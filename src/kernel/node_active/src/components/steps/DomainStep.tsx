@@ -4,15 +4,14 @@ import {
   Button,
   Chip,
   CircularProgress,
-  Grid,
   Paper,
+  Grid,
   Stack,
   TextField,
   Typography,
 } from "@mui/material";
 import {
   AutoAwesomeRounded,
-  ContentCopyRounded,
   DnsRounded,
   PublicRounded,
   VerifiedRounded,
@@ -23,7 +22,6 @@ import { GatewayType, WalletUser, WizardData } from "../../types";
 import {
   check_bucky_username,
   generate_key_pair,
-  generate_zone_txt_records,
   isValidDomain,
 } from "../../../active_lib";
 
@@ -46,12 +44,6 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
   const [snCode, setSnCode] = useState(wizardData.sn_active_code || "");
   const [nameStatus, setNameStatus] = useState<NameStatus>("idle");
   const [generatingKeys, setGeneratingKeys] = useState(false);
-  const [txtRecords, setTxtRecords] = useState({
-    boot: wizardData.zone_config_jwt ? `DID=${wizardData.zone_config_jwt};` : "",
-    pkx: "",
-    dev: "",
-  });
-  const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
 
   useEffect(() => {
@@ -106,7 +98,6 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
     if (mode !== "bucky" || !wizardData.owner_private_key || username.trim().length <= 4) {
       return;
     }
-    // Skip if zone_config_jwt already exists and is valid
     if (wizardData.zone_config_jwt) {
       return;
     }
@@ -118,64 +109,11 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
         return "sn.buckyos.ai";
       }
     })();
-    // generate_zone_txt_records(snHost,wizardData.owner_public_key, wizardData.owner_private_key, wizardData.device_public_key, wizardData.rtcp_port, wizardData.is_wallet_runtime)
-    //   .then((jwt) => {
-    //     if (!cancelled) {
-    //       onUpdate({ zone_config_jwt: jwt });
-    //       setTxtRecords((prev) => ({ ...prev, boot: `DID=${jwt};` }));
-    //     }
-    //   })
-    //   .catch(() => {
-    //     // ignore background errors, surface during explicit actions
-    //   });
+   
     return () => {
       cancelled = true;
     };
   }, [mode, username, wizardData.owner_private_key, wizardData.sn_url, wizardData.zone_config_jwt]);
-
-  const copy = (text: string) => {
-    if (!text) return;
-    navigator.clipboard?.writeText(text).then(() => {
-      // noop
-    });
-  };
-
-  const generateTxtRecords = async (): Promise<boolean> => {
-    setFormError("");
-    if (!wizardData.owner_private_key) {
-      setFormError(t("error_private_key_not_ready") || "");
-      return false;
-    }
-    if (!domain.trim()) {
-      setFormError(t("error_domain_required") || "");
-      return false;
-    }
-    setSaving(true);
-    try {
-      const snHost = (() => {
-        try {
-          return new URL(wizardData.sn_url || "").hostname;
-        } catch {
-          return "sn.buckyos.ai";
-        }
-      })();
-
-      // const jwt = await generate_zone_txt_records(snHost, wizardData.owner_private_key);
-      // onUpdate({ zone_config_jwt: jwt });
-      // setTxtRecords({
-      //   boot: `DID=${jwt};`,
-      //   pkx: t("txt_record_placeholder") || "(pending from SN)",
-      //   dev: t("txt_record_placeholder") || "(pending from SN)",
-      // });
-
-      return true;
-    } catch (_err) {
-      setFormError(t("error_generate_txt_records_failed") || "Failed to generate TXT records");
-      return false;
-    } finally {
-      setSaving(false);
-    }
-  };
 
   const handleNext = async () => {
     setFormError("");
@@ -188,7 +126,7 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
         setFormError(t("error_name_taken") || "");
         return;
       }
-      if (!isWalletRuntime && wizardData.gatewy_type === GatewayType.BuckyForward && (!snCode || snCode.length < 8)) {
+      if (!snCode || snCode.length < 8) {
         setFormError(t("error_invite_code_too_short") || "");
         return;
       }
@@ -196,7 +134,7 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
         use_self_domain: false,
         sn_user_name: username.trim(),
         self_domain: "",
-        sn_active_code: isWalletRuntime ? "" : snCode,
+        sn_active_code: snCode,
       });
       onNext();
       return;
@@ -209,12 +147,6 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
     if (!wizardData.owner_private_key) {
       setFormError(t("error_private_key_not_ready") || "");
       return;
-    }
-    if (!wizardData.zone_config_jwt) {
-      const ok = await generateTxtRecords();
-      if (!ok) {
-        return;
-      }
     }
     onUpdate({
       use_self_domain: true,
@@ -339,15 +271,13 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
               endAdornment: renderStatusChip() ? <Box sx={{ pr: 1 }}>{renderStatusChip()}</Box> : undefined,
             }}
           />
-          {!isWalletRuntime && (
-            <TextField
-              label={t("invite_code_placeholder")}
-              value={snCode}
-              onChange={(e) => setSnCode(e.target.value)}
-              helperText={t("invite_code_required")}
-              required={wizardData.gatewy_type === GatewayType.BuckyForward}
-            />
-          )}
+          <TextField
+            label={t("invite_code_placeholder")}
+            value={snCode}
+            onChange={(e) => setSnCode(e.target.value)}
+            helperText={t("invite_code_required")}
+            required
+          />
           {generatingKeys && (
             <Alert icon={<CircularProgress size={16} />} severity="info">
               {t("generate_keys_progress")}
@@ -371,59 +301,6 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
           <Alert icon={<DnsRounded fontSize="small" />} severity="info">
             {t("dns_ns_record", { sn_host_base: wizardData.web3_base_host || "web3.buckyos.ai" })}
           </Alert>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems="center">
-            <Button
-              variant="outlined"
-              startIcon={<ContentCopyRounded />}
-              onClick={generateTxtRecords}
-              disabled={saving}
-            >
-              {saving ? t("generating_txt_records") : t("generate_txt_records_button")}
-            </Button>
-            <Typography variant="body2" color="text.secondary">
-              {t("dns_txt_records_title")}
-            </Typography>
-          </Stack>
-          {txtRecords.boot && (
-            <Stack spacing={1}>
-              <Box>
-                <Typography variant="body2" color="text.secondary">
-                  BOOT
-                </Typography>
-                <Paper
-                  variant="outlined"
-                  sx={{ p: 1.5, display: "flex", alignItems: "center", justifyContent: "space-between" }}
-                >
-                  <Typography variant="body2" sx={{ wordBreak: "break-all" }}>
-                    {txtRecords.boot}
-                  </Typography>
-                  <Button onClick={() => copy(txtRecords.boot)} size="small" startIcon={<ContentCopyRounded />}>
-                    {t("copy_button")}
-                  </Button>
-                </Paper>
-              </Box>
-              <Box>
-                <Typography variant="body2" color="text.secondary">
-                  PKX
-                </Typography>
-                <Paper variant="outlined" sx={{ p: 1.5 }}>
-                  <Typography variant="body2" sx={{ wordBreak: "break-all" }}>
-                    {txtRecords.pkx || t("txt_record_placeholder")}
-                  </Typography>
-                </Paper>
-              </Box>
-              <Box>
-                <Typography variant="body2" color="text.secondary">
-                  DEV
-                </Typography>
-                <Paper variant="outlined" sx={{ p: 1.5 }}>
-                  <Typography variant="body2" sx={{ wordBreak: "break-all" }}>
-                    {txtRecords.dev || t("txt_record_placeholder")}
-                  </Typography>
-                </Paper>
-              </Box>
-            </Stack>
-          )}
         </Stack>
       )}
 

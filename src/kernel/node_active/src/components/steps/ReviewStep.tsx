@@ -9,11 +9,11 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { CheckCircleRounded, ContentCopyRounded, LaunchRounded } from "@mui/icons-material";
-import { useState } from "react";
+import { CheckCircleRounded, ContentCopyRounded, LaunchRounded, DnsRounded } from "@mui/icons-material";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { WizardData } from "../../types";
-import { do_active, do_active_by_wallet } from "../../../active_lib";
+import { GatewayType, WizardData } from "../../types";
+import { do_active, do_active_by_wallet, generate_zone_txt_records } from "../../../active_lib";
 
 type Props = {
   wizardData: WizardData;
@@ -27,6 +27,20 @@ const ReviewStep = ({ wizardData, onActivated, onBack, isWalletRuntime }: Props)
   const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const requiresDnsTxt = useMemo(
+    () => wizardData.gatewy_type === GatewayType.WAN && wizardData.use_self_domain,
+    [wizardData.gatewy_type, wizardData.use_self_domain]
+  );
+  const [dnsReady, setDnsReady] = useState(!requiresDnsTxt && !!wizardData.zone_config_jwt);
+  const [dnsRecords, setDnsRecords] = useState<Array<{ key: string; value: string }>>(
+    wizardData.zone_config_jwt ? [{ key: "BOOT", value: `DID=${wizardData.zone_config_jwt};` }] : []
+  );
+  const [dnsLoading, setDnsLoading] = useState(false);
+
+  useEffect(() => {
+    setDnsReady(!requiresDnsTxt && !!wizardData.zone_config_jwt);
+    setDnsRecords(wizardData.zone_config_jwt ? [{ key: "BOOT", value: `DID=${wizardData.zone_config_jwt};` }] : []);
+  }, [requiresDnsTxt, wizardData.zone_config_jwt]);
 
   const targetHost = wizardData.use_self_domain
     ? wizardData.self_domain
@@ -44,6 +58,10 @@ const ReviewStep = ({ wizardData, onActivated, onBack, isWalletRuntime }: Props)
 
   const handleActivate = async () => {
     setError("");
+    if (requiresDnsTxt && !dnsReady) {
+      setError(t("error_generate_txt_records_failed") || "DNS record not ready");
+      return;
+    }
     setLoading(true);
     try {
       const ok = isWalletRuntime ? await do_active_by_wallet(wizardData) : await do_active(wizardData);
@@ -57,6 +75,55 @@ const ReviewStep = ({ wizardData, onActivated, onBack, isWalletRuntime }: Props)
       setError(`${t("error_activation_failed") || "Activation failed"} ${msg}`);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const buildDnsRecord = async () => {
+    setError("");
+    if (!wizardData.is_wallet_runtime && !wizardData.owner_private_key) {
+      setError(t("error_private_key_not_ready") || "Private key missing");
+      return;
+    }
+    setDnsLoading(true);
+    try {
+      const snHost = (() => {
+        try {
+          return new URL(wizardData.sn_url || "https://sn.buckyos.ai").hostname;
+        } catch {
+          return "sn.buckyos.ai";
+        }
+      })();
+      const netId =
+        wizardData.gatewy_type === GatewayType.WAN
+          ? "wan"
+          : wizardData.port_mapping_mode === "full"
+          ? "wan_dyn"
+          : "portmap";
+      const result = await generate_zone_txt_records(
+        snHost,
+        wizardData.owner_public_key,
+        wizardData.owner_private_key,
+        wizardData.device_public_key,
+        netId,
+        wizardData.rtcp_port,
+        wizardData.is_wallet_runtime
+      );
+      if (!result) {
+        throw new Error("No TXT records returned");
+      }
+      const records = Object.entries(result).map(([key, value]) => ({
+        key,
+        value: typeof value === "string" ? value : JSON.stringify(value),
+      }));
+
+      setDnsRecords(records);
+      setDnsReady(true);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(`${t("error_generate_txt_records_failed") || "Failed to generate TXT"} ${msg}`);
+      setDnsReady(false);
+    } finally {
+      setDnsLoading(false);
     }
   };
 
@@ -86,6 +153,37 @@ const ReviewStep = ({ wizardData, onActivated, onBack, isWalletRuntime }: Props)
           }
         />
       </Stack>
+
+      {wizardData.use_self_domain && (
+        <Alert icon={<DnsRounded />} severity="info">
+          {t("dns_ns_record", { sn_host_base: wizardData.web3_base_host || "web3.buckyos.ai" })}
+        </Alert>
+      )}
+
+      {requiresDnsTxt && (
+        <Stack spacing={1.5}>
+          <Typography fontWeight={700}>{t("dns_txt_records_title")}</Typography>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems="center">
+            <Button variant="outlined" onClick={buildDnsRecord} disabled={dnsLoading}>
+              {dnsLoading ? t("generating_txt_records") : t("generate_txt_records_button")}
+            </Button>
+            <Typography variant="body2" color="text.secondary">
+              {t("public_ip_hint")}
+            </Typography>
+          </Stack>
+          {dnsRecords.map((rec) => (
+            <TextField
+              key={rec.key}
+              label={`${t("dns_txt_record_boot")} (${rec.key})`}
+              value={rec.value}
+              InputProps={{ readOnly: true }}
+              multiline
+              minRows={2}
+            />
+          ))}
+        </Stack>
+      )}
+
       {!wizardData.is_wallet_runtime && (
         <Stack spacing={1}>
           <Typography fontWeight={700}>{t("owner_private_key")}</Typography>
@@ -121,7 +219,7 @@ const ReviewStep = ({ wizardData, onActivated, onBack, isWalletRuntime }: Props)
           size="large"
           onClick={handleActivate}
           endIcon={!loading ? <LaunchRounded /> : undefined}
-          disabled={loading}
+          disabled={loading || (requiresDnsTxt && !dnsReady)}
           sx={{ py: 1.15, minWidth: 160 }}
         >
           {loading ? <CircularProgress size={20} /> : t("activate_button")}

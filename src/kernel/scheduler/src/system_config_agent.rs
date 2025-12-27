@@ -512,12 +512,16 @@ pub(crate) async fn update_node_gateway_config(
                             } else {
                                 let line_rule = format!("match ${{REQ.host}} \"{}.*\" && {}", shortcut_host, target_str);
                                 process_chain_lines.push_back(line_rule);
+                                let line_rule = format!("match ${{REQ.host}} \"{}*.\" && {}", shortcut_host, target_str);
+                                process_chain_lines.push_back(line_rule);
                             }
                         }
 
                         let expose_config = expose_config.unwrap();
                         for sub_hostname in expose_config.sub_hostname.iter() {
                             let line_rule = format!("match ${{REQ.host}} \"{}.*\" && {}", sub_hostname, target_str);
+                            process_chain_lines.push_back(line_rule);
+                            let line_rule = format!("match ${{REQ.host}} \"{}*.\" && {}", sub_hostname, target_str);
                             process_chain_lines.push_back(line_rule);
                         }
                     }

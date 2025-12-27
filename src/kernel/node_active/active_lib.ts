@@ -197,11 +197,11 @@ export async function generate_zone_txt_records(sn:string,
     let device_mini_config_str =  JSON.stringify(device_mini_config);
 
     if (is_by_wallet) {
-        let will_sign_str:string[] = [
-            zone_boot_config_str,
-            device_mini_config_str
+        let will_sign_objects:JsonValue[] = [
+            zone_boot_config,
+            device_mini_config
         ]
-        let signed_results:string[]|null = await buckyos.walletSignWithActiveDid(will_sign_str);
+        let signed_results:string[]|null = await buckyos.walletSignWithActiveDid(will_sign_objects);
         if (signed_results == null) {
             console.error("Failed to sign zone txt records");
             return null;

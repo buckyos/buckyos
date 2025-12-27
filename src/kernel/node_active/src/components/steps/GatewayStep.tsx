@@ -26,7 +26,10 @@ type Props = {
 
 const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) => {
   const { t } = useTranslation();
-  const [mode, setMode] = useState<GatewayType>(wizardData.gatewy_type || GatewayType.BuckyForward);
+  const [mode, setMode] = useState<GatewayType>(
+    wizardData.gatewy_type === GatewayType.WAN ? GatewayType.WAN : wizardData.gatewy_type || GatewayType.BuckyForward
+  );
+  const [vpsMode, setVpsMode] = useState(wizardData.gatewy_type === GatewayType.WAN);
   const [inviteCode, setInviteCode] = useState(wizardData.sn_active_code || "");
   const [checkingInvite, setCheckingInvite] = useState(false);
   const [inviteValid, setInviteValid] = useState<boolean | null>(null);
@@ -37,11 +40,12 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
   const [formError, setFormError] = useState("");
 
   useEffect(() => {
-    if (isWalletRuntime) {
+    const needsInvite = !isWalletRuntime && !vpsMode;
+    if (!needsInvite) {
       setInviteValid(true);
       return;
     }
-    if (mode !== GatewayType.WAN || inviteCode.length < 7) {
+    if (inviteCode.length < 7) {
       setInviteValid(null);
       return;
     }
@@ -66,12 +70,14 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
     return () => {
       cancelled = true;
     };
-  }, [inviteCode, mode]);
+  }, [inviteCode, vpsMode, isWalletRuntime]);
 
   const handleNext = () => {
     setFormError("");
 
-    if (mode === GatewayType.BuckyForward && !isWalletRuntime) {
+    const needsInvite = !isWalletRuntime && mode !== GatewayType.WAN;
+
+    if (needsInvite) {
       if (!inviteCode || inviteCode.length < 8) {
         setFormError(t("error_invite_code_too_short") || "Invitation code is required");
         return;
@@ -90,8 +96,9 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
 
     const port = parseInt(rtcpPort, 10);
     const finalPortMode = mode === GatewayType.WAN ? "full" : portMappingMode;
+    const gatewayType = mode === GatewayType.WAN ? GatewayType.WAN : mode;
     const nextData: Partial<WizardData> = {
-      gatewy_type: mode,
+      gatewy_type: gatewayType,
       sn_active_code: isWalletRuntime ? "" : inviteCode,
       sn_url: SN_API_URL,
       web3_base_host: WEB3_BASE_HOST,
@@ -110,11 +117,15 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
       onClick={() => {
         if (title === "bucky") {
           setMode(GatewayType.BuckyForward);
+          setVpsMode(false);
         } else if (title === "direct") {
           setMode(GatewayType.PortForward);
           setPortMappingMode("full");
+          setVpsMode(false);
         } else {
           setMode(GatewayType.WAN);
+          setPortMappingMode("full");
+          setVpsMode(true);
         }
       }}
       sx={{
@@ -231,6 +242,25 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
           </Typography>
           {mode !== GatewayType.WAN && (
             <>
+              {!isWalletRuntime && (
+                <TextField
+                  label={t("invite_code_placeholder")}
+                  value={inviteCode}
+                  onChange={(e) => setInviteCode(e.target.value)}
+                  error={inviteValid === false}
+                  helperText={
+                    checkingInvite
+                      ? t("invite_checking")
+                      : inviteValid === false
+                      ? t("error_invite_code_invalid")
+                      : inviteValid === true
+                      ? t("invite_valid")
+                      : t("bucky_forward_desc")
+                  }
+                  fullWidth
+                  required
+                />
+              )}
               <FormControl fullWidth>
                 <InputLabel id="port-mode-label">{t("port_mapping_mode_label")}</InputLabel>
                 <Select
