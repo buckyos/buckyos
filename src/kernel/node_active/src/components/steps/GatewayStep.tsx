@@ -100,8 +100,6 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
     const nextData: Partial<WizardData> = {
       gatewy_type: gatewayType,
       sn_active_code: isWalletRuntime ? "" : inviteCode,
-      sn_url: SN_API_URL,
-      web3_base_host: WEB3_BASE_HOST,
       port_mapping_mode: finalPortMode,
       rtcp_port: Number.isNaN(port) ? 2980 : port,
       is_wallet_runtime: isWalletRuntime,

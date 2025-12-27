@@ -32,10 +32,8 @@ export type ActiveWizzardData = {
 
   use_self_domain: boolean;
   self_domain: string;
-  zone_config_jwt: string;
 
-  sn_url: string;
-  web3_base_host: string;
+  //web3_base_host: string;
   sn_active_code: string | null;//钱包模式为null
   sn_user_name: string | null;//钱包模式不会为null
 
@@ -51,7 +49,6 @@ export type ActiveWizzardData = {
 
   is_wallet_runtime: boolean;
   owner_user_name: string;//did:bns:$owner_user_name
-
 }
 
 // 类型别名：用于组件中的向导数据，与 ActiveWizzardData 相同

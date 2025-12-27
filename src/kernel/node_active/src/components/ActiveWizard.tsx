@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Box, LinearProgress, Stack, Typography } from "@mui/material";
 import { useTranslation } from "react-i18next";
 import { StepKey, WalletUser, WizardData, ActiveWizzardData } from "../types";
-import { createInitialWizardData } from "../../active_lib";
+import { createInitialWizardData, WEB3_BASE_HOST } from "../../active_lib";
 import GatewayStep from "./steps/GatewayStep";
 import DomainStep from "./steps/DomainStep";
 import SecurityStep from "./steps/SecurityStep";
@@ -85,8 +85,8 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
     ? wizardData.self_domain
       ? `https://${wizardData.self_domain}`
       : ""
-    : wizardData?.sn_user_name && wizardData?.web3_base_host
-    ? `https://${wizardData.sn_user_name}.${wizardData.web3_base_host}`
+    : wizardData?.sn_user_name 
+    ? `https://${wizardData.sn_user_name}.${WEB3_BASE_HOST}`
     : "";
   const successUrl = completedUrl || fallbackUrl;
 

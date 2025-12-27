@@ -22,9 +22,10 @@ import { GatewayType, WalletUser, WizardData } from "../../types";
 import {
   check_bucky_username,
   check_sn_active_code,
-  generate_key_pair,
   isValidDomain,
   SN_BASE_HOST,
+  SN_API_URL,
+  WEB3_BASE_HOST,
 } from "../../../active_lib";
 
 type Props = {
@@ -124,7 +125,7 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
     let cancelled = false;
     const snHost = (() => {
       try {
-        return new URL(wizardData.sn_url || "").hostname;
+        return new URL(SN_API_URL).hostname;
       } catch {
         return "sn.buckyos.ai";
       }
@@ -133,7 +134,7 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
     return () => {
       cancelled = true;
     };
-  }, [mode, username, wizardData.sn_url]);
+  }, [mode, username, SN_API_URL]);
 
   const handleNext = async () => {
     setFormError("");
@@ -156,7 +157,8 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
       }
       onUpdate({
         use_self_domain: false,
-        sn_user_name: username.trim(),
+        sn_user_name: username.trim().toLowerCase(),
+        owner_user_name: wizardData.is_wallet_runtime?"":username.trim().toLowerCase(),
         self_domain: "",
         sn_active_code: snCode,
       });
@@ -178,9 +180,9 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
     onNext();
   };
 
-  const previewDomain = wizardData.web3_base_host
-    ? `https://${username || "your-name"}.${wizardData.web3_base_host}`
-    : "";
+  const previewDomain = wizardData.self_domain
+    ? wizardData.self_domain
+    : `https://${username || "your-name"}.${WEB3_BASE_HOST}`;
 
   const renderStatusChip = () => {
     if (nameStatus === "checking") {

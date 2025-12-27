@@ -2,6 +2,7 @@ import { CheckCircleOutlineRounded, ContentCopyRounded, LaunchRounded } from "@m
 import { Button, Paper, Stack, Typography } from "@mui/material";
 import { useTranslation } from "react-i18next";
 import { WizardData } from "../../types";
+import { WEB3_BASE_HOST } from "../../../active_lib";
 
 type Props = {
   wizardData: WizardData;
@@ -14,7 +15,7 @@ const SuccessStep = ({ wizardData, targetUrl }: Props) => {
     targetUrl ||
     (wizardData.use_self_domain
       ? `https://${wizardData.self_domain}`
-      : `https://${wizardData.sn_user_name}.${wizardData.web3_base_host}`);
+      : `https://${wizardData.sn_user_name}.${WEB3_BASE_HOST}`);
 
   const openUrl = () => {
     if (url) {

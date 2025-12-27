@@ -50,8 +50,7 @@ export async function createInitialWizardData (initial?: Partial<ActiveWizzardDa
         device_private_key: device_private_key,
         sn_active_code: "",
         sn_user_name: "",
-        sn_url: SN_API_URL,
-        web3_base_host: WEB3_BASE_HOST,
+        //web3_base_host: WEB3_BASE_HOST,
         use_self_domain: false,
         self_domain: "",
         admin_password_hash: "",
@@ -59,7 +58,6 @@ export async function createInitialWizardData (initial?: Partial<ActiveWizzardDa
         enable_guest_access: false,
         owner_public_key: owner_public_key,
         owner_private_key: owner_private_key,
-        zone_config_jwt: "",
         port_mapping_mode: "full",
         rtcp_port: 2980,
         is_wallet_runtime: false,
@@ -103,14 +101,18 @@ function create_zone_boot_config(sn:string|null,ood_net_id:string|null):JsonValu
     const now = Math.floor(Date.now() / 1000);
     let ood = "ood1";
     if (ood_net_id != null) {
-        ood = ood + "@" + ood_net_id;
+        if (ood_net_id != "nat") {
+            ood = ood + "@" + ood_net_id;
+        }
     }
     let zone_boot_config:JsonValue = {
         "oods": [ood],
         "exp": now + 3600*24*365*10
     }
     if (sn != null) {
-        zone_boot_config["sn"] = sn;
+        if (sn != "") {
+            zone_boot_config["sn"] = sn;
+        }
     }
     return zone_boot_config;
 }
@@ -243,27 +245,6 @@ export async function get_thisdevice_info():Promise<JsonValue> {
     return device_info;
 }
 
-export async function active_ood(wizzard_data:ActiveWizzardData,zone_name:string,
-    owner_public_key:JsonValue,owner_private_key:string,device_public_key:JsonValue,device_private_key:string,
- ):Promise<boolean> {
-    let rpc_client = new buckyos.kRPCClient("/kapi/active");
-    let result = await rpc_client.call("do_active",{
-        user_name:wizzard_data.owner_user_name,
-        zone_name:zone_name,
-        net_id:get_net_id_by_gateway_type(wizzard_data.gatewy_type,wizzard_data.port_mapping_mode),
-        public_key:owner_public_key,
-        private_key:owner_private_key,
-        device_public_key:device_public_key,
-        device_private_key:device_private_key,
-        admin_password_hash:wizzard_data.admin_password_hash,
-        guest_access:wizzard_data.enable_guest_access,
-        friend_passcode:wizzard_data.friend_passcode,
-        sn_url:wizzard_data.sn_url,
-        sn_host:wizzard_data.web3_base_host
-    });
-    return result["code"] == 0;
-}
-
 
 export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolean> {
 
@@ -279,29 +260,11 @@ export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolea
         real_sn_host = SN_HOST;
     }
 
-    // // Register SN user if needed
-    // if (need_sn && !data.is_wallet_runtime) {
-    //     let user_domain = null;
-    //     if(data.use_self_domain) {
-    //         user_domain = data.self_domain;
-    //     }
-    //     let register_sn_user_result = await register_sn_user(
-    //         data.sn_user_name,
-    //         data.sn_active_code,
-    //         JSON.stringify(data.owner_public_key),
-    //         data.zone_config_jwt,
-    //         user_domain);
-
-    //     if (!register_sn_user_result) {
-    //         return false;
-    //     }
-    // }
-
     let zone_name = "";
     if (data.use_self_domain) {
         zone_name = data.self_domain;
     } else {
-        zone_name = data.sn_user_name + "." + data.web3_base_host;
+        zone_name = data.sn_user_name + "." + WEB3_BASE_HOST;
     }
 
     // Step 1: Call prepare_params_for_active_by_wallet to get unsigned data
@@ -313,9 +276,10 @@ export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolea
         public_key: data.owner_public_key,
         device_public_key: data.device_public_key,
         device_private_key: data.device_private_key,
+        device_rtcp_port: data.rtcp_port,
         support_container: "true",
         sn_username: data.sn_user_name,
-        sn_url: data.sn_url || ""
+        sn_url: SN_API_URL
     };
 
     let prepare_result = await rpc_client.call("prepare_params_for_active_by_wallet", prepare_params);
@@ -369,13 +333,14 @@ export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolea
 
         user_name:data.owner_user_name,
         zone_name: zone_name,
+        is_self_domain: data.use_self_domain,
         public_key: data.owner_public_key, // Still needed for JWT verification
         admin_password_hash: data.admin_password_hash,
         guest_access: data.enable_guest_access,
         friend_passcode: data.friend_passcode,
-        sn_url: data.sn_url || "",
-        sn_username: data.sn_user_name,
 
+        sn_url: SN_API_URL,
+        sn_username: data.sn_user_name,
         sn_rpc_token: rpc_token_jwt,
     };
 
@@ -385,26 +350,41 @@ export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolea
 }
 
 export async function do_active(data:ActiveWizzardData):Promise<boolean> {
-    //generate device key pair
-    // let [device_public_key,device_private_key] = await generate_key_pair();
-    // let device_did = "did:dev:"+ device_public_key["x"];
-    // console.log("ood device_did",device_did);
-
     let need_sn = is_need_sn(data);
+    let net_id = get_net_id_by_gateway_type(data.gatewy_type,data.port_mapping_mode);
+    let sn_url = null;
     // register sn user
     if (need_sn) {
         let user_domain = null;
         if (data.sn_user_name == null || data.sn_user_name == "" || data.sn_active_code == null || data.sn_active_code == "") {
             return false;
         }
+        sn_url = SN_API_URL;
         if(data.use_self_domain) {
             user_domain = data.self_domain;
         }
+
+        let zone_boot_config = create_zone_boot_config(SN_HOST,net_id);
+        let zone_boot_config_str = JSON.stringify(zone_boot_config);
+        let device_mini_config = create_device_mini_config(data.device_public_key,data.rtcp_port);
+        let device_mini_config_str = JSON.stringify(device_mini_config);
+        let rpc_client = new buckyos.kRPCClient("/kapi/active");
+        let records_result = await rpc_client.call("generate_zone_txt_records",{
+            zone_boot_config:zone_boot_config_str,
+            device_mini_config:device_mini_config_str,
+            private_key:data.owner_private_key   
+        });
+        if (records_result["code"] != undefined && records_result["code"] != 0) {
+            console.error("Failed to generate zone txt records");
+            return false;
+        }
+        let zone_config_jwt = records_result["BOOT"];
+        
         let register_sn_user_result = await register_sn_user(
             data.sn_user_name,
             data.sn_active_code,
             JSON.stringify(data.owner_public_key),
-            data.zone_config_jwt,
+            zone_config_jwt,
             user_domain);
 
         if (!register_sn_user_result) {
@@ -418,25 +398,30 @@ export async function do_active(data:ActiveWizzardData):Promise<boolean> {
         if (data.sn_user_name == null) {
             return false;
         }
-        zone_name = data.sn_user_name + "." + data.web3_base_host;
+        zone_name = data.sn_user_name + "." + WEB3_BASE_HOST;
     }
 
     if (data.owner_private_key == null) {
         return false;
     }
 
-    let active_ood_result = await active_ood(
-        data,
-        zone_name,
-        data.owner_public_key,
-        data.owner_private_key,
-        data.device_public_key,
-        data.device_private_key,
-    );
-
-    if (!active_ood_result) {
-        return false;
-    }
-
-    return true;
+    console.log("call do_active,param:",data);
+    let rpc_client = new buckyos.kRPCClient("/kapi/active");
+    let result = await rpc_client.call("do_active",{
+        user_name:data.owner_user_name,
+        zone_name:zone_name,
+        net_id:get_net_id_by_gateway_type(data.gatewy_type,data.port_mapping_mode),
+        public_key:data.owner_public_key,
+        private_key:data.owner_private_key,
+        device_public_key:data.device_public_key,
+        device_private_key:data.device_private_key,
+        admin_password_hash:data.admin_password_hash,
+        guest_access:data.enable_guest_access,
+        friend_passcode:data.friend_passcode,
+        device_rtcp_port:data.rtcp_port,
+        sn_username:data.sn_user_name,
+        sn_url:sn_url
+    });
+    console.log("do_active result",result);
+    return result["code"] == 0;
 }

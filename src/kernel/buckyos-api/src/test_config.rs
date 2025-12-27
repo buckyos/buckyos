@@ -15,7 +15,7 @@ use ed25519_dalek::{SigningKey, VerifyingKey};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use cyfs_sn::SnDB;
 
-use crate::{AppDoc, LocalAppInstanceConfig, REPO_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, ServiceInstallConfig, ServiceInstanceState, SubPkgDesc, VERIFY_HUB_UNIQUE_ID};
+use crate::{AppDoc, LocalAppInstanceConfig, REPO_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, ServiceInstallConfig, ServiceInstanceState, VERIFY_HUB_UNIQUE_ID};
 
 // ============================================================================
 // Constant Definitions

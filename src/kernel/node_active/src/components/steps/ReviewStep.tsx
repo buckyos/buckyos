@@ -13,7 +13,7 @@ import { CheckCircleRounded, ContentCopyRounded, LaunchRounded, DnsRounded, Warn
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { GatewayType, WizardData } from "../../types";
-import { do_active, do_active_by_wallet, generate_zone_txt_records, get_net_id_by_gateway_type, SN_BASE_HOST } from "../../../active_lib";
+import { do_active, do_active_by_wallet, generate_zone_txt_records, get_net_id_by_gateway_type, SN_BASE_HOST, SN_API_URL,SN_HOST, WEB3_BASE_HOST } from "../../../active_lib";
 
 type Props = {
   wizardData: WizardData;
@@ -31,22 +31,21 @@ const ReviewStep = ({ wizardData, onActivated, onBack, isWalletRuntime }: Props)
     () => wizardData.gatewy_type === GatewayType.WAN && wizardData.use_self_domain,
     [wizardData.gatewy_type, wizardData.use_self_domain]
   );
-  const [dnsReady, setDnsReady] = useState(!requiresDnsTxt && !!wizardData.zone_config_jwt);
+  const [dnsReady, setDnsReady] = useState(!requiresDnsTxt );
   const [dnsRecords, setDnsRecords] = useState<Array<{ key: string; value: string }>>(
-    wizardData.zone_config_jwt ? [{ key: "BOOT", value: `DID=${wizardData.zone_config_jwt};` }] : []
+     []
   );
   const [dnsLoading, setDnsLoading] = useState(false);
 
   useEffect(() => {
-    setDnsReady(!requiresDnsTxt && !!wizardData.zone_config_jwt);
-    setDnsRecords(wizardData.zone_config_jwt ? [{ key: "BOOT", value: `DID=${wizardData.zone_config_jwt};` }] : []);
-  }, [requiresDnsTxt, wizardData.zone_config_jwt]);
+    setDnsReady(!requiresDnsTxt);
+    setDnsRecords([]);
+  }, [requiresDnsTxt]);
 
   const targetHost = wizardData.use_self_domain
     ? wizardData.self_domain
-    : wizardData.sn_user_name && wizardData.web3_base_host
-    ? `${wizardData.sn_user_name}.${wizardData.web3_base_host}`
-    : "";
+    : `${wizardData.sn_user_name}.${WEB3_BASE_HOST}`;
+
   const targetUrl = targetHost ? `https://${targetHost}` : "";
 
   const copyKey = () => {
@@ -87,16 +86,9 @@ const ReviewStep = ({ wizardData, onActivated, onBack, isWalletRuntime }: Props)
     }
     setDnsLoading(true);
     try {
-      const snHost = (() => {
-        try {
-          return new URL(wizardData.sn_url || "https://sn.buckyos.ai").hostname;
-        } catch {
-          return "sn.buckyos.ai";
-        }
-      })();
       const netid = get_net_id_by_gateway_type(wizardData.gatewy_type, wizardData.port_mapping_mode);
       const result = await generate_zone_txt_records(
-        snHost,
+        SN_HOST,
         wizardData.owner_public_key,
         wizardData.owner_private_key,
         wizardData.device_public_key,

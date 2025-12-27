@@ -48,8 +48,7 @@ impl ActiveServer {
 
         let user_name = req.params.get("user_name");
         let zone_name = req.params.get("zone_name");
-
-
+        let is_self_domain = req.params.get("is_self_domain");
         let owner_public_key_param = req.params.get("public_key");
         let admin_password_hash = req.params.get("admin_password_hash");
         let guest_access = req.params.get("guest_access");
@@ -67,13 +66,13 @@ impl ActiveServer {
 
         let boot_config_jwt = boot_config_jwt.unwrap().as_str().unwrap();
         let zone_name = zone_name.unwrap().as_str().unwrap();
+        let is_self_domain = is_self_domain.unwrap().as_str().unwrap() == "true";
         let zone_did = DID::from_str(zone_name).map_err(|_|RPCErrors::ReasonError("Invalid zone name".to_string()))?;
         let user_name = user_name.unwrap().as_str().unwrap();
         let user_name = user_name.to_lowercase();
         // Get owner public key from device_config (it should be in the JWT header or we need to verify)
         // For now, we'll need owner_public_key to verify, but let's try to extract it from the request if available
         // If not available, we'll decode without verification (less secure but works for now)
-
         let owner_public_key: Jwk = if owner_public_key_param.is_some() {
             serde_json::from_value(owner_public_key_param.unwrap().clone())
                 .map_err(|e| {
@@ -149,19 +148,29 @@ impl ActiveServer {
         // Register device to SN if needed
         if need_sn {
             let sn_url = sn_url.unwrap();
-            info!("sn_url: {}", sn_url);
             let sn_rpc_token = if sn_rpc_token.is_some() {
                 sn_rpc_token.unwrap().as_str().unwrap()
             } else {
                 return Err(RPCErrors::ParseRequestError("sn_rpc_token is required for SN registration".to_string()));
             };
 
+            let sn_username = if sn_username.is_some() {
+                sn_username.unwrap().as_str().unwrap()
+            } else {
+                return Err(RPCErrors::ParseRequestError("sn_username is required for SN registration".to_string()));
+            };
+
             info!("Bind new zone_boot_jwt {} to sn: {}", boot_config_jwt, sn_url);
+            let user_domain = if is_self_domain {
+                Some(zone_name.to_string())
+            } else {
+                None
+            };
 
             let sn_result = sn_bind_zone_config(sn_url.as_str(), Some(sn_rpc_token.to_string()),
-                user_name.as_str(),
+                sn_username,
                 boot_config_jwt,
-                None).await;
+                user_domain).await;//todo: user_domain?
             if sn_result.is_err() {
                 return Err(RPCErrors::ReasonError(format!("Failed to bind zone config to sn: {}",sn_result.err().unwrap())));
             }
@@ -183,8 +192,7 @@ impl ActiveServer {
                 info.auto_fill_by_system_info().await.unwrap();
                 info
             };
-            
-            device_info.auto_fill_by_system_info().await.unwrap();
+
             let device_info_json_final = serde_json::to_string(&device_info).unwrap();
             let device_ip = device_info.ip.unwrap().to_string();
             
@@ -195,10 +203,10 @@ impl ActiveServer {
             }
         } else {
             info!("NO SN mode: Check if the zone txt records is already exists ...");
-            let zone_boot = resolve_did(&zone_did, None).await
-                .map_err(|e|RPCErrors::ReasonError(format!("Failed to resolve zone did: {}", e)))?;
-            let zone_boot_config = ZoneBootConfig::decode(&zone_boot, Some(&owner_decoding_key))
-                .map_err(|e|RPCErrors::ReasonError(format!("Failed to decode zone boot config: {}", e)))?;
+            // let zone_boot = resolve_did(&zone_did, None).await
+            //     .map_err(|e|RPCErrors::ReasonError(format!("Failed to resolve zone did: {}", e)))?;
+            // let zone_boot_config = ZoneBootConfig::decode(&zone_boot, Some(&owner_decoding_key))
+            //     .map_err(|e|RPCErrors::ReasonError(format!("Failed to decode zone boot config: {}", e)))?;
             info!("verify zone boot config success");
         }
 
@@ -211,10 +219,8 @@ impl ActiveServer {
         // Write device identity
         let zone_did = DID::from_str(zone_name)
             .map_err(|_|RPCErrors::ReasonError("Invalid zone name".to_string()))?;
-
         let owner_did = DID::from_str(&user_name)
             .unwrap_or_else(|_| DID::new("bns", &user_name));
-
         let node_identity = NodeIdentityConfig {
             zone_did:zone_did,
             owner_public_key:owner_public_key,
@@ -223,7 +229,6 @@ impl ActiveServer {
             zone_iat:(buckyos_get_unix_timestamp() as u32 - 3600),
             device_mini_doc_jwt:device_mini_doc_jwt.to_string(),
         };
-
         let device_identity_file = write_dir.join("node_identity.json");
         let device_identity_str = serde_json::to_string(&node_identity)
             .map_err(|e|RPCErrors::ReasonError(format!("Failed to serialize node identity: {}", e)))?;
@@ -234,13 +239,13 @@ impl ActiveServer {
         let mut real_start_params = req.params.clone();
         let mut real_start_params = real_start_params.as_object_mut().unwrap();
         real_start_params.insert("ood_jwt".to_string(),Value::String(device_doc_jwt.to_string()));
-
         let start_params_str = serde_json::to_string(&real_start_params)
             .map_err(|e|RPCErrors::ReasonError(format!("Failed to serialize start params: {}", e)))?;
         let start_params_file = write_dir.join("start_config.json");
         tokio::fs::write(start_params_file,start_params_str.as_bytes()).await
             .map_err(|_|RPCErrors::ReasonError("Failed to write start params".to_string()))?;
 
+        //write node_device_config.json
         let node_device_config_file = write_dir.join("node_device_config.json");
         let node_device_config_json_str = serde_json::to_string(&device_config).unwrap();
         tokio::fs::write(node_device_config_file,node_device_config_json_str.as_bytes()).await
@@ -266,6 +271,7 @@ impl ActiveServer {
         let owner_public_key = req.params.get("public_key");
         let device_public_key = req.params.get("device_public_key");
         let device_private_key = req.params.get("device_private_key");
+        let device_rtcp_port_param = req.params.get("device_rtcp_port");
         let support_container = req.params.get("support_container");
         let sn_username = req.params.get("sn_username");
         let sn_url_param = req.params.get("sn_url");
@@ -281,14 +287,25 @@ impl ActiveServer {
         let user_name = user_name.unwrap().as_str().unwrap();
         let user_name = user_name.to_lowercase();
         let zone_name = zone_name.unwrap().as_str().unwrap();
+        let zone_did = DID::from_str(zone_name)
+            .map_err(|_|RPCErrors::ReasonError("Invalid zone name".to_string()))?;
+
         let net_id = if net_id.is_some() {
             Some(net_id.unwrap().as_str().unwrap().to_string())
         } else {
             None
         };
+
         let owner_public_key = owner_public_key.unwrap();
         let device_public_key = device_public_key.unwrap();
         let device_private_key = device_private_key.unwrap().as_str().unwrap();
+        let mut device_rtcp_port = None;
+        if device_rtcp_port_param.is_some() {
+            let real_device_rtcp_port = device_rtcp_port_param.unwrap().as_u64().unwrap();
+            if real_device_rtcp_port != 2980 {
+                device_rtcp_port = Some(real_device_rtcp_port as u32);
+            }
+        }
 
         let device_private_key_pem = EncodingKey::from_ed_pem(device_private_key.as_bytes())
             .map_err(|_|RPCErrors::ReasonError("Invalid device private key".to_string()))?;
@@ -305,11 +322,24 @@ impl ActiveServer {
         }
 
         // Create device_config without signing
+        let mut ddns_sn_url:Option<String> = None;
+        if net_id.is_some() {
+            let real_net_id = net_id.as_ref().unwrap();
+            if real_net_id == "wan_dyn" {
+                ddns_sn_url = sn_url.clone();
+            }
+            if real_net_id == "portmap" {
+                ddns_sn_url = sn_url.clone();
+            }
+        }
+
         let mut device_config = DeviceConfig::new_by_jwk("ood1",device_public_jwk);
         device_config.net_id = net_id;
-        device_config.ddns_sn_url = None;
+        device_config.ddns_sn_url = ddns_sn_url;
         device_config.support_container = is_support_container;
-        device_config.iss = user_name.to_string();
+        device_config.iss = format!("did:bns:{}",user_name.as_str());
+        device_config.zone_did = Some(zone_did.clone());
+        device_config.rtcp_port = device_rtcp_port;
         
         // Convert device_config to JSON (unsigned)
         let device_config_json = serde_json::to_value(&device_config)
@@ -355,6 +385,7 @@ impl ActiveServer {
     }
 
     async fn handle_do_active(&self,req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
+        //info!("handle_do_active: {}",serde_json::to_string_pretty(&req.params).unwrap());
         let user_name = req.params.get("user_name");
         let zone_name = req.params.get("zone_name");
         let net_id = req.params.get("net_id");
@@ -365,30 +396,43 @@ impl ActiveServer {
         let friend_passcode = req.params.get("friend_passcode");
         let device_public_key = req.params.get("device_public_key");
         let device_private_key = req.params.get("device_private_key");
+        let device_rtcp_port_param = req.params.get("device_rtcp_port");
         let support_container = req.params.get("support_container");
         let sn_url_param = req.params.get("sn_url");
+        let sn_username = req.params.get("sn_username");
         let mut sn_url:Option<String> = None;
         if sn_url_param.is_some() {
             sn_url = Some(sn_url_param.unwrap().as_str().unwrap().to_string());
         }
         //let device_info = req.params.get("device_info");  
         if user_name.is_none() || zone_name.is_none() || owner_public_key.is_none() || owner_private_key.is_none() || device_public_key.is_none() || device_private_key.is_none() {
+            warn!("Invalid params, user_name, zone_name, owner_public_key, owner_private_key, device_public_key or device_private_key is none");
             return Err(RPCErrors::ParseRequestError("Invalid params, user_name, zone_name, owner_public_key, owner_private_key, device_public_key or device_private_key is none".to_string()));
         }
 
         let user_name = user_name.unwrap().as_str().unwrap();
         let user_name = user_name.to_lowercase();
         let zone_name = zone_name.unwrap().as_str().unwrap();
+        let zone_did = DID::from_str(zone_name)
+            .map_err(|_|RPCErrors::ReasonError("Invalid zone name".to_string()))?;
+
         let net_id = if net_id.is_some() {
             Some(net_id.unwrap().as_str().unwrap().to_string())
         } else {
             None
         };
+
         let owner_public_key = owner_public_key.unwrap();
-    
         let owner_private_key = owner_private_key.unwrap().as_str().unwrap();
         let device_public_key = device_public_key.unwrap();
         let device_private_key = device_private_key.unwrap().as_str().unwrap();
+        let mut device_rtcp_port = None;
+        if device_rtcp_port_param.is_some() {
+            let real_device_rtcp_port = device_rtcp_port_param.unwrap().as_u64().unwrap();
+            if real_device_rtcp_port != 2980 {
+                device_rtcp_port = Some(real_device_rtcp_port as u32);
+            }
+        }
 
         let owner_private_key_pem = EncodingKey::from_ed_pem(owner_private_key.as_bytes())
             .map_err(|_|RPCErrors::ReasonError("Invalid owner private key".to_string()))?;
@@ -398,22 +442,34 @@ impl ActiveServer {
             .map_err(|_|RPCErrors::ReasonError("Invalid device public key".to_string()))?;
         let device_public_jwk:Jwk = serde_json::from_value(device_public_key.clone()).unwrap();
 
-        let device_ip:Option<IpAddr> = None;
+        //let device_ip:Option<IpAddr> = None;
         let mut ddns_sn_url:Option<String> = None;
-        let mut need_sn = false;
+        let mut need_sn = true;
+        if net_id.is_some() {
+            let real_net_id = net_id.as_ref().unwrap();
+            if real_net_id == "wan_dyn" {
+                ddns_sn_url = sn_url.clone();
+            }
+            if real_net_id == "portmap" {
+                ddns_sn_url = sn_url.clone();
+            }
+        }
+
+        
         let mut is_support_container = true;
         if support_container.is_some() {
             is_support_container = support_container.unwrap().as_str().unwrap() == "true";
         }
         //create device doc ,and sign it with owner private key
-
-
         let mut device_config = DeviceConfig::new_by_jwk("ood1",device_public_jwk);
         device_config.net_id = net_id;
         device_config.ddns_sn_url = ddns_sn_url;
         device_config.support_container = is_support_container;
-        device_config.iss = user_name.to_string();
-        
+        device_config.iss = format!("did:bns:{}",user_name.as_str());
+        device_config.zone_did = Some(zone_did.clone());
+        device_config.rtcp_port = device_rtcp_port;
+        //device_config.ip = device_ip;
+
         let device_doc_jwt = device_config.encode(Some(&owner_private_key_pem))
             .map_err(|_|RPCErrors::ReasonError("Failed to encode device config".to_string()))?;
         
@@ -426,13 +482,14 @@ impl ActiveServer {
         }
         
         if need_sn {
+            //call sn_register_device by owner's token
             let sn_url = sn_url.unwrap();
-            
+            let sn_username = sn_username.unwrap().as_str().unwrap().to_lowercase();
             let rpc_token = ::kRPC::RPCSessionToken {
                 token_type : ::kRPC::RPCSessionTokenType::JWT,
                 nonce : None,
                 session : None,
-                userid : Some(user_name.to_string()),
+                userid : Some(sn_username.to_string()),
                 appid:Some("active_service".to_string()),
                 exp:Some(buckyos_get_unix_timestamp() + 60),
                 iss:Some(user_name.to_string()),
@@ -448,44 +505,46 @@ impl ActiveServer {
             device_info.auto_fill_by_system_info().await.unwrap();
             let device_info_json = serde_json::to_string(&device_info).unwrap();
             let device_ip = device_info.ip.unwrap().to_string();
-            info!("Register OOD1(zone-gateway) to sn: {}",sn_url);
+            info!("Register device ood1(zone-gateway) to sn: {}",sn_url);
+
             let sn_result = sn_register_device(sn_url.as_str(), Some(user_rpc_token), 
-                user_name.as_str(), "ood1", &device_did.to_string(), &device_ip, device_info_json.as_str(),&device_mini_config_jwt).await;
+                sn_username.as_str(), "ood1", &device_did.to_string(), &device_ip, device_info_json.as_str(),&device_mini_config_jwt).await;
             if sn_result.is_err() {
                 warn!("Failed to register device to sn: {}",sn_result.as_ref().err().unwrap());
                 return Err(RPCErrors::ReasonError(format!("Failed to register device to sn: {}",sn_result.as_ref().err().unwrap().to_string())));
             }
         }
 
+        //TODO: call resolve_did to check self domain config is correct?
+        //  check in ui is more smoothly
+
         //write device private key 
         let write_dir = get_buckyos_system_etc_dir();
         let device_private_key_file = write_dir.join("node_private_key.pem");
         tokio::fs::write(device_private_key_file,device_private_key.as_bytes()).await.unwrap();
         let owner_public_key:Jwk = serde_json::from_value(owner_public_key.clone()).unwrap();
-        //write device idenity
-        let zone_did = DID::from_str(zone_name)
-            .map_err(|_|RPCErrors::ReasonError("Invalid zone name".to_string()))?;
+        
+        //write device idenity，
 
         let device_mini_config = DeviceMiniConfig::new_by_device_config(&device_config);
         let device_mini_doc_jwt = device_mini_config.to_jwt(&owner_private_key_pem).unwrap();
         let node_identity = NodeIdentityConfig {
             zone_did:zone_did,
-            owner_public_key:owner_public_key,
+            owner_public_key:owner_public_key,//TODO:how to update owner's public key? (update owner's did-doc)
             owner_did:DID::new("bns",user_name.as_str()),
             device_doc_jwt:device_doc_jwt.to_string(),
             zone_iat:(buckyos_get_unix_timestamp() as u32 - 3600),
             device_mini_doc_jwt:device_mini_doc_jwt.to_string(),
         };
-
-
         let device_identity_file = write_dir.join("node_identity.json");
         let device_identity_str = serde_json::to_string(&node_identity).unwrap();
         tokio::fs::write(device_identity_file,device_identity_str.as_bytes()).await
             .map_err(|_|RPCErrors::ReasonError("Failed to write node_identity.json".to_string()))?;
+
+        //write start config ,TODO
         let mut real_start_parms = req.params.clone();
         let mut real_start_params = real_start_parms.as_object_mut().unwrap();
         real_start_params.insert("ood_jwt".to_string(),Value::String(device_doc_jwt.to_string()));
-        //write boot config
         let start_params_str = serde_json::to_string(&real_start_params).unwrap();
         let start_params_file = write_dir.join("start_config.json");
         tokio::fs::write(start_params_file,start_params_str.as_bytes()).await
@@ -497,7 +556,8 @@ impl ActiveServer {
         tokio::fs::write(device_config_file,device_config_json_str.as_bytes()).await
             .map_err(|_|RPCErrors::ReasonError("Failed to write node_device_config.json".to_string()))?;
 
-            
+        //TODO: write zone_boot_config let system can boot immediately?
+        // The zone document caching mechanism needs to be refactored first to prevent incorrect updates.
         info!("DoAction Write Active files [node_private_key.pem,node_identity.json,start_config.json,node_device_config.json] success");
         
         tokio::task::spawn(async move {
