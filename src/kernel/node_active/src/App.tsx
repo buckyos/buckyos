@@ -47,10 +47,10 @@ const App = () => {
           .then((user) => {
             if (user) {
               setWalletUser({
-                user_name: user.user_name || user.username || "",
+                user_name: user.user_name?.toLowerCase() || user.username?.toLowerCase() || "",
                 user_id: user.did,
                 public_key: user.public_key || user.owner_public_key,
-                sn_username: user.sn_username,
+                sn_username: user.sn_username?.toLowerCase() || "",
               });
             }
           })

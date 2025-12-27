@@ -27,9 +27,9 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
   useEffect(() => {
     createInitialWizardData({
       is_wallet_runtime: isWalletRuntime,
-      owner_user_name: walletUser?.user_name,
+      owner_user_name: walletUser?.user_name.toLowerCase(),
       owner_public_key: walletUser?.public_key,
-      sn_user_name: walletUser?.sn_username || "",
+      sn_user_name: walletUser?.sn_username?.toLowerCase() || "",
     }).then((data) => {
       setWizardData(data);
     });
@@ -46,9 +46,9 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
     setWizardData((prev) => prev ? {
       ...prev,
       is_wallet_runtime: true,
-      owner_user_name: walletUser.user_name,
+      owner_user_name: walletUser.user_name?.toLowerCase() || "",
       owner_public_key: walletUser.public_key || {},
-      sn_user_name: walletUser.sn_username || null,
+      sn_user_name: walletUser.sn_username?.toLowerCase() || "",
     } : null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isWalletRuntime, walletUser]);

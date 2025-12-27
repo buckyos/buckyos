@@ -316,27 +316,23 @@ export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolea
         console.error("Failed to prepare params for wallet activation");
         return false;
     }
-    let boot_config_json = create_zone_boot_config(real_sn_host,null);
-    let boot_config_json_str =  JSON.stringify(boot_config_json);
-    let mini_device_config_json = create_device_mini_config(data.device_public_key,data.rtcp_port);
-    let mini_device_config_json_str =  JSON.stringify(mini_device_config_json);
-    let device_config_json:String = prepare_result["device_config"];
-    let device_config_json_str =  JSON.stringify(device_config_json);
-    let rpc_token_json = prepare_result["rpc_token"];
-    let rpc_token_json_str =  JSON.stringify(rpc_token_json);
-    let device_info_json = prepare_result["device_info"];
 
+    let boot_config_json = create_zone_boot_config(real_sn_host,null);
+    let mini_device_config_json = create_device_mini_config(data.device_public_key,data.rtcp_port);
+    let device_config_json = prepare_result["device_config"];
+    let rpc_token_json = prepare_result["rpc_token"];
+    let device_info_json = prepare_result["device_info"];
 
     // Step 2: Sign the data using wallet's signWithActiveDid
     let signed_results:string[]|null = null;
     try {
-        let will_sign_strs:string[] = [
-            boot_config_json_str,
-            mini_device_config_json_str,
-            device_config_json_str,
-            rpc_token_json_str,
+        let will_sign_payloads:Record<string,unknown>[] = [
+            boot_config_json,
+            mini_device_config_json,
+            device_config_json,
+            rpc_token_json,
         ]
-        signed_results = await buckyos.walletSignWithActiveDid(will_sign_strs);
+        signed_results = await buckyos.walletSignWithActiveDid(will_sign_payloads);
         if (signed_results == null) {
             console.error("Failed to sign zone txt records");
             return false;

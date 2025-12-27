@@ -4,8 +4,25 @@ use serde_json::{json,Value};
 use log::*;
 
 
-pub async fn sn_bind_zone_config(sn_url: &str, session_token: Option<String>, zone_config_jwt: &str)->Result<(),RPCErrors> {
-    unimplemented!()
+pub async fn sn_bind_zone_config(sn_url: &str, session_token: Option<String>, username:&str,zone_config_jwt: &str,user_domain:Option<String>)->Result<(),RPCErrors> {
+    let client : kRPC = kRPC::new(sn_url,session_token);
+
+    let real_username = username.to_lowercase();
+    let mut params = json!({
+        "zone_config": zone_config_jwt,
+        "user_name": real_username
+    });
+
+    if user_domain.is_some() {
+        params["user_domain"] = user_domain.unwrap().into();
+    }
+
+    info!("bind zone config to sn for {} {}",username,zone_config_jwt);
+
+    let _result = client.call("bind_zone_config", params).await?;
+
+    info!("bind zone config to sn for {} success",username);
+    Ok(())
 }
 
 pub async fn sn_update_device_info(sn_url: &str, session_token: Option<String>, 

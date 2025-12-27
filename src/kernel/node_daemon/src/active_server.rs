@@ -69,6 +69,7 @@ impl ActiveServer {
         let zone_name = zone_name.unwrap().as_str().unwrap();
         let zone_did = DID::from_str(zone_name).map_err(|_|RPCErrors::ReasonError("Invalid zone name".to_string()))?;
         let user_name = user_name.unwrap().as_str().unwrap();
+        let user_name = user_name.to_lowercase();
         // Get owner public key from device_config (it should be in the JWT header or we need to verify)
         // For now, we'll need owner_public_key to verify, but let's try to extract it from the request if available
         // If not available, we'll decode without verification (less secure but works for now)
@@ -156,8 +157,11 @@ impl ActiveServer {
             };
 
             info!("Bind new zone_boot_jwt {} to sn: {}", boot_config_jwt, sn_url);
-            //TODO:
-            let sn_result = sn_bind_zone_config(sn_url.as_str(), Some(sn_rpc_token.to_string()), boot_config_jwt).await;
+
+            let sn_result = sn_bind_zone_config(sn_url.as_str(), Some(sn_rpc_token.to_string()),
+                user_name.as_str(),
+                boot_config_jwt,
+                None).await;
             if sn_result.is_err() {
                 return Err(RPCErrors::ReasonError(format!("Failed to bind zone config to sn: {}",sn_result.err().unwrap())));
             }
@@ -185,7 +189,7 @@ impl ActiveServer {
             let device_ip = device_info.ip.unwrap().to_string();
             
             let sn_result = sn_register_device(sn_url.as_str(), Some(sn_rpc_token.to_string()), 
-                user_name, &device_name, &device_did.to_string(), &device_ip, device_info_json_final.as_str(), device_mini_doc_jwt).await;
+                user_name.as_str(), &device_name, &device_did.to_string(), &device_ip, device_info_json_final.as_str(), device_mini_doc_jwt).await;
             if sn_result.is_err() {
                 return Err(RPCErrors::ReasonError(format!("Failed to register device to sn: {}",sn_result.err().unwrap())));
             }
@@ -275,6 +279,7 @@ impl ActiveServer {
         }
 
         let user_name = user_name.unwrap().as_str().unwrap();
+        let user_name = user_name.to_lowercase();
         let zone_name = zone_name.unwrap().as_str().unwrap();
         let net_id = if net_id.is_some() {
             Some(net_id.unwrap().as_str().unwrap().to_string())
@@ -323,13 +328,14 @@ impl ActiveServer {
             }
         }
 
+        let sn_username = sn_username.unwrap().as_str().unwrap().to_lowercase();
         // Prepare RPC token for SN registration (if needed)
         let rpc_token_json = if need_sn {
             let rpc_token = ::kRPC::RPCSessionToken {
                 token_type : ::kRPC::RPCSessionTokenType::JWT,
                 nonce : None,
                 session : None,
-                userid : Some(sn_username.unwrap().as_str().unwrap().to_string()),
+                userid : Some(sn_username),
                 appid:Some("active_service".to_string()),
                 exp:Some(buckyos_get_unix_timestamp() + 60),
                 iss:Some(user_name.to_string()),
@@ -371,6 +377,7 @@ impl ActiveServer {
         }
 
         let user_name = user_name.unwrap().as_str().unwrap();
+        let user_name = user_name.to_lowercase();
         let zone_name = zone_name.unwrap().as_str().unwrap();
         let net_id = if net_id.is_some() {
             Some(net_id.unwrap().as_str().unwrap().to_string())
@@ -443,7 +450,7 @@ impl ActiveServer {
             let device_ip = device_info.ip.unwrap().to_string();
             info!("Register OOD1(zone-gateway) to sn: {}",sn_url);
             let sn_result = sn_register_device(sn_url.as_str(), Some(user_rpc_token), 
-                user_name, "ood1", &device_did.to_string(), &device_ip, device_info_json.as_str(),&device_mini_config_jwt).await;
+                user_name.as_str(), "ood1", &device_did.to_string(), &device_ip, device_info_json.as_str(),&device_mini_config_jwt).await;
             if sn_result.is_err() {
                 warn!("Failed to register device to sn: {}",sn_result.as_ref().err().unwrap());
                 return Err(RPCErrors::ReasonError(format!("Failed to register device to sn: {}",sn_result.as_ref().err().unwrap().to_string())));
@@ -464,7 +471,7 @@ impl ActiveServer {
         let node_identity = NodeIdentityConfig {
             zone_did:zone_did,
             owner_public_key:owner_public_key,
-            owner_did:DID::new("bns",user_name),
+            owner_did:DID::new("bns",user_name.as_str()),
             device_doc_jwt:device_doc_jwt.to_string(),
             zone_iat:(buckyos_get_unix_timestamp() as u32 - 3600),
             device_mini_doc_jwt:device_mini_doc_jwt.to_string(),
@@ -573,7 +580,8 @@ impl ActiveServer {
 #[async_trait]
 impl RPCHandler for ActiveServer {
     async fn handle_rpc_call(&self, req:RPCRequest,ip_from:IpAddr) -> Result<RPCResponse,RPCErrors> {
-        match req.method.as_str() {
+        let method = req.method.clone();
+        let result = match req.method.as_str() {
             "generate_key_pair" => self.handle_generate_key_pair(req).await,
             "get_device_info" => self.handle_get_device_info(req).await,
             "generate_zone_txt_records" => self.handle_generate_zone_txt_records(req).await,
@@ -581,7 +589,12 @@ impl RPCHandler for ActiveServer {
             "prepare_params_for_active_by_wallet" => self.handle_prepare_params_for_active_by_wallet(req).await,
             "do_active_by_wallet" => self.handle_active_by_wallet(req).await,
             _ => Err(RPCErrors::UnknownMethod(req.method)),
+        };
+        if result.is_err() {
+            error!("Failed to handle rpc call:{} {}", method.as_str(), result.as_ref().err().unwrap().to_string());
+            return Err(result.err().unwrap());
         }
+        return result;
     }
 }
 
