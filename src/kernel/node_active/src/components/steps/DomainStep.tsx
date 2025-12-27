@@ -85,7 +85,12 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
   }, [mode, username]);
 
   useEffect(() => {
-    const needsSnCode = !isWalletRuntime && mode === "bucky";
+    if (isWalletRuntime) {
+      setSnCodeValid(true);
+      return;
+    }
+    
+    const needsSnCode = mode === "bucky";
     if (!needsSnCode) {
       setSnCodeValid(true);
       return;
@@ -147,18 +152,21 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
         setFormError(t("error_name_taken") || "");
         return;
       }
-      if (!snCode || snCode.length < 8) {
-        setFormError(t("error_invite_code_too_short") || "");
-        return;
-      }
-      if (!isWalletRuntime && snCodeValid === false) {
-        setFormError(t("error_invite_code_invalid") || "");
-        return;
+      // 当 isWalletRuntime 为 true 时，跳过所有邀请码检查
+      if (!isWalletRuntime) {
+        if (!snCode || snCode.length < 8) {
+          setFormError(t("error_invite_code_too_short") || "");
+          return;
+        }
+        if (snCodeValid === false) {
+          setFormError(t("error_invite_code_invalid") || "");
+          return;
+        }
       }
       onUpdate({
         use_self_domain: false,
         sn_user_name: username.trim().toLowerCase(),
-        owner_user_name: wizardData.is_wallet_runtime?"":username.trim().toLowerCase(),
+        owner_user_name: wizardData.is_wallet_runtime?wizardData.owner_user_name:username.trim().toLowerCase(),
         self_domain: "",
         sn_active_code: snCode,
       });
@@ -296,23 +304,25 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
               endAdornment: renderStatusChip() ? <Box sx={{ pr: 1 }}>{renderStatusChip()}</Box> : undefined,
             }}
           />
-          <TextField
-            label={t("invite_code_placeholder")}
-            value={snCode}
-            onChange={(e) => setSnCode(e.target.value)}
-            error={snCodeValid === false}
-            helperText={
-              checkingSnCode
-                ? t("invite_checking")
-                : snCodeValid === false
-                ? t("error_invite_code_invalid")
-                : snCodeValid === true
-                ? t("invite_valid")
-                : t("invite_code_required")
-            }
-            fullWidth
-            required
-          />
+          {!isWalletRuntime && (
+            <TextField
+              label={t("invite_code_placeholder")}
+              value={snCode}
+              onChange={(e) => setSnCode(e.target.value)}
+              error={snCodeValid === false}
+              helperText={
+                checkingSnCode
+                  ? t("invite_checking")
+                  : snCodeValid === false
+                  ? t("error_invite_code_invalid")
+                  : snCodeValid === true
+                  ? t("invite_valid")
+                  : t("invite_code_required")
+              }
+              fullWidth
+              required
+            />
+          )}
     
         </Stack>
       ) : (

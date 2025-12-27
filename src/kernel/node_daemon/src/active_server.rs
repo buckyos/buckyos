@@ -48,7 +48,7 @@ impl ActiveServer {
 
         let user_name = req.params.get("user_name");
         let zone_name = req.params.get("zone_name");
-        let is_self_domain = req.params.get("is_self_domain");
+        let is_self_domain_param = req.params.get("is_self_domain");
         let owner_public_key_param = req.params.get("public_key");
         let admin_password_hash = req.params.get("admin_password_hash");
         let guest_access = req.params.get("guest_access");
@@ -66,7 +66,11 @@ impl ActiveServer {
 
         let boot_config_jwt = boot_config_jwt.unwrap().as_str().unwrap();
         let zone_name = zone_name.unwrap().as_str().unwrap();
-        let is_self_domain = is_self_domain.unwrap().as_str().unwrap() == "true";
+        let is_self_domain =  if is_self_domain_param.is_some() {
+            is_self_domain_param.unwrap().as_bool().unwrap()
+        } else {
+            false
+        };
         let zone_did = DID::from_str(zone_name).map_err(|_|RPCErrors::ReasonError("Invalid zone name".to_string()))?;
         let user_name = user_name.unwrap().as_str().unwrap();
         let user_name = user_name.to_lowercase();
@@ -197,7 +201,7 @@ impl ActiveServer {
             let device_ip = device_info.ip.unwrap().to_string();
             
             let sn_result = sn_register_device(sn_url.as_str(), Some(sn_rpc_token.to_string()), 
-                user_name.as_str(), &device_name, &device_did.to_string(), &device_ip, device_info_json_final.as_str(), device_mini_doc_jwt).await;
+            sn_username, &device_name, &device_did.to_string(), &device_ip, device_info_json_final.as_str(), device_mini_doc_jwt).await;
             if sn_result.is_err() {
                 return Err(RPCErrors::ReasonError(format!("Failed to register device to sn: {}",sn_result.err().unwrap())));
             }
