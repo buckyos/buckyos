@@ -9,11 +9,11 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { CheckCircleRounded, ContentCopyRounded, LaunchRounded, DnsRounded } from "@mui/icons-material";
+import { CheckCircleRounded, ContentCopyRounded, LaunchRounded, DnsRounded, WarningRounded } from "@mui/icons-material";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { GatewayType, WizardData } from "../../types";
-import { do_active, do_active_by_wallet, generate_zone_txt_records } from "../../../active_lib";
+import { do_active, do_active_by_wallet, generate_zone_txt_records, get_net_id_by_gateway_type, SN_BASE_HOST } from "../../../active_lib";
 
 type Props = {
   wizardData: WizardData;
@@ -80,6 +80,7 @@ const ReviewStep = ({ wizardData, onActivated, onBack, isWalletRuntime }: Props)
 
   const buildDnsRecord = async () => {
     setError("");
+
     if (!wizardData.is_wallet_runtime && !wizardData.owner_private_key) {
       setError(t("error_private_key_not_ready") || "Private key missing");
       return;
@@ -93,18 +94,13 @@ const ReviewStep = ({ wizardData, onActivated, onBack, isWalletRuntime }: Props)
           return "sn.buckyos.ai";
         }
       })();
-      const netId =
-        wizardData.gatewy_type === GatewayType.WAN
-          ? "wan"
-          : wizardData.port_mapping_mode === "full"
-          ? "wan_dyn"
-          : "portmap";
+      const netid = get_net_id_by_gateway_type(wizardData.gatewy_type, wizardData.port_mapping_mode);
       const result = await generate_zone_txt_records(
         snHost,
         wizardData.owner_public_key,
         wizardData.owner_private_key,
         wizardData.device_public_key,
-        netId,
+        netid,
         wizardData.rtcp_port,
         wizardData.is_wallet_runtime
       );
@@ -154,28 +150,31 @@ const ReviewStep = ({ wizardData, onActivated, onBack, isWalletRuntime }: Props)
         />
       </Stack>
 
-      {wizardData.use_self_domain && (
-        <Alert icon={<DnsRounded />} severity="info">
-          {t("dns_ns_record", { sn_host_base: wizardData.web3_base_host || "web3.buckyos.ai" })}
-        </Alert>
+      {wizardData.use_self_domain && wizardData.gatewy_type !== GatewayType.WAN && (
+        <>
+          <Alert icon={<DnsRounded />} severity="info">
+            {t("dns_ns_record", { sn_host_base: SN_BASE_HOST })}
+          </Alert>
+          <Typography fontWeight={700}>{t("dns_txt_records_title")}</Typography>
+        </>
       )}
 
       {requiresDnsTxt && (
         <Stack spacing={1.5}>
-          <Typography fontWeight={700}>{t("dns_txt_records_title")}</Typography>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems="center">
             <Button variant="outlined" onClick={buildDnsRecord} disabled={dnsLoading}>
               {dnsLoading ? t("generating_txt_records") : t("generate_txt_records_button")}
             </Button>
-            <Typography variant="body2" color="text.secondary">
-              {t("public_ip_hint")}
-            </Typography>
+            <Alert icon={<WarningRounded />} severity="warning">
+              {t("dns_config_txt_tips")}
+            </Alert>
           </Stack>
+          
           {dnsRecords.map((rec) => (
             <TextField
               key={rec.key}
-              label={`${t("dns_txt_record_boot")} (${rec.key})`}
-              value={rec.value}
+              label={`${rec.key}`}
+              value={`${rec.key}=${rec.value};`}
               InputProps={{ readOnly: true }}
               multiline
               minRows={2}

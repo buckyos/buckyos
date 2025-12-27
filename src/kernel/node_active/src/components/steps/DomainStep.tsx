@@ -21,8 +21,10 @@ import { useTranslation } from "react-i18next";
 import { GatewayType, WalletUser, WizardData } from "../../types";
 import {
   check_bucky_username,
+  check_sn_active_code,
   generate_key_pair,
   isValidDomain,
+  SN_BASE_HOST,
 } from "../../../active_lib";
 
 type Props = {
@@ -43,6 +45,8 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
   const [domain, setDomain] = useState(wizardData.self_domain || "");
   const [snCode, setSnCode] = useState(wizardData.sn_active_code || "");
   const [nameStatus, setNameStatus] = useState<NameStatus>("idle");
+  const [checkingSnCode, setCheckingSnCode] = useState(false);
+  const [snCodeValid, setSnCodeValid] = useState<boolean | null>(null);
   const [generatingKeys, setGeneratingKeys] = useState(false);
   const [formError, setFormError] = useState("");
 
@@ -51,21 +55,6 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
       setUsername(walletUser.user_name);
     }
   }, [isWalletRuntime, walletUser]);
-
-  useEffect(() => {
-    if (isWalletRuntime) {
-      return;
-    }
-    if (wizardData.owner_private_key) {
-      return;
-    }
-    setGeneratingKeys(true);
-    generate_key_pair()
-      .then(([pub, priv]) => {
-        onUpdate({ owner_public_key: pub, owner_private_key: priv });
-      })
-      .finally(() => setGeneratingKeys(false));
-  }, [onUpdate, wizardData.owner_private_key]);
 
   useEffect(() => {
     if (isWalletRuntime) {
@@ -95,12 +84,43 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
   }, [mode, username]);
 
   useEffect(() => {
-    if (mode !== "bucky" || !wizardData.owner_private_key || username.trim().length <= 4) {
+    const needsSnCode = !isWalletRuntime && mode === "bucky";
+    if (!needsSnCode) {
+      setSnCodeValid(true);
       return;
     }
-    if (wizardData.zone_config_jwt) {
+    if (snCode.length < 7) {
+      setSnCodeValid(null);
       return;
     }
+    let cancelled = false;
+    setCheckingSnCode(true);
+    check_sn_active_code(snCode)
+      .then((ok) => {
+        if (!cancelled) {
+          setSnCodeValid(ok);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSnCodeValid(false);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setCheckingSnCode(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [snCode, mode, isWalletRuntime]);
+
+  useEffect(() => {
+    if (mode !== "bucky"  || username.trim().length <= 4) {
+      return;
+    }
+
     let cancelled = false;
     const snHost = (() => {
       try {
@@ -113,7 +133,7 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
     return () => {
       cancelled = true;
     };
-  }, [mode, username, wizardData.owner_private_key, wizardData.sn_url, wizardData.zone_config_jwt]);
+  }, [mode, username, wizardData.sn_url]);
 
   const handleNext = async () => {
     setFormError("");
@@ -130,6 +150,10 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
         setFormError(t("error_invite_code_too_short") || "");
         return;
       }
+      if (!isWalletRuntime && snCodeValid === false) {
+        setFormError(t("error_invite_code_invalid") || "");
+        return;
+      }
       onUpdate({
         use_self_domain: false,
         sn_user_name: username.trim(),
@@ -144,10 +168,7 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
       setFormError(t("error_domain_format") || "");
       return;
     }
-    if (!wizardData.owner_private_key) {
-      setFormError(t("error_private_key_not_ready") || "");
-      return;
-    }
+
     onUpdate({
       use_self_domain: true,
       self_domain: domain.trim(),
@@ -249,9 +270,11 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
               </Box>
               <Box>
                 <Typography fontWeight={700}>{t("use_own_domain")}</Typography>
+               
                 <Typography variant="body2" color="text.secondary">
                   {t("domain_provider_setup")}
                 </Typography>
+                
               </Box>
             </Stack>
           </Paper>
@@ -275,14 +298,20 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
             label={t("invite_code_placeholder")}
             value={snCode}
             onChange={(e) => setSnCode(e.target.value)}
-            helperText={t("invite_code_required")}
+            error={snCodeValid === false}
+            helperText={
+              checkingSnCode
+                ? t("invite_checking")
+                : snCodeValid === false
+                ? t("error_invite_code_invalid")
+                : snCodeValid === true
+                ? t("invite_valid")
+                : t("invite_code_required")
+            }
+            fullWidth
             required
           />
-          {generatingKeys && (
-            <Alert icon={<CircularProgress size={16} />} severity="info">
-              {t("generate_keys_progress")}
-            </Alert>
-          )}
+    
         </Stack>
       ) : (
         <Stack spacing={2}>
@@ -292,15 +321,12 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
             onChange={(e) => setDomain(e.target.value)}
             placeholder="example.com"
             required
-            InputProps={{
-              endAdornment: wizardData.zone_config_jwt ? (
-                <Chip size="small" color="success" label={t("zone_config_ready")} />
-              ) : null,
-            }}
           />
-          <Alert icon={<DnsRounded fontSize="small" />} severity="info">
-            {t("dns_ns_record", { sn_host_base: wizardData.web3_base_host || "web3.buckyos.ai" })}
-          </Alert>
+          {wizardData.gatewy_type !== GatewayType.WAN && (
+            <Alert icon={<DnsRounded fontSize="small" />} severity="info">
+              {t("dns_ns_record", { sn_host_base: SN_BASE_HOST })}
+            </Alert>
+          )}
         </Stack>
       )}
 

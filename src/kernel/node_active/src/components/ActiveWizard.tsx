@@ -25,14 +25,20 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
 
   // 异步初始化 wizardData
   useEffect(() => {
-    createInitialWizardData({
-      is_wallet_runtime: isWalletRuntime,
-      owner_user_name: walletUser?.user_name.toLowerCase(),
-      owner_public_key: walletUser?.public_key,
-      sn_user_name: walletUser?.sn_username?.toLowerCase() || "",
-    }).then((data) => {
-      setWizardData(data);
-    });
+    if(isWalletRuntime) {
+      createInitialWizardData({
+        is_wallet_runtime: isWalletRuntime,
+        owner_user_name: walletUser?.user_name.toLowerCase(),
+        owner_public_key: walletUser?.public_key,
+        sn_user_name: walletUser?.sn_username?.toLowerCase() || "",
+      }).then((data) => {
+        setWizardData(data);
+      })
+    } else {
+      createInitialWizardData().then((data) => {
+        setWizardData(data);
+      });
+    }
   }, []); // 只在组件挂载时执行一次
 
   // 更新 wallet 相关信息

@@ -48,10 +48,10 @@
     "use_own_domain": "使用自己拥有的域名",
     "domain_placeholder": "输入将使用的域名",
     "domain_provider_setup": "您需要通过域名提供商进行以下设置:",
-    "dns_ns_record": "设置NS记录为 sn.{{sn_host_base}}",
+    "dns_ns_record": "请在您的DNS控制面板,增加NS记录:  dns.{{sn_host_base}}",
     "dns_ns_record_desc": "SN会正确处理A记录解析，并根据Personal AI Server的接入情况返回正确的IP地址",
-    "dns_txt_records_title": "SN会自动为你的域名兼容buckyos zone标准，创建下面3条TXT记录:",
-    "generate_txt_records_button": "生成TXT记录",
+    "dns_txt_records_title": "SN会自动为你的域名兼容buckyos zone标准，创建必要的TXT记录:",
+    "generate_txt_records_button": "-> 激活前构造并添加TXT记录 <-",
     "dns_txt_record_boot": "BOOT",
     "dns_txt_record_pkx": "PKX",
     "dns_txt_record_dev": "DEV",
@@ -77,9 +77,9 @@
     "access_domain": "访问域名:",
     "access_method_direct": "访问链路:直接连接到您的Personal AI Server",
     "access_method_bridge": "访问链路:使用buckyos.ai提供的Web3网桥",
-    "private_key_warning1": "请妥善保管以下私钥,激活后将无法查看!",
+    "private_key_warning1": "请妥善保管以上私钥,页面关闭后无法查看!",
     "private_key_warning2": "私钥丢失后将无法找回,会造成不可挽回的损失,请务必妥善保管.",
-    "private_key_warning3": "私钥泄露后会造成数据或财产的损失,因此请使用非电子方式保管秘钥.",
+    "private_key_warning3": "私钥泄露后会造成数据或财产的损失,不要将私钥发送给他人，尽量使用非电子方式保管秘钥.",
     "owner_private_key": "Owner Private Key",
     "generate_keys_progress": "正在准备密钥对...",
     "zone_config_ready": "TXT已生成",
@@ -106,5 +106,6 @@
     "error_generate_txt_records_failed": "生成TXT记录失败,请重试",
     "generating_txt_records": "正在生成...",
     "success_copied": "内容已复制到剪贴板",
-    "wallet_device_owner": "设备将属于: {{user_name}} {{public_key}}"
+    "wallet_device_owner": "设备将属于: {{user_name}} {{public_key}}",
+    "dns_config_txt_tips":"请在激活前添加下面3条TXT记录到您的域名"
 }

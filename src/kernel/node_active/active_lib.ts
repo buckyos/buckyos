@@ -34,8 +34,15 @@ export async function init_active_lib(config: ActiveConfig) {
 
 export async function createInitialWizardData (initial?: Partial<ActiveWizzardData>): Promise<ActiveWizzardData> {
     let [device_public_key,device_private_key] = await generate_key_pair();
+    let owner_public_key:JsonValue = {};
+    let owner_private_key:string = "";
+    if (!initial?.is_wallet_runtime ) {
+        [owner_public_key,owner_private_key] = await generate_key_pair();
+        console.log("owner_public_key",owner_public_key);
+    } 
     let device_did = "did:dev:"+ device_public_key["x"];
     console.log("device_did",device_did);
+
     let result:ActiveWizzardData = {
         gatewy_type: GatewayType.BuckyForward,
         //is_direct_connect: false,
@@ -50,8 +57,8 @@ export async function createInitialWizardData (initial?: Partial<ActiveWizzardDa
         admin_password_hash: "",
         friend_passcode: "",
         enable_guest_access: false,
-        owner_public_key: {},
-        owner_private_key: "",
+        owner_public_key: owner_public_key,
+        owner_private_key: owner_private_key,
         zone_config_jwt: "",
         port_mapping_mode: "full",
         rtcp_port: 2980,
@@ -59,7 +66,7 @@ export async function createInitialWizardData (initial?: Partial<ActiveWizzardDa
         owner_user_name: "",
         ...initial,
     };
-
+    console.log("createInitialWizardData result",result);
     return result;
 }
 
@@ -73,7 +80,7 @@ function is_need_sn(wizzard_data:ActiveWizzardData):boolean {
     return false;
 }
 
-function get_net_id_by_gateway_type(gateway_type:GatewayType,port_mapping_mode:string):string {
+export function get_net_id_by_gateway_type(gateway_type:GatewayType,port_mapping_mode:string):string {
     if (gateway_type == GatewayType.WAN) {
         return "wan";
     }

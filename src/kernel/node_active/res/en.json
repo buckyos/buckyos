@@ -48,10 +48,10 @@
     "use_own_domain": "Use your own domain",
     "domain_placeholder": "Enter the domain to be used",
     "domain_provider_setup": "You need to make the following settings through your domain provider:",
-    "dns_ns_record": "Set NS record to sn.{{sn_host_base}}",
+    "dns_ns_record": "Set NS record to dns.{{sn_host_base}}",
     "dns_ns_record_desc": "SN will correctly handle A record resolution and return the correct IP address based on Personal AI Server's connection status",
-    "dns_txt_records_title": "SN will automatically create the following 3 TXT records for your domain to be compatible with buckyos zone standard:",
-    "generate_txt_records_button": "Generate TXT Records",
+    "dns_txt_records_title": "SN will automatically create necessary TXT records for your domain to be compatible with buckyos zone standard:",
+    "generate_txt_records_button": "-> Generate TXT Records before activation <-",
     "dns_txt_record_boot": "BOOT",
     "dns_txt_record_pkx": "PKX",
     "dns_txt_record_dev": "DEV",
@@ -106,5 +106,6 @@
     "error_generate_txt_records_failed": "Failed to generate TXT records, please try again",
     "generating_txt_records": "Generating...",
     "success_copied": "Content copied to clipboard",
-    "wallet_device_owner": "Device will belong to: {{user_name}} {{public_key}}"
+    "wallet_device_owner": "Device will belong to: {{user_name}} {{public_key}}",
+    "dns_config_txt_tips":"Please add the following 3 TXT records to your domain before activation"
 }
