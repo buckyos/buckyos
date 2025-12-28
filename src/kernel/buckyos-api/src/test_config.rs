@@ -833,9 +833,13 @@ pub async fn register_device_to_sn(
         .map_err(|e| format!("Failed to fill device system info: {}", e))?;
 
     // Get device IP from DeviceInfo (ip is Option<IpAddr>)
-    let device_ip = device_info.ip
-        .map(|ip| ip.to_string())
-        .unwrap_or_else(|| "0.0.0.0".to_string());
+    let mut device_ip = "127.0.0.1".to_string();
+    if device_info.all_ip.len() > 0 {
+        device_ip = device_info.all_ip[0].clone().to_string();
+    }
+    if device_info.ips.len() > 0 {
+        device_ip = device_info.ips[0].clone().to_string();
+    }
 
     // Serialize device info to JSON
     let device_info_json = serde_json::to_string_pretty(&device_info)

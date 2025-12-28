@@ -198,7 +198,14 @@ impl ActiveServer {
             };
 
             let device_info_json_final = serde_json::to_string(&device_info).unwrap();
-            let device_ip = device_info.ip.unwrap().to_string();
+
+            let mut device_ip = "127.0.0.1".to_string();
+            if device_info.ips.len() > 0 {
+                device_ip = device_info.ips[0].clone().to_string();
+            }
+            if device_info.all_ip.len() > 0 {
+                device_ip = device_info.all_ip[0].clone().to_string();
+            }
             
             let sn_result = sn_register_device(sn_url.as_str(), Some(sn_rpc_token.to_string()), 
             sn_username, &device_name, &device_did.to_string(), &device_ip, device_info_json_final.as_str(), device_mini_doc_jwt).await;
@@ -508,7 +515,13 @@ impl ActiveServer {
             let mut device_info = DeviceInfo::from_device_doc(&device_config);
             device_info.auto_fill_by_system_info().await.unwrap();
             let device_info_json = serde_json::to_string(&device_info).unwrap();
-            let device_ip = device_info.ip.unwrap().to_string();
+            let mut device_ip = "127.0.0.1".to_string();
+            if device_info.ips.len() > 0 {
+                device_ip = device_info.ips[0].clone().to_string();
+            }
+            if device_info.all_ip.len() > 0 {
+                device_ip = device_info.all_ip[0].clone().to_string();
+            }
             info!("Register device ood1(zone-gateway) to sn: {}",sn_url);
 
             let sn_result = sn_register_device(sn_url.as_str(), Some(user_rpc_token), 

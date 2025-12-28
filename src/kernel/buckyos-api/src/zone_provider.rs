@@ -100,8 +100,8 @@ fn resolve_lan_hostname(hostname: &str) -> Option<std::net::IpAddr> {
 }
 
 async fn resolve_ood_ip_by_info(ood_info: &DeviceInfo,zone_config:&ZoneConfig) -> NSResult<IpAddr> {
-    if ood_info.ip.is_some() {
-        return Ok(ood_info.ip.unwrap().clone());
+    if ood_info.ips.len() > 0 {
+        return Ok(ood_info.ips[0].clone());
     }
 
     let zone_short_name = zone_config.get_zone_short_name();
@@ -131,7 +131,13 @@ async fn resolve_ood_ip_by_info(ood_info: &DeviceInfo,zone_config:&ZoneConfig) -
 
         if device_info.is_ok() {
             let device_info = device_info.unwrap();
-            return Ok(device_info.ip.unwrap());
+            if device_info.ips.len() > 0 {
+                return Ok(device_info.ips[0].clone());
+            }
+
+            if device_info.all_ip.len() > 0 {
+                return Ok(device_info.all_ip[0].clone());
+            }
         }
     }
 
@@ -361,10 +367,14 @@ impl ZoneProvider {
                 NSError::NotFound(format!("get device info failed: {}",e))
             })?;
 
-        let ip = device_info.ip;
-        if ip.is_some() {
-            return Ok(NameInfo::from_address(name,ip.unwrap()));
+        if device_info.ips.len() > 0 {
+            return Ok(NameInfo::from_address(name,device_info.ips[0].clone()));
         }
+
+        if device_info.all_ip.len() > 0 {
+            return Ok(NameInfo::from_address(name,device_info.all_ip[0].clone()));
+        }
+
 
         return Err(NSError::NotFound(format!("device info for {} not found",name)))
     }
