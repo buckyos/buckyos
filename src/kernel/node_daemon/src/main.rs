@@ -24,25 +24,6 @@ use std::panic;
 fn main() {
     init_logging("node_daemon",true);
     
-    // 设置全局 panic hook，捕获所有 unwrap 失败
-    panic::set_hook(Box::new(|panic_info| {
-        let location = panic_info.location()
-            .map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()))
-            .unwrap_or_else(|| "unknown location".to_string());
-        
-        let message = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
-            format!("panic message: {}", s)
-        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
-            format!("panic message: {}", s)
-        } else {
-            "panic occurred".to_string()
-        };
-        
-        error!("[PANIC] unwrap/panic failed at {} - {}", location, message);
-        
-        // 调用默认的 panic hook 以保留标准输出
-        eprintln!("[PANIC] unwrap/panic failed at {} - {}", location, message);
-    }));
     let matches = Command::new("BuckyOS Node Daemon")
         .arg(
             Arg::new("id")
