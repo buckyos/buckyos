@@ -5,29 +5,68 @@
 - node-daemon:
 - repo-server:
 
-## 对于开发者的使用
+## 开发者的使用
 
+为什么需要开发模式？每次改动代码都需要`打包->发布到env`太麻烦了
+
+
+加载pkg
 ```rust
 media_info = env.load_pkg("org-name_pkg-friend-name")
 exec(media_info.dir_path.join("start.sh"))
 ```
+在开发模式下，并不需要配置什么环境，只需要相关目录存在就好（和load_pkg调用的目录名一致）
 
-在开发模式下，可以简单的
+如果需要加载指定版本
+加载指定版本时，目标Pkg必然不会处于”在开发状态“，应通过在开发目录的parent env(环境env，是一个严格模式的env)里安装对应版本来实现
+```rust
+media_info = env.load_pkg("org-name_pkg-friend-name#^1.3")
+exec(media_info.dir_path.join("start.sh"))
+```
+
+但下面版本会保持兼容，但不鼓励长期使用（因为不是所有系统都能100%支持符号链接）
 ```rust
 pkg_dir = env.root_path.join("org-name_pkg-friend-name")
 exec(pkg_dir.join("start.sh"))
 ```
-并期望在真实环境下，上述调用文件系统会创建符号链接，指向真实的目录
 
 
+
+如果简单的在一个严格模式的env里安装版本
+- 将一个目录初始化成严格模式的env
+- 在该目录调用 buckycli install_pkg $local_pkg_path ,将一个已经下载好的的包安装到该目录
+- install_pkg有3种模式： 
+本地目录模式 / 本地包模式 
+url模式
+在env总添加源后，使用 pkgid直接安装
+
+创建一个pkg:
+在一个目录中放置一个meta文件即可，构造后基于该meta文件可以得到未签名，但已经包含了压缩包chunkid的正确的pkg meta
+将这个.json文件和压缩包放在一起，已经可以使用buckycli工具将其安装到任意env
+
+发布pkg
+1. 对pkg meta签名
+2. 将pkg meta发布到一个 源的meta-db里去
+
+随后install_pkg就可以基于该源的查询结果来完成可信的remote pkg安装工作
+对于”pkg"的最新版本查询这种操作，buckycli可选择相信‘源服务器'返回的结果，也可以先将源的meta-db下载到本地，再基于一个确定的本地db进行查询。（减少`源服务器`所需要支持的查询网络接口)
+
+
+
+## 自动升级的基本逻辑
+1. 检查循环不断检查“目标版本是否安装”
+2. 当检查依赖的meta-db升级后，原有的版本不再是最新版本，因此会导致条件1触发
+3. 触发后会执行安装，逻辑类似buckycli install
+4. 安装后的启动方法有两种
+- 系统重启，导致所有pkg重新load,自然就加载到了新版本
+- 安装检查通过后，进入“状态检查“，模块自己实现的状态检查脚本能发现”当前版本没执行“而调用start,并在start种先杀死了旧版本
 
 
 ## 安装 App/内核服务的全流程：
 0. repo自动/手工 从源同步 pkg-index-db.
-1. repo根据已安装app/service列表准备app.
-准备app(pkg): 根据app-meta信息，repo下载所有的subpkg和chunk。下载完成后，该appid(pkg)在本地是ready的（所有的sub_pkg都ready了）
-2. 使用appdoc产生app_config,这一步通常需要UI参与（app_setting.ts 里有手输app_doc后产出app_config的逻辑）
-3. 将app_config发送给调度器，由调度器去构造具体的node_config
+1. repo根据已安装app/service列表下载app的所有sub pkg.
+准备app(pkg): 根据app-meta信息，repo下载所有的subpkg和chunk。下载完成后，该appid(pkg)在本zone是ready的（所有的sub_pkg都ready了）
+2. 进入标准的app安装流程。从内核上全新安装和覆盖安装是一致的，但UI上会有所不同。安装的最后结果一般是构造了app replic
 4. node_daemon根据node_config,会在现在本地的bin_env或app_img_env里install对应的pkg,准备好后执行deploy脚本，对app来说，这个install脚本通常是将导入docker image的tar文件。
 
 

@@ -13,7 +13,7 @@ use std::fs;
 use ed25519_dalek::pkcs8::DecodePrivateKey;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use cyfs_sn::SnDB;
+use cyfs_sn::{SnDB, SqliteSnDB};
 
 use crate::{AppDoc, LocalAppInstanceConfig, REPO_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, ServiceInstallConfig, ServiceInstanceState, VERIFY_HUB_UNIQUE_ID};
 
@@ -626,8 +626,8 @@ pub async fn create_formula_sn_config() {
 
     // Create initial database
     let sn_db_path = sn_dir.join("sn_db.sqlite3");
-    let db = SnDB::new_by_path(&sn_db_path.to_string_lossy()).unwrap();
-    db.initialize_database().unwrap();
+    let db = SqliteSnDB::new_by_path(&sn_db_path.to_string_lossy()).await.unwrap();
+    db.initialize_database().await.unwrap();
     println!("- Created SN database.");
 }
 
@@ -701,12 +701,12 @@ pub async fn create_sn_config(builder: &DevEnvBuilder,sn_ip:IpAddr,sn_base_host:
 
     // Create initial database
     let sn_db_path = builder.root_dir().join("sn_server").join("sn_db.sqlite3");
-    let db = SnDB::new_by_path(&sn_db_path.to_string_lossy()).unwrap();
-    db.initialize_database().unwrap();
+    let db = SqliteSnDB::new_by_path(&sn_db_path.to_string_lossy()).await.unwrap();
+    db.initialize_database().await.unwrap();
     for i in 0..9 {
         let code = format!("sndevtest{}", i);
         println!("insert activation code: {}", code);
-        db.insert_activation_code(&code).unwrap();
+        db.insert_activation_code(&code).await.unwrap();
     }
 
     println!("- Created SN database.");
@@ -751,7 +751,7 @@ pub async fn register_user_to_sn(
     )
     .map_err(|e| format!("Failed to parse {:?}: {}", zone_record_path, e))?;
 
-    let db = SnDB::new_by_path(&sn_db_path).unwrap();
+    let db = SqliteSnDB::new_by_path(&sn_db_path).await.unwrap();
     let public_key_json = json!({
         "kty": "OKP",
         "crv": "Ed25519",
@@ -763,7 +763,7 @@ pub async fn register_user_to_sn(
         public_key_json.to_string().as_str(),
         zone_record.boot_config_jwt.as_str(),
         user_domain
-    ).map_err(|e| format!("Failed to register user: {}", e))?;
+    ).await.map_err(|e| format!("Failed to register user: {}", e))?;
     println!(
         "Successfully registered user {}@{} to SN database at {}",
         username, user_zone_id, sn_db_path
@@ -846,7 +846,7 @@ pub async fn register_device_to_sn(
         .map_err(|e| format!("Failed to serialize device info: {}", e))?;
 
     // Open SN database
-    let db = SnDB::new_by_path(sn_db_path)
+    let db = SqliteSnDB::new_by_path(sn_db_path).await
         .map_err(|e| format!("Failed to open SN database: {}", e))?;
 
     db.register_device(
@@ -857,6 +857,7 @@ pub async fn register_device_to_sn(
         &device_ip,
         &device_info_json
     )
+    .await
     .map_err(|e| format!("Failed to register device: {}", e))?;
     println!(
         "Successfully registered device {}.{} (DID: {:?}) to SN database at {}",
@@ -1379,7 +1380,6 @@ mod tests {
             "LBgzvFCD4VqQxTsO2LCZjs9FPVaQV2Dt0Q5W_lr4mr0".to_string(),
         );
         device_config.iss = "did:bns:waterflier".to_string();
-        device_config.ip = None;
         device_config.net_id = None;
 
         let json_str = serde_json::to_string(&device_config).unwrap();
