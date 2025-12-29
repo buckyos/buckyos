@@ -1,10 +1,48 @@
 # Beta1内核改动要点
 
-## 切换到新的cyfs-gateway 配置文件设计上来
-cyfs-gateway提供了巨大的灵活性，要仔细设计其目标构成
+## 完善resolve-did机制
+
+- 如果did本身是nameobj-id,那么立刻验证 （did:dev:$devpubkey)（此时没有fregment)
+
+```
+从任意渠道得到doc
+用来自did里的公钥验证
+保留iat最新的那个（没有iat用exp-默认过期时间得到iat)
+```
+
+- 如果fragment是owner,那么只认root_trust_provider的结果或本地缓存结果里最新的那个
+```
+从本地trust_provider得到did-doc
+从root_trust_provider得到did-doc
+    root_trust_provider和did.method绑定，目前有2个
+        bns->bns_provider,未来支持合约
+        web->https_provider,通过https协议进行验证(cyfs协议的一部分)
+比较，得到最新的那个
+更新本地缓存(本地的root_trust的更新需要不同的root_trust_provider可信等级)
+    只有可信等级更高的结果，才能刷新本地的存储（ https是1，本地缓存是2，本地root_trust是0，基于智能合约（去中心基础设施）的是0）
+```
+
+- 其它类型的解析,走标准验证流程
+```
+从任意provider得到did-doc (可能会有多个)
+    did-doc = provider.resolve_did(target_did,fragment)
+    auth-doc1  = provider.get_auth(target_did) or auth-did = did-doc.get_auth()
+    auth-doc2 = resolve_did(auth-did,"owner")
+    校验(did-doc,auth-doc.public_key)
+
+返回iat最新的那个
+更新本地缓存
+```
+
+
+
+## 切换到新版本的cyfs-gateway 上来
+cyfs-gateway process-chain机制提供了巨大的灵活性，要仔细设计其目标构成
 
 ### 在新结构上，正确实现service selector
 使用cyfs-gateway的基础设施实现，而不是简单的去扩展命令
+
+
 
 
 ### node-gateway / zone-gateway 处理应用访问时的权限管理

@@ -10,7 +10,7 @@
     "pre_install_apps": {
         "buckyos_filebrowser": {
             "data_mount_point": {
-                "/srv/": "/data/{{user_name}}/home/",
+                "/srv/": "/home/{{user_name}}/",
                 "/database/": "/data/{{user_name}}/buckyos_filebrowser/database/",
                 "/config/": "/data/{{user_name}}/buckyos_filebrowser/config/"
             },

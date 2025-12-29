@@ -146,24 +146,24 @@ docker run -v /home/$username/buckyos:/opt/buckyos buckyos/buckyos
 
 - DFS上的分区划分
   - dfs://system 保存系统服务的数据，比如系统内的repo_server会将所有已安装的dApp的pkg保存在这里
-  - dfs://appdata/$appid 保存dApp的zone级别数据
-  - dfs://appdata/$userid/$appid 保存用户自己的dApp数据
-  - dfs://appcache/$userid/$appid 保存dApp的标准Cache数据，这些数据通常不是用户创建的，可以从其他Zone获取的（也就是说，是保存在其它zone的dfs://data里的数据）
+  - dfs://data/$appid 保存系统服务的
+  - dfs://data/$userid/$appid 保存用户自己的dApp数据
+  - fs://cache/$userid/$appid 保存dApp的标准Cache数据，这些数据通常不是用户创建的，可以从其他Zone获取的（也就是说，是保存在其它zone的dfs://data里的数据）
   - dfs://homes/$userid/ 保存用户自己的个人文档数据
-  - dfs://library/public/ 保存公开的文档
-  - dfs://library/share/ 保存用户之间共享的文档
-  - dfs://library/photos/ 保存用户自己拍摄的照片和短片，默认是全Zone可见
-  - dfs://library/medias/ 保存用户喜爱的音乐、电影等，默认是全Zone可见
+  - dfs://library/public/ 保存公开的数据（面向Zone外公开），owner读写，其它人只读，大家都有新增数据的权限
+  - dfs://library/share/ 保存用户之间共享的文档，所有zone内用户都可读写
+  - dfs://library/photos/ 保存用户自己拍摄的照片和短片，默认是全Zone可见，owner读写，其它人只读，大家都有新增数据的权限
+  - dfs://library/medias/ 保存用户喜爱的音乐、电影等，默认是全Zone可见，owner读写，其它人只读，大家都有新增数据的权限
 
 
 站在app开发者的角度，在其容器里，看到的是下面几个目录:
 
-- /opt/buckyos/bin 只读
-- /bcache/$appid 默认读写
-- /appdata/$appid 默认读写
-- /appcache/$appid 默认读写
-- /homes/$userid/ 需要用户授权读写
-- /library/ 需要用户授权读
+
+- cache/$appid 默认读写
+- local/$appid 默认读写
+
+- dfs://home/$userid/ 需要用户授权读写
+- dfs://library/ 需要用户授权读
 
 
 站在用户的角度，看到的是下面几个目录：

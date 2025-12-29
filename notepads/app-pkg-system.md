@@ -5,6 +5,22 @@
 - node-daemon:
 - repo-server:
 
+## 对于开发者的使用
+
+```rust
+media_info = env.load_pkg("org-name_pkg-friend-name")
+exec(media_info.dir_path.join("start.sh"))
+```
+
+在开发模式下，可以简单的
+```rust
+pkg_dir = env.root_path.join("org-name_pkg-friend-name")
+exec(pkg_dir.join("start.sh"))
+```
+并期望在真实环境下，上述调用文件系统会创建符号链接，指向真实的目录
+
+
+
 
 ## 安装 App/内核服务的全流程：
 0. repo自动/手工 从源同步 pkg-index-db.

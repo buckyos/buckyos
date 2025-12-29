@@ -1,3 +1,6 @@
-# /buckyos/data
+# dfs://data
 
-storage local files for system.
+
+appdata folder
+
+在卸载时可以选择保留

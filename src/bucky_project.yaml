@@ -73,7 +73,10 @@ apps:
     - logs/
     - tmp/
     - local/
-    # 清理路径，install的时候会删除
+    - home/
+    - library/
+    - data/
+    # 清理路径，uninstall的时候会删除
     clean_paths: 
     - cache/
     - logs/
