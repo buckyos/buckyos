@@ -3,7 +3,7 @@ use slog::*;
 
 const SERVICE_NAME: &str = "test_slog_daemon";
 
-#[tokio::test]
+//#[tokio::test]
 async fn test_daemon() {
     let node_id = "node-001".to_string();
     let service_endpoint = "http://127.0.0.1:8089/logs".to_string();

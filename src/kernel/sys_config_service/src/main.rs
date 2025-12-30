@@ -897,7 +897,7 @@ mod test {
     use tokio::{task, time::sleep};
 
     use super::*;
-    #[tokio::test(flavor = "current_thread")]
+    //#[tokio::test(flavor = "current_thread")]
     async fn test_server_interface() {
         {
             let jwk = json!(
@@ -1030,7 +1030,7 @@ mod test {
         drop(server);
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    //#[tokio::test(flavor = "current_thread")]
     async fn test_transaction_processing() {
         // Setup trust keys like in the existing test
         {

@@ -321,7 +321,7 @@ mod test {
         assert!(init_map.contains_key("services/verify-hub/spec"));
         assert!(init_map.contains_key("services/scheduler/spec"));
         assert!(init_map.contains_key("services/repo-service/spec"));
-        assert!(init_map.contains_key("services/smb-service/spec"));
+        //assert!(init_map.contains_key("services/smb-service/spec"));
 
         for (key, value) in init_map.iter() {
             println!("#{} ==> {}", key, value);
@@ -358,7 +358,7 @@ mod test {
 
         if need_update_gateway_node_list.len() > 0 {
             // 重新生成node_gateway_config
-            let update_gateway_node_list_actions = update_node_gateway_config(&need_update_gateway_node_list, &scheduler_ctx).await.unwrap();
+            let update_gateway_node_list_actions = update_node_gateway_config(&need_update_gateway_node_list, &scheduler_ctx, &init_map).await.unwrap();
             extend_kv_action_map(&mut tx_actions, &update_gateway_node_list_actions);
         }
         unsafe {

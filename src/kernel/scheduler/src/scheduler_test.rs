@@ -101,7 +101,8 @@ fn test_create_pod_instance() {
         required_gpu_mem: 0,
         node_affinity: None,
         network_affinity: None,
-        default_service_port: 80,
+        app_index: 0,
+        service_ports_config: HashMap::new(),
     };
 
     scheduler.add_service_spec(pod);
@@ -165,7 +166,8 @@ fn test_pod_state_change() {
         required_gpu_mem: 0,
         node_affinity: None,
         network_affinity: None,
-        default_service_port: 80,
+        app_index: 10,
+        service_ports_config: HashMap::new(),
     };
     let pod2 = ServiceSpec {
         id: "pod2".to_string(),
@@ -181,7 +183,8 @@ fn test_pod_state_change() {
         required_gpu_mem: 0,
         node_affinity: None,
         network_affinity: None,
-        default_service_port: 80,
+        app_index: 12,
+        service_ports_config: HashMap::new(),
     };
 
     scheduler.add_service_spec(pod1);
@@ -263,7 +266,8 @@ fn test_create_pod_instance_no_suitable_node() {
         required_gpu_mem: 0,
         node_affinity: None,
         network_affinity: None,
-        default_service_port: 80,
+        app_index: 10,
+        service_ports_config: HashMap::new(),
     };
 
     scheduler.add_service_spec(pod);
@@ -303,7 +307,8 @@ fn test_node_and_network_affinity() {
         required_gpu_mem: 0,
         node_affinity: Some("gpu".to_string()),
         network_affinity: Some("zone3".to_string()),
-        default_service_port: 80,
+        app_index: 12,
+        service_ports_config: HashMap::new(),
     };
 
     scheduler.add_service_spec(pod);

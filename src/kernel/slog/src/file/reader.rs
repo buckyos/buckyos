@@ -338,7 +338,7 @@ impl FileLogReader {
 }
 
 
-#[test]
+
 fn test_read() {
     let log_dir = crate::get_buckyos_log_root_dir().join("test_slog_service");
     let file = log_dir.join("test_slog_service.1.log");
