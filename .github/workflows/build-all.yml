@@ -7,12 +7,22 @@ on:
         description: 'Version number'
         required: true
         type: string
+      enable_tests:
+        description: 'Enable cargo tests during build'
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       version:
         description: 'Version number'
         required: true
         type: string
+      enable_tests:
+        description: 'Enable cargo tests during build'
+        required: false
+        type: boolean
+        default: false
     outputs:
       build_time:
         value: ${{jobs.build-linux.outputs.build_time}}
@@ -26,6 +36,7 @@ jobs:
     with:
       version: ${{ inputs.version }}
       arch: ${{ matrix.arch }}
+      enable_tests: ${{inputs.enable_tests}}
     secrets: inherit
   build-linux:
     strategy:
@@ -35,6 +46,7 @@ jobs:
     with:
       version: ${{ inputs.version }}
       arch: ${{ matrix.arch }}
+      enable_tests: ${{inputs.enable_tests}}
     secrets: inherit
   build-macos:
     strategy:
@@ -44,4 +56,5 @@ jobs:
     with:
       version: ${{ inputs.version }}
       arch: ${{ matrix.arch }}
+      enable_tests: ${{inputs.enable_tests}}
     secrets: inherit

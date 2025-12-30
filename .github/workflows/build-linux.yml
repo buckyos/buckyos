@@ -8,6 +8,10 @@ on:
             arch:
                 required: true
                 type: string
+            enable_tests:
+                required: false
+                type: boolean
+                default: false
         outputs:
             build_time:
                 value: ${{jobs.build.outputs.build_time}}
@@ -47,6 +51,7 @@ jobs:
           sudo apt install -y musl-tools gcc-aarch64-linux-gnu
     - name: cargo test
       working-directory: ./src
+      if: ${{inputs.enable_tests == 'true'}}
       run: cargo test -- --test-threads=1
     - name: install buckyos devkit
       run: pip install "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"

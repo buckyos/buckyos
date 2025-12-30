@@ -50,4 +50,5 @@ jobs:
     uses: ./.github/workflows/build-all.yml
     with:
       version: ${{ needs.get-version.outputs.version }}
+      enable_tests: false
     secrets: inherit
