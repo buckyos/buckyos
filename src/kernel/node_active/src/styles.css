@@ -1,0 +1,31 @@
+:root {
+  font-family: "Manrope", "Space Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
+  line-height: 1.5;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: radial-gradient(circle at 20% 20%, rgba(93, 80, 255, 0.18), transparent 30%),
+    radial-gradient(circle at 80% 0%, rgba(0, 202, 255, 0.12), transparent 25%),
+    linear-gradient(145deg, #f7f8ff 0%, #e8ecff 50%, #f7faff 100%);
+  color: #0b1224;
+  transition: background 0.35s ease;
+}
+
+body[data-theme="dark"] {
+  background: radial-gradient(circle at 10% 20%, rgba(77, 117, 255, 0.18), transparent 30%),
+    radial-gradient(circle at 80% 0%, rgba(255, 115, 179, 0.12), transparent 25%),
+    linear-gradient(145deg, #050914 0%, #0b1020 45%, #070c1a 100%);
+  color: #e8ecff;
+}
+
+#root {
+  min-height: 100vh;
+}

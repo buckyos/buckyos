@@ -5,6 +5,8 @@ use crate::storage::{
 };
 use crate::{KTypeConfig, StorageResult};
 use openraft::testing::StoreBuilder;
+use simplelog::{ColorChoice, Config, LevelFilter, SimpleLogger, TermLogger, TerminalMode};
+use tracing_subscriber::{fmt, EnvFilter};
 use std::sync::Arc;
 
 struct TestMemoryContext {

@@ -1,37 +1,38 @@
 [package]
 name = "buckycli"
-version = "0.4.0"
+version.workspace = true
 edition = "2021"
 
 
 [dependencies]
-tokio = { version = "*", features = ["full"] }
-clap = "4.5.4"
-serde_json = "1.0.116"
+tokio = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
 vergen = { version = "8.0.0", features = ["build", "cargo", "git", "gitcl", "rustc", "si"] }
-flate2 = "1.0"
-reqwest = { version = "0.11", features = ["blocking", "json", "hickory-dns"] }
-serde = { version = "1.0", features = ["derive"] }
-sha2 = "0.10"
-tar = "0.4"
-toml = "0.5"
-kRPC = { git = "https://github.com/buckyos/buckyos-base.git", package = "kRPC"}
-buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit"}
-name-lib = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-lib"}
-ndn-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-lib"}
+flate2 = { workspace = true }
+reqwest = { workspace = true, features = ["blocking", "json", "hickory-dns"] }
+serde = { workspace = true }
+sha2 = { workspace = true }
+tar = { workspace = true }
+toml = { workspace = true }
+kRPC = { workspace = true }
+buckyos-kit = { workspace = true }
+name-lib = { workspace = true }
+ndn-lib = { workspace = true }
 buckyos-api = { path = "../../kernel/buckyos-api"}
-package-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "package-lib"}
-jsonwebtoken = { version = "*", features = ["aws_lc_rs"] }
-ed25519-dalek = { version = "*", features = ["pkcs8", "pem"] } 
-base64 = "*"
-log = "0.4"
-env_logger = "0.10"
-rustyline = "11.0.0"
+package-lib = { workspace = true }
+jsonwebtoken = { workspace = true }
+ed25519-dalek = { workspace = true }
+base64 = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+rustyline = { workspace = true }
+cyfs-sn = { workspace = true }
 
 [dev-dependencies]
-tempfile = "*"
+tempfile = { workspace = true }
 
 [build-dependencies]
 vergen = { version = "8.0.0", features = ["build", "cargo", "git", "gitcl", "rustc", "si"] }
-anyhow = "*"
+anyhow = { workspace = true }
 

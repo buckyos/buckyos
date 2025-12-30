@@ -6,6 +6,7 @@ mod sled_provider;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::net::IpAddr;
 
 use jsonwebtoken::DecodingKey;
 use log::*;
@@ -13,7 +14,7 @@ use log::*;
 use lazy_static::lazy_static;
 use serde_json::Value;
 use tokio::sync::Mutex;
-use warp::Filter;
+use async_trait::async_trait;
 
 use ::kRPC::*;
 use buckyos_kit::*;
@@ -21,6 +22,11 @@ use kv_provider::KVStoreProvider;
 use name_lib::*;
 use rbac::*;
 use sled_provider::SledStore;
+use cyfs_gateway_lib::{HttpServer, ServerError, ServerResult, StreamInfo, serve_http_by_rpc_handler, server_err, ServerErrorCode};
+use server_runner::*;
+use bytes::Bytes;
+use http::{Method, Version};
+use http_body_util::combinators::BoxBody;
 
 lazy_static! {
     static ref TRUST_KEYS: Arc<Mutex<HashMap<String, DecodingKey>>> = {
@@ -69,7 +75,7 @@ async fn handle_get(params: Value, session_token: &RPCSessionToken) -> Result<Va
     let appid = session_token.appid.as_deref().unwrap_or("kernel");
 
     let (full_res_path,real_key_path) = get_full_res_path(key)?;
-    info!("full_res_path:{},real_key_path:{:?},appid:{},userid:{},session_token:{:?}",full_res_path,real_key_path,appid,userid,session_token);
+    info!("GET: full_res_path:{},real_key_path:{:?},appid:{},userid:{},session_token:{:?}",full_res_path,real_key_path,appid,userid,session_token);
     let is_allowed = enforce(userid, Some(appid), full_res_path.as_str(), "read").await;
     if !is_allowed {
         warn!("No read permission");
@@ -645,65 +651,127 @@ async fn dump_configs_for_scheduler(
     return Ok(config_map);
 }
 
-async fn process_request(
-    method: String,
-    param: Value,
-    session_token: Option<String>,
-) -> ::kRPC::Result<Value> {
-    //check session_token
-    if session_token.is_some() {
-        let session_token = session_token.unwrap();
-        let mut rpc_session_token = RPCSessionToken::from_string(session_token.as_str())?;
-        //veruft session token (need access trust did_list)
-        verify_session_token(&mut rpc_session_token).await?;
-        if rpc_session_token.exp.is_some() {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-            if now > rpc_session_token.exp.unwrap() {
-                warn!("session token expired: {}", session_token);
-                return Err(RPCErrors::TokenExpired(session_token));
+#[derive(Clone)]
+struct SystemConfigServer {}
+
+impl SystemConfigServer {
+    fn new() -> Self {
+        SystemConfigServer {}
+    }
+
+    async fn process_request(
+        &self,
+        method: String,
+        param: Value,
+        session_token: Option<String>,
+    ) -> ::kRPC::Result<Value> {
+        //check session_token
+        if session_token.is_some() {
+            let session_token = session_token.unwrap();
+            let mut rpc_session_token = RPCSessionToken::from_string(session_token.as_str())?;
+            //veruft session token (need access trust did_list)
+            verify_session_token(&mut rpc_session_token).await?;
+            if rpc_session_token.exp.is_some() {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                if now > rpc_session_token.exp.unwrap() {
+                    warn!("session token expired: {}", session_token);
+                    return Err(RPCErrors::TokenExpired(session_token));
+                }
+                debug!("session token is valid: {}", session_token);
             }
-            debug!("session token is valid: {}", session_token);
+            debug!("ready to handle request : {}", method.as_str());
+            match method.as_str() {
+                "sys_config_create" => {
+                    return handle_create(param, &rpc_session_token).await;
+                }
+                "sys_config_get" => {
+                    return handle_get(param, &rpc_session_token).await;
+                }
+                "sys_config_set" => {
+                    return handle_set(param, &rpc_session_token).await;
+                }
+                "sys_config_set_by_json_path" => {
+                    return handle_set_by_json_path(param, &rpc_session_token).await;
+                }
+                "sys_config_exec_tx" => {
+                    return handle_exec_tx(param, &rpc_session_token).await;
+                }
+                "sys_config_delete" => {
+                    return handle_delete(param, &rpc_session_token).await;
+                }
+                "sys_config_append" => {
+                    return handle_append(param, &rpc_session_token).await;
+                }
+                "sys_config_list" => {
+                    return handle_list(param, &rpc_session_token).await;
+                }
+                "dump_configs_for_scheduler" => {
+                    return dump_configs_for_scheduler(param, &rpc_session_token).await;
+                }
+                "sys_refresh_trust_keys" => {
+                    return handle_refresh_trust_keys().await;
+                }
+                // Add more methods here
+                _ => Err(RPCErrors::UnknownMethod(String::from(method))),
+            }
+        } else {
+            return Err(RPCErrors::NoPermission("No session token".to_string()));
         }
-        debug!("ready to handle request : {}", method.as_str());
-        match method.as_str() {
-            "sys_config_create" => {
-                return handle_create(param, &rpc_session_token).await;
+    }
+}
+
+#[async_trait]
+impl RPCHandler for SystemConfigServer {
+    async fn handle_rpc_call(
+        &self,
+        req: RPCRequest,
+        _ip_from: IpAddr,
+    ) -> std::result::Result<RPCResponse, RPCErrors> {
+        let result = self.process_request(req.method, req.params, req.token).await;
+        
+        match result {
+            Ok(value) => {
+                Ok(RPCResponse::new(
+                    RPCResult::Success(value),
+                    req.id,
+                ))
             }
-            "sys_config_get" => {
-                return handle_get(param, &rpc_session_token).await;
+            Err(err) => {
+                Ok(RPCResponse::new(
+                    RPCResult::Failed(err.to_string()),
+                    req.id,
+                ))
             }
-            "sys_config_set" => {
-                return handle_set(param, &rpc_session_token).await;
-            }
-            "sys_config_set_by_json_path" => {
-                return handle_set_by_json_path(param, &rpc_session_token).await;
-            }
-            "sys_config_exec_tx" => {
-                return handle_exec_tx(param, &rpc_session_token).await;
-            }
-            "sys_config_delete" => {
-                return handle_delete(param, &rpc_session_token).await;
-            }
-            "sys_config_append" => {
-                return handle_append(param, &rpc_session_token).await;
-            }
-            "sys_config_list" => {
-                return handle_list(param, &rpc_session_token).await;
-            }
-            "dump_configs_for_scheduler" => {
-                return dump_configs_for_scheduler(param, &rpc_session_token).await;
-            }
-            "sys_refresh_trust_keys" => {
-                return handle_refresh_trust_keys().await;
-            }
-            // Add more methods here
-            _ => Err(RPCErrors::UnknownMethod(String::from(method))),
         }
-    } else {
-        return Err(RPCErrors::NoPermission("No session token".to_string()));
+    }
+}
+
+#[async_trait]
+impl HttpServer for SystemConfigServer {
+    async fn serve_request(
+        &self,
+        req: http::Request<BoxBody<Bytes, ServerError>>,
+        info: StreamInfo,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        if *req.method() == Method::POST {
+            return serve_http_by_rpc_handler(req, info, self).await;
+        }
+        return Err(server_err!(ServerErrorCode::BadRequest, "Method not allowed"));
+    }
+
+    fn id(&self) -> String {
+        "system-config-server".to_string()
+    }
+
+    fn http_version(&self) -> Version {
+        Version::HTTP_11
+    }
+
+    fn http3_port(&self) -> Option<u16> {
+        None
     }
 }
 
@@ -806,66 +874,13 @@ async fn service_main() {
     init_logging("system_config_service", true);
     info!("Starting system config service............................");
     init_by_boot_config().await.unwrap();
-    // Select the rear end storage, here you can switch different implementation
-
-    let cors_response = warp::path!("kapi" / "system_config")
-        .and(warp::options())
-        .map(|| {
-            info!("Handling OPTIONS request");
-            warp::http::Response::builder()
-                .header("Access-Control-Allow-Origin", "*")
-                .header("Access-Control-Allow-Methods", "POST, OPTIONS")
-                .header("Access-Control-Allow-Headers", "Content-Type")
-                .body("")
-        });
-
-    let rpc_route = warp::path!("kapi" / "system_config")
-        .and(warp::post())
-        .and(warp::body::json())
-        .and_then(|req: RPCRequest| async {
-            info!(
-                "|==>Received request: {}",
-                serde_json::to_string(&req).unwrap()
-            );
-
-            let process_result = process_request(req.method, req.params, req.token).await;
-
-            let rpc_response: RPCResponse;
-            match process_result {
-                Ok(result) => {
-                    rpc_response = RPCResponse {
-                        result: RPCResult::Success(result),
-                        seq: req.id,
-                        token: None,
-                        trace_id: req.trace_id.clone(),
-                    };
-                    info!(
-                        "<==|Response: OK {} {}",
-                        req.id,
-                        req.trace_id.as_deref().unwrap_or("")
-                    );
-                }
-                Err(err) => {
-                    rpc_response = RPCResponse {
-                        result: RPCResult::Failed(err.to_string()),
-                        seq: req.id,
-                        token: None,
-                        trace_id: req.trace_id,
-                    };
-                    info!(
-                        "<==|Response: {}",
-                        serde_json::to_string(&rpc_response).unwrap()
-                    );
-                }
-            }
-
-            Ok::<_, warp::Rejection>(warp::reply::json(&rpc_response))
-        });
-
-    info!("Starting system config service");
-    warp::serve(cors_response.or(rpc_route))
-        .run(([0, 0, 0, 0], 3200))
-        .await;
+    
+    let server = SystemConfigServer::new();
+    const SYSTEM_CONFIG_SERVICE_MAIN_PORT: u16 = 3200;
+    info!("Starting system config service on port {}", SYSTEM_CONFIG_SERVICE_MAIN_PORT);
+    let runner = Runner::new(SYSTEM_CONFIG_SERVICE_MAIN_PORT);
+    let _ = runner.add_http_server("/kapi/system_config".to_string(), Arc::new(server));
+    let _ = runner.run().await;
 }
 
 #[tokio::main]
@@ -882,7 +897,7 @@ mod test {
     use tokio::{task, time::sleep};
 
     use super::*;
-    //#[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_server_interface() {
         {
             let jwk = json!(
@@ -1015,7 +1030,7 @@ mod test {
         drop(server);
     }
 
-    //#[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_transaction_processing() {
         // Setup trust keys like in the existing test
         {

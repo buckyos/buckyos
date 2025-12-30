@@ -19,8 +19,7 @@ use crate::service_pkg::*;
 use crate::run_item::*;
 
 pub struct KernelServiceRunItem {
-    pub app_id: String,
-    pub target_state: RunItemTargetState,
+    pub service_name: String,
     pub pkg_id: String,
     service_pkg: ServicePkg,
 }
@@ -30,12 +29,11 @@ impl KernelServiceRunItem {
         app_id: &str,
         kernel_config: &KernelServiceInstanceConfig
     ) -> Self {
-        let service_pkg = ServicePkg::new(kernel_config.pkg_id.clone(), 
+        let service_pkg = ServicePkg::new(kernel_config.service_sepc.service_doc.meta.pkg_name.clone(), 
         get_buckyos_system_bin_dir());
         Self {
-            app_id: app_id.to_string(),
-            target_state: RunItemTargetState::from_str(&kernel_config.target_state.as_str()).unwrap(),
-            pkg_id: kernel_config.pkg_id.clone(),
+            service_name: app_id.to_string(),
+            pkg_id: kernel_config.service_sepc.service_doc.meta.pkg_name.clone(),
             service_pkg: service_pkg,
         }
     }
@@ -67,7 +65,7 @@ impl RunItemControl for KernelServiceRunItem {
 
     async fn start(&self, params: Option<&Vec<String>>) -> Result<()> {
         let timestamp = buckyos_get_unix_timestamp();
-        let app_id = self.app_id.clone();
+        let app_id = self.service_name.clone();
         let runtime = get_buckyos_api_runtime().unwrap();
         let device_doc = runtime.device_config.as_ref().unwrap();
         let device_private_key = runtime.device_private_key.as_ref().unwrap();
@@ -92,8 +90,10 @@ impl RunItemControl for KernelServiceRunItem {
                 );
             })?;
 
-        let env_key = get_session_token_env_key(&self.app_id,false);
-        std::env::set_var(env_key.as_str(), device_session_token_jwt);
+        let env_key = get_session_token_env_key(&self.service_name,false);
+        unsafe {
+            std::env::set_var(env_key.as_str(), device_session_token_jwt);
+        }
 
         let result = self.service_pkg
             .start(params)
@@ -136,7 +136,7 @@ impl RunItemControl for KernelServiceRunItem {
         }
     }
 
-    async fn get_state(&self, params: Option<&Vec<String>>) -> Result<ServiceState> {
+    async fn get_state(&self, params: Option<&Vec<String>>) -> Result<ServiceInstanceState> {
         let result = self.service_pkg
             .status(None)
             .await

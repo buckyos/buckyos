@@ -9,6 +9,9 @@ mod verify_hub_client;
 mod zone_provider;
 mod repo_client;
 mod runtime;
+mod app_mgr;
+mod gateway_control;
+pub mod test_config;
 
 pub use system_config::*;
 pub use sn_client::*;
@@ -17,8 +20,12 @@ pub use task_mgr::*;
 pub use control_panel::*;
 pub use scheduler_client::*;
 pub use verify_hub_client::*;
+pub use repo_client::*;
 pub use zone_provider::*;
 pub use runtime::*;
+pub use app_mgr::*;
+pub use gateway_control::*;
+
 
 use tokio::sync::RwLock;
 use std::sync::{Arc};
@@ -26,6 +33,15 @@ use std::collections::HashMap;
 use once_cell::sync::OnceCell;
 use buckyos_kit::*;
 use ::kRPC::*;
+use name_lib::DID;
+use package_lib::PackageMeta;
+use serde_json::json;
+
+pub const SMB_SERVICE_UNIQUE_ID: &str = "smb-service";
+pub const SMB_SERVICE_SERVICE_NAME: &str = "smb-service";
+
+pub const BASE_APP_PORT: u16 = 10000;
+pub const MAX_APP_INDEX: u16 = 2048;
 
 
 static CURRENT_BUCKYOS_RUNTIME:OnceCell<BuckyOSRuntime> = OnceCell::new();
@@ -88,3 +104,16 @@ pub async fn init_buckyos_api_runtime(app_id:&str,app_owner_id:Option<String>,ru
     Ok(runtime)
 }
 
+
+pub fn generate_smb_service_doc() -> KernelServiceDoc {
+    const VERSION: &str = env!("CARGO_PKG_VERSION");
+    let owner_did = DID::from_str("did:bns:buckyos").unwrap();
+    let mut pkg_meta = PackageMeta::new(SMB_SERVICE_UNIQUE_ID, VERSION, "did:bns:buckyos",&owner_did, None);
+    pkg_meta.description = json!("smb_service is the samba service of buckyos");
+    let doc = KernelServiceDoc {
+        meta: pkg_meta,
+        show_name: "Samba Service".to_string(),
+        selector_type: SelectorType::Random,
+    };
+    return doc;
+}

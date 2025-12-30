@@ -27,6 +27,7 @@ use name_lib::*;
 use buckyos_kit::*;
 use package_lib::*;
 
+use crate::local_app_mgr::LocalAppRunItem;
 use crate::run_item::*;
 use crate::frame_service_mgr::*;
 use crate::app_mgr::*;
@@ -52,26 +53,26 @@ type Result<T> = std::result::Result<T, NodeDaemonErrors>;
 
 fn get_system_pkgs() -> Vec<String> {
     vec![
-        "app_loader".to_string(),
+        "app-loader".to_string(),
         "buckycli".to_string(),
-        "control_panel".to_string(),
-        "repo_service".to_string(),
-        "cyfs_gateway".to_string(),
-        "node_active".to_string(),
-        "node_daemon".to_string(),
-        "repo_service".to_string(),
+        "control-panel".to_string(),
+        "repo-service".to_string(),
+        "cyfs-gateway".to_string(),
+        "node-active".to_string(),
+        "node-daemon".to_string(),
+        "repo-service".to_string(),
         "scheduler".to_string(),
-        "smb_service".to_string(),
-        "sys_test".to_string(),
-        "system_config".to_string(),
-        "verify_hub".to_string(),
+        "smb-service".to_string(),
+        "sys-test".to_string(),
+        "system-config".to_string(),
+        "verify-hub".to_string(),
     ]
 }
 
 async fn looking_zone_boot_config(node_identity: &NodeIdentityConfig) -> Result<ZoneBootConfig> {
     //If local files exist, priority loads local files
     let etc_dir = get_buckyos_system_etc_dir();
-    let json_config_path = etc_dir.join(format!("{}.zone.json",node_identity.zone_did.to_host_name()));
+    let json_config_path = etc_dir.join(format!("{}.zone.json",node_identity.zone_did.to_raw_host_name()));
     info!("check  {} is exist for debug ...", json_config_path.display());
     let mut zone_boot_config: ZoneBootConfig;;
     //在离线环境中，可以利用下面机制来绕开DNS查询
@@ -136,7 +137,7 @@ async fn looking_zone_boot_config(node_identity: &NodeIdentityConfig) -> Result<
     }
     
     zone_boot_config.id = Some(node_identity.zone_did.clone());
-    if node_identity.zone_iat > zone_boot_config.iat {
+    if node_identity.zone_iat > zone_boot_config.get_iat().unwrap_or(0) as u32 {
         error!("zone_boot_config.iat is earlier than node_identity.zone_iat!");
         return Err(NodeDaemonErrors::ReasonError("zone_boot_config.iat is not match!".to_string()));
     }
@@ -265,14 +266,14 @@ async fn check_and_update_system_pkgs(pkg_list: &Vec<String>) -> std::result::Re
 
 async fn make_sure_system_pkgs_ready(meta_db_path: &PathBuf,prefix: &str,session_token: Option<String>) -> std::result::Result<(), String> {
     let system_pkgs = vec![
-        "app_loader".to_string(),
-        "node_active".to_string(),
+        "app-loader".to_string(),
+        "node-active".to_string(),
         "buckycli".to_string(),
-        "control_panel".to_string(),
-        "repo_service".to_string(),
-        "cyfs_gateway".to_string(),
-        "system_config".to_string(),
-        "verify_hub".to_string(),
+        "control-panel".to_string(),
+        "repo-service".to_string(),
+        "cyfs-gateway".to_string(),
+        "system-config".to_string(),
+        "verify-hub".to_string(),
     ];
     let mut miss_chunk_list = vec![];
     for pkg_id in system_pkgs {
@@ -287,7 +288,7 @@ async fn make_sure_system_pkgs_ready(meta_db_path: &PathBuf,prefix: &str,session
     
     for chunk_id in miss_chunk_list {
         let ndn_client = NdnClient::new("http://127.0.0.1/ndn/".to_string(), session_token.clone(),None);
-        let chunk_result = ndn_client.pull_chunk(chunk_id.clone(),None).await;
+        let chunk_result = ndn_client.pull_chunk(chunk_id.clone(), StoreMode::StoreInNamedMgr).await;
         if chunk_result.is_err() {
             error!("make_sure_system_pkgs_ready: pull chunk {} failed! {}", chunk_id.to_string(), chunk_result.err().unwrap());
         }
@@ -318,7 +319,7 @@ async fn check_and_update_root_pkg_index_db(session_token: Option<String>) -> st
 
     info!("remote index db is not same as local index db, start update node's root_pkg_env.meta_index.db");
     let download_path = root_env_path.join("pkgs").join("meta_index.downloading");
-    ndn_client.download_fileobj_to_local(zone_repo_index_db_url, &download_path, None).await
+    ndn_client.download_fileobj(zone_repo_index_db_url, &download_path, None).await
         .map_err(|err| {
             error!("download remote index db to root pkg env's meta-Index db failed! {}", err);
             return String::from("download remote index db to root pkg env's meta-Index db failed!");
@@ -420,12 +421,12 @@ async fn wait_sysmte_config_sync() -> std::result::Result<(),String> {
 }
 
 async fn keep_system_config_service(node_id: &str,device_doc: &DeviceConfig, device_private_key: &EncodingKey,is_restart:bool) -> std::result::Result<(),String> {
-    let mut system_config_service_pkg = ServicePkg::new("system_config".to_string(),get_buckyos_system_bin_dir());
+    let mut system_config_service_pkg = ServicePkg::new("system-config".to_string(),get_buckyos_system_bin_dir());
 
     if !system_config_service_pkg.try_load().await {
         error!("load system_config_service pkg failed!");
         let mut env = PackageEnv::new(get_buckyos_system_bin_dir());
-        let result = env.install_pkg("system_config", false,false).await;
+        let result = env.install_pkg("system-config", false,false).await;
         if result.is_err() {
             error!("install system_config_service pkg failed! {}", result.err().unwrap());
             return Err(String::from("install system_config_service pkg failed!"));
@@ -445,10 +446,10 @@ async fn keep_system_config_service(node_id: &str,device_doc: &DeviceConfig, dev
             return String::from("stop system_config_service failed!");
         })?;
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        running_state = ServiceState::Stopped;
+        running_state = ServiceInstanceState::Stopped;
     }
 
-    if running_state == ServiceState::Stopped {
+    if running_state == ServiceInstanceState::Stopped {
         warn!("check system_config_service is stopped,try to start system_config_service");
         let start_result = system_config_service_pkg.start(None).await.map_err(|err| {
             error!("start system_config_service failed! {}", err);
@@ -460,9 +461,9 @@ async fn keep_system_config_service(node_id: &str,device_doc: &DeviceConfig, dev
 }
 
 
-async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, node_private_key: &EncodingKey,sn: Option<String>,is_restart:bool) -> std::result::Result<(),String> {
+async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, node_private_key: &EncodingKey,sn: Option<String>,is_reload:bool) -> std::result::Result<(),String> {
     //TODO: 需要区分boot模式和正常模式
-    let mut cyfs_gateway_service_pkg = ServicePkg::new("cyfs_gateway".to_string(),get_buckyos_system_bin_dir());
+    let mut cyfs_gateway_service_pkg = ServicePkg::new("cyfs-gateway".to_string(),get_buckyos_system_bin_dir());
  
     let mut running_state = cyfs_gateway_service_pkg.status(None).await.map_err(|err| {
         error!("check cyfs_gateway running failed! {}", err);
@@ -470,11 +471,11 @@ async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, node
     })?;
     debug!("cyfs_gateway service pkg status: {:?}",running_state);
 
-    if running_state == ServiceState::NotExist {        
+    if running_state == ServiceInstanceState::NotExist {        
         //当版本更新后,上述检查会返回NotExist, 并触发更新操作
         warn!("cyfs_gateway service pkg not exist, try install it...");
         let mut env = PackageEnv::new(get_buckyos_system_bin_dir());
-        let result = env.install_pkg("cyfs_gateway", false,false).await;
+        let result = env.install_pkg("cyfs-gateway", false,false).await;
         if result.is_err() {
             error!("install cyfs_gateway service pkg failed! {}", result.err().unwrap());
             return Err(String::from("install cyfs_gateway service pkg failed!"));
@@ -483,17 +484,19 @@ async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, node
         }      
     }
     
-    if is_restart {
-        info!("cyfs_gateway service pkg loaded, will do restart ...");
-        cyfs_gateway_service_pkg.stop(None).await.map_err(|err| {
-            error!("stop cyfs_gateway service failed! {}", err);
-            return String::from("stop cyfs_gateway service failed!");
+    if is_reload && running_state == ServiceInstanceState::Started {
+        info!("cyfs_gateway service pkg loaded, will do reload ...");
+        let params = vec!["--reload".to_string()];
+        cyfs_gateway_service_pkg.start(Some(&params)).await.map_err(|err| {
+            error!("start cyfs_gateway service failed! {}", err);
+            return String::from("start cyfs_gateway service failed!");
         })?;
+        info!("call cyfs_gateway reload success!");
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        running_state = ServiceState::Stopped;
+        running_state = ServiceInstanceState::Started;
     }
 
-    if running_state == ServiceState::Stopped {
+    if running_state == ServiceInstanceState::Stopped {
         warn!("check cyfs_gateway is stopped,try to start cyfs_gateway");
         //params: boot cyfs-gateway configs, identiy_etc folder, keep_tunnel list
         //  ood: keep tunnel to other ood, keep tunnel to gateway
@@ -535,8 +538,64 @@ async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, node
     Ok(())
 }   
 
+async fn desktop_daemon_main(skip_app_ids: &Vec<String>) -> Result<()> {
+    info!("desktop_daemon_main skip_app_ids: {:?}", skip_app_ids);
+    let app_list_path = get_buckyos_system_bin_dir().join("applist.json");
+    let app_list_str = std::fs::read_to_string(app_list_path.clone());
+    if app_list_str.is_err() {
+        error!("read app list failed! {}", app_list_str.err().unwrap());
+        return Err(NodeDaemonErrors::ReadConfigError(String::from("read local app list failed!")));
+    }
+    let app_list_str = app_list_str.unwrap();
+    let app_list = serde_json::from_str(app_list_str.as_str());
+    if app_list.is_err() {
+        error!("parse app list failed! {}", app_list.err().unwrap());
+        return Err(NodeDaemonErrors::ParserConfigError(String::from("parse local app list failed!")));
+    }
+    let app_list : HashMap<String,LocalAppInstanceConfig> = app_list.unwrap();
+    
+    let app_stream = stream::iter(app_list);
+    let app_task = app_stream.for_each_concurrent(2, |(app_id_with_name, app_cfg)| async move {
+        if skip_app_ids.contains(&app_id_with_name) {
+            info!("skip app {} because it is in skip_app_ids", app_id_with_name.clone());
+            return;
+        }
+        let app_loader = ServicePkg::new("app-loader".to_string(),get_buckyos_system_bin_dir());
+    
+        let local_app_run_item = LocalAppRunItem::new(&app_id_with_name,app_cfg.clone(),app_loader);
+
+        let target_state = RunItemTargetState::from_instance_state(&app_cfg.target_state);
+        let _ = ensure_run_item_state(&local_app_run_item, target_state)
+            .await
+            .map_err(|_err| {
+                error!("ensure app {} to target state failed!",app_id_with_name.clone());
+            });
+    });
+    return Ok(());
+}
+
+async fn desktop_daemon() -> Result<()> {
+    //为了防止desktop_daemon和node_daemon用不同的参数启动同一个app,使用node_daemon优先原则:
+    //即使优先执行node_daemon的检查，让node_daemon有机会先启动app
+    //read local app config frorm bin/app_list.json
+    let app_list_path = get_buckyos_system_bin_dir().join("applist.json");
+    let mut loop_step = 0;
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        loop_step += 1;
+        info!("desktop_daemon step:{},app_list_path:{}", loop_step,app_list_path.display());
+        let _ = desktop_daemon_main(&Vec::new()).await.map_err(|err| {
+            warn!("desktop_daemon failed! {}", err);
+            return NodeDaemonErrors::SystemConfigError("desktop_daemon failed!".to_string());
+        });
+    }
+
+    Ok(())
+}
+
 async fn node_main(node_host_name: &str,
                    is_ood: bool,
+                   is_desktop: bool,
                    buckyos_api_client: &SystemConfigClient,
                    device_doc:&DeviceConfig) -> Result<bool> {
 
@@ -559,14 +618,14 @@ async fn node_main(node_host_name: &str,
         }
     }
 
-    //control pod instance to target state
+    //control replica instance to target state
     let node_config = load_node_config(node_host_name, buckyos_api_client).await
         .map_err(|err| {
             error!("load node config failed! {}", err);
             return NodeDaemonErrors::SystemConfigError("cann't load node config!".to_string());
         })?;
     
-    if !node_config.is_running {
+    if !node_config.is_running() {
         warn!("node_config.is_running is set to false manually, will restart node_daemon...");
         return Ok(false);
     }
@@ -576,7 +635,7 @@ async fn node_main(node_host_name: &str,
         let kernel_run_item = KernelServiceRunItem::new(
             kernel_service_name.as_str(),&kernel_cfg);
 
-        let target_state = RunItemTargetState::from_str(&kernel_cfg.target_state.as_str()).unwrap();
+        let target_state = RunItemTargetState::from_instance_state(&kernel_cfg.target_state);
         
         let _ = ensure_run_item_state(&kernel_run_item, target_state)
             .await
@@ -601,20 +660,30 @@ async fn node_main(node_host_name: &str,
     
 
     //app services is "userA-appB-service", run in docker container
+    let  app_ids = node_config.apps.keys().cloned().collect::<Vec<String>>();
+
     let app_stream = stream::iter(node_config.apps);
     let app_task = app_stream.for_each_concurrent(4, |(app_id_with_name, app_cfg)| async move {
-        let app_loader = ServicePkg::new("app_loader".to_string(),get_buckyos_system_bin_dir());
+        let app_loader = ServicePkg::new("app-loader".to_string(),get_buckyos_system_bin_dir());
   
-        let app_run_item = AppRunItem::new(&app_cfg.app_id,app_cfg.clone(),app_loader);
+        let app_run_item = AppRunItem::new(&app_id_with_name,app_cfg.clone(),app_loader);
 
-        let target_state = RunItemTargetState::from_str(&app_cfg.target_state).unwrap();
+        let target_state = RunItemTargetState::from_instance_state(&app_cfg.target_state);
         let _ = ensure_run_item_state(&app_run_item, target_state)
             .await
             .map_err(|_err| {
-                error!("ensure app {} to target state failed!",app_cfg.app_id.clone());
-                return NodeDaemonErrors::SystemConfigError(app_cfg.app_id.clone());
+                error!("ensure app {} to target state failed!",app_id_with_name.clone());
+                return NodeDaemonErrors::SystemConfigError(app_id_with_name.clone());
             });
     });
+
+    if is_desktop {
+        let mut skip_app_ids = app_ids;
+        skip_app_ids.push("cyfs-gateway".to_string());
+        let _ = desktop_daemon_main(&skip_app_ids).await.map_err(|err| {
+            warn!("desktop_daemon failed! {}", err);
+        });
+    }
 
     tokio::join!(kernel_task,app_task);
     Ok(true)
@@ -633,7 +702,8 @@ async fn get_system_config_client(is_ood:bool,session_token:String)->std::result
 async fn node_daemon_main_loop(
     node_id:&str,
     node_host_name:&str,
-    is_ood: bool
+    is_ood: bool,
+    is_desktop: bool
 ) -> Result<()> {
     let mut loop_step = 0;
     let mut is_running = true;
@@ -670,7 +740,9 @@ async fn node_daemon_main_loop(
             }
             let device_info_str = serde_json::to_string(&device_info).unwrap();
             debug!("update device info: {:?}", device_info);
-            std::env::set_var("BUCKYOS_THIS_DEVICE_INFO", device_info_str);
+            unsafe {
+                std::env::set_var("BUCKYOS_THIS_DEVICE_INFO", device_info_str);
+            }
             update_device_info(&device_info, &system_config_client).await;
             //TODO：SN的上报频率不用那么快
             let device_session_token_jwt = buckyos_runtime.get_session_token().await;
@@ -686,7 +758,7 @@ async fn node_daemon_main_loop(
             })?;
         }
 
-        let main_result = node_main(node_host_name,is_ood, &system_config_client, device_doc).await;
+        let main_result = node_main(node_host_name,is_ood,is_desktop, &system_config_client, device_doc).await;
         
         if main_result.is_err() {
             error!("node_main failed! {}", main_result.err().unwrap());
@@ -696,33 +768,34 @@ async fn node_daemon_main_loop(
             if !is_running {
                 break;
             }
-
+            info!("node_main OK, load node gateway config ...");
             let new_node_gateway_config = load_node_gateway_config(node_host_name, &system_config_client).await;
             if new_node_gateway_config.is_ok() {
-                let mut need_restart = false;
+                let mut need_reload = false;
                 let new_node_gateway_config = new_node_gateway_config.unwrap();
                 let (new_node_gateway_config_id,new_node_gateway_config_str)= build_named_object_by_json("nodeconfig",&new_node_gateway_config);
                 if node_gateway_config_id.is_none() {
-                    need_restart = true;
+                    need_reload = true;
                     node_gateway_config_id = Some(new_node_gateway_config_id);
                 } else {
                     if node_gateway_config_id.as_ref().unwrap() == &new_node_gateway_config_id {
-                        need_restart = false;                        
+                        need_reload = false;                        
                     } else {
-                        need_restart = true;
+                        need_reload = true;
                         node_gateway_config_id = Some(new_node_gateway_config_id);
                     }
                 }
 
-                if need_restart {
-                    info!("node gateway_config changed, will write to node_gateway.json and restart cyfs_gateway service");
+                if need_reload {
+                    info!("node gateway_config changed, will write to node_gateway.json and reload");
                     let gateway_config_path = buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway.json");
                     std::fs::write(gateway_config_path, new_node_gateway_config_str.as_bytes()).unwrap();
                 }
             
                 let sn = buckyos_runtime.zone_config.as_ref().unwrap().sn.clone();
+                info!("*** keep cyfs-gateway service with sn: {:?}", sn);
                 keep_cyfs_gateway_service(node_id,device_doc, device_private_key, sn,
-                need_restart).await.map_err(|err| {
+                need_reload).await.map_err(|err| {
                     error!("keep cyfs_gateway service failed! {}", err);
                 });
             
@@ -768,6 +841,7 @@ async fn generate_device_session_token(device_doc: &DeviceConfig, device_private
 async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     let node_id = matches.get_one::<String>("id");
     let enable_active = matches.get_flag("enable_active");
+    let is_desktop = matches.get_flag("desktop_daemon");
     let default_node_id = "node".to_string();
     let node_id = node_id.unwrap_or(&default_node_id);
 
@@ -785,7 +859,6 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     })?;
     info!("init default name client OK!");
 
-
     let initial_pkgs = get_system_pkgs();
     check_and_update_system_pkgs(&initial_pkgs).await;
 
@@ -793,16 +866,30 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     let node_identity_file = get_buckyos_system_etc_dir().join("node_identity.json");
     let mut node_identity = NodeIdentityConfig::load_node_identity_config(&node_identity_file);
     if node_identity.is_err() {
+        let desktop_task = if is_desktop {
+            info!("start desktop daemon...");
+            let task_handle = tokio::task::spawn(desktop_daemon());
+            Some(task_handle)
+        } else {
+            None
+        };
+
         if enable_active {
             //befor start node_active_service ,try check and upgrade self
             info!("node_identity.json load error or not found, start node active service...");
             start_node_active_service().await;
             info!("node active service returned,restart node_daemon ...");
             exit(0);
-            //restart_program();
         } else {
             error!("load node identity config failed! {}", node_identity.err().unwrap());
             warn!("Would you like to enable activation mode? (Use `--enable_active` to proceed)");
+        }
+
+        if desktop_task.is_some() {
+            desktop_task.unwrap().await.unwrap();
+            info!("desktop daemon returned,exit node_daemon...");
+            exit(0);
+        } else {
             return Err(String::from("load node identity config failed!"));
         }
     }
@@ -865,7 +952,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     info!("Load zone_boot_config OK, {}", zone_config_json_str);
 
     //verify node_name is this device's hostname
-    let is_ood = zone_boot_config.oods.contains(&device_doc.name);
+    let is_ood = zone_boot_config.device_is_ood(&device_doc.name);
     let device_name = device_doc.name.clone();
     //CURRENT_ZONE_CONFIG.set(zone_config).unwrap();
     if is_ood {
@@ -874,9 +961,11 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         info!("Booting Node {} ...",device_doc.name.as_str());
     }
 
-    std::env::set_var("BUCKY_ZONE_OWNER", serde_json::to_string(&node_identity.owner_public_key).unwrap());
-    std::env::set_var("BUCKYOS_ZONE_BOOT_CONFIG", serde_json::to_string(&zone_boot_config).unwrap());
-    std::env::set_var("BUCKYOS_THIS_DEVICE", serde_json::to_string(&device_doc).unwrap());
+    unsafe {
+        std::env::set_var("BUCKY_ZONE_OWNER", serde_json::to_string(&node_identity.owner_public_key).unwrap());
+        std::env::set_var("BUCKYOS_ZONE_BOOT_CONFIG", serde_json::to_string(&zone_boot_config).unwrap());
+        std::env::set_var("BUCKYOS_THIS_DEVICE", serde_json::to_string(&device_doc).unwrap());
+    }
 
     info!("set env var BUCKY_ZONE_OWNER,BUCKYOS_ZONE_BOOT_CONFIG,BUCKYOS_THIS_DEVICE OK!");
 
@@ -927,7 +1016,9 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
                     do_boot_upgreade().await?;
 
                     warn!("Do boot schedule to generate all system configs...");
-                    std::env::set_var("SCHEDULER_SESSION_TOKEN", device_session_token_jwt.clone());
+                    unsafe {
+                        std::env::set_var("SCHEDULER_SESSION_TOKEN", device_session_token_jwt.clone());
+                    }
                     debug!("set var SCHEDULER_SESSION_TOKEN {}", device_session_token_jwt);
                     let boot_result = do_boot_schedule().await;
                     if boot_result.is_ok() {
@@ -953,7 +1044,9 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
             error!("parse zone config from boot/config failed! {}", err);
             return String::from("parse zone config from boot/config failed!");
         })?;
-        std::env::set_var("BUCKYOS_ZONE_CONFIG", boot_config_result_str);
+        unsafe {
+            std::env::set_var("BUCKYOS_ZONE_CONFIG", boot_config_result_str);
+        }
         info!("--------------------------------");
 
         let mut runtime = BuckyOSRuntime::new("node-daemon", None, BuckyOSRuntimeType::Kernel);
@@ -998,7 +1091,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     }
     
     info!("{}@{} boot OK, enter node daemon main loop.", &device_name, node_identity.zone_did.to_host_name());
-    node_daemon_main_loop(node_id,&device_name, is_ood)
+    node_daemon_main_loop(node_id,&device_name, is_ood, is_desktop)
         .await
         .map_err(|err| {
             error!("node daemon main loop failed! {}", err);

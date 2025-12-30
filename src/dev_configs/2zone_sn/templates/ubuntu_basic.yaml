@@ -1,0 +1,16 @@
+package_update: true
+package_upgrade: true
+packages:
+- docker.io
+- curl
+- wget
+
+users:
+- name: ubuntu
+  sudo: ALL=(ALL) NOPASSWD:ALL
+- chpasswd: null
+  disable_root: false
+  expire: false
+  name: root
+  passwd: $6$rounds=4096$vumjqMkVLNRXUvJw$iaiDsWKCGKgjeC7sp.PpGw6BOJkUaRCQ.XInFhfq39DEp6lRNswnyF4gVrE9UW7qqIF0zvQisY/OwglgPO2oc1
+  ssh_pwauth: true

@@ -1,0 +1,29 @@
+package_update: true
+package_upgrade: true
+packages:
+- docker.io
+- curl
+- wget
+- systemd-resolved
+
+# Disable cloud-init management of /etc/hosts
+manage_etc_hosts: false
+
+users:
+- name: ubuntu
+  sudo: ALL=(ALL) NOPASSWD:ALL
+
+write_files:
+- path: /etc/systemd/resolved.conf.d/dns-server.conf
+  content: |
+    [Resolve]
+    DNS=8.8.8.8 1.1.1.1
+    FallbackDNS=8.8.4.4 1.0.0.1
+    DNSStubListener=no
+  permissions: '0644'
+
+runcmd:
+- systemctl enable systemd-resolved
+- systemctl restart systemd-resolved
+- ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
+

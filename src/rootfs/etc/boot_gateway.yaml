@@ -1,0 +1,105 @@
+stacks:
+  node_rtcp:
+    id: node_rtcp
+    protocol: rtcp
+    bind: 0.0.0.0:2980
+    key_path: ./node_private_key.pem
+    device_config_path: ./node_device_config.json
+    hook_point:
+      main:
+        id: main
+        priority: 1
+        blocks:
+          default:
+            id: default
+            priority: 1
+            block: |
+              return "forward ${REQ.protocol}:///${REQ.dest_host}:${REQ.dest_port}";
+              
+  zone_gateway_http:
+    id: zone_gateway_http
+    protocol: tcp
+    bind: 0.0.0.0:80
+    hook_point:
+      main:
+        id: main
+        priority: 1
+        blocks:
+          default:
+            id: default
+            priority: 1
+            block: |
+              return "server node_gateway";
+
+  node_gateway_http:
+    id: node_gateway_http
+    protocol: tcp
+    bind: 0.0.0.0:3180
+    hook_point:
+      main:
+        id: main
+        priority: 1
+        blocks:
+          default:
+            id: default
+            priority: 1
+            block: |
+              return "server node_gateway";
+
+servers:
+    node_gateway:
+      id: node_gateway
+      type: http
+      hook_point:
+        main:
+          id: main
+          priority: 1
+          blocks:
+            default:
+              id: default
+              priority: 0
+              block: |
+                echo "node_gateway default block";
+
+# not use yet
+global_process_chains:
+  zone_http_selector:
+    priority: 1
+    blocks:
+      default:
+        id: default
+        priority: 1
+        block: |
+          exec --block parse_appid_from_host || echo "appid not found" && reject;
+          exec --block permit_check || echo "permit check failed" && reject;
+          exec --block direct_process && return;
+          match $REQ_TYPE "service" && return $(exec --block forward_to_service)
+          exec --block forward_to_app && return "forward ${TARGET_URL}";
+          reject;
+      parse_appid_from_host: # 未找到appid则返回false，如何能利用set匹配来提高性能
+        id: parse_appid_from_host
+        priority: 100
+        block: |
+          return false; 
+      permit_check: # 根据来源判断是否能访问appid
+        id: permit_check
+        priority: 110
+        block: |
+          return true;
+      forward_to_service:
+          id: forward_to_service
+          priority: 120
+          block: |
+            echo "forward_to_service block";
+            return false;
+      # app_pre_process_req:
+      #     id: app_pre_process_req
+      #     priority: 130
+      #     block: |
+      #       echo "app_pre_process_req block";
+      #       return true;
+      forward_to_app:
+          id: forward_to_app
+          priority: 140
+          block: |
+            echo "app_post_process_req block";

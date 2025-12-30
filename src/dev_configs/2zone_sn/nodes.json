@@ -1,0 +1,72 @@
+{
+  "nodes": {
+    "sn": {
+      "node_id": "sn",
+      "vm_template": "ubuntu_basic",
+      "network": {
+        "lan_id": "wan",
+        "type": "bridge"
+      },
+      "apps": {
+        "web3_bridge": {
+
+        }
+      },
+      "init_commands": [
+        "sudo hostnamectl set-hostname sn",
+        "sudo chmod 777 /opt/"
+      ],
+      "directories": {
+        "logs": "/opt/buckyos/logs"
+      }
+    },
+    "alice-ood1": {
+      "node_id": "alice_ood1",
+      "vm_template": "ubuntu_buckyos",
+      "network": {
+        "lan_id": "lan_port_map",
+        "type": "nat"
+      },
+      "apps": {
+        "buckyos" : {
+          "node_group": "alice.ood1"
+        }
+      },
+      "init_commands": [
+        "hostnamectl set-hostname alice-ood1",
+        "sudo chmod 777 /opt/"
+      ],
+      "instance_commands": [
+        "echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts"
+      ],
+      "directories": {
+        "logs": "/opt/buckyos/logs"
+      }
+    },
+    "bob-ood1": {
+      "node_id": "bob_ood1",
+      "vm_template": "ubuntu_buckyos",
+      "network": {
+        "lan_id": "lan",
+        "type": "nat"
+      },
+      "apps": {
+        "buckyos" : {
+          "node_group": "bob.ood1"
+        }
+      },
+      "init_commands": [
+        "sudo hostnamectl set-hostname bob-ood1",
+        "sudo chmod 777 /opt/"
+      ],
+      "instance_commands": [
+        "sudo echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts"
+      ],
+      "directories": {
+        "logs": "/opt/buckyos/logs"
+      }
+    }
+  },
+  "instance_order": ["sn", "alice-ood1", "bob-ood1"]
+}
+

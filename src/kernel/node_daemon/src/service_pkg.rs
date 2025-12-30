@@ -5,18 +5,8 @@ use tokio::sync::Mutex;
 use std::collections::HashMap;
 use thiserror::Error;
 use buckyos_kit::*;
+use buckyos_api::ServiceInstanceState;
 
-
-
-#[derive(PartialEq,Debug)]
-pub enum ServiceState {
-    //InstllDeps,
-    Deploying,
-    //DeployFailed(String,u32), //error message,failed count
-    NotExist,
-    Started,
-    Stopped,
-}
 
 type Result<T> = std::result::Result<T, ServiceControlError>;
 
@@ -135,12 +125,12 @@ impl ServicePkg {
         Ok(result)
     }
 
-    pub async fn status(&self, params: Option<&Vec<String>>) -> Result<ServiceState> {
+    pub async fn status(&self, params: Option<&Vec<String>>) -> Result<ServiceInstanceState> {
         let pkg_env = PackageEnv::new(self.pkg_env_path.clone()); 
         let media_info = pkg_env.load(&self.pkg_id).await;
         if media_info.is_err() {
             info!("pkg {} not exist", self.pkg_id);
-            return Ok(ServiceState::NotExist);
+            return Ok(ServiceInstanceState::NotExist);
         }
         let media_info = media_info.unwrap();
         let mut media_info_lock = self.media_info.lock().await;
@@ -148,10 +138,10 @@ impl ServicePkg {
         drop(media_info_lock);
         let result = self.execute_operation("status", params).await?;
         match result {
-            0 => Ok(ServiceState::Started),
-            255 => Ok(ServiceState::NotExist),
-            254 => Ok(ServiceState::Deploying),
-            _ => Ok(ServiceState::Stopped),
+            0 => Ok(ServiceInstanceState::Started),
+            255 => Ok(ServiceInstanceState::NotExist),
+            254 => Ok(ServiceInstanceState::Deploying),
+            _ => Ok(ServiceInstanceState::Stopped),
         }
     }
 }

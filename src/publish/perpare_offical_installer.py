@@ -2,8 +2,8 @@
 # 1. 拷贝rootfs到某个指定的文件夹，一般是/tmp下的某个Installer相关文件夹
 # 2. 清除掉拷贝后的rootfs/bin，之后要重新组织
 # 3. 调用perpare_packages，准备好新的PackageMeta
-# 4. 从官方源下载现在的meta db文件
-# 5. 将新版本的PackageMeta添加进本地的meta db里, 并重新"install"bin文件夹
+# 4. 从官方源下载现在的meta db文件（这一步可以跳过?)
+# 5. 将新版本的PackageMeta添加进本地的meta db里, 并重新"install"bin文件夹 --> 会导致产生符号链接
 # 4. 整理和移除不需要的文件
 import os
 import shutil

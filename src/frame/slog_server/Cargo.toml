@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-axum = "*"
+axum = { workspace = true }
 slog = { path = "../../kernel/slog" }
-log = "*"
-tokio = { version = "*", features = ["full"] }
-async-trait = "*"
-serde_json = '1.0'
-serde = { version = '*', features = ['derive'] }
-rusqlite = { version = "*", features = ["bundled"] }
+log = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+rusqlite = { workspace = true }

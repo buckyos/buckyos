@@ -1,4 +1,3 @@
-use buckyos_kit::buckyos_get_unix_timestamp;
 use std::collections::HashMap;
 
 use crate::scheduler::*;
@@ -36,7 +35,7 @@ fn create_test_node(
 // Removing -> Deleted
 #[test]
 fn test_node_state_change() {
-    let mut scheduler = PodScheduler::new_empty(1, buckyos_get_unix_timestamp());
+    let mut scheduler = NodeScheduler::new_empty(1);
 
     let node1 = create_test_node(
         "node1",
@@ -83,18 +82,17 @@ fn test_node_state_change() {
         }
 }
 
-// test create pod instance
+// test create service_spec instance
 #[test]
 fn test_create_pod_instance() {
-    let now = buckyos_get_unix_timestamp();
-    let mut scheduler = PodScheduler::new_empty(1, now);
+    let mut scheduler = NodeScheduler::new_empty(1);
 
-    let pod = PodItem {
+    let pod = ServiceSpec {
         id: "pod1".to_string(),
         app_id: "pod1".to_string(),
         owner_id: "root".to_string(),
-        pod_type: PodItemType::Service,
-        state: PodItemState::New,
+        spec_type: ServiceSpecType::Service,
+        state: ServiceSpecState::New,
         best_instance_count: 2,
         need_container: false,
         required_cpu_mhz: 100,
@@ -106,7 +104,7 @@ fn test_create_pod_instance() {
         default_service_port: 80,
     };
 
-    scheduler.add_pod(pod);
+    scheduler.add_service_spec(pod);
 
     // create nodes
     let node1 = create_test_node(
@@ -131,35 +129,34 @@ fn test_create_pod_instance() {
     scheduler.add_node(node1);
     scheduler.add_node(node2);
 
-    let actions = scheduler.schedule_pod_change().unwrap();
+    let actions = scheduler.schedule_spec_change().unwrap();
     assert_eq!(actions.len(), 2);
     for action in &actions {
         match action {
-            SchedulerAction::InstancePod(instance) => {
-                assert_eq!(instance.pod_id, "pod1");
+            SchedulerAction::InstanceReplica(instance) => {
+                assert_eq!(instance.spec_id, "pod1");
                 assert_eq!(instance.node_id, "node2");
             }
-            SchedulerAction::ChangePodStatus(pod_id, new_state) => {
-                assert_eq!(pod_id, "pod1");
-                assert_eq!(new_state, &PodItemState::Deployed);
+            SchedulerAction::ChangeServiceStatus(spec_id, new_state) => {
+                assert_eq!(spec_id, "pod1");
+                assert_eq!(new_state, &ServiceSpecState::Deployed);
             }
             _ => panic!("Unexpected action"),
         }
     }
 }
 
-// test pod state change: New -> Deployed, Removing -> Deleted
+// test service_spec state change: New -> Deployed, Removing -> Deleted
 #[test]
 fn test_pod_state_change() {
-    let now = buckyos_get_unix_timestamp();
-    let mut scheduler = PodScheduler::new_empty(1, now);
+    let mut scheduler = NodeScheduler::new_empty(1);
 
-    let pod1 = PodItem {
+    let pod1 = ServiceSpec {
         id: "pod1".to_string(),
         app_id: "pod1".to_string(),
         owner_id: "root".to_string(),
-        pod_type: PodItemType::Service,
-        state: PodItemState::New,
+        spec_type: ServiceSpecType::Service,
+        state: ServiceSpecState::New,
         best_instance_count: 1,
         need_container: false,
         required_cpu_mhz: 100,
@@ -170,12 +167,12 @@ fn test_pod_state_change() {
         network_affinity: None,
         default_service_port: 80,
     };
-    let pod2 = PodItem {
+    let pod2 = ServiceSpec {
         id: "pod2".to_string(),
         app_id: "pod2".to_string(),
         owner_id: "user1".to_string(),
-        pod_type: PodItemType::App,
-        state: PodItemState::Removing,
+        spec_type: ServiceSpecType::App,
+        state: ServiceSpecState::Deleted,
         best_instance_count: 1,
         need_container: false,
         required_cpu_mhz: 200,
@@ -187,8 +184,8 @@ fn test_pod_state_change() {
         default_service_port: 80,
     };
 
-    scheduler.add_pod(pod1);
-    scheduler.add_pod(pod2);
+    scheduler.add_service_spec(pod1);
+    scheduler.add_service_spec(pod2);
 
     // create node for pod1
     let node1 = create_test_node(
@@ -202,25 +199,25 @@ fn test_pod_state_change() {
     );
     scheduler.add_node(node1);
 
-    let actions = scheduler.schedule_pod_change().unwrap();
+    let actions = scheduler.schedule_spec_change().unwrap();
     assert_eq!(actions.len(), 3);
     for action in &actions {
         match action {
-            SchedulerAction::InstancePod(instance) => {
-                assert_eq!(instance.pod_id, "pod1");
+            SchedulerAction::InstanceReplica(instance) => {
+                assert_eq!(instance.spec_id, "pod1");
                 assert_eq!(instance.node_id, "node1");
                 //add pod instance
-                scheduler.add_pod_instance(instance.clone());
+                scheduler.add_replica_instance(instance.clone());
             }
-            SchedulerAction::ChangePodStatus(pod_id, new_state) => {
-                if pod_id == "pod1" {
-                    assert_eq!(new_state, &PodItemState::Deployed);
-                } else if pod_id == "pod2" {
-                    assert_eq!(new_state, &PodItemState::Deleted);
-                    // remove pod item
-                    scheduler.remove_pod(pod_id);
+            SchedulerAction::ChangeServiceStatus(spec_id, new_state) => {
+                if spec_id == "pod1" {
+                    assert_eq!(new_state, &ServiceSpecState::Deployed);
+                } else if spec_id == "pod2" {
+                    assert_eq!(new_state, &ServiceSpecState::Deleted);
+                    // remove service_spec
+                    scheduler.remove_service_spec(spec_id);
                 } else {
-                    panic!("Unexpected pod id: {}", pod_id);
+                    panic!("Unexpected spec id: {}", spec_id);
                 }
             }
             _ => panic!("Unexpected action"),
@@ -230,34 +227,34 @@ fn test_pod_state_change() {
     /*
     改变pod1的状态为Removing
     */
-    scheduler.update_pod_state("pod1", PodItemState::Removing);
-    let actions = scheduler.schedule_pod_change().unwrap();
-    assert_eq!(actions.len(), 1);
-    // if let SchedulerAction::RemovePodInstance(pod_id, instance_id, node_id) = &actions[0] {
+    scheduler.update_service_spec_state("pod1", ServiceSpecState::Deleted);
+    let actions = scheduler.schedule_spec_change().unwrap();
+    println!("test_pod_state_change actions: {:?}", actions);
+    assert_eq!(actions.len(), 2);
+    // if let SchedulerAction::RemoveReplica(pod_id, instance_id, node_id) = &actions[0] {
     //     assert_eq!(instance_id, "pod1@node1");
     //     assert_eq!(pod_id, "pod1");
     //     assert_eq!(node_id, "node1");
     // } else {
-    //     panic!("Expected RemovePodInstance action");
+    //     panic!("Expected RemoveReplica action");
     // }
     // if let SchedulerAction::ChangePodStatus(pod_id, new_state) = &actions[1] {
     //     assert_eq!(pod_id, "pod1");
-    //     assert_eq!(new_state, &PodItemState::Deleted);
+    //     assert_eq!(new_state, &ServiceSpecState::Deleted);
     // }
 }
 
-// test create pod instance with no suitable node
+// test create service_spec instance with no suitable node
 #[test]
 fn test_create_pod_instance_no_suitable_node() {
-    let now = buckyos_get_unix_timestamp();
-    let mut scheduler = PodScheduler::new_empty(1, now);
+    let mut scheduler = NodeScheduler::new_empty(1);
 
-    let pod = PodItem {
+    let pod = ServiceSpec {
         id: "pod1".to_string(),
         app_id: "pod1".to_string(),
         owner_id: "root".to_string(),
-        pod_type: PodItemType::Service,
-        state: PodItemState::New,
+        spec_type: ServiceSpecType::Service,
+        state: ServiceSpecState::New,
         best_instance_count: 1,
         need_container: false,
         required_cpu_mhz: 1000, // 超出节点资源
@@ -269,7 +266,7 @@ fn test_create_pod_instance_no_suitable_node() {
         default_service_port: 80,
     };
 
-    scheduler.add_pod(pod);
+    scheduler.add_service_spec(pod);
 
     // create nodes
     let node1 = create_test_node(
@@ -283,22 +280,21 @@ fn test_create_pod_instance_no_suitable_node() {
     );
     scheduler.add_node(node1);
 
-    let actions = scheduler.schedule_pod_change();
+    let actions = scheduler.schedule_spec_change();
     assert!(actions.is_err());
 }
 
 // test node_affinity and network_affinity
 #[test]
 fn test_node_and_network_affinity() {
-    let now = buckyos_get_unix_timestamp();
-    let mut scheduler = PodScheduler::new_empty(1, now);
+    let mut scheduler = NodeScheduler::new_empty(1);
 
-    let pod = PodItem {
+    let pod = ServiceSpec {
         id: "pod1".to_string(),
         app_id: "pod1".to_string(),
         owner_id: "root".to_string(),
-        pod_type: PodItemType::Service,
-        state: PodItemState::New,
+        spec_type: ServiceSpecType::Service,
+        state: ServiceSpecState::New,
         best_instance_count: 1,
         need_container: false,
         required_cpu_mhz: 100,
@@ -310,7 +306,7 @@ fn test_node_and_network_affinity() {
         default_service_port: 80,
     };
 
-    scheduler.add_pod(pod);
+    scheduler.add_service_spec(pod);
 
     // create nodes
     let node1 = create_test_node(
@@ -345,15 +341,15 @@ fn test_node_and_network_affinity() {
     scheduler.add_node(node2);
     scheduler.add_node(node3);
 
-    let actions = scheduler.schedule_pod_change().unwrap();
+    let actions = scheduler.schedule_spec_change().unwrap();
     assert_eq!(actions.len(), 2);
-    if let SchedulerAction::InstancePod(instance) = &actions[0] {
-        assert_eq!(instance.pod_id, "pod1");
+    if let SchedulerAction::InstanceReplica(instance) = &actions[0] {
+        assert_eq!(instance.spec_id, "pod1");
         assert_eq!(instance.node_id, "node3");
     }
-    if let SchedulerAction::ChangePodStatus(pod_id, new_state) = &actions[1] {
-        assert_eq!(pod_id, "pod1");
-        assert_eq!(new_state, &PodItemState::Deployed);
+    if let SchedulerAction::ChangeServiceStatus(spec_id, new_state) = &actions[1] {
+        assert_eq!(spec_id, "pod1");
+        assert_eq!(new_state, &ServiceSpecState::Deployed);
     } else {
         panic!("Unexpected action");
     }

@@ -4,12 +4,16 @@ mod sys_config;
 mod did;
 mod app;
 mod ndn;
+mod loader;
 
-use std::path::Path;
+
+use std::{fs, path::Path};
 use buckyos_api::*;
+use buckyos_api::test_config;
 use clap::{Arg, Command};
+use log::info;
 use package_cmd::*;
-
+use loader::*;
 
 fn is_local_cmd(cmd_name: &str) -> bool {
     const LOCAL_COMMANDS: &[&str] = &[
@@ -19,7 +23,14 @@ fn is_local_cmd(cmd_name: &str) -> bool {
         "load_pkg",
         "set_pkg_meta",
         "did",
-        "create_chunk"
+        "create_chunk",
+        "create_user_env",
+        "create_node_configs",
+        "create_sn_configs",
+        "register_device_to_sn",
+        "register_user_to_sn",
+        "build_did_docs",
+        "load",
     ];
     LOCAL_COMMANDS.contains(&cmd_name)
 }
@@ -116,6 +127,22 @@ async fn main() -> Result<(), String> {
                 )
         )
         .subcommand(
+            Command::new("load")
+                .about("test loader: load app service locally")
+                .arg(
+                    Arg::new("appid")
+                        .long("appid")
+                        .help("target app id")
+                        .required(true),
+                )
+                .arg(
+                    Arg::new("app_service_path")
+                        .index(1)
+                        .help("app service package path")
+                        .required(true),
+                )
+        )
+        .subcommand(
             Command::new("set_pkg_meta")
                 .about("set(add or update) pkg meta to meta-index-db")
                 .arg(
@@ -163,7 +190,7 @@ async fn main() -> Result<(), String> {
                 .arg(
                     Arg::new("set")
                         .long("set")
-                        .value_names(&["key", "value"])  // 定义两个占位符名称
+                        .value_names(&["key", "value"])  // Define two placeholder names
                         .num_args(2)
                         .help("set system config,
     buckycli sys_config --set $key $value")
@@ -177,7 +204,7 @@ async fn main() -> Result<(), String> {
                 .arg(
                     Arg::new("set_file")
                         .long("set_file")
-                        .value_names(&["key", "$filename"])  // 定义两个占位符名称
+                        .value_names(&["key", "$filename"])  // Define two placeholder names
                         .num_args(2)
                         .help("set system config with file content. filename = file path.
     buckycli sys_config --set_file $key $filename")
@@ -185,7 +212,7 @@ async fn main() -> Result<(), String> {
                 .arg(
                     Arg::new("append")
                         .long("append")
-                        .value_names(&["key", "value"])  // 定义两个占位符名称
+                        .value_names(&["key", "value"])  // Define two placeholder names
                         .num_args(2)
                         .help("append system config,
     buckycli sys_config --append $key $value")
@@ -204,7 +231,7 @@ async fn main() -> Result<(), String> {
                 .arg(
                     Arg::new("create_user")
                       .long("create_user")
-                      .value_names(&["name", "owner_jwk"])  // 定义两个占位符名称
+                      .value_names(&["name", "owner_jwk"])  // Define two placeholder names
                       .num_args(2)
                       .help("Create the user_config.json file in current dir
 owner_jwk look like this '{\"crv\":\"Ed25519\",\"kty\":\"OKP\",\"x\":\"14pk3c3XO9_xro5S6vSr_Tvq5eTXbFY8Mop-Vj1D0z8\"}'")
@@ -271,6 +298,179 @@ oods look like this 'ood1,ood2'.")
                     .help("chunk will store at target ndn data dir")
                 )
         )
+        .subcommand(
+            Command::new("create_user_env")
+                .about("create user environment configs(include user_config & zone_boot_config & zone TXT record)")
+                .arg(
+                    Arg::new("username")
+                        .long("username")
+                        .value_name("username")
+                        .help("username for the user environment")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new("hostname")
+                        .long("hostname")
+                        .value_name("hostname")
+                        .help("zone hostname (e.g., test.buckyos.io)")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new("ood_name")
+                        .long("ood_name")
+                        .value_name("ood_name")
+                        .help("default ood device name, e.g. ood1")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new("sn_base_host")
+                        .long("sn_base_host")
+                        .value_name("sn_base_host")
+                        .help("base host name for SN, e.g. test.buckyos.io")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new("rtcp_port")
+                        .long("rtcp_port")
+                        .value_parser(clap::value_parser!(u16))
+                        .default_value("2980")
+                        .value_name("rtcp_port")
+                        .help("rtcp port for the gateway port (default is 2980)")
+                        .required(false)
+                )
+                .arg(
+                    Arg::new("output_dir")
+                        .long("output_dir")
+                        .value_name("output_dir")
+                        .help("output directory (optional, defaults to current directory)")
+                        .required(false)
+                )
+        )
+        .subcommand(
+            Command::new("create_node_configs")
+                .about("create node configs")
+                .arg(
+                    Arg::new("device_name")
+                        .long("device_name")
+                        .value_name("device_name")
+                        .help("device name (e.g., ood1, node1)")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new("env_dir")
+                        .long("env_dir")
+                        .value_name("env_dir")
+                        .help("user env dir created by create_user_env")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new("output_dir")
+                        .long("output_dir")
+                        .value_name("output_dir")
+                        .help("output directory (optional, defaults to current directory)")
+                        .required(false)
+                )
+                .arg(
+                    Arg::new("net_id")
+                        .long("net_id")
+                        .value_name("net_id")
+                        .help("network id (optional)")
+                        .required(false)
+                )
+        )
+        .subcommand(
+            Command::new("create_sn_configs")
+                .about("create SN (Service Node) configs")
+                .arg(
+                    Arg::new("output_dir")
+                        .long("output_dir")
+                        .value_name("output_dir")
+                        .help("output directory (optional, defaults to current directory)")
+                        .required(false)
+                )
+                .arg(
+                    Arg::new("sn_ip")
+                        .long("sn_ip")
+                        .value_name("sn_ip")
+                        .help("SN server IP address")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new("sn_base_host")
+                        .long("sn_base_host")
+                        .value_name("sn_base_host")
+                        .help("SN base host name (e.g., buckyos.io or devtests.org)")
+                        .required(true)
+                )
+        )
+        .subcommand(
+            Command::new("build_did_docs")
+                .about("generate kernel service did docs into target dir")
+                .arg(
+                    Arg::new("output_dir")
+                        .long("output_dir")
+                        .value_name("output_dir")
+                        .help("directory to write *.doc.json")
+                        .required(true)
+                )
+        )
+        .subcommand(
+            Command::new("register_device_to_sn")
+                .about("register device to SN database")
+                .arg(
+                    Arg::new("username")
+                        .long("username")
+                        .value_name("username")
+                        .help("username (owner) of the device")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new("device_name")
+                        .long("device_name")
+                        .value_name("device_name")
+                        .help("device name (e.g., ood1, node1)")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new("sn_db_path")
+                        .long("sn_db_path")
+                        .value_name("sn_db_path")
+                        .help("path to SN database file (e.g., /opt/web3_bridge/sn_db.sqlite3)")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new("output_dir")
+                        .long("output_dir")
+                        .value_name("output_dir")
+                        .help("output directory where device configs are located (optional, defaults to current directory)")
+                        .required(false)
+                )
+        )
+        .subcommand(
+            Command::new("register_user_to_sn")
+                .about("register user to SN database")
+                .arg(
+                    Arg::new("username")
+                        .long("username")
+                        .value_name("username")
+                        .help("username to register")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new("sn_db_path")
+                        .long("sn_db_path")
+                        .value_name("sn_db_path")
+                        .help("path to SN database file (e.g., /opt/web3_bridge/sn_db.sqlite3)")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new("output_dir")
+                        .long("output_dir")
+                        .value_name("output_dir")
+                        .help("output directory where user configs are located (optional, defaults to current directory)")
+                        .required(false)
+                )
+        )
         .get_matches();
 
     let mut private_key = None;
@@ -299,7 +499,7 @@ oods look like this 'ood1,ood2'.")
         set_buckyos_api_runtime(runtime);
     }
 
-    // 处理子命令
+    // Handle subcommands
     match subcommand {
         Some(("version", _)) => {
             let version = option_env!("CARGO_PKG_VERSION").unwrap_or("unknown");
@@ -313,42 +513,42 @@ oods look like this 'ood1,ood2'.")
         }
         Some(("pub_pkg", matches)) => {
             let target_dir = matches.get_one::<String>("target_dir").unwrap();
-            //需要便利target_dir目录下的所有pkg，并发布
-            // 遍历target_dir目录下的所有pkg目录
+            // Need to iterate through all pkgs in target_dir directory and publish them
+            // Iterate through all pkg directories in target_dir
             let mut pkg_path_list = Vec::new();
             let target_path = Path::new(target_dir);
             
             if !target_path.exists() || !target_path.is_dir() {
-                return Err(format!("目标目录 {} 不存在或不是一个目录", target_dir));
+                return Err(format!("Target directory {} does not exist or is not a directory", target_dir));
             }
             
-            // 读取目录下的所有条目
+            // Read all entries in the directory
             let entries = std::fs::read_dir(target_path).map_err(|e| {
-                format!("读取目录 {} 失败: {}", target_dir, e.to_string())
+                format!("Failed to read directory {}: {}", target_dir, e.to_string())
             })?;
             
-            // 遍历所有条目，找出所有目录
+            // Iterate through all entries to find directories
             for entry in entries {
                 let entry = entry.map_err(|e| {
-                    format!("读取目录条目失败: {}", e.to_string())
+                    format!("Failed to read directory entry: {}", e.to_string())
                 })?;
                 
                 let path = entry.path();
                 if path.is_dir() {
-                    // 检查是否包含pkg_meta.jwt文件，这表明它是一个有效的包目录
+                    // Check if it contains pkg_meta.jwt file, which indicates it's a valid package directory
                     let pkg_meta_jwt_path = path.join("pkg_meta.jwt");
                     if pkg_meta_jwt_path.exists() {
-                        println!("找到有效的packed pkg目录: {}", path.display());
+                        println!("Found valid packed pkg directory: {}", path.display());
                         pkg_path_list.push(path);
                     }
                 }
             }
             
             if pkg_path_list.is_empty() {
-                return Err(format!("在目录 {} 中没有找到有效的包", target_dir));
+                return Err(format!("No valid packages found in directory {}", target_dir));
             }
             
-            println!("找到 {} 个包准备发布", pkg_path_list.len());
+            println!("Found {} packages ready to publish", pkg_path_list.len());
             let pub_result = publish_raw_pkg(&pkg_path_list).await;
             if pub_result.is_err() {
                 println!("Publish pkg failed! {}", pub_result.err().unwrap());
@@ -395,7 +595,7 @@ oods look like this 'ood1,ood2'.")
             let real_target_env:String = if target_env.is_some() {
                 target_env.unwrap().to_string()
             } else {
-                // 获取当前目录作为默认环境
+                // Get current directory as default environment
                 std::env::current_dir()
                     .map(|path| path.to_string_lossy().to_string())
                     .unwrap_or_else(|_| ".".to_string())
@@ -419,7 +619,7 @@ oods look like this 'ood1,ood2'.")
             let real_target_env:String = if target_env.is_some() {
                 target_env.unwrap().to_string()
             } else {
-                // 获取当前目录作为默认环境
+                // Get current directory as default environment
                 std::env::current_dir()
                     .map(|path| path.to_string_lossy().to_string())
                     .unwrap_or_else(|_| ".".to_string())
@@ -429,6 +629,15 @@ oods look like this 'ood1,ood2'.")
             let load_result = load_pkg(pkg_id, real_target_env.as_str()).await;
             if load_result.is_err() {
                 println!("Load package failed! {}", load_result.err().unwrap());
+            }
+        }
+        Some(("load", matches)) => {
+            let app_id = matches.get_one::<String>("appid").unwrap();
+            let app_service_path = matches.get_one::<String>("app_service_path").unwrap();
+            let load_result = load_app_service(app_id, app_service_path).await;
+            if load_result.is_err() {
+                println!("Load app service failed! {}", load_result.err().unwrap());
+                return Err("load app service failed!".to_string());
             }
         }
         Some(("pub_index", _matches)) => {
@@ -456,7 +665,7 @@ oods look like this 'ood1,ood2'.")
             if let Some(_key) = matches.get_one::<String>("set") {
                 let config_values: Vec<&String> = matches
                     .get_many::<String>("set")
-                    .expect("必须提供 key 和 value 参数")
+                    .expect("Must provide key and value parameters")
                     .collect();
                 let key = config_values[0];
                 let value = config_values[1];
@@ -472,7 +681,7 @@ oods look like this 'ood1,ood2'.")
             if let Some(_key) = matches.get_one::<String>("append") {
                 let config_values: Vec<&String> = matches
                     .get_many::<String>("append")
-                    .expect("必须提供 key 和 value 参数")
+                    .expect("Must provide key and value parameters")
                     .collect();
                 let key = config_values[0];
                 let value = config_values[1];
@@ -483,12 +692,12 @@ oods look like this 'ood1,ood2'.")
             if let Some(_key) = matches.get_one::<String>("set_file") {
                 let config_values: Vec<&String> = matches
                     .get_many::<String>("set_file")
-                    .expect("必须提供 key 和 file 参数")
+                    .expect("Must provide key and file parameters")
                     .collect();
                 let key = config_values[0];
                 let filepath = config_values[1];
                 let content = std::fs::read_to_string(filepath)
-                    .unwrap_or_else(|_| panic!("无法读取文件: {}", filepath));
+                    .unwrap_or_else(|_| panic!("Failed to read file: {}", filepath));
                 sys_config::set_config(key, &content).await;
                 return Ok(());
             }
@@ -519,7 +728,134 @@ oods look like this 'ood1,ood2'.")
                     return Ok(());
                 }
             }
-
+        }
+        Some(("create_user_env", matches)) => {
+            let username = matches.get_one::<String>("username").unwrap();
+            let hostname = matches.get_one::<String>("hostname").unwrap();
+            let ood_name = matches.get_one::<String>("ood_name").unwrap();
+            let sn_base_host = matches.get_one::<String>("sn_base_host").unwrap();
+            let rtcp_port = matches.get_one::<u16>("rtcp_port").unwrap();
+            let output_dir = matches.get_one::<String>("output_dir");
+            info!("create user env: username: {}, hostname: {}, ood_name: {}, sn_base_host: {}, rtcp_port: {}", username, hostname, ood_name, sn_base_host, rtcp_port);
+            match test_config::cmd_create_user_env(
+                username,
+                hostname,
+                ood_name,
+                sn_base_host,
+                *rtcp_port,
+                output_dir.map(|s| s.as_str()),
+            ).await {
+                Ok(_) => {
+                    println!("Successfully created user environment configuration");
+                }
+                Err(e) => {
+                    println!("Failed to create user environment configuration: {}", e);
+                    return Err(e);
+                }
+            }
+        }
+        Some(("create_node_configs", matches)) => {
+            let device_name = matches.get_one::<String>("device_name").unwrap();
+            let env_dir = matches.get_one::<String>("env_dir").unwrap();
+            let output_dir = matches.get_one::<String>("output_dir");
+            let net_id = matches.get_one::<String>("net_id");
+            
+            match test_config::cmd_create_node_configs(
+                device_name,
+                Path::new(env_dir),
+                output_dir.map(|s| s.as_str()),
+                net_id.map(|s| s.as_str()),
+            ).await {
+                Ok(_) => {
+                    println!("Successfully created node configuration {}", device_name);
+                }
+                Err(e) => {
+                    println!("Failed to create node configuration: {}", e);
+                    return Err(e);
+                }
+            }
+        }
+        Some(("create_sn_configs", matches)) => {
+            //create rtcp config files for sn server
+            let output_dir = matches.get_one::<String>("output_dir");
+            let sn_ip_str = matches.get_one::<String>("sn_ip").unwrap();
+            let sn_base_host = matches.get_one::<String>("sn_base_host").unwrap();
+            
+            // Parse IP address
+            let sn_ip = sn_ip_str.parse::<std::net::IpAddr>()
+                .map_err(|e| format!("Invalid IP address '{}': {}", sn_ip_str, e))?;
+            
+            match test_config::cmd_create_sn_configs(
+                output_dir.map(|s| s.as_str()),
+                sn_ip,
+                sn_base_host.to_string(),
+            ).await {
+                Ok(_) => {
+                    println!("Successfully created SN configuration");
+                }
+                Err(e) => {
+                    println!("Failed to create SN configuration: {}", e);
+                    return Err(e);
+                }
+            }
+        }
+        Some(("build_did_docs", matches)) => {
+            let output_dir = matches.get_one::<String>("output_dir").unwrap();
+            let out_path = Path::new(output_dir);
+            if let Err(e) = fs::create_dir_all(out_path) {
+                return Err(format!("create output_dir {} failed: {}", out_path.display(), e));
+            }
+            let docs = test_config::gen_kernel_service_docs();
+            for (did, doc) in docs.iter() {
+                let filename = format!("{}.doc.json", did.to_raw_host_name());
+                let file_path = out_path.join(filename);
+                let json_value = doc.clone().to_json_value().unwrap();
+                let json_str = serde_json::to_string_pretty(&json_value).unwrap();
+                if let Err(e) = fs::write(&file_path, json_str) {
+                    return Err(format!("write {} failed: {}", file_path.display(), e));
+                }
+            }
+            println!("did_docs generated at {}", out_path.display());
+        }
+        Some(("register_device_to_sn", matches)) => {
+            let username = matches.get_one::<String>("username").unwrap();
+            let device_name = matches.get_one::<String>("device_name").unwrap();
+            let sn_db_path = matches.get_one::<String>("sn_db_path").unwrap();
+            let output_dir = matches.get_one::<String>("output_dir");
+            
+            match test_config::cmd_register_device_to_sn(
+                username,
+                device_name,
+                sn_db_path,
+                output_dir.map(|s| s.as_str()),
+            ).await {
+                Ok(_) => {
+                    return Ok(());
+                }
+                Err(e) => {
+                    println!("Failed to register device: {}", e);
+                    return Err(e);
+                }
+            }
+        }
+        Some(("register_user_to_sn", matches)) => {
+            let username = matches.get_one::<String>("username").unwrap();
+            let sn_db_path = matches.get_one::<String>("sn_db_path").unwrap();
+            let output_dir = matches.get_one::<String>("output_dir");
+            
+            match test_config::cmd_register_user_to_sn(
+                username,
+                sn_db_path,
+                output_dir.map(|s| s.as_str()),
+            ).await {
+                Ok(_) => {
+                    return Ok(());
+                }
+                Err(e) => {
+                    println!("Failed to register user: {}", e);
+                    return Err(e.to_string());
+                }
+            }
         }
         _ => {
             println!("unknown command!");

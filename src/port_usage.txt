@@ -1,17 +1,18 @@
 # 系统需要为buckyos保留的端口
 80,443是zone-gateway的http,https端口，可以完全打开
+
 2980 是rtcp stack的默认端口，可以完全打开
 3180,3143 是默认的cyfs-gateway(node-gateway) http,https端口，建议只允许本机访问
 3200 是system_config的端口，建议允许局域网访问
 
 其他端口都为动态端口，无需特意保留
-
 3000-4000 kernel service
     3210-3220 veriy_hub [http kapi/verify_hub]
-    3230-3240 scheduler [http kapi/scheduler]
+    3220-3230 scheduler [http kapi/scheduler]
 
 4000-5000 frame service （
-    4000-4100 repo-service [http kapi/repo]
+    4000-4010 repo-service [http kapi/repo]
+    4010-4020 smb-service
 
 >= 10000 app service
 端口号，是 10000 + appindex*10

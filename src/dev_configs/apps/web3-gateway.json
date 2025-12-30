@@ -1,0 +1,26 @@
+{
+  "name": "web3-gateway",
+  "version": "latest",
+  "directories": {
+      "source": "/opt/web3-gateway",
+      "target": "/opt/web3-gateway",
+      "source_bin": "/opt/web3-gateway/web3_gateway",
+      "target_bin": "/opt/web3-gateway/web3_gateway"
+  },
+  "commands": {
+    "build": [
+      "echo 'MAKE sure you already build the linux version of cyfs-gateway (result store in web3-gateway/)'"
+    ],
+    "build_all": [
+        "python3 make_config.py sn_server --sn_ip {{sn.ip}}"
+    ],
+    "update":[
+      "echo 'update web3-gateway'"
+    ],
+    "install": [
+      "sudo chmod +x /opt/web3-gateway/web3_gateway"
+    ],
+    "start": ["sudo python3 /opt/web3-gateway/start.py > /dev/null 2>&1 &"],
+    "stop": ["sudo python3 /opt/web3-gateway/stop.py"]
+  }
+}

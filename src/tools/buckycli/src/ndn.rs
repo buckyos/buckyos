@@ -9,8 +9,8 @@ pub async fn create_ndn_chunk(filepath: &str, target: &str) {
         println!("get ndn mgr at {} failed", target);
         return;
     }
-    let ndn_mgr = ndn_mgr.unwrap();
-    let chunk_id = ndn_mgr.pub_local_file_as_chunk(&file_path,"","").await;
+    let _ndn_mgr = ndn_mgr.unwrap();
+    let chunk_id = put_local_file_as_chunk(None,ChunkType::Mix256,&file_path,StoreMode::StoreInNamedMgr).await;
     if chunk_id.is_err() {
         println!("pub local file as chunk failed");
         return;

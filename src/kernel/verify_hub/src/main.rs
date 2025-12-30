@@ -9,14 +9,20 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::env;
 use std::sync::Arc;
+use std::net::IpAddr;
 use tokio::sync::{Mutex, RwLock};
-use warp::Filter;
+use async_trait::async_trait;
 
 use ::kRPC::*;
 use buckyos_api::*;
 use buckyos_kit::*;
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation};
 use name_lib::*;
+use cyfs_gateway_lib::{HttpServer, ServerError, ServerResult, StreamInfo, serve_http_by_rpc_handler, server_err, ServerErrorCode};
+use server_runner::*;
+use bytes::Bytes;
+use http::{Method, Version};
+use http_body_util::combinators::BoxBody;
 
 type Result<T> = std::result::Result<T, RPCErrors>;
 enum LoginType {
@@ -601,19 +607,85 @@ async fn handle_login(params: Value, login_nonce: u64) -> Result<Value> {
  curl -X POST http://127.0.0.1/kapi/verify_hub -H "Content-Type: application/json" -d '{"method": "login","params":{"type":"jwt","jwt":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL3d3dy53aGl0ZS5ib3Vjay5pbyIsImF1ZCI6Imh0dHBzOi8vd3d3LndoaXRlLmJvdWNrLmlvIiwiZXhwIjoxNzI3NzIwMDAwLCJpYXQiOjE3Mjc3MTY0MDAsInVzZXJpZCI6ImRpZDpleGFtcGxlOjEyMzQ1Njc4OTAiLCJhcHBpZCI6InN5c3RvbSIsInVzZXJuYW1lIjoiYWxpY2UifQ.6XQ56XQ56XQ56XQ56XQ56XQ56XQ56XQ56XQ56XQ5"}}'
 curl -X POST http://127.0.0.1:3300/kapi/verify_hub -H "Content-Type: application/json" -d '{"method": "login","params":{"type":"password","username":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL3d3dy53aGl0ZS5ib3Vjay5pbyIsImF1ZCI6Imh0dHBzOi8vd3d3LndoaXRlLmJvdWNrLmlvIiwiZXhwIjoxNzI3NzIwMDAwLCJpYXQiOjE3Mjc3MTY0MDAsInVzZXJpZCI6ImRpZDpleGFtcGxlOjEyMzQ1Njc4OTAiLCJhcHBpZCI6InN5c3RvbSIsInVzZXJuYW1lIjoiYWxpY2UifQ.6XQ56XQ56XQ56XQ56XQ56XQ56XQ56XQ56XQ56XQ5"}}'
  */
-async fn process_request(method: String, param: Value, req_seq: u64) -> ::kRPC::Result<Value> {
-    match method.as_str() {
-        "login" => {
-            return handle_login(param, req_seq).await;
+#[derive(Clone)]
+struct VerifyHubServer {}
+
+impl VerifyHubServer {
+    fn new() -> Self {
+        VerifyHubServer {}
+    }
+
+    async fn process_request(
+        &self,
+        method: String,
+        param: Value,
+        req_seq: u64,
+    ) -> ::kRPC::Result<Value> {
+        match method.as_str() {
+            "login" => {
+                return handle_login(param, req_seq).await;
+            }
+            // "query_userid" => {
+            //     return handle_query_userid(param).await;
+            // },
+            "verify_token" => {
+                return handle_verify_session_token(param).await;
+            }
+            // Add more methods here
+            _ => Err(RPCErrors::UnknownMethod(String::from(method))),
         }
-        // "query_userid" => {
-        //     return handle_query_userid(param).await;
-        // },
-        "verify_token" => {
-            return handle_verify_session_token(param).await;
+    }
+}
+
+#[async_trait]
+impl RPCHandler for VerifyHubServer {
+    async fn handle_rpc_call(
+        &self,
+        req: RPCRequest,
+        _ip_from: IpAddr,
+    ) -> std::result::Result<RPCResponse, RPCErrors> {
+        let result = self.process_request(req.method, req.params, req.id).await;
+        
+        match result {
+            Ok(value) => {
+                Ok(RPCResponse::new(
+                    RPCResult::Success(value),
+                    req.id,
+                ))
+            }
+            Err(err) => {
+                Ok(RPCResponse::new(
+                    RPCResult::Failed(err.to_string()),
+                    req.id,
+                ))
+            }
         }
-        // Add more methods here
-        _ => Err(RPCErrors::UnknownMethod(String::from(method))),
+    }
+}
+
+#[async_trait]
+impl HttpServer for VerifyHubServer {
+    async fn serve_request(
+        &self,
+        req: http::Request<BoxBody<Bytes, ServerError>>,
+        info: StreamInfo,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        if *req.method() == Method::POST {
+            return serve_http_by_rpc_handler(req, info, self).await;
+        }
+        return Err(server_err!(ServerErrorCode::BadRequest, "Method not allowed"));
+    }
+
+    fn id(&self) -> String {
+        "verify-hub-server".to_string()
+    }
+
+    fn http_version(&self) -> Version {
+        Version::HTTP_11
+    }
+
+    fn http3_port(&self) -> Option<u16> {
+        None
     }
 }
 
@@ -702,57 +774,12 @@ async fn service_main() -> i32 {
     });
     //load cache from service_cache@dfs:// and service_local_cache@fs://
 
-    let cors_response = warp::path!("kapi" / "verify-hub")
-        .and(warp::options())
-        .map(|| {
-            info!("Handling OPTIONS request");
-            warp::http::Response::builder()
-                .header("Access-Control-Allow-Origin", "*")
-                .header("Access-Control-Allow-Methods", "POST, OPTIONS")
-                .header("Access-Control-Allow-Headers", "Content-Type")
-                .body("")
-        });
-
-    let rpc_route = warp::path!("kapi" / "verify-hub")
-        .and(warp::post())
-        .and(warp::body::json())
-        .and_then(|req: RPCRequest| async move {
-            info!(
-                "|==>Received request: {}",
-                serde_json::to_string(&req).unwrap()
-            );
-            let process_result = process_request(req.method, req.params, req.id).await;
-            let rpc_response: RPCResponse;
-            match process_result {
-                Ok(result) => {
-                    rpc_response = RPCResponse {
-                        result: RPCResult::Success(result),
-                        seq: req.id,
-                        token: None,
-                        trace_id: req.trace_id,
-                    };
-                }
-                Err(err) => {
-                    rpc_response = RPCResponse {
-                        result: RPCResult::Failed(err.to_string()),
-                        seq: req.id,
-                        token: None,
-                        trace_id: req.trace_id,
-                    };
-                }
-            }
-
-            info!(
-                "<==|Response: {}",
-                serde_json::to_string(&rpc_response).unwrap()
-            );
-            Ok::<_, warp::Rejection>(warp::reply::json(&rpc_response))
-        });
-
-    let routes = cors_response.or(rpc_route);
-
-    info!("verify_hub service initialized, running on port 3300");
-    warp::serve(routes).run(([127, 0, 0, 1], 3300)).await;
+    let server = VerifyHubServer::new();
+    const VERIFY_HUB_SERVICE_MAIN_PORT: u16 = 3300;
+    info!("verify_hub service initialized, running on port {}", VERIFY_HUB_SERVICE_MAIN_PORT);
+    let runner = Runner::new(VERIFY_HUB_SERVICE_MAIN_PORT);
+    let _ = runner.add_http_server("/kapi/verify-hub".to_string(), Arc::new(server));
+    let _ = runner.run().await;
     return 0;
 }
 
@@ -770,7 +797,7 @@ mod test {
     use tokio::task;
     use tokio::time::sleep;
 
-    //#[tokio::test]
+    #[tokio::test]
     async fn test_login_and_verify() {
         //let zone_config = ZoneConfig::new_test_config();
         //env::set_var("BUCKYOS_ZONE_CONFIG", serde_json::to_string(&zone_config).unwrap());
@@ -805,7 +832,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        header.kid = Some("{owner}".to_string());
+        header.kid = Some(String::from("root"));
         header.typ = None;
         // let login_params = json!({
         //     "userid": "did:example:1234567890",
@@ -824,7 +851,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
             userid: Some("alice".to_string()),
             token: None,
             session: Some(session_id),
-            iss: Some("{owner}".to_string()),
+            iss: Some("root".to_string()),
             exp: Some(now + 3600),
         };
 

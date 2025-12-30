@@ -1,304 +1,83 @@
-use std::ops::Deref;
-//system control panel client
-
 use name_lib::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use serde_json::json;
 use log::*;
-use ::kRPC::*;
+use ::kRPC::*; 
 use crate::system_config::*;
-use package_lib::PackageMeta;
+use crate::app_mgr::*;
 use crate::KVAction;
 
-pub const SERVICE_INSTANCE_INFO_UPDATE_INTERVAL: u64 = 30;
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(try_from = "String", into = "String")]
+pub enum UserState {
+    Active,
+    Suspended(String),//suspend reason
+    Deleted,//delete reason
+    Banned(String),//ban reason
+}
 
+impl TryFrom<String> for UserState {
+    type Error = &'static str;
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        let split_result = value.split(":").collect::<Vec<&str>>();
+        let state_str = split_result[0];
+        let reason = split_result.get(1).unwrap_or(&"");
+        match state_str {
+            "active" => Ok(UserState::Active),
+            "suspended" => Ok(UserState::Suspended(reason.to_string())),
+            "deleted" => Ok(UserState::Deleted),
+            "banned" => Ok(UserState::Banned(reason.to_string())),
+            _ => Err("Invalid user state"),
+        }
+    }
+}
+
+impl Into<String> for UserState {
+    fn into(self) -> String {
+        match self {
+            UserState::Active => "active".to_string(),
+            UserState::Suspended(reason) => format!("suspended:{}", reason),
+            UserState::Deleted => "deleted".to_string(),
+            UserState::Banned(reason) => format!("banned:{}", reason),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "lowercase")]
+pub enum UserType {
+    Admin,
+    User,
+    Root,
+    Limited,
+    Guest,
+}
+
+//user did -> UserSettings
 #[derive(Serialize, Deserialize)]
 pub struct UserSettings {
     //rename to type
     #[serde(rename = "type")]
-    pub user_type:String,
-    pub username:String,
+    pub user_type:UserType,
+    pub username:String,//友好名称
     pub password:String,
+    pub state: UserState,
+    pub res_pool_id:String,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct ServiceInstanceInfo {
-    pub state: String,
-    pub port: u16,
-    pub last_update_time: u64,
-    pub start_time: u64,
-    pub pid: u32,
-}
-
-#[derive(Serialize, Deserialize,Clone)]
-pub struct ServiceNodeInfo {
-    pub weight: u32,
-    pub state: String,
-    pub port: u16,
-    pub node_did:String,
-    pub node_net_id:Option<String>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct ServiceInfo {
-    //TODO:后续要提供类似nginx的cluster的支持
-    pub selector_type:String,//random ONLY
-    //node_name -> ServiceNodeInfo
-    pub node_list: HashMap<String, ServiceNodeInfo>,
-}
-
-
-
-#[derive(Serialize, Deserialize)]
-pub struct InstallConfig {
-    pub data_mount_point: Vec<String>,
-    pub cache_mount_point: Vec<String>,
-    pub local_cache_mount_point: Vec<String>,
-    pub tcp_ports: HashMap<String,u16>,
-    pub udp_ports: HashMap<String,u16>,
-    pub container_param:Option<String>,
-} 
-
-impl Default for InstallConfig {
-    fn default() -> Self {
-        Self {
-            data_mount_point: vec![],
-            cache_mount_point: vec![],
-            local_cache_mount_point: vec![],
-            tcp_ports: HashMap::new(),
-            udp_ports: HashMap::new(),
-            container_param: None,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct SubPkgDesc {
-    pub pkg_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub docker_image_name:Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub docker_image_hash:Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub package_url:Option<String>,
-    #[serde(flatten)]
-    pub configs:HashMap<String,String>,
-
-}
-//App info is store at Index-db, publish to bucky store
-#[derive(Serialize, Deserialize)]
-pub struct AppDoc {
-    #[serde(flatten)]    
-    pub meta: PackageMeta,
-    pub app_name: String, // just for display, app_id is meta.pkg_name (like "buckyos-filebrowser")
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub app_icon_url: Option<String>,
-    pub install_config:InstallConfig,
-
-    //service name -> full image url
-    // 命名逻辑:<arch>_<runtimne_type>_<media_type>, 
-    //"amd64_docker_image" 
-    //"aarch64_docker_image"
-    //"amd64_win_app"
-    //"aarch64_apple_app"
-    //"amd64_apple_app"
-    pub pkg_list: HashMap<String, SubPkgDesc>,
-}
-
-impl AppDoc {
-    pub fn from_pkg_meta(pkg_meta: &PackageMeta) -> Result<Self> {
-        let pkg_json = serde_json::to_value(pkg_meta).unwrap();
-        let result_self  = serde_json::from_value(pkg_json)
-            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-        Ok(result_self) 
-    }
-
-    pub fn to_pkg_meta(&self) -> Result<PackageMeta> {
-        let pkg_json = serde_json::to_value(self).unwrap();
-        let result_pkg_meta = serde_json::from_value(pkg_json)
-            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-        Ok(result_pkg_meta)
-    }
-}
-
-impl Deref for AppDoc {
-    type Target = PackageMeta;
-    
-    fn deref(&self) -> &Self::Target {
-        &self.meta
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct KernelServiceConfig {
-    pub name: String,
-    pub description: String,
-    pub vendor_did: String,
-    pub pkg_id: String,
-    pub port: u16,
-    pub node_list: Vec<String>,
-    pub state: String,
-    pub service_type: String,
-    pub instance: u32
-}
-
-
-#[derive(Serialize, Deserialize)]
-pub struct AppConfig {
-    pub app_id: String,
-    pub app_doc: AppDoc,
-    pub app_index: u16, //app index in user's app list
-    pub enable: bool,
-    pub instance: u32,//期望的instance数量
-    pub state: String,
-    //mount pint
-    // folder in docker -> real folder in host
-    pub data_mount_point: HashMap<String,String>,
-    pub cache_mount_point: Vec<String>,
-    pub local_cache_mount_point: Vec<String>,
-    //extra mount pint, real_path:docker_inner_path
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_cpu_num: Option<u32>,
-    // 0 - 100
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_cpu_percent: Option<u32>,
-    
-    // memory quota in bytes
-    pub memory_quota: Option<u64>,
-    
-    //network resource, name:docker_inner_port
-    pub tcp_ports: HashMap<String,u16>,
-    pub udp_ports: HashMap<String,u16>,
-
-    pub container_param:Option<String>,
-}
-
-
-
-
-#[derive(Serialize, Deserialize,Clone)]
-pub struct AppServiceInstanceConfig {
-    pub target_state: String,
-    pub app_id: String,
-    pub user_id: String,//owner user id
-
-    pub app_pkg_id: Option<String>,
-    pub docker_image_pkg_id: Option<String>,
-    pub docker_image_name : Option<String>,//TODO:能否从pkg_id中推断出docker_image_name?
-    pub docker_image_hash: Option<String>,
-    pub service_pkg_id: Option<String>,    
-
-    // folder in docker -> real folder in host
-    pub data_mount_point: HashMap<String,String>,
-    pub cache_mount_point: Vec<String>,
-    pub local_cache_mount_point: Vec<String>,
-    
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_cpu_num: Option<u32>,
-    // 0 - 100
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_cpu_percent: Option<u32>,
-    // memory quota in bytes
-    pub memory_quota: Option<u64>,
-
-    // host port ==> real port in docker
-    pub tcp_ports: HashMap<u16,u16>,
-    pub udp_ports: HashMap<u16,u16>,
-    //pub service_image_name : String, // support mutil platform image name (arm/x86...)
-
-    pub container_param:Option<String>,
-}
-
-
-
-impl AppServiceInstanceConfig {
-    pub fn new(owner_user_id:&str,app_config:&AppConfig) -> AppServiceInstanceConfig {
-        AppServiceInstanceConfig {
-            target_state: "Running".to_string(),
-            app_id: app_config.app_id.clone(),
-            user_id:owner_user_id.to_string(),
-            app_pkg_id: None,
-            docker_image_pkg_id: None,
-            docker_image_name: None,
-            docker_image_hash: None,
-            service_pkg_id: None,
-            data_mount_point: app_config.data_mount_point.clone(),
-            cache_mount_point: app_config.cache_mount_point.clone(),
-            local_cache_mount_point: app_config.local_cache_mount_point.clone(),
-            max_cpu_num: app_config.max_cpu_num.clone(),
-            max_cpu_percent: app_config.max_cpu_percent.clone(),
-            memory_quota: app_config.memory_quota.clone(),
-            tcp_ports: HashMap::new(),
-            udp_ports: HashMap::new(),
-            container_param: app_config.container_param.clone(),
-        }
-    }
-
-    pub fn get_http_port(&self,www_port:u16) -> Option<u16> {
-        for (real_port,docker_port) in self.tcp_ports.iter() {
-            if docker_port == &www_port {
-                return Some(*real_port);
-            }            
-        }
-
-        None
-    }
-
-    pub fn to_string(&self) -> String {
-        serde_json::to_string(self).unwrap()
-    }
-}  
-
-
-
-#[derive(Serialize, Deserialize)]
-pub struct RunItemControlOperation {
-    pub command : String,
-    pub params : Option<Vec<String>>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct KernelServiceInstanceConfig {
-    pub target_state: String,
-    pub pkg_id: String,
-    pub operations: HashMap<String, RunItemControlOperation>,
-}
-
-impl KernelServiceInstanceConfig {
-    pub fn new(pkg_id:String)->Self {
-        let mut operations = HashMap::new();
-        operations.insert("status".to_string(),RunItemControlOperation {
-            command: "status".to_string(),
-            params: None,
-        });
-        operations.insert("start".to_string(),RunItemControlOperation {
-            command: "start".to_string(),
-            params: None,
-        });
-        operations.insert("stop".to_string(),RunItemControlOperation {
-            command: "stop".to_string(),
-            params: None,
-        });
-
-        Self {
-            target_state: "Running".to_string(),
-            pkg_id,
-            operations,
-        }
-    }
-}
-#[derive(Serialize, Deserialize)]
-pub struct FrameServiceInstanceConfig {
-    pub target_state: String,
-    pub pkg_id: String,
-    pub operations: HashMap<String, RunItemControlOperation>,
-}
-
-impl FrameServiceInstanceConfig {
-    pub fn new(_pkg_id:String)->Self {
-        unimplemented!()
-    }
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeState {
+    Running,
+    Stopped,
+    Starting,
+    Stopping,
+    Restarting,
+    Initializing,
+    Removed,
+    Maintenance,
+    Repalcing,
 }
 
 //load from SystemConfig,node的配置分为下面几个部分
@@ -309,11 +88,21 @@ impl FrameServiceInstanceConfig {
 #[derive(Serialize, Deserialize)]
 pub struct NodeConfig {
     //pub pure_version: u64,
+    pub node_id:String,
+    pub node_did:String,
     pub kernel: HashMap<String, KernelServiceInstanceConfig>,
     pub apps: HashMap<String, AppServiceInstanceConfig>,
     pub frame_services: HashMap<String, FrameServiceInstanceConfig>,
-    pub is_running: bool,
-    pub state:Option<String>,
+    pub state:NodeState,
+}
+
+impl NodeConfig {
+    pub fn is_running(&self) -> bool {
+        match self.state {
+            NodeState::Running => true,
+            _ => false,
+        }
+    }
 }
 
 pub struct ControlPanelClient {
@@ -432,10 +221,10 @@ impl ControlPanelClient {
     }
 
     //TODO: help app installer dev easy to generate right app-index
-    pub async fn install_app_service(&self,user_id:&str,app_config:&AppConfig,shortcut:Option<String>) -> Result<u64> {
+    pub async fn install_app_service(&self,user_id:&str,app_config:&AppServiceSpec,shortcut:Option<String>) -> Result<u64> {
         // TODO: if you want install a web-client-app, use another function
         //1. create users/{user_id}/apps/{appid}/config
-        let app_id = app_config.app_id.as_str();
+        let app_id = app_config.app_doc.pkg_name.as_str();
         let app_config_str = serde_json::to_string(app_config).unwrap();
         self.system_config_client.create(format!("users/{}/apps/{}/config",user_id,app_id).as_str(),app_config_str.as_str()).await
             .map_err(|e| RPCErrors::ReasonError(format!("install app service failed, err:{}", e)))?;
@@ -472,7 +261,7 @@ impl ControlPanelClient {
         Ok(user_list.unwrap())
     }
 
-    pub async fn get_app_list(&self) -> Result<Vec<AppConfig>> {
+    pub async fn get_app_list(&self) -> Result<Vec<AppServiceSpec>> {
         let user_list = self.get_user_list().await;
         if user_list.is_err() {
             return Err(RPCErrors::ReasonError("user list not found".to_string()));
@@ -490,7 +279,7 @@ impl ControlPanelClient {
                     return Err(RPCErrors::ReasonError("app config not found".to_string()));
                 }
                 let app_config = app_config.unwrap();
-                let app_config:AppConfig = serde_json::from_str(&app_config.value)
+                let app_config:AppServiceSpec = serde_json::from_str(&app_config.value)
                     .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
                 result_app_list.push(app_config);
             }
@@ -500,7 +289,7 @@ impl ControlPanelClient {
 
     pub async fn update_service_instance_info(&self,
         service_name:&str,node_name:&str,
-        instance_info:&ServiceInstanceInfo) -> Result<u64> {
+        instance_info:&ServiceInstanceReportInfo) -> Result<u64> {
         let service_info_path = format!("services/{}/instances/{}",service_name,node_name);
         let service_info_str = serde_json::to_string(instance_info).unwrap();
         self.system_config_client.set(service_info_path.as_str(),service_info_str.as_str()).await
@@ -540,58 +329,3 @@ impl ControlPanelClient {
 }
 
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::system_config::*;
-    use crate::control_panel::*;
-    use serde_json::json;
-    #[tokio::test]
-    async fn test_get_parse_app_doc() {
-        let app_doc = json!({
-            "pkg_name":"buckyos.home-station",
-            "version":"1.0.0",
-            "tag":"latest",
-            "app_name" : "Home Station",
-            "description" : "Home Station",
-            "author" : "did:bns:buckyos",
-            "pub_time":1715760000,
-
-            "pkg_list" : {
-                "amd64_docker_image" : {
-                    "pkg_id":"home-station-x86-img",
-                    "docker_image_name":"filebrowser/filebrowser:s6"
-                },
-                "aarch64_docker_image" : {
-                    "pkg_id":"home-station-arm64-img",
-                    "docker_image_name":"filebrowser/filebrowser:s6"
-                },
-                "web_pages" :{
-                    "pkg_id" : "home-station-web-page"
-                },
-                "amd64_direct_image" :{
-                    "pkg_id" : "home-station-web-page",
-                    "package_url": "https://web3.buckyos.io/static/home-station-win.zip"
-                },
-                "amd64_win_app" :{
-                    "pkg_id" : "home-station-win-app"
-                },
-                "amd64_linux_app" :{
-                    "pkg_id" : "home-station-linux-app"
-                }
-            },
-            "install_config":{
-                "data_mount_point":["/data"],
-                "cache_mount_point":["/cache"],
-                "local_cache_mount_point":["/local_cache"],
-                "tcp_ports":{"www":80},
-                "udp_ports":{"dns":53}
-            }
-
-        });
-        let app_doc:AppDoc = serde_json::from_value(app_doc).unwrap();
-        println!("{}#{}", app_doc.pkg_name, app_doc.version);
-        let app_doc_str = serde_json::to_string_pretty(&app_doc).unwrap();
-        println!("{}", app_doc_str);
-    }
-}

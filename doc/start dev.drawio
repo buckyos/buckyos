@@ -1,6 +1,6 @@
 <mxfile host="65bd71144e" pages="2">
     <diagram name="Quick Start" id="_c5SOJppO-HaUyLpSSM0">
-        <mxGraphModel dx="768" dy="929" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+        <mxGraphModel dx="1334" dy="943" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -179,32 +179,32 @@
         </mxGraphModel>
     </diagram>
     <diagram id="6NgGjk6tVoeCivgmBa_m" name="标准分布式开发环境">
-        <mxGraphModel dx="768" dy="929" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+        <mxGraphModel dx="1334" dy="943" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
-                <mxCell id="0K5GHQBQ3lg5-S8yyhjc-2" value="Zone test.buckyos.io" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 8;verticalAlign=top;fillColor=none;" parent="1" vertex="1">
+                <mxCell id="0K5GHQBQ3lg5-S8yyhjc-2" value="Zone test.buckyos.io&lt;div&gt;did:web:test.buckyos.io&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 8;verticalAlign=top;fillColor=none;" parent="1" vertex="1">
                     <mxGeometry x="80" y="50" width="250" height="270" as="geometry"/>
                 </mxCell>
                 <mxCell id="0K5GHQBQ3lg5-S8yyhjc-1" value="开发机&lt;div&gt;OOD1&lt;/div&gt;&lt;div&gt;Linux/OSX/Windows&lt;/div&gt;&lt;div&gt;WLAN&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=1" parent="1" vertex="1">
-                    <mxGeometry x="140" y="100" width="120" height="60" as="geometry"/>
+                    <mxGeometry x="140" y="130" width="120" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="0K5GHQBQ3lg5-S8yyhjc-3" value="VM&lt;br&gt;&lt;div&gt;Node1&lt;/div&gt;&lt;div&gt;Linux&lt;/div&gt;&lt;div&gt;NAT&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=1" parent="1" vertex="1">
+                <mxCell id="0K5GHQBQ3lg5-S8yyhjc-3" value="VM&lt;br&gt;&lt;div&gt;Node1&lt;/div&gt;&lt;div&gt;LAN1&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=1" parent="1" vertex="1">
                     <mxGeometry x="140" y="220" width="120" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="0K5GHQBQ3lg5-S8yyhjc-4" value="Zone sn.buckyos.io" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 8;verticalAlign=top;fillColor=none;" parent="1" vertex="1">
+                <mxCell id="0K5GHQBQ3lg5-S8yyhjc-4" value="sn.devtests.org&lt;div&gt;（web3.devtests.org)&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 8;verticalAlign=top;fillColor=none;" parent="1" vertex="1">
                     <mxGeometry x="390" y="50" width="250" height="120" as="geometry"/>
                 </mxCell>
                 <mxCell id="0K5GHQBQ3lg5-S8yyhjc-5" value="VM&lt;br&gt;&lt;div&gt;SN Server&lt;/div&gt;&lt;div&gt;WLAN&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=1" parent="1" vertex="1">
                     <mxGeometry x="450" y="90" width="120" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="0K5GHQBQ3lg5-S8yyhjc-6" value="Zone bob.web3.buckyos.io&lt;div&gt;(did:bns:bob)&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 8;verticalAlign=top;fillColor=none;" parent="1" vertex="1">
+                <mxCell id="0K5GHQBQ3lg5-S8yyhjc-6" value="Zone bob.web3.devtests.org&lt;div&gt;(did:btest:bob)&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 8;verticalAlign=top;fillColor=none;" parent="1" vertex="1">
                     <mxGeometry x="390" y="200" width="250" height="120" as="geometry"/>
                 </mxCell>
                 <mxCell id="tXxmC5UZVwhhfbEr_8o1-3" style="edgeStyle=none;html=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" parent="1" source="0K5GHQBQ3lg5-S8yyhjc-7" target="0K5GHQBQ3lg5-S8yyhjc-4" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="0K5GHQBQ3lg5-S8yyhjc-7" value="VM&lt;br&gt;&lt;div&gt;OOD1&lt;/div&gt;&lt;div&gt;Linux&lt;/div&gt;&lt;div&gt;NAT&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=1" parent="1" vertex="1">
+                <mxCell id="0K5GHQBQ3lg5-S8yyhjc-7" value="VM&lt;br&gt;&lt;div&gt;bob.ood1&lt;/div&gt;&lt;div&gt;LAN2 with NAT&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=1" parent="1" vertex="1">
                     <mxGeometry x="455" y="250" width="120" height="60" as="geometry"/>
                 </mxCell>
                 <mxCell id="tXxmC5UZVwhhfbEr_8o1-1" value="&lt;b&gt;标准分布式开发环境的设计目的&lt;/b&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;1）在能覆盖常见场景的情况下，机构哦尽量简单&lt;/div&gt;&lt;div&gt;2）标准环境中设备的身份固定，没有随机性，方便基于日志进行讨论&lt;/div&gt;&lt;div&gt;3）在一键构建的基础上，优化 部署/调试/更新 循环。减少因为配置问题带来的bug和浪费，提升开发效率&lt;/div&gt;&lt;div&gt;4） 基于该标准环境精心构建测试用例，提高系统的质量&lt;/div&gt;&lt;div&gt;5）基于相同的基准环境进行性能评测&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
@@ -218,6 +218,18 @@
                 </mxCell>
                 <mxCell id="tXxmC5UZVwhhfbEr_8o1-6" value="&lt;b&gt;一些重要的基本知识&lt;/b&gt;&lt;div&gt;&lt;font color=&quot;#000000&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font color=&quot;#000000&quot;&gt;0. 系统主要涉及两个系统服务: node_daemon和web3_gateway,这些服务已经启动&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font color=&quot;#000000&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;div&gt;1. 如果启动设备，则应通过启动日志进行分析，分析的过程需要理解系统的关键配置设计。根据经验，配置错误是最常见的错误类型&lt;/div&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;2. 理解系统状态检测脚本对系统的各个组件是否正常工作的检测逻辑，并基于此理解系统的主要的运行流。在进行debug前一定要确保优先排除了配置错误&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;3.常见的bug总是和身份验证有关，&lt;span style=&quot;color: rgb(63, 63, 63); background-color: transparent;&quot;&gt;很多系统服务返回的常见错误都是权限错误&lt;/span&gt;&lt;span style=&quot;background-color: transparent;&quot;&gt;（我们的系统在这里是比较敏感的）&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent;&quot;&gt;每个request都有session token&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent;&quot;&gt;sessiontoken的构造与验证（签发者和过期时间）&lt;/span&gt;&lt;/div&gt;&lt;div&gt;从有效的sessiontoken中提取userid和appid&lt;/div&gt;&lt;div&gt;基于userid,appid, opid, resid,进行rbac验证&amp;nbsp;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
                     <mxGeometry x="75" y="820" width="410" height="310" as="geometry"/>
+                </mxCell>
+                <mxCell id="PIFTuyAp-HkmgY4DSb_s-3" value="典型的网络环境6种：是否用2级域名 公网/局域网/局域+端口映射&amp;nbsp;&lt;div&gt;从典型的角度考虑，我们构造下面3种典型的zone&lt;/div&gt;&lt;div&gt;1. zone-gateway在WLAN (无转发)&lt;/div&gt;&lt;div&gt;2. zone-gateway在LAN，用2级域名 （有转发)&lt;/div&gt;&lt;div&gt;3. zone-gateway在LAN，有端口映射，用2级域名 (无转发）&lt;/div&gt;&lt;div&gt;4. zone-gateway在LAN，用自己的域名（有转发)&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;有端口映射有2种情况&lt;/div&gt;&lt;div&gt;1. 支持80+443端口映射，此时等同于在WLAN&lt;/div&gt;&lt;div&gt;2.对多个设备开RTCP端口映射(2980),此时使用RTCP（定制浏览器）可以直连，用浏览器要转发（有限转发）&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;如何区分zone-gateway的接入方式?&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
+                    <mxGeometry x="87.5" y="1110" width="410" height="210" as="geometry"/>
+                </mxCell>
+                <mxCell id="PIFTuyAp-HkmgY4DSb_s-4" value="Zone alice.web3.devtests.org&lt;div&gt;(did:btest:alice)&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 8;verticalAlign=top;fillColor=none;" parent="1" vertex="1">
+                    <mxGeometry x="700" y="50" width="250" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="PIFTuyAp-HkmgY4DSb_s-5" value="VM&lt;div&gt;&lt;font color=&quot;#000000&quot;&gt;alice.ood1&lt;br&gt;&lt;/font&gt;&lt;div&gt;LAN3 with Portforward&lt;/div&gt;&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=1" parent="1" vertex="1">
+                    <mxGeometry x="765" y="100" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="PIFTuyAp-HkmgY4DSb_s-6" value="&lt;h1 style=&quot;margin-top: 0px;&quot;&gt;使用自签名证书&lt;/h1&gt;&lt;p&gt;后续基于https 内容的行为管理也是需要自签名证书的，因此开发者应该先了解该模式&lt;/p&gt;&lt;p&gt;&lt;br&gt;&lt;/p&gt;&lt;p&gt;测试用的CA证书是用户自己构建的(私钥保存在user config 目录)&lt;/p&gt;&lt;p&gt;&lt;br&gt;&lt;/p&gt;&lt;p&gt;后续测试环境的tls证书，都基于该CA证书构造&lt;/p&gt;&lt;p&gt;&lt;br&gt;&lt;/p&gt;&lt;p&gt;&lt;br&gt;&lt;/p&gt;&lt;p&gt;&lt;br&gt;&lt;/p&gt;&lt;p&gt;&lt;br&gt;&lt;/p&gt;" style="text;html=1;whiteSpace=wrap;overflow=hidden;rounded=0;" parent="1" vertex="1">
+                    <mxGeometry x="80" y="1350" width="425" height="200" as="geometry"/>
                 </mxCell>
             </root>
         </mxGraphModel>

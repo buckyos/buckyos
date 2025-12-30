@@ -1,3 +1,4 @@
+
 use ::kRPC::*;
 use async_trait::async_trait;
 use buckyos_api::*;
@@ -5,7 +6,7 @@ use buckyos_kit::buckyos_get_unix_timestamp;
 use core::error;
 use log::*;
 use name_lib::*;
-use name_lib::{DeviceConfig, ZoneConfig};
+use name_lib::DeviceConfig;
 use ndn_lib::*;
 use package_lib::*;
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,11 @@ use std::time::Duration;
 use tokio::io::AsyncSeekExt;
 use tokio::sync::Mutex as TokioMutex;
 
+use bytes::Bytes;
+use cyfs_gateway_lib::{HttpServer, ServerError, ServerResult, StreamInfo, serve_http_by_rpc_handler, server_err, ServerErrorCode};
+use http::{Method, Response, StatusCode, Version};
+use http_body_util::combinators::BoxBody;
+use http_body_util::{BodyExt, Full};
 use crate::pkg_task_data::*;
 struct ReqHelper;
 
@@ -146,15 +152,13 @@ impl RepoServer {
             if !default_meta_index_db_path.exists() {
                 info!("default meta-index-db found, but not set to NDN, bind it");
                 let mut file_object = FileObject::new("meta_index.db".to_string(), 0, String::new());
-                NamedDataMgr::pub_local_file_as_fileobj(
+                pub_local_file_as_fileobj(
                     None,
                     &default_meta_index_db_path,
                     "/repo/meta_index.db",
-                    "/repo/meta_index.db/content",
                     &mut file_object,
                     "kernel",
-                    "repo_service",
-                    false
+                    "repo_service"
                 )
                 .await
                 .map_err(|e| {
@@ -528,7 +532,7 @@ impl RepoServer {
                 //let named_mgr = named_mgr.lock().await;
                 let chunk_id = ChunkId::new(will_install_chunk_id.as_str()).unwrap();
                 //TODO chunk_url?
-                let pull_result = ndn_client.pull_chunk(chunk_id.clone(), None).await;
+                let pull_result = ndn_client.pull_chunk(chunk_id.clone(), StoreMode::StoreInNamedMgr).await;
 
                 if pull_result.is_ok() {
                     let chunk_size = pull_result.unwrap();
@@ -613,7 +617,7 @@ impl RepoServer {
         }
 
         ndn_client
-            .download_fileobj_to_local(root_source_url.as_str(), &new_meta_index_db_path, None)
+            .download_fileobj(root_source_url.as_str(), &new_meta_index_db_path, None)
             .await
             .map_err(|e| {
                 error!(
@@ -653,7 +657,7 @@ impl RepoServer {
                 error!("parse chunk_id failed, err:{}", e);
                 RPCErrors::ReasonError(format!("parse chunk_id failed, err:{}", e))
             })?;
-            let pull_chunk_result = ndn_client.pull_chunk(chunk_id.clone(), None).await;
+            let pull_chunk_result = ndn_client.pull_chunk(chunk_id.clone(), StoreMode::StoreInNamedMgr).await;
             if pull_chunk_result.is_err() {
                 error!(
                     "pull chunk:{} failed, err:{}",
@@ -768,15 +772,13 @@ impl RepoServer {
         //info!("will pub new default meta-index-db to named-mgr");
         let mut file_object = FileObject::new("meta_index.db".to_string(), 0, String::new());
         let default_meta_index_db_path = RepoServer::get_my_default_meta_index_db_path();
-        NamedDataMgr::pub_local_file_as_fileobj(
+        pub_local_file_as_fileobj(
             None,
             &default_meta_index_db_path,
             "/repo/meta_index.db",
-            "/repo/meta_index.db/content",
             &mut file_object,
             user_id,
             "repo_service",
-            false
         )
         .await
         .map_err(|e| {
@@ -859,7 +861,7 @@ impl RepoServer {
                     error!("parse chunk_id failed, err:{}", e);
                     RPCErrors::ReasonError(format!("parse chunk_id failed, err:{}", e))
                 })?;
-                let is_exist = NamedDataMgr::have_chunk(&chunk_id, None).await;
+                let is_exist = NamedDataMgr::have_chunk(None,&chunk_id).await;
                 if !is_exist {
                     error!(
                         "handle_pub_pkg: {} 's chunk:{} not found",
@@ -959,15 +961,13 @@ impl RepoServer {
         info!("copy wait_meta_db to pub_meta_db success");
         let mut file_object = FileObject::new("pub_meta_index.db".to_string(), 0, String::new());
         //info!("will pub pub_meta_index to named-mgr");
-        NamedDataMgr::pub_local_file_as_fileobj(
+        pub_local_file_as_fileobj(
             None,
             &pub_meta_db_path,
             "/repo/pub_meta_index.db",
-            "/repo/pub_meta_index.db/content",
             &mut file_object,
             user_id.as_str(),
-            "repo_service",
-            false
+            "repo_service"
         )
         .await
         .map_err(|e| {
@@ -1155,7 +1155,7 @@ impl RepoServer {
                 error!("parse chunk_id failed, err:{}", e);
                 RPCErrors::ReasonError(format!("parse chunk_id failed, err:{}", e))
             })?;
-            let pull_chunk_result = ndn_client.pull_chunk(chunk_id.clone(), None).await;
+            let pull_chunk_result = ndn_client.pull_chunk(chunk_id.clone(), StoreMode::StoreInNamedMgr).await;
             if pull_chunk_result.is_err() {
                 error!(
                     "pull chunk:{} failed, err:{}",
@@ -1337,7 +1337,7 @@ impl RepoServer {
 }
 
 #[async_trait]
-impl InnerServiceHandler for RepoServer {
+impl RPCHandler for RepoServer {
     async fn handle_rpc_call(
         &self,
         req: RPCRequest,
@@ -1359,9 +1359,31 @@ impl InnerServiceHandler for RepoServer {
             }
         }
     }
+}
 
-    async fn handle_http_get(&self, req_path: &str, ip_from: IpAddr) -> Result<String, RPCErrors> {
-        return Err(RPCErrors::UnknownMethod(req_path.to_string()));
+#[async_trait]
+impl HttpServer for RepoServer {
+    async fn serve_request(
+        &self,
+        req: http::Request<BoxBody<Bytes, ServerError>>,
+        info: StreamInfo,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        if *req.method() == Method::POST {
+            return serve_http_by_rpc_handler(req, info, self).await;
+        }
+        return Err(server_err!(ServerErrorCode::BadRequest, "Method not allowed"));
+    }
+
+    fn id(&self) -> String {
+        "repo-server".to_string()
+    }
+
+    fn http_version(&self) -> Version {
+        Version::HTTP_11
+    }
+
+    fn http3_port(&self) -> Option<u16> {
+        None
     }
 }
 

@@ -1,0 +1,31 @@
+{
+  "name": "buckyos",
+  "version": "0.5.1",
+  "directories": {
+      "source": "/opt/buckyos",
+      "target": "/opt/buckyos",
+      "source_bin": "./rootfs/bin",
+      "target_bin": "/opt/buckyos/bin"
+  },
+  "commands": {
+    "build": [
+      "echo 'MAKE sure you already build the linux version of buckyos (result store in rootfs/bin)'"
+    ],
+    "build_all": [
+      "buckyos-install --all --app=buckyos",
+      "python3 make_config.py {{buckyos.node_group}}"
+    ],
+    "update":[
+      "echo 'update buckyos'"
+    ],
+    "install": [
+      "sudo chmod 777 -R /opt/buckyos/bin/",
+      "sudo cp /opt/buckyos/etc/ca.cert /usr/local/share/ca-certificates/buckyos_ca.crt",
+      "sudo chmod 644 /usr/local/share/ca-certificates/buckyos_ca.crt",
+      "sudo update-ca-certificates"
+    ],
+    "start": ["sudo nohup /opt/buckyos/bin/node-daemon/node_daemon --enable_active > /dev/null 2>&1 &"],
+    "stop": ["sudo python3 /opt/buckyos/bin/stop.py"],
+    "check_dns": ["cat {{sn.ip}}"]
+  }
+}

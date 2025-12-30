@@ -1,6 +1,6 @@
 [package]
 name = "dcfs_fuse"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -9,4 +9,4 @@ edition = "2021"
 fuser="*"
 clap="*"
 libc="*"
-env_logger = "*"
+env_logger = { workspace = true }

@@ -1,1 +1,0 @@
-Some common JS-based PAC templates implement the core function RuleSelect and provide the ability to statically configure IPs and domain names.

@@ -5,18 +5,17 @@ edition = "2024"
 
 [dependencies]
 openraft = { version = "0.9", features = ["serde", "storage-v2", "anyhow"]}
-serde = "*"
-tokio = { version = "*", features = ["full"] }
-async-trait = "*"
-log = "*"
-bincode = { version = "2", features = ["serde"] }
-chrono = "*"
-anyhow = "*"
-anyerror = { version = "*", features = ["anyhow"]}
-simplelog = "*"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-reqwest = "*"
-thiserror = "*"
-warp = "*"
-bytes = "*"
+serde = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+log = { workspace = true }
+bincode = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+anyerror = { workspace = true }
+simplelog = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+reqwest = { workspace = true }
+thiserror = { workspace = true }
+bytes = { workspace = true }

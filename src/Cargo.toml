@@ -2,29 +2,123 @@
 resolver = "2"
 
 members = [
-
-    "./cyfs_gateway/cyfs-gateway-lib",
-    "./cyfs_gateway/cyfs_gateway",
-    "./cyfs_gateway/cyfs-dns",
-    "./cyfs_gateway/cyfs-warp",
-    "./cyfs_gateway/cyfs-sn",
-    "./cyfs_gateway/cyfs-socks",
-
     "./kernel/buckyos-api",
     "./kernel/sys_config_service",
     "./kernel/verify_hub",
     "./kernel/node_daemon",
     "./kernel/scheduler",
     "./kernel/task_manager",    
+    "./kernel/klog", 
+    "./kernel/slog", 
+    "./kernel/slog_daemon",
 
+    "./frame/slog_server", 
     "./frame/repo_service",
     "./frame/smb_service",
+    
+    "./frame/control_panel/service",
 
     "./tools/buckycli", 
-    "test/test_rbac", "kernel/klog", "kernel/slog", "kernel/slog_daemon", "frame/slog_server", 
+    "./test/test_rbac"
 ]
 
 exclude = [
     "./tools/ns-tool",
     "./apps/tray-controller"
 ]
+
+[workspace.package]
+version = "0.5.1"
+
+[workspace.dependencies]
+# BuckyOS internal dependencies
+buckyos-tracing = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-tracing", branch = "beta1"}
+buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit", branch = "beta1" }
+package-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "package-lib", branch = "beta1" }
+name-lib = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-lib", branch = "beta1" }
+name-client = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-client", branch = "beta1" }
+kRPC = { git = "https://github.com/buckyos/buckyos-base.git", package = "kRPC", branch = "beta1" }
+rbac = { git = "https://github.com/buckyos/buckyos-base.git", package = "rbac", branch = "beta1" }
+ndn-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-lib", branch = "beta1" }
+cyfs-gateway = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs_gateway", branch = "main" }
+cyfs-gateway-lib = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-gateway-lib", branch = "main" }
+cyfs-sn = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-sn", branch = "main" }
+server-runner =  { git = "https://github.com/buckyos/cyfs-gateway.git", package = "server-runner", branch = "main" }
+
+# Common async runtime and utilities
+tokio = { version = "*", features = ["full"] }
+async-trait = "*"
+futures = "*"
+futures-util = "*"
+
+# Serialization
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+
+# Logging
+log = "*"
+simplelog = "*"
+env_logger = "0.11.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "2.0.17"
+anyhow = "*"
+anyerror = { version = "*", features = ["anyhow"] }
+
+# HTTP and web
+reqwest = { version = "*", features = ["json","rustls-tls-native-roots"] }
+url = "*"
+http = "1"
+http-body-util = "0.1"
+bytes = "1.11.0"
+axum = "*"
+
+# Time and date
+chrono = "*"
+time = { version = "0.3.44", features = ["formatting"] }
+
+# Configuration and parsing
+toml = "*"
+clap = "*"
+
+# Crypto and security
+jsonwebtoken = { version = "*", features = ["aws_lc_rs"] }
+base64 = "0.22.1"
+sha2 = "0.10.9"
+rand = "0.9.2"
+rand_core = "0.9.3"
+rand_chacha = "0.9.0"
+getrandom = "0.3.4"
+digest = "0.10.7"
+block-buffer = "0.10.4"
+hmac = "0.12.1"
+ed25519-dalek = { version = "*", features = ["pkcs8", "pem"] }
+
+# Database
+rusqlite = { version = "*", features = ["bundled"] }
+sled = "*"
+
+# Utilities
+lazy_static = "*"
+once_cell = "*"
+uuid = { version = "*", features = ["v4"] }
+hex = "*"
+semver = "1.0.27"
+num_cpus = "*"
+sysinfo = "0.37.2"
+if-addrs = "*"
+hashbrown = "0.16.1"
+rustix = "1.1.2"
+itertools = "0.14.0"
+
+# Other
+upon = "*"
+async-recursion = "*"
+rustyline = "11.0.0"
+flate2 = "1.0"
+tar = "0.4"
+bincode = { version = "2", features = ["serde"] }
+flexi_logger = "*"
+tempfile = "*"

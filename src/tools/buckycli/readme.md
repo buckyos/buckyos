@@ -1,29 +1,29 @@
 # buckycli
 
-## 基本操作
+## Basic Operations
 
 ```
 buckycli --version
 ```
 
-## 管理DID(账号管理)
-命令行的钱包
+## Manage DID (Account Management)
+Command line wallet
 
-## 操作SystemConfig
+## SystemConfig Operations
 buckycli connect 
 buckycli set_sys
 buckycli get_sys
 
 
-## 管理pkg
+## Manage Packages
 
-buckycli pack_pkg $src_dir $target_dir # 将本地目录打包，可以跳过签名
-buckycli pub_pkg $target_dir --pkg_name $pkg_name # 发布pkg到repo的待发布index
-buckycli pub_app $target_dir # 发布app到repo的待发布index,注意
+buckycli pack_pkg $src_dir $target_dir # Pack local directory, can skip signing
+buckycli pub_pkg $target_dir --pkg_name $pkg_name # Publish pkg to repo's pending publish index
+buckycli pub_app $target_dir # Publish app to repo's pending publish index, note
 buckycli repo_publish # 
-buckycli install pkg_name  # 这个需要在env目录运行
-buckycli publish_app $remote_repo_host #发布app到另一个repo
-buckycli install_app $app_name --config1 v1 --config2 v2  # zone级别的安装
+buckycli install pkg_name  # This needs to run in env directory
+buckycli publish_app $remote_repo_host # Publish app to another repo
+buckycli install_app $app_name --config1 v1 --config2 v2  # Zone-level installation
 
 
 

@@ -12,10 +12,9 @@ pub struct SledStore {
 
 impl SledStore {
     pub fn new() -> std::result::Result<Self, Box<dyn std::error::Error>> {
-        let root_path  = get_buckyos_root_dir();
-        let path = root_path.join("data").join("system_config");
-
-        let db = sled::open(path)?;
+        let data_path  = get_buckyos_service_local_data_dir("system_config",None);
+        //let path = root_path.join("data").join("system_config");
+        let db = sled::open(data_path)?;
         Ok(SledStore { db: Arc::new(db) })
     }
 }
@@ -27,7 +26,7 @@ impl KVStoreProvider for SledStore {
             Some(value) => {
                 let result = String::from_utf8(value.to_vec())
                     .map_err(|_err| KVStoreErrors::InternalError("Invalid UTF-8 sequence".to_string()))?;
-                info!("Sled Get key:[{}] value length:[{}]", key, result.len());
+                debug!("Sled Get key:[{}] value length:[{}]", key, result.len());
                 Ok(Some(result))
             },
             None => Ok(None)
@@ -38,7 +37,7 @@ impl KVStoreProvider for SledStore {
         self.db.insert(key.clone(), value.clone().into_bytes())
             .map_err(|err| KVStoreErrors::InternalError(err.to_string()))?;
         self.db.flush().map_err(|err| KVStoreErrors::InternalError(err.to_string()))?;
-        info!("Sled Set key:[{}] to value:[{}]", key, value);
+        debug!("Sled Set key:[{}] to value:[{}]", key, value);
         Ok(())
     }
 
@@ -94,7 +93,7 @@ impl KVStoreProvider for SledStore {
         match create_result {
             Ok(Ok(_)) => {
                 self.db.flush().map_err(|err| KVStoreErrors::InternalError(err.to_string()))?;
-                info!("Sled Create key:[{}] to value:[{}]", key, value);
+                debug!("Sled Create key:[{}] to value:[{}]", key, value);
                 return Ok(())
             },
             Ok(Err(_)) => {
@@ -114,7 +113,7 @@ impl KVStoreProvider for SledStore {
         if result.is_none() {
             return Err(KVStoreErrors::KeyNotFound(key.to_string()));
         }
-        info!("Sled Delete key:[{}]", key);
+        debug!("Sled Delete key:[{}]", key);
         Ok(())
     }
 

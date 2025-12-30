@@ -1,26 +1,28 @@
 [package]
 name = "task-manager"
-version = "0.4.0"
+version.workspace = true
 edition = "2021"
 authors = ["BuckyOS DAO","@alexsunxl","@waterflier"]
 
 [dependencies]
-async-trait = "*"
-tokio = { version = "1", features = ["full"] }
-warp = "0.3.7"
-chrono = { version = "*", features = ["serde"] }
-rusqlite =  { version = "*", features = ["bundled"] }
-serde = { version = "*", features = ["derive"] }
-serde_json = "*"
-log = "*"
-lazy_static = "*"
+async-trait = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+lazy_static = { workspace = true }
 
 
 
-cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }
-kRPC = { git = "https://github.com/buckyos/buckyos-base.git", package = "kRPC" }
-buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit" }
-cyfs-gateway-lib = { path = "../../cyfs_gateway/cyfs-gateway-lib" }
+server-runner = { workspace = true }
+kRPC = { workspace = true }
+buckyos-kit = { workspace = true }
+cyfs-gateway-lib = { workspace = true }
+bytes = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
 
 [dev-dependencies]
-tempfile = "*"
+tempfile = { workspace = true }

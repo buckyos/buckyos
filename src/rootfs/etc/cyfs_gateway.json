@@ -1,8 +1,0 @@
-{
-    "includes" : [
-        {"path": "user_gateway.json"},
-        {"path": "boot_gateway.json"},
-        {"path": "node_gateway.json"},
-        {"path": "post_gateway.json"}
-    ]
-}

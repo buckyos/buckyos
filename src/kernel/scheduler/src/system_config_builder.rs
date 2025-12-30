@@ -1,0 +1,390 @@
+use anyhow::{anyhow, Result};
+use log::{debug, info};
+use buckyos_api::{
+    AppDoc, AppServiceSpec, GatewaySettings, GatewayShortcut, KernelServiceDoc, KernelServiceSpec, NodeConfig, NodeState, SCHEDULER_SERVICE_UNIQUE_ID, ServiceExposeConfig, ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, UserSettings, UserState, UserType, VERIFY_HUB_UNIQUE_ID
+};
+use buckyos_api::{SMB_SERVICE_UNIQUE_ID, REPO_SERVICE_UNIQUE_ID};
+use jsonwebtoken::jwk::Jwk;
+use name_client::resolve_did;
+use name_lib::{DID, OwnerConfig, VerifyHubInfo, ZoneBootConfig, ZoneConfig};
+use package_lib::PackageId;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::convert::TryFrom;
+
+const DEFAULT_OOD_ID: &str = "ood1";
+
+#[derive(Debug, Deserialize)]
+pub struct StartConfigSummary {
+    pub user_name: String,
+    pub admin_password_hash: String,
+    pub public_key: Jwk,
+    #[serde(default)]
+    pub ood_jwt: Option<String>,
+}
+
+
+
+#[derive(Serialize, Deserialize)]
+pub struct SystemInstallSettings {
+    pub pre_install_apps: HashMap<String, ServiceInstallConfig>,
+}
+
+pub struct SystemConfigBuilder {
+    entries: HashMap<String, String>,
+}
+
+impl SystemConfigBuilder {
+    pub fn new(init_map: HashMap<String, String>) -> Self {
+        Self {
+            entries: init_map,
+        }
+    }
+
+    pub fn add_default_accounts(&mut self, config: &StartConfigSummary) -> Result<&mut Self> {
+        let root_settings = UserSettings {
+            user_type: UserType::Root,
+            username: config.user_name.clone(),
+            password: config.admin_password_hash.clone(),
+            state: UserState::Active,
+            res_pool_id: "default".to_string(),
+        };
+        self.insert_json("users/root/settings", &root_settings)?;
+
+        let admin_key = format!("users/{}/settings", config.user_name);
+        let admin_settings = UserSettings {
+            user_type: UserType::Admin,
+            username: config.user_name.clone(),
+            password: config.admin_password_hash.clone(),
+            state: UserState::Active,
+            res_pool_id: "default".to_string(),
+        };
+        self.insert_json(&admin_key, &admin_settings)?;
+        self.append_policy(&format!("g, {}, admin", config.user_name));
+        Ok(self)
+    }
+
+    pub fn add_user_doc(&mut self, config: &StartConfigSummary) -> Result<&mut Self> {
+        let user_did = DID::new("bns", &config.user_name);
+        let owner_jwk = config.public_key.clone();
+
+        let owner_config = OwnerConfig::new(
+            user_did,
+            config.user_name.clone(),
+            config.user_name.clone(),
+            owner_jwk,
+        );
+
+        let key = format!("users/{}/doc", config.user_name);
+        self.insert_json(&key, &owner_config)?;
+        Ok(self)
+    }
+
+    pub async fn build_app_doc(&self, app_id: &str) -> Result<AppDoc> {
+        let app_did = PackageId::unique_name_to_did(app_id);
+        let app_doc = resolve_did(&app_did, None).await?;
+        let doc_value = app_doc.to_json_value()?;
+        let app_doc = serde_json::from_value(doc_value)?;
+        Ok(app_doc)
+    }
+
+    pub async fn add_default_apps(&mut self, config: &StartConfigSummary) -> Result<&mut Self> {
+        let install_settings = self.entries.get("system/install_settings");
+        if install_settings.is_none() {
+            return Err(anyhow!("system/install_settings not found"));
+        }
+        let install_settings : SystemInstallSettings = serde_json::from_str(install_settings.unwrap())?;
+        let mut app_index = 10;
+        for (app_id, app_install_config) in install_settings.pre_install_apps.iter() {
+            let app_doc = self.build_app_doc(app_id).await?;
+            let app_key = format!(
+                "users/{}/apps/{}/spec",
+                config.user_name, app_id
+            );
+            debug!("app_key: {}", app_key);
+      
+            let app_spec = AppServiceSpec {
+                app_doc,
+                app_index: app_index,
+                user_id: config.user_name.clone(),
+                enable: true,
+                expected_instance_count: 1,
+                state: ServiceState::default(),
+                install_config: app_install_config.clone(),
+            };
+
+            self.insert_json(&app_key, &app_spec)?;
+            app_index += 1;
+        }
+
+        Ok(self)
+    }
+
+    pub fn add_device_doc(
+        &mut self,
+        ood_name: &str,
+        config: &StartConfigSummary,
+    ) -> Result<&mut Self> {
+        let ood_jwt = config
+            .ood_jwt
+            .as_ref()
+            .ok_or_else(|| anyhow!("start_config.json missing ood_jwt"))?;
+        self.entries
+            .insert(format!("devices/{}/doc", ood_name), ood_jwt.clone());
+        Ok(self)
+    }
+
+    pub fn add_system_defaults(&mut self) -> Result<&mut Self> {
+        self.insert_json("system/system_pkgs", &json!({}))?;
+        Ok(self)
+    }
+
+    pub async fn add_verify_hub(
+        &mut self,
+        verify_hub_private_key: &str,
+    ) -> Result<&mut Self> {
+        self.entries
+            .insert("system/verify-hub/key".into(), verify_hub_private_key.to_string());
+
+        let config = build_kernel_service_spec(
+            VERIFY_HUB_UNIQUE_ID,
+            3300,
+            1
+        ).await?;
+        self.insert_json("services/verify-hub/spec", &config)?;
+
+        let settings = VerifyHubSettings {
+            trust_keys: vec![],
+        };
+        self.insert_json("services/verify-hub/settings", &settings)?;
+     
+        Ok(self)
+    }
+
+    pub async fn add_scheduler(&mut self) -> Result<&mut Self> {
+        let config = build_kernel_service_spec(
+            SCHEDULER_SERVICE_UNIQUE_ID,
+            3400,
+            1
+        ).await?;
+        self.insert_json("services/scheduler/spec", &config)?;
+        Ok(self)
+    }
+
+    pub fn add_gateway_settings(
+        &mut self,
+        config: &StartConfigSummary,
+    ) -> Result<&mut Self> {
+        // let settings = GatewaySettings {
+        //     shortcuts: HashMap::from([
+        //         (
+        //             "www".to_string(),
+        //             GatewayShortcut {
+        //                 target_type: "app".to_string(),
+        //                 user_id: Some(config.user_name.clone()),
+        //                 app_id: "buckyos_filebrowser".to_string(),
+        //             },
+        //         ),
+        //         (
+        //             "_".to_string(),
+        //             GatewayShortcut {
+        //                 target_type: "app".to_string(),
+        //                 user_id: Some(config.user_name.clone()),
+        //                 app_id: "buckyos_filebrowser".to_string(),
+        //             },
+        //         )
+        //     ]),
+        // };
+        // self.insert_json("services/gateway/settings", &settings)?;
+        Ok(self)
+    }
+
+    pub async fn add_repo_service(&mut self) -> Result<&mut Self> {
+        let config = build_kernel_service_spec(
+            REPO_SERVICE_UNIQUE_ID,
+            4000,
+            1
+        ).await?;
+        self.insert_json("services/repo-service/spec", &config)?;
+
+        let settings = RepoServiceSettings {
+            remote_source: HashMap::from([
+                ("default".to_string(), "https://buckyos.ai/ndn/repo/meta_index.db".to_string())
+            ]),
+            enable_dev_mode: true,
+        };
+        self.insert_json("services/repo-service/settings", &settings)?;
+
+        let pkg_list = HashMap::from([
+            ("nightly-linux-amd64.node_daemon".to_string(), "no".to_string()),
+            ("nightly-linux-aarch64.node_daemon".to_string(), "no".to_string()),
+            ("nightly-windows-amd64.node_daemon".to_string(), "no".to_string()),
+            ("nightly-apple-amd64.node_daemon".to_string(), "no".to_string()),
+            ("nightly-apple-aarch64.node_daemon".to_string(), "no".to_string()),
+            ("nightly-linux-amd64.buckycli".to_string(), "no".to_string()),
+            ("nightly-linux-aarch64.buckycli".to_string(), "no".to_string()),
+            ("nightly-windows-amd64.buckycli".to_string(), "no".to_string()),
+            ("nightly-apple-amd64.buckycli".to_string(), "no".to_string()),
+            ("nightly-apple-aarch64.buckycli".to_string(), "no".to_string()),
+        ]);
+        self.insert_json("services/repo-service/pkg_list", &pkg_list)?;
+        Ok(self)
+    }
+
+    pub async fn add_smb_service(&mut self) -> Result<&mut Self> {
+        let config = build_kernel_service_spec(
+            SMB_SERVICE_UNIQUE_ID,
+            4100,
+            1
+        ).await?;
+        self.insert_json("services/smb-service/spec", &config)?;
+        Ok(self)
+    }
+
+    pub fn append_policy(&mut self, policy: &str) -> Result<&mut Self> {
+        let policy_str = self.entries.get("system/rbac/base_policy");
+        if policy_str.is_none() {
+            self.entries.insert("system/rbac/base_policy".to_string(), policy.to_string());
+            return Ok(self);
+        }
+        let policy_str = policy_str.unwrap();
+        let new_policy_str = format!("{}\n{}", policy_str, policy);
+        self.entries.insert("system/rbac/base_policy".to_string(), new_policy_str);
+        Ok(self)
+    }
+
+    pub fn add_node(&mut self,ood_name: &str) -> Result<&mut Self> {
+        let config = NodeConfig {
+            node_id: ood_name.to_string(),
+            node_did: format!("did:bns:{ood_name}"),
+            kernel: HashMap::new(),
+            apps: HashMap::new(),
+            frame_services: HashMap::new(),
+            state: NodeState::Running,
+        };
+        self.insert_json(&format!("nodes/{}/config", ood_name), &config)?;
+
+        let gateway_config = json!({
+          
+        });
+        self.insert_json(&format!("nodes/{}/gateway_config", ood_name), &gateway_config)?;
+
+        self.append_policy(&format!("g, {ood_name}, ood"))?;
+        Ok(self)
+    }
+
+    pub fn add_boot_config(
+        &mut self,
+        config: &StartConfigSummary,
+        verify_hub_public_key: &Jwk,
+        zone_boot_config: &ZoneBootConfig,
+    ) -> Result<&mut Self> {
+        let public_key_value = verify_hub_public_key.clone();
+        let mut zone_config = ZoneConfig::new(DID::new("bns", &config.user_name), DID::new("bns", &config.user_name), config.public_key.clone());
+
+        let verify_hub_info = VerifyHubInfo {
+            public_key: public_key_value,
+            port: 3300,
+            node_name: DEFAULT_OOD_ID.to_string(),
+        };
+        zone_config.init_by_boot_config(zone_boot_config);
+        zone_config.verify_hub_info = Some(verify_hub_info);
+        info!("add_boot_config: zone_config: {}", serde_json::to_string_pretty(&zone_config)?);
+        self.insert_json("boot/config", &zone_config)?;
+        Ok(self)
+    }
+
+    pub fn build(self) -> HashMap<String, String> {
+        self.entries
+    }
+
+    fn insert_json<T: ?Sized + serde::Serialize>(
+        &mut self,
+        key: &str,
+        value: &T,
+    ) -> Result<()> {
+        let content = serde_json::to_string_pretty(value)?;
+        self.entries.insert(key.to_string(), content);
+        Ok(())
+    }
+}
+
+
+async fn build_kernel_service_spec(
+    pkg_name: &str,
+    port: u16,
+    expected_instance_count: u32,
+) -> Result<KernelServiceSpec> {
+    let service_did = PackageId::unique_name_to_did(pkg_name);
+    //实际上，读取的是保存在 get_buckyos_service_local_data_dir("name-client", None).join("did_docs")/ 写的配置
+    // 这种设计相比直接调用generate_kernel_service_doc的好处是，可以更好的支持安装包制作正确的service doc
+    let service_doc = resolve_did(&service_did, None).await?;
+    let doc_value = service_doc.to_json_value()?;
+    let service_doc = serde_json::from_value(doc_value)?;
+
+    let mut install_config = ServiceInstallConfig::default();
+    let service_expose_config = ServiceExposeConfig {
+        sub_hostname: Vec::new(),
+        expose_uri: Some(format!("/kapi/{}", pkg_name)),
+        expose_port: Some(port),
+    };
+    install_config.expose_config.insert("www".to_string(), service_expose_config);
+
+    Ok(KernelServiceSpec {
+        service_doc,
+        app_index: 0,
+        enable: true,
+        expected_instance_count,
+        state: ServiceState::default(),
+        install_config,
+    })
+}
+
+#[derive(Serialize)]
+struct VerifyHubSettings {
+    trust_keys: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct RepoServiceSettings {
+    remote_source: HashMap<String, String>,
+    enable_dev_mode: bool,
+}
+
+impl TryFrom<&Value> for StartConfigSummary {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &Value) -> Result<Self> {
+        let user_public_key: Jwk = serde_json::from_value(
+            value
+                .get("public_key")
+                .cloned()
+                .ok_or_else(|| anyhow!("start_config.json missing public_key"))?,
+        ).map_err(|e| anyhow!("Failed to parse public key: {}", e))?;
+        Ok(Self {
+            user_name: value
+                .get("user_name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("start_config.json missing user_name"))?
+                .to_string(),
+            admin_password_hash: value
+                .get("admin_password_hash")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("start_config.json missing admin_password_hash"))?
+                .to_string(),
+            public_key: user_public_key,
+
+            ood_jwt: value
+                .get("ood_jwt")
+                .and_then(Value::as_str)
+                .map(|s| s.to_string()),
+        })
+    }
+}
+
+impl StartConfigSummary {
+    pub fn from_value(value: &Value) -> Result<Self> {
+        Self::try_from(value)
+    }
+}

@@ -1,5 +1,6 @@
 import i18next from 'i18next';
 import HttpBackend from 'i18next-http-backend';
+import { initReactI18next } from 'react-i18next';
 
 // 检测系统语言
 function detectSystemLanguage(): string {
@@ -34,6 +35,7 @@ function detectSystemLanguage(): string {
 
 i18next
   .use(HttpBackend)
+  .use(initReactI18next)
   .init({
     lng: detectSystemLanguage(), // 使用检测到的系统语言
     fallbackLng: 'en', // 降级语言
@@ -53,6 +55,9 @@ i18next
     debug: false, // 生产环境可以设置为false
     interpolation: {
       escapeValue: false // React已经处理了XSS
+    },
+    react: {
+      useSuspense: false
     }
   }).then(() => {
     console.log("i18n initialized with language:", i18next.language);
@@ -86,7 +91,8 @@ export async function changeLanguage(lang: 'en' | 'zh'): Promise<void> {
 
 // 获取当前语言
 export function getCurrentLanguage(): string {
-  return i18next.language;
+  const lng = i18next.language || detectSystemLanguage();
+  return lng.split('-')[0];
 }
 
 // 获取支持的语言列表
