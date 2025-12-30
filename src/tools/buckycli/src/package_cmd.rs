@@ -409,6 +409,10 @@ pub async fn load_pkg(
     Ok(())
 }
 
+pub async fn install_pkg_from_local(pkg_id: &str, target_env:&str) -> Result<(), String> {
+    unimplemented!()
+}
+
 pub async fn install_pkg(
     pkg_id: &str,
     target_env:&str

@@ -34,6 +34,20 @@
 更新本地缓存
 ```
 
+## pkg逻辑调整
+- 是在制作安装包之前调用buckycli install_pkg,还是在安装时，执行buckycli install_pkg?
+    原理上，还是在目标环境安装更可靠一些，缺点是要带上buckycli
+- bin目录永远不enable符号？
+    - 缺点：安装时的删除在windows下可能不会成功？用重命名逻辑？还是要处理GC
+    - 好处：防止pkgs目录膨胀（不用处理GC）
+    - 好处：不用处理“因为系统原因无法enable 符号的两种逻辑”（回退到最保守模式）
+    - 缺点：强制要求pkg每次都更新版本号，否则可能会有潜在的bug
+- 对pkg升级流程进行独立验证
+在需要升级的env，或parent env执行
+```
+buckycli pkg_sync #从源拉最新版本的meta-db
+buckycli pkg_upgrade [$pkg_id] 
+```
 
 
 ## 切换到新版本的cyfs-gateway 上来

@@ -90,7 +90,7 @@ async fn create_init_list_by_template(zone_boot_config: &ZoneBootConfig) -> Resu
         .add_verify_hub(&private_key_pem).await?
         .add_scheduler().await?
         .add_repo_service().await?
-        .add_smb_service().await?
+        //.add_smb_service().await?
         .add_default_apps(&start_config).await?
         .add_gateway_settings(&start_config)?
         .add_node(ood_name)?;

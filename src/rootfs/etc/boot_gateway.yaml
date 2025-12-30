@@ -57,10 +57,11 @@ servers:
           blocks:
             default:
               id: default
-              priority: 1
+              priority: 0
               block: |
                 echo "node_gateway default block";
 
+# not use yet
 global_process_chains:
   zone_http_selector:
     priority: 1
