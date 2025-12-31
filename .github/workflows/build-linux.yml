@@ -19,7 +19,7 @@ on:
 jobs:
   build:
     name: build
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.arch == 'aarch64' && 'ubuntu-24.04-arm64' || 'ubuntu-latest' }}
     steps:
     - uses: Kaven-Universe/github-action-current-date-time@v1
       id: date
@@ -46,17 +46,10 @@ jobs:
         toolchain: stable
         targets: ${{inputs.arch}}-unknown-linux-${{inputs.arch == 'aarch64' && 'gnu' || 'musl'}}
     - name: Setup Needed Packages
+      if: ${{ inputs.arch == 'x86_64' }}
       run: |
           sudo apt update
-          sudo apt install -y musl-tools gcc-aarch64-linux-gnu
-    - name: Setup Cargo Config
-      run: |
-          mkdir -p ~/.cargo
-          cat > ~/.cargo/config.toml << 'EOF'
-          [target.aarch64-unknown-linux-gnu]
-          linker = "aarch64-linux-gnu-gcc"
-          ar = "aarch64-linux-gnu-ar"
-          EOF
+          sudo apt install -y musl-tools
     - name: cargo test
       working-directory: ./src
       if: ${{inputs.enable_tests == 'true'}}
@@ -65,7 +58,7 @@ jobs:
       run: pip install "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"
     - name: build buckyos
       working-directory: ./src
-      run: buckyos-build --skip-web --target=${{inputs.arch}}-unknown-linux-${{inputs.arch == 'aarch64' && 'gnu' || 'musl'}}
+      run: buckyos-build --skip-web
     - name: Tar Rootfs
       run:
         cd ./src/rootfs && tar -cvf ../../rootfs.tar .

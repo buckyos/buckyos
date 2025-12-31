@@ -19,7 +19,7 @@ on:
 jobs:
   build:
     name: build
-    runs-on: windows-latest
+    runs-on: ${{ inputs.arch == 'aarch64' && 'windows-2025-arm64' || 'windows-latest' }}
     steps:
     - name: Set up current date and time
       uses: Kaven-Universe/github-action-current-date-time@v1
@@ -49,8 +49,6 @@ jobs:
         targets: ${{inputs.arch}}-pc-windows-msvc
     - name: Setup MSVC
       uses: ilammy/msvc-dev-cmd@v1
-      with:
-        arch: ${{ inputs.arch == 'aarch64' && 'amd64_arm64' || 'amd64' }}
     - uses: actions/setup-python@v6
       with:
         python-version: '3.11' 
@@ -62,7 +60,7 @@ jobs:
       run: pip install "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"
     - name: build buckyos
       working-directory: ./src
-      run: buckyos-build --skip-web --target=${{inputs.arch}}-pc-windows-msvc
+      run: buckyos-build --skip-web
       env:
         PYTHONIOENCODING: 'utf-8'
         PYTHONLEGACYWINDOWSSTDIO: "utf-8"
