@@ -49,6 +49,14 @@ jobs:
       run: |
           sudo apt update
           sudo apt install -y musl-tools gcc-aarch64-linux-gnu
+    - name: Setup Cargo Config
+      run: |
+          mkdir -p ~/.cargo
+          cat > ~/.cargo/config.toml << 'EOF'
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+          ar = "aarch64-linux-gnu-ar"
+          EOF
     - name: cargo test
       working-directory: ./src
       if: ${{inputs.enable_tests == 'true'}}
