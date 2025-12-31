@@ -63,6 +63,9 @@ jobs:
     - name: build buckyos
       working-directory: ./src
       run: buckyos-build --skip-web --target=${{inputs.arch}}-pc-windows-msvc
+      env:
+        PYTHONIOENCODING: 'utf-8'
+        PYTHONLEGACYWINDOWSSTDIO: "utf-8"
     - name: Prepare tools
       run: |
         mkdir tools
