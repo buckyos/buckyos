@@ -51,6 +51,9 @@ jobs:
       uses: ilammy/msvc-dev-cmd@v1
       with:
         arch: ${{ inputs.arch == 'aarch64' && 'amd64_arm64' || 'amd64' }}
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '3.11' 
     - name: cargo test
       working-directory: ./src
       if: ${{inputs.enable_tests == true}}
