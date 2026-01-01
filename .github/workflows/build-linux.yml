@@ -19,7 +19,7 @@ on:
 jobs:
   build:
     name: build
-    runs-on: ${{ inputs.arch == 'aarch64' && 'ubuntu-24.04-arm64' || 'ubuntu-latest' }}
+    runs-on: ${{ inputs.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     steps:
     - uses: Kaven-Universe/github-action-current-date-time@v1
       id: date
@@ -58,7 +58,7 @@ jobs:
       run: pip install "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"
     - name: build buckyos
       working-directory: ./src
-      run: buckyos-build --skip-web
+      run: buckyos-build
     - name: Tar Rootfs
       run:
         cd ./src/rootfs && tar -cvf ../../rootfs.tar .

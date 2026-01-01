@@ -19,7 +19,7 @@ on:
 jobs:
   build:
     name: build
-    runs-on: ${{ inputs.arch == 'aarch64' && 'macos-14' || 'macos-13' }}
+    runs-on: ${{ inputs.arch == 'aarch64' && 'macos-15' || 'macos-15-intel' }}
     steps:
     - name: Set up current date and time
       uses: Kaven-Universe/github-action-current-date-time@v1
@@ -54,7 +54,7 @@ jobs:
       run: pip install "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"
     - name: build buckyos
       working-directory: ./src
-      run: sudo buckyos-build --skip-web 
+      run: sudo buckyos-build
     - name: Tar Rootfs
       run: 
         cd ./src/rootfs && tar -cvf ../../rootfs.tar .

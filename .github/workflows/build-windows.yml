@@ -19,7 +19,7 @@ on:
 jobs:
   build:
     name: build
-    runs-on: ${{ inputs.arch == 'aarch64' && 'windows-2025-arm64' || 'windows-latest' }}
+    runs-on: ${{ inputs.arch == 'aarch64' && 'windows-11-arm' || 'windows-2025' }}
     steps:
     - name: Set up current date and time
       uses: Kaven-Universe/github-action-current-date-time@v1
@@ -60,7 +60,7 @@ jobs:
       run: pip install "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"
     - name: build buckyos
       working-directory: ./src
-      run: buckyos-build --skip-web
+      run: buckyos-build
       env:
         PYTHONIOENCODING: 'utf-8'
         PYTHONLEGACYWINDOWSSTDIO: "utf-8"
