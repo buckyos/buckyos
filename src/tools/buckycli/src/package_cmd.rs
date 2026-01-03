@@ -130,9 +130,9 @@ pub async fn pack_raw_pkg(pkg_path: &str, dest_dir: &str,private_key:Option<(Str
         .map_err(|e| format!("Failed to calculate file chunk id: {}", e.to_string()))?;
     
     // Update metadata
-    meta_data.chunk_id = Some(chunk_id.to_string());
+    meta_data.content = Some(chunk_id.to_string());
     println!("meta_data chunk_id: {}", chunk_id.to_string());
-    meta_data.chunk_size =Some(file_size);
+    meta_data.size = file_size;
 
     let meta_data_json = serde_json::to_value(&meta_data).map_err(|e| {
         format!("Failed to serialize metadata: {}", e.to_string())
@@ -211,7 +211,7 @@ pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), St
 
         let (chunk_id,file_size) = calculate_file_chunk_id(pkg_tar_path.to_str().unwrap(),chunk_type).await
             .map_err(|e| format!("Failed to calculate file chunk id: {}", e.to_string()))?;
-        if Some(chunk_id.to_string()) != pkg_meta.chunk_id {
+        if Some(chunk_id.to_string()) != pkg_meta.content {
             println!("chunk_id does not match: {}", chunk_id.to_string());
             continue;
         }
@@ -521,12 +521,11 @@ mod tests {
             category: Some("pkg".to_string()),
             author: author.to_string(),
             owner: DID::from_str("did:bns:buckyos").unwrap(),
-            chunk_id: None,
-            chunk_url: None,
-            chunk_size: None,
+            content: None,
+            size: 0,
             deps: HashMap::new(),
             pub_time: 0,
-            description: json!("{}"),
+            meta: json!("{}"),
             extra_info: HashMap::new(),
             exp:0,
         };
@@ -602,12 +601,11 @@ mod tests {
             category: Some("pkg".to_string()),
             author: author.to_string(),
             owner: DID::from_str("did:bns:buckyos").unwrap(),
-            chunk_id: None,
-            chunk_url: None,
-            chunk_size: None,
+            content: None,
+            size: 0,
             deps: HashMap::new(),
             pub_time: 0,
-            description: json!("{}"),
+            meta: json!("{}"),
             extra_info: HashMap::new(),
             exp:0,
         };

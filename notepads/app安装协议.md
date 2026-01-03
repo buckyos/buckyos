@@ -61,12 +61,49 @@ buckyos的app信任机制主要由下面机制构成
 `用户安装app成功`是经济模型的利益原点, buckyos通过简单透明的规则，将这个利益分配给`App作者、应用源、分享来源`。
 `用户安装app成功`后，buckyos会自动把安装成功证明发送给App作者、应用源、分享来源。
 
+安装证明
+```json
+{
+    "action":"installed",
+    "objid":"xxxx",//what
+    "userid":"xxx",//who
+    "device_id":"xxxx",//where
+
+    "iat" : "",//创建证明的事件
+    "exp" : "",//无意义
+    "details" : {
+        "referrer" : "",
+        "curator" : "",
+    }
+}
+```
+
+购买的细节
+1. 通过合约购买，注意购买一般购买的是一个系列（比如版本1.0，版本2.0），这里需要公共的让用户知道自己买了什么
+2. 
+购买证明：如果用传统网关支付完成，那么owner/curator需要开具购买证明。(有签名)
+```json
+{
+    "action":"puared",
+    "objid":"xxxx,"
+}
+```
+
+
 ### 获得BDT(BuckyOS DAO Token)奖励
 
 利益相关方把`用户安装App成功`这个行为(批量)提交给BDT DAO合约后，将会根据合约规则得到BDT奖励。
 BDT DAO根据BuckyOS的成熟度，逐步释放BDT，因为BDT总量有限，生态奖励的BDT的特点是
 - 早期一个安装的奖励多，后期一个安装的奖励少
 - 早期大应用奖励多，后期长尾应用的奖励相对固定
+
+获得奖励的两种流程
+```
+用户支付完成
+用户基于支付完成的收据，去向 作者/源 下载（向源下载的时候，需要在支付收据里有正确的源信息）
+
+```
+
 
 ### 传统付费App
 
@@ -95,9 +132,136 @@ App作者也可以通过http 402协议，扩展自己的专属付费模式。
 - 按`作者、源、分享来源` 的思路，可以把经济循环扩展到Video\Game\Music等 广泛的数字产品 的经济循环上。BuckyOS希望通过新的去中心基础设施+经济模型，建立新的"Internet Content Library"
 - 只有买断，没有订阅。从"服务自有"的角度出发，BuckyOS的基础设施天然喜欢买断制，反对依赖中心化服务的订阅制。
 
-## APP_META_JSON的设计
+收录行为由源签名
+```json
+{
+    "name":"$appname",
+    "objid":"app_pkg_id",
+    "userid":"收录者账号",
+    "action":"listed",
+    "iat":"收录时间",
+    "exp":"有效期",
+    "directory":"dir_id",//很重要，收录到哪个列表里去了？
+    "score" : "", //收录时的评分
+    "details" : {
+        //附加的介绍
+        //被收录到的目录对象id
+    }
+}
+```
+在有收录列表id的情况下，也可以用用dirid + path 的模式来说明“这是一个我收录的对象”
+dirObject也是一个content object,可以有签名(JWT)
 
-1. docker url, 最重要
+
+分享行为,通常是设备的签名。极限的分数，需要用户签名
+```json
+{
+    "objid":"app_pkg_id",
+    "userid":"分享者账号",    
+    "device_id":"did:dev:xxx",
+    "action":"recommand",
+    "iat":"xxx",
+    "exp":"xxx",
+    "score":"xxx",
+    "details" : {
+
+    }
+}
+```
+
+
+### 经济循环里的一些负面行为
+- 购买前先看用户的推荐（去中心的），并由AI汇总成分数
+- 支付的时机：使用先支付再下载，但支付成功后下载失败怎么办？
+    - 如何解决问题？求助其它用户？求助其它源？
+    - 公开该行为，目的是导致 作者 / 源 的信用降低
+- 评分体系如何防刷？(这个课题相当的大，应该单独拿出一章来说，和放BDT的领取本质上一类问题)
+- 版权保护：buckyos的官方发行版本里有校验是否购买的逻辑，用户修改该逻辑，或分发去掉该验证逻辑的版本，都可能触犯版权法
+- 
+
+## APP_META_JSON的设计
+```json
+{
+  "@schema": "buckyos.app.meta.v1",
+
+    "pkg_name": "buckyos-filebrowser",
+    "version": "2.27.0",
+    "meta": {    
+         "show_name": "File Browser",
+        "icon_url": "https://example.com/icon.png",
+        "homepage_url": "https://example.com",
+        "support_url": "https://example.com/support","en": "A web-based file manager.", "zh": "一个基于 Web 的文件管理器。","license": "Apache-2.0" 
+    },
+    "pub_time": 1760000000,
+    "exp": 0,
+    "deps": {},
+    "tag": ["file", "web", "nas"],
+    "category": "app",
+
+    "author": "Filebrowser Team",
+    "owner": "did:bucky:authorxxxx",
+    "curators" ["did:bns:curator1","did:web:gitpot.ai"],
+
+    //付费应用填写，这个比较精细（站在对用户公开的角度来支持合适的细节），支持多种版本购买
+    "economics": {
+        "version" : "*", //购买的是所有版本， ^1.0 只购买1.0版本
+        "revenue_split": { "author": 0.8, "source": 0.15, "referrer": 0.05 },
+        "payment": { "usdb": {
+            "prices" : "1.99",
+            "contract" : "付款合约地址",// usdb有默认的付费合约地址，这里不应设置
+        } }
+    },
+
+// install主要是列出app希望申请的资源
+  "install": {
+    "selector_type": "single",
+    "install_config_tips": {
+      "data_mount_point": ["/data"],
+      "local_cache_mount_point": [],
+      "service_ports": { "www": 80 },
+      "container_param": null,
+      "custom_config": {}
+    },
+    "services": [
+      {
+        "name": "www",
+        "protocol": "tcp",
+        "container_port": 80,
+        "expose": {
+          "mode": "gateway_http",
+          "default_subdomain": "file",
+          "default_path_prefix": "/",
+          "tls": "optional"
+        }
+      }
+    ],
+    "mounts": [
+      { "kind": "data", "container_path": "/data", "persistence": "keep_on_uninstall" },
+      { "kind": "config", "container_path": "/config", "persistence": "delete_on_uninstall" },
+      { "kind": "cache", "container_path": "/cache", "persistence": "delete_on_uninstall" }
+    ],
+    "network": { "bind_default": "127.0.0.1", "allow_bind_public": true }
+  },
+  "permissions": {
+    "fs": {
+      "sandbox": true,
+      "home": {
+        "private": { "read": false, "write": false },
+        "public": { "read": true, "write": true },
+        "shared": { "read": true, "write": true }
+      }
+    },
+    "system": { "need_privileged": false, "devices": [], "capabilities": [] }
+  }
+}
+
+```
+是一个ContentObject(有 owner/收录者/传播者) 三要素，可以是DirObject?
+
+0. app类型，目前支持2种:docker / static_web(比如只依赖钱包的智能合约前端页面)
+1. docker 信息：, 最重要，符合docker hub规范，在一个url里同时支持amd64/arm64双架构，默认只支持amd64
+
+
 2. app提供了哪些服务？ 最简单的就是http服务，其它服务因为不能通过gateway router,而是基于端口router的，因此在系统中有一定的独占性 
     WWW服务 -> 内部端口， 配置到哪个子域名？
     其它服务 -> 外部端口，内部端口
@@ -107,8 +271,10 @@ App作者也可以通过http 402协议，扩展自己的专属付费模式。
     config -> app自己的配置，升级不会覆盖，但是卸载后会删除
     cache -> app的cache
 4. app是否需要一些其它的能力（特殊的docker参数）
-5. app的资源限制（目前不能设置）
-6. app的一些展示信息
+
+5. app的最小资源需求（最小CPU需求，最小内存需求，是否需要GPU，是否需要本地大语言模型目前不能设置）
+6. app的一些展示信息 (标准meta)
+
 7. app的作者信息
 8. app的权益信息（是否需要付费）
 

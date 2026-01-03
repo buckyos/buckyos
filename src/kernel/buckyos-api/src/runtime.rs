@@ -742,14 +742,14 @@ impl BuckyOSRuntime {
         let client = GLOBAL_NAME_CLIENT.get();
         if client.is_none() {
             let client = NameClient::new(NameClientConfig::default());
-            client.add_provider(Box::new(ZONE_PROVIDER.clone())).await;
+            client.add_provider(Box::new(ZONE_PROVIDER.clone()),None).await;
             let set_result = GLOBAL_NAME_CLIENT.set(client);
             if set_result.is_err() {
                 error!("Failed to set GLOBAL_NAME_CLIENT");
             }
         } else {
             let client = client.unwrap();            
-            client.add_provider(Box::new(ZONE_PROVIDER.clone())).await;
+            client.add_provider(Box::new(ZONE_PROVIDER.clone()),None).await;
         }
 
         Ok(())
