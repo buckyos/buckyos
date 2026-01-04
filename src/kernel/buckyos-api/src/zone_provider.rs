@@ -104,17 +104,16 @@ async fn resolve_ood_ip_by_info(ood_info: &DeviceInfo,zone_config:&ZoneConfig) -
         return Ok(ood_info.ips[0].clone());
     }
 
-    let zone_short_name = zone_config.get_zone_short_name();
-    
+    let zone_short_name = zone_config.id.to_host_name();
 
     if !ood_info.is_wan_device() {
-        let hostname = format!("{}-{}",zone_short_name.as_str(),ood_info.name.as_str());
+        let hostname = format!("{}.{}",ood_info.name.as_str(),zone_short_name.as_str());
         let addr = resolve_lan_hostname(hostname.as_str());
         if addr.is_some() {
             return Ok(addr.unwrap());
         }
 
-        let hostname = format!("{}-{}.local",zone_short_name.as_str(),ood_info.name.as_str());
+        let hostname = format!("{}.local",ood_info.name.as_str());
         let addr = resolve_lan_hostname(hostname.as_str());
         if addr.is_some() {
             return Ok(addr.unwrap());
@@ -122,21 +121,25 @@ async fn resolve_ood_ip_by_info(ood_info: &DeviceInfo,zone_config:&ZoneConfig) -
     }
 
     //try resolve by HTTP-SN
-    let sn_url = zone_config.get_sn_api_url();
-    if sn_url.is_some() {
-        let sn_url = sn_url.unwrap();
+    if let Some(sn_url) = zone_config.get_sn_api_url() {
         info!("try resolve ood {} ip by sn: {}",ood_info.name.clone(),sn_url);
-        let device_info = sn_get_device_info(sn_url.as_str(),None,
-            zone_config.get_zone_short_name().as_str(),ood_info.name.as_str()).await;
+        let owner_id = zone_config.owner.clone();
+        if owner_id.is_valid() {
+            let device_info = sn_get_device_info(
+                sn_url.as_str(),
+                None,
+                &owner_id.id.to_string(),
+                ood_info.name.as_str()
+            ).await;
 
-        if device_info.is_ok() {
-            let device_info = device_info.unwrap();
-            if device_info.ips.len() > 0 {
-                return Ok(device_info.ips[0].clone());
-            }
+            if let Ok(device_info) = device_info {
+                if !device_info.ips.is_empty() {
+                    return Ok(device_info.ips[0].clone());
+                }
 
-            if device_info.all_ip.len() > 0 {
-                return Ok(device_info.all_ip[0].clone());
+                if !device_info.all_ip.is_empty() {
+                    return Ok(device_info.all_ip[0].clone());
+                }
             }
         }
     }
@@ -415,13 +418,12 @@ impl NsProvider for ZoneProvider {
             return Err(NSError::NotFound("zone config not found".to_string()));
         }
         let zone_config = zone_config.unwrap();
-        let ood_string = zone_config.get_ood_desc_string(name);
-        if ood_string.is_some() {
+        let ood_desc = zone_config.oods.iter().find(|ood| ood.name == name);
+        if let Some(ood_desc) = ood_desc {
             //TODO: 需要更系统性的思考如何得到 devi
-            let ood_info = DeviceInfo::new(ood_string.unwrap().as_str(),DID::new("dns","ood"));
-            let ip = resolve_ood_ip_by_info(&ood_info,&zone_config).await;
-            if ip.is_ok() {
-                return Ok(NameInfo::from_address(name,ip.unwrap()));
+            let ood_info = DeviceInfo::new(ood_desc,DID::new("dns","ood"));
+            if let Ok(ip) = resolve_ood_ip_by_info(&ood_info,&zone_config).await {
+                return Ok(NameInfo::from_address(name,ip));
             }
         } 
         

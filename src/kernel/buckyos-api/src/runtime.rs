@@ -654,11 +654,9 @@ impl BuckyOSRuntime {
                 warn!("NO verfiy-hub publick key, system init with errors!");
             }
 
-            if zone_config.owner.is_some() {
-                let owner_key = zone_config.get_default_key();
-                let owner_did = zone_config.owner.as_ref().unwrap().clone();
-                if owner_key.is_some() {
-                    let owner_key = owner_key.unwrap();
+            if zone_config.owner.is_valid() {
+                let owner_did = zone_config.owner.clone();
+                if let Some(owner_key) = zone_config.get_default_key() {
                     let owner_public_key = DecodingKey::from_jwk(&owner_key).map_err(|err| {
                         error!("Failed to parse owner_public_key from zone_config: {}",err);
                         RPCErrors::ReasonError(err.to_string())
@@ -1039,9 +1037,6 @@ impl BuckyOSRuntime {
         format!("{}://{}/ndn/",schema,self.zone_id.to_host_name())
     }
 
-    pub async fn get_zone_boot_info(&self) -> Result<ZoneBootInfo> {
-        unimplemented!()
-    }
 
     //return (url,is_local)
     pub async fn get_kernel_service_url(&self,service_name: &str) -> Result<(String,bool)> {

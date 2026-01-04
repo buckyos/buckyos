@@ -112,8 +112,9 @@ async fn do_boot_scheduler() -> Result<()> {
         "zone_boot_config_str:{}",
         zone_boot_config_str.as_ref().unwrap()
     );
+    let zone_boot_config_json = zone_boot_config_str.unwrap();
     let zone_boot_config: ZoneBootConfig =
-        serde_json::from_str(&zone_boot_config_str.unwrap()).unwrap();
+        serde_json::from_str(&zone_boot_config_json).unwrap();
     let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN");
 
     if rpc_session_token_str.is_err() {
@@ -144,7 +145,7 @@ async fn do_boot_scheduler() -> Result<()> {
         error!("load ZoneConfig from boot/config failed: {:?}", e);
         e
     })?;
-    zone_config.init_by_boot_config(&zone_boot_config);
+    zone_config.init_by_boot_config(&zone_boot_config,&zone_boot_config_json);
     init_list.insert(
         "boot/config".to_string(),
         serde_json::to_string_pretty(&zone_config).unwrap(),

@@ -348,7 +348,7 @@ impl ActiveServer {
         device_config.net_id = net_id;
         device_config.ddns_sn_url = ddns_sn_url;
         device_config.support_container = is_support_container;
-        device_config.iss = format!("did:bns:{}",user_name.as_str());
+        device_config.owner = DID::new("bns", user_name.as_str());
         device_config.zone_did = Some(zone_did.clone());
         device_config.rtcp_port = device_rtcp_port;
         
@@ -476,7 +476,7 @@ impl ActiveServer {
         device_config.net_id = net_id;
         device_config.ddns_sn_url = ddns_sn_url;
         device_config.support_container = is_support_container;
-        device_config.iss = format!("did:bns:{}",user_name.as_str());
+        device_config.owner = DID::new("bns", user_name.as_str());
         device_config.zone_did = Some(zone_did.clone());
         device_config.rtcp_port = device_rtcp_port;
         //device_config.ip = device_ip;
@@ -597,7 +597,10 @@ impl ActiveServer {
     }
 
     async fn handle_get_device_info(&self,req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
-        let mut device_info = DeviceInfo::new("ood1",DID::new("dns","ood1"));
+        let ood_desc: OODDescriptionString = "ood1"
+            .parse()
+            .unwrap_or_else(|_| OODDescriptionString::new("ood1".to_string(), DeviceNodeType::OOD, None, None));
+        let mut device_info = DeviceInfo::new(&ood_desc,DID::new("dns","ood1"));
         device_info.auto_fill_by_system_info().await.unwrap();
         let device_info_json = serde_json::to_value(device_info).unwrap();
         Ok(RPCResponse::new(RPCResult::Success(json!({

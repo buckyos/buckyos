@@ -272,7 +272,7 @@ pub(crate) fn schedule_action_to_tx_actions(
     }
     let zone_config = zone_config.unwrap();
     let zone_config: ZoneConfig = serde_json::from_str(zone_config.as_str())?;
-    let zone_gateway = zone_config.zone_gateway;
+    let zone_gateway = zone_config.get_default_zone_gateway();
     match action {
         SchedulerAction::ChangeNodeStatus(node_id, node_status) => {
             let key = format!("nodes/{}/config", node_id);
@@ -332,7 +332,10 @@ pub(crate) fn schedule_action_to_tx_actions(
                     let service_config = service_config.unwrap();
                     let service_config: KernelServiceSpec =
                         serde_json::from_str(service_config.as_str())?;
-                    let is_zone_gateway = zone_gateway.contains(&new_instance.node_id);
+                    let is_zone_gateway = zone_gateway
+                        .as_ref()
+                        .map(|gw| gw == &new_instance.node_id)
+                        .unwrap_or(false);
                     let instance_action =
                         instance_service(new_instance, &service_config, is_zone_gateway)?;
                     info!("will instance service pod: {}", new_instance.spec_id);

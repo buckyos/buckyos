@@ -137,11 +137,6 @@ async fn looking_zone_boot_config(node_identity: &NodeIdentityConfig) -> Result<
     }
     
     zone_boot_config.id = Some(node_identity.zone_did.clone());
-    if node_identity.zone_iat > zone_boot_config.get_iat().unwrap_or(0) as u32 {
-        error!("zone_boot_config.iat is earlier than node_identity.zone_iat!");
-        return Err(NodeDaemonErrors::ReasonError("zone_boot_config.iat is not match!".to_string()));
-    }
-    
     if zone_boot_config.owner.is_some() {
         if zone_boot_config.owner.as_ref().unwrap() != & node_identity.owner_did {
             error!("zone boot config's owner is not match node_identity's owner_did!");
@@ -372,19 +367,16 @@ async fn report_ood_info_to_sn(device_info: &DeviceInfo, device_token_jwt: &str,
 
     let sn_url = sn_url.unwrap();
 
-    let ood_string = zone_config.get_ood_desc_string(device_info.name.as_str());
-    if ood_string.is_none() {
+    if zone_config.oods.iter().find(|ood| ood.name == device_info.name).is_none() {
         error!("this device is not in zone's ood list!");
         return Err(String::from("this device is not in zone's ood list!"));
     }
 
-    let ood_string = ood_string.unwrap();
     let owner_did = zone_config.owner.clone();
-    if owner_did.is_none() {
+    if !owner_did.is_valid() {
         error!("zone config owner_did is not set!");
         return Err(String::from("zone config owner_did is not set!"));
     }
-    let owner_did = owner_did.unwrap();
 
     sn_update_device_info(sn_url.as_str(), Some(device_token_jwt.to_string()),
                           &owner_did.id,device_info.name.as_str(), &device_info).await;

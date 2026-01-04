@@ -7,7 +7,6 @@ use name_lib::{
 use ndn_lib::named_obj_to_jwt;
 use std::fs::File;
 use std::io::Write;
-use std::collections::HashMap;
 
 pub(crate) async fn sign_json_data(
     matches: &ArgMatches,
@@ -114,9 +113,7 @@ pub(crate) fn did_matches(matches: &ArgMatches) {
         }
         return did_create_zoneboot(oods_vec, sn_host);
     }
-    if let Some(_value) = matches.get_one::<String>("create_zone") {
-        return did_create_zone();
-    }
+
 
     println!("no mathch arg")
 }
@@ -256,7 +253,6 @@ fn did_create_zoneboot(oods: Vec<String>, sn_host: Option<String>) {
         oods: oods.into_iter().map(|ood| ood.parse().unwrap()).collect(),
         sn: sn_host,
         exp,
-        devices:HashMap::new(),
         owner: None,
         owner_key: None,
         extra_info: std::collections::HashMap::new(),
@@ -269,8 +265,4 @@ fn did_create_zoneboot(oods: Vec<String>, sn_host: Option<String>) {
         .write_all(zone_boot_config_json_str.as_bytes())
         .unwrap();
     println!("zone boot config created!");
-}
-
-fn did_create_zone() {
-    unimplemented!()
 }

@@ -285,10 +285,9 @@ impl SystemConfigBuilder {
 
         let verify_hub_info = VerifyHubInfo {
             public_key: public_key_value,
-            port: 3300,
-            node_name: DEFAULT_OOD_ID.to_string(),
         };
-        zone_config.init_by_boot_config(zone_boot_config);
+        let boot_jwt = config.ood_jwt.clone().unwrap_or_default();
+        zone_config.init_by_boot_config(zone_boot_config,&boot_jwt);
         zone_config.verify_hub_info = Some(verify_hub_info);
         info!("add_boot_config: zone_config: {}", serde_json::to_string_pretty(&zone_config)?);
         self.insert_json("boot/config", &zone_config)?;

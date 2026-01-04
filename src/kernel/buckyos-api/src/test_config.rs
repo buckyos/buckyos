@@ -1,7 +1,7 @@
 use buckyos_kit::buckyos_get_unix_timestamp;
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use name_lib::{
-    DID, DIDDocumentTrait, DeviceConfig, DeviceInfo, DeviceMiniConfig, EncodedDocument, NodeIdentityConfig, OODDescriptionString, OwnerConfig, ZoneBootConfig, ZoneConfig, generate_ed25519_key_pair, get_x_from_jwk
+    DID, DIDDocumentTrait, DeviceConfig, DeviceInfo, DeviceMiniConfig, DeviceNodeType, EncodedDocument, NodeIdentityConfig, OODDescriptionString, OwnerConfig, ZoneBootConfig, ZoneConfig, generate_ed25519_key_pair, get_x_from_jwk
 };
 use package_lib::PackageId;
 use serde::{Deserialize, Serialize};
@@ -443,7 +443,6 @@ impl<'a> UserEnvScope<'a> {
             oods: vec![ood.clone()],
             sn: real_sn_host,
             exp: self.builder.exp,
-            devices:HashMap::new(),
             owner: None,
             owner_key: None,
             extra_info:HashMap::new(),
@@ -455,16 +454,17 @@ impl<'a> UserEnvScope<'a> {
         );
         zone_boot.id = Some(self.zone_did.clone());
         let mut zone_config = ZoneConfig::new(self.zone_did.clone(), self.did.clone(), get_jwk(&self.key_pair.public_key_x));
-        zone_config.init_by_boot_config(&zone_boot);
+
+        let owner_key = get_encoding_key(self.key_pair.private_key_pem.as_str());
+        let jwt = zone_boot.encode(Some(&owner_key)).unwrap();
+        let jwt_str = jwt.to_string();
+        zone_config.init_by_boot_config(&zone_boot,&jwt_str);
         write_json(
             &self.user_dir.join("zone_config.json"),
             &zone_config,
         );
-
-        let owner_key = get_encoding_key(self.key_pair.private_key_pem.as_str());
-        let jwt = zone_boot.encode(Some(&owner_key)).unwrap();
         let pkx = get_x_from_jwk(&get_jwk(&self.key_pair.public_key_x)).unwrap();
-        println!("=> {} TXT Record({}): BOOT={};", zone_host_name, jwt.to_string().len()+6, jwt.to_string());
+        println!("=> {} TXT Record({}): BOOT={};", zone_host_name, jwt_str.len()+6, jwt_str);
         println!("=> {} TXT Record({}): PKX={};", zone_host_name, pkx.len()+5, pkx.as_str());
 
         let real_rtcp_port = if rtcp_port == 2980 { None } else { Some(rtcp_port as u32) };
@@ -484,7 +484,8 @@ impl<'a> UserEnvScope<'a> {
         let mut device_config = DeviceConfig::new_by_jwk(ood.name.as_str(), device_jwk.clone());
         device_config.support_container = true;
         device_config.net_id = ood.net_id.clone();
-        device_config.iss = self.did.to_string();
+        device_config.owner = self.did.clone();
+        device_config.zone_did = Some(self.zone_did.clone());
         device_config.ddns_sn_url = ddns_sn_url;
         let node_dir = self.user_dir.join(ood.name.as_str());
         write_json(&node_dir.join("node_device_config.json"), &device_config);
@@ -497,7 +498,7 @@ impl<'a> UserEnvScope<'a> {
         );
 
         let zone_txt_record = ZoneTxtRecord {
-            boot_config_jwt: jwt.to_string(),
+            boot_config_jwt: jwt_str.clone(),
             device_mini_doc_jwt: mini_jwt.to_string(),
             pkx: pkx,
         };
@@ -589,7 +590,7 @@ pub async fn create_formula_sn_config() {
         extra_info: HashMap::new(),
     };
     let device_mini_jwt = device_mini_config.to_jwt(&get_encoding_key(owner_keys.private_key_pem.as_str())).unwrap();  
-    let mut device_config = DeviceConfig::new_by_mini_config(&device_mini_config, DID::new("web", "sn.buckyos.ai"), DID::new("bns", "buckyos"));
+    let mut device_config = DeviceConfig::new_by_mini_config(&device_mini_jwt, &device_mini_config, DID::new("web", "sn.buckyos.ai"), DID::new("bns", "buckyos"));
     device_config.net_id = Some("wan".to_string());
     write_json(&sn_dir.join("sn_device_config.json"), &device_config);
     write_file(&sn_dir.join("sn_private_key.pem"), device_keys.private_key_pem.as_str());
@@ -605,7 +606,6 @@ pub async fn create_formula_sn_config() {
         owner: None,
         owner_key: None,
         extra_info: HashMap::new(),
-        devices: HashMap::new(),
     };
 
     let owner_key = get_encoding_key(owner_keys.private_key_pem.as_str());
@@ -661,7 +661,7 @@ pub async fn create_sn_config(builder: &DevEnvBuilder,sn_ip:IpAddr,sn_base_host:
     };
     let device_mini_jwt = device_mini_config.to_jwt(&get_encoding_key(owner_keys.private_key_pem.as_str())).unwrap();
 
-    let mut device_config = DeviceConfig::new_by_mini_config(&device_mini_config, DID::new("web", "sn.devtests.org"), DID::new("bns", "sn"));
+    let mut device_config = DeviceConfig::new_by_mini_config(&device_mini_jwt, &device_mini_config, DID::new("web", "sn.devtests.org"), DID::new("bns", "sn"));
     device_config.net_id = Some("wan".to_string());
     write_json(&sn_dir.join("sn_device_config.json"), &device_config);
     write_file(&sn_dir.join("sn_private_key.pem"), device_keys.private_key_pem.as_str());
@@ -676,7 +676,6 @@ pub async fn create_sn_config(builder: &DevEnvBuilder,sn_ip:IpAddr,sn_base_host:
         owner: None,
         owner_key: None,
         extra_info: HashMap::new(),
-        devices: HashMap::new(),
     };
 
     let owner_key = get_encoding_key(owner_keys.private_key_pem.as_str());
@@ -827,8 +826,21 @@ pub async fn register_device_to_sn(
     // Get device DID from device config id field
     let device_did = device_doc.id.clone();
 
+    let ood_desc = {
+        let zone_config_path = builder.root_dir().join(user_zone_id).join("zone_config.json");
+        fs::read_to_string(&zone_config_path)
+            .ok()
+            .and_then(|content| serde_json::from_str::<ZoneConfig>(&content).ok())
+            .and_then(|zone_config| zone_config.oods.iter().find(|ood| ood.name == device_name).cloned())
+            .unwrap_or_else(|| {
+                device_name
+                    .parse::<OODDescriptionString>()
+                    .unwrap_or_else(|_| OODDescriptionString::new(device_name.to_string(), DeviceNodeType::Device, None, None))
+            })
+    };
+
     // Create DeviceInfo and fill system info
-    let mut device_info = DeviceInfo::new(device_name, device_did.clone());
+    let mut device_info = DeviceInfo::new(&ood_desc, device_did.clone());
     device_info.auto_fill_by_system_info().await
         .map_err(|e| format!("Failed to fill device system info: {}", e))?;
 
@@ -1193,18 +1205,19 @@ mod tests {
         let scope = builder.user_scope("devtest", DID::new("bns", "devtest"), &owner_keys);
         scope.create_owner_config();
 
+        // Create Zone configuration
+        let zone_did = DID::new("web", "test.buckyos.io");
         // Create device configuration
         let device_jwk = get_jwk(&device_keys.public_key_x);
         let mut device_config = DeviceConfig::new_by_jwk("ood1", device_jwk.clone());
         device_config.support_container = true;
-        device_config.iss = "did:bns:devtest".to_string();
+        device_config.owner = DID::new("bns", "devtest");
+        device_config.zone_did = Some(zone_did.clone());
 
         let owner_key = get_encoding_key(owner_keys.private_key_pem.as_str());
         let device_jwt = device_config.encode(Some(&owner_key)).unwrap();
         let device_mini_doc = DeviceMiniConfig::new_by_device_config(&device_config);
         let device_mini_doc_jwt = device_mini_doc.to_jwt(&owner_key).unwrap();
-        // Create Zone configuration
-        let zone_did = DID::new("web", "test.buckyos.io");
         let ood: OODDescriptionString = "ood1".to_string().parse().unwrap();
         let zone_txt_record = scope.create_zone_boot_config_jwt(None, ood, 2980);
 
@@ -1280,7 +1293,6 @@ mod tests {
             oods: vec![ood],
             sn: sn_host,
             exp: builder.exp(),
-            devices: HashMap::new(),
             owner: None,
             owner_key: None,
             extra_info: HashMap::new(),
@@ -1314,7 +1326,7 @@ mod tests {
             "ood1",
             "5bUuyWLOKyCre9az_IhJVIuOw8bA0gyKjstcYGHbaPE".to_string(),
         );
-        device_config.iss = "did:bns:lzc".to_string();
+        device_config.owner = DID::new("bns", "lzc");
 
         let json_str = serde_json::to_string(&device_config).unwrap();
         println!("ood json_str: {}", json_str);
@@ -1379,7 +1391,7 @@ mod tests {
             "server1",
             "LBgzvFCD4VqQxTsO2LCZjs9FPVaQV2Dt0Q5W_lr4mr0".to_string(),
         );
-        device_config.iss = "did:bns:waterflier".to_string();
+        device_config.owner = DID::new("bns", "waterflier");
         device_config.net_id = None;
 
         let json_str = serde_json::to_string(&device_config).unwrap();
