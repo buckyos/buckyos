@@ -123,7 +123,7 @@ async fn looking_zone_boot_config(node_identity: &NodeIdentityConfig) -> Result<
         // info!("zone_jwt: {:?}",zone_jwt);
         
 
-        let zone_doc = resolve_did(&node_identity.zone_did,None).await.map_err(|err| {
+        let zone_doc = resolve_did(&node_identity.zone_did,Some("boot")).await.map_err(|err| {
             error!("resolve zone did failed! {}", err);
             return NodeDaemonErrors::ReasonError("resolve zone did failed!".to_string());
         })?;

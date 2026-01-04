@@ -18,11 +18,15 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use once_cell::sync::OnceCell;
 use serde_json::{Value,json};
+use bytes::Bytes;
+use http::Method;
+use http_body_util::{combinators::BoxBody, Full, BodyExt};
+use cyfs_gateway_lib::{HttpServer, ServerError, ServerResult, StreamInfo, server_err, ServerErrorCode};
 use crate::*;
 use ::kRPC::*;
 use lazy_static::lazy_static;
 use std::sync::Mutex;
-use url::Url;
+use url::{Url, form_urlencoded};
 
 fn is_unicast_link_local_stable(ipv6: &Ipv6Addr) -> bool {
     ipv6.segments()[0] == 0xfe80
@@ -445,6 +449,130 @@ impl NsProvider for ZoneProvider {
         Err(NSError::NotFound(format!("did {} not found",did.to_host_name())))
     }
 
+}
+
+#[async_trait]
+impl HttpServer for ZoneProvider {
+    async fn serve_request(&self, req: http::Request<BoxBody<Bytes, ServerError>>, info: StreamInfo) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+
+        // helper for building CORS friendly JSON response
+        let build_resp = |body: String| -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+            Ok(http::Response::builder()
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .header(http::header::ACCESS_CONTROL_ALLOW_METHODS, "GET, OPTIONS")
+                .header(http::header::ACCESS_CONTROL_ALLOW_HEADERS, "*")
+                .body(
+                    BoxBody::new(
+                        Full::new(Bytes::from(body))
+                            .map_err(|never: std::convert::Infallible| -> ServerError { match never {} })
+                            .boxed(),
+                    ),
+                )
+                .map_err(|e| server_err!(ServerErrorCode::InvalidData, "Failed to build response: {}", e))?)
+        };
+
+        // CORS 预检
+        if *req.method() == Method::OPTIONS {
+            return Ok(http::Response::builder()
+                .status(http::StatusCode::NO_CONTENT)
+                .header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .header(http::header::ACCESS_CONTROL_ALLOW_METHODS, "GET, OPTIONS")
+                .header(http::header::ACCESS_CONTROL_ALLOW_HEADERS, "*")
+                .body(
+                    BoxBody::new(
+                        Full::new(Bytes::from_static(b""))
+                            .map_err(|never: std::convert::Infallible| -> ServerError { match never {} })
+                            .boxed(),
+                    ),
+                )
+                .map_err(|e| server_err!(ServerErrorCode::InvalidData, "Failed to build response: {}", e))?);
+        }
+
+        if *req.method() != Method::GET {
+            return Err(server_err!(ServerErrorCode::BadRequest, "Method not allowed"));
+        }
+
+        // GET https://resolver.example.com/1.0/identifiers/did:dev:abcdefg?type=doc_type
+        let path = req.uri().path().to_string();
+        if path.starts_with("/1.0/identifiers/") {
+            let did_str = path.trim_start_matches("/1.0/identifiers/").to_string();
+            if did_str.is_empty() {
+                return Err(server_err!(ServerErrorCode::BadRequest, "invalid did in path"));
+            }
+
+            // parse optional `type` query parameter
+            let typ = req
+                .uri()
+                .query()
+                .and_then(|q| {
+                    form_urlencoded::parse(q.as_bytes())
+                        .find(|(k, _)| k == "type")
+                        .map(|(_, v)| v.into_owned())
+                });
+
+            let did_doc = self
+                .do_query_did(did_str.as_str(), typ)
+                .await
+                .map_err(|e| server_err!(ServerErrorCode::InvalidData, "query did failed: {}", e))?;
+
+            return build_resp(did_doc);
+        }
+
+        // GET http://{did_host_name}/.well-known/{doc_type}.json
+        if path.starts_with("/.well-known/") && path.ends_with(".json") {
+            // pick host from URI first, fallback to Host header
+            let host = req
+                .uri()
+                .host()
+                .map(|v| v.to_string())
+                .or_else(|| {
+                    req.headers()
+                        .get(http::header::HOST)
+                        .and_then(|v| v.to_str().ok())
+                        .map(|v| v.split(':').next().unwrap_or(v).to_string())
+                });
+
+            if host.is_none() {
+                return Err(server_err!(ServerErrorCode::BadRequest, "host not found"));
+            }
+            let host = host.unwrap();
+
+            // doc_type 是文件名（去掉.json）
+            let doc_type = path
+                .trim_start_matches("/.well-known/")
+                .trim_end_matches(".json")
+                .to_string();
+
+            // 将 host 转换为 DID:web 形式，若本身已是 DID 字符串则直接使用
+            let did_str = if DID::is_did(host.as_str()) {
+                host.clone()
+            } else {
+                format!("did:web:{}", host)
+            };
+
+            let did_doc = self
+                .do_query_did(did_str.as_str(), Some(doc_type))
+                .await
+                .map_err(|e| server_err!(ServerErrorCode::InvalidData, "query did failed: {}", e))?;
+
+            return build_resp(did_doc);
+        }
+
+        return Err(server_err!(ServerErrorCode::BadRequest, "Method not allowed"));
+    }
+
+    fn id(&self) -> String {
+        "zone-did-resolver".to_string()
+    }
+
+    fn http_version(&self) -> http::Version {
+        http::Version::HTTP_11
+    }
+
+    fn http3_port(&self) -> Option<u16> {
+        None
+    }
 }
 
 

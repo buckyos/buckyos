@@ -20,6 +20,9 @@ tokio = { workspace = true }
 jsonwebtoken = { workspace = true }
 reqwest = { workspace = true }
 url = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
 base64 = { workspace = true }
 ed25519-dalek = { workspace = true }
 cyfs-sn = { workspace = true }
@@ -30,4 +33,5 @@ name-lib = { workspace = true }
 name-client = { workspace = true }
 kRPC ={ workspace = true }
 rbac = { workspace = true }
+cyfs-gateway-lib = { workspace = true }
 

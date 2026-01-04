@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
-use log::{debug, info};
+use log::{debug, info, warn};
 use buckyos_api::{
-    AppDoc, AppServiceSpec, GatewaySettings, GatewayShortcut, KernelServiceDoc, KernelServiceSpec, NodeConfig, NodeState, SCHEDULER_SERVICE_UNIQUE_ID, ServiceExposeConfig, ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, UserSettings, UserState, UserType, VERIFY_HUB_UNIQUE_ID
+    AppDoc, AppServiceSpec, GatewaySettings, GatewayShortcut, KernelServiceDoc, KernelServiceSpec, NodeConfig, NodeState, SCHEDULER_SERVICE_UNIQUE_ID, ServiceExposeConfig, ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, UserSettings, UserState, UserType, VERIFY_HUB_UNIQUE_ID, generate_repo_service_doc, generate_scheduler_service_doc, generate_smb_service_doc, generate_verify_hub_service_doc
 };
 use buckyos_api::{SMB_SERVICE_UNIQUE_ID, REPO_SERVICE_UNIQUE_ID};
 use jsonwebtoken::jwk::Jwk;
@@ -147,10 +147,13 @@ impl SystemConfigBuilder {
         self.entries
             .insert("system/verify-hub/key".into(), verify_hub_private_key.to_string());
 
+        let service_doc = generate_verify_hub_service_doc();
+
         let config = build_kernel_service_spec(
             VERIFY_HUB_UNIQUE_ID,
             3300,
-            1
+            1,
+            service_doc
         ).await?;
         self.insert_json("services/verify-hub/spec", &config)?;
 
@@ -163,10 +166,12 @@ impl SystemConfigBuilder {
     }
 
     pub async fn add_scheduler(&mut self) -> Result<&mut Self> {
+        let service_doc = generate_scheduler_service_doc();
         let config = build_kernel_service_spec(
             SCHEDULER_SERVICE_UNIQUE_ID,
             3400,
-            1
+            1,
+            service_doc
         ).await?;
         self.insert_json("services/scheduler/spec", &config)?;
         Ok(self)
@@ -201,10 +206,12 @@ impl SystemConfigBuilder {
     }
 
     pub async fn add_repo_service(&mut self) -> Result<&mut Self> {
+        let service_doc = generate_repo_service_doc();
         let config = build_kernel_service_spec(
             REPO_SERVICE_UNIQUE_ID,
             4000,
-            1
+            1,
+            service_doc
         ).await?;
         self.insert_json("services/repo-service/spec", &config)?;
 
@@ -233,10 +240,12 @@ impl SystemConfigBuilder {
     }
 
     pub async fn add_smb_service(&mut self) -> Result<&mut Self> {
+        let service_doc = generate_smb_service_doc();
         let config = build_kernel_service_spec(
             SMB_SERVICE_UNIQUE_ID,
             4100,
-            1
+            1,
+            service_doc
         ).await?;
         self.insert_json("services/smb-service/spec", &config)?;
         Ok(self)
@@ -314,14 +323,10 @@ async fn build_kernel_service_spec(
     pkg_name: &str,
     port: u16,
     expected_instance_count: u32,
+    service_doc: KernelServiceDoc,
 ) -> Result<KernelServiceSpec> {
     let service_did = PackageId::unique_name_to_did(pkg_name);
-    //实际上，读取的是保存在 get_buckyos_service_local_data_dir("name-client", None).join("did_docs")/ 写的配置
-    // 这种设计相比直接调用generate_kernel_service_doc的好处是，可以更好的支持安装包制作正确的service doc
-    let service_doc = resolve_did(&service_did, None).await?;
-    let doc_value = service_doc.to_json_value()?;
-    let service_doc = serde_json::from_value(doc_value)?;
-
+   
     let mut install_config = ServiceInstallConfig::default();
     let service_expose_config = ServiceExposeConfig {
         sub_hostname: Vec::new(),
