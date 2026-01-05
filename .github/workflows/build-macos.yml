@@ -76,10 +76,8 @@ jobs:
         if-no-files-found: error
     - name: Report Upload Urls
       run: |
-        npm i
-        npm run build
-        node client.js seturl ${{inputs.version}}+build${{ steps.short_time.outputs.last6 }} macos ${{inputs.arch}} ${{steps.upload.outputs.artifact-url}} ${{github.sha}}
-      working-directory: ./test/test_server
+        npm install @buckyos/test-server-client
+        npx test-server-client seturl buckyos ${{inputs.version}}+build${{ steps.short_time.outputs.last6 }} macos ${{inputs.arch}} ${{steps.upload.outputs.artifact-url}} ${{github.sha}}
       env:
         USERNAME: ${{ secrets.TEST_SERVER_USERNAME }}
         PRIVATE_KEY: ${{ secrets.TEST_SERVER_PRIVATE_KEY }}
