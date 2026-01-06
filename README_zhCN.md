@@ -1,24 +1,30 @@
-# BuckyOS Alpha3(0.4.1) 发布！
+# BuckyOS Beta1(0.5.1) 发布！
 
-Alpha3 是计划中的最后一个 Alpha 版本，其主要目标是完成 Alpha2 中遗留的功能，通过建立更完善的测试体系来提升系统稳定性，并为 Beta 版本的公开测试做好准备。
 
-Alpha3 计划实现的主要功能包括：
+Beta1 实现的主要功能包括：
 
-* 修复上一个版本中为赶进度而匆忙开发的内核组件，确保其健壮性，并完善测试用例
-* 改进标准的分布式开发环境，并基于该环境构建测试用例
-* 优化代码仓库结构，为 cyfs-gateway 的独立产品化做准备
-* 构建完整的 Nightl-channel，并支持自动版本更新
-* 改进 ndn-lib，新增对 fileobject 的 chunklist 支持
-* 为 ndn-lib 增加对容器与 DirObject（Git 模式）的基本支持支持 
-* 支持通过 USB4 在 Mac 上连接并访问 smba 服务
-* 支持在 BuckyOS 中快速添加 Docker URL，并通过 appID.\$zoneID 方式访问应用
-* backup/cyfs-gateway独立产品化的规划移至beta1
-* 考虑到dfs的集成问题，暂时搁置system_config的etcd后端计划
+* 核心修改:将网络内核迁移到新版的，基于process-chain的cyfs-gateway上。至此，BuckyOS的网络内核基本稳定
+* 新增BuckyOSApp，用户使用Web3.0钱包的方式管理自己的私钥，并完善了整个激活流程
+* 对Beta阶段面向的主要场景:在Windows/OSX上安装进行了系统性的优化
+* 继续完善调度器，让调度器的核心逻辑更加独立，复杂调度可以理论先行完成实现
+* 引入了buckyos-devkit辅助开发工具，优化了日常开发测试的流程
+* 基于buckyos-devkit,完善了基于multipass的常规复杂场景的开发循环
+* 完善resolve-did机制
+* 基于新的ndn-lib核心对象，调整pkg-meta
+* 基于新版本的pkg-meta，实现App安装协议
+
 
 加入我们的征程吧！欢迎随时提交 issue 或 pull request！让我们共同构建下一代分布式AI操作系统！
 
-目前我们正处于Alpha3的版本DAO验收阶段，我们计划下周开启Beta1的研发工作。Beta1是BuckyOS是一个关键的版本，这个版本我们将按计划完成与[OpenDAN](https://github.com/fiatrete/OpenDAN-Personal-AI-OS)进行整合，在BuckyOS里提供OpenDAN所需要的关键AI能力。
+随着Beta1版本的发布，我们已经进入了Beta1.2版本的研发阶段。Beta1.2版本计划在2026年2月15日发布，这是一个快速迭代版本，基本没有内核级别的修改
 
+- 完成与buckyos backup suite的集成。实现系统的整体备份和恢复
+- 内核完成对OPTask的支持（备份和恢复依赖该设施）
+- 完成system control service服务，完成系统控制面板UI
+- 完成App安装协议的相关UI，做好对首个大型killapp `gitpot.ai`的支持
+- 集成slog,klog等已经完成的基础服务
+- 完成`gitpot.ai`需要的一些AI基础设施
+- 整理buckyos的所有文档
 
 ## 开始使用
 
@@ -57,6 +63,11 @@ http://<你的服务器IP>:3180/index.html
 
 你将看到 BuckyOS 的启动设置页面，按照指示完成设置即可！在 Alpha 测试阶段，使用 `sn.buckyos.ai` 的中继和 D-DNS 服务需要邀请码（点击此处获取邀请码），你可以从我们的 issue 页面获得。（如果你拥有自己的域名并已在路由器上设置端口转发，则无需使用 `sn.buckyos.ai` 的任何服务，可直接尝试，无需邀请码）
 
+#### 端口与访问入口速查（Beta1）
+
+- **首次打开 Web 启动页**：默认 `http://<设备IP>:3180/index.html`
+- **待激活设备发现/激活服务**：默认 `http://<设备IP>:3182/`（更多见 [`notepads/设备激活协议.md`](notepads/设备激活协议.md)）
+
 ### Windows 安装
 
 敬请期待。
@@ -80,14 +91,117 @@ http://<你的服务器IP>:3180/index.html
 
 
 ```bash
-git clone https://github.com/buckyos/buckyos.git && cd buckyos && python3 devenv.py && python3 src/build.py
+git clone https://github.com/buckyos/buckyos.git
 ```
 
-构建脚本完成后，本地机器上的安装就完成了（为了方便，默认包含了测试身份信息）。运行以下命令启动初始状态下的 BuckyOS：
+clone 完成后，需要安装 `buckyos-devkit`（它会提供 `buckyos-build` / `buckyos-install` 等命令）。建议在项目目录创建并激活 venv 后再安装：
 
 ```bash
-sudo /opt/buckyos/bin/node_daemon --enable_active
+cd buckyos
+python3 -m venv venv
+source venv/bin/activate
+python3 -m pip install -U "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"
 ```
+
+开始构建：构建前可以参考 `devenv.py` 搭建环境。我们主要依赖 `Rust 工具链、Node.js + pnpm、Python3.12、docker.io` 工具链。
+
+```
+cd buckyos
+buckyos-build
+```
+
+
+构建完成后，通过下面命令完成开发机安装：
+
+- **首次安装/全量重装（推荐）**：会执行 clean + install_app_data + 更新 modules 构建产物
+- **日常增量覆盖**：只覆盖更新 modules 构建产物
+
+```bash
+# 首次安装 / 全量重装（推荐）
+buckyos-install --all
+
+# 日常增量（不带 --all）
+# buckyos-install
+```
+
+然后生成配置组（下面的 `release/dev/...` 是“配置组名称”，用于生成一套可运行的系统配置）：
+
+```bash
+python3 make_config release
+```
+
+目前cyfs-gateway是独立构造的，因此在运行前先需要从源码构造cyfs-gateway
+```bash
+git clone https://github.com/buckyos/cyfs-gateway.git
+cd cyfs-gateway
+buckyos-build
+buckyos-install --all
+```
+
+#### 过渡期 Dev 一条龙（从 clone 到生成 sn 测试组配置）
+
+如果你是新环境从零开始，且需要构建安装 **buckyos + cyfs-gateway** 并生成 **sn** 测试组配置（含 3 个 OOD 身份），可以直接按下面顺序执行（这份顺序来自社区整理的 issue 说明，强烈建议照做）：
+
+- 参考：[`buckyos/issues/321`](https://github.com/buckyos/buckyos/issues/321)
+
+```bash
+# 0) 准备工作目录
+mkdir -p ~/work && cd ~/work
+
+# 1) clone repos
+git clone https://github.com/buckyos/buckyos.git
+git clone https://github.com/buckyos/cyfs-gateway.git
+
+# 2) 安装 buckyos-devkit（提供 buckyos-build / buckyos-install 命令）
+cd ~/work/buckyos
+python3 -m venv venv
+source venv/bin/activate
+python3 -m pip install -U "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"
+
+# 3) （过渡期常见坑）更新 Rust 依赖锁
+cargo update
+
+# 4) 在 buckyos repo 构建 + 全量安装
+buckyos-build
+buckyos-install --all
+
+# 5) 在 cyfs-gateway repo 构建 + 全量安装
+cd ~/work/cyfs-gateway
+cargo update
+buckyos-build
+buckyos-install --all
+
+# 6) 回到 buckyos repo：生成 sn 所需的 3 个 OOD 身份 + 生成 sn 配置
+cd ~/work/buckyos
+python3 make_config.py alice.ood1
+python3 make_config.py bob.ood1
+python3 make_config.py charlie.ood1
+python3 make_config.py sn
+```
+
+补充说明（非常重要）：
+
+- `buckyos-build` / `buckyos-install` **不是**仓库自带脚本，它们来自 Python 包 `buckyos-devkit`。
+- `--app=<name>` 是可选参数：
+  - `buckyos-build --app=<name>`：只构建某个 app
+  - **不传 `--app`**：默认会对 `bucky_project.yaml` 中定义的**所有 apps**执行 build/install
+- `--all` 语义：
+  - `buckyos-install --all`：全量重装（clean → install_app_data → 更新 modules 构建结果）
+  - `buckyos-install`（不带 `--all`）：增量覆盖（只复制 modules 构建结果）
+
+#### 常见坑点与排查（过渡期）
+
+- **经常需要 `cargo update`**：尤其是新环境或依赖锁漂移时。
+- **`buckyos-devkit` 更新快**：过渡期通常需要从 git 安装最新版（见上面的 pip 命令）。
+- **`make_config.py` 依赖 `buckycli`**：通常需要先在 buckyos repo 执行 `buckyos-build && buckyos-install` 确保 `buckycli` 就绪。
+- **测试 CA 根证书复用是隐式行为**：方便浏览器安装，但清理/切换环境时容易困惑（后续我们会在工具链里补“reset 指令”）。
+
+启动！使用下面命令即可进入和安装包一样的激活流程。因为是开发启动，所以激活成功后不会自动重启，还需要再执行一次该命令让buckyos以激活模式运行
+```bash
+sudo /opt/buckyos/bin/node-daemon/node_daemon --enable_active
+```
+
+说明：不同发布/平台的二进制目录可能是 `node-daemon/node_daemon` 或 `node_daemon/node_daemon`；如果一个路径不存在，换另一个即可。
 
 ### 源码目录的常用脚本
 
@@ -110,8 +224,20 @@ python3 start.py -reinstall $group_name
 ```
 如果group_name为空，则用空配置文件启动buckyos,此时进入待激活状态。
 目前系统带有两组配置文件
-- dev 
-- dev_no_docker
+- release （在正式环境中运行，使用buckyos.ai的sn设施）
+- dev (无sn的开发测试配置，不依赖任何本机外的组件)
+- alice.ood1,bob.ood1,charlie.ood1,3个预设身份，均使用计划部署到虚拟测试环境的devtests.org环境
+- sn 虚拟测试环境中的sn
+
+#### App 安装协议与 UI 设计（文档入口）
+
+- App 安装协议（第三方网页如何触发安装、分享安装等）：[`notepads/app安装协议.md`](notepads/app安装协议.md)
+- 安装流程 UI 草案（安装确认/高级配置/进度/失败/分享/信任机制等）：[`notepads/app安装UI.md`](notepads/app安装UI.md)
+
+#### SN 虚拟机测试环境（sntest）
+
+如果你要跑 sn 虚拟机测试环境（`sntest`），并在 `buckyos (ood) + cyfs-gateway (sn)` 两个工程间迭代构建/更新，可参考：[`notepads/sntest环境使用.md`](notepads/sntest环境使用.md)
+
 
 老的 `python3 start.py --all`脚本现在等价于  `python3 start.py --reinstall dev`
 
@@ -149,16 +275,19 @@ SourceDAO 是基于以上理念的我们的开源 DAO 智能合约。更多详�
 
 #### 2024
 
-- **0.1 Demo：** 2.5%（已完成）
-- **0.2 PoC：** 2.5%（已完成）
-- **0.3 Alpha1：** 2.5%（已完成）
-- **0.4 Alpha2：** 2.5%（实际发布日期2025年4月，已完成）
+- **0.1 Demo：** 2.5%（2024年6月 已完成）
+- **0.2 PoC：** 2.5%（2024年9月 已完成）
+- **0.3 Alpha1：** 2.5%（2024年12月 已完成）
 
 #### 2025
+- **0.4 Alpha2：** 2.5%（2025年3月，已完成）
+- **0.4.1 Alpha3：** 2.5%（2025年9月 已完成）
+- **0.5.1 Beta1:** 4%（2025年12月 本次发布 首个公开发行版本）
 
-- **0.4.1 Alpha3：** 2.5%（本次发布）
-- **0.5 Beta1:** 5%（2025年10月 首个公开发行版本）
-- **0.6 Beta2:** 2.5%（2025 年 Q4）
+#### 2026
+
+- **0.5.2 Beta1.2:** 1%（2026 年 Q1）
+- **0.6 Beta2** 2.5% （2026年Q2）
 
 
 ## 许可证
