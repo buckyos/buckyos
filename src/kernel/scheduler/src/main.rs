@@ -53,11 +53,20 @@ async fn create_init_list_by_template(zone_boot_config: &ZoneBootConfig) -> Resu
     let verify_hub_public_key: Jwk = serde_json::from_value(public_key_jwk).map_err(|e| anyhow::anyhow!("invalid jwk: {}", e))?;
 
     //load boot.template
-    let template_type_str = "boot".to_string();
     let template_file_path = get_buckyos_system_etc_dir()
         .join("scheduler")
-        .join(format!("{}.template.toml", template_type_str));
-    let template_str = tokio::fs::read_to_string(template_file_path).await?;
+        .join("boot.template.toml");
+    let template_str = match tokio::fs::read_to_string(&template_file_path).await {
+        Ok(content) => content,
+        Err(err) => {
+            error!(
+                "read template failed: path={}, err={}",
+                template_file_path.to_string_lossy(),
+                err
+            );
+            exit(1);
+        }
+    };
 
     let mut engine = upon::Engine::new();
     engine.add_template("config", &template_str)?;
