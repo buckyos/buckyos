@@ -55,7 +55,7 @@ pub fn generate_verify_hub_service_doc() -> KernelServiceDoc {
     const VERSION: &str = env!("CARGO_PKG_VERSION");
     let owner_did = DID::from_str("did:bns:buckyos").unwrap();
     let mut pkg_meta = PackageMeta::new(VERIFY_HUB_UNIQUE_ID, VERSION, "did:bns:buckyos",&owner_did, None);
-    pkg_meta.meta = json!("Verify Hub is a service that verifies the authenticity of the user's identity.");
+
     let doc = KernelServiceDoc {
         meta: pkg_meta,
         show_name: "Verify Hub".to_string(),

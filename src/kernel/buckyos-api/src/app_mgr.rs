@@ -393,7 +393,7 @@ pub struct AppServiceSpec {
 
 impl AppServiceSpec {
     pub fn app_id(&self) -> &str {
-        self.app_doc.pkg_name.as_str()
+        self.app_doc.name.as_str()
     }
 }
 

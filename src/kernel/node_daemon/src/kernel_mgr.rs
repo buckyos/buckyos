@@ -29,11 +29,17 @@ impl KernelServiceRunItem {
         app_id: &str,
         kernel_config: &KernelServiceInstanceConfig
     ) -> Self {
-        let service_pkg = ServicePkg::new(kernel_config.service_sepc.service_doc.meta.pkg_name.clone(), 
+        let pkg_name = kernel_config
+            .service_sepc
+            .service_doc
+            .meta
+            .name
+            .clone();
+        let service_pkg = ServicePkg::new(pkg_name.clone(), 
         get_buckyos_system_bin_dir());
         Self {
             service_name: app_id.to_string(),
-            pkg_id: kernel_config.service_sepc.service_doc.meta.pkg_name.clone(),
+            pkg_id: pkg_name,
             service_pkg: service_pkg,
         }
     }

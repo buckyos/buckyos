@@ -23,7 +23,7 @@ pub fn generate_scheduler_service_doc() -> KernelServiceDoc {
     const VERSION: &str = env!("CARGO_PKG_VERSION");
     let owner_did = DID::from_str("did:bns:buckyos").unwrap();
     let mut pkg_meta = PackageMeta::new(SCHEDULER_SERVICE_UNIQUE_ID, VERSION, "did:bns:buckyos",&owner_did, None);
-    pkg_meta.meta = json!("Scheduler is the core service of buckyos, controlling the scheduling of tasks and services");
+
     let doc = KernelServiceDoc {
         meta: pkg_meta,
         show_name: "Scheduler".to_string(),

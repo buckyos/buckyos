@@ -217,28 +217,28 @@ impl RepoServer {
                     error!("cacl_pkg_deps_metas failed, err:{}", e);
                     RPCErrors::ReasonError(format!("cacl_pkg_deps_metas failed, err:{}", e))
                 })?;
-            if pkg_meta.content.is_some() {
+            if !pkg_meta.content.is_empty() {
                 download_list.insert(
-                    pkg_meta.content.clone().unwrap(),
+                    pkg_meta.content.clone(),
                     WillDownloadPkgInfo {
-                        pkg_name: pkg_meta.pkg_name.clone(),
+                        pkg_name: pkg_meta.name.clone(),
                         pkg_version: pkg_meta.version.clone(),
-                        chunk_id: pkg_meta.content.clone().unwrap(),
-                        chunk_size: pkg_meta.size.clone(),
+                        chunk_id: pkg_meta.content.clone(),
+                        chunk_size: pkg_meta.size,
                     },
                 );
             }
         }
 
         for (pkg_meta_obj_id, pkg_meta) in deps_metas.iter() {
-            if pkg_meta.content.is_some() {
+            if !pkg_meta.content.is_empty() {
                 download_list.insert(
-                    pkg_meta.content.clone().unwrap(),
+                    pkg_meta.content.clone(),
                     WillDownloadPkgInfo {
-                        pkg_name: pkg_meta.pkg_name.clone(),
+                        pkg_name: pkg_meta.name.clone(),
                         pkg_version: pkg_meta.version.clone(),
-                        chunk_id: pkg_meta.content.clone().unwrap(),
-                        chunk_size: pkg_meta.size.clone(),
+                        chunk_id: pkg_meta.content.clone(),
+                        chunk_size: pkg_meta.size,
                     },
                 );
             }
@@ -469,14 +469,14 @@ impl RepoServer {
                 )));
             }
             let (pkg_meta_obj_id, pkg_meta) = pkg_meta.unwrap();
-            if pkg_meta.content.is_none() {
+            if pkg_meta.content.is_empty() {
                 error!("pkg_meta not found, pkg_id:{}", pkg_id);
                 return Err(RPCErrors::ReasonError(format!(
                     "pkg_meta not found, pkg_id:{}",
                     pkg_id
                 )));
             }
-            let chunk_id = pkg_meta.content.unwrap();
+            let chunk_id = pkg_meta.content.clone();
             total_size += pkg_meta.size;
             if will_install_chunk_id.len() > 3 {}
             {
@@ -855,8 +855,8 @@ impl RepoServer {
                 RPCErrors::ReasonError(format!("parse pkg_meta_jwt failed, err:{}", e))
             })?;
 
-            if pkg_meta.content.is_some() {
-                let chunk_id = pkg_meta.content.unwrap();
+            if !pkg_meta.content.is_empty() {
+                let chunk_id = pkg_meta.content.clone();
                 let chunk_id = ChunkId::new(chunk_id.as_str()).map_err(|e| {
                     error!("parse chunk_id failed, err:{}", e);
                     RPCErrors::ReasonError(format!("parse chunk_id failed, err:{}", e))
@@ -865,12 +865,12 @@ impl RepoServer {
                 if !is_exist {
                     error!(
                         "handle_pub_pkg: {} 's chunk:{} not found",
-                        pkg_meta.pkg_name.as_str(),
+                        pkg_meta.name.as_str(),
                         chunk_id.to_string()
                     );
                     return Err(RPCErrors::ReasonError(format!(
                         "{} 's chunk:{} not found",
-                        pkg_meta.pkg_name.as_str(),
+                        pkg_meta.name.as_str(),
                         chunk_id.to_string()
                     )));
                 }
@@ -880,7 +880,7 @@ impl RepoServer {
                     None,
                     format!(
                         "/repo/pkg/{}/{}/chunk",
-                        pkg_meta.pkg_name.as_str(),
+                        pkg_meta.name.as_str(),
                         pkg_meta.version.as_str()
                     )
                     .as_str(),
@@ -892,12 +892,12 @@ impl RepoServer {
                 .map_err(|e| {
                     error!(
                         "handle_pub_pkg: {} 's chunk:{} not found",
-                        pkg_meta.pkg_name.as_str(),
+                        pkg_meta.name.as_str(),
                         chunk_id.to_string()
                     );
                     RPCErrors::ReasonError(format!(
                         "{} 's chunk:{} not found",
-                        pkg_meta.pkg_name.as_str(),
+                        pkg_meta.name.as_str(),
                         chunk_id.to_string()
                     ))
                 })?;
@@ -908,9 +908,9 @@ impl RepoServer {
             })?;
             let package_meta_node = PackageMetaNode {
                 meta_jwt: pkg_meta_jwt.clone(),
-                pkg_name: pkg_meta.pkg_name.clone(),
+                pkg_name: pkg_meta.name.clone(),
                 version: pkg_meta.version.clone(),
-                tag: pkg_meta.tag.clone(),
+                tag: pkg_meta.version_tag.clone(),
                 author: pkg_meta.author.clone(),
                 author_pk: jwk_str,
             };
@@ -1114,7 +1114,7 @@ impl RepoServer {
 
             //3. 尝试下载chunkid到本地，失败在发布任务中写入错误信息，下载成功的chunk会关联到正确的path,防止被删除
             //4. 所有的chunk都准备好了，本次发布成功（业务逻辑也可以加入审核流程，手工将发布任务的状态设置为成功）
-            if pkg_meta.content.is_some() {
+            if !pkg_meta.content.is_empty() {
                 let chunk_size = pkg_meta.size;
                 if chunk_size == 0 {
                     error!("chunk_size is 0");
@@ -1123,7 +1123,7 @@ impl RepoServer {
                 total_size += chunk_size;
                 let chunk_url = "".to_string(); // chunk_url field has been removed from PackageMeta
                 will_download_chunk_list.insert(
-                    pkg_meta.content.as_ref().unwrap().clone(),
+                    pkg_meta.content.clone(),
                     (chunk_url, chunk_size),
                 );
             }
@@ -1238,9 +1238,9 @@ impl RepoServer {
 
                 let package_meta_node = PackageMetaNode {
                     meta_jwt: pkg_meta_jwt.clone(),
-                    pkg_name: pkg_meta.pkg_name.clone(),
+                    pkg_name: pkg_meta.name.clone(),
                     version: pkg_meta.version.clone(),
-                    tag: pkg_meta.tag.clone(),
+                    tag: pkg_meta.version_tag.clone(),
                     author: pkg_meta.author.clone(),
                     author_pk: serde_json::to_string(&pub_task_data.author_pk).map_err(|e| {
                         error!("serialize author_pk failed, err:{}", e);

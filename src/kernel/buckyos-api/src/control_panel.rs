@@ -224,7 +224,7 @@ impl ControlPanelClient {
     pub async fn install_app_service(&self,user_id:&str,app_config:&AppServiceSpec,shortcut:Option<String>) -> Result<u64> {
         // TODO: if you want install a web-client-app, use another function
         //1. create users/{user_id}/apps/{appid}/config
-        let app_id = app_config.app_doc.pkg_name.as_str();
+        let app_id = app_config.app_doc.name.as_str();
         let app_config_str = serde_json::to_string(app_config).unwrap();
         self.system_config_client.create(format!("users/{}/apps/{}/config",user_id,app_id).as_str(),app_config_str.as_str()).await
             .map_err(|e| RPCErrors::ReasonError(format!("install app service failed, err:{}", e)))?;

@@ -109,7 +109,7 @@ pub fn generate_smb_service_doc() -> KernelServiceDoc {
     const VERSION: &str = env!("CARGO_PKG_VERSION");
     let owner_did = DID::from_str("did:bns:buckyos").unwrap();
     let mut pkg_meta = PackageMeta::new(SMB_SERVICE_UNIQUE_ID, VERSION, "did:bns:buckyos",&owner_did, None);
-    pkg_meta.meta = json!("smb_service is the samba service of buckyos");
+
     let doc = KernelServiceDoc {
         meta: pkg_meta,
         show_name: "Samba Service".to_string(),

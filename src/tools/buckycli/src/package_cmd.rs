@@ -104,7 +104,7 @@ pub async fn pack_raw_pkg(pkg_path: &str, dest_dir: &str,private_key:Option<(Str
     let mut meta_data:PackageMeta = serde_json::from_str(&meta_content)
         .map_err(|e| format!("Failed to parse pkg_meta.json: {}", e.to_string()))?;
 
-    let pkg_name = meta_data.pkg_name.clone();
+    let pkg_name = meta_data.name.clone();
     
     let version = meta_data.version.clone();
     let author = meta_data.author.clone();
@@ -130,7 +130,7 @@ pub async fn pack_raw_pkg(pkg_path: &str, dest_dir: &str,private_key:Option<(Str
         .map_err(|e| format!("Failed to calculate file chunk id: {}", e.to_string()))?;
     
     // Update metadata
-    meta_data.content = Some(chunk_id.to_string());
+    meta_data.content = chunk_id.to_string();
     println!("meta_data chunk_id: {}", chunk_id.to_string());
     meta_data.size = file_size;
 
@@ -201,7 +201,7 @@ pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), St
             .map_err(|e| format!("Failed to parse pkg_meta.jwt: {}", e.to_string()))?;
         let pkg_meta_obj_id = build_obj_id("pkg",&pkg_meta_jwt_str);
 
-        let pkg_tar_path = pkg_path.join(format!("{}#{}.tar.gz", pkg_meta.pkg_name, pkg_meta.version));
+        let pkg_tar_path = pkg_path.join(format!("{}#{}.tar.gz", pkg_meta.name, pkg_meta.version));
         if !pkg_tar_path.exists() {
             println!("tar.gz file does not exist: {}", pkg_tar_path.display());
             continue;
@@ -211,7 +211,7 @@ pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), St
 
         let (chunk_id,file_size) = calculate_file_chunk_id(pkg_tar_path.to_str().unwrap(),chunk_type).await
             .map_err(|e| format!("Failed to calculate file chunk id: {}", e.to_string()))?;
-        if Some(chunk_id.to_string()) != pkg_meta.content {
+        if chunk_id.to_string() != pkg_meta.content {
             println!("chunk_id does not match: {}", chunk_id.to_string());
             continue;
         }
@@ -277,7 +277,7 @@ pub async fn publish_app_pkg(dapp_dir_path: &str,is_pub_sub_pkg:bool) -> Result<
         .map_err(|e| format!("Failed to read app doc.json: {}", e.to_string()))?;
     let mut app_meta:AppDoc = serde_json::from_str(&app_meta_str)
         .map_err(|e| format!("Failed to parse app doc.json: {}", e.to_string()))?;
-    //info!("app_meta:{} {}",app_meta.pkg_name.as_str(), serde_json::to_string_pretty(&app_meta).unwrap());
+    //info!("app_meta:{} {}",app_meta.name.as_str(), serde_json::to_string_pretty(&app_meta).unwrap());
     let mut pkg_path_list = Vec::new();
 
     for (sub_pkg_section,pkg_desc) in app_meta.pkg_list.iter() {
@@ -316,7 +316,7 @@ pub async fn publish_app_pkg(dapp_dir_path: &str,is_pub_sub_pkg:bool) -> Result<
 
     let pub_result = publish_raw_pkg(&pkg_path_list).await?;
 
-    println!("Successfully published App {}", app_meta.pkg_name);
+    println!("Successfully published App {}", app_meta.name);
     Ok(())
 }
 
@@ -460,9 +460,9 @@ pub async fn set_pkg_meta(
     let mut pkg_meta_map = HashMap::new();
     pkg_meta_map.insert(meta_obj_id.to_string(),PackageMetaNode {
         meta_jwt: meta_content,
-        pkg_name: meta_data.pkg_name.clone(),
+        pkg_name: meta_data.name.clone(),
         version: meta_data.version.clone(),
-        tag: meta_data.tag.clone(),
+        tag: meta_data.version_tag.clone(),
         author: meta_data.author.clone(),
         author_pk: "".to_string(),
     });
@@ -480,7 +480,6 @@ mod tests {
     use name_lib::{DID, load_private_key};
     use tempfile::tempdir;
     use std::mem;
-    use serde_json::json;
     
     #[tokio::test]
     async fn test_pack_pkg() {
@@ -514,21 +513,15 @@ mod tests {
         ).unwrap();
         
         // Create pkg_meta.json file
-        let meta = PackageMeta {
-            pkg_name: pkg_name.to_string(),
-            version: version.to_string(),
-            tag: None,
-            category: Some("pkg".to_string()),
-            author: author.to_string(),
-            owner: DID::from_str("did:bns:buckyos").unwrap(),
-            content: None,
-            size: 0,
-            deps: HashMap::new(),
-            pub_time: 0,
-            meta: json!("{}"),
-            extra_info: HashMap::new(),
-            exp:0,
-        };
+        let mut meta = PackageMeta::new(
+            pkg_name,
+            version,
+            author,
+            &DID::from_str("did:bns:buckyos").unwrap(),
+            None,
+        );
+        meta.content = String::new();
+        meta.size = 0;
         
         let meta_json = serde_json::to_string_pretty(&meta).unwrap();
         fs::write(src_path.join("pkg_meta.json"), meta_json).unwrap();
@@ -563,11 +556,11 @@ mod tests {
         let meta_content = fs::read_to_string(expected_meta_path).unwrap();
         let meta_data:PackageMeta = serde_json::from_str(&meta_content).unwrap();
         
-        assert_eq!(meta_data.pkg_name, pkg_name);
+        assert_eq!(meta_data.name, pkg_name);
         assert_eq!(meta_data.version, version);
         assert_eq!(meta_data.author, author);
-        assert_eq!(meta_data.chunk_id.unwrap(), chunk_id.to_string(), "chunk_id OK");
-        assert_eq!(meta_data.chunk_size.unwrap(), file_info.size, "chunk_size OK");
+        assert_eq!(meta_data.content, chunk_id.to_string(), "chunk_id OK");
+        assert_eq!(meta_data.size, file_info.size, "chunk_size OK");
     }
     
     #[tokio::test]
@@ -594,21 +587,15 @@ mod tests {
         ).unwrap();
         
         // Create pkg_meta.json file
-        let meta = PackageMeta {
-            pkg_name: pkg_name.to_string(),
-            version: version.to_string(),
-            tag: None,
-            category: Some("pkg".to_string()),
-            author: author.to_string(),
-            owner: DID::from_str("did:bns:buckyos").unwrap(),
-            content: None,
-            size: 0,
-            deps: HashMap::new(),
-            pub_time: 0,
-            meta: json!("{}"),
-            extra_info: HashMap::new(),
-            exp:0,
-        };
+        let mut meta = PackageMeta::new(
+            pkg_name,
+            version,
+            author,
+            &DID::from_str("did:bns:buckyos").unwrap(),
+            None,
+        );
+        meta.content = String::new();
+        meta.size = 0;
         
         let meta_json = serde_json::to_string_pretty(&meta).unwrap();
         fs::write(src_path.join("pkg_meta.json"), meta_json).unwrap();
