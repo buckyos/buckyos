@@ -9,10 +9,13 @@ mod verify_hub_client;
 mod zone_provider;
 mod repo_client;
 mod runtime;
+mod app_doc;
 mod app_mgr;
 mod gateway_control;
+mod permission;
 pub mod test_config;
 
+pub use app_doc::*;
 pub use system_config::*;
 pub use sn_client::*;
 pub use zone_gateway::*;
@@ -25,7 +28,7 @@ pub use zone_provider::*;
 pub use runtime::*;
 pub use app_mgr::*;
 pub use gateway_control::*;
-
+pub use permission::*;
 
 use tokio::sync::RwLock;
 use std::sync::{Arc};

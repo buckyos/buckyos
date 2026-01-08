@@ -5,18 +5,9 @@
     "meta": {
       "detail": "BuckyOS File Browser"
     },
-    "size":0,
-    "content":"",
     "create_time": 1743008063,
     "last_update_time": 1743008063,
     "exp": 1837616063,
-    "deps": {
-      "nightly-apple-amd64.buckyos_filebrowser-bin": "0.5.1",
-      "nightly-linux-aarch64.buckyos_filebrowser-img": "0.5.1",
-      "nightly-linux-amd64.buckyos_filebrowser-img": "0.5.1",
-      "nightly-windows-amd64.buckyos_filebrowser-bin": "0.5.1",
-      "nightly-apple-aarch64.buckyos_filebrowser-bin": "0.5.1"
-    },
     "tag": "latest",
     "author": "did:web:buckyos.ai",
     "owner": "did:web:buckyos.ai",
