@@ -122,13 +122,11 @@ impl Default for ServiceInstallConfigTips {
 pub struct SubPkgDesc {
     pub pkg_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub docker_image_name:Option<String>,
+    pub docker_image_name:Option<String>,//like buckyos/nightly-buckyos-filebrowser:0.4.1-amd64, 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub docker_image_hash:Option<String>,
+    pub docker_image_hash:Option<String>,//docker digest
     #[serde(skip_serializing_if = "Option::is_none")]
     pub package_url:Option<String>,
-    #[serde(flatten)]
-    pub configs:HashMap<String,String>,
 
 }
 
@@ -265,7 +263,7 @@ impl TryFrom<String> for SelectorType {
 #[derive(Serialize, Deserialize,Clone)]
 pub struct AppDoc {
     #[serde(flatten)]    
-    pub meta: PackageMeta,
+    pub _base: PackageMeta,
     pub show_name: String, // just for display, app_id is meta.pkg_name (like "buckyos-filebrowser")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_icon_url: Option<String>,
@@ -296,7 +294,7 @@ impl Deref for AppDoc {
     type Target = PackageMeta;
     
     fn deref(&self) -> &Self::Target {
-        &self.meta
+        &self._base
     }
 }
 
@@ -518,9 +516,10 @@ mod tests {
     #[tokio::test]
     async fn test_get_parse_app_doc() {
         let app_doc = json!({
-            "pkg_name": "buckyos_filebrowser",
+            "name": "buckyos_filebrowser",
             "version": "0.4.1",
             "tag": "latest",
+            "size":0,
             "show_name": "BuckyOS File Browser",
             "description": {
                 "detail": "BuckyOS File Browser"
@@ -565,7 +564,7 @@ mod tests {
             }
         });
         let app_doc:AppDoc = serde_json::from_value(app_doc).unwrap();
-        println!("{}#{}", app_doc.pkg_name, app_doc.version);
+        println!("{}#{}", app_doc.name, app_doc.version);
         let app_doc_str = serde_json::to_string_pretty(&app_doc).unwrap();
         println!("{}", app_doc_str);
     }

@@ -183,8 +183,8 @@ dirObject也是一个content object,可以有签名(JWT)
 ```json
 {
   "@schema": "buckyos.app.meta.v1",
-
-    "pkg_name": "buckyos-filebrowser",
+    "did":"did:bns:filebrowser.buckyos"
+    "name": "buckyos-filebrowser",
     "version": "2.27.0",
     "meta": {    
          "show_name": "File Browser",
@@ -195,7 +195,7 @@ dirObject也是一个content object,可以有签名(JWT)
     "pub_time": 1760000000,
     "exp": 0,
     "deps": {},
-    "tag": ["file", "web", "nas"],
+    "tas": ["file", "web", "nas"],
     "category": "app",
 
     "author": "Filebrowser Team",
@@ -256,11 +256,18 @@ dirObject也是一个content object,可以有签名(JWT)
 }
 
 ```
-是一个ContentObject(有 owner/收录者/传播者) 三要素，可以是DirObject?
 
-0. app类型，目前支持2种:docker / static_web(比如只依赖钱包的智能合约前端页面)
-1. docker 信息：, 最重要，符合docker hub规范，在一个url里同时支持amd64/arm64双架构，默认只支持amd64
+一些老问题
+## 统一系统里的Kernel Service / Frame Service / App Service / Static Web的 AppMeta
+## 通过DID->Doc机制，明确了AppMeta的发布、收录流程
+## 基于AppMeta，进一步建立完整的内容发布/分享/评论机制 的几乎流程
+## 下载安装的任务管理和反馈
 
+
+0. app类型，目前支持2种:docker / static_web(比如只依赖钱包的智能合约前端页面), 
+1. docker类型时，docker 信息必须填：, 最重要，符合docker hub规范，在一个url里同时支持amd64/arm64双架构，默认只支持amd64
+  docker必须包含hash，安装的时候会校验）
+2. static web默认不申请kernel service的访问权限,是安装配置最简单的app
 
 2. app提供了哪些服务？ 最简单的就是http服务，其它服务因为不能通过gateway router,而是基于端口router的，因此在系统中有一定的独占性 
     WWW服务 -> 内部端口， 配置到哪个子域名？

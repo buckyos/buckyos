@@ -1,11 +1,14 @@
 {
   
-  "pkg_name": "buckyos_filebrowser",
+  "name": "buckyos_filebrowser",
     "version": "0.5.1",
     "meta": {
       "detail": "BuckyOS File Browser"
     },
+    "size":0,
+    "content":"",
     "create_time": 1743008063,
+    "last_update_time": 1743008063,
     "exp": 1837616063,
     "deps": {
       "nightly-apple-amd64.buckyos_filebrowser-bin": "0.5.1",
