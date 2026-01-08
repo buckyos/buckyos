@@ -573,57 +573,51 @@ g, cyfs-gateway, kernel
 
     fn get_filebrowser_doc() -> EncodedDocument {
         let doc_str = r#"{
-  "pkg_name": "buckyos_filebrowser",
-  "version": "0.4.1",
-  "description": {
-    "detail": "BuckyOS File Browser"
-  },
-  "pub_time": 1743008063,
-  "exp": 1837616063,
-  "deps": {
-    "nightly-apple-amd64.buckyos_filebrowser-bin": "0.4.1",
-    "nightly-linux-aarch64.buckyos_filebrowser-img": "0.4.1",
-    "nightly-linux-amd64.buckyos_filebrowser-img": "0.4.1",
-    "nightly-windows-amd64.buckyos_filebrowser-bin": "0.4.1",
-    "nightly-apple-aarch64.buckyos_filebrowser-bin": "0.4.1"
-  },
-  "tag": "latest",
-  "author": "did:web:buckyos.ai",
-  "owner": "did:web:buckyos.ai",
-  "show_name": "BuckyOS File Browser",
-  "selector_type": "single",
-  "install_config_tips": {
-    "data_mount_point": [
-      "/srv/",
-      "/database/",
-      "/config/"
-    ],
-    "local_cache_mount_point": [],
-    "service_ports": {
-      "www": 80
+  "name": "buckyos_filebrowser",
+    "version": "0.5.1",
+    "meta": {
+      "detail": "BuckyOS File Browser"
+    },
+    "create_time": 1743008063,
+    "last_update_time": 1743008063,
+    "exp": 1837616063,
+    "tag": "latest",
+    "author": "did:web:buckyos.ai",
+    "owner": "did:web:buckyos.ai",
+    "show_name": "BuckyOS File Browser",
+    "selector_type": "single",
+    "install_config_tips": {
+      "data_mount_point": [
+        "/srv/",
+        "/database/",
+        "/config/"
+      ],
+      "local_cache_mount_point": [],
+      "service_ports": {
+        "www": 80
+      }
+    },
+    "pkg_list": {
+      "amd64_docker_image": {
+        "pkg_id": "nightly-linux-amd64.buckyos_filebrowser-img#0.5.1",
+        "docker_image_name": "buckyos/nightly-buckyos_filebrowser:0.5.1-amd64"
+      },
+      "aarch64_docker_image": {
+        "pkg_id": "nightly-linux-aarch64.buckyos_filebrowser-img#0.5.1",
+        "docker_image_name": "buckyos/nightly-buckyos_filebrowser:0.5.1-aarch64"
+      },
+      "amd64_win_app": {
+        "pkg_id": "nightly-windows-amd64.buckyos_filebrowser-bin#0.5.1"
+      },
+      "aarch64_apple_app": {
+        "pkg_id": "nightly-apple-aarch64.buckyos_filebrowser-bin#0.5.1"
+      },
+      "web": null,
+      "amd64_apple_app": {
+        "pkg_id": "nightly-apple-amd64.buckyos_filebrowser-bin#0.5.1"
+      }
     }
-  },
-  "pkg_list": {
-    "amd64_docker_image": {
-      "pkg_id": "nightly-linux-amd64.buckyos_filebrowser-img#0.4.1",
-      "docker_image_name": "buckyos/nightly-buckyos-filebrowser:0.4.1-amd64"
-    },
-    "aarch64_docker_image": {
-      "pkg_id": "nightly-linux-aarch64.buckyos_filebrowser-img#0.4.1",
-      "docker_image_name": "buckyos/nightly-buckyos-filebrowser:0.4.1-aarch64"
-    },
-    "amd64_win_app": {
-      "pkg_id": "nightly-windows-amd64.buckyos_filebrowser-bin#0.4.1"
-    },
-    "aarch64_apple_app": {
-      "pkg_id": "nightly-apple-aarch64.buckyos_filebrowser-bin#0.4.1"
-    },
-    "web": null,
-    "amd64_apple_app": {
-      "pkg_id": "nightly-apple-amd64.buckyos_filebrowser-bin#0.4.1"
-    }
-  }
-}        
+  }             
         "#;
         let doc: EncodedDocument = EncodedDocument::from_str(doc_str.to_string()).unwrap();
         doc
