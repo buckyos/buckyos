@@ -32,7 +32,6 @@ impl KernelServiceRunItem {
         let pkg_name = kernel_config
             .service_sepc
             .service_doc
-            .meta
             .name
             .clone();
         let service_pkg = ServicePkg::new(pkg_name.clone(), 

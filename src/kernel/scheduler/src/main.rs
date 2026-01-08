@@ -566,7 +566,7 @@ g, cyfs-gateway, kernel
         docs.insert(PackageId::unique_name_to_did("buckyos_filebrowser"), get_filebrowser_doc());
         let docs = docs.into_iter().map(|(did, doc)| (did.to_raw_host_name(), doc)).collect();
         client
-            .add_provider(Box::new(StaticProvider::new(docs)))
+            .add_provider(Box::new(StaticProvider::new(docs)), None)
             .await;
         let _ = GLOBAL_NAME_CLIENT.set(client);
     }

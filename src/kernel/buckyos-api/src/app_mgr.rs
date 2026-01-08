@@ -203,43 +203,9 @@ impl AppServiceInstanceConfig {
         serde_json::to_string(self).unwrap()
     }
 }  
-
-
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct KernelServiceDoc {
-    #[serde(flatten)]    
-    pub meta: PackageMeta,
-    pub show_name: String,//just for display
-    pub selector_type:SelectorType,
-}
-
-impl Deref for KernelServiceDoc {
-    type Target = PackageMeta;
-    
-    fn deref(&self) -> &Self::Target {
-        &self.meta
-    }
-}
-impl KernelServiceDoc {
-    pub fn from_pkg_meta(pkg_meta: &PackageMeta) -> Result<Self> {
-        let pkg_json = serde_json::to_value(pkg_meta).unwrap();
-        let result_self  = serde_json::from_value(pkg_json)
-            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-        Ok(result_self) 
-    }
-
-    pub fn to_pkg_meta(&self) -> Result<PackageMeta> {
-        let pkg_json = serde_json::to_value(self).unwrap();
-        let result_pkg_meta = serde_json::from_value(pkg_json)
-            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-        Ok(result_pkg_meta)
-    }
-}
-
 #[derive(Serialize, Deserialize, Clone)]
 pub struct KernelServiceSpec {
-    pub service_doc:KernelServiceDoc,
+    pub service_doc:AppDoc,
     pub enable: bool,
     pub app_index: u16,
     pub expected_instance_count: u32, 

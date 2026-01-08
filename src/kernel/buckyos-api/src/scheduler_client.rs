@@ -1,8 +1,7 @@
 
 use ::kRPC::*;
-use crate::{KernelServiceDoc, SelectorType};
+use crate::{AppDoc, AppType, SelectorType};
 use name_lib::DID;
-use package_lib::PackageMeta;
 use serde_json::json;
 
 pub const SCHEDULER_SERVICE_UNIQUE_ID: &str = "scheduler";
@@ -19,17 +18,20 @@ impl SchedulerClient {
 }
 
 
-pub fn generate_scheduler_service_doc() -> KernelServiceDoc {
+pub fn generate_scheduler_service_doc() -> AppDoc {
     const VERSION: &str = env!("CARGO_PKG_VERSION");
     let owner_did = DID::from_str("did:bns:buckyos").unwrap();
-    let mut pkg_meta = PackageMeta::new(SCHEDULER_SERVICE_UNIQUE_ID, VERSION, "did:bns:buckyos",&owner_did, None);
-
-    let doc = KernelServiceDoc {
-        meta: pkg_meta,
-        show_name: "Scheduler".to_string(),
-        selector_type: SelectorType::Single,
-    };
-    return doc;
+    AppDoc::builder(
+        AppType::Service,
+        SCHEDULER_SERVICE_UNIQUE_ID,
+        VERSION,
+        "did:bns:buckyos",
+        &owner_did,
+    )
+    .show_name("Scheduler")
+    .selector_type(SelectorType::Single)
+    .build()
+    .unwrap()
 }
 
 mod tests {

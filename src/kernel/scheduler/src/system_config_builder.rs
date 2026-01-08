@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use log::{debug, info, warn};
 use buckyos_api::{
-    AppDoc, AppServiceSpec, GatewaySettings, GatewayShortcut, KernelServiceDoc, KernelServiceSpec, NodeConfig, NodeState, SCHEDULER_SERVICE_UNIQUE_ID, ServiceExposeConfig, ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, UserSettings, UserState, UserType, VERIFY_HUB_UNIQUE_ID, generate_repo_service_doc, generate_scheduler_service_doc, generate_smb_service_doc, generate_verify_hub_service_doc
+    AppDoc, AppServiceSpec, GatewaySettings, GatewayShortcut, KernelServiceSpec, NodeConfig, NodeState, SCHEDULER_SERVICE_UNIQUE_ID, ServiceExposeConfig, ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, UserSettings, UserState, UserType, VERIFY_HUB_UNIQUE_ID, generate_repo_service_doc, generate_scheduler_service_doc, generate_smb_service_doc, generate_verify_hub_service_doc
 };
 use buckyos_api::{SMB_SERVICE_UNIQUE_ID, REPO_SERVICE_UNIQUE_ID};
 use jsonwebtoken::jwk::Jwk;
@@ -323,7 +323,7 @@ async fn build_kernel_service_spec(
     pkg_name: &str,
     port: u16,
     expected_instance_count: u32,
-    service_doc: KernelServiceDoc,
+    service_doc: AppDoc,
 ) -> Result<KernelServiceSpec> {
     let service_did = PackageId::unique_name_to_did(pkg_name);
    

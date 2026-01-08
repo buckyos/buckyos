@@ -108,15 +108,18 @@ pub async fn init_buckyos_api_runtime(app_id:&str,app_owner_id:Option<String>,ru
 }
 
 
-pub fn generate_smb_service_doc() -> KernelServiceDoc {
+pub fn generate_smb_service_doc() -> AppDoc {
     const VERSION: &str = env!("CARGO_PKG_VERSION");
     let owner_did = DID::from_str("did:bns:buckyos").unwrap();
-    let mut pkg_meta = PackageMeta::new(SMB_SERVICE_UNIQUE_ID, VERSION, "did:bns:buckyos",&owner_did, None);
-
-    let doc = KernelServiceDoc {
-        meta: pkg_meta,
-        show_name: "Samba Service".to_string(),
-        selector_type: SelectorType::Random,
-    };
-    return doc;
+    AppDoc::builder(
+        AppType::Service,
+        SMB_SERVICE_UNIQUE_ID,
+        VERSION,
+        "did:bns:buckyos",
+        &owner_did,
+    )
+    .show_name("Samba Service")
+    .selector_type(SelectorType::Random)
+    .build()
+    .unwrap()
 }

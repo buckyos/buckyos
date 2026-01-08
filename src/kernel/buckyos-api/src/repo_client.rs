@@ -1,13 +1,12 @@
 
 
 use name_lib::DID;
-use package_lib::PackageMeta;
 use serde_json::json;
 use std::collections::HashMap;
 use ::kRPC::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{KernelServiceDoc, SelectorType};
+use crate::{AppDoc, AppType, SelectorType};
 
 pub const REPO_SERVICE_UNIQUE_ID: &str = "repo-service";
 pub const REPO_SERVICE_SERVICE_NAME: &str = "repo-service";
@@ -62,17 +61,20 @@ impl RepoClient {
 }
 
 
-pub fn generate_repo_service_doc() -> KernelServiceDoc {
+pub fn generate_repo_service_doc() -> AppDoc {
     const VERSION: &str = env!("CARGO_PKG_VERSION");
     let owner_did = DID::from_str("did:bns:buckyos").unwrap();
-    let mut pkg_meta = PackageMeta::new(REPO_SERVICE_UNIQUE_ID, VERSION, "did:bns:buckyos",&owner_did, None);
- 
-    let doc = KernelServiceDoc {
-        meta: pkg_meta,
-        show_name: "Repo Service".to_string(),
-        selector_type: SelectorType::Random,
-    };
-    return doc;
+    AppDoc::builder(
+        AppType::Service,
+        REPO_SERVICE_UNIQUE_ID,
+        VERSION,
+        "did:bns:buckyos",
+        &owner_did,
+    )
+    .show_name("Repo Service")
+    .selector_type(SelectorType::Random)
+    .build()
+    .unwrap()
 }
 
 mod tests {

@@ -1008,18 +1008,19 @@ pub fn create_applist() -> Result<HashMap<String,LocalAppInstanceConfig>, String
     let mut app_list = HashMap::new();
 
     let cyfs_gateway_doc_json = json!({
-        "pkg_name": "cyfs-gateway",
+        "name": "cyfs-gateway",
         "show_name": "CYFS Gateway",
         "app_icon_url": "https://cyfs-gateway.buckyos.ai/meta/icon.png",
         "selector_type": "single",
         "version": "0.5.1",
         "author": "buckyos.ai",
         "owner": "did:web:buckyos.ai",
+        "create_time": buckyos_kit::buckyos_get_unix_timestamp(),
+        "last_update_time": buckyos_kit::buckyos_get_unix_timestamp(),
         "description": {
             "detail": "CYFS Gateway Service"
         },
-        "category": "sys_module,local_app",
-        "pub_time": buckyos_kit::buckyos_get_unix_timestamp(),
+        "categories": ["sys_module","local_app"],
         "exp": buckyos_kit::buckyos_get_unix_timestamp() + 3600 * 24 * 30,
         "pkg_list": {
             "amd64_win_app": {

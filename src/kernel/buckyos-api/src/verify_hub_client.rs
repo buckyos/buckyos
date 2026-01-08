@@ -1,10 +1,9 @@
 use ::kRPC::*;
 use name_lib::DID;
-use package_lib::PackageMeta;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::{KernelServiceDoc, SelectorType};
+use crate::{AppDoc, AppType, SelectorType};
 
 pub const VERIFY_HUB_UNIQUE_ID: &str = "verify-hub";
 pub const VERIFY_HUB_SERVICE_NAME: &str = "verify-hub";
@@ -51,17 +50,20 @@ impl VerifyHubClient {
     }
 }
 
-pub fn generate_verify_hub_service_doc() -> KernelServiceDoc {
+pub fn generate_verify_hub_service_doc() -> AppDoc {
     const VERSION: &str = env!("CARGO_PKG_VERSION");
     let owner_did = DID::from_str("did:bns:buckyos").unwrap();
-    let mut pkg_meta = PackageMeta::new(VERIFY_HUB_UNIQUE_ID, VERSION, "did:bns:buckyos",&owner_did, None);
-
-    let doc = KernelServiceDoc {
-        meta: pkg_meta,
-        show_name: "Verify Hub".to_string(),
-        selector_type: SelectorType::Random,
-    };
-    return doc;
+    AppDoc::builder(
+        AppType::Service,
+        VERIFY_HUB_UNIQUE_ID,
+        VERSION,
+        "did:bns:buckyos",
+        &owner_did,
+    )
+    .show_name("Verify Hub")
+    .selector_type(SelectorType::Random)
+    .build()
+    .unwrap()
 }
 
 mod tests {
@@ -70,7 +72,7 @@ mod tests {
     fn test_generate_verify_hub_service_doc() {
         use super::generate_verify_hub_service_doc;
         let doc = generate_verify_hub_service_doc();
-        let pkg_id = doc.meta.get_package_id();
+        let pkg_id = doc.get_package_id();
         let pkg_did = pkg_id.to_did();
         println!("pkg_id: {}", pkg_did.to_raw_host_name());
         let json_str = serde_json::to_string_pretty(&doc).unwrap();
