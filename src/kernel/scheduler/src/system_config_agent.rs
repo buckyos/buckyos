@@ -553,6 +553,9 @@ pub(crate) async fn update_node_gateway_config(
             process_chain_lines.push_back(default_target);
         }
 
+        //特化处理control-panel的访问
+        process_chain_lines.push_front(r#"match ${REQ.host} "sys.*" && return "forward http://127.0.0.1:4020/";"#.to_string());
+
         let process_chain_lines_str = process_chain_lines
             .iter()
             .cloned()

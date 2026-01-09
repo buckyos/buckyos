@@ -98,7 +98,8 @@ async fn create_init_list_by_template(zone_boot_config: &ZoneBootConfig) -> Resu
         .add_system_defaults()?
         .add_verify_hub(&private_key_pem).await?
         .add_scheduler().await?
-        .add_repo_service().await?;
+        .add_repo_service().await?
+        .add_control_panel().await?;
 
     info!("add_kernel_services success, add default apps and gateway settings...");
     builder

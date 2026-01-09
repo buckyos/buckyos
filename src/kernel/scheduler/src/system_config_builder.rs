@@ -1,9 +1,9 @@
 use anyhow::{anyhow, Result};
 use log::{debug, info, warn};
 use buckyos_api::{
-    AppDoc, AppServiceSpec, GatewaySettings, GatewayShortcut, KernelServiceSpec, NodeConfig, NodeState, SCHEDULER_SERVICE_UNIQUE_ID, ServiceExposeConfig, ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, UserSettings, UserState, UserType, VERIFY_HUB_UNIQUE_ID, generate_repo_service_doc, generate_scheduler_service_doc, generate_smb_service_doc, generate_verify_hub_service_doc
+    AppDoc, AppServiceSpec, AppType, GatewaySettings, GatewayShortcut, KernelServiceSpec, NodeConfig, NodeState, SCHEDULER_SERVICE_UNIQUE_ID, SelectorType, ServiceExposeConfig, ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, UserSettings, UserState, UserType, VERIFY_HUB_UNIQUE_ID, generate_control_panel_service_doc, generate_repo_service_doc, generate_scheduler_service_doc, generate_smb_service_doc, generate_verify_hub_service_doc
 };
-use buckyos_api::{SMB_SERVICE_UNIQUE_ID, REPO_SERVICE_UNIQUE_ID};
+use buckyos_api::{CONTROL_PANEL_SERVICE_PORT, CONTROL_PANEL_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, REPO_SERVICE_UNIQUE_ID};
 use jsonwebtoken::jwk::Jwk;
 use name_client::resolve_did;
 use name_lib::{DID, OwnerConfig, VerifyHubInfo, ZoneBootConfig, ZoneConfig};
@@ -137,6 +137,24 @@ impl SystemConfigBuilder {
 
     pub fn add_system_defaults(&mut self) -> Result<&mut Self> {
         self.insert_json("system/system_pkgs", &json!({}))?;
+        Ok(self)
+    }
+
+    pub async fn add_control_panel(&mut self) -> Result<&mut Self> {
+        // NOTE: scheduler loads any `services/<name>/spec` as `KernelServiceSpec`.
+        // We follow the same pattern as other kernel-like services to make
+        // control-panel available through the existing scheduling pipeline.
+        let service_doc = generate_control_panel_service_doc();
+
+        let config = build_kernel_service_spec(
+            CONTROL_PANEL_SERVICE_UNIQUE_ID,
+            CONTROL_PANEL_SERVICE_PORT,
+            1,
+            service_doc,
+        )
+        .await?;
+
+        self.insert_json("services/control-panel/spec", &config)?;
         Ok(self)
     }
 

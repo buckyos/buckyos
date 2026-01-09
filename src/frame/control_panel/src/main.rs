@@ -1,6 +1,7 @@
 use ::kRPC::*;
 use anyhow::Result;
 use async_trait::async_trait;
+use buckyos_api::CONTROL_PANEL_SERVICE_PORT;
 use buckyos_kit::*;
 use bytes::Bytes;
 use cyfs_gateway_lib::*;
@@ -219,7 +220,7 @@ impl HttpServer for ControlPanelServer {
     }
 
     fn id(&self) -> String {
-        "active-server".to_string()
+        "control-panel".to_string()
     }
 
     fn http_version(&self) -> Version {
@@ -231,22 +232,31 @@ impl HttpServer for ControlPanelServer {
     }
 }
 
-pub async fn start_node_active_service() {
+pub async fn start_control_panel_service() {
     let control_panel_server = ControlPanelServer::new();
-    const PORT: u16 = 3180;
-    let runner = Runner::new(PORT);
+    // Bind to the default control-panel service port.
+
+    let runner = Runner::new(CONTROL_PANEL_SERVICE_PORT);
     // 添加 RPC 服务
     let _ = runner.add_http_server(
         "/kapi/control-panel".to_string(),
         Arc::new(control_panel_server),
     );
 
+    //添加web
+    //web_dir是当前可执行文件所在目录.join("web")
+    let web_dir = std::env::current_exe().unwrap().parent().unwrap().join("web");
+    let _ = runner.add_dir_handler(
+        "/".to_string(),
+        web_dir,
+    ).await;
+
     let _ = runner.run().await;
 }
 
 async fn service_main() {
-    init_logging("control_server", true);
-    let _ = start_node_active_service().await;
+    init_logging("control-panel", true);
+    let _ = start_control_panel_service().await;
     let _ = tokio::signal::ctrl_c().await;
 }
 

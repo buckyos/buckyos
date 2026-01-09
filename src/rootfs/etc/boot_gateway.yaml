@@ -55,12 +55,13 @@ servers:
           id: main
           priority: 1
           blocks:
-            default:
-              id: default
-              priority: 0
+            boot:
+              id: boot
+              priority: -10
               block: |
-                echo "node_gateway default block";
+                echo "node_gateway boot block";
 
+    
 # not use yet
 global_process_chains:
   zone_http_selector:

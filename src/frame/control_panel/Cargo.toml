@@ -1,6 +1,6 @@
 [package]
-name = "control_panel_service"
-version = "0.4.0"
+name = "control_panel"
+version = "0.5.1"
 edition = "2021"
 authors = ["BuckyOS DAO","@sun"]
 
@@ -38,4 +38,5 @@ kRPC = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
 bytes = { workspace = true }
-buckyos-api = { path = "../../../kernel/buckyos-api" }
+buckyos-api = { path = "../../kernel/buckyos-api" }
+

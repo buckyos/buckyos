@@ -28,9 +28,12 @@ modules:
     name: node_active
     src_dir: kernel/node_active/
   control_panel:
+    type: rust
+    name: control_panel
+  control_panel_web:
     type: web
     name: control_panel
-    src_dir: apps/control_panel/src/
+    src_dir: frame/control_panel/web/
   sys_test:
     type: web
     name: sys_test
@@ -51,6 +54,8 @@ apps:
       system_config: bin/system-config/
       verify_hub: bin/verify-hub/
       scheduler: bin/scheduler/
+      control_panel: bin/control-panel/
+      control_panel_web: bin/control-panel/web/
       smb_service: bin/smb-service/
       repo_service: bin/repo-service/
       buckycli: bin/buckycli/
@@ -62,6 +67,7 @@ apps:
       boot-gateway-config: etc/boot_gateway.yaml
       util.py: bin/util.py
       stop.py: bin/stop.py
+
     # 数据路径，update的时候如果目标存在，则不会更新
     data_paths: 
     - bin/applist.json

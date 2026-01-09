@@ -43,5 +43,7 @@ def kill_all():
     kill_process("smb_service")
     kill_process("repo-service")
     kill_process("repo_service")
+    kill_process("control-panel")
+    kill_process("control_panel")
 
 kill_all()

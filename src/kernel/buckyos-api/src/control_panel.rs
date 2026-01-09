@@ -4,13 +4,19 @@ use std::collections::HashMap;
 use serde_json::json;
 use log::*;
 use ::kRPC::*; 
+use crate::{AppDoc, AppType, SelectorType};
 use crate::system_config::*;
 use crate::app_mgr::*;
 use crate::KVAction;
 
+
+pub const CONTROL_PANEL_SERVICE_NAME: &str = "control-panel";
+pub const CONTROL_PANEL_SERVICE_UNIQUE_ID: &str = "control-panel";
+pub const CONTROL_PANEL_SERVICE_PORT: u16 = 4020;
+
+
 #[derive(Serialize, Deserialize, Clone)]
-#[serde(try_from = "String", into = "String")]
-pub enum UserState {
+#[serde(try_from = "String", into = "String")]pub enum UserState {
     Active,
     Suspended(String),//suspend reason
     Deleted,//delete reason
@@ -328,4 +334,20 @@ impl ControlPanelClient {
 
 }
 
+
+pub fn generate_control_panel_service_doc() -> AppDoc {
+    const VERSION: &str = env!("CARGO_PKG_VERSION");
+    let owner_did = DID::from_str("did:bns:buckyos").unwrap();
+    AppDoc::builder(
+        AppType::Service,
+        CONTROL_PANEL_SERVICE_UNIQUE_ID,
+        VERSION,
+        "did:bns:buckyos",
+        &owner_did,
+    )
+    .show_name("System Control Panel")
+    .selector_type(SelectorType::Single)
+    .build()
+    .unwrap()
+}
 
