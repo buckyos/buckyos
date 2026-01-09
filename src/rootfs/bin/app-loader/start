@@ -43,6 +43,7 @@ def check_image_exists(image_name, digest=None):
     - "sha256:..."
     - "<repo>@sha256:..."
     """
+    print(f"do check_image_exists: {image_name}, {digest}")
     check_image_cmd = f"docker images -q {image_name}"
     image_id = os.popen(check_image_cmd).read().strip()
     if not image_id:
@@ -57,27 +58,46 @@ def check_image_exists(image_name, digest=None):
     if not target:
         return True
 
-    # Query local repo digests and compare.
-    inspect_cmd = f"docker image inspect --format='{{{{json .RepoDigests}}}}' {image_name}"
+    # First, try to match against RepoDigests (for images pulled from registry)
+    # Use different quote styles for Windows vs Linux
+    is_windows = platform.system() == "Windows"
+    if is_windows:
+        inspect_cmd = f'docker image inspect --format="{{{{json .RepoDigests}}}}" {image_name}'
+    else:
+        inspect_cmd = f"docker image inspect --format='{{{{json .RepoDigests}}}}' {image_name}"
     inspect_out = os.popen(inspect_cmd).read().strip()
-    if not inspect_out:
-        return False
+    if inspect_out:
+        try:
+            repo_digests = json.loads(inspect_out)
+            if isinstance(repo_digests, list):
+                for rd in repo_digests:
+                    if not isinstance(rd, str):
+                        continue
+                    if "@" in rd:
+                        local_digest = rd.split("@", 1)[1].strip()
+                        if local_digest == target:
+                            return True
+        except Exception:
+            pass
 
-    try:
-        repo_digests = json.loads(inspect_out)
-    except Exception:
-        return False
-
-    if not isinstance(repo_digests, list):
-        return False
-
-    for rd in repo_digests:
-        if not isinstance(rd, str):
-            continue
-        if "@" in rd:
-            local_digest = rd.split("@", 1)[1].strip()
-            if local_digest == target:
+    # If RepoDigests is empty or doesn't match, check the image's actual digest (Id field)
+    # This handles images that were locally tagged or loaded from tar
+    if is_windows:
+        inspect_cmd_id = f'docker image inspect --format="{{{{.Id}}}}" {image_name}'
+    else:
+        inspect_cmd_id = f"docker image inspect --format='{{{{.Id}}}}' {image_name}"
+    inspect_id_out = os.popen(inspect_cmd_id).read().strip()
+    if inspect_id_out:
+        # Docker Id format is "sha256:xxxxx", same as digest format
+        if inspect_id_out == target:
+            return True
+        # Also try without the algorithm prefix
+        if ":" in inspect_id_out and ":" in target:
+            id_hash = inspect_id_out.split(":", 1)[1]
+            target_hash = target.split(":", 1)[1]
+            if id_hash == target_hash:
                 return True
+
     return False
 
 
@@ -173,7 +193,17 @@ def start_app_with_docker():
                 exit(1)
             # Tag pulled ref back to `image_name` for consistent later run/check.
             if pull_ref != image_name:
-                os.system(f"docker tag {pull_ref} {image_name}")
+                # When pulling by digest, we need to get the image ID and tag it
+                # because "docker tag image@digest newname" doesn't work
+                get_id_cmd = f"docker images -q {pull_ref.split('@')[0]}"
+                pulled_image_id = os.popen(get_id_cmd).read().strip()
+                if pulled_image_id:
+                    tag_cmd = f"docker tag {pulled_image_id} {image_name}"
+                    print(f"Tagging pulled image: {tag_cmd}")
+                    os.system(tag_cmd)
+                else:
+                    # Fallback: try tagging with the full pull_ref (might not work with @digest)
+                    os.system(f"docker tag {pull_ref} {image_name}")
 
         # After import (load or pull), validate again (and verify digest if provided).
         if not check_image_exists(image_name, image_digest):
