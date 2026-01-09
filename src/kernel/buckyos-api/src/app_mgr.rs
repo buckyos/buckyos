@@ -4,12 +4,8 @@
 use log::warn;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use ::kRPC::*;
-use package_lib::PackageMeta;
 use name_lib::DID;
-use std::ops::Deref;
 use crate::AppDoc;
-use crate::SelectorType;
 
 pub const SERVICE_INSTANCE_INFO_UPDATE_INTERVAL: u64 = 30;
 
@@ -255,4 +251,3 @@ impl FrameServiceInstanceConfig {
         unimplemented!()
     }
 }
-

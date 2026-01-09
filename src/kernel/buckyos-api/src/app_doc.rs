@@ -491,7 +491,7 @@ impl AppDocBuilder {
         self
     }
 
-    pub fn description_detail(mut self, detail: impl Into<String>) -> Self {
+    pub fn description_detail(self, detail: impl Into<String>) -> Self {
         let detail = detail.into();
         // Backward-compatible helper: write a single-language "en" description.
         self.description("en", detail)

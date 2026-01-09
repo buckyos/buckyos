@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 /*
@@ -62,4 +61,3 @@ pub struct PermissionItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub constraints: Option<serde_json::Value>,
 }
-

@@ -2,7 +2,6 @@
 use ::kRPC::*;
 use crate::{AppDoc, AppType, SelectorType};
 use name_lib::DID;
-use serde_json::json;
 
 pub const SCHEDULER_SERVICE_UNIQUE_ID: &str = "scheduler";
 pub const SCHEDULER_SERVICE_SERVICE_NAME: &str = "scheduler";
