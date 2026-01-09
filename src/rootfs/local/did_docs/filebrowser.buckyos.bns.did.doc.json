@@ -27,10 +27,12 @@
     "pkg_list": {
       "amd64_docker_image": {
         "pkg_id": "nightly-linux-amd64.buckyos_filebrowser-img#0.5.1",
+        "docker_image_digest": "sha256:a3da360c99a263e8397aeb719d4bfb8756f557710333f7e8d497eea8290782c9",
         "docker_image_name": "buckyos/nightly-buckyos_filebrowser:0.5.1-amd64"
       },
       "aarch64_docker_image": {
         "pkg_id": "nightly-linux-aarch64.buckyos_filebrowser-img#0.5.1",
+        "docker_image_digest": "sha256:7d32ad05234ba78e72b3daf128c1e2204c8e6f53b0b16b5b83dabe4fc8963297",
         "docker_image_name": "buckyos/nightly-buckyos_filebrowser:0.5.1-aarch64"
       },
       "amd64_win_app": {

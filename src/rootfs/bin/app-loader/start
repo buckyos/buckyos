@@ -10,6 +10,7 @@ sys.path.append(current_dir)
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 import util
+from app_doc import AppDoc, AppDocError
 
 appid = None
 full_appid = None
@@ -24,11 +25,60 @@ device_info = None
 is_support_docker = True
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
+def _normalize_digest(digest):
+    if not digest:
+        return None
+    s = str(digest).strip()
+    if "@" in s:
+        s = s.split("@", 1)[1].strip()
+    return s or None
 
-def check_image_exists(image_name):
+
+def check_image_exists(image_name, digest=None):
+    """
+    Check if a docker image exists locally.
+
+    If `digest` is provided, also verify the local image matches the digest.
+    Digest can be either:
+    - "sha256:..."
+    - "<repo>@sha256:..."
+    """
     check_image_cmd = f"docker images -q {image_name}"
-    image_exists = os.popen(check_image_cmd).read().strip()
-    return image_exists
+    image_id = os.popen(check_image_cmd).read().strip()
+    if not image_id:
+        return False
+
+    if not digest:
+        return True
+
+    target = str(digest).strip()
+    if "@" in target:
+        target = target.split("@", 1)[1].strip()
+    if not target:
+        return True
+
+    # Query local repo digests and compare.
+    inspect_cmd = f"docker image inspect --format='{{{{json .RepoDigests}}}}' {image_name}"
+    inspect_out = os.popen(inspect_cmd).read().strip()
+    if not inspect_out:
+        return False
+
+    try:
+        repo_digests = json.loads(inspect_out)
+    except Exception:
+        return False
+
+    if not isinstance(repo_digests, list):
+        return False
+
+    for rd in repo_digests:
+        if not isinstance(rd, str):
+            continue
+        if "@" in rd:
+            local_digest = rd.split("@", 1)[1].strip()
+            if local_digest == target:
+                return True
+    return False
 
 
 def load_image_from_tar(image_tar_path):
@@ -56,7 +106,8 @@ def start_app_without_docker():
 def ensure_directory_accessible(directory_path):
     if not os.path.exists(directory_path):
         os.makedirs(directory_path, exist_ok=True)
-    os.system(f"chmod 777 -R {directory_path}")
+    os.system(f"chmod -R 777 {directory_path}")
+    return directory_path
 
 def start_app_with_docker():
     # 如果镜像已经在运行，则先停止再启动
@@ -66,19 +117,23 @@ def start_app_with_docker():
     docker_command = f"docker kill {container_id}"
     os.system(docker_command)
 
-    # 得到镜像名
-    if platform.machine() == "x86_64": 
-        image_name = app_instance_config.get("app_spec").get("app_doc").get("pkg_list").get("amd64_docker_image").get("docker_image_name")
-        image_pkg_id = app_instance_config.get("app_spec").get("app_doc").get("pkg_list").get("amd64_docker_image").get("pkg_id")
-    else:
-        image_name = app_instance_config.get("app_spec").get("app_doc").get("pkg_list").get("aarch64_docker_image").get("docker_image_name")
-        image_pkg_id = app_instance_config.get("app_spec").get("app_doc").get("pkg_list").get("aarch64_docker_image").get("pkg_id")
+    # 得到镜像名（基于 AppDoc 做架构选择）
+    try:
+        app_doc = AppDoc.from_dict(app_instance_config.get("app_spec", {}).get("app_doc", {}))
+        image_desc = app_doc.pkg_list.get_docker_image_for_host(platform.machine())
+        image_name = image_desc.docker_image_name
+        image_pkg_id = image_desc.pkg_id
+        image_digest = image_desc.docker_image_digest
+        service_install_tips = app_doc.install_config_tips
+    except AppDocError as e:
+        print(f"Invalid app_doc in app_instance_config: {e}")
+        exit(1)
 
     if not image_name:
         print("Image name not found in the configuration")
         exit(1)
 
-    if not check_image_exists(image_name):
+    if not check_image_exists(image_name, image_digest):
         print(f"Image {image_name} not installed, trying to import docker image from local tar file")
         is_imported = False
         # 如果能import，优先import
@@ -98,16 +153,34 @@ def start_app_with_docker():
                 is_imported = True
 
         if not is_imported:
+            image_full_name = None
             if zone_docker_repo_base_url:
                 image_full_name = f"{zone_docker_repo_base_url}/{image_name}"
-                pull_cmd = f"docker pull {image_full_name}"
-            else: 
-                pull_cmd = f"docker pull {image_name}"
+            else:
+                image_full_name = image_name
+
+            if image_digest:
+                digest_only = _normalize_digest(image_digest)
+                pull_ref = f"{image_full_name}@{digest_only}"
+            else:
+                pull_ref = image_full_name
+
+            pull_cmd = f"docker pull {pull_ref}"
             print(f"Try Pulling docker image by {pull_cmd}")
             ret = os.system(pull_cmd)
             if ret != 0:
                 print(f"Failed to import docker image {image_name}")
                 exit(1)
+            # Tag pulled ref back to `image_name` for consistent later run/check.
+            if pull_ref != image_name:
+                os.system(f"docker tag {pull_ref} {image_name}")
+
+        # After import (load or pull), validate again (and verify digest if provided).
+        if not check_image_exists(image_name, image_digest):
+            print(f"Imported image {image_name} but digest/tag not matched or inspect failed")
+            exit(1)
+    
+    print(f"Image {image_name} exists, now start container ...")
 
     volume_mapping = ""
     instance_install_config = app_instance_config.get("app_spec").get("install_config")
@@ -137,9 +210,8 @@ def start_app_with_docker():
     port_cmd = ""
     service_ports = app_instance_config.get("service_ports_config", {})
     #print(f"** service_ports: {service_ports}")
-    service_install_tips = app_instance_config.get("app_spec").get("app_doc").get("install_config_tips")
     for (service_name,instance_port) in service_ports.items():
-        docker_port = service_install_tips.get("service_ports").get(service_name,0)
+        docker_port = service_install_tips.service_ports.get(service_name, 0)
         if docker_port == 0:
             print(f"No docker port found for service: {service_name}")
             exit(1)
@@ -147,7 +219,9 @@ def start_app_with_docker():
         port_cmd += f" -p {instance_port}:{docker_port} "
 
     # 构造docker命令
-    docker_command = f"docker run --rm {port_cmd} --name {container_id} -e BUCKYOS_ZONE_CONFIG -e {full_appid}_token -d "
+    # 让容器内拿到 zone_config 和当前 app token（使用真实 env key）
+    app_token_env_key = util.get_session_token_env_key(full_appid, True)
+    docker_command = f"docker run --rm {port_cmd} --name {container_id} -e BUCKYOS_ZONE_CONFIG -e {app_token_env_key} -d "
 
     if volume_mapping:
         docker_command += volume_mapping
@@ -165,7 +239,7 @@ def start_app_with_docker():
 
     docker_command += f" {image_name}"
 
-    print(f"docker craete container command: {docker_command}")
+    print(f"* craete container, command: {docker_command}")
     os.system(docker_command)
 
 
@@ -184,8 +258,8 @@ def start_app():
     zone_config_str = os.getenv(f"BUCKYOS_ZONE_CONFIG")
     zone_config = None
     zone_docker_repo_base_url = None
-    device_info_str = os.getenv(f"BUCKYOS_THIS_DEVICE_INFO")
-    device_info = None
+    device_info_str = os.getenv("BUCKYOS_THIS_DEVICE_INFO")
+    device_info = {}
     # 打印所有环境变量用于调试
     # print("=== 环境变量列表（用于调试）===")
     # for key, value in os.environ.items():
@@ -200,7 +274,10 @@ def start_app():
             zone_docker_repo_base_url = docker_repo_base_url
     
     if device_info_str:
-        device_info = json.loads(device_info_str)
+        try:
+            device_info = json.loads(device_info_str) or {}
+        except Exception:
+            device_info = {}
 
     if app_token is None:
         print(f"No session token found for appid: {full_appid},env_key: {app_token_env_key}")
@@ -212,7 +289,7 @@ def start_app():
     app_instance_config = json.loads(app_instance_config_str)
 
     #container_hash = app_meta_info.get("image_hash")
-    is_support_docker = device_info.get("support_container", True)
+    is_support_docker = bool(device_info.get("support_container", True))
 
     if is_support_docker:
         print(f"Start app {full_appid} with docker")

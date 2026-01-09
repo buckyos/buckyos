@@ -8,6 +8,7 @@ sys.path.append(current_dir)
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 import util
+from app_doc import AppDoc, AppDocError
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -48,8 +49,8 @@ if __name__ == "__main__":
     app_token = os.getenv(app_token_env_key)
     app_instance_config_str = os.getenv("app_instance_config")
     media_info_str = os.getenv("app_media_info")
-    device_info_str = os.getenv(f"BUCKYOS_THIS_DEVICE_INFO")
-    device_info = None
+    device_info_str = os.getenv("BUCKYOS_THIS_DEVICE_INFO")
+    device_info = {}
 
     if app_instance_config_str is None:
         print(f"No configuration found for appid: {full_appid}")
@@ -57,7 +58,10 @@ if __name__ == "__main__":
     app_instance_config = json.loads(app_instance_config_str)
 
     if device_info_str:
-        device_info = json.loads(device_info_str)
+        try:
+            device_info = json.loads(device_info_str) or {}
+        except Exception:
+            device_info = {}
 
     if app_instance_config_str is None:
         print(f"No configuration found for appid: {full_appid}")
@@ -65,15 +69,17 @@ if __name__ == "__main__":
     app_instance_config = json.loads(app_instance_config_str)
 
     #container_hash = app_meta_info.get("image_hash")
-    is_support_docker = device_info.get("support_container", True)
+    is_support_docker = bool(device_info.get("support_container", True))
 
     if is_support_docker:
         # check docker container status
 
-        if platform.machine() == "x86_64": 
-            docker_image_name = app_instance_config.get("app_spec").get("app_doc").get("pkg_list").get("amd64_docker_image").get("docker_image_name")
-        else:
-            docker_image_name = app_instance_config.get("app_spec").get("app_doc").get("pkg_list").get("aarch64_docker_image").get("docker_image_name")
+        try:
+            app_doc = AppDoc.from_dict(app_instance_config.get("app_spec", {}).get("app_doc", {}))
+            docker_image_name, _pkg_id = app_doc.get_docker_image_for_host(platform.machine())
+        except AppDocError as e:
+            print(f"Invalid app_doc in app_instance_config: {e}")
+            exit(255)
  
         if is_container_running(container_id,docker_image_name):
             exit(0)
