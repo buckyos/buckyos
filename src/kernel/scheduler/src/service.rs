@@ -103,6 +103,7 @@ pub fn update_service_info(spec_id: &str, service_info: &SchedulerServiceInfo,de
                         node_net_id,
                         state: ServiceInstanceState::Started,
                         weight: *weight,
+                        service_port: instance.service_ports.clone(),
                     });
                 } else {
                     warn!("device info not found for node: {}",node_id);
@@ -118,6 +119,7 @@ pub fn update_service_info(spec_id: &str, service_info: &SchedulerServiceInfo,de
                     node_net_id,
                     state: ServiceInstanceState::Started,
                     weight: 100,
+                    service_port: instance.service_ports.clone(),
                 });
             } else {
                 warn!("device info not found for node: {}",instance.node_id);

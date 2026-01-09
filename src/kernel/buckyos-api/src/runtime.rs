@@ -1055,7 +1055,7 @@ impl BuckyOSRuntime {
             if local_node.node_did == self.device_config.as_ref().unwrap().id {
                 if local_node.state == ServiceInstanceState::Started {
                     if let Some(port) =
-                        Self::resolve_service_port(local_node, service_name)
+                        Self::resolve_service_port(local_node, "www")
                     {
                         return Ok((
                             format!("http://127.0.0.1:{}/kapi/{}", port, service_name),
@@ -1119,7 +1119,7 @@ impl BuckyOSRuntime {
     }
 
     fn resolve_service_port(_node_info: &ServiceNode, _service_name: &str) -> Option<u16> {
-        unimplemented!()
+        return _node_info.service_port.get(_service_name).cloned();
     }
 
     //if http_only is false, return the url with tunnel protocol

@@ -67,7 +67,7 @@ pub struct ServiceNode {
     pub node_net_id:Option<String>,
     pub state: ServiceInstanceState,
     pub weight: u32,
-    //pub service_port:  HashMap<String,u16>,
+    pub service_port:  HashMap<String,u16>,
 }
 
 //有调度器定期更新的ServiceInfo, 是selector的输入信息
