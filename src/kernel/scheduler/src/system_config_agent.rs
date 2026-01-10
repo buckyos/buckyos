@@ -530,7 +530,7 @@ pub(crate) async fn update_node_gateway_config(
                             } else {
                                 let line_rule = format!("match ${{REQ.host}} \"{}.*\" && {}", shortcut_host, target_str);
                                 process_chain_lines.push_back(line_rule);
-                                let line_rule = format!("match ${{REQ.host}} \"{}*.\" && {}", shortcut_host, target_str);
+                                let line_rule = format!("match ${{REQ.host}} \"{}-*.\" && {}", shortcut_host, target_str);
                                 process_chain_lines.push_back(line_rule);
                             }
                         }
@@ -539,7 +539,7 @@ pub(crate) async fn update_node_gateway_config(
                         for sub_hostname in expose_config.sub_hostname.iter() {
                             let line_rule = format!("match ${{REQ.host}} \"{}.*\" && {}", sub_hostname, target_str);
                             process_chain_lines.push_back(line_rule);
-                            let line_rule = format!("match ${{REQ.host}} \"{}*.\" && {}", sub_hostname, target_str);
+                            let line_rule = format!("match ${{REQ.host}} \"{}-*.\" && {}", sub_hostname, target_str);
                             process_chain_lines.push_back(line_rule);
                         }
                     }
@@ -564,6 +564,7 @@ pub(crate) async fn update_node_gateway_config(
         }
         //特化处理control-panel的访问
         process_chain_lines.push_back(r#"match ${REQ.host} "sys.*" && return "forward http://127.0.0.1:4020/";"#.to_string());
+        process_chain_lines.push_back(r#"match ${REQ.host} "sys-*" && return "forward http://127.0.0.1:4020/";"#.to_string());
 
         if default_target.is_some() {
             let default_target = default_target.unwrap();
