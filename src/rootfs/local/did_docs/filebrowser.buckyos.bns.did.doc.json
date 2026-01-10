@@ -41,7 +41,6 @@
       "aarch64_apple_app": {
         "pkg_id": "nightly-apple-aarch64.buckyos_filebrowser-bin#0.5.1"
       },
-      "web": null,
       "amd64_apple_app": {
         "pkg_id": "nightly-apple-amd64.buckyos_filebrowser-bin#0.5.1"
       }

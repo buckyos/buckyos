@@ -442,6 +442,20 @@ pub fn get_app_spec_by_spec_id(spec_id: &str,input_system_config: &HashMap<Strin
     Ok(app_spec)
 }
 
+pub fn get_zone_config(input_system_config: &HashMap<String, String>) -> Result<ZoneConfig> {
+    let key = "boot/config";
+    let zone_config = input_system_config.get(key);
+    if zone_config.is_none() {
+        return Err(anyhow::anyhow!("zone_config not found"));
+    }
+    let zone_config = zone_config.unwrap();
+    let zone_config: ZoneConfig = serde_json::from_str(zone_config.as_str()).map_err(|e| {
+        error!("ZoneConfig::from_str failed: {:?}", e);
+        e
+    })?;
+    Ok(zone_config)
+}
+
 pub fn get_zone_gateway_settings(input_system_config: &HashMap<String, String>) -> Result<ZoneGatewaySettings> {
     let key = "services/gateway/settings";
     let zone_gateway_settings = input_system_config.get(key);
@@ -464,6 +478,7 @@ pub(crate) async fn update_node_gateway_config(
     input_system_config: &HashMap<String, String>
 ) -> Result<HashMap<String, KVAction>> {
     let mut result = HashMap::new();
+    let zone_config = get_zone_config(input_system_config)?;
     let zone_gateway_settings = get_zone_gateway_settings(input_system_config)?;
 
     for node_id in need_update_gateway_node_list.iter() {
@@ -547,14 +562,14 @@ pub(crate) async fn update_node_gateway_config(
   
             }
         }
+        //特化处理control-panel的访问
+        process_chain_lines.push_back(r#"match ${REQ.host} "sys.*" && return "forward http://127.0.0.1:4020/";"#.to_string());
 
         if default_target.is_some() {
             let default_target = default_target.unwrap();
             process_chain_lines.push_back(default_target);
         }
 
-        //特化处理control-panel的访问
-        process_chain_lines.push_front(r#"match ${REQ.host} "sys.*" && return "forward http://127.0.0.1:4020/";"#.to_string());
 
         let process_chain_lines_str = process_chain_lines
             .iter()
@@ -562,22 +577,66 @@ pub(crate) async fn update_node_gateway_config(
             .collect::<Vec<String>>()
             .join("\n");
 
-
-        let node_gateway_json = json!({
-        "servers": {
-            "node_gateway": {
-                "hook_point": {
-                    "main": {
-                        "blocks": {
-                            "default": {
-                                "block": process_chain_lines_str
+        let mut node_gateway_json = json!({
+            "servers": {
+                "node_gateway": {
+                    "hook_point": {
+                        "main": {
+                            "blocks": {
+                                "default": {
+                                    "block": process_chain_lines_str
+                                }
                             }
                         }
                     }
                 }
             }
-        }
         });
+
+        if zone_config.sn.is_some() {
+            info!("SN enabled,add  acme functions. ");
+            let sn_url = format!("https://{}", zone_config.sn.as_ref().unwrap());
+            let zone_hostname = zone_config.id.to_host_name();
+            let wildcard_zone_domain = format!("*.{}", zone_hostname);
+            let acme_functions = json!({
+                "acme": {
+                    "dns_providers": {
+                        "sn-dns": {
+                            "sn": sn_url,
+                            "key_path": "./node_private_key.pem",
+                            "device_config_path": "./node_device_config.json"
+                        }
+                    }
+                },
+                "stacks": {
+                    "zone_tls": {
+                        "bind": "0.0.0.0:443",
+                        "protocol": "tls",
+                        "certs": [
+                            {
+                                "domain": wildcard_zone_domain,
+                                "acme_type": "dns-01",
+                                "dns_provider": "sn-dns"
+                            },
+                            {
+                                "domain": "*"
+                            }
+                        ],
+                        "hook_point": {
+                            "main": {
+                                "blocks": {
+                                    "default": {
+                                        "block": "return \"server node_gateway\";\n"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+            node_gateway_json["acme"] = acme_functions["acme"].clone();
+            node_gateway_json["stacks"] = acme_functions["stacks"].clone();
+        }
 
         let node_gatway_config_str = serde_json::to_string_pretty(&node_gateway_json)?;
         info!(
