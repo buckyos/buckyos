@@ -67,9 +67,11 @@ apps:
       util.py: bin/util.py
       stop.py: bin/stop.py
 
+
     # 数据路径，update的时候如果目标存在，则不会更新
     data_paths: 
     - bin/applist.json
+    - bin/cyfs-gateway/
     - etc/user_gateway.yaml
     - etc/post_gateway.yaml
     - etc/node_gateway.json
@@ -81,6 +83,7 @@ apps:
     - home/
     - library/
     - data/
+
     # 清理路径，uninstall的时候会删除（所有的modules item都会删除)
     clean_paths: 
     - cache/

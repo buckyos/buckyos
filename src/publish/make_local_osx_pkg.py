@@ -226,9 +226,15 @@ def _stage_buckyos_app_root(*, src_root: Path, dst_root: Path, layout: AppLayout
         rel_s = rel_s.rstrip("/")
         s = src_root / rel_s
         d = defaults_root / rel_s
+        if not s.exists():
+            raise FileNotFoundError(
+                f"data_paths source missing: '{rel}' -> '{s}'. "
+                f"Please ensure it exists under the buckyos publish root ({src_root}), "
+                "or remove it from apps.buckyos.data_paths."
+            )
         if s.is_dir():
             shutil.copytree(s, d, dirs_exist_ok=True)
-        elif s.exists():
+        else:
             d.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(s, d)
 
