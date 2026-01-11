@@ -35,6 +35,7 @@ launchctl load "$PLIST"
 echo "BuckyOS install success, open http://127.0.0.1:3182/index.html to start, ENJOY!"
 echo "[buckyos] postinstall: install data_paths if missing (overwrite install semantics)"
 if [ -d "$DEFAULTS_DIR" ]; then
+  # BEGIN AUTO-GENERATED: data_paths
   if [ ! -e "$BUCKYOS_ROOT/bin/applist.json" ] && [ -e "$DEFAULTS_DIR/bin/applist.json" ]; then
     mkdir -p "$(dirname "$BUCKYOS_ROOT/bin/applist.json")"
     cp -p "$DEFAULTS_DIR/bin/applist.json" "$BUCKYOS_ROOT/bin/applist.json"
@@ -87,5 +88,6 @@ if [ -d "$DEFAULTS_DIR" ]; then
     mkdir -p "$(dirname "$BUCKYOS_ROOT/data")"
     ditto "$DEFAULTS_DIR/data" "$BUCKYOS_ROOT/data"
   fi
+  # END AUTO-GENERATED: data_paths
   rm -rf "$DEFAULTS_DIR" || true
 fi

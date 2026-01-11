@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+import re
+
 try:
     import yaml  # type: ignore
 except ImportError as e:
@@ -76,25 +78,29 @@ class AppLayout:
     clean_paths: List[str]
 
 
-def load_buckyos_layout(project_yaml_path: Path = PROJECT_YAML, target_override: str | None = None) -> AppLayout:
+def load_app_layout(
+    project_yaml_path: Path,
+    app_key: str,
+    target_override: str | None = None,
+) -> AppLayout:
     data = yaml_load_file(project_yaml_path)
-    apps = data.get("apps", {})
-    buckyos = apps.get("buckyos", {})
+    apps = data.get("apps", {}) or {}
+    app_cfg = apps.get(app_key, {}) or {}
 
     base_dir = str(data.get("base_dir", "."))
     project_base = (project_yaml_path.parent / base_dir).resolve()
 
-    rootfs_rel = str(buckyos.get("rootfs", "rootfs/"))
+    rootfs_rel = str(app_cfg.get("rootfs", "rootfs/"))
     source_rootfs = (project_base / rootfs_rel).resolve()
 
-    default_target = str(buckyos.get("default_target_rootfs", "${BUCKYOS_ROOT}"))
+    default_target = str(app_cfg.get("default_target_rootfs", "${BUCKYOS_ROOT}"))
     target_str = target_override if target_override else default_target
     target_rootfs = Path(_expand_vars(target_str)).resolve()
 
-    modules = buckyos.get("modules", {}) or {}
+    modules = app_cfg.get("modules", {}) or {}
     module_paths = [str(p) for p in modules.values()]
-    data_paths = [str(p) for p in (buckyos.get("data_paths", []) or [])]
-    clean_paths = [str(p) for p in (buckyos.get("clean_paths", []) or [])]
+    data_paths = [str(p) for p in (app_cfg.get("data_paths", []) or [])]
+    clean_paths = [str(p) for p in (app_cfg.get("clean_paths", []) or [])]
 
     return AppLayout(
         source_rootfs=source_rootfs,
@@ -103,6 +109,11 @@ def load_buckyos_layout(project_yaml_path: Path = PROJECT_YAML, target_override:
         data_paths=data_paths,
         clean_paths=clean_paths,
     )
+
+
+def load_buckyos_layout(project_yaml_path: Path = PROJECT_YAML, target_override: str | None = None) -> AppLayout:
+    # Backward compatibility wrapper
+    return load_app_layout(project_yaml_path, "buckyos", target_override=target_override)
 
 
 def _as_str(v: Any) -> str:
@@ -384,6 +395,11 @@ def build_macos_distribution_pkg(
     resources_dir = MACOS_PKG_PROJECT_DIR
     dist_xml = work_dir / "distribution.xml"
 
+    # Keep project scripts in sync with bucky_project.yaml before building.
+    # This updates only marked AUTO-GENERATED blocks in existing scripts.
+    if (not dry_run) and (not bool(os.environ.get("BUCKYOS_PKG_NO_SYNC_SCRIPTS"))):
+        sync_macos_scripts(project_yaml_path, resources_dir / "scripts")
+
     if work_dir.exists() and not dry_run:
         shutil.rmtree(work_dir, ignore_errors=True)
     if not dry_run:
@@ -465,8 +481,7 @@ def build_macos_distribution_pkg(
         built.append((comp, pkg_id, pkg_filename))
 
     if not dry_run:
-        # Keep welcome page aligned with current component install locations.
-        generate_welcome_html(components, resources_dir / "welcome.html")
+        # Do not auto-generate/overwrite project HTML resources here.
         _write_distribution_xml(
             title="BuckyOS",
             version=version,
@@ -531,7 +546,7 @@ def verify_pkg(
     Checks:
     - Distribution choices exist for all publish.macos_pkg.apps components
     - optional:false => required=true and enabled=false
-    - buckyos component has scripts; other components do not
+    - Per-component scripts are attached iff templates exist in publish/macos_pkg/scripts/
     - buckyos payload contains data_paths under .buckyos_installer_defaults and not at real paths
     """
     components = load_macos_pkg_components(project_yaml_path)
@@ -576,7 +591,8 @@ def verify_pkg(
                             failures.append(f"component {comp.key} should be required=false, got {required}")
 
         # Verify component packages exist and scripts attachment.
-        # We name component pkgs by sanitized key: {sanitize(key)}.pkg
+        # Embedded component packages are named by sanitized key: {sanitize(key)}.pkg
+        templates_dir = MACOS_PKG_PROJECT_DIR / "scripts"
         for comp in components:
             subpkg_dir = expanded / f"{_sanitize_id(comp.key)}.pkg"
             if not subpkg_dir.exists():
@@ -584,23 +600,13 @@ def verify_pkg(
                 continue
 
             scripts_dir = subpkg_dir / "Scripts"
-            if comp.key == "buckyos":
-                if not scripts_dir.exists():
-                    failures.append("buckyos component should have Scripts/ but it is missing")
-                else:
-                    for required_name in ("preinstall", "postinstall"):
-                        if not (scripts_dir / required_name).exists():
-                            failures.append(f"buckyos Scripts/{required_name} missing")
-                    # Ensure postinstall contains defaults logic
-                    postinstall = scripts_dir / "postinstall"
-                    if postinstall.exists():
-                        txt = postinstall.read_text(encoding="utf-8", errors="ignore")
-                        if BUCKYOS_DEFAULTS_SUBDIR not in txt:
-                            failures.append("buckyos postinstall does not reference defaults dir for data_paths")
-            else:
-                # Non-buckyos components should not carry service scripts.
-                if scripts_dir.exists():
-                    failures.append(f"component {comp.key} should not have Scripts/ (only buckyos should)")
+            expects_scripts = any(
+                (templates_dir / f"{comp.key}_{name}").exists() for name in ("preinstall", "postinstall", "uninstall")
+            )
+            if expects_scripts and not scripts_dir.exists():
+                failures.append(f"component {comp.key} should have Scripts/ but it is missing")
+            if (not expects_scripts) and scripts_dir.exists():
+                failures.append(f"component {comp.key} should NOT have Scripts/ (no templates provided)")
 
         # Verify data_paths payload staging for buckyos.
         buckyos_pkg_dir = expanded / "buckyos.pkg"
@@ -734,134 +740,12 @@ def action_uninstall(layout: AppLayout, dry_run: bool = False) -> None:
 
 
 def generate_macos_scripts(layout: AppLayout, scripts_dir: Path) -> None:
-    """
-    Generate scripts under `src/publish/macos_pkg/scripts/`.
-
-    Naming convention:
-    - Component-scoped templates: `buckyos_preinstall`, `buckyos_postinstall`, `buckyos_uninstall`
-    - Backward-compatible entrypoints: `preinstall`, `postinstall`, `uninstall` (wrappers)
-    """
-    scripts_dir.mkdir(parents=True, exist_ok=True)
-    target_var = '${BUCKYOS_ROOT:-/opt/buckyos}'
-
-    def norm(p: str) -> str:
-        p = p.strip()
-        if p.startswith("/"):
-            p = p[1:]
-        return p
-
-    def is_dir(p: str) -> bool:
-        return p.endswith("/")
-
-    def strip_dir(p: str) -> str:
-        return p.rstrip("/")
-
-    # buckyos_preinstall: remove module paths only (keep data_paths)
-    buckyos_preinstall = [
-        "#!/bin/zsh",
-        "set -e",
-        f'BUCKYOS_ROOT="{target_var}"',
-        'echo "[buckyos] preinstall: remove module paths (keep data)"',
-    ]
-    for rel in sorted(set(layout.module_paths)):
-        buckyos_preinstall.append(f'rm -rf "$BUCKYOS_ROOT/{strip_dir(norm(rel))}"')
-    (scripts_dir / "buckyos_preinstall").write_text("\n".join(buckyos_preinstall) + "\n", encoding="utf-8")
-
-    # buckyos_postinstall: setup service plist (only meaningful when buckyos component installed)
-    buckyos_postinstall = [
-        "#!/bin/zsh",
-        "set -e",
-        f'BUCKYOS_ROOT="{target_var}"',
-        f'DEFAULTS_DIR="$BUCKYOS_ROOT/{BUCKYOS_DEFAULTS_SUBDIR}"',
-        'PLIST="/Library/LaunchAgents/buckyos.service.plist"',
-        'mkdir -p "/Library/LaunchAgents"',
-        'cat > "$PLIST" << EOF',
-        '<?xml version="1.0" encoding="UTF-8"?>',
-        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
-        '<plist version="1.0">',
-        "<dict>",
-        "    <key>Label</key>",
-        "    <string>buckyos.service</string>",
-        "    <key>ProgramArguments</key>",
-        "    <array>",
-        "        <string>${BUCKYOS_ROOT}/bin/node-daemon/node-daemon</string>",
-        "        <string>--enable_active</string>",
-        "    </array>",
-        "    <key>RunAtLoad</key>",
-        "    <true/>",
-        "    <key>KeepAlive</key>",
-        "    <true/>",
-        "    <key>StandardErrorPath</key>",
-        "    <string>/var/log/buckyos-node-daemon.err</string>",
-        "    <key>StandardOutPath</key>",
-        "    <string>/var/log/buckyos-node-daemon.log</string>",
-        "</dict>",
-        "</plist>",
-        "EOF",
-        'chown root:wheel "$PLIST" || true',
-        'chmod 644 "$PLIST"',
-        'launchctl stop buckyos.service || true',
-        'launchctl unload "$PLIST" || true',
-        'launchctl load "$PLIST"',
-        'echo "BuckyOS install success, open http://127.0.0.1:3182/index.html to start, ENJOY!"',
-        'echo "[buckyos] postinstall: install data_paths if missing (overwrite install semantics)"',
-        'if [ -d "$DEFAULTS_DIR" ]; then',
-    ]
-    for rel in (layout.data_paths or []):
-        rel_s = rel.strip()
-        if rel_s.startswith("/"):
-            rel_s = rel_s[1:]
-        if rel_s.endswith("/"):
-            rel_s = rel_s.rstrip("/")
-            buckyos_postinstall += [
-                f'  if [ ! -d "$BUCKYOS_ROOT/{rel_s}" ] && [ -d "$DEFAULTS_DIR/{rel_s}" ]; then',
-                f'    mkdir -p "$(dirname "$BUCKYOS_ROOT/{rel_s}")"',
-                f'    ditto "$DEFAULTS_DIR/{rel_s}" "$BUCKYOS_ROOT/{rel_s}"',
-                "  fi",
-            ]
-        else:
-            buckyos_postinstall += [
-                f'  if [ ! -e "$BUCKYOS_ROOT/{rel_s}" ] && [ -e "$DEFAULTS_DIR/{rel_s}" ]; then',
-                f'    mkdir -p "$(dirname "$BUCKYOS_ROOT/{rel_s}")"',
-                f'    cp -p "$DEFAULTS_DIR/{rel_s}" "$BUCKYOS_ROOT/{rel_s}"',
-                "  fi",
-            ]
-    buckyos_postinstall += [
-        '  rm -rf "$DEFAULTS_DIR" || true',
-        "fi",
-    ]
-    (scripts_dir / "buckyos_postinstall").write_text("\n".join(buckyos_postinstall) + "\n", encoding="utf-8")
-
-    # buckyos_uninstall: remove modules + clean_paths
-    buckyos_uninstall = [
-        "#!/bin/zsh",
-        "set -e",
-        f'BUCKYOS_ROOT="{target_var}"',
-        'PLIST="/Library/LaunchAgents/buckyos.service.plist"',
-        'echo "[buckyos] uninstall: stopping service"',
-        "launchctl stop buckyos.service || true",
-        'launchctl unload "$PLIST" || true',
-        'rm -f "$PLIST" || true',
-        'echo "[buckyos] uninstall: removing modules + clean_paths"',
-    ]
-    for rel in sorted(set(layout.module_paths)):
-        buckyos_uninstall.append(f'rm -rf "$BUCKYOS_ROOT/{strip_dir(norm(rel))}"')
-
-    # Clean paths: remove as-is (even if it overlaps with data_paths).
-    for rel in sorted(set(layout.clean_paths)):
-        rel_n = norm(rel)
-        buckyos_uninstall.append(f'rm -rf "$BUCKYOS_ROOT/{strip_dir(rel_n)}"')
-    (scripts_dir / "buckyos_uninstall").write_text("\n".join(buckyos_uninstall) + "\n", encoding="utf-8")
-
-    # Backward-compatible wrappers (single-pkg workflows).
-    wrapper = [
-        "#!/bin/zsh",
-        "set -e",
-        'DIR="$(cd "$(dirname "$0")" && pwd)"',
-    ]
-    (scripts_dir / "preinstall").write_text("\n".join(wrapper + ['zsh "$DIR/buckyos_preinstall"']) + "\n", encoding="utf-8")
-    (scripts_dir / "postinstall").write_text("\n".join(wrapper + ['zsh "$DIR/buckyos_postinstall"']) + "\n", encoding="utf-8")
-    (scripts_dir / "uninstall").write_text("\n".join(wrapper + ['zsh "$DIR/buckyos_uninstall"']) + "\n", encoding="utf-8")
+    # This repository treats install/uninstall scripts as project-owned assets.
+    # This function is retained only for backwards compatibility with older workflows,
+    # but MUST NOT generate/overwrite any scripts.
+    _ = layout
+    _ = scripts_dir
+    return None
 
 
 def _materialize_pkg_scripts_from_templates(component_key: str, templates_dir: Path, out_scripts_dir: Path) -> None:
@@ -884,6 +768,118 @@ def _materialize_pkg_scripts_from_templates(component_key: str, templates_dir: P
     if uninstall_tpl.exists():
         shutil.copy2(uninstall_tpl, out_scripts_dir / "uninstall")
         (out_scripts_dir / "uninstall").chmod(0o755)
+
+
+AUTO_BEGIN = "# BEGIN AUTO-GENERATED:"
+AUTO_END = "# END AUTO-GENERATED:"
+
+
+def _detect_root_var(script_text: str) -> str:
+    # Try to detect a var like BUCKYOS_ROOT=... or TARGET_ROOT=...
+    for line in script_text.splitlines()[:80]:
+        m = re.match(r"\s*([A-Z0-9_]+_ROOT)\s*=", line)
+        if m:
+            return f"${m.group(1)}"
+    return "$BUCKYOS_ROOT"
+
+
+def _detect_defaults_var(script_text: str) -> str:
+    for line in script_text.splitlines()[:120]:
+        m = re.match(r"\s*(DEFAULTS_DIR)\s*=", line)
+        if m:
+            return f"${m.group(1)}"
+    return '$DEFAULTS_DIR'
+
+
+def _rm_lines(root_var: str, rel_paths: List[str]) -> List[str]:
+    out: List[str] = []
+    for rel in rel_paths:
+        rel_s = rel.strip().lstrip("/").rstrip("/")
+        if not rel_s:
+            continue
+        out.append(f'rm -rf "{root_var}/{rel_s}"')
+    return out
+
+
+def _data_copy_lines(root_var: str, defaults_var: str, rel_paths: List[str]) -> List[str]:
+    out: List[str] = []
+    for rel in rel_paths:
+        rel_s = rel.strip().lstrip("/")
+        if not rel_s:
+            continue
+        if rel_s.endswith("/"):
+            rel_s = rel_s.rstrip("/")
+            out += [
+                f'if [ ! -d "{root_var}/{rel_s}" ] && [ -d "{defaults_var}/{rel_s}" ]; then',
+                f'  mkdir -p "$(dirname "{root_var}/{rel_s}")"',
+                f'  ditto "{defaults_var}/{rel_s}" "{root_var}/{rel_s}"',
+                "fi",
+            ]
+        else:
+            out += [
+                f'if [ ! -e "{root_var}/{rel_s}" ] && [ -e "{defaults_var}/{rel_s}" ]; then',
+                f'  mkdir -p "$(dirname "{root_var}/{rel_s}")"',
+                f'  cp -p "{defaults_var}/{rel_s}" "{root_var}/{rel_s}"',
+                "fi",
+            ]
+    return out
+
+
+def _replace_marked_block(text: str, block_name: str, new_lines: List[str], indent: str = "") -> str:
+    begin = f"{AUTO_BEGIN} {block_name}"
+    end = f"{AUTO_END} {block_name}"
+    lines = text.splitlines()
+    try:
+        i0 = next(i for i, l in enumerate(lines) if l.strip() == begin)
+        i1 = next(i for i, l in enumerate(lines) if l.strip() == end and i > i0)
+    except StopIteration:
+        # If missing markers, append at end.
+        appended = [begin] + [indent + l for l in new_lines] + [end]
+        return text.rstrip() + "\n" + "\n".join(appended) + "\n"
+
+    replaced = lines[: i0 + 1] + [indent + l for l in new_lines] + lines[i1:]
+    # Always ensure a trailing newline on writeback.
+    return "\n".join(replaced).rstrip("\n") + "\n"
+
+
+def sync_macos_scripts(project_yaml_path: Path, scripts_dir: Path) -> None:
+    """
+    Project helper: update *existing* scripts in publish/macos_pkg/scripts/ based on bucky_project.yaml.
+
+    It only updates sections wrapped by markers:
+      # BEGIN AUTO-GENERATED: <name>
+      ...
+      # END AUTO-GENERATED: <name>
+    """
+    data = yaml_load_file(project_yaml_path)
+    apps = data.get("apps", {}) or {}
+
+    for app_key in apps.keys():
+        layout = load_app_layout(project_yaml_path, app_key)
+
+        pre = scripts_dir / f"{app_key}_preinstall"
+        if pre.exists():
+            txt = pre.read_text(encoding="utf-8", errors="ignore")
+            root_var = _detect_root_var(txt)
+            txt = _replace_marked_block(txt, "modules", _rm_lines(root_var, layout.module_paths))
+            pre.write_text(txt.rstrip("\n") + "\n", encoding="utf-8")
+
+        post = scripts_dir / f"{app_key}_postinstall"
+        if post.exists():
+            txt = post.read_text(encoding="utf-8", errors="ignore")
+            root_var = _detect_root_var(txt)
+            defaults_var = _detect_defaults_var(txt)
+            # Most postinstall templates place the block inside `if [ -d "$DEFAULTS_DIR" ]; then`
+            txt = _replace_marked_block(txt, "data_paths", _data_copy_lines(root_var, defaults_var, layout.data_paths), indent="  ")
+            post.write_text(txt.rstrip("\n") + "\n", encoding="utf-8")
+
+        un = scripts_dir / f"{app_key}_uninstall"
+        if un.exists():
+            txt = un.read_text(encoding="utf-8", errors="ignore")
+            root_var = _detect_root_var(txt)
+            txt = _replace_marked_block(txt, "modules", _rm_lines(root_var, layout.module_paths))
+            txt = _replace_marked_block(txt, "clean_paths", _rm_lines(root_var, layout.clean_paths))
+            un.write_text(txt.rstrip("\n") + "\n", encoding="utf-8")
 
 
 def build_pkg(architecture: str, version: str, **kwargs: Any) -> None:
@@ -936,6 +932,11 @@ def main(argv: List[str]) -> int:
         help='Output directory for the final .pkg (default: "./publish")',
     )
     p_build.add_argument(
+        "--no-sync-scripts",
+        action="store_true",
+        help="Do not auto-sync publish/macos_pkg/scripts from bucky_project.yaml before build",
+    )
+    p_build.add_argument(
         "--extra-bundle",
         action="append",
         default=[],
@@ -964,6 +965,8 @@ def main(argv: List[str]) -> int:
         if arch == "x86_64":
             arch = "amd64"
         extra_bundles = [Path(p) for p in (args.extra_bundle or [])]
+        if args.no_sync_scripts:
+            os.environ["BUCKYOS_PKG_NO_SYNC_SCRIPTS"] = "1"
         out_pkg = build_macos_distribution_pkg(
             architecture=arch,
             version=args.version,
@@ -977,9 +980,8 @@ def main(argv: List[str]) -> int:
         return 0
 
     if args.cmd == "sync-macos-scripts":
-        layout = load_buckyos_layout(Path(args.project), target_override="/opt/buckyos")
-        generate_macos_scripts(layout, SRC_DIR / "publish" / "macos_pkg" / "scripts")
-        print("macos_pkg scripts regenerated.")
+        sync_macos_scripts(Path(args.project), SRC_DIR / "publish" / "macos_pkg" / "scripts")
+        print("macos_pkg scripts synced.")
         return 0
 
     if args.cmd == "verify-pkg":
