@@ -6,7 +6,7 @@ echo "[buckyos] uninstall: stopping service"
 launchctl stop buckyos.service || true
 launchctl unload "$PLIST" || true
 rm -f "$PLIST" || true
-echo "[buckyos] uninstall: removing files (keep data_paths)"
+echo "[buckyos] uninstall: removing modules + clean_paths"
 rm -rf "$BUCKYOS_ROOT/bin/app-loader"
 rm -rf "$BUCKYOS_ROOT/bin/buckycli"
 rm -rf "$BUCKYOS_ROOT/bin/control-panel"
@@ -22,10 +22,8 @@ rm -rf "$BUCKYOS_ROOT/bin/util.py"
 rm -rf "$BUCKYOS_ROOT/bin/verify-hub"
 rm -rf "$BUCKYOS_ROOT/etc/boot_gateway.yaml"
 rm -rf "$BUCKYOS_ROOT/etc/scheduler"
-if [ -d "$BUCKYOS_ROOT/etc" ]; then
-  for item in "$BUCKYOS_ROOT/etc"/*; do
-    name="$(basename "$item")"
-    case "$name" in cyfs_gateway.yaml|node_gateway.json|post_gateway.yaml|user_gateway.yaml) continue ;; esac
-    rm -rf "$item"
-  done
-fi
+rm -rf "$BUCKYOS_ROOT/cache"
+rm -rf "$BUCKYOS_ROOT/etc"
+rm -rf "$BUCKYOS_ROOT/local"
+rm -rf "$BUCKYOS_ROOT/logs"
+rm -rf "$BUCKYOS_ROOT/tmp"

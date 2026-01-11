@@ -2,12 +2,27 @@
 <html>
   <head>
     <meta charset="utf-8" />
+    <style>
+      body { font-family: -apple-system, system-ui, sans-serif; font-size: 13px; }
+      table { border-collapse: collapse; width: 100%; }
+      th, td { border: 1px solid #ddd; padding: 8px; vertical-align: top; }
+      th { background: #f6f6f6; text-align: left; }
+      code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    </style>
   </head>
   <body>
-    <p>
-      This installer will regenerate this page during build, based on
-      <code>publish.macos_pkg.apps</code> in <code>src/bucky_project.yaml</code>,
-      to show where each component will be installed.
-    </p>
+    <p>This installer contains multiple components. Install locations are shown below.</p>
+    <p><b>Note:</b> <code>~</code> means the current user's home directory.</p>
+    <table>
+      <thead>
+        <tr><th>Component</th><th>Install location</th><th>Required</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><b>BuckyOS Desktop App</b></td><td><code>~/Applications/BuckyOS.app</code></td><td>Required</td></tr>
+        <tr><td><b>BuckyOS CLI</b></td><td><code>~/buckycli/</code></td><td>Required</td></tr>
+        <tr><td><b>BuckyOS Service</b></td><td><code>/opt/buckyos/</code></td><td>Optional</td></tr>
+      </tbody>
+    </table>
   </body>
 </html>
+

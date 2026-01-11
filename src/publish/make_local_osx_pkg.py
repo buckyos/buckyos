@@ -44,6 +44,7 @@ RESULT_ROOT_DIR = Path(os.environ.get("BUCKYOS_BUILD_ROOT", "/opt/buckyosci"))
 TMP_INSTALL_DIR = RESULT_ROOT_DIR / "macos-pkg"
 
 MACOS_PKG_PROJECT_DIR = SRC_DIR / "publish" / "macos_pkg"
+BUCKYOS_DEFAULTS_SUBDIR = ".buckyos_installer_defaults"
 
 
 def yaml_load_file(path: Path) -> Dict[str, Any]:
@@ -190,6 +191,44 @@ def _copy_dir_contents(src_dir: Path, dst_dir: Path) -> None:
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(child, dst)
 
+
+def _stage_buckyos_app_root(*, src_root: Path, dst_root: Path, layout: AppLayout) -> None:
+    """
+    Stage buckyos rootfs into dst_root.
+
+    Semantics:
+    - modules: always copied into real target paths (will be overwritten by pkg install)
+    - data_paths: copied into `${BUCKYOS_ROOT}/.buckyos_installer_defaults/...`
+      and postinstall will copy to real paths only if missing (overwrite install behavior)
+    """
+    # modules -> real target
+    for rel in layout.module_paths:
+        rel_s = rel.strip()
+        if rel_s.startswith("/"):
+            rel_s = rel_s[1:]
+        rel_s = rel_s.rstrip("/")
+        s = src_root / rel_s
+        d = dst_root / rel_s
+        if s.is_dir():
+            shutil.copytree(s, d, dirs_exist_ok=True)
+        elif s.exists():
+            d.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(s, d)
+
+    # data_paths -> defaults area
+    defaults_root = dst_root / BUCKYOS_DEFAULTS_SUBDIR
+    for rel in layout.data_paths:
+        rel_s = rel.strip()
+        if rel_s.startswith("/"):
+            rel_s = rel_s[1:]
+        rel_s = rel_s.rstrip("/")
+        s = src_root / rel_s
+        d = defaults_root / rel_s
+        if s.is_dir():
+            shutil.copytree(s, d, dirs_exist_ok=True)
+        elif s.exists():
+            d.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(s, d)
 
 def _run(cmd: List[str], dry_run: bool) -> None:
     print("+", " ".join(cmd))
@@ -367,17 +406,22 @@ def build_macos_distribution_pkg(
             component_root.mkdir(parents=True, exist_ok=True)
 
             dst = component_root / target_rel
-            if src.is_dir():
-                if str(target).endswith(".app"):
-                    shutil.copytree(src, dst, dirs_exist_ok=True)
-                else:
-                    _copy_dir_contents(src, dst)
+            if comp.key == "buckyos":
+                # Special staging to honor data_paths overwrite-install semantics.
+                layout = load_buckyos_layout(project_yaml_path, target_override="/opt/buckyos")
+                _stage_buckyos_app_root(src_root=src, dst_root=dst, layout=layout)
             else:
-                # File payload
-                if str(target).endswith("/"):
-                    dst = component_root / target_rel / src.name
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, dst)
+                if src.is_dir():
+                    if str(target).endswith(".app"):
+                        shutil.copytree(src, dst, dirs_exist_ok=True)
+                    else:
+                        _copy_dir_contents(src, dst)
+                else:
+                    # File payload
+                    if str(target).endswith("/"):
+                        dst = component_root / target_rel / src.name
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, dst)
 
         pkg_id = f"{base_identifier}.{_sanitize_id(comp.key)}"
         pkg_filename = f"{_sanitize_id(comp.key)}.pkg"
@@ -562,8 +606,6 @@ def generate_macos_scripts(layout: AppLayout, scripts_dir: Path) -> None:
     def strip_dir(p: str) -> str:
         return p.rstrip("/")
 
-    protected = {norm(p) for p in (layout.data_paths or [])}
-
     # buckyos_preinstall: remove module paths only (keep data_paths)
     buckyos_preinstall = [
         "#!/bin/zsh",
@@ -580,6 +622,7 @@ def generate_macos_scripts(layout: AppLayout, scripts_dir: Path) -> None:
         "#!/bin/zsh",
         "set -e",
         f'BUCKYOS_ROOT="{target_var}"',
+        f'DEFAULTS_DIR="$BUCKYOS_ROOT/{BUCKYOS_DEFAULTS_SUBDIR}"',
         'PLIST="/Library/LaunchAgents/buckyos.service.plist"',
         'mkdir -p "/Library/LaunchAgents"',
         'cat > "$PLIST" << EOF',
@@ -611,10 +654,35 @@ def generate_macos_scripts(layout: AppLayout, scripts_dir: Path) -> None:
         'launchctl unload "$PLIST" || true',
         'launchctl load "$PLIST"',
         'echo "BuckyOS install success, open http://127.0.0.1:3182/index.html to start, ENJOY!"',
+        'echo "[buckyos] postinstall: install data_paths if missing (overwrite install semantics)"',
+        'if [ -d "$DEFAULTS_DIR" ]; then',
+    ]
+    for rel in (layout.data_paths or []):
+        rel_s = rel.strip()
+        if rel_s.startswith("/"):
+            rel_s = rel_s[1:]
+        if rel_s.endswith("/"):
+            rel_s = rel_s.rstrip("/")
+            buckyos_postinstall += [
+                f'  if [ ! -d "$BUCKYOS_ROOT/{rel_s}" ] && [ -d "$DEFAULTS_DIR/{rel_s}" ]; then',
+                f'    mkdir -p "$(dirname "$BUCKYOS_ROOT/{rel_s}")"',
+                f'    ditto "$DEFAULTS_DIR/{rel_s}" "$BUCKYOS_ROOT/{rel_s}"',
+                "  fi",
+            ]
+        else:
+            buckyos_postinstall += [
+                f'  if [ ! -e "$BUCKYOS_ROOT/{rel_s}" ] && [ -e "$DEFAULTS_DIR/{rel_s}" ]; then',
+                f'    mkdir -p "$(dirname "$BUCKYOS_ROOT/{rel_s}")"',
+                f'    cp -p "$DEFAULTS_DIR/{rel_s}" "$BUCKYOS_ROOT/{rel_s}"',
+                "  fi",
+            ]
+    buckyos_postinstall += [
+        '  rm -rf "$DEFAULTS_DIR" || true',
+        "fi",
     ]
     (scripts_dir / "buckyos_postinstall").write_text("\n".join(buckyos_postinstall) + "\n", encoding="utf-8")
 
-    # buckyos_uninstall: remove modules + clean_paths, but keep data_paths items.
+    # buckyos_uninstall: remove modules + clean_paths
     buckyos_uninstall = [
         "#!/bin/zsh",
         "set -e",
@@ -624,31 +692,14 @@ def generate_macos_scripts(layout: AppLayout, scripts_dir: Path) -> None:
         "launchctl stop buckyos.service || true",
         'launchctl unload "$PLIST" || true',
         'rm -f "$PLIST" || true',
-        'echo "[buckyos] uninstall: removing files (keep data_paths)"',
+        'echo "[buckyos] uninstall: removing modules + clean_paths"',
     ]
     for rel in sorted(set(layout.module_paths)):
         buckyos_uninstall.append(f'rm -rf "$BUCKYOS_ROOT/{strip_dir(norm(rel))}"')
 
-    # Clean paths: remove only when it does not touch protected (data_paths).
+    # Clean paths: remove as-is (even if it overlaps with data_paths).
     for rel in sorted(set(layout.clean_paths)):
         rel_n = norm(rel)
-        if rel_n in protected:
-            continue
-        if is_dir(rel_n) and any(p.startswith(rel_n) for p in protected):
-            # Special-case etc/: keep data_paths like etc/user_gateway.yaml
-            if strip_dir(rel_n) == "etc":
-                keep_files = sorted({Path(p).name for p in protected if p.startswith("etc/") and not p.endswith("/")})
-                buckyos_uninstall.append('if [ -d "$BUCKYOS_ROOT/etc" ]; then')
-                buckyos_uninstall.append('  for item in "$BUCKYOS_ROOT/etc"/*; do')
-                buckyos_uninstall.append('    name="$(basename "$item")"')
-                if keep_files:
-                    cases = "|".join(keep_files)
-                    buckyos_uninstall.append(f'    case "$name" in {cases}) continue ;; esac')
-                buckyos_uninstall.append('    rm -rf "$item"')
-                buckyos_uninstall.append("  done")
-                buckyos_uninstall.append("fi")
-            # Otherwise skip removing this directory.
-            continue
         buckyos_uninstall.append(f'rm -rf "$BUCKYOS_ROOT/{strip_dir(rel_n)}"')
     (scripts_dir / "buckyos_uninstall").write_text("\n".join(buckyos_uninstall) + "\n", encoding="utf-8")
 
