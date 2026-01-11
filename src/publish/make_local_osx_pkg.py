@@ -24,6 +24,8 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -487,6 +489,148 @@ def build_macos_distribution_pkg(
     return out_pkg
 
 
+def _pkgutil_expand(pkg_path: Path, out_dir: Path) -> None:
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    if out_dir.exists():
+        shutil.rmtree(out_dir, ignore_errors=True)
+    subprocess.run(["pkgutil", "--expand", str(pkg_path), str(out_dir)], check=True)
+
+
+def _pkg_payload_files(pkg_component_dir: Path) -> List[str]:
+    """
+    Return payload file list for an embedded component package.
+
+    When verifying an expanded product archive, embedded component packages are directories
+    that contain a `Bom` file. In that case, use `lsbom` to list entries.
+    """
+    if pkg_component_dir.is_dir():
+        bom = pkg_component_dir / "Bom"
+        if bom.exists():
+            out = subprocess.check_output(["lsbom", "-s", str(bom)])
+            return [line.strip() for line in out.decode("utf-8", errors="ignore").splitlines() if line.strip()]
+
+    # Fallback for unexpanded/flat component packages.
+    out = subprocess.check_output(["pkgutil", "--payload-files", str(pkg_component_dir)])
+    return [line.strip() for line in out.decode("utf-8", errors="ignore").splitlines() if line.strip()]
+
+
+def verify_pkg(
+    *,
+    pkg_path: Path,
+    project_yaml_path: Path,
+) -> int:
+    """
+    Offline verification for the built macOS .pkg.
+
+    Checks:
+    - Distribution choices exist for all publish.macos_pkg.apps components
+    - optional:false => required=true and enabled=false
+    - buckyos component has scripts; other components do not
+    - buckyos payload contains data_paths under .buckyos_installer_defaults and not at real paths
+    """
+    components = load_macos_pkg_components(project_yaml_path)
+    expected_keys = {c.key for c in components}
+    by_choice_id: Dict[str, PublishComponent] = {f"choice.{_sanitize_id(c.key)}": c for c in components}
+
+    failures: List[str] = []
+
+    with tempfile.TemporaryDirectory(prefix="buckyos-pkg-verify-") as td:
+        work = Path(td)
+        expanded = work / "expanded"
+        _pkgutil_expand(pkg_path, expanded)
+
+        dist_file = expanded / "Distribution"
+        if not dist_file.exists():
+            failures.append("missing Distribution file")
+        else:
+            xml = dist_file.read_text(encoding="utf-8", errors="ignore")
+            try:
+                root = ET.fromstring(xml)
+            except ET.ParseError as e:
+                failures.append(f"Distribution XML parse error: {e}")
+                root = None
+
+            if root is not None:
+                # Collect choices
+                choices = {c.attrib.get("id", ""): c for c in root.findall(".//choice")}
+                for choice_id, comp in by_choice_id.items():
+                    if choice_id not in choices:
+                        failures.append(f"missing choice for component {comp.key} (expected id={choice_id})")
+                        continue
+                    elem = choices[choice_id]
+                    required = elem.attrib.get("required")
+                    enabled = elem.attrib.get("enabled")
+                    if not comp.optional:
+                        if required != "true":
+                            failures.append(f"component {comp.key} should be required=true, got {required}")
+                        if enabled != "false":
+                            failures.append(f"component {comp.key} should be enabled=false (locked), got {enabled}")
+                    else:
+                        if required not in (None, "false"):
+                            failures.append(f"component {comp.key} should be required=false, got {required}")
+
+        # Verify component packages exist and scripts attachment.
+        # We name component pkgs by sanitized key: {sanitize(key)}.pkg
+        for comp in components:
+            subpkg_dir = expanded / f"{_sanitize_id(comp.key)}.pkg"
+            if not subpkg_dir.exists():
+                failures.append(f"missing embedded component package: {subpkg_dir.name}")
+                continue
+
+            scripts_dir = subpkg_dir / "Scripts"
+            if comp.key == "buckyos":
+                if not scripts_dir.exists():
+                    failures.append("buckyos component should have Scripts/ but it is missing")
+                else:
+                    for required_name in ("preinstall", "postinstall"):
+                        if not (scripts_dir / required_name).exists():
+                            failures.append(f"buckyos Scripts/{required_name} missing")
+                    # Ensure postinstall contains defaults logic
+                    postinstall = scripts_dir / "postinstall"
+                    if postinstall.exists():
+                        txt = postinstall.read_text(encoding="utf-8", errors="ignore")
+                        if BUCKYOS_DEFAULTS_SUBDIR not in txt:
+                            failures.append("buckyos postinstall does not reference defaults dir for data_paths")
+            else:
+                # Non-buckyos components should not carry service scripts.
+                if scripts_dir.exists():
+                    failures.append(f"component {comp.key} should not have Scripts/ (only buckyos should)")
+
+        # Verify data_paths payload staging for buckyos.
+        buckyos_pkg_dir = expanded / "buckyos.pkg"
+        if buckyos_pkg_dir.exists():
+            layout = load_buckyos_layout(project_yaml_path, target_override="/opt/buckyos")
+            payload_files = set(_pkg_payload_files(buckyos_pkg_dir))
+
+            def normalize_payload_path(p: str) -> str:
+                # pkgutil lists paths without leading '/', relative to install-location (/)
+                return p.lstrip("./").lstrip("/")
+
+            for rel in layout.data_paths:
+                rel_s = rel.strip().lstrip("/").rstrip("/")
+                real_prefix = f"opt/buckyos/{rel_s}"
+                defaults_prefix = f"opt/buckyos/{BUCKYOS_DEFAULTS_SUBDIR}/{rel_s}"
+
+                real_present = any(normalize_payload_path(p).startswith(real_prefix) for p in payload_files)
+                defaults_present = any(normalize_payload_path(p).startswith(defaults_prefix) for p in payload_files)
+                if real_present:
+                    failures.append(f"data_paths '{rel}' should NOT be in payload at '{real_prefix}' (would overwrite)")
+                if not defaults_present:
+                    failures.append(f"data_paths '{rel}' missing from defaults payload at '{defaults_prefix}'")
+
+        else:
+            failures.append("missing embedded buckyos.pkg (cannot verify data_paths semantics)")
+
+    if failures:
+        print("VERIFY FAIL:")
+        for f in failures:
+            print("-", f)
+        return 1
+
+    print("VERIFY PASS")
+    return 0
+
+
 def _safe_join(root: Path, rel: str) -> Path:
     rel = rel.strip()
     if rel.startswith("/"):
@@ -744,7 +888,7 @@ def build_pkg(architecture: str, version: str, **kwargs: Any) -> None:
 def _legacy_build_main(argv: List[str]) -> int:
     # Backward compatibility:
     #   python make_local_osx_pkg.py <architecture> <version>
-    subcommands = {"build-pkg", "sync-macos-scripts", "install", "update", "uninstall"}
+    subcommands = {"build-pkg", "sync-macos-scripts", "verify-pkg", "install", "update", "uninstall"}
     if len(argv) == 3 and (argv[1] not in subcommands) and (not argv[1].startswith("-")):
         architecture = argv[1]
         version = argv[2]
@@ -796,6 +940,10 @@ def main(argv: List[str]) -> int:
     p_sync = sub.add_parser("sync-macos-scripts", help="Regenerate macos_pkg preinstall/postinstall/uninstall from bucky_project.yaml")
     p_sync.add_argument("--project", default=str(PROJECT_YAML), help="Path to bucky_project.yaml")
 
+    p_verify = sub.add_parser("verify-pkg", help="Verify a built macOS .pkg offline (no install)")
+    p_verify.add_argument("pkg", help="Path to .pkg")
+    p_verify.add_argument("--project", default=str(PROJECT_YAML), help="Path to bucky_project.yaml")
+
     for name in ("install", "update", "uninstall"):
         p = sub.add_parser(name, help=f"Local filesystem action: {name}")
         p.add_argument("--project", default=str(PROJECT_YAML), help="Path to bucky_project.yaml")
@@ -827,6 +975,9 @@ def main(argv: List[str]) -> int:
         generate_macos_scripts(layout, SRC_DIR / "publish" / "macos_pkg" / "scripts")
         print("macos_pkg scripts regenerated.")
         return 0
+
+    if args.cmd == "verify-pkg":
+        return verify_pkg(pkg_path=Path(args.pkg).expanduser().resolve(), project_yaml_path=Path(args.project))
 
     layout = load_buckyos_layout(Path(args.project), target_override=args.target)
     if args.source:
