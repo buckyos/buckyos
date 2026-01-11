@@ -55,7 +55,6 @@ apps:
       verify_hub: bin/verify-hub/
       scheduler: bin/scheduler/
       control_panel: bin/control-panel/
-      control_panel_web: bin/control-panel/web/
       smb_service: bin/smb-service/
       repo_service: bin/repo-service/
       buckycli: bin/buckycli/
@@ -82,14 +81,14 @@ apps:
     - home/
     - library/
     - data/
-    # 清理路径，uninstall的时候会删除
+    # 清理路径，uninstall的时候会删除（所有的modules item都会删除)
     clean_paths: 
     - cache/
     - logs/
     - tmp/
     - local/
     - etc/
-    - data/ #  TODO:用户数据不应该被删除，这个需要调整服务的可卸载数据到 local/目录
+
   buckycli:
     name: buckycli
     rootfs: rootfs/bin/buckycli/
@@ -101,3 +100,25 @@ apps:
 
 rust_env:
   OPENSSL_STATIC: '1'
+
+publish:
+  macos_pkg:
+    apps:
+      BuckyOSApp:
+        name: BuckyOS Desktop App
+        type: bundle # 已经打包好的app bundle
+        optional: false
+        src: BuckyOS.app # PUBLISH_DIR/$appname/BuckyOS.app
+        default_target: "~/Applications/BuckyOS.app"
+      buckycli:
+        name: BuckyOS CLI
+        type: app #基于本文件定义的app src rootfs is PUBLISH_DIR/$appname/
+        optional: false
+        default_target: "~/buckycli/"
+      buckyos:
+        name: BuckyOS Service
+        type: app #基于本文件定义的app src rootfs is PUBLISH_DIR/$appname/
+        optional: true
+        default_target: "/opt/buckyos/"
+      
+      

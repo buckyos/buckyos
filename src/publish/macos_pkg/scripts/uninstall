@@ -1,4 +1,4 @@
 #!/bin/zsh
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
-zsh "$DIR/buckyos_preinstall"
+zsh "$DIR/buckyos_uninstall"

@@ -43,3 +43,4 @@ rootfs/_buckycli_tmp/
 src/rootfs/bin/control_panel/
 src/rootfs/bin/node_active/
 src/rootfs/bin/sys_test/
+publish/*

@@ -1,0 +1,34 @@
+#!/bin/zsh
+set -e
+BUCKYOS_ROOT="${BUCKYOS_ROOT:-/opt/buckyos}"
+PLIST="/Library/LaunchAgents/buckyos.service.plist"
+mkdir -p "/Library/LaunchAgents"
+cat > "$PLIST" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>buckyos.service</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${BUCKYOS_ROOT}/bin/node-daemon/node-daemon</string>
+        <string>--enable_active</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>/var/log/buckyos-node-daemon.err</string>
+    <key>StandardOutPath</key>
+    <string>/var/log/buckyos-node-daemon.log</string>
+</dict>
+</plist>
+EOF
+chown root:wheel "$PLIST" || true
+chmod 644 "$PLIST"
+launchctl stop buckyos.service || true
+launchctl unload "$PLIST" || true
+launchctl load "$PLIST"
+echo "BuckyOS install success, open http://127.0.0.1:3182/index.html to start, ENJOY!"

@@ -645,6 +645,7 @@ impl ActiveServer {
 
     async fn handle_get_mini_device_info(&self,req:http::Request<BoxBody<Bytes, ServerError>>) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
         let device_info_json = serde_json::to_string(&self.device_mini_info).unwrap();
+        info!("device_info_json: {}",device_info_json);
         Ok(http::Response::builder()
             .body(BoxBody::new(
                 Full::new(Bytes::from(device_info_json))
