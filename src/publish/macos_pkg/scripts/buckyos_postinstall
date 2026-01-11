@@ -13,7 +13,7 @@ cat > "$PLIST" << EOF
     <string>buckyos.service</string>
     <key>ProgramArguments</key>
     <array>
-        <string>${BUCKYOS_ROOT}/bin/node-daemon/node-daemon</string>
+        <string>${BUCKYOS_ROOT}/bin/node-daemon/node_daemon</string>
         <string>--enable_active</string>
     </array>
     <key>RunAtLoad</key>
