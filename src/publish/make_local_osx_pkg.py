@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -517,6 +518,78 @@ def _pkgutil_expand(pkg_path: Path, out_dir: Path) -> None:
     subprocess.run(["pkgutil", "--expand", str(pkg_path), str(out_dir)], check=True)
 
 
+def _pkgutil_expand_full(pkg_path: Path, out_dir: Path) -> None:
+    """
+    Expand and extract payload for a (flat) pkg.
+
+    Works for both the top-level product archive and embedded component pkgs.
+    """
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    if out_dir.exists():
+        shutil.rmtree(out_dir, ignore_errors=True)
+    subprocess.run(["pkgutil", "--expand-full", str(pkg_path), str(out_dir)], check=True)
+
+
+def _pkgutil_flatten(pkg_dir: Path, out_pkg_path: Path) -> None:
+    """
+    Convert an expanded package directory into a flat .pkg file.
+
+    Note: when a product archive is expanded with `pkgutil --expand`, embedded
+    component packages appear as directories (e.g. `buckyos.pkg/` containing
+    `Bom`, `Payload`, `PackageInfo`, ...). `pkgutil --expand-full` only accepts
+    a *flat* package file, so we flatten first.
+    """
+    out_pkg_path.parent.mkdir(parents=True, exist_ok=True)
+    if out_pkg_path.exists():
+        out_pkg_path.unlink(missing_ok=True)
+    subprocess.run(["pkgutil", "--flatten", str(pkg_dir), str(out_pkg_path)], check=True)
+
+
+def _host_arch() -> str:
+    m = (platform.machine() or "").lower()
+    if m in ("amd64",):
+        return "x86_64"
+    if m in ("aarch64",):
+        return "arm64"
+    return m or "unknown"
+
+
+def _is_macho_candidate(rel_path: str, p: Path) -> bool:
+    # Heuristics to avoid calling `file` on every single file.
+    # We still want to catch dylibs/node addons/app binaries even if not +x.
+    rp = rel_path.replace("\\", "/")
+    if "/.dSYM/" in rp:
+        return False
+    if rp.startswith("bin/") or "/bin/" in rp:
+        return True
+    if rp.endswith((".dylib", ".so", ".node")):
+        return True
+    if "/Contents/MacOS/" in rp:
+        return True
+    try:
+        return os.access(p, os.X_OK)
+    except Exception:
+        return False
+
+
+def _parse_macho_arches(file_output: str) -> Optional[List[str]]:
+    """
+    Parse `file` output and return arch list for Mach-O files, else None.
+    """
+    s = file_output.strip()
+    if "Mach-O" not in s:
+        return None
+    # Universal binary: ... [x86_64:...] [arm64:...]
+    if "universal binary" in s:
+        arches = re.findall(r"\[([A-Za-z0-9_]+):", s)
+        return list(dict.fromkeys([a.lower() for a in arches])) or ["unknown"]
+    arches: List[str] = []
+    for a in ("arm64", "x86_64"):
+        if a in s:
+            arches.append(a)
+    return arches or ["unknown"]
+
+
 def _pkg_payload_files(pkg_component_dir: Path) -> List[str]:
     """
     Return payload file list for an embedded component package.
@@ -548,6 +621,7 @@ def verify_pkg(
     - optional:false => required=true and enabled=false
     - Per-component scripts are attached iff templates exist in publish/macos_pkg/scripts/
     - buckyos payload contains data_paths under .buckyos_installer_defaults and not at real paths
+    - Mach-O binaries inside payload are runnable on this host (avoid Rosetta surprise)
     """
     components = load_macos_pkg_components(project_yaml_path)
     expected_keys = {c.key for c in components}
@@ -632,6 +706,61 @@ def verify_pkg(
 
         else:
             failures.append("missing embedded buckyos.pkg (cannot verify data_paths semantics)")
+
+        # Verify payload Mach-O architectures (best-effort, offline).
+        host_arch = _host_arch()
+        embedded_pkgs = sorted([p for p in expanded.iterdir() if p.is_dir() and p.name.endswith(".pkg")])
+        macho_findings: List[Tuple[str, str]] = []  # (payload_rel_path, file_output)
+        foreign_arch: List[Tuple[str, List[str]]] = []  # (payload_rel_path, arches)
+
+        for subpkg_dir in embedded_pkgs:
+            extract_dir = work / "payloads" / subpkg_dir.name
+            try:
+                flat_pkg = work / "payloads_flat" / f"{subpkg_dir.name}.flat.pkg"
+                _pkgutil_flatten(subpkg_dir, flat_pkg)
+                _pkgutil_expand_full(flat_pkg, extract_dir)
+            except subprocess.CalledProcessError as e:
+                failures.append(f"pkgutil extract payload failed for {subpkg_dir.name}: {e}")
+                continue
+
+            payload_root = extract_dir / "Payload"
+            if not payload_root.exists():
+                # Some pkgutil versions may extract payload directly under extract_dir.
+                payload_root = extract_dir
+
+            for p in payload_root.rglob("*"):
+                if not p.is_file():
+                    continue
+                try:
+                    rel = p.relative_to(payload_root).as_posix()
+                except Exception:
+                    rel = p.name
+                if not _is_macho_candidate(rel, p):
+                    continue
+                try:
+                    out = subprocess.check_output(["file", str(p)]).decode("utf-8", errors="ignore").strip()
+                except Exception:
+                    continue
+                arches = _parse_macho_arches(out)
+                if arches is None:
+                    continue
+                macho_findings.append((rel, out))
+                # If host arch is known, ensure it's present in the Mach-O arches list.
+                if host_arch not in ("unknown", "") and host_arch not in arches and "unknown" not in arches:
+                    foreign_arch.append((rel, arches))
+
+        if macho_findings:
+            print(f"[verify] Mach-O files found: {len(macho_findings)} (host_arch={host_arch})")
+        else:
+            print(f"[verify] No Mach-O files found in payloads (host_arch={host_arch})")
+
+        if foreign_arch:
+            # Common Rosetta trigger on Apple Silicon: x86_64-only payload binaries.
+            # Fail with actionable paths.
+            for rel, arches in foreign_arch[:200]:
+                failures.append(f"payload Mach-O not runnable on host ({host_arch}): {rel} arches={arches}")
+            if len(foreign_arch) > 200:
+                failures.append(f"... and {len(foreign_arch) - 200} more foreign-arch Mach-O files")
 
     if failures:
         print("VERIFY FAIL:")
