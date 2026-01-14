@@ -4,6 +4,7 @@ use buckyos_api::{
     AppDoc, AppServiceSpec, AppType, GatewaySettings, GatewayShortcut, KernelServiceSpec, NodeConfig, NodeState, SCHEDULER_SERVICE_UNIQUE_ID, SelectorType, ServiceExposeConfig, ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, UserSettings, UserState, UserType, VERIFY_HUB_UNIQUE_ID, generate_control_panel_service_doc, generate_repo_service_doc, generate_scheduler_service_doc, generate_smb_service_doc, generate_verify_hub_service_doc
 };
 use buckyos_api::{CONTROL_PANEL_SERVICE_PORT, CONTROL_PANEL_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, REPO_SERVICE_UNIQUE_ID};
+use buckyos_kit::get_buckyos_root_dir;
 use jsonwebtoken::jwk::Jwk;
 use name_client::resolve_did;
 use name_lib::{DID, OwnerConfig, VerifyHubInfo, ZoneBootConfig, ZoneConfig};
@@ -83,7 +84,25 @@ impl SystemConfigBuilder {
 
     pub async fn build_app_doc(&self, app_id: &str) -> Result<AppDoc> {
         let app_did = PackageId::unique_name_to_did(app_id);
-        let app_doc = resolve_did(&app_did, None).await?;
+        let did_raw_host = app_did.to_raw_host_name();
+        let cache_doc = get_buckyos_root_dir()
+            .join("local")
+            .join("did_docs")
+            .join(format!("{}.doc.json", did_raw_host));
+        let app_doc = resolve_did(&app_did, None).await.map_err(|e| {
+            let cache_hint = if cache_doc.exists() {
+                format!("cache_present={}", cache_doc.display())
+            } else {
+                format!("cache_missing={}, hint=populate did_docs cache", cache_doc.display())
+            };
+            anyhow!(
+                "resolve_did failed for app_id={}, did_raw_host={}, {}, err={}",
+                app_id,
+                did_raw_host,
+                cache_hint,
+                e
+            )
+        })?;
         let doc_value = app_doc.to_json_value()?;
         let app_doc = serde_json::from_value(doc_value)?;
         Ok(app_doc)
