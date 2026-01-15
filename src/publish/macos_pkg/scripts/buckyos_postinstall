@@ -48,6 +48,45 @@ launchctl enable "system/buckyos.service" >/dev/null 2>&1 || true
 launchctl kickstart -k "system/buckyos.service" >/dev/null 2>&1 || true
 echo "BuckyOS install success, open http://127.0.0.1:3182/index.html to start, ENJOY!"
 echo "[buckyos] postinstall: install data_paths if missing (overwrite install semantics)"
+
+# Keep ${BUCKYOS_ROOT}/home stable for legacy paths, but store actual data under
+# the interactive user's home directory: ~/my_pi.
+# IMPORTANT: This function definition must be placed BEFORE the auto-generated
+# data_paths block so that regeneration won't overwrite it.
+setup_user_home_symlink() {
+  local console_user home_dir user_group user_home_target
+
+  console_user="$(/usr/bin/stat -f%Su /dev/console 2>/dev/null || true)"
+  if [ -z "$console_user" ] || [ "$console_user" = "root" ] || [ "$console_user" = "loginwindow" ]; then
+    return 0
+  fi
+
+  home_dir="$(/usr/bin/dscl . -read /Users/"$console_user" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}')"
+  if [ -z "$home_dir" ] || [ ! -d "$home_dir" ]; then
+    return 0
+  fi
+
+  user_group="$(/usr/bin/id -gn "$console_user" 2>/dev/null || echo staff)"
+  user_home_target="$home_dir/my_pi"
+
+  mkdir -p "$user_home_target" || true
+  chown "$console_user":"$user_group" "$user_home_target" >/dev/null 2>&1 || true
+
+  # If ${BUCKYOS_ROOT}/home is a real dir (seeded by auto-generated code),
+  # migrate its contents into ~/my_pi then replace it with a symlink.
+  if [ -e "$BUCKYOS_ROOT/home" ] && [ ! -L "$BUCKYOS_ROOT/home" ]; then
+    ditto "$BUCKYOS_ROOT/home" "$user_home_target" >/dev/null 2>&1 || true
+    rm -rf "$BUCKYOS_ROOT/home" >/dev/null 2>&1 || true
+  fi
+
+  rm -f "$BUCKYOS_ROOT/home" >/dev/null 2>&1 || true
+  ln -s "$user_home_target" "$BUCKYOS_ROOT/home" >/dev/null 2>&1 || true
+
+  # Postinstall runs as root; ensure user can read/write under ~/my_pi.
+  chown -R "$console_user":"$user_group" "$user_home_target" >/dev/null 2>&1 || true
+}
+setup_user_home_symlink
+
 if [ -d "$DEFAULTS_DIR" ]; then
   # BEGIN AUTO-GENERATED: data_paths
   if [ ! -e "$BUCKYOS_ROOT/bin/applist.json" ] && [ -e "$DEFAULTS_DIR/bin/applist.json" ]; then
@@ -95,5 +134,7 @@ if [ -d "$DEFAULTS_DIR" ]; then
     ditto "$DEFAULTS_DIR/data" "$BUCKYOS_ROOT/data"
   fi
   # END AUTO-GENERATED: data_paths
-  #rm -rf "$DEFAULTS_DIR" || true
+
+
+  rm -rf "$DEFAULTS_DIR" || true
 fi
