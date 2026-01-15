@@ -1,6 +1,23 @@
 #!/bin/zsh
 set -e
 BUCKYOS_ROOT="${BUCKYOS_ROOT:-/opt/buckyos}"
+DAEMON_PLIST="/Library/LaunchDaemons/buckyos.service.plist"
+AGENT_PLIST="/Library/LaunchAgents/buckyos.service.plist"
+
+echo "[buckyos] preinstall: stopping service (best effort)"
+launchctl kickstart -k "system/buckyos.service" >/dev/null 2>&1 || true
+launchctl bootout system "$DAEMON_PLIST" >/dev/null 2>&1 || true
+rm -f "$DAEMON_PLIST" >/dev/null 2>&1 || true
+
+CONSOLE_USER="$(/usr/bin/stat -f%Su /dev/console 2>/dev/null || true)"
+if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && [ "$CONSOLE_USER" != "loginwindow" ]; then
+  CONSOLE_UID="$(/usr/bin/id -u "$CONSOLE_USER" 2>/dev/null || true)"
+  if [ -n "$CONSOLE_UID" ]; then
+    launchctl bootout "gui/$CONSOLE_UID" "$AGENT_PLIST" >/dev/null 2>&1 || true
+  fi
+fi
+rm -f "$AGENT_PLIST" >/dev/null 2>&1 || true
+
 echo "[buckyos] preinstall: remove module paths (keep data)"
 # BEGIN AUTO-GENERATED: modules
 rm -rf "$BUCKYOS_ROOT/bin/node-daemon"

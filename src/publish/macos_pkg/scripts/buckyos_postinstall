@@ -2,9 +2,9 @@
 set -e
 BUCKYOS_ROOT="${BUCKYOS_ROOT:-/opt/buckyos}"
 DEFAULTS_DIR="$BUCKYOS_ROOT/.buckyos_installer_defaults"
-# Run node_daemon as a per-user LaunchAgent (GUI session).
-PLIST="/Library/LaunchAgents/buckyos.service.plist"
-mkdir -p "/Library/LaunchAgents"
+# Run node_daemon as a system LaunchDaemon (root) so it can bind privileged ports (80/443).
+PLIST="/Library/LaunchDaemons/buckyos.service.plist"
+mkdir -p "/Library/LaunchDaemons"
 cat > "$PLIST" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -12,18 +12,22 @@ cat > "$PLIST" << EOF
 <dict>
     <key>Label</key>
     <string>buckyos.service</string>
-    <key>LimitLoadToSessionType</key>
-    <string>Aqua</string>
     <key>ProgramArguments</key>
     <array>
         <string>${BUCKYOS_ROOT}/bin/node-daemon/node_daemon</string>
         <string>--enable_active</string>
     </array>
+    <key>WorkingDirectory</key>
+    <string>${BUCKYOS_ROOT}</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
+    <key>StandardOutPath</key>
+    <string>/var/log/buckyos.service.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/buckyos.service.err.log</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -33,22 +37,15 @@ cat > "$PLIST" << EOF
 </dict>
 </plist>
 EOF
-# /Library/LaunchAgents plists should not be writable by non-root users.
+# /Library/LaunchDaemons plists should not be writable by non-root users.
 chown root:wheel "$PLIST" || true
 chmod 644 "$PLIST"
 
-# Best-effort (re)load for the current console user.
-# Note: LaunchAgents are normally loaded automatically on user login.
-CONSOLE_USER="$(/usr/bin/stat -f%Su /dev/console 2>/dev/null || true)"
-if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && [ "$CONSOLE_USER" != "loginwindow" ]; then
-  CONSOLE_UID="$(/usr/bin/id -u "$CONSOLE_USER" 2>/dev/null || true)"
-  if [ -n "$CONSOLE_UID" ]; then
-    launchctl bootout "gui/$CONSOLE_UID" "$PLIST" >/dev/null 2>&1 || true
-    launchctl bootstrap "gui/$CONSOLE_UID" "$PLIST" >/dev/null 2>&1 || true
-    launchctl enable "gui/$CONSOLE_UID/buckyos.service" >/dev/null 2>&1 || true
-    launchctl kickstart -k "gui/$CONSOLE_UID/buckyos.service" >/dev/null 2>&1 || true
-  fi
-fi
+# Best-effort (re)load for system domain.
+launchctl bootout system "$PLIST" >/dev/null 2>&1 || true
+launchctl bootstrap system "$PLIST" >/dev/null 2>&1 || true
+launchctl enable "system/buckyos.service" >/dev/null 2>&1 || true
+launchctl kickstart -k "system/buckyos.service" >/dev/null 2>&1 || true
 echo "BuckyOS install success, open http://127.0.0.1:3182/index.html to start, ENJOY!"
 echo "[buckyos] postinstall: install data_paths if missing (overwrite install semantics)"
 if [ -d "$DEFAULTS_DIR" ]; then
