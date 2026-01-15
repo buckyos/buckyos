@@ -1,0 +1,36 @@
+#!/bin/zsh
+set -e
+
+STAGE_DIR="/Library/Application Support/BuckyOS/buckycli"
+
+if [ ! -d "$STAGE_DIR" ]; then
+  echo "[buckycli] postinstall: missing stage dir: $STAGE_DIR"
+  exit 0
+fi
+
+CONSOLE_USER="$(stat -f%Su /dev/console 2>/dev/null || true)"
+if [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = "root" ] || [ "$CONSOLE_USER" = "loginwindow" ]; then
+  # No interactive user. Install system-wide as a fallback.
+  if [ -f "$STAGE_DIR/buckycli" ]; then
+    mkdir -p /usr/local/bin || true
+    install -m 755 "$STAGE_DIR/buckycli" "/usr/local/bin/buckycli" || true
+    echo "[buckycli] postinstall: installed to /usr/local/bin/buckycli (no console user)"
+  fi
+  exit 0
+fi
+
+HOME_DIR="$(dscl . -read /Users/"$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}')"
+if [ -z "$HOME_DIR" ] || [ ! -d "$HOME_DIR" ]; then
+  echo "[buckycli] postinstall: cannot resolve home for user: $CONSOLE_USER"
+  exit 0
+fi
+
+DEST_DIR="$HOME_DIR/buckycli"
+mkdir -p "$DEST_DIR"
+ditto "$STAGE_DIR" "$DEST_DIR"
+
+USER_GROUP="$(id -gn "$CONSOLE_USER" 2>/dev/null || echo staff)"
+chown -R "$CONSOLE_USER":"$USER_GROUP" "$DEST_DIR" || true
+echo "[buckycli] postinstall: installed to $DEST_DIR for user $CONSOLE_USER"
+# BEGIN AUTO-GENERATED: data_paths
+# END AUTO-GENERATED: data_paths

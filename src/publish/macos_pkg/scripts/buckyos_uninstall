@@ -1,10 +1,10 @@
 #!/bin/zsh
 set -e
 BUCKYOS_ROOT="${BUCKYOS_ROOT:-/opt/buckyos}"
-PLIST="/Library/LaunchAgents/buckyos.service.plist"
+PLIST="/Library/LaunchDaemons/buckyos.service.plist"
 echo "[buckyos] uninstall: stopping service"
-launchctl stop buckyos.service || true
-launchctl unload "$PLIST" || true
+launchctl kickstart -k "system/buckyos.service" >/dev/null 2>&1 || true
+launchctl bootout system "$PLIST" >/dev/null 2>&1 || true
 rm -f "$PLIST" || true
 echo "[buckyos] uninstall: removing modules + clean_paths"
 # BEGIN AUTO-GENERATED: modules

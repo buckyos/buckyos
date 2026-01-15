@@ -465,17 +465,17 @@ def build_macos_distribution_pkg(
             str(pkg_path),
         ]
 
-        # Attach scripts only for buckyos (service setup + overwrite semantics).
-        if comp.key == "buckyos":
-            layout = load_buckyos_layout(project_yaml_path, target_override="/opt/buckyos")
-            templates_dir = resources_dir / "scripts"
-            # Ensure component templates exist (generate if missing/outdated).
-            generate_macos_scripts(layout, templates_dir)
-            scripts_dir = work_dir / "scripts" / "buckyos"
+        # Attach scripts for any component that provides templates in publish/macos_pkg/scripts/.
+        templates_dir = resources_dir / "scripts"
+        has_templates = any(
+            (templates_dir / f"{comp.key}_{name}").exists() for name in ("preinstall", "postinstall", "uninstall")
+        )
+        if has_templates:
+            scripts_dir = work_dir / "scripts" / comp.key
             if scripts_dir.exists() and not dry_run:
                 shutil.rmtree(scripts_dir, ignore_errors=True)
             if not dry_run:
-                _materialize_pkg_scripts_from_templates("buckyos", templates_dir, scripts_dir)
+                _materialize_pkg_scripts_from_templates(comp.key, templates_dir, scripts_dir)
                 cmd = cmd[:-1] + ["--scripts", str(scripts_dir)] + cmd[-1:]
 
         _run(cmd, dry_run=dry_run)
@@ -939,8 +939,9 @@ def _data_copy_lines(root_var: str, defaults_var: str, rel_paths: List[str]) -> 
         if rel_s.endswith("/"):
             rel_s = rel_s.rstrip("/")
             out += [
-                f'if [ ! -d "{root_var}/{rel_s}" ] && [ -d "{defaults_var}/{rel_s}" ]; then',
-                f'  mkdir -p "$(dirname "{root_var}/{rel_s}")"',
+                # If the destination dir already exists but is empty (common when payload creates it),
+                # treat it as "missing" and seed it once from defaults.
+                f'if [ -d "{defaults_var}/{rel_s}" ]; then',
                 f'  ditto "{defaults_var}/{rel_s}" "{root_var}/{rel_s}"',
                 "fi",
             ]

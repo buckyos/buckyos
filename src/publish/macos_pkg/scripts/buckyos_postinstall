@@ -2,6 +2,7 @@
 set -e
 BUCKYOS_ROOT="${BUCKYOS_ROOT:-/opt/buckyos}"
 DEFAULTS_DIR="$BUCKYOS_ROOT/.buckyos_installer_defaults"
+# Run node_daemon as a per-user LaunchAgent (GUI session).
 PLIST="/Library/LaunchAgents/buckyos.service.plist"
 mkdir -p "/Library/LaunchAgents"
 cat > "$PLIST" << EOF
@@ -11,27 +12,43 @@ cat > "$PLIST" << EOF
 <dict>
     <key>Label</key>
     <string>buckyos.service</string>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
     <key>ProgramArguments</key>
     <array>
         <string>${BUCKYOS_ROOT}/bin/node-daemon/node_daemon</string>
         <string>--enable_active</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
-    <key>StandardErrorPath</key>
-    <string>/var/log/buckyos-node-daemon.err</string>
-    <key>StandardOutPath</key>
-    <string>/var/log/buckyos-node-daemon.log</string>
+    <key>AbandonProcessGroup</key>
+    <true/>
 </dict>
 </plist>
 EOF
+# /Library/LaunchAgents plists should not be writable by non-root users.
 chown root:wheel "$PLIST" || true
 chmod 644 "$PLIST"
-launchctl stop buckyos.service || true
-launchctl unload "$PLIST" || true
-launchctl load "$PLIST"
+
+# Best-effort (re)load for the current console user.
+# Note: LaunchAgents are normally loaded automatically on user login.
+CONSOLE_USER="$(/usr/bin/stat -f%Su /dev/console 2>/dev/null || true)"
+if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && [ "$CONSOLE_USER" != "loginwindow" ]; then
+  CONSOLE_UID="$(/usr/bin/id -u "$CONSOLE_USER" 2>/dev/null || true)"
+  if [ -n "$CONSOLE_UID" ]; then
+    launchctl bootout "gui/$CONSOLE_UID" "$PLIST" >/dev/null 2>&1 || true
+    launchctl bootstrap "gui/$CONSOLE_UID" "$PLIST" >/dev/null 2>&1 || true
+    launchctl enable "gui/$CONSOLE_UID/buckyos.service" >/dev/null 2>&1 || true
+    launchctl kickstart -k "gui/$CONSOLE_UID/buckyos.service" >/dev/null 2>&1 || true
+  fi
+fi
 echo "BuckyOS install success, open http://127.0.0.1:3182/index.html to start, ENJOY!"
 echo "[buckyos] postinstall: install data_paths if missing (overwrite install semantics)"
 if [ -d "$DEFAULTS_DIR" ]; then
@@ -40,8 +57,7 @@ if [ -d "$DEFAULTS_DIR" ]; then
     mkdir -p "$(dirname "$BUCKYOS_ROOT/bin/applist.json")"
     cp -p "$DEFAULTS_DIR/bin/applist.json" "$BUCKYOS_ROOT/bin/applist.json"
   fi
-  if [ ! -d "$BUCKYOS_ROOT/bin/cyfs-gateway" ] && [ -d "$DEFAULTS_DIR/bin/cyfs-gateway" ]; then
-    mkdir -p "$(dirname "$BUCKYOS_ROOT/bin/cyfs-gateway")"
+  if [ -d "$DEFAULTS_DIR/bin/cyfs-gateway" ]; then
     ditto "$DEFAULTS_DIR/bin/cyfs-gateway" "$BUCKYOS_ROOT/bin/cyfs-gateway"
   fi
   if [ ! -e "$BUCKYOS_ROOT/etc/user_gateway.yaml" ] && [ -e "$DEFAULTS_DIR/etc/user_gateway.yaml" ]; then
@@ -60,34 +76,27 @@ if [ -d "$DEFAULTS_DIR" ]; then
     mkdir -p "$(dirname "$BUCKYOS_ROOT/etc/cyfs_gateway.yaml")"
     cp -p "$DEFAULTS_DIR/etc/cyfs_gateway.yaml" "$BUCKYOS_ROOT/etc/cyfs_gateway.yaml"
   fi
-  if [ ! -d "$BUCKYOS_ROOT/cache" ] && [ -d "$DEFAULTS_DIR/cache" ]; then
-    mkdir -p "$(dirname "$BUCKYOS_ROOT/cache")"
+  if [ -d "$DEFAULTS_DIR/cache" ]; then
     ditto "$DEFAULTS_DIR/cache" "$BUCKYOS_ROOT/cache"
   fi
-  if [ ! -d "$BUCKYOS_ROOT/logs" ] && [ -d "$DEFAULTS_DIR/logs" ]; then
-    mkdir -p "$(dirname "$BUCKYOS_ROOT/logs")"
+  if [ -d "$DEFAULTS_DIR/logs" ]; then
     ditto "$DEFAULTS_DIR/logs" "$BUCKYOS_ROOT/logs"
   fi
-  if [ ! -d "$BUCKYOS_ROOT/tmp" ] && [ -d "$DEFAULTS_DIR/tmp" ]; then
-    mkdir -p "$(dirname "$BUCKYOS_ROOT/tmp")"
+  if [ -d "$DEFAULTS_DIR/tmp" ]; then
     ditto "$DEFAULTS_DIR/tmp" "$BUCKYOS_ROOT/tmp"
   fi
-  if [ ! -d "$BUCKYOS_ROOT/local" ] && [ -d "$DEFAULTS_DIR/local" ]; then
-    mkdir -p "$(dirname "$BUCKYOS_ROOT/local")"
+  if [ -d "$DEFAULTS_DIR/local" ]; then
     ditto "$DEFAULTS_DIR/local" "$BUCKYOS_ROOT/local"
   fi
-  if [ ! -d "$BUCKYOS_ROOT/home" ] && [ -d "$DEFAULTS_DIR/home" ]; then
-    mkdir -p "$(dirname "$BUCKYOS_ROOT/home")"
+  if [ -d "$DEFAULTS_DIR/home" ]; then
     ditto "$DEFAULTS_DIR/home" "$BUCKYOS_ROOT/home"
   fi
-  if [ ! -d "$BUCKYOS_ROOT/library" ] && [ -d "$DEFAULTS_DIR/library" ]; then
-    mkdir -p "$(dirname "$BUCKYOS_ROOT/library")"
+  if [ -d "$DEFAULTS_DIR/library" ]; then
     ditto "$DEFAULTS_DIR/library" "$BUCKYOS_ROOT/library"
   fi
-  if [ ! -d "$BUCKYOS_ROOT/data" ] && [ -d "$DEFAULTS_DIR/data" ]; then
-    mkdir -p "$(dirname "$BUCKYOS_ROOT/data")"
+  if [ -d "$DEFAULTS_DIR/data" ]; then
     ditto "$DEFAULTS_DIR/data" "$BUCKYOS_ROOT/data"
   fi
   # END AUTO-GENERATED: data_paths
-  rm -rf "$DEFAULTS_DIR" || true
+  #rm -rf "$DEFAULTS_DIR" || true
 fi

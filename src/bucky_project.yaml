@@ -112,12 +112,14 @@ publish:
         type: bundle # 已经打包好的app bundle
         optional: false
         src: BuckyOS.app # PUBLISH_DIR/$appname/BuckyOS.app
-        default_target: "~/Applications/BuckyOS.app"
+        # Stage into a system location; the pkg postinstall script will copy to the current console user's home.
+        default_target: "/Library/Application Support/BuckyOS/BuckyOS.app"
       buckycli:
         name: BuckyOS CLI
         type: app #基于本文件定义的app src rootfs is PUBLISH_DIR/$appname/
         optional: false
-        default_target: "~/buckycli/"
+        # Stage into a system location; the pkg postinstall script will copy to the current console user's home.
+        default_target: "/Library/Application Support/BuckyOS/buckycli/"
       buckyos:
         name: BuckyOS Service
         type: app #基于本文件定义的app src rootfs is PUBLISH_DIR/$appname/

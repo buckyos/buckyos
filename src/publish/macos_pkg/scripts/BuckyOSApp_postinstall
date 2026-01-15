@@ -1,0 +1,39 @@
+#!/bin/zsh
+set -e
+
+STAGE_APP="/Library/Application Support/BuckyOS/BuckyOS.app"
+
+if [ ! -d "$STAGE_APP" ]; then
+  echo "[BuckyOSApp] postinstall: missing staged app: $STAGE_APP"
+  exit 0
+fi
+
+CONSOLE_USER="$(stat -f%Su /dev/console 2>/dev/null || true)"
+DEST_APP=""
+DEST_PARENT=""
+
+if [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = "root" ] || [ "$CONSOLE_USER" = "loginwindow" ]; then
+  # No interactive user. Install system-wide as a fallback.
+  DEST_PARENT="/Applications"
+  DEST_APP="$DEST_PARENT/BuckyOS.app"
+else
+  HOME_DIR="$(dscl . -read /Users/"$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}')"
+  if [ -n "$HOME_DIR" ] && [ -d "$HOME_DIR" ]; then
+    DEST_PARENT="$HOME_DIR/Applications"
+    DEST_APP="$DEST_PARENT/BuckyOS.app"
+  else
+    DEST_PARENT="/Applications"
+    DEST_APP="$DEST_PARENT/BuckyOS.app"
+  fi
+fi
+
+mkdir -p "$DEST_PARENT"
+rm -rf "$DEST_APP" || true
+ditto "$STAGE_APP" "$DEST_APP"
+
+if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && [ "$CONSOLE_USER" != "loginwindow" ]; then
+  USER_GROUP="$(id -gn "$CONSOLE_USER" 2>/dev/null || echo staff)"
+  chown -R "$CONSOLE_USER":"$USER_GROUP" "$DEST_APP" || true
+fi
+
+echo "[BuckyOSApp] postinstall: installed to $DEST_APP"

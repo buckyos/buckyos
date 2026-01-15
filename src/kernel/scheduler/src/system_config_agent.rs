@@ -620,6 +620,9 @@ pub(crate) async fn update_node_gateway_config(
                                 "dns_provider": "sn-dns"
                             },
                             {
+                                "domain": zone_hostname
+                            },
+                            {
                                 "domain": "*"
                             }
                         ],
