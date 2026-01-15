@@ -407,7 +407,7 @@ def build_macos_distribution_pkg(
         roots_dir.mkdir(parents=True, exist_ok=True)
         pkgs_dir.mkdir(parents=True, exist_ok=True)
 
-    base_identifier = "com.github.buckyos.pkg"
+    base_identifier = "ai.buckyos"
 
     built: List[Tuple[PublishComponent, str, str]] = []
     for comp in components:

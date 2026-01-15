@@ -2,6 +2,7 @@ import subprocess
 import platform
 import os
 import locale
+import shlex
 
 system = platform.system()
 ext = ""
@@ -104,20 +105,35 @@ def kill_process(name):
         print(f"{name} killed")
 
 def nohup_start(run_cmd, env_vars=None):
-    cmd = f"nohup {run_cmd} > /dev/null 2>&1 &"
-    creationflags = 0
-    if system == "Windows":
-        cmd = f"start /min {run_cmd}"
-        creationflags = subprocess.DETACHED_PROCESS|subprocess.CREATE_NEW_PROCESS_GROUP|subprocess.CREATE_NO_WINDOW
-    print(f"will run cmd {cmd} on system {system}")
-    
     # 创建环境变量字典
     env = os.environ.copy()
     if env_vars:
         env.update(env_vars)
-    
-    subprocess.run(cmd, shell=True, creationflags=creationflags, env=env)
-    # os.system(cmd)
+
+    if system == "Windows":
+        cmd = f"start /min {run_cmd}"
+        creationflags = (
+            subprocess.DETACHED_PROCESS
+            | subprocess.CREATE_NEW_PROCESS_GROUP
+            | subprocess.CREATE_NO_WINDOW
+        )
+        print(f"will run cmd {cmd} on system {system}")
+        subprocess.run(cmd, shell=True, creationflags=creationflags, env=env)
+        return None
+
+    # POSIX (macOS/Linux): detach from parent session/process group so parent exit won't affect child.
+    args = run_cmd if isinstance(run_cmd, (list, tuple)) else shlex.split(str(run_cmd))
+    print(f"will run cmd {args} on system {system}")
+    proc = subprocess.Popen(
+        list(args),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        preexec_fn=os.setsid,  # new session / new process group
+        close_fds=True,
+        env=env,
+    )
+    return proc.pid
 
 def get_buckyos_root():
     buckyos_root = os.environ.get("BUCKYOS_ROOT")
