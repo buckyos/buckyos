@@ -4,16 +4,25 @@ BUCKYOS_ROOT="${BUCKYOS_ROOT:-/opt/buckyos}"
 DAEMON_PLIST="/Library/LaunchDaemons/buckyos.service.plist"
 AGENT_PLIST="/Library/LaunchAgents/buckyos.service.plist"
 
+run_with_timeout() {
+  # macOS doesn't ship GNU timeout; use perl alarm for a best-effort timeout.
+  # Usage: run_with_timeout 10 command args...
+  local seconds="$1"
+  shift
+  /usr/bin/perl -e '$t=shift; alarm $t; exec @ARGV' "$seconds" "$@"
+}
+
 echo "[buckyos] preinstall: stopping service (best effort)"
-launchctl kickstart -k "system/buckyos.service" >/dev/null 2>&1 || true
-launchctl bootout system "$DAEMON_PLIST" >/dev/null 2>&1 || true
+# Don't use kickstart here: it may start (or wait for) the job and block in installer context.
+launchctl disable "system/buckyos.service" >/dev/null 2>&1 || true
+run_with_timeout 10 launchctl bootout system "$DAEMON_PLIST" >/dev/null 2>&1 || true
 rm -f "$DAEMON_PLIST" >/dev/null 2>&1 || true
 
 CONSOLE_USER="$(/usr/bin/stat -f%Su /dev/console 2>/dev/null || true)"
 if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && [ "$CONSOLE_USER" != "loginwindow" ]; then
   CONSOLE_UID="$(/usr/bin/id -u "$CONSOLE_USER" 2>/dev/null || true)"
   if [ -n "$CONSOLE_UID" ]; then
-    launchctl bootout "gui/$CONSOLE_UID" "$AGENT_PLIST" >/dev/null 2>&1 || true
+    run_with_timeout 10 launchctl bootout "gui/$CONSOLE_UID" "$AGENT_PLIST" >/dev/null 2>&1 || true
   fi
 fi
 rm -f "$AGENT_PLIST" >/dev/null 2>&1 || true
