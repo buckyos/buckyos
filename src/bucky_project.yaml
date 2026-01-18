@@ -46,7 +46,7 @@ apps:
     default_target_rootfs: "${BUCKYOS_ROOT}"
     # 安装模式
     # - update 覆盖安装，当目标目录不存在时，会触发重新安装(install_data,update)
-    # - install 全新安装，相当于先卸载后安装 (clean,install_data,update)
+    # - install 全新安装，相当于先卸载后安装 (clean,install_data，update)
     
     # 模块指向的 文件/文件夹，每次update的时候都会覆盖更新 
     modules:
@@ -55,11 +55,11 @@ apps:
       verify_hub: bin/verify-hub/
       scheduler: bin/scheduler/
       control_panel: bin/control-panel/
+      control_panel_web: bin/control-panel/web/
       smb_service: bin/smb-service/
       repo_service: bin/repo-service/
       buckycli: bin/buckycli/
       node_active: bin/node-active/
-      control_panel: bin/control-panel/
       sys_test: bin/sys-test/
       app-loader: bin/app-loader/
       scheduler-etc: etc/scheduler/
@@ -68,7 +68,7 @@ apps:
       stop.py: bin/stop.py
 
 
-    # 数据路径，update的时候如果目标存在，则不会更新
+    # 数据路径，install_data 的时候如果目标存在，则不会复制，否则从rootfs复制到目标
     data_paths: 
     - bin/applist.json
     - bin/cyfs-gateway/
@@ -125,5 +125,22 @@ publish:
         type: app #基于本文件定义的app src rootfs is PUBLISH_DIR/$appname/
         optional: true
         default_target: "/opt/buckyos/"
+  win_pkg:
+    apps:
+      BuckyOSApp:
+        name: BuckyOS App
+        type: bundle 
+        optional: false
+        src: buckyosapp.exe # PUBLISH_DIR/$appname/buckyosapp.exe
+        # Stage into a system location; the pkg postinstall script will copy to the current console user's home.
+        default_target: "C:\\Program Files\\BuckyOS\\buckyosapp.exe" #window下运行用户选择安装位置
+      buckyos:
+        name: BuckyOS Desktop Service
+        type: app
+        system_service: true,
+        optional: true
+        default_target: "%APPDATA%\\BuckyOS\\" #window下运行用户选择安装位置
+
+      
       
       
