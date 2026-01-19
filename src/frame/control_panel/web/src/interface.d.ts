@@ -1,9 +1,30 @@
 export {}
 
 declare global {
+  type IconName =
+    | 'dashboard'
+    | 'users'
+    | 'storage'
+    | 'apps'
+    | 'settings'
+    | 'bell'
+    | 'signout'
+    | 'alert'
+    | 'spark'
+    | 'cpu'
+    | 'memory'
+    | 'network'
+    | 'package'
+    | 'shield'
+    | 'link'
+    | 'activity'
+    | 'drive'
+    | 'chart'
+    | 'server'
+
   type NavItem = {
     label: string
-    icon: string
+    icon: IconName
     path: string
     badge?: string
   }
@@ -17,12 +38,12 @@ declare global {
   type DappItem = {
     name: string
     status: 'running' | 'stopped'
-    icon: string
+    icon: IconName
   }
 
   type QuickAction = {
     label: string
-    icon: string
+    icon: IconName
     to: string
   }
 
@@ -146,7 +167,7 @@ declare global {
 
   type DappCard = {
     name: string
-    icon: string
+    icon: IconName
     category: string
     status: 'installed' | 'available'
     version: string
@@ -156,6 +177,6 @@ declare global {
     title: string
     description: string
     actions: string[]
-    icon: string
+    icon: IconName
   }
 }

@@ -2,15 +2,15 @@ import {buckyos} from 'buckyos'
 
 const mockLayoutData: RootLayoutData = {
   primaryNav: [
-    { label: 'Dashboard', icon: '📊', path: '/' },
-    { label: 'User Management', icon: '👥', path: '/users' },
-    { label: 'Storage', icon: '🗄️', path: '/storage' },
-    { label: 'dApp Store', icon: '🛒', path: '/dapps' },
-    { label: 'Settings', icon: '⚙️', path: '/settings' },
+    { label: 'Dashboard', icon: 'dashboard', path: '/' },
+    { label: 'User Management', icon: 'users', path: '/users' },
+    { label: 'Storage', icon: 'storage', path: '/storage' },
+    { label: 'dApp Store', icon: 'apps', path: '/dapps' },
+    { label: 'Settings', icon: 'settings', path: '/settings' },
   ],
   secondaryNav: [
-    { label: 'Notifications', icon: '🔔', path: '/notifications', badge: '3' },
-    { label: 'Sign Out', icon: '↪️', path: '/sign-out' },
+    { label: 'Notifications', icon: 'bell', path: '/notifications', badge: '3' },
+    { label: 'Sign Out', icon: 'signout', path: '/sign-out' },
   ],
   profile: {
     name: 'Admin User',
@@ -34,18 +34,18 @@ const mockDashboardData: DashboardState = {
     { title: 'New admin policy applied', subtitle: 'Yesterday', tone: 'info' },
   ],
   dapps: [
-    { name: 'FileSync', icon: '🗂️', status: 'running' },
-    { name: 'SecureChat', icon: '💬', status: 'stopped' },
-    { name: 'CloudBridge', icon: '🌉', status: 'stopped' },
-    { name: 'PhotoVault', icon: '📷', status: 'running' },
-    { name: 'DataAnalyzer', icon: '📊', status: 'running' },
-    { name: 'WebPortal', icon: '🌐', status: 'running' },
+    { name: 'FileSync', icon: 'package', status: 'running' },
+    { name: 'SecureChat', icon: 'package', status: 'stopped' },
+    { name: 'CloudBridge', icon: 'package', status: 'stopped' },
+    { name: 'PhotoVault', icon: 'package', status: 'running' },
+    { name: 'DataAnalyzer', icon: 'package', status: 'running' },
+    { name: 'WebPortal', icon: 'package', status: 'running' },
   ],
   quickActions: [
-    { label: 'Manage Users', icon: '👤', to: '/users' },
-    { label: 'Storage Settings', icon: '💾', to: '/storage' },
-    { label: 'Network Config', icon: '🛰️', to: '/settings' },
-    { label: 'System Logs', icon: '📈', to: '/notifications' },
+    { label: 'Manage Users', icon: 'users', to: '/users' },
+    { label: 'Storage Settings', icon: 'storage', to: '/storage' },
+    { label: 'Network Config', icon: 'network', to: '/settings' },
+    { label: 'System Logs', icon: 'chart', to: '/notifications' },
   ],
   resourceTimeline: [
     { time: '00:00', cpu: 52, memory: 68 },
