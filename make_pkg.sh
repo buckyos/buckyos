@@ -1,5 +1,7 @@
 #! /bin/bash
 
+echo "Starting to make pkg, make sure already build buckyosapp and store in buckyosci/buckyosapp"
+
 source ./venv/bin/activate
 rm -rf /opt/buckyosci/buckyos/
 rm -rf /opt/buckyosci/buckycli/

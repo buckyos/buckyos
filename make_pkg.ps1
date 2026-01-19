@@ -44,6 +44,8 @@ function Invoke-Step {
     }
 }
 
+Write-Host "Starting to make installer, make sure already build buckyosapp and store in buckyosci/buckyosapp" -ForegroundColor Green
+
 # 1) Activate venv
 $venvActivate = Join-Path $repoRoot "venv\Scripts\Activate.ps1"
 if (Test-Path $venvActivate) {
