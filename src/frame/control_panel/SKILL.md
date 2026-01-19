@@ -21,6 +21,12 @@ Use this when designing or implementing control_panel UI.
 4. Typography & color: consistent scale and palette
 5. Motion: respect prefers-reduced-motion
 
+## Design System (current)
+
+- Primary color: #0f766e
+- Accent color: #f59e0b
+- Fonts: Space Grotesk (headings), Work Sans (body)
+
 ## Workflow
 
 1. Define a design system (style, palette, typography, spacing).
