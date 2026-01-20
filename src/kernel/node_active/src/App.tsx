@@ -25,6 +25,8 @@ const App = () => {
   const [mode, setMode] = useState<PaletteMode>(prefersDark ? "dark" : "light");
   const [isWalletRuntime, setIsWalletRuntime] = useState(false);
   const [walletUser, setWalletUser] = useState<WalletUser | null>(null);
+  const [isInitialized, setIsInitialized] = useState(false);
+  const [initError, setInitError] = useState<string | null>(null);
 
   useEffect(() => {
     setMode(prefersDark ? "dark" : "light");
@@ -39,28 +41,51 @@ const App = () => {
   }, [t, i18n.language]);
 
   useEffect(() => {
-    try {
-      const runtime = buckyos.getRuntimeType?.();
-      if (runtime === RuntimeType.AppRuntime) {
+    let cancelled = false;
+    const init = async () => {
+      try {
+        setIsInitialized(false);
+        setInitError(null);
+        setWalletUser(null);
+        setIsWalletRuntime(false);
+
+        const runtime = buckyos.getRuntimeType?.();
+        const isAppRuntime = runtime === RuntimeType.AppRuntime;
+        if (!isAppRuntime) {
+          return;
+        }
+
+        // Wallet runtime: wait wallet user result BEFORE rendering wizard.
+        const user = await buckyos.getCurrentWalletUser?.();
+        if (!user) {
+          // If wallet user is unavailable, fall back to non-wallet flow.
+          return;
+        }
+
+        if (cancelled) return;
+        setWalletUser({
+          user_name: (user.user_name || user.username || "").toLowerCase(),
+          user_id: user.did,
+          public_key: user.public_key || user.owner_public_key,
+          sn_username: (user.sn_username || "").toLowerCase(),
+        });
         setIsWalletRuntime(true);
-        buckyos.getCurrentWalletUser?.()
-          .then((user) => {
-            if (user) {
-              setWalletUser({
-                user_name: user.user_name?.toLowerCase() || user.username?.toLowerCase() || "",
-                user_id: user.did,
-                public_key: user.public_key || user.owner_public_key,
-                sn_username: user.sn_username?.toLowerCase() || "",
-              });
-            }
-          })
-          .catch((err: any) => {
-            console.warn("Failed to load wallet user", err);
-          });
+      } catch (err: any) {
+        console.warn("App initialization failed", err);
+        if (!cancelled) {
+          setInitError(err?.message || String(err));
+        }
+      } finally {
+        if (!cancelled) {
+          setIsInitialized(true);
+        }
       }
-    } catch (err) {
-      console.warn("Detect runtime failed", err);
-    }
+    };
+
+    init();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const walletPubKeyDisplay = (() => {
@@ -141,7 +166,37 @@ const App = () => {
                 <ThemeToggle mode={mode} onToggle={() => setMode((prev) => (prev === "light" ? "dark" : "light"))} />
               </Stack>
             </Stack>
-            <ActiveWizard isWalletRuntime={isWalletRuntime} walletUser={walletUser || undefined} />
+            {!isInitialized ? (
+              <Box sx={{ py: 2 }}>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                  {t("loading") || "Loading..."}
+                </Typography>
+                <Box
+                  sx={{
+                    height: 8,
+                    borderRadius: 999,
+                    backgroundColor: "action.hover",
+                    overflow: "hidden",
+                  }}
+                >
+                  <Box
+                    sx={{
+                      height: "100%",
+                      width: "35%",
+                      bgcolor: "primary.main",
+                      opacity: 0.75,
+                    }}
+                  />
+                </Box>
+                {initError ? (
+                  <Typography variant="body2" color="warning.main" sx={{ mt: 1 }}>
+                    {initError}
+                  </Typography>
+                ) : null}
+              </Box>
+            ) : (
+              <ActiveWizard isWalletRuntime={isWalletRuntime} walletUser={walletUser || undefined} />
+            )}
           </Paper>
         </Container>
       </Box>

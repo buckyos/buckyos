@@ -23,40 +23,42 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
   const [activeStep, setActiveStep] = useState(0);
   const [completedUrl, setCompletedUrl] = useState("");
 
-  // 异步初始化 wizardData
+  // 异步初始化 wizardData（必须等 walletUser 就绪，避免初始化路径错误）
   useEffect(() => {
-    if(isWalletRuntime) {
-      createInitialWizardData({
-        is_wallet_runtime: isWalletRuntime,
-        owner_user_name: walletUser?.user_name.toLowerCase(),
-        owner_public_key: walletUser?.public_key,
-        sn_user_name: walletUser?.sn_username?.toLowerCase() || "",
-      }).then((data) => {
-        setWizardData(data);
-      })
-    } else {
-      createInitialWizardData().then((data) => {
-        setWizardData(data);
-      });
-    }
-  }, []); // 只在组件挂载时执行一次
+    let cancelled = false;
+    const init = async () => {
+      try {
+        setWizardData(null);
+        setActiveStep(0);
+        setCompletedUrl("");
 
-  // 更新 wallet 相关信息
-  useEffect(() => {
-    if (!wizardData) return;
-    
-    if (!isWalletRuntime || !walletUser) {
-      setWizardData((prev) => prev ? { ...prev, is_wallet_runtime: false } : null);
-      return;
-    }
-    setWizardData((prev) => prev ? {
-      ...prev,
-      is_wallet_runtime: true,
-      owner_user_name: walletUser.user_name?.toLowerCase() || "",
-      owner_public_key: walletUser.public_key || {},
-      sn_user_name: walletUser.sn_username?.toLowerCase() || "",
-    } : null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        if (isWalletRuntime) {
+          // Wallet runtime requires wallet user.
+          if (!walletUser) {
+            return;
+          }
+          const data = await createInitialWizardData({
+            is_wallet_runtime: true,
+            owner_user_name: (walletUser.user_name || "").toLowerCase(),
+            owner_public_key: walletUser.public_key,
+            sn_user_name: (walletUser.sn_username || "").toLowerCase(),
+          });
+          if (!cancelled) setWizardData(data);
+          return;
+        }
+
+        const data = await createInitialWizardData();
+        if (!cancelled) setWizardData(data);
+      } catch (err) {
+        console.warn("Failed to init wizard data", err);
+        if (!cancelled) setWizardData(null);
+      }
+    };
+
+    init();
+    return () => {
+      cancelled = true;
+    };
   }, [isWalletRuntime, walletUser]);
 
   const stepTitles = useMemo(
@@ -91,6 +93,15 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
   const successUrl = completedUrl || fallbackUrl;
 
   const renderStep = () => {
+    if (isWalletRuntime && !walletUser) {
+      return (
+        <Box>
+          <Typography variant="body2" color="text.secondary">
+            {t("loading") || "Loading..."}
+          </Typography>
+        </Box>
+      );
+    }
     if (!wizardData) {
       return <Box>Loading...</Box>;
     }

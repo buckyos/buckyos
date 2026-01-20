@@ -21,7 +21,8 @@ src/rootfs/bin/node-daemon/node_daemon
 src/rootfs/bin/repo-service/repo_service
 src/rootfs/bin/smb-service/smb_service
 src/rootfs/bin/buckycli/buckycli
-/src/rootfs/bin/control-panel/
+/src/rootfs/bin/control-panel/control_panel
+/src/rootfs/bin/control-panel/web/
 /src/rootfs/bin/sys-test/
 src/rootfs/logs
 src/rootfs/tmp
@@ -42,7 +43,7 @@ src/rootfs/_buckycli_tmp/
 src/_scripts/
 src/target
 rootfs/_buckycli_tmp/
-src/rootfs/bin/control_panel/
+
 src/rootfs/bin/node_active/
 src/rootfs/bin/sys_test/
 publish/*

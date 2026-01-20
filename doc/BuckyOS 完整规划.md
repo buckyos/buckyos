@@ -37,7 +37,7 @@ chunk storage可以以标准文件系统的形式，保存在多个目录下。�
 - 现在的Path接口，能与did-resove对接上
 - 基于NDM原始接口，与FUSE接口对接，实现广泛的mount支持
 
-### 基于klog实现分布式MetaDB
+### 基于klog实现分布式fs-meta-db
 
 ### 存储池扩展管理，通过添加不同类型的chunk storage来
 

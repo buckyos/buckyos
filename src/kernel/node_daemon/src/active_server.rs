@@ -97,7 +97,7 @@ impl ActiveServer {
 
 
         // Decode device_doc_jwt to extract information
-        let encoded_doc = EncodedDocument::from_str(device_doc_jwt.to_string())
+        let encoded_device_doc = EncodedDocument::from_str(device_doc_jwt.to_string())
             .map_err(|e| {
                 warn!("Invalid device_doc_jwt format: {}", e);
                 RPCErrors::ParseRequestError(format!("Invalid device_doc_jwt format: {}", e))
@@ -106,7 +106,7 @@ impl ActiveServer {
         // First decode without verification to get owner public key hint, then verify
         // For now, we'll decode without verification first to extract owner info
         // In production, owner_public_key should be provided or extracted from zone config
-        let device_config = DeviceConfig::decode(&encoded_doc, None)
+        let device_config = DeviceConfig::decode(&encoded_device_doc, None)
             .map_err(|e| {
                 warn!("Failed to decode device_doc_jwt: {}", e);
                 RPCErrors::ParseRequestError(format!("Failed to decode device_doc_jwt: {}", e))
@@ -125,7 +125,7 @@ impl ActiveServer {
             })?;
         
         // Re-decode with verification
-        let _verified_device_config = DeviceConfig::decode(&encoded_doc, Some(&owner_decoding_key))
+        let _verified_device_config = DeviceConfig::decode(&encoded_device_doc, Some(&owner_decoding_key))
             .map_err(|e| {
                 warn!("Failed to verify device_doc_jwt: {}", e);
                 RPCErrors::ParseRequestError(format!("Failed to verify device_doc_jwt: {}", e))

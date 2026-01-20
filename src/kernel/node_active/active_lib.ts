@@ -37,9 +37,13 @@ export async function createInitialWizardData (initial?: Partial<ActiveWizzardDa
     let owner_public_key:JsonValue = {};
     let owner_private_key:string = "";
     if (!initial?.is_wallet_runtime ) {
+        console.log("generate_key_pair for owner");
         [owner_public_key,owner_private_key] = await generate_key_pair();
-        console.log("owner_public_key",owner_public_key);
-    } 
+    }  else {
+        owner_public_key = initial?.owner_public_key as JsonValue;
+    }
+
+    console.log("owner_public_key",owner_public_key);
     let device_did = "did:dev:"+ device_public_key["x"];
     console.log("device_did",device_did);
 
@@ -56,8 +60,8 @@ export async function createInitialWizardData (initial?: Partial<ActiveWizzardDa
         admin_password_hash: "",
         friend_passcode: "",
         enable_guest_access: false,
-        owner_public_key: owner_public_key,
         owner_private_key: owner_private_key,
+        owner_public_key: owner_public_key,
         port_mapping_mode: "full",
         rtcp_port: 2980,
         is_wallet_runtime: false,
