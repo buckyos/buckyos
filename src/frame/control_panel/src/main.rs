@@ -1,7 +1,7 @@
 use ::kRPC::*;
 use anyhow::Result;
 use async_trait::async_trait;
-use buckyos_api::{CONTROL_PANEL_SERVICE_PORT, SystemConfigClient};
+use buckyos_api::{SystemConfigClient, CONTROL_PANEL_SERVICE_PORT};
 use buckyos_kit::*;
 use bytes::Bytes;
 use cyfs_gateway_lib::*;
@@ -9,6 +9,7 @@ use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use serde_json::*;
 use server_runner::*;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::{net::IpAddr, time::Duration};
 use sysinfo::{DiskRefreshKind, Disks, System};
@@ -35,6 +36,26 @@ impl ControlPanelServer {
             })),
             req.id,
         ))
+    }
+
+    fn param_str(req: &RPCRequest, key: &str) -> Option<String> {
+        req.params
+            .get(key)
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string())
+    }
+
+    fn require_param_str(req: &RPCRequest, key: &str) -> Result<String, RPCErrors> {
+        Self::param_str(req, key).ok_or(RPCErrors::ParseRequestError(format!("Missing {}", key)))
+    }
+
+    fn build_system_config_client(req: &RPCRequest) -> SystemConfigClient {
+        let service_url = Self::param_str(req, "service_url");
+        let session_token = req
+            .token
+            .clone()
+            .or_else(|| Self::param_str(req, "session_token"));
+        SystemConfigClient::new(service_url.as_deref(), session_token.as_deref())
     }
 
     async fn handle_layout(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
@@ -189,6 +210,250 @@ impl ControlPanelServer {
         Ok(RPCResponse::new(RPCResult::Success(dashboard), req.id))
     }
 
+    async fn handle_system_overview(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let mut system = System::new_all();
+        system.refresh_all();
+
+        let cpu_brand = system
+            .cpus()
+            .get(0)
+            .map(|c| c.brand().to_string())
+            .unwrap_or_else(|| "Unknown CPU".to_string());
+
+        let overview = json!({
+            "name": System::host_name().unwrap_or_else(|| "BuckyOS Node".to_string()),
+            "model": cpu_brand,
+            "os": System::name().unwrap_or_else(|| "Unknown OS".to_string()),
+            "version": System::os_version().unwrap_or_else(|| "Unknown".to_string()),
+            "uptime_seconds": System::uptime(),
+        });
+
+        Ok(RPCResponse::new(RPCResult::Success(overview), req.id))
+    }
+
+    async fn handle_system_metrics(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let mut system = System::new_all();
+        system.refresh_memory();
+        system.refresh_cpu_usage();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        system.refresh_cpu_usage();
+
+        let cpu_usage = system.global_cpu_usage() as f64;
+        let cpu_brand = system
+            .cpus()
+            .get(0)
+            .map(|c| c.brand().to_string())
+            .unwrap_or_else(|| "Unknown CPU".to_string());
+        let cpu_cores = system.cpus().len() as u64;
+
+        let total_memory_bytes = system.total_memory();
+        let used_memory_bytes = system.used_memory();
+        let memory_percent = if total_memory_bytes > 0 {
+            ((used_memory_bytes as f64 / total_memory_bytes as f64) * 100.0).round()
+        } else {
+            0.0
+        };
+
+        let mut disks_detail: Vec<Value> = Vec::new();
+        let mut storage_capacity_bytes: u64 = 0;
+        let mut storage_used_bytes: u64 = 0;
+
+        let mut disks = Disks::new_with_refreshed_list_specifics(DiskRefreshKind::everything());
+        disks.refresh(true);
+
+        for disk in disks.list().iter() {
+            let total = disk.total_space();
+            let available = disk.available_space();
+            let used = total.saturating_sub(available);
+            storage_capacity_bytes = storage_capacity_bytes.saturating_add(total);
+            storage_used_bytes = storage_used_bytes.saturating_add(used);
+
+            disks_detail.push(json!({
+                "label": disk.name().to_string_lossy(),
+                "totalGb": bytes_to_gb(total),
+                "usedGb": bytes_to_gb(used),
+                "fs": disk.file_system().to_string_lossy(),
+                "mount": disk.mount_point().to_string_lossy(),
+            }));
+        }
+
+        let disk_usage_percent = if storage_capacity_bytes > 0 {
+            ((storage_used_bytes as f64 / storage_capacity_bytes as f64) * 100.0).round()
+        } else {
+            0.0
+        };
+
+        let metrics = json!({
+            "cpu": {
+                "usagePercent": cpu_usage,
+                "model": cpu_brand,
+                "cores": cpu_cores,
+            },
+            "memory": {
+                "totalGb": bytes_to_gb(total_memory_bytes),
+                "usedGb": bytes_to_gb(used_memory_bytes),
+                "usagePercent": memory_percent,
+            },
+            "disk": {
+                "totalGb": bytes_to_gb(storage_capacity_bytes),
+                "usedGb": bytes_to_gb(storage_used_bytes),
+                "usagePercent": disk_usage_percent,
+                "disks": disks_detail,
+            },
+            "network": {
+                "rxBytes": 0,
+                "txBytes": 0,
+                "rxPerSec": 0,
+                "txPerSec": 0,
+            }
+        });
+
+        Ok(RPCResponse::new(RPCResult::Success(metrics), req.id))
+    }
+
+    async fn handle_sys_config_get(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let key = Self::require_param_str(&req, "key")?;
+        let client = Self::build_system_config_client(&req);
+        let value = client
+            .get(&key)
+            .await
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "key": key,
+                "value": value.value,
+                "version": value.version,
+                "isChanged": value.is_changed,
+            })),
+            req.id,
+        ))
+    }
+
+    async fn handle_sys_config_set(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let key = Self::require_param_str(&req, "key")?;
+        let value = Self::require_param_str(&req, "value")?;
+        let client = Self::build_system_config_client(&req);
+        client
+            .set(&key, &value)
+            .await
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "ok": true,
+                "key": key,
+            })),
+            req.id,
+        ))
+    }
+
+    async fn handle_sys_config_list(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let key = Self::param_str(&req, "key")
+            .or_else(|| Self::param_str(&req, "prefix"))
+            .unwrap_or_default();
+        let client = Self::build_system_config_client(&req);
+        let items = client
+            .list(&key)
+            .await
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "key": key,
+                "items": items,
+            })),
+            req.id,
+        ))
+    }
+
+    async fn build_sys_config_tree(
+        &self,
+        client: &SystemConfigClient,
+        key: &str,
+        depth: u64,
+    ) -> Result<Value, RPCErrors> {
+        if depth == 0 {
+            return Ok(json!({}));
+        }
+
+        let mut queue: Vec<(String, u64)> = vec![(key.to_string(), depth)];
+        let mut children_map: HashMap<String, Vec<String>> = HashMap::new();
+
+        while let Some((current_key, current_depth)) = queue.pop() {
+            if current_depth == 0 {
+                continue;
+            }
+            let children = client
+                .list(&current_key)
+                .await
+                .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+            children_map.insert(current_key.clone(), children.clone());
+            if current_depth > 1 {
+                for child in children {
+                    let child_key = if current_key.is_empty() || child.starts_with(&current_key) {
+                        child
+                    } else {
+                        format!("{}/{}", current_key, child)
+                    };
+                    queue.push((child_key, current_depth - 1));
+                }
+            }
+        }
+
+        fn build_tree_node(
+            children_map: &HashMap<String, Vec<String>>,
+            key: &str,
+            depth: u64,
+        ) -> Value {
+            if depth == 0 {
+                return json!({});
+            }
+            let mut map = Map::new();
+            let children = children_map.get(key).cloned().unwrap_or_default();
+            for child in children {
+                let child_key = if key.is_empty() || child.starts_with(key) {
+                    child.clone()
+                } else {
+                    format!("{}/{}", key, child)
+                };
+                let child_name = child.split('/').last().unwrap_or(child.as_str()).to_string();
+                let subtree = if depth > 1 {
+                    build_tree_node(children_map, &child_key, depth - 1)
+                } else {
+                    json!({})
+                };
+                map.insert(child_name, subtree);
+            }
+            Value::Object(map)
+        }
+
+        Ok(build_tree_node(&children_map, key, depth))
+    }
+
+    async fn handle_sys_config_tree(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let key = Self::param_str(&req, "key")
+            .or_else(|| Self::param_str(&req, "prefix"))
+            .unwrap_or_default();
+        let depth = req
+            .params
+            .get("depth")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(2);
+        let depth = depth.min(6);
+        let client = Self::build_system_config_client(&req);
+        let tree = self.build_sys_config_tree(&client, &key, depth).await?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "key": key,
+                "depth": depth,
+                "tree": tree,
+            })),
+            req.id,
+        ))
+    }
+
     async fn handle_system_config_test(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         let key = req
             .params
@@ -196,18 +461,7 @@ impl ControlPanelServer {
             .and_then(|value| value.as_str())
             .unwrap_or("boot/config")
             .to_string();
-        let service_url = req
-            .params
-            .get("service_url")
-            .and_then(|value| value.as_str());
-        let session_token = req.token.clone().or_else(|| {
-            req.params
-                .get("session_token")
-                .and_then(|value| value.as_str())
-                .map(|value| value.to_string())
-        });
-
-        let client = SystemConfigClient::new(service_url, session_token.as_deref());
+        let client = Self::build_system_config_client(&req);
         let value = client
             .get(&key)
             .await
@@ -249,13 +503,15 @@ impl RPCHandler for ControlPanelServer {
             "layout" | "ui.layout" => self.handle_layout(req).await,
             "dashboard" | "ui.dashboard" => self.handle_dashboard(req).await,
             // Auth
-            "auth.login" => self
-                .handle_unimplemented(req, "Authenticate admin/user session")
-                .await,
+            "auth.login" => {
+                self.handle_unimplemented(req, "Authenticate admin/user session")
+                    .await
+            }
             "auth.logout" => self.handle_unimplemented(req, "Terminate session").await,
-            "auth.refresh" => self
-                .handle_unimplemented(req, "Refresh token/session")
-                .await,
+            "auth.refresh" => {
+                self.handle_unimplemented(req, "Refresh token/session")
+                    .await
+            }
             // User & Role
             "user.list" => self.handle_unimplemented(req, "List users").await,
             "user.get" => self.handle_unimplemented(req, "Get user detail").await,
@@ -265,9 +521,9 @@ impl RPCHandler for ControlPanelServer {
             "user.role.list" => self.handle_unimplemented(req, "List roles/policies").await,
             "user.role.update" => self.handle_unimplemented(req, "Update role/policy").await,
             // System
-            "system.overview" => self.handle_unimplemented(req, "System overview").await,
+            "system.overview" => self.handle_system_overview(req).await,
             "system.status" => self.handle_unimplemented(req, "Health status").await,
-            "system.metrics" => self.handle_unimplemented(req, "CPU/mem/net/disk").await,
+            "system.metrics" => self.handle_system_metrics(req).await,
             "system.update.check" => self.handle_unimplemented(req, "Check updates").await,
             "system.update.apply" => self.handle_unimplemented(req, "Apply update").await,
             "system.config.test" => self.handle_system_config_test(req).await,
@@ -287,19 +543,21 @@ impl RPCHandler for ControlPanelServer {
             "share.update" => self.handle_unimplemented(req, "Update share").await,
             "share.delete" => self.handle_unimplemented(req, "Delete share").await,
             // Files
-            "files.browse" => self.handle_unimplemented(req, "List directory entries").await,
+            "files.browse" => {
+                self.handle_unimplemented(req, "List directory entries")
+                    .await
+            }
             "files.stat" => self.handle_unimplemented(req, "File metadata").await,
             "files.mkdir" => self.handle_unimplemented(req, "Create folder").await,
             "files.delete" => self.handle_unimplemented(req, "Delete file/folder").await,
             "files.move" => self.handle_unimplemented(req, "Move/rename").await,
             "files.copy" => self.handle_unimplemented(req, "Copy").await,
-            "files.upload.init" => self
-                .handle_unimplemented(req, "Init multipart upload")
-                .await,
+            "files.upload.init" => {
+                self.handle_unimplemented(req, "Init multipart upload")
+                    .await
+            }
             "files.upload.part" => self.handle_unimplemented(req, "Upload part").await,
-            "files.upload.complete" => self
-                .handle_unimplemented(req, "Complete upload")
-                .await,
+            "files.upload.complete" => self.handle_unimplemented(req, "Complete upload").await,
             "files.download" => self.handle_unimplemented(req, "Download file").await,
             // Backup
             "backup.jobs" => self.handle_unimplemented(req, "List backup jobs").await,
@@ -317,23 +575,26 @@ impl RPCHandler for ControlPanelServer {
             "apps.stop" => self.handle_unimplemented(req, "Stop app").await,
             // Network
             "network.interfaces" => self.handle_unimplemented(req, "List interfaces").await,
-            "network.interface.update" => self
-                .handle_unimplemented(req, "Update interface config")
-                .await,
+            "network.interface.update" => {
+                self.handle_unimplemented(req, "Update interface config")
+                    .await
+            }
             "network.dns" => self.handle_unimplemented(req, "Get/set DNS").await,
             "network.ddns" => self.handle_unimplemented(req, "Get/set DDNS").await,
-            "network.firewall.rules" => self
-                .handle_unimplemented(req, "List firewall rules")
-                .await,
-            "network.firewall.update" => self
-                .handle_unimplemented(req, "Update firewall rules")
-                .await,
+            "network.firewall.rules" => self.handle_unimplemented(req, "List firewall rules").await,
+            "network.firewall.update" => {
+                self.handle_unimplemented(req, "Update firewall rules")
+                    .await
+            }
             // Device
             "device.list" => self.handle_unimplemented(req, "List devices/clients").await,
             "device.block" => self.handle_unimplemented(req, "Block device").await,
             "device.unblock" => self.handle_unimplemented(req, "Unblock device").await,
             // Notification
-            "notification.list" => self.handle_unimplemented(req, "List notifications/events").await,
+            "notification.list" => {
+                self.handle_unimplemented(req, "List notifications/events")
+                    .await
+            }
             // Logs
             "log.system" => self.handle_unimplemented(req, "System logs").await,
             "log.access" => self.handle_unimplemented(req, "Access logs").await,
@@ -352,11 +613,17 @@ impl RPCHandler for ControlPanelServer {
             "file_service.ftp.get" => self.handle_unimplemented(req, "Get FTP config").await,
             "file_service.ftp.update" => self.handle_unimplemented(req, "Update FTP config").await,
             "file_service.webdav.get" => self.handle_unimplemented(req, "Get WebDAV config").await,
-            "file_service.webdav.update" => self.handle_unimplemented(req, "Update WebDAV config").await,
+            "file_service.webdav.update" => {
+                self.handle_unimplemented(req, "Update WebDAV config").await
+            }
             "file_service.rsync.get" => self.handle_unimplemented(req, "Get rsync config").await,
-            "file_service.rsync.update" => self.handle_unimplemented(req, "Update rsync config").await,
+            "file_service.rsync.update" => {
+                self.handle_unimplemented(req, "Update rsync config").await
+            }
             "file_service.sftp.get" => self.handle_unimplemented(req, "Get SFTP config").await,
-            "file_service.sftp.update" => self.handle_unimplemented(req, "Update SFTP config").await,
+            "file_service.sftp.update" => {
+                self.handle_unimplemented(req, "Update SFTP config").await
+            }
             "file_service.ssh.get" => self.handle_unimplemented(req, "Get SSH config").await,
             "file_service.ssh.update" => self.handle_unimplemented(req, "Update SSH config").await,
             // iSCSI
@@ -374,14 +641,32 @@ impl RPCHandler for ControlPanelServer {
             "snapshot.create" => self.handle_unimplemented(req, "Create snapshot").await,
             "snapshot.delete" => self.handle_unimplemented(req, "Delete snapshot").await,
             "snapshot.restore" => self.handle_unimplemented(req, "Restore snapshot").await,
-            "snapshot.schedule.list" => self.handle_unimplemented(req, "List snapshot schedules").await,
-            "snapshot.schedule.update" => self.handle_unimplemented(req, "Update snapshot schedule").await,
+            "snapshot.schedule.list" => {
+                self.handle_unimplemented(req, "List snapshot schedules")
+                    .await
+            }
+            "snapshot.schedule.update" => {
+                self.handle_unimplemented(req, "Update snapshot schedule")
+                    .await
+            }
             // Replication
-            "replication.jobs" => self.handle_unimplemented(req, "List replication jobs").await,
-            "replication.job.create" => self.handle_unimplemented(req, "Create replication job").await,
+            "replication.jobs" => {
+                self.handle_unimplemented(req, "List replication jobs")
+                    .await
+            }
+            "replication.job.create" => {
+                self.handle_unimplemented(req, "Create replication job")
+                    .await
+            }
             "replication.job.run" => self.handle_unimplemented(req, "Run replication job").await,
-            "replication.job.pause" => self.handle_unimplemented(req, "Pause replication job").await,
-            "replication.job.delete" => self.handle_unimplemented(req, "Delete replication job").await,
+            "replication.job.pause" => {
+                self.handle_unimplemented(req, "Pause replication job")
+                    .await
+            }
+            "replication.job.delete" => {
+                self.handle_unimplemented(req, "Delete replication job")
+                    .await
+            }
             "replication.status" => self.handle_unimplemented(req, "Replication status").await,
             // Sync
             "sync.providers" => self.handle_unimplemented(req, "List sync providers").await,
@@ -400,10 +685,19 @@ impl RPCHandler for ControlPanelServer {
             "acl.update" => self.handle_unimplemented(req, "Update ACL").await,
             "acl.reset" => self.handle_unimplemented(req, "Reset ACL").await,
             // Recycle Bin
-            "recycle_bin.get" => self.handle_unimplemented(req, "Get recycle bin settings").await,
-            "recycle_bin.update" => self.handle_unimplemented(req, "Update recycle bin settings").await,
+            "recycle_bin.get" => {
+                self.handle_unimplemented(req, "Get recycle bin settings")
+                    .await
+            }
+            "recycle_bin.update" => {
+                self.handle_unimplemented(req, "Update recycle bin settings")
+                    .await
+            }
             "recycle_bin.list" => self.handle_unimplemented(req, "List recycled items").await,
-            "recycle_bin.restore" => self.handle_unimplemented(req, "Restore recycled item").await,
+            "recycle_bin.restore" => {
+                self.handle_unimplemented(req, "Restore recycled item")
+                    .await
+            }
             "recycle_bin.delete" => self.handle_unimplemented(req, "Delete recycled item").await,
             // Index / Search
             "index.status" => self.handle_unimplemented(req, "Index status").await,
@@ -427,9 +721,15 @@ impl RPCHandler for ControlPanelServer {
             "container.stop" => self.handle_unimplemented(req, "Stop container").await,
             "container.update" => self.handle_unimplemented(req, "Update container").await,
             "container.delete" => self.handle_unimplemented(req, "Delete container").await,
-            "container.images" => self.handle_unimplemented(req, "List container images").await,
+            "container.images" => {
+                self.handle_unimplemented(req, "List container images")
+                    .await
+            }
             "container.image.pull" => self.handle_unimplemented(req, "Pull container image").await,
-            "container.image.remove" => self.handle_unimplemented(req, "Remove container image").await,
+            "container.image.remove" => {
+                self.handle_unimplemented(req, "Remove container image")
+                    .await
+            }
             // VM
             "vm.list" => self.handle_unimplemented(req, "List VMs").await,
             "vm.create" => self.handle_unimplemented(req, "Create VM").await,
@@ -461,7 +761,10 @@ impl RPCHandler for ControlPanelServer {
             "power.shutdown" => self.handle_unimplemented(req, "Shutdown").await,
             "power.reboot" => self.handle_unimplemented(req, "Reboot").await,
             "power.schedule.list" => self.handle_unimplemented(req, "List power schedules").await,
-            "power.schedule.update" => self.handle_unimplemented(req, "Update power schedule").await,
+            "power.schedule.update" => {
+                self.handle_unimplemented(req, "Update power schedule")
+                    .await
+            }
             "power.wol.send" => self.handle_unimplemented(req, "Send Wake-on-LAN").await,
             // Time
             "time.get" => self.handle_unimplemented(req, "Get system time").await,
@@ -480,26 +783,32 @@ impl RPCHandler for ControlPanelServer {
             // Antivirus
             "antivirus.status" => self.handle_unimplemented(req, "Antivirus status").await,
             "antivirus.scan" => self.handle_unimplemented(req, "Run antivirus scan").await,
-            "antivirus.signatures.update" => self
-                .handle_unimplemented(req, "Update antivirus signatures")
-                .await,
-            "antivirus.quarantine.list" => self
-                .handle_unimplemented(req, "List quarantined items")
-                .await,
-            "antivirus.quarantine.delete" => self
-                .handle_unimplemented(req, "Delete quarantined item")
-                .await,
+            "antivirus.signatures.update" => {
+                self.handle_unimplemented(req, "Update antivirus signatures")
+                    .await
+            }
+            "antivirus.quarantine.list" => {
+                self.handle_unimplemented(req, "List quarantined items")
+                    .await
+            }
+            "antivirus.quarantine.delete" => {
+                self.handle_unimplemented(req, "Delete quarantined item")
+                    .await
+            }
             // System Config
-            "sys_config.get" => self.handle_unimplemented(req, "Get config key").await,
-            "sys_config.set" => self.handle_unimplemented(req, "Set config key").await,
-            "sys_config.list" => self.handle_unimplemented(req, "List config keys").await,
-            "sys_config.tree" => self.handle_unimplemented(req, "Config tree").await,
+            "sys_config.get" => self.handle_sys_config_get(req).await,
+            "sys_config.set" => self.handle_sys_config_set(req).await,
+            "sys_config.list" => self.handle_sys_config_list(req).await,
+            "sys_config.tree" => self.handle_sys_config_tree(req).await,
             "sys_config.history" => self.handle_unimplemented(req, "Config history").await,
             // Scheduler
             "scheduler.status" => self.handle_unimplemented(req, "Scheduler status").await,
             "scheduler.queue.list" => self.handle_unimplemented(req, "Scheduler queue").await,
             "scheduler.task.list" => self.handle_unimplemented(req, "Scheduler tasks").await,
-            "scheduler.task.cancel" => self.handle_unimplemented(req, "Cancel scheduler task").await,
+            "scheduler.task.cancel" => {
+                self.handle_unimplemented(req, "Cancel scheduler task")
+                    .await
+            }
             // Node / Daemon
             "node.list" => self.handle_unimplemented(req, "List nodes").await,
             "node.get" => self.handle_unimplemented(req, "Node detail").await,
@@ -559,7 +868,10 @@ impl RPCHandler for ControlPanelServer {
             "rbac.policy.update" => self.handle_unimplemented(req, "Update RBAC policy").await,
             // Runtime
             "runtime.info" => self.handle_unimplemented(req, "Runtime info").await,
-            "runtime.reload" => self.handle_unimplemented(req, "Reload runtime config").await,
+            "runtime.reload" => {
+                self.handle_unimplemented(req, "Reload runtime config")
+                    .await
+            }
             _ => Err(RPCErrors::UnknownMethod(req.method)),
         }
     }
@@ -605,13 +917,24 @@ pub async fn start_control_panel_service() {
         Arc::new(control_panel_server),
     );
 
-    //添加web
-    //web_dir是当前可执行文件所在目录.join("web")
-    let web_dir = std::env::current_exe().unwrap().parent().unwrap().join("web");
-    let _ = runner.add_dir_handler(
-        "/".to_string(),
-        web_dir,
-    ).await;
+    // 添加 web (best-effort, skip if path cannot be resolved)
+    let web_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|parent| parent.join("web")));
+    if let Some(web_dir) = web_dir {
+        let _ = runner
+            .add_dir_handler_with_options(
+                "/".to_string(),
+                web_dir,
+                DirHandlerOptions {
+                    fallback_file: Some("index.html".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await;
+    } else {
+        log::warn!("control-panel web_dir not available; static web UI disabled");
+    }
 
     let _ = runner.run().await;
 }

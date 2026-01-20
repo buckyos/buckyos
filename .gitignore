@@ -1,6 +1,8 @@
 .vscode
 **/.idea
 .VSCodeCounter
+AGENT.md
+context.md
 *.bkp
 *.exe
 package-lock.json
