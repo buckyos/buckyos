@@ -83,7 +83,7 @@ Use this when designing or implementing control_panel UI.
 
 1. Define a design system (style, palette, typography, spacing).
 2. Apply UX rules above while building components.
-3. Match UI data fields to backend contracts (see `doc/dashboard/README.md`).
+3. Match UI data fields to backend contracts (see `doc/dashboard/control_panel.md`).
 
 ## Quick Checks
 
@@ -93,4 +93,4 @@ Use this when designing or implementing control_panel UI.
 
 ## References
 
-- `doc/dashboard/README.md`
+- `doc/dashboard/control_panel.md`
