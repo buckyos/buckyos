@@ -14,8 +14,18 @@ util.kill_process("scheduler")
 # 得到本命令行的参数
 args = sys.argv[1:]
 #print("Command line arguments:", args)
-arg_str = " ".join(args)
 
+# In boot mode, scheduler is expected to run a one-shot job and exit.
+# So we MUST run it in foreground and wait for completion.
+if "--boot" in args:
+    scheduler_bin = os.path.join(current_dir, f"scheduler{util.ext}")
+    print(f"boot mode: will run {scheduler_bin} {args} in foreground")
+    rc, timed_out = util.run_and_wait([scheduler_bin, *args], timeout_secs=None, cwd=current_dir)
+    if timed_out:
+        print("boot mode: scheduler timed out")
+    sys.exit(rc)
+
+arg_str = " ".join(args)
 # 启动新的进程，注意使用nohup模式，并使用本命令行的参数
 util.nohup_start(f"{current_dir}/scheduler {arg_str}")
 print("start scheduler success!")

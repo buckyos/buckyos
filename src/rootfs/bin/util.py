@@ -3,6 +3,7 @@ import platform
 import os
 import locale
 import shlex
+import signal
 
 system = platform.system()
 ext = ""
@@ -134,6 +135,90 @@ def nohup_start(run_cmd, env_vars=None):
         env=env,
     )
     return proc.pid
+
+
+def run_and_wait(run_cmd, timeout_secs=None, env_vars=None, cwd=None):
+    """
+    Run command in foreground and wait for it to exit.
+
+    - run_cmd: str | list[str] | tuple[str]
+    - timeout_secs: float | int | None (None means wait forever)
+    - env_vars: dict[str,str] | None
+    - cwd: str | None
+
+    Returns: (returncode: int, timed_out: bool)
+    """
+    env = os.environ.copy()
+    if env_vars:
+        env.update(env_vars)
+
+    args = run_cmd if isinstance(run_cmd, (list, tuple)) else shlex.split(str(run_cmd))
+    print(f"will run cmd {args} on system {system}, timeout={timeout_secs}s")
+
+    if system == "Windows":
+        # Create a new process group so we can terminate the whole tree on timeout.
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+        proc = subprocess.Popen(
+            list(args),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            creationflags=creationflags,
+            cwd=cwd,
+            env=env,
+            text=True,
+            errors="ignore",
+        )
+        try:
+            out, _ = proc.communicate(timeout=timeout_secs)
+            if out:
+                print(out, end="" if out.endswith("\n") else "\n")
+            return proc.returncode, False
+        except subprocess.TimeoutExpired:
+            print(f"cmd timeout after {timeout_secs}s, will terminate pid={proc.pid}")
+            # Best-effort: kill process tree.
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception as e:
+                print(f"taskkill failed: {e}")
+            return 124, True
+
+    # POSIX: start in a new session/process group and kill the group on timeout.
+    proc = subprocess.Popen(
+        list(args),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        preexec_fn=os.setsid,
+        close_fds=True,
+        cwd=cwd,
+        env=env,
+        text=True,
+        errors="ignore",
+    )
+    try:
+        out, _ = proc.communicate(timeout=timeout_secs)
+        if out:
+            print(out, end="" if out.endswith("\n") else "\n")
+        return proc.returncode, False
+    except subprocess.TimeoutExpired:
+        print(f"cmd timeout after {timeout_secs}s, will terminate pgid={proc.pid}")
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except Exception as e:
+            print(f"killpg(SIGTERM) failed: {e}")
+        try:
+            proc.wait(timeout=2)
+        except Exception:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except Exception as e:
+                print(f"killpg(SIGKILL) failed: {e}")
+        return 124, True
 
 def get_buckyos_root():
     buckyos_root = os.environ.get("BUCKYOS_ROOT")
