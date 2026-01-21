@@ -1,5 +1,22 @@
 import {buckyos} from 'buckyos'
 
+const rpcClient = new buckyos.kRPCClient('/kapi/control-panel')
+
+const callRpc = async <T>(
+  method: string,
+  params: Record<string, unknown> = {},
+): Promise<{ data: T | null; error: unknown }> => {
+  try {
+    const result = await rpcClient.call(method, params)
+    if (!result || typeof result !== 'object') {
+      throw new Error(`Invalid ${method} response`)
+    }
+    return { data: result as T, error: null }
+  } catch (error) {
+    return { data: null, error }
+  }
+}
+
 const mockLayoutData: RootLayoutData = {
   primaryNav: [
     { label: 'Dashboard', icon: 'dashboard', path: '/' },
@@ -83,21 +100,55 @@ const mockDashboardData: DashboardState = {
   ],
 }
 
+const mockDappStoreData: DappCard[] = [
+  { name: 'FileSync', icon: 'package', category: 'Storage', status: 'installed', version: '1.4.2' },
+  { name: 'SecureChat', icon: 'package', category: 'Communication', status: 'available', version: '2.1.0' },
+  { name: 'CloudBridge', icon: 'package', category: 'Networking', status: 'available', version: '0.9.5' },
+  { name: 'PhotoVault', icon: 'package', category: 'Media', status: 'installed', version: '1.2.0' },
+  { name: 'DataAnalyzer', icon: 'package', category: 'Analytics', status: 'installed', version: '3.0.1' },
+  { name: 'WebPortal', icon: 'package', category: 'Web', status: 'available', version: '1.0.0' },
+]
+
+const defaultDappCard = (name: string): DappCard => ({
+  name,
+  icon: 'package',
+  category: 'Service',
+  status: 'installed',
+  version: '0.0.0',
+})
+
+const normalizeAppStatus = (value: unknown): DappCard['status'] =>
+  value === 'available' ? 'available' : 'installed'
+
+const normalizeAppItem = (item: DappCard | string): DappCard => {
+  if (typeof item === 'string') {
+    return defaultDappCard(item)
+  }
+  const app = item as Partial<DappCard>
+  return {
+    name: typeof app.name === 'string' ? app.name : 'Unknown',
+    icon: app.icon ?? 'package',
+    category: typeof app.category === 'string' ? app.category : 'Service',
+    status: normalizeAppStatus(app.status),
+    version: typeof app.version === 'string' ? app.version : '0.0.0',
+    settings: app.settings,
+  }
+}
+
 export const fetchLayout = async (): Promise<{ data: RootLayoutData | null; error: unknown }> => {
   try {
-    const rpcClient = new buckyos.kRPCClient('/kapi/control-panel')
-    const result = await rpcClient.call('layout', {})
-    if (!result || typeof result !== 'object') {
+    const { data, error } = await callRpc<RootLayoutData>('ui.layout', {})
+    if (!data) {
       throw new Error('Invalid layout response')
     }
     const merged: RootLayoutData = {
       ...mockLayoutData,
-      ...(result as Record<string, unknown>),
+      ...(data as Record<string, unknown>),
       primaryNav: mockLayoutData.primaryNav,
       secondaryNav: mockLayoutData.secondaryNav,
     }
     console.log('fetchLayout', merged)
-    return { data: merged, error: null }
+    return { data: merged, error }
   } catch (error) {
     return { data: null, error }
   }
@@ -105,20 +156,43 @@ export const fetchLayout = async (): Promise<{ data: RootLayoutData | null; erro
 
 export const fetchDashboard = async (): Promise<{ data: DashboardState | null; error: unknown }> => {
   try {
-    const rpcClient = new buckyos.kRPCClient('/kapi/control-panel')
-    const result = await rpcClient.call('dashboard', {})
-    if (!result || typeof result !== 'object') {
+    const { data, error } = await callRpc<DashboardState>('ui.dashboard', {})
+    if (!data) {
       throw new Error('Invalid dashboard response')
     }
     const merged: DashboardState = {
       ...mockDashboardData,
-      ...(result as Record<string, unknown>),
+      ...(data as Record<string, unknown>),
       quickActions: mockDashboardData.quickActions,
     }
-    return { data: merged, error: null }
+    return { data: merged, error }
   } catch (error) {
     return { data: null, error }
   }
 }
 
-export { mockLayoutData, mockDashboardData }
+export const fetchAppsList = async (): Promise<{ data: DappCard[] | null; error: unknown }> => {
+  const { data, error } = await callRpc<AppsListResponse>('apps.list', {})
+  if (!data || !Array.isArray(data.items)) {
+    return { data: null, error }
+  }
+  return { data: data.items.map((item) => normalizeAppItem(item)), error }
+}
+
+export const fetchSystemOverview = async (): Promise<{
+  data: SystemOverview | null
+  error: unknown
+}> => callRpc<SystemOverview>('system.overview', {})
+
+export const fetchSystemMetrics = async (): Promise<{
+  data: SystemMetrics | null
+  error: unknown
+}> => callRpc<SystemMetrics>('system.metrics', {})
+
+export const fetchSysConfigTree = async (
+  key: string,
+  depth = 2,
+): Promise<{ data: SysConfigTreeResponse | null; error: unknown }> =>
+  callRpc<SysConfigTreeResponse>('sys_config.tree', { key, depth })
+
+export { mockLayoutData, mockDashboardData, mockDappStoreData }

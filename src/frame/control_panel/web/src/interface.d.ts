@@ -157,6 +157,41 @@ declare global {
     fs?: string
   }
 
+  type SystemOverview = {
+    name: string
+    model: string
+    os: string
+    version: string
+    uptime_seconds: number
+  }
+
+  type SystemMetricsDisk = {
+    totalGb: number
+    usedGb: number
+    usagePercent: number
+    disks: DiskInfo[]
+  }
+
+  type SystemMetricsNetwork = {
+    rxBytes: number
+    txBytes: number
+    rxPerSec: number
+    txPerSec: number
+  }
+
+  type SystemMetrics = {
+    cpu: DashboardCPU
+    memory: DashboardMemory
+    disk: SystemMetricsDisk
+    network: SystemMetricsNetwork
+  }
+
+  type SysConfigTreeResponse = {
+    key: string
+    depth: number
+    tree: Record<string, unknown>
+  }
+
   type UserSummary = {
     name: string
     email: string
@@ -171,6 +206,12 @@ declare global {
     category: string
     status: 'installed' | 'available'
     version: string
+    settings?: unknown
+  }
+
+  type AppsListResponse = {
+    items: Array<DappCard | string>
+    key?: string
   }
 
   type SettingBlock = {
