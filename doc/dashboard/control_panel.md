@@ -101,6 +101,15 @@
 - 排序: `sort` + `order` (asc/desc)
 - 过滤: `query` 用于搜索关键词
 
+## login: 管理员密码来源
+- active_lib的激活流程只保存 `admin_password_hash`，不存明文。
+- 写入路径: `/opt/buckyos/etc/start_config.json` (active 服务写入)。
+- 启动后由 scheduler 写入 sys_config:
+  - `users/root/settings.password`
+  - `users/<username>/settings.password`
+- 哈希生成: 激活阶段使用 `buckyos.hashPassword(username, password)` 生成 `admin_password_hash`。
+- 校验应通过 verify-hub 的登录流程（读取 sys_config 的 password 字段），客户端推荐走 `buckyos.doLogin`/`AuthClient.hash_password`。
+
 ## 版本策略
 - 新增字段向后兼容
 - 破坏性变更使用新 method 名称
