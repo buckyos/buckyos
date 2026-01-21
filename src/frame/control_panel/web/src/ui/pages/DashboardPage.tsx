@@ -2,7 +2,7 @@ import type { CSSProperties } from 'react'
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 
-import { fetchDashboard, mockDashboardData } from '@/api'
+import { fetchDashboard, fetchSystemMetrics, mockDashboardData } from '@/api'
 import Icon from '../icons'
 
 const toneStyles: Record<EventItem['tone'], string> = {
@@ -13,6 +13,16 @@ const toneStyles: Record<EventItem['tone'], string> = {
 
 const DashboardPage = () => {
   const [dashboardData, setDashboardData] = useState<DashboardState | null>(null)
+  const [systemMetrics, setSystemMetrics] = useState<SystemMetrics | null>(null)
+  const normalizeTimelineTime = (value: string) =>
+    value.length === 5 ? `${value}:00` : value
+
+  const [resourceSeries, setResourceSeries] = useState<ResourcePoint[]>(
+    mockDashboardData.resourceTimeline.map((point) => ({
+      ...point,
+      time: normalizeTimelineTime(point.time),
+    })),
+  )
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -21,6 +31,16 @@ const DashboardPage = () => {
       const { data, error } = await fetchDashboard()
       if (!cancelled) {
         setDashboardData(data ?? mockDashboardData)
+        if (data?.resourceTimeline?.length) {
+          setResourceSeries(
+            data.resourceTimeline
+              .slice(-6)
+              .map((point) => ({
+                ...point,
+                time: normalizeTimelineTime(point.time),
+              })),
+          )
+        }
         if (error) {
           // eslint-disable-next-line no-console
           console.warn('Dashboard API unavailable, using mock data', error)
@@ -35,17 +55,65 @@ const DashboardPage = () => {
     }
   }, [])
 
+  useEffect(() => {
+    let cancelled = false
+    const formatTimelineTime = (date: Date) =>
+      `${date.getHours().toString().padStart(2, '0')}:${date
+        .getMinutes()
+        .toString()
+        .padStart(2, '0')}:${date.getSeconds().toString().padStart(2, '0')}`
+
+    const loadMetrics = async () => {
+      const { data, error } = await fetchSystemMetrics({ lite: true })
+      if (!cancelled) {
+        if (error) {
+          // eslint-disable-next-line no-console
+          console.warn('System metrics API unavailable', error)
+          return
+        }
+        if (data) {
+          setSystemMetrics((prev) => ({
+            cpu: data.cpu,
+            memory: data.memory,
+            disk: prev?.disk ?? data.disk,
+            network: prev?.network ?? data.network,
+          }))
+          const cpuValue = Math.round(data.cpu?.usagePercent ?? 0)
+          const memoryValue = Math.round(data.memory?.usagePercent ?? 0)
+          const time = formatTimelineTime(new Date())
+          setResourceSeries((prev) => {
+            const trimmed = prev.length >= 6 ? prev.slice(prev.length - 5) : prev
+            return [
+              ...trimmed,
+              {
+                time,
+                cpu: Math.max(0, Math.min(cpuValue, 100)),
+                memory: Math.max(0, Math.min(memoryValue, 100)),
+              },
+            ]
+          })
+        }
+      }
+    }
+
+    loadMetrics()
+    const intervalId = window.setInterval(loadMetrics, 5000)
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
+  }, [])
+
   const recentEvents = dashboardData?.recentEvents ?? []
-  const dapps = dashboardData?.dapps ?? []
   const quickActions = dashboardData?.quickActions ?? []
-  const resourceTimeline = dashboardData?.resourceTimeline ?? []
+  const resourceTimeline = resourceSeries
   const storageSlices = dashboardData?.storageSlices ?? []
-  const storageCapacityGb = dashboardData?.storageCapacityGb ?? 0
-  const storageUsedGb = dashboardData?.storageUsedGb ?? 0
+  const storageCapacityGb = dashboardData?.storageCapacityGb ?? systemMetrics?.disk?.totalGb ?? 0
+  const storageUsedGb = dashboardData?.storageUsedGb ?? systemMetrics?.disk?.usedGb ?? 0
   const devices = dashboardData?.devices ?? []
-  const memoryInfo = dashboardData?.memory
-  const cpuInfo = dashboardData?.cpu
-  const disks = dashboardData?.disks ?? []
+  const memoryInfo = systemMetrics?.memory ?? dashboardData?.memory
+  const cpuInfo = systemMetrics?.cpu ?? dashboardData?.cpu
+  const disks = dashboardData?.disks ?? systemMetrics?.disk?.disks ?? []
 
   const totalMemoryGb = memoryInfo?.totalGb ?? 0
   const usedMemoryGb = memoryInfo?.usedGb ?? 0
@@ -54,11 +122,13 @@ const DashboardPage = () => {
   const cpuModel = cpuInfo?.model ?? 'Unknown CPU'
   const cpuCores = cpuInfo?.cores ?? 0
 
-  const cpuUsage = resourceTimeline.at(-1)?.cpu ?? 0
-  const memoryUsage = resourceTimeline.at(-1)?.memory ?? 0
-  const resourceLinePoints = resourceTimeline
+  const chartTimeline = resourceTimeline.slice(-6)
+  const cpuUsage = chartTimeline.at(-1)?.cpu ?? 0
+  const memoryUsage = chartTimeline.at(-1)?.memory ?? 0
+  const resourceLinePoints = chartTimeline
     .map((point, index) => {
-      const x = (index / (resourceTimeline.length - 1)) * 100
+      const denominator = Math.max(chartTimeline.length - 1, 1)
+      const x = (index / denominator) * 100
       const cpuY = 100 - point.cpu
       const memoryY = 100 - point.memory
       return { x, cpuY, memoryY }
@@ -71,11 +141,11 @@ const DashboardPage = () => {
       { cpu: '', memory: '' },
     )
 
-const storageSlicesTotal = storageSlices.reduce((sum, slice) => sum + slice.value, 0) || 1
-const storageBarSegments = storageSlices.map((slice) => ({
-  ...slice,
-  width: `${(slice.value / storageSlicesTotal) * 100}%`,
-}))
+  const storageSlicesTotal = storageSlices.reduce((sum, slice) => sum + slice.value, 0) || 1
+  const storageBarSegments = storageSlices.map((slice) => ({
+    ...slice,
+    width: `${(slice.value / storageSlicesTotal) * 100}%`,
+  }))
 
   const storageDonutStyle: CSSProperties = {
     background: `conic-gradient(${storageSlices
@@ -122,8 +192,7 @@ const storageBarSegments = storageSlices.map((slice) => ({
         </div>
       </header>
 
-      <section className="grid gap-6 lg:grid-cols-[2fr_1fr]">
-        <div className="cp-panel p-6">
+      <section className="cp-panel p-6">
           <div className="mb-6 flex items-center gap-3 text-lg font-semibold text-[var(--cp-ink)]">
             <span className="inline-flex size-9 items-center justify-center rounded-2xl bg-[var(--cp-primary-soft)] text-[var(--cp-primary-strong)]">
               <Icon name="activity" className="size-4" />
@@ -181,9 +250,11 @@ const storageBarSegments = storageSlices.map((slice) => ({
                     strokeLinejoin="round"
                   />
                 </svg>
-                <div className="mt-3 flex justify-between text-xs text-[var(--cp-muted)]">
-                  {resourceTimeline.map((point) => (
-                    <span key={point.time}>{point.time}</span>
+                <div className="mt-3 grid grid-cols-6 gap-2 overflow-hidden text-xs text-[var(--cp-muted)]">
+                  {chartTimeline.map((point, index) => (
+                    <span key={`${point.time}-${index}`} className="truncate text-center">
+                      {point.time}
+                    </span>
                   ))}
                 </div>
               </div>
@@ -212,132 +283,95 @@ const storageBarSegments = storageSlices.map((slice) => ({
               </div>
             </div>
           </div>
-        </div>
+      </section>
 
-        <div className="cp-panel p-6">
-          <div className="mb-6 flex items-center gap-3 text-lg font-semibold text-[var(--cp-ink)]">
-            <span className="inline-flex size-9 items-center justify-center rounded-2xl bg-[var(--cp-primary-soft)] text-[var(--cp-primary-strong)]">
-              <Icon name="drive" className="size-4" />
+      <section className="cp-panel p-6">
+        <div className="mb-6 flex items-center gap-3 text-lg font-semibold text-[var(--cp-ink)]">
+          <span className="inline-flex size-9 items-center justify-center rounded-2xl bg-[var(--cp-primary-soft)] text-[var(--cp-primary-strong)]">
+            <Icon name="drive" className="size-4" />
+          </span>
+          <h2>Storage Overview</h2>
+        </div>
+        <div className="space-y-6 text-sm text-[var(--cp-muted)]">
+          <div className="flex items-center justify-between text-xs uppercase tracking-wide text-[var(--cp-muted)]">
+            <span>Used Space</span>
+            <span className="text-[var(--cp-ink)]">
+              {(storageUsedGb / 1024).toFixed(1)}TB / {(storageCapacityGb / 1024).toFixed(1)}TB
             </span>
-            <h2>Storage Overview</h2>
           </div>
-          <div className="space-y-6 text-sm text-[var(--cp-muted)]">
-            <div className="flex items-center justify-between text-xs uppercase tracking-wide text-[var(--cp-muted)]">
-              <span>Used Space</span>
-              <span className="text-[var(--cp-ink)]">
-                {(storageUsedGb / 1024).toFixed(1)}TB / {(storageCapacityGb / 1024).toFixed(1)}TB
-              </span>
-            </div>
-            <div className="flex h-2 overflow-hidden rounded-full bg-[var(--cp-surface-muted)]">
-              {storageBarSegments.map((segment) => (
-                <span
-                  key={segment.label}
-                  style={{ width: segment.width, backgroundColor: segment.color }}
-                  className="h-full"
-                />
-              ))}
-            </div>
-            <div className="flex flex-col items-center gap-6 lg:flex-row lg:items-center lg:justify-between">
-              <div className="flex items-center gap-5">
-                <div
-                  style={storageDonutStyle}
-                  className="relative flex size-24 items-center justify-center rounded-full"
-                >
-                  <div className="size-10 rounded-full bg-white" />
-                </div>
-                <div className="space-y-2 text-xs text-[var(--cp-muted)]">
-                  {storageSlices.map((slice) => (
-                    <div key={slice.label} className="flex items-center gap-2">
-                      <span
-                        className="inline-flex size-2 rounded-full"
-                        style={{ backgroundColor: slice.color }}
-                      />
-                      <span className="w-20 text-[var(--cp-ink)]">{slice.label}</span>
-                      <span>{slice.value}%</span>
-                    </div>
-                  ))}
-                </div>
+          <div className="flex h-2 overflow-hidden rounded-full bg-[var(--cp-surface-muted)]">
+            {storageBarSegments.map((segment) => (
+              <span
+                key={segment.label}
+                style={{ width: segment.width, backgroundColor: segment.color }}
+                className="h-full"
+              />
+            ))}
+          </div>
+          <div className="flex flex-col items-center gap-6 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex items-center gap-5">
+              <div
+                style={storageDonutStyle}
+                className="relative flex size-24 items-center justify-center rounded-full"
+              >
+                <div className="size-10 rounded-full bg-white" />
               </div>
-              <div className="rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-5 py-4 text-xs text-[var(--cp-muted)]">
-                <div className="flex justify-between text-[var(--cp-ink)]">
-                  <span>Snapshots</span>
-                  <span>12</span>
-                </div>
-                <div className="flex justify-between text-[var(--cp-ink)]">
-                  <span>Replication</span>
-                  <span>Enabled</span>
-                </div>
-                <div className="mt-2 rounded-lg bg-[var(--cp-primary-soft)] px-3 py-2 text-[var(--cp-primary-strong)]">
-                  4 nodes synced
-                </div>
+              <div className="space-y-2 text-xs text-[var(--cp-muted)]">
+                {storageSlices.map((slice) => (
+                  <div key={slice.label} className="flex items-center gap-2">
+                    <span
+                      className="inline-flex size-2 rounded-full"
+                      style={{ backgroundColor: slice.color }}
+                    />
+                    <span className="w-20 text-[var(--cp-ink)]">{slice.label}</span>
+                    <span>{slice.value}%</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-5 py-4 text-xs text-[var(--cp-muted)]">
+              <div className="flex justify-between text-[var(--cp-ink)]">
+                <span>Snapshots</span>
+                <span>12</span>
+              </div>
+              <div className="flex justify-between text-[var(--cp-ink)]">
+                <span>Replication</span>
+                <span>Enabled</span>
+              </div>
+              <div className="mt-2 rounded-lg bg-[var(--cp-primary-soft)] px-3 py-2 text-[var(--cp-primary-strong)]">
+                4 nodes synced
               </div>
             </div>
           </div>
         </div>
       </section>
 
-      <section className="grid gap-6 lg:grid-cols-[2fr_1fr]">
-        <div className="cp-panel p-6">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-[var(--cp-ink)]">Recent Events</h2>
-            <span className="text-xs uppercase tracking-wide text-[var(--cp-muted)]">Last 24h</span>
-          </div>
-          <div className="mt-5 max-h-64 space-y-3 overflow-y-auto pr-1">
-            {recentEvents.map((item) => (
-              <div
-                key={item.title}
-                className="flex items-start gap-3 rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-4 py-3 text-sm text-[var(--cp-muted)]"
-              >
-                <span
-                  className={`mt-1 inline-flex size-2 rounded-full ${toneStyles[item.tone]}`}
-                  aria-hidden
-                />
-                <div className="flex-1">
-                  <p className="font-medium text-[var(--cp-ink)]">{item.title}</p>
-                  <p className="text-xs text-[var(--cp-muted)]">{item.subtitle}</p>
-                </div>
-              </div>
-            ))}
-          </div>
+      <section className="cp-panel p-6">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-[var(--cp-ink)]">Recent Events</h2>
+          <span className="text-xs uppercase tracking-wide text-[var(--cp-muted)]">Last 24h</span>
         </div>
-
-        <div className="cp-panel p-6">
-          <div className="mb-4 flex items-center gap-3 text-lg font-semibold text-[var(--cp-ink)]">
-            <span className="inline-flex size-9 items-center justify-center rounded-2xl bg-[var(--cp-primary-soft)] text-[var(--cp-primary-strong)]">
-              <Icon name="apps" className="size-4" />
-            </span>
-            <h2>dApps</h2>
-          </div>
-          <div className="space-y-3">
-            {dapps.map((dapp) => (
-              <div
-                key={dapp.name}
-                className="flex items-center justify-between rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-4 py-3 text-sm"
-              >
-                <div className="flex items-center gap-3 text-[var(--cp-ink)]">
-                  <span className="inline-flex size-9 items-center justify-center rounded-xl bg-white text-[var(--cp-primary-strong)] shadow-sm">
-                    <Icon name={dapp.icon} className="size-4" />
-                  </span>
-                  <span>{dapp.name}</span>
-                </div>
-                <span
-                  className={[
-                    'cp-pill',
-                    dapp.status === 'running'
-                      ? 'bg-emerald-100 text-emerald-700'
-                      : 'bg-[var(--cp-surface-muted)] text-[var(--cp-muted)]',
-                  ].join(' ')}
-                >
-                  {dapp.status}
-                </span>
+        <div className="mt-5 max-h-64 space-y-3 overflow-y-auto pr-1">
+          {recentEvents.map((item) => (
+            <div
+              key={item.title}
+              className="flex items-start gap-3 rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-4 py-3 text-sm text-[var(--cp-muted)]"
+            >
+              <span
+                className={`mt-1 inline-flex size-2 rounded-full ${toneStyles[item.tone]}`}
+                aria-hidden
+              />
+              <div className="flex-1">
+                <p className="font-medium text-[var(--cp-ink)]">{item.title}</p>
+                <p className="text-xs text-[var(--cp-muted)]">{item.subtitle}</p>
               </div>
-            ))}
-          </div>
+            </div>
+          ))}
         </div>
       </section>
 
-      <section className="grid gap-6 lg:grid-cols-[1.5fr_1fr_1fr]">
-        <div className="cp-panel p-6">
+      <section className="grid gap-6 lg:grid-cols-2">
+        <div className="cp-panel p-6 lg:col-span-2">
           <div className="mb-6 flex items-center gap-3 text-lg font-semibold text-[var(--cp-ink)]">
             <span className="inline-flex size-9 items-center justify-center rounded-2xl bg-[var(--cp-primary-soft)] text-[var(--cp-primary-strong)]">
               <Icon name="network" className="size-4" />

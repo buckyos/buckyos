@@ -184,10 +184,12 @@ export const fetchSystemOverview = async (): Promise<{
   error: unknown
 }> => callRpc<SystemOverview>('system.overview', {})
 
-export const fetchSystemMetrics = async (): Promise<{
+export const fetchSystemMetrics = async (
+  options: { lite?: boolean } = {},
+): Promise<{
   data: SystemMetrics | null
   error: unknown
-}> => callRpc<SystemMetrics>('system.metrics', {})
+}> => callRpc<SystemMetrics>('system.metrics', options.lite ? { lite: true } : {})
 
 export const fetchSysConfigTree = async (
   key: string,

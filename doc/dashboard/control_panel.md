@@ -37,6 +37,42 @@
 - 监控集成：Prometheus/Elastic 等外部可观测对接。
 - 插件机制：自定义模块、前端卡片/后端 RPC 扩展。
 
+## 事件通知模块方案（不新增 KernelService）
+目标: 在不增加新内核服务的前提下, 由现有 control_panel 统一收敛事件并对外提供通知能力。
+
+### 服务划分
+- control_panel: 事件聚合 + 存储 + RPC, 作为唯一入口.
+- 其他服务: 通过 control_panel RPC 写入事件, 无需改为独立通知服务.
+
+### 事件来源
+- node_daemon / scheduler / gateway / repo-service / sys_config_service 通过 RPC 推送事件.
+- control_panel 也可从 sys_config 读取部分配置变更记录, 作为补充来源.
+
+### 数据与存储
+- 事件落地到 control_panel 本地 DB (sled/rocksdb), 支持时间/级别/来源索引与保留期.
+- sys_config 仅存规则/通道配置, 避免大数据膨胀.
+
+### 权限与审计
+- 使用 verify-hub session_token + RBAC 过滤可见范围.
+- 关键操作写入审计事件, 由 control_panel 统一持久化.
+
+### 通知通道
+- 先实现 webhook / email, 其他通道后续扩展.
+- 支持: 静默时间、频率限制、聚合通知.
+
+### RPC 设计（control_panel 内部实现）
+- notification.emit
+- notification.list
+- notification.get
+- notification.ack
+- notification.unread.count
+- notification.rule.list / create / update / delete
+- notification.channel.list / create / update / delete
+
+### UI 对接
+- Dashboard Recent Events: notification.list (top N, last 24h).
+- Notifications 页: 全量列表 + 过滤/标记已读.
+
 # Control Panel RPC 文档
 
 本文件集中记录 control_panel 的 RPC 规划与约定，供前后端协作实现使用。

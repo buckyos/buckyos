@@ -282,27 +282,34 @@ impl ControlPanelServer {
             0.0
         };
 
+        let lite = req
+            .params
+            .get("lite")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
         let mut disks_detail: Vec<Value> = Vec::new();
         let mut storage_capacity_bytes: u64 = 0;
         let mut storage_used_bytes: u64 = 0;
 
-        let mut disks = Disks::new_with_refreshed_list_specifics(DiskRefreshKind::everything());
-        disks.refresh(true);
+        if !lite {
+            let mut disks = Disks::new_with_refreshed_list_specifics(DiskRefreshKind::everything());
+            disks.refresh(true);
 
-        for disk in disks.list().iter() {
-            let total = disk.total_space();
-            let available = disk.available_space();
-            let used = total.saturating_sub(available);
-            storage_capacity_bytes = storage_capacity_bytes.saturating_add(total);
-            storage_used_bytes = storage_used_bytes.saturating_add(used);
+            for disk in disks.list().iter() {
+                let total = disk.total_space();
+                let available = disk.available_space();
+                let used = total.saturating_sub(available);
+                storage_capacity_bytes = storage_capacity_bytes.saturating_add(total);
+                storage_used_bytes = storage_used_bytes.saturating_add(used);
 
-            disks_detail.push(json!({
-                "label": disk.name().to_string_lossy(),
-                "totalGb": bytes_to_gb(total),
-                "usedGb": bytes_to_gb(used),
-                "fs": disk.file_system().to_string_lossy(),
-                "mount": disk.mount_point().to_string_lossy(),
-            }));
+                disks_detail.push(json!({
+                    "label": disk.name().to_string_lossy(),
+                    "totalGb": bytes_to_gb(total),
+                    "usedGb": bytes_to_gb(used),
+                    "fs": disk.file_system().to_string_lossy(),
+                    "mount": disk.mount_point().to_string_lossy(),
+                }));
+            }
         }
 
         let disk_usage_percent = if storage_capacity_bytes > 0 {
