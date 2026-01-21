@@ -1077,8 +1077,8 @@ impl BuckyOSRuntime {
             }
         }
 
-        let mut rng = rand::rng();
-        let random_num = rng.random_range(0..total_weight);
+        let mut rng = rand::thread_rng();
+        let random_num = rng.gen_range(0..total_weight);
         let mut current_weight = 0;
         let mut last_best_same_lan_node_url = String::new();
         let mut last_best_wan_node_url = String::new();

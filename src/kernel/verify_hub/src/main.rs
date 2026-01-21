@@ -318,8 +318,8 @@ async fn handle_login_by_jwt(params: Value, _login_nonce: u64) -> Result<RPCSess
     }
     let next_nonce;
     {
-        let mut rng = rand::rng();
-        next_nonce = rng.random::<u64>();
+        let mut rng = rand::thread_rng();
+        next_nonce = rng.gen::<u64>();
         drop(rng)
     }
 
@@ -489,8 +489,8 @@ async fn handle_login_by_password(params: Value, login_nonce: u64) -> Result<Val
     );
     let session_id;
     {
-        let mut rng = rand::rng();
-        session_id = rng.random::<u64>();
+        let mut rng = rand::thread_rng();
+        session_id = rng.gen::<u64>();
     }
 
     let session_token =
@@ -841,8 +841,8 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         // });
         // let token = encode(&header, &login_params, &private_key).unwrap();
 
-        let mut rng = rand::rng();
-        let session_id = rng.random::<u64>();
+        let mut rng = rand::thread_rng();
+        let session_id = rng.gen::<u64>();
 
         let test_login_token = RPCSessionToken {
             token_type: RPCSessionTokenType::JWT,
@@ -875,7 +875,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
 
         //test expired token
 
-        let session_id = rng.random::<u64>();
+        let session_id = rng.gen::<u64>();
         let test_login_token = RPCSessionToken {
             token_type: RPCSessionTokenType::JWT,
             nonce: Some((buckyos_get_unix_timestamp() - 10000) * 1_000_000),
