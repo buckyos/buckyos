@@ -32,14 +32,14 @@ version = "0.5.1"
 
 [workspace.dependencies]
 # BuckyOS internal dependencies
-buckyos-tracing = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-tracing", branch = "beta1"}
-buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit", branch = "beta1" }
-package-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "package-lib", branch = "beta1" }
-name-lib = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-lib", branch = "beta1" }
-name-client = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-client", branch = "beta1" }
-kRPC = { git = "https://github.com/buckyos/buckyos-base.git", package = "kRPC", branch = "beta1" }
-rbac = { git = "https://github.com/buckyos/buckyos-base.git", package = "rbac", branch = "beta1" }
-ndn-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-lib", branch = "beta1" }
+buckyos-tracing = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-tracing", branch = "main"}
+buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit", branch = "main" }
+package-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "package-lib", branch = "main" }
+name-lib = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-lib", branch = "main" }
+name-client = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-client", branch = "main" }
+kRPC = { git = "https://github.com/buckyos/buckyos-base.git", package = "kRPC", branch = "main" }
+rbac = { git = "https://github.com/buckyos/buckyos-base.git", package = "rbac", branch = "main" }
+ndn-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-lib", branch = "main" }
 cyfs-gateway = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs_gateway", branch = "main" }
 cyfs-gateway-lib = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-gateway-lib", branch = "main" }
 cyfs-sn = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-sn", branch = "main" }
