@@ -1,3 +1,5 @@
+# TODO beta2
+
 
 ## 检查zone_provider的实现 （寻址/服务发现逻辑)
 - [ ] 使用 $name.zonehost的方式，得到设备的地址信息，在通内网兼容TCP (later,集群化加入)

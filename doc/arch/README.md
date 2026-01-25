@@ -1,4 +1,4 @@
-# BuckyOS 系统架构设计（基于当前实现）
+# BuckyOS 系统架构设计
 
 本文档集是一份“基于当前代码实现”的系统架构说明，目标是让读者在不阅读全部源码的情况下，理解 BuckyOS 的交付形态、核心组件边界、关键主链路，以及与常见系统（传统单机服务、K8s、家庭 NAS、P2P 应用）相比差异最大的设计点。
 
@@ -19,36 +19,32 @@
 ## 阅读导航（推荐顺序）
 
 1) 总览与差异点
-- `new_doc/arch/01_overview.md`
+- `01_overview.md`
 
 2) 启动与激活（Secure Boot / ZoneBootConfig / OOD 连接）
-- `new_doc/arch/02_boot_and_activation.md`
+- `02_boot_and_activation.md`
 
 3) 系统配置：system-config（KV Source of Truth）
-- `new_doc/arch/03_system_config.md`
+- `03_system_config.md`
 
 4) 调度：scheduler（确定性调度 + 写回 node_config / service_info / rbac）
-- `new_doc/arch/04_scheduler.md`
+- `04_scheduler.md`
 
-5) 交付与升级：pkg-system / repo-server / pkg-env / node-daemon
-- `new_doc/arch/05_delivery_pkg_system.md`
+5) 服务安装与升级：pkg-system / repo-server / pkg-env / node-daemon
+- `05_delivery_pkg_system.md`
 
 6) 网络与访问：cyfs-gateway / NodeGateway / ZoneGateway / SN
-- `new_doc/arch/06_network_and_gateways.md`
+- `06_network_and_gateways.md`
 
 7) 身份与权限：verify-hub / session-token / RBAC
-- `new_doc/arch/07_identity_and_rbac.md`
+- `07_identity_and_rbac.md`
 
 8) API Runtime：buckyos-api-runtime（服务发现、登录、调用路径选择）
-- `new_doc/arch/08_api_runtime.md`
+- `08_api_runtime.md`
 
 9) 常见踩坑与工程建议
-- `new_doc/arch/09_pitfalls.md`
+- `09_pitfalls.md`
 
-10) 参考材料（从原目录集成，便于交叉链接；不保证最新，以代码为准）
-- `new_doc/ref/README.md`
-- `new_doc/ref/notepads/`
-- `new_doc/ref/doc/`
 
 ## 术语与端口（当前实现的关键常量）
 - system-config 服务主端口：`3200`（见 `src/kernel/sys_config_service/src/main.rs`）

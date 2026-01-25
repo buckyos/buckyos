@@ -1,11 +1,17 @@
-# 01. 总览与设计差异点（加强版）
+# 01. 总览与设计差异点
+欢迎阅读《BuckyOS 架构设计》
+
+本文假设你是开发者，对常见的分布式操作系统，或则云计算的基础概念有一定了解，并希望能成为BuckyOS贡献者
+
+如果你只是希望在BuckyOS上开发dapp,或是想让自己的硬件产品与BuckyOS兼容,我们也强烈建议你在首先阅读《BuckyOS SDK》后，再通读一遍本文，以建立对BuckyOS整体是怎么工作的有一个更完整的理解。
+
 
 本文档回答三个问题：
-1) BuckyOS 交付与运行时系统“长什么样”；
+1) BuckyOS 运行时系统“长什么样”；
 2) 哪些组件构成最短关键路径；
-3) 与常见系统相比，BuckyOS 最不一样的设计点是什么（并说明代价/收益/常见误解）。
+3) 与常见系统相比，BuckyOS 最不一样的设计点是什么。
 
-## 读者的心智模型（先把系统看对）
+## 基础概念(建立新的心智模型)
 
 把 BuckyOS 看成一个以“Zone”为单位的家庭/小团队分布式 OS：
 - system-config 是 Zone 的唯一真相源（KV）。
@@ -20,14 +26,10 @@
 - 多进程系统：核心能力以 kernel services + frame services + apps 组合交付（模块边界见 `src/README.md`）。
 - 交付单位是 pkg：repo-server + pkg-index-db + chunk 负责分发面；node-daemon + pkg-env 负责节点落地。
 
-关键端口（当前实现）：
-- system-config：3200（`src/kernel/sys_config_service/src/main.rs`）
-- activation：3182（`src/kernel/node_daemon/src/active_server.rs`）
-- NodeGateway 入口：3180（`src/kernel/buckyos-api/src/runtime.rs`）
-
 ## 最短关键路径（最小可用闭环）
 
 当系统从“未激活 / 冷启动”进入可用状态，最短闭环通常是：
+
 1) 激活：设备暴露 3182，完成 owner/zone 绑定，写入必要身份与 ZoneBootConfig（协议思路见 `new_doc/ref/notepads/设备激活协议.md`）。
 2) 启动关键三件套：cyfs-gateway（网络底座） + system-config（状态存储） + node-daemon（执行代理）。
 3) boot 调度：scheduler 在 boot 阶段生成 `boot/config`（ZoneConfig）及初始服务/权限/节点配置（`src/kernel/scheduler/src/main.rs`）。
@@ -66,7 +68,9 @@ BuckyOS 把大量控制面复杂性收敛为一个可审计、可事务化的 KV
 
 ### 2) scheduler 强调“确定性/幂等”，并把结果写回，而不是做事件驱动的局部优化
 
-notepads 强调调度器幂等性（`new_doc/ref/notepads/scheduler.md`），实现中也通过 snapshot 对比来避免无效写入（`src/kernel/scheduler/src/system_config_agent.rs`）。
+> 面向复杂计算的cacl_scheduler还未实现，但其实现是基于scheduler的
+
+调度器关注幂等性（`scheduler.md`），实现中也通过 snapshot 对比来避免无效写入（`src/kernel/scheduler/src/system_config_agent.rs`）。
 
 BuckyOS 调度不仅做 placement，还要同时推导：
 - instance（node_config 里的运行意图）
@@ -96,7 +100,7 @@ BuckyOS 不假设“所有服务端口固定”，而是采用范式：
 - 客户端基于 service_info 选择最终 URL。
 
 参考：
-- `new_doc/ref/notepads/scheduler.md`（范式描述）
+- `scheduler.md`（范式描述）
 
 收益：
 - 避免家庭环境里“端口冲突/端口占用/不可控”的大量运维问题。
@@ -112,9 +116,9 @@ BuckyOS 不假设“所有服务端口固定”，而是采用范式：
 
 BuckyOS 的默认假设是：家庭网络拓扑不稳定、没有公网 IP、端口映射不可控。
 因此访问链路优先通过网关抽象而不是假设固定 IP：
-- NodeGateway 提供 `http://127.0.0.1:3180/kapi/<service_name>` 的一致入口（`new_doc/ref/notepads/buckyos-api-runtime.md`）。
-- ZoneGateway 提供对外入口（HTTP/HTTPS/转发），并承担公网暴露的控制点（`new_doc/ref/notepads/再次整理zone-boot-config与zone-gateway.md`）。
-- SN 提供 DDNS/证书挑战/转发协助（可选，见 `new_doc/ref/notepads/SN.md`）。
+- NodeGateway 提供 `http://127.0.0.1:3180/kapi/<service_name>` 的一致入口（`buckyos-api-runtime.md`）。
+- ZoneGateway 提供对外入口（HTTP/HTTPS/转发），并承担公网暴露的控制点（`zone-boot-config与zone-gateway.md`）。
+- SN 提供 DDNS/证书挑战/转发协助（可选，见 `SN.md`）。
 
 对比常见家庭 NAS：
 - NAS 通常走“厂商云中继/单机入口/固定端口映射”，多设备协同和服务暴露的系统化程度有限。
@@ -137,8 +141,7 @@ ZoneBootConfig（JWT/可验证）是 BuckyOS 引导阶段的关键对象：
 - 引导阶段强调建立 OOD 之间的 rtcp tunnel（以及可选的 SN 辅助）。
 
 参考：
-- `new_doc/ref/notepads/再次整理zone-boot-config与zone-gateway.md`
-- boot 阶段读取 `BUCKYOS_ZONE_BOOT_CONFIG`：`src/kernel/scheduler/src/main.rs`
+- `zone-boot-config与zone-gateway.md`
 
 对比：
 - 家用 NAS/单机系统通常没有“集群级别”的引导信任链。
@@ -157,12 +160,12 @@ ZoneBootConfig（JWT/可验证）是 BuckyOS 引导阶段的关键对象：
 ### 6) 包交付优先：pkg-system 把“升级”当成系统一级能力（ready 语义）
 
 BuckyOS 的交付假设不是“手工升级/运维”，而是：
-- repo-server 持有 pkg-index-db 与 chunk 数据，负责把目标版本准备成 ready。
+- repo-server 持有 pkg-index-db 与 pkg 数据，负责把目标版本准备成 ready。
 - node-daemon 基于 pkg-index-db 变化与 node_config 变化触发部署/升级。
 - 通过“准备（ready）→ 写系统意图 → 调度 → 节点收敛”的链路降低失败面。
 
 参考：
-- `new_doc/ref/notepads/app-pkg-system.md`（ready/升级触发/主循环伪代码）
+- `app-pkg-system.md`（ready/升级触发/主循环伪代码）
 
 对比 K8s 镜像分发：
 - K8s 假设镜像仓库可达（或用本地缓存/镜像预拉取优化），但家庭离线/断网/多架构场景更难保证。
@@ -181,7 +184,7 @@ BuckyOS 的交付假设不是“手工升级/运维”，而是：
 ### 7) 权限是主链路：verify-hub + RBAC 贯穿访问、调度与运行
 
 - verify-hub 是 token 的签发与验证中心（`src/kernel/verify_hub/README.md`、`src/kernel/verify_hub/src/main.rs`）。
-- RBAC 策略存储在 system-config（`system/rbac/*`），并会被缓存；notepads 记录传播延迟最长约 10s（`new_doc/ref/notepads/rbac.md`）。
+- RBAC 策略存储在 system-config（`system/rbac/*`），并会被缓存；notepads 记录传播延迟最长约 10s（`rbac.md`）。
 
 对比常见系统：
 - 很多系统把权限集中在“入口网关/控制面 API”，内部服务间调用默认信任。
@@ -197,7 +200,7 @@ BuckyOS 的交付假设不是“手工升级/运维”，而是：
 - 误解：改完权限立刻生效。
 - 实际：存在缓存延迟，系统级一致性传播需要时间窗口（当前实现最长约 10s）。
 
-## 关键数据结构（从代码抽取的最小视图）
+## 关键数据结构
 
 本节只列出“理解系统主链路必须知道”的字段，忽略大量实现细节。
 
