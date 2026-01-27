@@ -40,7 +40,7 @@ PROJECT_YAML = SRC_DIR / "bucky_project.yaml"
 RESULT_ROOT_DIR = Path(os.environ.get("BUCKYOS_BUILD_ROOT", "/opt/buckyosci"))
 TMP_INSTALL_DIR = RESULT_ROOT_DIR / "deb-build"
 
-DEB_TEMPLATE_DIR = SRC_DIR / "publish" / "deb_template"
+DEB_TEMPLATE_DIR = Path(__file__).resolve().parent / "deb_template"
 BUCKYOS_DEFAULTS_SUBDIR = ".buckyos_installer_defaults"
 
 

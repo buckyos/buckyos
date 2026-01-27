@@ -48,7 +48,7 @@ PROJECT_YAML = SRC_DIR / "bucky_project.yaml"
 RESULT_ROOT_DIR = Path(os.environ.get("BUCKYOS_BUILD_ROOT", "/opt/buckyosci"))
 TMP_INSTALL_DIR = RESULT_ROOT_DIR / "macos-pkg"
 
-MACOS_PKG_PROJECT_DIR = SRC_DIR / "publish" / "macos_pkg"
+MACOS_PKG_PROJECT_DIR = Path(__file__).resolve().parent / "macos_pkg"
 BUCKYOS_DEFAULTS_SUBDIR = ".buckyos_installer_defaults"
 
 
