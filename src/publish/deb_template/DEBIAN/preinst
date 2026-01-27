@@ -1,2 +1,9 @@
 #!/bin/bash
-rm -rf /opt/buckyos/bin/
+set -e
+BUCKYOS_ROOT="/opt/buckyos"
+# BEGIN AUTO-GENERATED: modules
+if [ -d "$BUCKYOS_ROOT/bin/" ]; then
+  systemctl stop buckyos.service >/dev/null 2>&1 || true
+  rm -rf "$BUCKYOS_ROOT/bin/"
+fi
+# END AUTO-GENERATED: modules
