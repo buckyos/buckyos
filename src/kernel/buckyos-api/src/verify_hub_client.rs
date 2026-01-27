@@ -10,6 +10,12 @@ pub const VERIFY_HUB_SERVICE_NAME: &str = "verify-hub";
 pub const VERIFY_HUB_TOKEN_EXPIRE_TIME: u64 = 60*10;//10 minutes
 pub const VERIFY_HUB_SERVICE_PORT: u16 = 3210;
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TokenPair {
+    pub session_token: String,
+    pub refresh_token: String,
+}
+
 
 #[derive(Serialize, Deserialize)]
 struct VerifyHubSettings {
@@ -25,7 +31,7 @@ impl VerifyHubClient {
         Self { krpc_client }
     }
 
-    pub async fn login_by_jwt(&self, jwt: String, login_params: Option<Value>) -> Result<RPCSessionToken> {
+    pub async fn login_by_jwt(&self, jwt: String, login_params: Option<Value>) -> Result<TokenPair> {
         self.krpc_client.reset_session_token().await;
         let mut params = json!({
             "type": "jwt",
@@ -43,10 +49,31 @@ impl VerifyHubClient {
         }
         
         let result = self.krpc_client.call("login", params).await?;
-        let session_token_str = result.as_str()
-            .ok_or(RPCErrors::ParserResponseError("Response is not a string".to_string()))?;
-        let session_token = RPCSessionToken::from_string(session_token_str)?;
-        Ok(session_token)
+        let token_pair: TokenPair = serde_json::from_value(result)
+            .map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?;
+        Ok(token_pair)
+    }
+
+    pub async fn verify_token(&self, session_token: &str, appid: Option<&str>) -> Result<Value> {
+        let mut params = json!({
+            "session_token": session_token,
+        });
+        if let Some(appid) = appid {
+            if let Some(obj) = params.as_object_mut() {
+                obj.insert("appid".to_string(), Value::String(appid.to_string()));
+            }
+        }
+        self.krpc_client.call("verify_token", params).await
+    }
+
+    // Backward-compatible convenience: exchange JWT for a single session token.
+    pub async fn login_by_jwt_session_token(
+        &self,
+        jwt: String,
+        login_params: Option<Value>,
+    ) -> Result<RPCSessionToken> {
+        let token_pair = self.login_by_jwt(jwt, login_params).await?;
+        RPCSessionToken::from_string(token_pair.session_token.as_str())
     }
 }
 
@@ -65,6 +92,15 @@ pub fn generate_verify_hub_service_doc() -> AppDoc {
     .build()
     .unwrap()
 }
+
+// #[async_trait]
+// pub trait VerifyHubServer  {
+//     async fn handle_login_by_jwt(&self, jwt: String, login_params: Option<Value>) -> Result<RPCSessionToken>;
+// }
+
+// pub fn handle_krpc(server: &dyn VerifyHubServer, req: RPCRequest, _ip_from: IpAddr) -> Result<Value> {
+//     //根据req.method分发到对应的handler
+// }
 
 mod tests {
 

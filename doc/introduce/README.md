@@ -8,10 +8,10 @@
 
 ## 目录
 
-- 第一章 从DID开始
-- 第二章 访问运行在BuckyOS上的app服务
-- 第三章 启动自己的Zone
-- 第四章 Service的生与死
+- 第一章 从DID开始（`doc/introduce/Chapter1 DID.md`）
+- 第二章 访问运行在BuckyOS上的app服务（`doc/introduce/Chapter2 Acess app.md`）
+- 第三章 启动自己的Zone（`doc/introduce/Chapter3 Start zone.md`）
+- 第四章 Service的生与死（`doc/introduce/Chapter4 Service lifecycle.md`）
 - 第五章 我的数据安全么（数据管理、访问控制、隐私保护、备份与恢复）
 - 第六章 Agent
 - 第七章 系统扩容

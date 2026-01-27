@@ -63,6 +63,7 @@ pub struct BuckyOSRuntime {
     //pub is_token_iss_by_self:bool,
     pub zone_config:Option<ZoneConfig>,
     pub session_token:Arc<RwLock<String>>,
+    pub refresh_token:Arc<RwLock<String>>,
     trust_keys:Arc<RwLock<HashMap<String,DecodingKey>>>,
     last_update_service_info_time:RwLock<u64>,
     
@@ -88,6 +89,7 @@ impl BuckyOSRuntime {
             user_id: None,
             runtime_type,
             session_token: Arc::new(RwLock::new("".to_string())),
+            refresh_token: Arc::new(RwLock::new("".to_string())),
             buckyos_root_dir: get_buckyos_root_dir(),
             zone_config: None,
             device_config: None,
@@ -435,8 +437,7 @@ impl BuckyOSRuntime {
         }
 
         let mut need_refresh = false;
-        if real_session_token.iss.is_some() {
-            let iss = real_session_token.iss.unwrap();
+        if let Some(iss) = real_session_token.iss.as_deref() {
             if iss != "verify-hub" {
                 need_refresh = true;
             }
@@ -453,11 +454,69 @@ impl BuckyOSRuntime {
 
         info!("session_token is close to expired,try to renew token");
         let verify_hub_client = self.get_verify_hub_client().await?;
-        let login_result = verify_hub_client.login_by_jwt(session_token_str,None).await?;
-        info!("verify_hub_client login by jwt success,login_result: {:?}",login_result);
-        let mut session_token = self.session_token.write().await;
-        *session_token = login_result.token.unwrap();
+
+        // Prefer refresh-token rotation when current session is issued by verify-hub.
+        let token_pair = if real_session_token.iss.as_deref() == Some("verify-hub") {
+            let refresh_token = self.refresh_token.read().await;
+            if !refresh_token.is_empty() {
+                verify_hub_client
+                    .login_by_jwt(refresh_token.clone(), None)
+                    .await?
+            } else {
+                // Fallback: if refresh token is missing, re-login by a locally generated device/user JWT.
+                // This keeps the runtime functional but is less standard than refresh rotation.
+                drop(refresh_token);
+                let (fallback_jwt, _) = self.create_local_login_jwt().await?;
+                verify_hub_client.login_by_jwt(fallback_jwt, None).await?
+            }
+        } else {
+            // First login / exchange: accept trusted JWT (device/root/etc)
+            verify_hub_client.login_by_jwt(session_token_str, None).await?
+        };
+
+        {
+            let mut session_token = self.session_token.write().await;
+            *session_token = token_pair.session_token.clone();
+        }
+        {
+            let mut refresh_token = self.refresh_token.write().await;
+            *refresh_token = token_pair.refresh_token.clone();
+        }
         Ok(())
+    }
+
+    async fn create_local_login_jwt(&self) -> Result<(String, RPCSessionToken)> {
+        if self.app_id.is_empty() {
+            return Err(RPCErrors::ReasonError("App id is not set".to_string()));
+        }
+
+        if self.runtime_type == BuckyOSRuntimeType::AppClient {
+            if self.user_private_key.is_some() && self.user_id.is_some() {
+                let (jwt, token) = RPCSessionToken::generate_jwt_token(
+                    self.user_id.as_ref().unwrap(),
+                    self.app_id.as_str(),
+                    Some("root".to_string()),
+                    self.user_private_key.as_ref().unwrap(),
+                )?;
+                return Ok((jwt, token));
+            }
+        }
+
+        if self.device_private_key.is_some() && self.device_config.is_some() {
+            let device_private_key = self.device_private_key.as_ref().unwrap();
+            let device_uid = self.device_config.as_ref().unwrap().name.clone();
+            let (jwt, token) = RPCSessionToken::generate_jwt_token(
+                device_uid.as_str(),
+                self.app_id.as_str(),
+                Some(device_uid.clone()),
+                device_private_key,
+            )?;
+            return Ok((jwt, token));
+        }
+
+        Err(RPCErrors::ReasonError(
+            "Missing local private key for login".to_string(),
+        ))
     }
 
     async fn keep_alive() -> Result<()> {
