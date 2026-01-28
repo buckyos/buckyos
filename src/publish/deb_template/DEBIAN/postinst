@@ -14,7 +14,7 @@ Description=buckyos node daemon
 After=network.target
 
 [Service]
-ExecStart=/opt/buckyos/bin/node_daemon/node_daemon --enable_active
+ExecStart=/opt/buckyos/bin/node-daemon/node_daemon --enable_active
 User=root
 WorkingDirectory=/opt/buckyos/bin
 Restart=always
