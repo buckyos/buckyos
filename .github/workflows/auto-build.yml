@@ -17,7 +17,7 @@ jobs:
         with:
             fetch-depth: 0
             fetch-tags: true
-      - name: Compare Current Commit with url from https://buckyos.ai/version/latest/commit
+      - name: Compare Current Commit with url from https://buckyos.ai/version/latest/commit?product=buckyos
         id: compare-commits
         run: |
           latest_commit_url="https://buckyos.ai/version/latest/commit"
