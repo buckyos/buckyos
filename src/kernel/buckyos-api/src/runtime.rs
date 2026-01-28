@@ -460,18 +460,20 @@ impl BuckyOSRuntime {
             let refresh_token = self.refresh_token.read().await;
             if !refresh_token.is_empty() {
                 verify_hub_client
-                    .login_by_jwt(refresh_token.clone(), None)
+                    .login_by_jwt(refresh_token.as_str(), None)
                     .await?
             } else {
                 // Fallback: if refresh token is missing, re-login by a locally generated device/user JWT.
                 // This keeps the runtime functional but is less standard than refresh rotation.
                 drop(refresh_token);
                 let (fallback_jwt, _) = self.create_local_login_jwt().await?;
-                verify_hub_client.login_by_jwt(fallback_jwt, None).await?
+                verify_hub_client.login_by_jwt(fallback_jwt.as_str(), None).await?
             }
         } else {
             // First login / exchange: accept trusted JWT (device/root/etc)
-            verify_hub_client.login_by_jwt(session_token_str, None).await?
+            verify_hub_client
+                .login_by_jwt(session_token_str.as_str(), None)
+                .await?
         };
 
         {
