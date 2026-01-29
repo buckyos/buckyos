@@ -105,8 +105,9 @@ async fn generate_session_token(
 
     let mut session_token = RPCSessionToken {
         token_type: RPCSessionTokenType::JWT,
+        appid: Some(appid.to_string()),
         jti: Some(jti.to_string()),
-        aud: Some(appid.to_string()),
+        aud: None,
         sub: Some(userid.to_string()),
         token: None,
         session: Some(session),
@@ -145,8 +146,9 @@ async fn generate_refresh_token(
 
     let mut refresh_token = RPCSessionToken {
         token_type: RPCSessionTokenType::JWT,
+        appid: Some(appid.to_string()),
         jti: Some(jti.to_string()),
-        aud: Some(appid.to_string()),
+        aud: None,
         sub: Some(userid.to_string()),
         token: None,
         session: Some(session),
@@ -278,8 +280,9 @@ async fn get_my_krpc_token() -> Result<RPCSessionToken> {
 
     let mut session_token = RPCSessionToken {
         token_type: RPCSessionTokenType::JWT,
+        appid: Some("verify-hub".to_string()),
         jti: None,
-        aud: Some("verify-hub".to_string()),
+        aud: None,
         sub: Some(device_id),
         token: None,
         session: None,

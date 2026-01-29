@@ -811,10 +811,11 @@ async fn generate_device_session_token(device_doc: &DeviceConfig, device_private
 
     let device_session_token = kRPC::RPCSessionToken {
         token_type : kRPC::RPCSessionTokenType::JWT,
+        appid: Some("node-daemon".to_string()),
         jti : None,
         session : None,
         sub : Some(userid),
-        aud:Some("node-daemon".to_string()),
+        aud:None,
         exp:Some(timestamp + 60*15),
         iss:Some(device_doc.name.clone()),
         token:None,

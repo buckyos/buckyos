@@ -600,7 +600,7 @@ impl BuckyOSRuntime {
                 drop(session_token);
 
                 info!("real_session_token: {:?}",real_session_token);
-                let appid = real_session_token.aud.clone().unwrap_or("kernel".to_string());
+                let appid = real_session_token.appid.clone().unwrap_or("kernel".to_string());
                 if appid != self.app_id {
                     warn!("Session token is not valid,aud(appid):{} != self.app_id:{}",appid,self.app_id);
                     return Err(RPCErrors::ReasonError("Session token is not valid".to_string()));

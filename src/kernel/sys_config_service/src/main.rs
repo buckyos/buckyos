@@ -819,7 +819,7 @@ async fn verify_session_token(token: &mut RPCSessionToken) -> Result<()> {
         debug!("verify_session_token: {:?}", token);
         return Ok(())
     } else {
-        unimplemented!();
+        return Err(RPCErrors::ReasonError("Not a self verify token".to_string()));
     }
 
 }
