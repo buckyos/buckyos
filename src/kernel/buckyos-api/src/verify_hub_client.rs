@@ -298,7 +298,7 @@ impl<T: VerifyHubApiHandler> RPCHandler for VerifyHubRpcHandler<T> {
         req: RPCRequest,
         _ip_from: IpAddr,
     ) -> Result<RPCResponse> {
-        let seq = req.id;
+        let seq = req.seq;
         let trace_id = req.trace_id.clone();
 
         let result = match req.method.as_str() {
@@ -314,7 +314,7 @@ impl<T: VerifyHubApiHandler> RPCHandler for VerifyHubRpcHandler<T> {
                 let (username, password, appid) = LoginByPasswordRequest::from_json(req.params)?;
                 let result = self
                     .0
-                    .handle_login_by_password(&username, &password, &appid, req.id)
+                    .handle_login_by_password(&username, &password, &appid, req.seq)
                     .await?;
                 RPCResult::Success(result)
             }
@@ -478,9 +478,9 @@ mod tests {
         let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 
         let login_req = RPCRequest {
-            method: "login".to_string(),
+            method: "login_by_jwt".to_string(),
             params: json!({"type": "jwt", "jwt": "jwt-2", "extra": "value"}),
-            id: 7,
+            seq: 7,
             token: None,
             trace_id: None,
         };
@@ -497,7 +497,7 @@ mod tests {
         let verify_req = RPCRequest {
             method: "verify_token".to_string(),
             params: json!({"session_token": "session-1", "appid": "kernel"}),
-            id: 8,
+            seq: 8,
             token: None,
             trace_id: None,
         };

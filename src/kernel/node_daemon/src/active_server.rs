@@ -271,7 +271,7 @@ impl ActiveServer {
         
         Ok(RPCResponse::new(RPCResult::Success(json!({
             "code":0
-        })),req.id))
+        })),req.seq))
     }
 
 
@@ -392,7 +392,7 @@ impl ActiveServer {
             "device_config": device_config_json,
             "rpc_token": rpc_token_json,
             "device_info": device_info_json,
-        })),req.id))
+        })),req.seq))
     }
 
     async fn handle_do_active(&self,req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
@@ -584,7 +584,7 @@ impl ActiveServer {
         
         Ok(RPCResponse::new(RPCResult::Success(json!({
             "code":0
-        })),req.id))
+        })),req.seq))
     }
 
     async fn handle_generate_key_pair(&self,req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
@@ -593,7 +593,7 @@ impl ActiveServer {
         return Ok(RPCResponse::new(RPCResult::Success(json!({
             "private_key":private_key,
             "public_key":public_key
-        })),req.id));
+        })),req.seq));
     }
 
     async fn handle_get_device_info(&self,req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
@@ -605,7 +605,7 @@ impl ActiveServer {
         let device_info_json = serde_json::to_value(device_info).unwrap();
         Ok(RPCResponse::new(RPCResult::Success(json!({
             "device_info":device_info_json
-        })),req.id))
+        })),req.seq))
     }
 
     async fn handle_generate_zone_txt_records(&self,req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
@@ -640,7 +640,7 @@ impl ActiveServer {
         return Ok(RPCResponse::new(RPCResult::Success(json!({
             "BOOT":zone_boot_config_jwt.to_string(),
             "DEV":device_mini_config_jwt,
-        })),req.id));
+        })),req.seq));
     }
 
     async fn handle_get_mini_device_info(&self,req:http::Request<BoxBody<Bytes, ServerError>>) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {

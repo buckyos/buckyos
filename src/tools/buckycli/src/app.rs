@@ -340,6 +340,11 @@ async fn build_app_service_config(app_config: &serde_json::Value) -> Result<Stri
         .and_then(|v| v.as_str())
         .unwrap_or("No description provided")
         .to_string();
+    let owner = get_buckyos_api_runtime()
+        .ok()
+        .and_then(|runtime| runtime.user_id.clone())
+        .unwrap_or_else(|| "did:web:unknown".to_string());
+    let now = buckyos_kit::buckyos_get_unix_timestamp();
     let docker_image = app_config
         .get("docker_image")
         .and_then(|v| v.as_str())
@@ -375,6 +380,22 @@ async fn build_app_service_config(app_config: &serde_json::Value) -> Result<Stri
                 .join(", ")
         })
         .unwrap_or("".to_string());
+    let expose_config = app_config
+        .get("tcp_ports")
+        .and_then(|v| v.as_object())
+        .map(|v| {
+            v.iter()
+                .map(|(k, v)| {
+                    format!(
+                        "\"{}\": {{\"expose_port\": {}}}",
+                        k,
+                        v.as_i64().unwrap_or(0)
+                    )
+                })
+                .collect::<Vec<String>>()
+                .join(", ")
+        })
+        .unwrap_or("".to_string());
     let udp_ports = app_config
         .get("udp_ports")
         .and_then(|v| v.as_object())
@@ -396,16 +417,23 @@ async fn build_app_service_config(app_config: &serde_json::Value) -> Result<Stri
         {{
             "app_id": "{}",
             "app_doc": {{
+                "name": "{}",
                 "pkg_name": "{}",
                 "version": "{}",
                 "tag": "latest",
+                "size": 0,
                 "app_name": "{}",
+                "show_name": "{}",
                 "description": {{
                     "detail": "{}"
                 }},
                 "author": "{}",
+                "owner": "{}",
+                "create_time": {},
+                "last_update_time": {},
                 "pub_time": 0,
                 "exp": 0,
+                "categories": ["dapp"],
                 "pkg_list": {{
                     "amd64_docker_image": {{
                         "docker_image_name": "{}",
@@ -417,6 +445,7 @@ async fn build_app_service_config(app_config: &serde_json::Value) -> Result<Stri
                     }}
                 }},
                 "deps": {{}},
+                "selector_type": "single",
                 "install_config": {{
                     "data_mount_point": [{}],
                     "cache_mount_point": [],
@@ -431,8 +460,20 @@ async fn build_app_service_config(app_config: &serde_json::Value) -> Result<Stri
                 "container_param": "{}"
             }},
             "app_index": {},
+            "user_id": "{}",
             "enable": true,
-            "state": "New",
+            "expected_instance_count": 1,
+            "state": "new",
+            "install_config": {{
+                "data_mount_point": {{{}}},
+                "cache_mount_point": [],
+                "local_cache_mount_point": [],
+                "expose_config": {{
+                    {}
+                }},
+                "container_param": "{}",
+                "res_pool_id": "default"
+            }},
             "instance": 1,
             "data_mount_point": {{{}}},
             "cache_mount_point": [],
@@ -450,10 +491,15 @@ async fn build_app_service_config(app_config: &serde_json::Value) -> Result<Stri
         }}"#,
         app_id,
         app_id,
+        app_id,
         version,
+        app_name,
         app_name,
         description,
         author,
+        owner,
+        now,
+        now,
         docker_image,
         app_id,
         docker_image,
@@ -463,6 +509,10 @@ async fn build_app_service_config(app_config: &serde_json::Value) -> Result<Stri
         udp_ports,
         container_param,
         cur_app_count + 1,
+        owner,
+        data_mount_point,
+        expose_config,
+        container_param,
         data_mount_point,
         tcp_ports,
         udp_ports,

@@ -734,13 +734,13 @@ impl RPCHandler for SystemConfigServer {
             Ok(value) => {
                 Ok(RPCResponse::new(
                     RPCResult::Success(value),
-                    req.id,
+                    req.seq,
                 ))
             }
             Err(err) => {
                 Ok(RPCResponse::new(
                     RPCResult::Failed(err.to_string()),
-                    req.id,
+                    req.seq,
                 ))
             }
         }

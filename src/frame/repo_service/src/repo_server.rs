@@ -577,7 +577,7 @@ impl RepoServer {
             RPCResult::Success(json!({
                 "task_id": task_id,
             })),
-            req.id,
+            req.seq,
         ))
     }
 
@@ -706,7 +706,7 @@ impl RepoServer {
             RPCResult::Success(json!({
                 "success": true,
             })),
-            req.id,
+            req.seq,
         ))
     }
 
@@ -935,7 +935,7 @@ impl RepoServer {
             RPCResult::Success(json!({
                 "success": true,
             })),
-            req.id,
+            req.seq,
         ))
     }
 
@@ -981,7 +981,7 @@ impl RepoServer {
             RPCResult::Success(json!({
                 "success": true,
             })),
-            req.id,
+            req.seq,
         ))
     }
 
@@ -1028,7 +1028,7 @@ impl RepoServer {
             RPCResult::Success(json!({
                 "success": true,
             })),
-            req.id,
+            req.seq,
         ))
     }
 
@@ -1186,7 +1186,7 @@ impl RepoServer {
             RPCResult::Success(json!({
                 "task_id": task_id,
             })),
-            req.id,
+            req.seq,
         ));
     }
 
@@ -1270,7 +1270,7 @@ impl RepoServer {
             RPCResult::Success(json!({
                 "success": true,
             })),
-            req.id,
+            req.seq,
         ))
     }
 

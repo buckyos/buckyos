@@ -41,7 +41,7 @@ impl ControlPanelServer {
             RPCResult::Success(json!({
                 "test":"test",
             })),
-            req.id,
+            req.seq,
         ))
     }
 
@@ -101,7 +101,7 @@ impl ControlPanelServer {
             }
         });
 
-        Ok(RPCResponse::new(RPCResult::Success(layout), req.id))
+        Ok(RPCResponse::new(RPCResult::Success(layout), req.seq))
     }
 
     async fn handle_dashboard(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
@@ -235,7 +235,7 @@ impl ControlPanelServer {
             "disks": disks_detail
         });
 
-        Ok(RPCResponse::new(RPCResult::Success(dashboard), req.id))
+        Ok(RPCResponse::new(RPCResult::Success(dashboard), req.seq))
     }
 
     async fn handle_system_overview(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
@@ -256,7 +256,7 @@ impl ControlPanelServer {
             "uptime_seconds": System::uptime(),
         });
 
-        Ok(RPCResponse::new(RPCResult::Success(overview), req.id))
+        Ok(RPCResponse::new(RPCResult::Success(overview), req.seq))
     }
 
     async fn handle_system_metrics(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
@@ -343,7 +343,7 @@ impl ControlPanelServer {
             }
         });
 
-        Ok(RPCResponse::new(RPCResult::Success(metrics), req.id))
+        Ok(RPCResponse::new(RPCResult::Success(metrics), req.seq))
     }
 
     async fn handle_sys_config_get(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
@@ -361,7 +361,7 @@ impl ControlPanelServer {
                 "version": value.version,
                 "isChanged": value.is_changed,
             })),
-            req.id,
+            req.seq,
         ))
     }
 
@@ -379,7 +379,7 @@ impl ControlPanelServer {
                 "ok": true,
                 "key": key,
             })),
-            req.id,
+            req.seq,
         ))
     }
 
@@ -398,7 +398,7 @@ impl ControlPanelServer {
                 "key": key,
                 "items": items,
             })),
-            req.id,
+            req.seq,
         ))
     }
 
@@ -491,7 +491,7 @@ impl ControlPanelServer {
                 "depth": depth,
                 "tree": tree,
             })),
-            req.id,
+            req.seq,
         ))
     }
 
@@ -515,7 +515,7 @@ impl ControlPanelServer {
                 "version": value.version,
                 "isChanged": value.is_changed,
             })),
-            req.id,
+            req.seq,
         ))
     }
 
@@ -551,7 +551,7 @@ impl ControlPanelServer {
                 "key": key,
                 "items": apps,
             })),
-            req.id,
+            req.seq,
         ))
     }
 
