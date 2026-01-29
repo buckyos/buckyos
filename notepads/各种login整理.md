@@ -146,7 +146,7 @@ rtcp stack -鉴权-> new_tunnel -鉴权-> open_stream
 -----------------REVIEW--------------------
 **TODO**
 
-0): RPR Session Token的设计，更加符合标准的jwt规范
+0): **RPR Session Token的设计，更加符合标准的jwt规范** OK 
 
 这些是 JWT 里常见的标准字段/头部字段，含义如下（简明版）：
 iss（Issuer）：签发者，谁发的 token
