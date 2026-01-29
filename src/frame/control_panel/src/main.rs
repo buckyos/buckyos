@@ -424,7 +424,7 @@ impl ControlPanelServer {
                 "warnings": warnings,
                 "services": services,
             })),
-            req.id,
+            req.seq,
         ))
     }
 
