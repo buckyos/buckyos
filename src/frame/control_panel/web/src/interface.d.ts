@@ -53,6 +53,12 @@ declare global {
     memory: number
   }
 
+  type NetworkPoint = {
+    time: string
+    rx: number
+    tx: number
+  }
+
   type StorageSlice = {
     label: string
     value: number
@@ -155,6 +161,7 @@ declare global {
     totalGb: number
     usedGb: number
     fs?: string
+    usagePercent?: number
   }
 
   type SystemOverview = {
@@ -179,11 +186,46 @@ declare global {
     txPerSec: number
   }
 
+  type SystemMetricsSwap = {
+    totalGb: number
+    usedGb: number
+    usagePercent: number
+  }
+
+  type SystemLoadAverage = {
+    one: number
+    five: number
+    fifteen: number
+  }
+
   type SystemMetrics = {
     cpu: DashboardCPU
     memory: DashboardMemory
     disk: SystemMetricsDisk
     network: SystemMetricsNetwork
+    swap?: SystemMetricsSwap
+    loadAverage?: SystemLoadAverage
+    processCount?: number
+    uptimeSeconds?: number
+  }
+
+  type SystemWarning = {
+    label: string
+    message: string
+    severity: 'warning' | 'critical'
+    value?: number
+    unit?: string
+  }
+
+  type ServiceStatus = {
+    name: string
+    status: 'running' | 'stopped' | 'unknown'
+  }
+
+  type SystemStatusResponse = {
+    state: 'online' | 'warning' | 'critical'
+    warnings: SystemWarning[]
+    services: ServiceStatus[]
   }
 
   type SysConfigTreeResponse = {

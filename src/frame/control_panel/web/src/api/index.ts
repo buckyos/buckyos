@@ -95,8 +95,58 @@ const mockDashboardData: DashboardState = {
     usagePercent: 59,
   },
   disks: [
-    { label: '/dev/sda1', mount: '/', totalGb: 512, usedGb: 310, fs: 'ext4' },
-    { label: '/dev/sdb1', mount: '/data', totalGb: 1024, usedGb: 640, fs: 'ext4' },
+    { label: '/dev/sda1', mount: '/', totalGb: 512, usedGb: 310, fs: 'ext4', usagePercent: 60 },
+    { label: '/dev/sdb1', mount: '/data', totalGb: 1024, usedGb: 640, fs: 'ext4', usagePercent: 63 },
+  ],
+}
+
+const mockSystemMetrics: SystemMetrics = {
+  cpu: {
+    usagePercent: 58,
+    model: 'Mock CPU 8-Core',
+    cores: 8,
+  },
+  memory: {
+    totalGb: 32,
+    usedGb: 19,
+    usagePercent: 59,
+  },
+  disk: {
+    totalGb: 1536,
+    usedGb: 950,
+    usagePercent: 62,
+    disks: [
+      { label: '/dev/sda1', mount: '/', totalGb: 512, usedGb: 310, fs: 'ext4', usagePercent: 60 },
+      { label: '/dev/sdb1', mount: '/data', totalGb: 1024, usedGb: 640, fs: 'ext4', usagePercent: 63 },
+    ],
+  },
+  network: {
+    rxBytes: 580_245_000,
+    txBytes: 240_900_000,
+    rxPerSec: 2_200_000,
+    txPerSec: 1_200_000,
+  },
+  swap: {
+    totalGb: 4,
+    usedGb: 1.2,
+    usagePercent: 30,
+  },
+  loadAverage: {
+    one: 0.62,
+    five: 0.55,
+    fifteen: 0.51,
+  },
+  processCount: 186,
+  uptimeSeconds: 345678,
+}
+
+const mockSystemStatus: SystemStatusResponse = {
+  state: 'online',
+  warnings: [],
+  services: [
+    { name: 'control-panel', status: 'running' },
+    { name: 'repo-service', status: 'running' },
+    { name: 'cyfs-gateway', status: 'running' },
   ],
 }
 
@@ -189,7 +239,45 @@ export const fetchSystemMetrics = async (
 ): Promise<{
   data: SystemMetrics | null
   error: unknown
-}> => callRpc<SystemMetrics>('system.metrics', options.lite ? { lite: true } : {})
+}> => {
+  const { data, error } = await callRpc<SystemMetrics>(
+    'system.metrics',
+    options.lite ? { lite: true } : {},
+  )
+  if (!data) {
+    return { data: mockSystemMetrics, error }
+  }
+  const merged: SystemMetrics = {
+    ...mockSystemMetrics,
+    ...(data as Record<string, unknown>),
+    cpu: { ...mockSystemMetrics.cpu, ...(data.cpu ?? {}) },
+    memory: { ...mockSystemMetrics.memory, ...(data.memory ?? {}) },
+    disk: { ...mockSystemMetrics.disk, ...(data.disk ?? {}) },
+    network: { ...mockSystemMetrics.network, ...(data.network ?? {}) },
+    swap: data.swap ?? mockSystemMetrics.swap,
+    loadAverage: data.loadAverage ?? mockSystemMetrics.loadAverage,
+    processCount: data.processCount ?? mockSystemMetrics.processCount,
+    uptimeSeconds: data.uptimeSeconds ?? mockSystemMetrics.uptimeSeconds,
+  }
+  return { data: merged, error }
+}
+
+export const fetchSystemStatus = async (): Promise<{
+  data: SystemStatusResponse | null
+  error: unknown
+}> => {
+  const { data, error } = await callRpc<SystemStatusResponse>('system.status', {})
+  if (!data) {
+    return { data: mockSystemStatus, error }
+  }
+  const merged: SystemStatusResponse = {
+    ...mockSystemStatus,
+    ...(data as Record<string, unknown>),
+    warnings: Array.isArray(data.warnings) ? data.warnings : mockSystemStatus.warnings,
+    services: Array.isArray(data.services) ? data.services : mockSystemStatus.services,
+  }
+  return { data: merged, error }
+}
 
 export const fetchSysConfigTree = async (
   key: string,
@@ -197,4 +285,4 @@ export const fetchSysConfigTree = async (
 ): Promise<{ data: SysConfigTreeResponse | null; error: unknown }> =>
   callRpc<SysConfigTreeResponse>('sys_config.tree', { key, depth })
 
-export { mockLayoutData, mockDashboardData, mockDappStoreData }
+export { mockLayoutData, mockDashboardData, mockDappStoreData, mockSystemMetrics, mockSystemStatus }

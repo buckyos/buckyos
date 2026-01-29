@@ -15,7 +15,7 @@ use server_runner::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::{net::IpAddr, time::Duration};
-use sysinfo::{DiskRefreshKind, Disks, System};
+use sysinfo::{DiskRefreshKind, Disks, Networks, System};
 
 // RPC docs live under doc/dashboard. UI endpoints use "ui.*" as canonical names;
 // "main/layout/dashboard" are kept as legacy aliases.
@@ -161,6 +161,7 @@ impl ControlPanelServer {
                 "label": disk.name().to_string_lossy(),
                 "totalGb": bytes_to_gb(total),
                 "usedGb": bytes_to_gb(used),
+                "usagePercent": used_percent,
                 "fs": disk.file_system().to_string_lossy(),
                 "mount": disk.mount_point().to_string_lossy(),
             }));
@@ -259,6 +260,174 @@ impl ControlPanelServer {
         Ok(RPCResponse::new(RPCResult::Success(overview), req.seq))
     }
 
+    async fn handle_system_status(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let mut system = System::new_all();
+        system.refresh_memory();
+        system.refresh_cpu_usage();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        system.refresh_cpu_usage();
+
+        let cpu_usage = system.global_cpu_usage() as f64;
+        let total_memory_bytes = system.total_memory();
+        let used_memory_bytes = system.used_memory();
+        let memory_percent = if total_memory_bytes > 0 {
+            ((used_memory_bytes as f64 / total_memory_bytes as f64) * 100.0).round()
+        } else {
+            0.0
+        };
+        let total_swap_bytes = system.total_swap();
+        let used_swap_bytes = system.used_swap();
+        let swap_percent = if total_swap_bytes > 0 {
+            ((used_swap_bytes as f64 / total_swap_bytes as f64) * 100.0).round()
+        } else {
+            0.0
+        };
+
+        let mut disks = Disks::new_with_refreshed_list_specifics(DiskRefreshKind::everything());
+        disks.refresh(true);
+        let mut storage_capacity_bytes: u64 = 0;
+        let mut storage_used_bytes: u64 = 0;
+        for disk in disks.list().iter() {
+            let total = disk.total_space();
+            let available = disk.available_space();
+            let used = total.saturating_sub(available);
+            storage_capacity_bytes = storage_capacity_bytes.saturating_add(total);
+            storage_used_bytes = storage_used_bytes.saturating_add(used);
+        }
+        let disk_usage_percent = if storage_capacity_bytes > 0 {
+            ((storage_used_bytes as f64 / storage_capacity_bytes as f64) * 100.0).round()
+        } else {
+            0.0
+        };
+
+        let mut warnings: Vec<Value> = Vec::new();
+        let mut status_level: u8 = 0;
+        let mut push_warning = |label: &str,
+                                message: String,
+                                severity: &'static str,
+                                value: f64,
+                                unit: &'static str| {
+            let level = if severity == "critical" { 2 } else { 1 };
+            status_level = status_level.max(level);
+            warnings.push(json!({
+                "label": label,
+                "message": message,
+                "severity": severity,
+                "value": value,
+                "unit": unit,
+            }));
+        };
+
+        let warn_threshold = 85.0;
+        let critical_threshold = 95.0;
+
+        if cpu_usage >= critical_threshold {
+            push_warning(
+                "CPU",
+                format!("CPU usage above {:.0}%", critical_threshold),
+                "critical",
+                cpu_usage,
+                "%",
+            );
+        } else if cpu_usage >= warn_threshold {
+            push_warning(
+                "CPU",
+                format!("CPU usage above {:.0}%", warn_threshold),
+                "warning",
+                cpu_usage,
+                "%",
+            );
+        }
+
+        if memory_percent >= critical_threshold {
+            push_warning(
+                "Memory",
+                format!("Memory usage above {:.0}%", critical_threshold),
+                "critical",
+                memory_percent,
+                "%",
+            );
+        } else if memory_percent >= warn_threshold {
+            push_warning(
+                "Memory",
+                format!("Memory usage above {:.0}%", warn_threshold),
+                "warning",
+                memory_percent,
+                "%",
+            );
+        }
+
+        if disk_usage_percent >= critical_threshold {
+            push_warning(
+                "Storage",
+                format!("Disk usage above {:.0}%", critical_threshold),
+                "critical",
+                disk_usage_percent,
+                "%",
+            );
+        } else if disk_usage_percent >= warn_threshold {
+            push_warning(
+                "Storage",
+                format!("Disk usage above {:.0}%", warn_threshold),
+                "warning",
+                disk_usage_percent,
+                "%",
+            );
+        }
+
+        if swap_percent >= critical_threshold {
+            push_warning(
+                "Swap",
+                format!("Swap usage above {:.0}%", critical_threshold),
+                "critical",
+                swap_percent,
+                "%",
+            );
+        } else if swap_percent >= warn_threshold {
+            push_warning(
+                "Swap",
+                format!("Swap usage above {:.0}%", warn_threshold),
+                "warning",
+                swap_percent,
+                "%",
+            );
+        }
+
+        let key = Self::param_str(&req, "key").unwrap_or_else(|| "services".to_string());
+        let client = self.build_system_config_client(&req);
+        let services: Vec<Value> = match client.list(&key).await {
+            Ok(items) => items
+                .into_iter()
+                .map(|name| json!({ "name": name, "status": "unknown" }))
+                .collect(),
+            Err(error) => {
+                push_warning(
+                    "Services",
+                    format!("Failed to list services: {}", error),
+                    "warning",
+                    0.0,
+                    "",
+                );
+                Vec::new()
+            }
+        };
+
+        let state = match status_level {
+            2 => "critical",
+            1 => "warning",
+            _ => "online",
+        };
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "state": state,
+                "warnings": warnings,
+                "services": services,
+            })),
+            req.id,
+        ))
+    }
+
     async fn handle_system_metrics(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         let mut system = System::new_all();
         system.refresh_memory();
@@ -281,6 +450,16 @@ impl ControlPanelServer {
         } else {
             0.0
         };
+        let total_swap_bytes = system.total_swap();
+        let used_swap_bytes = system.used_swap();
+        let swap_percent = if total_swap_bytes > 0 {
+            ((used_swap_bytes as f64 / total_swap_bytes as f64) * 100.0).round()
+        } else {
+            0.0
+        };
+        let load_avg = System::load_average();
+        let process_count = system.processes().len() as u64;
+        let uptime_seconds = System::uptime();
 
         let lite = req
             .params
@@ -290,6 +469,15 @@ impl ControlPanelServer {
         let mut disks_detail: Vec<Value> = Vec::new();
         let mut storage_capacity_bytes: u64 = 0;
         let mut storage_used_bytes: u64 = 0;
+
+        let mut networks = Networks::new_with_refreshed_list();
+        networks.refresh(true);
+        let mut rx_bytes: u64 = 0;
+        let mut tx_bytes: u64 = 0;
+        for (_, data) in networks.iter() {
+            rx_bytes = rx_bytes.saturating_add(data.total_received());
+            tx_bytes = tx_bytes.saturating_add(data.total_transmitted());
+        }
 
         if !lite {
             let mut disks = Disks::new_with_refreshed_list_specifics(DiskRefreshKind::everything());
@@ -301,11 +489,17 @@ impl ControlPanelServer {
                 let used = total.saturating_sub(available);
                 storage_capacity_bytes = storage_capacity_bytes.saturating_add(total);
                 storage_used_bytes = storage_used_bytes.saturating_add(used);
+                let usage_percent = if total > 0 {
+                    ((used as f64 / total as f64) * 100.0).round()
+                } else {
+                    0.0
+                };
 
                 disks_detail.push(json!({
                     "label": disk.name().to_string_lossy(),
                     "totalGb": bytes_to_gb(total),
                     "usedGb": bytes_to_gb(used),
+                    "usagePercent": usage_percent,
                     "fs": disk.file_system().to_string_lossy(),
                     "mount": disk.mount_point().to_string_lossy(),
                 }));
@@ -336,11 +530,23 @@ impl ControlPanelServer {
                 "disks": disks_detail,
             },
             "network": {
-                "rxBytes": 0,
-                "txBytes": 0,
+                "rxBytes": rx_bytes,
+                "txBytes": tx_bytes,
                 "rxPerSec": 0,
                 "txPerSec": 0,
-            }
+            },
+            "swap": {
+                "totalGb": bytes_to_gb(total_swap_bytes),
+                "usedGb": bytes_to_gb(used_swap_bytes),
+                "usagePercent": swap_percent,
+            },
+            "loadAverage": {
+                "one": load_avg.one,
+                "five": load_avg.five,
+                "fifteen": load_avg.fifteen,
+            },
+            "processCount": process_count,
+            "uptimeSeconds": uptime_seconds,
         });
 
         Ok(RPCResponse::new(RPCResult::Success(metrics), req.seq))
@@ -599,7 +805,7 @@ impl RPCHandler for ControlPanelServer {
             "user.role.update" => self.handle_unimplemented(req, "Update role/policy").await,
             // System
             "system.overview" => self.handle_system_overview(req).await,
-            "system.status" => self.handle_unimplemented(req, "Health status").await,
+            "system.status" => self.handle_system_status(req).await,
             "system.metrics" => self.handle_system_metrics(req).await,
             "system.update.check" => self.handle_unimplemented(req, "Check updates").await,
             "system.update.apply" => self.handle_unimplemented(req, "Apply update").await,
