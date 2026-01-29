@@ -228,6 +228,36 @@ declare global {
     services: ServiceStatus[]
   }
 
+  type SystemLogLevel = 'info' | 'warning' | 'error' | 'unknown'
+
+  type SystemLogEntry = {
+    timestamp: string
+    level: SystemLogLevel
+    message: string
+    raw: string
+    service: string
+    file: string
+    line?: number
+  }
+
+  type SystemLogService = {
+    id: string
+    label: string
+    path: string
+  }
+
+  type SystemLogQueryResponse = {
+    entries: SystemLogEntry[]
+    nextCursor?: string
+    hasMore?: boolean
+  }
+
+  type SystemLogDownloadResponse = {
+    url: string
+    expiresInSec: number
+    filename?: string
+  }
+
   type SysConfigTreeResponse = {
     key: string
     depth: number

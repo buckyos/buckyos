@@ -26,7 +26,8 @@ const mockLayoutData: RootLayoutData = {
     { label: 'Settings', icon: 'settings', path: '/settings' },
   ],
   secondaryNav: [
-    { label: 'Notifications', icon: 'bell', path: '/notifications', badge: '3' },
+    { label: 'Recent Events', icon: 'bell', path: '/notifications', badge: '3' },
+    { label: 'System Logs', icon: 'chart', path: '/system-logs' },
     { label: 'Sign Out', icon: 'signout', path: '/sign-out' },
   ],
   profile: {
@@ -62,7 +63,7 @@ const mockDashboardData: DashboardState = {
     { label: 'Manage Users', icon: 'users', to: '/users' },
     { label: 'Storage Settings', icon: 'storage', to: '/storage' },
     { label: 'Network Config', icon: 'network', to: '/settings' },
-    { label: 'System Logs', icon: 'chart', to: '/notifications' },
+    { label: 'System Logs', icon: 'chart', to: '/system-logs' },
   ],
   resourceTimeline: [
     { time: '00:00', cpu: 52, memory: 68 },
@@ -149,6 +150,55 @@ const mockSystemStatus: SystemStatusResponse = {
     { name: 'cyfs-gateway', status: 'running' },
   ],
 }
+
+const mockLogServices: SystemLogService[] = [
+  { id: 'control-panel', label: 'Control Panel', path: '/opt/buckyos/logs/control-panel' },
+  { id: 'cyfs_gateway', label: 'Cyfs Gateway', path: '/opt/buckyos/logs/cyfs_gateway' },
+  { id: 'node_daemon', label: 'Node Daemon', path: '/opt/buckyos/logs/node_daemon' },
+  { id: 'repo_service', label: 'Repo Service', path: '/opt/buckyos/logs/repo_service' },
+  { id: 'scheduler', label: 'Scheduler', path: '/opt/buckyos/logs/scheduler' },
+  {
+    id: 'system_config_service',
+    label: 'System Config',
+    path: '/opt/buckyos/logs/system_config_service',
+  },
+  { id: 'verify_hub', label: 'Verify Hub', path: '/opt/buckyos/logs/verify_hub' },
+]
+
+const mockLogEntries: SystemLogEntry[] = [
+  {
+    timestamp: '01-29 08:34:18.943',
+    level: 'info',
+    message: 'server-runner listening on 0.0.0.0:4020',
+    raw: '01-29 08:34:18.943 [INFO] server-runner listening on 0.0.0.0:4020',
+    service: 'control-panel',
+    file: 'control-panel_217501.log',
+  },
+  {
+    timestamp: '01-29 08:34:29.142',
+    level: 'info',
+    message: 'recv http request:remote 127.0.0.1:54438 method POST host sys.meteor002.web3.buckyos.ai path /kapi/control-panel',
+    raw: '01-29 08:34:29.142 [INFO] recv http request:remote 127.0.0.1:54438 method POST host sys.meteor002.web3.buckyos.ai path /kapi/control-panel',
+    service: 'control-panel',
+    file: 'control-panel_217501.log',
+  },
+  {
+    timestamp: '01-29 08:32:50.642',
+    level: 'info',
+    message: 'update ood1 info to system_config success!',
+    raw: '01-29 08:32:50.642 [INFO] update ood1 info to system_config success!',
+    service: 'node_daemon',
+    file: 'node_daemon_215894.log',
+  },
+  {
+    timestamp: '01-29 08:32:50.555',
+    level: 'warning',
+    message: 'system config client is created,service_url:http://127.0.0.1:3200/kapi/system_config',
+    raw: '01-29 08:32:50.555 [WARN] system config client is created,service_url:http://127.0.0.1:3200/kapi/system_config',
+    service: 'system_config_service',
+    file: 'system_config_service_215996.log',
+  },
+]
 
 const mockDappStoreData: DappCard[] = [
   { name: 'FileSync', icon: 'package', category: 'Storage', status: 'installed', version: '1.4.2' },
@@ -279,10 +329,88 @@ export const fetchSystemStatus = async (): Promise<{
   return { data: merged, error }
 }
 
+type LogQueryParams = {
+  services?: string[]
+  service?: string
+  file?: string
+  level?: SystemLogLevel
+  keyword?: string
+  since?: string
+  until?: string
+  limit?: number
+  cursor?: string
+  direction?: 'forward' | 'backward'
+}
+
+type LogTailParams = {
+  services?: string[]
+  service?: string
+  file?: string
+  level?: SystemLogLevel
+  keyword?: string
+  limit?: number
+  cursor?: string
+  from?: 'start' | 'end'
+}
+
+type LogDownloadParams = {
+  services: string[]
+  mode: 'filtered' | 'full'
+  level?: SystemLogLevel
+  keyword?: string
+  since?: string
+  until?: string
+  file?: string
+}
+
+export const fetchLogServices = async (): Promise<{
+  data: SystemLogService[] | null
+  error: unknown
+}> => {
+  const { data, error } = await callRpc<{ services: SystemLogService[] }>('system.logs.list', {})
+  if (!data?.services?.length) {
+    return { data: mockLogServices, error }
+  }
+  return { data: data.services, error }
+}
+
+export const querySystemLogs = async (
+  params: LogQueryParams,
+): Promise<{ data: SystemLogQueryResponse | null; error: unknown }> => {
+  const { data, error } = await callRpc<SystemLogQueryResponse>('system.logs.query', params)
+  if (!data) {
+    return { data: { entries: mockLogEntries }, error }
+  }
+  return { data, error }
+}
+
+export const tailSystemLogs = async (
+  params: LogTailParams,
+): Promise<{ data: SystemLogQueryResponse | null; error: unknown }> => {
+  const { data, error } = await callRpc<SystemLogQueryResponse>('system.logs.tail', params)
+  if (!data) {
+    return { data: { entries: [] }, error }
+  }
+  return { data, error }
+}
+
+export const downloadSystemLogs = async (
+  params: LogDownloadParams,
+): Promise<{ data: SystemLogDownloadResponse | null; error: unknown }> =>
+  callRpc<SystemLogDownloadResponse>('system.logs.download', params)
+
 export const fetchSysConfigTree = async (
   key: string,
   depth = 2,
 ): Promise<{ data: SysConfigTreeResponse | null; error: unknown }> =>
   callRpc<SysConfigTreeResponse>('sys_config.tree', { key, depth })
 
-export { mockLayoutData, mockDashboardData, mockDappStoreData, mockSystemMetrics, mockSystemStatus }
+export {
+  mockLayoutData,
+  mockDashboardData,
+  mockDappStoreData,
+  mockSystemMetrics,
+  mockSystemStatus,
+  mockLogServices,
+  mockLogEntries,
+}

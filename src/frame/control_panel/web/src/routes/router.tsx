@@ -6,6 +6,8 @@ import PlaceholderPage from '../ui/pages/PlaceholderPage'
 import UserManagementPage from '../ui/pages/UserManagementPage'
 import DappStorePage from '../ui/pages/DappStorePage'
 import SettingsPage from '../ui/pages/SettingsPage'
+import RecentEventsPage from '../ui/pages/RecentEventsPage'
+import SystemLogsPage from '../ui/pages/SystemLogsPage'
 
 const router = createBrowserRouter([
   {
@@ -31,13 +33,11 @@ const router = createBrowserRouter([
       },
       {
         path: 'notifications',
-        element: (
-          <PlaceholderPage
-            title="Notifications"
-            description="Review alerts, scheduled tasks, and automation rules triggered by your infrastructure."
-            ctaLabel="Review Alerts"
-          />
-        ),
+        element: <RecentEventsPage />,
+      },
+      {
+        path: 'system-logs',
+        element: <SystemLogsPage />,
       },
       {
         path: 'sign-out',

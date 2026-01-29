@@ -14,12 +14,6 @@ import DonutChart from '../charts/DonutChart'
 import HorizontalBarChart from '../charts/HorizontalBarChart'
 import LineAreaChart from '../charts/LineAreaChart'
 
-const toneStyles: Record<EventItem['tone'], string> = {
-  success: 'bg-emerald-500',
-  warning: 'bg-amber-500',
-  info: 'bg-sky-500',
-}
-
 const DashboardPage = () => {
   const normalizeTimelineTime = (value: string) =>
     value.length === 5 ? `${value}:00` : value
@@ -206,7 +200,6 @@ const DashboardPage = () => {
     }
   }, [])
 
-  const recentEvents = dashboardData?.recentEvents ?? []
   const quickActions = dashboardData?.quickActions ?? []
   const resourceTimeline = resourceSeries
   const rawStorageSlices = dashboardData?.storageSlices ?? []
@@ -685,30 +678,6 @@ const DashboardPage = () => {
         </div>
       </section>
 
-      <section className="cp-panel p-6">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-[var(--cp-ink)]">Recent Events</h2>
-          <span className="text-xs uppercase tracking-wide text-[var(--cp-muted)]">Last 24h</span>
-        </div>
-        <div className="mt-5 max-h-64 space-y-3 overflow-y-auto pr-1">
-          {recentEvents.map((item) => (
-            <div
-              key={item.title}
-              className="flex items-start gap-3 rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-4 py-3 text-sm text-[var(--cp-muted)]"
-            >
-              <span
-                className={`mt-1 inline-flex size-2 rounded-full ${toneStyles[item.tone]}`}
-                aria-hidden
-              />
-              <div className="flex-1">
-                <p className="font-medium text-[var(--cp-ink)]">{item.title}</p>
-                <p className="text-xs text-[var(--cp-muted)]">{item.subtitle}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
       <section className="grid gap-6 lg:grid-cols-2">
         <div className="cp-panel p-6 lg:col-span-2">
           <div className="mb-6 flex items-center gap-3 text-lg font-semibold text-[var(--cp-ink)]">
@@ -806,9 +775,13 @@ const DashboardPage = () => {
                     className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-3"
                   >
                     <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-[var(--cp-ink)]">{disk.label}</p>
-                        <p className="text-[11px] text-[var(--cp-muted)]">{disk.mount}</p>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-[var(--cp-ink)]" title={disk.label}>
+                          {disk.label}
+                        </p>
+                        <p className="truncate text-[11px] text-[var(--cp-muted)]" title={disk.mount}>
+                          {disk.mount}
+                        </p>
                       </div>
                       <span className="text-xs font-semibold text-[var(--cp-ink)]">
                         {usagePercent}%
