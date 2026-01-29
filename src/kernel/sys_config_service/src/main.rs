@@ -72,7 +72,7 @@ async fn handle_get(params: Value, session_token: &RPCSessionToken) -> Result<Va
     }
     let userid = session_token.sub.as_ref().unwrap();
 
-    let appid = session_token.aud.as_deref().unwrap_or("kernel");
+    let appid = session_token.appid.as_deref().unwrap_or("kernel");
 
     let (full_res_path,real_key_path) = get_full_res_path(key)?;
     info!("GET: full_res_path:{},real_key_path:{:?},appid:{},userid:{},session_token:{:?}",full_res_path,real_key_path,appid,userid,session_token);
@@ -118,7 +118,7 @@ async fn handle_set(params: Value, session_token: &RPCSessionToken) -> Result<Va
     let (full_res_path,real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
-        session_token.aud.as_deref(),
+        session_token.appid.as_deref(),
         full_res_path.as_str(),
         "write",
     )
@@ -162,7 +162,7 @@ async fn handle_create(params: Value, session_token: &RPCSessionToken) -> Result
     let (full_res_path,real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
-        session_token.aud.as_deref(),
+        session_token.appid.as_deref(),
         full_res_path.as_str(),
         "write",
     )
@@ -201,7 +201,7 @@ async fn handle_delete(params: Value, session_token: &RPCSessionToken) -> Result
     let (full_res_path,real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
-        session_token.aud.as_deref(),
+        session_token.appid.as_deref(),
         full_res_path.as_str(),
         "write",
     )
@@ -244,7 +244,7 @@ async fn handle_append(params: Value, session_token: &RPCSessionToken) -> Result
     let (full_res_path,real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
-        session_token.aud.as_deref(),
+        session_token.appid.as_deref(),
         full_res_path.as_str(),
         "write",
     )
@@ -306,7 +306,7 @@ async fn handle_set_by_json_path(params: Value, session_token: &RPCSessionToken)
     let (full_res_path,real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
-        session_token.aud.as_deref(),
+        session_token.appid.as_deref(),
         full_res_path.as_str(),
         "write",
     )
@@ -351,7 +351,7 @@ async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Resul
         let (full_res_path,real_key_path) = get_full_res_path(key)?;
         if !enforce(
             userid,
-            session_token.aud.as_deref(),
+            session_token.appid.as_deref(),
             full_res_path.as_str(),
             "write",
         )
@@ -459,10 +459,10 @@ async fn handle_list(params: Value, session_token: &RPCSessionToken) -> Result<V
     }
     let userid = session_token.sub.as_ref().unwrap();
     let (full_res_path,real_key_path) = get_full_res_path(key)?;
-    info!("full_res_path: {},userid: {},appid: {}", full_res_path,userid,session_token.aud.as_deref().unwrap());
+    info!("full_res_path: {},userid: {},appid: {}", full_res_path,userid,session_token.appid.as_deref().unwrap());
     if !enforce(
         userid,
-        session_token.aud.as_deref(),
+        session_token.appid.as_deref(),
         full_res_path.as_str(),
         "read",
     )
@@ -605,7 +605,7 @@ async fn dump_configs_for_scheduler(
     _params: Value,
     session_token: &RPCSessionToken,
 ) -> Result<Value> {
-    let appid = session_token.aud.as_deref().unwrap();
+    let appid = session_token.appid.as_deref().unwrap();
     if appid != "scheduler" && appid != "node-daemon" {
         return Err(RPCErrors::NoPermission("No permission".to_string()));
     }
