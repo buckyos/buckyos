@@ -1,7 +1,7 @@
 {
   
   "name": "buckyos_filebrowser",
-    "version": "0.5.1",
+    "version": "0.5.1", 
     "meta": {
       "detail": "BuckyOS File Browser"
     },

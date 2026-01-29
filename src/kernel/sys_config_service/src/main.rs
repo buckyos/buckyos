@@ -67,12 +67,12 @@ async fn handle_get(params: Value, session_token: &RPCSessionToken) -> Result<Va
     }
     let key = key.unwrap();
 
-    if session_token.userid.is_none() {
-        return Err(RPCErrors::NoPermission("No userid".to_string()));
+    if session_token.sub.is_none() {
+        return Err(RPCErrors::NoPermission("No sub(userid)".to_string()));
     }
-    let userid = session_token.userid.as_ref().unwrap();
+    let userid = session_token.sub.as_ref().unwrap();
 
-    let appid = session_token.appid.as_deref().unwrap_or("kernel");
+    let appid = session_token.aud.as_deref().unwrap_or("kernel");
 
     let (full_res_path,real_key_path) = get_full_res_path(key)?;
     info!("GET: full_res_path:{},real_key_path:{:?},appid:{},userid:{},session_token:{:?}",full_res_path,real_key_path,appid,userid,session_token);
@@ -111,14 +111,14 @@ async fn handle_set(params: Value, session_token: &RPCSessionToken) -> Result<Va
     let new_value = new_value.as_str().unwrap();
 
     //check access control
-    if session_token.userid.is_none() {
-        return Err(RPCErrors::NoPermission("No userid".to_string()));
+    if session_token.sub.is_none() {
+        return Err(RPCErrors::NoPermission("No sub(userid)".to_string()));
     }
-    let userid = session_token.userid.as_ref().unwrap();
+    let userid = session_token.sub.as_ref().unwrap();
     let (full_res_path,real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
-        session_token.appid.as_deref(),
+        session_token.aud.as_deref(),
         full_res_path.as_str(),
         "write",
     )
@@ -155,14 +155,14 @@ async fn handle_create(params: Value, session_token: &RPCSessionToken) -> Result
     let new_value = new_value.as_str().unwrap();
 
     //check access control
-    if session_token.userid.is_none() {
-        return Err(RPCErrors::NoPermission("No userid".to_string()));
+    if session_token.sub.is_none() {
+        return Err(RPCErrors::NoPermission("No sub(userid)".to_string()));
     }
-    let userid = session_token.userid.as_ref().unwrap();
+    let userid = session_token.sub.as_ref().unwrap();
     let (full_res_path,real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
-        session_token.appid.as_deref(),
+        session_token.aud.as_deref(),
         full_res_path.as_str(),
         "write",
     )
@@ -194,14 +194,14 @@ async fn handle_delete(params: Value, session_token: &RPCSessionToken) -> Result
     let key = key.as_str().unwrap();
 
     //check access control
-    if session_token.userid.is_none() {
-        return Err(RPCErrors::NoPermission("No userid".to_string()));
+    if session_token.sub.is_none() {
+        return Err(RPCErrors::NoPermission("No sub(userid)".to_string()));
     }
-    let userid = session_token.userid.as_ref().unwrap();
+    let userid = session_token.sub.as_ref().unwrap();
     let (full_res_path,real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
-        session_token.appid.as_deref(),
+        session_token.aud.as_deref(),
         full_res_path.as_str(),
         "write",
     )
@@ -237,14 +237,14 @@ async fn handle_append(params: Value, session_token: &RPCSessionToken) -> Result
     let append_value = append_value.as_str().unwrap();
 
     //check access control
-    if session_token.userid.is_none() {
-        return Err(RPCErrors::NoPermission("No userid".to_string()));
+    if session_token.sub.is_none() {
+        return Err(RPCErrors::NoPermission("No sub(userid)".to_string()));
     }
-    let userid = session_token.userid.as_ref().unwrap();
+    let userid = session_token.sub.as_ref().unwrap();
     let (full_res_path,real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
-        session_token.appid.as_deref(),
+        session_token.aud.as_deref(),
         full_res_path.as_str(),
         "write",
     )
@@ -299,14 +299,14 @@ async fn handle_set_by_json_path(params: Value, session_token: &RPCSessionToken)
     let json_path = json_path.as_str().unwrap();
 
     //check access control
-    if session_token.userid.is_none() {
-        return Err(RPCErrors::NoPermission("No userid".to_string()));
+    if session_token.sub.is_none() {
+        return Err(RPCErrors::NoPermission("No sub(userid)".to_string()));
     }
-    let userid = session_token.userid.as_ref().unwrap();
+    let userid = session_token.sub.as_ref().unwrap();
     let (full_res_path,real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
-        session_token.appid.as_deref(),
+        session_token.aud.as_deref(),
         full_res_path.as_str(),
         "write",
     )
@@ -339,10 +339,10 @@ async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Resul
     }
 
     // Check access control for all keys
-    if session_token.userid.is_none() {
-        return Err(RPCErrors::NoPermission("No userid".to_string()));
+    if session_token.sub.is_none() {
+        return Err(RPCErrors::NoPermission("No sub(userid)".to_string()));
     }
-    let userid = session_token.userid.as_ref().unwrap();
+    let userid = session_token.sub.as_ref().unwrap();
 
     let mut tx_actions = HashMap::new();
 
@@ -351,7 +351,7 @@ async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Resul
         let (full_res_path,real_key_path) = get_full_res_path(key)?;
         if !enforce(
             userid,
-            session_token.appid.as_deref(),
+            session_token.aud.as_deref(),
             full_res_path.as_str(),
             "write",
         )
@@ -454,15 +454,15 @@ async fn handle_list(params: Value, session_token: &RPCSessionToken) -> Result<V
     let key = key.as_str().unwrap();
 
     //check access control
-    if session_token.userid.is_none() {
-        return Err(RPCErrors::NoPermission("No userid".to_string()));
+    if session_token.sub.is_none() {
+        return Err(RPCErrors::NoPermission("No sub(userid)".to_string()));
     }
-    let userid = session_token.userid.as_ref().unwrap();
+    let userid = session_token.sub.as_ref().unwrap();
     let (full_res_path,real_key_path) = get_full_res_path(key)?;
-    info!("full_res_path: {},userid: {},appid: {}", full_res_path,userid,session_token.appid.as_deref().unwrap());
+    info!("full_res_path: {},userid: {},appid: {}", full_res_path,userid,session_token.aud.as_deref().unwrap());
     if !enforce(
         userid,
-        session_token.appid.as_deref(),
+        session_token.aud.as_deref(),
         full_res_path.as_str(),
         "read",
     )
@@ -605,7 +605,7 @@ async fn dump_configs_for_scheduler(
     _params: Value,
     session_token: &RPCSessionToken,
 ) -> Result<Value> {
-    let appid = session_token.appid.as_deref().unwrap();
+    let appid = session_token.aud.as_deref().unwrap();
     if appid != "scheduler" && appid != "node-daemon" {
         return Err(RPCErrors::NoPermission("No permission".to_string()));
     }
@@ -930,13 +930,13 @@ mod test {
 
         let private_key = EncodingKey::from_ed_pem(test_owner_private_key_pem.as_bytes()).unwrap();
         let token = RPCSessionToken {
-            userid: Some("alice".to_string()),
-            appid: Some("test".to_string()),
+            sub: Some("alice".to_string()),
+            aud: Some("test".to_string()),
             exp: Some(now + 5), //5 seconds
             token_type: RPCSessionTokenType::JWT,
             token: None,
             iss: None,
-            nonce: None,
+            jti: None,
             session: None,
         };
         let jwt = token
@@ -1064,13 +1064,13 @@ mod test {
 
         let private_key = EncodingKey::from_ed_pem(test_owner_private_key_pem.as_bytes()).unwrap();
         let token = RPCSessionToken {
-            userid: Some("alice".to_string()),
-            appid: None,
+            sub: Some("alice".to_string()),
+            aud: None,
             exp: Some(now + 30),
             token_type: RPCSessionTokenType::JWT,
             token: None,
             iss: None,
-            nonce: None,
+            jti: None,
             session: None,
         };
         let jwt = token

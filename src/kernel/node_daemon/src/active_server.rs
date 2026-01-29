@@ -374,10 +374,10 @@ impl ActiveServer {
         let rpc_token_json = if need_sn {
             let rpc_token = ::kRPC::RPCSessionToken {
                 token_type : ::kRPC::RPCSessionTokenType::JWT,
-                nonce : None,
+                jti : None,
                 session : None,
-                userid : Some(sn_username),
-                appid:Some("active_service".to_string()),
+                sub : Some(sn_username),
+                aud:Some("active_service".to_string()),
                 exp:Some(buckyos_get_unix_timestamp() + 60),
                 iss:Some(user_name.to_string()),
                 token:None,
@@ -498,10 +498,10 @@ impl ActiveServer {
             let sn_username = sn_username.unwrap().as_str().unwrap().to_lowercase();
             let rpc_token = ::kRPC::RPCSessionToken {
                 token_type : ::kRPC::RPCSessionTokenType::JWT,
-                nonce : None,
+                jti : None,
                 session : None,
-                userid : Some(sn_username.to_string()),
-                appid:Some("active_service".to_string()),
+                sub : Some(sn_username.to_string()),
+                aud:Some("active_service".to_string()),
                 exp:Some(buckyos_get_unix_timestamp() + 60),
                 iss:Some(user_name.to_string()),
                 token:None,

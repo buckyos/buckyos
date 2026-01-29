@@ -196,7 +196,7 @@ pub async fn init_ndn_client(
     let session_token = kRPC::RPCSessionToken {
         token_type: kRPC::RPCSessionTokenType::JWT,
         token: None,
-        appid: Some("ndn".to_string()),
+        aud: Some("ndn".to_string()),
         exp: Some(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -205,8 +205,8 @@ pub async fn init_ndn_client(
                 + 3600 * 24 * 7,
         ),
         iss: None,
-        nonce: None,
-        userid: None,
+        jti: None,
+        sub: None,
         session: None,
     };
 

@@ -457,12 +457,14 @@ impl BuckyOSRuntime {
 
         // Prefer refresh-token rotation when current session is issued by verify-hub.
         let token_pair = if real_session_token.iss.as_deref() == Some("verify-hub") {
+            info!("use refresh-token to renew session-token from verify-hub...");
             let refresh_token = self.refresh_token.read().await;
             if !refresh_token.is_empty() {
                 verify_hub_client
                     .login_by_jwt(refresh_token.as_str(), None)
                     .await?
             } else {
+                info!("refresh-token is empty, re-login by a locally generated device/user JWT...");
                 // Fallback: if refresh token is missing, re-login by a locally generated device/user JWT.
                 // This keeps the runtime functional but is less standard than refresh rotation.
                 drop(refresh_token);
@@ -471,11 +473,13 @@ impl BuckyOSRuntime {
             }
         } else {
             // First login / exchange: accept trusted JWT (device/root/etc)
+            info!("use session-token to renew session-token from verify-hub...");
             verify_hub_client
                 .login_by_jwt(session_token_str.as_str(), None)
                 .await?
         };
 
+        info!("renew session-token success, token_pair: {:?}",token_pair);
         {
             let mut session_token = self.session_token.write().await;
             *session_token = token_pair.session_token.clone();
@@ -596,9 +600,9 @@ impl BuckyOSRuntime {
                 drop(session_token);
 
                 info!("real_session_token: {:?}",real_session_token);
-                let appid = real_session_token.appid.clone().unwrap_or("kernel".to_string());
+                let appid = real_session_token.aud.clone().unwrap_or("kernel".to_string());
                 if appid != self.app_id {
-                    warn!("Session token is not valid,appid:{} != self.app_id:{}",appid,self.app_id);
+                    warn!("Session token is not valid,aud(appid):{} != self.app_id:{}",appid,self.app_id);
                     return Err(RPCErrors::ReasonError("Session token is not valid".to_string()));
                 }
                 //login by jwt
@@ -867,9 +871,12 @@ impl BuckyOSRuntime {
                         *session_token_guard = new_session_token_str.clone();
                         return new_session_token_str;
                     }
-                } 
+                }
+                warn!("session-token expired!");
+                return "".to_string();
             } 
         }
+        warn!("use a session-token without expiration, it will be a BUG?");
         return session_token_str;
     }
 

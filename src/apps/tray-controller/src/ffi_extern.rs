@@ -674,10 +674,10 @@ async fn select_node() -> Result<Option<NodeInfomationObj>, String> {
         let timestamp = since_the_epoch.as_secs();
         let device_session_token = kRPC::RPCSessionToken {
             token_type: kRPC::RPCSessionTokenType::JWT,
-            nonce: None,
+            jti: None,
             session:None,
-            userid: Some(device_doc.name.clone()),
-            appid: Some("kernel".to_string()),
+            sub: Some(device_doc.name.clone()),
+            aud: Some("kernel".to_string()),
             exp: Some(timestamp + 3600 * 24 * 7),
             iss: Some(device_doc.name.clone()),
             token: None,
