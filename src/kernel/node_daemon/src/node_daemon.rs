@@ -821,7 +821,7 @@ async fn generate_device_session_token(device_doc: &DeviceConfig, device_private
         token:None,
     };
 
-    let device_session_token_jwt = device_session_token.generate_jwt(Some(device_doc.name.clone()),&device_private_key)
+    let device_session_token_jwt = device_session_token.generate_jwt(None,&device_private_key)
         .map_err(|err| {
             error!("generate device session token failed! {}", err);
             return String::from("generate device session token failed!");})?;

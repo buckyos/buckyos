@@ -87,7 +87,7 @@ impl RunItemControl for KernelServiceRunItem {
         };
 
         let device_session_token_jwt = device_session_token
-            .generate_jwt(Some(device_doc.name.clone()), device_private_key)
+            .generate_jwt(None, device_private_key)
             .map_err(|err| {
                 error!("generate session token for {} failed! {}", self.pkg_id, err);
                 return ControlRuntItemErrors::ExecuteError(

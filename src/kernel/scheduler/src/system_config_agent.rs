@@ -173,7 +173,7 @@ pub fn create_scheduler_by_system_config(
                     };
                     scheduler_ctx.add_user(user_item);
                     if user_id == "root" {
-                        scheduler_ctx.default_user_id = user_settings.username.clone();
+                        scheduler_ctx.default_user_id = user_settings.user_id.clone();
                     }
                 }
             }

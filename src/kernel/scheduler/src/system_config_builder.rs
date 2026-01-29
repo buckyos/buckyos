@@ -46,7 +46,8 @@ impl SystemConfigBuilder {
     pub fn add_default_accounts(&mut self, config: &StartConfigSummary) -> Result<&mut Self> {
         let root_settings = UserSettings {
             user_type: UserType::Root,
-            username: config.user_name.clone(),
+            user_id: config.user_name.clone(),
+            show_name: config.user_name.clone(),
             password: config.admin_password_hash.clone(),
             state: UserState::Active,
             res_pool_id: "default".to_string(),
@@ -56,7 +57,8 @@ impl SystemConfigBuilder {
         let admin_key = format!("users/{}/settings", config.user_name);
         let admin_settings = UserSettings {
             user_type: UserType::Admin,
-            username: config.user_name.clone(),
+            user_id: config.user_name.clone(),
+            show_name: config.user_name.clone(),
             password: config.admin_password_hash.clone(),
             state: UserState::Active,
             res_pool_id: "default".to_string(),

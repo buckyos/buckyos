@@ -15,8 +15,9 @@ pub const CONTROL_PANEL_SERVICE_UNIQUE_ID: &str = "control-panel";
 pub const CONTROL_PANEL_SERVICE_PORT: u16 = 4020;
 
 
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(try_from = "String", into = "String")]pub enum UserState {
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(try_from = "String", into = "String")]
+pub enum UserState {
     Active,
     Suspended(String),//suspend reason
     Deleted,//delete reason
@@ -50,7 +51,7 @@ impl Into<String> for UserState {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "lowercase")]
 pub enum UserType {
     Admin,
@@ -60,16 +61,36 @@ pub enum UserType {
     Guest,
 }
 
-//user did -> UserSettings
+//did:bns:$user_id user_id is-> UserSettings
 #[derive(Serialize, Deserialize)]
 pub struct UserSettings {
+    pub user_id:String,
     //rename to type
     #[serde(rename = "type")]
     pub user_type:UserType,
-    pub username:String,//友好名称
+    pub show_name:String,
     pub password:String,
     pub state: UserState,
     pub res_pool_id:String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UserInfo {
+    pub show_name:String,
+    pub user_id:String,
+    pub state: UserState,
+    pub user_type:UserType,
+}
+
+impl UserSettings {
+    pub fn to_user_info(&self) -> UserInfo{
+        UserInfo {
+            show_name: self.show_name.clone(),
+            user_id: self.user_id.clone(),
+            state: self.state.clone(),
+            user_type: self.user_type.clone(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -265,6 +286,18 @@ impl ControlPanelClient {
             return Err(RPCErrors::ReasonError("user list not found".to_string()));
         }
         Ok(user_list.unwrap())
+    }
+
+    pub async fn get_user_settings_by_username(&self,username:&str) -> Result<UserSettings> {
+        let user_info_path = format!("users/{}/settings", username);
+        let user_info = self.system_config_client.get(user_info_path.as_str()).await;
+        if user_info.is_err() {
+            return Err(RPCErrors::ReasonError("user info not found".to_string()));
+        }
+        let user_info = user_info.unwrap();
+        let user_info:UserSettings = serde_json::from_str(&user_info.value)
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        Ok(user_info)
     }
 
     pub async fn get_app_list(&self) -> Result<Vec<AppServiceSpec>> {

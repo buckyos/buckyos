@@ -45,7 +45,7 @@ async fn test() -> std::result::Result<(), String> {
     let (session_token_str, _real_session_token) = RPCSessionToken::generate_jwt_token(
         &user_name,
         "buckycli",
-        Some(user_name.clone()),
+        None,
         &private_key,
     )
     .map_err(|e| {
@@ -176,7 +176,7 @@ async fn test() -> std::result::Result<(), String> {
     let (session_token_str, _real_session_token) = RPCSessionToken::generate_jwt_token(
         &user_name,
         "sys-test",
-        Some(user_name.clone()),
+        None,
         &private_key,
     )
     .map_err(|e| {

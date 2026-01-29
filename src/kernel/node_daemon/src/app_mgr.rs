@@ -108,7 +108,7 @@ impl AppRunItem {
         };
 
         let app_service_session_token_jwt = app_service_session_token
-            .generate_jwt(Some(device_doc.name.clone()), device_private_key)
+            .generate_jwt(None, device_private_key)
             .map_err(|err| {
                 error!("generate session token for {} failed! {}", self.app_id, err);
                 return ControlRuntItemErrors::ExecuteError(

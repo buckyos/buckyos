@@ -5,10 +5,9 @@ mod sled_provider;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::net::IpAddr;
 
-use jsonwebtoken::DecodingKey;
+use jsonwebtoken::{Algorithm, DecodingKey};
 use log::*;
 
 use lazy_static::lazy_static;
@@ -39,7 +38,6 @@ lazy_static! {
     static ref SYS_STORE: Arc<Mutex<dyn KVStoreProvider>> =
         Arc::new(Mutex::new(SledStore::new().unwrap()));
 }
-
 
 fn get_full_res_path(key_path:&str) -> Result<(String,String)> {
     let mut real_key_path = key_path;
@@ -666,20 +664,10 @@ impl SystemConfigServer {
         //check session_token
         if session_token.is_some() {
             let session_token = session_token.unwrap();
-            let mut rpc_session_token = RPCSessionToken::from_string(session_token.as_str())?;
+            let rpc_session_token = verify_trusted_jwt(session_token.as_str()).await?;
+            //let mut rpc_session_token = RPCSessionToken::from_string(session_token.as_str())?;
             //veruft session token (need access trust did_list)
-            verify_session_token(&mut rpc_session_token).await?;
-            if rpc_session_token.exp.is_some() {
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs();
-                if now > rpc_session_token.exp.unwrap() {
-                    warn!("session token expired: {}", session_token);
-                    return Err(RPCErrors::TokenExpired(session_token));
-                }
-                debug!("session token is valid: {}", session_token);
-            }
+            //verify_session_token(&mut rpc_session_token).await?;
             debug!("ready to handle request : {}", method.as_str());
             match method.as_str() {
                 "sys_config_create" => {
@@ -788,41 +776,108 @@ async fn load_device_doc(device_name:&str) -> Result<DeviceConfig> {
     return Ok(device_doc);
 }
 
-async fn verify_session_token(token: &mut RPCSessionToken) -> Result<()> {
-    if token.is_self_verify() {
-        let mut trust_keys = TRUST_KEYS.lock().await;
-        let kid = token.verify_by_key_map(&trust_keys);
-        if kid.is_err() {
-            let kid_err = kid.err().unwrap();
-            match kid_err {
-                RPCErrors::KeyNotExist(kid) => {
-                    info!("kid not exist: {},try to load device doc", kid);
-                    //kid is device name, try load device doc
-                    let device_doc = load_device_doc(kid.as_str()).await?;
-                    if device_doc.device_type != "ood" && device_doc.device_type != "node" {
-                        return Err(RPCErrors::ReasonError(format!("device type is not ood or node: {}", kid)));
-                    }
-                    let device_key = device_doc.get_default_key();
-                    if device_key.is_some() {
-                        let device_key = device_key.unwrap();
-                        info!("load device {} doc successfully, insert public key to trust keys", kid);
-                        trust_keys.insert(kid.clone(), DecodingKey::from_jwk(&device_key).unwrap());
-                    }
-                    token.verify_by_key_map(&trust_keys)?;
-                    return Ok(());
-                },
-                _ => {
-                    return Err(kid_err);
-                }
-            }
-        }
-        debug!("verify_session_token: {:?}", token);
-        return Ok(())
-    } else {
-        return Err(RPCErrors::ReasonError("Not a self verify token".to_string()));
+async fn verify_trusted_jwt(jwt: &str) -> Result<RPCSessionToken> {
+    // Parse header first to check algorithm and kid
+    let header: jsonwebtoken::Header = jsonwebtoken::decode_header(jwt).map_err(|error| {
+        error!("JWT decode header error: {}", error);
+        RPCErrors::ReasonError("JWT decode header error".to_string())
+    })?;
+
+    if header.alg != Algorithm::EdDSA {
+        return Err(RPCErrors::ReasonError("JWT algorithm not allowed".to_string()));
     }
 
+    // Decode claims without verification so we can pick a key fallback (iss) when kid is missing
+    let claims = decode_jwt_claim_without_verify(jwt).map_err(|error| {
+        error!("decode_jwt_claim_without_verify error: {}", error);
+        RPCErrors::ReasonError("decode_jwt_claim_without_verify error".to_string())
+    })?;
+
+    let key_id = claims
+        .get("iss")
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .or_else(|| header.kid.clone())
+        .unwrap_or_else(|| "$default".to_string());
+
+    // Fast path: try current trust keys
+    let mut trust_keys = TRUST_KEYS.lock().await;
+    let mut public_key = trust_keys.get(&key_id);
+
+    // If missing, attempt to load device doc and cache its public key
+    if public_key.is_none() {
+        drop(trust_keys); // release lock before awaiting
+        let device_doc = load_device_doc(&key_id).await?;
+        if device_doc.device_type != "ood" && device_doc.device_type != "node" {
+            return Err(RPCErrors::ReasonError(format!(
+                "device type is not ood or node: {}",
+                key_id
+            )));
+        }
+        let device_key = device_doc.get_default_key();
+        if device_key.is_none() {
+            return Err(RPCErrors::ReasonError(format!(
+                "device {} has no default key",
+                key_id
+            )));
+        }
+        let device_key = device_key.unwrap();
+        let real_key = DecodingKey::from_jwk(&device_key).map_err(|err| {
+            RPCErrors::ReasonError(format!("parse device key failed: {}", err))
+        })?;
+
+        // cache and reuse
+        trust_keys = TRUST_KEYS.lock().await;
+        trust_keys.insert(key_id.clone(), real_key);
+        public_key = trust_keys.get(&key_id);
+    }
+
+    let public_key = public_key.ok_or(RPCErrors::KeyNotExist(key_id.clone()))?;
+
+    // Build token from string and verify signature/claims using the selected key
+    let mut rpc_token = RPCSessionToken::from_string(jwt)?;
+    rpc_token.verify_by_key(public_key)?;
+
+    Ok(rpc_token)
 }
+
+
+
+// async fn verify_session_token(token: &mut RPCSessionToken) -> Result<()> {
+//     if token.is_self_verify() {
+//         let mut trust_keys = TRUST_KEYS.lock().await;
+//         let kid = token.verify_by_key_map(&trust_keys);
+        
+//         if kid.is_err() {
+//             let kid_err = kid.err().unwrap();
+//             match kid_err {
+//                 RPCErrors::KeyNotExist(kid) => {
+//                     info!("kid not exist: {},try to load device doc", kid);
+//                     //kid is device name, try load device doc
+//                     let device_doc = load_device_doc(kid.as_str()).await?;
+//                     if device_doc.device_type != "ood" && device_doc.device_type != "node" {
+//                         return Err(RPCErrors::ReasonError(format!("device type is not ood or node: {}", kid)));
+//                     }
+//                     let device_key = device_doc.get_default_key();
+//                     if device_key.is_some() {
+//                         let device_key = device_key.unwrap();
+//                         info!("load device {} doc successfully, insert public key to trust keys", kid);
+//                         trust_keys.insert(kid.clone(), DecodingKey::from_jwk(&device_key).unwrap());
+//                     }
+//                     token.verify_by_key_map(&trust_keys)?;
+//                     return Ok(());
+//                 },
+//                 _ => {
+//                     return Err(kid_err);
+//                 }
+//             }
+//         }
+//         debug!("verify_session_token: {:?}", token);
+//         return Ok(())
+//     } else {
+//         return Err(RPCErrors::ReasonError("Not a self verify token".to_string()));
+//     }
+
+// }
 
 async fn init_by_boot_config() -> Result<()> {
     let r = handle_refresh_trust_keys().await;
@@ -888,7 +943,7 @@ async fn main() {
 
 #[cfg(test)]
 mod test {
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use jsonwebtoken::EncodingKey;
     use serde_json::json;
@@ -931,16 +986,17 @@ mod test {
         let private_key = EncodingKey::from_ed_pem(test_owner_private_key_pem.as_bytes()).unwrap();
         let token = RPCSessionToken {
             sub: Some("alice".to_string()),
-            aud: Some("test".to_string()),
+            appid: Some("test".to_string()),
             exp: Some(now + 5), //5 seconds
             token_type: RPCSessionTokenType::JWT,
             token: None,
-            iss: None,
+            iss: Some("{owner}".to_string()),
             jti: None,
             session: None,
+            aud: None,
         };
         let jwt = token
-            .generate_jwt(Some("{owner}".to_string()), &private_key)
+            .generate_jwt(None, &private_key)
             .unwrap();
 
         sleep(Duration::from_millis(1000)).await;
@@ -1065,16 +1121,17 @@ mod test {
         let private_key = EncodingKey::from_ed_pem(test_owner_private_key_pem.as_bytes()).unwrap();
         let token = RPCSessionToken {
             sub: Some("alice".to_string()),
+            appid: Some("test".to_string()),
             aud: None,
             exp: Some(now + 30),
             token_type: RPCSessionTokenType::JWT,
             token: None,
-            iss: None,
+            iss: Some("alice".to_string()),
             jti: None,
             session: None,
         };
         let jwt = token
-            .generate_jwt(Some("alice".to_string()), &private_key)
+            .generate_jwt(None, &private_key)
             .unwrap();
 
         sleep(Duration::from_millis(1000)).await;
