@@ -47,3 +47,4 @@ rootfs/_buckycli_tmp/
 src/rootfs/bin/node_active/
 src/rootfs/bin/sys_test/
 publish/*
+src/rootfs/bin/buckyos_systest/
