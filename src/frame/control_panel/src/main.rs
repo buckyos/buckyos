@@ -3,8 +3,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
 use buckyos_api::{
-    get_session_token_env_key, init_buckyos_api_runtime, set_buckyos_api_runtime,
-    BuckyOSRuntimeType, SystemConfigClient, CONTROL_PANEL_SERVICE_NAME, CONTROL_PANEL_SERVICE_PORT,
+    BuckyOSRuntimeType, CONTROL_PANEL_SERVICE_NAME, CONTROL_PANEL_SERVICE_PORT, SystemConfigClient, get_buckyos_api_runtime, get_session_token_env_key, init_buckyos_api_runtime, set_buckyos_api_runtime
 };
 use buckyos_kit::*;
 use bytes::Bytes;
@@ -13,6 +12,7 @@ use cyfs_gateway_lib::*;
 use http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE};
 use http::{Method, Version};
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
+use log::info;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::*;
 use server_runner::*;
@@ -70,14 +70,12 @@ struct LogFileRef {
 
 #[derive(Clone)]
 struct ControlPanelServer {
-    system_config_client: Option<Arc<SystemConfigClient>>,
     log_downloads: Arc<Mutex<HashMap<String, LogDownloadEntry>>>,
 }
 
 impl ControlPanelServer {
-    pub fn new(system_config_client: Option<Arc<SystemConfigClient>>) -> Self {
+    pub fn new() -> Self {
         ControlPanelServer {
-            system_config_client,
             log_downloads: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -100,36 +98,6 @@ impl ControlPanelServer {
 
     fn require_param_str(req: &RPCRequest, key: &str) -> Result<String, RPCErrors> {
         Self::param_str(req, key).ok_or(RPCErrors::ParseRequestError(format!("Missing {}", key)))
-    }
-
-    fn build_system_config_client(&self, req: &RPCRequest) -> Arc<SystemConfigClient> {
-        let service_url = Self::param_str(req, "service_url");
-        let request_token = req
-            .token
-            .clone()
-            .or_else(|| Self::param_str(req, "session_token"));
-        if request_token.is_none() && service_url.is_none() {
-            if let Some(client) = self.system_config_client.as_ref() {
-                return Arc::clone(client);
-            }
-        }
-
-        let env_key = get_session_token_env_key(CONTROL_PANEL_SERVICE_NAME, false);
-        let env_token = std::env::var(&env_key).ok();
-        if let Some(token) = env_token.as_ref() {
-            log::info!(
-                "control-panel session_token from env {}: {}",
-                env_key,
-                token
-            );
-        } else {
-            log::info!("control-panel session_token env {} is not set", env_key);
-        }
-        let session_token = request_token.or_else(|| env_token.clone());
-        Arc::new(SystemConfigClient::new(
-            service_url.as_deref(),
-            session_token.as_deref(),
-        ))
     }
 
     fn encode_cursor<T: Serialize>(value: &T) -> String {
@@ -684,7 +652,8 @@ impl ControlPanelServer {
         }
 
         let key = Self::param_str(&req, "key").unwrap_or_else(|| "services".to_string());
-        let client = self.build_system_config_client(&req);
+        let runtime = get_buckyos_api_runtime()?;
+        let client = runtime.get_system_config_client().await?;
         let services: Vec<Value> = match client.list(&key).await {
             Ok(items) => items
                 .into_iter()
@@ -1663,7 +1632,8 @@ impl ControlPanelServer {
 
     async fn handle_sys_config_get(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         let key = Self::require_param_str(&req, "key")?;
-        let client = self.build_system_config_client(&req);
+        let runtime = get_buckyos_api_runtime()?;
+        let client = runtime.get_system_config_client().await?;
         let value = client
             .get(&key)
             .await
@@ -1683,7 +1653,8 @@ impl ControlPanelServer {
     async fn handle_sys_config_set(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         let key = Self::require_param_str(&req, "key")?;
         let value = Self::require_param_str(&req, "value")?;
-        let client = self.build_system_config_client(&req);
+        let runtime = get_buckyos_api_runtime()?;
+        let client = runtime.get_system_config_client().await?;
         client
             .set(&key, &value)
             .await
@@ -1702,7 +1673,8 @@ impl ControlPanelServer {
         let key = Self::param_str(&req, "key")
             .or_else(|| Self::param_str(&req, "prefix"))
             .unwrap_or_default();
-        let client = self.build_system_config_client(&req);
+        let runtime = get_buckyos_api_runtime()?;
+        let client = runtime.get_system_config_client().await?;
         let items = client
             .list(&key)
             .await
@@ -1795,9 +1767,10 @@ impl ControlPanelServer {
             .and_then(|value| value.as_u64())
             .unwrap_or(2);
         let depth = depth.min(6);
-        let client = self.build_system_config_client(&req);
+        let runtime = get_buckyos_api_runtime()?;
+        let client = runtime.get_system_config_client().await?;
         let tree = self
-            .build_sys_config_tree(client.as_ref(), &key, depth)
+            .build_sys_config_tree(&client, &key, depth)
             .await?;
 
         Ok(RPCResponse::new(
@@ -1817,7 +1790,8 @@ impl ControlPanelServer {
             .and_then(|value| value.as_str())
             .unwrap_or("boot/config")
             .to_string();
-        let client = self.build_system_config_client(&req);
+        let runtime = get_buckyos_api_runtime()?;
+        let client = runtime.get_system_config_client().await?;
         let value = client
             .get(&key)
             .await
@@ -1837,7 +1811,8 @@ impl ControlPanelServer {
     async fn handle_apps_list(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         let key = Self::param_str(&req, "key").unwrap_or_else(|| "services".to_string());
         let base_key = key.trim_end_matches('/').to_string();
-        let client = self.build_system_config_client(&req);
+        let runtime = get_buckyos_api_runtime()?;
+        let client = runtime.get_system_config_client().await?;
         let items = client
             .list(&key)
             .await
@@ -2310,32 +2285,17 @@ impl HttpServer for ControlPanelServer {
     }
 }
 
-pub async fn start_control_panel_service() {
-    let system_config_client = match init_buckyos_api_runtime(
-        CONTROL_PANEL_SERVICE_NAME,
-        None,
-        BuckyOSRuntimeType::KernelService,
-    )
-    .await
-    {
-        Ok(runtime) => {
-            let client = match runtime.get_system_config_client().await {
-                Ok(client) => Some(Arc::new(client)),
-                Err(err) => {
-                    log::error!("control-panel get system_config_client failed: {}", err);
-                    None
-                }
-            };
-            set_buckyos_api_runtime(runtime);
-            client
-        }
-        Err(err) => {
-            log::error!("control-panel runtime init failed: {}", err);
-            None
-        }
-    };
+pub async fn start_control_panel_service() -> anyhow::Result<()> {
+    let mut runtime = init_buckyos_api_runtime(CONTROL_PANEL_SERVICE_NAME,None,BuckyOSRuntimeType::KernelService).await?;
+    let login_result = runtime.login().await;
+    if  login_result.is_err() {
+        log::error!("control-panel service login to system failed! err:{:?}", login_result);
+        return Err(anyhow::anyhow!("control-panel service login to system failed! err:{:?}", login_result));
+    }
+    runtime.set_main_service_port(CONTROL_PANEL_SERVICE_PORT).await;
+    set_buckyos_api_runtime(runtime);
 
-    let control_panel_server = ControlPanelServer::new(system_config_client);
+    let control_panel_server = ControlPanelServer::new();
     // Bind to the default control-panel service port.
 
     let runner = Runner::new(CONTROL_PANEL_SERVICE_PORT);
@@ -2364,12 +2324,25 @@ pub async fn start_control_panel_service() {
         log::warn!("control-panel web_dir not available; static web UI disabled");
     }
 
-    let _ = runner.run().await;
+    runner.start();
+    info!(
+        "control-panel service started at port {}",
+        CONTROL_PANEL_SERVICE_PORT
+    );
+    Ok(())
 }
 
 async fn service_main() {
     init_logging("control-panel", true);
-    let _ = start_control_panel_service().await;
+    let start_result = start_control_panel_service().await;
+    if start_result.is_err() {
+        log::error!(
+            "control-panel service start failed! err:{:?}",
+            start_result
+        );
+        return;
+    }
+
     let _ = tokio::signal::ctrl_c().await;
 }
 
