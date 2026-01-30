@@ -3,9 +3,11 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 
 use anyhow::Result;
+use buckyos_api::SelectorType;
 use log::*;
+use package_lib::PackageId;
 use rbac::DEFAULT_POLICY;
-use serde_json::json;
+use serde_json::{json,Value};
 
 use crate::app::*;
 use crate::scheduler::*;
@@ -58,6 +60,7 @@ fn create_service_spec_by_app_config(
     app_config: &AppServiceSpec,
 ) -> ServiceSpec {
     let spec_state = ServiceSpecState::from(app_config.state.clone());
+
     let mut need_container = true;
     if app_config
         .app_doc
@@ -153,9 +156,11 @@ pub fn create_scheduler_by_system_config(
                         );
                         e
                     })?;
-                    let service_spec =
-                        create_service_spec_by_app_config(full_appid.as_str(), user_id, &app_config);
-                    scheduler_ctx.add_service_spec(service_spec);
+                    if app_config.app_doc.selector_type != SelectorType::Static {
+                        let service_spec =
+                            create_service_spec_by_app_config(full_appid.as_str(), user_id, &app_config);
+                        scheduler_ctx.add_service_spec(service_spec);
+                    }
                 }
             } else if key.ends_with("/settings") {
                 let parts: Vec<&str> = key.split('/').collect();
@@ -472,6 +477,34 @@ pub fn get_zone_gateway_settings(input_system_config: &HashMap<String, String>) 
     Ok(zone_gateway_settings)
 }
 
+pub fn get_web_app_list(input_system_config: &HashMap<String, String>) -> Result<Vec<AppServiceSpec>> {
+    let mut web_app_list:Vec<AppServiceSpec> = Vec::new();
+    for (key, value) in input_system_config.iter() {
+        if key.starts_with("users/") && key.ends_with("/spec") {
+            let parts: Vec<&str> = key.split('/').collect();
+            if parts.len() >= 4 && parts[2] == "apps" {
+                let user_id = parts[1];
+                let app_id = parts[3];
+                let full_appid = format!("{}@{}", app_id, user_id);
+                let app_config: AppServiceSpec = serde_json::from_str(value.as_str()).map_err(|e| {
+                    error!(
+                        "AppConfig serde_json::from_str failed: {:?} {}",
+                        e,
+                        value.as_str()
+                    );
+                    e
+                })?;
+                let is_web_app = app_config.app_doc.selector_type == SelectorType::Static; 
+                if is_web_app {
+                    info!("found web app: {}", full_appid);
+                    web_app_list.push(app_config);
+                }
+            }
+        }
+    }
+    Ok(web_app_list)
+}
+
 pub(crate) async fn update_node_gateway_config(
     need_update_gateway_node_list: &HashSet<String>,
     scheduler_ctx: &NodeScheduler,
@@ -566,6 +599,41 @@ pub(crate) async fn update_node_gateway_config(
         process_chain_lines.push_back(r#"match ${REQ.host} "sys.*" && return "forward http://127.0.0.1:4020/";"#.to_string());
         process_chain_lines.push_back(r#"match ${REQ.host} "sys-*" && return "forward http://127.0.0.1:4020/";"#.to_string());
 
+        let web_app_list = get_web_app_list(input_system_config)?;
+        let mut web_app_servers: HashMap<String,Value> = HashMap::new();
+        for web_app in web_app_list.iter() {
+            let expose_config = web_app.install_config.expose_config.get("www");
+            if expose_config.is_some() && web_app.app_doc.pkg_list.web.is_some() {
+                let webpkg_str = web_app.app_doc.pkg_list.web.as_ref().unwrap().pkg_id.clone();
+                let webpkg_id = PackageId::get_pkg_id_unique_name(webpkg_str.as_str());
+                let target_str = format!("return \"server {}\";",webpkg_id);
+                web_app_servers.insert(webpkg_id.clone(), json!({
+                    "type": "dir",
+                    "root_path":format!("../bin/{}/", webpkg_id),
+                }));
+                // let shortcut_hosts = zone_gateway_settings.get_shortcut(spec_id.as_str());
+                // for shortcut_host in shortcut_hosts.iter() {
+                //     let shortcut_host = shortcut_host;
+                //     if shortcut_host.as_str() == "_" {
+                //         default_target = Some(target_str.clone());
+                //     } else {
+                //         let line_rule = format!("match ${{REQ.host}} \"{}.*\" && {}", shortcut_host, target_str);
+                //         process_chain_lines.push_back(line_rule);
+                //         let line_rule = format!("match ${{REQ.host}} \"{}-*.\" && {}", shortcut_host, target_str);
+                //         process_chain_lines.push_back(line_rule);
+                //     }
+                // }
+
+                let expose_config = expose_config.unwrap();
+                for sub_hostname in expose_config.sub_hostname.iter() {
+                    let line_rule = format!("match ${{REQ.host}} \"{}.*\" && {}", sub_hostname, target_str);
+                    process_chain_lines.push_back(line_rule);
+                    // let line_rule = format!("match ${{REQ.host}} \"{}-*.\" && {}", sub_hostname, target_str);
+                    // process_chain_lines.push_back(line_rule);
+                }
+            }
+        }
+
         if default_target.is_some() {
             let default_target = default_target.unwrap();
             process_chain_lines.push_back(default_target);
@@ -593,6 +661,10 @@ pub(crate) async fn update_node_gateway_config(
                 }
             }
         });
+
+        for (server_name, server_config) in web_app_servers.iter() {
+            node_gateway_json["servers"][server_name] = server_config.clone();
+        }
 
         if zone_config.sn.is_some() {
             info!("SN enabled,add  acme functions. ");

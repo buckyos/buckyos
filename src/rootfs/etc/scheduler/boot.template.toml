@@ -25,6 +25,21 @@
             },
             "bind_address": "0.0.0.0",
             "res_pool_id": "default"
+        },
+        "buckyos_systest": {
+            "data_mount_point": {
+
+            },
+            "cache_mount_point": [
+            ],
+            "local_cache_mount_point": [
+            ],
+            "expose_config": {
+                "www": {
+                    "sub_hostname": ["systest"]
+                }
+            },
+            "res_pool_id": ""
         }
     }
 }

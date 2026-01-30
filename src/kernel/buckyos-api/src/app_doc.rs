@@ -819,8 +819,37 @@ mod tests {
             "built web app_doc:\n{}",
             serde_json::to_string_pretty(&doc).unwrap()
         );
+
         assert_eq!(doc.selector_type, SelectorType::Static);
         assert!(doc.permissions.is_empty());
+
+        let sys_testdoc = r#"
+{
+  "name": "buckyos_systest",
+    "version": "0.5.1", 
+    "meta": {
+      "detail": "BuckyOS System Test App"
+    },
+    "create_time": 1743008063,
+    "last_update_time": 1743008063,
+    "exp": 1837616063,
+    "tag": "latest",
+    "author": "did:web:buckyos.ai",
+    "owner": "did:web:buckyos.ai",
+    "show_name": "BuckyOS System Test",
+    "selector_type": "static",
+    "install_config_tips": {
+    },
+    "pkg_list": {
+      "web": {
+        "pkg_id": "nightly-linux-amd64.buckyos_systest#0.5.1"
+      }
+    }
+  }     
+"#;
+        let parsed_doc: AppDoc = serde_json::from_str(sys_testdoc).unwrap();
+        assert_eq!(parsed_doc.selector_type, SelectorType::Static);
+        
         
     }
 

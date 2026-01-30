@@ -53,13 +53,14 @@ servers:
       hook_point:
         main:
           id: main
-          priority: 1
+          priority: -10
           blocks:
             boot:
               id: boot
-              priority: -10
+              priority: 10
               block: |
                 echo "node_gateway boot block";
+                match ${REQ.host} "systest.*" && return "server buckyos_systest";
 
     
 # not use yet

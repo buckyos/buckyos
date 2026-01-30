@@ -1,0 +1,23 @@
+{
+  "name": "buckyos_systest",
+    "version": "0.5.1", 
+    "description": {
+      "detail": "BuckyOS System Test App"
+    },
+    "categories": ["web"],
+    "create_time": 1743008063,
+    "last_update_time": 1743008063,
+    "exp": 1837616063,
+    "tag": "latest",
+    "author": "did:web:buckyos.ai",
+    "owner": "did:web:buckyos.ai",
+    "show_name": "BuckyOS System Test",
+    "selector_type": "static",
+    "install_config_tips": {
+    },
+    "pkg_list": {
+      "web": {
+        "pkg_id": "nightly-linux-amd64.buckyos_systest#0.5.1"
+      }
+    }
+  }     

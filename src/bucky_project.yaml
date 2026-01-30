@@ -34,7 +34,7 @@ modules:
     type: web
     name: control_panel
     src_dir: frame/control_panel/web/
-  sys_test:
+  buckyos_systest:
     type: web
     name: sys_test
     src_dir: apps/sys_test/
@@ -60,7 +60,7 @@ apps:
       repo_service: bin/repo-service/
       buckycli: bin/buckycli/
       node_active: bin/node-active/
-      sys_test: bin/sys-test/
+      buckyos_systest: bin/buckyos_systest/
       app-loader: bin/app-loader/
       scheduler-etc: etc/scheduler/
       boot-gateway-config: etc/boot_gateway.yaml
