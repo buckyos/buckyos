@@ -46,23 +46,7 @@ stacks:
             block: |
               return "server node_gateway";
 
-servers:
-    node_gateway:
-      id: node_gateway
-      type: http
-      hook_point:
-        main:
-          id: main
-          priority: -10
-          blocks:
-            boot:
-              id: boot
-              priority: 10
-              block: |
-                echo "node_gateway boot block";
-                match ${REQ.host} "systest.*" && return "server buckyos_systest";
 
-    
 # not use yet
 global_process_chains:
   zone_http_selector:

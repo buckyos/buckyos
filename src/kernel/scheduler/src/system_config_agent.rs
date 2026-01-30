@@ -649,6 +649,7 @@ pub(crate) async fn update_node_gateway_config(
         let mut node_gateway_json = json!({
             "servers": {
                 "node_gateway": {
+                    "type": "http",
                     "hook_point": {
                         "main": {
                             "blocks": {

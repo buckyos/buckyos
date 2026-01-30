@@ -1,6 +1,7 @@
 import { createBrowserRouter } from 'react-router-dom'
 import RootLayout from '../ui/RootLayout'
 import DashboardPage from '../ui/pages/DashboardPage'
+import LoginPage from '../ui/pages/LoginPage'
 import StoragePage from '../ui/pages/StoragePage'
 import PlaceholderPage from '../ui/pages/PlaceholderPage'
 import UserManagementPage from '../ui/pages/UserManagementPage'
@@ -10,6 +11,14 @@ import RecentEventsPage from '../ui/pages/RecentEventsPage'
 import SystemLogsPage from '../ui/pages/SystemLogsPage'
 
 const router = createBrowserRouter([
+  {
+    path: '/sso/login',
+    element: <LoginPage />,
+  },
+  {
+    path: '/sso/login.html',
+    element: <LoginPage />,
+  },
   {
     path: '/',
     element: <RootLayout />,
