@@ -18,7 +18,6 @@ use name_lib::*;
 use name_client::*;
 use rand::Rng;
 
-use crate::zone_provider::*;
 use crate::repo_client::*;
 use crate::system_config::*;
 use crate::task_mgr::*;
@@ -810,22 +809,22 @@ impl BuckyOSRuntime {
         Ok((userid.to_string(),appid.to_string()))
     }
 
-    pub async fn enable_zone_provider (_is_gateway: bool) -> Result<()> {
-        let client = GLOBAL_NAME_CLIENT.get();
-        if client.is_none() {
-            let client = NameClient::new(NameClientConfig::default());
-            client.add_provider(Box::new(ZONE_PROVIDER.clone()),None).await;
-            let set_result = GLOBAL_NAME_CLIENT.set(client);
-            if set_result.is_err() {
-                error!("Failed to set GLOBAL_NAME_CLIENT");
-            }
-        } else {
-            let client = client.unwrap();            
-            client.add_provider(Box::new(ZONE_PROVIDER.clone()),None).await;
-        }
+//     pub async fn enable_zone_provider (_is_gateway: bool) -> Result<()> {
+//         let client = GLOBAL_NAME_CLIENT.get();
+//         if client.is_none() {
+//             let client = NameClient::new(NameClientConfig::default());
+//             client.add_provider(Box::new(ZONE_PROVIDER.clone()),None).await;
+//             let set_result = GLOBAL_NAME_CLIENT.set(client);
+//             if set_result.is_err() {
+//                 error!("Failed to set GLOBAL_NAME_CLIENT");
+//             }
+//         } else {
+//             let client = client.unwrap();            
+//             client.add_provider(Box::new(ZONE_PROVIDER.clone()),None).await;
+//         }
 
-        Ok(())
-   }
+//         Ok(())
+//    }
 
     pub fn get_app_id(&self) -> String {
         self.app_id.clone()

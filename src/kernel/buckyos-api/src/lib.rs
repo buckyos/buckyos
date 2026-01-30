@@ -6,7 +6,7 @@ mod task_mgr;
 mod control_panel;
 mod scheduler_client;
 mod verify_hub_client;
-mod zone_provider;
+
 mod repo_client;
 mod runtime;
 mod app_doc;
@@ -24,7 +24,7 @@ pub use control_panel::*;
 pub use scheduler_client::*;
 pub use verify_hub_client::*;
 pub use repo_client::*;
-pub use zone_provider::*;
+
 pub use runtime::*;
 pub use app_mgr::*;
 pub use gateway_control::*;

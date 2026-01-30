@@ -27,7 +27,6 @@ base64 = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
 rustyline = { workspace = true }
-cyfs-sn = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -35,4 +34,3 @@ tempfile = { workspace = true }
 [build-dependencies]
 vergen = { version = "8.0.0", features = ["build", "cargo", "git", "gitcl", "rustc", "si"] }
 anyhow = { workspace = true }
-
