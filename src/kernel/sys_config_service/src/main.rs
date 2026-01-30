@@ -2,6 +2,7 @@ mod kv_provider;
 //mod etcd_provider;
 //mod rocksdb_provider;
 mod sled_provider;
+mod zone_did_resolver;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -27,6 +28,8 @@ use bytes::Bytes;
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 
+use crate::zone_did_resolver::ZoneDidResolver;
+
 lazy_static! {
     static ref TRUST_KEYS: Arc<Mutex<HashMap<String, DecodingKey>>> = {
         let hashmap: HashMap<String, DecodingKey> = HashMap::new();
@@ -35,7 +38,7 @@ lazy_static! {
 }
 
 lazy_static! {
-    static ref SYS_STORE: Arc<Mutex<dyn KVStoreProvider>> =
+    pub(crate) static ref SYS_STORE: Arc<Mutex<dyn KVStoreProvider>> =
         Arc::new(Mutex::new(SledStore::new().unwrap()));
 }
 
@@ -933,6 +936,9 @@ async fn service_main() {
     info!("Starting system config service on port {}", SYSTEM_CONFIG_SERVICE_MAIN_PORT);
     let runner = Runner::new(SYSTEM_CONFIG_SERVICE_MAIN_PORT);
     let _ = runner.add_http_server("/kapi/system_config".to_string(), Arc::new(server));
+
+    let resolver = ZoneDidResolver {};
+    let _ = runner.add_http_server("/".to_string(), Arc::new(resolver));
     let _ = runner.run().await;
 }
 

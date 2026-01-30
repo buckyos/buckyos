@@ -12,11 +12,11 @@ import SystemLogsPage from '../ui/pages/SystemLogsPage'
 
 const router = createBrowserRouter([
   {
-    path: '/sso/login',
+    path: '/login',
     element: <LoginPage />,
   },
   {
-    path: '/sso/login.html',
+    path: '/login.html',
     element: <LoginPage />,
   },
   {

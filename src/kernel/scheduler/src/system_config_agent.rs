@@ -595,10 +595,15 @@ pub(crate) async fn update_node_gateway_config(
   
             }
         }
-        //特化处理control-panel的访问
+        //特化处理 control-panel的访问
         process_chain_lines.push_back(r#"match ${REQ.host} "sys.*" && return "forward http://127.0.0.1:4020/";"#.to_string());
         process_chain_lines.push_back(r#"match ${REQ.host} "sys-*" && return "forward http://127.0.0.1:4020/";"#.to_string());
+        //特化处理 kapi/system_config
 
+        process_chain_lines.push_front(r#"match ${REQ.path} "/1.0/identifiers/*" && return "forward http://127.0.0.1:3200/";"#.to_string());
+        process_chain_lines.push_front(r#"match ${REQ.path} "/.well-known/*" && return "forward http://127.0.0.1:3200/";"#.to_string());
+        process_chain_lines.push_front(r#"match ${REQ.path} "/kapi/system_config/*" && return "forward http://127.0.0.1:3200/";"#.to_string());
+        
         let web_app_list = get_web_app_list(input_system_config)?;
         let mut web_app_servers: HashMap<String,Value> = HashMap::new();
         for web_app in web_app_list.iter() {
