@@ -373,7 +373,7 @@ impl ActiveServer {
         // Prepare RPC token for SN registration (if needed)
         let rpc_token_json = if need_sn {
             let rpc_token = ::kRPC::RPCSessionToken {
-                token_type : ::kRPC::RPCSessionTokenType::JWT,
+                token_type : ::kRPC::RPCSessionTokenType::Normal,
                 appid: Some("active_service".to_string()),
                 jti : None,
                 session : None,
@@ -382,6 +382,7 @@ impl ActiveServer {
                 exp:Some(buckyos_get_unix_timestamp() + 60),
                 iss:Some(user_name.to_string()),
                 token:None,
+                extra: HashMap::new(),
             };
             Some(serde_json::to_value(&rpc_token)
                 .map_err(|e|RPCErrors::ReasonError(format!("Failed to serialize rpc token: {}", e)))?)
@@ -498,7 +499,7 @@ impl ActiveServer {
             let sn_url = sn_url.unwrap();
             let sn_username = sn_username.unwrap().as_str().unwrap().to_lowercase();
             let rpc_token = ::kRPC::RPCSessionToken {
-                token_type : ::kRPC::RPCSessionTokenType::JWT,
+                token_type : ::kRPC::RPCSessionTokenType::Normal,
                 appid: Some("active_service".to_string()),
                 jti : None,
                 session : None,
@@ -507,6 +508,7 @@ impl ActiveServer {
                 exp:Some(buckyos_get_unix_timestamp() + 60),
                 iss:Some(user_name.to_string()),
                 token:None,
+                extra: HashMap::new(),
             };
 
             let user_rpc_token = rpc_token.generate_jwt(None,&owner_private_key_pem)

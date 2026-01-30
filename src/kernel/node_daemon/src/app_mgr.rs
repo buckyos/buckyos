@@ -96,7 +96,7 @@ impl AppRunItem {
         let device_doc = runtime.device_config.as_ref().unwrap();
         let device_private_key = runtime.device_private_key.as_ref().unwrap();
         let app_service_session_token = kRPC::RPCSessionToken {
-            token_type: kRPC::RPCSessionTokenType::JWT,
+            token_type: kRPC::RPCSessionTokenType::Normal,
             appid: Some(self.app_id.clone()),
             jti: None,
             session: None,
@@ -105,6 +105,7 @@ impl AppRunItem {
             exp: Some(timestamp + VERIFY_HUB_TOKEN_EXPIRE_TIME*2),
             iss: Some(device_doc.name.clone()),
             token: None,
+            extra: HashMap::new(),
         };
 
         let app_service_session_token_jwt = app_service_session_token

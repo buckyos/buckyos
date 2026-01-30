@@ -1,5 +1,6 @@
 use std::env;
 use std::fmt::format;
+use std::hash::Hash;
 use std::process::exit;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -810,7 +811,7 @@ async fn generate_device_session_token(device_doc: &DeviceConfig, device_private
     }
 
     let device_session_token = kRPC::RPCSessionToken {
-        token_type : kRPC::RPCSessionTokenType::JWT,
+        token_type : kRPC::RPCSessionTokenType::Normal,
         appid: Some("node-daemon".to_string()),
         jti : None,
         session : None,
@@ -819,6 +820,7 @@ async fn generate_device_session_token(device_doc: &DeviceConfig, device_private
         exp:Some(timestamp + 60*15),
         iss:Some(device_doc.name.clone()),
         token:None,
+        extra:HashMap::new(),
     };
 
     let device_session_token_jwt = device_session_token.generate_jwt(None,&device_private_key)

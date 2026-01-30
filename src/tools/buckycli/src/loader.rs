@@ -8,6 +8,7 @@ use buckyos_api::{get_buckyos_api_runtime, get_session_token_env_key, VERIFY_HUB
 use buckyos_kit::buckyos_get_unix_timestamp;
 use log::*;
 use tokio::process::Command;
+use std::collections::HashMap;
 
 pub async fn load_app_service(app_id: &str, app_service_path: &str) -> Result<(), String> {
     let timestamp = buckyos_get_unix_timestamp();
@@ -22,7 +23,7 @@ pub async fn load_app_service(app_id: &str, app_service_path: &str) -> Result<()
         .ok_or_else(|| "device_private_key not found".to_string())?;
 
     let device_session_token = kRPC::RPCSessionToken {
-        token_type: kRPC::RPCSessionTokenType::JWT,
+        token_type: kRPC::RPCSessionTokenType::Normal,
         appid: Some(app_id.to_string()),
         jti: Some(timestamp.to_string()),
         session: None,
@@ -31,6 +32,7 @@ pub async fn load_app_service(app_id: &str, app_service_path: &str) -> Result<()
         exp: Some(timestamp + VERIFY_HUB_TOKEN_EXPIRE_TIME * 2),
         iss: Some(device_doc.name.clone()),
         token: None,
+        extra: HashMap::new(),
     };
 
     let device_session_token_jwt = device_session_token

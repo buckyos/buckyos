@@ -75,7 +75,7 @@ impl RunItemControl for KernelServiceRunItem {
         let device_doc = runtime.device_config.as_ref().unwrap();
         let device_private_key = runtime.device_private_key.as_ref().unwrap();
         let device_session_token = kRPC::RPCSessionToken {
-            token_type: kRPC::RPCSessionTokenType::JWT,
+            token_type: kRPC::RPCSessionTokenType::Normal,
             appid: Some(app_id.clone()),
             jti: Some(timestamp.to_string()),
             session: None,
@@ -84,6 +84,7 @@ impl RunItemControl for KernelServiceRunItem {
             exp: Some(timestamp + VERIFY_HUB_TOKEN_EXPIRE_TIME*2),
             iss: Some(device_doc.name.clone()),
             token: None,
+            extra: HashMap::new(),
         };
 
         let device_session_token_jwt = device_session_token

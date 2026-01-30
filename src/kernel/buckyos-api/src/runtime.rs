@@ -584,7 +584,7 @@ impl BuckyOSRuntime {
                     let device_name = &self.device_config.as_ref().unwrap().name;
                     let timestamp = buckyos_get_unix_timestamp();
                     let token = RPCSessionToken {
-                        token_type: RPCSessionTokenType::JWT,
+                        token_type: RPCSessionTokenType::Normal,
                         token: None,
                         aud: None,
                         appid: Some(self.app_id.clone()),
@@ -592,6 +592,7 @@ impl BuckyOSRuntime {
                         iss: Some(device_name.to_string()), // signer/device
                         jti: None,
                         session: None,
+                        extra: HashMap::new(),
                         sub: Some(self.user_id.as_ref().unwrap().to_string()), // user subject
                     };
                     let jwt = token.generate_jwt(None, self.device_private_key.as_ref().unwrap())?;

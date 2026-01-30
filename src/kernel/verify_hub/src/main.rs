@@ -78,7 +78,7 @@ async fn generate_session_token(
     let exp = now + duration;
 
     let mut session_token = RPCSessionToken {
-        token_type: RPCSessionTokenType::JWT,
+        token_type: RPCSessionTokenType::Normal,
         appid: Some(appid.to_string()),
         jti: Some(jti.to_string()),
         aud: Some(appid.to_string()),
@@ -87,6 +87,7 @@ async fn generate_session_token(
         session: Some(session),
         iss: Some(VERIFY_HUB_ISSUER.to_string()),
         exp: Some(exp),
+        extra:HashMap::new(),
     };
 
     {
@@ -111,7 +112,7 @@ async fn generate_refresh_token(
     let exp = now + duration;
 
     let mut refresh_token = RPCSessionToken {
-        token_type: RPCSessionTokenType::JWT,
+        token_type: RPCSessionTokenType::Normal,
         appid: Some(appid.to_string()),
         jti: Some(jti.to_string()),
         aud: Some(VERIFY_HUB_UNIQUE_ID.to_string()),//refresh token audience is verify-hub
@@ -120,6 +121,7 @@ async fn generate_refresh_token(
         session: Some(session),
         iss: Some(VERIFY_HUB_ISSUER.to_string()),
         exp: Some(exp),
+        extra:HashMap::new(),
     };
 
     {
@@ -237,7 +239,7 @@ async fn get_my_krpc_token() -> Result<RPCSessionToken> {
     let exp = now + VERIFY_HUB_TOKEN_EXPIRE_TIME;
 
     let mut session_token = RPCSessionToken {
-        token_type: RPCSessionTokenType::JWT,
+        token_type: RPCSessionTokenType::Normal,
         appid: Some("verify-hub".to_string()),
         jti: None,
         aud: None,
@@ -246,6 +248,7 @@ async fn get_my_krpc_token() -> Result<RPCSessionToken> {
         session: None,
         iss: Some(VERIFY_HUB_ISSUER.to_string()),
         exp: Some(exp),
+        extra:HashMap::new(),
     };
 
     {
@@ -873,7 +876,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         exp: u64,
     ) -> String {
         let test_login_token = RPCSessionToken {
-            token_type: RPCSessionTokenType::JWT,
+            token_type: RPCSessionTokenType::Normal,
             jti: Some(jti.to_string()),
             appid: Some(appid.to_string()),
             aud: None,
@@ -882,6 +885,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
             session: Some(jti), // Use jti as session for first login
             iss: Some("root".to_string()),
             exp: Some(exp),
+            extra: HashMap::new(),
         };
 
         test_login_token
@@ -1149,7 +1153,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         println!("\n=== Test: Refresh token cache operations ===");
         
         let test_token = RPCSessionToken {
-            token_type: RPCSessionTokenType::JWT,
+            token_type: RPCSessionTokenType::Normal,
             jti: Some("123456".to_string()),
             appid: Some("test-app".to_string()),
             aud: None,
@@ -1158,6 +1162,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
             session: Some(789),
             iss: Some("verify-hub".to_string()),
             exp: Some(buckyos_get_unix_timestamp() + 3600),
+            extra:HashMap::new(),
         };
         
         let cache_key = "test_cache_key";

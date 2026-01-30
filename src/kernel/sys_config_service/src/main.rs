@@ -988,12 +988,13 @@ mod test {
             sub: Some("alice".to_string()),
             appid: Some("test".to_string()),
             exp: Some(now + 5), //5 seconds
-            token_type: RPCSessionTokenType::JWT,
+            token_type: RPCSessionTokenType::Normal,
             token: None,
             iss: Some("{owner}".to_string()),
             jti: None,
             session: None,
             aud: None,
+            extra:HashMap::new(),
         };
         let jwt = token
             .generate_jwt(None, &private_key)
@@ -1120,15 +1121,17 @@ mod test {
 
         let private_key = EncodingKey::from_ed_pem(test_owner_private_key_pem.as_bytes()).unwrap();
         let token = RPCSessionToken {
+
             sub: Some("alice".to_string()),
             appid: Some("test".to_string()),
             aud: None,
             exp: Some(now + 30),
-            token_type: RPCSessionTokenType::JWT,
+            token_type: RPCSessionTokenType::Normal,
             token: None,
             iss: Some("alice".to_string()),
             jti: None,
             session: None,
+            extra:HashMap::new(),
         };
         let jwt = token
             .generate_jwt(None, &private_key)
