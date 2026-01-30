@@ -23,6 +23,7 @@ import {
   check_bucky_username,
   check_sn_active_code,
   isValidDomain,
+  validate_bucky_username,
   SN_BASE_HOST,
   SN_API_URL,
   WEB3_BASE_HOST,
@@ -37,7 +38,7 @@ type Props = {
   walletUser?: WalletUser;
 };
 
-type NameStatus = "idle" | "checking" | "ok" | "taken" | "tooShort";
+type NameStatus = "idle" | "checking" | "ok" | "taken" | "tooShort" | "invalid";
 
 const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, walletUser }: Props) => {
   const { t } = useTranslation();
@@ -64,6 +65,11 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
     }
     if (mode !== "bucky" || username.trim().length <= 4) {
       setNameStatus(username.trim().length > 0 && username.trim().length <= 4 ? "tooShort" : "idle");
+      return;
+    }
+    const validation = validate_bucky_username(username.trim());
+    if (!validation.valid) {
+      setNameStatus("invalid");
       return;
     }
     let cancelled = false;
@@ -148,6 +154,13 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
         setFormError(t("error_name_too_short") || "");
         return;
       }
+      const validation = validate_bucky_username(username.trim());
+      if (!validation.valid) {
+        setFormError(
+          t("error_name_invalid") || "Only lowercase letters and numbers are supported.",
+        );
+        return;
+      }
       if (!isWalletRuntime && nameStatus === "taken") {
         setFormError(t("error_name_taken") || "");
         return;
@@ -204,6 +217,9 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
     }
     if (nameStatus === "tooShort") {
       return <Chip size="small" color="warning" label={t("error_name_too_short")} />;
+    }
+    if (nameStatus === "invalid") {
+      return <Chip size="small" color="error" label={t("error_name_invalid") || "Invalid name"} />;
     }
     return null;
   };

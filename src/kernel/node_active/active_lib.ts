@@ -181,10 +181,28 @@ export async function check_sn_active_code(sn_active_code:string) : Promise<bool
 }
 
 export async function check_bucky_username(check_bucky_username:string) : Promise<boolean> {
+    const validation = validate_bucky_username(check_bucky_username);
+    if (!validation.valid) {
+        return false;
+    }
     let rpc_client = new buckyos.kRPCClient(SN_API_URL);
     let result = await rpc_client.call("check_username",{username:check_bucky_username});
     let valid = result["valid"];
     return valid;
+}
+
+export function validate_bucky_username(username:string):{valid:boolean; reason?:string} {
+    const trimmed = username.trim().toLowerCase();
+    if (trimmed.length <= 4) {
+        return {valid:false, reason:"too_short"};
+    }
+    if (trimmed.length > 32) {
+        return {valid:false, reason:"too_long"};
+    }
+    if (!/^[a-z0-9]+$/.test(trimmed)) {
+        return {valid:false, reason:"invalid_chars"};
+    }
+    return {valid:true};
 }
 
 export async function generate_key_pair():Promise<[JsonValue,string]> {
@@ -361,6 +379,11 @@ export async function do_active(data:ActiveWizzardData):Promise<boolean> {
     if (need_sn) {
         let user_domain = null;
         if (data.sn_user_name == null || data.sn_user_name == "" || data.sn_active_code == null || data.sn_active_code == "") {
+            return false;
+        }
+        const validation = validate_bucky_username(data.sn_user_name);
+        if (!validation.valid) {
+            console.error("Invalid sn_user_name format", validation.reason);
             return false;
         }
         sn_url = SN_API_URL;
