@@ -581,21 +581,13 @@ impl BuckyOSRuntime {
                 if self.device_private_key.is_some() && self.device_config.is_some() && session_token.is_empty() {
                     info!("buckyos-api-runtime: session token is empty,runtime_type:{:?},try to create session token by device_private_key",self.runtime_type);
                     let device_name = &self.device_config.as_ref().unwrap().name;
-                    let timestamp = buckyos_get_unix_timestamp();
-                    let token = RPCSessionToken {
-                        token_type: RPCSessionTokenType::Normal,
-                        token: None,
-                        aud: None,
-                        appid: Some(self.app_id.clone()),
-                        exp: Some(timestamp + 60 * 15),
-                        iss: Some(device_name.to_string()), // signer/device
-                        jti: None,
-                        session: None,
-                        extra: HashMap::new(),
-                        sub: Some(self.user_id.as_ref().unwrap().to_string()), // user subject
-                    };
-                    let jwt = token.generate_jwt(None, self.device_private_key.as_ref().unwrap())?;
-                    *session_token = jwt;
+                    let (session_token_str, _real_session_token) = RPCSessionToken::generate_jwt_token(
+                        device_name.as_str(),
+                        self.app_id.as_str(),
+                        None,
+                        self.device_private_key.as_ref().unwrap(),
+                    )?;
+                    *session_token = session_token_str;
                 } 
 
                 if session_token.is_empty() {
