@@ -93,6 +93,8 @@ pub struct LoginByPasswordRequest {
     pub username: String,
     pub password: String,
     pub appid: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
 }
 
 impl LoginByPasswordRequest {
@@ -101,6 +103,7 @@ impl LoginByPasswordRequest {
             username,
             password,
             appid,
+            source_url: None,
         }
     }
 

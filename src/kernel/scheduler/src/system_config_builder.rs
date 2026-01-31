@@ -21,6 +21,7 @@ pub struct StartConfigSummary {
     pub user_name: String,
     pub admin_password_hash: String,
     pub public_key: Jwk,
+    pub zone_name:String,//zone hostname
     #[serde(default)]
     pub ood_jwt: Option<String>,
 }
@@ -329,7 +330,9 @@ impl SystemConfigBuilder {
         zone_boot_config: &ZoneBootConfig,
     ) -> Result<&mut Self> {
         let public_key_value = verify_hub_public_key.clone();
-        let mut zone_config = ZoneConfig::new(DID::new("bns", &config.user_name), DID::new("bns", &config.user_name), config.public_key.clone());
+        //TODO: add zoone did here:
+        let zone_did = DID::from_str(&config.zone_name)?;
+        let mut zone_config = ZoneConfig::new(zone_did, DID::new("bns", &config.user_name), config.public_key.clone());
 
         let verify_hub_info = VerifyHubInfo {
             public_key: public_key_value,
@@ -417,6 +420,11 @@ impl TryFrom<&Value> for StartConfigSummary {
                 .ok_or_else(|| anyhow!("start_config.json missing admin_password_hash"))?
                 .to_string(),
             public_key: user_public_key,
+            zone_name: value
+                .get("zone_name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("start_config.json missing zone_name"))?
+                .to_string(),
 
             ood_jwt: value
                 .get("ood_jwt")

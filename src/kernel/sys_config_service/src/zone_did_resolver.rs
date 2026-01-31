@@ -466,7 +466,7 @@ impl HttpServer for ZoneDidResolver {
             return Err(server_err!(ServerErrorCode::BadRequest, "Method not allowed"));
         }
 
-        // GET https://resolver.example.com/1.0/identifiers/did:dev:abcdefg?type=doc_type
+        // GET https://example.com/1.0/identifiers/did:dev:abcdefg?type=doc_type
         let path = req.uri().path().to_string();
         if path.starts_with("/1.0/identifiers/") {
             let did_str = path.trim_start_matches("/1.0/identifiers/").to_string();
