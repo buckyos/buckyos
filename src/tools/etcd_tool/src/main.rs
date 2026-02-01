@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use clap::{Arg, ArgMatches, Command, value_parser};
+use buckyos_kit::get_version;
 use etcd_client::EtcdClient;
 use sfo_result::into_err as into_etcd_err;
 
@@ -15,7 +16,7 @@ type EtcdError = sfo_result::Error<EtcdErrorCode>;
 async fn main() {
     let matches = Command::new("etcd_tool")
         .about("A tool for etcd")
-        .version("0.1.0")
+        .version(get_version())
         .subcommand_required(true)
         .arg_required_else_help(true)
         .subcommand(Command::new("import_node_config")

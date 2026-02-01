@@ -5,7 +5,7 @@ use sysinfo::{ProcessesToUpdate, System};
 use std::fs::File;
 use std::sync::OnceLock;
 use fs2::FileExt;
-use buckyos_kit::{get_buckyos_root_dir};
+use buckyos_kit::{get_buckyos_root_dir, get_version};
 use buckyos_api::{get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType, SystemConfigError};
 use crate::error::{into_smb_err, smb_err, SmbErrorCode, SmbResult};
 #[cfg(target_os = "linux")]
@@ -66,6 +66,7 @@ fn check_process_exist(name: &str) -> bool {
 
 async fn async_main() {
     let matches = Command::new("smb-service")
+        .version(get_version())
         .subcommand(Command::new("start"))
         .subcommand(Command::new("stop"))
         .subcommand(Command::new("status")).get_matches();

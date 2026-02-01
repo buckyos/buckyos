@@ -31,4 +31,4 @@ systemctl start buckyos.service
 
 chmod -R 777 /opt/buckyos/
 
-echo "BuckyOS install success, open http://127.0.0.1:3180/index.html to start, ENJOY!"
+echo "BuckyOS install success, open http://127.0.0.1:3182/index.html to start, ENJOY!"

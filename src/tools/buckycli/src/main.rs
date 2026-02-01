@@ -10,6 +10,7 @@ mod loader;
 use std::{fs, path::Path};
 use buckyos_api::*;
 use buckyos_api::test_config;
+use buckyos_kit::get_version;
 use clap::{Arg, Command};
 use log::info;
 use package_cmd::*;
@@ -40,6 +41,7 @@ async fn main() -> Result<(), String> {
     buckyos_kit::init_logging("buckycli", false);
 
     let matches = Command::new("buckyos control tool")
+        .version(get_version())
         .author("buckyos")
         .about("control tools")
         .subcommand_required(true)
@@ -867,4 +869,3 @@ oods look like this 'ood1,ood2'.")
 
     Ok(())
 }
-

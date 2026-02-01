@@ -17,7 +17,7 @@ mod finder;
 mod win_srv;
 
 use clap::{Arg, Command};
-use buckyos_kit::{init_logging};
+use buckyos_kit::{get_version, init_logging};
 use log::*;
 use std::panic;
 
@@ -25,6 +25,7 @@ fn main() {
     init_logging("node_daemon",true);
     
     let matches = Command::new("BuckyOS Node Daemon")
+        .version(get_version())
         .arg(
             Arg::new("id")
                 .long("node_id")
