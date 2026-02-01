@@ -382,7 +382,7 @@ async fn report_ood_info_to_sn(device_info: &DeviceInfo, device_token_jwt: &str,
     sn_update_device_info(sn_url.as_str(), Some(device_token_jwt.to_string()),
                           &owner_did.id,device_info.name.as_str(), &device_info).await;
 
-    info!("update {} 's info to sn {} success!",device_info.name.as_str(),sn_url.as_str());
+    info!("update {}'s info to sn {} success!",device_info.name.as_str(),sn_url.as_str());
     Ok(())
 }
 

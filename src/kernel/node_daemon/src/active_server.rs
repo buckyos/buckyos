@@ -377,10 +377,10 @@ impl ActiveServer {
                 appid: Some("active_service".to_string()),
                 jti : None,
                 session : None,
-                sub : Some(sn_username),
-                aud:None,
+                sub : Some(sn_username.clone()),
+                aud:Some("sn".to_string()),//sudo token MUST have aud filed
                 exp:Some(buckyos_get_unix_timestamp() + 60),
-                iss:Some(user_name.to_string()),
+                iss:Some(sn_username),
                 token:None,
                 extra: HashMap::new(),
             };
@@ -504,9 +504,9 @@ impl ActiveServer {
                 jti : None,
                 session : None,
                 sub : Some(sn_username.to_string()),
-                aud:None,
+                aud:Some("sn".to_string()),
                 exp:Some(buckyos_get_unix_timestamp() + 60),
-                iss:Some(user_name.to_string()),
+                iss:Some(sn_username.to_string()),
                 token:None,
                 extra: HashMap::new(),
             };
