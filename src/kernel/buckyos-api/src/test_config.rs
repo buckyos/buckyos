@@ -1,21 +1,27 @@
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use buckyos_kit::buckyos_get_unix_timestamp;
+use cyfs_sn::{SnDB, SqliteSnDB};
+use ed25519_dalek::pkcs8::DecodePrivateKey;
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use name_lib::{
-    DID, DIDDocumentTrait, DeviceConfig, DeviceInfo, DeviceMiniConfig, DeviceNodeType, EncodedDocument, NodeIdentityConfig, OODDescriptionString, OwnerConfig, ZoneBootConfig, ZoneConfig, generate_ed25519_key_pair, get_x_from_jwk
+    generate_ed25519_key_pair, get_x_from_jwk, DIDDocumentTrait, DeviceConfig, DeviceInfo,
+    DeviceMiniConfig, DeviceNodeType, EncodedDocument, NodeIdentityConfig, OODDescriptionString,
+    OwnerConfig, ZoneBootConfig, ZoneConfig, DID,
 };
 use package_lib::PackageId;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::fs;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::fs;
-use ed25519_dalek::pkcs8::DecodePrivateKey;
-use ed25519_dalek::{SigningKey, VerifyingKey};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use cyfs_sn::{SnDB, SqliteSnDB};
 
-use crate::{AppDoc, LocalAppInstanceConfig, REPO_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, ServiceInstallConfig, ServiceInstanceState, VERIFY_HUB_UNIQUE_ID};
+use crate::{
+    AppDoc, LocalAppInstanceConfig, ServiceInstallConfig, ServiceInstanceState,
+    REPO_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID,
+    VERIFY_HUB_UNIQUE_ID,
+};
 
 // ============================================================================
 // Constant Definitions
@@ -48,12 +54,12 @@ impl TestKeys {
     fn verify_key_pair(key_pair: &TestKeyPair) -> Result<(), String> {
         let signing_key = SigningKey::from_pkcs8_pem(key_pair.private_key_pem.as_str())
             .expect("Failed to parse private key PEM");
-        
+
         let verifying_key: VerifyingKey = signing_key.verifying_key();
 
         let public_key_bytes = verifying_key.as_bytes();
         let public_key_x_from_private = URL_SAFE_NO_PAD.encode(public_key_bytes);
-        
+
         if public_key_x_from_private != key_pair.public_key_x {
             return Err(format!("Public key extracted from private key does not match public_key_x. Expected: {}, Got: {}", key_pair.public_key_x, public_key_x_from_private));
         }
@@ -131,7 +137,8 @@ impl TestKeys {
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
------END PRIVATE KEY-----"#.to_string(),
+-----END PRIVATE KEY-----"#
+                .to_string(),
             public_key_x: "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8".to_string(),
         }
     }
@@ -140,7 +147,8 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
------END PRIVATE KEY-----"#.to_string(),
+-----END PRIVATE KEY-----"#
+                .to_string(),
             public_key_x: "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc".to_string(),
         }
     }
@@ -149,7 +157,8 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
------END PRIVATE KEY-----"#.to_string(),
+-----END PRIVATE KEY-----"#
+                .to_string(),
             public_key_x: "Bb325f2ed0XSxrPS5sKQaX7ylY9Jh9rfevXiidKA1zc".to_string(),
         }
     }
@@ -158,7 +167,8 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEILQLoUZt2okCht0UVhsf4UlGAV9h3BoliwZQN5zBO1G+
------END PRIVATE KEY-----"#.to_string(),
+-----END PRIVATE KEY-----"#
+                .to_string(),
             public_key_x: "y-kuJcQ0doFpdNXf4HI8E814lK8MB3-t4XjDRcR_QCU".to_string(),
         }
     }
@@ -167,17 +177,18 @@ MC4CAQAwBQYDK2VwBCIEILQLoUZt2okCht0UVhsf4UlGAV9h3BoliwZQN5zBO1G+
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIADmO0+u/gcmStDsHZOZCM5gxNYlQmP6jpMo279TQE75
------END PRIVATE KEY-----"#.to_string(),
+-----END PRIVATE KEY-----"#
+                .to_string(),
             public_key_x: "iSMKakFEGzGAxLTlaB5TkqZ6d4wurObr-BpaQleoE2M".to_string(),
         }
-
     }
     //did:bns:devtests
     fn sn_owner() -> TestKeyPair {
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIMkwWZKUe7+z7NtfgbgxWwGjMddvxtrmeGJiJe8rq00M
------END PRIVATE KEY-----"#.to_string(),
+-----END PRIVATE KEY-----"#
+                .to_string(),
             public_key_x: "blzinUlTNGYcvCPFT1OfPKPbmjvteuXWMwQG55cTo7M".to_string(),
         }
     }
@@ -186,7 +197,8 @@ MC4CAQAwBQYDK2VwBCIEIMkwWZKUe7+z7NtfgbgxWwGjMddvxtrmeGJiJe8rq00M
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIBvnIIa1Tx45SjRu9kBZuMgusP5q762SvojXZ4scFxVD
------END PRIVATE KEY-----"#.to_string(),
+-----END PRIVATE KEY-----"#
+                .to_string(),
             public_key_x: "FPvY3WXPxuWPYFuwOY0Qbh0O7-hhKr6ta1jTcX9ORPI".to_string(),
         }
     }
@@ -195,7 +207,8 @@ MC4CAQAwBQYDK2VwBCIEIBvnIIa1Tx45SjRu9kBZuMgusP5q762SvojXZ4scFxVD
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEICBO4nQL1yMcu4uu51Grea+VTaaS+sswioMRZXoltzZh
------END PRIVATE KEY-----"#.to_string(),
+-----END PRIVATE KEY-----"#
+                .to_string(),
             public_key_x: "waupPnLqJRwjr3hJ_2i2J4qGLx-8t5ihX6LET0ZY828".to_string(),
         }
     }
@@ -205,7 +218,8 @@ MC4CAQAwBQYDK2VwBCIEICBO4nQL1yMcu4uu51Grea+VTaaS+sswioMRZXoltzZh
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIKH6oJdebg+xxICY7Z1vm84qMkSzm6Wk0ic88DGR90aq
------END PRIVATE KEY-----"#.to_string(),
+-----END PRIVATE KEY-----"#
+                .to_string(),
             public_key_x: "uh7RD37tflN65CrcJSUQ3vGnyU4vmC7_M8IkEEOHnds".to_string(),
         }
     }
@@ -214,7 +228,8 @@ MC4CAQAwBQYDK2VwBCIEIKH6oJdebg+xxICY7Z1vm84qMkSzm6Wk0ic88DGR90aq
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIGhyUJ3/YgIrLZxSGG7o1bgiWcyETZKjTBoGagNdpxVy
------END PRIVATE KEY-----"#.to_string(),
+-----END PRIVATE KEY-----"#
+                .to_string(),
             public_key_x: "E1oQDYqzyX4ysrNgTJ5DAVaMgA3By8XpBa0e6r2gBqQ".to_string(),
         }
     }
@@ -223,7 +238,8 @@ MC4CAQAwBQYDK2VwBCIEIGhyUJ3/YgIrLZxSGG7o1bgiWcyETZKjTBoGagNdpxVy
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEICLjVTK81RKQ1aPtSLKFx/Fl33+WbxgqCpPCBFlqlBQX
------END PRIVATE KEY-----"#.to_string(),
+-----END PRIVATE KEY-----"#
+                .to_string(),
             public_key_x: "cuFY7qeU1q96O1K5RRbXo7GXGR78szB-gmmkBXDMscE".to_string(),
         }
     }
@@ -232,7 +248,8 @@ MC4CAQAwBQYDK2VwBCIEICLjVTK81RKQ1aPtSLKFx/Fl33+WbxgqCpPCBFlqlBQX
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIMe0Q/tl7DWbu3SIQE8vnDxO8YQMIivAlCgKiNUfjcWU
------END PRIVATE KEY-----"#.to_string(),
+-----END PRIVATE KEY-----"#
+                .to_string(),
             public_key_x: "PY9uu16H74QYVRjstVxdWdAsgkoy10-74fvQhx4ddek".to_string(),
         }
     }
@@ -241,22 +258,21 @@ MC4CAQAwBQYDK2VwBCIEIMe0Q/tl7DWbu3SIQE8vnDxO8YQMIivAlCgKiNUfjcWU
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 TODOTODO
------END PRIVATE KEY-----"#.to_string(),
+-----END PRIVATE KEY-----"#
+                .to_string(),
             public_key_x: "qmtOLLWpZeBMzt97lpfj2MxZGWn3QfuDB7Q4uaP3Eok".to_string(),
         }
     }
 
     fn sn_buckyos() -> TestKeyPair {
         let (private_key, public_key) = generate_ed25519_key_pair();
-        let x = public_key
-            .get("x").unwrap().as_str().unwrap().to_string();
+        let x = public_key.get("x").unwrap().as_str().unwrap().to_string();
 
         TestKeyPair {
             private_key_pem: private_key,
             public_key_x: x,
         }
     }
-
 }
 
 // ============================================================================
@@ -289,7 +305,8 @@ fn get_jwk(x: &str) -> jsonwebtoken::jwk::Jwk {
         "kty": "OKP",
         "crv": "Ed25519",
         "x": x
-    })).unwrap()
+    }))
+    .unwrap()
 }
 
 pub fn gen_kernel_service_docs() -> HashMap<DID, EncodedDocument> {
@@ -309,8 +326,14 @@ pub fn gen_kernel_service_docs() -> HashMap<DID, EncodedDocument> {
     let smb_doc = crate::generate_smb_service_doc();
     let smb_json = serde_json::to_string(&smb_doc).unwrap();
     let smb_did = PackageId::unique_name_to_did(SMB_SERVICE_UNIQUE_ID);
-    docs.insert(verify_hub_did, EncodedDocument::from_str(verify_hub_json).unwrap());
-    docs.insert(scheduler_did, EncodedDocument::from_str(scheduler_json).unwrap());
+    docs.insert(
+        verify_hub_did,
+        EncodedDocument::from_str(verify_hub_json).unwrap(),
+    );
+    docs.insert(
+        scheduler_did,
+        EncodedDocument::from_str(scheduler_json).unwrap(),
+    );
     docs.insert(repo_did, EncodedDocument::from_str(repo_json).unwrap());
     docs.insert(smb_did, EncodedDocument::from_str(smb_json).unwrap());
     docs
@@ -392,7 +415,7 @@ impl DevEnvBuilder {
 pub struct UserEnvScope<'a> {
     builder: &'a DevEnvBuilder,
     username: &'a str,
-    did: DID,//owner did?
+    did: DID, //owner did?
     key_pair: &'a TestKeyPair,
     user_dir: PathBuf,
     zone_did: DID,
@@ -401,7 +424,10 @@ pub struct UserEnvScope<'a> {
 impl<'a> UserEnvScope<'a> {
     /// Create Owner configuration
     pub fn create_owner_config(&self) {
-        write_file(&self.user_dir.join("user_private_key.pem"), self.key_pair.private_key_pem.as_str());
+        write_file(
+            &self.user_dir.join("user_private_key.pem"),
+            self.key_pair.private_key_pem.as_str(),
+        );
 
         let owner_jwk = get_jwk(&self.key_pair.public_key_x);
         let owner_config = OwnerConfig::new(
@@ -415,9 +441,14 @@ impl<'a> UserEnvScope<'a> {
         println!("Created owner config for {}", self.username);
     }
 
-    /// Create Zone configuration 
+    /// Create Zone configuration
     /// return zone_boot_config_jwt, TXT Records
-    pub fn create_zone_boot_config_jwt(&self, sn_host: Option<String>, ood:OODDescriptionString, rtcp_port: u16) -> ZoneTxtRecord {
+    pub fn create_zone_boot_config_jwt(
+        &self,
+        sn_host: Option<String>,
+        ood: OODDescriptionString,
+        rtcp_port: u16,
+    ) -> ZoneTxtRecord {
         let device_full_id = format!("{}.{}", self.username, ood.name.as_str());
         let device_key_pair = TestKeys::get_key_pair_by_id(&device_full_id).unwrap();
         let ood_net_id = ood.net_id.clone();
@@ -437,7 +468,6 @@ impl<'a> UserEnvScope<'a> {
             }
         }
 
-
         let mut zone_boot = ZoneBootConfig {
             id: None,
             oods: vec![ood.clone()],
@@ -445,7 +475,7 @@ impl<'a> UserEnvScope<'a> {
             exp: self.builder.exp,
             owner: None,
             owner_key: None,
-            extra_info:HashMap::new(),
+            extra_info: HashMap::new(),
         };
         let zone_host_name = self.zone_did.to_raw_host_name();
         write_json(
@@ -453,21 +483,36 @@ impl<'a> UserEnvScope<'a> {
             &zone_boot,
         );
         zone_boot.id = Some(self.zone_did.clone());
-        let mut zone_config = ZoneConfig::new(self.zone_did.clone(), self.did.clone(), get_jwk(&self.key_pair.public_key_x));
+        let mut zone_config = ZoneConfig::new(
+            self.zone_did.clone(),
+            self.did.clone(),
+            get_jwk(&self.key_pair.public_key_x),
+        );
 
         let owner_key = get_encoding_key(self.key_pair.private_key_pem.as_str());
         let jwt = zone_boot.encode(Some(&owner_key)).unwrap();
         let jwt_str = jwt.to_string();
-        zone_config.init_by_boot_config(&zone_boot,&jwt_str);
-        write_json(
-            &self.user_dir.join("zone_config.json"),
-            &zone_config,
-        );
+        zone_config.init_by_boot_config(&zone_boot, &jwt_str);
+        write_json(&self.user_dir.join("zone_config.json"), &zone_config);
         let pkx = get_x_from_jwk(&get_jwk(&self.key_pair.public_key_x)).unwrap();
-        println!("=> {} TXT Record({}): BOOT={};", zone_host_name, jwt_str.len()+6, jwt_str);
-        println!("=> {} TXT Record({}): PKX={};", zone_host_name, pkx.len()+5, pkx.as_str());
+        println!(
+            "=> {} TXT Record({}): BOOT={};",
+            zone_host_name,
+            jwt_str.len() + 6,
+            jwt_str
+        );
+        println!(
+            "=> {} TXT Record({}): PKX={};",
+            zone_host_name,
+            pkx.len() + 5,
+            pkx.as_str()
+        );
 
-        let real_rtcp_port = if rtcp_port == 2980 { None } else { Some(rtcp_port as u32) };
+        let real_rtcp_port = if rtcp_port == 2980 {
+            None
+        } else {
+            Some(rtcp_port as u32)
+        };
         //ood1 mini config jwt
         let mini_config = DeviceMiniConfig {
             name: ood.name.clone(),
@@ -475,9 +520,14 @@ impl<'a> UserEnvScope<'a> {
             rtcp_port: real_rtcp_port,
             exp: self.builder.exp,
             extra_info: HashMap::new(),
-        };   
+        };
         let mini_jwt = mini_config.to_jwt(&owner_key).unwrap();
-        println!("=> {} TXT Record({}): DEV={};", zone_host_name, mini_jwt.len()+5, mini_jwt.to_string());
+        println!(
+            "=> {} TXT Record({}): DEV={};",
+            zone_host_name,
+            mini_jwt.len() + 5,
+            mini_jwt.to_string()
+        );
 
         // 2. Create device configuration and JWT
         let device_jwk = get_jwk(&device_key_pair.public_key_x);
@@ -489,7 +539,6 @@ impl<'a> UserEnvScope<'a> {
         device_config.ddns_sn_url = ddns_sn_url;
         let node_dir = self.user_dir.join(ood.name.as_str());
         write_json(&node_dir.join("node_device_config.json"), &device_config);
-   
 
         println!(
             "{} device config: {}",
@@ -502,33 +551,40 @@ impl<'a> UserEnvScope<'a> {
             device_mini_doc_jwt: mini_jwt.to_string(),
             pkx: pkx,
         };
-        write_json(&self.user_dir.join("zone_txt_record.json"), &zone_txt_record);
-        println!("zone txt record write to file: {}", self.user_dir.join("zone_txt_record.json").to_string_lossy());
+        write_json(
+            &self.user_dir.join("zone_txt_record.json"),
+            &zone_txt_record,
+        );
+        println!(
+            "zone txt record write to file: {}",
+            self.user_dir.join("zone_txt_record.json").to_string_lossy()
+        );
         zone_txt_record
     }
 
     /// Create node configuration
-    pub fn create_node_config(
-        &self,
-        device_name: &str,
-        net_id: Option<String>,
-    ) -> String {
+    pub fn create_node_config(&self, device_name: &str, net_id: Option<String>) -> String {
         let full_device_name = format!("{}.{}", self.username, device_name);
         let device_key_pair = TestKeys::get_key_pair_by_id(&full_device_name).unwrap();
         let node_dir = self.user_dir.join(device_name);
         // 1. Write device private key
-        write_file(&node_dir.join("node_private_key.pem"), device_key_pair.private_key_pem.as_str());
+        write_file(
+            &node_dir.join("node_private_key.pem"),
+            device_key_pair.private_key_pem.as_str(),
+        );
 
         // 2. Create device configuration and JWT
         let device_jwk = get_jwk(&device_key_pair.public_key_x);
         //load device_config from file
         let device_config_path = node_dir.join("node_device_config.json");
-        let device_config: DeviceConfig = serde_json::from_str(
-            &fs::read_to_string(&device_config_path).unwrap()
-        ).unwrap();
+        let device_config: DeviceConfig =
+            serde_json::from_str(&fs::read_to_string(&device_config_path).unwrap()).unwrap();
 
-        println!("input net_id: {:?},device_config.net_id: {:?}", net_id, device_config.net_id);
-  
+        println!(
+            "input net_id: {:?},device_config.net_id: {:?}",
+            net_id, device_config.net_id
+        );
+
         let owner_key = get_encoding_key(self.key_pair.private_key_pem.as_str());
         let device_jwt = device_config.encode(Some(&owner_key)).unwrap();
         println!("{} device jwt: {}", device_name, device_jwt.to_string());
@@ -536,8 +592,15 @@ impl<'a> UserEnvScope<'a> {
         // Create device_mini_config_jwt
         let device_mini_config = DeviceMiniConfig::new_by_device_config(&device_config);
         let device_mini_jwt = device_mini_config.to_jwt(&owner_key).unwrap();
-        println!("{} device mini config jwt: {}", device_name, device_mini_jwt.to_string());
-        write_file(&node_dir.join("device_mini_config.jwt"), device_mini_jwt.to_string().as_str());
+        println!(
+            "{} device mini config jwt: {}",
+            device_name,
+            device_mini_jwt.to_string()
+        );
+        write_file(
+            &node_dir.join("device_mini_config.jwt"),
+            device_mini_jwt.to_string().as_str(),
+        );
 
         // 3. Create node identity configuration
         let identity_config = NodeIdentityConfig {
@@ -589,13 +652,22 @@ pub async fn create_formula_sn_config() {
         exp: buckyos_get_unix_timestamp() + 3600 * 24 * 365 * DEFAULT_EXP_YEARS,
         extra_info: HashMap::new(),
     };
-    let device_mini_jwt = device_mini_config.to_jwt(&get_encoding_key(owner_keys.private_key_pem.as_str())).unwrap();  
-    let mut device_config = DeviceConfig::new_by_mini_config(&device_mini_jwt, &device_mini_config, DID::new("web", "sn.buckyos.ai"), DID::new("bns", "buckyos"));
+    let device_mini_jwt = device_mini_config
+        .to_jwt(&get_encoding_key(owner_keys.private_key_pem.as_str()))
+        .unwrap();
+    let mut device_config = DeviceConfig::new_by_mini_config(
+        &device_mini_jwt,
+        &device_mini_config,
+        DID::new("web", "sn.buckyos.ai"),
+        DID::new("bns", "buckyos"),
+    );
     device_config.net_id = Some("wan".to_string());
     write_json(&sn_dir.join("sn_device_config.json"), &device_config);
-    write_file(&sn_dir.join("sn_private_key.pem"), device_keys.private_key_pem.as_str());
+    write_file(
+        &sn_dir.join("sn_private_key.pem"),
+        device_keys.private_key_pem.as_str(),
+    );
     println!("- Created sn device config & private key.");
-
 
     // Create ZoneBootConfig
     let zone_boot = ZoneBootConfig {
@@ -626,19 +698,28 @@ pub async fn create_formula_sn_config() {
 
     // Create initial database
     let sn_db_path = sn_dir.join("sn_db.sqlite3");
-    let db = SqliteSnDB::new_by_path(&sn_db_path.to_string_lossy()).await.unwrap();
+    let db = SqliteSnDB::new_by_path(&sn_db_path.to_string_lossy())
+        .await
+        .unwrap();
     db.initialize_database().await.unwrap();
     println!("- Created SN database.");
 }
 
 /// Create SN server configuration
-pub async fn create_sn_config(builder: &DevEnvBuilder,sn_ip:IpAddr,sn_base_host:String) {
+pub async fn create_sn_config(builder: &DevEnvBuilder, sn_ip: IpAddr, sn_base_host: String) {
     let sn_dir = builder.root_dir().join("sn_server");
     let owner_keys = TestKeys::get_key_pair_by_id("sn_owner").unwrap();
     let device_keys = TestKeys::get_key_pair_by_id("sn_server").unwrap();
 
     // Save owner_config to sn_dir directory
-    write_file(&builder.root_dir().join("sn_server").join(".buckycli").join("user_private_key.pem"), owner_keys.private_key_pem.as_str());
+    write_file(
+        &builder
+            .root_dir()
+            .join("sn_server")
+            .join(".buckycli")
+            .join("user_private_key.pem"),
+        owner_keys.private_key_pem.as_str(),
+    );
 
     let owner_jwk = get_jwk(owner_keys.public_key_x.as_str());
     let owner_config = OwnerConfig::new(
@@ -648,7 +729,14 @@ pub async fn create_sn_config(builder: &DevEnvBuilder,sn_ip:IpAddr,sn_base_host:
         owner_jwk,
     );
 
-    write_json(&builder.root_dir().join("sn_server").join(".buckycli").join("user_config.json"), &owner_config);
+    write_json(
+        &builder
+            .root_dir()
+            .join("sn_server")
+            .join(".buckycli")
+            .join("user_config.json"),
+        &owner_config,
+    );
     println!("- Created owner config for sn admin.");
 
     // Create device JWT
@@ -659,12 +747,22 @@ pub async fn create_sn_config(builder: &DevEnvBuilder,sn_ip:IpAddr,sn_base_host:
         exp: builder.exp(),
         extra_info: HashMap::new(),
     };
-    let device_mini_jwt = device_mini_config.to_jwt(&get_encoding_key(owner_keys.private_key_pem.as_str())).unwrap();
+    let device_mini_jwt = device_mini_config
+        .to_jwt(&get_encoding_key(owner_keys.private_key_pem.as_str()))
+        .unwrap();
 
-    let mut device_config = DeviceConfig::new_by_mini_config(&device_mini_jwt, &device_mini_config, DID::new("web", "sn.devtests.org"), DID::new("bns", "sn"));
+    let mut device_config = DeviceConfig::new_by_mini_config(
+        &device_mini_jwt,
+        &device_mini_config,
+        DID::new("web", "sn.devtests.org"),
+        DID::new("bns", "sn"),
+    );
     device_config.net_id = Some("wan".to_string());
     write_json(&sn_dir.join("sn_device_config.json"), &device_config);
-    write_file(&sn_dir.join("sn_private_key.pem"), device_keys.private_key_pem.as_str());
+    write_file(
+        &sn_dir.join("sn_private_key.pem"),
+        device_keys.private_key_pem.as_str(),
+    );
     println!("- Created sn device config & private key.");
 
     // Create ZoneBootConfig
@@ -700,7 +798,9 @@ pub async fn create_sn_config(builder: &DevEnvBuilder,sn_ip:IpAddr,sn_base_host:
 
     // Create initial database
     let sn_db_path = builder.root_dir().join("sn_server").join("sn_db.sqlite3");
-    let db = SqliteSnDB::new_by_path(&sn_db_path.to_string_lossy()).await.unwrap();
+    let db = SqliteSnDB::new_by_path(&sn_db_path.to_string_lossy())
+        .await
+        .unwrap();
     db.initialize_database().await.unwrap();
     for i in 0..9 {
         let code = format!("sndevtest{}", i);
@@ -709,9 +809,7 @@ pub async fn create_sn_config(builder: &DevEnvBuilder,sn_ip:IpAddr,sn_base_host:
     }
 
     println!("- Created SN database.");
-   
 }
-
 
 pub async fn register_user_to_sn(
     builder: &DevEnvBuilder,
@@ -719,7 +817,10 @@ pub async fn register_user_to_sn(
     sn_db_path: &str,
 ) -> Result<(), String> {
     // Parse username
-    let user_config_path = builder.root_dir().join(user_zone_id).join("user_config.json");
+    let user_config_path = builder
+        .root_dir()
+        .join(user_zone_id)
+        .join("user_config.json");
     println!("user_config_path: {}", user_config_path.display());
     let user_config_content = fs::read_to_string(&user_config_path)
         .map_err(|e| format!("Failed to read user_config.json: {}", e))?;
@@ -730,12 +831,15 @@ pub async fn register_user_to_sn(
         .and_then(|v| v.as_str())
         .ok_or("user_config.json missing name field")?;
 
-    let zone_config_file = builder.root_dir().join(user_zone_id).join("zone_config.json");
+    let zone_config_file = builder
+        .root_dir()
+        .join(user_zone_id)
+        .join("zone_config.json");
     let zone_config: ZoneConfig = serde_json::from_str(
-            &fs::read_to_string(&zone_config_file)
-                .map_err(|e| format!("Failed to read {:?}: {}", zone_config_file, e))?,
-        )
-        .map_err(|e| format!("Failed to parse {:?}: {}", zone_config_file, e))?;
+        &fs::read_to_string(&zone_config_file)
+            .map_err(|e| format!("Failed to read {:?}: {}", zone_config_file, e))?,
+    )
+    .map_err(|e| format!("Failed to parse {:?}: {}", zone_config_file, e))?;
 
     let zone_did = zone_config.id.clone();
     let mut user_domain = None;
@@ -743,7 +847,10 @@ pub async fn register_user_to_sn(
         user_domain = Some(zone_did.to_host_name());
     }
 
-    let zone_record_path = builder.root_dir().join(user_zone_id).join("zone_txt_record.json");
+    let zone_record_path = builder
+        .root_dir()
+        .join(user_zone_id)
+        .join("zone_txt_record.json");
     let zone_record: ZoneTxtRecord = serde_json::from_str(
         &fs::read_to_string(&zone_record_path)
             .map_err(|e| format!("Failed to read {:?}: {}", zone_record_path, e))?,
@@ -761,8 +868,10 @@ pub async fn register_user_to_sn(
         username,
         public_key_json.to_string().as_str(),
         zone_record.boot_config_jwt.as_str(),
-        user_domain
-    ).await.map_err(|e| format!("Failed to register user: {}", e))?;
+        user_domain,
+    )
+    .await
+    .map_err(|e| format!("Failed to register user: {}", e))?;
     println!(
         "Successfully registered user {}@{} to SN database at {}",
         username, user_zone_id, sn_db_path
@@ -771,7 +880,7 @@ pub async fn register_user_to_sn(
 }
 
 /// Register device to SN database
-/// 
+///
 /// Device registration types supported:
 /// - NAT behind OOD + subdomain
 /// - NAT behind OOD + custom domain
@@ -781,7 +890,7 @@ pub async fn register_user_to_sn(
 /// - NAT behind OOD with full port mapping + custom domain
 /// - WAN OOD + subdomain
 /// - WAN OOD + custom domain
-/// 
+///
 /// Not supported:
 /// - WAN OOD with fixed IP, using own domain, using own NS server (no SN needed)
 pub async fn register_device_to_sn(
@@ -794,7 +903,7 @@ pub async fn register_device_to_sn(
     // Try to find device config in builder root: {username}/{device_name}/node_identity.json
     let device_dir = builder.root_dir().join(user_zone_id).join(device_name);
     let node_identity_path = device_dir.join("node_identity.json");
-    
+
     if !node_identity_path.exists() {
         return Err(format!(
             "Device config not found: {}",
@@ -805,7 +914,7 @@ pub async fn register_device_to_sn(
     // Read node_identity.json to get device DID
     let node_identity: NodeIdentityConfig = serde_json::from_str(
         &std::fs::read_to_string(&node_identity_path)
-            .map_err(|e| format!("Failed to read node_identity.json: {}", e))?
+            .map_err(|e| format!("Failed to read node_identity.json: {}", e))?,
     )
     .map_err(|e| format!("Failed to parse node_identity.json: {}", e))?;
 
@@ -818,8 +927,10 @@ pub async fn register_device_to_sn(
         .map_err(|e| format!("Failed to create EncodedDocument: {}", e))?;
     let device_doc = DeviceConfig::decode(
         &encoded_doc,
-        Some(&DecodingKey::from_jwk(&node_identity.owner_public_key)
-            .map_err(|e| format!("Failed to decode owner public key: {}", e))?)
+        Some(
+            &DecodingKey::from_jwk(&node_identity.owner_public_key)
+                .map_err(|e| format!("Failed to decode owner public key: {}", e))?,
+        ),
     )
     .map_err(|e| format!("Failed to decode device_doc_jwt: {}", e))?;
 
@@ -827,21 +938,39 @@ pub async fn register_device_to_sn(
     let device_did = device_doc.id.clone();
 
     let ood_desc = {
-        let zone_config_path = builder.root_dir().join(user_zone_id).join("zone_config.json");
+        let zone_config_path = builder
+            .root_dir()
+            .join(user_zone_id)
+            .join("zone_config.json");
         fs::read_to_string(&zone_config_path)
             .ok()
             .and_then(|content| serde_json::from_str::<ZoneConfig>(&content).ok())
-            .and_then(|zone_config| zone_config.oods.iter().find(|ood| ood.name == device_name).cloned())
+            .and_then(|zone_config| {
+                zone_config
+                    .oods
+                    .iter()
+                    .find(|ood| ood.name == device_name)
+                    .cloned()
+            })
             .unwrap_or_else(|| {
                 device_name
                     .parse::<OODDescriptionString>()
-                    .unwrap_or_else(|_| OODDescriptionString::new(device_name.to_string(), DeviceNodeType::Device, None, None))
+                    .unwrap_or_else(|_| {
+                        OODDescriptionString::new(
+                            device_name.to_string(),
+                            DeviceNodeType::Device,
+                            None,
+                            None,
+                        )
+                    })
             })
     };
 
     // Create DeviceInfo and fill system info
     let mut device_info = DeviceInfo::new(&ood_desc, device_did.clone());
-    device_info.auto_fill_by_system_info().await
+    device_info
+        .auto_fill_by_system_info()
+        .await
         .map_err(|e| format!("Failed to fill device system info: {}", e))?;
 
     // Get device IP from DeviceInfo (ip is Option<IpAddr>)
@@ -858,7 +987,8 @@ pub async fn register_device_to_sn(
         .map_err(|e| format!("Failed to serialize device info: {}", e))?;
 
     // Open SN database
-    let db = SqliteSnDB::new_by_path(sn_db_path).await
+    let db = SqliteSnDB::new_by_path(sn_db_path)
+        .await
         .map_err(|e| format!("Failed to open SN database: {}", e))?;
 
     db.register_device(
@@ -867,7 +997,7 @@ pub async fn register_device_to_sn(
         &device_did.to_string(),
         &device_mini_doc_jwt,
         &device_ip,
-        &device_info_json
+        &device_info_json,
     )
     .await
     .map_err(|e| format!("Failed to register device: {}", e))?;
@@ -887,7 +1017,7 @@ pub async fn cmd_create_user_env(
     username: &str,
     hostname: &str,
     ood_name: &str,
-    sn_base_host: &str, 
+    sn_base_host: &str,
     rtcp_port: u16,
     output_dir: Option<&str>,
 ) -> Result<(), String> {
@@ -898,7 +1028,7 @@ pub async fn cmd_create_user_env(
     };
 
     let builder = DevEnvBuilder::from_path(root_dir);
-    
+
     // Get or create user key pair
     let key_pair = TestKeys::get_key_pair_by_id(username)
         .or_else(|_| {
@@ -907,7 +1037,10 @@ pub async fn cmd_create_user_env(
         })
         .or_else(|_| {
             // If still not found, use devtest as default (for testing only)
-            println!("Warning: Key pair for user {} not found, using devtest key pair", username);
+            println!(
+                "Warning: Key pair for user {} not found, using devtest key pair",
+                username
+            );
             TestKeys::get_key_pair_by_id("devtest")
         })?;
 
@@ -916,20 +1049,23 @@ pub async fn cmd_create_user_env(
     let mut sn_host = None;
     if sn_base_host.contains(".") {
         let web3_bns = format!("web3.{}", sn_base_host);
-        zone_did = DID::from_host_name_by_bridge(hostname,"bns",&web3_bns).unwrap();
+        zone_did = DID::from_host_name_by_bridge(hostname, "bns", &web3_bns).unwrap();
         sn_host = Some(format!("sn.{}", sn_base_host));
     }
 
     let scope = builder.user_scope(username, zone_did.clone(), &key_pair);
-    
+
     // Create owner configuration
     scope.create_owner_config();
-    
+
     // Create zone_boot_config (currently only generates a simple OOD description, SN is empty)
     let ood: OODDescriptionString = ood_name.to_string().parse().unwrap();
     let _zone_txt_record = scope.create_zone_boot_config_jwt(sn_host, ood, rtcp_port);
 
-    println!("Successfully created user environment configuration: {}", username);
+    println!(
+        "Successfully created user environment configuration: {}",
+        username
+    );
     println!("Zone hostname: {}", hostname);
     println!("Zone netid: {}", ood_name);
     Ok(())
@@ -963,34 +1099,46 @@ pub async fn cmd_create_node_configs(
     // Parse zone configuration
     let zone_config_file = root_dir.join("zone_config.json");
     let zone_config: ZoneConfig = serde_json::from_str(
-            &fs::read_to_string(&zone_config_file)
-                .map_err(|e| format!("Failed to read {:?}: {}", zone_config_file, e))?,
-        )
-        .map_err(|e| format!("Failed to parse {:?}: {}", zone_config_file, e))?;
+        &fs::read_to_string(&zone_config_file)
+            .map_err(|e| format!("Failed to read {:?}: {}", zone_config_file, e))?,
+    )
+    .map_err(|e| format!("Failed to parse {:?}: {}", zone_config_file, e))?;
     let zone_did = zone_config.id.clone();
 
     // Get user key pair
-    let key_pair = TestKeys::get_key_pair_by_id(username)
-        .or_else(|_| {
-            println!("Warning: Key pair for user {} not found, using devtest key pair", username);
-            TestKeys::get_key_pair_by_id("devtest")
-        })?;
+    let key_pair = TestKeys::get_key_pair_by_id(username).or_else(|_| {
+        println!(
+            "Warning: Key pair for user {} not found, using devtest key pair",
+            username
+        );
+        TestKeys::get_key_pair_by_id("devtest")
+    })?;
 
     let scope = builder.user_scope(username, zone_did.clone(), &key_pair);
 
     // Ensure user configuration exists
     if !scope.user_dir.join("user_config.json").exists() {
-        return Err(format!("User configuration does not exist: {}", scope.user_dir.join("user_config.json").display()));
+        return Err(format!(
+            "User configuration does not exist: {}",
+            scope.user_dir.join("user_config.json").display()
+        ));
     }
 
     scope.create_node_config(device_name, net_id.map(|s| s.to_string()));
 
-    println!("Successfully created node configuration: {}.{}", username, device_name);
+    println!(
+        "Successfully created node configuration: {}.{}",
+        username, device_name
+    );
     Ok(())
 }
 
 /// Create SN configuration (command line interface)
-pub async fn cmd_create_sn_configs(output_dir: Option<&str>,sn_ip:IpAddr,sn_base_host:String) -> Result<(), String> {
+pub async fn cmd_create_sn_configs(
+    output_dir: Option<&str>,
+    sn_ip: IpAddr,
+    sn_base_host: String,
+) -> Result<(), String> {
     let root_dir = if let Some(dir) = output_dir {
         PathBuf::from(dir)
     } else {
@@ -998,13 +1146,13 @@ pub async fn cmd_create_sn_configs(output_dir: Option<&str>,sn_ip:IpAddr,sn_base
     };
 
     let builder = DevEnvBuilder::from_path(root_dir);
-    create_sn_config(&builder,sn_ip,sn_base_host).await;
-    
+    create_sn_config(&builder, sn_ip, sn_base_host).await;
+
     println!("Successfully created SN configuration");
     Ok(())
 }
 
-pub fn create_applist() -> Result<HashMap<String,LocalAppInstanceConfig>, String> {
+pub fn create_applist() -> Result<HashMap<String, LocalAppInstanceConfig>, String> {
     let mut app_list = HashMap::new();
 
     let cyfs_gateway_doc_json = json!({
@@ -1032,7 +1180,7 @@ pub fn create_applist() -> Result<HashMap<String,LocalAppInstanceConfig>, String
         }
     });
 
-    let cyfs_gateway_doc : AppDoc = serde_json::from_value(cyfs_gateway_doc_json).unwrap();
+    let cyfs_gateway_doc: AppDoc = serde_json::from_value(cyfs_gateway_doc_json).unwrap();
 
     let cyfs_gateway_cfg = LocalAppInstanceConfig {
         target_state: ServiceInstanceState::Started,
@@ -1041,7 +1189,7 @@ pub fn create_applist() -> Result<HashMap<String,LocalAppInstanceConfig>, String
         user_id: "devtest".to_string(),
         install_config: ServiceInstallConfig::default(),
     };
-    app_list.insert("cyfs-gateway".to_string(), cyfs_gateway_cfg);  
+    app_list.insert("cyfs-gateway".to_string(), cyfs_gateway_cfg);
 
     Ok(app_list)
 }
@@ -1052,7 +1200,7 @@ pub fn cmd_create_applist(output_dir: Option<&str>) -> Result<(), String> {
     } else {
         std::env::current_dir().map_err(|e| format!("Failed to get current directory: {}", e))?
     };
-    
+
     let app_list = create_applist()?;
     write_json(&root_dir.join("applist.json"), &app_list);
     Ok(())
@@ -1091,7 +1239,7 @@ pub async fn cmd_register_device_to_sn(
 
     let builder = DevEnvBuilder::from_path(root_dir);
     register_device_to_sn(&builder, username, device_name, sn_db_path).await?;
-    
+
     Ok(())
 }
 
@@ -1116,10 +1264,7 @@ pub async fn create_test_env_configs() {
 
     // devtest node1
     let _node1_keys = TestKeys::devtest_node1();
-    devtest_scope.create_node_config(
-        "node1",
-        Some("lan1".to_string()),
-    );
+    devtest_scope.create_node_config("node1", Some("lan1".to_string()));
 
     // 2. Create bob user environment
     let bob_keys = TestKeys::bob_owner();
@@ -1137,22 +1282,27 @@ pub async fn create_test_env_configs() {
     bob_scope.create_node_config("ood1", Some("lan2".to_string()));
 
     // 3. Create SN configuration
-    create_sn_config(&builder, "127.0.0.1".parse().unwrap(), "buckyos.io".to_string()).await;
+    create_sn_config(
+        &builder,
+        "127.0.0.1".parse().unwrap(),
+        "buckyos.io".to_string(),
+    )
+    .await;
 
     // 4. Initialize SN database (if SnDB is available)
     // let sn_db_path = builder.root_dir().join("sn_db.sqlite3");
     // if sn_db_path.exists() {
     //     std::fs::remove_file(&sn_db_path).unwrap();
     // }
-    // 
+    //
     // let db = SnDB::new_by_path(sn_db_path.to_str().unwrap()).unwrap();
     // db.initialize_database();
-    // 
+    //
     // // Insert activation codes
     // for code in &["test-active-sn-code-bob", "11111", "22222", "33333", "44444", "55555"] {
     //     db.insert_activation_code(code).unwrap();
     // }
-    // 
+    //
     // // Register user
     // let bob_public_key_str = serde_json::to_string(&bob_keys.public_key_jwk).unwrap();
     // db.register_user(
@@ -1163,12 +1313,12 @@ pub async fn create_test_env_configs() {
     //     None,
     // )
     // .unwrap();
-    // 
+    //
     // // Register device
     // let mut device_info = DeviceInfo::new("ood1", bob_ood1_did.clone());
     // device_info.auto_fill_by_system_info().await.unwrap();
     // let device_info_json = serde_json::to_string_pretty(&device_info).unwrap();
-    // 
+    //
     // db.register_device(
     //     "bob",
     //     "ood1",
@@ -1177,7 +1327,7 @@ pub async fn create_test_env_configs() {
     //     device_info_json.as_str(),
     // )
     // .unwrap();
-    // 
+    //
     // println!("# sn_db created at {}", sn_db_path.to_string_lossy());
 }
 
@@ -1190,7 +1340,7 @@ mod tests {
         let root_dir = format!(".buckycli_{}", test_name);
         DevEnvBuilder::new(&root_dir)
     }
-    
+
     #[tokio::test]
     pub async fn test_verify_all_key_pairs() {
         TestKeys::verify_all_key_pairs().unwrap();
@@ -1253,7 +1403,10 @@ mod tests {
         write_json(&builder.root_dir().join("start_config.json"), &start_config);
 
         // Output DNS records
-        println!("# test.buckyos.io TXT Record: BOOT={};", zone_txt_record.boot_config_jwt);
+        println!(
+            "# test.buckyos.io TXT Record: BOOT={};",
+            zone_txt_record.boot_config_jwt
+        );
         if let Ok(owner_x) = get_x_from_jwk(&get_jwk(&owner_keys.public_key_x)) {
             println!("# test.buckyos.io TXT Record: PKX={};", owner_x);
         }
@@ -1283,7 +1436,8 @@ mod tests {
         let public_key = DecodingKey::from_jwk(&public_key_jwk).unwrap();
 
         // Wrap JWT string as EncodedDocument, then decode
-        let encoded_doc = EncodedDocument::from_str(zone_txt_record.boot_config_jwt.clone()).unwrap();
+        let encoded_doc =
+            EncodedDocument::from_str(zone_txt_record.boot_config_jwt.clone()).unwrap();
         let zone_boot_config_decoded =
             ZoneBootConfig::decode(&encoded_doc, Some(&public_key)).unwrap();
         println!("zone_boot_config_decoded: {:?}", zone_boot_config_decoded);
@@ -1301,7 +1455,6 @@ mod tests {
 
         //assert_eq!(expected_zone_boot_config, zone_boot_config_decoded);
     }
-
 
     //#[tokio::test]
     async fn test_create_formula_sn_config() {

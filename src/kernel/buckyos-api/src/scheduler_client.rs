@@ -1,6 +1,5 @@
-
-use ::kRPC::*;
 use crate::{AppDoc, AppType, SelectorType};
+use ::kRPC::*;
 use name_lib::DID;
 
 pub const SCHEDULER_SERVICE_UNIQUE_ID: &str = "scheduler";
@@ -15,7 +14,6 @@ impl SchedulerClient {
         Self { rpc_client }
     }
 }
-
 
 pub fn generate_scheduler_service_doc() -> AppDoc {
     const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -20,9 +20,6 @@ App申请的权限分类
 
 */
 
-
-
-
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum GrantMode {
@@ -32,16 +29,15 @@ pub enum GrantMode {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct PermissionRequest {
-    pub scope: String,              // e.g. "fs.home"
-    pub grant: GrantMode,           // all | subset
+    pub scope: String,    // e.g. "fs.home"
+    pub grant: GrantMode, // all | subset
     pub required: bool,
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub actions: Vec<String>,       // e.g. ["read","write"]
+    pub actions: Vec<String>, // e.g. ["read","write"]
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<PermissionItem>, // required when grant=subset
-
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub constraints: Option<serde_json::Value>,
@@ -56,7 +52,6 @@ pub struct PermissionItem {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required: Option<bool>,
-
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub constraints: Option<serde_json::Value>,

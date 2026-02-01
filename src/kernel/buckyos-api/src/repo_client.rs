@@ -1,17 +1,14 @@
-
-
+use ::kRPC::*;
 use name_lib::DID;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
-use ::kRPC::*;
-use serde::{Deserialize, Serialize};
 
 use crate::{AppDoc, AppType, SelectorType};
 
 pub const REPO_SERVICE_UNIQUE_ID: &str = "repo-service";
 pub const REPO_SERVICE_SERVICE_NAME: &str = "repo-service";
 pub const REPO_SERVICE_SERVICE_PORT: u16 = 4000;
-
 
 #[derive(Serialize, Deserialize)]
 struct RepoServiceSettings {
@@ -34,7 +31,7 @@ impl RepoClient {
         Ok(())
     }
 
-    pub async fn pub_pkg(&self,pkg_meta_jwt_map: HashMap<String,String>) -> Result<()> {
+    pub async fn pub_pkg(&self, pkg_meta_jwt_map: HashMap<String, String>) -> Result<()> {
         let params = json!({
             "pkg_list": pkg_meta_jwt_map
         });
@@ -44,7 +41,11 @@ impl RepoClient {
 
     // install pkg at current zone
     // pkg_id -> will_install_chunk_id (can be empty)
-    pub async fn install_pkg(&self,pkg_list: &HashMap<String,String>,install_task_name: &str) -> Result<()> {
+    pub async fn install_pkg(
+        &self,
+        pkg_list: &HashMap<String, String>,
+        install_task_name: &str,
+    ) -> Result<()> {
         let params = json!({
             "pkg_list": pkg_list,
             "task_name": install_task_name
@@ -55,11 +56,13 @@ impl RepoClient {
 
     pub async fn sync_from_remote_source(&self) -> Result<()> {
         let params = json!({});
-        let _result = self.krpc_client.call("sync_from_remote_source", params).await?;
+        let _result = self
+            .krpc_client
+            .call("sync_from_remote_source", params)
+            .await?;
         Ok(())
     }
 }
-
 
 pub fn generate_repo_service_doc() -> AppDoc {
     const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -11,8 +11,7 @@ pub struct ShortcutTarget {
     app_id: String,
 }
 
-
- // services/gateway/settings
+// services/gateway/settings
 #[derive(Serialize, Deserialize)]
 pub struct ZoneGatewaySettings {
     shortcuts: HashMap<String, ShortcutTarget>,
@@ -36,8 +35,8 @@ impl ZoneGatewaySettings {
     pub fn get_shortcut(&self, spec_id: &str) -> Vec<String> {
         info!("get_shortcut: {}", spec_id);
         let mut shortcut_hosts = Vec::new();
-        let parts  = spec_id.split("@").collect::<Vec<&str>>();
-        let app_id ;
+        let parts = spec_id.split("@").collect::<Vec<&str>>();
+        let app_id;
         let mut user_id = None;
         if parts.len() == 2 {
             app_id = parts[0].to_string();
@@ -55,4 +54,3 @@ impl ZoneGatewaySettings {
         shortcut_hosts
     }
 }
-

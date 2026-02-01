@@ -1,5 +1,6 @@
 {
-  "name": "buckyos_systest",
+  
+  "name": "buckyos_systest", 
     "version": "0.5.1", 
     "description": {
       "detail": "BuckyOS System Test App"

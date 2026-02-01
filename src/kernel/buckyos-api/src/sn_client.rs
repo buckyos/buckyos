@@ -1,7 +1,7 @@
-use name_lib::DeviceInfo;
 use ::kRPC::*;
 use async_trait::async_trait;
 use log::*;
+use name_lib::DeviceInfo;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::net::IpAddr;
@@ -25,10 +25,7 @@ impl SnBindZoneConfigReq {
 
     pub fn from_json(value: Value) -> Result<Self, RPCErrors> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse SnBindZoneConfigReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse SnBindZoneConfigReq: {}", e))
         })
     }
 }
@@ -51,10 +48,7 @@ impl SnUpdateDeviceInfoReq {
 
     pub fn from_json(value: Value) -> Result<Self, RPCErrors> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse SnUpdateDeviceInfoReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse SnUpdateDeviceInfoReq: {}", e))
         })
     }
 }
@@ -67,19 +61,48 @@ pub struct SnGetDeviceInfoReq {
 
 impl SnGetDeviceInfoReq {
     pub fn new(owner_id: String, device_id: String) -> Self {
-        Self { owner_id, device_id }
+        Self {
+            owner_id,
+            device_id,
+        }
     }
 
     pub fn from_json(value: Value) -> Result<Self, RPCErrors> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse SnGetDeviceInfoReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse SnGetDeviceInfoReq: {}", e))
         })
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnSetUserDidDocumentReq {
+    pub owner_user: String,
+    pub obj_name: String,
+    pub did_document: Value,
+    pub doc_type: String,
+}
+
+impl SnSetUserDidDocumentReq {
+    pub fn new(
+        owner_user: String,
+        obj_name: String,
+        did_document: Value,
+        doc_type: String,
+    ) -> Self {
+        Self {
+            owner_user,
+            obj_name,
+            did_document,
+            doc_type,
+        }
+    }
+
+    pub fn from_json(value: Value) -> Result<Self, RPCErrors> {
+        serde_json::from_value(value).map_err(|e| {
+            RPCErrors::ParseRequestError(format!("Failed to parse SnSetUserDidDocumentReq: {}", e))
+        })
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnRegisterDeviceReq {
@@ -112,10 +135,7 @@ impl SnRegisterDeviceReq {
 
     pub fn from_json(value: Value) -> Result<Self, RPCErrors> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse SnRegisterDeviceReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse SnRegisterDeviceReq: {}", e))
         })
     }
 }
@@ -204,10 +224,7 @@ impl SnClient {
             Self::KRPC(client) => {
                 let req = SnGetDeviceInfoReq::new(owner_id.to_string(), device_id.to_string());
                 let req_json = serde_json::to_value(&req).map_err(|e| {
-                    RPCErrors::ReasonError(format!(
-                        "Failed to serialize SnGetDeviceInfoReq: {}",
-                        e
-                    ))
+                    RPCErrors::ReasonError(format!("Failed to serialize SnGetDeviceInfoReq: {}", e))
                 })?;
                 let result = client.call("get", req_json).await?;
                 serde_json::from_value(result).map_err(|e| {
@@ -262,6 +279,38 @@ impl SnClient {
             }
         }
     }
+
+    pub async fn set_user_did_document(
+        &self,
+        owner_user: &str,
+        obj_name: &str,
+        did_document: &Value,
+        doc_type: &str,
+    ) -> Result<(), RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_set_user_did_document(owner_user, obj_name, did_document, doc_type)
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req = SnSetUserDidDocumentReq::new(
+                    owner_user.to_string(),
+                    obj_name.to_string(),
+                    did_document.clone(),
+                    doc_type.to_string(),
+                );
+                let req_json = serde_json::to_value(&req).map_err(|e| {
+                    RPCErrors::ReasonError(format!(
+                        "Failed to serialize SnSetUserDidDocumentReq: {}",
+                        e
+                    ))
+                })?;
+                client.call("set_user_did_document", req_json).await?;
+                Ok(())
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -294,6 +343,14 @@ pub trait SnHandler: Send + Sync {
         device_ip: &str,
         device_info: &str,
         mini_config_jwt: &str,
+    ) -> Result<(), RPCErrors>;
+
+    async fn handle_set_user_did_document(
+        &self,
+        owner_user: &str,
+        obj_name: &str,
+        did_document: &Value,
+        doc_type: &str,
     ) -> Result<(), RPCErrors>;
 }
 
@@ -363,6 +420,19 @@ impl<T: SnHandler> RPCHandler for SnServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
+            "set_user_did_document" => {
+                let set_req = SnSetUserDidDocumentReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_set_user_did_document(
+                        &set_req.owner_user,
+                        &set_req.obj_name,
+                        &set_req.did_document,
+                        &set_req.doc_type,
+                    )
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
             _ => return Err(RPCErrors::UnknownMethod(req.method.clone())),
         };
 
@@ -384,13 +454,12 @@ pub async fn sn_bind_zone_config(
     let client = SnClient::new_krpc(Box::new(kRPC::new(sn_url, session_token)));
 
     let real_username = username.to_lowercase();
-    let req = SnBindZoneConfigReq::new(
-        zone_config_jwt.to_string(),
-        real_username,
-        user_domain,
-    );
+    let req = SnBindZoneConfigReq::new(zone_config_jwt.to_string(), real_username, user_domain);
 
-    info!("bind zone config to sn for {} {}", username, zone_config_jwt);
+    info!(
+        "bind zone config to sn for {} {}",
+        username, zone_config_jwt
+    );
     client
         .bind_zone_config(&req.zone_config, &req.user_name, req.user_domain)
         .await?;
@@ -407,7 +476,10 @@ pub async fn sn_update_device_info(
 ) -> Result<(), RPCErrors> {
     let client = SnClient::new_krpc(Box::new(kRPC::new(sn_url, session_token)));
 
-    info!("update device info to sn {} for {}_{}", sn_url, owner_id, device_id);
+    info!(
+        "update device info to sn {} for {}_{}",
+        sn_url, owner_id, device_id
+    );
     client
         .update_device_info(owner_id, device_id, device_info)
         .await?;
@@ -452,17 +524,37 @@ pub async fn sn_register_device(
     Ok(())
 }
 
-pub async fn get_real_sn_host_name(sn: &str,device_id: &str) -> std::result::Result<String,RPCErrors> {
+pub async fn sn_set_user_did_document(
+    sn_url: &str,
+    session_token: Option<String>,
+    owner_user: &str,
+    obj_name: &str,
+    did_document: &Value,
+    doc_type: &str,
+) -> Result<(), RPCErrors> {
+    let client = SnClient::new_krpc(Box::new(kRPC::new(sn_url, session_token)));
+
+    client
+        .set_user_did_document(owner_user, obj_name, did_document, doc_type)
+        .await
+}
+
+pub async fn get_real_sn_host_name(
+    sn: &str,
+    device_id: &str,
+) -> std::result::Result<String, RPCErrors> {
     // 尝试通过 HTTP GET 请求获取 https://$sn/config?device_id=$device_id
     let url = format!("https://{}/config?device_id={}", sn, device_id);
     let response = match reqwest::get(&url).await {
         Ok(resp) => resp,
         Err(e) => {
-            warn!("get sn host name from {} failed! {},use sn as host name", url, e);
+            warn!(
+                "get sn host name from {} failed! {},use sn as host name",
+                url, e
+            );
             return Ok(sn.to_string());
         }
     };
-
 
     let body = match response.text().await {
         Ok(text) => text,
@@ -478,10 +570,9 @@ pub async fn get_real_sn_host_name(sn: &str,device_id: &str) -> std::result::Res
         return Ok(sn.to_string());
     }
 
-    let sn_config:Value = sn_config.unwrap();
+    let sn_config: Value = sn_config.unwrap();
 
     let host_name = sn_config["host"].as_str().unwrap();
-    warn!("get sn real host from {} success! => {}", url,host_name);
+    warn!("get sn real host from {} success! => {}", url, host_name);
     Ok(host_name.to_string())
-
 }

@@ -149,7 +149,7 @@ export async function register_sn_user(user_name:string,active_code:string,publi
         params["user_domain"] = user_domain;
     }
     console.log("register_sn_user params",params);
-    let result = await rpc_client.call("register_user",params);
+    let result: JsonValue = await rpc_client.call("register_user",params);
     let code = result["code"];
     return code == 0;
 }
@@ -158,7 +158,7 @@ export async function register_sn_user(user_name:string,active_code:string,publi
 
 export async function register_sn_main_ood (user_name:string,device_name:string,device_did:string,mini_config_jwt:string,device_ip:string,device_info:string) : Promise<boolean> {
     let rpc_client = new buckyos.kRPCClient(SN_API_URL);
-    let result = await rpc_client.call("register",{
+    let result: JsonValue = await rpc_client.call("register",{
         user_name:user_name,
         device_name:device_name,
         device_did:device_did,
@@ -175,7 +175,7 @@ export async function register_sn_main_ood (user_name:string,device_name:string,
 
 export async function check_sn_active_code(sn_active_code:string) : Promise<boolean> {
     let rpc_client = new buckyos.kRPCClient(SN_API_URL);
-    let result = await rpc_client.call("check_active_code",{active_code:sn_active_code});
+    let result: JsonValue = await rpc_client.call("check_active_code",{active_code:sn_active_code});
     let valid = result["valid"];
     return valid;
 }
@@ -186,7 +186,7 @@ export async function check_bucky_username(check_bucky_username:string) : Promis
         return false;
     }
     let rpc_client = new buckyos.kRPCClient(SN_API_URL);
-    let result = await rpc_client.call("check_username",{username:check_bucky_username});
+    let result: JsonValue = await rpc_client.call("check_username",{username:check_bucky_username});
     let valid = result["valid"];
     return valid;
 }
@@ -207,7 +207,7 @@ export function validate_bucky_username(username:string):{valid:boolean; reason?
 
 export async function generate_key_pair():Promise<[JsonValue,string]> {
     let rpc_client = new buckyos.kRPCClient("/kapi/active");
-    let result = await rpc_client.call("generate_key_pair",{});
+    let result: JsonValue = await rpc_client.call("generate_key_pair",{});
     let public_key = result["public_key"]
     let private_key = result["private_key"]
     return [public_key,private_key];
@@ -244,7 +244,7 @@ export async function generate_zone_txt_records(sn:string,
         }
     } else {
         let rpc_client = new buckyos.kRPCClient("/kapi/active");
-        let result = await rpc_client.call("generate_zone_txt_records",{
+        let result: JsonValue = await rpc_client.call("generate_zone_txt_records",{
             zone_boot_config:zone_boot_config_str,
             device_mini_config:device_mini_config_str,
             private_key:owner_private_key   
@@ -262,7 +262,7 @@ export function isValidDomain(domain: string): boolean {
 
 export async function get_thisdevice_info():Promise<JsonValue> {
     let rpc_client = new buckyos.kRPCClient("/kapi/active");
-    let result = await rpc_client.call("get_device_info",{});
+    let result: JsonValue = await rpc_client.call("get_device_info",{});
     let device_info = result["device_info"];
     return device_info;
 }
@@ -304,7 +304,7 @@ export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolea
         sn_url: SN_API_URL
     };
 
-    let prepare_result = await rpc_client.call("prepare_params_for_active_by_wallet", prepare_params);
+    let prepare_result: JsonValue = await rpc_client.call("prepare_params_for_active_by_wallet", prepare_params);
     if (prepare_result["code"] != undefined && prepare_result["code"] != 0) {
         console.error("Failed to prepare params for wallet activation");
         return false;
@@ -314,7 +314,7 @@ export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolea
     let mini_device_config_json = create_device_mini_config(data.device_public_key,data.rtcp_port);
     let device_config_json = prepare_result["device_config"];
     let rpc_token_json = prepare_result["rpc_token"];
-    let device_info_json = prepare_result["device_info"];
+    let device_info_json = prepare_result["device_info"]; 
 
     // Step 2: Sign the data using wallet's signWithActiveDid
     let signed_results:string[]|null = null;
@@ -366,7 +366,7 @@ export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolea
         sn_rpc_token: rpc_token_jwt,
     };
 
-    let active_result = await rpc_client.call("do_active_by_wallet", active_params);
+    let active_result: JsonValue = await rpc_client.call("do_active_by_wallet", active_params);
     let code = active_result["code"];
     return code == 0;
 }
@@ -396,7 +396,7 @@ export async function do_active(data:ActiveWizzardData):Promise<boolean> {
         let device_mini_config = create_device_mini_config(data.device_public_key,data.rtcp_port);
         let device_mini_config_str = JSON.stringify(device_mini_config);
         let rpc_client = new buckyos.kRPCClient("/kapi/active");
-        let records_result = await rpc_client.call("generate_zone_txt_records",{
+        let records_result: JsonValue = await rpc_client.call("generate_zone_txt_records",{
             zone_boot_config:zone_boot_config_str,
             device_mini_config:device_mini_config_str,
             private_key:data.owner_private_key   
@@ -434,7 +434,7 @@ export async function do_active(data:ActiveWizzardData):Promise<boolean> {
 
     console.log("call do_active,param:",data);
     let rpc_client = new buckyos.kRPCClient("/kapi/active");
-    let result = await rpc_client.call("do_active",{
+    let result: JsonValue = await rpc_client.call("do_active",{
         user_name:data.owner_user_name,
         zone_name:zone_name,
         net_id:get_net_id_by_gateway_type(data.gatewy_type,data.port_mapping_mode),

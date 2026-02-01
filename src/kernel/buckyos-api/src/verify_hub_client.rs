@@ -10,7 +10,7 @@ use crate::{AppDoc, AppType, SelectorType, UserInfo};
 
 pub const VERIFY_HUB_UNIQUE_ID: &str = "verify-hub";
 pub const VERIFY_HUB_SERVICE_NAME: &str = "verify-hub";
-pub const VERIFY_HUB_TOKEN_EXPIRE_TIME: u64 = 60*10;//10 minutes
+pub const VERIFY_HUB_TOKEN_EXPIRE_TIME: u64 = 60 * 10; //10 minutes
 pub const VERIFY_HUB_SERVICE_PORT: u16 = 3210;
 
 #[allow(dead_code)]
@@ -18,7 +18,6 @@ pub const VERIFY_HUB_SERVICE_PORT: u16 = 3210;
 struct VerifyHubSettings {
     trust_keys: Vec<String>,
 }
-
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TokenPair {
@@ -153,7 +152,7 @@ impl LoginByPasswordRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginByPasswordResponse {
-    pub user_info:UserInfo,
+    pub user_info: UserInfo,
     pub session_token: String,
     pub refresh_token: String,
 }
@@ -167,24 +166,21 @@ pub struct VerifyTokenRequest {
 
 impl VerifyTokenRequest {
     pub fn new(session_token: String, appid: Option<String>) -> Self {
-        Self { session_token, appid }
+        Self {
+            session_token,
+            appid,
+        }
     }
 
     pub fn to_json(&self) -> Result<Value> {
         serde_json::to_value(self).map_err(|error| {
-            RPCErrors::ReasonError(format!(
-                "Failed to serialize VerifyTokenRequest: {}",
-                error
-            ))
+            RPCErrors::ReasonError(format!("Failed to serialize VerifyTokenRequest: {}", error))
         })
     }
 
     pub fn from_json(value: Value) -> Result<Self> {
         serde_json::from_value(value).map_err(|error| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse VerifyTokenRequest: {}",
-                error
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse VerifyTokenRequest: {}", error))
         })
     }
 }
@@ -208,10 +204,7 @@ impl RefreshTokenRequest {
     }
     pub fn from_json(value: Value) -> Result<Self> {
         serde_json::from_value(value).map_err(|error| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse RefreshTokenRequest: {}",
-                error
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse RefreshTokenRequest: {}", error))
         })
     }
 }
@@ -279,8 +272,9 @@ impl VerifyHubClient {
                 client.reset_session_token().await;
                 let params = LoginByPasswordRequest::new(username, password, appid).to_json()?;
                 let result = client.call("login_by_password", params).await?;
-                let login_by_password_response: LoginByPasswordResponse = serde_json::from_value(result)
-                    .map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?;
+                let login_by_password_response: LoginByPasswordResponse =
+                    serde_json::from_value(result)
+                        .map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?;
                 Ok(login_by_password_response)
             }
         }
@@ -289,11 +283,7 @@ impl VerifyHubClient {
     pub async fn verify_token(&self, session_token: &str, appid: Option<&str>) -> Result<bool> {
         let appid = appid.map(|value| value.to_string());
         match self {
-            Self::InProcess(handler) => {
-                handler
-                    .handle_verify_token(session_token, appid)
-                    .await
-            }
+            Self::InProcess(handler) => handler.handle_verify_token(session_token, appid).await,
             Self::KRPC(client) => {
                 let params = VerifyTokenRequest::new(session_token.to_string(), appid).to_json()?;
                 let result = client.call("verify_token", params).await?;
@@ -323,17 +313,10 @@ pub trait VerifyHubApiHandler: Send + Sync {
         login_params: Option<Value>,
     ) -> Result<TokenPair>;
 
-    async fn handle_verify_token(
-        &self,
-        session_token: &str,
-        appid: Option<String>,
-    ) -> Result<bool>;
+    async fn handle_verify_token(&self, session_token: &str, appid: Option<String>)
+        -> Result<bool>;
 
-
-    async fn handle_refresh_token(
-        &self,
-        refresh_jwt: &str,
-    ) -> Result<TokenPair>;
+    async fn handle_refresh_token(&self, refresh_jwt: &str) -> Result<TokenPair>;
 
     async fn handle_login_by_password(
         &self,
@@ -355,11 +338,7 @@ impl<T: VerifyHubApiHandler> VerifyHubRpcHandler<T> {
 
 #[async_trait]
 impl<T: VerifyHubApiHandler> RPCHandler for VerifyHubRpcHandler<T> {
-    async fn handle_rpc_call(
-        &self,
-        req: RPCRequest,
-        _ip_from: IpAddr,
-    ) -> Result<RPCResponse> {
+    async fn handle_rpc_call(&self, req: RPCRequest, _ip_from: IpAddr) -> Result<RPCResponse> {
         let seq = req.seq;
         let trace_id = req.trace_id.clone();
 
@@ -378,12 +357,21 @@ impl<T: VerifyHubApiHandler> RPCHandler for VerifyHubRpcHandler<T> {
                     .0
                     .handle_login_by_password(&username, &password, &appid, req.seq)
                     .await?;
-                RPCResult::Success(serde_json::to_value(result).map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?)
+                RPCResult::Success(
+                    serde_json::to_value(result)
+                        .map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?,
+                )
             }
             "refresh_token" => {
                 let refresh_jwt = RefreshTokenRequest::from_json(req.params)?;
-                let token_pair = self.0.handle_refresh_token(&refresh_jwt.refresh_token).await?;
-                RPCResult::Success(serde_json::to_value(token_pair).map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?)
+                let token_pair = self
+                    .0
+                    .handle_refresh_token(&refresh_jwt.refresh_token)
+                    .await?;
+                RPCResult::Success(
+                    serde_json::to_value(token_pair)
+                        .map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?,
+                )
             }
             "verify_token" => {
                 let verify_req = VerifyTokenRequest::from_json(req.params)?;
@@ -391,7 +379,10 @@ impl<T: VerifyHubApiHandler> RPCHandler for VerifyHubRpcHandler<T> {
                     .0
                     .handle_verify_token(&verify_req.session_token, verify_req.appid)
                     .await?;
-                RPCResult::Success(serde_json::to_value(value).map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?)
+                RPCResult::Success(
+                    serde_json::to_value(value)
+                        .map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?,
+                )
             }
             _ => return Err(RPCErrors::UnknownMethod(req.method.clone())),
         };
@@ -430,7 +421,7 @@ pub fn generate_verify_hub_service_doc() -> AppDoc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{UserType, UserState};
+    use crate::{UserState, UserType};
     use serde_json::json;
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::{Arc, Mutex};
@@ -489,10 +480,7 @@ mod tests {
             })
         }
 
-        async fn handle_refresh_token(
-            &self,
-            refresh_jwt: &str,
-        ) -> Result<TokenPair> {
+        async fn handle_refresh_token(&self, refresh_jwt: &str) -> Result<TokenPair> {
             let mut calls = self.calls.lock().unwrap();
             calls.refresh_token = Some(refresh_jwt.to_string());
             Ok(TokenPair {
@@ -539,8 +527,11 @@ mod tests {
         assert_eq!(token_pair.session_token, "session-1");
         assert_eq!(token_pair.refresh_token, "refresh-1");
 
-        let verify_result = client.verify_token("session-1", Some("kernel")).await.unwrap();
-        assert_eq!(verify_result,true);
+        let verify_result = client
+            .verify_token("session-1", Some("kernel"))
+            .await
+            .unwrap();
+        assert_eq!(verify_result, true);
 
         let calls = calls.lock().unwrap();
         let (jwt, params) = calls.login_jwt.clone().unwrap();
