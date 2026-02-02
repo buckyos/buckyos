@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 mod control_panel;
+pub mod msg_queue;
 mod scheduler_client;
 mod sn_client;
 mod system_config;

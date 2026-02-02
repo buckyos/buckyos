@@ -3,6 +3,7 @@ resolver = "2"
 
 members = [
     "./kernel/buckyos-api",
+    "./kernel/kmsg",
     "./kernel/sys_config_service",
     "./kernel/verify_hub",
     "./kernel/node_daemon",

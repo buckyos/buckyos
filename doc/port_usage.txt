@@ -9,11 +9,13 @@
 3000-4000 kernel service
     3210-3220 veriy_hub [http kapi/verify_hub]
     3220-3230 scheduler [http kapi/scheduler]
+   
 
 4000-5000 frame service （
     4000-4010 repo-service [http kapi/repo]
     4010-4020 smb-service
-    4020-4030 control-panel
+    4020-4030 control-panel 
+    4030-3040 kmsg [http kapi/kmsg]
 
 >= 10000 app service
 端口号，是 10000 + appindex*10
