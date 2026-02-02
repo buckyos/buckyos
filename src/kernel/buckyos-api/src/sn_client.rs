@@ -79,7 +79,7 @@ pub struct SnSetUserDidDocumentReq {
     pub owner_user: String,
     pub obj_name: String,
     pub did_document: Value,
-    pub doc_type: String,
+    pub doc_type: Option<String>,
 }
 
 impl SnSetUserDidDocumentReq {
@@ -87,7 +87,7 @@ impl SnSetUserDidDocumentReq {
         owner_user: String,
         obj_name: String,
         did_document: Value,
-        doc_type: String,
+        doc_type: Option<String>,
     ) -> Self {
         Self {
             owner_user,
@@ -285,7 +285,7 @@ impl SnClient {
         owner_user: &str,
         obj_name: &str,
         did_document: &Value,
-        doc_type: &str,
+        doc_type: Option<&str>,
     ) -> Result<(), RPCErrors> {
         match self {
             Self::InProcess(handler) => {
@@ -298,7 +298,7 @@ impl SnClient {
                     owner_user.to_string(),
                     obj_name.to_string(),
                     did_document.clone(),
-                    doc_type.to_string(),
+                    doc_type.map(|s| s.to_string()),
                 );
                 let req_json = serde_json::to_value(&req).map_err(|e| {
                     RPCErrors::ReasonError(format!(
@@ -350,7 +350,7 @@ pub trait SnHandler: Send + Sync {
         owner_user: &str,
         obj_name: &str,
         did_document: &Value,
-        doc_type: &str,
+        doc_type: Option<&str>,
     ) -> Result<(), RPCErrors>;
 }
 
@@ -428,7 +428,7 @@ impl<T: SnHandler> RPCHandler for SnServerHandler<T> {
                         &set_req.owner_user,
                         &set_req.obj_name,
                         &set_req.did_document,
-                        &set_req.doc_type,
+                        set_req.doc_type.as_deref(),
                     )
                     .await?;
                 RPCResult::Success(json!(result))
@@ -530,7 +530,7 @@ pub async fn sn_set_user_did_document(
     owner_user: &str,
     obj_name: &str,
     did_document: &Value,
-    doc_type: &str,
+    doc_type: Option<&str>,
 ) -> Result<(), RPCErrors> {
     let client = SnClient::new_krpc(Box::new(kRPC::new(sn_url, session_token)));
 

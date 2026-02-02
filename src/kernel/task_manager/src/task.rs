@@ -1,16 +1,17 @@
-#[allow(dead_code)]
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::fmt;
 use std::str::FromStr;
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskStatus {
-    Pending,    // 任务已创建但尚未开始
-    Running,    // 任务正在运行
-    Paused,     // 任务已暂停
-    Completed,  // 任务已完成
-    Failed,     // 任务失败
-    WaitingForApproval, // 任务完成但等待审核/批准
+    Pending,
+    Running,
+    Paused,
+    Completed,
+    Failed,
+    Canceled,
+    WaitingForApproval,
 }
 
 impl TaskStatus {
@@ -21,21 +22,16 @@ impl TaskStatus {
             "Paused" => Ok(TaskStatus::Paused),
             "Completed" => Ok(TaskStatus::Completed),
             "Failed" => Ok(TaskStatus::Failed),
+            "Canceled" => Ok(TaskStatus::Canceled),
             "WaitingForApproval" => Ok(TaskStatus::WaitingForApproval),
             _ => Err(()),
         }
     }
 }
-impl ToString for TaskStatus {
-    fn to_string(&self) -> String {
-        match *self {
-            TaskStatus::Pending => "Pending".to_string(),
-            TaskStatus::Running => "Running".to_string(),
-            TaskStatus::Paused => "Paused".to_string(),
-            TaskStatus::Completed => "Completed".to_string(),
-            TaskStatus::Failed => "Failed".to_string(),
-            TaskStatus::WaitingForApproval => "WaitingForApproval".to_string(),
-        }
+
+impl fmt::Display for TaskStatus {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
     }
 }
 
@@ -47,68 +43,72 @@ impl FromStr for TaskStatus {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Serialize, Deserialize)]
+pub enum TaskScope {
+    Private,
+    User,
+    System,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskPermissions {
+    pub read: TaskScope,
+    pub write: TaskScope,
+}
+
+impl Default for TaskPermissions {
+    fn default() -> Self {
+        Self {
+            read: TaskScope::User,
+            write: TaskScope::Private,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
-    pub id: i32,
+    pub id: i64,
+    pub user_id: String,
+    pub app_id: String,
+    pub parent_id: Option<i64>,
+    pub root_id: Option<i64>,
     pub name: String,
-    pub title: String,         // 任务标题
-    pub task_type: String,     // 任务类型，如"publish", "backup", "restore"等
-    pub app_name: String,      // 关联的应用名称
-    pub status: TaskStatus,    // 任务状态
-    pub progress: f32,         // 进度百分比 (0.0-100.0)
-    pub total_items: i32,      // 总项目数（如总文件数、总chunk数等）
-    pub completed_items: i32,  // 已完成项目数
-    pub error_message: Option<String>, // 错误信息（如果有）
-    pub data: Option<String>,  // 任务相关的JSON数据，可存储任何任务特定信息
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub task_type: String,
+    pub status: TaskStatus,
+    pub progress: f32,
+    pub message: Option<String>,
+    pub data: Value,
+    pub permissions: TaskPermissions,
+    pub created_at: u64,
+    pub updated_at: u64,
 }
 
 impl Task {
-    pub fn new(name: String, title: String, task_type: String, app_name: String, data: Option<String>) -> Self {
+    pub fn new(
+        name: String,
+        task_type: String,
+        user_id: String,
+        app_id: String,
+        parent_id: Option<i64>,
+        permissions: TaskPermissions,
+        data: Value,
+    ) -> Self {
+        let now = chrono::Utc::now().timestamp() as u64;
         Task {
             id: 0,
+            user_id,
+            app_id,
+            parent_id,
+            root_id: None,
             name,
-            title,
             task_type,
-            app_name,
             status: TaskStatus::Pending,
             progress: 0.0,
-            total_items: 0,
-            completed_items: 0,
-            error_message: None,
+            message: None,
             data,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            permissions,
+            created_at: now,
+            updated_at: now,
         }
-    }
-    
-    #[allow(dead_code)]
-    pub fn update_progress(&mut self, completed_items: i32, total_items: i32) {
-        self.completed_items = completed_items;
-        self.total_items = total_items;
-        if total_items > 0 {
-            self.progress = (completed_items as f32 / total_items as f32) * 100.0;
-        }
-        self.updated_at = Utc::now();
-    }
-    
-    #[allow(dead_code)]
-    pub fn set_error(&mut self, error_message: String) {
-        self.error_message = Some(error_message);
-        self.status = TaskStatus::Failed;
-        self.updated_at = Utc::now();
-    }
-    
-    #[allow(dead_code)]
-    pub fn update_status(&mut self, status: TaskStatus) {
-        self.status = status;
-        self.updated_at = Utc::now();
-    }
-    
-    #[allow(dead_code)]
-    pub fn update_data(&mut self, data: String) {
-        self.data = Some(data);
-        self.updated_at = Utc::now();
     }
 }

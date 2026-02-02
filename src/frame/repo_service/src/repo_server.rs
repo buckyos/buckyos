@@ -498,18 +498,19 @@ impl RepoServer {
         };
         let install_pkg_task_data = serde_json::to_value(&install_pkg_task_data).unwrap();
         //todo user_id,app_name应该是来自req的app_name
-        let task_id = task_mgr_client
+        let task = task_mgr_client
             .create_task(
                 install_task_name.as_str(),
                 "install_pkg",
-                "repo_service",
                 Some(install_pkg_task_data),
+                None,
             )
             .await
             .map_err(|e| {
                 error!("create install_pkg task failed, err:{}", e);
                 RPCErrors::ReasonError(format!("create install_pkg task failed, err:{}", e))
             })?;
+        let task_id = task.id;
 
         //save pkg_list to repo's pin pkg list
         let pin_result = self.pin_pkg_list(&pkg_list).await;
@@ -1062,18 +1063,19 @@ impl RepoServer {
                 RPCErrors::ReasonError(format!("parse task_data failed, err:{}", e))
             })?;
 
-        let task_id = task_mgr
+        let task = task_mgr
             .create_task(
                 &real_task_name,
                 "pub_pkg_to_source",
-                "repo_service",
                 Some(task_data.clone()),
+                None,
             )
             .await
             .map_err(|e| {
                 error!("create task failed, err:{}", e);
                 RPCErrors::ReasonError(format!("create task failed, err:{}", e))
             })?;
+        let task_id = task.id;
 
         //注意和req的session_token不一样，app_id是不同的
         let session_token = runtime.get_session_token().await;
@@ -1199,9 +1201,10 @@ impl RepoServer {
         let task_mgr = runtime.get_task_mgr_client().await?;
 
         let filter = TaskFilter {
-            app_name: Some("repo_service".to_string()),
+            app_id: Some("repo_service".to_string()),
             task_type: Some("pub_pkg_to_source".to_string()),
             status: Some(TaskStatus::WaitingForApproval),
+            ..Default::default()
         };
         let tasks = task_mgr.list_tasks(Some(filter)).await.map_err(|e| {
             error!("list tasks failed, err:{}", e);
@@ -1215,9 +1218,8 @@ impl RepoServer {
         })?;
 
         for task in tasks.iter() {
-            let task_data = task.data.as_ref().unwrap();
             let pub_task_data: PubPkgTaskData =
-                serde_json::from_str(task_data.as_str()).map_err(|e| {
+                serde_json::from_value(task.data.clone()).map_err(|e| {
                     error!("parse task_data failed, err:{}", e);
                     RPCErrors::ReasonError(format!("parse task_data failed, err:{}", e))
                 })?;
