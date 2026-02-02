@@ -787,6 +787,13 @@ impl<T: TaskManagerHandler> TaskManagerServerHandler<T> {
     pub fn new(handler: T) -> Self {
         Self(handler)
     }
+
+    fn to_rpc_result<R: Serialize>(res: Result<R>) -> RPCResult {
+        match res {
+            Ok(value) => RPCResult::Success(json!(value)),
+            Err(err) => RPCResult::Failed(err.to_string()),
+        }
+    }
 }
 
 #[async_trait]
@@ -803,58 +810,47 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
         let result = match req.method.as_str() {
             "create_task" => {
                 let create_req = TaskManagerCreateTaskReq::from_json(req.params)?;
-                let result = self.0.handle_create_task(&ctx, create_req).await?;
-                RPCResult::Success(json!(result))
+                Self::to_rpc_result(self.0.handle_create_task(&ctx, create_req).await)
             }
             "get_task" => {
                 let get_req = TaskManagerGetTaskReq::from_json(req.params)?;
-                let result = self.0.handle_get_task(&ctx, get_req.id).await?;
-                RPCResult::Success(json!(result))
+                Self::to_rpc_result(self.0.handle_get_task(&ctx, get_req.id).await)
             }
             "list_tasks" => {
                 let list_req = TaskManagerListTasksReq::from_json(req.params)?;
-                let result = self.0.handle_list_tasks(&ctx, list_req).await?;
-                RPCResult::Success(json!(result))
+                Self::to_rpc_result(self.0.handle_list_tasks(&ctx, list_req).await)
             }
             "update_task" => {
                 let update_req = TaskManagerUpdateTaskReq::from_json(req.params)?;
-                let result = self.0.handle_update_task(&ctx, update_req).await?;
-                RPCResult::Success(json!(result))
+                Self::to_rpc_result(self.0.handle_update_task(&ctx, update_req).await)
             }
             "cancel_task" => {
                 let cancel_req = TaskManagerCancelTaskReq::from_json(req.params)?;
-                let result = self.0.handle_cancel_task(&ctx, cancel_req).await?;
-                RPCResult::Success(json!(result))
+                Self::to_rpc_result(self.0.handle_cancel_task(&ctx, cancel_req).await)
             }
             "get_subtasks" => {
                 let sub_req = TaskManagerGetSubtasksReq::from_json(req.params)?;
-                let result = self.0.handle_get_subtasks(&ctx, sub_req).await?;
-                RPCResult::Success(json!(result))
+                Self::to_rpc_result(self.0.handle_get_subtasks(&ctx, sub_req).await)
             }
             "update_task_status" => {
                 let update_req = TaskManagerUpdateTaskStatusReq::from_json(req.params)?;
-                let result = self.0.handle_update_task_status(&ctx, update_req).await?;
-                RPCResult::Success(json!(result))
+                Self::to_rpc_result(self.0.handle_update_task_status(&ctx, update_req).await)
             }
             "update_task_progress" => {
                 let update_req = TaskManagerUpdateTaskProgressReq::from_json(req.params)?;
-                let result = self.0.handle_update_task_progress(&ctx, update_req).await?;
-                RPCResult::Success(json!(result))
+                Self::to_rpc_result(self.0.handle_update_task_progress(&ctx, update_req).await)
             }
             "update_task_error" => {
                 let update_req = TaskManagerUpdateTaskErrorReq::from_json(req.params)?;
-                let result = self.0.handle_update_task_error(&ctx, update_req).await?;
-                RPCResult::Success(json!(result))
+                Self::to_rpc_result(self.0.handle_update_task_error(&ctx, update_req).await)
             }
             "update_task_data" => {
                 let update_req = TaskManagerUpdateTaskDataReq::from_json(req.params)?;
-                let result = self.0.handle_update_task_data(&ctx, update_req).await?;
-                RPCResult::Success(json!(result))
+                Self::to_rpc_result(self.0.handle_update_task_data(&ctx, update_req).await)
             }
             "delete_task" => {
                 let delete_req = TaskManagerDeleteTaskReq::from_json(req.params)?;
-                let result = self.0.handle_delete_task(&ctx, delete_req).await?;
-                RPCResult::Success(json!(result))
+                Self::to_rpc_result(self.0.handle_delete_task(&ctx, delete_req).await)
             }
             _ => return Err(RPCErrors::UnknownMethod(req.method.clone())),
         };
@@ -915,7 +911,14 @@ mod tests {
     use serde_json::json;
     use std::net::IpAddr;
     use std::str::FromStr;
+    use std::sync::Once;
     use tempfile::tempdir;
+    use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
+
+    lazy_static::lazy_static! {
+        static ref TEST_MUTEX: AsyncMutex<()> = AsyncMutex::new(());
+    }
+    static INIT_LOGGING: Once = Once::new();
 
     fn create_rpc_request(method: &str, params: Value) -> RPCRequest {
         RPCRequest {
@@ -927,8 +930,16 @@ mod tests {
         }
     }
 
-    async fn setup_test_environment() -> (TaskManagerServerHandler<TaskManagerService>, tempfile::TempDir) {
-        buckyos_kit::init_logging("test_task_manager", false);
+    async fn setup_test_environment(
+    ) -> (
+        TaskManagerServerHandler<TaskManagerService>,
+        tempfile::TempDir,
+        MutexGuard<'static, ()>,
+    ) {
+        let guard = TEST_MUTEX.lock().await;
+        INIT_LOGGING.call_once(|| {
+            buckyos_kit::init_logging("test_task_manager", false);
+        });
         let temp_dir = tempdir().unwrap();
         let db_path = temp_dir.path().join("test.db");
         let db_path_str = db_path.to_str().unwrap();
@@ -936,18 +947,17 @@ mod tests {
         let mut db = TaskDb::new();
         db.connect(db_path_str).unwrap();
         db.init_db().await.unwrap();
-        db.ensure_columns().await.unwrap();
         *crate::task_db::DB_MANAGER.lock().await = db;
 
         let server = TaskManagerServerHandler::new(TaskManagerService::new());
-        (server, temp_dir)
+        (server, temp_dir, guard)
     }
 
     async fn clean_test_environment(_temp_dir: tempfile::TempDir) {}
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_create_and_get_task() {
-        let (server, _temp_dir) = setup_test_environment().await;
+        let (server, _temp_dir, _guard) = setup_test_environment().await;
         let ip = IpAddr::from_str("127.0.0.1").unwrap();
 
         let create_params = json!({
@@ -986,7 +996,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_list_tasks() {
-        let (server, _temp_dir) = setup_test_environment().await;
+        let (server, _temp_dir, _guard) = setup_test_environment().await;
         let ip = IpAddr::from_str("127.0.0.1").unwrap();
 
         for i in 1..4 {
@@ -1014,7 +1024,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_list_tasks_by_app() {
-        let (server, _temp_dir) = setup_test_environment().await;
+        let (server, _temp_dir, _guard) = setup_test_environment().await;
         let ip = IpAddr::from_str("127.0.0.1").unwrap();
 
         let create_params1 = json!({
@@ -1053,7 +1063,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_update_task_status() {
-        let (server, _temp_dir) = setup_test_environment().await;
+        let (server, _temp_dir, _guard) = setup_test_environment().await;
         let ip = IpAddr::from_str("127.0.0.1").unwrap();
 
         let create_params = json!({
@@ -1100,7 +1110,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_update_task_progress() {
-        let (server, _temp_dir) = setup_test_environment().await;
+        let (server, _temp_dir, _guard) = setup_test_environment().await;
         let ip = IpAddr::from_str("127.0.0.1").unwrap();
 
         let create_params = json!({
@@ -1150,7 +1160,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_update_task_error() {
-        let (server, _temp_dir) = setup_test_environment().await;
+        let (server, _temp_dir, _guard) = setup_test_environment().await;
         let ip = IpAddr::from_str("127.0.0.1").unwrap();
 
         let create_params = json!({
@@ -1198,7 +1208,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_update_task_data() {
-        let (server, _temp_dir) = setup_test_environment().await;
+        let (server, _temp_dir, _guard) = setup_test_environment().await;
         let ip = IpAddr::from_str("127.0.0.1").unwrap();
 
         let create_params = json!({
@@ -1246,7 +1256,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_delete_task() {
-        let (server, _temp_dir) = setup_test_environment().await;
+        let (server, _temp_dir, _guard) = setup_test_environment().await;
         let ip = IpAddr::from_str("127.0.0.1").unwrap();
 
         let create_params = json!({
@@ -1290,7 +1300,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_invalid_method() {
-        let (server, _temp_dir) = setup_test_environment().await;
+        let (server, _temp_dir, _guard) = setup_test_environment().await;
         let ip = IpAddr::from_str("127.0.0.1").unwrap();
 
         let req = create_rpc_request("invalid_method", json!({}));

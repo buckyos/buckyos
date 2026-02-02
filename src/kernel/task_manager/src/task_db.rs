@@ -1,9 +1,7 @@
 use crate::task::{Task, TaskPermissions, TaskStatus};
-use chrono::NaiveDateTime;
 use log::*;
 use rusqlite::{params, Connection, Result, Row};
 use serde_json::Value;
-use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -18,6 +16,7 @@ impl TaskDb {
 
     pub fn connect(&mut self, db_path: &str) -> Result<()> {
         let conn: Connection = Connection::open(db_path)?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         self.conn = Some(Arc::new(Mutex::new(conn)));
         Ok(())
     }
@@ -25,60 +24,35 @@ impl TaskDb {
     pub async fn init_db(&self) -> Result<(), rusqlite::Error> {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
-        conn.execute(
+        conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS task (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                name            TEXT NOT NULL UNIQUE,
+                name            TEXT NOT NULL,
                 title           TEXT,
                 task_type       TEXT NOT NULL,
-                app_name        TEXT,
                 status          TEXT NOT NULL,
                 progress        REAL NOT NULL,
-                total_items     INTEGER NOT NULL,
-                completed_items INTEGER NOT NULL,
+                total_items     INTEGER NOT NULL DEFAULT 0,
+                completed_items INTEGER NOT NULL DEFAULT 0,
                 error_message   TEXT,
                 data            TEXT,
-                created_at      TEXT NOT NULL,
-                updated_at      TEXT NOT NULL,
-                user_id         TEXT,
-                app_id          TEXT,
+                created_at      INTEGER NOT NULL,
+                updated_at      INTEGER NOT NULL,
+                user_id         TEXT NOT NULL DEFAULT '',
+                app_id          TEXT NOT NULL DEFAULT '',
                 parent_id       INTEGER,
                 root_id         INTEGER,
                 permissions     TEXT,
-                message         TEXT
-            )",
-            params![],
+                message         TEXT,
+                FOREIGN KEY(parent_id) REFERENCES task(id) ON DELETE CASCADE
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_task_name_scope ON task(app_id, user_id, name);
+            CREATE INDEX IF NOT EXISTS idx_task_root_status ON task(root_id, status);
+            CREATE INDEX IF NOT EXISTS idx_task_parent ON task(parent_id);
+            CREATE INDEX IF NOT EXISTS idx_task_app_created ON task(app_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_task_status_created ON task(status, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_task_type_created ON task(task_type, created_at DESC);",
         )?;
-        Ok(())
-    }
-
-    pub async fn ensure_columns(&self) -> Result<()> {
-        let conn = self.conn.as_ref().unwrap();
-        let conn = conn.lock().await;
-        let mut stmt = conn.prepare("PRAGMA table_info(task)")?;
-        let column_iter = stmt.query_map([], |row| row.get::<_, String>(1))?;
-        let mut columns: HashSet<String> = HashSet::new();
-        for column in column_iter {
-            columns.insert(column?);
-        }
-
-        let add_columns = [
-            "user_id TEXT",
-            "app_id TEXT",
-            "parent_id INTEGER",
-            "root_id INTEGER",
-            "permissions TEXT",
-            "message TEXT",
-        ];
-
-        for column in add_columns {
-            let name = column.split_whitespace().next().unwrap_or("");
-            if !columns.contains(name) {
-                let sql = format!("ALTER TABLE task ADD COLUMN {}", column);
-                conn.execute(sql.as_str(), params![])?;
-            }
-        }
-
         Ok(())
     }
 
@@ -88,26 +62,19 @@ impl TaskDb {
         let data_str = serde_json::to_string(&task.data).unwrap_or_else(|_| "{}".to_string());
         let permissions_str =
             serde_json::to_string(&task.permissions).unwrap_or_else(|_| "{}".to_string());
-        let created_at = task.created_at.to_string();
-        let updated_at = task.updated_at.to_string();
-        let app_name = if task.app_id.is_empty() {
-            None
-        } else {
-            Some(task.app_id.clone())
-        };
-
+        let created_at = task.created_at as i64;
+        let updated_at = task.updated_at as i64;
         conn.execute(
             "INSERT INTO task (
-                name, title, task_type, app_name, status, progress,
+                name, title, task_type, status, progress,
                 total_items, completed_items, error_message, data,
                 created_at, updated_at, user_id, app_id, parent_id,
                 root_id, permissions, message
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 task.name,
                 task.name,
                 task.task_type,
-                app_name,
                 task.status.to_string(),
                 task.progress,
                 0,
@@ -188,8 +155,7 @@ impl TaskDb {
             params_vec.push(rusqlite::types::Value::Text(user_id.to_string()));
         }
         if let Some(app_id) = app_id {
-            conditions.push("(app_id = ? OR app_name = ?)".to_string());
-            params_vec.push(rusqlite::types::Value::Text(app_id.to_string()));
+            conditions.push("app_id = ?".to_string());
             params_vec.push(rusqlite::types::Value::Text(app_id.to_string()));
         }
         if let Some(task_type) = task_type {
@@ -247,7 +213,7 @@ impl TaskDb {
     pub async fn update_task_status(&self, id: i64, status: TaskStatus) -> Result<()> {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
-        let updated_at = now_ts_string();
+        let updated_at = now_ts();
         conn.execute(
             "UPDATE task SET status = ?1, updated_at = ?2 WHERE id = ?3",
             params![status.to_string(), updated_at, id],
@@ -262,7 +228,7 @@ impl TaskDb {
     ) -> Result<()> {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
-        let updated_at = now_ts_string();
+        let updated_at = now_ts();
         conn.execute(
             "UPDATE task SET status = ?1, updated_at = ?2 WHERE root_id = ?3",
             params![status.to_string(), updated_at, root_id],
@@ -279,7 +245,7 @@ impl TaskDb {
     ) -> Result<()> {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
-        let updated_at = now_ts_string();
+        let updated_at = now_ts();
         conn.execute(
             "UPDATE task SET progress = ?1, completed_items = ?2, total_items = ?3, updated_at = ?4 WHERE id = ?5",
             params![progress, completed_items, total_items, updated_at, id],
@@ -290,7 +256,7 @@ impl TaskDb {
     pub async fn update_task_error(&self, id: i64, error_message: &str) -> Result<()> {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
-        let updated_at = now_ts_string();
+        let updated_at = now_ts();
         conn.execute(
             "UPDATE task SET status = ?1, error_message = ?2, message = ?3, updated_at = ?4 WHERE id = ?5",
             params![
@@ -307,10 +273,18 @@ impl TaskDb {
     pub async fn update_task_data(&self, id: i64, data: &str) -> Result<()> {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
-        let updated_at = now_ts_string();
+        let data_value: Value = serde_json::from_str(data)
+            .or_else(|_| {
+                // Handle inputs with escaped quotes like {\"key\": \"value\"}
+                let unescaped = data.replace("\\\"", "\"");
+                serde_json::from_str(unescaped.as_str())
+            })
+            .unwrap_or_else(|_| Value::Object(Default::default()));
+        let data_str = serde_json::to_string(&data_value).unwrap_or_else(|_| "{}".to_string());
+        let updated_at = now_ts();
         conn.execute(
             "UPDATE task SET data = ?1, updated_at = ?2 WHERE id = ?3",
-            params![data, updated_at, id],
+            params![data_str, updated_at, id],
         )?;
         Ok(())
     }
@@ -336,7 +310,7 @@ impl TaskDb {
 
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
-        let updated_at = now_ts_string();
+        let updated_at = now_ts();
         conn.execute(
             "UPDATE task SET status = COALESCE(?1, status), progress = COALESCE(?2, progress), message = COALESCE(?3, message), data = COALESCE(?4, data), updated_at = ?5 WHERE id = ?6",
             params![
@@ -357,19 +331,6 @@ impl TaskDb {
         conn.execute("DELETE FROM task WHERE id = ?1", params![id])?;
         Ok(())
     }
-}
-
-fn parse_timestamp(value: Option<String>) -> u64 {
-    if let Some(value) = value {
-        if let Ok(ts) = value.parse::<i64>() {
-            return ts.max(0) as u64;
-        }
-        let format = "%Y-%m-%d %H:%M:%S%.f UTC";
-        if let Ok(dt) = NaiveDateTime::parse_from_str(&value, format) {
-            return dt.and_utc().timestamp().max(0) as u64;
-        }
-    }
-    0
 }
 
 fn parse_permissions(value: Option<String>) -> TaskPermissions {
@@ -403,16 +364,15 @@ fn task_from_row(row: &Row) -> rusqlite::Result<Task> {
     let root_id: Option<i64> = row.get("root_id")?;
     let user_id: Option<String> = row.get("user_id")?;
     let app_id: Option<String> = row.get("app_id")?;
-    let app_name: Option<String> = row.get("app_name")?;
-    let created_at: Option<String> = row.get("created_at")?;
-    let updated_at: Option<String> = row.get("updated_at")?;
+    let created_at: i64 = row.get("created_at")?;
+    let updated_at: i64 = row.get("updated_at")?;
 
     let mut resolved_root_id = root_id;
     if resolved_root_id.is_none() {
         resolved_root_id = Some(id);
     }
 
-    let resolved_app_id = app_id.or(app_name).unwrap_or_else(|| "".to_string());
+    let resolved_app_id = app_id.unwrap_or_else(|| "".to_string());
     let resolved_user_id = user_id.unwrap_or_else(|| "".to_string());
 
     Ok(Task {
@@ -428,13 +388,13 @@ fn task_from_row(row: &Row) -> rusqlite::Result<Task> {
         message,
         data: parse_data(data_str),
         permissions: parse_permissions(permissions_str),
-        created_at: parse_timestamp(created_at),
-        updated_at: parse_timestamp(updated_at),
+        created_at: created_at.max(0) as u64,
+        updated_at: updated_at.max(0) as u64,
     })
 }
 
-fn now_ts_string() -> String {
-    chrono::Utc::now().timestamp().to_string()
+fn now_ts() -> i64 {
+    chrono::Utc::now().timestamp()
 }
 
 fn merge_json(target: &mut Value, patch: &Value) {
@@ -462,10 +422,6 @@ pub async fn init_db(db_path: &str) {
     match db_manager.init_db().await {
         Ok(_) => info!("Database initialized successfully."),
         Err(e) => info!("Failed to initialize database: {}", e),
-    }
-
-    if let Err(err) = db_manager.ensure_columns().await {
-        warn!("Failed to ensure task_manager columns: {}", err);
     }
 }
 
@@ -506,7 +462,6 @@ mod tests {
         let mut db = TaskDb::new();
         db.connect(db_path_str).unwrap();
         db.init_db().await.unwrap();
-        db.ensure_columns().await.unwrap();
 
         (db, temp_dir)
     }
@@ -520,7 +475,6 @@ mod tests {
         let mut db = TaskDb::new();
         assert!(db.connect(db_path_str).is_ok());
         assert!(db.init_db().await.is_ok());
-        assert!(db.ensure_columns().await.is_ok());
         assert!(db_path.exists());
     }
 
