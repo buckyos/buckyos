@@ -85,6 +85,8 @@ Generate **only** the Rust code block. Assume standard imports (`serde`, `serde_
 
 ```rust
 
+
+// Request/Response Data Structures
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MyApiAddReq {
     pub a: i32,
@@ -102,6 +104,23 @@ impl MyApiAddReq {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MyApiDeleteAppDataReq {
+    pub userid: String,
+    pub appid: String,
+}
+
+impl MyApiDeleteAppDataReq {
+    pub fn new(userid: &str, appid: &str) -> Self {
+        Self { userid: userid.to_string(), appid: appid.to_string() }
+    }
+
+    pub fn from_json(value: Value) -> Result<Self, RPCErrors> {
+        serde_json::from_value(value)
+            .map_err(|e| RPCErrors::ParseRequestError(format!("Failed to parse MyApiDeleteAppDataReq: {}", e)))
+    }
+}
+// Client Implementation
 pub enum MyApiClient {
     InProcess(Box<dyn MyApiHandler>),
     KRPC(Box<kRPC>),
@@ -117,10 +136,21 @@ impl MyApiClient {
         Self::KRPC(client)
     }
 
+     pub async fn set_context(&self, context: RPCContext)  {
+        match self {
+            Self::InProcess(_) => {}
+            Self::KRPC(client) => {
+                client.set_context(context).await
+            }
+        }
+    }
+   
+
     pub async fn add(&self, a: i32, b: i32) -> Result<i32, RPCErrors> {
         match self {
             Self::InProcess(handler) => {
-                handler.handle_add(a, b).await
+                let ctx = RPCContext::default();
+                handler.handle_add(a, b,ctx).await
             }
             Self::KRPC(client) => {
 
@@ -136,39 +166,68 @@ impl MyApiClient {
             }
         }
     }
+
+    pub async fn delete_app_data(&self, userid:&str, appid:&str) -> Result<(), RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler.handle_delete_app_data(userid, appid,ctx).await
+            }
+            Self::KRPC(client) => {
+                let req = MyApiDeleteAppDataReq::new(userid, appid);
+                let req_json = serde_json::to_value(&req)
+                    .map_err(|e| RPCErrors::ReasonError(format!("Failed to serialize request: {}", e)))?;
+                
+                let result = client.call("delete_app_data", req_json).await?;
+                
+                let is_deleted = result.as_bool().ok_or_else(|| RPCErrors::ParserResponseError("Expected bool result".to_string()))?;
+                if !is_deleted {
+                    return Err(RPCErrors::ParserResponseError("Failed to delete app data".to_string()));
+                }
+                return Ok(());
+            }
+        }
+    }
 }
 
 
 #[async_trait]
 pub trait MyApiHandler: Send + Sync {
-    async fn handle_add(&self, a: i32, b: i32) -> Result<i32, RPCErrors>;
+    async fn handle_add(&self, a: i32, b: i32,ctx:RPCContext) -> Result<i32, RPCErrors>;
+    async fn handle_delete_app_data(&self, userid:&str, appid:&str,ctx:RPCContext) -> Result<(), RPCErrors>;
 }
 
-pub struct MyServerHandler<T: MyApiHandler>(pub T);
 
-impl<T: MyApiHandler> MyServerHandler<T> {
+pub struct MyApiRpcHandler<T: MyApiHandler>(pub T);
+
+impl<T: MyApiHandler> MyApiRpcHandler<T> {
     pub fn new(handler: T) -> Self {
         Self(handler)
     }
 }
 
 #[async_trait]
-impl<T: MyApiHandler> RPCHandler for MyServerHandler<T> {
+impl<T: MyApiHandler> RPCHandler for MyApiRpcHandler<T> {
     async fn handle_rpc_call(
         &self,
         req: RPCRequest,
-        _ip_from: IpAddr,
+        ip_from: IpAddr,
     ) -> Result<RPCResponse, RPCErrors> {
         let seq = req.seq;
         let trace_id = req.trace_id.clone();
+        let ctx = RPCContext::from_request(&req, ip_from);
         
         let result = match req.method.as_str() {
             "add" => {
                 let add_req = MyApiAddReq::from_json(req.params)?;
-                let result = self.handle_add(add_req.a, add_req.b).await?;
+                let result = self.0.handle_add(add_req.a, add_req.b,ctx).await?;
                 RPCResult::Success(json!(result))
             }
-    
+            "delete_app_data" => {
+                let delete_app_data_req = MyApiDeleteAppDataReq::from_json(req.params)?;
+                let result = self.0.handle_delete_app_data(&delete_app_data_req.userid, &delete_app_data_req.appid,ctx).await?;
+                RPCResult::Success(json!(result))
+            }
             _ => {
                 return Err(RPCErrors::UnknownMethod(req.method.clone()));
             }

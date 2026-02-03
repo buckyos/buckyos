@@ -420,7 +420,7 @@ impl RepoServer {
     //在repo里安装pkg(pkg_name已经在index-db中了)
     async fn handle_install_pkg(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         let runtime = get_buckyos_api_runtime()?;
-        let _r = runtime
+        let (user_id, app_id) = runtime
             .enforce(&req, "write", "dfs://system/data/repo/meta_index.db")
             .await?;
 
@@ -497,12 +497,13 @@ impl RepoServer {
             pkg_list: pkg_list.clone(),
         };
         let install_pkg_task_data = serde_json::to_value(&install_pkg_task_data).unwrap();
-        //todo user_id,app_name应该是来自req的app_name
         let task = task_mgr_client
             .create_task(
                 install_task_name.as_str(),
                 "install_pkg",
                 Some(install_pkg_task_data),
+                user_id.as_str(),
+                app_id.as_str(),
                 None,
             )
             .await
@@ -1068,6 +1069,8 @@ impl RepoServer {
                 &real_task_name,
                 "pub_pkg_to_source",
                 Some(task_data.clone()),
+                user_id.as_str(),
+                app_id.as_str(),
                 None,
             )
             .await
@@ -1206,7 +1209,12 @@ impl RepoServer {
             status: Some(TaskStatus::WaitingForApproval),
             ..Default::default()
         };
-        let tasks = task_mgr.list_tasks(Some(filter)).await.map_err(|e| {
+        let source_user_id = runtime.user_id.as_deref();
+        let source_app_id = Some(runtime.app_id.as_str());
+        let tasks = task_mgr
+            .list_tasks(Some(filter), source_user_id, source_app_id)
+            .await
+            .map_err(|e| {
             error!("list tasks failed, err:{}", e);
             RPCErrors::ReasonError(format!("list tasks failed, err:{}", e))
         })?;

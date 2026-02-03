@@ -23,6 +23,7 @@ cyfs-gateway-lib = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
+buckyos-api = { path = "../buckyos-api" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -212,14 +212,26 @@ impl MsgQueuePostMessageReq {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MsgQueueSubscribeReq {
     pub queue_urn: QueueUrn,
+    #[serde(rename = "userid", alias = "user_id")]
+    pub user_id: String,
+    #[serde(rename = "appid", alias = "app_id")]
+    pub app_id: String,
     pub sub_id: Option<String>,
     pub position: SubPosition,
 }
 
 impl MsgQueueSubscribeReq {
-    pub fn new(queue_urn: QueueUrn, sub_id: Option<String>, position: SubPosition) -> Self {
+    pub fn new(
+        queue_urn: QueueUrn,
+        user_id: String,
+        app_id: String,
+        sub_id: Option<String>,
+        position: SubPosition,
+    ) -> Self {
         Self {
             queue_urn,
+            user_id,
+            app_id,
             sub_id,
             position,
         }
@@ -358,6 +370,15 @@ impl MsgQueueClient {
         Self::KRPC(client)
     }
 
+    pub async fn set_context(&self, context: RPCContext)  {
+        match self {
+            Self::InProcess(_) => {}
+            Self::KRPC(client) => {
+                client.set_context(context).await
+            }
+        }
+    }
+
     pub async fn create_queue(
         &self,
         name: Option<&str>,
@@ -367,8 +388,9 @@ impl MsgQueueClient {
     ) -> std::result::Result<QueueUrn, RPCErrors> {
         match self {
             Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
                 handler
-                    .handle_create_queue(name, appid, app_owner, config)
+                    .handle_create_queue(name, appid, app_owner, config, ctx)
                     .await
             }
             Self::KRPC(client) => {
@@ -400,7 +422,10 @@ impl MsgQueueClient {
         queue_urn: &str,
     ) -> std::result::Result<(), RPCErrors> {
         match self {
-            Self::InProcess(handler) => handler.handle_delete_queue(queue_urn).await,
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler.handle_delete_queue(queue_urn, ctx).await
+            }
             Self::KRPC(client) => {
                 let req = MsgQueueDeleteQueueReq::new(queue_urn.to_string());
                 let req_json = serde_json::to_value(&req).map_err(|e| {
@@ -420,7 +445,10 @@ impl MsgQueueClient {
         queue_urn: &str,
     ) -> std::result::Result<QueueStats, RPCErrors> {
         match self {
-            Self::InProcess(handler) => handler.handle_get_queue_stats(queue_urn).await,
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler.handle_get_queue_stats(queue_urn, ctx).await
+            }
             Self::KRPC(client) => {
                 let req = MsgQueueGetQueueStatsReq::new(queue_urn.to_string());
                 let req_json = serde_json::to_value(&req).map_err(|e| {
@@ -447,7 +475,8 @@ impl MsgQueueClient {
     ) -> std::result::Result<(), RPCErrors> {
         match self {
             Self::InProcess(handler) => {
-                handler.handle_update_queue_config(queue_urn, config).await
+                let ctx = RPCContext::default();
+                handler.handle_update_queue_config(queue_urn, config, ctx).await
             }
             Self::KRPC(client) => {
                 let req = MsgQueueUpdateQueueConfigReq::new(queue_urn.to_string(), config);
@@ -469,7 +498,10 @@ impl MsgQueueClient {
         message: Message,
     ) -> std::result::Result<MsgIndex, RPCErrors> {
         match self {
-            Self::InProcess(handler) => handler.handle_post_message(queue_urn, message).await,
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler.handle_post_message(queue_urn, message, ctx).await
+            }
             Self::KRPC(client) => {
                 let req = MsgQueuePostMessageReq::new(queue_urn.to_string(), message);
                 let req_json = serde_json::to_value(&req).map_err(|e| {
@@ -489,15 +521,26 @@ impl MsgQueueClient {
     pub async fn subscribe(
         &self,
         queue_urn: &str,
+        user_id: &str,
+        app_id: &str,
         sub_id: Option<String>,
         position: SubPosition,
     ) -> std::result::Result<SubscriptionId, RPCErrors> {
         match self {
             Self::InProcess(handler) => {
-                handler.handle_subscribe(queue_urn, sub_id, position).await
+                let ctx = RPCContext::default();
+                handler
+                    .handle_subscribe(queue_urn, user_id, app_id, sub_id, position, ctx)
+                    .await
             }
             Self::KRPC(client) => {
-                let req = MsgQueueSubscribeReq::new(queue_urn.to_string(), sub_id, position);
+                let req = MsgQueueSubscribeReq::new(
+                    queue_urn.to_string(),
+                    user_id.to_string(),
+                    app_id.to_string(),
+                    sub_id,
+                    position,
+                );
                 let req_json = serde_json::to_value(&req).map_err(|e| {
                     RPCErrors::ReasonError(format!(
                         "Failed to serialize MsgQueueSubscribeReq: {}",
@@ -522,7 +565,10 @@ impl MsgQueueClient {
         sub_id: &str,
     ) -> std::result::Result<(), RPCErrors> {
         match self {
-            Self::InProcess(handler) => handler.handle_unsubscribe(sub_id).await,
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler.handle_unsubscribe(sub_id, ctx).await
+            }
             Self::KRPC(client) => {
                 let req = MsgQueueUnsubscribeReq::new(sub_id.to_string());
                 let req_json = serde_json::to_value(&req).map_err(|e| {
@@ -545,7 +591,10 @@ impl MsgQueueClient {
     ) -> std::result::Result<Vec<Message>, RPCErrors> {
         match self {
             Self::InProcess(handler) => {
-                handler.handle_fetch_messages(sub_id, length, auto_commit).await
+                let ctx = RPCContext::default();
+                handler
+                    .handle_fetch_messages(sub_id, length, auto_commit, ctx)
+                    .await
             }
             Self::KRPC(client) => {
                 let req =
@@ -573,7 +622,10 @@ impl MsgQueueClient {
         index: MsgIndex,
     ) -> std::result::Result<(), RPCErrors> {
         match self {
-            Self::InProcess(handler) => handler.handle_commit_ack(sub_id, index).await,
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler.handle_commit_ack(sub_id, index, ctx).await
+            }
             Self::KRPC(client) => {
                 let req = MsgQueueCommitAckReq::new(sub_id.to_string(), index);
                 let req_json = serde_json::to_value(&req).map_err(|e| {
@@ -594,7 +646,10 @@ impl MsgQueueClient {
         index: SubPosition,
     ) -> std::result::Result<(), RPCErrors> {
         match self {
-            Self::InProcess(handler) => handler.handle_seek(sub_id, index).await,
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler.handle_seek(sub_id, index, ctx).await
+            }
             Self::KRPC(client) => {
                 let req = MsgQueueSeekReq::new(sub_id.to_string(), index);
                 let req_json = serde_json::to_value(&req).map_err(|e| {
@@ -616,7 +671,8 @@ impl MsgQueueClient {
     ) -> std::result::Result<u64, RPCErrors> {
         match self {
             Self::InProcess(handler) => {
-                handler.handle_delete_message_before(queue_urn, index).await
+                let ctx = RPCContext::default();
+                handler.handle_delete_message_before(queue_urn, index, ctx).await
             }
             Self::KRPC(client) => {
                 let req = MsgQueueDeleteMessageBeforeReq::new(queue_urn.to_string(), index);
@@ -643,40 +699,49 @@ pub trait MsgQueueHandler: Send + Sync {
         appid: &str,
         app_owner: &str,
         config: QueueConfig,
+        ctx: RPCContext,
     ) -> std::result::Result<QueueUrn, RPCErrors>;
 
     async fn handle_delete_queue(
         &self,
         queue_urn: &str,
+        ctx: RPCContext,
     ) -> std::result::Result<(), RPCErrors>;
 
     async fn handle_get_queue_stats(
         &self,
         queue_urn: &str,
+        ctx: RPCContext,
     ) -> std::result::Result<QueueStats, RPCErrors>;
 
     async fn handle_update_queue_config(
         &self,
         queue_urn: &str,
         config: QueueConfig,
+        ctx: RPCContext,
     ) -> std::result::Result<(), RPCErrors>;
 
     async fn handle_post_message(
         &self,
         queue_urn: &str,
         message: Message,
+        ctx: RPCContext,
     ) -> std::result::Result<MsgIndex, RPCErrors>;
 
     async fn handle_subscribe(
         &self,
         queue_urn: &str,
+        user_id: &str,
+        app_id: &str,
         sub_id: Option<String>,
         position: SubPosition,
+        ctx: RPCContext,
     ) -> std::result::Result<SubscriptionId, RPCErrors>;
 
     async fn handle_unsubscribe(
         &self,
         sub_id: &str,
+        ctx: RPCContext,
     ) -> std::result::Result<(), RPCErrors>;
 
     async fn handle_fetch_messages(
@@ -684,24 +749,28 @@ pub trait MsgQueueHandler: Send + Sync {
         sub_id: &str,
         length: usize,
         auto_commit: bool,
+        ctx: RPCContext,
     ) -> std::result::Result<Vec<Message>, RPCErrors>;
 
     async fn handle_commit_ack(
         &self,
         sub_id: &str,
         index: MsgIndex,
+        ctx: RPCContext,
     ) -> std::result::Result<(), RPCErrors>;
 
     async fn handle_seek(
         &self,
         sub_id: &str,
         index: SubPosition,
+        ctx: RPCContext,
     ) -> std::result::Result<(), RPCErrors>;
 
     async fn handle_delete_message_before(
         &self,
         queue_urn: &str,
         index: MsgIndex,
+        ctx: RPCContext,
     ) -> std::result::Result<u64, RPCErrors>;
 }
 
@@ -718,10 +787,11 @@ impl<T: MsgQueueHandler> RPCHandler for MsgQueueServerHandler<T> {
     async fn handle_rpc_call(
         &self,
         req: RPCRequest,
-        _ip_from: IpAddr,
+        ip_from: IpAddr,
     ) -> std::result::Result<RPCResponse, RPCErrors> {
         let seq = req.seq;
         let trace_id = req.trace_id.clone();
+        let ctx = RPCContext::from_request(&req, ip_from);
 
         let result = match req.method.as_str() {
             "create_queue" => {
@@ -733,25 +803,32 @@ impl<T: MsgQueueHandler> RPCHandler for MsgQueueServerHandler<T> {
                         &create_req.appid,
                         &create_req.app_owner,
                         create_req.config,
+                        ctx,
                     )
                     .await?;
                 RPCResult::Success(json!(result))
             }
             "delete_queue" => {
                 let delete_req = MsgQueueDeleteQueueReq::from_json(req.params)?;
-                let result = self.0.handle_delete_queue(&delete_req.queue_urn).await?;
+                let result = self
+                    .0
+                    .handle_delete_queue(&delete_req.queue_urn, ctx)
+                    .await?;
                 RPCResult::Success(json!(result))
             }
             "get_queue_stats" => {
                 let stats_req = MsgQueueGetQueueStatsReq::from_json(req.params)?;
-                let result = self.0.handle_get_queue_stats(&stats_req.queue_urn).await?;
+                let result = self
+                    .0
+                    .handle_get_queue_stats(&stats_req.queue_urn, ctx)
+                    .await?;
                 RPCResult::Success(json!(result))
             }
             "update_queue_config" => {
                 let update_req = MsgQueueUpdateQueueConfigReq::from_json(req.params)?;
                 let result = self
                     .0
-                    .handle_update_queue_config(&update_req.queue_urn, update_req.config)
+                    .handle_update_queue_config(&update_req.queue_urn, update_req.config, ctx)
                     .await?;
                 RPCResult::Success(json!(result))
             }
@@ -759,7 +836,7 @@ impl<T: MsgQueueHandler> RPCHandler for MsgQueueServerHandler<T> {
                 let post_req = MsgQueuePostMessageReq::from_json(req.params)?;
                 let result = self
                     .0
-                    .handle_post_message(&post_req.queue_urn, post_req.message)
+                    .handle_post_message(&post_req.queue_urn, post_req.message, ctx)
                     .await?;
                 RPCResult::Success(json!(result))
             }
@@ -769,15 +846,21 @@ impl<T: MsgQueueHandler> RPCHandler for MsgQueueServerHandler<T> {
                     .0
                     .handle_subscribe(
                         &subscribe_req.queue_urn,
+                        &subscribe_req.user_id,
+                        &subscribe_req.app_id,
                         subscribe_req.sub_id,
                         subscribe_req.position,
+                        ctx,
                     )
                     .await?;
                 RPCResult::Success(json!(result))
             }
             "unsubscribe" => {
                 let unsubscribe_req = MsgQueueUnsubscribeReq::from_json(req.params)?;
-                let result = self.0.handle_unsubscribe(&unsubscribe_req.sub_id).await?;
+                let result = self
+                    .0
+                    .handle_unsubscribe(&unsubscribe_req.sub_id, ctx)
+                    .await?;
                 RPCResult::Success(json!(result))
             }
             "fetch_messages" => {
@@ -788,6 +871,7 @@ impl<T: MsgQueueHandler> RPCHandler for MsgQueueServerHandler<T> {
                         &fetch_req.sub_id,
                         fetch_req.length,
                         fetch_req.auto_commit,
+                        ctx,
                     )
                     .await?;
                 RPCResult::Success(json!(result))
@@ -796,7 +880,7 @@ impl<T: MsgQueueHandler> RPCHandler for MsgQueueServerHandler<T> {
                 let commit_req = MsgQueueCommitAckReq::from_json(req.params)?;
                 let result = self
                     .0
-                    .handle_commit_ack(&commit_req.sub_id, commit_req.index)
+                    .handle_commit_ack(&commit_req.sub_id, commit_req.index, ctx)
                     .await?;
                 RPCResult::Success(json!(result))
             }
@@ -804,7 +888,7 @@ impl<T: MsgQueueHandler> RPCHandler for MsgQueueServerHandler<T> {
                 let seek_req = MsgQueueSeekReq::from_json(req.params)?;
                 let result = self
                     .0
-                    .handle_seek(&seek_req.sub_id, seek_req.index)
+                    .handle_seek(&seek_req.sub_id, seek_req.index, ctx)
                     .await?;
                 RPCResult::Success(json!(result))
             }
@@ -812,7 +896,7 @@ impl<T: MsgQueueHandler> RPCHandler for MsgQueueServerHandler<T> {
                 let delete_req = MsgQueueDeleteMessageBeforeReq::from_json(req.params)?;
                 let result = self
                     .0
-                    .handle_delete_message_before(&delete_req.queue_urn, delete_req.index)
+                    .handle_delete_message_before(&delete_req.queue_urn, delete_req.index, ctx)
                     .await?;
                 RPCResult::Success(json!(result))
             }
@@ -901,6 +985,7 @@ mod tests {
             appid: &str,
             app_owner: &str,
             config: QueueConfig,
+            _ctx: RPCContext,
         ) -> std::result::Result<QueueUrn, RPCErrors> {
             let name = name.map(|value| value.to_string()).unwrap_or_else(|| {
                 self.next_queue_name()
@@ -927,6 +1012,7 @@ mod tests {
         async fn handle_delete_queue(
             &self,
             queue_urn: &str,
+            _ctx: RPCContext,
         ) -> std::result::Result<(), RPCErrors> {
             let mut queues = self.queues.lock().await;
             if queues.remove(queue_urn).is_none() {
@@ -945,6 +1031,7 @@ mod tests {
         async fn handle_get_queue_stats(
             &self,
             queue_urn: &str,
+            _ctx: RPCContext,
         ) -> std::result::Result<QueueStats, RPCErrors> {
             let queues = self.queues.lock().await;
             let queue = queues.get(queue_urn).ok_or_else(|| {
@@ -971,6 +1058,7 @@ mod tests {
             &self,
             queue_urn: &str,
             config: QueueConfig,
+            _ctx: RPCContext,
         ) -> std::result::Result<(), RPCErrors> {
             let mut queues = self.queues.lock().await;
             let queue = queues.get_mut(queue_urn).ok_or_else(|| {
@@ -984,6 +1072,7 @@ mod tests {
             &self,
             queue_urn: &str,
             mut message: Message,
+            _ctx: RPCContext,
         ) -> std::result::Result<MsgIndex, RPCErrors> {
             let mut queues = self.queues.lock().await;
             let queue = queues.get_mut(queue_urn).ok_or_else(|| {
@@ -999,8 +1088,11 @@ mod tests {
         async fn handle_subscribe(
             &self,
             queue_urn: &str,
+            _user_id: &str,
+            _app_id: &str,
             sub_id: Option<String>,
             position: SubPosition,
+            _ctx: RPCContext,
         ) -> std::result::Result<SubscriptionId, RPCErrors> {
             let queues = self.queues.lock().await;
             let queue = queues.get(queue_urn).ok_or_else(|| {
@@ -1040,6 +1132,7 @@ mod tests {
         async fn handle_unsubscribe(
             &self,
             sub_id: &str,
+            _ctx: RPCContext,
         ) -> std::result::Result<(), RPCErrors> {
             let mut subs = self.subscriptions.lock().await;
             if subs.remove(sub_id).is_none() {
@@ -1056,6 +1149,7 @@ mod tests {
             sub_id: &str,
             length: usize,
             auto_commit: bool,
+            _ctx: RPCContext,
         ) -> std::result::Result<Vec<Message>, RPCErrors> {
             let mut subs = self.subscriptions.lock().await;
             let sub = subs.get_mut(sub_id).ok_or_else(|| {
@@ -1087,6 +1181,7 @@ mod tests {
             &self,
             sub_id: &str,
             index: MsgIndex,
+            _ctx: RPCContext,
         ) -> std::result::Result<(), RPCErrors> {
             let mut subs = self.subscriptions.lock().await;
             let sub = subs.get_mut(sub_id).ok_or_else(|| {
@@ -1100,6 +1195,7 @@ mod tests {
             &self,
             sub_id: &str,
             index: SubPosition,
+            _ctx: RPCContext,
         ) -> std::result::Result<(), RPCErrors> {
             let mut subs = self.subscriptions.lock().await;
             let sub = subs.get_mut(sub_id).ok_or_else(|| {
@@ -1127,6 +1223,7 @@ mod tests {
             &self,
             queue_urn: &str,
             index: MsgIndex,
+            _ctx: RPCContext,
         ) -> std::result::Result<u64, RPCErrors> {
             let mut queues = self.queues.lock().await;
             let queue = queues.get_mut(queue_urn).ok_or_else(|| {
@@ -1161,7 +1258,7 @@ mod tests {
             .unwrap();
 
         let sub_id = client
-            .subscribe(&queue_urn, None, SubPosition::Earliest)
+            .subscribe(&queue_urn, "user", "app", None, SubPosition::Earliest)
             .await
             .unwrap();
 
@@ -1192,7 +1289,7 @@ mod tests {
             .unwrap();
 
         let sub_id = client
-            .subscribe(&queue_urn, None, SubPosition::Earliest)
+            .subscribe(&queue_urn, "user", "app", None, SubPosition::Earliest)
             .await
             .unwrap();
 
@@ -1223,7 +1320,7 @@ mod tests {
             .unwrap();
 
         let sub_id = client
-            .subscribe(&queue_urn, None, SubPosition::Latest)
+            .subscribe(&queue_urn, "user", "app", None, SubPosition::Latest)
             .await
             .unwrap();
 

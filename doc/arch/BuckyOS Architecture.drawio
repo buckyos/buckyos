@@ -1,6 +1,6 @@
 <mxfile host="65bd71144e" pages="12">
     <diagram id="oIMGCOtcYAl4cptAXmcz" name="Architecture">
-        <mxGraphModel dx="1489" dy="801" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+        <mxGraphModel dx="1276" dy="801" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -1245,127 +1245,127 @@
         </mxGraphModel>
     </diagram>
     <diagram id="0Y17DWSzZZsquk_YFecL" name="Agent App">
-        <mxGraphModel dx="810" dy="1961" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+        <mxGraphModel dx="272" dy="1901" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
                 <mxCell id="Ih0z0G4T_rDQ9Utei5Il-8" value="Agent的运行容器可以持续扩展，不同的Agent可以运行在不同的容器中。系统通过Agent Msg和Workspace定义了Agent与外部世界交互的标准方法。workspace是可以扩展的。&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;Agent与外界的交互具有可观察性，是外向的。Agent的Memory是完全内向的&lt;/div&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
                     <mxGeometry x="930" y="-990" width="150" height="190" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-2" value="AI Compute Kernel" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-2" value="AI Compute Kernel" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
                     <mxGeometry x="1120" y="-775" width="130" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-3" value="MsgQueue" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-3" value="MsgQueue" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
                     <mxGeometry x="1035" y="-678" width="130" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-4" value="TaskMgr" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-4" value="TaskMgr" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
                     <mxGeometry x="1220" y="-678" width="130" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-6" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;dashed=1;dashPattern=8 8;" vertex="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-6" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;dashed=1;dashPattern=8 8;" parent="1" vertex="1">
                     <mxGeometry x="1102.5" y="-980" width="165" height="180" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-7" value="Agent1" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-7" value="Agent1" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
                     <mxGeometry x="1115" y="-950" width="135" height="40" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-8" value="Memory&lt;div&gt;文件夹&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-8" value="Memory&lt;div&gt;文件夹&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
                     <mxGeometry x="1115" y="-888" width="70" height="30" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-28" style="edgeStyle=none;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="e6VtaDdwPvUsGqGn1qCW-9" target="e6VtaDdwPvUsGqGn1qCW-27">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-28" style="edgeStyle=none;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="e6VtaDdwPvUsGqGn1qCW-9" target="e6VtaDdwPvUsGqGn1qCW-27" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-30" value="同构直发，agent高效协作" style="edgeStyle=none;html=1;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="e6VtaDdwPvUsGqGn1qCW-9" target="e6VtaDdwPvUsGqGn1qCW-29">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-30" value="同构直发，agent高效协作" style="edgeStyle=none;html=1;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="e6VtaDdwPvUsGqGn1qCW-9" target="e6VtaDdwPvUsGqGn1qCW-29" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-9" value="Workspace&lt;div&gt;tools/skills/code interpter&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-9" value="Workspace&lt;div&gt;tools/skills/code interpter&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
                     <mxGeometry x="1190" y="-888" width="160" height="30" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-10" value="行为-&amp;gt;LLM&amp;nbsp; Process" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-10" value="行为-&amp;gt;LLM&amp;nbsp; Process" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
                     <mxGeometry x="1120" y="-840" width="140" height="30" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-11" value="Agent 运行容器" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-11" value="Agent 运行容器" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
                     <mxGeometry x="1112.5" y="-980" width="97.5" height="30" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-12" value="知识库&lt;div&gt;图数据库?&lt;/div&gt;" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;" vertex="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-12" value="知识库&lt;div&gt;图数据库?&lt;/div&gt;" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;" parent="1" vertex="1">
                     <mxGeometry x="1280" y="-777.5" width="80" height="65" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-13" value="深度记忆系统" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;" vertex="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-13" value="深度记忆系统" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;" parent="1" vertex="1">
                     <mxGeometry x="1020" y="-777.5" width="60" height="65" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-23" style="edgeStyle=none;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="e6VtaDdwPvUsGqGn1qCW-15" target="e6VtaDdwPvUsGqGn1qCW-22">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-23" style="edgeStyle=none;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="e6VtaDdwPvUsGqGn1qCW-15" target="e6VtaDdwPvUsGqGn1qCW-22" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-15" value="Agent&lt;br&gt;Msg" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" vertex="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-15" value="Agent&lt;br&gt;Msg" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" parent="1" vertex="1">
                     <mxGeometry x="1430" y="-966" width="72" height="72" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-16" value="" style="endArrow=none;dashed=1;html=1;dashPattern=1 3;strokeWidth=2;rounded=0;" edge="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-16" value="" style="endArrow=none;dashed=1;html=1;dashPattern=1 3;strokeWidth=2;rounded=0;" parent="1" edge="1">
                     <mxGeometry width="50" height="50" relative="1" as="geometry">
                         <mxPoint x="900" y="-790" as="sourcePoint"/>
                         <mxPoint x="1740" y="-788" as="targetPoint"/>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-17" value="内核" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-17" value="内核" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
                     <mxGeometry x="920" y="-790" width="60" height="30" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-18" value="AgentMsg 协议&lt;div&gt;1. Agent都有DID&lt;/div&gt;&lt;div&gt;2.可以基于DID构造发送消息的http接口，实现给Agent发消息的。这是一个稳定的，外界与Agent沟通的方法&lt;/div&gt;&lt;div&gt;3. Agent回复消息：&lt;/div&gt;&lt;div&gt;a) Agent需要识别消息来源实体，并通过contact mgr的信息进行合并&lt;/div&gt;&lt;div&gt;b) Agent的心智模型是：选择tunnel向指定实体发送消息&lt;/div&gt;&lt;div&gt;c) 回复消息与接收消息不是一一对应的，而是Agent觉得需要就回复&lt;/div&gt;&lt;div&gt;d) 观察Agent的工作情况，是通过TaskMgr + Workspace的观察接口，不是Agent通过回复消息实现的&lt;/div&gt;&lt;div&gt;e) Agent根据消息的来源，构造正确的回复方法。本质上两种&lt;br&gt;- 可以立刻回复的（调用成功就是回复成功）&lt;/div&gt;&lt;div&gt;- 需要进行发送解耦的，放入系统的Outbox，由另一个系统服务负责进行可靠发送&lt;/div&gt;&lt;div&gt;4. 注意AgentMsg原生对群聊的支持&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-18" value="AgentMsg 协议&lt;div&gt;1. Agent都有DID&lt;/div&gt;&lt;div&gt;2.可以基于DID构造发送消息的http接口，实现给Agent发消息的。这是一个稳定的，外界与Agent沟通的方法&lt;/div&gt;&lt;div&gt;3. Agent回复消息：&lt;/div&gt;&lt;div&gt;a) Agent需要识别消息来源实体，并通过contact mgr的信息进行合并&lt;/div&gt;&lt;div&gt;b) Agent的心智模型是：选择tunnel向指定实体发送消息&lt;/div&gt;&lt;div&gt;c) 回复消息与接收消息不是一一对应的，而是Agent觉得需要就回复&lt;/div&gt;&lt;div&gt;d) 观察Agent的工作情况，是通过TaskMgr + Workspace的观察接口，不是Agent通过回复消息实现的&lt;/div&gt;&lt;div&gt;e) Agent根据消息的来源，构造正确的回复方法。本质上两种&lt;br&gt;- 可以立刻回复的（调用成功就是回复成功）&lt;/div&gt;&lt;div&gt;- 需要进行发送解耦的，放入系统的Outbox，由另一个系统服务负责进行可靠发送&lt;/div&gt;&lt;div&gt;4. 注意AgentMsg原生对群聊的支持&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
                     <mxGeometry x="1780" y="-810" width="300" height="200" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-21" style="edgeStyle=none;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="e6VtaDdwPvUsGqGn1qCW-19" target="e6VtaDdwPvUsGqGn1qCW-15">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-21" style="edgeStyle=none;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="e6VtaDdwPvUsGqGn1qCW-19" target="e6VtaDdwPvUsGqGn1qCW-15" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-19" value="did:bns:$a_name.$zone&lt;div&gt;http方法&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-19" value="did:bns:$a_name.$zone&lt;div&gt;http方法&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
                     <mxGeometry x="1550" y="-960" width="140" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-24" style="edgeStyle=none;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="e6VtaDdwPvUsGqGn1qCW-22" target="e6VtaDdwPvUsGqGn1qCW-7">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-24" style="edgeStyle=none;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="e6VtaDdwPvUsGqGn1qCW-22" target="e6VtaDdwPvUsGqGn1qCW-7" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-22" value="inbox" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-22" value="inbox" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
                     <mxGeometry x="1320" y="-945" width="80" height="30" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-26" style="edgeStyle=none;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;exitX=0;exitY=0.5;exitDx=0;exitDy=0;" edge="1" parent="1" source="e6VtaDdwPvUsGqGn1qCW-25" target="e6VtaDdwPvUsGqGn1qCW-19">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-26" style="edgeStyle=none;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;exitX=0;exitY=0.5;exitDx=0;exitDy=0;" parent="1" source="e6VtaDdwPvUsGqGn1qCW-25" target="e6VtaDdwPvUsGqGn1qCW-19" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-25" value="Telegram Tunnel&lt;div&gt;Telegram bot&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-25" value="Telegram Tunnel&lt;div&gt;Telegram bot&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
                     <mxGeometry x="1780" y="-1040" width="140" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-38" style="edgeStyle=none;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.25;entryDx=0;entryDy=0;" edge="1" parent="1" source="e6VtaDdwPvUsGqGn1qCW-27" target="e6VtaDdwPvUsGqGn1qCW-36">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-38" style="edgeStyle=none;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.25;entryDx=0;entryDy=0;" parent="1" source="e6VtaDdwPvUsGqGn1qCW-27" target="e6VtaDdwPvUsGqGn1qCW-36" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-27" value="outbox" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-27" value="outbox" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
                     <mxGeometry x="1502" y="-888" width="80" height="30" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-29" value="zone内另一个agent inbox" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-29" value="zone内另一个agent inbox" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
                     <mxGeometry x="1446" y="-828" width="104" height="32" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-31" value="Slack Tunnel" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-31" value="Slack Tunnel" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
                     <mxGeometry x="1780" y="-950" width="140" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-32" style="edgeStyle=none;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.978;entryY=0.662;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="e6VtaDdwPvUsGqGn1qCW-31" target="e6VtaDdwPvUsGqGn1qCW-19">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-32" style="edgeStyle=none;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.978;entryY=0.662;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="e6VtaDdwPvUsGqGn1qCW-31" target="e6VtaDdwPvUsGqGn1qCW-19" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-33" value="" style="endArrow=none;dashed=1;html=1;dashPattern=1 3;strokeWidth=2;" edge="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-33" value="" style="endArrow=none;dashed=1;html=1;dashPattern=1 3;strokeWidth=2;" parent="1" edge="1">
                     <mxGeometry width="50" height="50" relative="1" as="geometry">
                         <mxPoint x="1740" y="-790" as="sourcePoint"/>
                         <mxPoint x="1740" y="-1010" as="targetPoint"/>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-35" value="Zone边界" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="e6VtaDdwPvUsGqGn1qCW-33">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-35" value="Zone边界" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="e6VtaDdwPvUsGqGn1qCW-33" vertex="1" connectable="0">
                     <mxGeometry x="-0.4845" y="1" relative="1" as="geometry">
                         <mxPoint as="offset"/>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-39" style="edgeStyle=none;html=1;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="e6VtaDdwPvUsGqGn1qCW-36" target="e6VtaDdwPvUsGqGn1qCW-31">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-39" style="edgeStyle=none;html=1;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.75;entryDx=0;entryDy=0;" parent="1" source="e6VtaDdwPvUsGqGn1qCW-36" target="e6VtaDdwPvUsGqGn1qCW-31" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-36" value="系统发送服务&lt;div&gt;处理用&#39;任意tunnel&#39;发送&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-36" value="系统发送服务&lt;div&gt;处理用&#39;任意tunnel&#39;发送&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
                     <mxGeometry x="1610" y="-888" width="80" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-40" value="ContactMgr" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-40" value="ContactMgr" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
                     <mxGeometry x="1390" y="-678" width="130" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-43" value="Agent的协作&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;Agent必然会通过协作完成复杂工作。协作分了下面几种类型&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;1) sub agent协作：Agent为了完成工作，临时创建了agent,共享自己的worksapce + memory(可选）来共同完成工作。这些sub agent共享主agent的资源&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;2）纯AI Agent协作：和Zone内其它的AI Agent协作。大家通过公共的Workspace和AgentMsg进行沟通。但绝不共享各自的Memory.在协作的过程中，某个AI Agent使用sub agent完成其工作的过程，对其它Agent是透明的。&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;3）外部协作：通过Agent Msg和外部实体协作。这种协作是比较简单的。更复杂的情况是共享Workspace给外部实体，共同修改。&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;Agent与人的协作，也属于这个类型&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-43" value="Agent的协作&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;Agent必然会通过协作完成复杂工作。协作分了下面几种类型&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;1) sub agent协作：Agent为了完成工作，临时创建了agent,共享自己的worksapce + memory(可选）来共同完成工作。这些sub agent共享主agent的资源&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;2）纯AI Agent协作：和Zone内其它的AI Agent协作。大家通过公共的Workspace和AgentMsg进行沟通。但绝不共享各自的Memory.在协作的过程中，某个AI Agent使用sub agent完成其工作的过程，对其它Agent是透明的。&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;3）外部协作：通过Agent Msg和外部实体协作。这种协作是比较简单的。更复杂的情况是共享Workspace给外部实体，共同修改。&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;Agent与人的协作，也属于这个类型&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
                     <mxGeometry x="1540" y="-530" width="255" height="330" as="geometry"/>
                 </mxCell>
-                <mxCell id="e6VtaDdwPvUsGqGn1qCW-44" value="&lt;h1 style=&quot;margin-top: 0px;&quot;&gt;workspace是什么&lt;/h1&gt;&lt;p&gt;workspace是Agent交付成功的地方。如果没有workspace，那么Agent对外沟通(交付成功）的方法只有Agent Msg&lt;/p&gt;&lt;p&gt;&lt;br&gt;&lt;/p&gt;&lt;p&gt;Agent 内部为了实现目的，总是有一个workspace的（基础工具组合，最强力的工具就是coding 工具), Agent 可以根据自己的角色，环境，使用这些工具--&amp;gt;workspace是为支持完成某类工作设计的。比工作流更基础，是工作流的基础。类似车库，摆满了各种工具。这里最重要的工具是制造工具的工具（3D打印机)&lt;/p&gt;&lt;p&gt;构造合适的Workspace是一种元能力。使用确定的Workspace是一种能力。为了提高正确率，人类可以要求必须使用某个特定的Workspace来进行协作&lt;/p&gt;&lt;p&gt;结论：&lt;/p&gt;&lt;p&gt;Workspace用来做结果交付&lt;/p&gt;&lt;p&gt;外部，用来做结果交付的worksapce是一个did-doucment标识的http 服务。&lt;/p&gt;&lt;p&gt;内部的workspace（改名字？workshop?）是一个“skills集合”，其实就是一台电脑 --&amp;gt; 怎样使用电脑的能力强&lt;/p&gt;&lt;p&gt;- 用命令行&lt;/p&gt;&lt;p&gt;- 用图形App（比如浏览器）&lt;/p&gt;&lt;p&gt;这个是Agent特别不擅长的&lt;/p&gt;&lt;p&gt;- 用代码（理论上可以干一切）&lt;/p&gt;&lt;p&gt;&lt;br&gt;&lt;/p&gt;&lt;p&gt;&lt;br&gt;&lt;/p&gt;" style="text;html=1;whiteSpace=wrap;overflow=hidden;rounded=0;" vertex="1" parent="1">
+                <mxCell id="e6VtaDdwPvUsGqGn1qCW-44" value="&lt;h1 style=&quot;margin-top: 0px;&quot;&gt;workspace是什么&lt;/h1&gt;&lt;p&gt;workspace是Agent交付成功的地方。如果没有workspace，那么Agent对外沟通(交付成功）的方法只有Agent Msg&lt;/p&gt;&lt;p&gt;&lt;br&gt;&lt;/p&gt;&lt;p&gt;Agent 内部为了实现目的，总是有一个workspace的（基础工具组合，最强力的工具就是coding 工具), Agent 可以根据自己的角色，环境，使用这些工具--&amp;gt;workspace是为支持完成某类工作设计的。比工作流更基础，是工作流的基础。类似车库，摆满了各种工具。这里最重要的工具是制造工具的工具（3D打印机)&lt;/p&gt;&lt;p&gt;构造合适的Workspace是一种元能力。使用确定的Workspace是一种能力。为了提高正确率，人类可以要求必须使用某个特定的Workspace来进行协作&lt;/p&gt;&lt;p&gt;结论：&lt;/p&gt;&lt;p&gt;Workspace用来做结果交付&lt;/p&gt;&lt;p&gt;外部，用来做结果交付的worksapce是一个did-doucment标识的http 服务。&lt;/p&gt;&lt;p&gt;内部的workspace（改名字？workshop?）是一个“skills集合”，其实就是一台电脑 --&amp;gt; 怎样使用电脑的能力强&lt;/p&gt;&lt;p&gt;- 用命令行&lt;/p&gt;&lt;p&gt;- 用图形App（比如浏览器）&lt;/p&gt;&lt;p&gt;这个是Agent特别不擅长的&lt;/p&gt;&lt;p&gt;- 用代码（理论上可以干一切）&lt;/p&gt;&lt;p&gt;&lt;br&gt;&lt;/p&gt;&lt;p&gt;&lt;br&gt;&lt;/p&gt;" style="text;html=1;whiteSpace=wrap;overflow=hidden;rounded=0;" parent="1" vertex="1">
                     <mxGeometry x="905" y="-550" width="570" height="500" as="geometry"/>
                 </mxCell>
             </root>

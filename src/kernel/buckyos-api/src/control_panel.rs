@@ -141,6 +141,11 @@ impl ControlPanelClient {
         }
     }
 
+    pub async fn set_context(&self, context: RPCContext) -> SytemConfigResult<()> {
+        self.system_config_client.set_context(context).await
+    }
+
+
     //return (rbac_model,rbac_policy)
     pub async fn load_rbac_config(&self) -> Result<(String, String)> {
         let rbac_model_path = "system/rbac/model";

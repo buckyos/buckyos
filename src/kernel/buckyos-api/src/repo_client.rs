@@ -25,6 +25,10 @@ impl RepoClient {
         Self { krpc_client }
     }
 
+    pub async fn set_context(&self, context: RPCContext) {
+        self.krpc_client.set_context(context).await
+    }
+
     pub async fn pub_index(&self) -> Result<()> {
         let params = json!({});
         let _result = self.krpc_client.call("pub_index", params).await?;

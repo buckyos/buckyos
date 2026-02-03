@@ -243,6 +243,7 @@ impl MsgQueueHandler for SledMsgQueue {
         appid: &str,
         app_owner: &str,
         config: QueueConfig,
+        _ctx: RPCContext,
     ) -> std::result::Result<QueueUrn, RPCErrors> {
         let name = match name {
             Some(value) => value.to_string(),
@@ -284,7 +285,11 @@ impl MsgQueueHandler for SledMsgQueue {
         Ok(queue_urn)
     }
 
-    async fn handle_delete_queue(&self, queue_urn: &str) -> std::result::Result<(), RPCErrors> {
+    async fn handle_delete_queue(
+        &self,
+        queue_urn: &str,
+        _ctx: RPCContext,
+    ) -> std::result::Result<(), RPCErrors> {
         let key = Self::queue_key(queue_urn);
         if self
             .queues
@@ -335,6 +340,7 @@ impl MsgQueueHandler for SledMsgQueue {
     async fn handle_get_queue_stats(
         &self,
         queue_urn: &str,
+        _ctx: RPCContext,
     ) -> std::result::Result<QueueStats, RPCErrors> {
         let meta = self.get_queue_meta(queue_urn)?;
         Ok(QueueStats {
@@ -349,6 +355,7 @@ impl MsgQueueHandler for SledMsgQueue {
         &self,
         queue_urn: &str,
         config: QueueConfig,
+        _ctx: RPCContext,
     ) -> std::result::Result<(), RPCErrors> {
         let key = Self::queue_key(queue_urn);
         if self
@@ -379,6 +386,7 @@ impl MsgQueueHandler for SledMsgQueue {
         &self,
         queue_urn: &str,
         mut message: Message,
+        _ctx: RPCContext,
     ) -> std::result::Result<MsgIndex, RPCErrors> {
         let config = self.get_queue_config(queue_urn)?;
         let now = Self::now_seconds();
@@ -457,8 +465,11 @@ impl MsgQueueHandler for SledMsgQueue {
     async fn handle_subscribe(
         &self,
         queue_urn: &str,
+        _user_id: &str,
+        _app_id: &str,
         sub_id: Option<String>,
         position: SubPosition,
+        _ctx: RPCContext,
     ) -> std::result::Result<SubscriptionId, RPCErrors> {
         let meta = self.get_queue_meta(queue_urn)?;
         let first_index = if meta.first_index == 0 { 1 } else { meta.first_index };
@@ -497,7 +508,11 @@ impl MsgQueueHandler for SledMsgQueue {
         Ok(sub_id)
     }
 
-    async fn handle_unsubscribe(&self, sub_id: &str) -> std::result::Result<(), RPCErrors> {
+    async fn handle_unsubscribe(
+        &self,
+        sub_id: &str,
+        _ctx: RPCContext,
+    ) -> std::result::Result<(), RPCErrors> {
         if self
             .subs
             .remove(sub_id.as_bytes())
@@ -517,6 +532,7 @@ impl MsgQueueHandler for SledMsgQueue {
         sub_id: &str,
         length: usize,
         auto_commit: bool,
+        _ctx: RPCContext,
     ) -> std::result::Result<Vec<Message>, RPCErrors> {
         let sub_value = self
             .subs
@@ -556,6 +572,7 @@ impl MsgQueueHandler for SledMsgQueue {
         &self,
         sub_id: &str,
         index: MsgIndex,
+        _ctx: RPCContext,
     ) -> std::result::Result<(), RPCErrors> {
         let sub_value = self
             .subs
@@ -577,6 +594,7 @@ impl MsgQueueHandler for SledMsgQueue {
         &self,
         sub_id: &str,
         index: SubPosition,
+        _ctx: RPCContext,
     ) -> std::result::Result<(), RPCErrors> {
         let sub_value = self
             .subs
@@ -607,6 +625,7 @@ impl MsgQueueHandler for SledMsgQueue {
         &self,
         queue_urn: &str,
         index: MsgIndex,
+        _ctx: RPCContext,
     ) -> std::result::Result<u64, RPCErrors> {
         let config = self.get_queue_config(queue_urn)?;
         let queue_urn = queue_urn.to_string();
@@ -706,7 +725,11 @@ mod tests {
     async fn push_messages(queue: &SledMsgQueue, queue_urn: &str, count: usize) {
         for i in 1..=count {
             let _ = queue
-                .handle_post_message(queue_urn, make_message(&format!("m{}", i)))
+                .handle_post_message(
+                    queue_urn,
+                    make_message(&format!("m{}", i)),
+                    RPCContext::default(),
+                )
                 .await
                 .unwrap();
         }
@@ -717,11 +740,23 @@ mod tests {
         let (_tmp, queue) = setup_queue();
         let config = QueueConfig::default();
         let queue_urn = queue
-            .handle_create_queue(Some("inbox"), "app", "owner", config.clone())
+            .handle_create_queue(
+                Some("inbox"),
+                "app",
+                "owner",
+                config.clone(),
+                RPCContext::default(),
+            )
             .await?;
         // duplicate creation should fail
         assert!(queue
-            .handle_create_queue(Some("inbox"), "app", "owner", config.clone())
+            .handle_create_queue(
+                Some("inbox"),
+                "app",
+                "owner",
+                config.clone(),
+                RPCContext::default(),
+            )
             .await
             .is_err());
 
@@ -729,83 +764,120 @@ mod tests {
         let mut new_cfg = config.clone();
         new_cfg.sync_write = true;
         queue
-            .handle_update_queue_config(&queue_urn, new_cfg.clone())
+            .handle_update_queue_config(&queue_urn, new_cfg.clone(), RPCContext::default())
             .await?;
         let stored = queue.get_queue_config(&queue_urn)?;
         assert!(stored.sync_write);
 
         // post messages
         let idx1 = queue
-            .handle_post_message(&queue_urn, make_message("m1"))
+            .handle_post_message(&queue_urn, make_message("m1"), RPCContext::default())
             .await?;
         let idx2 = queue
-            .handle_post_message(&queue_urn, make_message("m2"))
+            .handle_post_message(&queue_urn, make_message("m2"), RPCContext::default())
             .await?;
         let idx3 = queue
-            .handle_post_message(&queue_urn, make_message("m3"))
+            .handle_post_message(&queue_urn, make_message("m3"), RPCContext::default())
             .await?;
         assert_eq!((idx1, idx2, idx3), (1, 2, 3));
 
         // stats after post
-        let stats = queue.handle_get_queue_stats(&queue_urn).await?;
+        let stats = queue
+            .handle_get_queue_stats(&queue_urn, RPCContext::default())
+            .await?;
         assert_eq!(stats.message_count, 3);
         assert_eq!(stats.first_index, 1);
         assert_eq!(stats.last_index, 3);
 
         // subscribe from earliest
         let sub_id = queue
-            .handle_subscribe(&queue_urn, None, SubPosition::Earliest)
+            .handle_subscribe(
+                &queue_urn,
+                "user",
+                "app",
+                None,
+                SubPosition::Earliest,
+                RPCContext::default(),
+            )
             .await?;
-        let msgs = queue.handle_fetch_messages(&sub_id, 2, true).await?;
+        let msgs = queue
+            .handle_fetch_messages(&sub_id, 2, true, RPCContext::default())
+            .await?;
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].index, 1);
         assert_eq!(msgs[1].index, 2);
 
         // fetch remaining without auto commit then ack
-        let msgs = queue.handle_fetch_messages(&sub_id, 2, false).await?;
+        let msgs = queue
+            .handle_fetch_messages(&sub_id, 2, false, RPCContext::default())
+            .await?;
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].index, 3);
-        queue.handle_commit_ack(&sub_id, 3).await?;
-        let msgs = queue.handle_fetch_messages(&sub_id, 1, false).await?;
+        queue
+            .handle_commit_ack(&sub_id, 3, RPCContext::default())
+            .await?;
+        let msgs = queue
+            .handle_fetch_messages(&sub_id, 1, false, RPCContext::default())
+            .await?;
         assert!(msgs.is_empty());
 
         // seek back to earliest and read again
         queue
-            .handle_seek(&sub_id, SubPosition::Earliest)
+            .handle_seek(&sub_id, SubPosition::Earliest, RPCContext::default())
             .await?;
-        let msgs = queue.handle_fetch_messages(&sub_id, 1, false).await?;
+        let msgs = queue
+            .handle_fetch_messages(&sub_id, 1, false, RPCContext::default())
+            .await?;
         assert_eq!(msgs[0].index, 1);
 
         // subscribe at latest should see nothing until new message
         let sub_latest = queue
-            .handle_subscribe(&queue_urn, Some("latest".to_string()), SubPosition::Latest)
+            .handle_subscribe(
+                &queue_urn,
+                "user",
+                "app",
+                Some("latest".to_string()),
+                SubPosition::Latest,
+                RPCContext::default(),
+            )
             .await?;
         let msgs = queue
-            .handle_fetch_messages(&sub_latest, 1, false)
+            .handle_fetch_messages(&sub_latest, 1, false, RPCContext::default())
             .await?;
         assert!(msgs.is_empty());
 
         // delete messages before index 3 (drops 1 and 2)
         let removed = queue
-            .handle_delete_message_before(&queue_urn, 3)
+            .handle_delete_message_before(&queue_urn, 3, RPCContext::default())
             .await?;
         assert_eq!(removed, 2);
-        let stats = queue.handle_get_queue_stats(&queue_urn).await?;
+        let stats = queue
+            .handle_get_queue_stats(&queue_urn, RPCContext::default())
+            .await?;
         assert_eq!(stats.message_count, 1);
         assert_eq!(stats.first_index, 3);
         assert_eq!(stats.last_index, 3);
 
         // unsubscribe both
-        queue.handle_unsubscribe(&sub_id).await?;
-        queue.handle_unsubscribe(&sub_latest).await?;
+        queue
+            .handle_unsubscribe(&sub_id, RPCContext::default())
+            .await?;
+        queue
+            .handle_unsubscribe(&sub_latest, RPCContext::default())
+            .await?;
         assert!(queue
-            .handle_fetch_messages(&sub_id, 1, false)
+            .handle_fetch_messages(&sub_id, 1, false, RPCContext::default())
             .await
             .is_err());
 
         // delete queue
-        queue.handle_delete_queue(&queue_urn).await?;
-        assert!(queue.handle_get_queue_stats(&queue_urn).await.is_err());
+        queue
+            .handle_delete_queue(&queue_urn, RPCContext::default())
+            .await?;
+        assert!(queue
+            .handle_get_queue_stats(&queue_urn, RPCContext::default())
+            .await
+            .is_err());
 
         Ok(())
     }
@@ -814,7 +886,13 @@ mod tests {
     async fn test_multiple_subscribers_and_messages() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let (_tmp, queue) = setup_queue();
         let queue_urn = queue
-            .handle_create_queue(Some("multi"), "app", "owner", QueueConfig::default())
+            .handle_create_queue(
+                Some("multi"),
+                "app",
+                "owner",
+                QueueConfig::default(),
+                RPCContext::default(),
+            )
             .await?;
 
         // seed 10 messages
@@ -822,75 +900,108 @@ mod tests {
 
         // subscribers at different positions
         let sub_earliest = queue
-            .handle_subscribe(&queue_urn, Some("earliest".into()), SubPosition::Earliest)
+            .handle_subscribe(
+                &queue_urn,
+                "user",
+                "app",
+                Some("earliest".into()),
+                SubPosition::Earliest,
+                RPCContext::default(),
+            )
             .await?;
         let sub_latest = queue
-            .handle_subscribe(&queue_urn, Some("latest".into()), SubPosition::Latest)
+            .handle_subscribe(
+                &queue_urn,
+                "user",
+                "app",
+                Some("latest".into()),
+                SubPosition::Latest,
+                RPCContext::default(),
+            )
             .await?;
         let sub_mid = queue
-            .handle_subscribe(&queue_urn, Some("mid".into()), SubPosition::At(5))
+            .handle_subscribe(
+                &queue_urn,
+                "user",
+                "app",
+                Some("mid".into()),
+                SubPosition::At(5),
+                RPCContext::default(),
+            )
             .await?;
 
         // earliest reads first three and auto commits
         let msgs = queue
-            .handle_fetch_messages(&sub_earliest, 3, true)
+            .handle_fetch_messages(&sub_earliest, 3, true, RPCContext::default())
             .await?;
         assert_eq!(msgs.iter().map(|m| m.index).collect::<Vec<_>>(), vec![1, 2, 3]);
 
         // mid reads two without commit, then commit to 6
         let msgs = queue
-            .handle_fetch_messages(&sub_mid, 2, false)
+            .handle_fetch_messages(&sub_mid, 2, false, RPCContext::default())
             .await?;
         assert_eq!(msgs.iter().map(|m| m.index).collect::<Vec<_>>(), vec![5, 6]);
-        queue.handle_commit_ack(&sub_mid, 6).await?;
+        queue
+            .handle_commit_ack(&sub_mid, 6, RPCContext::default())
+            .await?;
 
         // latest should see nothing until new messages arrive
         let msgs = queue
-            .handle_fetch_messages(&sub_latest, 5, true)
+            .handle_fetch_messages(&sub_latest, 5, true, RPCContext::default())
             .await?;
         assert!(msgs.is_empty());
 
         // add two more messages (indexes 11,12)
         queue
-            .handle_post_message(&queue_urn, make_message("m11"))
+            .handle_post_message(&queue_urn, make_message("m11"), RPCContext::default())
             .await?;
         queue
-            .handle_post_message(&queue_urn, make_message("m12"))
+            .handle_post_message(&queue_urn, make_message("m12"), RPCContext::default())
             .await?;
 
         // latest now gets both new messages
         let msgs = queue
-            .handle_fetch_messages(&sub_latest, 10, true)
+            .handle_fetch_messages(&sub_latest, 10, true, RPCContext::default())
             .await?;
         assert_eq!(msgs.iter().map(|m| m.index).collect::<Vec<_>>(), vec![11, 12]);
 
         // prune older messages (<6)
         let removed = queue
-            .handle_delete_message_before(&queue_urn, 6)
+            .handle_delete_message_before(&queue_urn, 6, RPCContext::default())
             .await?;
         assert_eq!(removed, 5); // messages 1-5 removed
-        let stats = queue.handle_get_queue_stats(&queue_urn).await?;
+        let stats = queue
+            .handle_get_queue_stats(&queue_urn, RPCContext::default())
+            .await?;
         assert_eq!(stats.first_index, 6);
         assert_eq!(stats.last_index, 12);
         assert_eq!(stats.message_count, 7);
 
         // earliest cursor was at 4 (after auto commit) and should now see from 6
         let msgs = queue
-            .handle_fetch_messages(&sub_earliest, 3, true)
+            .handle_fetch_messages(&sub_earliest, 3, true, RPCContext::default())
             .await?;
         assert_eq!(msgs.iter().map(|m| m.index).collect::<Vec<_>>(), vec![6, 7, 8]);
 
         // mid cursor at 7 after commit; fetch remaining
         let msgs = queue
-            .handle_fetch_messages(&sub_mid, 10, true)
+            .handle_fetch_messages(&sub_mid, 10, true, RPCContext::default())
             .await?;
         assert_eq!(msgs.iter().map(|m| m.index).collect::<Vec<_>>(), vec![7, 8, 9, 10, 11, 12]);
 
         // cleanup
-        queue.handle_unsubscribe(&sub_earliest).await?;
-        queue.handle_unsubscribe(&sub_latest).await?;
-        queue.handle_unsubscribe(&sub_mid).await?;
-        queue.handle_delete_queue(&queue_urn).await?;
+        queue
+            .handle_unsubscribe(&sub_earliest, RPCContext::default())
+            .await?;
+        queue
+            .handle_unsubscribe(&sub_latest, RPCContext::default())
+            .await?;
+        queue
+            .handle_unsubscribe(&sub_mid, RPCContext::default())
+            .await?;
+        queue
+            .handle_delete_queue(&queue_urn, RPCContext::default())
+            .await?;
 
         Ok(())
     }

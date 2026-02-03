@@ -1,14 +1,13 @@
 //TODO:
 //  add WATCH,and load cached value automatically when the value is changed.
 
-use ::kRPC::kRPC;
+use ::kRPC::{kRPC, RPCContext};
 use buckyos_kit::buckyos_get_unix_timestamp;
 use log::*;
 use serde_json::{json, Map, Value};
 use thiserror::Error;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::LazyLock;
 use tokio::sync::{OnceCell, RwLock};
 
@@ -34,7 +33,7 @@ pub enum SystemConfigError {
 
 pub type SytemConfigResult<T> = std::result::Result<T, SystemConfigError>;
 pub struct SystemConfigClient {
-    client: OnceCell<Arc<kRPC>>,
+    client: kRPC,
     session_token: Option<String>,
     cache_key_control: OnceCell<Vec<String>>,
     current_version: RwLock<u64>,
@@ -68,6 +67,11 @@ impl SystemConfigClient {
             }
         }
         false
+    }
+
+    pub async fn set_context(&self, context: RPCContext) -> SytemConfigResult<()> {
+        self.client.set_context(context).await;
+        Ok(())
     }
 
     async fn get_config_cache(&self, key: &str) -> Option<String> {
@@ -135,7 +139,7 @@ impl SystemConfigClient {
             service_url.unwrap_or("http://127.0.0.1:3200/kapi/system_config"),
             real_session_token.clone(),
         );
-        let client = Arc::new(client);
+       
         info!(
             "system config client is created,service_url:{},session_token:{}",
             service_url.unwrap_or("http://127.0.0.1:3200/kapi/system_config"),
@@ -145,7 +149,7 @@ impl SystemConfigClient {
         let cache_key_control = OnceCell::new_with(Some(key_control));
 
         SystemConfigClient {
-            client: OnceCell::new_with(Some(client)),
+            client,
             session_token: real_session_token,
             cache_key_control: cache_key_control,
             current_version: RwLock::new(0),
@@ -156,14 +160,8 @@ impl SystemConfigClient {
         self.session_token.clone()
     }
 
-    fn get_krpc_client(&self) -> SytemConfigResult<Arc<kRPC>> {
-        let client = self.client.get();
-        if client.is_none() {
-            return Err(SystemConfigError::ReasonError(
-                "krpc client not found!".to_string(),
-            ));
-        }
-        Ok(client.unwrap().clone())
+    fn get_krpc_client(&self) -> SytemConfigResult<&kRPC> {
+        Ok(&self.client)
     }
 
     //return (value,version,is_changed)
@@ -174,8 +172,8 @@ impl SystemConfigClient {
         }
 
         // 缓存中没有，从服务器获取
-        let client = self.get_krpc_client()?;
-        let result = client
+
+        let result = self.client
             .call("sys_config_get", json!({"key": key}))
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
