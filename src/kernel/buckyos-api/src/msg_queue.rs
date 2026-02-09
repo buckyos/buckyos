@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::IpAddr;
-use thiserror::Error;
 
 const KMSG_SERVICE_NAME: &str = "kmsg";
 pub const KMSG_SERVICE_MAIN_PORT: u16 = 4030;

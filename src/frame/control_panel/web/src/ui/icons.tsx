@@ -7,6 +7,13 @@ type IconProps = {
 }
 
 const icons: Record<IconName, ReactNode> = {
+  desktop: (
+    <>
+      <rect x="4" y="5" width="16" height="11" rx="2" />
+      <path d="M8 21h8" />
+      <path d="M12 16v5" />
+    </>
+  ),
   dashboard: (
     <>
       <rect x="3" y="3" width="8" height="8" rx="1.5" />

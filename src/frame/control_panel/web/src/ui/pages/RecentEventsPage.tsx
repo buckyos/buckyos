@@ -145,7 +145,6 @@ const RecentEventsPage = () => {
           {loading ? (
             Array.from({ length: 4 }).map((_, index) => (
               <div
-                // eslint-disable-next-line react/no-array-index-key
                 key={`event-skeleton-${index}`}
                 className="animate-pulse rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-4 py-4"
               >

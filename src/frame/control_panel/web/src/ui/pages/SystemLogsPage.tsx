@@ -100,7 +100,6 @@ const LogList = ({
         <div className="h-[480px] overflow-y-auto p-2">
           {Array.from({ length: 6 }).map((_, index) => (
             <div
-              // eslint-disable-next-line react/no-array-index-key
               key={`log-skeleton-${index}`}
               className="animate-pulse px-2 py-2"
               style={{ borderBottom: '1px solid rgba(215, 225, 223, 0.25)' }}

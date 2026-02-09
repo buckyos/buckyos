@@ -3,7 +3,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
 use buckyos_api::{
-    BuckyOSRuntimeType, CONTROL_PANEL_SERVICE_NAME, CONTROL_PANEL_SERVICE_PORT, SystemConfigClient, get_buckyos_api_runtime, get_session_token_env_key, init_buckyos_api_runtime, set_buckyos_api_runtime
+    BuckyOSRuntimeType, CONTROL_PANEL_SERVICE_NAME, CONTROL_PANEL_SERVICE_PORT, SystemConfigClient, get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime
 };
 use buckyos_kit::*;
 use bytes::Bytes;
@@ -21,9 +21,9 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::{net::IpAddr, time::Duration};
+use std::{net::IpAddr, time::{Duration, Instant}};
 use sysinfo::{DiskRefreshKind, Disks, Networks, System};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio::task;
 use uuid::Uuid;
 use zip::write::FileOptions;
@@ -68,16 +68,103 @@ struct LogFileRef {
     modified: std::time::SystemTime,
 }
 
+#[derive(Clone, Debug, Default)]
+struct NetworkStatsSnapshot {
+    rx_bytes: u64,
+    tx_bytes: u64,
+    rx_per_sec: u64,
+    tx_per_sec: u64,
+    interface_count: usize,
+    updated_at: Option<std::time::SystemTime>,
+}
+
 #[derive(Clone)]
 struct ControlPanelServer {
     log_downloads: Arc<Mutex<HashMap<String, LogDownloadEntry>>>,
+    network_stats: Arc<RwLock<NetworkStatsSnapshot>>,
 }
 
 impl ControlPanelServer {
     pub fn new() -> Self {
+        let network_stats = Arc::new(RwLock::new(NetworkStatsSnapshot::default()));
+        Self::start_network_sampler(network_stats.clone());
         ControlPanelServer {
             log_downloads: Arc::new(Mutex::new(HashMap::new())),
+            network_stats,
         }
+    }
+
+    fn start_network_sampler(network_stats: Arc<RwLock<NetworkStatsSnapshot>>) {
+        // Background sampler so network rates are stable and independent of UI polling.
+        tokio::spawn(async move {
+            let mut networks = Networks::new_with_refreshed_list();
+            networks.refresh(true);
+
+            let (mut prev_rx, mut prev_tx, iface_count) =
+                ControlPanelServer::sum_network_totals(&networks);
+            {
+                let mut snapshot = network_stats.write().await;
+                snapshot.rx_bytes = prev_rx;
+                snapshot.tx_bytes = prev_tx;
+                snapshot.rx_per_sec = 0;
+                snapshot.tx_per_sec = 0;
+                snapshot.interface_count = iface_count;
+                snapshot.updated_at = Some(std::time::SystemTime::now());
+            }
+
+            let mut last_at = Instant::now();
+            let mut ticker = tokio::time::interval(Duration::from_secs(1));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            loop {
+                ticker.tick().await;
+                networks.refresh(true);
+
+                let (rx_bytes, tx_bytes, iface_count) =
+                    ControlPanelServer::sum_network_totals(&networks);
+                let dt = last_at.elapsed().as_secs_f64();
+                last_at = Instant::now();
+
+                let rx_delta = rx_bytes.saturating_sub(prev_rx);
+                let tx_delta = tx_bytes.saturating_sub(prev_tx);
+                prev_rx = rx_bytes;
+                prev_tx = tx_bytes;
+
+                let (rx_per_sec, tx_per_sec) = if dt > 0.0 {
+                    (
+                        ((rx_delta as f64) / dt).round() as u64,
+                        ((tx_delta as f64) / dt).round() as u64,
+                    )
+                } else {
+                    (0, 0)
+                };
+
+                let mut snapshot = network_stats.write().await;
+                snapshot.rx_bytes = rx_bytes;
+                snapshot.tx_bytes = tx_bytes;
+                snapshot.rx_per_sec = rx_per_sec;
+                snapshot.tx_per_sec = tx_per_sec;
+                snapshot.interface_count = iface_count;
+                snapshot.updated_at = Some(std::time::SystemTime::now());
+            }
+        });
+    }
+
+    fn sum_network_totals(networks: &Networks) -> (u64, u64, usize) {
+        // Default behavior: sum all non-loopback interfaces.
+        let mut rx_bytes: u64 = 0;
+        let mut tx_bytes: u64 = 0;
+        let mut iface_count: usize = 0;
+        for (name, data) in networks.iter() {
+            let iface = name.as_str();
+            if iface == "lo" || iface == "lo0" {
+                continue;
+            }
+            iface_count = iface_count.saturating_add(1);
+            rx_bytes = rx_bytes.saturating_add(data.total_received());
+            tx_bytes = tx_bytes.saturating_add(data.total_transmitted());
+        }
+        (rx_bytes, tx_bytes, iface_count)
     }
 
     async fn handle_main(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
@@ -1548,14 +1635,7 @@ impl ControlPanelServer {
         let mut storage_capacity_bytes: u64 = 0;
         let mut storage_used_bytes: u64 = 0;
 
-        let mut networks = Networks::new_with_refreshed_list();
-        networks.refresh(true);
-        let mut rx_bytes: u64 = 0;
-        let mut tx_bytes: u64 = 0;
-        for (_, data) in networks.iter() {
-            rx_bytes = rx_bytes.saturating_add(data.total_received());
-            tx_bytes = tx_bytes.saturating_add(data.total_transmitted());
-        }
+        let network_stats = { self.network_stats.read().await.clone() };
 
         if !lite {
             let mut disks = Disks::new_with_refreshed_list_specifics(DiskRefreshKind::everything());
@@ -1608,10 +1688,10 @@ impl ControlPanelServer {
                 "disks": disks_detail,
             },
             "network": {
-                "rxBytes": rx_bytes,
-                "txBytes": tx_bytes,
-                "rxPerSec": 0,
-                "txPerSec": 0,
+                "rxBytes": network_stats.rx_bytes,
+                "txBytes": network_stats.tx_bytes,
+                "rxPerSec": network_stats.rx_per_sec,
+                "txPerSec": network_stats.tx_per_sec,
             },
             "swap": {
                 "totalGb": bytes_to_gb(total_swap_bytes),
@@ -2324,7 +2404,7 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
         log::warn!("control-panel web_dir not available; static web UI disabled");
     }
 
-    runner.start();
+    let _ = runner.start();
     info!(
         "control-panel service started at port {}",
         CONTROL_PANEL_SERVICE_PORT

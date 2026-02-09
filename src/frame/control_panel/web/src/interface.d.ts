@@ -2,6 +2,7 @@ export {}
 
 declare global {
   type IconName =
+    | 'desktop'
     | 'dashboard'
     | 'users'
     | 'storage'

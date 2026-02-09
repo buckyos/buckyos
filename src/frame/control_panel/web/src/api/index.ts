@@ -19,7 +19,8 @@ const callRpc = async <T>(
 
 const mockLayoutData: RootLayoutData = {
   primaryNav: [
-    { label: 'Dashboard', icon: 'dashboard', path: '/' },
+    { label: 'Desktop', icon: 'desktop', path: '/' },
+    { label: 'Monitor', icon: 'dashboard', path: '/monitor' },
     { label: 'User Management', icon: 'users', path: '/users' },
     { label: 'Storage', icon: 'storage', path: '/storage' },
     { label: 'dApp Store', icon: 'apps', path: '/dapps' },
@@ -48,7 +49,7 @@ const mockDashboardData: DashboardState = {
     { title: 'System backup completed', subtitle: '2 mins ago', tone: 'success' },
     { title: 'High memory usage detected', subtitle: '15 mins ago', tone: 'warning' },
     { title: 'New device connected: iPhone 15', subtitle: '1 hour ago', tone: 'info' },
-    { title: 'dApp \"FileSync\" updated successfully', subtitle: '2 hours ago', tone: 'success' },
+    { title: 'dApp "FileSync" updated successfully', subtitle: '2 hours ago', tone: 'success' },
     { title: 'New admin policy applied', subtitle: 'Yesterday', tone: 'info' },
   ],
   dapps: [

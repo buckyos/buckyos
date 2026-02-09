@@ -187,7 +187,6 @@ const StoragePage = () => {
               <rect x="0" y="0" width="100" height="60" fill="transparent" />
               {[20, 40, 60, 80].map((value) => (
                 <line
-                  // eslint-disable-next-line react/no-array-index-key
                   key={value}
                   x1="0"
                   y1={60 - value * 0.6}
@@ -245,7 +244,6 @@ const StoragePage = () => {
               <rect x="0" y="0" width="100" height="60" fill="transparent" />
               {[400, 800, 1200, 1600].map((value) => (
                 <line
-                  // eslint-disable-next-line react/no-array-index-key
                   key={value}
                   x1="0"
                   y1={60 - value / 20}
