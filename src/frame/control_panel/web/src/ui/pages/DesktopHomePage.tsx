@@ -368,10 +368,10 @@ const DesktopHomePage = () => {
   const wallpaperStyle = useMemo(
     () => ({
       backgroundImage:
-        'radial-gradient(1100px circle at 18% 12%, rgba(15, 118, 110, 0.42) 0%, transparent 55%),\n'
-        + 'radial-gradient(900px circle at 82% 18%, rgba(245, 158, 11, 0.32) 0%, transparent 52%),\n'
-        + 'radial-gradient(900px circle at 70% 84%, rgba(56, 189, 248, 0.16) 0%, transparent 50%),\n'
-        + 'linear-gradient(140deg, #071316 0%, #0b2430 48%, #071318 100%)',
+        'radial-gradient(1100px circle at 18% 12%, rgba(15, 118, 110, 0.68) 0%, transparent 60%),\n'
+        + 'radial-gradient(1000px circle at 82% 18%, rgba(245, 158, 11, 0.48) 0%, transparent 60%),\n'
+        + 'radial-gradient(900px circle at 70% 84%, rgba(56, 189, 248, 0.34) 0%, transparent 60%),\n'
+        + 'linear-gradient(140deg, #166b7d 0%, #4bb8c6 52%, #135c6b 100%)',
     }),
     [],
   )
@@ -447,7 +447,7 @@ const DesktopHomePage = () => {
         className="absolute inset-0"
         style={{
           backgroundImage:
-            'radial-gradient(700px circle at 20% 30%, rgba(255, 255, 255, 0.08) 0%, transparent 55%), radial-gradient(700px circle at 80% 60%, rgba(255, 255, 255, 0.06) 0%, transparent 58%)',
+            'radial-gradient(700px circle at 20% 28%, rgba(255, 255, 255, 0.18) 0%, transparent 62%), radial-gradient(700px circle at 80% 60%, rgba(255, 255, 255, 0.12) 0%, transparent 64%)',
         }}
         aria-hidden
       />
