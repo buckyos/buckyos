@@ -139,7 +139,7 @@ impl SystemConfigClient {
             service_url.unwrap_or("http://127.0.0.1:3200/kapi/system_config"),
             real_session_token.clone(),
         );
-       
+
         info!(
             "system config client is created,service_url:{},session_token:{}",
             service_url.unwrap_or("http://127.0.0.1:3200/kapi/system_config"),
@@ -173,7 +173,8 @@ impl SystemConfigClient {
 
         // 缓存中没有，从服务器获取
 
-        let result = self.client
+        let result = self
+            .client
             .call("sys_config_get", json!({"key": key}))
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;

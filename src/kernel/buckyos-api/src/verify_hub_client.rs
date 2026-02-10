@@ -226,13 +226,11 @@ impl VerifyHubClient {
     pub fn new_krpc(krpc_client: Box<kRPC>) -> Self {
         Self::KRPC(krpc_client)
     }
-    
-    pub async fn set_context(&self, context: RPCContext)  {
+
+    pub async fn set_context(&self, context: RPCContext) {
         match self {
             Self::InProcess(_) => {}
-            Self::KRPC(client) => {
-                client.set_context(context).await
-            }
+            Self::KRPC(client) => client.set_context(context).await,
         }
     }
 

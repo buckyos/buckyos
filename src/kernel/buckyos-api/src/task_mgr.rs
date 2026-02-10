@@ -7,7 +7,6 @@ use std::net::IpAddr;
 use std::ops::Range;
 use std::str::FromStr;
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskStatus {
     Pending,
@@ -136,7 +135,6 @@ pub struct ListTasksResult {
     pub tasks: Vec<Task>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskManagerCreateTaskReq {
     pub name: String,
@@ -188,10 +186,7 @@ impl TaskManagerCreateTaskReq {
 
     pub fn from_json(value: Value) -> Result<Self> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerCreateTaskReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse TaskManagerCreateTaskReq: {}", e))
         })
     }
 }
@@ -208,10 +203,7 @@ impl TaskManagerGetTaskReq {
 
     pub fn from_json(value: Value) -> Result<Self> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerGetTaskReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse TaskManagerGetTaskReq: {}", e))
         })
     }
 }
@@ -253,10 +245,7 @@ impl TaskManagerListTasksReq {
 
     pub fn from_json(value: Value) -> Result<Self> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerListTasksReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse TaskManagerListTasksReq: {}", e))
         })
     }
 }
@@ -329,10 +318,7 @@ impl TaskManagerUpdateTaskReq {
 
     pub fn from_json(value: Value) -> Result<Self> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerUpdateTaskReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse TaskManagerUpdateTaskReq: {}", e))
         })
     }
 }
@@ -351,10 +337,7 @@ impl TaskManagerCancelTaskReq {
 
     pub fn from_json(value: Value) -> Result<Self> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerCancelTaskReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse TaskManagerCancelTaskReq: {}", e))
         })
     }
 }
@@ -480,10 +463,7 @@ impl TaskManagerDeleteTaskReq {
 
     pub fn from_json(value: Value) -> Result<Self> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerDeleteTaskReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse TaskManagerDeleteTaskReq: {}", e))
         })
     }
 }
@@ -506,16 +486,14 @@ impl TaskManagerClient {
         Self::KRPC(client)
     }
 
-    pub async fn set_context(&self, context: RPCContext)  {
+    pub async fn set_context(&self, context: RPCContext) {
         match self {
             Self::InProcess(_) => {}
-            Self::KRPC(client) => {
-                client.set_context(context).await
-            }
+            Self::KRPC(client) => client.set_context(context).await,
         }
     }
 
-    //reivew: 
+    //reivew:
     pub async fn create_task(
         &self,
         name: &str,
@@ -530,15 +508,7 @@ impl TaskManagerClient {
             Self::InProcess(handler) => {
                 let ctx = RPCContext::default();
                 let result = handler
-                    .handle_create_task(
-                        name,
-                        task_type,
-                        data,
-                        opts,
-                        user_id,
-                        app_id,
-                        ctx,
-                    )
+                    .handle_create_task(name, task_type, data, opts, user_id, app_id, ctx)
                     .await?;
                 Ok(result)
             }
@@ -554,10 +524,7 @@ impl TaskManagerClient {
                     app_id.to_string(),
                 );
                 let req_json = serde_json::to_value(&req).map_err(|e| {
-                    RPCErrors::ReasonError(format!(
-                        "Failed to serialize request: {}",
-                        e
-                    ))
+                    RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
                 })?;
                 let result = client.call("create_task", req_json).await?;
 
@@ -587,10 +554,7 @@ impl TaskManagerClient {
             Self::KRPC(client) => {
                 let req = TaskManagerGetTaskReq::new(id);
                 let req_json = serde_json::to_value(&req).map_err(|e| {
-                    RPCErrors::ReasonError(format!(
-                        "Failed to serialize request: {}",
-                        e
-                    ))
+                    RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
                 })?;
                 let result = client.call("get_task", req_json).await?;
 
@@ -602,9 +566,7 @@ impl TaskManagerClient {
                     .get("task")
                     .and_then(|value| serde_json::from_value::<Task>(value.clone()).ok())
                     .ok_or_else(|| {
-                        RPCErrors::ParserResponseError(
-                            "Expected task in response".to_string(),
-                        )
+                        RPCErrors::ParserResponseError("Expected task in response".to_string())
                     })
             }
         }
@@ -620,7 +582,12 @@ impl TaskManagerClient {
             Self::InProcess(handler) => {
                 let ctx = RPCContext::default();
                 let result = handler
-                    .handle_list_tasks(filter.unwrap_or_default(), source_user_id, source_app_id, ctx)
+                    .handle_list_tasks(
+                        filter.unwrap_or_default(),
+                        source_user_id,
+                        source_app_id,
+                        ctx,
+                    )
                     .await?;
                 Ok(result)
             }
@@ -631,10 +598,7 @@ impl TaskManagerClient {
                     source_app_id.map(|value| value.to_string()),
                 );
                 let req_json = serde_json::to_value(&req).map_err(|e| {
-                    RPCErrors::ReasonError(format!(
-                        "Failed to serialize request: {}",
-                        e
-                    ))
+                    RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
                 })?;
                 let result = client.call("list_tasks", req_json).await?;
 
@@ -643,14 +607,9 @@ impl TaskManagerClient {
                 }
 
                 if let Some(tasks_value) = result.get("tasks") {
-                    return serde_json::from_value::<Vec<Task>>(tasks_value.clone()).map_err(
-                        |e| {
-                            RPCErrors::ParserResponseError(format!(
-                                "Failed to parse tasks: {}",
-                                e
-                            ))
-                        },
-                    );
+                    return serde_json::from_value::<Vec<Task>>(tasks_value.clone()).map_err(|e| {
+                        RPCErrors::ParserResponseError(format!("Failed to parse tasks: {}", e))
+                    });
                 }
 
                 Err(RPCErrors::ParserResponseError(
@@ -692,10 +651,7 @@ impl TaskManagerClient {
                     time_range,
                 );
                 let req_json = serde_json::to_value(&req).map_err(|e| {
-                    RPCErrors::ReasonError(format!(
-                        "Failed to serialize request: {}",
-                        e
-                    ))
+                    RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
                 })?;
                 let result = client.call("list_tasks_by_time_range", req_json).await?;
 
@@ -704,14 +660,9 @@ impl TaskManagerClient {
                 }
 
                 if let Some(tasks_value) = result.get("tasks") {
-                    return serde_json::from_value::<Vec<Task>>(tasks_value.clone()).map_err(
-                        |e| {
-                            RPCErrors::ParserResponseError(format!(
-                                "Failed to parse tasks: {}",
-                                e
-                            ))
-                        },
-                    );
+                    return serde_json::from_value::<Vec<Task>>(tasks_value.clone()).map_err(|e| {
+                        RPCErrors::ParserResponseError(format!("Failed to parse tasks: {}", e))
+                    });
                 }
 
                 Err(RPCErrors::ParserResponseError(
@@ -746,10 +697,7 @@ impl TaskManagerClient {
                 };
                 let req = TaskManagerUpdateTaskReq::new(payload);
                 let req_json = serde_json::to_value(&req).map_err(|e| {
-                    RPCErrors::ReasonError(format!(
-                        "Failed to serialize request: {}",
-                        e
-                    ))
+                    RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
                 })?;
                 client.call("update_task", req_json).await?;
                 Ok(())
@@ -766,10 +714,7 @@ impl TaskManagerClient {
             Self::KRPC(client) => {
                 let req = TaskManagerCancelTaskReq::new(id, recursive);
                 let req_json = serde_json::to_value(&req).map_err(|e| {
-                    RPCErrors::ReasonError(format!(
-                        "Failed to serialize request: {}",
-                        e
-                    ))
+                    RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
                 })?;
                 client.call("cancel_task", req_json).await?;
                 Ok(())
@@ -787,24 +732,16 @@ impl TaskManagerClient {
             Self::KRPC(client) => {
                 let req = TaskManagerGetSubtasksReq::new(parent_id);
                 let req_json = serde_json::to_value(&req).map_err(|e| {
-                    RPCErrors::ReasonError(format!(
-                        "Failed to serialize request: {}",
-                        e
-                    ))
+                    RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
                 })?;
                 let result = client.call("get_subtasks", req_json).await?;
                 if let Ok(response) = serde_json::from_value::<ListTasksResult>(result.clone()) {
                     return Ok(response.tasks);
                 }
                 if let Some(tasks_value) = result.get("tasks") {
-                    return serde_json::from_value::<Vec<Task>>(tasks_value.clone()).map_err(
-                        |e| {
-                            RPCErrors::ParserResponseError(format!(
-                                "Failed to parse tasks: {}",
-                                e
-                            ))
-                        },
-                    );
+                    return serde_json::from_value::<Vec<Task>>(tasks_value.clone()).map_err(|e| {
+                        RPCErrors::ParserResponseError(format!("Failed to parse tasks: {}", e))
+                    });
                 }
                 Err(RPCErrors::ParserResponseError(
                     "Expected tasks in response".to_string(),
@@ -822,10 +759,7 @@ impl TaskManagerClient {
             Self::KRPC(client) => {
                 let req = TaskManagerUpdateTaskStatusReq::new(id, status);
                 let req_json = serde_json::to_value(&req).map_err(|e| {
-                    RPCErrors::ReasonError(format!(
-                        "Failed to serialize request: {}",
-                        e
-                    ))
+                    RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
                 })?;
                 client.call("update_task_status", req_json).await?;
                 Ok(())
@@ -849,10 +783,7 @@ impl TaskManagerClient {
             Self::KRPC(client) => {
                 let req = TaskManagerUpdateTaskProgressReq::new(id, completed_items, total_items);
                 let req_json = serde_json::to_value(&req).map_err(|e| {
-                    RPCErrors::ReasonError(format!(
-                        "Failed to serialize request: {}",
-                        e
-                    ))
+                    RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
                 })?;
                 client.call("update_task_progress", req_json).await?;
                 Ok(())
@@ -864,15 +795,14 @@ impl TaskManagerClient {
         match self {
             Self::InProcess(handler) => {
                 let ctx = RPCContext::default();
-                handler.handle_update_task_error(id, error_message, ctx).await
+                handler
+                    .handle_update_task_error(id, error_message, ctx)
+                    .await
             }
             Self::KRPC(client) => {
                 let req = TaskManagerUpdateTaskErrorReq::new(id, error_message.to_string());
                 let req_json = serde_json::to_value(&req).map_err(|e| {
-                    RPCErrors::ReasonError(format!(
-                        "Failed to serialize request: {}",
-                        e
-                    ))
+                    RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
                 })?;
                 client.call("update_task_error", req_json).await?;
                 Ok(())
@@ -889,10 +819,7 @@ impl TaskManagerClient {
             Self::KRPC(client) => {
                 let req = TaskManagerUpdateTaskDataReq::new(id, data);
                 let req_json = serde_json::to_value(&req).map_err(|e| {
-                    RPCErrors::ReasonError(format!(
-                        "Failed to serialize request: {}",
-                        e
-                    ))
+                    RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
                 })?;
                 client.call("update_task_data", req_json).await?;
                 Ok(())
@@ -909,10 +836,7 @@ impl TaskManagerClient {
             Self::KRPC(client) => {
                 let req = TaskManagerDeleteTaskReq::new(id);
                 let req_json = serde_json::to_value(&req).map_err(|e| {
-                    RPCErrors::ReasonError(format!(
-                        "Failed to serialize request: {}",
-                        e
-                    ))
+                    RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
                 })?;
                 client.call("delete_task", req_json).await?;
                 Ok(())
@@ -1054,15 +978,9 @@ pub trait TaskManagerHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<()>;
 
-    async fn handle_update_task_data(
-        &self,
-        id: i64,
-        data: Value,
-        ctx: RPCContext,
-    ) -> Result<()>;
+    async fn handle_update_task_data(&self, id: i64, data: Value, ctx: RPCContext) -> Result<()>;
 
-    async fn handle_cancel_task(&self, id: i64, recursive: bool, ctx: RPCContext)
-        -> Result<()>;
+    async fn handle_cancel_task(&self, id: i64, recursive: bool, ctx: RPCContext) -> Result<()>;
 
     async fn handle_delete_task(&self, id: i64, ctx: RPCContext) -> Result<()>;
 }
@@ -1077,11 +995,7 @@ impl<T: TaskManagerHandler> TaskManagerServerHandler<T> {
 
 #[async_trait]
 impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
-    async fn handle_rpc_call(
-        &self,
-        req: RPCRequest,
-        ip_from: IpAddr,
-    ) -> Result<RPCResponse> {
+    async fn handle_rpc_call(&self, req: RPCRequest, ip_from: IpAddr) -> Result<RPCResponse> {
         let seq = req.seq;
         let trace_id = req.trace_id.clone();
         let ctx = RPCContext::from_request(&req, ip_from);
@@ -1205,10 +1119,7 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
             }
             "get_subtasks" => {
                 let sub_req = TaskManagerGetSubtasksReq::from_json(req.params)?;
-                let tasks = self
-                    .0
-                    .handle_get_subtasks(sub_req.parent_id, ctx)
-                    .await?;
+                let tasks = self.0.handle_get_subtasks(sub_req.parent_id, ctx).await?;
                 RPCResult::Success(json!(ListTasksResult { tasks }))
             }
             "update_task_status" => {
@@ -1256,6 +1167,10 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
             _ => return Err(RPCErrors::UnknownMethod(req.method.clone())),
         };
 
-        Ok(RPCResponse { result, seq, trace_id })
+        Ok(RPCResponse {
+            result,
+            seq,
+            trace_id,
+        })
     }
 }

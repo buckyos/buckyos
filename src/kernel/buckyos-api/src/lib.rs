@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+mod content_mgr_client;
 mod control_panel;
 pub mod msg_queue;
 mod scheduler_client;
@@ -17,6 +18,7 @@ mod runtime;
 pub mod test_config;
 
 pub use app_doc::*;
+pub use content_mgr_client::*;
 pub use control_panel::*;
 pub use repo_client::*;
 pub use scheduler_client::*;

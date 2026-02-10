@@ -1,13 +1,16 @@
+mod share_content_mgr;
+
 use ::kRPC::*;
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
 use buckyos_api::{
-    BuckyOSRuntimeType, CONTROL_PANEL_SERVICE_NAME, CONTROL_PANEL_SERVICE_PORT, SystemConfigClient, get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime
+    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType,
+    SystemConfigClient, CONTROL_PANEL_SERVICE_NAME, CONTROL_PANEL_SERVICE_PORT,
 };
 use buckyos_kit::*;
 use bytes::Bytes;
-use chrono::{Datelike, DateTime, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, Datelike, NaiveDateTime, TimeZone, Utc};
 use cyfs_gateway_lib::*;
 use http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE};
 use http::{Method, Version};
@@ -21,7 +24,10 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::{net::IpAddr, time::{Duration, Instant}};
+use std::{
+    net::IpAddr,
+    time::{Duration, Instant},
+};
 use sysinfo::{DiskRefreshKind, Disks, Networks, System};
 use tokio::sync::{Mutex, RwLock};
 use tokio::task;
@@ -253,7 +259,12 @@ impl ControlPanelServer {
             ));
         }
         if let Some((ctx_ts, ctx_level)) = context {
-            return Some((ctx_ts.clone(), ctx_level.clone(), trimmed.trim().to_string(), None));
+            return Some((
+                ctx_ts.clone(),
+                ctx_level.clone(),
+                trimmed.trim().to_string(),
+                None,
+            ));
         }
         None
     }
@@ -834,8 +845,10 @@ impl ControlPanelServer {
         let level_filter = Self::param_str(&req, "level").map(|value| value.to_lowercase());
         let keyword_raw = Self::param_str(&req, "keyword");
         let keyword_filter = keyword_raw.as_ref().map(|value| value.to_lowercase());
-        let since_filter = Self::param_str(&req, "since").and_then(|value| Self::parse_filter_time(&value));
-        let until_filter = Self::param_str(&req, "until").and_then(|value| Self::parse_filter_time(&value));
+        let since_filter =
+            Self::param_str(&req, "since").and_then(|value| Self::parse_filter_time(&value));
+        let until_filter =
+            Self::param_str(&req, "until").and_then(|value| Self::parse_filter_time(&value));
         let since_key = since_filter.as_ref().map(Self::format_log_filter_key);
         let until_key = until_filter.as_ref().map(Self::format_log_filter_key);
         let limit = req
@@ -857,7 +870,10 @@ impl ControlPanelServer {
             if value.direction != direction {
                 return None;
             }
-            if files.iter().any(|file| file.service == value.service && file.name == value.file) {
+            if files
+                .iter()
+                .any(|file| file.service == value.service && file.name == value.file)
+            {
                 Some(value)
             } else {
                 None
@@ -937,8 +953,7 @@ impl ControlPanelServer {
                             Ok(value) => value,
                             Err(_) => continue,
                         };
-                        let maybe_entry =
-                            Self::extract_log_entry(&raw, last_context.as_ref());
+                        let maybe_entry = Self::extract_log_entry(&raw, last_context.as_ref());
                         let (ts, level, message, raw_line) = match maybe_entry {
                             Some((ts, level, message, next_context)) => {
                                 if let Some(context) = next_context {
@@ -979,7 +994,8 @@ impl ControlPanelServer {
 
                 if let Some(cursor) = cursor.as_ref() {
                     if cursor.service == file.service && cursor.file == file.name {
-                        candidates.retain(|(line_index, _, _, _, _)| *line_index < cursor.line_index);
+                        candidates
+                            .retain(|(line_index, _, _, _, _)| *line_index < cursor.line_index);
                     }
                 }
 
@@ -1037,7 +1053,9 @@ impl ControlPanelServer {
                             for (line_index, raw) in matched_lines.into_iter() {
                                 if !reached_cursor {
                                     if let Some(cursor) = cursor.as_ref() {
-                                        if cursor.service == file.service && cursor.file == file.name {
+                                        if cursor.service == file.service
+                                            && cursor.file == file.name
+                                        {
                                             if line_index <= cursor.line_index {
                                                 continue;
                                             }
@@ -1116,8 +1134,7 @@ impl ControlPanelServer {
                             Ok(value) => value,
                             Err(_) => continue,
                         };
-                        let maybe_entry =
-                            Self::extract_log_entry(&raw, last_context.as_ref());
+                        let maybe_entry = Self::extract_log_entry(&raw, last_context.as_ref());
                         let (ts, level, message, raw_line) = match maybe_entry {
                             Some((ts, level, message, next_context)) => {
                                 if let Some(context) = next_context {
@@ -1261,9 +1278,9 @@ impl ControlPanelServer {
         if let Some(file) = file_param.as_deref() {
             files.retain(|entry| entry.name == file);
         }
-        let file = files.first().ok_or_else(|| {
-            RPCErrors::ReasonError(format!("No log files found for {}", service))
-        })?;
+        let file = files
+            .first()
+            .ok_or_else(|| RPCErrors::ReasonError(format!("No log files found for {}", service)))?;
 
         let mut start_offset = 0u64;
         let mut read_from_end = false;
@@ -1280,11 +1297,12 @@ impl ControlPanelServer {
         let path = file.path.clone();
         let file_name = file.name.clone();
         let read_result = task::spawn_blocking(move || -> Result<(Vec<String>, u64), RPCErrors> {
-            let mut file = std::fs::File::open(&path)
-                .map_err(|err| RPCErrors::ReasonError(format!("Failed to open log file: {}", err)))?;
-            let metadata = file
-                .metadata()
-                .map_err(|err| RPCErrors::ReasonError(format!("Failed to read log metadata: {}", err)))?;
+            let mut file = std::fs::File::open(&path).map_err(|err| {
+                RPCErrors::ReasonError(format!("Failed to open log file: {}", err))
+            })?;
+            let metadata = file.metadata().map_err(|err| {
+                RPCErrors::ReasonError(format!("Failed to read log metadata: {}", err))
+            })?;
             let file_len = metadata.len();
             if read_from_end {
                 let mut buffer = String::new();
@@ -1394,8 +1412,10 @@ impl ControlPanelServer {
         let mode = Self::param_str(&req, "mode").unwrap_or_else(|| "filtered".to_string());
         let level_filter = Self::param_str(&req, "level").map(|value| value.to_lowercase());
         let keyword_filter = Self::param_str(&req, "keyword").map(|value| value.to_lowercase());
-        let since_filter = Self::param_str(&req, "since").and_then(|value| Self::parse_filter_time(&value));
-        let until_filter = Self::param_str(&req, "until").and_then(|value| Self::parse_filter_time(&value));
+        let since_filter =
+            Self::param_str(&req, "since").and_then(|value| Self::parse_filter_time(&value));
+        let until_filter =
+            Self::param_str(&req, "until").and_then(|value| Self::parse_filter_time(&value));
 
         let token = Uuid::new_v4().to_string();
         let file_name = format!("buckyos-logs-{}.zip", token);
@@ -1410,7 +1430,8 @@ impl ControlPanelServer {
             let file = std::fs::File::create(&zip_path_clone)
                 .map_err(|err| RPCErrors::ReasonError(format!("Failed to create zip: {}", err)))?;
             let mut zip = zip::ZipWriter::new(file);
-            let options = FileOptions::<()>::default().compression_method(CompressionMethod::Deflated);
+            let options =
+                FileOptions::<()>::default().compression_method(CompressionMethod::Deflated);
 
             for service in services_clone.iter() {
                 let dir_path = Path::new(LOG_ROOT_DIR).join(service);
@@ -1849,9 +1870,7 @@ impl ControlPanelServer {
         let depth = depth.min(6);
         let runtime = get_buckyos_api_runtime()?;
         let client = runtime.get_system_config_client().await?;
-        let tree = self
-            .build_sys_config_tree(&client, &key, depth)
-            .await?;
+        let tree = self.build_sys_config_tree(&client, &key, depth).await?;
 
         Ok(RPCResponse::new(
             RPCResult::Success(json!({
@@ -2366,13 +2385,26 @@ impl HttpServer for ControlPanelServer {
 }
 
 pub async fn start_control_panel_service() -> anyhow::Result<()> {
-    let mut runtime = init_buckyos_api_runtime(CONTROL_PANEL_SERVICE_NAME,None,BuckyOSRuntimeType::KernelService).await?;
+    let mut runtime = init_buckyos_api_runtime(
+        CONTROL_PANEL_SERVICE_NAME,
+        None,
+        BuckyOSRuntimeType::KernelService,
+    )
+    .await?;
     let login_result = runtime.login().await;
-    if  login_result.is_err() {
-        log::error!("control-panel service login to system failed! err:{:?}", login_result);
-        return Err(anyhow::anyhow!("control-panel service login to system failed! err:{:?}", login_result));
+    if login_result.is_err() {
+        log::error!(
+            "control-panel service login to system failed! err:{:?}",
+            login_result
+        );
+        return Err(anyhow::anyhow!(
+            "control-panel service login to system failed! err:{:?}",
+            login_result
+        ));
     }
-    runtime.set_main_service_port(CONTROL_PANEL_SERVICE_PORT).await;
+    runtime
+        .set_main_service_port(CONTROL_PANEL_SERVICE_PORT)
+        .await;
     set_buckyos_api_runtime(runtime);
 
     let control_panel_server = ControlPanelServer::new();
@@ -2416,10 +2448,7 @@ async fn service_main() {
     init_logging("control-panel", true);
     let start_result = start_control_panel_service().await;
     if start_result.is_err() {
-        log::error!(
-            "control-panel service start failed! err:{:?}",
-            start_result
-        );
+        log::error!("control-panel service start failed! err:{:?}", start_result);
         return;
     }
 
