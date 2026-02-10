@@ -1,0 +1,23 @@
+[package]
+name = "aicc"
+version.workspace = true
+edition = "2021"
+authors = ["BuckyOS DAO"]
+
+[dependencies]
+anyhow = { workspace = true }
+kRPC = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+buckyos-kit = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true }
+bytes = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+cyfs-gateway-lib = { workspace = true }
+server-runner = { workspace = true }
+reqwest = { workspace = true }
+buckyos-api = { path = "../../kernel/buckyos-api" }

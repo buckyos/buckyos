@@ -1,0 +1,1432 @@
+use ::kRPC::*;
+use async_trait::async_trait;
+use base64::engine::general_purpose;
+use base64::Engine as _;
+use buckyos_api::{
+    AiResponseSummary, AiccHandler, CancelResponse, Capability, CompleteRequest, CompleteResponse,
+    CompleteStatus, Feature, ResourceRef,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+const DEFAULT_FALLBACK_LIMIT: usize = 2;
+const DEFAULT_BASE64_MAX_BYTES: usize = 8 * 1024 * 1024;
+const EWMA_ALPHA: f64 = 0.2;
+
+#[derive(Clone, Debug, Default)]
+pub struct InvokeCtx {
+    pub tenant_id: String,
+    pub session_token: Option<String>,
+    pub trace_id: Option<String>,
+}
+
+impl InvokeCtx {
+    pub fn from_rpc(ctx: &RPCContext) -> Self {
+        let session_token = ctx.token.clone();
+        let tenant_id = if let Some(token) = session_token.clone() {
+            if token.trim().is_empty() {
+                "anonymous".to_string()
+            } else {
+                token
+            }
+        } else {
+            "anonymous".to_string()
+        };
+
+        Self {
+            tenant_id,
+            session_token,
+            trace_id: ctx.trace_id.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ProviderInstance {
+    pub instance_id: String,
+    pub provider_type: String,
+    pub capabilities: Vec<Capability>,
+    pub features: Vec<Feature>,
+    pub endpoint: Option<String>,
+    pub plugin_key: Option<String>,
+}
+
+impl ProviderInstance {
+    pub fn supports_capability(&self, capability: &Capability) -> bool {
+        self.capabilities.iter().any(|item| item == capability)
+    }
+
+    pub fn supports_features(&self, required_features: &[Feature]) -> bool {
+        required_features
+            .iter()
+            .all(|feature| self.features.iter().any(|item| item == feature))
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CostEstimate {
+    pub estimated_cost_usd: Option<f64>,
+    pub estimated_latency_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderError {
+    message: String,
+    retryable: bool,
+}
+
+impl ProviderError {
+    pub fn retryable(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            retryable: true,
+        }
+    }
+
+    pub fn fatal(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            retryable: false,
+        }
+    }
+
+    pub fn is_retryable(&self) -> bool {
+        self.retryable
+    }
+}
+
+impl std::fmt::Display for ProviderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.retryable {
+            write!(f, "retryable: {}", self.message)
+        } else {
+            write!(f, "fatal: {}", self.message)
+        }
+    }
+}
+
+impl std::error::Error for ProviderError {}
+
+#[derive(Debug, Clone)]
+pub enum ProviderStartResult {
+    Immediate(AiResponseSummary),
+    Started,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResolvedRequest {
+    pub request: CompleteRequest,
+}
+
+impl ResolvedRequest {
+    pub fn new(request: CompleteRequest) -> Self {
+        Self { request }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskEventKind {
+    Started,
+    Final,
+    Error,
+    CancelRequested,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TaskEvent {
+    pub task_id: String,
+    pub kind: TaskEventKind,
+    pub timestamp_ms: u128,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+}
+
+#[async_trait]
+pub trait TaskEventSink: Send + Sync {
+    fn event_ref(&self) -> Option<String>;
+    async fn emit(&self, event: TaskEvent) -> std::result::Result<(), RPCErrors>;
+}
+
+pub trait TaskEventSinkFactory: Send + Sync {
+    fn build(&self, _ctx: &InvokeCtx, task_id: &str) -> Arc<dyn TaskEventSink>;
+}
+
+#[derive(Debug)]
+pub struct MemoryTaskEventSink {
+    event_ref: Option<String>,
+    events: Mutex<Vec<TaskEvent>>,
+}
+
+impl MemoryTaskEventSink {
+    pub fn new(event_ref: Option<String>) -> Self {
+        Self {
+            event_ref,
+            events: Mutex::new(vec![]),
+        }
+    }
+
+    pub fn events(&self) -> Vec<TaskEvent> {
+        self.events
+            .lock()
+            .map(|events| events.clone())
+            .unwrap_or_default()
+    }
+}
+
+#[async_trait]
+impl TaskEventSink for MemoryTaskEventSink {
+    fn event_ref(&self) -> Option<String> {
+        self.event_ref.clone()
+    }
+
+    async fn emit(&self, event: TaskEvent) -> std::result::Result<(), RPCErrors> {
+        let mut events = self.events.lock().map_err(|_| {
+            RPCErrors::ReasonError("internal_error: event sink lock poisoned".to_string())
+        })?;
+        events.push(event);
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct DefaultTaskEventSinkFactory;
+
+impl TaskEventSinkFactory for DefaultTaskEventSinkFactory {
+    fn build(&self, _ctx: &InvokeCtx, task_id: &str) -> Arc<dyn TaskEventSink> {
+        Arc::new(MemoryTaskEventSink::new(Some(format!(
+            "task://{}/events",
+            task_id
+        ))))
+    }
+}
+
+#[async_trait]
+pub trait ResourceResolver: Send + Sync {
+    async fn resolve(
+        &self,
+        _ctx: &InvokeCtx,
+        req: &CompleteRequest,
+    ) -> std::result::Result<ResolvedRequest, RPCErrors>;
+}
+
+#[derive(Default)]
+pub struct PassthroughResourceResolver;
+
+#[async_trait]
+impl ResourceResolver for PassthroughResourceResolver {
+    async fn resolve(
+        &self,
+        _ctx: &InvokeCtx,
+        req: &CompleteRequest,
+    ) -> std::result::Result<ResolvedRequest, RPCErrors> {
+        Ok(ResolvedRequest::new(req.clone()))
+    }
+}
+
+#[async_trait]
+pub trait Provider: Send + Sync {
+    fn instance(&self) -> &ProviderInstance;
+    fn estimate_cost(&self, req: &CompleteRequest, provider_model: &str) -> CostEstimate;
+    async fn start(
+        &self,
+        ctx: InvokeCtx,
+        provider_model: String,
+        req: ResolvedRequest,
+        sink: Arc<dyn TaskEventSink>,
+    ) -> std::result::Result<ProviderStartResult, ProviderError>;
+    async fn cancel(&self, ctx: InvokeCtx, task_id: &str)
+        -> std::result::Result<(), ProviderError>;
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ProviderMetrics {
+    pub in_flight: u64,
+    pub ewma_latency_ms: f64,
+    pub ewma_error_rate: f64,
+}
+
+#[derive(Clone)]
+struct ProviderEntry {
+    instance: ProviderInstance,
+    provider: Arc<dyn Provider>,
+    metrics: ProviderMetrics,
+}
+
+#[derive(Clone, Debug)]
+pub struct RegistryCandidate {
+    pub instance: ProviderInstance,
+    pub metrics: ProviderMetrics,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct RegistrySnapshot {
+    pub candidates: Vec<RegistryCandidate>,
+}
+
+#[derive(Clone, Default)]
+pub struct Registry {
+    entries: Arc<RwLock<HashMap<String, ProviderEntry>>>,
+}
+
+impl Registry {
+    pub fn add_provider(&self, provider: Arc<dyn Provider>) {
+        let instance = provider.instance().clone();
+        let mut entries = self
+            .entries
+            .write()
+            .expect("registry lock should be available");
+        entries.insert(
+            instance.instance_id.clone(),
+            ProviderEntry {
+                instance,
+                provider,
+                metrics: ProviderMetrics::default(),
+            },
+        );
+    }
+
+    pub fn remove_instance(&self, instance_id: &str) {
+        let mut entries = self
+            .entries
+            .write()
+            .expect("registry lock should be available");
+        entries.remove(instance_id);
+    }
+
+    pub fn snapshot(&self, capability: Capability) -> RegistrySnapshot {
+        let entries = self
+            .entries
+            .read()
+            .expect("registry lock should be available");
+        let candidates = entries
+            .values()
+            .filter(|entry| entry.instance.supports_capability(&capability))
+            .map(|entry| RegistryCandidate {
+                instance: entry.instance.clone(),
+                metrics: entry.metrics.clone(),
+            })
+            .collect::<Vec<_>>();
+
+        RegistrySnapshot { candidates }
+    }
+
+    pub fn get_provider(&self, instance_id: &str) -> Option<Arc<dyn Provider>> {
+        let entries = self.entries.read().ok()?;
+        entries.get(instance_id).map(|entry| entry.provider.clone())
+    }
+
+    pub fn mark_start_begin(&self, instance_id: &str) {
+        if let Ok(mut entries) = self.entries.write() {
+            if let Some(entry) = entries.get_mut(instance_id) {
+                entry.metrics.in_flight = entry.metrics.in_flight.saturating_add(1);
+            }
+        }
+    }
+
+    pub fn record_start_success(&self, instance_id: &str, latency_ms: f64) {
+        if let Ok(mut entries) = self.entries.write() {
+            if let Some(entry) = entries.get_mut(instance_id) {
+                entry.metrics.in_flight = entry.metrics.in_flight.saturating_sub(1);
+                entry.metrics.ewma_latency_ms = ewma(
+                    entry.metrics.ewma_latency_ms,
+                    latency_ms.max(0.0),
+                    EWMA_ALPHA,
+                );
+                entry.metrics.ewma_error_rate =
+                    ewma(entry.metrics.ewma_error_rate, 0.0, EWMA_ALPHA).clamp(0.0, 1.0);
+            }
+        }
+    }
+
+    pub fn record_start_failure(&self, instance_id: &str, latency_ms: f64) {
+        if let Ok(mut entries) = self.entries.write() {
+            if let Some(entry) = entries.get_mut(instance_id) {
+                entry.metrics.in_flight = entry.metrics.in_flight.saturating_sub(1);
+                entry.metrics.ewma_latency_ms = ewma(
+                    entry.metrics.ewma_latency_ms,
+                    latency_ms.max(0.0),
+                    EWMA_ALPHA,
+                );
+                entry.metrics.ewma_error_rate =
+                    ewma(entry.metrics.ewma_error_rate, 1.0, EWMA_ALPHA).clamp(0.0, 1.0);
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RouteWeights {
+    pub w_cost: f64,
+    pub w_latency: f64,
+    pub w_load: f64,
+    pub w_error: f64,
+}
+
+impl Default for RouteWeights {
+    fn default() -> Self {
+        Self {
+            w_cost: 0.35,
+            w_latency: 0.35,
+            w_load: 0.2,
+            w_error: 0.1,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TenantRouteConfig {
+    pub allow_provider_types: Option<Vec<String>>,
+    pub deny_provider_types: Option<Vec<String>>,
+    pub weights: Option<RouteWeights>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RouteConfig {
+    pub global_weights: RouteWeights,
+    pub tenant_overrides: HashMap<String, TenantRouteConfig>,
+    pub fallback_limit: usize,
+}
+
+impl Default for RouteConfig {
+    fn default() -> Self {
+        Self {
+            global_weights: RouteWeights::default(),
+            tenant_overrides: HashMap::new(),
+            fallback_limit: DEFAULT_FALLBACK_LIMIT,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+struct ModelMappingKey {
+    capability: Capability,
+    alias: String,
+    provider_type: String,
+}
+
+#[derive(Clone, Default)]
+pub struct ModelCatalog {
+    mappings: Arc<RwLock<HashMap<ModelMappingKey, String>>>,
+    tenant_overrides: Arc<RwLock<HashMap<(String, ModelMappingKey), String>>>,
+}
+
+impl ModelCatalog {
+    pub fn set_mapping(
+        &self,
+        capability: Capability,
+        alias: impl Into<String>,
+        provider_type: impl Into<String>,
+        provider_model: impl Into<String>,
+    ) {
+        let key = ModelMappingKey {
+            capability,
+            alias: alias.into(),
+            provider_type: provider_type.into(),
+        };
+        if let Ok(mut mappings) = self.mappings.write() {
+            mappings.insert(key, provider_model.into());
+        }
+    }
+
+    pub fn set_tenant_mapping(
+        &self,
+        tenant_id: impl Into<String>,
+        capability: Capability,
+        alias: impl Into<String>,
+        provider_type: impl Into<String>,
+        provider_model: impl Into<String>,
+    ) {
+        let key = ModelMappingKey {
+            capability,
+            alias: alias.into(),
+            provider_type: provider_type.into(),
+        };
+        if let Ok(mut mappings) = self.tenant_overrides.write() {
+            mappings.insert((tenant_id.into(), key), provider_model.into());
+        }
+    }
+
+    pub fn resolve(
+        &self,
+        tenant_id: &str,
+        capability: &Capability,
+        alias: &str,
+        provider_type: &str,
+    ) -> Option<String> {
+        let key = ModelMappingKey {
+            capability: capability.clone(),
+            alias: alias.to_string(),
+            provider_type: provider_type.to_string(),
+        };
+
+        if let Ok(tenant_map) = self.tenant_overrides.read() {
+            if let Some(model) = tenant_map.get(&(tenant_id.to_string(), key.clone())) {
+                return Some(model.clone());
+            }
+        }
+
+        let mappings = self.mappings.read().ok()?;
+        mappings.get(&key).cloned()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct RouteAttempt {
+    instance_id: String,
+    provider_model: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct RouteDecision {
+    pub primary_instance_id: String,
+    pub fallback_instance_ids: Vec<String>,
+    pub provider_model: String,
+    attempts: Vec<RouteAttempt>,
+}
+
+impl RouteDecision {
+    fn attempts(&self) -> &[RouteAttempt] {
+        &self.attempts
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct Router;
+
+impl Router {
+    pub fn route(
+        &self,
+        tenant_id: &str,
+        req: &CompleteRequest,
+        snapshot: &RegistrySnapshot,
+        registry: &Registry,
+        route_cfg: &RouteConfig,
+        model_catalog: &ModelCatalog,
+    ) -> std::result::Result<RouteDecision, RPCErrors> {
+        if snapshot.candidates.is_empty() {
+            return Err(reason_error(
+                "no_provider_available",
+                "no provider instance supports requested capability",
+            ));
+        }
+
+        let tenant_cfg = route_cfg.tenant_overrides.get(tenant_id);
+        let weights = tenant_cfg
+            .and_then(|cfg| cfg.weights.clone())
+            .unwrap_or_else(|| route_cfg.global_weights.clone());
+
+        let allow_set = tenant_cfg
+            .and_then(|cfg| cfg.allow_provider_types.clone())
+            .map(|items| items.into_iter().collect::<HashSet<_>>());
+        let deny_set = tenant_cfg
+            .and_then(|cfg| cfg.deny_provider_types.clone())
+            .map(|items| items.into_iter().collect::<HashSet<_>>());
+
+        let mut alias_mapped = false;
+        let mut scored = vec![];
+
+        for candidate in snapshot.candidates.iter() {
+            if !candidate
+                .instance
+                .supports_features(&req.requirements.must_features)
+            {
+                continue;
+            }
+
+            if let Some(allow) = allow_set.as_ref() {
+                if !allow.contains(candidate.instance.provider_type.as_str()) {
+                    continue;
+                }
+            }
+            if let Some(deny) = deny_set.as_ref() {
+                if deny.contains(candidate.instance.provider_type.as_str()) {
+                    continue;
+                }
+            }
+
+            let provider_model = model_catalog.resolve(
+                tenant_id,
+                &req.capability,
+                req.model.alias.as_str(),
+                candidate.instance.provider_type.as_str(),
+            );
+            let Some(provider_model) = provider_model else {
+                continue;
+            };
+
+            alias_mapped = true;
+            let Some(provider) = registry.get_provider(candidate.instance.instance_id.as_str())
+            else {
+                continue;
+            };
+
+            let estimate = provider.estimate_cost(req, provider_model.as_str());
+            if let Some(max_cost) = req.requirements.max_cost_usd {
+                if let Some(estimated_cost) = estimate.estimated_cost_usd {
+                    if estimated_cost > max_cost {
+                        continue;
+                    }
+                }
+            }
+
+            let predicted_latency_ms = if candidate.metrics.ewma_latency_ms > 0.0 {
+                candidate.metrics.ewma_latency_ms
+            } else {
+                estimate.estimated_latency_ms.unwrap_or(0) as f64
+            };
+
+            if let Some(max_latency_ms) = req.requirements.max_latency_ms {
+                if predicted_latency_ms > max_latency_ms as f64 {
+                    continue;
+                }
+            }
+
+            scored.push(ScoredRouteCandidate {
+                instance_id: candidate.instance.instance_id.clone(),
+                provider_model,
+                cost: estimate.estimated_cost_usd.unwrap_or(1.0).max(0.0),
+                latency: predicted_latency_ms.max(0.0),
+                load: candidate.metrics.in_flight as f64,
+                error: candidate.metrics.ewma_error_rate.clamp(0.0, 1.0),
+                score: 0.0,
+            });
+        }
+
+        if scored.is_empty() {
+            if !alias_mapped {
+                return Err(reason_error(
+                    "model_alias_not_mapped",
+                    format!(
+                        "alias '{}' is not mapped for capability '{:?}'",
+                        req.model.alias, req.capability
+                    ),
+                ));
+            }
+            return Err(reason_error(
+                "no_provider_available",
+                "all candidate providers were filtered out by policy or requirements",
+            ));
+        }
+
+        let cost_range = range(scored.iter().map(|item| item.cost));
+        let latency_range = range(scored.iter().map(|item| item.latency));
+        let load_range = range(scored.iter().map(|item| item.load));
+        let error_range = range(scored.iter().map(|item| item.error));
+
+        for item in scored.iter_mut() {
+            let cost_score = normalize(item.cost, cost_range.0, cost_range.1);
+            let latency_score = normalize(item.latency, latency_range.0, latency_range.1);
+            let load_score = normalize(item.load, load_range.0, load_range.1);
+            let error_score = normalize(item.error, error_range.0, error_range.1);
+            item.score = (weights.w_cost * cost_score)
+                + (weights.w_latency * latency_score)
+                + (weights.w_load * load_score)
+                + (weights.w_error * error_score);
+        }
+
+        scored.sort_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(Ordering::Equal));
+
+        let attempts = scored
+            .into_iter()
+            .map(|item| RouteAttempt {
+                instance_id: item.instance_id,
+                provider_model: item.provider_model,
+            })
+            .collect::<Vec<_>>();
+
+        let primary = attempts
+            .first()
+            .cloned()
+            .ok_or_else(|| reason_error("no_provider_available", "no route candidate generated"))?;
+
+        let fallback_limit = route_cfg.fallback_limit.max(1);
+        let fallback_instance_ids = attempts
+            .iter()
+            .skip(1)
+            .take(fallback_limit)
+            .map(|item| item.instance_id.clone())
+            .collect::<Vec<_>>();
+
+        let final_attempts = std::iter::once(primary.clone())
+            .chain(attempts.iter().skip(1).take(fallback_limit).cloned())
+            .collect::<Vec<_>>();
+
+        Ok(RouteDecision {
+            primary_instance_id: primary.instance_id.clone(),
+            fallback_instance_ids,
+            provider_model: primary.provider_model.clone(),
+            attempts: final_attempts,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ScoredRouteCandidate {
+    instance_id: String,
+    provider_model: String,
+    cost: f64,
+    latency: f64,
+    load: f64,
+    error: f64,
+    score: f64,
+}
+
+#[derive(Clone, Debug)]
+struct TaskBinding {
+    tenant_id: String,
+    instance_id: String,
+}
+
+pub struct AIComputeCenter {
+    registry: Registry,
+    router: Router,
+    route_cfg: Arc<RwLock<RouteConfig>>,
+    model_catalog: ModelCatalog,
+    resource_resolver: Arc<dyn ResourceResolver>,
+    sink_factory: Arc<dyn TaskEventSinkFactory>,
+    task_bindings: Arc<RwLock<HashMap<String, TaskBinding>>>,
+    task_id_seq: AtomicU64,
+    base64_max_bytes: usize,
+    base64_mime_allowlist: HashSet<String>,
+}
+
+impl Default for AIComputeCenter {
+    fn default() -> Self {
+        Self::new(Registry::default(), ModelCatalog::default())
+    }
+}
+
+impl AIComputeCenter {
+    pub fn new(registry: Registry, model_catalog: ModelCatalog) -> Self {
+        let base64_mime_allowlist = [
+            "image/png",
+            "image/jpeg",
+            "image/webp",
+            "audio/wav",
+            "audio/mpeg",
+            "audio/ogg",
+            "video/mp4",
+            "application/json",
+            "text/plain",
+        ]
+        .into_iter()
+        .map(|item| item.to_string())
+        .collect::<HashSet<_>>();
+
+        Self {
+            registry,
+            router: Router,
+            route_cfg: Arc::new(RwLock::new(RouteConfig::default())),
+            model_catalog,
+            resource_resolver: Arc::new(PassthroughResourceResolver),
+            sink_factory: Arc::new(DefaultTaskEventSinkFactory),
+            task_bindings: Arc::new(RwLock::new(HashMap::new())),
+            task_id_seq: AtomicU64::new(1),
+            base64_max_bytes: DEFAULT_BASE64_MAX_BYTES,
+            base64_mime_allowlist,
+        }
+    }
+
+    pub fn registry(&self) -> &Registry {
+        &self.registry
+    }
+
+    pub fn model_catalog(&self) -> &ModelCatalog {
+        &self.model_catalog
+    }
+
+    pub fn update_route_config(&self, new_cfg: RouteConfig) {
+        if let Ok(mut cfg) = self.route_cfg.write() {
+            *cfg = new_cfg;
+        }
+    }
+
+    pub fn set_resource_resolver(&mut self, resolver: Arc<dyn ResourceResolver>) {
+        self.resource_resolver = resolver;
+    }
+
+    pub fn set_task_event_sink_factory(&mut self, factory: Arc<dyn TaskEventSinkFactory>) {
+        self.sink_factory = factory;
+    }
+
+    pub fn set_base64_policy(&mut self, max_bytes: usize, mime_allowlist: HashSet<String>) {
+        self.base64_max_bytes = max_bytes;
+        self.base64_mime_allowlist = mime_allowlist;
+    }
+
+    pub async fn complete(
+        &self,
+        request: CompleteRequest,
+        rpc_ctx: RPCContext,
+    ) -> std::result::Result<CompleteResponse, RPCErrors> {
+        let invoke_ctx = InvokeCtx::from_rpc(&rpc_ctx);
+        let task_id = self.generate_task_id();
+        let sink = self.sink_factory.build(&invoke_ctx, &task_id);
+        let event_ref = sink.event_ref();
+
+        if let Err(error) = self.validate_request(&request) {
+            self.emit_task_error(
+                sink.clone(),
+                task_id.as_str(),
+                "bad_request",
+                error.to_string(),
+            )
+            .await;
+            return Ok(CompleteResponse::new(
+                task_id,
+                CompleteStatus::Failed,
+                None,
+                event_ref,
+            ));
+        }
+
+        let snapshot = self.registry.snapshot(request.capability.clone());
+        let route_cfg = self
+            .route_cfg
+            .read()
+            .map(|cfg| cfg.clone())
+            .unwrap_or_default();
+
+        let decision = match self.router.route(
+            invoke_ctx.tenant_id.as_str(),
+            &request,
+            &snapshot,
+            &self.registry,
+            &route_cfg,
+            &self.model_catalog,
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                let code = extract_error_code(&error);
+                self.emit_task_error(
+                    sink.clone(),
+                    task_id.as_str(),
+                    code.as_str(),
+                    error.to_string(),
+                )
+                .await;
+                return Ok(CompleteResponse::new(
+                    task_id,
+                    CompleteStatus::Failed,
+                    None,
+                    event_ref,
+                ));
+            }
+        };
+
+        let resolved = match self.resource_resolver.resolve(&invoke_ctx, &request).await {
+            Ok(result) => result,
+            Err(error) => {
+                self.emit_task_error(
+                    sink.clone(),
+                    task_id.as_str(),
+                    "resource_invalid",
+                    error.to_string(),
+                )
+                .await;
+                return Ok(CompleteResponse::new(
+                    task_id,
+                    CompleteStatus::Failed,
+                    None,
+                    event_ref,
+                ));
+            }
+        };
+
+        let start_result = self
+            .start_with_fallback(
+                &invoke_ctx,
+                task_id.as_str(),
+                resolved,
+                &decision,
+                sink.clone(),
+            )
+            .await;
+        match start_result {
+            Ok((ProviderStartResult::Immediate(summary), _instance_id)) => {
+                self.emit_task_final(sink, task_id.as_str(), &summary).await;
+                Ok(CompleteResponse::new(
+                    task_id,
+                    CompleteStatus::Succeeded,
+                    Some(summary),
+                    event_ref,
+                ))
+            }
+            Ok((ProviderStartResult::Started, instance_id)) => {
+                self.bind_task(
+                    task_id.as_str(),
+                    invoke_ctx.tenant_id.as_str(),
+                    instance_id.as_str(),
+                );
+                self.emit_task_started(sink, task_id.as_str(), instance_id.as_str())
+                    .await;
+                Ok(CompleteResponse::new(
+                    task_id,
+                    CompleteStatus::Running,
+                    None,
+                    event_ref,
+                ))
+            }
+            Err(error) => {
+                let code = extract_error_code(&error);
+                self.emit_task_error(sink, task_id.as_str(), code.as_str(), error.to_string())
+                    .await;
+                Ok(CompleteResponse::new(
+                    task_id,
+                    CompleteStatus::Failed,
+                    None,
+                    event_ref,
+                ))
+            }
+        }
+    }
+
+    pub async fn cancel(
+        &self,
+        task_id: &str,
+        rpc_ctx: RPCContext,
+    ) -> std::result::Result<CancelResponse, RPCErrors> {
+        let invoke_ctx = InvokeCtx::from_rpc(&rpc_ctx);
+
+        let binding = self
+            .task_bindings
+            .read()
+            .ok()
+            .and_then(|bindings| bindings.get(task_id).cloned());
+        let Some(binding) = binding else {
+            return Ok(CancelResponse::new(task_id.to_string(), false));
+        };
+
+        if !binding.tenant_id.is_empty() && binding.tenant_id != invoke_ctx.tenant_id {
+            return Err(RPCErrors::NoPermission(
+                "cross-tenant cancel is not allowed".to_string(),
+            ));
+        }
+
+        let provider = self.registry.get_provider(binding.instance_id.as_str());
+        let Some(provider) = provider else {
+            return Ok(CancelResponse::new(task_id.to_string(), false));
+        };
+
+        let accepted = provider.cancel(invoke_ctx, task_id).await.is_ok();
+        if accepted {
+            if let Ok(mut bindings) = self.task_bindings.write() {
+                bindings.remove(task_id);
+            }
+        }
+        Ok(CancelResponse::new(task_id.to_string(), accepted))
+    }
+
+    async fn start_with_fallback(
+        &self,
+        ctx: &InvokeCtx,
+        task_id: &str,
+        req: ResolvedRequest,
+        decision: &RouteDecision,
+        sink: Arc<dyn TaskEventSink>,
+    ) -> std::result::Result<(ProviderStartResult, String), RPCErrors> {
+        let mut last_err: Option<ProviderError> = None;
+
+        for attempt in decision.attempts() {
+            let provider = self.registry.get_provider(attempt.instance_id.as_str());
+            let Some(provider) = provider else {
+                continue;
+            };
+
+            self.registry.mark_start_begin(attempt.instance_id.as_str());
+            let started_at = Instant::now();
+            let result = provider
+                .start(
+                    ctx.clone(),
+                    attempt.provider_model.clone(),
+                    req.clone(),
+                    sink.clone(),
+                )
+                .await;
+            let elapsed_ms = started_at.elapsed().as_millis() as f64;
+
+            match result {
+                Ok(start_result) => {
+                    self.registry
+                        .record_start_success(attempt.instance_id.as_str(), elapsed_ms);
+                    return Ok((start_result, attempt.instance_id.clone()));
+                }
+                Err(error) => {
+                    self.registry
+                        .record_start_failure(attempt.instance_id.as_str(), elapsed_ms);
+                    last_err = Some(error.clone());
+                    if !error.is_retryable() {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let reason = last_err
+            .map(|error| format!("provider start failed for task {}: {}", task_id, error))
+            .unwrap_or_else(|| format!("provider start failed for task {}: no candidate", task_id));
+        Err(reason_error("provider_start_failed", reason))
+    }
+
+    fn validate_request(&self, req: &CompleteRequest) -> std::result::Result<(), RPCErrors> {
+        if req.model.alias.trim().is_empty() {
+            return Err(reason_error("bad_request", "model.alias must not be empty"));
+        }
+
+        let has_payload = req.payload.text.is_some()
+            || !req.payload.messages.is_empty()
+            || !req.payload.resources.is_empty()
+            || req.payload.input_json.is_some();
+        if !has_payload {
+            return Err(reason_error(
+                "bad_request",
+                "payload must include text/messages/resources/input_json",
+            ));
+        }
+
+        for resource in req.payload.resources.iter() {
+            self.validate_resource(resource)?;
+        }
+        Ok(())
+    }
+
+    fn validate_resource(&self, resource: &ResourceRef) -> std::result::Result<(), RPCErrors> {
+        match resource {
+            ResourceRef::Url { url, .. } => {
+                if url.trim().is_empty() {
+                    return Err(reason_error(
+                        "resource_invalid",
+                        "resource url must not be empty",
+                    ));
+                }
+                if !url.contains("://") {
+                    return Err(reason_error(
+                        "resource_invalid",
+                        "resource url must include scheme",
+                    ));
+                }
+                Ok(())
+            }
+            ResourceRef::Base64 { mime, data_base64 } => {
+                if !self.base64_mime_allowlist.contains(mime.as_str()) {
+                    return Err(reason_error(
+                        "resource_invalid",
+                        format!("base64 mime '{}' is not allowed", mime),
+                    ));
+                }
+                let decoded = general_purpose::STANDARD.decode(data_base64).map_err(|_| {
+                    reason_error("resource_invalid", "resource base64 is not valid")
+                })?;
+                if decoded.len() > self.base64_max_bytes {
+                    return Err(reason_error(
+                        "resource_invalid",
+                        format!(
+                            "base64 payload exceeds limit: {} > {} bytes",
+                            decoded.len(),
+                            self.base64_max_bytes
+                        ),
+                    ));
+                }
+                Ok(())
+            }
+            ResourceRef::NamedObject { .. } => Ok(()),
+        }
+    }
+
+    fn bind_task(&self, task_id: &str, tenant_id: &str, instance_id: &str) {
+        if let Ok(mut bindings) = self.task_bindings.write() {
+            bindings.insert(
+                task_id.to_string(),
+                TaskBinding {
+                    tenant_id: tenant_id.to_string(),
+                    instance_id: instance_id.to_string(),
+                },
+            );
+        }
+    }
+
+    fn generate_task_id(&self) -> String {
+        let seq = self.task_id_seq.fetch_add(1, AtomicOrdering::Relaxed);
+        let ts_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        format!("aicc-{}-{}", ts_ms, seq)
+    }
+
+    async fn emit_task_started(
+        &self,
+        sink: Arc<dyn TaskEventSink>,
+        task_id: &str,
+        instance_id: &str,
+    ) {
+        let event = TaskEvent {
+            task_id: task_id.to_string(),
+            kind: TaskEventKind::Started,
+            timestamp_ms: now_ms(),
+            data: Some(json!({ "instance_id": instance_id })),
+        };
+        let _ = sink.emit(event).await;
+    }
+
+    async fn emit_task_final(
+        &self,
+        sink: Arc<dyn TaskEventSink>,
+        task_id: &str,
+        summary: &AiResponseSummary,
+    ) {
+        let event = TaskEvent {
+            task_id: task_id.to_string(),
+            kind: TaskEventKind::Final,
+            timestamp_ms: now_ms(),
+            data: Some(json!({
+                "finish_reason": summary.finish_reason.clone(),
+                "has_text": summary.text.as_ref().map(|text| !text.is_empty()).unwrap_or(false),
+                "artifact_count": summary.artifacts.len(),
+            })),
+        };
+        let _ = sink.emit(event).await;
+    }
+
+    async fn emit_task_error(
+        &self,
+        sink: Arc<dyn TaskEventSink>,
+        task_id: &str,
+        code: &str,
+        message: String,
+    ) {
+        let event = TaskEvent {
+            task_id: task_id.to_string(),
+            kind: TaskEventKind::Error,
+            timestamp_ms: now_ms(),
+            data: Some(json!({
+                "code": code,
+                "message": message,
+            })),
+        };
+        let _ = sink.emit(event).await;
+    }
+}
+
+#[async_trait]
+impl AiccHandler for AIComputeCenter {
+    async fn handle_complete(
+        &self,
+        request: CompleteRequest,
+        ctx: RPCContext,
+    ) -> std::result::Result<CompleteResponse, RPCErrors> {
+        self.complete(request, ctx).await
+    }
+
+    async fn handle_cancel(
+        &self,
+        task_id: &str,
+        ctx: RPCContext,
+    ) -> std::result::Result<CancelResponse, RPCErrors> {
+        self.cancel(task_id, ctx).await
+    }
+}
+
+fn now_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+fn ewma(previous: f64, sample: f64, alpha: f64) -> f64 {
+    if previous <= 0.0 {
+        sample
+    } else {
+        ((1.0 - alpha) * previous) + (alpha * sample)
+    }
+}
+
+fn range(values: impl Iterator<Item = f64>) -> (f64, f64) {
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    for value in values {
+        min = min.min(value);
+        max = max.max(value);
+    }
+    if min.is_infinite() || max.is_infinite() {
+        (0.0, 0.0)
+    } else {
+        (min, max)
+    }
+}
+
+fn normalize(value: f64, min: f64, max: f64) -> f64 {
+    if (max - min).abs() < f64::EPSILON {
+        0.0
+    } else {
+        (value - min) / (max - min)
+    }
+}
+
+fn reason_error(code: &str, detail: impl Into<String>) -> RPCErrors {
+    RPCErrors::ReasonError(format!("{}: {}", code, detail.into()))
+}
+
+fn extract_error_code(error: &RPCErrors) -> String {
+    match error {
+        RPCErrors::ReasonError(message) => message
+            .split(':')
+            .next()
+            .map(|code| code.trim().to_string())
+            .filter(|code| !code.is_empty())
+            .unwrap_or_else(|| "internal_error".to_string()),
+        RPCErrors::ParseRequestError(_) => "bad_request".to_string(),
+        RPCErrors::NoPermission(_) => "forbidden".to_string(),
+        _ => "internal_error".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use buckyos_api::{AiPayload, ModelSpec, Requirements};
+    use serde_json::json;
+    use std::collections::VecDeque;
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::sync::Mutex;
+
+    #[derive(Debug)]
+    struct MockProvider {
+        instance: ProviderInstance,
+        cost: CostEstimate,
+        start_results: Mutex<VecDeque<std::result::Result<ProviderStartResult, ProviderError>>>,
+        canceled: Mutex<Vec<String>>,
+    }
+
+    impl MockProvider {
+        fn new(
+            instance: ProviderInstance,
+            cost: CostEstimate,
+            start_results: Vec<std::result::Result<ProviderStartResult, ProviderError>>,
+        ) -> Self {
+            Self {
+                instance,
+                cost,
+                start_results: Mutex::new(start_results.into_iter().collect()),
+                canceled: Mutex::new(vec![]),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Provider for MockProvider {
+        fn instance(&self) -> &ProviderInstance {
+            &self.instance
+        }
+
+        fn estimate_cost(&self, _req: &CompleteRequest, _provider_model: &str) -> CostEstimate {
+            self.cost.clone()
+        }
+
+        async fn start(
+            &self,
+            _ctx: InvokeCtx,
+            _provider_model: String,
+            _req: ResolvedRequest,
+            _sink: Arc<dyn TaskEventSink>,
+        ) -> std::result::Result<ProviderStartResult, ProviderError> {
+            let mut queue = self.start_results.lock().unwrap();
+            queue
+                .pop_front()
+                .unwrap_or_else(|| Err(ProviderError::fatal("no preset start result")))
+        }
+
+        async fn cancel(
+            &self,
+            _ctx: InvokeCtx,
+            task_id: &str,
+        ) -> std::result::Result<(), ProviderError> {
+            let mut canceled = self.canceled.lock().unwrap();
+            canceled.push(task_id.to_string());
+            Ok(())
+        }
+    }
+
+    fn base_request() -> CompleteRequest {
+        CompleteRequest::new(
+            Capability::LlmRouter,
+            ModelSpec::new("llm.plan.default".to_string(), None),
+            Requirements::new(vec!["plan".to_string()], Some(3000), Some(0.1), None),
+            AiPayload::new(
+                Some("hello".to_string()),
+                vec![],
+                vec![],
+                None,
+                Some(json!({"temperature": 0.1})),
+            ),
+            Some("idem-1".to_string()),
+        )
+    }
+
+    fn mock_instance(instance_id: &str, provider_type: &str) -> ProviderInstance {
+        ProviderInstance {
+            instance_id: instance_id.to_string(),
+            provider_type: provider_type.to_string(),
+            capabilities: vec![Capability::LlmRouter],
+            features: vec!["plan".to_string()],
+            endpoint: Some("http://127.0.0.1:8080".to_string()),
+            plugin_key: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_returns_immediate_success() {
+        let registry = Registry::default();
+        let catalog = ModelCatalog::default();
+        catalog.set_mapping(
+            Capability::LlmRouter,
+            "llm.plan.default",
+            "provider-a",
+            "gpt-4o-mini",
+        );
+
+        let provider = Arc::new(MockProvider::new(
+            mock_instance("provider-a-1", "provider-a"),
+            CostEstimate {
+                estimated_cost_usd: Some(0.001),
+                estimated_latency_ms: Some(200),
+            },
+            vec![Ok(ProviderStartResult::Immediate(AiResponseSummary {
+                text: Some("ok".to_string()),
+                json: None,
+                artifacts: vec![],
+                usage: None,
+                cost: None,
+                finish_reason: Some("stop".to_string()),
+                provider_task_ref: None,
+                extra: None,
+            }))],
+        ));
+        registry.add_provider(provider);
+
+        let center = AIComputeCenter::new(registry, catalog);
+        let response = center
+            .handle_complete(
+                base_request(),
+                RPCContext::from_request(
+                    &RPCRequest {
+                        method: "complete".to_string(),
+                        params: json!({}),
+                        seq: 1,
+                        token: None,
+                        trace_id: None,
+                    },
+                    IpAddr::V4(Ipv4Addr::LOCALHOST),
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status, CompleteStatus::Succeeded);
+        assert_eq!(
+            response
+                .result
+                .as_ref()
+                .and_then(|result| result.text.as_ref()),
+            Some(&"ok".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_fallback_on_retryable_start_error() {
+        let registry = Registry::default();
+        let catalog = ModelCatalog::default();
+        catalog.set_mapping(
+            Capability::LlmRouter,
+            "llm.plan.default",
+            "provider-a",
+            "gpt-4o-mini",
+        );
+        catalog.set_mapping(
+            Capability::LlmRouter,
+            "llm.plan.default",
+            "provider-b",
+            "gpt-4.1-mini",
+        );
+
+        let p1 = Arc::new(MockProvider::new(
+            mock_instance("provider-a-1", "provider-a"),
+            CostEstimate {
+                estimated_cost_usd: Some(0.001),
+                estimated_latency_ms: Some(100),
+            },
+            vec![Err(ProviderError::retryable(
+                "upstream temporary unavailable",
+            ))],
+        ));
+        let p2 = Arc::new(MockProvider::new(
+            mock_instance("provider-b-1", "provider-b"),
+            CostEstimate {
+                estimated_cost_usd: Some(0.002),
+                estimated_latency_ms: Some(250),
+            },
+            vec![Ok(ProviderStartResult::Started)],
+        ));
+        registry.add_provider(p1);
+        registry.add_provider(p2);
+
+        let center = AIComputeCenter::new(registry, catalog);
+        let response = center
+            .handle_complete(base_request(), RPCContext::default())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status, CompleteStatus::Running);
+        assert!(!response.task_id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancel_rejects_cross_tenant_task() {
+        let registry = Registry::default();
+        let catalog = ModelCatalog::default();
+        catalog.set_mapping(
+            Capability::LlmRouter,
+            "llm.plan.default",
+            "provider-a",
+            "gpt-4o-mini",
+        );
+
+        let provider = Arc::new(MockProvider::new(
+            mock_instance("provider-a-1", "provider-a"),
+            CostEstimate {
+                estimated_cost_usd: Some(0.001),
+                estimated_latency_ms: Some(100),
+            },
+            vec![Ok(ProviderStartResult::Started)],
+        ));
+        registry.add_provider(provider);
+
+        let center = AIComputeCenter::new(registry, catalog);
+
+        let mut alice_ctx = RPCContext::default();
+        alice_ctx.token = Some("tenant-alice".to_string());
+        let start_response = center
+            .handle_complete(base_request(), alice_ctx)
+            .await
+            .unwrap();
+        assert_eq!(start_response.status, CompleteStatus::Running);
+
+        let mut bob_ctx = RPCContext::default();
+        bob_ctx.token = Some("tenant-bob".to_string());
+        let cancel_result = center
+            .handle_cancel(start_response.task_id.as_str(), bob_ctx)
+            .await;
+        assert!(cancel_result.is_err());
+        assert!(matches!(
+            cancel_result.unwrap_err(),
+            RPCErrors::NoPermission(_)
+        ));
+    }
+}

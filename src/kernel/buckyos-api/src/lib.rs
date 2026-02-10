@@ -11,6 +11,7 @@ mod zone_gateway;
 
 mod app_doc;
 mod app_mgr;
+mod aicc_client;
 mod gateway_control;
 mod permission;
 mod repo_client;
@@ -20,6 +21,7 @@ pub mod test_config;
 pub use app_doc::*;
 pub use content_mgr_client::*;
 pub use control_panel::*;
+pub use aicc_client::*;
 pub use repo_client::*;
 pub use scheduler_client::*;
 pub use sn_client::*;

@@ -16,6 +16,7 @@ members = [
     "./frame/slog_server", 
     "./frame/repo_service",
     "./frame/smb_service",
+    "./frame/aicc",
     
     "./frame/control_panel",
 
