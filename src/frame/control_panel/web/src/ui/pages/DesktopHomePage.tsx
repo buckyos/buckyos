@@ -13,6 +13,7 @@ import {
   mockSystemStatus,
   querySystemLogs,
 } from '@/api'
+import { NetworkTrendChart, ResourceTrendChart } from '../components/MonitorTrendCharts'
 import usePrefersReducedMotion from '../charts/usePrefersReducedMotion'
 import Icon from '../icons'
 
@@ -26,9 +27,13 @@ type DesktopWindow = {
   icon: IconName
   x: number
   y: number
+  width: number
+  height: number
   z: number
   minimized: boolean
 }
+
+type ResizeEdge = 'top' | 'right' | 'bottom' | 'left' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max)
 
@@ -43,6 +48,75 @@ const formatBytes = (value: number) => {
 }
 
 const formatRate = (value: number) => `${formatBytes(value)}/s`
+
+const WINDOW_MARGIN = 24
+const WINDOW_TOP_MARGIN = 80
+const MIN_WINDOW_WIDTH = 420
+const MIN_WINDOW_HEIGHT = 280
+
+const SETTINGS_MODULE_PREVIEW = [
+  {
+    name: 'General',
+    detail: 'Node identity, locale, and host naming baseline.',
+    state: 'ready' as const,
+  },
+  {
+    name: 'Security',
+    detail: 'MFA policy, session timeout, and trusted devices.',
+    state: 'review' as const,
+  },
+  {
+    name: 'Networking',
+    detail: 'SN endpoints, DNS fallback, and gateway behavior.',
+    state: 'ready' as const,
+  },
+  {
+    name: 'Storage',
+    detail: 'Snapshot cadence, retention, and replication policy.',
+    state: 'review' as const,
+  },
+  {
+    name: 'Notifications',
+    detail: 'Alert channels and severity routing matrix.',
+    state: 'draft' as const,
+  },
+  {
+    name: 'Integrations',
+    detail: 'Repo hooks, observability export, and webhook secrets.',
+    state: 'ready' as const,
+  },
+]
+
+const USER_TEAM_PREVIEW = [
+  {
+    name: 'Alice Johnson',
+    role: 'Owner',
+    group: 'Administrators',
+    status: 'active' as const,
+    access: 'Full',
+  },
+  {
+    name: 'Leo Martins',
+    role: 'Admin',
+    group: 'Administrators',
+    status: 'active' as const,
+    access: 'Ops',
+  },
+  {
+    name: 'Rina Patel',
+    role: 'Editor',
+    group: 'Product',
+    status: 'pending' as const,
+    access: 'Limited',
+  },
+  {
+    name: 'Tomas Silva',
+    role: 'Viewer',
+    group: 'Guests',
+    status: 'disabled' as const,
+    access: 'Read',
+  },
+]
 
 const DesktopHomePage = () => {
   const navigate = useNavigate()
@@ -61,6 +135,7 @@ const DesktopHomePage = () => {
 
   const zCounterRef = useRef(10)
   const [windows, setWindows] = useState<DesktopWindow[]>([])
+  const windowMemoryRef = useRef<Partial<Record<WindowId, Pick<DesktopWindow, 'x' | 'y' | 'width' | 'height'>>>>({})
   const logsWindowOpen = windows.some((win) => win.id === 'logs' && !win.minimized)
   const dragRef = useRef<{
     id: WindowId
@@ -69,17 +144,34 @@ const DesktopHomePage = () => {
     startY: number
     originX: number
     originY: number
+    width: number
+    height: number
   } | null>(null)
+  const dragRafRef = useRef<number | null>(null)
+  const dragPositionRef = useRef<{ id: WindowId; x: number; y: number } | null>(null)
+  const resizeRef = useRef<{
+    id: WindowId
+    pointerId: number
+    edge: ResizeEdge
+    startX: number
+    startY: number
+    originX: number
+    originY: number
+    originWidth: number
+    originHeight: number
+  } | null>(null)
+  const resizeRafRef = useRef<number | null>(null)
+  const resizeRectRef = useRef<{ id: WindowId; x: number; y: number; width: number; height: number } | null>(null)
 
   const windowSpec = useMemo(
     () =>
       ({
-        monitor: { title: 'System Monitor', icon: 'dashboard' as const, width: 640, height: 440 },
-        storage: { title: 'Storage Manager', icon: 'storage' as const, width: 640, height: 460 },
-        logs: { title: 'System Logs', icon: 'chart' as const, width: 720, height: 520 },
-        apps: { title: 'Applications', icon: 'apps' as const, width: 640, height: 460 },
-        settings: { title: 'Settings', icon: 'settings' as const, width: 720, height: 520 },
-        users: { title: 'Users', icon: 'users' as const, width: 620, height: 440 },
+        monitor: { title: 'System Monitor', icon: 'dashboard' as const, width: 896, height: 616 },
+        storage: { title: 'Storage Manager', icon: 'storage' as const, width: 896, height: 648 },
+        logs: { title: 'System Logs', icon: 'chart' as const, width: 1008, height: 728 },
+        apps: { title: 'Applications', icon: 'apps' as const, width: 896, height: 648 },
+        settings: { title: 'Settings', icon: 'settings' as const, width: 1008, height: 728 },
+        users: { title: 'Users', icon: 'users' as const, width: 872, height: 616 },
       }) satisfies Record<WindowId, { title: string; icon: IconName; width: number; height: number }>,
     [],
   )
@@ -200,15 +292,25 @@ const DesktopHomePage = () => {
       }
 
       const spec = windowSpec[id]
-      const margin = 24
       const viewportWidth = typeof window === 'undefined' ? 1200 : window.innerWidth
       const viewportHeight = typeof window === 'undefined' ? 800 : window.innerHeight
-      const baseX = Math.round((viewportWidth - spec.width) / 2)
-      const baseY = Math.round((viewportHeight - spec.height) / 2)
+      const remembered = windowMemoryRef.current[id]
+      const initialWidth = remembered?.width ?? spec.width
+      const initialHeight = remembered?.height ?? spec.height
+      const baseX = Math.round((viewportWidth - initialWidth) / 2)
+      const baseY = Math.round((viewportHeight - initialHeight) / 2)
       const offset = prev.length * 24
       zCounterRef.current += 1
-      const x = clamp(baseX + offset, margin, Math.max(margin, viewportWidth - spec.width - margin))
-      const y = clamp(baseY + offset, margin + 56, Math.max(margin + 56, viewportHeight - spec.height - margin))
+      const x = clamp(
+        (remembered ? remembered.x : baseX + offset),
+        WINDOW_MARGIN,
+        Math.max(WINDOW_MARGIN, viewportWidth - initialWidth - WINDOW_MARGIN),
+      )
+      const y = clamp(
+        (remembered ? remembered.y : baseY + offset),
+        WINDOW_TOP_MARGIN,
+        Math.max(WINDOW_TOP_MARGIN, viewportHeight - initialHeight - WINDOW_MARGIN),
+      )
 
       const next: DesktopWindow = {
         id,
@@ -216,6 +318,8 @@ const DesktopHomePage = () => {
         icon: spec.icon,
         x,
         y,
+        width: initialWidth,
+        height: initialHeight,
         z: zCounterRef.current,
         minimized: false,
       }
@@ -223,10 +327,20 @@ const DesktopHomePage = () => {
     })
   }, [windowSpec])
 
-  const closeWindow = useCallback(
-    (id: WindowId) => setWindows((prev) => prev.filter((win) => win.id !== id)),
-    [],
-  )
+  const closeWindow = useCallback((id: WindowId) => {
+    setWindows((prev) => {
+      const closing = prev.find((win) => win.id === id)
+      if (closing) {
+        windowMemoryRef.current[id] = {
+          x: closing.x,
+          y: closing.y,
+          width: closing.width,
+          height: closing.height,
+        }
+      }
+      return prev.filter((win) => win.id !== id)
+    })
+  }, [])
 
   const toggleMinimize = useCallback(
     (id: WindowId) =>
@@ -235,7 +349,7 @@ const DesktopHomePage = () => {
   )
 
   const startWindowDrag = useCallback(
-    (id: WindowId, originX: number, originY: number, event: PointerEvent<HTMLDivElement>) => {
+    (id: WindowId, originX: number, originY: number, width: number, height: number, event: PointerEvent<HTMLDivElement>) => {
       bringToFront(id)
       event.stopPropagation()
 
@@ -264,6 +378,8 @@ const DesktopHomePage = () => {
         startY: event.clientY,
         originX,
         originY,
+        width,
+        height,
       }
     },
     [bringToFront],
@@ -274,28 +390,213 @@ const DesktopHomePage = () => {
     if (!drag || drag.pointerId !== event.pointerId) {
       return
     }
-    const spec = windowSpec[drag.id]
-    const margin = 24
     const viewportWidth = window.innerWidth
     const viewportHeight = window.innerHeight
-    const maxX = Math.max(margin, viewportWidth - spec.width - margin)
-    const maxY = Math.max(margin + 56, viewportHeight - spec.height - margin)
-    const nextX = clamp(drag.originX + (event.clientX - drag.startX), margin, maxX)
-    const nextY = clamp(drag.originY + (event.clientY - drag.startY), margin + 56, maxY)
-    setWindows((prev) => prev.map((win) => (win.id === drag.id ? { ...win, x: nextX, y: nextY } : win)))
-  }, [windowSpec])
+    const maxX = Math.max(WINDOW_MARGIN, viewportWidth - drag.width - WINDOW_MARGIN)
+    const maxY = Math.max(WINDOW_TOP_MARGIN, viewportHeight - drag.height - WINDOW_MARGIN)
+    const nextX = clamp(drag.originX + (event.clientX - drag.startX), WINDOW_MARGIN, maxX)
+    const nextY = clamp(drag.originY + (event.clientY - drag.startY), WINDOW_TOP_MARGIN, maxY)
+
+    dragPositionRef.current = { id: drag.id, x: nextX, y: nextY }
+    if (dragRafRef.current !== null) {
+      return
+    }
+
+    dragRafRef.current = window.requestAnimationFrame(() => {
+      dragRafRef.current = null
+      const dragPosition = dragPositionRef.current
+      if (!dragPosition) {
+        return
+      }
+      setWindows((prev) =>
+        prev.map((win) =>
+          win.id === dragPosition.id ? { ...win, x: dragPosition.x, y: dragPosition.y } : win,
+        ),
+      )
+    })
+  }, [])
 
   const handleTitlePointerUp = useCallback((event: PointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current
     if (!drag || drag.pointerId !== event.pointerId) {
       return
     }
+
+    if (dragRafRef.current !== null) {
+      window.cancelAnimationFrame(dragRafRef.current)
+      dragRafRef.current = null
+      const dragPosition = dragPositionRef.current
+      if (dragPosition) {
+        setWindows((prev) =>
+          prev.map((win) =>
+            win.id === dragPosition.id ? { ...win, x: dragPosition.x, y: dragPosition.y } : win,
+          ),
+        )
+      }
+    }
+
+    dragPositionRef.current = null
     try {
       event.currentTarget.releasePointerCapture(event.pointerId)
     } catch {
       // ignore
     }
     dragRef.current = null
+  }, [])
+
+  const startWindowResize = useCallback(
+    (
+      id: WindowId,
+      edge: ResizeEdge,
+      originX: number,
+      originY: number,
+      originWidth: number,
+      originHeight: number,
+      event: PointerEvent<HTMLDivElement>,
+    ) => {
+      bringToFront(id)
+      event.stopPropagation()
+
+      if (event.button !== 0) {
+        return
+      }
+
+      if (typeof window !== 'undefined' && window.innerWidth < 768) {
+        return
+      }
+
+      event.preventDefault()
+      event.currentTarget.setPointerCapture(event.pointerId)
+      resizeRef.current = {
+        id,
+        pointerId: event.pointerId,
+        edge,
+        startX: event.clientX,
+        startY: event.clientY,
+        originX,
+        originY,
+        originWidth,
+        originHeight,
+      }
+    },
+    [bringToFront],
+  )
+
+  const handleResizePointerMove = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    const resize = resizeRef.current
+    if (!resize || resize.pointerId !== event.pointerId) {
+      return
+    }
+
+    const dx = event.clientX - resize.startX
+    const dy = event.clientY - resize.startY
+    const viewportWidth = window.innerWidth
+    const viewportHeight = window.innerHeight
+    const rightEdge = resize.originX + resize.originWidth
+    const bottomEdge = resize.originY + resize.originHeight
+
+    let nextX = resize.originX
+    let nextY = resize.originY
+    let nextWidth = resize.originWidth
+    let nextHeight = resize.originHeight
+
+    if (resize.edge.includes('right')) {
+      nextWidth = clamp(
+        resize.originWidth + dx,
+        MIN_WINDOW_WIDTH,
+        Math.max(MIN_WINDOW_WIDTH, viewportWidth - resize.originX - WINDOW_MARGIN),
+      )
+    }
+
+    if (resize.edge.includes('left')) {
+      const maxLeft = rightEdge - MIN_WINDOW_WIDTH
+      nextX = clamp(resize.originX + dx, WINDOW_MARGIN, Math.max(WINDOW_MARGIN, maxLeft))
+      nextWidth = rightEdge - nextX
+    }
+
+    if (resize.edge.includes('bottom')) {
+      nextHeight = clamp(
+        resize.originHeight + dy,
+        MIN_WINDOW_HEIGHT,
+        Math.max(MIN_WINDOW_HEIGHT, viewportHeight - resize.originY - WINDOW_MARGIN),
+      )
+    }
+
+    if (resize.edge.includes('top')) {
+      const maxTop = bottomEdge - MIN_WINDOW_HEIGHT
+      nextY = clamp(resize.originY + dy, WINDOW_TOP_MARGIN, Math.max(WINDOW_TOP_MARGIN, maxTop))
+      nextHeight = bottomEdge - nextY
+    }
+
+    resizeRectRef.current = {
+      id: resize.id,
+      x: nextX,
+      y: nextY,
+      width: nextWidth,
+      height: nextHeight,
+    }
+
+    if (resizeRafRef.current !== null) {
+      return
+    }
+
+    resizeRafRef.current = window.requestAnimationFrame(() => {
+      resizeRafRef.current = null
+      const rect = resizeRectRef.current
+      if (!rect) {
+        return
+      }
+      setWindows((prev) =>
+        prev.map((win) =>
+          win.id === rect.id
+            ? { ...win, x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+            : win,
+        ),
+      )
+    })
+  }, [])
+
+  const handleResizePointerUp = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    const resize = resizeRef.current
+    if (!resize || resize.pointerId !== event.pointerId) {
+      return
+    }
+
+    if (resizeRafRef.current !== null) {
+      window.cancelAnimationFrame(resizeRafRef.current)
+      resizeRafRef.current = null
+      const rect = resizeRectRef.current
+      if (rect) {
+        setWindows((prev) =>
+          prev.map((win) =>
+            win.id === rect.id
+              ? { ...win, x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+              : win,
+          ),
+        )
+      }
+    }
+
+    resizeRectRef.current = null
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    } catch {
+      // ignore
+    }
+    resizeRef.current = null
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (dragRafRef.current !== null) {
+        window.cancelAnimationFrame(dragRafRef.current)
+        dragRafRef.current = null
+      }
+      if (resizeRafRef.current !== null) {
+        window.cancelAnimationFrame(resizeRafRef.current)
+        resizeRafRef.current = null
+      }
+    }
   }, [])
 
   const systemPill = useMemo(() => {
@@ -335,7 +636,7 @@ const DesktopHomePage = () => {
           id: 'storage' as const,
           label: 'Storage',
           icon: 'storage' as const,
-          tile: 'bg-purple-500',
+          tile: 'bg-teal-500',
         },
         {
           id: 'logs' as const,
@@ -347,7 +648,7 @@ const DesktopHomePage = () => {
           id: 'apps' as const,
           label: 'Apps',
           icon: 'apps' as const,
-          tile: 'bg-indigo-500',
+          tile: 'bg-sky-500',
         },
         {
           id: 'settings' as const,
@@ -368,28 +669,13 @@ const DesktopHomePage = () => {
   const wallpaperStyle = useMemo(
     () => ({
       backgroundImage:
-        'radial-gradient(1100px circle at 18% 12%, rgba(15, 118, 110, 0.68) 0%, transparent 60%),\n'
-        + 'radial-gradient(1000px circle at 82% 18%, rgba(245, 158, 11, 0.48) 0%, transparent 60%),\n'
-        + 'radial-gradient(900px circle at 70% 84%, rgba(56, 189, 248, 0.34) 0%, transparent 60%),\n'
-        + 'linear-gradient(140deg, #166b7d 0%, #4bb8c6 52%, #135c6b 100%)',
+        'radial-gradient(1200px circle at 14% 10%, rgba(255, 255, 255, 0.36) 0%, transparent 64%),\n'
+        + 'radial-gradient(980px circle at 84% 16%, rgba(245, 158, 11, 0.28) 0%, transparent 62%),\n'
+        + 'radial-gradient(860px circle at 72% 86%, rgba(125, 211, 252, 0.32) 0%, transparent 62%),\n'
+        + 'linear-gradient(146deg, #2a8da2 0%, #86d9e4 54%, #2f8b9d 100%)',
     }),
     [],
   )
-
-  const now = useMemo(() => new Date(), [])
-  const [clockTick, setClockTick] = useState(0)
-  useEffect(() => {
-    const intervalId = window.setInterval(() => setClockTick((prev) => prev + 1), 1000)
-    return () => window.clearInterval(intervalId)
-  }, [])
-
-  const clock = useMemo(() => {
-    const date = new Date(now.getTime() + clockTick * 1000)
-    const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    const seconds = date.toLocaleTimeString([], { second: '2-digit' })
-    const day = date.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })
-    return { time, seconds, day }
-  }, [clockTick, now])
 
   const cpuPercent = Math.round(metrics.cpu?.usagePercent ?? 0)
   const memoryPercent = Math.round(metrics.memory?.usagePercent ?? 0)
@@ -447,7 +733,7 @@ const DesktopHomePage = () => {
         className="absolute inset-0"
         style={{
           backgroundImage:
-            'radial-gradient(700px circle at 20% 28%, rgba(255, 255, 255, 0.18) 0%, transparent 62%), radial-gradient(700px circle at 80% 60%, rgba(255, 255, 255, 0.12) 0%, transparent 64%)',
+            'radial-gradient(760px circle at 20% 28%, rgba(255, 255, 255, 0.26) 0%, transparent 62%), radial-gradient(720px circle at 80% 60%, rgba(255, 255, 255, 0.2) 0%, transparent 64%), repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.04) 0px, rgba(255, 255, 255, 0.04) 1px, transparent 1px, transparent 10px)',
         }}
         aria-hidden
       />
@@ -477,8 +763,6 @@ const DesktopHomePage = () => {
             desktopApps={desktopApps}
             prefersReducedMotion={prefersReducedMotion}
             openWindow={openWindow}
-            clockTime={clock.time}
-            clockDay={clock.day}
             statusState={status.state}
             cpuPercent={cpuPercent}
             memoryPercent={memoryPercent}
@@ -492,12 +776,14 @@ const DesktopHomePage = () => {
 
       <WindowLayer
         windows={windows}
-        windowSpec={windowSpec}
         windowData={windowData}
         bringToFront={bringToFront}
         startWindowDrag={startWindowDrag}
+        startWindowResize={startWindowResize}
         onTitlePointerMove={handleTitlePointerMove}
         onTitlePointerUp={handleTitlePointerUp}
+        onResizePointerMove={handleResizePointerMove}
+        onResizePointerUp={handleResizePointerUp}
         closeWindow={closeWindow}
         toggleMinimize={toggleMinimize}
       />
@@ -723,8 +1009,6 @@ type DesktopViewProps = {
   desktopApps: { id: WindowId; label: string; icon: IconName; tile: string }[]
   prefersReducedMotion: boolean
   openWindow: (id: WindowId) => void
-  clockTime: string
-  clockDay: string
   statusState: SystemStatusResponse['state']
   cpuPercent: number
   memoryPercent: number
@@ -737,8 +1021,6 @@ const DesktopView = memo((props: DesktopViewProps) => {
     desktopApps,
     prefersReducedMotion,
     openWindow,
-    clockTime,
-    clockDay,
     statusState,
     cpuPercent,
     memoryPercent,
@@ -749,18 +1031,18 @@ const DesktopView = memo((props: DesktopViewProps) => {
   return (
     <section className="relative min-h-screen px-5 pb-28 pt-28 sm:px-6 md:px-8">
       <div className="mx-auto grid max-w-7xl grid-cols-1 gap-10 md:grid-cols-[1fr_320px]">
-        <div className="grid grid-cols-4 content-start gap-4 md:grid-cols-8 lg:grid-cols-10">
+        <div className="grid grid-cols-3 content-start justify-items-center gap-x-5 gap-y-4 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10">
           {desktopApps.map((app, index) => (
             <button
               key={app.id}
               type="button"
               onClick={() => openWindow(app.id)}
-              className={`group flex flex-col items-center gap-2 rounded-xl p-2 transition-colors hover:bg-white/10 focus-visible:bg-white/15 focus-visible:outline-none ${
-                index === 0 ? 'md:col-start-2 lg:col-start-3' : ''
+              className={`group flex w-[86px] flex-col items-center gap-2 rounded-xl p-2 transition-colors hover:bg-white/10 focus-visible:bg-white/15 focus-visible:outline-none ${
+                index === 0 ? 'md:col-start-2 lg:col-start-3 xl:col-start-4' : ''
               }`}
             >
               <div
-                className={`flex h-14 w-14 items-center justify-center rounded-2xl text-white shadow-lg ${app.tile} ${
+                className={`flex h-16 w-16 items-center justify-center rounded-2xl text-white shadow-lg ${app.tile} ${
                   prefersReducedMotion ? '' : 'group-hover:scale-105'
                 } transition-transform duration-200`}
               >
@@ -783,10 +1065,7 @@ const DesktopView = memo((props: DesktopViewProps) => {
 
         <aside className="hidden md:block">
           <div className="sticky top-24 space-y-4">
-            <div className="rounded-2xl border border-white/10 bg-white/10 p-4 text-white shadow-xl backdrop-blur-md">
-              <div className="text-3xl font-light">{clockTime}</div>
-              <div className="text-sm opacity-70">{clockDay}</div>
-            </div>
+            <ClockCard />
 
             <div className="rounded-2xl border border-white/10 bg-white/10 p-4 text-white shadow-xl backdrop-blur-md">
               <div className="mb-2 flex items-center justify-between">
@@ -846,14 +1125,62 @@ type WindowData = {
   navigateTo: (to: string) => void
 }
 
+const ClockCard = memo(() => {
+  const [clock, setClock] = useState(() => {
+    const date = new Date()
+    return {
+      time: date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      day: date.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' }),
+    }
+  })
+
+  useEffect(() => {
+    const tick = () => {
+      const date = new Date()
+      setClock({
+        time: date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        day: date.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' }),
+      })
+    }
+
+    const intervalId = window.setInterval(tick, 1000)
+    return () => window.clearInterval(intervalId)
+  }, [])
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/10 p-4 text-white shadow-xl backdrop-blur-md">
+      <div className="text-3xl font-light">{clock.time}</div>
+      <div className="text-sm opacity-70">{clock.day}</div>
+    </div>
+  )
+})
+ClockCard.displayName = 'ClockCard'
+
 type WindowLayerProps = {
   windows: DesktopWindow[]
-  windowSpec: Record<WindowId, { title: string; icon: IconName; width: number; height: number }>
   windowData: WindowData
   bringToFront: (id: WindowId) => void
-  startWindowDrag: (id: WindowId, originX: number, originY: number, event: PointerEvent<HTMLDivElement>) => void
+  startWindowDrag: (
+    id: WindowId,
+    originX: number,
+    originY: number,
+    width: number,
+    height: number,
+    event: PointerEvent<HTMLDivElement>,
+  ) => void
+  startWindowResize: (
+    id: WindowId,
+    edge: ResizeEdge,
+    originX: number,
+    originY: number,
+    originWidth: number,
+    originHeight: number,
+    event: PointerEvent<HTMLDivElement>,
+  ) => void
   onTitlePointerMove: (event: PointerEvent<HTMLDivElement>) => void
   onTitlePointerUp: (event: PointerEvent<HTMLDivElement>) => void
+  onResizePointerMove: (event: PointerEvent<HTMLDivElement>) => void
+  onResizePointerUp: (event: PointerEvent<HTMLDivElement>) => void
   closeWindow: (id: WindowId) => void
   toggleMinimize: (id: WindowId) => void
 }
@@ -870,12 +1197,14 @@ const getWindowFullPath = (id: WindowId) => {
 const WindowLayer = memo((props: WindowLayerProps) => {
   const {
     windows,
-    windowSpec,
     windowData,
     bringToFront,
     startWindowDrag,
+    startWindowResize,
     onTitlePointerMove,
     onTitlePointerUp,
+    onResizePointerMove,
+    onResizePointerUp,
     closeWindow,
     toggleMinimize,
   } = props
@@ -889,12 +1218,14 @@ const WindowLayer = memo((props: WindowLayerProps) => {
           <WindowFrame
             key={win.id}
             win={win}
-            spec={windowSpec[win.id]}
             windowData={windowData}
             bringToFront={bringToFront}
             startWindowDrag={startWindowDrag}
+            startWindowResize={startWindowResize}
             onTitlePointerMove={onTitlePointerMove}
             onTitlePointerUp={onTitlePointerUp}
+            onResizePointerMove={onResizePointerMove}
+            onResizePointerUp={onResizePointerUp}
             closeWindow={closeWindow}
             toggleMinimize={toggleMinimize}
           />
@@ -906,12 +1237,29 @@ WindowLayer.displayName = 'WindowLayer'
 
 type WindowFrameProps = {
   win: DesktopWindow
-  spec: { title: string; icon: IconName; width: number; height: number }
   windowData: WindowData
   bringToFront: (id: WindowId) => void
-  startWindowDrag: (id: WindowId, originX: number, originY: number, event: PointerEvent<HTMLDivElement>) => void
+  startWindowDrag: (
+    id: WindowId,
+    originX: number,
+    originY: number,
+    width: number,
+    height: number,
+    event: PointerEvent<HTMLDivElement>,
+  ) => void
+  startWindowResize: (
+    id: WindowId,
+    edge: ResizeEdge,
+    originX: number,
+    originY: number,
+    originWidth: number,
+    originHeight: number,
+    event: PointerEvent<HTMLDivElement>,
+  ) => void
   onTitlePointerMove: (event: PointerEvent<HTMLDivElement>) => void
   onTitlePointerUp: (event: PointerEvent<HTMLDivElement>) => void
+  onResizePointerMove: (event: PointerEvent<HTMLDivElement>) => void
+  onResizePointerUp: (event: PointerEvent<HTMLDivElement>) => void
   closeWindow: (id: WindowId) => void
   toggleMinimize: (id: WindowId) => void
 }
@@ -919,24 +1267,39 @@ type WindowFrameProps = {
 const WindowFrame = memo((props: WindowFrameProps) => {
   const {
     win,
-    spec,
     windowData,
     bringToFront,
     startWindowDrag,
+    startWindowResize,
     onTitlePointerMove,
     onTitlePointerUp,
+    onResizePointerMove,
+    onResizePointerUp,
     closeWindow,
     toggleMinimize,
   } = props
+
+  const resizeHandles: { edge: ResizeEdge; className: string }[] = [
+    { edge: 'top', className: 'left-3 right-3 top-0 h-2 cursor-n-resize' },
+    { edge: 'right', className: 'bottom-3 right-0 top-3 w-2 cursor-e-resize' },
+    { edge: 'bottom', className: 'bottom-0 left-3 right-3 h-2 cursor-s-resize' },
+    { edge: 'left', className: 'bottom-3 left-0 top-3 w-2 cursor-w-resize' },
+    { edge: 'top-left', className: 'left-0 top-0 size-3 cursor-nw-resize' },
+    { edge: 'top-right', className: 'right-0 top-0 size-3 cursor-ne-resize' },
+    { edge: 'bottom-left', className: 'bottom-0 left-0 size-3 cursor-sw-resize' },
+    { edge: 'bottom-right', className: 'bottom-0 right-0 size-3 cursor-se-resize' },
+  ]
 
   return (
     <div
       className="pointer-events-auto fixed"
       style={{
-        left: win.x,
-        top: win.y,
-        width: spec.width,
-        height: spec.height,
+        left: 0,
+        top: 0,
+        transform: `translate3d(${win.x}px, ${win.y}px, 0)`,
+        willChange: 'transform',
+        width: win.width,
+        height: win.height,
         zIndex: win.z,
       }}
       onPointerDown={() => bringToFront(win.id)}
@@ -944,9 +1307,10 @@ const WindowFrame = memo((props: WindowFrameProps) => {
       <div className="flex h-full flex-col overflow-hidden rounded-3xl border border-white/10 bg-white/85 text-[var(--cp-ink)] shadow-2xl shadow-black/40 backdrop-blur">
         <div
           className="flex items-center justify-between gap-3 border-b border-[rgba(215,225,223,0.65)] bg-white/70 px-4 py-3"
-          onPointerDown={(event) => startWindowDrag(win.id, win.x, win.y, event)}
+          onPointerDown={(event) => startWindowDrag(win.id, win.x, win.y, win.width, win.height, event)}
           onPointerMove={onTitlePointerMove}
           onPointerUp={onTitlePointerUp}
+          onPointerCancel={onTitlePointerUp}
           style={{ touchAction: 'none' }}
         >
           <div className="flex items-center gap-3">
@@ -996,6 +1360,20 @@ const WindowFrame = memo((props: WindowFrameProps) => {
           <WindowBody id={win.id} data={windowData} />
         </div>
       </div>
+
+      {resizeHandles.map((handle) => (
+        <div
+          key={handle.edge}
+          className={`absolute ${handle.className}`}
+          onPointerDown={(event) =>
+            startWindowResize(win.id, handle.edge, win.x, win.y, win.width, win.height, event)
+          }
+          onPointerMove={onResizePointerMove}
+          onPointerUp={onResizePointerUp}
+          onPointerCancel={onResizePointerUp}
+          style={{ touchAction: 'none' }}
+        />
+      ))}
     </div>
   )
 })
@@ -1024,6 +1402,17 @@ const WindowBody = memo((props: WindowBodyProps) => {
   } = data
 
   if (id === 'monitor') {
+    const resourceTimeline = (
+      metrics.resourceTimeline?.length
+        ? metrics.resourceTimeline
+        : [{ time: 'now', cpu: cpuPercent, memory: memoryPercent }]
+    ).slice(-8)
+    const networkTimeline = (
+      metrics.networkTimeline?.length
+        ? metrics.networkTimeline
+        : [{ time: 'now', rx: rxRate, tx: txRate }]
+    ).slice(-8)
+
     return (
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
@@ -1057,6 +1446,20 @@ const WindowBody = memo((props: WindowBodyProps) => {
           <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">Network</p>
           <p className="mt-2 text-lg font-semibold text-[var(--cp-ink)]">{formatRate(rxRate)}</p>
           <p className="mt-1 text-xs text-[var(--cp-muted)]">Up {formatRate(txRate)}</p>
+        </div>
+        <div className="sm:col-span-2 rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">CPU / Memory trend</p>
+            <span className="text-[11px] text-[var(--cp-muted)]">Last {resourceTimeline.length} points</span>
+          </div>
+          <ResourceTrendChart timeline={resourceTimeline} height={180} />
+        </div>
+        <div className="sm:col-span-2 rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">Network throughput trend</p>
+            <span className="text-[11px] text-[var(--cp-muted)]">MB/s</span>
+          </div>
+          <NetworkTrendChart timeline={networkTimeline} height={180} />
         </div>
         <div className="sm:col-span-2 rounded-2xl border border-[var(--cp-border)] bg-white p-4">
           <div className="flex items-center justify-between">
@@ -1245,7 +1648,65 @@ const WindowBody = memo((props: WindowBodyProps) => {
           <div className="mt-3 rounded-2xl bg-[var(--cp-surface-muted)] px-4 py-3">
             <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Identity</p>
             <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{layout.profile.email}</p>
-            <p className="text-xs text-[var(--cp-muted)]">Use the full Settings page for config tree.</p>
+            <p className="text-xs text-[var(--cp-muted)]">Policy owner: {layout.profile.name}</p>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">Settings modules</p>
+            <button
+              type="button"
+              onClick={() => navigateTo('/settings')}
+              className="rounded-full bg-[var(--cp-primary)] px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-[var(--cp-primary-strong)]"
+            >
+              Open full settings
+            </button>
+          </div>
+          <div className="mt-3 space-y-2">
+            {SETTINGS_MODULE_PREVIEW.map((module) => (
+              <div
+                key={module.name}
+                className="rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-[var(--cp-ink)]">{module.name}</p>
+                    <p className="text-xs text-[var(--cp-muted)]">{module.detail}</p>
+                  </div>
+                  <span
+                    className={`rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide ${
+                      module.state === 'ready'
+                        ? 'bg-emerald-100 text-emerald-700'
+                        : module.state === 'review'
+                          ? 'bg-amber-100 text-amber-700'
+                          : 'bg-slate-100 text-slate-700'
+                    }`}
+                  >
+                    {module.state}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+          <p className="text-sm font-semibold text-[var(--cp-ink)]">Policy baseline</p>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            {[
+              'MFA required for Owner/Admin roles',
+              'Session timeout at 12h idle window',
+              'Critical alerts routed to admin channel',
+              'Nightly backup validation at 04:00',
+            ].map((policy) => (
+              <div
+                key={policy}
+                className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2 text-xs text-[var(--cp-ink)]"
+              >
+                {policy}
+              </div>
+            ))}
           </div>
         </div>
       </div>
@@ -1255,11 +1716,11 @@ const WindowBody = memo((props: WindowBodyProps) => {
   return (
     <div className="space-y-4">
       <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-        <p className="text-sm font-semibold text-[var(--cp-ink)]">User shortcuts</p>
-        <p className="mt-1 text-xs text-[var(--cp-muted)]">
-          This window is a compact launcher. Manage roles and invites in the full page.
-        </p>
-        <div className="mt-4 flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">Team and access overview</p>
+            <p className="mt-1 text-xs text-[var(--cp-muted)]">Role assignments and invite queue snapshot.</p>
+          </div>
           <button
             type="button"
             onClick={() => navigateTo('/users')}
@@ -1267,6 +1728,62 @@ const WindowBody = memo((props: WindowBodyProps) => {
           >
             Open user management
           </button>
+        </div>
+
+        <div className="mt-4 grid gap-2 sm:grid-cols-3">
+          <div className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2">
+            <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Members</p>
+            <p className="mt-1 text-xl font-semibold text-[var(--cp-ink)]">{USER_TEAM_PREVIEW.length}</p>
+          </div>
+          <div className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2">
+            <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Pending invites</p>
+            <p className="mt-1 text-xl font-semibold text-[var(--cp-ink)]">
+              {USER_TEAM_PREVIEW.filter((member) => member.status === 'pending').length}
+            </p>
+          </div>
+          <div className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2">
+            <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Admin coverage</p>
+            <p className="mt-1 text-xl font-semibold text-[var(--cp-ink)]">
+              {USER_TEAM_PREVIEW.filter((member) => member.role === 'Owner' || member.role === 'Admin').length}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-3 space-y-2">
+          {USER_TEAM_PREVIEW.map((member) => (
+            <div
+              key={member.name}
+              className="rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-[var(--cp-ink)]">{member.name}</p>
+                  <p className="text-xs text-[var(--cp-muted)]">
+                    {member.role} - {member.group}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="rounded-full border border-[var(--cp-border)] bg-white px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--cp-ink)]">
+                    {member.access}
+                  </span>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                      member.status === 'active'
+                        ? 'bg-emerald-100 text-emerald-700'
+                        : member.status === 'pending'
+                          ? 'bg-amber-100 text-amber-700'
+                          : 'bg-rose-100 text-rose-700'
+                    }`}
+                  >
+                    {member.status}
+                  </span>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-3 flex flex-wrap gap-2">
           <button
             type="button"
             onClick={() => navigateTo('/settings')}

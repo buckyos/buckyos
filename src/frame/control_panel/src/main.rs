@@ -16,7 +16,7 @@ use log::info;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::*;
 use server_runner::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -40,6 +40,8 @@ const LOG_ROOT_DIR: &str = "/opt/buckyos/logs";
 const LOG_DOWNLOAD_TTL_SECS: u64 = 600;
 const DEFAULT_LOG_LIMIT: usize = 200;
 const MAX_LOG_LIMIT: usize = 1000;
+const METRICS_HISTORY_LIMIT: usize = 120;
+const METRICS_DISK_REFRESH_INTERVAL_SECS: u64 = 5;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct LogQueryCursor {
@@ -78,47 +80,119 @@ struct NetworkStatsSnapshot {
     updated_at: Option<std::time::SystemTime>,
 }
 
+#[derive(Clone, Debug)]
+struct MetricsTimelinePoint {
+    time: String,
+    cpu: u64,
+    memory: u64,
+    rx: u64,
+    tx: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct SystemMetricsSnapshot {
+    cpu_usage_percent: f64,
+    cpu_brand: String,
+    cpu_cores: u64,
+    memory_total_bytes: u64,
+    memory_used_bytes: u64,
+    swap_total_bytes: u64,
+    swap_used_bytes: u64,
+    load_one: f64,
+    load_five: f64,
+    load_fifteen: f64,
+    process_count: u64,
+    uptime_seconds: u64,
+    storage_capacity_bytes: u64,
+    storage_used_bytes: u64,
+    disks_detail: Vec<Value>,
+    network: NetworkStatsSnapshot,
+    timeline: VecDeque<MetricsTimelinePoint>,
+    updated_at: Option<std::time::SystemTime>,
+}
+
 #[derive(Clone)]
 struct ControlPanelServer {
     log_downloads: Arc<Mutex<HashMap<String, LogDownloadEntry>>>,
-    network_stats: Arc<RwLock<NetworkStatsSnapshot>>,
+    metrics_snapshot: Arc<RwLock<SystemMetricsSnapshot>>,
 }
 
 impl ControlPanelServer {
     pub fn new() -> Self {
-        let network_stats = Arc::new(RwLock::new(NetworkStatsSnapshot::default()));
-        Self::start_network_sampler(network_stats.clone());
+        let metrics_snapshot = Arc::new(RwLock::new(SystemMetricsSnapshot::default()));
+        Self::start_metrics_sampler(metrics_snapshot.clone());
         ControlPanelServer {
             log_downloads: Arc::new(Mutex::new(HashMap::new())),
-            network_stats,
+            metrics_snapshot,
         }
     }
 
-    fn start_network_sampler(network_stats: Arc<RwLock<NetworkStatsSnapshot>>) {
-        // Background sampler so network rates are stable and independent of UI polling.
+    fn start_metrics_sampler(metrics_snapshot: Arc<RwLock<SystemMetricsSnapshot>>) {
+        // Background sampler so metrics timelines are produced server-side.
         tokio::spawn(async move {
+            let mut system = System::new_all();
             let mut networks = Networks::new_with_refreshed_list();
+            let mut disks = Disks::new_with_refreshed_list_specifics(DiskRefreshKind::everything());
+
+            system.refresh_memory();
+            system.refresh_cpu_usage();
             networks.refresh(true);
+            disks.refresh(true);
+
+            let cpu_brand = system
+                .cpus()
+                .first()
+                .map(|cpu| cpu.brand().to_string())
+                .unwrap_or_else(|| "Unknown CPU".to_string());
+            let cpu_cores = system.cpus().len() as u64;
+
+            let (storage_capacity_bytes, storage_used_bytes, disks_detail) =
+                ControlPanelServer::sum_disks(&disks);
 
             let (mut prev_rx, mut prev_tx, iface_count) =
                 ControlPanelServer::sum_network_totals(&networks);
             {
-                let mut snapshot = network_stats.write().await;
-                snapshot.rx_bytes = prev_rx;
-                snapshot.tx_bytes = prev_tx;
-                snapshot.rx_per_sec = 0;
-                snapshot.tx_per_sec = 0;
-                snapshot.interface_count = iface_count;
+                let mut snapshot = metrics_snapshot.write().await;
+                snapshot.cpu_brand = cpu_brand;
+                snapshot.cpu_cores = cpu_cores;
+                snapshot.memory_total_bytes = system.total_memory();
+                snapshot.memory_used_bytes = system.used_memory();
+                snapshot.swap_total_bytes = system.total_swap();
+                snapshot.swap_used_bytes = system.used_swap();
+                snapshot.load_one = System::load_average().one;
+                snapshot.load_five = System::load_average().five;
+                snapshot.load_fifteen = System::load_average().fifteen;
+                snapshot.process_count = system.processes().len() as u64;
+                snapshot.uptime_seconds = System::uptime();
+                snapshot.storage_capacity_bytes = storage_capacity_bytes;
+                snapshot.storage_used_bytes = storage_used_bytes;
+                snapshot.disks_detail = disks_detail;
+                snapshot.network.rx_bytes = prev_rx;
+                snapshot.network.tx_bytes = prev_tx;
+                snapshot.network.rx_per_sec = 0;
+                snapshot.network.tx_per_sec = 0;
+                snapshot.network.interface_count = iface_count;
+                snapshot.network.updated_at = Some(std::time::SystemTime::now());
                 snapshot.updated_at = Some(std::time::SystemTime::now());
             }
 
             let mut last_at = Instant::now();
             let mut ticker = tokio::time::interval(Duration::from_secs(1));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut disk_refresh_counter: u64 = 0;
 
             loop {
                 ticker.tick().await;
+
+                system.refresh_memory();
+                system.refresh_cpu_usage();
                 networks.refresh(true);
+
+                disk_refresh_counter = disk_refresh_counter.saturating_add(1);
+                let refresh_disks = disk_refresh_counter % METRICS_DISK_REFRESH_INTERVAL_SECS == 0;
+                if refresh_disks {
+                    disks.refresh(true);
+                }
 
                 let (rx_bytes, tx_bytes, iface_count) =
                     ControlPanelServer::sum_network_totals(&networks);
@@ -139,15 +213,90 @@ impl ControlPanelServer {
                     (0, 0)
                 };
 
-                let mut snapshot = network_stats.write().await;
-                snapshot.rx_bytes = rx_bytes;
-                snapshot.tx_bytes = tx_bytes;
-                snapshot.rx_per_sec = rx_per_sec;
-                snapshot.tx_per_sec = tx_per_sec;
-                snapshot.interface_count = iface_count;
+                let total_memory_bytes = system.total_memory();
+                let used_memory_bytes = system.used_memory();
+                let memory_percent = if total_memory_bytes > 0 {
+                    ((used_memory_bytes as f64 / total_memory_bytes as f64) * 100.0).round() as u64
+                } else {
+                    0
+                };
+                let cpu_usage_percent = system.global_cpu_usage() as f64;
+                let cpu_percent = cpu_usage_percent.round() as u64;
+
+                let now = Utc::now();
+                let time_label = now.format("%H:%M:%S").to_string();
+
+                let mut snapshot = metrics_snapshot.write().await;
+                snapshot.cpu_usage_percent = cpu_usage_percent;
+                snapshot.memory_total_bytes = total_memory_bytes;
+                snapshot.memory_used_bytes = used_memory_bytes;
+                snapshot.swap_total_bytes = system.total_swap();
+                snapshot.swap_used_bytes = system.used_swap();
+
+                let load_avg = System::load_average();
+                snapshot.load_one = load_avg.one;
+                snapshot.load_five = load_avg.five;
+                snapshot.load_fifteen = load_avg.fifteen;
+                snapshot.process_count = system.processes().len() as u64;
+                snapshot.uptime_seconds = System::uptime();
+
+                if refresh_disks {
+                    let (capacity, used, details) = ControlPanelServer::sum_disks(&disks);
+                    snapshot.storage_capacity_bytes = capacity;
+                    snapshot.storage_used_bytes = used;
+                    snapshot.disks_detail = details;
+                }
+
+                snapshot.network.rx_bytes = rx_bytes;
+                snapshot.network.tx_bytes = tx_bytes;
+                snapshot.network.rx_per_sec = rx_per_sec;
+                snapshot.network.tx_per_sec = tx_per_sec;
+                snapshot.network.interface_count = iface_count;
+                snapshot.network.updated_at = Some(std::time::SystemTime::now());
+
+                if snapshot.timeline.len() >= METRICS_HISTORY_LIMIT {
+                    snapshot.timeline.pop_front();
+                }
+                snapshot.timeline.push_back(MetricsTimelinePoint {
+                    time: time_label,
+                    cpu: cpu_percent.min(100),
+                    memory: memory_percent.min(100),
+                    rx: rx_per_sec,
+                    tx: tx_per_sec,
+                });
                 snapshot.updated_at = Some(std::time::SystemTime::now());
             }
         });
+    }
+
+    fn sum_disks(disks: &Disks) -> (u64, u64, Vec<Value>) {
+        let mut total_bytes: u64 = 0;
+        let mut used_bytes: u64 = 0;
+        let mut details: Vec<Value> = Vec::new();
+
+        for disk in disks.list().iter() {
+            let total = disk.total_space();
+            let available = disk.available_space();
+            let used = total.saturating_sub(available);
+            total_bytes = total_bytes.saturating_add(total);
+            used_bytes = used_bytes.saturating_add(used);
+            let usage_percent = if total > 0 {
+                ((used as f64 / total as f64) * 100.0).round()
+            } else {
+                0.0
+            };
+
+            details.push(json!({
+                "label": disk.name().to_string_lossy(),
+                "totalGb": bytes_to_gb(total),
+                "usedGb": bytes_to_gb(used),
+                "usagePercent": usage_percent,
+                "fs": disk.file_system().to_string_lossy(),
+                "mount": disk.mount_point().to_string_lossy(),
+            }));
+        }
+
+        (total_bytes, used_bytes, details)
     }
 
     fn sum_network_totals(networks: &Networks) -> (u64, u64, usize) {
@@ -1594,87 +1743,72 @@ impl ControlPanelServer {
     }
 
     async fn handle_system_metrics(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
-        let mut system = System::new_all();
-        system.refresh_memory();
-        system.refresh_cpu_usage();
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        system.refresh_cpu_usage();
+        let snapshot = { self.metrics_snapshot.read().await.clone() };
 
-        let cpu_usage = system.global_cpu_usage() as f64;
-        let cpu_brand = system
-            .cpus()
-            .get(0)
-            .map(|c| c.brand().to_string())
-            .unwrap_or_else(|| "Unknown CPU".to_string());
-        let cpu_cores = system.cpus().len() as u64;
-
-        let total_memory_bytes = system.total_memory();
-        let used_memory_bytes = system.used_memory();
+        let total_memory_bytes = snapshot.memory_total_bytes;
+        let used_memory_bytes = snapshot.memory_used_bytes;
         let memory_percent = if total_memory_bytes > 0 {
             ((used_memory_bytes as f64 / total_memory_bytes as f64) * 100.0).round()
         } else {
             0.0
         };
-        let total_swap_bytes = system.total_swap();
-        let used_swap_bytes = system.used_swap();
+        let total_swap_bytes = snapshot.swap_total_bytes;
+        let used_swap_bytes = snapshot.swap_used_bytes;
         let swap_percent = if total_swap_bytes > 0 {
             ((used_swap_bytes as f64 / total_swap_bytes as f64) * 100.0).round()
         } else {
             0.0
         };
-        let load_avg = System::load_average();
-        let process_count = system.processes().len() as u64;
-        let uptime_seconds = System::uptime();
+        let process_count = snapshot.process_count;
+        let uptime_seconds = snapshot.uptime_seconds;
 
         let lite = req
             .params
             .get("lite")
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
-        let mut disks_detail: Vec<Value> = Vec::new();
-        let mut storage_capacity_bytes: u64 = 0;
-        let mut storage_used_bytes: u64 = 0;
+        let disks_detail = if lite {
+            Vec::new()
+        } else {
+            snapshot.disks_detail.clone()
+        };
 
-        let network_stats = { self.network_stats.read().await.clone() };
-
-        if !lite {
-            let mut disks = Disks::new_with_refreshed_list_specifics(DiskRefreshKind::everything());
-            disks.refresh(true);
-
-            for disk in disks.list().iter() {
-                let total = disk.total_space();
-                let available = disk.available_space();
-                let used = total.saturating_sub(available);
-                storage_capacity_bytes = storage_capacity_bytes.saturating_add(total);
-                storage_used_bytes = storage_used_bytes.saturating_add(used);
-                let usage_percent = if total > 0 {
-                    ((used as f64 / total as f64) * 100.0).round()
-                } else {
-                    0.0
-                };
-
-                disks_detail.push(json!({
-                    "label": disk.name().to_string_lossy(),
-                    "totalGb": bytes_to_gb(total),
-                    "usedGb": bytes_to_gb(used),
-                    "usagePercent": usage_percent,
-                    "fs": disk.file_system().to_string_lossy(),
-                    "mount": disk.mount_point().to_string_lossy(),
-                }));
-            }
-        }
-
+        let storage_capacity_bytes = snapshot.storage_capacity_bytes;
+        let storage_used_bytes = snapshot.storage_used_bytes;
         let disk_usage_percent = if storage_capacity_bytes > 0 {
             ((storage_used_bytes as f64 / storage_capacity_bytes as f64) * 100.0).round()
         } else {
             0.0
         };
 
+        let resource_timeline: Vec<Value> = snapshot
+            .timeline
+            .iter()
+            .map(|point| {
+                json!({
+                    "time": point.time,
+                    "cpu": point.cpu,
+                    "memory": point.memory,
+                })
+            })
+            .collect();
+        let network_timeline: Vec<Value> = snapshot
+            .timeline
+            .iter()
+            .map(|point| {
+                json!({
+                    "time": point.time,
+                    "rx": point.rx,
+                    "tx": point.tx,
+                })
+            })
+            .collect();
+
         let metrics = json!({
             "cpu": {
-                "usagePercent": cpu_usage,
-                "model": cpu_brand,
-                "cores": cpu_cores,
+                "usagePercent": snapshot.cpu_usage_percent,
+                "model": snapshot.cpu_brand,
+                "cores": snapshot.cpu_cores,
             },
             "memory": {
                 "totalGb": bytes_to_gb(total_memory_bytes),
@@ -1688,10 +1822,10 @@ impl ControlPanelServer {
                 "disks": disks_detail,
             },
             "network": {
-                "rxBytes": network_stats.rx_bytes,
-                "txBytes": network_stats.tx_bytes,
-                "rxPerSec": network_stats.rx_per_sec,
-                "txPerSec": network_stats.tx_per_sec,
+                "rxBytes": snapshot.network.rx_bytes,
+                "txBytes": snapshot.network.tx_bytes,
+                "rxPerSec": snapshot.network.rx_per_sec,
+                "txPerSec": snapshot.network.tx_per_sec,
             },
             "swap": {
                 "totalGb": bytes_to_gb(total_swap_bytes),
@@ -1699,12 +1833,14 @@ impl ControlPanelServer {
                 "usagePercent": swap_percent,
             },
             "loadAverage": {
-                "one": load_avg.one,
-                "five": load_avg.five,
-                "fifteen": load_avg.fifteen,
+                "one": snapshot.load_one,
+                "five": snapshot.load_five,
+                "fifteen": snapshot.load_fifteen,
             },
             "processCount": process_count,
             "uptimeSeconds": uptime_seconds,
+            "resourceTimeline": resource_timeline,
+            "networkTimeline": network_timeline,
         });
 
         Ok(RPCResponse::new(RPCResult::Success(metrics), req.seq))

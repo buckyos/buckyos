@@ -204,6 +204,8 @@ declare global {
     memory: DashboardMemory
     disk: SystemMetricsDisk
     network: SystemMetricsNetwork
+    resourceTimeline?: ResourcePoint[]
+    networkTimeline?: NetworkPoint[]
     swap?: SystemMetricsSwap
     loadAverage?: SystemLoadAverage
     processCount?: number
