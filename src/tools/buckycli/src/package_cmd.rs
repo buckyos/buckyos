@@ -179,85 +179,86 @@ pub async fn pack_raw_pkg(pkg_path: &str, dest_dir: &str,private_key:Option<(Str
 
 // Based on pack raw pkg output, publish pkg to current zone (call repo_server.pub_pkg)
 pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), String> {
-    // 1) First push_chunk
-    let mut pkg_meta_jwt_map = HashMap::new();
-    let runtime = get_buckyos_api_runtime().unwrap();
-    let zone_host_name = runtime.zone_id.to_host_name();
-    let base_url = runtime.get_zone_ndn_base_url();
-    let ndn_client = NdnClient::new(base_url,None,None);
-    //let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(None).await.unwrap();
-    for pkg_path in pkg_pack_path_list {
-        let pkg_meta_jwt_path = pkg_path.join("pkg_meta.jwt");
-        if !pkg_meta_jwt_path.exists() {
-            println!("pkg_meta.jwt file does not exist: {}", pkg_meta_jwt_path.display());
-            continue;
-        }
-        let pkg_meta_jwt_str = fs::read_to_string(pkg_meta_jwt_path)
-            .map_err(|e| format!("Failed to read pkg_meta.jwt: {}", e.to_string()))?;
+    unimplemented!()
+    // // 1) First push_chunk
+    // let mut pkg_meta_jwt_map = HashMap::new();
+    // let runtime = get_buckyos_api_runtime().unwrap();
+    // let zone_host_name = runtime.zone_id.to_host_name();
+    // let base_url = runtime.get_zone_ndn_base_url();
+    // let ndn_client = NdnClient::new(base_url,None,None);
+    // //let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(None).await.unwrap();
+    // for pkg_path in pkg_pack_path_list {
+    //     let pkg_meta_jwt_path = pkg_path.join("pkg_meta.jwt");
+    //     if !pkg_meta_jwt_path.exists() {
+    //         println!("pkg_meta.jwt file does not exist: {}", pkg_meta_jwt_path.display());
+    //         continue;
+    //     }
+    //     let pkg_meta_jwt_str = fs::read_to_string(pkg_meta_jwt_path)
+    //         .map_err(|e| format!("Failed to read pkg_meta.jwt: {}", e.to_string()))?;
 
-        let pkg_meta = decode_jwt_claim_without_verify(&pkg_meta_jwt_str)
-            .map_err(|e| format!("Failed to decode pkg_meta.jwt: {}", e.to_string()))?;
-        let pkg_meta:PackageMeta = serde_json::from_value(pkg_meta)
-            .map_err(|e| format!("Failed to parse pkg_meta.jwt: {}", e.to_string()))?;
-        let pkg_meta_obj_id = build_obj_id("pkg",&pkg_meta_jwt_str);
+    //     let pkg_meta = decode_jwt_claim_without_verify(&pkg_meta_jwt_str)
+    //         .map_err(|e| format!("Failed to decode pkg_meta.jwt: {}", e.to_string()))?;
+    //     let pkg_meta:PackageMeta = serde_json::from_value(pkg_meta)
+    //         .map_err(|e| format!("Failed to parse pkg_meta.jwt: {}", e.to_string()))?;
+    //     let pkg_meta_obj_id = build_obj_id("pkg",&pkg_meta_jwt_str);
 
-        let pkg_tar_path = pkg_path.join(format!("{}#{}.tar.gz", pkg_meta.name, pkg_meta.version));
-        if !pkg_tar_path.exists() {
-            println!("tar.gz file does not exist: {}", pkg_tar_path.display());
-            continue;
-        }
+    //     let pkg_tar_path = pkg_path.join(format!("{}#{}.tar.gz", pkg_meta.name, pkg_meta.version));
+    //     if !pkg_tar_path.exists() {
+    //         println!("tar.gz file does not exist: {}", pkg_tar_path.display());
+    //         continue;
+    //     }
 
-        let chunk_type = ChunkId::default_chunk_type();
+    //     let chunk_type = ChunkId::default_chunk_type();
 
-        let (chunk_id,file_size) = calculate_file_chunk_id(pkg_tar_path.to_str().unwrap(),chunk_type).await
-            .map_err(|e| format!("Failed to calculate file chunk id: {}", e.to_string()))?;
-        if chunk_id.to_string() != pkg_meta.content {
-            println!("chunk_id does not match: {}", chunk_id.to_string());
-            continue;
-        }
-        //let real_named_mgr = named_mgr.lock().await;
-        let is_exist = NamedDataMgr::have_chunk(None,&chunk_id).await;
-        if !is_exist {
-            let (mut chunk_writer, _) = NamedDataMgr::open_chunk_writer(None,&chunk_id, file_size, 0).await.map_err(|e| {
-                format!("Failed to open chunk writer: {}", e.to_string())
-            })?;
+    //     let (chunk_id,file_size) = calculate_file_chunk_id(pkg_tar_path.to_str().unwrap(),chunk_type).await
+    //         .map_err(|e| format!("Failed to calculate file chunk id: {}", e.to_string()))?;
+    //     if chunk_id.to_string() != pkg_meta.content {
+    //         println!("chunk_id does not match: {}", chunk_id.to_string());
+    //         continue;
+    //     }
+    //     //let real_named_mgr = named_mgr.lock().await;
+    //     let is_exist = NamedDataMgr::have_chunk(None,&chunk_id).await;
+    //     if !is_exist {
+    //         let (mut chunk_writer, _) = NamedDataMgr::open_chunk_writer(None,&chunk_id, file_size, 0).await.map_err(|e| {
+    //             format!("Failed to open chunk writer: {}", e.to_string())
+    //         })?;
         
-            let mut file_reader = tokio::fs::File::open(pkg_tar_path.to_str().unwrap()).await
-                .map_err(|e| {
-                    format!("Failed to open tar.gz file: {}", e.to_string())
-                })?;
-            tokio::io::copy(&mut file_reader, &mut chunk_writer).await
-            .map_err(|e| {
-                format!("Failed to copy tar.gz file: {}", e.to_string())
-            })?;
-            println!(" {} file successfully written to local named-mgr,chunk_id: {}", pkg_tar_path.display(),chunk_id.to_string());
+    //         let mut file_reader = tokio::fs::File::open(pkg_tar_path.to_str().unwrap()).await
+    //             .map_err(|e| {
+    //                 format!("Failed to open tar.gz file: {}", e.to_string())
+    //             })?;
+    //         tokio::io::copy(&mut file_reader, &mut chunk_writer).await
+    //         .map_err(|e| {
+    //             format!("Failed to copy tar.gz file: {}", e.to_string())
+    //         })?;
+    //         println!(" {} file successfully written to local named-mgr,chunk_id: {}", pkg_tar_path.display(),chunk_id.to_string());
  
-            NamedDataMgr::complete_chunk_writer(None,&chunk_id).await.map_err(|e| {
-                format!("Failed to complete chunk writer: {}", e.to_string())
-            })?;
+    //         NamedDataMgr::complete_chunk_writer(None,&chunk_id).await.map_err(|e| {
+    //             format!("Failed to complete chunk writer: {}", e.to_string())
+    //         })?;
 
-        } else {
-            println!(" {} file already exists in local named-mgr,chunk_id: {}", pkg_tar_path.display(),chunk_id.to_string());
-        }
+    //     } else {
+    //         println!(" {} file already exists in local named-mgr,chunk_id: {}", pkg_tar_path.display(),chunk_id.to_string());
+    //     }
         
-        println!("# push chunk : {}, size: {} bytes...", chunk_id.to_string(),file_size);
-        ndn_client.push_chunk(chunk_id.clone(),None).await.map_err(|e| {
-            format!("Failed to push chunk: {}", e.to_string())
-        })?;
-        println!("# push chunk : {}, size: {} bytes success.", chunk_id.to_string(),file_size);
+    //     println!("# push chunk : {}, size: {} bytes...", chunk_id.to_string(),file_size);
+    //     ndn_client.push_chunk(chunk_id.clone(),None).await.map_err(|e| {
+    //         format!("Failed to push chunk: {}", e.to_string())
+    //     })?;
+    //     println!("# push chunk : {}, size: {} bytes success.", chunk_id.to_string(),file_size);
 
-        pkg_meta_jwt_map.insert(pkg_meta_obj_id.to_string(),pkg_meta_jwt_str);
-    }
-    // 2) Then call repo_server.pub_pkg
-    // TODO: Separate upload and pub_pkg
-    let pkg_lens = pkg_meta_jwt_map.len();
-    let runtime = get_buckyos_api_runtime().unwrap();
-    let repo_client = runtime.get_repo_client().await.unwrap();
-    repo_client.pub_pkg(pkg_meta_jwt_map).await.map_err(|e| {
-        format!("Failed to publish pkg: {}", e.to_string())
-    })?;
-    println!("Successfully published pkg, total {} pkgs published",pkg_lens);
-    Ok(())
+    //     pkg_meta_jwt_map.insert(pkg_meta_obj_id.to_string(),pkg_meta_jwt_str);
+    // }
+    // // 2) Then call repo_server.pub_pkg
+    // // TODO: Separate upload and pub_pkg
+    // let pkg_lens = pkg_meta_jwt_map.len();
+    // let runtime = get_buckyos_api_runtime().unwrap();
+    // let repo_client = runtime.get_repo_client().await.unwrap();
+    // repo_client.pub_pkg(pkg_meta_jwt_map).await.map_err(|e| {
+    //     format!("Failed to publish pkg: {}", e.to_string())
+    // })?;
+    // println!("Successfully published pkg, total {} pkgs published",pkg_lens);
+    // Ok(())
 }
 
 // Prepare dapp_meta for publishing, this dapp_meta can be used for the next step of publishing

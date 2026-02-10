@@ -33,6 +33,7 @@ package-lib = { workspace = true }
 name-lib = { workspace = true }
 name-client = { workspace = true }
 buckyos-kit = { workspace = true }
+named_store = { workspace = true }
 kRPC ={ workspace = true }
 buckyos-api = { path = "../../kernel/buckyos-api" }
 server-runner = { workspace = true }

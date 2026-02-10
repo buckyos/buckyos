@@ -282,59 +282,59 @@ async fn make_sure_system_pkgs_ready(meta_db_path: &PathBuf,prefix: &str,session
         }
     }
     
-    for chunk_id in miss_chunk_list {
-        let ndn_client = NdnClient::new("http://127.0.0.1/ndn/".to_string(), session_token.clone(),None);
-        let chunk_result = ndn_client.pull_chunk(chunk_id.clone(), StoreMode::StoreInNamedMgr).await;
-        if chunk_result.is_err() {
-            error!("make_sure_system_pkgs_ready: pull chunk {} failed! {}", chunk_id.to_string(), chunk_result.err().unwrap());
-        }
-        info!("make_sure_system_pkgs_ready: pull chunk {} success", chunk_id.to_string());
-    }
+    // for chunk_id in miss_chunk_list {
+    //     let ndn_client = NdnClient::new("http://127.0.0.1/ndn/".to_string(), session_token.clone(),None);
+    //     let chunk_result = ndn_client.pull_chunk(chunk_id.clone(), StoreMode::StoreInNamedMgr).await;
+    //     if chunk_result.is_err() {
+    //         error!("make_sure_system_pkgs_ready: pull chunk {} failed! {}", chunk_id.to_string(), chunk_result.err().unwrap());
+    //     }
+    //     info!("make_sure_system_pkgs_ready: pull chunk {} success", chunk_id.to_string());
+    // }
 
     Ok(())
 }
 
 async fn check_and_update_root_pkg_index_db(session_token: Option<String>) -> std::result::Result<bool, String>  {
-    let root_env_path = BuckyOSRuntime::get_root_pkg_env_path();
-    let mut root_env = PackageEnv::new(root_env_path.clone());
-    let meta_db_file_patgh = root_env_path.join("pkgs").join("meta_index.db");
+    // let root_env_path = BuckyOSRuntime::get_root_pkg_env_path();
+    // let mut root_env = PackageEnv::new(root_env_path.clone());
+    // let meta_db_file_patgh = root_env_path.join("pkgs").join("meta_index.db");
 
-    //TODO:beta1 需要得到正确的repo service地址
-    let zone_repo_index_db_url = "http://127.0.0.1/ndn/repo/meta_index.db";
-    let ndn_client = NdnClient::new("http://127.0.0.1/ndn/".to_string(), session_token.clone(),None);
+    // //TODO:beta1 需要得到正确的repo service地址
+    // let zone_repo_index_db_url = "http://127.0.0.1/ndn/repo/meta_index.db";
+    // let ndn_client = NdnClient::new("http://127.0.0.1/ndn/".to_string(), session_token.clone(),None);
     
-    let remote_is_better = ndn_client.remote_is_better(zone_repo_index_db_url,&meta_db_file_patgh).await
-        .map_err(|e| {
-            error!("check remote meta-index.db is better than local meta-index.db failed, err:{}", e);
-            return String::from("check remote meta-index.db is better than local meta-index.db failed!");
-        })?;
-    if !remote_is_better {
-        info!("local meta-index.db is better than repo's default meta-index.db, no need to update!");
-        return Ok(false);
-    }
+    // let remote_is_better = ndn_client.remote_is_better(zone_repo_index_db_url,&meta_db_file_patgh).await
+    //     .map_err(|e| {
+    //         error!("check remote meta-index.db is better than local meta-index.db failed, err:{}", e);
+    //         return String::from("check remote meta-index.db is better than local meta-index.db failed!");
+    //     })?;
+    // if !remote_is_better {
+    //     info!("local meta-index.db is better than repo's default meta-index.db, no need to update!");
+    //     return Ok(false);
+    // }
 
-    info!("remote index db is not same as local index db, start update node's root_pkg_env.meta_index.db");
-    let download_path = root_env_path.join("pkgs").join("meta_index.downloading");
-    ndn_client.download_fileobj(zone_repo_index_db_url, &download_path, None).await
-        .map_err(|err| {
-            error!("download remote index db to root pkg env's meta-Index db failed! {}", err);
-            return String::from("download remote index db to root pkg env's meta-Index db failed!");
-        })?;
-    info!("download new meta-index.db success, will update root env's meta-index.db..");
+    // info!("remote index db is not same as local index db, start update node's root_pkg_env.meta_index.db");
+    // let download_path = root_env_path.join("pkgs").join("meta_index.downloading");
+    // ndn_client.download_fileobj(zone_repo_index_db_url, &download_path, None).await
+    //     .map_err(|err| {
+    //         error!("download remote index db to root pkg env's meta-Index db failed! {}", err);
+    //         return String::from("download remote index db to root pkg env's meta-Index db failed!");
+    //     })?;
+    // info!("download new meta-index.db success, will update root env's meta-index.db..");
 
-    let prefix = root_env.get_prefix();
-    make_sure_system_pkgs_ready(&download_path, &prefix, session_token.clone()).await?;
-    root_env.try_update_index_db(&download_path).await
-        .map_err(|err| {
-            error!("update root pkg env's meta-Index db failed! {}", err);
-            return String::from("update root pkg env's meta-Index db failed!");
-        })?;
+    // let prefix = root_env.get_prefix();
+    // make_sure_system_pkgs_ready(&download_path, &prefix, session_token.clone()).await?;
+    // root_env.try_update_index_db(&download_path).await
+    //     .map_err(|err| {
+    //         error!("update root pkg env's meta-Index db failed! {}", err);
+    //         return String::from("update root pkg env's meta-Index db failed!");
+    //     })?;
     
-    info!("update root pkg env's meta-index.db OK");
-    let remove_result = std::fs::remove_file(download_path);
-    if remove_result.is_err() {
-        warn!("remove meta_index.downloading error!");
-    }
+    // info!("update root pkg env's meta-index.db OK");
+    // let remove_result = std::fs::remove_file(download_path);
+    // if remove_result.is_err() {
+    //     warn!("remove meta_index.downloading error!");
+    // }
 
     Ok(true)
 }
