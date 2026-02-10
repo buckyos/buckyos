@@ -48,8 +48,9 @@ pub const MAX_APP_INDEX: u16 = 2048;
 
 static CURRENT_BUCKYOS_RUNTIME: OnceCell<BuckyOSRuntime> = OnceCell::new();
 pub fn get_buckyos_api_runtime() -> Result<&'static BuckyOSRuntime> {
-    let runtime = CURRENT_BUCKYOS_RUNTIME.get().unwrap();
-    Ok(runtime)
+    CURRENT_BUCKYOS_RUNTIME.get().ok_or(RPCErrors::ReasonError(
+        "BuckyOSRuntime is not initialized".to_string(),
+    ))
 }
 
 pub fn set_buckyos_api_runtime(runtime: BuckyOSRuntime) {

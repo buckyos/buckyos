@@ -12,9 +12,8 @@ if __name__ == "__main__":
     process_name = "aicc"
     process_full_path = os.path.abspath(os.path.join(os.path.dirname(__file__), process_name))
     if util.check_process_exists(process_full_path):
-        if util.check_port(4000):
-            print(f"{process_name} is running")
-            exit(0)
+        print(f"{process_name} is running")
+        exit(0)
             
     print(f"{process_name} is not running")
     exit(1)

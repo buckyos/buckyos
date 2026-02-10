@@ -508,7 +508,7 @@ impl BuckyOSRuntime {
         if !need_refresh {
             let expired_time = real_session_token.exp.unwrap();
             let now = buckyos_get_unix_timestamp();
-            if now < expired_time - 30 {
+            if now < expired_time.saturating_sub(30) {
                 debug!("session_token is not expired,skip renew token");
                 return Ok(());
             }
@@ -591,7 +591,16 @@ impl BuckyOSRuntime {
 
     async fn keep_alive() -> Result<()> {
         //info!("buckyos-api-runtime::keep_alive start");
-        let buckyos_api_runtime = get_buckyos_api_runtime().unwrap();
+        let buckyos_api_runtime = match get_buckyos_api_runtime() {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                warn!(
+                    "buckyos-api-runtime is not initialized, skip keep_alive tick: {}",
+                    error
+                );
+                return Ok(());
+            }
+        };
         let refresh_result = buckyos_api_runtime.renew_token_from_verify_hub().await;
         if refresh_result.is_err() {
             warn!(
@@ -603,11 +612,8 @@ impl BuckyOSRuntime {
         let _ = buckyos_api_runtime.update_service_instance_info().await;
 
         if buckyos_api_runtime.is_service() {
-            let control_panel_client = buckyos_api_runtime.get_control_panel_client().await?;
-            let (rbac_model, rbac_policy) = control_panel_client.load_rbac_config().await?;
-            rbac::create_enforcer(Some(rbac_model.as_str()), Some(rbac_policy.as_str()))
-                .await
-                .unwrap();
+            // RBAC is initialized at login(). Avoid high-frequency remote RBAC reload here;
+            // keepalive should prioritize stability and token/service liveness.
             buckyos_api_runtime.refresh_trust_keys().await?;
         }
         Ok(())
@@ -720,7 +726,9 @@ impl BuckyOSRuntime {
             let (rbac_model, rbac_policy) = control_panel_client.load_rbac_config().await?;
             rbac::create_enforcer(Some(rbac_model.as_str()), Some(rbac_policy.as_str()))
                 .await
-                .unwrap();
+                .map_err(|error| {
+                    RPCErrors::ReasonError(format!("init rbac enforcer failed: {}", error))
+                })?;
             self.refresh_trust_keys().await?;
             info!("refresh trust keys OK");
         }
@@ -862,20 +870,19 @@ impl BuckyOSRuntime {
         action: &str,
         resource_path: &str,
     ) -> Result<(String, String)> {
-        let token = req
-            .token
-            .as_ref()
-            .map(|token| RPCSessionToken::from_string(token.as_str()))
-            .unwrap_or(Err(RPCErrors::ParseRequestError(
-                "Invalid params, session_token is none".to_string(),
-            )));
-        let token = token.unwrap();
+        let token_str = req.token.as_deref().ok_or(RPCErrors::ParseRequestError(
+            "Invalid params, session_token is none".to_string(),
+        ))?;
+        let token = RPCSessionToken::from_string(token_str)
+            .map_err(|error| RPCErrors::InvalidToken(format!("Invalid session token: {}", error)))?;
         if !token.is_self_verify() {
             return Err(RPCErrors::InvalidToken(
                 "Session token is not valid".to_string(),
             ));
         }
-        let token_str = token.token.as_ref().unwrap();
+        let token_str = token.token.as_deref().ok_or(RPCErrors::InvalidToken(
+            "Session token is missing raw JWT".to_string(),
+        ))?;
         let header: jsonwebtoken::Header =
             jsonwebtoken::decode_header(token_str).map_err(|error| {
                 RPCErrors::InvalidToken(format!("JWT decode header error : {}", error))
@@ -904,14 +911,16 @@ impl BuckyOSRuntime {
 
         let userid = decoded_json
             .get("userid")
+            .or_else(|| decoded_json.get("sub"))
             .ok_or(RPCErrors::InvalidToken("Missing userid".to_string()))?;
         let userid = userid
             .as_str()
             .ok_or(RPCErrors::InvalidToken("Invalid userid".to_string()))?;
         let appid = decoded_json
             .get("appid")
-            .map(|appid| appid.as_str().unwrap_or("kernel"));
-        let appid = appid.unwrap_or("kernel");
+            .and_then(|appid| appid.as_str())
+            .or_else(|| decoded_json.get("aud").and_then(|aud| aud.as_str()))
+            .unwrap_or("kernel");
 
         let system_config_client = self.get_system_config_client().await?;
         let rbac_policy = system_config_client.get("system/rbac/policy").await;
@@ -977,11 +986,20 @@ impl BuckyOSRuntime {
         let session_token_str = session_token.clone();
         drop(session_token);
 
-        let session_token = RPCSessionToken::from_string(&session_token_str).unwrap();
+        let session_token = match RPCSessionToken::from_string(&session_token_str) {
+            Ok(token) => token,
+            Err(error) => {
+                warn!(
+                    "session token parse failed, fallback to raw token string: {}",
+                    error
+                );
+                return session_token_str;
+            }
+        };
         if session_token.exp.is_some() {
             let exp = session_token.exp.unwrap();
             let now = buckyos_get_unix_timestamp();
-            if now < exp - 10 {
+            if now < exp.saturating_sub(10) {
                 return session_token_str;
             } else {
                 if self.device_private_key.is_some() {

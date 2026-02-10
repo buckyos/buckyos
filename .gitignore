@@ -51,3 +51,4 @@ src/rootfs/bin/buckyos_systest/
 src/rootfs/bin/aicc/aicc
 src/rootfs/bin/kmsg/kmsg
 src/rootfs/bin/task-manager/task_manager
+src/rootfs/bin/aicc/aicc
