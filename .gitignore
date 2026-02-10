@@ -48,3 +48,6 @@ src/rootfs/bin/node_active/
 src/rootfs/bin/sys_test/
 publish/*
 src/rootfs/bin/buckyos_systest/
+src/rootfs/bin/aicc/aicc
+src/rootfs/bin/kmsg/kmsg
+src/rootfs/bin/task-manager/task_manager

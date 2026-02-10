@@ -9,6 +9,7 @@ use std::net::IpAddr;
 
 pub const AICC_SERVICE_UNIQUE_ID: &str = "aicc";
 pub const AICC_SERVICE_SERVICE_NAME: &str = "aicc";
+pub const AICC_SERVICE_SERVICE_PORT: u16 = 4040;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
 #[serde(rename_all = "snake_case")]

@@ -1,12 +1,32 @@
 use ::kRPC::*;
 use async_trait::async_trait;
+use name_lib::DID;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::IpAddr;
 
-const KMSG_SERVICE_NAME: &str = "kmsg";
+use crate::{AppDoc, AppType, SelectorType};
+
+pub const KMSG_SERVICE_UNIQUE_ID: &str = "kmsg";
+pub const KMSG_SERVICE_NAME: &str = "kmsg";
 pub const KMSG_SERVICE_MAIN_PORT: u16 = 4030;
+
+pub fn generate_kmsg_service_doc() -> AppDoc {
+    const VERSION: &str = env!("CARGO_PKG_VERSION");
+    let owner_did = DID::from_str("did:bns:buckyos").unwrap();
+    AppDoc::builder(
+        AppType::Service,
+        KMSG_SERVICE_UNIQUE_ID,
+        VERSION,
+        "did:bns:buckyos",
+        &owner_did,
+    )
+    .show_name("Kernel Message Queue")
+    .selector_type(SelectorType::Single)
+    .build()
+    .unwrap()
+}
 
 /// 全局唯一的队列标识符 (Uniform Resource Name)
 /// 格式通常为: "appid::owner::name"

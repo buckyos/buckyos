@@ -14,7 +14,7 @@ AICC_RPC_TOKEN = os.environ.get("AICC_RPC_TOKEN")
 AICC_TIMEOUT_SECONDS = float(os.environ.get("AICC_TIMEOUT_SECONDS", "90"))
 AICC_TEST_INPUT = os.environ.get(
     "AICC_TEST_INPUT",
-    "医生的免疫记录本里，写H，是指得过的意思么？",
+    "介绍一下BuckyOS",
 )
 
 

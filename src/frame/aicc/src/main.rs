@@ -78,25 +78,25 @@ impl HttpServer for AiccHttpServer {
 }
 
 pub async fn start_aicc_service(center: AIComputeCenter) -> Result<()> {
-    // let mut runtime = init_buckyos_api_runtime(
-    //     AICC_SERVICE_SERVICE_NAME,
-    //     None,
-    //     BuckyOSRuntimeType::KernelService,
-    // )
-    // .await?;
-    // let login_result = runtime.login().await;
-    // if login_result.is_err() {
-    //     error!(
-    //         "aicc service login to system failed! err:{:?}",
-    //         login_result
-    //     );
-    //     return Err(anyhow::anyhow!(
-    //         "aicc service login to system failed! err:{:?}",
-    //         login_result
-    //     ));
-    // }
-    // runtime.set_main_service_port(AICC_SERVICE_MAIN_PORT).await;
-    // set_buckyos_api_runtime(runtime);
+    let mut runtime = init_buckyos_api_runtime(
+        AICC_SERVICE_SERVICE_NAME,
+        None,
+        BuckyOSRuntimeType::KernelService,
+    )
+    .await?;
+    let login_result = runtime.login().await;
+    if login_result.is_err() {
+        error!(
+            "aicc service login to system failed! err:{:?}",
+            login_result
+        );
+        return Err(anyhow::anyhow!(
+            "aicc service login to system failed! err:{:?}",
+            login_result
+        ));
+    }
+    runtime.set_main_service_port(AICC_SERVICE_MAIN_PORT).await;
+    set_buckyos_api_runtime(runtime);
 
     let server = AiccHttpServer::new(center);
 

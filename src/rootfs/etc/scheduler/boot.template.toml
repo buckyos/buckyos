@@ -112,8 +112,10 @@ g, node-daemon, kernel
 g, scheduler, kernel
 g, system-config, kernel
 g, verify-hub, kernel
+g, task-manager, kernel
+g, kmsg, kernel
+g, aicc, kernel
 g, control-panel, kernel
 g, buckycli, kernel
 g, cyfs-gateway, kernel
 """
-

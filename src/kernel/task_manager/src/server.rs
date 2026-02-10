@@ -1,5 +1,6 @@
 use crate::task::{Task, TaskPermissions, TaskScope, TaskStatus};
 use crate::task_db::DB_MANAGER;
+use buckyos_api::*;
 use ::kRPC::*;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -1147,7 +1148,26 @@ impl<T: TaskManagerHandler + 'static> HttpServer for TaskManagerServerHandler<T>
     }
 }
 
-pub async fn start_task_manager_service() {
+pub async fn start_task_manager_service() -> Result<()> {
+    let mut runtime = init_buckyos_api_runtime(
+        TASK_MANAGER_SERVICE_NAME,
+        None,
+        BuckyOSRuntimeType::KernelService,
+    )
+    .await?;
+    if let Err(err) = runtime.login().await {
+        error!(
+            "task manager service login to system failed! err:{:?}",
+            err
+        );
+        return Err(RPCErrors::ReasonError(format!(
+            "task manager login to system failed! err:{:?}",
+            err
+        )));
+    }
+    runtime.set_main_service_port(TASK_MANAGER_SERVICE_MAIN_PORT).await;
+    set_buckyos_api_runtime(runtime);
+
     let handler = TaskManagerService::new();
     let server = TaskManagerServerHandler::new(handler);
 
@@ -1160,6 +1180,7 @@ pub async fn start_task_manager_service() {
     if let Err(err) = runner.run().await {
         error!("task manager runner exited with error: {:?}", err);
     }
+    Ok(())
 }
 
 #[cfg(test)]

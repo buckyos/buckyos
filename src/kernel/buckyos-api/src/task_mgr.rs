@@ -1,11 +1,34 @@
 use ::kRPC::*;
 use async_trait::async_trait;
+use name_lib::DID;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fmt;
 use std::net::IpAddr;
 use std::ops::Range;
 use std::str::FromStr;
+
+use crate::{AppDoc, AppType, SelectorType};
+
+pub const TASK_MANAGER_SERVICE_UNIQUE_ID: &str = "task-manager";
+pub const TASK_MANAGER_SERVICE_NAME: &str = "task-manager";
+pub const TASK_MANAGER_SERVICE_PORT: u16 = 3380;
+
+pub fn generate_task_manager_service_doc() -> AppDoc {
+    const VERSION: &str = env!("CARGO_PKG_VERSION");
+    let owner_did = DID::from_str("did:bns:buckyos").unwrap();
+    AppDoc::builder(
+        AppType::Service,
+        TASK_MANAGER_SERVICE_UNIQUE_ID,
+        VERSION,
+        "did:bns:buckyos",
+        &owner_did,
+    )
+    .show_name("Task Manager")
+    .selector_type(SelectorType::Single)
+    .build()
+    .unwrap()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskStatus {

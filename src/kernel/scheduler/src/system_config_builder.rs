@@ -1,9 +1,16 @@
 use anyhow::{anyhow, Result};
 use log::{debug, info, warn};
 use buckyos_api::{
-    AppDoc, AppServiceSpec, AppType, GatewaySettings, GatewayShortcut, KernelServiceSpec, NodeConfig, NodeState, SCHEDULER_SERVICE_UNIQUE_ID, SelectorType, ServiceExposeConfig, ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, UserSettings, UserState, UserType, VERIFY_HUB_UNIQUE_ID, generate_control_panel_service_doc, generate_repo_service_doc, generate_scheduler_service_doc, generate_smb_service_doc, generate_verify_hub_service_doc
+    AppDoc, AppServiceSpec, AppType, GatewaySettings, GatewayShortcut, KernelServiceSpec, NodeConfig, NodeState, SCHEDULER_SERVICE_UNIQUE_ID, SelectorType, ServiceExposeConfig, ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, UserSettings, UserState, UserType, VERIFY_HUB_UNIQUE_ID, generate_aicc_service_doc, generate_control_panel_service_doc, generate_repo_service_doc, generate_scheduler_service_doc, generate_smb_service_doc, generate_task_manager_service_doc, generate_verify_hub_service_doc
 };
-use buckyos_api::{CONTROL_PANEL_SERVICE_PORT, CONTROL_PANEL_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, REPO_SERVICE_UNIQUE_ID};
+use buckyos_api::msg_queue::{
+    generate_kmsg_service_doc, KMSG_SERVICE_MAIN_PORT, KMSG_SERVICE_UNIQUE_ID,
+};
+use buckyos_api::{
+    AICC_SERVICE_SERVICE_PORT, AICC_SERVICE_UNIQUE_ID, CONTROL_PANEL_SERVICE_PORT,
+    CONTROL_PANEL_SERVICE_UNIQUE_ID, REPO_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID,
+    TASK_MANAGER_SERVICE_PORT, TASK_MANAGER_SERVICE_UNIQUE_ID,
+};
 use buckyos_kit::get_buckyos_root_dir;
 use jsonwebtoken::jwk::Jwk;
 use name_client::resolve_did;
@@ -214,6 +221,45 @@ impl SystemConfigBuilder {
             service_doc
         ).await?;
         self.insert_json("services/scheduler/spec", &config)?;
+        Ok(self)
+    }
+
+    pub async fn add_task_mgr(&mut self) -> Result<&mut Self> {
+        let service_doc = generate_task_manager_service_doc();
+        let config = build_kernel_service_spec(
+            TASK_MANAGER_SERVICE_UNIQUE_ID,
+            TASK_MANAGER_SERVICE_PORT,
+            1,
+            service_doc,
+        )
+        .await?;
+        self.insert_json("services/task-manager/spec", &config)?;
+        Ok(self)
+    }
+
+    pub async fn add_kmsg(&mut self) -> Result<&mut Self> {
+        let service_doc = generate_kmsg_service_doc();
+        let config = build_kernel_service_spec(
+            KMSG_SERVICE_UNIQUE_ID,
+            KMSG_SERVICE_MAIN_PORT,
+            1,
+            service_doc,
+        )
+        .await?;
+        self.insert_json("services/kmsg/spec", &config)?;
+        Ok(self)
+    }
+
+    pub async fn add_aicc(&mut self) -> Result<&mut Self> {
+        let service_doc = generate_aicc_service_doc();
+        let config = build_kernel_service_spec(
+            AICC_SERVICE_UNIQUE_ID,
+            AICC_SERVICE_SERVICE_PORT,
+            1,
+            service_doc,
+        )
+        .await?;
+        self.insert_json("services/aicc/spec", &config)?;
         Ok(self)
     }
 

@@ -98,7 +98,10 @@ async fn create_init_list_by_template(zone_boot_config: &ZoneBootConfig) -> Resu
         .add_system_defaults()?
         .add_verify_hub(&private_key_pem).await?
         .add_scheduler().await?
-        .add_repo_service().await?
+        .add_task_mgr().await?
+        .add_kmsg().await?
+        //.add_repo_service().await?
+        .add_aicc().await?
         .add_control_panel().await?;
 
     info!("add_kernel_services success, add default apps and gateway settings...");
@@ -334,7 +337,10 @@ mod test {
         assert!(init_map.contains_key("boot/config"));
         assert!(init_map.contains_key("services/verify-hub/spec"));
         assert!(init_map.contains_key("services/scheduler/spec"));
+        assert!(init_map.contains_key("services/task-manager/spec"));
+        assert!(init_map.contains_key("services/kmsg/spec"));
         assert!(init_map.contains_key("services/repo-service/spec"));
+        assert!(init_map.contains_key("services/aicc/spec"));
         //assert!(init_map.contains_key("services/smb-service/spec"));
 
         for (key, value) in init_map.iter() {
@@ -455,6 +461,9 @@ g, node-daemon, kernel
 g, scheduler, kernel
 g, system-config, kernel
 g, verify-hub, kernel
+g, task-manager, kernel
+g, kmsg, kernel
+g, aicc, kernel
 g, control-panel, kernel
 g, buckycli, kernel
 g, cyfs-gateway, kernel

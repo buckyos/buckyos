@@ -18,7 +18,7 @@ use std::time::Duration;
 
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_OPENAI_TIMEOUT_MS: u64 = 60_000;
-const DEFAULT_OPENAI_MODELS: &str = "gpt-4o-mini,gpt-4.1-mini,gpt-4o";
+const DEFAULT_OPENAI_MODELS: &str = "gpt-5,gpt-5-mini,gpt-5-nono,gpt-5-pro";
 
 #[derive(Debug, Clone)]
 pub struct OpenAIInstanceConfig {
