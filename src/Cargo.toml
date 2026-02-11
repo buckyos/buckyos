@@ -122,6 +122,9 @@ bincode = { version = "2", features = ["serde"] }
 flexi_logger = "0.31.8"
 tempfile = "3.24.0"
 
+[patch.crates-io]
+grammers-session = { path = "patches/grammers-session-0.8.0" }
+
 [profile.release]
 # Reduce final binary size.
 opt-level = "z"

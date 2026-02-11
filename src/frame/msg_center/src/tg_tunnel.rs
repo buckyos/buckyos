@@ -4,9 +4,13 @@ use async_trait::async_trait;
 use buckyos_api::{
     DeliveryReportResult, IngressContext, MsgCenterHandler, MsgObject, MsgRecordWithObject,
 };
-use grammers_client::session::{PackedChat, PackedType, Session};
-use grammers_client::types::{Chat as TgChat, Message as TgMessage, Update};
-use grammers_client::{Client, Config, InitParams};
+use grammers_client::session::defs::{PeerAuth, PeerId, PeerRef};
+use grammers_client::session::storages::SqliteSession;
+use grammers_client::session::updates::UpdatesLike;
+use grammers_client::types::update::Message as TgMessage;
+use grammers_client::types::{Peer as TgPeer, Update};
+use grammers_client::{Client, UpdatesConfiguration};
+use grammers_mtsender::{SenderPool, SenderPoolHandle};
 use kRPC::RPCContext;
 use log::{info, warn};
 use name_lib::DID;
@@ -16,7 +20,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc::UnboundedReceiver};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
@@ -83,16 +87,16 @@ struct TgIngressDispatch {
 struct TgMessageConverter;
 
 impl TgMessageConverter {
-    fn chat_kind(chat: &TgChat) -> &'static str {
+    fn chat_kind(chat: &TgPeer) -> &'static str {
         match chat {
-            TgChat::User(_) => "user",
-            TgChat::Group(_) => "group",
-            TgChat::Channel(_) => "channel",
+            TgPeer::User(_) => "user",
+            TgPeer::Group(_) => "group",
+            TgPeer::Channel(_) => "channel",
         }
     }
 
-    fn build_dispatch_key(bot_account_id: &str, packed_chat: &str, message_id: i32) -> String {
-        format!("tg:{}:{}:{}", bot_account_id, packed_chat, message_id)
+    fn build_dispatch_key(bot_account_id: &str, chat_id: i64, message_id: i32) -> String {
+        format!("tg:{}:{}:{}", bot_account_id, chat_id, message_id)
     }
 
     fn fnv1a64(raw: &[u8]) -> u64 {
@@ -140,14 +144,15 @@ impl TgMessageConverter {
         owner_did: DID,
         sender_did: DID,
         sender_account_id: String,
-        sender_chat: &TgChat,
+        chat: &TgPeer,
+        sender_chat: &TgPeer,
         bot_account_id: &str,
         tunnel_did: Option<DID>,
         message: &TgMessage,
     ) -> AnyResult<TgIngressDispatch> {
-        let chat = message.chat();
-        let packed_chat = chat.pack().to_hex();
-        let idempotency_key = Self::build_dispatch_key(bot_account_id, &packed_chat, message.id());
+        let chat_id = chat.id().bot_api_dialog_id();
+        let chat_type = Self::chat_kind(chat);
+        let idempotency_key = Self::build_dispatch_key(bot_account_id, chat_id, message.id());
         let msg_obj_id = Self::build_msg_obj_id(&idempotency_key)?;
         let created_at_ms = message.date().timestamp_millis().max(0) as u64;
         let text = message.text().to_string();
@@ -162,22 +167,22 @@ impl TgMessageConverter {
             from: sender_did,
             source: None,
             to: vec![owner_did.clone()],
-            thread_key: Some(format!("tg:{}:{}", bot_account_id, packed_chat)),
+            thread_key: Some(format!("tg:{}:{}", bot_account_id, chat_id)),
             payload: json!({
                 "kind": payload_kind,
                 "text": text,
                 "telegram": {
                     "message_id": message.id(),
-                    "chat_id": chat.id(),
-                    "chat_type": Self::chat_kind(&chat),
+                    "chat_id": chat_id,
+                    "chat_type": chat_type,
                     "chat_name": chat.name(),
                 }
             }),
             meta: Some(json!({
                 "telegram": {
-                    "chat_pack": packed_chat,
+                    "chat_dialog_id": chat_id,
                     "chat_username": chat.username(),
-                    "sender_id": sender_chat.id(),
+                    "sender_id": sender_chat.id().bot_api_dialog_id(),
                     "sender_username": sender_chat.username(),
                     "sender_name": sender_chat.name(),
                     "bot_account_id": bot_account_id,
@@ -189,12 +194,12 @@ impl TgMessageConverter {
         let ingress_ctx = IngressContext {
             tunnel_did,
             platform: Some(TELEGRAM_PLATFORM.to_string()),
-            chat_id: Some(chat.pack().to_hex()),
+            chat_id: Some(chat_id.to_string()),
             source_account_id: Some(sender_account_id),
-            context_id: Some(format!("tg:{}:{}", owner_did.to_string(), chat.id())),
+            context_id: Some(format!("tg:{}:{}", owner_did.to_string(), chat_id)),
             extra: Some(json!({
                 "tg_message_id": message.id(),
-                "chat_type": Self::chat_kind(&chat),
+                "chat_type": chat_type,
             })),
         };
 
@@ -319,13 +324,14 @@ struct GrammersTgRuntime {
     owner_did: DID,
     bot_account_id: String,
     client: Client,
-    session_path: PathBuf,
+    sender_pool_handle: SenderPoolHandle,
+    sender_pool_task: JoinHandle<()>,
 }
 
 pub struct GrammersTgGateway {
     cfg: GrammersTgGatewayConfig,
     runtimes: Mutex<HashMap<String, GrammersTgRuntime>>,
-    dispatcher: Mutex<Option<Arc<dyn MsgCenterHandler>>>,
+    dispatcher: Arc<Mutex<Option<Arc<dyn MsgCenterHandler>>>>,
     ingress_tasks: Mutex<HashMap<String, JoinHandle<()>>>,
 }
 
@@ -334,7 +340,7 @@ impl GrammersTgGateway {
         Self {
             cfg,
             runtimes: Mutex::new(HashMap::new()),
-            dispatcher: Mutex::new(None),
+            dispatcher: Arc::new(Mutex::new(None)),
             ingress_tasks: Mutex::new(HashMap::new()),
         }
     }
@@ -467,23 +473,28 @@ impl GrammersTgGateway {
         Some(value.to_string())
     }
 
-    fn chat_account_id(chat: &TgChat) -> String {
-        format!("{}:{}", TgMessageConverter::chat_kind(chat), chat.id())
+    fn chat_account_id(chat: &TgPeer) -> String {
+        format!(
+            "{}:{}",
+            TgMessageConverter::chat_kind(chat),
+            chat.id().bot_api_dialog_id()
+        )
     }
 
     fn profile_hint_from_chat(
-        chat: &TgChat,
+        chat: &TgPeer,
         bot_account_id: &str,
         tunnel_did: Option<&DID>,
     ) -> Value {
+        let chat_id = chat.id().bot_api_dialog_id();
         let username = chat.username().map(|value| value.to_string());
         let display_id = username
             .as_ref()
             .map(|value| format!("@{}", value))
-            .unwrap_or_else(|| chat.id().to_string());
+            .unwrap_or_else(|| chat_id.to_string());
         json!({
             "chat_type": TgMessageConverter::chat_kind(chat),
-            "chat_id": chat.id(),
+            "chat_id": chat_id,
             "name": chat.name(),
             "username": username,
             "display_id": display_id,
@@ -495,7 +506,7 @@ impl GrammersTgGateway {
     async fn resolve_chat_did(
         dispatcher: &Arc<dyn MsgCenterHandler>,
         owner_scope: Option<DID>,
-        chat: &TgChat,
+        chat: &TgPeer,
         bot_account_id: &str,
         tunnel_did: Option<&DID>,
     ) -> AnyResult<(DID, String)> {
@@ -527,8 +538,19 @@ impl GrammersTgGateway {
             return Ok(());
         }
 
-        let chat = message.chat();
-        let sender_chat = message.sender().unwrap_or_else(|| chat.clone());
+        let chat = match message.peer() {
+            Ok(chat) => chat.clone(),
+            Err(peer_ref) => {
+                warn!(
+                    "skip telegram message with unresolved chat peer: owner={}, bot={}, chat_id={}",
+                    owner_did.to_string(),
+                    bot_account_id,
+                    peer_ref.id.bot_api_dialog_id()
+                );
+                return Ok(());
+            }
+        };
+        let sender_chat = message.sender().cloned().unwrap_or_else(|| chat.clone());
         let owner_scope = Some(owner_did.clone());
 
         let (sender_did, sender_account_id) = Self::resolve_chat_did(
@@ -543,6 +565,7 @@ impl GrammersTgGateway {
             owner_did,
             sender_did,
             sender_account_id,
+            &chat,
             &sender_chat,
             &bot_account_id,
             tunnel_did,
@@ -561,95 +584,78 @@ impl GrammersTgGateway {
         Ok(())
     }
 
-    async fn rebuild_ingress_tasks(&self) {
-        let mut tasks_guard = self.ingress_tasks.lock().await;
-        for (_, task) in tasks_guard.drain() {
-            task.abort();
-        }
-        drop(tasks_guard);
-
-        let dispatcher = {
-            let guard = self.dispatcher.lock().await;
-            guard.clone()
-        };
-        let Some(dispatcher) = dispatcher else {
-            return;
-        };
-
-        let runtimes: Vec<(String, DID, String, Client)> = {
-            let guard = self.runtimes.lock().await;
-            guard
-                .iter()
-                .map(|(owner_key, runtime)| {
-                    (
-                        owner_key.clone(),
-                        runtime.owner_did.clone(),
-                        runtime.bot_account_id.clone(),
-                        runtime.client.clone(),
-                    )
-                })
-                .collect()
-        };
-
-        let mut rebuilt = HashMap::new();
-        for (owner_key, owner_did, bot_account_id, client) in runtimes {
-            let dispatcher = dispatcher.clone();
-            let tunnel_did = self.cfg.tunnel_did.clone();
-            let task = tokio::spawn(async move {
-                loop {
-                    match client.next_update().await {
-                        Ok(Update::NewMessage(message)) => {
-                            if let Err(error) = Self::dispatch_incoming_message(
-                                dispatcher.clone(),
-                                owner_did.clone(),
-                                bot_account_id.clone(),
-                                tunnel_did.clone(),
-                                message,
-                            )
-                            .await
-                            {
-                                warn!(
-                                    "telegram ingress dispatch failed, owner={}, bot={}, error={}",
-                                    owner_did.to_string(),
-                                    bot_account_id,
-                                    error
-                                );
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(error) => {
+    fn spawn_ingress_task(
+        &self,
+        owner_did: DID,
+        bot_account_id: String,
+        client: Client,
+        updates_rx: UnboundedReceiver<UpdatesLike>,
+    ) -> JoinHandle<()> {
+        let dispatcher = self.dispatcher.clone();
+        let tunnel_did = self.cfg.tunnel_did.clone();
+        tokio::spawn(async move {
+            let mut updates = client.stream_updates(
+                updates_rx,
+                UpdatesConfiguration {
+                    catch_up: true,
+                    ..Default::default()
+                },
+            );
+            loop {
+                match updates.next().await {
+                    Ok(Update::NewMessage(message)) => {
+                        let dispatcher = {
+                            let guard = dispatcher.lock().await;
+                            guard.clone()
+                        };
+                        let Some(dispatcher) = dispatcher else {
+                            continue;
+                        };
+                        if let Err(error) = Self::dispatch_incoming_message(
+                            dispatcher,
+                            owner_did.clone(),
+                            bot_account_id.clone(),
+                            tunnel_did.clone(),
+                            message,
+                        )
+                        .await
+                        {
                             warn!(
-                                "telegram update loop failed, owner={}, bot={}, error={}",
+                                "telegram ingress dispatch failed, owner={}, bot={}, error={}",
                                 owner_did.to_string(),
                                 bot_account_id,
                                 error
                             );
-                            tokio::time::sleep(Duration::from_millis(800)).await;
                         }
                     }
+                    Ok(_) => {}
+                    Err(grammers_client::InvocationError::Dropped) => break,
+                    Err(error) => {
+                        warn!(
+                            "telegram update loop failed, owner={}, bot={}, error={}",
+                            owner_did.to_string(),
+                            bot_account_id,
+                            error
+                        );
+                        tokio::time::sleep(Duration::from_millis(800)).await;
+                    }
                 }
-            });
-            rebuilt.insert(owner_key, task);
-        }
-
-        let mut tasks_guard = self.ingress_tasks.lock().await;
-        *tasks_guard = rebuilt;
+            }
+        })
     }
 
-    fn packed_chat_from_dialog_id(dialog_id: i64) -> AnyResult<PackedChat> {
+    fn peer_ref_from_dialog_id(dialog_id: i64) -> AnyResult<PeerRef> {
         if (1..=0xFFFF_FFFFFF).contains(&dialog_id) {
-            return Ok(PackedChat {
-                ty: PackedType::User,
-                id: dialog_id,
-                access_hash: None,
+            return Ok(PeerRef {
+                id: PeerId::user(dialog_id),
+                auth: PeerAuth::default(),
             });
         }
 
         if (-999_999_999_999..=-1).contains(&dialog_id) {
-            return Ok(PackedChat {
-                ty: PackedType::Chat,
-                id: -dialog_id,
-                access_hash: None,
+            return Ok(PeerRef {
+                id: PeerId::chat(-dialog_id),
+                auth: PeerAuth::default(),
             });
         }
 
@@ -657,24 +663,19 @@ impl GrammersTgGateway {
             || (-4_000_000_000_000..=-2_002_147_483_649).contains(&dialog_id)
         {
             let channel_id = -dialog_id - 1_000_000_000_000;
-            return Ok(PackedChat {
-                ty: PackedType::Broadcast,
-                id: channel_id,
-                access_hash: None,
+            return Ok(PeerRef {
+                id: PeerId::channel(channel_id),
+                auth: PeerAuth::default(),
             });
         }
 
         bail!("invalid telegram dialog id {}", dialog_id)
     }
 
-    async fn resolve_packed_chat(client: &Client, chat_id: &str) -> AnyResult<PackedChat> {
+    async fn resolve_chat_peer(client: &Client, chat_id: &str) -> AnyResult<PeerRef> {
         let trimmed = chat_id.trim();
         if trimmed.is_empty() {
             bail!("empty telegram chat_id");
-        }
-
-        if let Ok(packed) = PackedChat::from_hex(trimmed) {
-            return Ok(packed);
         }
 
         if let Some(username) = Self::username_from_chat_id(trimmed) {
@@ -682,20 +683,20 @@ impl GrammersTgGateway {
                 .resolve_username(&username)
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("telegram username {} not found", username))?;
-            return Ok(chat.pack());
+            return Ok(PeerRef::from(chat));
         }
 
         let dialog_id = trimmed
             .parse::<i64>()
             .with_context(|| format!("invalid telegram chat_id {}", chat_id))?;
-        Self::packed_chat_from_dialog_id(dialog_id)
+        Self::peer_ref_from_dialog_id(dialog_id)
     }
 
     async fn start_binding(
         &self,
         binding: &TgBotBinding,
         token: &str,
-    ) -> AnyResult<GrammersTgRuntime> {
+    ) -> AnyResult<(GrammersTgRuntime, UnboundedReceiver<UpdatesLike>)> {
         std::fs::create_dir_all(&self.cfg.session_dir).with_context(|| {
             format!(
                 "failed to create telegram session dir {}",
@@ -703,69 +704,64 @@ impl GrammersTgGateway {
             )
         })?;
         let session_path = self.cfg.session_dir.join(Self::session_file_name(binding));
-
-        let client = Client::connect(Config {
-            session: Session::load_file_or_create(&session_path).with_context(|| {
-                format!(
-                    "failed to open/create telegram session {}",
-                    session_path.display()
-                )
-            })?,
-            api_id: self.cfg.api_id,
-            api_hash: self.cfg.api_hash.clone(),
-            params: InitParams {
-                catch_up: false,
-                ..Default::default()
-            },
-        })
-        .await?;
+        let session = Arc::new(SqliteSession::open(&session_path).with_context(|| {
+            format!(
+                "failed to open/create telegram session {}",
+                session_path.display()
+            )
+        })?);
+        let pool = SenderPool::new(session, self.cfg.api_id);
+        let client = Client::new(&pool);
+        let SenderPool {
+            runner,
+            updates,
+            handle,
+        } = pool;
+        let sender_pool_task = tokio::spawn(runner.run());
 
         if !client.is_authorized().await? {
-            client.bot_sign_in(token).await.with_context(|| {
+            client
+                .bot_sign_in(token, &self.cfg.api_hash)
+                .await
+                .with_context(|| {
                 format!(
                     "telegram bot sign-in failed for owner {} (bot account {})",
                     binding.owner_did.to_string(),
                     binding.bot_account_id
                 )
             })?;
-            client
-                .session()
-                .save_to_file(&session_path)
-                .with_context(|| {
-                    format!(
-                        "failed to persist telegram session {}",
-                        session_path.display()
-                    )
-                })?;
         }
 
         let me = client.get_me().await?;
         info!(
             "telegram tunnel bot ready: owner={}, bot_id={}, username={:?}",
             binding.owner_did.to_string(),
-            me.id(),
+            me.bare_id(),
             me.username()
         );
 
-        Ok(GrammersTgRuntime {
-            owner_did: binding.owner_did.clone(),
-            bot_account_id: binding.bot_account_id.clone(),
-            client,
-            session_path,
-        })
+        Ok((
+            GrammersTgRuntime {
+                owner_did: binding.owner_did.clone(),
+                bot_account_id: binding.bot_account_id.clone(),
+                client,
+                sender_pool_handle: handle,
+                sender_pool_task,
+            },
+            updates,
+        ))
     }
 
-    fn stop_runtime(runtime: GrammersTgRuntime) -> AnyResult<()> {
-        runtime
-            .client
-            .session()
-            .save_to_file(&runtime.session_path)
-            .with_context(|| {
-                format!(
-                    "failed to save telegram session {}",
-                    runtime.session_path.display()
-                )
-            })?;
+    async fn stop_runtime(runtime: GrammersTgRuntime) -> AnyResult<()> {
+        runtime.sender_pool_handle.quit();
+        if let Err(error) = runtime.sender_pool_task.await {
+            warn!(
+                "telegram sender pool join failed, owner={}, bot={}, error={}",
+                runtime.owner_did.to_string(),
+                runtime.bot_account_id,
+                error
+            );
+        }
         Ok(())
     }
 }
@@ -786,25 +782,40 @@ impl TgGateway for GrammersTgGateway {
         }
 
         let mut started = HashMap::new();
+        let mut started_tasks: HashMap<String, JoinHandle<()>> = HashMap::new();
         for binding in bindings {
             binding.validate()?;
             let token = Self::resolve_bot_token(binding)?;
-            let runtime = match self.start_binding(binding, &token).await {
+            let (runtime, updates_rx) = match self.start_binding(binding, &token).await {
                 Ok(runtime) => runtime,
                 Err(error) => {
+                    for (_, task) in started_tasks.drain() {
+                        task.abort();
+                    }
                     for (_, runtime) in started.drain() {
-                        let _ = Self::stop_runtime(runtime);
+                        let _ = Self::stop_runtime(runtime).await;
                     }
                     return Err(error);
                 }
             };
-            started.insert(binding.owner_did.to_string(), runtime);
+            let owner_key = binding.owner_did.to_string();
+            let task = self.spawn_ingress_task(
+                binding.owner_did.clone(),
+                binding.bot_account_id.clone(),
+                runtime.client.clone(),
+                updates_rx,
+            );
+            started.insert(owner_key.clone(), runtime);
+            started_tasks.insert(owner_key, task);
         }
 
         let mut guard = self.runtimes.lock().await;
         if !guard.is_empty() {
+            for (_, task) in started_tasks.drain() {
+                task.abort();
+            }
             for (_, runtime) in started.drain() {
-                let _ = Self::stop_runtime(runtime);
+                let _ = Self::stop_runtime(runtime).await;
             }
             return Ok(());
         }
@@ -812,7 +823,8 @@ impl TgGateway for GrammersTgGateway {
         *guard = started;
         drop(guard);
 
-        self.rebuild_ingress_tasks().await;
+        let mut task_guard = self.ingress_tasks.lock().await;
+        *task_guard = started_tasks;
         Ok(())
     }
 
@@ -821,14 +833,19 @@ impl TgGateway for GrammersTgGateway {
             let mut dispatcher = self.dispatcher.lock().await;
             *dispatcher = None;
         }
-        self.rebuild_ingress_tasks().await;
+        {
+            let mut tasks_guard = self.ingress_tasks.lock().await;
+            for (_, task) in tasks_guard.drain() {
+                task.abort();
+            }
+        }
 
         let mut guard = self.runtimes.lock().await;
         let runtimes: Vec<_> = guard.drain().map(|(_, runtime)| runtime).collect();
         drop(guard);
 
         for runtime in runtimes {
-            let _ = Self::stop_runtime(runtime);
+            let _ = Self::stop_runtime(runtime).await;
         }
         Ok(())
     }
@@ -861,7 +878,7 @@ impl TgGateway for GrammersTgGateway {
                 envelope.record_id
             )
         })?;
-        let chat = Self::resolve_packed_chat(&client, chat_id).await?;
+        let chat = Self::resolve_chat_peer(&client, chat_id).await?;
         let text = Self::resolve_text(&envelope);
 
         let sent = client.send_message(chat, text).await?;
@@ -878,7 +895,6 @@ impl TgGateway for GrammersTgGateway {
             let mut guard = self.dispatcher.lock().await;
             *guard = dispatcher;
         }
-        self.rebuild_ingress_tasks().await;
         Ok(())
     }
 }
