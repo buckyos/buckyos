@@ -4,9 +4,13 @@ import { Link, useNavigate } from 'react-router-dom'
 
 import {
   fetchAppsList,
+  fetchGatewayFile,
+  fetchGatewayOverview,
   fetchLayout,
   fetchSystemMetrics,
+  fetchSystemOverview,
   fetchSystemStatus,
+  fetchZoneOverview,
   mockDappStoreData,
   mockLayoutData,
   mockSystemMetrics,
@@ -14,6 +18,10 @@ import {
   querySystemLogs,
 } from '@/api'
 import { NetworkTrendChart, ResourceTrendChart } from '../components/MonitorTrendCharts'
+import StorageDiskStatusPanel from '../components/StorageDiskStatusPanel'
+import StorageHealthSignalsPanel from '../components/StorageHealthSignalsPanel'
+import SystemConfigTreeViewer from '../components/SystemConfigTreeViewer'
+import UserPatternAvatar from '../components/UserPatternAvatar'
 import usePrefersReducedMotion from '../charts/usePrefersReducedMotion'
 import Icon from '../icons'
 
@@ -33,6 +41,23 @@ type DesktopWindow = {
   minimized: boolean
 }
 
+type AccessModePill = {
+  label: string
+  tone: string
+  dot: string
+  description: string
+  host: string
+}
+
+type SettingsMenuKey =
+  | 'general'
+  | 'zone-manager'
+  | 'sys-manager'
+  | 'gateway-manager'
+  | 'storage'
+  | 'permissions'
+  | 'software-update'
+
 type ResizeEdge = 'top' | 'right' | 'bottom' | 'left' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max)
@@ -49,43 +74,22 @@ const formatBytes = (value: number) => {
 
 const formatRate = (value: number) => `${formatBytes(value)}/s`
 
+const formatUptime = (seconds: number) => {
+  const safeSeconds = Math.max(0, Math.floor(seconds))
+  const days = Math.floor(safeSeconds / 86400)
+  const hours = Math.floor((safeSeconds % 86400) / 3600)
+  const minutes = Math.floor((safeSeconds % 3600) / 60)
+  const parts: string[] = []
+  if (days) parts.push(`${days}d`)
+  if (hours || days) parts.push(`${hours}h`)
+  parts.push(`${minutes}m`)
+  return parts.join(' ')
+}
+
 const WINDOW_MARGIN = 24
 const WINDOW_TOP_MARGIN = 80
 const MIN_WINDOW_WIDTH = 420
 const MIN_WINDOW_HEIGHT = 280
-
-const SETTINGS_MODULE_PREVIEW = [
-  {
-    name: 'General',
-    detail: 'Node identity, locale, and host naming baseline.',
-    state: 'ready' as const,
-  },
-  {
-    name: 'Security',
-    detail: 'MFA policy, session timeout, and trusted devices.',
-    state: 'review' as const,
-  },
-  {
-    name: 'Networking',
-    detail: 'SN endpoints, DNS fallback, and gateway behavior.',
-    state: 'ready' as const,
-  },
-  {
-    name: 'Storage',
-    detail: 'Snapshot cadence, retention, and replication policy.',
-    state: 'review' as const,
-  },
-  {
-    name: 'Notifications',
-    detail: 'Alert channels and severity routing matrix.',
-    state: 'draft' as const,
-  },
-  {
-    name: 'Integrations',
-    detail: 'Repo hooks, observability export, and webhook secrets.',
-    state: 'ready' as const,
-  },
-]
 
 const USER_TEAM_PREVIEW = [
   {
@@ -118,6 +122,23 @@ const USER_TEAM_PREVIEW = [
   },
 ]
 
+const SETTINGS_WINDOW_MENU: { id: SettingsMenuKey; label: string; description: string }[] = [
+  { id: 'general', label: 'General', description: 'Identity and basic preferences' },
+  { id: 'zone-manager', label: 'Zone Manager', description: 'Zone naming and topology' },
+  { id: 'sys-manager', label: 'Sys Manager', description: 'Runtime and service health' },
+  { id: 'gateway-manager', label: 'Gateway Manager', description: 'Ingress and access mode' },
+  { id: 'storage', label: 'Storage', description: 'Capacity and disk health' },
+  { id: 'permissions', label: 'Permissions', description: 'Role and policy baseline' },
+  { id: 'software-update', label: 'Software Update', description: 'Version and release channel' },
+]
+
+const SETTINGS_POLICY_BASELINE = [
+  'MFA required for Owner/Admin roles',
+  'Session timeout at 12h idle window',
+  'Critical alerts routed to admin channel',
+  'Nightly backup validation at 04:00',
+]
+
 const DesktopHomePage = () => {
   const navigate = useNavigate()
   const navigateTo = useCallback((to: string) => navigate(to), [navigate])
@@ -126,10 +147,16 @@ const DesktopHomePage = () => {
   const [mode, setMode] = useState<DesktopMode>('desktop')
   const [layout, setLayout] = useState<RootLayoutData>(mockLayoutData)
   const [layoutError, setLayoutError] = useState<string | null>(null)
+  const [overview, setOverview] = useState<SystemOverview | null>(null)
+  const [overviewError, setOverviewError] = useState<string | null>(null)
   const [metrics, setMetrics] = useState<SystemMetrics>(mockSystemMetrics)
   const [status, setStatus] = useState<SystemStatusResponse>(mockSystemStatus)
   const [apps, setApps] = useState<DappCard[]>([])
   const [appsError, setAppsError] = useState<string | null>(null)
+  const [zoneOverview, setZoneOverview] = useState<ZoneOverview | null>(null)
+  const [zoneError, setZoneError] = useState<string | null>(null)
+  const [gatewayOverview, setGatewayOverview] = useState<GatewayOverview | null>(null)
+  const [gatewayError, setGatewayError] = useState<string | null>(null)
   const [logPeek, setLogPeek] = useState<SystemLogEntry[] | null>(null)
   const [logPeekError, setLogPeekError] = useState<string | null>(null)
 
@@ -213,6 +240,33 @@ const DesktopHomePage = () => {
 
   useEffect(() => {
     let cancelled = false
+    const loadOverview = async () => {
+      const { data, error } = await fetchSystemOverview()
+      if (cancelled) return
+      setOverview(data)
+      if (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : typeof error === 'string'
+              ? error
+              : 'System overview request failed'
+        setOverviewError(message)
+      } else {
+        setOverviewError(null)
+      }
+    }
+
+    loadOverview()
+    const intervalId = window.setInterval(loadOverview, 30000)
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
     const loadStatus = async () => {
       const { data } = await fetchSystemStatus()
       if (cancelled || !data) return
@@ -242,6 +296,60 @@ const DesktopHomePage = () => {
     loadApps()
     return () => {
       cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const loadZone = async () => {
+      const { data, error } = await fetchZoneOverview()
+      if (cancelled) return
+      setZoneOverview(data)
+      if (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : typeof error === 'string'
+              ? error
+              : 'Zone config request failed'
+        setZoneError(message)
+      } else {
+        setZoneError(null)
+      }
+    }
+
+    loadZone()
+    const intervalId = window.setInterval(loadZone, 30000)
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const loadGateway = async () => {
+      const { data, error } = await fetchGatewayOverview()
+      if (cancelled) return
+      setGatewayOverview(data)
+      if (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : typeof error === 'string'
+              ? error
+              : 'Gateway config request failed'
+        setGatewayError(message)
+      } else {
+        setGatewayError(null)
+      }
+    }
+
+    loadGateway()
+    const intervalId = window.setInterval(loadGateway, 30000)
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
     }
   }, [])
 
@@ -623,6 +731,54 @@ const DesktopHomePage = () => {
     }
   }, [status.state])
 
+  const accessModePill = useMemo<AccessModePill>(() => {
+    if (typeof window === 'undefined') {
+      return {
+        label: 'Direct mode',
+        tone: 'bg-white/15 text-white ring-white/20',
+        dot: 'bg-white/80',
+        description: 'Direct access to local gateway endpoint.',
+        host: 'unknown',
+      }
+    }
+
+    const hostname = window.location.hostname.toLowerCase()
+    const host = window.location.host
+    const isIPv4 = /^(?:\d{1,3}\.){3}\d{1,3}$/.test(hostname)
+    const isIPv6 = hostname.includes(':')
+
+    if (isIPv4 || isIPv6) {
+      return {
+        label: 'Direct mode',
+        tone: 'bg-sky-500/20 text-sky-100 ring-sky-300/40',
+        dot: 'bg-sky-300',
+        description:
+          'Access through IP/local entry. Requests go straight to this node gateway with lower latency. Best for LAN and local debugging.',
+        host,
+      }
+    }
+
+    if (hostname.includes('web3.buckyos.ai')) {
+      return {
+        label: 'SN mode',
+        tone: 'bg-emerald-500/20 text-emerald-100 ring-emerald-300/40',
+        dot: 'bg-emerald-300',
+        description:
+          'Access through web3 SN domain. Traffic goes via SN/DDNS mapping and tunnel route, suitable for remote access with public TLS.',
+        host,
+      }
+    }
+
+    return {
+      label: 'Direct mode',
+      tone: 'bg-white/15 text-white ring-white/20',
+      dot: 'bg-white/80',
+      description:
+        'Access through non-SN hostname. Requests are handled as direct gateway entry on this node.',
+      host,
+    }
+  }, [])
+
   const desktopApps = useMemo(
     () =>
       [
@@ -687,9 +843,15 @@ const DesktopHomePage = () => {
     () => ({
       metrics,
       status,
+      overview,
+      overviewError,
       layout,
       apps,
       appsError,
+      zoneOverview,
+      zoneError,
+      gatewayOverview,
+      gatewayError,
       logPeek,
       logPeekError,
       cpuPercent,
@@ -702,6 +864,12 @@ const DesktopHomePage = () => {
     [
       apps,
       appsError,
+      overview,
+      overviewError,
+      zoneError,
+      zoneOverview,
+      gatewayError,
+      gatewayOverview,
       cpuPercent,
       diskPercent,
       layout,
@@ -740,10 +908,10 @@ const DesktopHomePage = () => {
 
       <DesktopHeader
         layoutError={layoutError}
-        profileAvatar={layout.profile.avatar}
         profileName={layout.profile.name}
         profileEmail={layout.profile.email}
         systemPill={systemPill}
+        accessModePill={accessModePill}
         prefersReducedMotion={prefersReducedMotion}
         rxRate={rxRate}
         txRate={txRate}
@@ -793,10 +961,10 @@ const DesktopHomePage = () => {
 
 type DesktopHeaderProps = {
   layoutError: string | null
-  profileAvatar: string
   profileName: string
   profileEmail: string
   systemPill: { label: string; tone: string; dot: string }
+  accessModePill: AccessModePill
   prefersReducedMotion: boolean
   rxRate: number
   txRate: number
@@ -806,10 +974,10 @@ type DesktopHeaderProps = {
 const DesktopHeader = memo((props: DesktopHeaderProps) => {
   const {
     layoutError,
-    profileAvatar,
     profileName,
     profileEmail,
     systemPill,
+    accessModePill,
     prefersReducedMotion,
     rxRate,
     txRate,
@@ -825,7 +993,7 @@ const DesktopHeader = memo((props: DesktopHeaderProps) => {
           </div>
           <div className="min-w-0 leading-tight">
             <p className="truncate font-semibold tracking-tight">BuckyOS</p>
-            <p className="truncate text-xs text-white/70">NAS Control Desktop</p>
+            <p className="truncate text-xs text-white/70">Control Desktop</p>
           </div>
           <div
             className={`ml-2 hidden items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ring-1 md:inline-flex ${systemPill.tone}`}
@@ -837,6 +1005,17 @@ const DesktopHeader = memo((props: DesktopHeaderProps) => {
               aria-hidden
             />
             {systemPill.label}
+          </div>
+          <div
+            className={`group relative hidden items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ring-1 lg:inline-flex ${accessModePill.tone}`}
+            title={accessModePill.description}
+          >
+            <span className={`inline-flex size-2 rounded-full ${accessModePill.dot}`} aria-hidden />
+            {accessModePill.label}
+            <div className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-20 w-80 -translate-x-1/2 rounded-xl border border-white/20 bg-slate-900/90 px-3 py-2 text-left text-[11px] font-normal text-white/90 opacity-0 shadow-2xl transition-opacity duration-150 group-hover:opacity-100">
+              <p>{accessModePill.description}</p>
+              <p className="mt-1 text-white/65">Current host: {accessModePill.host}</p>
+            </div>
           </div>
         </div>
 
@@ -872,11 +1051,7 @@ const DesktopHeader = memo((props: DesktopHeaderProps) => {
           </div>
 
           <div className="flex items-center gap-3">
-            <img
-              src={profileAvatar}
-              alt={`${profileName} avatar`}
-              className="size-8 rounded-full border border-white/15 object-cover"
-            />
+            <UserPatternAvatar name={profileName} className="size-8" />
             <div className="hidden min-w-0 leading-tight sm:block">
               <p className="truncate text-sm font-semibold">{profileName}</p>
               <p className="truncate text-xs text-white/70">{profileEmail}</p>
@@ -1031,7 +1206,7 @@ const DesktopView = memo((props: DesktopViewProps) => {
   return (
     <section className="relative min-h-screen px-5 pb-28 pt-28 sm:px-6 md:px-8">
       <div className="mx-auto grid max-w-7xl grid-cols-1 gap-10 md:grid-cols-[1fr_320px]">
-        <div className="grid grid-cols-3 content-start justify-items-center gap-x-5 gap-y-4 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10">
+        <div className="grid grid-cols-3 content-start justify-items-center gap-x-6 gap-y-5 sm:grid-cols-4 md:grid-cols-6 md:gap-x-7 md:gap-y-6 lg:grid-cols-8 xl:grid-cols-10">
           {desktopApps.map((app, index) => (
             <button
               key={app.id}
@@ -1112,9 +1287,15 @@ DesktopView.displayName = 'DesktopView'
 type WindowData = {
   metrics: SystemMetrics
   status: SystemStatusResponse
+  overview: SystemOverview | null
+  overviewError: string | null
   layout: RootLayoutData
   apps: DappCard[]
   appsError: string | null
+  zoneOverview: ZoneOverview | null
+  zoneError: string | null
+  gatewayOverview: GatewayOverview | null
+  gatewayError: string | null
   logPeek: SystemLogEntry[] | null
   logPeekError: string | null
   cpuPercent: number
@@ -1278,6 +1459,7 @@ const WindowFrame = memo((props: WindowFrameProps) => {
     closeWindow,
     toggleMinimize,
   } = props
+  const panelRef = useRef<HTMLDivElement | null>(null)
 
   const resizeHandles: { edge: ResizeEdge; className: string }[] = [
     { edge: 'top', className: 'left-3 right-3 top-0 h-2 cursor-n-resize' },
@@ -1289,6 +1471,41 @@ const WindowFrame = memo((props: WindowFrameProps) => {
     { edge: 'bottom-left', className: 'bottom-0 left-0 size-3 cursor-sw-resize' },
     { edge: 'bottom-right', className: 'bottom-0 right-0 size-3 cursor-se-resize' },
   ]
+
+  useEffect(() => {
+    const panel = panelRef.current
+    if (!panel || typeof window === 'undefined') {
+      return
+    }
+
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      return
+    }
+
+    const animation = panel.animate(
+      [
+        {
+          opacity: 0,
+          transform: 'translateY(10px) scale(0.985)',
+          filter: 'saturate(0.92)',
+        },
+        {
+          opacity: 1,
+          transform: 'translateY(0) scale(1)',
+          filter: 'saturate(1)',
+        },
+      ],
+      {
+        duration: 260,
+        easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
+        fill: 'both',
+      },
+    )
+
+    return () => {
+      animation.cancel()
+    }
+  }, [])
 
   return (
     <div
@@ -1304,7 +1521,10 @@ const WindowFrame = memo((props: WindowFrameProps) => {
       }}
       onPointerDown={() => bringToFront(win.id)}
     >
-      <div className="flex h-full flex-col overflow-hidden rounded-3xl border border-white/10 bg-white/85 text-[var(--cp-ink)] shadow-2xl shadow-black/40 backdrop-blur">
+      <div
+        ref={panelRef}
+        className="flex h-full flex-col overflow-hidden rounded-3xl border border-white/10 bg-white/85 text-[var(--cp-ink)] shadow-2xl shadow-black/40 backdrop-blur"
+      >
         <div
           className="flex items-center justify-between gap-3 border-b border-[rgba(215,225,223,0.65)] bg-white/70 px-4 py-3"
           onPointerDown={(event) => startWindowDrag(win.id, win.x, win.y, win.width, win.height, event)}
@@ -1389,8 +1609,14 @@ const WindowBody = memo((props: WindowBodyProps) => {
   const {
     metrics,
     status,
+    overview,
+    overviewError,
     layout,
     apps,
+    zoneOverview,
+    zoneError,
+    gatewayOverview,
+    gatewayError,
     logPeek,
     logPeekError,
     cpuPercent,
@@ -1400,6 +1626,63 @@ const WindowBody = memo((props: WindowBodyProps) => {
     txRate,
     navigateTo,
   } = data
+  const [settingsMenu, setSettingsMenu] = useState<SettingsMenuKey>('general')
+  const [expandedGatewayFile, setExpandedGatewayFile] = useState<string | null>(null)
+  const [gatewayFileCache, setGatewayFileCache] = useState<Record<string, GatewayFileContent>>({})
+  const [gatewayFileLoadingName, setGatewayFileLoadingName] = useState<string | null>(null)
+  const [gatewayFileErrors, setGatewayFileErrors] = useState<Record<string, string>>({})
+
+  const toggleGatewayFile = useCallback((name: string) => {
+    setExpandedGatewayFile((prev) => (prev === name ? null : name))
+  }, [])
+
+  useEffect(() => {
+    if (!expandedGatewayFile || gatewayFileCache[expandedGatewayFile]) {
+      return
+    }
+
+    let cancelled = false
+
+    const load = async () => {
+      setGatewayFileLoadingName(expandedGatewayFile)
+      setGatewayFileErrors((prev) => {
+        const next = { ...prev }
+        delete next[expandedGatewayFile]
+        return next
+      })
+
+      const { data, error } = await fetchGatewayFile(expandedGatewayFile)
+      if (cancelled) {
+        return
+      }
+
+      if (data) {
+        setGatewayFileCache((prev) => ({
+          ...prev,
+          [expandedGatewayFile]: data,
+        }))
+      } else {
+        const message =
+          error instanceof Error
+            ? error.message
+            : typeof error === 'string'
+              ? error
+              : `Failed to load ${expandedGatewayFile}`
+        setGatewayFileErrors((prev) => ({
+          ...prev,
+          [expandedGatewayFile]: message,
+        }))
+      }
+
+      setGatewayFileLoadingName((current) => (current === expandedGatewayFile ? null : current))
+    }
+
+    load()
+
+    return () => {
+      cancelled = true
+    }
+  }, [expandedGatewayFile, gatewayFileCache])
 
   if (id === 'monitor') {
     const resourceTimeline = (
@@ -1570,59 +1853,58 @@ const WindowBody = memo((props: WindowBodyProps) => {
   }
 
   if (id === 'storage') {
+    const totalGb = metrics.disk?.totalGb ?? 0
+    const usedGb = metrics.disk?.usedGb ?? 0
+    const freeGb = Math.max(0, totalGb - usedGb)
+
     return (
       <div className="space-y-4">
         <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-          <div className="flex items-center justify-between">
-            <p className="text-sm font-semibold text-[var(--cp-ink)]">Storage usage</p>
-            <span className="rounded-full bg-[var(--cp-surface-muted)] px-3 py-1 text-xs font-semibold text-[var(--cp-ink)]">
-              {metrics.disk?.usedGb?.toFixed(0) ?? '-'} / {metrics.disk?.totalGb?.toFixed(0) ?? '-'} GB
-            </span>
+          <div>
+            <div>
+              <p className="text-sm font-semibold text-[var(--cp-ink)]">Storage center preview</p>
+              <p className="text-xs text-[var(--cp-muted)]">Unified disk status with system telemetry.</p>
+            </div>
           </div>
-          <div className="mt-3 h-2 overflow-hidden rounded-full bg-[var(--cp-surface-muted)]">
-            <div
-              className="h-full rounded-full bg-[var(--cp-primary)]"
-              style={{ width: `${clamp(diskPercent, 0, 100)}%` }}
+          <div className="mt-3 grid gap-2 sm:grid-cols-3">
+            <div className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2">
+              <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Total</p>
+              <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{totalGb.toFixed(totalGb >= 100 ? 0 : 1)} GB</p>
+            </div>
+            <div className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2">
+              <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Used</p>
+              <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{usedGb.toFixed(usedGb >= 100 ? 0 : 1)} GB</p>
+            </div>
+            <div className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2">
+              <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Free</p>
+              <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{freeGb.toFixed(freeGb >= 100 ? 0 : 1)} GB</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+          <StorageDiskStatusPanel disk={metrics.disk} compact maxItems={5} />
+        </div>
+
+        <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">Health signals</p>
+          <div className="mt-3">
+            <StorageHealthSignalsPanel
+              warnings={status.warnings}
+              disks={metrics.disk?.disks}
+              compact
             />
           </div>
         </div>
+
         <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">Disks</p>
-          <div className="mt-3 space-y-3">
-            {(metrics.disk?.disks ?? []).slice(0, 5).map((disk) => {
-              const usagePercent = Math.round(
-                disk.usagePercent ?? (disk.totalGb ? (disk.usedGb / disk.totalGb) * 100 : 0),
-              )
-              return (
-                <div
-                  key={`${disk.mount}-${disk.label}`}
-                  className="rounded-2xl bg-[var(--cp-surface-muted)] px-4 py-3"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-semibold text-[var(--cp-ink)]">{disk.label}</p>
-                      <p className="truncate text-xs text-[var(--cp-muted)]">{disk.mount}</p>
-                    </div>
-                    <span className="text-xs font-semibold text-[var(--cp-ink)]">{usagePercent}%</span>
-                  </div>
-                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-white">
-                    <div
-                      className="h-full rounded-full bg-[var(--cp-primary)]"
-                      style={{ width: `${clamp(usagePercent, 0, 100)}%` }}
-                    />
-                  </div>
-                  <div className="mt-2 flex items-center justify-between text-[11px] text-[var(--cp-muted)]">
-                    <span>
-                      {disk.usedGb.toFixed(1)} / {disk.totalGb.toFixed(1)} GB
-                    </span>
-                    <span>{disk.fs ?? 'unknown'}</span>
-                  </div>
-                </div>
-              )
-            })}
-            {!(metrics.disk?.disks ?? []).length ? (
-              <p className="text-sm text-[var(--cp-muted)]">No disk details available.</p>
-            ) : null}
+          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">File manager handoff</p>
+          <p className="mt-2 text-sm text-[var(--cp-muted)]">
+            File browsing and operations are handled by a dedicated app. Use full storage view for
+            integration entry.
+          </p>
+          <div className="mt-3 rounded-xl border border-dashed border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2 text-xs text-[var(--cp-muted)]">
+            Planned: app deep-link and compact file manager quick preview.
           </div>
         </div>
       </div>
@@ -1630,84 +1912,471 @@ const WindowBody = memo((props: WindowBodyProps) => {
   }
 
   if (id === 'settings') {
-    return (
-      <div className="space-y-4">
-        <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-          <p className="text-sm font-semibold text-[var(--cp-ink)]">System details</p>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <div className="rounded-2xl bg-[var(--cp-surface-muted)] px-4 py-3">
-              <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">CPU</p>
-              <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{metrics.cpu?.model ?? 'Unknown CPU'}</p>
+    const selectedMenu = SETTINGS_WINDOW_MENU.find((menu) => menu.id === settingsMenu) ?? SETTINGS_WINDOW_MENU[0]
+    const currentHost = typeof window === 'undefined' ? 'unknown' : window.location.host
+    const storageUsed = metrics.disk?.usedGb ?? 0
+    const storageTotal = metrics.disk?.totalGb ?? 0
+    const snUrlDisplay = (zoneOverview?.sn.url ?? '').replace(/^https?:\/\//, '') || '-'
+    const uptimeLabel = formatUptime(overview?.uptime_seconds ?? metrics.uptimeSeconds ?? 0)
+
+    const contentByMenu: Record<SettingsMenuKey, React.ReactNode> = {
+      general: (
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">Identity and system release</p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Current user</p>
+                <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{layout.profile.name}</p>
+              </div>
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Device</p>
+                <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{layout.profile.email}</p>
+              </div>
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">System version</p>
+                <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{overview?.version ?? 'Beta1'}</p>
+              </div>
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">System</p>
+                <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{overview?.os ?? 'Linux'} · {overview?.model ?? '-'}</p>
+              </div>
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2 sm:col-span-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Uptime</p>
+                <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{uptimeLabel}</p>
+              </div>
             </div>
-            <div className="rounded-2xl bg-[var(--cp-surface-muted)] px-4 py-3">
-              <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Network</p>
-              <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">Down {formatRate(rxRate)}</p>
-              <p className="text-xs text-[var(--cp-muted)]">Up {formatRate(txRate)}</p>
-            </div>
+            {overviewError ? (
+              <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                System overview fallback is active: {overviewError}
+              </div>
+            ) : null}
           </div>
-          <div className="mt-3 rounded-2xl bg-[var(--cp-surface-muted)] px-4 py-3">
-            <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Identity</p>
-            <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{layout.profile.email}</p>
-            <p className="text-xs text-[var(--cp-muted)]">Policy owner: {layout.profile.name}</p>
+
+          <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">Hardware and runtime details</p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">CPU model</p>
+                <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{metrics.cpu?.model ?? 'Unknown CPU'}</p>
+              </div>
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">CPU cores</p>
+                <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{metrics.cpu?.cores ?? '-'}</p>
+              </div>
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Memory</p>
+                <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">
+                  {metrics.memory?.usedGb?.toFixed(1) ?? '-'} / {metrics.memory?.totalGb?.toFixed(1) ?? '-'} GB ({memoryPercent}%)
+                </p>
+              </div>
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Swap</p>
+                <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">
+                  {metrics.swap?.usedGb?.toFixed(1) ?? '-'} / {metrics.swap?.totalGb?.toFixed(1) ?? '-'} GB ({Math.round(metrics.swap?.usagePercent ?? 0)}%)
+                </p>
+              </div>
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Disk</p>
+                <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">
+                  {metrics.disk?.usedGb?.toFixed(1) ?? '-'} / {metrics.disk?.totalGb?.toFixed(1) ?? '-'} GB ({diskPercent}%)
+                </p>
+              </div>
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Network throughput</p>
+                <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">Down {formatRate(rxRate)} · Up {formatRate(txRate)}</p>
+              </div>
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Process count</p>
+                <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{metrics.processCount ?? '-'}</p>
+              </div>
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Load average</p>
+                <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">
+                  {metrics.loadAverage
+                    ? `${metrics.loadAverage.one.toFixed(2)} / ${metrics.loadAverage.five.toFixed(2)} / ${metrics.loadAverage.fifteen.toFixed(2)}`
+                    : '-'}
+                </p>
+              </div>
+            </div>
           </div>
         </div>
+      ),
+      'zone-manager': (
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">Zone identity (/opt/buckyos/etc)</p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Zone</p>
+                <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">
+                  {zoneOverview?.zone.name || layout.profile.name}
+                </p>
+              </div>
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Zone domain</p>
+                <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">
+                  {zoneOverview?.zone.domain || '-'}
+                </p>
+              </div>
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Zone DID</p>
+                <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.zone.did || '-'}</p>
+              </div>
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Owner DID</p>
+                <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.zone.ownerDid || '-'}</p>
+              </div>
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">User name</p>
+                <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.zone.userName || '-'}</p>
+              </div>
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Zone IAT</p>
+                <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">
+                  {zoneOverview?.zone.zoneIat ? String(zoneOverview.zone.zoneIat) : '-'}
+                </p>
+              </div>
+            </div>
 
-        <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-sm font-semibold text-[var(--cp-ink)]">Settings modules</p>
-            <button
-              type="button"
-              onClick={() => navigateTo('/settings')}
-              className="rounded-full bg-[var(--cp-primary)] px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-[var(--cp-primary-strong)]"
-            >
-              Open full settings
-            </button>
+            {zoneError ? (
+              <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                Zone config fallback is active: {zoneError}
+              </div>
+            ) : null}
           </div>
-          <div className="mt-3 space-y-2">
-            {SETTINGS_MODULE_PREVIEW.map((module) => (
-              <div
-                key={module.name}
-                className="rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-semibold text-[var(--cp-ink)]">{module.name}</p>
-                    <p className="text-xs text-[var(--cp-muted)]">{module.detail}</p>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+              <p className="text-sm font-semibold text-[var(--cp-ink)]">Device profile</p>
+              <div className="mt-3 space-y-2">
+                <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Device</p>
+                  <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.device.name || '-'}</p>
+                </div>
+                <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Device DID</p>
+                  <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.device.did || '-'}</p>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                    <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Type</p>
+                    <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.device.type || '-'}</p>
                   </div>
-                  <span
-                    className={`rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide ${
-                      module.state === 'ready'
-                        ? 'bg-emerald-100 text-emerald-700'
-                        : module.state === 'review'
-                          ? 'bg-amber-100 text-amber-700'
-                          : 'bg-slate-100 text-slate-700'
-                    }`}
-                  >
-                    {module.state}
-                  </span>
+                  <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                    <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Net ID</p>
+                    <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.device.netId || '-'}</p>
+                  </div>
                 </div>
               </div>
+            </div>
+
+            <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+              <p className="text-sm font-semibold text-[var(--cp-ink)]">SN profile</p>
+              <div className="mt-3 space-y-2">
+                <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">SN username</p>
+                  <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.sn.username || '-'}</p>
+                </div>
+                <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">SN URL</p>
+                  <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">{snUrlDisplay}</p>
+                </div>
+                <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Config dir</p>
+                  <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.etcDir || '/opt/buckyos/etc'}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">Zone-related files</p>
+            <div className="mt-3 space-y-2">
+              {(zoneOverview?.files ?? []).map((file) => (
+                <div
+                  key={file.path}
+                  className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2"
+                >
+                  <p className="text-xs font-semibold text-[var(--cp-ink)]">{file.name}</p>
+                  <p className="mt-1 break-all text-[11px] text-[var(--cp-muted)]">{file.path}</p>
+                  <p className="text-[11px] text-[var(--cp-muted)]">
+                    {file.exists ? `size ${file.sizeBytes} bytes` : 'missing file'}
+                    {file.modifiedAt ? ` · updated ${file.modifiedAt}` : ''}
+                  </p>
+                </div>
+              ))}
+              {!(zoneOverview?.files ?? []).length ? (
+                <p className="text-xs text-[var(--cp-muted)]">No zone config files discovered.</p>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4 text-sm text-[var(--cp-muted)]">
+            {(zoneOverview?.notes ?? []).length ? (
+              (zoneOverview?.notes ?? []).map((note, index) => (
+                <p key={`${index}-${note}`} className={index > 0 ? 'mt-2' : ''}>
+                  {note}
+                </p>
+              ))
+            ) : (
+              <p>Zone manager shows identity and topology values sourced from /opt/buckyos/etc.</p>
+            )}
+          </div>
+        </div>
+      ),
+      'sys-manager': (
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">System Config Tree</p>
+            <p className="mt-1 text-xs text-[var(--cp-muted)]">Depth-limited view (4 levels)</p>
+            <div className="mt-3">
+              <SystemConfigTreeViewer defaultKey="" depth={4} compact />
+            </div>
+          </div>
+        </div>
+      ),
+      'gateway-manager': (
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">Gateway config overview</p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Mode</p>
+                <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">
+                  {gatewayOverview?.mode === 'sn' ? 'SN mode' : 'Direct mode'}
+                </p>
+              </div>
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Host</p>
+                <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">{currentHost}</p>
+              </div>
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Config dir</p>
+                <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">
+                  {gatewayOverview?.etcDir ?? '/opt/buckyos/etc'}
+                </p>
+              </div>
+            </div>
+
+            {gatewayError ? (
+              <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                Gateway config fallback is active: {gatewayError}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">Gateway files</p>
+            <div className="mt-3 space-y-2">
+              {(gatewayOverview?.files ?? []).map((file) => (
+                <div
+                  key={file.path}
+                  className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-xs font-semibold text-[var(--cp-ink)]">{file.name}</p>
+                    <button
+                      type="button"
+                      disabled={!file.exists}
+                      onClick={() => toggleGatewayFile(file.name)}
+                      className="rounded-full border border-[var(--cp-border)] bg-white px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--cp-ink)] transition hover:border-[var(--cp-primary)] hover:text-[var(--cp-primary-strong)] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {expandedGatewayFile === file.name
+                        ? 'Hide file'
+                        : gatewayFileLoadingName === file.name
+                          ? 'Loading...'
+                          : 'View file'}
+                    </button>
+                  </div>
+                  <p className="mt-1 break-all text-[11px] text-[var(--cp-muted)]">{file.path}</p>
+                  <p className="text-[11px] text-[var(--cp-muted)]">
+                    {file.exists ? `size ${file.sizeBytes} bytes` : 'missing file'}
+                    {file.modifiedAt ? ` · updated ${file.modifiedAt}` : ''}
+                  </p>
+
+                  {expandedGatewayFile === file.name ? (
+                    <div className="mt-3 max-h-72 min-w-0 overflow-auto rounded-xl border border-[var(--cp-border)] bg-white p-3">
+                      {gatewayFileLoadingName === file.name && !gatewayFileCache[file.name] ? (
+                        <p className="text-xs text-[var(--cp-muted)]">Loading file content...</p>
+                      ) : gatewayFileErrors[file.name] ? (
+                        <p className="text-xs text-amber-800">{gatewayFileErrors[file.name]}</p>
+                      ) : gatewayFileCache[file.name] ? (
+                        <pre className="max-w-full whitespace-pre-wrap break-all font-mono text-[11px] leading-5 text-[var(--cp-ink)]">
+                          {gatewayFileCache[file.name].content}
+                        </pre>
+                      ) : (
+                        <p className="text-xs text-[var(--cp-muted)]">No file content available.</p>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+              <p className="text-sm font-semibold text-[var(--cp-ink)]">Include chain</p>
+              <div className="mt-3 space-y-2">
+                {(gatewayOverview?.includes ?? []).map((item) => (
+                  <div
+                    key={item}
+                    className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2 text-xs text-[var(--cp-ink)]"
+                  >
+                    {item}
+                  </div>
+                ))}
+                {!(gatewayOverview?.includes ?? []).length ? (
+                  <p className="text-xs text-[var(--cp-muted)]">No include chain data.</p>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+              <p className="text-sm font-semibold text-[var(--cp-ink)]">Stack bindings</p>
+              <div className="mt-3 space-y-2">
+                {(gatewayOverview?.stacks ?? []).map((stack) => (
+                  <div
+                    key={`${stack.name}-${stack.bind}`}
+                    className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-semibold text-[var(--cp-ink)]">{stack.name}</p>
+                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-700">
+                        {stack.protocol || 'unknown'}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-[11px] text-[var(--cp-muted)]">Bind: {stack.bind || 'N/A'}</p>
+                  </div>
+                ))}
+                {!(gatewayOverview?.stacks ?? []).length ? (
+                  <p className="text-xs text-[var(--cp-muted)]">No stack binding data.</p>
+                ) : null}
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">TLS domains</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {(gatewayOverview?.tlsDomains ?? []).map((domain) => (
+                <span
+                  key={domain}
+                  className="rounded-full border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-2.5 py-1 text-[11px] text-[var(--cp-ink)]"
+                >
+                  {domain}
+                </span>
+              ))}
+              {!(gatewayOverview?.tlsDomains ?? []).length ? (
+                <p className="text-xs text-[var(--cp-muted)]">No TLS domain config detected.</p>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">Route preview</p>
+            <div className="mt-3 max-h-52 overflow-auto rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] p-3">
+              <pre className="whitespace-pre-wrap break-words font-mono text-[11px] text-[var(--cp-ink)]">
+                {gatewayOverview?.routePreview || 'No route preview available.'}
+              </pre>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4 text-sm text-[var(--cp-muted)]">
+            {(gatewayOverview?.notes ?? []).map((note, index) => (
+              <p key={`${index}-${note}`} className={index > 0 ? 'mt-2' : ''}>
+                {note}
+              </p>
             ))}
           </div>
         </div>
+      ),
+      storage: (
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">Storage policy snapshot</p>
+            <p className="mt-1 text-xs text-[var(--cp-muted)]">
+              {storageUsed.toFixed(storageUsed >= 100 ? 0 : 1)} / {storageTotal.toFixed(storageTotal >= 100 ? 0 : 1)} GB in use.
+            </p>
+            <div className="mt-3">
+              <StorageDiskStatusPanel disk={metrics.disk} compact maxItems={4} />
+            </div>
+          </div>
+        </div>
+      ),
+      permissions: (
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">Permission baseline</p>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              {SETTINGS_POLICY_BASELINE.map((policy) => (
+                <div
+                  key={policy}
+                  className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2 text-xs text-[var(--cp-ink)]"
+                >
+                  {policy}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4 text-sm text-[var(--cp-muted)]">
+            Permission changes should be reviewed with role ownership, app scope, and audit trail.
+          </div>
+        </div>
+      ),
+      'software-update': (
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">System release</p>
+            <div className="mt-3 rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-4 py-4">
+              <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Current version</p>
+              <p className="mt-1 text-2xl font-semibold text-[var(--cp-ink)]">Beta1</p>
+              <p className="mt-1 text-xs text-[var(--cp-muted)]">
+                This version represents the whole BuckyOS system release, not individual app versions.
+              </p>
+            </div>
+          </div>
+          <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4 text-sm text-[var(--cp-muted)]">
+            Update strategy and channel policy are managed at system level by scheduler/repo workflow.
+          </div>
+        </div>
+      ),
+    }
 
-        <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-          <p className="text-sm font-semibold text-[var(--cp-ink)]">Policy baseline</p>
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            {[
-              'MFA required for Owner/Admin roles',
-              'Session timeout at 12h idle window',
-              'Critical alerts routed to admin channel',
-              'Nightly backup validation at 04:00',
-            ].map((policy) => (
-              <div
-                key={policy}
-                className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2 text-xs text-[var(--cp-ink)]"
+    return (
+      <div className="grid gap-4 md:grid-cols-[220px_1fr]">
+        <aside className="rounded-2xl border border-[var(--cp-border)] bg-white p-3">
+          <p className="px-2 pt-1 text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">
+            Settings Menu
+          </p>
+          <div className="mt-2 space-y-1">
+            {SETTINGS_WINDOW_MENU.map((menu) => (
+              <button
+                key={menu.id}
+                type="button"
+                onClick={() => setSettingsMenu(menu.id)}
+                className={`w-full rounded-xl px-3 py-2 text-left transition ${
+                  settingsMenu === menu.id
+                    ? 'bg-[var(--cp-primary)] text-white shadow'
+                    : 'bg-[var(--cp-surface-muted)] text-[var(--cp-ink)] hover:bg-[var(--cp-primary-soft)]'
+                }`}
               >
-                {policy}
-              </div>
+                <p className="text-sm font-semibold">{menu.label}</p>
+                <p className={`text-xs ${settingsMenu === menu.id ? 'text-white/85' : 'text-[var(--cp-muted)]'}`}>
+                  {menu.description}
+                </p>
+              </button>
             ))}
           </div>
+        </aside>
+
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">{selectedMenu.label}</p>
+            <p className="mt-1 text-xs text-[var(--cp-muted)]">{selectedMenu.description}</p>
+          </div>
+          {contentByMenu[settingsMenu]}
         </div>
       </div>
     )

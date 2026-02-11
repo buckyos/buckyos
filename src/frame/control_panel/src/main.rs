@@ -42,6 +42,16 @@ const DEFAULT_LOG_LIMIT: usize = 200;
 const MAX_LOG_LIMIT: usize = 1000;
 const METRICS_HISTORY_LIMIT: usize = 120;
 const METRICS_DISK_REFRESH_INTERVAL_SECS: u64 = 5;
+const SYS_CONFIG_TREE_MAX_DEPTH: u64 = 24;
+const GATEWAY_ETC_DIR: &str = "/opt/buckyos/etc";
+const GATEWAY_CONFIG_FILES: [&str; 5] = [
+    "cyfs_gateway.json",
+    "boot_gateway.yaml",
+    "node_gateway.json",
+    "user_gateway.yaml",
+    "post_gateway.yaml",
+];
+const ZONE_CONFIG_FILES: [&str; 3] = ["start_config.json", "node_device_config.json", "node_identity.json"];
 
 #[derive(Clone, Serialize, Deserialize)]
 struct LogQueryCursor {
@@ -336,6 +346,105 @@ impl ControlPanelServer {
         Self::param_str(req, key).ok_or(RPCErrors::ParseRequestError(format!("Missing {}", key)))
     }
 
+    fn parse_zone_name_from_did(did: &str) -> Option<String> {
+        did.strip_prefix("did:bns:")
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string())
+    }
+
+    async fn resolve_profile_name_from_req(req: &RPCRequest) -> Option<String> {
+        if let Ok(runtime) = get_buckyos_api_runtime() {
+            let zone_did = runtime.zone_id.to_string();
+            if let Some(zone_name) = Self::parse_zone_name_from_did(zone_did.as_str()) {
+                return Some(zone_name);
+            }
+
+            if let Ok(client) = runtime.get_system_config_client().await {
+                if let Ok(boot_config_str) = client.get("boot/config").await {
+                    if let Ok(boot_config) = serde_json::from_str::<Value>(boot_config_str.value.as_str()) {
+                        if let Some(zone_id) = boot_config.get("id").and_then(|value| value.as_str()) {
+                            if let Some(zone_name) = Self::parse_zone_name_from_did(zone_id) {
+                                return Some(zone_name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let token_str = req
+            .token
+            .as_ref()
+            .cloned()
+            .or_else(|| Self::param_str(req, "session_token"));
+
+        if let Some(token_str) = token_str {
+            if let Ok(token) = RPCSessionToken::from_string(token_str.as_str()) {
+                if let Some(subject) = token.sub {
+                    let subject = subject.trim();
+                    if !subject.is_empty() {
+                        return Some(subject.to_string());
+                    }
+                }
+            }
+        }
+
+        get_buckyos_api_runtime()
+            .ok()
+            .and_then(|runtime| {
+                runtime
+                    .user_config
+                    .as_ref()
+                    .map(|cfg| cfg.name.clone())
+                    .or_else(|| runtime.user_id.clone())
+                    .or_else(|| runtime.get_owner_user_id())
+            })
+            .and_then(|name| {
+                let name = name.trim().to_string();
+                if name.is_empty() {
+                    None
+                } else {
+                    Some(name)
+                }
+            })
+    }
+
+    fn resolve_device_name_from_req(req: &RPCRequest) -> Option<String> {
+        if let Ok(runtime) = get_buckyos_api_runtime() {
+            if let Some(device_name) = runtime
+                .device_config
+                .as_ref()
+                .map(|device| device.name.clone())
+                .or_else(|| runtime.user_id.clone())
+            {
+                let trimmed = device_name.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+
+        let token_str = req
+            .token
+            .as_ref()
+            .cloned()
+            .or_else(|| Self::param_str(req, "session_token"));
+
+        if let Some(token_str) = token_str {
+            if let Ok(token) = RPCSessionToken::from_string(token_str.as_str()) {
+                if let Some(subject) = token.sub {
+                    let subject = subject.trim();
+                    if !subject.is_empty() {
+                        return Some(subject.to_string());
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
     fn encode_cursor<T: Serialize>(value: &T) -> String {
         let payload = serde_json::to_vec(value).unwrap_or_default();
         general_purpose::STANDARD.encode(payload)
@@ -581,10 +690,21 @@ impl ControlPanelServer {
     }
 
     async fn handle_layout(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let profile_name = Self::resolve_profile_name_from_req(&req)
+            .await
+            .unwrap_or_else(|| "Admin User".to_string());
+        let profile_email = if let Some(device_name) = Self::resolve_device_name_from_req(&req) {
+            format!("{} @ {}", profile_name, device_name)
+        } else if profile_name.contains('@') {
+            profile_name.clone()
+        } else {
+            "admin@buckyos.io".to_string()
+        };
+
         let layout = json!({
             "profile": {
-                "name": "Admin User",
-                "email": "admin@buckyos.io",
+                "name": profile_name,
+                "email": profile_email,
                 "avatar": "https://i.pravatar.cc/64?img=12"
             },
             "systemStatus": {
@@ -1982,7 +2102,7 @@ impl ControlPanelServer {
             .get("depth")
             .and_then(|value| value.as_u64())
             .unwrap_or(2);
-        let depth = depth.min(6);
+        let depth = depth.min(SYS_CONFIG_TREE_MAX_DEPTH);
         let runtime = get_buckyos_api_runtime()?;
         let client = runtime.get_system_config_client().await?;
         let tree = self
@@ -2056,6 +2176,513 @@ impl ControlPanelServer {
             RPCResult::Success(json!({
                 "key": key,
                 "items": apps,
+            })),
+            req.seq,
+        ))
+    }
+
+    fn gateway_file_summary(path: &Path) -> Value {
+        let metadata = std::fs::metadata(path).ok();
+        let size_bytes = metadata.as_ref().map(|meta| meta.len()).unwrap_or(0);
+        let modified_at = metadata
+            .as_ref()
+            .and_then(|meta| meta.modified().ok())
+            .map(|time| DateTime::<Utc>::from(time).to_rfc3339())
+            .unwrap_or_else(|| "".to_string());
+
+        json!({
+            "name": path.file_name().and_then(|value| value.to_str()).unwrap_or(""),
+            "path": path.display().to_string(),
+            "exists": path.exists(),
+            "sizeBytes": size_bytes,
+            "modifiedAt": modified_at,
+        })
+    }
+
+    fn gateway_config_file_path(name: &str) -> Option<PathBuf> {
+        if !GATEWAY_CONFIG_FILES.contains(&name) {
+            return None;
+        }
+        Some(Path::new(GATEWAY_ETC_DIR).join(name))
+    }
+
+    fn zone_config_file_path(name: &str) -> Option<PathBuf> {
+        if !ZONE_CONFIG_FILES.contains(&name) {
+            return None;
+        }
+        Some(Path::new(GATEWAY_ETC_DIR).join(name))
+    }
+
+    fn extract_first_quoted_after(value: &str, marker: &str) -> Option<String> {
+        let marker_index = value.find(marker)?;
+        let tail = &value[marker_index + marker.len()..];
+        let quote_start = tail.find('"')?;
+        let quoted_tail = &tail[quote_start + 1..];
+        let quote_end = quoted_tail.find('"')?;
+        Some(quoted_tail[..quote_end].to_string())
+    }
+
+    fn parse_gateway_route_rules(block: &str) -> Vec<Value> {
+        let mut rules: Vec<Value> = Vec::new();
+
+        for raw_line in block.lines() {
+            let line = raw_line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let kind = if line.contains("match ${REQ.path}") {
+                "path"
+            } else if line.contains("match ${REQ.host}") {
+                "host"
+            } else if line.starts_with("return ") {
+                "fallback"
+            } else {
+                "logic"
+            };
+
+            let matcher = if kind == "path" || kind == "host" {
+                Self::extract_first_quoted_after(line, "match ").unwrap_or_default()
+            } else {
+                "".to_string()
+            };
+
+            let action = Self::extract_first_quoted_after(line, "return ").unwrap_or_default();
+
+            rules.push(json!({
+                "kind": kind,
+                "matcher": matcher,
+                "action": action,
+                "raw": line,
+            }));
+        }
+
+        rules
+    }
+
+    fn parse_boot_gateway_stacks(yaml: &str) -> Vec<Value> {
+        let mut stacks: Vec<Value> = Vec::new();
+        let mut current_name: Option<String> = None;
+        let mut current_id = String::new();
+        let mut current_protocol = String::new();
+        let mut current_bind = String::new();
+
+        let flush_current = |stacks: &mut Vec<Value>,
+                             current_name: &mut Option<String>,
+                             current_id: &mut String,
+                             current_protocol: &mut String,
+                             current_bind: &mut String| {
+            if let Some(name) = current_name.take() {
+                stacks.push(json!({
+                    "name": name,
+                    "id": current_id.clone(),
+                    "protocol": current_protocol.clone(),
+                    "bind": current_bind.clone(),
+                }));
+            }
+            current_id.clear();
+            current_protocol.clear();
+            current_bind.clear();
+        };
+
+        let mut in_stacks = false;
+        for raw_line in yaml.lines() {
+            let line = raw_line.trim_end();
+            if line.trim().is_empty() || line.trim_start().starts_with('#') {
+                continue;
+            }
+
+            let indent = raw_line
+                .chars()
+                .take_while(|ch| ch.is_ascii_whitespace())
+                .count();
+            let trimmed = line.trim();
+
+            if trimmed == "stacks:" {
+                in_stacks = true;
+                continue;
+            }
+
+            if !in_stacks {
+                continue;
+            }
+
+            if indent == 0 || trimmed == "global_process_chains:" {
+                break;
+            }
+
+            if indent == 2 && trimmed.ends_with(':') {
+                flush_current(
+                    &mut stacks,
+                    &mut current_name,
+                    &mut current_id,
+                    &mut current_protocol,
+                    &mut current_bind,
+                );
+                current_name = Some(trimmed.trim_end_matches(':').to_string());
+                continue;
+            }
+
+            if current_name.is_none() {
+                continue;
+            }
+
+            if indent == 4 {
+                if let Some(value) = trimmed.strip_prefix("id:") {
+                    current_id = value.trim().to_string();
+                    continue;
+                }
+                if let Some(value) = trimmed.strip_prefix("protocol:") {
+                    current_protocol = value.trim().to_string();
+                    continue;
+                }
+                if let Some(value) = trimmed.strip_prefix("bind:") {
+                    current_bind = value.trim().to_string();
+                    continue;
+                }
+            }
+
+        }
+
+        flush_current(
+            &mut stacks,
+            &mut current_name,
+            &mut current_id,
+            &mut current_protocol,
+            &mut current_bind,
+        );
+
+        stacks
+    }
+
+    async fn handle_zone_overview(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let start_config_path = Self::zone_config_file_path("start_config.json")
+            .unwrap_or_else(|| Path::new(GATEWAY_ETC_DIR).join("start_config.json"));
+        let node_device_config_path = Self::zone_config_file_path("node_device_config.json")
+            .unwrap_or_else(|| Path::new(GATEWAY_ETC_DIR).join("node_device_config.json"));
+        let node_identity_path = Self::zone_config_file_path("node_identity.json")
+            .unwrap_or_else(|| Path::new(GATEWAY_ETC_DIR).join("node_identity.json"));
+
+        let files = vec![
+            Self::gateway_file_summary(&start_config_path),
+            Self::gateway_file_summary(&node_device_config_path),
+            Self::gateway_file_summary(&node_identity_path),
+        ];
+
+        let mut zone_name = String::new();
+        let mut zone_domain = String::new();
+        let mut zone_did = String::new();
+        let mut owner_did = String::new();
+        let mut user_name = String::new();
+        let mut device_name = String::new();
+        let mut device_did = String::new();
+        let mut device_type = String::new();
+        let mut net_id = String::new();
+        let mut sn_url = String::new();
+        let mut sn_username = String::new();
+        let mut zone_iat: i64 = 0;
+        let mut notes: Vec<String> = Vec::new();
+
+        if let Ok(content) = std::fs::read_to_string(&start_config_path) {
+            if let Ok(value) = serde_json::from_str::<Value>(content.as_str()) {
+                zone_domain = value
+                    .get("zone_name")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                user_name = value
+                    .get("user_name")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                sn_url = value
+                    .get("sn_url")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                sn_username = value
+                    .get("sn_username")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                if net_id.is_empty() {
+                    net_id = value
+                        .get("net_id")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                }
+            }
+        }
+
+        if let Ok(content) = std::fs::read_to_string(&node_device_config_path) {
+            if let Ok(value) = serde_json::from_str::<Value>(content.as_str()) {
+                device_did = value
+                    .get("id")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                device_name = value
+                    .get("name")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                device_type = value
+                    .get("device_type")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                if zone_did.is_empty() {
+                    zone_did = value
+                        .get("zone_did")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                }
+                if owner_did.is_empty() {
+                    owner_did = value
+                        .get("owner")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                }
+                if net_id.is_empty() {
+                    net_id = value
+                        .get("net_id")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                }
+            }
+        }
+
+        if let Ok(content) = std::fs::read_to_string(&node_identity_path) {
+            if let Ok(value) = serde_json::from_str::<Value>(content.as_str()) {
+                if zone_did.is_empty() {
+                    zone_did = value
+                        .get("zone_did")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                }
+                if owner_did.is_empty() {
+                    owner_did = value
+                        .get("owner_did")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                }
+                zone_iat = value.get("zone_iat").and_then(|item| item.as_i64()).unwrap_or(0);
+            }
+        }
+
+        if zone_name.is_empty() {
+            zone_name = Self::parse_zone_name_from_did(zone_did.as_str()).unwrap_or_default();
+        }
+
+        if zone_domain.is_empty() && !zone_name.is_empty() {
+            zone_domain = format!("{}.web3.buckyos.ai", zone_name);
+        }
+
+        if zone_name.is_empty() {
+            notes.push("zone name not found in start_config.json or zone_did".to_string());
+        }
+        if zone_did.is_empty() {
+            notes.push("zone_did not found in node_device_config.json/node_identity.json".to_string());
+        }
+        if device_name.is_empty() {
+            notes.push("device name not found in node_device_config.json".to_string());
+        }
+
+        let response = json!({
+            "etcDir": GATEWAY_ETC_DIR,
+            "zone": {
+                "name": zone_name,
+                "domain": zone_domain,
+                "did": zone_did,
+                "ownerDid": owner_did,
+                "userName": user_name,
+                "zoneIat": zone_iat,
+            },
+            "device": {
+                "name": device_name,
+                "did": device_did,
+                "type": device_type,
+                "netId": net_id,
+            },
+            "sn": {
+                "url": sn_url,
+                "username": sn_username,
+            },
+            "files": files,
+            "notes": notes,
+        });
+
+        Ok(RPCResponse::new(RPCResult::Success(response), req.seq))
+    }
+
+    async fn handle_gateway_overview(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let etc_dir = Path::new(GATEWAY_ETC_DIR);
+        let cyfs_gateway_path = etc_dir.join("cyfs_gateway.json");
+        let boot_gateway_path = etc_dir.join("boot_gateway.yaml");
+        let node_gateway_path = etc_dir.join("node_gateway.json");
+        let user_gateway_path = etc_dir.join("user_gateway.yaml");
+        let post_gateway_path = etc_dir.join("post_gateway.yaml");
+
+        let files = vec![
+            Self::gateway_file_summary(&cyfs_gateway_path),
+            Self::gateway_file_summary(&boot_gateway_path),
+            Self::gateway_file_summary(&node_gateway_path),
+            Self::gateway_file_summary(&user_gateway_path),
+            Self::gateway_file_summary(&post_gateway_path),
+        ];
+
+        let mut includes: Vec<String> = Vec::new();
+        let mut route_rules: Vec<Value> = Vec::new();
+        let mut route_preview = String::new();
+        let mut tls_domains: Vec<String> = Vec::new();
+        let mut stacks: Vec<Value> = Vec::new();
+        let mut custom_overrides: Vec<Value> = Vec::new();
+        let mut notes: Vec<String> = Vec::new();
+
+        if let Ok(content) = std::fs::read_to_string(&cyfs_gateway_path) {
+            if let Ok(value) = serde_json::from_str::<Value>(content.as_str()) {
+                if let Some(items) = value.get("includes").and_then(|item| item.as_array()) {
+                    includes = items
+                        .iter()
+                        .filter_map(|item| item.get("path").and_then(|value| value.as_str()))
+                        .map(|value| value.to_string())
+                        .collect();
+                }
+            }
+        }
+
+        if let Ok(content) = std::fs::read_to_string(&node_gateway_path) {
+            if let Ok(value) = serde_json::from_str::<Value>(content.as_str()) {
+                if let Some(block) = value
+                    .get("servers")
+                    .and_then(|item| item.get("node_gateway"))
+                    .and_then(|item| item.get("hook_point"))
+                    .and_then(|item| item.get("main"))
+                    .and_then(|item| item.get("blocks"))
+                    .and_then(|item| item.get("default"))
+                    .and_then(|item| item.get("block"))
+                    .and_then(|item| item.as_str())
+                {
+                    route_rules = Self::parse_gateway_route_rules(block);
+                    route_preview = block
+                        .lines()
+                        .take(8)
+                        .map(|line| line.trim())
+                        .filter(|line| !line.is_empty())
+                        .collect::<Vec<&str>>()
+                        .join("\n");
+                }
+
+                if let Some(certs) = value
+                    .get("stacks")
+                    .and_then(|item| item.get("zone_tls"))
+                    .and_then(|item| item.get("certs"))
+                    .and_then(|item| item.as_array())
+                {
+                    tls_domains = certs
+                        .iter()
+                        .filter_map(|item| item.get("domain").and_then(|value| value.as_str()))
+                        .map(|value| value.to_string())
+                        .collect();
+                }
+            }
+        }
+
+        if let Ok(content) = std::fs::read_to_string(&boot_gateway_path) {
+            stacks = Self::parse_boot_gateway_stacks(content.as_str());
+        }
+
+        for path in [&user_gateway_path, &post_gateway_path] {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                let normalized = content
+                    .lines()
+                    .map(|line| line.trim())
+                    .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                    .collect::<Vec<&str>>()
+                    .join(" ");
+
+                if normalized != "--- {}" && normalized != "{}" {
+                    custom_overrides.push(json!({
+                        "name": path.file_name().and_then(|value| value.to_str()).unwrap_or(""),
+                        "preview": content.lines().take(6).collect::<Vec<&str>>().join("\n"),
+                    }));
+                }
+            }
+        }
+
+        let mode = if tls_domains.iter().any(|domain| domain.contains("web3.buckyos.ai")) {
+            "sn"
+        } else {
+            "direct"
+        };
+
+        notes.push("Gateway config loaded from /opt/buckyos/etc.".to_string());
+        if custom_overrides.is_empty() {
+            notes.push("No user override rules detected in user_gateway.yaml/post_gateway.yaml.".to_string());
+        } else {
+            notes.push("User override rules detected; they may overwrite generated gateway blocks.".to_string());
+        }
+
+        let response = json!({
+            "mode": mode,
+            "etcDir": GATEWAY_ETC_DIR,
+            "files": files,
+            "includes": includes,
+            "stacks": stacks,
+            "tlsDomains": tls_domains,
+            "routes": route_rules,
+            "routePreview": route_preview,
+            "customOverrides": custom_overrides,
+            "notes": notes,
+        });
+
+        Ok(RPCResponse::new(RPCResult::Success(response), req.seq))
+    }
+
+    async fn handle_gateway_file_get(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let name = Self::require_param_str(&req, "name")?;
+        let path = Self::gateway_config_file_path(name.as_str()).ok_or_else(|| {
+            RPCErrors::ParseRequestError(format!("Unsupported gateway config file: {}", name))
+        })?;
+
+        if !path.exists() {
+            return Err(RPCErrors::ReasonError(format!(
+                "Gateway config file not found: {}",
+                path.display()
+            )));
+        }
+
+        let bytes = std::fs::read(&path)
+            .map_err(|err| RPCErrors::ReasonError(format!("Failed to read {}: {}", path.display(), err)))?;
+
+        if bytes.len() > 2 * 1024 * 1024 {
+            return Err(RPCErrors::ReasonError(format!(
+                "Gateway config file too large ({} bytes)",
+                bytes.len()
+            )));
+        }
+
+        let content = String::from_utf8_lossy(&bytes).to_string();
+        let metadata = std::fs::metadata(&path).ok();
+        let modified_at = metadata
+            .as_ref()
+            .and_then(|meta| meta.modified().ok())
+            .map(|time| DateTime::<Utc>::from(time).to_rfc3339())
+            .unwrap_or_else(|| "".to_string());
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "name": name,
+                "path": path.display().to_string(),
+                "sizeBytes": bytes.len(),
+                "modifiedAt": modified_at,
+                "content": content,
             })),
             req.seq,
         ))
@@ -2173,6 +2800,9 @@ impl RPCHandler for ControlPanelServer {
                 self.handle_unimplemented(req, "Update firewall rules")
                     .await
             }
+            "zone.overview" | "zone.config" => self.handle_zone_overview(req).await,
+            "gateway.overview" | "gateway.config" => self.handle_gateway_overview(req).await,
+            "gateway.file.get" => self.handle_gateway_file_get(req).await,
             // Device
             "device.list" => self.handle_unimplemented(req, "List devices/clients").await,
             "device.block" => self.handle_unimplemented(req, "Block device").await,

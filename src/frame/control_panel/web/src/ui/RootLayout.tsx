@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 
 import { fetchLayout, mockLayoutData } from '@/api'
+import UserPatternAvatar from './components/UserPatternAvatar'
 import Icon from './icons'
 
 const baseNavClasses =
@@ -130,11 +131,7 @@ const RootLayout = () => {
 
           <div className="mt-8 space-y-4 rounded-2xl bg-[var(--cp-surface-muted)] p-4 text-sm text-[var(--cp-muted)]">
             <div className="flex items-center gap-3">
-              <img
-                src={profile.avatar}
-                alt={`${profile.name} avatar`}
-                className="size-10 rounded-full border border-[var(--cp-border)] object-cover"
-              />
+              <UserPatternAvatar name={profile.name} className="size-10 border-[var(--cp-border)]" />
               <div className="leading-tight">
                 <p className="font-medium text-[var(--cp-ink)]">{profile.name}</p>
                 <p className="text-xs text-[var(--cp-muted)]">{profile.email}</p>

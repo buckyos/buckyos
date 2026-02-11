@@ -152,6 +152,107 @@ const mockSystemStatus: SystemStatusResponse = {
   ],
 }
 
+const mockGatewayOverview: GatewayOverview = {
+  mode: 'sn',
+  etcDir: '/opt/buckyos/etc',
+  files: [
+    {
+      name: 'cyfs_gateway.json',
+      path: '/opt/buckyos/etc/cyfs_gateway.json',
+      exists: true,
+      sizeBytes: 186,
+      modifiedAt: '',
+    },
+    {
+      name: 'boot_gateway.yaml',
+      path: '/opt/buckyos/etc/boot_gateway.yaml',
+      exists: true,
+      sizeBytes: 2048,
+      modifiedAt: '',
+    },
+    {
+      name: 'node_gateway.json',
+      path: '/opt/buckyos/etc/node_gateway.json',
+      exists: true,
+      sizeBytes: 4096,
+      modifiedAt: '',
+    },
+  ],
+  includes: ['user_gateway.yaml', 'boot_gateway.yaml', 'node_gateway.json', 'post_gateway.yaml'],
+  stacks: [
+    { name: 'zone_gateway_http', id: 'zone_gateway_http', protocol: 'tcp', bind: '0.0.0.0:80' },
+    { name: 'node_gateway_http', id: 'node_gateway_http', protocol: 'tcp', bind: '0.0.0.0:3180' },
+  ],
+  tlsDomains: ['*.meteor101.web3.buckyos.ai', 'meteor101.web3.buckyos.ai'],
+  routes: [
+    {
+      kind: 'path',
+      matcher: '/kapi/control-panel/*',
+      action: 'forward http://127.0.0.1:4020',
+      raw: 'match ${REQ.path} "/kapi/control-panel/*" && return "forward http://127.0.0.1:4020"',
+    },
+    {
+      kind: 'host',
+      matcher: 'sys-*',
+      action: 'forward http://127.0.0.1:4020/',
+      raw: 'match ${REQ.host} "sys-*" && return "forward http://127.0.0.1:4020/"',
+    },
+  ],
+  routePreview:
+    'match ${REQ.path} "/kapi/control-panel/*" && return "forward http://127.0.0.1:4020"\nmatch ${REQ.host} "sys-*" && return "forward http://127.0.0.1:4020/"',
+  customOverrides: [],
+  notes: [
+    'Gateway config loaded from /opt/buckyos/etc.',
+    'No user override rules detected in user_gateway.yaml/post_gateway.yaml.',
+  ],
+}
+
+const mockZoneOverview: ZoneOverview = {
+  etcDir: '/opt/buckyos/etc',
+  zone: {
+    name: 'meteor101',
+    domain: 'meteor101.web3.buckyos.ai',
+    did: 'did:bns:meteor101',
+    ownerDid: 'did:bns:meteor101',
+    userName: 'meteor101',
+    zoneIat: 1770361152,
+  },
+  device: {
+    name: 'ood1',
+    did: 'did:dev:jocxyR8Ceskn6rjgDfDYmMQ5HXJDhw_TEyJj7sqCPZA',
+    type: 'ood',
+    netId: 'nat',
+  },
+  sn: {
+    url: 'http://sn.buckyos.ai/kapi/sn',
+    username: 'meteor101',
+  },
+  files: [
+    {
+      name: 'start_config.json',
+      path: '/opt/buckyos/etc/start_config.json',
+      exists: true,
+      sizeBytes: 1024,
+      modifiedAt: '',
+    },
+    {
+      name: 'node_device_config.json',
+      path: '/opt/buckyos/etc/node_device_config.json',
+      exists: true,
+      sizeBytes: 1024,
+      modifiedAt: '',
+    },
+    {
+      name: 'node_identity.json',
+      path: '/opt/buckyos/etc/node_identity.json',
+      exists: true,
+      sizeBytes: 1024,
+      modifiedAt: '',
+    },
+  ],
+  notes: [],
+}
+
 const mockLogServices: SystemLogService[] = [
   { id: 'control-panel', label: 'Control Panel', path: '/opt/buckyos/logs/control-panel' },
   { id: 'cyfs_gateway', label: 'Cyfs Gateway', path: '/opt/buckyos/logs/cyfs_gateway' },
@@ -330,6 +431,63 @@ export const fetchSystemStatus = async (): Promise<{
   return { data: merged, error }
 }
 
+export const fetchGatewayOverview = async (): Promise<{
+  data: GatewayOverview | null
+  error: unknown
+}> => {
+  const { data, error } = await callRpc<GatewayOverview>('gateway.overview', {})
+  if (!data) {
+    return { data: mockGatewayOverview, error }
+  }
+
+  const merged: GatewayOverview = {
+    ...mockGatewayOverview,
+    ...(data as Record<string, unknown>),
+    files: Array.isArray(data.files) ? data.files : mockGatewayOverview.files,
+    includes: Array.isArray(data.includes) ? data.includes : mockGatewayOverview.includes,
+    stacks: Array.isArray(data.stacks) ? data.stacks : mockGatewayOverview.stacks,
+    tlsDomains: Array.isArray(data.tlsDomains) ? data.tlsDomains : mockGatewayOverview.tlsDomains,
+    routes: Array.isArray(data.routes) ? data.routes : mockGatewayOverview.routes,
+    customOverrides: Array.isArray(data.customOverrides)
+      ? data.customOverrides
+      : mockGatewayOverview.customOverrides,
+    notes: Array.isArray(data.notes) ? data.notes : mockGatewayOverview.notes,
+  }
+  return { data: merged, error }
+}
+
+export const fetchGatewayFile = async (
+  name: string,
+): Promise<{ data: GatewayFileContent | null; error: unknown }> => {
+  const { data, error } = await callRpc<GatewayFileContent>('gateway.file.get', { name })
+  if (!data || typeof data.content !== 'string') {
+    return { data: null, error }
+  }
+  return { data, error }
+}
+
+export const fetchZoneOverview = async (): Promise<{
+  data: ZoneOverview | null
+  error: unknown
+}> => {
+  const { data, error } = await callRpc<ZoneOverview>('zone.overview', {})
+  if (!data) {
+    return { data: mockZoneOverview, error }
+  }
+
+  const merged: ZoneOverview = {
+    ...mockZoneOverview,
+    ...(data as Record<string, unknown>),
+    zone: { ...mockZoneOverview.zone, ...(data.zone ?? {}) },
+    device: { ...mockZoneOverview.device, ...(data.device ?? {}) },
+    sn: { ...mockZoneOverview.sn, ...(data.sn ?? {}) },
+    files: Array.isArray(data.files) ? data.files : mockZoneOverview.files,
+    notes: Array.isArray(data.notes) ? data.notes : mockZoneOverview.notes,
+  }
+
+  return { data: merged, error }
+}
+
 type LogQueryParams = {
   services?: string[]
   service?: string
@@ -412,6 +570,8 @@ export {
   mockDappStoreData,
   mockSystemMetrics,
   mockSystemStatus,
+  mockGatewayOverview,
+  mockZoneOverview,
   mockLogServices,
   mockLogEntries,
 }

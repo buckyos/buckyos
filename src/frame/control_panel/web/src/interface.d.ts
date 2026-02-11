@@ -231,6 +231,86 @@ declare global {
     services: ServiceStatus[]
   }
 
+  type GatewayConfigFile = {
+    name: string
+    path: string
+    exists: boolean
+    sizeBytes: number
+    modifiedAt: string
+  }
+
+  type GatewayConfigStack = {
+    name: string
+    id: string
+    protocol: string
+    bind: string
+  }
+
+  type GatewayConfigRoute = {
+    kind: 'path' | 'host' | 'fallback' | 'logic'
+    matcher: string
+    action: string
+    raw: string
+  }
+
+  type GatewayConfigOverride = {
+    name: string
+    preview: string
+  }
+
+  type GatewayOverview = {
+    mode: 'sn' | 'direct' | string
+    etcDir: string
+    files: GatewayConfigFile[]
+    includes: string[]
+    stacks: GatewayConfigStack[]
+    tlsDomains: string[]
+    routes: GatewayConfigRoute[]
+    routePreview: string
+    customOverrides: GatewayConfigOverride[]
+    notes: string[]
+  }
+
+  type GatewayFileContent = {
+    name: string
+    path: string
+    sizeBytes: number
+    modifiedAt: string
+    content: string
+  }
+
+  type ZoneConfigFile = {
+    name: string
+    path: string
+    exists: boolean
+    sizeBytes: number
+    modifiedAt: string
+  }
+
+  type ZoneOverview = {
+    etcDir: string
+    zone: {
+      name: string
+      domain: string
+      did: string
+      ownerDid: string
+      userName: string
+      zoneIat: number
+    }
+    device: {
+      name: string
+      did: string
+      type: string
+      netId: string
+    }
+    sn: {
+      url: string
+      username: string
+    }
+    files: ZoneConfigFile[]
+    notes: string[]
+  }
+
   type SystemLogLevel = 'info' | 'warning' | 'error' | 'unknown'
 
   type SystemLogEntry = {
