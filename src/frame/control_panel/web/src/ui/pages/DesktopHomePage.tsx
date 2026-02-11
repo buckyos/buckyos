@@ -69,6 +69,8 @@ type SettingsMenuKey =
   | 'permissions'
   | 'software-update'
 
+type UserGroupKey = 'admin' | 'family' | 'guests'
+
 type ResizeEdge = 'top' | 'right' | 'bottom' | 'left' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max)
@@ -115,35 +117,10 @@ const getMaximizedRect = () => {
   return { x, y, width, height }
 }
 
-const USER_TEAM_PREVIEW = [
-  {
-    name: 'Alice Johnson',
-    role: 'Owner',
-    group: 'Administrators',
-    status: 'active' as const,
-    access: 'Full',
-  },
-  {
-    name: 'Leo Martins',
-    role: 'Admin',
-    group: 'Administrators',
-    status: 'active' as const,
-    access: 'Ops',
-  },
-  {
-    name: 'Rina Patel',
-    role: 'Editor',
-    group: 'Product',
-    status: 'pending' as const,
-    access: 'Limited',
-  },
-  {
-    name: 'Tomas Silva',
-    role: 'Viewer',
-    group: 'Guests',
-    status: 'disabled' as const,
-    access: 'Read',
-  },
+const USER_WINDOW_GROUPS: { id: UserGroupKey; label: string; description: string }[] = [
+  { id: 'admin', label: 'admin', description: 'Owner and system operators' },
+  { id: 'family', label: 'family', description: 'Trusted home collaborators' },
+  { id: 'guests', label: 'guests', description: 'Limited temporary access' },
 ]
 
 const SETTINGS_WINDOW_MENU: { id: SettingsMenuKey; label: string; description: string }[] = [
@@ -1856,13 +1833,36 @@ const WindowBody = memo((props: WindowBodyProps) => {
     diskPercent,
     rxRate,
     txRate,
-    navigateTo,
   } = data
   const [settingsMenu, setSettingsMenu] = useState<SettingsMenuKey>('general')
   const [expandedGatewayFile, setExpandedGatewayFile] = useState<string | null>(null)
   const [gatewayFileCache, setGatewayFileCache] = useState<Record<string, GatewayFileContent>>({})
   const [gatewayFileLoadingName, setGatewayFileLoadingName] = useState<string | null>(null)
   const [gatewayFileErrors, setGatewayFileErrors] = useState<Record<string, string>>({})
+  const [selectedUserGroup, setSelectedUserGroup] = useState<UserGroupKey>('admin')
+  const [selectedContactId, setSelectedContactId] = useState('self')
+
+  const userContacts = useMemo(
+    () => [
+      {
+        id: 'self',
+        name: layout.profile.name || 'Current user',
+        email: layout.profile.email || '-',
+        status: 'online',
+        role: 'Owner',
+        memberships: {
+          admin: 'Owner',
+          family: 'Not in group',
+          guests: 'Not in group',
+        } satisfies Record<UserGroupKey, string>,
+      },
+    ],
+    [layout.profile.email, layout.profile.name],
+  )
+
+  const selectedContact = userContacts.find((contact) => contact.id === selectedContactId) ?? userContacts[0]
+  const selectedGroup = USER_WINDOW_GROUPS.find((group) => group.id === selectedUserGroup) ?? USER_WINDOW_GROUPS[0]
+  const selectedGroupMembership = selectedContact.memberships[selectedUserGroup]
 
   const toggleGatewayFile = useCallback((name: string) => {
     setExpandedGatewayFile((prev) => (prev === name ? null : name))
@@ -2654,88 +2654,135 @@ const WindowBody = memo((props: WindowBodyProps) => {
     )
   }
 
-  return (
-    <div className="space-y-4">
-      <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <p className="text-sm font-semibold text-[var(--cp-ink)]">Team and access overview</p>
-            <p className="mt-1 text-xs text-[var(--cp-muted)]">Role assignments and invite queue snapshot.</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => navigateTo('/users')}
-            className="rounded-full bg-[var(--cp-primary)] px-4 py-2 text-xs font-semibold text-white transition hover:bg-[var(--cp-primary-strong)]"
-          >
-            Open user management
-          </button>
-        </div>
-
-        <div className="mt-4 grid gap-2 sm:grid-cols-3">
-          <div className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2">
-            <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Members</p>
-            <p className="mt-1 text-xl font-semibold text-[var(--cp-ink)]">{USER_TEAM_PREVIEW.length}</p>
-          </div>
-          <div className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2">
-            <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Pending invites</p>
-            <p className="mt-1 text-xl font-semibold text-[var(--cp-ink)]">
-              {USER_TEAM_PREVIEW.filter((member) => member.status === 'pending').length}
-            </p>
-          </div>
-          <div className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2">
-            <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Admin coverage</p>
-            <p className="mt-1 text-xl font-semibold text-[var(--cp-ink)]">
-              {USER_TEAM_PREVIEW.filter((member) => member.role === 'Owner' || member.role === 'Admin').length}
-            </p>
-          </div>
-        </div>
-
-        <div className="mt-3 space-y-2">
-          {USER_TEAM_PREVIEW.map((member) => (
-            <div
-              key={member.name}
-              className="rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2"
-            >
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-semibold text-[var(--cp-ink)]">{member.name}</p>
-                  <p className="text-xs text-[var(--cp-muted)]">
-                    {member.role} - {member.group}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="rounded-full border border-[var(--cp-border)] bg-white px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--cp-ink)]">
-                    {member.access}
-                  </span>
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
-                      member.status === 'active'
-                        ? 'bg-emerald-100 text-emerald-700'
-                        : member.status === 'pending'
-                          ? 'bg-amber-100 text-amber-700'
-                          : 'bg-rose-100 text-rose-700'
+  if (id === 'users') {
+    return (
+      <div className="grid gap-4 md:grid-cols-[240px_1fr]">
+        <aside className="flex flex-col justify-between rounded-2xl border border-[var(--cp-border)] bg-white p-3">
+          <div className="space-y-4">
+            <section>
+              <p className="px-2 pt-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--cp-muted)]">Main menu</p>
+              <p className="mt-2 px-2 text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">Groups</p>
+              <div className="mt-2 space-y-1.5">
+                {USER_WINDOW_GROUPS.map((group) => (
+                  <button
+                    key={group.id}
+                    type="button"
+                    onClick={() => setSelectedUserGroup(group.id)}
+                    className={`w-full rounded-xl px-3 py-2 text-left transition ${
+                      selectedUserGroup === group.id
+                        ? 'bg-[var(--cp-primary)] text-white shadow'
+                        : 'bg-[var(--cp-surface-muted)] text-[var(--cp-ink)] hover:bg-[var(--cp-primary-soft)]'
                     }`}
                   >
-                    {member.status}
-                  </span>
+                    <p className="text-sm font-semibold capitalize">{group.label}</p>
+                    <p className={`text-xs ${selectedUserGroup === group.id ? 'text-white/85' : 'text-[var(--cp-muted)]'}`}>
+                      {group.description}
+                    </p>
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            <section>
+              <p className="px-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--cp-muted)]">Quick contacts</p>
+              <p className="mt-2 px-2 text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">All contacts</p>
+              <div className="mt-2 space-y-1">
+                {userContacts.map((contact) => (
+                  <button
+                    key={contact.id}
+                    type="button"
+                    onClick={() => setSelectedContactId(contact.id)}
+                    className={`flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition ${
+                      selectedContact.id === contact.id
+                        ? 'bg-[var(--cp-primary-soft)] text-[var(--cp-ink)] ring-1 ring-[var(--cp-primary)]/30'
+                        : 'bg-[var(--cp-surface-muted)] text-[var(--cp-ink)] hover:bg-[var(--cp-primary-soft)]'
+                    }`}
+                  >
+                    <UserPatternAvatar name={contact.name} className="size-9 border border-[var(--cp-border)]" />
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-[var(--cp-ink)]">{contact.name}</p>
+                      <p className="truncate text-xs text-[var(--cp-muted)]">{contact.email}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </section>
+          </div>
+
+          <div className="group relative mt-4">
+            <button
+              type="button"
+              aria-disabled="true"
+              onClick={(event) => event.preventDefault()}
+              className="w-full rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)] transition hover:border-[var(--cp-primary)] hover:text-[var(--cp-primary-strong)]"
+            >
+              Invite
+            </button>
+            <div className="pointer-events-none absolute -top-10 left-1/2 -translate-x-1/2 rounded-lg bg-slate-900 px-2.5 py-1 text-[11px] font-medium text-white opacity-0 shadow-lg transition-opacity duration-150 group-hover:opacity-100">
+              Not implemented yet
+            </div>
+          </div>
+        </aside>
+
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">User information</p>
+            <p className="mt-1 text-xs text-[var(--cp-muted)]">Selected contact details and group context.</p>
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <UserPatternAvatar name={selectedContact.name} className="size-12 border border-[var(--cp-border)]" />
+              <div className="min-w-0">
+                <p className="truncate text-lg font-semibold text-[var(--cp-ink)]">{selectedContact.name}</p>
+                <p className="truncate text-sm text-[var(--cp-muted)]">{selectedContact.email}</p>
+              </div>
+              <span className="ml-auto rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-700">
+                {selectedContact.status}
+              </span>
+            </div>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">Account profile</p>
+              <div className="mt-3 space-y-2">
+                <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Role</p>
+                  <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{selectedContact.role}</p>
+                </div>
+                <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Active group</p>
+                  <p className="mt-1 text-sm font-semibold capitalize text-[var(--cp-ink)]">{selectedGroup.label}</p>
+                </div>
+                <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Membership</p>
+                  <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{selectedGroupMembership}</p>
                 </div>
               </div>
             </div>
-          ))}
-        </div>
 
-        <div className="mt-3 flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => navigateTo('/settings')}
-            className="rounded-full border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-4 py-2 text-xs font-semibold text-[var(--cp-ink)] transition hover:border-[var(--cp-primary)] hover:text-[var(--cp-primary-strong)]"
-          >
-            Review policies
-          </button>
+            <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">Zone identity</p>
+              <div className="mt-3 space-y-2">
+                <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">SN username</p>
+                  <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.sn.username || '-'}</p>
+                </div>
+                <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Zone user</p>
+                  <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.zone.userName || '-'}</p>
+                </div>
+                <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Zone DID</p>
+                  <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.zone.did || '-'}</p>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
-    </div>
-  )
+    )
+  }
+
+  return null
 })
 WindowBody.displayName = 'WindowBody'
 
