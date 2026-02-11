@@ -115,6 +115,7 @@ g, verify-hub, kernel
 g, task-manager, kernel
 g, kmsg, kernel
 g, aicc, kernel
+g, msg-center, kernel
 g, control-panel, kernel
 g, buckycli, kernel
 g, cyfs-gateway, kernel

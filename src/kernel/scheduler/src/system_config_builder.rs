@@ -1,14 +1,14 @@
 use anyhow::{anyhow, Result};
 use log::{debug, info, warn};
 use buckyos_api::{
-    AppDoc, AppServiceSpec, AppType, GatewaySettings, GatewayShortcut, KernelServiceSpec, NodeConfig, NodeState, SCHEDULER_SERVICE_UNIQUE_ID, SelectorType, ServiceExposeConfig, ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, UserSettings, UserState, UserType, VERIFY_HUB_UNIQUE_ID, generate_aicc_service_doc, generate_control_panel_service_doc, generate_repo_service_doc, generate_scheduler_service_doc, generate_smb_service_doc, generate_task_manager_service_doc, generate_verify_hub_service_doc
+    AppDoc, AppServiceSpec, AppType, GatewaySettings, GatewayShortcut, KernelServiceSpec, NodeConfig, NodeState, SCHEDULER_SERVICE_UNIQUE_ID, SelectorType, ServiceExposeConfig, ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, UserSettings, UserState, UserType, VERIFY_HUB_UNIQUE_ID, generate_aicc_service_doc, generate_control_panel_service_doc, generate_msg_center_service_doc, generate_repo_service_doc, generate_scheduler_service_doc, generate_smb_service_doc, generate_task_manager_service_doc, generate_verify_hub_service_doc
 };
 use buckyos_api::msg_queue::{
     generate_kmsg_service_doc, KMSG_SERVICE_MAIN_PORT, KMSG_SERVICE_UNIQUE_ID,
 };
 use buckyos_api::{
     AICC_SERVICE_SERVICE_PORT, AICC_SERVICE_UNIQUE_ID, CONTROL_PANEL_SERVICE_PORT,
-    CONTROL_PANEL_SERVICE_UNIQUE_ID, REPO_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID,
+    CONTROL_PANEL_SERVICE_UNIQUE_ID, MSG_CENTER_SERVICE_PORT, MSG_CENTER_SERVICE_UNIQUE_ID, REPO_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID,
     TASK_MANAGER_SERVICE_PORT, TASK_MANAGER_SERVICE_UNIQUE_ID,
 };
 use buckyos_kit::get_buckyos_root_dir;
@@ -260,6 +260,19 @@ impl SystemConfigBuilder {
         )
         .await?;
         self.insert_json("services/aicc/spec", &config)?;
+        Ok(self)
+    }
+
+    pub async fn add_msg_center(&mut self) -> Result<&mut Self> {
+        let service_doc = generate_msg_center_service_doc();
+        let config = build_kernel_service_spec(
+            MSG_CENTER_SERVICE_UNIQUE_ID,
+            MSG_CENTER_SERVICE_PORT,
+            1,
+            service_doc,
+        )
+        .await?;
+        self.insert_json("services/msg-center/spec", &config)?;
         Ok(self)
     }
 

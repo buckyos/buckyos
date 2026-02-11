@@ -15,6 +15,11 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 rusqlite = { workspace = true }
+bytes = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+cyfs-gateway-lib = { workspace = true }
+server-runner = { workspace = true }
 
 kRPC = { workspace = true }
 name-lib = { workspace = true }
