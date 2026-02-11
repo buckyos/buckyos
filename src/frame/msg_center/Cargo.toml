@@ -1,0 +1,23 @@
+[package]
+name = "msg_center"
+version.workspace = true
+edition = "2021"
+authors = ["BuckyOS DAO", "@waterflier"]
+
+
+
+[dependencies]
+async-trait = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+rusqlite = { workspace = true }
+
+kRPC = { workspace = true }
+name-lib = { workspace = true }
+ndn-lib = { workspace = true }
+buckyos-kit = { workspace = true }
+buckyos-api = { path = "../../kernel/buckyos-api" }

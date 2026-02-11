@@ -17,7 +17,7 @@ members = [
     "./frame/repo_service",
     "./frame/smb_service",
     "./frame/aicc",
-    
+    "./frame/msg_center",
     "./frame/control_panel",
 
     "./tools/buckycli", 
