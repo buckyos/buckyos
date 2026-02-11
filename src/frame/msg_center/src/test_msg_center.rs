@@ -123,7 +123,10 @@ async fn dispatch_stranger_goes_to_request_box() {
     let recipient = DID::new("bns", "recipient-b");
     let msg = make_msg(sender, None, vec![recipient.clone()]);
 
-    let dispatch = center.handle_dispatch(msg, None, None, ctx()).await.unwrap();
+    let dispatch = center
+        .handle_dispatch(msg, None, None, ctx())
+        .await
+        .unwrap();
     assert!(dispatch.ok);
     assert!(dispatch.delivered_recipients.contains(&recipient));
 
@@ -160,7 +163,10 @@ async fn dispatch_group_message_creates_group_and_agent_views() {
         .unwrap();
 
     let msg = make_msg(group_id.clone(), Some(author), Vec::new());
-    let dispatch = center.handle_dispatch(msg, None, None, ctx()).await.unwrap();
+    let dispatch = center
+        .handle_dispatch(msg, None, None, ctx())
+        .await
+        .unwrap();
     assert_eq!(dispatch.delivered_group, Some(group_id.clone()));
     assert_eq!(dispatch.delivered_agents.len(), 2);
 
@@ -418,7 +424,10 @@ async fn read_receipt_can_be_set_and_queried() {
     let msg = make_msg(group.clone(), Some(author), Vec::new());
     let msg_id = msg.id.clone();
 
-    center.handle_dispatch(msg, None, None, ctx()).await.unwrap();
+    center
+        .handle_dispatch(msg, None, None, ctx())
+        .await
+        .unwrap();
 
     let receipt = center
         .handle_set_read_state(
