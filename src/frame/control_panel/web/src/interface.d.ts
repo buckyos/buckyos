@@ -3,6 +3,7 @@ export {}
 declare global {
   type IconName =
     | 'desktop'
+    | 'container'
     | 'dashboard'
     | 'users'
     | 'storage'
@@ -58,6 +59,38 @@ declare global {
     time: string
     rx: number
     tx: number
+    errors?: number
+    drops?: number
+  }
+
+  type NetworkInterfacePoint = {
+    name: string
+    rxBytes: number
+    txBytes: number
+    rxPerSec: number
+    txPerSec: number
+    rxErrors: number
+    txErrors: number
+    rxDrops: number
+    txDrops: number
+  }
+
+  type NetworkOverviewSummary = {
+    rxBytes: number
+    txBytes: number
+    rxPerSec: number
+    txPerSec: number
+    rxErrors: number
+    txErrors: number
+    rxDrops: number
+    txDrops: number
+    interfaceCount: number
+  }
+
+  type NetworkOverview = {
+    summary: NetworkOverviewSummary
+    timeline: NetworkPoint[]
+    perInterface: NetworkInterfacePoint[]
   }
 
   type StorageSlice = {
@@ -185,6 +218,12 @@ declare global {
     txBytes: number
     rxPerSec: number
     txPerSec: number
+    rxErrors?: number
+    txErrors?: number
+    rxDrops?: number
+    txDrops?: number
+    interfaceCount?: number
+    perInterface?: NetworkInterfacePoint[]
   }
 
   type SystemMetricsSwap = {
@@ -309,6 +348,56 @@ declare global {
     }
     files: ZoneConfigFile[]
     notes: string[]
+  }
+
+  type ContainerServerInfo = {
+    name: string
+    version: string
+    apiVersion: string
+    os: string
+    kernel: string
+    driver: string
+    cgroupDriver: string
+    cpuCount: number
+    memTotalBytes: number
+  }
+
+  type ContainerSummary = {
+    total: number
+    running: number
+    paused: number
+    exited: number
+    restarting: number
+    dead: number
+  }
+
+  type ContainerItem = {
+    id: string
+    name: string
+    image: string
+    state: string
+    status: string
+    ports: string
+    networks: string
+    createdAt: string
+    runningFor: string
+    command: string
+  }
+
+  type ContainerOverview = {
+    available: boolean
+    daemonRunning: boolean
+    server: ContainerServerInfo
+    summary: ContainerSummary
+    containers: ContainerItem[]
+    notes: string[]
+  }
+
+  type ContainerActionResponse = {
+    id: string
+    action: 'start' | 'stop' | 'restart' | string
+    ok: boolean
+    stdout?: string
   }
 
   type SystemLogLevel = 'info' | 'warning' | 'error' | 'unknown'

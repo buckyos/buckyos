@@ -14,6 +14,13 @@ const icons: Record<IconName, ReactNode> = {
       <path d="M12 16v5" />
     </>
   ),
+  container: (
+    <>
+      <rect x="4" y="6" width="16" height="12" rx="2" />
+      <path d="M4 10h16" />
+      <path d="M9 6v12M15 6v12" />
+    </>
+  ),
   dashboard: (
     <>
       <rect x="3" y="3" width="8" height="8" rx="1.5" />

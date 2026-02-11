@@ -40,8 +40,8 @@ const LOG_ROOT_DIR: &str = "/opt/buckyos/logs";
 const LOG_DOWNLOAD_TTL_SECS: u64 = 600;
 const DEFAULT_LOG_LIMIT: usize = 200;
 const MAX_LOG_LIMIT: usize = 1000;
-const METRICS_HISTORY_LIMIT: usize = 120;
 const METRICS_DISK_REFRESH_INTERVAL_SECS: u64 = 5;
+const NETWORK_TIMELINE_LIMIT: usize = 300;
 const SYS_CONFIG_TREE_MAX_DEPTH: u64 = 24;
 const GATEWAY_ETC_DIR: &str = "/opt/buckyos/etc";
 const GATEWAY_CONFIG_FILES: [&str; 5] = [
@@ -86,8 +86,26 @@ struct NetworkStatsSnapshot {
     tx_bytes: u64,
     rx_per_sec: u64,
     tx_per_sec: u64,
+    rx_errors: u64,
+    tx_errors: u64,
+    rx_drops: u64,
+    tx_drops: u64,
     interface_count: usize,
+    per_interfaces: Vec<InterfaceNetworkStats>,
     updated_at: Option<std::time::SystemTime>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct InterfaceNetworkStats {
+    name: String,
+    rx_bytes: u64,
+    tx_bytes: u64,
+    rx_per_sec: u64,
+    tx_per_sec: u64,
+    rx_errors: u64,
+    tx_errors: u64,
+    rx_drops: u64,
+    tx_drops: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -97,6 +115,38 @@ struct MetricsTimelinePoint {
     memory: u64,
     rx: u64,
     tx: u64,
+    errors: u64,
+    drops: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct NetworkInterfaceTotals {
+    rx_bytes: u64,
+    tx_bytes: u64,
+    rx_errors: u64,
+    tx_errors: u64,
+    rx_drops: u64,
+    tx_drops: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct NetworkCollectionSnapshot {
+    rx_bytes: u64,
+    tx_bytes: u64,
+    rx_errors: u64,
+    tx_errors: u64,
+    rx_drops: u64,
+    tx_drops: u64,
+    interface_count: usize,
+    per_interfaces: HashMap<String, NetworkInterfaceTotals>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ProcNetDevStats {
+    rx_errors: u64,
+    rx_drops: u64,
+    tx_errors: u64,
+    tx_drops: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -159,8 +209,15 @@ impl ControlPanelServer {
             let (storage_capacity_bytes, storage_used_bytes, disks_detail) =
                 ControlPanelServer::sum_disks(&disks);
 
-            let (mut prev_rx, mut prev_tx, iface_count) =
-                ControlPanelServer::sum_network_totals(&networks);
+            let mut proc_net_dev_stats = ControlPanelServer::read_proc_net_dev_stats();
+            let mut network_totals =
+                ControlPanelServer::collect_network_snapshot(&networks, &proc_net_dev_stats);
+            let mut prev_interfaces = network_totals.per_interfaces.clone();
+            let mut prev_rx = network_totals.rx_bytes;
+            let mut prev_tx = network_totals.tx_bytes;
+            let mut prev_error_total =
+                network_totals.rx_errors.saturating_add(network_totals.tx_errors);
+            let mut prev_drop_total = network_totals.rx_drops.saturating_add(network_totals.tx_drops);
             {
                 let mut snapshot = metrics_snapshot.write().await;
                 snapshot.cpu_brand = cpu_brand;
@@ -177,11 +234,17 @@ impl ControlPanelServer {
                 snapshot.storage_capacity_bytes = storage_capacity_bytes;
                 snapshot.storage_used_bytes = storage_used_bytes;
                 snapshot.disks_detail = disks_detail;
-                snapshot.network.rx_bytes = prev_rx;
-                snapshot.network.tx_bytes = prev_tx;
+                snapshot.network.rx_bytes = network_totals.rx_bytes;
+                snapshot.network.tx_bytes = network_totals.tx_bytes;
                 snapshot.network.rx_per_sec = 0;
                 snapshot.network.tx_per_sec = 0;
-                snapshot.network.interface_count = iface_count;
+                snapshot.network.rx_errors = network_totals.rx_errors;
+                snapshot.network.tx_errors = network_totals.tx_errors;
+                snapshot.network.rx_drops = network_totals.rx_drops;
+                snapshot.network.tx_drops = network_totals.tx_drops;
+                snapshot.network.interface_count = network_totals.interface_count;
+                snapshot.network.per_interfaces =
+                    ControlPanelServer::build_interface_rate_stats(&network_totals.per_interfaces, &prev_interfaces, 0.0);
                 snapshot.network.updated_at = Some(std::time::SystemTime::now());
                 snapshot.updated_at = Some(std::time::SystemTime::now());
             }
@@ -197,6 +260,7 @@ impl ControlPanelServer {
                 system.refresh_memory();
                 system.refresh_cpu_usage();
                 networks.refresh(true);
+                proc_net_dev_stats = ControlPanelServer::read_proc_net_dev_stats();
 
                 disk_refresh_counter = disk_refresh_counter.saturating_add(1);
                 let refresh_disks = disk_refresh_counter % METRICS_DISK_REFRESH_INTERVAL_SECS == 0;
@@ -204,15 +268,26 @@ impl ControlPanelServer {
                     disks.refresh(true);
                 }
 
-                let (rx_bytes, tx_bytes, iface_count) =
-                    ControlPanelServer::sum_network_totals(&networks);
+                network_totals =
+                    ControlPanelServer::collect_network_snapshot(&networks, &proc_net_dev_stats);
                 let dt = last_at.elapsed().as_secs_f64();
                 last_at = Instant::now();
 
-                let rx_delta = rx_bytes.saturating_sub(prev_rx);
-                let tx_delta = tx_bytes.saturating_sub(prev_tx);
-                prev_rx = rx_bytes;
-                prev_tx = tx_bytes;
+                let rx_delta = network_totals.rx_bytes.saturating_sub(prev_rx);
+                let tx_delta = network_totals.tx_bytes.saturating_sub(prev_tx);
+                prev_rx = network_totals.rx_bytes;
+                prev_tx = network_totals.tx_bytes;
+
+                let error_total = network_totals
+                    .rx_errors
+                    .saturating_add(network_totals.tx_errors);
+                let drop_total = network_totals
+                    .rx_drops
+                    .saturating_add(network_totals.tx_drops);
+                let error_delta = error_total.saturating_sub(prev_error_total);
+                let drop_delta = drop_total.saturating_sub(prev_drop_total);
+                prev_error_total = error_total;
+                prev_drop_total = drop_total;
 
                 let (rx_per_sec, tx_per_sec) = if dt > 0.0 {
                     (
@@ -257,14 +332,21 @@ impl ControlPanelServer {
                     snapshot.disks_detail = details;
                 }
 
-                snapshot.network.rx_bytes = rx_bytes;
-                snapshot.network.tx_bytes = tx_bytes;
+                snapshot.network.rx_bytes = network_totals.rx_bytes;
+                snapshot.network.tx_bytes = network_totals.tx_bytes;
                 snapshot.network.rx_per_sec = rx_per_sec;
                 snapshot.network.tx_per_sec = tx_per_sec;
-                snapshot.network.interface_count = iface_count;
+                snapshot.network.rx_errors = network_totals.rx_errors;
+                snapshot.network.tx_errors = network_totals.tx_errors;
+                snapshot.network.rx_drops = network_totals.rx_drops;
+                snapshot.network.tx_drops = network_totals.tx_drops;
+                snapshot.network.interface_count = network_totals.interface_count;
+                snapshot.network.per_interfaces =
+                    ControlPanelServer::build_interface_rate_stats(&network_totals.per_interfaces, &prev_interfaces, dt);
                 snapshot.network.updated_at = Some(std::time::SystemTime::now());
+                prev_interfaces = network_totals.per_interfaces.clone();
 
-                if snapshot.timeline.len() >= METRICS_HISTORY_LIMIT {
+                if snapshot.timeline.len() >= NETWORK_TIMELINE_LIMIT {
                     snapshot.timeline.pop_front();
                 }
                 snapshot.timeline.push_back(MetricsTimelinePoint {
@@ -273,6 +355,16 @@ impl ControlPanelServer {
                     memory: memory_percent.min(100),
                     rx: rx_per_sec,
                     tx: tx_per_sec,
+                    errors: if dt > 0.0 {
+                        ((error_delta as f64) / dt).round() as u64
+                    } else {
+                        0
+                    },
+                    drops: if dt > 0.0 {
+                        ((drop_delta as f64) / dt).round() as u64
+                    } else {
+                        0
+                    },
                 });
                 snapshot.updated_at = Some(std::time::SystemTime::now());
             }
@@ -309,21 +401,131 @@ impl ControlPanelServer {
         (total_bytes, used_bytes, details)
     }
 
-    fn sum_network_totals(networks: &Networks) -> (u64, u64, usize) {
-        // Default behavior: sum all non-loopback interfaces.
-        let mut rx_bytes: u64 = 0;
-        let mut tx_bytes: u64 = 0;
-        let mut iface_count: usize = 0;
+    fn read_proc_net_dev_stats() -> HashMap<String, ProcNetDevStats> {
+        let mut map: HashMap<String, ProcNetDevStats> = HashMap::new();
+        let content = match std::fs::read_to_string("/proc/net/dev") {
+            Ok(value) => value,
+            Err(_) => return map,
+        };
+
+        for line in content.lines().skip(2) {
+            let (iface_raw, metrics_raw) = match line.split_once(':') {
+                Some(value) => value,
+                None => continue,
+            };
+            let iface = iface_raw.trim().to_string();
+            if iface.is_empty() || iface == "lo" || iface == "lo0" {
+                continue;
+            }
+
+            let values: Vec<&str> = metrics_raw.split_whitespace().collect();
+            if values.len() < 12 {
+                continue;
+            }
+
+            let rx_errors = values.get(2).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+            let rx_drops = values.get(3).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+            let tx_errors = values.get(10).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+            let tx_drops = values.get(11).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+
+            map.insert(
+                iface,
+                ProcNetDevStats {
+                    rx_errors,
+                    rx_drops,
+                    tx_errors,
+                    tx_drops,
+                },
+            );
+        }
+
+        map
+    }
+
+    fn collect_network_snapshot(
+        networks: &Networks,
+        proc_net_dev_stats: &HashMap<String, ProcNetDevStats>,
+    ) -> NetworkCollectionSnapshot {
+        let mut snapshot = NetworkCollectionSnapshot::default();
+
         for (name, data) in networks.iter() {
             let iface = name.as_str();
             if iface == "lo" || iface == "lo0" {
                 continue;
             }
-            iface_count = iface_count.saturating_add(1);
-            rx_bytes = rx_bytes.saturating_add(data.total_received());
-            tx_bytes = tx_bytes.saturating_add(data.total_transmitted());
+
+            let mut totals = NetworkInterfaceTotals {
+                rx_bytes: data.total_received(),
+                tx_bytes: data.total_transmitted(),
+                rx_errors: data.total_errors_on_received(),
+                tx_errors: data.total_errors_on_transmitted(),
+                rx_drops: 0,
+                tx_drops: 0,
+            };
+
+            if let Some(proc_stats) = proc_net_dev_stats.get(iface) {
+                totals.rx_errors = proc_stats.rx_errors;
+                totals.tx_errors = proc_stats.tx_errors;
+                totals.rx_drops = proc_stats.rx_drops;
+                totals.tx_drops = proc_stats.tx_drops;
+            }
+
+            snapshot.interface_count = snapshot.interface_count.saturating_add(1);
+            snapshot.rx_bytes = snapshot.rx_bytes.saturating_add(totals.rx_bytes);
+            snapshot.tx_bytes = snapshot.tx_bytes.saturating_add(totals.tx_bytes);
+            snapshot.rx_errors = snapshot.rx_errors.saturating_add(totals.rx_errors);
+            snapshot.tx_errors = snapshot.tx_errors.saturating_add(totals.tx_errors);
+            snapshot.rx_drops = snapshot.rx_drops.saturating_add(totals.rx_drops);
+            snapshot.tx_drops = snapshot.tx_drops.saturating_add(totals.tx_drops);
+            snapshot.per_interfaces.insert(iface.to_string(), totals);
         }
-        (rx_bytes, tx_bytes, iface_count)
+
+        snapshot
+    }
+
+    fn build_interface_rate_stats(
+        current: &HashMap<String, NetworkInterfaceTotals>,
+        prev: &HashMap<String, NetworkInterfaceTotals>,
+        dt: f64,
+    ) -> Vec<InterfaceNetworkStats> {
+        let mut names: Vec<&String> = current.keys().collect();
+        names.sort();
+
+        names
+            .into_iter()
+            .filter_map(|name| {
+                let now = current.get(name)?;
+                let old = prev.get(name);
+
+                let rx_delta = old
+                    .map(|value| now.rx_bytes.saturating_sub(value.rx_bytes))
+                    .unwrap_or(0);
+                let tx_delta = old
+                    .map(|value| now.tx_bytes.saturating_sub(value.tx_bytes))
+                    .unwrap_or(0);
+
+                let (rx_per_sec, tx_per_sec) = if dt > 0.0 {
+                    (
+                        ((rx_delta as f64) / dt).round() as u64,
+                        ((tx_delta as f64) / dt).round() as u64,
+                    )
+                } else {
+                    (0, 0)
+                };
+
+                Some(InterfaceNetworkStats {
+                    name: name.to_string(),
+                    rx_bytes: now.rx_bytes,
+                    tx_bytes: now.tx_bytes,
+                    rx_per_sec,
+                    tx_per_sec,
+                    rx_errors: now.rx_errors,
+                    tx_errors: now.tx_errors,
+                    rx_drops: now.rx_drops,
+                    tx_drops: now.tx_drops,
+                })
+            })
+            .collect()
     }
 
     async fn handle_main(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
@@ -1920,6 +2122,26 @@ impl ControlPanelServer {
                     "time": point.time,
                     "rx": point.rx,
                     "tx": point.tx,
+                    "errors": point.errors,
+                    "drops": point.drops,
+                })
+            })
+            .collect();
+        let network_per_interface: Vec<Value> = snapshot
+            .network
+            .per_interfaces
+            .iter()
+            .map(|iface| {
+                json!({
+                    "name": iface.name,
+                    "rxBytes": iface.rx_bytes,
+                    "txBytes": iface.tx_bytes,
+                    "rxPerSec": iface.rx_per_sec,
+                    "txPerSec": iface.tx_per_sec,
+                    "rxErrors": iface.rx_errors,
+                    "txErrors": iface.tx_errors,
+                    "rxDrops": iface.rx_drops,
+                    "txDrops": iface.tx_drops,
                 })
             })
             .collect();
@@ -1946,6 +2168,12 @@ impl ControlPanelServer {
                 "txBytes": snapshot.network.tx_bytes,
                 "rxPerSec": snapshot.network.rx_per_sec,
                 "txPerSec": snapshot.network.tx_per_sec,
+                "rxErrors": snapshot.network.rx_errors,
+                "txErrors": snapshot.network.tx_errors,
+                "rxDrops": snapshot.network.rx_drops,
+                "txDrops": snapshot.network.tx_drops,
+                "interfaceCount": snapshot.network.interface_count,
+                "perInterface": network_per_interface,
             },
             "swap": {
                 "totalGb": bytes_to_gb(total_swap_bytes),
@@ -1964,6 +2192,61 @@ impl ControlPanelServer {
         });
 
         Ok(RPCResponse::new(RPCResult::Success(metrics), req.seq))
+    }
+
+    async fn handle_network_overview(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let snapshot = { self.metrics_snapshot.read().await.clone() };
+
+        let timeline: Vec<Value> = snapshot
+            .timeline
+            .iter()
+            .map(|point| {
+                json!({
+                    "time": point.time,
+                    "rx": point.rx,
+                    "tx": point.tx,
+                    "errors": point.errors,
+                    "drops": point.drops,
+                })
+            })
+            .collect();
+
+        let per_interface: Vec<Value> = snapshot
+            .network
+            .per_interfaces
+            .iter()
+            .map(|iface| {
+                json!({
+                    "name": iface.name,
+                    "rxBytes": iface.rx_bytes,
+                    "txBytes": iface.tx_bytes,
+                    "rxPerSec": iface.rx_per_sec,
+                    "txPerSec": iface.tx_per_sec,
+                    "rxErrors": iface.rx_errors,
+                    "txErrors": iface.tx_errors,
+                    "rxDrops": iface.rx_drops,
+                    "txDrops": iface.tx_drops,
+                })
+            })
+            .collect();
+
+        let response = json!({
+            "summary": {
+                "rxBytes": snapshot.network.rx_bytes,
+                "txBytes": snapshot.network.tx_bytes,
+                "rxPerSec": snapshot.network.rx_per_sec,
+                "txPerSec": snapshot.network.tx_per_sec,
+                "rxErrors": snapshot.network.rx_errors,
+                "txErrors": snapshot.network.tx_errors,
+                "rxDrops": snapshot.network.rx_drops,
+                "txDrops": snapshot.network.tx_drops,
+                "interfaceCount": snapshot.network.interface_count,
+            },
+            "timeline": timeline,
+            "perInterface": per_interface,
+        });
+
+        Ok(RPCResponse::new(RPCResult::Success(response), req.seq))
     }
 
     async fn handle_sys_config_get(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
@@ -2688,6 +2971,227 @@ impl ControlPanelServer {
         ))
     }
 
+    async fn handle_container_overview(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let mut notes: Vec<String> = Vec::new();
+
+        let server_info = match Command::new("docker")
+            .args(["info", "--format", "{{json .}}"])
+            .output()
+        {
+            Ok(output) => {
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                    let message = if stderr.is_empty() {
+                        "docker info returned non-zero exit code".to_string()
+                    } else {
+                        stderr
+                    };
+                    notes.push(format!("Docker daemon is unavailable: {}", message));
+                    let response = json!({
+                        "available": false,
+                        "daemonRunning": false,
+                        "server": {},
+                        "summary": {
+                            "total": 0,
+                            "running": 0,
+                            "paused": 0,
+                            "exited": 0,
+                            "restarting": 0,
+                            "dead": 0,
+                        },
+                        "containers": [],
+                        "notes": notes,
+                    });
+                    return Ok(RPCResponse::new(RPCResult::Success(response), req.seq));
+                }
+
+                let content = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                serde_json::from_str::<Value>(content.as_str()).unwrap_or_else(|_| json!({}))
+            }
+            Err(error) => {
+                notes.push(format!("docker command not available: {}", error));
+                let response = json!({
+                    "available": false,
+                    "daemonRunning": false,
+                    "server": {},
+                    "summary": {
+                        "total": 0,
+                        "running": 0,
+                        "paused": 0,
+                        "exited": 0,
+                        "restarting": 0,
+                        "dead": 0,
+                    },
+                    "containers": [],
+                    "notes": notes,
+                });
+                return Ok(RPCResponse::new(RPCResult::Success(response), req.seq));
+            }
+        };
+
+        let ps_output = Command::new("docker")
+            .args(["ps", "--all", "--format", "{{json .}}"])
+            .output()
+            .map_err(|error| RPCErrors::ReasonError(format!("docker ps failed: {}", error)))?;
+
+        if !ps_output.status.success() {
+            let stderr = String::from_utf8_lossy(&ps_output.stderr).trim().to_string();
+            let message = if stderr.is_empty() {
+                "docker ps returned non-zero exit code".to_string()
+            } else {
+                stderr
+            };
+            return Err(RPCErrors::ReasonError(format!("docker ps failed: {}", message)));
+        }
+
+        let mut containers: Vec<Value> = Vec::new();
+        for line in String::from_utf8_lossy(&ps_output.stdout).lines() {
+            let row = line.trim();
+            if row.is_empty() {
+                continue;
+            }
+
+            let item = match serde_json::from_str::<Value>(row) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+
+            containers.push(json!({
+                "id": item.get("ID").and_then(|v| v.as_str()).unwrap_or_default(),
+                "name": item.get("Names").and_then(|v| v.as_str()).unwrap_or_default(),
+                "image": item.get("Image").and_then(|v| v.as_str()).unwrap_or_default(),
+                "state": item.get("State").and_then(|v| v.as_str()).unwrap_or_default(),
+                "status": item.get("Status").and_then(|v| v.as_str()).unwrap_or_default(),
+                "ports": item.get("Ports").and_then(|v| v.as_str()).unwrap_or_default(),
+                "networks": item.get("Networks").and_then(|v| v.as_str()).unwrap_or_default(),
+                "createdAt": item.get("CreatedAt").and_then(|v| v.as_str()).unwrap_or_default(),
+                "runningFor": item.get("RunningFor").and_then(|v| v.as_str()).unwrap_or_default(),
+                "command": item.get("Command").and_then(|v| v.as_str()).unwrap_or_default(),
+            }));
+        }
+
+        let running = containers
+            .iter()
+            .filter(|item| {
+                item.get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .eq_ignore_ascii_case("running")
+            })
+            .count() as u64;
+        let paused = containers
+            .iter()
+            .filter(|item| {
+                item.get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .eq_ignore_ascii_case("paused")
+            })
+            .count() as u64;
+        let restarting = containers
+            .iter()
+            .filter(|item| {
+                item.get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .eq_ignore_ascii_case("restarting")
+            })
+            .count() as u64;
+        let dead = containers
+            .iter()
+            .filter(|item| {
+                item.get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .eq_ignore_ascii_case("dead")
+            })
+            .count() as u64;
+        let exited = containers
+            .iter()
+            .filter(|item| {
+                let state = item
+                    .get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                state == "exited" || state == "created"
+            })
+            .count() as u64;
+
+        let response = json!({
+            "available": true,
+            "daemonRunning": true,
+            "server": {
+                "name": server_info.get("Name").and_then(|v| v.as_str()).unwrap_or_default(),
+                "version": server_info.get("ServerVersion").and_then(|v| v.as_str()).unwrap_or_default(),
+                "apiVersion": server_info.get("APIVersion").and_then(|v| v.as_str()).unwrap_or_default(),
+                "os": server_info.get("OperatingSystem").and_then(|v| v.as_str()).unwrap_or_default(),
+                "kernel": server_info.get("KernelVersion").and_then(|v| v.as_str()).unwrap_or_default(),
+                "driver": server_info.get("Driver").and_then(|v| v.as_str()).unwrap_or_default(),
+                "cgroupDriver": server_info.get("CgroupDriver").and_then(|v| v.as_str()).unwrap_or_default(),
+                "cpuCount": server_info.get("NCPU").and_then(|v| v.as_u64()).unwrap_or_default(),
+                "memTotalBytes": server_info.get("MemTotal").and_then(|v| v.as_u64()).unwrap_or_default(),
+            },
+            "summary": {
+                "total": containers.len() as u64,
+                "running": running,
+                "paused": paused,
+                "exited": exited,
+                "restarting": restarting,
+                "dead": dead,
+            },
+            "containers": containers,
+            "notes": notes,
+        });
+
+        Ok(RPCResponse::new(RPCResult::Success(response), req.seq))
+    }
+
+    async fn handle_container_action(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let id = Self::require_param_str(&req, "id")?;
+        let action = Self::require_param_str(&req, "action")?;
+
+        let docker_action = match action.as_str() {
+            "start" => "start",
+            "stop" => "stop",
+            "restart" => "restart",
+            _ => {
+                return Err(RPCErrors::ParseRequestError(format!(
+                    "Unsupported container action: {}",
+                    action
+                )));
+            }
+        };
+
+        let output = Command::new("docker")
+            .arg(docker_action)
+            .arg(id.as_str())
+            .output()
+            .map_err(|error| RPCErrors::ReasonError(format!("docker {} failed: {}", docker_action, error)))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+        if !output.status.success() {
+            let reason = if stderr.is_empty() {
+                format!("docker {} returned non-zero exit code", docker_action)
+            } else {
+                stderr
+            };
+            return Err(RPCErrors::ReasonError(reason));
+        }
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "id": id,
+                "action": docker_action,
+                "ok": true,
+                "stdout": stdout,
+            })),
+            req.seq,
+        ))
+    }
+
     async fn handle_unimplemented(
         &self,
         req: RPCRequest,
@@ -2793,6 +3297,7 @@ impl RPCHandler for ControlPanelServer {
                 self.handle_unimplemented(req, "Update interface config")
                     .await
             }
+            "network.overview" | "network.metrics" => self.handle_network_overview(req).await,
             "network.dns" => self.handle_unimplemented(req, "Get/set DNS").await,
             "network.ddns" => self.handle_unimplemented(req, "Get/set DDNS").await,
             "network.firewall.rules" => self.handle_unimplemented(req, "List firewall rules").await,
@@ -2803,6 +3308,12 @@ impl RPCHandler for ControlPanelServer {
             "zone.overview" | "zone.config" => self.handle_zone_overview(req).await,
             "gateway.overview" | "gateway.config" => self.handle_gateway_overview(req).await,
             "gateway.file.get" => self.handle_gateway_file_get(req).await,
+            "container.overview" | "containers.overview" | "docker.overview" => {
+                self.handle_container_overview(req).await
+            }
+            "container.action" | "containers.action" | "docker.action" => {
+                self.handle_container_action(req).await
+            }
             // Device
             "device.list" => self.handle_unimplemented(req, "List devices/clients").await,
             "device.block" => self.handle_unimplemented(req, "Block device").await,

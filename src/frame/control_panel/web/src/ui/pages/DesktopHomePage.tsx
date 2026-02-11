@@ -1,12 +1,14 @@
-import type { PointerEvent } from 'react'
+import type { MouseEvent, PointerEvent } from 'react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
 import {
   fetchAppsList,
+  fetchContainerOverview,
   fetchGatewayFile,
   fetchGatewayOverview,
   fetchLayout,
+  fetchNetworkOverview,
   fetchSystemMetrics,
   fetchSystemOverview,
   fetchSystemStatus,
@@ -17,6 +19,8 @@ import {
   mockSystemStatus,
   querySystemLogs,
 } from '@/api'
+import ContainerOverviewPanel from '../components/ContainerOverviewPanel'
+import NetworkOverviewPanel from '../components/NetworkOverviewPanel'
 import { NetworkTrendChart, ResourceTrendChart } from '../components/MonitorTrendCharts'
 import StorageDiskStatusPanel from '../components/StorageDiskStatusPanel'
 import StorageHealthSignalsPanel from '../components/StorageHealthSignalsPanel'
@@ -27,7 +31,7 @@ import Icon from '../icons'
 
 type DesktopMode = 'desktop' | 'jarvis'
 
-type WindowId = 'monitor' | 'storage' | 'logs' | 'apps' | 'settings' | 'users'
+type WindowId = 'monitor' | 'network' | 'containers' | 'storage' | 'logs' | 'apps' | 'settings' | 'users'
 
 type DesktopWindow = {
   id: WindowId
@@ -39,6 +43,13 @@ type DesktopWindow = {
   height: number
   z: number
   minimized: boolean
+  maximized: boolean
+  restoreRect?: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }
 }
 
 type AccessModePill = {
@@ -90,6 +101,19 @@ const WINDOW_MARGIN = 24
 const WINDOW_TOP_MARGIN = 80
 const MIN_WINDOW_WIDTH = 420
 const MIN_WINDOW_HEIGHT = 280
+const DESKTOP_HEADER_HEIGHT = 56
+const DESKTOP_DOCK_RESERVED_HEIGHT = 92
+const MAXIMIZED_SIDE_MARGIN = 10
+
+const getMaximizedRect = () => {
+  const viewportWidth = typeof window === 'undefined' ? 1200 : window.innerWidth
+  const viewportHeight = typeof window === 'undefined' ? 800 : window.innerHeight
+  const x = MAXIMIZED_SIDE_MARGIN
+  const y = DESKTOP_HEADER_HEIGHT
+  const width = Math.max(320, viewportWidth - MAXIMIZED_SIDE_MARGIN * 2)
+  const height = Math.max(220, viewportHeight - y - DESKTOP_DOCK_RESERVED_HEIGHT)
+  return { x, y, width, height }
+}
 
 const USER_TEAM_PREVIEW = [
   {
@@ -153,6 +177,10 @@ const DesktopHomePage = () => {
   const [status, setStatus] = useState<SystemStatusResponse>(mockSystemStatus)
   const [apps, setApps] = useState<DappCard[]>([])
   const [appsError, setAppsError] = useState<string | null>(null)
+  const [networkOverview, setNetworkOverview] = useState<NetworkOverview | null>(null)
+  const [networkError, setNetworkError] = useState<string | null>(null)
+  const [containerOverview, setContainerOverview] = useState<ContainerOverview | null>(null)
+  const [containerError, setContainerError] = useState<string | null>(null)
   const [zoneOverview, setZoneOverview] = useState<ZoneOverview | null>(null)
   const [zoneError, setZoneError] = useState<string | null>(null)
   const [gatewayOverview, setGatewayOverview] = useState<GatewayOverview | null>(null)
@@ -194,6 +222,8 @@ const DesktopHomePage = () => {
     () =>
       ({
         monitor: { title: 'System Monitor', icon: 'dashboard' as const, width: 896, height: 616 },
+        network: { title: 'Network Monitor', icon: 'network' as const, width: 980, height: 700 },
+        containers: { title: 'Container Manager', icon: 'container' as const, width: 980, height: 700 },
         storage: { title: 'Storage Manager', icon: 'storage' as const, width: 896, height: 648 },
         logs: { title: 'System Logs', icon: 'chart' as const, width: 1008, height: 728 },
         apps: { title: 'Applications', icon: 'apps' as const, width: 896, height: 648 },
@@ -296,6 +326,60 @@ const DesktopHomePage = () => {
     loadApps()
     return () => {
       cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const loadNetwork = async () => {
+      const { data, error } = await fetchNetworkOverview()
+      if (cancelled) return
+      setNetworkOverview(data)
+      if (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : typeof error === 'string'
+              ? error
+              : 'Network request failed'
+        setNetworkError(message)
+      } else {
+        setNetworkError(null)
+      }
+    }
+
+    loadNetwork()
+    const intervalId = window.setInterval(loadNetwork, 4000)
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const loadContainers = async () => {
+      const { data, error } = await fetchContainerOverview()
+      if (cancelled) return
+      setContainerOverview(data)
+      if (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : typeof error === 'string'
+              ? error
+              : 'Container request failed'
+        setContainerError(message)
+      } else {
+        setContainerError(null)
+      }
+    }
+
+    loadContainers()
+    const intervalId = window.setInterval(loadContainers, 7000)
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
     }
   }, [])
 
@@ -430,6 +514,7 @@ const DesktopHomePage = () => {
         height: initialHeight,
         z: zCounterRef.current,
         minimized: false,
+        maximized: false,
       }
       return [...prev, next]
     })
@@ -439,11 +524,12 @@ const DesktopHomePage = () => {
     setWindows((prev) => {
       const closing = prev.find((win) => win.id === id)
       if (closing) {
+        const restoreRect = closing.maximized ? closing.restoreRect : undefined
         windowMemoryRef.current[id] = {
-          x: closing.x,
-          y: closing.y,
-          width: closing.width,
-          height: closing.height,
+          x: restoreRect?.x ?? closing.x,
+          y: restoreRect?.y ?? closing.y,
+          width: restoreRect?.width ?? closing.width,
+          height: restoreRect?.height ?? closing.height,
         }
       }
       return prev.filter((win) => win.id !== id)
@@ -454,6 +540,84 @@ const DesktopHomePage = () => {
     (id: WindowId) =>
       setWindows((prev) => prev.map((win) => (win.id === id ? { ...win, minimized: !win.minimized } : win))),
     [],
+  )
+
+  const toggleMaximize = useCallback((id: WindowId) => {
+    setWindows((prev) =>
+      prev.map((win) => {
+        if (win.id !== id) {
+          return win
+        }
+
+        if (win.maximized) {
+          const restore = win.restoreRect
+          if (!restore) {
+            return { ...win, maximized: false }
+          }
+
+          const viewportWidth = typeof window === 'undefined' ? 1200 : window.innerWidth
+          const viewportHeight = typeof window === 'undefined' ? 800 : window.innerHeight
+          const restoredWidth = clamp(
+            restore.width,
+            MIN_WINDOW_WIDTH,
+            Math.max(MIN_WINDOW_WIDTH, viewportWidth - WINDOW_MARGIN * 2),
+          )
+          const restoredHeight = clamp(
+            restore.height,
+            MIN_WINDOW_HEIGHT,
+            Math.max(MIN_WINDOW_HEIGHT, viewportHeight - WINDOW_TOP_MARGIN - WINDOW_MARGIN),
+          )
+          const restoredX = clamp(
+            restore.x,
+            WINDOW_MARGIN,
+            Math.max(WINDOW_MARGIN, viewportWidth - restoredWidth - WINDOW_MARGIN),
+          )
+          const restoredY = clamp(
+            restore.y,
+            WINDOW_TOP_MARGIN,
+            Math.max(WINDOW_TOP_MARGIN, viewportHeight - restoredHeight - WINDOW_MARGIN),
+          )
+
+          return {
+            ...win,
+            x: restoredX,
+            y: restoredY,
+            width: restoredWidth,
+            height: restoredHeight,
+            maximized: false,
+            restoreRect: undefined,
+          }
+        }
+
+        const maximizedRect = getMaximizedRect()
+        return {
+          ...win,
+          ...maximizedRect,
+          maximized: true,
+          restoreRect: {
+            x: win.x,
+            y: win.y,
+            width: win.width,
+            height: win.height,
+          },
+        }
+      }),
+    )
+  }, [])
+
+  const handleTitleDoubleClick = useCallback(
+    (id: WindowId, event: MouseEvent<HTMLDivElement>) => {
+      const target = event.target as HTMLElement | null
+      const isControl = Boolean(
+        target?.closest('[data-window-control="true"],button,a,input,textarea,select'),
+      )
+      if (isControl) {
+        return
+      }
+      event.stopPropagation()
+      toggleMaximize(id)
+    },
+    [toggleMaximize],
   )
 
   const startWindowDrag = useCallback(
@@ -789,6 +953,18 @@ const DesktopHomePage = () => {
           tile: 'bg-blue-500',
         },
         {
+          id: 'network' as const,
+          label: 'Network',
+          icon: 'network' as const,
+          tile: 'bg-indigo-500',
+        },
+        {
+          id: 'containers' as const,
+          label: 'Containers',
+          icon: 'container' as const,
+          tile: 'bg-cyan-600',
+        },
+        {
           id: 'storage' as const,
           label: 'Storage',
           icon: 'storage' as const,
@@ -848,6 +1024,10 @@ const DesktopHomePage = () => {
       layout,
       apps,
       appsError,
+      networkOverview,
+      networkError,
+      containerOverview,
+      containerError,
       zoneOverview,
       zoneError,
       gatewayOverview,
@@ -864,6 +1044,10 @@ const DesktopHomePage = () => {
     [
       apps,
       appsError,
+      networkError,
+      networkOverview,
+      containerError,
+      containerOverview,
       overview,
       overviewError,
       zoneError,
@@ -885,6 +1069,7 @@ const DesktopHomePage = () => {
   )
 
   const onNotificationsClick = useCallback(() => navigateTo('/notifications'), [navigateTo])
+  const onOpenNetworkWindow = useCallback(() => openWindow('network'), [openWindow])
   const onNavigateSettings = useCallback(() => navigateTo('/settings'), [navigateTo])
   const goDesktop = useCallback(() => setMode('desktop'), [])
   const goJarvis = useCallback(() => setMode('jarvis'), [])
@@ -916,6 +1101,7 @@ const DesktopHomePage = () => {
         rxRate={rxRate}
         txRate={txRate}
         onNotificationsClick={onNotificationsClick}
+        onNetworkClick={onOpenNetworkWindow}
       />
 
       <main className="relative z-10 min-h-screen">
@@ -952,8 +1138,10 @@ const DesktopHomePage = () => {
         onTitlePointerUp={handleTitlePointerUp}
         onResizePointerMove={handleResizePointerMove}
         onResizePointerUp={handleResizePointerUp}
+        onTitleDoubleClick={handleTitleDoubleClick}
         closeWindow={closeWindow}
         toggleMinimize={toggleMinimize}
+        toggleMaximize={toggleMaximize}
       />
     </div>
   )
@@ -969,6 +1157,7 @@ type DesktopHeaderProps = {
   rxRate: number
   txRate: number
   onNotificationsClick: () => void
+  onNetworkClick: () => void
 }
 
 const DesktopHeader = memo((props: DesktopHeaderProps) => {
@@ -982,6 +1171,7 @@ const DesktopHeader = memo((props: DesktopHeaderProps) => {
     rxRate,
     txRate,
     onNotificationsClick,
+    onNetworkClick,
   } = props
 
   return (
@@ -1039,7 +1229,11 @@ const DesktopHeader = memo((props: DesktopHeaderProps) => {
             <span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-[var(--cp-accent)]" />
           </button>
 
-          <div className="hidden items-center gap-2 rounded-xl bg-white/10 px-2.5 py-1.5 ring-1 ring-white/15 md:flex">
+          <button
+            type="button"
+            onClick={onNetworkClick}
+            className="hidden items-center gap-2 rounded-xl bg-white/10 px-2.5 py-1.5 ring-1 ring-white/15 transition hover:bg-white/15 md:flex"
+          >
             <Icon name="network" className="size-4 text-white/80" />
             <p className="text-[11px] font-semibold text-white">
               Down {formatRate(rxRate)}
@@ -1048,7 +1242,7 @@ const DesktopHeader = memo((props: DesktopHeaderProps) => {
               </span>
               Up {formatRate(txRate)}
             </p>
-          </div>
+          </button>
 
           <div className="flex items-center gap-3">
             <UserPatternAvatar name={profileName} className="size-8" />
@@ -1206,15 +1400,13 @@ const DesktopView = memo((props: DesktopViewProps) => {
   return (
     <section className="relative min-h-screen px-5 pb-28 pt-28 sm:px-6 md:px-8">
       <div className="mx-auto grid max-w-7xl grid-cols-1 gap-10 md:grid-cols-[1fr_320px]">
-        <div className="grid grid-cols-3 content-start justify-items-center gap-x-6 gap-y-5 sm:grid-cols-4 md:grid-cols-6 md:gap-x-7 md:gap-y-6 lg:grid-cols-8 xl:grid-cols-10">
-          {desktopApps.map((app, index) => (
+        <div className="grid grid-cols-3 content-start justify-items-center gap-x-16 gap-y-5 sm:grid-cols-4 md:ml-[100px] md:w-fit md:grid-cols-5 md:justify-items-start md:gap-x-16 md:gap-y-6 lg:ml-[120px]">
+          {desktopApps.map((app) => (
             <button
               key={app.id}
               type="button"
               onClick={() => openWindow(app.id)}
-              className={`group flex w-[86px] flex-col items-center gap-2 rounded-xl p-2 transition-colors hover:bg-white/10 focus-visible:bg-white/15 focus-visible:outline-none ${
-                index === 0 ? 'md:col-start-2 lg:col-start-3 xl:col-start-4' : ''
-              }`}
+              className="group flex w-[86px] flex-col items-center gap-2 rounded-xl p-2 transition-colors hover:bg-white/10 focus-visible:bg-white/15 focus-visible:outline-none"
             >
               <div
                 className={`flex h-16 w-16 items-center justify-center rounded-2xl text-white shadow-lg ${app.tile} ${
@@ -1292,6 +1484,10 @@ type WindowData = {
   layout: RootLayoutData
   apps: DappCard[]
   appsError: string | null
+  networkOverview: NetworkOverview | null
+  networkError: string | null
+  containerOverview: ContainerOverview | null
+  containerError: string | null
   zoneOverview: ZoneOverview | null
   zoneError: string | null
   gatewayOverview: GatewayOverview | null
@@ -1362,12 +1558,16 @@ type WindowLayerProps = {
   onTitlePointerUp: (event: PointerEvent<HTMLDivElement>) => void
   onResizePointerMove: (event: PointerEvent<HTMLDivElement>) => void
   onResizePointerUp: (event: PointerEvent<HTMLDivElement>) => void
+  onTitleDoubleClick: (id: WindowId, event: MouseEvent<HTMLDivElement>) => void
   closeWindow: (id: WindowId) => void
   toggleMinimize: (id: WindowId) => void
+  toggleMaximize: (id: WindowId) => void
 }
 
 const getWindowFullPath = (id: WindowId) => {
   if (id === 'monitor') return '/monitor'
+  if (id === 'network') return '/network'
+  if (id === 'containers') return '/containers'
   if (id === 'storage') return '/storage'
   if (id === 'logs') return '/system-logs'
   if (id === 'apps') return '/dapps'
@@ -1386,8 +1586,10 @@ const WindowLayer = memo((props: WindowLayerProps) => {
     onTitlePointerUp,
     onResizePointerMove,
     onResizePointerUp,
+    onTitleDoubleClick,
     closeWindow,
     toggleMinimize,
+    toggleMaximize,
   } = props
 
   return (
@@ -1407,8 +1609,10 @@ const WindowLayer = memo((props: WindowLayerProps) => {
             onTitlePointerUp={onTitlePointerUp}
             onResizePointerMove={onResizePointerMove}
             onResizePointerUp={onResizePointerUp}
+            onTitleDoubleClick={onTitleDoubleClick}
             closeWindow={closeWindow}
             toggleMinimize={toggleMinimize}
+            toggleMaximize={toggleMaximize}
           />
         ))}
     </div>
@@ -1441,8 +1645,10 @@ type WindowFrameProps = {
   onTitlePointerUp: (event: PointerEvent<HTMLDivElement>) => void
   onResizePointerMove: (event: PointerEvent<HTMLDivElement>) => void
   onResizePointerUp: (event: PointerEvent<HTMLDivElement>) => void
+  onTitleDoubleClick: (id: WindowId, event: MouseEvent<HTMLDivElement>) => void
   closeWindow: (id: WindowId) => void
   toggleMinimize: (id: WindowId) => void
+  toggleMaximize: (id: WindowId) => void
 }
 
 const WindowFrame = memo((props: WindowFrameProps) => {
@@ -1456,8 +1662,10 @@ const WindowFrame = memo((props: WindowFrameProps) => {
     onTitlePointerUp,
     onResizePointerMove,
     onResizePointerUp,
+    onTitleDoubleClick,
     closeWindow,
     toggleMinimize,
+    toggleMaximize,
   } = props
   const panelRef = useRef<HTMLDivElement | null>(null)
 
@@ -1527,10 +1735,16 @@ const WindowFrame = memo((props: WindowFrameProps) => {
       >
         <div
           className="flex items-center justify-between gap-3 border-b border-[rgba(215,225,223,0.65)] bg-white/70 px-4 py-3"
-          onPointerDown={(event) => startWindowDrag(win.id, win.x, win.y, win.width, win.height, event)}
+          onPointerDown={(event) => {
+            if (win.maximized) {
+              return
+            }
+            startWindowDrag(win.id, win.x, win.y, win.width, win.height, event)
+          }}
           onPointerMove={onTitlePointerMove}
           onPointerUp={onTitlePointerUp}
           onPointerCancel={onTitlePointerUp}
+          onDoubleClick={(event) => onTitleDoubleClick(win.id, event)}
           style={{ touchAction: 'none' }}
         >
           <div className="flex items-center gap-3">
@@ -1557,23 +1771,35 @@ const WindowFrame = memo((props: WindowFrameProps) => {
                   toggleMinimize(win.id)
                 }}
               />
-              <span className="size-3 rounded-full bg-emerald-400/80 ring-1 ring-black/10" />
+              <button
+                type="button"
+                data-window-control="true"
+                className="size-3 rounded-full bg-emerald-400/85 ring-1 ring-black/10"
+                aria-label={`${win.maximized ? 'Restore' : 'Maximize'} ${win.title}`}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  toggleMaximize(win.id)
+                }}
+              />
             </div>
             <div className="flex items-center gap-2">
               <Icon name={win.icon} className="size-4 text-[var(--cp-muted)]" />
               <p className="text-sm font-semibold tracking-tight text-[var(--cp-ink)]">{win.title}</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Link
-              data-window-control="true"
-              to={getWindowFullPath(win.id)}
-              className="rounded-full border border-[var(--cp-border)] bg-white px-3 py-1 text-xs font-semibold text-[var(--cp-ink)] transition hover:border-[var(--cp-primary)] hover:text-[var(--cp-primary-strong)]"
-              onPointerDown={(event) => event.stopPropagation()}
-            >
-              Open full
-            </Link>
-          </div>
+          {win.id === 'logs' ? (
+            <div className="flex items-center gap-2">
+              <Link
+                data-window-control="true"
+                to={getWindowFullPath(win.id)}
+                className="rounded-full border border-[var(--cp-border)] bg-white px-3 py-1 text-xs font-semibold text-[var(--cp-ink)] transition hover:border-[var(--cp-primary)] hover:text-[var(--cp-primary-strong)]"
+                onPointerDown={(event) => event.stopPropagation()}
+              >
+                Open full
+              </Link>
+            </div>
+          ) : null}
         </div>
 
         <div className="min-h-0 flex-1 overflow-auto bg-[var(--cp-surface-muted)] p-4">
@@ -1581,19 +1807,21 @@ const WindowFrame = memo((props: WindowFrameProps) => {
         </div>
       </div>
 
-      {resizeHandles.map((handle) => (
-        <div
-          key={handle.edge}
-          className={`absolute ${handle.className}`}
-          onPointerDown={(event) =>
-            startWindowResize(win.id, handle.edge, win.x, win.y, win.width, win.height, event)
-          }
-          onPointerMove={onResizePointerMove}
-          onPointerUp={onResizePointerUp}
-          onPointerCancel={onResizePointerUp}
-          style={{ touchAction: 'none' }}
-        />
-      ))}
+      {!win.maximized
+        ? resizeHandles.map((handle) => (
+            <div
+              key={handle.edge}
+              className={`absolute ${handle.className}`}
+              onPointerDown={(event) =>
+                startWindowResize(win.id, handle.edge, win.x, win.y, win.width, win.height, event)
+              }
+              onPointerMove={onResizePointerMove}
+              onPointerUp={onResizePointerUp}
+              onPointerCancel={onResizePointerUp}
+              style={{ touchAction: 'none' }}
+            />
+          ))
+        : null}
     </div>
   )
 })
@@ -1613,6 +1841,10 @@ const WindowBody = memo((props: WindowBodyProps) => {
     overviewError,
     layout,
     apps,
+    networkOverview,
+    networkError,
+    containerOverview,
+    containerError,
     zoneOverview,
     zoneError,
     gatewayOverview,
@@ -1774,6 +2006,46 @@ const WindowBody = memo((props: WindowBodyProps) => {
           ) : (
             <p className="mt-2 text-xs text-[var(--cp-muted)]">No active warnings.</p>
           )}
+        </div>
+      </div>
+    )
+  }
+
+  if (id === 'network') {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+          <p className="text-sm font-semibold text-[var(--cp-ink)]">Network monitor</p>
+          <p className="mt-1 text-xs text-[var(--cp-muted)]">
+            Backend-thread timeline with per-interface throughput, errors, and drops.
+          </p>
+        </div>
+        <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+          <NetworkOverviewPanel
+            overview={networkOverview}
+            errorMessage={networkError}
+            compact
+          />
+        </div>
+      </div>
+    )
+  }
+
+  if (id === 'containers') {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+          <p className="text-sm font-semibold text-[var(--cp-ink)]">Docker runtime overview</p>
+          <p className="mt-1 text-xs text-[var(--cp-muted)]">
+            Manage container lifecycle and inspect runtime health for this node.
+          </p>
+        </div>
+        <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+          <ContainerOverviewPanel
+            overview={containerOverview}
+            errorMessage={containerError}
+            compact
+          />
         </div>
       </div>
     )
