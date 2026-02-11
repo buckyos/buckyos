@@ -39,6 +39,9 @@ modules:
   aicc:
     type: rust
     name: aicc
+  msg_center:
+    type: rust
+    name: msg_center
   control_panel_web:
     type: web
     name: control_panel
@@ -74,6 +77,7 @@ apps:
       buckyos_systest: bin/buckyos_systest/
       app-loader: bin/app-loader/
       aicc: bin/aicc/
+      msg_center: bin/msg-center/
       scheduler-etc: etc/scheduler/
       boot-gateway-config: etc/boot_gateway.yaml
       util.py: bin/util.py

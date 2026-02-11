@@ -8,6 +8,7 @@ mod system_config;
 mod task_mgr;
 mod verify_hub_client;
 mod zone_gateway;
+mod msg_center_client;
 
 mod app_doc;
 mod app_mgr;
@@ -29,6 +30,7 @@ pub use system_config::*;
 pub use task_mgr::*;
 pub use verify_hub_client::*;
 pub use zone_gateway::*;
+pub use msg_center_client::*;
 
 pub use app_mgr::*;
 pub use gateway_control::*;
