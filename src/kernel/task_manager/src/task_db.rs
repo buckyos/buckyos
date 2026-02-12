@@ -304,7 +304,8 @@ impl TaskDb {
                     .map(|task| task.data)
                     .unwrap_or_else(|| Value::Object(Default::default()));
                 merge_json(&mut current, &data_patch);
-                data_str = Some(serde_json::to_string(&current).unwrap_or_else(|_| "{}".to_string()));
+                data_str =
+                    Some(serde_json::to_string(&current).unwrap_or_else(|_| "{}".to_string()));
             }
         }
 
@@ -567,7 +568,10 @@ mod tests {
         db.create_task(&task2).await.unwrap();
 
         let running_tasks = db.list_tasks_by_status(TaskStatus::Running).await.unwrap();
-        let completed_tasks = db.list_tasks_by_status(TaskStatus::Completed).await.unwrap();
+        let completed_tasks = db
+            .list_tasks_by_status(TaskStatus::Completed)
+            .await
+            .unwrap();
 
         assert_eq!(running_tasks.len(), 1);
         assert_eq!(completed_tasks.len(), 1);
@@ -582,7 +586,9 @@ mod tests {
         let task = create_test_task("status_test");
         let id = db.create_task(&task).await.unwrap();
 
-        db.update_task_status(id, TaskStatus::Running).await.unwrap();
+        db.update_task_status(id, TaskStatus::Running)
+            .await
+            .unwrap();
 
         let updated_task = db.get_task(id).await.unwrap().unwrap();
         assert_eq!(updated_task.status, TaskStatus::Running);
@@ -607,7 +613,9 @@ mod tests {
         let task = create_test_task("error_test");
         let id = db.create_task(&task).await.unwrap();
 
-        db.update_task_error(id, "Test error message").await.unwrap();
+        db.update_task_error(id, "Test error message")
+            .await
+            .unwrap();
         let updated_task = db.get_task(id).await.unwrap().unwrap();
         assert_eq!(updated_task.status, TaskStatus::Failed);
         assert_eq!(updated_task.message, Some("Test error message".to_string()));

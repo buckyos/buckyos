@@ -80,7 +80,7 @@ impl SystemLoggerBuilder {
             1024 * 1024 * 16, // 16 MB max file size
             1000,             // flush interval ms
         )?;
-        
+
         let target = Box::new(target) as Box<dyn SystemLogTarget>;
         self.targets.push(target);
 

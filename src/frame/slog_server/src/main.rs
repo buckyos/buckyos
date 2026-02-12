@@ -7,7 +7,7 @@ mod storage;
 extern crate log;
 
 use crate::server::LogHttpServer;
-use crate::storage::{create_log_storage, LogStorageType};
+use crate::storage::{LogStorageType, create_log_storage};
 
 pub const SERVICE_NAME: &str = "slog_server";
 

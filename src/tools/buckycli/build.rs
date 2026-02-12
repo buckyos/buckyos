@@ -1,6 +1,6 @@
 use anyhow::Result;
-use vergen::EmitBuilder;
 use std::env;
+use vergen::EmitBuilder;
 
 pub fn main() -> Result<()> {
     // NOTE: This will output everything, and requires all features enabled.

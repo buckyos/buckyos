@@ -71,15 +71,15 @@ fn test_node_state_change() {
 
     let actions = scheduler.resort_nodes().unwrap();
     assert_eq!(actions.len(), 2);
-            if let SchedulerAction::ChangeNodeStatus(node_id, new_state) = &actions[0] {
-            if node_id == "node1" {
-                assert_eq!(new_state, &NodeState::Prepare);
-            } else if node_id == "node2" {
-                assert_eq!(new_state, &NodeState::Deleted);
-            } else {
-                panic!("Unexpected node id: {}", node_id);
-            }
+    if let SchedulerAction::ChangeNodeStatus(node_id, new_state) = &actions[0] {
+        if node_id == "node1" {
+            assert_eq!(new_state, &NodeState::Prepare);
+        } else if node_id == "node2" {
+            assert_eq!(new_state, &NodeState::Deleted);
+        } else {
+            panic!("Unexpected node id: {}", node_id);
         }
+    }
 }
 
 // test create service_spec instance
@@ -358,4 +358,4 @@ fn test_node_and_network_affinity() {
     } else {
         panic!("Unexpected action");
     }
-} 
+}

@@ -576,8 +576,9 @@ fn register_default_aliases(
 }
 
 pub fn register_openai_llm_providers(center: &AIComputeCenter) -> Result<usize> {
-    let api_token = env::var("OPENAI_API_TOKEN")
-        .map_err(|_| anyhow!("OPENAI_API_TOKEN environment variable is required for openai provider"))?;
+    let api_token = env::var("OPENAI_API_TOKEN").map_err(|_| {
+        anyhow!("OPENAI_API_TOKEN environment variable is required for openai provider")
+    })?;
     if api_token.trim().is_empty() {
         return Err(anyhow!(
             "OPENAI_API_TOKEN environment variable is empty for openai provider"

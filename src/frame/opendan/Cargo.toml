@@ -8,6 +8,7 @@ authors = ["BuckyOS DAO","waterflier","codex5.3"]
 async-trait = {workspace = true}
 serde = {workspace = true}
 serde_json = {workspace = true}
+serde_yaml = "0.9"
 thiserror = {workspace = true}
 buckyos-api = { path = "../../kernel/buckyos-api" }
 kRPC = { workspace = true }

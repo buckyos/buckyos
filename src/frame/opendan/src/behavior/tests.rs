@@ -310,6 +310,24 @@ impl AiccHandler for MockAicc {
     }
 }
 
+async fn load_behavior_config_yaml_for_test(behavior_name: &str, yaml: &str) -> BehaviorConfig {
+    let tmp = tempdir().expect("create tempdir for behavior config");
+    let behaviors_dir = tmp.path().join("behaviors");
+    fs::create_dir_all(&behaviors_dir)
+        .await
+        .expect("create behaviors dir");
+    fs::write(
+        behaviors_dir.join(format!("{behavior_name}.yaml")),
+        yaml.trim_start(),
+    )
+    .await
+    .expect("write behavior config yaml");
+
+    BehaviorConfig::load_from_dir(&behaviors_dir, behavior_name)
+        .await
+        .expect("load behavior config from yaml")
+}
+
 #[test]
 fn parse_json_in_code_fence() {
     let raw = LLMRawResponse {
@@ -414,6 +432,17 @@ async fn run_step_with_tool_followup() {
     tool_mgr
         .register_tool(EchoTool)
         .expect("register tool.echo should succeed");
+    let behavior_cfg = load_behavior_config_yaml_for_test(
+        "on_wakeup",
+        r#"
+process_rule: do work
+tools:
+  mode: allow_list
+  names:
+    - tool.echo
+"#,
+    )
+    .await;
 
     let deps = LLMBehaviorDeps {
         taskmgr: Arc::new(TaskManagerClient::new_in_process(Box::new(
@@ -425,18 +454,18 @@ async fn run_step_with_tool_followup() {
         aicc,
         tools: tool_mgr,
         policy: Arc::new(MockPolicy {
-            tools: vec![ToolSpec {
+            tools: behavior_cfg.tools.filter_tool_specs(&[ToolSpec {
                 name: "tool.echo".to_string(),
                 description: "echo".to_string(),
                 args_schema: json!({"type":"object"}),
                 output_schema: json!({"type":"object"}),
-            }],
+            }]),
         }),
         worklog: Arc::new(MockWorklog),
         tokenizer: Arc::new(MockTokenizer),
     };
 
-    let behavior = LLMBehavior::new(LLMBehaviorConfig::default(), deps);
+    let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
     let input = ProcessInput {
         trace: TraceCtx {
             trace_id: "trace-1".to_string(),
@@ -447,12 +476,12 @@ async fn run_step_with_tool_followup() {
         },
         role_md: "role".to_string(),
         self_md: "self".to_string(),
-        behavior_prompt: "do work".to_string(),
+        behavior_prompt: behavior_cfg.process_rule.clone(),
         env_context: vec![],
         inbox: json!({"event":"wake"}),
         memory: json!({"facts":[]}),
         last_observations: vec![],
-        limits: StepLimits::default(),
+        limits: behavior_cfg.limits.clone(),
     };
 
     let result = behavior.run_step(input).await;
@@ -576,6 +605,15 @@ async fn run_step_then_run_actions_followup() {
         ),
     ])));
     let requests = Arc::new(Mutex::new(Vec::<CompleteRequest>::new()));
+    let behavior_cfg = load_behavior_config_yaml_for_test(
+        "on_wakeup",
+        r#"
+process_rule: plan action and summarize action result
+tools:
+  mode: none
+"#,
+    )
+    .await;
 
     let deps = LLMBehaviorDeps {
         taskmgr: Arc::new(TaskManagerClient::new_in_process(Box::new(
@@ -594,7 +632,7 @@ async fn run_step_then_run_actions_followup() {
         tokenizer: Arc::new(MockTokenizer),
     };
 
-    let behavior = LLMBehavior::new(LLMBehaviorConfig::default(), deps);
+    let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
 
     let base_trace = TraceCtx {
         trace_id: "trace-actions".to_string(),
@@ -608,12 +646,12 @@ async fn run_step_then_run_actions_followup() {
         trace: base_trace.clone(),
         role_md: "role".to_string(),
         self_md: "self".to_string(),
-        behavior_prompt: "plan action first".to_string(),
+        behavior_prompt: behavior_cfg.process_rule.clone(),
         env_context: vec![],
         inbox: json!({"event":"wake"}),
         memory: json!({"facts":[]}),
         last_observations: vec![],
-        limits: StepLimits::default(),
+        limits: behavior_cfg.limits.clone(),
     };
 
     let first_result = behavior.run_step(first_input).await;
@@ -638,12 +676,12 @@ async fn run_step_then_run_actions_followup() {
         },
         role_md: "role".to_string(),
         self_md: "self".to_string(),
-        behavior_prompt: "summarize action result".to_string(),
+        behavior_prompt: behavior_cfg.process_rule.clone(),
         env_context: vec![],
         inbox: json!({"event":"action_done"}),
         memory: json!({"facts":[]}),
         last_observations: action_observations,
-        limits: StepLimits::default(),
+        limits: behavior_cfg.limits.clone(),
     };
 
     let second_result = behavior.run_step(second_input).await;
@@ -765,6 +803,17 @@ async fn run_step_with_workshop_list_dir_then_plan_python_actions() {
         ),
     ])));
     let requests = Arc::new(Mutex::new(Vec::<CompleteRequest>::new()));
+    let behavior_cfg = load_behavior_config_yaml_for_test(
+        "on_wakeup",
+        r#"
+process_rule: list todo and then plan python script actions
+tools:
+  mode: allow_list
+  names:
+    - workshop.exec_bash
+"#,
+    )
+    .await;
 
     let deps = LLMBehaviorDeps {
         taskmgr: Arc::new(TaskManagerClient::new_in_process(Box::new(
@@ -779,13 +828,15 @@ async fn run_step_with_workshop_list_dir_then_plan_python_actions() {
         }))),
         tools: tool_mgr.clone(),
         policy: Arc::new(MockPolicy {
-            tools: tool_mgr.list_tool_specs(),
+            tools: behavior_cfg
+                .tools
+                .filter_tool_specs(&tool_mgr.list_tool_specs()),
         }),
         worklog: Arc::new(MockWorklog),
         tokenizer: Arc::new(MockTokenizer),
     };
 
-    let behavior = LLMBehavior::new(LLMBehaviorConfig::default(), deps);
+    let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
     let input = ProcessInput {
         trace: TraceCtx {
             trace_id: "trace-workshop-actions".to_string(),
@@ -796,12 +847,12 @@ async fn run_step_with_workshop_list_dir_then_plan_python_actions() {
         },
         role_md: "role".to_string(),
         self_md: "self".to_string(),
-        behavior_prompt: "list todo and then plan python script actions".to_string(),
+        behavior_prompt: behavior_cfg.process_rule.clone(),
         env_context: vec![],
         inbox: json!({"event":"wake"}),
         memory: json!({"facts":[]}),
         last_observations: vec![],
-        limits: StepLimits::default(),
+        limits: behavior_cfg.limits.clone(),
     };
 
     let result = behavior.run_step(input).await;

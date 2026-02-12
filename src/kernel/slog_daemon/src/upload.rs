@@ -15,7 +15,11 @@ impl LogUploader {
         }
     }
 
-    pub async fn upload_logs(&self, service: &str, records: Vec<SystemLogRecord>) -> Result<(), String> {
+    pub async fn upload_logs(
+        &self,
+        service: &str,
+        records: Vec<SystemLogRecord>,
+    ) -> Result<(), String> {
         // Prepare the payload
         let payload = serde_json::json!({
             "node": self.node,
@@ -24,7 +28,9 @@ impl LogUploader {
         });
 
         // Send the HTTP POST request
-        let response = self.client.post(&self.service_endpoint)
+        let response = self
+            .client
+            .post(&self.service_endpoint)
             .json(&payload)
             .send()
             .await

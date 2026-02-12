@@ -1,9 +1,12 @@
-use super::meta::LogMeta;
-use crate::system_log::{SystemLogTarget, SystemLogRecord};
-use std::{fs::File, path::{PathBuf, Path}};
-use std::sync::{Mutex, Arc};
 use super::format::SystemLogRecordLineFormatter;
+use super::meta::LogMeta;
+use crate::system_log::{SystemLogRecord, SystemLogTarget};
 use std::io::Write;
+use std::sync::{Arc, Mutex};
+use std::{
+    fs::File,
+    path::{Path, PathBuf},
+};
 
 // Cache log records before flushing to file, then we flush log every interval
 struct LogRecordCache {
@@ -45,7 +48,6 @@ struct FileLogTargetInner {
 
     current_file: Mutex<Option<FileInfo>>,
     cache: LogRecordCache,
-
 }
 
 #[derive(Clone)]
@@ -85,7 +87,9 @@ impl FileLogTarget {
         let this = self.clone();
         std::thread::spawn(move || {
             loop {
-                std::thread::sleep(std::time::Duration::from_millis(this.inner.flush_interval_ms));
+                std::thread::sleep(std::time::Duration::from_millis(
+                    this.inner.flush_interval_ms,
+                ));
                 this.flush_to_file();
             }
         });
@@ -156,7 +160,11 @@ impl FileLogTarget {
 
         // Stat the file to get its size
         let metadata = file.metadata().map_err(|e| {
-            let msg = format!("failed to get metadata of log file {}: {}", log_file.display(), e);
+            let msg = format!(
+                "failed to get metadata of log file {}: {}",
+                log_file.display(),
+                e
+            );
             error!("{}", msg);
             msg
         })?;
@@ -171,7 +179,7 @@ impl FileLogTarget {
 
     fn log_to_file(&self, records: &[SystemLogRecord]) -> Result<(), String> {
         // First format all records to lines
-        let mut lines  = Vec::with_capacity(records.len());
+        let mut lines = Vec::with_capacity(records.len());
 
         for record in records {
             let line = SystemLogRecordLineFormatter::format_record(record);
@@ -197,14 +205,17 @@ impl FileLogTarget {
         }
 
         let file_info = current_file.as_mut().unwrap();
-        
+
         // Get current pos of the file
         use std::io::Seek;
-        let pos = file_info.file.seek(std::io::SeekFrom::Current(0)).map_err(|e| {
-            let msg = format!("failed to seek to end of log file: {}", e);
-            error!("{}", msg);
-            msg
-        })?;
+        let pos = file_info
+            .file
+            .seek(std::io::SeekFrom::Current(0))
+            .map_err(|e| {
+                let msg = format!("failed to seek to end of log file: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
 
         let mut i = 0;
         let ret = loop {
@@ -214,10 +225,10 @@ impl FileLogTarget {
 
             let line = &lines[i];
             i += 1;
-            match  file_info.file.write_all(line.as_bytes()) {
+            match file_info.file.write_all(line.as_bytes()) {
                 Ok(_) => {
                     file_info.size += line.len() as u64;
-                },
+                }
                 Err(e) => {
                     let msg = format!("failed to write log to file: {}", e);
                     error!("{}", msg);
@@ -226,19 +237,25 @@ impl FileLogTarget {
             }
         };
 
-        let new_pos = file_info.file.seek(std::io::SeekFrom::Current(0)).map_err(|e| {
-            let msg = format!("failed to seek log file after writing: {}", e);
-            error!("{}", msg);
-            msg
-        })?;
-
-        // If any logs were written, update the write index in meta
-        if new_pos > pos {
-            self.inner.meta.update_current_write_index(new_pos).map_err(|e| {
-                let msg = format!("failed to update write index of current log file: {}", e);
+        let new_pos = file_info
+            .file
+            .seek(std::io::SeekFrom::Current(0))
+            .map_err(|e| {
+                let msg = format!("failed to seek log file after writing: {}", e);
                 error!("{}", msg);
                 msg
             })?;
+
+        // If any logs were written, update the write index in meta
+        if new_pos > pos {
+            self.inner
+                .meta
+                .update_current_write_index(new_pos)
+                .map_err(|e| {
+                    let msg = format!("failed to update write index of current log file: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?;
         }
 
         ret

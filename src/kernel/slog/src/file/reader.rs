@@ -5,7 +5,7 @@ use crate::system_log::SystemLogRecord;
 use std::fs::File;
 use std::io::Seek;
 use std::io::prelude::*;
-use std::path::{PathBuf, Path};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 struct ReadFileInfo {
@@ -91,10 +91,7 @@ impl FileLogReader {
             let mut read_info = read_info.unwrap();
 
             // Open the file for reading
-            info!(
-                "opening log file for reading: {:?}",
-                read_info
-            );
+            info!("opening log file for reading: {:?}", read_info);
 
             let file_path = self.dir.join(&read_info.name);
             // Check file exists
@@ -106,11 +103,13 @@ impl FileLogReader {
                 warn!("{}", msg);
 
                 // Mark read complete to skip this file
-                self.meta.mark_file_read_complete(read_info.id).map_err(|e| {
-                    let msg = format!("failed to mark log file read complete: {}", e);
-                    error!("{}", msg);
-                    msg
-                })?;
+                self.meta
+                    .mark_file_read_complete(read_info.id)
+                    .map_err(|e| {
+                        let msg = format!("failed to mark log file read complete: {}", e);
+                        error!("{}", msg);
+                        msg
+                    })?;
 
                 continue; // Try next file
             }
@@ -153,15 +152,17 @@ impl FileLogReader {
                         metadata.len()
                     );
                     warn!("{}", msg);
-                    self.meta.update_file_read_index(read_info.id, metadata.len() as i64).map_err(|e| {
-                        let msg = format!(
-                            "failed to update read index of log file: {}, {}",
-                            file_path.display(),
-                            e
-                        );
-                        error!("{}", msg);
-                        msg
-                    })?;
+                    self.meta
+                        .update_file_read_index(read_info.id, metadata.len() as i64)
+                        .map_err(|e| {
+                            let msg = format!(
+                                "failed to update read index of log file: {}, {}",
+                                file_path.display(),
+                                e
+                            );
+                            error!("{}", msg);
+                            msg
+                        })?;
 
                     read_info.read_index = metadata.len() as i64;
                 }
@@ -209,7 +210,7 @@ impl FileLogReader {
             read_info.last_read_index,
             batch_size
         );
-        
+
         let mut records = Vec::new();
         let mut buf_reader = std::io::BufReader::new(&mut read_info.file);
 
@@ -240,7 +241,7 @@ impl FileLogReader {
                 msg
             })?;
 
-            /* 
+            /*
             let pos = buf_reader.seek(std::io::SeekFrom::Current(0)).map_err(|e| {
                 let msg = format!(
                     "failed to get current position of log file: {}, {}",
@@ -257,7 +258,7 @@ impl FileLogReader {
                 pos,
             );
             */
-            
+
             if bytes_read == 0 {
                 break; // EOF
             }
@@ -274,7 +275,7 @@ impl FileLogReader {
                         e
                     );
                     println!("{}", msg);
-                    
+
                     // TODO: skip invalid log line for now
                     continue;
                 }
@@ -315,8 +316,7 @@ impl FileLogReader {
 
         debug!(
             "flushing read index for log file id: {}, last_read_index: {}",
-            read_info.meta.id,
-            read_info.last_read_index
+            read_info.meta.id, read_info.last_read_index
         );
         // Update meta db
         self.meta
@@ -336,8 +336,6 @@ impl FileLogReader {
         Ok(())
     }
 }
-
-
 
 fn test_read() {
     let log_dir = crate::get_buckyos_log_root_dir().join("test_slog_service");

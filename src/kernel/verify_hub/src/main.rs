@@ -4,13 +4,13 @@ use lazy_static::lazy_static;
 use log::*;
 use rand::prelude::*;
 
+use async_trait::async_trait;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::env;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
-use async_trait::async_trait;
 
 use ::kRPC::*;
 use buckyos_api::*;
@@ -18,18 +18,20 @@ use buckyos_kit::*;
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Validation};
 use name_lib::*;
 
-
 // Token expiration time constants
 // Session token: short-lived, used for API requests
 const SESSION_TOKEN_EXPIRE_SECONDS: u64 = 15 * 60; // 15 minutes
-// Refresh token: long-lived, used to obtain new token pairs
+                                                   // Refresh token: long-lived, used to obtain new token pairs
 const REFRESH_TOKEN_EXPIRE_SECONDS: u64 = 7 * 24 * 3600; // 7 days
 const MAX_LOGIN_NONCE_AGE_SECONDS: u64 = 3600 * 8; // 8 hours
-use cyfs_gateway_lib::{HttpServer, ServerError, ServerResult, StreamInfo, serve_http_by_rpc_handler, server_err, ServerErrorCode};
-use server_runner::*;
 use bytes::Bytes;
+use cyfs_gateway_lib::{
+    serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
+    StreamInfo,
+};
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
+use server_runner::*;
 
 type Result<T> = std::result::Result<T, RPCErrors>;
 
@@ -87,7 +89,7 @@ async fn generate_session_token(
         session: Some(session),
         iss: Some(VERIFY_HUB_ISSUER.to_string()),
         exp: Some(exp),
-        extra:HashMap::new(),
+        extra: HashMap::new(),
     };
 
     {
@@ -115,13 +117,13 @@ async fn generate_refresh_token(
         token_type: RPCSessionTokenType::Normal,
         appid: Some(appid.to_string()),
         jti: Some(jti.to_string()),
-        aud: Some(VERIFY_HUB_UNIQUE_ID.to_string()),//refresh token audience is verify-hub
+        aud: Some(VERIFY_HUB_UNIQUE_ID.to_string()), //refresh token audience is verify-hub
         sub: Some(userid.to_string()),
         token: None,
         session: Some(session),
         iss: Some(VERIFY_HUB_ISSUER.to_string()),
         exp: Some(exp),
-        extra:HashMap::new(),
+        extra: HashMap::new(),
     };
 
     {
@@ -181,7 +183,10 @@ async fn generate_token_pair(
 
 /// Cache refresh token for validation during refresh flow
 async fn cache_refresh_token(key: &str, token: RPCSessionToken) {
-    REFRESH_TOKEN_CACHE.lock().await.insert(key.to_string(), token);
+    REFRESH_TOKEN_CACHE
+        .lock()
+        .await
+        .insert(key.to_string(), token);
 }
 
 async fn gc_token_caches() {
@@ -248,7 +253,7 @@ async fn get_my_krpc_token() -> Result<RPCSessionToken> {
         session: None,
         iss: Some(VERIFY_HUB_ISSUER.to_string()),
         exp: Some(exp),
-        extra:HashMap::new(),
+        extra: HashMap::new(),
     };
 
     {
@@ -354,13 +359,15 @@ async fn verify_trusted_jwt(jwt: &str) -> Result<Value> {
     })?;
 
     if header.alg != Algorithm::EdDSA {
-        return Err(RPCErrors::ReasonError("JWT algorithm not allowed".to_string()));
+        return Err(RPCErrors::ReasonError(
+            "JWT algorithm not allowed".to_string(),
+        ));
     }
 
     let mut validation = Validation::new(Algorithm::EdDSA);
     // We don't have an expected audience for generic trusted JWTs.
     validation.validate_aud = false;
-    
+
     // Get iss from claims by decoding the payload part (without signature verification)
     // JWT format: header.payload.signature
     let claims = decode_jwt_claim_without_verify(jwt).map_err(|error| {
@@ -383,21 +390,19 @@ async fn verify_trusted_jwt(jwt: &str) -> Result<Value> {
             RPCErrors::ReasonError("JWT verify error".to_string())
         })?;
 
-
     Ok(decoded_token.claims)
 }
 
-async fn verify_verify_hub_jwt(
-    jwt: &str,
-    expected_audience: Option<&str>,
-) -> Result<Value> {
+async fn verify_verify_hub_jwt(jwt: &str, expected_audience: Option<&str>) -> Result<Value> {
     let header: jsonwebtoken::Header = jsonwebtoken::decode_header(jwt).map_err(|error| {
         error!("JWT decode header error: {}", error);
         RPCErrors::ReasonError("JWT decode header error".to_string())
     })?;
 
     if header.alg != Algorithm::EdDSA {
-        return Err(RPCErrors::ReasonError("JWT algorithm not allowed".to_string()));
+        return Err(RPCErrors::ReasonError(
+            "JWT algorithm not allowed".to_string(),
+        ));
     }
 
     let claims = decode_jwt_claim_without_verify(jwt).map_err(|error| {
@@ -415,7 +420,7 @@ async fn verify_verify_hub_jwt(
     }
 
     // Always verify verify-hub issued tokens by verify-hub public key
-    let public_key = get_trust_public_key(VERIFY_HUB_ISSUER, &None,).await?;
+    let public_key = get_trust_public_key(VERIFY_HUB_ISSUER, &None).await?;
 
     let mut validation = Validation::new(Algorithm::EdDSA);
     validation.set_issuer(&[VERIFY_HUB_ISSUER]);
@@ -436,7 +441,6 @@ async fn verify_verify_hub_jwt(
 
     Ok(decoded_token.claims)
 }
-
 
 /**
 curl -X POST http://127.0.0.1/kapi/verify_hub -H "Content-Type: application/json" -d '{"method": "login","params":{"type":"jwt","jwt":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL3d3dy53aGl0ZS5ib3Vjay5pbyIsImF1ZCI6Imh0dHBzOi8vd3d3LndoaXRlLmJvdWNrLmlvIiwiZXhwIjoxNzI3NzIwMDAwLCJpYXQiOjE3Mjc3MTY0MDAsInVzZXJpZCI6ImRpZDpleGFtcGxlOjEyMzQ1Njc4OTAiLCJhcHBpZCI6InN5c3RvbSIsInVzZXJuYW1lIjoiYWxpY2UifQ.6XQ56XQ56XQ56XQ56XQ56XQ56XQ56XQ56XQ56XQ5"}}'
@@ -463,23 +467,35 @@ impl VerifyHubApiHandler for VerifyHubServer {
         // Step 1: Verify JWT signature (include exp) and extract payload
         // The incoming JWT is signed by a trusted entity (device/owner)
         let jwt_payload = verify_trusted_jwt(jwt).await?;
-    
+
         // Step 2: Extract required fields from JWT payload
-        let rpc_session_token : RPCSessionToken = serde_json::from_value(jwt_payload).map_err(|error| {
-            error!("Failed to parse RPCSessionToken from JWT payload: {}", error);
-            RPCErrors::ReasonError("Failed to parse RPCSessionToken from JWT payload".to_string())
-        })?;
-        let userid = rpc_session_token.sub.ok_or(RPCErrors::ReasonError("Missing sub".to_string()))?;
-        let appid = rpc_session_token.appid.ok_or(RPCErrors::ReasonError("Missing appid".to_string()))?;
-        let token_jti = rpc_session_token.jti.ok_or(RPCErrors::ReasonError("Missing jti".to_string()))?;
+        let rpc_session_token: RPCSessionToken =
+            serde_json::from_value(jwt_payload).map_err(|error| {
+                error!(
+                    "Failed to parse RPCSessionToken from JWT payload: {}",
+                    error
+                );
+                RPCErrors::ReasonError(
+                    "Failed to parse RPCSessionToken from JWT payload".to_string(),
+                )
+            })?;
+        let userid = rpc_session_token
+            .sub
+            .ok_or(RPCErrors::ReasonError("Missing sub".to_string()))?;
+        let appid = rpc_session_token
+            .appid
+            .ok_or(RPCErrors::ReasonError("Missing appid".to_string()))?;
+        let token_jti = rpc_session_token
+            .jti
+            .ok_or(RPCErrors::ReasonError("Missing jti".to_string()))?;
         //let token_jti = rpc_session_token.jti.ok_or(RPCErrors::ReasonError("Missing jti".to_string()))?;
-       
+
         // ============================================================
         // FIRST LOGIN FLOW: Using trusted device/owner JWT
         // The incoming JWT is signed by a trusted entity (device/owner)
         // ============================================================
         info!("Handle login by JWT for sub: {}, appid: {}", userid, appid);
-        
+
         let session_key = format!("{}_{}_{}", userid, appid, token_jti);
 
         // Step 4: Check if this login JWT has already been used (replay protection)
@@ -495,18 +511,18 @@ impl VerifyHubApiHandler for VerifyHubServer {
             session_id = rng.gen::<u64>();
         }
         let new_session_key = format!("{}_{}_{}", userid, appid, session_id);
-        
+
         // Step 6: Generate new token pair (session_token + refresh_token)
         let (token_pair, session_token, refresh_token) =
             generate_token_pair(appid.as_str(), userid.as_str(), session_id).await?;
-        
+
         // Step 7: Cache both tokens
         // Cache by original session_key to mark login JWT as used
         cache_token(session_key.as_str(), session_token.clone()).await;
         // Cache by new session_key for future refresh operations
         cache_token(new_session_key.as_str(), session_token).await;
         cache_refresh_token(new_session_key.as_str(), refresh_token).await;
-        
+
         info!(
             "Login successful for user: {}. Session: {}. Token pair generated.",
             userid, new_session_key
@@ -518,43 +534,58 @@ impl VerifyHubApiHandler for VerifyHubServer {
         })
     }
 
-    async fn handle_refresh_token(
-        &self,
-        refresh_jwt: &str,
-    ) -> Result<TokenPair> {
+    async fn handle_refresh_token(&self, refresh_jwt: &str) -> Result<TokenPair> {
         gc_token_caches().await;
 
         // Step 1: Verify the refresh token JWT
         // Refresh token must be verified by verify-hub key
         let jwt_payload = verify_verify_hub_jwt(refresh_jwt, None).await?;
 
-        let rpc_session_token : RPCSessionToken = serde_json::from_value(jwt_payload).map_err(|error| {
-            error!("Failed to parse RPCSessionToken from JWT payload: {}", error);
-            RPCErrors::ReasonError("Failed to parse RPCSessionToken from JWT payload".to_string())
-        })?;
+        let rpc_session_token: RPCSessionToken =
+            serde_json::from_value(jwt_payload).map_err(|error| {
+                error!(
+                    "Failed to parse RPCSessionToken from JWT payload: {}",
+                    error
+                );
+                RPCErrors::ReasonError(
+                    "Failed to parse RPCSessionToken from JWT payload".to_string(),
+                )
+            })?;
 
-        let userid = rpc_session_token.sub.ok_or(RPCErrors::ReasonError("Missing sub".to_string()))?;
-        let appid = rpc_session_token.appid.ok_or(RPCErrors::ReasonError("Missing appid".to_string()))?;
-        let session_id = rpc_session_token.session.ok_or(RPCErrors::ReasonError("Missing session".to_string()))?;
+        let userid = rpc_session_token
+            .sub
+            .ok_or(RPCErrors::ReasonError("Missing sub".to_string()))?;
+        let appid = rpc_session_token
+            .appid
+            .ok_or(RPCErrors::ReasonError("Missing appid".to_string()))?;
+        let session_id = rpc_session_token
+            .session
+            .ok_or(RPCErrors::ReasonError("Missing session".to_string()))?;
         let session_key = format!("{}_{}_{}", userid, appid, session_id);
         if rpc_session_token.jti.is_none() {
             return Err(RPCErrors::ReasonError("Missing jti".to_string()));
         }
 
         info!("Handle refresh token request for session: {}", session_key);
-            
+
         // Step 4: Validate the refresh token exists in cache
         // This ensures the refresh token hasn't been invalidated
         let cached_refresh = load_refresh_token_from_cache(session_key.as_str()).await;
         if cached_refresh.is_none() {
-            warn!("Refresh token not found in cache for session: {}", session_key);
-            warn!("Refresh reuse detected (cache-miss), revoking session: {}", session_key);
+            warn!(
+                "Refresh token not found in cache for session: {}",
+                session_key
+            );
+            warn!(
+                "Refresh reuse detected (cache-miss), revoking session: {}",
+                session_key
+            );
             revoke_session_tokens(session_key.as_str()).await;
             return Err(RPCErrors::ReasonError(
                 "Refresh token not found or already invalidated".to_string(),
             ));
         }
-            
+
         // Step 5: Verify the jti matches the cached refresh token
         // This prevents replay attacks with old refresh tokens
         let old_refresh: RPCSessionToken = cached_refresh.unwrap();
@@ -563,26 +594,29 @@ impl VerifyHubApiHandler for VerifyHubServer {
                 "Invalid refresh token jti. Expected: {:?}, Got: {:?}",
                 old_refresh.jti, rpc_session_token.jti
             );
-            warn!("Refresh reuse detected (jti-mismatch), revoking session: {}", session_key);
+            warn!(
+                "Refresh reuse detected (jti-mismatch), revoking session: {}",
+                session_key
+            );
             revoke_session_tokens(session_key.as_str()).await;
             return Err(RPCErrors::ReasonError(
                 "Invalid refresh token jti".to_string(),
             ));
         }
-            
+
         // Step 7: IMPORTANT - Invalidate the old refresh token immediately
         // This ensures the old refresh token cannot be reused (one-time use)
         invalidate_refresh_token(session_key.as_str()).await;
         info!("Old refresh token invalidated for session: {}", session_key);
-        
+
         // Step 8: Generate new token pair (session_token + refresh_token)
         let (token_pair, session_token, refresh_token) =
             generate_token_pair(appid.as_str(), userid.as_str(), session_id).await?;
-        
+
         // Step 9: Cache the new tokens
         cache_token(session_key.as_str(), session_token).await;
         cache_refresh_token(session_key.as_str(), refresh_token).await;
-        
+
         info!(
             "Refresh successful for session: {}. New token pair generated.",
             session_key
@@ -628,59 +662,60 @@ impl VerifyHubApiHandler for VerifyHubServer {
                 username, session_id
             );
             // Revoke the original session to force legitimate user to re-login
-            warn!("Revoking session {} due to replay attack detection", session_key);
+            warn!(
+                "Revoking session {} due to replay attack detection",
+                session_key
+            );
             revoke_session_tokens(session_key.as_str()).await;
-            return Err(RPCErrors::ReasonError("Login nonce already used".to_string()));
+            return Err(RPCErrors::ReasonError(
+                "Login nonce already used".to_string(),
+            ));
         }
-    
+
         // Step 3: Load user info from system config service
         let system_config_client = get_system_config_client().await?;
         let control_panel_client = ControlPanelClient::new(system_config_client);
-        let user_settings = control_panel_client.get_user_settings_by_username(username).await?;
+        let user_settings = control_panel_client
+            .get_user_settings_by_username(username)
+            .await?;
 
         // Step 4: Verify password
         // Password is hashed with nonce on client side: SHA256(stored_password + nonce)
         let password_hash_input = STANDARD
             .decode(password)
             .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
-    
+
         let salt = format!("{}{}", user_settings.password, login_nonce);
         let hash = Sha256::digest(salt.clone()).to_vec();
         if hash != password_hash_input {
-            warn!(
-                "{} login by password failed, password is wrong!",
-                username
-            );
+            warn!("{} login by password failed, password is wrong!", username);
             return Err(RPCErrors::InvalidPassword);
         }
-    
+
         info!(
             "Password login successful for user: {}. Generating token pair.",
             username
         );
-    
+
         // Step 5: Generate token pair (session_token + refresh_token)
         // session_token: short-lived (15 minutes) for API requests
         // refresh_token: long-lived (7 days) for obtaining new token pairs
         let (token_pair, session_token, refresh_token) =
             generate_token_pair(appid, username, session_id).await?;
-        
+
         // Step 6: Cache both tokens
         cache_token(session_key.as_str(), session_token).await;
         cache_refresh_token(session_key.as_str(), refresh_token).await;
-        
-        info!(
-            "Token pair cached for session: {}",
-            session_key
-        );
+
+        info!("Token pair cached for session: {}", session_key);
 
         let user_info = user_settings.to_user_info();
-    
+
         // Step 8: Return account info with dual tokens
         let result_account_info = LoginByPasswordResponse {
             user_info: user_info,
             session_token: token_pair.session_token,
-            refresh_token: token_pair.refresh_token
+            refresh_token: token_pair.refresh_token,
         };
         return Ok(result_account_info);
     }
@@ -697,14 +732,11 @@ impl VerifyHubApiHandler for VerifyHubServer {
             //this is not a jwt token, use token-store to verify
             return Err(RPCErrors::InvalidToken("not a jwt token".to_string()));
         } else {
-            let _json_body =
-                verify_verify_hub_jwt(session_token, expected_audience).await?;
+            let _json_body = verify_verify_hub_jwt(session_token, expected_audience).await?;
             Ok(true)
         }
     }
 }
-
-
 
 #[async_trait]
 impl HttpServer for VerifyHubServer {
@@ -717,7 +749,10 @@ impl HttpServer for VerifyHubServer {
             let rpc_handler = VerifyHubRpcHandler::new(self.clone());
             return serve_http_by_rpc_handler(req, info, &rpc_handler).await;
         }
-        return Err(server_err!(ServerErrorCode::BadRequest, "Method not allowed"));
+        return Err(server_err!(
+            ServerErrorCode::BadRequest,
+            "Method not allowed"
+        ));
     }
 
     fn id(&self) -> String {
@@ -823,7 +858,10 @@ async fn service_main() -> i32 {
 
     let server = VerifyHubServer::new();
     const VERIFY_HUB_SERVICE_MAIN_PORT: u16 = 3300;
-    info!("verify_hub service initialized, running on port {}", VERIFY_HUB_SERVICE_MAIN_PORT);
+    info!(
+        "verify_hub service initialized, running on port {}",
+        VERIFY_HUB_SERVICE_MAIN_PORT
+    );
     let runner = Runner::new(VERIFY_HUB_SERVICE_MAIN_PORT);
     let _ = runner.add_http_server("/kapi/verify-hub".to_string(), Arc::new(server));
     let _ = runner.run().await;
@@ -920,13 +958,18 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         let verify_ok = verify_hub_client
             .verify_token(&token_pair.session_token, Some("kernel"))
             .await;
-        assert!(verify_ok.is_ok(), "verify_token should succeed for correct appid");
+        assert!(
+            verify_ok.is_ok(),
+            "verify_token should succeed for correct appid"
+        );
 
         let verify_bad = verify_hub_client
             .verify_token(&token_pair.session_token, Some("not-kernel"))
             .await;
-        assert!(verify_bad.is_err(), "verify_token should reject wrong appid");
-
+        assert!(
+            verify_bad.is_err(),
+            "verify_token should reject wrong appid"
+        );
     }
 
     //TEST login by password
@@ -966,14 +1009,14 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         // Expected: Returns token pair {session_token, refresh_token}
         // ============================================================
         println!("\n=== Test 1: First login ===");
-        
+
         let test_jwt = create_login_jwt(&private_key, "alice", "kernel", login_nonce, now + 3600);
 
         let login_result = handler.handle_login_by_jwt(test_jwt.as_str(), None).await;
-        
+
         assert!(login_result.is_ok(), "First login should succeed");
         let token_pair = login_result.unwrap();
-        
+
         println!("First login successful!");
         println!("  session_token: {}...", &token_pair.session_token[..50]);
         println!("  refresh_token: {}...", &token_pair.refresh_token[..50]);
@@ -983,11 +1026,11 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         // Expected: Session token should be valid
         // ============================================================
         println!("\n=== Test 2: Verify session token ===");
-        
+
         let verify_result = handler
             .handle_verify_token(token_pair.session_token.as_str(), None)
             .await;
-        
+
         assert!(verify_result.is_ok(), "Session token should be valid");
         println!("Session token verified successfully!");
         println!("  payload: {:?}", verify_result.unwrap());
@@ -997,17 +1040,23 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         // Expected: Returns new token pair, old refresh token invalidated
         // ============================================================
         println!("\n=== Test 3: Refresh using refresh_token ===");
-        
+
         let refresh_result = handler
             .handle_refresh_token(token_pair.refresh_token.as_str())
             .await;
-        
+
         assert!(refresh_result.is_ok(), "Refresh should succeed");
         let new_token_pair = refresh_result.unwrap();
-        
+
         println!("Refresh successful!");
-        println!("  new session_token: {}...", &new_token_pair.session_token[..50]);
-        println!("  new refresh_token: {}...", &new_token_pair.refresh_token[..50]);
+        println!(
+            "  new session_token: {}...",
+            &new_token_pair.session_token[..50]
+        );
+        println!(
+            "  new refresh_token: {}...",
+            &new_token_pair.refresh_token[..50]
+        );
 
         // Verify new session token is different from old one
         assert_ne!(
@@ -1024,12 +1073,15 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         // Expected: New session token should be valid
         // ============================================================
         println!("\n=== Test 4: Verify new session token ===");
-        
+
         let verify_new_result = handler
             .handle_verify_token(new_token_pair.session_token.as_str(), None)
             .await;
-        
-        assert!(verify_new_result.is_ok(), "New session token should be valid");
+
+        assert!(
+            verify_new_result.is_ok(),
+            "New session token should be valid"
+        );
         println!("New session token verified successfully!");
 
         // ============================================================
@@ -1037,33 +1089,45 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         // Expected: Old refresh token is invalidated, reuse should fail
         // ============================================================
         println!("\n=== Test 5: Reuse old refresh token (should fail) ===");
-        
+
         let reuse_result = handler
             .handle_refresh_token(token_pair.refresh_token.as_str())
             .await;
-        
-        assert!(reuse_result.is_err(), "Reusing old refresh token should fail");
-        println!("Old refresh token correctly rejected: {:?}", reuse_result.err());
+
+        assert!(
+            reuse_result.is_err(),
+            "Reusing old refresh token should fail"
+        );
+        println!(
+            "Old refresh token correctly rejected: {:?}",
+            reuse_result.err()
+        );
 
         // ============================================================
         // Test 6: Second refresh with new refresh token
         // Expected: Should fail because reuse detection revokes the session
         // ============================================================
         println!("\n=== Test 6: Second refresh with new refresh token ===");
-        
+
         let second_refresh_result = handler
             .handle_refresh_token(new_token_pair.refresh_token.as_str())
             .await;
-        
-        assert!(second_refresh_result.is_err(), "Second refresh should fail after reuse detection");
-        println!("Second refresh correctly rejected: {:?}", second_refresh_result.err());
+
+        assert!(
+            second_refresh_result.is_err(),
+            "Second refresh should fail after reuse detection"
+        );
+        println!(
+            "Second refresh correctly rejected: {:?}",
+            second_refresh_result.err()
+        );
 
         // ============================================================
         // Test 7: Login with expired JWT (should fail)
         // Expected: Expired login JWT should be rejected
         // ============================================================
         println!("\n=== Test 7: Login with expired JWT (should fail) ===");
-        
+
         let expired_nonce = rng.gen::<u64>();
         let expired_jwt = create_login_jwt(
             &private_key,
@@ -1076,7 +1140,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         let expired_result = handler
             .handle_login_by_jwt(expired_jwt.as_str(), None)
             .await;
-        
+
         assert!(expired_result.is_err(), "Expired JWT login should fail");
         println!("Expired JWT correctly rejected: {:?}", expired_result.err());
 
@@ -1085,14 +1149,14 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         // Expected: Same login JWT cannot be used twice
         // ============================================================
         println!("\n=== Test 8: Replay attack - reuse login JWT (should fail) ===");
-        
+
         // First use the JWT
         let replay_nonce = rng.gen::<u64>();
         let replay_jwt = create_login_jwt(&private_key, "bob", "kernel", replay_nonce, now + 3600);
-        
+
         let first_use = handler.handle_login_by_jwt(replay_jwt.as_str(), None).await;
         assert!(first_use.is_ok(), "First use of login JWT should succeed");
-        
+
         // Try to use the same JWT again
         let second_use = handler.handle_login_by_jwt(replay_jwt.as_str(), None).await;
         assert!(second_use.is_err(), "Replay of login JWT should fail");
@@ -1106,42 +1170,54 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
     #[tokio::test]
     async fn test_generate_token_pair() {
         println!("\n=== Test: Token pair generation ===");
-        
+
         let (token_pair, session_token, refresh_token) =
-            generate_token_pair("test-app", "test-user", 12345).await.unwrap();
-        
+            generate_token_pair("test-app", "test-user", 12345)
+                .await
+                .unwrap();
+
         // Verify token pair contains both tokens
-        assert!(!token_pair.session_token.is_empty(), "Session token should not be empty");
-        assert!(!token_pair.refresh_token.is_empty(), "Refresh token should not be empty");
-        
+        assert!(
+            !token_pair.session_token.is_empty(),
+            "Session token should not be empty"
+        );
+        assert!(
+            !token_pair.refresh_token.is_empty(),
+            "Refresh token should not be empty"
+        );
+
         // Verify tokens are different
         assert_ne!(
             token_pair.session_token, token_pair.refresh_token,
             "Session and refresh tokens should be different"
         );
-        
+
         // Verify session token has correct expiration (short-lived)
         assert!(
-            session_token.exp.unwrap() <= buckyos_get_unix_timestamp() + SESSION_TOKEN_EXPIRE_SECONDS + 1,
+            session_token.exp.unwrap()
+                <= buckyos_get_unix_timestamp() + SESSION_TOKEN_EXPIRE_SECONDS + 1,
             "Session token expiration should be short"
         );
-        
+
         // Verify refresh token has correct expiration (long-lived)
         assert!(
-            refresh_token.exp.unwrap() <= buckyos_get_unix_timestamp() + REFRESH_TOKEN_EXPIRE_SECONDS + 1,
+            refresh_token.exp.unwrap()
+                <= buckyos_get_unix_timestamp() + REFRESH_TOKEN_EXPIRE_SECONDS + 1,
             "Refresh token expiration should be long"
         );
         assert!(
             refresh_token.exp.unwrap() > session_token.exp.unwrap(),
             "Refresh token should expire later than session token"
         );
-        
+
         println!("Token pair generated correctly:");
-        println!("  Session token exp: {} (in {} seconds)", 
+        println!(
+            "  Session token exp: {} (in {} seconds)",
             session_token.exp.unwrap(),
             session_token.exp.unwrap() - buckyos_get_unix_timestamp()
         );
-        println!("  Refresh token exp: {} (in {} seconds)", 
+        println!(
+            "  Refresh token exp: {} (in {} seconds)",
             refresh_token.exp.unwrap(),
             refresh_token.exp.unwrap() - buckyos_get_unix_timestamp()
         );
@@ -1151,7 +1227,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
     #[tokio::test]
     async fn test_refresh_token_cache() {
         println!("\n=== Test: Refresh token cache operations ===");
-        
+
         let test_token = RPCSessionToken {
             token_type: RPCSessionTokenType::Normal,
             jti: Some("123456".to_string()),
@@ -1162,26 +1238,30 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
             session: Some(789),
             iss: Some("verify-hub".to_string()),
             exp: Some(buckyos_get_unix_timestamp() + 3600),
-            extra:HashMap::new(),
+            extra: HashMap::new(),
         };
-        
+
         let cache_key = "test_cache_key";
-        
+
         // Test cache is initially empty
         let initial = load_refresh_token_from_cache(cache_key).await;
         assert!(initial.is_none(), "Cache should be initially empty");
-        
+
         // Test caching token
         cache_refresh_token(cache_key, test_token.clone()).await;
         let cached = load_refresh_token_from_cache(cache_key).await;
         assert!(cached.is_some(), "Token should be cached");
-        assert_eq!(cached.unwrap().jti, test_token.jti, "Cached token should match");
-        
+        assert_eq!(
+            cached.unwrap().jti,
+            test_token.jti,
+            "Cached token should match"
+        );
+
         // Test invalidating token
         invalidate_refresh_token(cache_key).await;
         let after_invalidate = load_refresh_token_from_cache(cache_key).await;
         assert!(after_invalidate.is_none(), "Token should be invalidated");
-        
+
         println!("Refresh token cache operations work correctly!");
     }
 }

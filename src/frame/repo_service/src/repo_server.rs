@@ -1,13 +1,13 @@
-
 use ::kRPC::*;
 use async_trait::async_trait;
 use buckyos_api::*;
 use buckyos_kit::buckyos_get_unix_timestamp;
 use core::error;
 use log::*;
-use name_lib::*;
 use name_lib::DeviceConfig;
+use name_lib::*;
 use named_store::*;
+use ndn_lib::*;
 use package_lib::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -18,18 +18,20 @@ use std::result::Result;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::LazyLock;
-use std::{env, hash::Hash};
 use std::time::Duration;
+use std::{env, hash::Hash};
 use tokio::io::AsyncSeekExt;
 use tokio::sync::Mutex as TokioMutex;
-use ndn_lib::*;
 
+use crate::pkg_task_data::*;
 use bytes::Bytes;
-use cyfs_gateway_lib::{HttpServer, ServerError, ServerResult, StreamInfo, serve_http_by_rpc_handler, server_err, ServerErrorCode};
+use cyfs_gateway_lib::{
+    serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
+    StreamInfo,
+};
 use http::{Method, Response, StatusCode, Version};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
-use crate::pkg_task_data::*;
 struct ReqHelper;
 
 impl ReqHelper {
@@ -98,7 +100,9 @@ install_pkg:
 
 */
 
-fn default_enable_auto_sync() -> bool { true }
+fn default_enable_auto_sync() -> bool {
+    true
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoServerSetting {
@@ -107,7 +111,7 @@ pub struct RepoServerSetting {
     #[serde(default = "default_enable_auto_sync")]
     enable_auto_sync: bool,
     #[serde(flatten)]
-    pub configs:HashMap<String,String>,
+    pub configs: HashMap<String, String>,
 }
 
 impl Default for RepoServerSetting {
@@ -115,9 +119,9 @@ impl Default for RepoServerSetting {
         Self {
             remote_source: HashMap::new(),
             enable_dev_mode: false,
-            enable_auto_sync:false,
-            configs:HashMap::new(),
-        }   
+            enable_auto_sync: false,
+            configs: HashMap::new(),
+        }
     }
 }
 
@@ -587,12 +591,10 @@ impl RepoServer {
         // ))
     }
 
-
     async fn do_sycn_from_remote_source(setting: &RepoServerSetting) -> Result<(), RPCErrors> {
         unimplemented!();
         // // 该操作可能会修改default_meta_index_db_path，需要加锁
         // let _lock = DEFAULT_META_INDEX_DB_LOCK.lock().await;
-
 
         // //尝试拿到sync操作的锁，拿不到则说明已经在处理了
         // //1.先下载并验证远程版本到临时db
@@ -706,7 +708,6 @@ impl RepoServer {
         &self,
         req: RPCRequest,
     ) -> Result<RPCResponse, RPCErrors> {
-
         RepoServer::do_sycn_from_remote_source(&self.setting).await?;
 
         Ok(RPCResponse::new(
@@ -1227,9 +1228,9 @@ impl RepoServer {
             .list_tasks(Some(filter), source_user_id, source_app_id)
             .await
             .map_err(|e| {
-            error!("list tasks failed, err:{}", e);
-            RPCErrors::ReasonError(format!("list tasks failed, err:{}", e))
-        })?;
+                error!("list tasks failed, err:{}", e);
+                RPCErrors::ReasonError(format!("list tasks failed, err:{}", e))
+            })?;
 
         let wait_meta_db_path = RepoServer::get_my_wait_pub_meta_index_db_path();
         let wait_meta_db = MetaIndexDb::new(wait_meta_db_path, false).map_err(|e| {
@@ -1393,7 +1394,10 @@ impl HttpServer for RepoServer {
         if *req.method() == Method::POST {
             return serve_http_by_rpc_handler(req, info, self).await;
         }
-        return Err(server_err!(ServerErrorCode::BadRequest, "Method not allowed"));
+        return Err(server_err!(
+            ServerErrorCode::BadRequest,
+            "Method not allowed"
+        ));
     }
 
     fn id(&self) -> String {

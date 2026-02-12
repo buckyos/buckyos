@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
-use tokio::sync::{Mutex, mpsc::UnboundedReceiver};
+use tokio::sync::{mpsc::UnboundedReceiver, Mutex};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
@@ -724,12 +724,12 @@ impl GrammersTgGateway {
                 .bot_sign_in(token, &self.cfg.api_hash)
                 .await
                 .with_context(|| {
-                format!(
-                    "telegram bot sign-in failed for owner {} (bot account {})",
-                    binding.owner_did.to_string(),
-                    binding.bot_account_id
-                )
-            })?;
+                    format!(
+                        "telegram bot sign-in failed for owner {} (bot account {})",
+                        binding.owner_did.to_string(),
+                        binding.bot_account_id
+                    )
+                })?;
         }
 
         let me = client.get_me().await?;

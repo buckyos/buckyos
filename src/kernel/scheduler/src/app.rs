@@ -1,34 +1,42 @@
 use buckyos_api::*;
-use name_lib::*;
-use std::collections::HashMap;
-use serde_json::json;
 use log::*;
+use name_lib::*;
+use serde_json::json;
+use std::collections::HashMap;
 
-use crate::*;
 use crate::scheduler::*;
+use crate::*;
 
 use anyhow::Result;
 use buckyos_api::{BASE_APP_PORT, MAX_APP_INDEX};
 
-fn build_app_service_config(node_id:&str,app_config:&AppServiceSpec,node_info:&DeviceInfo,instance_service_ports:HashMap<String,u16>) -> Result<AppServiceInstanceConfig> {
-    let mut result_config = AppServiceInstanceConfig::new(node_id,app_config);
+fn build_app_service_config(
+    node_id: &str,
+    app_config: &AppServiceSpec,
+    node_info: &DeviceInfo,
+    instance_service_ports: HashMap<String, u16>,
+) -> Result<AppServiceInstanceConfig> {
+    let mut result_config = AppServiceInstanceConfig::new(node_id, app_config);
     if node_info.support_container {
-        let docker_pkg_name = format!("{}_docker_image",node_info.arch.as_str());
-        let docker_pkg_info =  app_config.app_doc.pkg_list.get(&docker_pkg_name);
+        let docker_pkg_name = format!("{}_docker_image", node_info.arch.as_str());
+        let docker_pkg_info = app_config.app_doc.pkg_list.get(&docker_pkg_name);
         if docker_pkg_info.is_none() {
-            return Err(anyhow::anyhow!("docker_pkg_name: {} not found",docker_pkg_name));
+            return Err(anyhow::anyhow!(
+                "docker_pkg_name: {} not found",
+                docker_pkg_name
+            ));
         }
     } else {
         // 解析是否有<arch>_<os_type>_app字段
-        let app_pkg_name = format!("{}_{}_app", node_info.arch.as_str(),node_info.os.as_str());
+        let app_pkg_name = format!("{}_{}_app", node_info.arch.as_str(), node_info.os.as_str());
         if app_config.app_doc.pkg_list.get(&app_pkg_name).is_none() {
-            return Err(anyhow::anyhow!("app_pkg_name: {} not found",app_pkg_name));
+            return Err(anyhow::anyhow!("app_pkg_name: {} not found", app_pkg_name));
         }
     }
 
     result_config.service_ports_config = instance_service_ports;
 
-    return Ok(result_config)
+    return Ok(result_config);
 }
 
 // pub fn alloc_app_service_port(app_index:u16,service_name:&str,expose_port:Option<u16>)->u16 {
@@ -44,53 +52,78 @@ fn build_app_service_config(node_id:&str,app_config:&AppServiceSpec,node_info:&D
 //     return 0;
 // }
 
-pub fn instance_app_service(new_instance:&ReplicaInstance,device_list:&HashMap<String,DeviceInfo>,input_config:&HashMap<String,String>)->Result<HashMap<String,KVAction>> {
+pub fn instance_app_service(
+    new_instance: &ReplicaInstance,
+    device_list: &HashMap<String, DeviceInfo>,
+    input_config: &HashMap<String, String>,
+) -> Result<HashMap<String, KVAction>> {
     let mut result = HashMap::new();
-    
-    let (app_id,user_id,node_id) = parse_instance_id(new_instance.instance_id.as_str())?;
+
+    let (app_id, user_id, node_id) = parse_instance_id(new_instance.instance_id.as_str())?;
     //debug!("instance_app_service app_id: {}, user_id: {}, node_id: {},instance_id: {}", app_id, user_id, node_id,new_instance.instance_id);
-    let app_config_path = format!("users/{}/apps/{}/spec",user_id,app_id);
-    info!("instance_app_service app_config_path: {}",app_config_path);
+    let app_config_path = format!("users/{}/apps/{}/spec", user_id, app_id);
+    info!("instance_app_service app_config_path: {}", app_config_path);
     let app_config = input_config.get(&app_config_path);
     if app_config.is_none() {
-        warn!("app_config: {} not found",app_config_path);
-        return Err(anyhow::anyhow!("app_config: {} not found",app_config_path));
+        warn!("app_config: {} not found", app_config_path);
+        return Err(anyhow::anyhow!("app_config: {} not found", app_config_path));
     }
     let app_config = app_config.unwrap();
-    debug!("will instance_app_service app_config: {}",app_config);
+    debug!("will instance_app_service app_config: {}", app_config);
     let app_config = serde_json::from_str(&app_config);
     if app_config.is_err() {
-        warn!("app_config: {} is not a valid json",app_config_path);
-        return Err(anyhow::anyhow!("app_config: {} is not a valid json",app_config_path));
+        warn!("app_config: {} is not a valid json", app_config_path);
+        return Err(anyhow::anyhow!(
+            "app_config: {} is not a valid json",
+            app_config_path
+        ));
     }
 
-    let app_config : AppServiceSpec = app_config.unwrap();
-    if  app_config.app_index  > MAX_APP_INDEX {
-        warn!("app_index: {} is too large,skip",app_config.app_index);
-        return Err(anyhow::anyhow!("app_index: {} is too large",app_config.app_index));
+    let app_config: AppServiceSpec = app_config.unwrap();
+    if app_config.app_index > MAX_APP_INDEX {
+        warn!("app_index: {} is too large,skip", app_config.app_index);
+        return Err(anyhow::anyhow!(
+            "app_index: {} is too large",
+            app_config.app_index
+        ));
     }
 
     let node_info = device_list.get(&new_instance.node_id);
     if node_info.is_none() {
-        return Err(anyhow::anyhow!("node_info: {} not found",new_instance.node_id));
+        return Err(anyhow::anyhow!(
+            "node_info: {} not found",
+            new_instance.node_id
+        ));
     }
     let node_info = node_info.unwrap();
 
     //write to node_config
-    info!("will instance_app_service app_config: {},service_ports: {:?}",app_id,new_instance.service_ports);
+    info!(
+        "will instance_app_service app_config: {},service_ports: {:?}",
+        app_id, new_instance.service_ports
+    );
     let app_service_config = build_app_service_config(
-new_instance.node_id.as_str(),
+        new_instance.node_id.as_str(),
         &app_config,
         &node_info,
-        new_instance.service_ports.clone())?;
+        new_instance.service_ports.clone(),
+    )?;
 
     let mut set_action = HashMap::new();
     let instance_config_str = serde_json::to_string(&app_service_config).unwrap();
-    info!("will instance_app_service app_service_config: {}",instance_config_str);
-    set_action.insert(format!("/apps/{}",new_instance.instance_id.as_str()),
-        Some(serde_json::to_value(&app_service_config).unwrap()));
-    let app_service_config_set_action =  KVAction::SetByJsonPath(set_action);
-    result.insert(format!("nodes/{}/config",new_instance.node_id),app_service_config_set_action);
+    info!(
+        "will instance_app_service app_service_config: {}",
+        instance_config_str
+    );
+    set_action.insert(
+        format!("/apps/{}", new_instance.instance_id.as_str()),
+        Some(serde_json::to_value(&app_service_config).unwrap()),
+    );
+    let app_service_config_set_action = KVAction::SetByJsonPath(set_action);
+    result.insert(
+        format!("nodes/{}/config", new_instance.node_id),
+        app_service_config_set_action,
+    );
 
     // //write to gateway_config
     // let http_port = app_service_config.get_host_service_port("www");
@@ -107,7 +140,7 @@ new_instance.node_id.as_str(),
     //             app_prefix = format!("{}.{}",app_id,user_owner_domain.as_ref().unwrap());
     //         }
     //     }
-        
+
     //     //创建默认的appid-userid的短域名给node-gateway.json
     //     let gateway_path = format!("/servers/zone_gateway/hosts/{}",app_prefix);
     //     let app_gateway_config = json!(
@@ -116,9 +149,9 @@ new_instance.node_id.as_str(),
     //                 "/":{
     //                     "upstream":format!("http://127.0.0.1:{}",http_port)
     //                 }
-    //             }  
+    //             }
     //         }
-    //     );    
+    //     );
     //     let mut set_action = HashMap::new();
     //     set_action.insert(gateway_path,Some(app_gateway_config));
 
@@ -156,24 +189,25 @@ new_instance.node_id.as_str(),
     //     }
     //     info!("instance_app_service set gateway_config: {:?}",set_action);
     //     result.insert(format!("nodes/{}/gateway_config",new_instance.node_id.as_str()),
-    //         KVAction::SetByJsonPath(set_action));  
-    
+    //         KVAction::SetByJsonPath(set_action));
+
     // }
-
-
 
     //调度器不处理权限,权限是在安装应用的时候就完成的配置
     Ok(result)
 }
 
-pub fn uninstance_app_service(instance:&ReplicaInstance)->Result<HashMap<String,KVAction>> {
+pub fn uninstance_app_service(instance: &ReplicaInstance) -> Result<HashMap<String, KVAction>> {
     let mut result = HashMap::new();
-    let (app_id,user_id,node_id) = parse_instance_id(instance.spec_id.as_str())?;
+    let (app_id, user_id, node_id) = parse_instance_id(instance.spec_id.as_str())?;
 
-    let key_path = format!("nodes/{}/config",instance.node_id.as_str());
+    let key_path = format!("nodes/{}/config", instance.node_id.as_str());
     let mut set_action = HashMap::new();
-    set_action.insert(format!("/apps/{}/target_state",instance.instance_id.as_str()), Some(json!("Stopped")));
-    result.insert(key_path,KVAction::SetByJsonPath(set_action));
+    set_action.insert(
+        format!("/apps/{}/target_state", instance.instance_id.as_str()),
+        Some(json!("Stopped")),
+    );
+    result.insert(key_path, KVAction::SetByJsonPath(set_action));
 
     // let key_path = format!("nodes/{}/gateway_config",instance.node_id.as_str());
     // let mut set_action = HashMap::new();
@@ -188,18 +222,23 @@ pub fn uninstance_app_service(instance:&ReplicaInstance)->Result<HashMap<String,
     Ok(result)
 }
 
-pub fn update_app_service_instance(instance:&ReplicaInstance)->Result<HashMap<String,KVAction>> {
+pub fn update_app_service_instance(
+    instance: &ReplicaInstance,
+) -> Result<HashMap<String, KVAction>> {
     unimplemented!();
 }
 
-pub fn set_app_service_state(spec_id:&str,state:&ServiceSpecState)->Result<HashMap<String,KVAction>> {
+pub fn set_app_service_state(
+    spec_id: &str,
+    state: &ServiceSpecState,
+) -> Result<HashMap<String, KVAction>> {
     //spec_id 是app_id@user_id
-    let (app_id,user_id) = parse_spec_id(spec_id)?;
-    let key = format!("users/{}/apps/{}/spec",user_id,app_id);
+    let (app_id, user_id) = parse_spec_id(spec_id)?;
+    let key = format!("users/{}/apps/{}/spec", user_id, app_id);
     debug!("update_app_service sepc key: {}", key);
     let mut set_paths = HashMap::new();
-    set_paths.insert("state".to_string(),Some(json!(state.to_string())));
+    set_paths.insert("state".to_string(), Some(json!(state.to_string())));
     let mut result = HashMap::new();
-    result.insert(key,KVAction::SetByJsonPath(set_paths));
+    result.insert(key, KVAction::SetByJsonPath(set_paths));
     Ok(result)
 }

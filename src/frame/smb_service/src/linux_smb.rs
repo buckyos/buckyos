@@ -1,13 +1,13 @@
 #![allow(dead_code)]
-use std::path::Path;
+use crate::error::{into_smb_err, smb_err, SmbErrorCode, SmbResult};
+use crate::samba::{SmbItem, SmbUserItem};
 use ini::Ini;
 use shlex::Shlex;
+use std::path::Path;
 use sysinfo::System;
 use tokio::fs::read_to_string;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout};
-use crate::error::{into_smb_err, smb_err, SmbErrorCode, SmbResult};
-use crate::samba::{SmbItem, SmbUserItem};
 
 pub struct QAProcess {
     stdin: Option<ChildStdin>,
@@ -95,15 +95,29 @@ impl QAProcess {
     }
 
     pub async fn wait(&mut self) -> SmbResult<()> {
-        let status = self.child.wait().await.map_err(into_smb_err!(SmbErrorCode::Failed))?;
+        let status = self
+            .child
+            .wait()
+            .await
+            .map_err(into_smb_err!(SmbErrorCode::Failed))?;
         if status.success() {
             Ok(())
         } else {
-            let stderr = self.stderr.as_mut().ok_or_else(||smb_err!(SmbErrorCode::Failed, "Failed to get stderr"))?;
+            let stderr = self
+                .stderr
+                .as_mut()
+                .ok_or_else(|| smb_err!(SmbErrorCode::Failed, "Failed to get stderr"))?;
             let mut error = Vec::new();
-            stderr.read_to_end(&mut error).await.map_err(into_smb_err!(SmbErrorCode::Failed))?;
+            stderr
+                .read_to_end(&mut error)
+                .await
+                .map_err(into_smb_err!(SmbErrorCode::Failed))?;
 
-            Err(smb_err!(SmbErrorCode::Failed, "{}", String::from_utf8_lossy(error.as_slice())))
+            Err(smb_err!(
+                SmbErrorCode::Failed,
+                "{}",
+                String::from_utf8_lossy(error.as_slice())
+            ))
         }
     }
 }
@@ -118,10 +132,17 @@ async fn execute(cmd: &str) -> SmbResult<Vec<u8>> {
         .await
         .map_err(into_smb_err!(SmbErrorCode::Failed))?;
     if output.status.success() {
-        log::info!("success:{}", String::from_utf8_lossy(output.stdout.as_slice()));
+        log::info!(
+            "success:{}",
+            String::from_utf8_lossy(output.stdout.as_slice())
+        );
         Ok(output.stdout)
     } else {
-        Err(smb_err!(SmbErrorCode::CmdReturnFailed, "{}", String::from_utf8_lossy(output.stderr.as_slice())))
+        Err(smb_err!(
+            SmbErrorCode::CmdReturnFailed,
+            "{}",
+            String::from_utf8_lossy(output.stderr.as_slice())
+        ))
     }
 }
 
@@ -142,9 +163,7 @@ async fn spawn(cmd: &str) -> SmbResult<QAProcess> {
 
 pub async fn exist_system_user(user_name: &str) -> SmbResult<bool> {
     match execute(format!("id {}", user_name).as_str()).await {
-        Ok(_) => {
-            Ok(true)
-        }
+        Ok(_) => Ok(true),
         Err(e) => {
             if e.code() == SmbErrorCode::CmdReturnFailed {
                 Ok(false)
@@ -166,8 +185,10 @@ pub async fn del_system_user(user_name: &str) -> SmbResult<()> {
 
 pub async fn add_smb_user(user_name: &str, password: &str) -> SmbResult<()> {
     let mut proc = spawn(format!("smbpasswd -a {}", user_name).as_str()).await?;
-    proc.answer("New SMB password:", format!("{}", password).as_str()).await?;
-    proc.answer("Retype new SMB password:", format!("{}", password).as_str()).await?;
+    proc.answer("New SMB password:", format!("{}", password).as_str())
+        .await?;
+    proc.answer("Retype new SMB password:", format!("{}", password).as_str())
+        .await?;
     proc.wait().await?;
     Ok(())
 }
@@ -201,7 +222,10 @@ pub async fn restart_smb_service() -> SmbResult<()> {
     }
 
     if let Some(version) = sysinfo::System::name() {
-        if version.to_lowercase().contains("ubuntu") || version.to_lowercase().contains("debian") || version.to_lowercase().contains("centos") {
+        if version.to_lowercase().contains("ubuntu")
+            || version.to_lowercase().contains("debian")
+            || version.to_lowercase().contains("centos")
+        {
             execute("systemctl restart smb").await?;
         } else {
             execute("smbd").await?;
@@ -213,9 +237,11 @@ pub async fn restart_smb_service() -> SmbResult<()> {
 }
 
 async fn kill_smbd() -> SmbResult<()> {
-    let smbd_pid_file =  Path::new("/run/samba/smbd.pid");
+    let smbd_pid_file = Path::new("/run/samba/smbd.pid");
     if smbd_pid_file.exists() {
-        let pid = read_to_string(smbd_pid_file).await.map_err(into_smb_err!(SmbErrorCode::Failed))?;
+        let pid = read_to_string(smbd_pid_file)
+            .await
+            .map_err(into_smb_err!(SmbErrorCode::Failed))?;
         let pid = pid.trim();
         execute(format!("kill -9 {}", pid).as_str()).await?;
     } else {
@@ -233,7 +259,10 @@ async fn kill_smbd() -> SmbResult<()> {
 
 pub async fn stop_smb_service() -> SmbResult<()> {
     if let Some(version) = sysinfo::System::name() {
-        if version.to_lowercase().contains("ubuntu") || version.to_lowercase().contains("debian") || version.to_lowercase().contains("centos") {
+        if version.to_lowercase().contains("ubuntu")
+            || version.to_lowercase().contains("debian")
+            || version.to_lowercase().contains("centos")
+        {
             execute("systemctl stop smbd").await?;
         } else {
             kill_smbd().await?;
@@ -250,16 +279,27 @@ pub async fn load_sub_smb_conf() -> SmbResult<Vec<Ini>> {
         return Ok(Vec::new());
     }
 
-    let mut entrys = tokio::fs::read_dir(config_path).await
-        .map_err(into_smb_err!(SmbErrorCode::LoadSmbConfFailed, "{}", config_path.to_string_lossy().to_string()))?;
+    let mut entrys = tokio::fs::read_dir(config_path)
+        .await
+        .map_err(into_smb_err!(
+            SmbErrorCode::LoadSmbConfFailed,
+            "{}",
+            config_path.to_string_lossy().to_string()
+        ))?;
 
     let mut list = Vec::new();
-    while let Some(entry) = entrys.next_entry().await
-        .map_err(into_smb_err!(SmbErrorCode::LoadSmbConfFailed, "{}", config_path.to_string_lossy().to_string()))? {
+    while let Some(entry) = entrys.next_entry().await.map_err(into_smb_err!(
+        SmbErrorCode::LoadSmbConfFailed,
+        "{}",
+        config_path.to_string_lossy().to_string()
+    ))? {
         if let Some(ext) = entry.path().extension() {
             if ext == "conf" {
-                let config = Ini::load_from_file(entry.path())
-                    .map_err(into_smb_err!(SmbErrorCode::LoadSmbConfFailed, "{}", entry.path().to_string_lossy().to_string()))?;
+                let config = Ini::load_from_file(entry.path()).map_err(into_smb_err!(
+                    SmbErrorCode::LoadSmbConfFailed,
+                    "{}",
+                    entry.path().to_string_lossy().to_string()
+                ))?;
                 list.push(config);
             }
         }
@@ -301,11 +341,21 @@ async fn generate_smb_conf(smb_list: &Vec<SmbItem>) -> SmbResult<()> {
         sec.set("guest ok", "no");
     }
 
-    conf.write_to_file("/etc/samba/smb.conf").map_err(into_smb_err!(SmbErrorCode::LoadSmbConfFailed, "{}", "/etc/samba/smb.conf"))?;
+    conf.write_to_file("/etc/samba/smb.conf")
+        .map_err(into_smb_err!(
+            SmbErrorCode::LoadSmbConfFailed,
+            "{}",
+            "/etc/samba/smb.conf"
+        ))?;
     Ok(())
 }
 
-pub async fn update_samba_conf(_remove_users: Vec<SmbUserItem>, new_all_users: Vec<SmbUserItem>, _remove_list: Vec<SmbItem>, new_samba_list: Vec<SmbItem>) -> SmbResult<()> {
+pub async fn update_samba_conf(
+    _remove_users: Vec<SmbUserItem>,
+    new_all_users: Vec<SmbUserItem>,
+    _remove_list: Vec<SmbItem>,
+    new_samba_list: Vec<SmbItem>,
+) -> SmbResult<()> {
     for item in new_all_users.iter() {
         let _ = delete_smb_user(item.user.as_str()).await;
         if !exist_system_user(item.user.as_str()).await? {

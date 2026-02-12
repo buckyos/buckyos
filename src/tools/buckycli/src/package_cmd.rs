@@ -1,9 +1,11 @@
+use buckyos_api::*;
 #[allow(dead_code, unused)]
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use jsonwebtoken::EncodingKey;
-use name_lib::{decode_jwt_claim_without_verify};
+use name_lib::decode_jwt_claim_without_verify;
 use ndn_lib::*;
+use package_lib::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -12,10 +14,7 @@ use std::fs::File;
 use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
 use tar::Builder;
-use package_lib::*;
-use buckyos_api::*;
 //use log::*;
-
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct PackResult {
@@ -64,7 +63,7 @@ async fn tar_gz(src_dir: &Path, tarball_path: &Path) -> Result<(), String> {
             if path.starts_with(".") {
                 continue;
             }
-            
+
             if path.is_dir() {
                 tar.append_dir(name, &path)?;
                 append_dir_all(tar, &path, base)?;
@@ -75,22 +74,26 @@ async fn tar_gz(src_dir: &Path, tarball_path: &Path) -> Result<(), String> {
         Ok(())
     }
 
-    append_dir_all(&mut tar, src_dir, src_dir).map_err(|e| {
-        format!("Failed to add files to package: {}", e.to_string())
-    })?;
+    append_dir_all(&mut tar, src_dir, src_dir)
+        .map_err(|e| format!("Failed to add files to package: {}", e.to_string()))?;
 
-    tar.finish().map_err(|e| {
-        format!("Failed to complete packaging process: {}", e.to_string())
-    })?;
+    tar.finish()
+        .map_err(|e| format!("Failed to complete packaging process: {}", e.to_string()))?;
     Ok(())
 }
 
-
-pub async fn pack_raw_pkg(pkg_path: &str, dest_dir: &str,private_key:Option<(String,EncodingKey)>) -> Result<(), String> {
+pub async fn pack_raw_pkg(
+    pkg_path: &str,
+    dest_dir: &str,
+    private_key: Option<(String, EncodingKey)>,
+) -> Result<(), String> {
     println!("Starting to package path: {}", pkg_path);
     let pkg_path = Path::new(pkg_path);
     if !pkg_path.exists() {
-        return Err(format!("Specified path {} does not exist", pkg_path.display()));
+        return Err(format!(
+            "Specified path {} does not exist",
+            pkg_path.display()
+        ));
     }
     // Read meta.json file
     let meta_path = pkg_path.join("pkg_meta.json");
@@ -100,22 +103,24 @@ pub async fn pack_raw_pkg(pkg_path: &str, dest_dir: &str,private_key:Option<(Str
 
     let meta_content = fs::read_to_string(&meta_path)
         .map_err(|e| format!("Failed to read pkg_meta.json: {}", e.to_string()))?;
-    
-    let mut meta_data:PackageMeta = serde_json::from_str(&meta_content)
+
+    let mut meta_data: PackageMeta = serde_json::from_str(&meta_content)
         .map_err(|e| format!("Failed to parse pkg_meta.json: {}", e.to_string()))?;
 
     let pkg_name = meta_data.name.clone();
-    
+
     let version = meta_data.version.clone();
     let author = meta_data.author.clone();
-    
-    println!("Parsed pkg_meta.json: pkg_name = {}, version = {}, author = {}", pkg_name, version, author);
+
+    println!(
+        "Parsed pkg_meta.json: pkg_name = {}, version = {}, author = {}",
+        pkg_name, version, author
+    );
     // Check and create target directory
     let dest_dir_path = Path::new(dest_dir).join(&pkg_name);
     if !dest_dir_path.exists() {
-        fs::create_dir_all(dest_dir_path.clone()).map_err(|e| {
-            format!("Failed to create target directory: {}", e.to_string())
-        })?;
+        fs::create_dir_all(dest_dir_path.clone())
+            .map_err(|e| format!("Failed to create target directory: {}", e.to_string()))?;
     }
     // Create tarball
     let tarball_name = format!("{}#{}.tar.gz", pkg_name, version);
@@ -126,52 +131,50 @@ pub async fn pack_raw_pkg(pkg_path: &str, dest_dir: &str,private_key:Option<(Str
 
     // Calculate SHA256 hash of the tar.gz file
     let chunk_type = ChunkId::default_chunk_type();
-    let (chunk_id,file_size) = calculate_file_chunk_id(tarball_path.to_str().unwrap(),chunk_type).await
+    let (chunk_id, file_size) = calculate_file_chunk_id(tarball_path.to_str().unwrap(), chunk_type)
+        .await
         .map_err(|e| format!("Failed to calculate file chunk id: {}", e.to_string()))?;
-    
+
     // Update metadata
     meta_data.content = chunk_id.to_string();
     println!("meta_data chunk_id: {}", chunk_id.to_string());
     meta_data.size = file_size;
 
-    let meta_data_json = serde_json::to_value(&meta_data).map_err(|e| {
-        format!("Failed to serialize metadata: {}", e.to_string())
-    })?;
-    
-    let (pkg_meta_obj_id,pkg_meta_json_str) = build_named_object_by_json("pkg",&meta_data_json);
-    
+    let meta_data_json = serde_json::to_value(&meta_data)
+        .map_err(|e| format!("Failed to serialize metadata: {}", e.to_string()))?;
+
+    let (pkg_meta_obj_id, pkg_meta_json_str) = build_named_object_by_json("pkg", &meta_data_json);
+
     // Save updated metadata to pkg.meta.json
     let meta_json_path = dest_dir_path.join("pkg_meta.json");
-    
-    fs::write(&meta_json_path, &pkg_meta_json_str.as_bytes()).map_err(|e| {
-        format!("Failed to write pkg.meta.json: {}", e.to_string())
-    })?;
+
+    fs::write(&meta_json_path, &pkg_meta_json_str.as_bytes())
+        .map_err(|e| format!("Failed to write pkg.meta.json: {}", e.to_string()))?;
     let meta_json_path = dest_dir_path.join("meta_obj_id");
-    fs::write(&meta_json_path, &pkg_meta_obj_id.to_filename().as_bytes()).map_err(|e| {
-        format!("Failed to write objid: {}", e.to_string())
-    })?;
+    fs::write(&meta_json_path, &pkg_meta_obj_id.to_filename().as_bytes())
+        .map_err(|e| format!("Failed to write objid: {}", e.to_string()))?;
     // If private key is provided, sign the metadata
-    if let Some((kid,private_key)) = private_key { 
-        let jwt_token = named_obj_to_jwt(&meta_data_json,
-            &private_key,Some(kid.to_string()))
+    if let Some((kid, private_key)) = private_key {
+        let jwt_token = named_obj_to_jwt(&meta_data_json, &private_key, Some(kid.to_string()))
             .map_err(|e| format!("Failed to generate pkg_meta.jwt: {}", e.to_string()))?;
         let jwt_path = dest_dir_path.join("pkg_meta.jwt");
-        fs::write(&jwt_path, jwt_token).map_err(|e| {
-            format!("Failed to write pkg_meta.jwt: {}", e.to_string())
-        })?;
+        fs::write(&jwt_path, jwt_token)
+            .map_err(|e| format!("Failed to write pkg_meta.jwt: {}", e.to_string()))?;
         println!("pkg_meta.jwt written successfully: {}", jwt_path.display());
     } else {
         println!("No private key provided, skipping metadata signing");
         // Delete old .jwt file
         let jwt_path = dest_dir_path.join("pkg_meta.jwt");
         if jwt_path.exists() {
-            fs::remove_file(jwt_path).map_err(|e| {
-                format!("Failed to delete pkg_meta.jwt: {}", e.to_string())
-            })?;
+            fs::remove_file(jwt_path)
+                .map_err(|e| format!("Failed to delete pkg_meta.jwt: {}", e.to_string()))?;
         }
     }
 
-    println!("Package {} version {} author {} has been successfully packaged.", pkg_name, version, author);
+    println!(
+        "Package {} version {} author {} has been successfully packaged.",
+        pkg_name, version, author
+    );
     println!("Package file created at: {:?}", tarball_path);
 
     Ok(())
@@ -222,7 +225,7 @@ pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), St
     //         let (mut chunk_writer, _) = NamedDataMgr::open_chunk_writer(None,&chunk_id, file_size, 0).await.map_err(|e| {
     //             format!("Failed to open chunk writer: {}", e.to_string())
     //         })?;
-        
+
     //         let mut file_reader = tokio::fs::File::open(pkg_tar_path.to_str().unwrap()).await
     //             .map_err(|e| {
     //                 format!("Failed to open tar.gz file: {}", e.to_string())
@@ -232,7 +235,7 @@ pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), St
     //             format!("Failed to copy tar.gz file: {}", e.to_string())
     //         })?;
     //         println!(" {} file successfully written to local named-mgr,chunk_id: {}", pkg_tar_path.display(),chunk_id.to_string());
- 
+
     //         NamedDataMgr::complete_chunk_writer(None,&chunk_id).await.map_err(|e| {
     //             format!("Failed to complete chunk writer: {}", e.to_string())
     //         })?;
@@ -240,7 +243,7 @@ pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), St
     //     } else {
     //         println!(" {} file already exists in local named-mgr,chunk_id: {}", pkg_tar_path.display(),chunk_id.to_string());
     //     }
-        
+
     //     println!("# push chunk : {}, size: {} bytes...", chunk_id.to_string(),file_size);
     //     ndn_client.push_chunk(chunk_id.clone(),None).await.map_err(|e| {
     //         format!("Failed to push chunk: {}", e.to_string())
@@ -262,7 +265,7 @@ pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), St
 }
 
 // Prepare dapp_meta for publishing, this dapp_meta can be used for the next step of publishing
-pub async fn publish_app_pkg(dapp_dir_path: &str,is_pub_sub_pkg:bool) -> Result<(), String> {
+pub async fn publish_app_pkg(dapp_dir_path: &str, is_pub_sub_pkg: bool) -> Result<(), String> {
     // Before publishing dapp_pkg, users need to ensure sub_pkgs
     let runtime = get_buckyos_api_runtime().unwrap();
     if runtime.user_private_key.is_none() {
@@ -276,44 +279,53 @@ pub async fn publish_app_pkg(dapp_dir_path: &str,is_pub_sub_pkg:bool) -> Result<
 
     let app_meta_str = fs::read_to_string(app_meta_path)
         .map_err(|e| format!("Failed to read app doc.json: {}", e.to_string()))?;
-    let mut app_meta:AppDoc = serde_json::from_str(&app_meta_str)
+    let mut app_meta: AppDoc = serde_json::from_str(&app_meta_str)
         .map_err(|e| format!("Failed to parse app doc.json: {}", e.to_string()))?;
     //info!("app_meta:{} {}",app_meta.name.as_str(), serde_json::to_string_pretty(&app_meta).unwrap());
     let mut pkg_path_list = Vec::new();
 
-    for (sub_pkg_section,pkg_desc) in app_meta.pkg_list.iter() {
+    for (sub_pkg_section, pkg_desc) in app_meta.pkg_list.iter() {
         let sub_pkg_id = pkg_desc.pkg_id.clone();
-        let sub_pkg_id:PackageId = PackageId::parse(sub_pkg_id.as_str())
+        let sub_pkg_id: PackageId = PackageId::parse(sub_pkg_id.as_str())
             .map_err(|e| format!("Failed to parse sub_pkg_id: {}", e.to_string()))?;
-   
+
         let pkg_path = Path::new(dapp_dir_path).join(sub_pkg_id.name.as_str());
         if !pkg_path.exists() {
-            return Err(format!("sub pkg {} directory does not exist", pkg_path.display()));
+            return Err(format!(
+                "sub pkg {} directory does not exist",
+                pkg_path.display()
+            ));
         }
         let pkg_meta_path = pkg_path.join("pkg_meta.jwt");
         if !pkg_meta_path.exists() {
-            return Err(format!("sub pkg {} pkg_meta.jwt does not exist", pkg_path.display()));
+            return Err(format!(
+                "sub pkg {} pkg_meta.jwt does not exist",
+                pkg_path.display()
+            ));
         }
 
-        println!("app sub pkg {} => {}", sub_pkg_section,pkg_path.display());
+        println!("app sub pkg {} => {}", sub_pkg_section, pkg_path.display());
         pkg_path_list.push(pkg_path);
-        
     }
 
     let repo_client = runtime.get_repo_client().await.unwrap();
     let mut app_meta_jwt_map = HashMap::new();
-    let app_doc_json = serde_json::to_value(&app_meta).map_err(|e| {
-        format!("Failed to serialize app_doc: {}", e.to_string())
-    })?;
+    let app_doc_json = serde_json::to_value(&app_meta)
+        .map_err(|e| format!("Failed to serialize app_doc: {}", e.to_string()))?;
 
-    let (app_doc_obj_id,_) = build_named_object_by_json("app",&app_doc_json);
-    let app_doc_jwt = named_obj_to_jwt(&app_doc_json,runtime.user_private_key.as_ref().unwrap(),runtime.user_id.clone())
-        .map_err(|e| format!("Failed to generate app_doc.jwt: {}", e.to_string()))?;
-    app_meta_jwt_map.insert(app_doc_obj_id.to_string(),app_doc_jwt);
+    let (app_doc_obj_id, _) = build_named_object_by_json("app", &app_doc_json);
+    let app_doc_jwt = named_obj_to_jwt(
+        &app_doc_json,
+        runtime.user_private_key.as_ref().unwrap(),
+        runtime.user_id.clone(),
+    )
+    .map_err(|e| format!("Failed to generate app_doc.jwt: {}", e.to_string()))?;
+    app_meta_jwt_map.insert(app_doc_obj_id.to_string(), app_doc_jwt);
 
-    repo_client.pub_pkg(app_meta_jwt_map).await.map_err(|e| {
-        format!("Failed to publish app doc: {}", e.to_string())
-    })?;
+    repo_client
+        .pub_pkg(app_meta_jwt_map)
+        .await
+        .map_err(|e| format!("Failed to publish app doc: {}", e.to_string()))?;
 
     let pub_result = publish_raw_pkg(&pkg_path_list).await?;
 
@@ -321,19 +333,22 @@ pub async fn publish_app_pkg(dapp_dir_path: &str,is_pub_sub_pkg:bool) -> Result<
     Ok(())
 }
 
-
 // call repo_server.pub_index, which will trigger automatic upgrades of related components in the zone
 pub async fn publish_repo_index() -> Result<(), String> {
     let api_runtime = get_buckyos_api_runtime().unwrap();
     let repo_client = api_runtime.get_repo_client().await.unwrap();
-    repo_client.pub_index().await.map_err(|e| {
-        format!("Failed to publish repo index: {}", e.to_string())
-    })?;
+    repo_client
+        .pub_index()
+        .await
+        .map_err(|e| format!("Failed to publish repo index: {}", e.to_string()))?;
     println!("Successfully published repo index");
     Ok(())
 }
 
-pub async fn publish_app_to_remote_repo(_app_dir_path: &str,_zone_host_name: &str) -> Result<(), String> {
+pub async fn publish_app_to_remote_repo(
+    _app_dir_path: &str,
+    _zone_host_name: &str,
+) -> Result<(), String> {
     unimplemented!()
 }
 
@@ -341,7 +356,10 @@ pub async fn sync_from_remote_source() -> Result<(), String> {
     let api_runtime = get_buckyos_api_runtime().unwrap();
     let repo_client = api_runtime.get_repo_client().await.unwrap();
     repo_client.sync_from_remote_source().await.map_err(|e| {
-        format!("Failed to sync zone repo service's meta-index-db from remote source: {}", e.to_string())
+        format!(
+            "Failed to sync zone repo service's meta-index-db from remote source: {}",
+            e.to_string()
+        )
     })?;
     println!("Successfully synced zone repo service's meta-index-db from remote source, new default meta-index-db is ready");
     Ok(())
@@ -390,17 +408,16 @@ fn calculate_file_hash(file_path: &str) -> Result<FileInfo, String> {
     })
 }
 
-
-pub async fn load_pkg(
-    pkg_id: &str,
-    target_env:&str
-) -> Result<(), String> {
+pub async fn load_pkg(pkg_id: &str, target_env: &str) -> Result<(), String> {
     let target_env = PathBuf::from(target_env);
     if !target_env.exists() {
-        return Err(format!("target env {} does not exist", target_env.display()));
+        return Err(format!(
+            "target env {} does not exist",
+            target_env.display()
+        ));
     }
 
-    let the_env:PackageEnv = PackageEnv::new(target_env);
+    let the_env: PackageEnv = PackageEnv::new(target_env);
     let media_info = the_env.load(pkg_id).await;
     if media_info.is_err() {
         println!("Load package failed! {}", media_info.err().unwrap());
@@ -410,31 +427,29 @@ pub async fn load_pkg(
     Ok(())
 }
 
-pub async fn install_pkg_from_local(pkg_id: &str, target_env:&str) -> Result<(), String> {
+pub async fn install_pkg_from_local(pkg_id: &str, target_env: &str) -> Result<(), String> {
     unimplemented!()
 }
 
-pub async fn install_pkg(
-    pkg_id: &str,
-    target_env:&str
-) -> Result<(), String> {
+pub async fn install_pkg(pkg_id: &str, target_env: &str) -> Result<(), String> {
     let target_env = PathBuf::from(target_env);
     if !target_env.exists() {
-        return Err(format!("target env {} does not exist", target_env.display()));
+        return Err(format!(
+            "target env {} does not exist",
+            target_env.display()
+        ));
     }
 
-    let mut the_env:PackageEnv = PackageEnv::new(target_env);
-    the_env.install_pkg(pkg_id, true,true).await.map_err(|e| {
-        format!("Failed to install pkg: {}", e.to_string())
-    })?;
-    
+    let mut the_env: PackageEnv = PackageEnv::new(target_env);
+    the_env
+        .install_pkg(pkg_id, true, true)
+        .await
+        .map_err(|e| format!("Failed to install pkg: {}", e.to_string()))?;
+
     Ok(())
 }
 
-pub async fn set_pkg_meta(
-    meta_path: &str,
-    db_path: &str
-) -> Result<(), String> {
+pub async fn set_pkg_meta(meta_path: &str, db_path: &str) -> Result<(), String> {
     let meta_path = PathBuf::from(meta_path);
     let db_path = PathBuf::from(db_path);
     if !meta_path.exists() {
@@ -444,44 +459,48 @@ pub async fn set_pkg_meta(
         return Err(format!("db_path {} does not exist", db_path.display()));
     }
 
-    let meta_content = fs::read_to_string(meta_path).map_err(|e| {
-        format!("Failed to read meta_path: {}", e.to_string())
-    })?;
+    let meta_content = fs::read_to_string(meta_path)
+        .map_err(|e| format!("Failed to read meta_path: {}", e.to_string()))?;
 
-    let meta_data:PackageMeta = PackageMeta::from_str(&meta_content).map_err(|e| {
-        format!("Failed to parse meta_path: {}", e.to_string())
-    })?;
-    let (meta_obj_id,meta_obj_id_str) = meta_data.gen_obj_id();
+    let meta_data: PackageMeta = PackageMeta::from_str(&meta_content)
+        .map_err(|e| format!("Failed to parse meta_path: {}", e.to_string()))?;
+    let (meta_obj_id, meta_obj_id_str) = meta_data.gen_obj_id();
 
-    let meta_db = MetaIndexDb::new(db_path,false);
+    let meta_db = MetaIndexDb::new(db_path, false);
     if meta_db.is_err() {
-        return Err(format!("Failed to open meta_db: {}", meta_db.err().unwrap()));
+        return Err(format!(
+            "Failed to open meta_db: {}",
+            meta_db.err().unwrap()
+        ));
     }
     let meta_db = meta_db.unwrap();
     let mut pkg_meta_map = HashMap::new();
-    pkg_meta_map.insert(meta_obj_id.to_string(),PackageMetaNode {
-        meta_jwt: meta_content,
-        pkg_name: meta_data.name.clone(),
-        version: meta_data.version.clone(),
-        tag: meta_data.version_tag.clone(),
-        author: meta_data.author.clone(),
-        author_pk: "".to_string(),
-    });
-    meta_db.add_pkg_meta_batch(&pkg_meta_map).map_err(|e| {
-        format!("Failed to set pkg meta: {}", e.to_string())
-    })?;
-    
+    pkg_meta_map.insert(
+        meta_obj_id.to_string(),
+        PackageMetaNode {
+            meta_jwt: meta_content,
+            pkg_name: meta_data.name.clone(),
+            version: meta_data.version.clone(),
+            tag: meta_data.version_tag.clone(),
+            author: meta_data.author.clone(),
+            author_pk: "".to_string(),
+        },
+    );
+    meta_db
+        .add_pkg_meta_batch(&pkg_meta_map)
+        .map_err(|e| format!("Failed to set pkg meta: {}", e.to_string()))?;
+
     Ok(())
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use name_lib::{load_private_key, DID};
     use std::fs;
-    use std::path::Path;
-    use name_lib::{DID, load_private_key};
-    use tempfile::tempdir;
     use std::mem;
-    
+    use std::path::Path;
+    use tempfile::tempdir;
+
     #[tokio::test]
     async fn test_pack_pkg() {
         // Create temporary directory as source directory
@@ -494,25 +513,26 @@ mod tests {
         // Prevent temporary directory from being deleted
         mem::forget(dest_dir);
 
-
         // Create test file structure
         let pkg_name = "test_package";
         let version = "0.1.0";
         let author = "test_author";
-        
+
         // Create test file
         fs::write(
             src_path.join("test_file.txt"),
             "This is a test file content",
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         // Create test subdirectory and file
         fs::create_dir(src_path.join("subdir")).unwrap();
         fs::write(
             src_path.join("subdir").join("subfile.txt"),
             "This is a subdir file content",
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         // Create pkg_meta.json file
         let mut meta = PackageMeta::new(
             pkg_name,
@@ -523,47 +543,44 @@ mod tests {
         );
         meta.content = String::new();
         meta.size = 0;
-        
+
         let meta_json = serde_json::to_string_pretty(&meta).unwrap();
         fs::write(src_path.join("pkg_meta.json"), meta_json).unwrap();
-        
+
         // Execute packaging function
-        let result = pack_raw_pkg(
-            src_path.to_str().unwrap(),
-            &dest_path,
-            None,
-        ).await;
-        
+        let result = pack_raw_pkg(src_path.to_str().unwrap(), &dest_path, None).await;
+
         // Verify result
         assert!(result.is_ok(), "Packaging failed: {:?}", result.err());
-        
+
         // Verify file exists
         let expected_tarball_path = Path::new(&dest_path)
             .join(pkg_name)
             .join(format!("{}#{}.tar.gz", pkg_name, version));
-        assert!(expected_tarball_path.exists(), "Packaged file does not exist");
+        assert!(
+            expected_tarball_path.exists(),
+            "Packaged file does not exist"
+        );
         // Get file's sha256 and size
         let file_info = calculate_file_hash(expected_tarball_path.to_str().unwrap()).unwrap();
         //println!("tar: {} : {:?}", expected_tarball_path.display(), &file_info);
         let chunk_id = ChunkId::from_mix256_result(file_info.size, &file_info.sha256);
         println!("pkg chunk_id: {}", chunk_id.to_string());
         // Verify metadata file exists
-        let expected_meta_path = Path::new(&dest_path)
-            .join(pkg_name)
-            .join("pkg_meta.json");
+        let expected_meta_path = Path::new(&dest_path).join(pkg_name).join("pkg_meta.json");
         assert!(expected_meta_path.exists(), "Metadata file does not exist");
-        
+
         // Verify metadata content
         let meta_content = fs::read_to_string(expected_meta_path).unwrap();
-        let meta_data:PackageMeta = serde_json::from_str(&meta_content).unwrap();
-        
+        let meta_data: PackageMeta = serde_json::from_str(&meta_content).unwrap();
+
         assert_eq!(meta_data.name, pkg_name);
         assert_eq!(meta_data.version, version);
         assert_eq!(meta_data.author, author);
         assert_eq!(meta_data.content, chunk_id.to_string(), "chunk_id OK");
         assert_eq!(meta_data.size, file_info.size, "chunk_size OK");
     }
-    
+
     #[tokio::test]
     async fn test_pack_pkg_with_jwt() {
         // Create temporary directory as source directory
@@ -575,18 +592,19 @@ mod tests {
         let dest_path = dest_dir.path().to_str().unwrap().to_string();
         // Prevent temporary directory from being deleted
         mem::forget(dest_dir);
-        
+
         // Create test file structure
         let pkg_name = "test_package_jwt";
         let version = "0.1.0";
         let author = "test_author";
-        
+
         // Create test file
         fs::write(
             src_path.join("test_file.txt"),
             "This is a test file content",
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         // Create pkg_meta.json file
         let mut meta = PackageMeta::new(
             pkg_name,
@@ -597,37 +615,40 @@ mod tests {
         );
         meta.content = String::new();
         meta.size = 0;
-        
+
         let meta_json = serde_json::to_string_pretty(&meta).unwrap();
         fs::write(src_path.join("pkg_meta.json"), meta_json).unwrap();
-        
+
         // Create temporary private key file (Note: This is only for testing, actual implementation should use a valid private key)
         let key_dir = tempdir().unwrap();
         let key_path = key_dir.path().join("test_key.pem");
-        fs::write(&key_path, r#"
+        fs::write(
+            &key_path,
+            r#"
 -----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
 -----END PRIVATE KEY-----
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         let encoding_key = load_private_key(&key_path).unwrap();
-        
+
         // Execute packaging function
         let result = pack_raw_pkg(
             src_path.to_str().unwrap(),
             &dest_path,
-            Some(("did:bns:buckyos".to_string(),encoding_key)),
-        ).await;
-        
+            Some(("did:bns:buckyos".to_string(), encoding_key)),
+        )
+        .await;
+
         // Since we don't have a real private key, this test may fail
         // In actual environment, should use a valid private key or mock generate_jwt function
         if result.is_ok() {
             let _pack_result = result.unwrap();
-            
+
             // Verify JWT file exists
-            let expected_jwt_path = Path::new(&dest_path)
-                .join(pkg_name)
-                .join("pkg_meta.jwt");
-            
+            let expected_jwt_path = Path::new(&dest_path).join(pkg_name).join("pkg_meta.jwt");
+
             if expected_jwt_path.exists() {
                 println!("JWT file created successfully");
             } else {
@@ -638,31 +659,31 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             println!("This may be due to no valid private key in test environment");
         }
     }
-    
+
     #[tokio::test]
     async fn test_pack_pkg_missing_meta() {
         // Create temporary directory as source directory, but don't create pkg_meta.json file
         let src_dir = tempdir().unwrap();
         let src_path = src_dir.path();
-        
+
         // Create temporary directory as target directory
         let dest_dir = tempdir().unwrap();
         let dest_path = dest_dir.path().to_str().unwrap().to_string();
-        
+
         // Create test file
         fs::write(
             src_path.join("test_file.txt"),
             "This is a test file content",
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         // Execute packaging function, should fail
-        let result = pack_raw_pkg(
-            src_path.to_str().unwrap(),
-            &dest_path,
-            None,
-        ).await;
-        
+        let result = pack_raw_pkg(src_path.to_str().unwrap(), &dest_path, None).await;
+
         // Verify result
-        assert!(result.is_err(), "Should fail due to missing pkg_meta.json file");
+        assert!(
+            result.is_err(),
+            "Should fail due to missing pkg_meta.json file"
+        );
     }
 }

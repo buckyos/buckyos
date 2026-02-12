@@ -1,29 +1,27 @@
 #![allow(dead_code)]
 #![allow(unused)]
 
-
-mod run_item;
-mod kernel_mgr; // support manager kernel service (run in native, run for system)
-mod frame_service_mgr; // support manager frame service (run in docker,run for all users)
-mod local_app_mgr;
-mod app_mgr; // support manager app service (run in docker,run for one user)
 mod active_server;
-mod service_pkg;
-mod node_daemon;
+mod app_mgr; // support manager app service (run in docker,run for one user)
 mod finder;
-
+mod frame_service_mgr; // support manager frame service (run in docker,run for all users)
+mod kernel_mgr; // support manager kernel service (run in native, run for system)
+mod local_app_mgr;
+mod node_daemon;
+mod run_item;
+mod service_pkg;
 
 #[cfg(target_os = "windows")]
 mod win_srv;
 
-use clap::{Arg, Command};
 use buckyos_kit::{get_version, init_logging};
+use clap::{Arg, Command};
 use log::*;
 use std::panic;
 
 fn main() {
-    init_logging("node_daemon",true);
-    
+    init_logging("node_daemon", true);
+
     let matches = Command::new("BuckyOS Node Daemon")
         .version(get_version())
         .arg(
@@ -46,11 +44,13 @@ fn main() {
                 .action(clap::ArgAction::SetTrue)
                 .required(false),
         )
-        .arg(Arg::new("as_win_srv")
-            .long("as_win_srv")
-            .help("run as a windows service")
-            .action(clap::ArgAction::SetTrue)
-            .required(false))
+        .arg(
+            Arg::new("as_win_srv")
+                .long("as_win_srv")
+                .help("run as a windows service")
+                .action(clap::ArgAction::SetTrue)
+                .required(false),
+        )
         .get_matches();
     if matches.get_flag("as_win_srv") {
         #[cfg(windows)]

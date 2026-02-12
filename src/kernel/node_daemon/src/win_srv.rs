@@ -1,14 +1,16 @@
+use crate::node_daemon;
+use clap::{Arg, ArgMatches, Command};
+use lazy_static::lazy_static;
 use std::cell::OnceCell;
 use std::ffi::OsString;
 use std::process::exit;
 use std::sync::OnceLock;
 use std::time::Duration;
-use clap::{Arg, ArgMatches, Command};
-use lazy_static::lazy_static;
-use windows_service::{define_windows_service, service_control_handler, service_dispatcher, Error};
-use windows_service::service::{ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType};
+use windows_service::service::{
+    ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType,
+};
 use windows_service::service_control_handler::{ServiceControlHandlerResult, ServiceStatusHandle};
-use crate::node_daemon;
+use windows_service::{define_windows_service, service_control_handler, service_dispatcher, Error};
 
 define_windows_service!(ffi_service_main, service_main);
 
@@ -18,7 +20,7 @@ struct WinService {
 }
 
 lazy_static! {
-    static ref SERVICE: std::sync::RwLock<WinService> = std::sync::RwLock::new(WinService{
+    static ref SERVICE: std::sync::RwLock<WinService> = std::sync::RwLock::new(WinService {
         status_handle: None,
         cur_svc_status: ServiceStatus {
             service_type: ServiceType::OWN_PROCESS,
@@ -28,7 +30,8 @@ lazy_static! {
             checkpoint: 0,
             wait_hint: Duration::default(),
             process_id: None,
-    }});
+        }
+    });
 }
 
 static MATCHES: OnceLock<ArgMatches> = OnceLock::new();
@@ -42,7 +45,10 @@ pub(crate) fn service_main(_arguments: Vec<OsString>) -> windows_service::Result
                 service.cur_svc_status.current_state = ServiceState::Stopped;
                 service.cur_svc_status.controls_accepted = ServiceControlAccept::empty();
 
-                service.status_handle.unwrap().set_service_status(service.cur_svc_status.clone());
+                service
+                    .status_handle
+                    .unwrap()
+                    .set_service_status(service.cur_svc_status.clone());
 
                 //exit(0);
                 ServiceControlHandlerResult::NoError
@@ -50,12 +56,15 @@ pub(crate) fn service_main(_arguments: Vec<OsString>) -> windows_service::Result
             ServiceControl::Interrogate => {
                 let mut status = SERVICE.read().unwrap().cur_svc_status.clone();
                 status.process_id = Some(std::process::id());
-                SERVICE.read().unwrap().status_handle.unwrap().set_service_status(status);
+                SERVICE
+                    .read()
+                    .unwrap()
+                    .status_handle
+                    .unwrap()
+                    .set_service_status(status);
                 ServiceControlHandlerResult::NoError
             }
-            _ => {
-                ServiceControlHandlerResult::NotImplemented
-            }
+            _ => ServiceControlHandlerResult::NotImplemented,
         }
     })?;
 
@@ -66,8 +75,10 @@ pub(crate) fn service_main(_arguments: Vec<OsString>) -> windows_service::Result
         service.cur_svc_status.controls_accepted = ServiceControlAccept::STOP;
         service.status_handle = Some(status_handle);
 
-        service.status_handle.unwrap().set_service_status(service.cur_svc_status.clone());
-
+        service
+            .status_handle
+            .unwrap()
+            .set_service_status(service.cur_svc_status.clone());
     }
 
     let matches = MATCHES.get().unwrap().clone();

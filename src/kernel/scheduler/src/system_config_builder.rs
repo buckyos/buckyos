@@ -1,20 +1,27 @@
 use anyhow::{anyhow, Result};
-use log::{debug, info, warn};
-use buckyos_api::{
-    AppDoc, AppServiceSpec, AppType, GatewaySettings, GatewayShortcut, KernelServiceSpec, NodeConfig, NodeState, SCHEDULER_SERVICE_UNIQUE_ID, SelectorType, ServiceExposeConfig, ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, UserSettings, UserState, UserType, VERIFY_HUB_UNIQUE_ID, generate_aicc_service_doc, generate_control_panel_service_doc, generate_msg_center_service_doc, generate_repo_service_doc, generate_scheduler_service_doc, generate_smb_service_doc, generate_task_manager_service_doc, generate_verify_hub_service_doc
-};
 use buckyos_api::msg_queue::{
     generate_kmsg_service_doc, KMSG_SERVICE_MAIN_PORT, KMSG_SERVICE_UNIQUE_ID,
 };
 use buckyos_api::{
+    generate_aicc_service_doc, generate_control_panel_service_doc, generate_msg_center_service_doc,
+    generate_repo_service_doc, generate_scheduler_service_doc, generate_smb_service_doc,
+    generate_task_manager_service_doc, generate_verify_hub_service_doc, AppDoc, AppServiceSpec,
+    AppType, GatewaySettings, GatewayShortcut, KernelServiceSpec, NodeConfig, NodeState,
+    SelectorType, ServiceExposeConfig, ServiceInfo, ServiceInstallConfig,
+    ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, UserSettings,
+    UserState, UserType, SCHEDULER_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID,
+};
+use buckyos_api::{
     AICC_SERVICE_SERVICE_PORT, AICC_SERVICE_UNIQUE_ID, CONTROL_PANEL_SERVICE_PORT,
-    CONTROL_PANEL_SERVICE_UNIQUE_ID, MSG_CENTER_SERVICE_PORT, MSG_CENTER_SERVICE_UNIQUE_ID, REPO_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID,
-    TASK_MANAGER_SERVICE_PORT, TASK_MANAGER_SERVICE_UNIQUE_ID,
+    CONTROL_PANEL_SERVICE_UNIQUE_ID, MSG_CENTER_SERVICE_PORT, MSG_CENTER_SERVICE_UNIQUE_ID,
+    REPO_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, TASK_MANAGER_SERVICE_PORT,
+    TASK_MANAGER_SERVICE_UNIQUE_ID,
 };
 use buckyos_kit::get_buckyos_root_dir;
 use jsonwebtoken::jwk::Jwk;
+use log::{debug, info, warn};
 use name_client::resolve_did;
-use name_lib::{DID, OwnerConfig, VerifyHubInfo, ZoneBootConfig, ZoneConfig};
+use name_lib::{OwnerConfig, VerifyHubInfo, ZoneBootConfig, ZoneConfig, DID};
 use package_lib::PackageId;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -28,12 +35,10 @@ pub struct StartConfigSummary {
     pub user_name: String,
     pub admin_password_hash: String,
     pub public_key: Jwk,
-    pub zone_name:String,//zone hostname
+    pub zone_name: String, //zone hostname
     #[serde(default)]
     pub ood_jwt: Option<String>,
 }
-
-
 
 #[derive(Serialize, Deserialize)]
 pub struct SystemInstallSettings {
@@ -46,9 +51,7 @@ pub struct SystemConfigBuilder {
 
 impl SystemConfigBuilder {
     pub fn new(init_map: HashMap<String, String>) -> Self {
-        Self {
-            entries: init_map,
-        }
+        Self { entries: init_map }
     }
 
     pub fn add_default_accounts(&mut self, config: &StartConfigSummary) -> Result<&mut Self> {
@@ -103,7 +106,10 @@ impl SystemConfigBuilder {
             let cache_hint = if cache_doc.exists() {
                 format!("cache_present={}", cache_doc.display())
             } else {
-                format!("cache_missing={}, hint=populate did_docs cache", cache_doc.display())
+                format!(
+                    "cache_missing={}, hint=populate did_docs cache",
+                    cache_doc.display()
+                )
             };
             anyhow!(
                 "resolve_did failed for app_id={}, did_raw_host={}, {}, err={}",
@@ -123,16 +129,14 @@ impl SystemConfigBuilder {
         if install_settings.is_none() {
             return Err(anyhow!("system/install_settings not found"));
         }
-        let install_settings : SystemInstallSettings = serde_json::from_str(install_settings.unwrap())?;
+        let install_settings: SystemInstallSettings =
+            serde_json::from_str(install_settings.unwrap())?;
         let mut app_index = 10;
         for (app_id, app_install_config) in install_settings.pre_install_apps.iter() {
             let app_doc = self.build_app_doc(app_id).await?;
-            let app_key = format!(
-                "users/{}/apps/{}/spec",
-                config.user_name, app_id
-            );
+            let app_key = format!("users/{}/apps/{}/spec", config.user_name, app_id);
             debug!("app_key: {}", app_key);
-      
+
             let app_spec = AppServiceSpec {
                 app_doc,
                 app_index: app_index,
@@ -187,39 +191,27 @@ impl SystemConfigBuilder {
         Ok(self)
     }
 
-    pub async fn add_verify_hub(
-        &mut self,
-        verify_hub_private_key: &str,
-    ) -> Result<&mut Self> {
-        self.entries
-            .insert("system/verify-hub/key".into(), verify_hub_private_key.to_string());
+    pub async fn add_verify_hub(&mut self, verify_hub_private_key: &str) -> Result<&mut Self> {
+        self.entries.insert(
+            "system/verify-hub/key".into(),
+            verify_hub_private_key.to_string(),
+        );
 
         let service_doc = generate_verify_hub_service_doc();
 
-        let config = build_kernel_service_spec(
-            VERIFY_HUB_UNIQUE_ID,
-            3300,
-            1,
-            service_doc
-        ).await?;
+        let config = build_kernel_service_spec(VERIFY_HUB_UNIQUE_ID, 3300, 1, service_doc).await?;
         self.insert_json("services/verify-hub/spec", &config)?;
 
-        let settings = VerifyHubSettings {
-            trust_keys: vec![],
-        };
+        let settings = VerifyHubSettings { trust_keys: vec![] };
         self.insert_json("services/verify-hub/settings", &settings)?;
-     
+
         Ok(self)
     }
 
     pub async fn add_scheduler(&mut self) -> Result<&mut Self> {
         let service_doc = generate_scheduler_service_doc();
-        let config = build_kernel_service_spec(
-            SCHEDULER_SERVICE_UNIQUE_ID,
-            3400,
-            1,
-            service_doc
-        ).await?;
+        let config =
+            build_kernel_service_spec(SCHEDULER_SERVICE_UNIQUE_ID, 3400, 1, service_doc).await?;
         self.insert_json("services/scheduler/spec", &config)?;
         Ok(self)
     }
@@ -276,10 +268,7 @@ impl SystemConfigBuilder {
         Ok(self)
     }
 
-    pub fn add_gateway_settings(
-        &mut self,
-        config: &StartConfigSummary,
-    ) -> Result<&mut Self> {
+    pub fn add_gateway_settings(&mut self, config: &StartConfigSummary) -> Result<&mut Self> {
         // let settings = GatewaySettings {
         //     shortcuts: HashMap::from([
         //         (
@@ -306,33 +295,54 @@ impl SystemConfigBuilder {
 
     pub async fn add_repo_service(&mut self) -> Result<&mut Self> {
         let service_doc = generate_repo_service_doc();
-        let config = build_kernel_service_spec(
-            REPO_SERVICE_UNIQUE_ID,
-            4000,
-            1,
-            service_doc
-        ).await?;
+        let config =
+            build_kernel_service_spec(REPO_SERVICE_UNIQUE_ID, 4000, 1, service_doc).await?;
         self.insert_json("services/repo-service/spec", &config)?;
 
         let settings = RepoServiceSettings {
-            remote_source: HashMap::from([
-                ("default".to_string(), "https://buckyos.ai/ndn/repo/meta_index.db".to_string())
-            ]),
+            remote_source: HashMap::from([(
+                "default".to_string(),
+                "https://buckyos.ai/ndn/repo/meta_index.db".to_string(),
+            )]),
             enable_dev_mode: true,
         };
         self.insert_json("services/repo-service/settings", &settings)?;
 
         let pkg_list = HashMap::from([
-            ("nightly-linux-amd64.node_daemon".to_string(), "no".to_string()),
-            ("nightly-linux-aarch64.node_daemon".to_string(), "no".to_string()),
-            ("nightly-windows-amd64.node_daemon".to_string(), "no".to_string()),
-            ("nightly-apple-amd64.node_daemon".to_string(), "no".to_string()),
-            ("nightly-apple-aarch64.node_daemon".to_string(), "no".to_string()),
+            (
+                "nightly-linux-amd64.node_daemon".to_string(),
+                "no".to_string(),
+            ),
+            (
+                "nightly-linux-aarch64.node_daemon".to_string(),
+                "no".to_string(),
+            ),
+            (
+                "nightly-windows-amd64.node_daemon".to_string(),
+                "no".to_string(),
+            ),
+            (
+                "nightly-apple-amd64.node_daemon".to_string(),
+                "no".to_string(),
+            ),
+            (
+                "nightly-apple-aarch64.node_daemon".to_string(),
+                "no".to_string(),
+            ),
             ("nightly-linux-amd64.buckycli".to_string(), "no".to_string()),
-            ("nightly-linux-aarch64.buckycli".to_string(), "no".to_string()),
-            ("nightly-windows-amd64.buckycli".to_string(), "no".to_string()),
+            (
+                "nightly-linux-aarch64.buckycli".to_string(),
+                "no".to_string(),
+            ),
+            (
+                "nightly-windows-amd64.buckycli".to_string(),
+                "no".to_string(),
+            ),
             ("nightly-apple-amd64.buckycli".to_string(), "no".to_string()),
-            ("nightly-apple-aarch64.buckycli".to_string(), "no".to_string()),
+            (
+                "nightly-apple-aarch64.buckycli".to_string(),
+                "no".to_string(),
+            ),
         ]);
         self.insert_json("services/repo-service/pkg_list", &pkg_list)?;
         Ok(self)
@@ -340,12 +350,7 @@ impl SystemConfigBuilder {
 
     pub async fn add_smb_service(&mut self) -> Result<&mut Self> {
         let service_doc = generate_smb_service_doc();
-        let config = build_kernel_service_spec(
-            SMB_SERVICE_UNIQUE_ID,
-            4100,
-            1,
-            service_doc
-        ).await?;
+        let config = build_kernel_service_spec(SMB_SERVICE_UNIQUE_ID, 4100, 1, service_doc).await?;
         self.insert_json("services/smb-service/spec", &config)?;
         Ok(self)
     }
@@ -353,16 +358,18 @@ impl SystemConfigBuilder {
     pub fn append_policy(&mut self, policy: &str) -> Result<&mut Self> {
         let policy_str = self.entries.get("system/rbac/base_policy");
         if policy_str.is_none() {
-            self.entries.insert("system/rbac/base_policy".to_string(), policy.to_string());
+            self.entries
+                .insert("system/rbac/base_policy".to_string(), policy.to_string());
             return Ok(self);
         }
         let policy_str = policy_str.unwrap();
         let new_policy_str = format!("{}\n{}", policy_str, policy);
-        self.entries.insert("system/rbac/base_policy".to_string(), new_policy_str);
+        self.entries
+            .insert("system/rbac/base_policy".to_string(), new_policy_str);
         Ok(self)
     }
 
-    pub fn add_node(&mut self,ood_name: &str) -> Result<&mut Self> {
+    pub fn add_node(&mut self, ood_name: &str) -> Result<&mut Self> {
         let config = NodeConfig {
             node_id: ood_name.to_string(),
             node_did: format!("did:bns:{ood_name}"),
@@ -373,10 +380,11 @@ impl SystemConfigBuilder {
         };
         self.insert_json(&format!("nodes/{}/config", ood_name), &config)?;
 
-        let gateway_config = json!({
-          
-        });
-        self.insert_json(&format!("nodes/{}/gateway_config", ood_name), &gateway_config)?;
+        let gateway_config = json!({});
+        self.insert_json(
+            &format!("nodes/{}/gateway_config", ood_name),
+            &gateway_config,
+        )?;
 
         self.append_policy(&format!("g, {ood_name}, ood"))?;
         Ok(self)
@@ -391,15 +399,22 @@ impl SystemConfigBuilder {
         let public_key_value = verify_hub_public_key.clone();
         //TODO: add zoone did here:
         let zone_did = DID::from_str(&config.zone_name)?;
-        let mut zone_config = ZoneConfig::new(zone_did, DID::new("bns", &config.user_name), config.public_key.clone());
+        let mut zone_config = ZoneConfig::new(
+            zone_did,
+            DID::new("bns", &config.user_name),
+            config.public_key.clone(),
+        );
 
         let verify_hub_info = VerifyHubInfo {
             public_key: public_key_value,
         };
         let boot_jwt = config.ood_jwt.clone().unwrap_or_default();
-        zone_config.init_by_boot_config(zone_boot_config,&boot_jwt);
+        zone_config.init_by_boot_config(zone_boot_config, &boot_jwt);
         zone_config.verify_hub_info = Some(verify_hub_info);
-        info!("add_boot_config: zone_config: {}", serde_json::to_string_pretty(&zone_config)?);
+        info!(
+            "add_boot_config: zone_config: {}",
+            serde_json::to_string_pretty(&zone_config)?
+        );
         self.insert_json("boot/config", &zone_config)?;
         Ok(self)
     }
@@ -408,17 +423,12 @@ impl SystemConfigBuilder {
         self.entries
     }
 
-    fn insert_json<T: ?Sized + serde::Serialize>(
-        &mut self,
-        key: &str,
-        value: &T,
-    ) -> Result<()> {
+    fn insert_json<T: ?Sized + serde::Serialize>(&mut self, key: &str, value: &T) -> Result<()> {
         let content = serde_json::to_string_pretty(value)?;
         self.entries.insert(key.to_string(), content);
         Ok(())
     }
 }
-
 
 async fn build_kernel_service_spec(
     pkg_name: &str,
@@ -427,14 +437,16 @@ async fn build_kernel_service_spec(
     service_doc: AppDoc,
 ) -> Result<KernelServiceSpec> {
     let service_did = PackageId::unique_name_to_did(pkg_name);
-   
+
     let mut install_config = ServiceInstallConfig::default();
     let service_expose_config = ServiceExposeConfig {
         sub_hostname: Vec::new(),
         expose_uri: Some(format!("/kapi/{}", pkg_name)),
         expose_port: Some(port),
     };
-    install_config.expose_config.insert("www".to_string(), service_expose_config);
+    install_config
+        .expose_config
+        .insert("www".to_string(), service_expose_config);
 
     Ok(KernelServiceSpec {
         service_doc,
@@ -466,7 +478,8 @@ impl TryFrom<&Value> for StartConfigSummary {
                 .get("public_key")
                 .cloned()
                 .ok_or_else(|| anyhow!("start_config.json missing public_key"))?,
-        ).map_err(|e| anyhow!("Failed to parse public key: {}", e))?;
+        )
+        .map_err(|e| anyhow!("Failed to parse public key: {}", e))?;
         Ok(Self {
             user_name: value
                 .get("user_name")

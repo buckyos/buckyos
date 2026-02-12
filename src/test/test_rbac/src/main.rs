@@ -42,16 +42,13 @@ async fn test() -> std::result::Result<(), String> {
     println!("*************************");
     println!("Begin admin + kernel test");
     println!("*************************");
-    let (session_token_str, _real_session_token) = RPCSessionToken::generate_jwt_token(
-        &user_name,
-        "buckycli",
-        None,
-        &private_key,
-    )
-    .map_err(|e| {
-        println!("Failed to generate session token for admin + kernel: {}", e);
-        return e.to_string();
-    })?;
+    let (session_token_str, _real_session_token) =
+        RPCSessionToken::generate_jwt_token(&user_name, "buckycli", None, &private_key).map_err(
+            |e| {
+                println!("Failed to generate session token for admin + kernel: {}", e);
+                return e.to_string();
+            },
+        )?;
 
     println!("generate session token for admin + kernel success");
 
@@ -92,7 +89,9 @@ async fn test() -> std::result::Result<(), String> {
         });
     if _result.is_ok() {
         println!("test CREATE system/test_rbac/set via admin + kernel should failed");
-        return Err("test CREATE system/test_rbac/set via admin + kernel should failed".to_string());
+        return Err(
+            "test CREATE system/test_rbac/set via admin + kernel should failed".to_string(),
+        );
     }
     println!("<== test CREATE system/test_rbac/set via admin + kernel, pass");
 
@@ -129,11 +128,15 @@ async fn test() -> std::result::Result<(), String> {
         });
     if _result.is_ok() {
         println!("test DELETE system/test_rbac/set via admin + kernel should failed");
-        return Err("test DELETE system/test_rbac/set via admin + kernel should failed".to_string());
+        return Err(
+            "test DELETE system/test_rbac/set via admin + kernel should failed".to_string(),
+        );
     }
     println!("<== test DELETE system/test_rbac/set via admin + kernel, pass");
 
-    println!("==> test SET users/devtest/apps/sys-test/settings via admin + kernel, should success");
+    println!(
+        "==> test SET users/devtest/apps/sys-test/settings via admin + kernel, should success"
+    );
     let _result = client
         .call(
             "sys_config_set",
@@ -149,7 +152,9 @@ async fn test() -> std::result::Result<(), String> {
         })?;
     println!("<== test SET users/devtest/apps/sys-test/settings via admin + kernel, pass");
 
-    println!("==> test GET users/devtest/apps/sys-test/settings via admin + kernel, should success");
+    println!(
+        "==> test GET users/devtest/apps/sys-test/settings via admin + kernel, should success"
+    );
     let _result = client
         .call(
             "sys_config_get",
@@ -173,19 +178,16 @@ async fn test() -> std::result::Result<(), String> {
     println!("**********************");
     println!("Begin admin + app test");
     println!("**********************");
-    let (session_token_str, _real_session_token) = RPCSessionToken::generate_jwt_token(
-        &user_name,
-        "sys-test",
-        None,
-        &private_key,
-    )
-    .map_err(|e| {
-        println!(
-            "Failed to generate session token: for admin + sys-test {}",
-            e
-        );
-        return e.to_string();
-    })?;
+    let (session_token_str, _real_session_token) =
+        RPCSessionToken::generate_jwt_token(&user_name, "sys-test", None, &private_key).map_err(
+            |e| {
+                println!(
+                    "Failed to generate session token: for admin + sys-test {}",
+                    e
+                );
+                return e.to_string();
+            },
+        )?;
     println!("generate session token for admin + sys-test success");
     let client = kRPC::new(
         "http://127.0.0.1:3200/kapi/system_config",
@@ -223,7 +225,9 @@ async fn test() -> std::result::Result<(), String> {
     }
     println!("<== test SET system/test_rbac/set via admin + sys-test, pass");
 
-    println!("==> test SET users/devtest/apps/sys-test/settings via admin + sys-test, should success");
+    println!(
+        "==> test SET users/devtest/apps/sys-test/settings via admin + sys-test, should success"
+    );
     let _result = client
         .call(
             "sys_config_set",
@@ -239,7 +243,9 @@ async fn test() -> std::result::Result<(), String> {
         })?;
     println!("<== test SET users/devtest/apps/sys-test/settings via admin + sys-test, pass");
 
-    println!("==> test GET users/devtest/apps/sys-test/settings via admin + sys-test, should success");
+    println!(
+        "==> test GET users/devtest/apps/sys-test/settings via admin + sys-test, should success"
+    );
     let _result = client
         .call(
             "sys_config_get",
@@ -283,7 +289,8 @@ async fn test() -> std::result::Result<(), String> {
     if result.is_ok() {
         println!("test SET users/devtest/apps/sys-test/info via admin + sys-test should failed");
         return Err(
-            "test SET users/devtest/apps/sys-test/info via admin + sys-test should failed".to_string(),
+            "test SET users/devtest/apps/sys-test/info via admin + sys-test should failed"
+                .to_string(),
         );
     }
     println!("<== test SET users/devtest/apps/sys-test/info via admin + sys-test, pass");
@@ -313,7 +320,9 @@ async fn test() -> std::result::Result<(), String> {
             );
             return e.to_string();
         })?;
-    println!("<== test GET users/devtest/apps/buckyos-filebrowser/settings via admin + sys-test, pass");
+    println!(
+        "<== test GET users/devtest/apps/buckyos-filebrowser/settings via admin + sys-test, pass"
+    );
 
     println!(
         "==> test SET users/devtest/apps/buckyos-filebrowser/settings via admin + sys-test, should failed"
@@ -330,7 +339,9 @@ async fn test() -> std::result::Result<(), String> {
         );
         return Err("test SET users/devtest/apps/buckyos-filebrowser/settings via admin + sys-test should failed".to_string());
     }
-    println!("<== test SET users/devtest/apps/buckyos-filebrowser/settings via admin + sys-test, pass");
+    println!(
+        "<== test SET users/devtest/apps/buckyos-filebrowser/settings via admin + sys-test, pass"
+    );
 
     println!("********************************");
     println!("End admin + appA Write appB test");

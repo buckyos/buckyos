@@ -1,8 +1,8 @@
 use crate::task::{Task, TaskPermissions, TaskScope, TaskStatus};
 use crate::task_db::DB_MANAGER;
-use buckyos_api::*;
 use ::kRPC::*;
 use async_trait::async_trait;
+use buckyos_api::*;
 use bytes::Bytes;
 use cyfs_gateway_lib::{
     serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
@@ -114,10 +114,7 @@ impl TaskManagerCreateTaskReq {
 
     pub fn from_json(value: Value) -> Result<Self> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerCreateTaskReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse TaskManagerCreateTaskReq: {}", e))
         })
     }
 }
@@ -134,10 +131,7 @@ impl TaskManagerGetTaskReq {
 
     pub fn from_json(value: Value) -> Result<Self> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerGetTaskReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse TaskManagerGetTaskReq: {}", e))
         })
     }
 }
@@ -179,10 +173,7 @@ impl TaskManagerListTasksReq {
 
     pub fn from_json(value: Value) -> Result<Self> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerListTasksReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse TaskManagerListTasksReq: {}", e))
         })
     }
 }
@@ -255,10 +246,7 @@ impl TaskManagerUpdateTaskReq {
 
     pub fn from_json(value: Value) -> Result<Self> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerUpdateTaskReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse TaskManagerUpdateTaskReq: {}", e))
         })
     }
 }
@@ -277,10 +265,7 @@ impl TaskManagerCancelTaskReq {
 
     pub fn from_json(value: Value) -> Result<Self> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerCancelTaskReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse TaskManagerCancelTaskReq: {}", e))
         })
     }
 }
@@ -406,10 +391,7 @@ impl TaskManagerDeleteTaskReq {
 
     pub fn from_json(value: Value) -> Result<Self> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerDeleteTaskReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse TaskManagerDeleteTaskReq: {}", e))
         })
     }
 }
@@ -479,12 +461,7 @@ pub trait TaskManagerHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<()>;
 
-    async fn handle_cancel_task(
-        &self,
-        id: i64,
-        recursive: bool,
-        ctx: RPCContext,
-    ) -> Result<()>;
+    async fn handle_cancel_task(&self, id: i64, recursive: bool, ctx: RPCContext) -> Result<()>;
 
     async fn handle_get_subtasks(&self, parent_id: i64, ctx: RPCContext) -> Result<Vec<Task>>;
 
@@ -510,16 +487,10 @@ pub trait TaskManagerHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<()>;
 
-    async fn handle_update_task_data(
-        &self,
-        id: i64,
-        data: Value,
-        ctx: RPCContext,
-    ) -> Result<()>;
+    async fn handle_update_task_data(&self, id: i64, data: Value, ctx: RPCContext) -> Result<()>;
 
     async fn handle_delete_task(&self, id: i64, ctx: RPCContext) -> Result<()>;
 }
-
 
 #[derive(Clone)]
 struct TaskManagerService {}
@@ -721,12 +692,7 @@ impl TaskManagerHandler for TaskManagerService {
         Ok(())
     }
 
-    async fn handle_cancel_task(
-        &self,
-        id: i64,
-        recursive: bool,
-        _ctx: RPCContext,
-    ) -> Result<()> {
+    async fn handle_cancel_task(&self, id: i64, recursive: bool, _ctx: RPCContext) -> Result<()> {
         let request_ctx = request_context_from_source(None, None);
         let task = self.load_task(id).await?;
         if !self.can_write_task(&request_ctx, &task) {
@@ -751,11 +717,7 @@ impl TaskManagerHandler for TaskManagerService {
         Ok(())
     }
 
-    async fn handle_get_subtasks(
-        &self,
-        parent_id: i64,
-        _ctx: RPCContext,
-    ) -> Result<Vec<Task>> {
+    async fn handle_get_subtasks(&self, parent_id: i64, _ctx: RPCContext) -> Result<Vec<Task>> {
         let request_ctx = request_context_from_source(None, None);
         let db_manager = DB_MANAGER.lock().await;
         let tasks = db_manager
@@ -815,12 +777,7 @@ impl TaskManagerHandler for TaskManagerService {
 
         let db_manager = DB_MANAGER.lock().await;
         db_manager
-            .update_task_progress(
-                id,
-                progress,
-                completed_items as i32,
-                total_items as i32,
-            )
+            .update_task_progress(id, progress, completed_items as i32, total_items as i32)
             .await
             .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
 
@@ -858,12 +815,7 @@ impl TaskManagerHandler for TaskManagerService {
         Ok(())
     }
 
-    async fn handle_update_task_data(
-        &self,
-        id: i64,
-        data: Value,
-        _ctx: RPCContext,
-    ) -> Result<()> {
+    async fn handle_update_task_data(&self, id: i64, data: Value, _ctx: RPCContext) -> Result<()> {
         let request_ctx = request_context_from_source(None, None);
         let task = self.load_task(id).await?;
         if !self.can_write_task(&request_ctx, &task) {
@@ -872,8 +824,8 @@ impl TaskManagerHandler for TaskManagerService {
             ));
         }
 
-        let data_str = serde_json::to_string(&data)
-            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        let data_str =
+            serde_json::to_string(&data).map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
         let db_manager = DB_MANAGER.lock().await;
         db_manager
             .update_task_data(id, data_str.as_str())
@@ -882,11 +834,7 @@ impl TaskManagerHandler for TaskManagerService {
         Ok(())
     }
 
-    async fn handle_delete_task(
-        &self,
-        id: i64,
-        _ctx: RPCContext,
-    ) -> Result<()> {
+    async fn handle_delete_task(&self, id: i64, _ctx: RPCContext) -> Result<()> {
         let request_ctx = request_context_from_source(None, None);
         let task = self.load_task(id).await?;
         if !self.can_write_task(&request_ctx, &task) {
@@ -921,11 +869,7 @@ impl<T: TaskManagerHandler> TaskManagerServerHandler<T> {
 
 #[async_trait]
 impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
-    async fn handle_rpc_call(
-        &self,
-        req: RPCRequest,
-        ip_from: IpAddr,
-    ) -> Result<RPCResponse> {
+    async fn handle_rpc_call(&self, req: RPCRequest, ip_from: IpAddr) -> Result<RPCResponse> {
         let seq = req.seq;
         let trace_id = req.trace_id.clone();
         let ctx = RPCContext::from_request(&req, ip_from);
@@ -1093,7 +1037,11 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
                 let update_req = TaskManagerUpdateTaskErrorReq::from_json(req.params)?;
                 Self::to_rpc_result(
                     self.0
-                        .handle_update_task_error(update_req.id, update_req.error_message.as_str(), ctx)
+                        .handle_update_task_error(
+                            update_req.id,
+                            update_req.error_message.as_str(),
+                            ctx,
+                        )
                         .await,
                 )
             }
@@ -1107,9 +1055,7 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
             }
             "delete_task" => {
                 let delete_req = TaskManagerDeleteTaskReq::from_json(req.params)?;
-                Self::to_rpc_result(
-                    self.0.handle_delete_task(delete_req.id, ctx).await,
-                )
+                Self::to_rpc_result(self.0.handle_delete_task(delete_req.id, ctx).await)
             }
             _ => return Err(RPCErrors::UnknownMethod(req.method.clone())),
         };
@@ -1132,7 +1078,10 @@ impl<T: TaskManagerHandler + 'static> HttpServer for TaskManagerServerHandler<T>
         if *req.method() == Method::POST {
             return serve_http_by_rpc_handler(req, info, self).await;
         }
-        Err(server_err!(ServerErrorCode::BadRequest, "Method not allowed"))
+        Err(server_err!(
+            ServerErrorCode::BadRequest,
+            "Method not allowed"
+        ))
     }
 
     fn id(&self) -> String {
@@ -1156,16 +1105,15 @@ pub async fn start_task_manager_service() -> Result<()> {
     )
     .await?;
     if let Err(err) = runtime.login().await {
-        error!(
-            "task manager service login to system failed! err:{:?}",
-            err
-        );
+        error!("task manager service login to system failed! err:{:?}", err);
         return Err(RPCErrors::ReasonError(format!(
             "task manager login to system failed! err:{:?}",
             err
         )));
     }
-    runtime.set_main_service_port(TASK_MANAGER_SERVICE_MAIN_PORT).await;
+    runtime
+        .set_main_service_port(TASK_MANAGER_SERVICE_MAIN_PORT)
+        .await;
     set_buckyos_api_runtime(runtime);
 
     let handler = TaskManagerService::new();
@@ -1209,8 +1157,7 @@ mod tests {
         }
     }
 
-    async fn setup_test_environment(
-    ) -> (
+    async fn setup_test_environment() -> (
         TaskManagerServerHandler<TaskManagerService>,
         tempfile::TempDir,
         MutexGuard<'static, ()>,

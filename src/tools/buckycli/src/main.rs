@@ -1,25 +1,24 @@
+mod app;
+mod did;
+mod loader;
+mod ndn;
 #[allow(unused_mut, dead_code, unused_variables)]
 mod package_cmd;
 mod sys_config;
-mod did;
-mod app;
-mod ndn;
-mod loader;
 
-
-use std::{fs, path::Path};
-use buckyos_api::*;
 use buckyos_api::test_config;
+use buckyos_api::*;
 use buckyos_kit::get_version;
 use clap::{Arg, Command};
+use loader::*;
 use log::info;
 use package_cmd::*;
-use loader::*;
+use std::{fs, path::Path};
 
 fn is_local_cmd(cmd_name: &str) -> bool {
     const LOCAL_COMMANDS: &[&str] = &[
         "version",
-        "install_pkg", 
+        "install_pkg",
         "pack_pkg",
         "load_pkg",
         "set_pkg_meta",
@@ -479,10 +478,12 @@ oods look like this 'ood1,ood2'.")
     let subcommand = matches.subcommand();
 
     let cmd_name = subcommand.clone().unwrap().0;
-    let mut runtime = init_buckyos_api_runtime("buckycli",None,BuckyOSRuntimeType::AppClient).await.map_err(|e| {
-        println!("Failed to init buckyos runtime: {}", e);
-        return e.to_string();
-    })?;
+    let mut runtime = init_buckyos_api_runtime("buckycli", None, BuckyOSRuntimeType::AppClient)
+        .await
+        .map_err(|e| {
+            println!("Failed to init buckyos runtime: {}", e);
+            return e.to_string();
+        })?;
     if !is_local_cmd(cmd_name) {
         runtime.login().await.map_err(|e| {
             println!("Failed to login: {}", e);
@@ -491,12 +492,17 @@ oods look like this 'ood1,ood2'.")
         set_buckyos_api_runtime(runtime);
         let buckyos_runtime = get_buckyos_api_runtime().unwrap();
         let zone_host_name = buckyos_runtime.zone_id.to_host_name();
-        println!("Connect to {:?} @ {:?}",buckyos_runtime.user_id,zone_host_name);
-
+        println!(
+            "Connect to {:?} @ {:?}",
+            buckyos_runtime.user_id, zone_host_name
+        );
     } else {
         if runtime.user_private_key.is_some() {
             println!("Warning: You are using a developer private key, please make sure you are on a secure development machine!!!");
-            private_key = Some((runtime.user_id.clone().unwrap(),runtime.user_private_key.clone().unwrap()));
+            private_key = Some((
+                runtime.user_id.clone().unwrap(),
+                runtime.user_private_key.clone().unwrap(),
+            ));
         }
         set_buckyos_api_runtime(runtime);
     }
@@ -506,12 +512,11 @@ oods look like this 'ood1,ood2'.")
         Some(("version", _)) => {
             let version = option_env!("CARGO_PKG_VERSION").unwrap_or("unknown");
             let git_hash = option_env!("VERGEN_GIT_SHA").unwrap_or("unknown");
-            println!("Build Timestamp: {}", option_env!("VERGEN_BUILD_TIMESTAMP").unwrap_or("unknown"));
             println!(
-                "buckyos control tool version {} {}",
-                version,
-                git_hash,
+                "Build Timestamp: {}",
+                option_env!("VERGEN_BUILD_TIMESTAMP").unwrap_or("unknown")
             );
+            println!("buckyos control tool version {} {}", version, git_hash,);
         }
         Some(("pub_pkg", matches)) => {
             let target_dir = matches.get_one::<String>("target_dir").unwrap();
@@ -519,22 +524,24 @@ oods look like this 'ood1,ood2'.")
             // Iterate through all pkg directories in target_dir
             let mut pkg_path_list = Vec::new();
             let target_path = Path::new(target_dir);
-            
+
             if !target_path.exists() || !target_path.is_dir() {
-                return Err(format!("Target directory {} does not exist or is not a directory", target_dir));
+                return Err(format!(
+                    "Target directory {} does not exist or is not a directory",
+                    target_dir
+                ));
             }
-            
+
             // Read all entries in the directory
             let entries = std::fs::read_dir(target_path).map_err(|e| {
                 format!("Failed to read directory {}: {}", target_dir, e.to_string())
             })?;
-            
+
             // Iterate through all entries to find directories
             for entry in entries {
-                let entry = entry.map_err(|e| {
-                    format!("Failed to read directory entry: {}", e.to_string())
-                })?;
-                
+                let entry = entry
+                    .map_err(|e| format!("Failed to read directory entry: {}", e.to_string()))?;
+
                 let path = entry.path();
                 if path.is_dir() {
                     // Check if it contains pkg_meta.jwt file, which indicates it's a valid package directory
@@ -545,11 +552,14 @@ oods look like this 'ood1,ood2'.")
                     }
                 }
             }
-            
+
             if pkg_path_list.is_empty() {
-                return Err(format!("No valid packages found in directory {}", target_dir));
+                return Err(format!(
+                    "No valid packages found in directory {}",
+                    target_dir
+                ));
             }
-            
+
             println!("Found {} packages ready to publish", pkg_path_list.len());
             let pub_result = publish_raw_pkg(&pkg_path_list).await;
             if pub_result.is_err() {
@@ -560,7 +570,7 @@ oods look like this 'ood1,ood2'.")
         }
         Some(("pub_app", matches)) => {
             let app_dir_path = matches.get_one::<String>("target_dir").unwrap();
-            let pub_result = publish_app_pkg( app_dir_path,true).await;
+            let pub_result = publish_app_pkg(app_dir_path, true).await;
             if pub_result.is_err() {
                 println!("Publish app failed! {}", pub_result.err().unwrap());
                 return Err("publish app failed!".to_string());
@@ -570,7 +580,7 @@ oods look like this 'ood1,ood2'.")
             let src_pkg_path = matches.get_one::<String>("src_pkg_path").unwrap();
             let target_path = matches.get_one::<String>("target_path").unwrap();
 
-            match pack_raw_pkg(src_pkg_path, target_path,private_key.clone()).await {
+            match pack_raw_pkg(src_pkg_path, target_path, private_key.clone()).await {
                 Ok(_) => {
                     println!("############\nPack package success!");
                 }
@@ -588,13 +598,16 @@ oods look like this 'ood1,ood2'.")
                 println!("Set pkg meta failed! {}", set_result.err().unwrap());
                 return Err("set pkg meta failed!".to_string());
             }
-            println!("############\nSet pkg meta {} to db {} success!", meta_path, db_path);
+            println!(
+                "############\nSet pkg meta {} to db {} success!",
+                meta_path, db_path
+            );
         }
-        
+
         Some(("install_pkg", matches)) => {
             let pkg_id = matches.get_one::<String>("pkg_id").unwrap();
             let target_env = matches.get_one::<String>("env");
-            let real_target_env:String = if target_env.is_some() {
+            let real_target_env: String = if target_env.is_some() {
                 target_env.unwrap().to_string()
             } else {
                 // Get current directory as default environment
@@ -603,8 +616,12 @@ oods look like this 'ood1,ood2'.")
                     .unwrap_or_else(|_| ".".to_string())
             };
 
-            println!("start install pkg: {} to target env: {}", pkg_id, real_target_env.as_str());
-            
+            println!(
+                "start install pkg: {} to target env: {}",
+                pkg_id,
+                real_target_env.as_str()
+            );
+
             match install_pkg(pkg_id, real_target_env.as_str()).await {
                 Ok(_) => {
                     println!("############\nInstall package success!");
@@ -618,7 +635,7 @@ oods look like this 'ood1,ood2'.")
         Some(("load_pkg", matches)) => {
             let pkg_id = matches.get_one::<String>("pkg_id").unwrap();
             let target_env = matches.get_one::<String>("env");
-            let real_target_env:String = if target_env.is_some() {
+            let real_target_env: String = if target_env.is_some() {
                 target_env.unwrap().to_string()
             } else {
                 // Get current directory as default environment
@@ -627,7 +644,11 @@ oods look like this 'ood1,ood2'.")
                     .unwrap_or_else(|_| ".".to_string())
             };
 
-            println!("start load pkg: {} to target env: {}", pkg_id, real_target_env.as_str());
+            println!(
+                "start load pkg: {} to target env: {}",
+                pkg_id,
+                real_target_env.as_str()
+            );
             let load_result = load_pkg(pkg_id, real_target_env.as_str()).await;
             if load_result.is_err() {
                 println!("Load package failed! {}", load_result.err().unwrap());
@@ -653,7 +674,10 @@ oods look like this 'ood1,ood2'.")
         Some(("update_index", _matches)) => {
             let sync_result = sync_from_remote_source().await;
             if sync_result.is_err() {
-                println!("Sync from remote source failed! {}", sync_result.err().unwrap());
+                println!(
+                    "Sync from remote source failed! {}",
+                    sync_result.err().unwrap()
+                );
                 return Err("sync from remote source failed!".to_string());
             }
         }
@@ -726,7 +750,7 @@ oods look like this 'ood1,ood2'.")
         Some(("create_chunk", matches)) => {
             if let Some(filepath) = matches.get_one::<String>("create") {
                 if let Some(target) = matches.get_one::<String>("target") {
-                    ndn::create_ndn_chunk(filepath,target).await;
+                    ndn::create_ndn_chunk(filepath, target).await;
                     return Ok(());
                 }
             }
@@ -746,7 +770,9 @@ oods look like this 'ood1,ood2'.")
                 sn_base_host,
                 *rtcp_port,
                 output_dir.map(|s| s.as_str()),
-            ).await {
+            )
+            .await
+            {
                 Ok(_) => {
                     println!("Successfully created user environment configuration");
                 }
@@ -761,13 +787,15 @@ oods look like this 'ood1,ood2'.")
             let env_dir = matches.get_one::<String>("env_dir").unwrap();
             let output_dir = matches.get_one::<String>("output_dir");
             let net_id = matches.get_one::<String>("net_id");
-            
+
             match test_config::cmd_create_node_configs(
                 device_name,
                 Path::new(env_dir),
                 output_dir.map(|s| s.as_str()),
                 net_id.map(|s| s.as_str()),
-            ).await {
+            )
+            .await
+            {
                 Ok(_) => {
                     println!("Successfully created node configuration {}", device_name);
                 }
@@ -782,16 +810,19 @@ oods look like this 'ood1,ood2'.")
             let output_dir = matches.get_one::<String>("output_dir");
             let sn_ip_str = matches.get_one::<String>("sn_ip").unwrap();
             let sn_base_host = matches.get_one::<String>("sn_base_host").unwrap();
-            
+
             // Parse IP address
-            let sn_ip = sn_ip_str.parse::<std::net::IpAddr>()
+            let sn_ip = sn_ip_str
+                .parse::<std::net::IpAddr>()
                 .map_err(|e| format!("Invalid IP address '{}': {}", sn_ip_str, e))?;
-            
+
             match test_config::cmd_create_sn_configs(
                 output_dir.map(|s| s.as_str()),
                 sn_ip,
                 sn_base_host.to_string(),
-            ).await {
+            )
+            .await
+            {
                 Ok(_) => {
                     println!("Successfully created SN configuration");
                 }
@@ -805,7 +836,11 @@ oods look like this 'ood1,ood2'.")
             let output_dir = matches.get_one::<String>("output_dir").unwrap();
             let out_path = Path::new(output_dir);
             if let Err(e) = fs::create_dir_all(out_path) {
-                return Err(format!("create output_dir {} failed: {}", out_path.display(), e));
+                return Err(format!(
+                    "create output_dir {} failed: {}",
+                    out_path.display(),
+                    e
+                ));
             }
             let docs = test_config::gen_kernel_service_docs();
             for (did, doc) in docs.iter() {
@@ -824,13 +859,15 @@ oods look like this 'ood1,ood2'.")
             let device_name = matches.get_one::<String>("device_name").unwrap();
             let sn_db_path = matches.get_one::<String>("sn_db_path").unwrap();
             let output_dir = matches.get_one::<String>("output_dir");
-            
+
             match test_config::cmd_register_device_to_sn(
                 username,
                 device_name,
                 sn_db_path,
                 output_dir.map(|s| s.as_str()),
-            ).await {
+            )
+            .await
+            {
                 Ok(_) => {
                     return Ok(());
                 }
@@ -844,12 +881,14 @@ oods look like this 'ood1,ood2'.")
             let username = matches.get_one::<String>("username").unwrap();
             let sn_db_path = matches.get_one::<String>("sn_db_path").unwrap();
             let output_dir = matches.get_one::<String>("output_dir");
-            
+
             match test_config::cmd_register_user_to_sn(
                 username,
                 sn_db_path,
                 output_dir.map(|s| s.as_str()),
-            ).await {
+            )
+            .await
+            {
                 Ok(_) => {
                     return Ok(());
                 }

@@ -1,4 +1,4 @@
-use crate::{KNodeId, KResult, KTypeConfig, KLogError};
+use crate::{KLogError, KNodeId, KResult, KTypeConfig};
 use openraft::error::PayloadTooLarge;
 use openraft::network::RPCTypes;
 use openraft::raft::{

@@ -1,7 +1,12 @@
+use crate::run_item::*;
+use crate::service_pkg::*;
 use async_trait::async_trait;
+use buckyos_api::*;
+use buckyos_kit::*;
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::*;
 use name_lib::DeviceConfig;
+use package_lib::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -9,11 +14,6 @@ use std::hash::Hash;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use tokio::sync::RwLock;
-use buckyos_kit::*;
-use buckyos_api::*;
-use package_lib::*;
-use crate::run_item::*;
-use crate::service_pkg::*;
 
 //use package_installer::*;
 use buckyos_api::{get_full_appid, get_session_token_env_key, AppServiceInstanceConfig};
@@ -28,14 +28,13 @@ pub struct AppRunItem {
     pub app_id: String,
     pub app_instance_config: AppServiceInstanceConfig,
     pub app_loader: ServicePkg,
-
 }
 
 impl AppRunItem {
     pub fn new(
         app_instance_id: &String, // app_id@username@nodeid
         app_service_config: AppServiceInstanceConfig,
-        app_loader: ServicePkg
+        app_loader: ServicePkg,
     ) -> Self {
         let app_id = app_instance_id.split("@").nth(0).unwrap().to_string();
         AppRunItem {
@@ -45,8 +44,13 @@ impl AppRunItem {
         }
     }
 
-    fn get_instance_pkg_id(&self,is_strict: bool) -> Result<String> {
-        let docker_image_pkg_id = self.app_instance_config.app_spec.app_doc.pkg_list.get_docker_image_pkg_id();
+    fn get_instance_pkg_id(&self, is_strict: bool) -> Result<String> {
+        let docker_image_pkg_id = self
+            .app_instance_config
+            .app_spec
+            .app_doc
+            .pkg_list
+            .get_docker_image_pkg_id();
         if docker_image_pkg_id.is_some() {
             let full_pkg_id = docker_image_pkg_id.unwrap();
             if is_strict {
@@ -55,7 +59,12 @@ impl AppRunItem {
                 return Ok(PackageId::get_pkg_id_unique_name(full_pkg_id.as_str()));
             }
         }
-        let app_pkg_id = self.app_instance_config.app_spec.app_doc.pkg_list.get_app_pkg_id();
+        let app_pkg_id = self
+            .app_instance_config
+            .app_spec
+            .app_doc
+            .pkg_list
+            .get_app_pkg_id();
         if app_pkg_id.is_some() {
             let full_app_pkg_id = app_pkg_id.unwrap();
             if is_strict {
@@ -63,14 +72,15 @@ impl AppRunItem {
             } else {
                 return Ok(PackageId::get_pkg_id_unique_name(full_app_pkg_id.as_str()));
             }
-        } 
+        }
 
-        Err(ControlRuntItemErrors::PkgNotExist(
-            format!("app {} pkg not found", self.app_id),
-        ))
+        Err(ControlRuntItemErrors::PkgNotExist(format!(
+            "app {} pkg not found",
+            self.app_id
+        )))
     }
 
-    async fn set_env_var(&self,_is_system_app:bool) -> Result<()> {
+    async fn set_env_var(&self, _is_system_app: bool) -> Result<()> {
         //if self.app_service_config.app_pkg_id.is_some() {
         let env = PackageEnv::new(get_buckyos_system_bin_dir());
         let instance_pkg_id = self.get_instance_pkg_id(env.is_strict());
@@ -84,13 +94,17 @@ impl AppRunItem {
                     "full_path": app_pkg.full_path.to_string_lossy(),
                 });
                 let media_info_json_str = media_info_json.to_string();
-                unsafe { std::env::set_var("app_media_info", media_info_json_str); }
+                unsafe {
+                    std::env::set_var("app_media_info", media_info_json_str);
+                }
             }
         }
 
         let app_config_str = serde_json::to_string(&self.app_instance_config).unwrap();
-        unsafe { std::env::set_var("app_instance_config",app_config_str); }
-        
+        unsafe {
+            std::env::set_var("app_instance_config", app_config_str);
+        }
+
         let timestamp = buckyos_get_unix_timestamp();
         let runtime = get_buckyos_api_runtime().unwrap();
         let device_doc = runtime.device_config.as_ref().unwrap();
@@ -102,7 +116,7 @@ impl AppRunItem {
             session: None,
             sub: Some(self.app_instance_config.app_spec.user_id.clone()),
             aud: None,
-            exp: Some(timestamp + VERIFY_HUB_TOKEN_EXPIRE_TIME*2),
+            exp: Some(timestamp + VERIFY_HUB_TOKEN_EXPIRE_TIME * 2),
             iss: Some(device_doc.name.clone()),
             token: None,
             extra: HashMap::new(),
@@ -112,14 +126,13 @@ impl AppRunItem {
             .generate_jwt(None, device_private_key)
             .map_err(|err| {
                 error!("generate session token for {} failed! {}", self.app_id, err);
-                return ControlRuntItemErrors::ExecuteError(
-                    "start".to_string(),
-                    err.to_string(),
-                );
+                return ControlRuntItemErrors::ExecuteError("start".to_string(), err.to_string());
             })?;
         let full_appid = get_full_appid(&self.app_id, &self.app_instance_config.app_spec.user_id);
-        let env_key = get_session_token_env_key(&full_appid,true);
-        unsafe { std::env::set_var(env_key.as_str(), app_service_session_token_jwt); }
+        let env_key = get_session_token_env_key(&full_appid, true);
+        unsafe {
+            std::env::set_var(env_key.as_str(), app_service_session_token_jwt);
+        }
         Ok(())
     }
 }
@@ -128,7 +141,10 @@ impl AppRunItem {
 impl RunItemControl for AppRunItem {
     fn get_item_name(&self) -> Result<String> {
         //appid#userid
-        let full_appid = format!("{}#{}", self.app_instance_config.app_spec.user_id, self.app_id);
+        let full_appid = format!(
+            "{}#{}",
+            self.app_instance_config.app_spec.user_id, self.app_id
+        );
         Ok(full_appid)
     }
 
@@ -138,32 +154,41 @@ impl RunItemControl for AppRunItem {
 
         let mut env = PackageEnv::new(get_buckyos_system_bin_dir());
         let instance_pkg_id = self.get_instance_pkg_id(env.is_strict())?;
-        info!("install app pkg {}",instance_pkg_id);
-        let install_result = env.install_pkg(&instance_pkg_id, true,false).await
+        info!("install app pkg {}", instance_pkg_id);
+        let install_result = env
+            .install_pkg(&instance_pkg_id, true, false)
+            .await
             .map_err(|e| {
                 error!("AppRunItem install pkg {} failed! {}", self.app_id, e);
-                return ControlRuntItemErrors::ExecuteError(
-                    "deploy".to_string(),
-                    e.to_string(),
-                );
+                return ControlRuntItemErrors::ExecuteError("deploy".to_string(), e.to_string());
             });
 
         if install_result.is_ok() {
-            warn!("install app instance pkg {} success",instance_pkg_id);
+            warn!("install app instance pkg {} success", instance_pkg_id);
         }
 
         if !is_system_app {
             self.set_env_var(false).await?;
-            let real_param = vec![self.app_id.clone(), self.app_instance_config.app_spec.user_id.clone()];
-            let result = self.app_loader.execute_operation("deploy",Some(&real_param)).await.map_err(|err| {
-                return ControlRuntItemErrors::ExecuteError(
-                    "deploy".to_string(),
-                    err.to_string(),
-                );
-            });
+            let real_param = vec![
+                self.app_id.clone(),
+                self.app_instance_config.app_spec.user_id.clone(),
+            ];
+            let result = self
+                .app_loader
+                .execute_operation("deploy", Some(&real_param))
+                .await
+                .map_err(|err| {
+                    return ControlRuntItemErrors::ExecuteError(
+                        "deploy".to_string(),
+                        err.to_string(),
+                    );
+                });
             if result.is_ok() {
                 if result.unwrap() == 0 {
-                    info!("deploy app (not system) {} by app_loader success",self.app_id);
+                    info!(
+                        "deploy app (not system) {} by app_loader success",
+                        self.app_id
+                    );
                     return Ok(());
                 }
             }
@@ -185,16 +210,17 @@ impl RunItemControl for AppRunItem {
         } else {
             self.set_env_var(false).await?;
         }
-        let real_param = vec![self.app_id.clone(), self.app_instance_config.app_spec.user_id.clone()];
+        let real_param = vec![
+            self.app_id.clone(),
+            self.app_instance_config.app_spec.user_id.clone(),
+        ];
 
-        let result = self.app_loader
+        let result = self
+            .app_loader
             .start(Some(&real_param))
             .await
             .map_err(|err| {
-                return ControlRuntItemErrors::ExecuteError(
-                    "start".to_string(),
-                    err.to_string(),
-                );
+                return ControlRuntItemErrors::ExecuteError("start".to_string(), err.to_string());
             })?;
 
         if result == 0 {
@@ -207,7 +233,6 @@ impl RunItemControl for AppRunItem {
         }
     }
 
-    
     async fn stop(&self, params: Option<&Vec<String>>) -> Result<()> {
         //let is_system_app = self.app_instance_config.app_spec.app_doc.pkg_list.get_app_pkg_id().is_some();
         let is_system_app = false;
@@ -216,15 +241,16 @@ impl RunItemControl for AppRunItem {
         } else {
             self.set_env_var(false).await?;
         }
-        let real_param = vec![self.app_id.clone(), self.app_instance_config.app_spec.user_id.clone()];
-        let result = self.app_loader
+        let real_param = vec![
+            self.app_id.clone(),
+            self.app_instance_config.app_spec.user_id.clone(),
+        ];
+        let result = self
+            .app_loader
             .stop(Some(&real_param))
             .await
             .map_err(|err| {
-                return ControlRuntItemErrors::ExecuteError(
-                    "stop".to_string(),
-                    err.to_string(),
-                );
+                return ControlRuntItemErrors::ExecuteError("stop".to_string(), err.to_string());
             })?;
         if result == 0 {
             return Ok(());
@@ -250,19 +276,24 @@ impl RunItemControl for AppRunItem {
         // } else {
 
         //     is_system_app = false;
-        // }  
-        
+        // }
+
         self.set_env_var(is_system_app).await?;
-        let real_param = vec![self.app_id.clone(), self.app_instance_config.app_spec.user_id.clone()];
-        let result: ServiceInstanceState = self.app_loader.status(Some(&real_param)).await.map_err(|err| {
-            return ControlRuntItemErrors::ExecuteError(
-                "get_state".to_string(),
-                err.to_string(),
-            );
-        })?;
+        let real_param = vec![
+            self.app_id.clone(),
+            self.app_instance_config.app_spec.user_id.clone(),
+        ];
+        let result: ServiceInstanceState = self
+            .app_loader
+            .status(Some(&real_param))
+            .await
+            .map_err(|err| {
+                return ControlRuntItemErrors::ExecuteError(
+                    "get_state".to_string(),
+                    err.to_string(),
+                );
+            })?;
 
         Ok(result)
     }
-
-
 }

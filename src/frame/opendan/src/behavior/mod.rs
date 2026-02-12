@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -10,6 +11,7 @@ use serde_json::{json, Map, Value as Json};
 
 use crate::agent_tool::{ToolCall, ToolManager, ToolSpec};
 
+pub mod config;
 pub mod observability;
 pub mod parser;
 pub mod policy_adapter;
@@ -18,6 +20,7 @@ pub mod sanitize;
 pub mod tool_loop;
 pub mod types;
 
+pub use config::{BehaviorConfig, BehaviorConfigError};
 pub use observability::{Event, WorklogSink};
 pub use parser::{OutputParser, StepDraft};
 pub use policy_adapter::PolicyEngine;
@@ -44,6 +47,16 @@ pub struct LLMBehavior {
 impl LLMBehavior {
     pub fn new(cfg: LLMBehaviorConfig, deps: LLMBehaviorDeps) -> Self {
         Self { cfg, deps }
+    }
+
+    pub async fn from_behavior_dir(
+        behaviors_dir: impl AsRef<Path>,
+        behavior_name: &str,
+        deps: LLMBehaviorDeps,
+    ) -> Result<(Self, BehaviorConfig), BehaviorConfigError> {
+        let behavior_cfg = BehaviorConfig::load_from_dir(behaviors_dir, behavior_name).await?;
+        let llm_cfg = behavior_cfg.to_llm_behavior_config();
+        Ok((Self::new(llm_cfg, deps), behavior_cfg))
     }
 
     pub async fn run_step(&self, input: ProcessInput) -> LLMResult {

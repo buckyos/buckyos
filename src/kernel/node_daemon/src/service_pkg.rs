@@ -1,12 +1,11 @@
+use buckyos_api::ServiceInstanceState;
+use buckyos_kit::*;
 use log::*;
 use package_lib::*;
-use std::path::PathBuf;
-use tokio::sync::Mutex;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use thiserror::Error;
-use buckyos_kit::*;
-use buckyos_api::ServiceInstanceState;
-
+use tokio::sync::Mutex;
 
 type Result<T> = std::result::Result<T, ServiceControlError>;
 
@@ -17,7 +16,6 @@ pub struct ServicePkg {
     pub env_vars: HashMap<String, String>,
     pub media_info: Mutex<Option<MediaInfo>>,
 }
-
 
 impl Default for ServicePkg {
     fn default() -> Self {
@@ -44,7 +42,7 @@ impl ServicePkg {
     pub async fn try_load(&self) -> bool {
         let mut media_info = self.media_info.lock().await;
         if media_info.is_none() {
-            let pkg_env = PackageEnv::new(self.pkg_env_path.clone()); 
+            let pkg_env = PackageEnv::new(self.pkg_env_path.clone());
             let new_media_info = pkg_env.load(&self.pkg_id).await;
             if new_media_info.is_ok() {
                 debug!("load service pkg {} success", self.pkg_id);
@@ -69,7 +67,11 @@ impl ServicePkg {
         }
     }
 
-    pub async fn execute_operation(&self, op_name: &str, params: Option<&Vec<String>>) -> Result<i32> {
+    pub async fn execute_operation(
+        &self,
+        op_name: &str,
+        params: Option<&Vec<String>>,
+    ) -> Result<i32> {
         //let media_info = self.media_info.clone().unwrap();
         let media_info = self.media_info.lock().await;
         let media_info = media_info.as_ref();
@@ -86,11 +88,11 @@ impl ServicePkg {
             self.current_dir.as_ref(),
             Some(&self.env_vars),
         )
-            .await
-            .map_err(|e| {
-                error!("# execute {} failed! {}", op_file.display(), e);
-                return ServiceControlError::ReasonError(e.to_string());
-            })?;
+        .await
+        .map_err(|e| {
+            error!("# execute {} failed! {}", op_file.display(), e);
+            return ServiceControlError::ReasonError(e.to_string());
+        })?;
 
         let params_str = params.map(|p| p.join(" ")).unwrap_or_default();
         if result == 0 {
@@ -108,14 +110,14 @@ impl ServicePkg {
                 params_str,
                 result,
                 String::from_utf8_lossy(&output)
-            ); 
+            );
         }
         Ok(result)
     }
 
     pub async fn start(&self, params: Option<&Vec<String>>) -> Result<i32> {
         self.try_load().await;
-        let result = self.execute_operation( "start", params).await?;
+        let result = self.execute_operation("start", params).await?;
         Ok(result)
     }
 
@@ -126,7 +128,7 @@ impl ServicePkg {
     }
 
     pub async fn status(&self, params: Option<&Vec<String>>) -> Result<ServiceInstanceState> {
-        let pkg_env = PackageEnv::new(self.pkg_env_path.clone()); 
+        let pkg_env = PackageEnv::new(self.pkg_env_path.clone());
         let media_info = pkg_env.load(&self.pkg_id).await;
         if media_info.is_err() {
             info!("pkg {} not exist", self.pkg_id);

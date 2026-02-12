@@ -46,7 +46,9 @@ pub enum ResourceRef {
         mime: String,
         data_base64: String,
     },
-    NamedObject { obj_id: ObjId },
+    NamedObject {
+        obj_id: ObjId,
+    },
 }
 
 impl ResourceRef {
@@ -357,10 +359,7 @@ impl AiccClient {
             Self::KRPC(client) => {
                 let req = CancelRequest::new(task_id.to_string());
                 let req_json = serde_json::to_value(&req).map_err(|error| {
-                    RPCErrors::ReasonError(format!(
-                        "Failed to serialize CancelRequest: {}",
-                        error
-                    ))
+                    RPCErrors::ReasonError(format!("Failed to serialize CancelRequest: {}", error))
                 })?;
                 let result = client.call("cancel", req_json).await?;
                 serde_json::from_value(result).map_err(|error| {
@@ -526,11 +525,13 @@ mod tests {
                     "user".to_string(),
                     "summarize this commit".to_string(),
                 )],
-                vec![ResourceRef::url(
-                    "cyfs://example/object/1".to_string(),
-                    Some("text/plain".to_string()),
-                ),
-                ResourceRef::named_object(ObjId::new("chunk:123456").unwrap())],
+                vec![
+                    ResourceRef::url(
+                        "cyfs://example/object/1".to_string(),
+                        Some("text/plain".to_string()),
+                    ),
+                    ResourceRef::named_object(ObjId::new("chunk:123456").unwrap()),
+                ],
                 None,
                 Some(json!({"temperature": 0.3})),
             ),

@@ -1,6 +1,5 @@
-use crate::system_log::{SystemLogRecord, LogTimeHelper, LogLevel};
+use crate::system_log::{LogLevel, LogTimeHelper, SystemLogRecord};
 use std::str::FromStr;
-
 
 pub struct SystemLogRecordLineFormatter;
 
@@ -43,7 +42,7 @@ impl SystemLogRecordLineFormatter {
         let level = LogLevel::from_str(level_str)?;
 
         let target_str = parts[2].trim_matches(&['[', ']'][..]);
-        
+
         // Check if there is file and line info
         let content_part = parts[3].trim();
         let (file, line, content) = if content_part.starts_with('<') {
@@ -66,7 +65,10 @@ impl SystemLogRecordLineFormatter {
                 println!("{}", msg);
                 msg
             })?);
-            let content = content_part[end_pos + 1..].trim().trim_end_matches('\n').to_string();
+            let content = content_part[end_pos + 1..]
+                .trim()
+                .trim_end_matches('\n')
+                .to_string();
             (file, line, content)
         } else {
             // No file and line info
@@ -85,7 +87,6 @@ impl SystemLogRecordLineFormatter {
         Ok(record)
     }
 }
-
 
 #[cfg(test)]
 mod tests {

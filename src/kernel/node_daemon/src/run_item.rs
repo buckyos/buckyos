@@ -1,10 +1,10 @@
+use crate::service_pkg::*;
 use async_trait::async_trait;
+use buckyos_api::ServiceInstanceState;
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::{debug, info, warn};
-use serde_json::Value;
 use serde::{Deserialize, Serialize};
-use buckyos_api::ServiceInstanceState;
-use crate::service_pkg::*;
+use serde_json::Value;
 use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum ControlRuntItemErrors {
@@ -24,10 +24,10 @@ pub enum ControlRuntItemErrors {
 
 pub type Result<T> = std::result::Result<T, ControlRuntItemErrors>;
 
-#[derive(Serialize, Deserialize, Debug,Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum RunItemTargetState {
-    Running, 
-    Stopped, 
+    Running,
+    Stopped,
     Exited,
 }
 
@@ -41,11 +41,10 @@ impl RunItemTargetState {
     }
 }
 
-
-#[derive(Serialize, Deserialize, Debug,Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RunItemControlOperation {
-    pub command : String,
-    pub params : Option<Vec<String>>,
+    pub command: String,
+    pub params: Option<Vec<String>>,
 }
 
 #[async_trait]
@@ -56,14 +55,14 @@ pub trait RunItemControl: Send + Sync {
     //return new version
     //async fn update(&self, params: &Option<RunItemParams>) -> Result<String>;
 
-    async fn start(&self,params:Option<&Vec<String>>) -> Result<()>;
+    async fn start(&self, params: Option<&Vec<String>>) -> Result<()>;
     async fn stop(&self, params: Option<&Vec<String>>) -> Result<()>;
     async fn get_state(&self, params: Option<&Vec<String>>) -> Result<ServiceInstanceState>;
 }
 
 pub async fn ensure_run_item_state(
     item: &dyn RunItemControl,
-    target_state: RunItemTargetState
+    target_state: RunItemTargetState,
 ) -> Result<()> {
     let item_name = item.get_item_name()?;
     match target_state {
@@ -100,9 +99,7 @@ pub async fn ensure_run_item_state(
                 item.deploy(None).await?;
                 Ok(())
             }
-            _ => {
-                Ok(())
-            }
+            _ => Ok(()),
         },
         RunItemTargetState::Stopped => match item.get_state(None).await? {
             ServiceInstanceState::Started => {

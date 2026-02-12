@@ -11,7 +11,12 @@ pub struct LogDaemonClient {
 }
 
 impl LogDaemonClient {
-    pub fn new(node: String, service_endpoint: String, log_dir: &Path, excluded: Vec<String>) -> Result<Self, String> {
+    pub fn new(
+        node: String,
+        service_endpoint: String,
+        log_dir: &Path,
+        excluded: Vec<String>,
+    ) -> Result<Self, String> {
         let uploader = LogUploader::new(node.clone(), service_endpoint.clone());
 
         let (tx, rx) = mpsc::channel::<LogRecordLoad>(100);

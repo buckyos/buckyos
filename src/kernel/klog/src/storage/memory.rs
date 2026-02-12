@@ -1,5 +1,5 @@
 use super::storage::{KLogStorage, KLogStorageSnapshot};
-use crate::{KResult, KLogEntry, KLogError};
+use crate::{KLogEntry, KLogError, KResult};
 use std::sync::Arc;
 use tokio::sync::Mutex as AsyncMutex;
 

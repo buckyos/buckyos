@@ -1,18 +1,18 @@
 #![allow(dead_code)]
 
-use openraft::{declare_raft_types, LogId};
-use serde::{Deserialize, Serialize};
 use openraft::Raft;
+use openraft::{LogId, declare_raft_types};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 #[cfg(test)]
 mod logs;
 #[cfg(test)]
+mod network;
+#[cfg(test)]
 mod state_machine;
 #[cfg(test)]
 mod storage;
-#[cfg(test)]
-mod network;
 #[cfg(test)]
 mod test;
 
@@ -20,17 +20,13 @@ mod test;
 #[macro_use]
 extern crate log;
 
-
-
 #[derive(Serialize, Deserialize, Debug, Clone, thiserror::Error)]
 pub enum KLogError {
     #[error("Invalid format: {0}")]
     InvalidFormat(String),
 }
 
-
 pub type KResult<T> = Result<T, KLogError>;
-
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct KLogEntry {
@@ -72,7 +68,6 @@ declare_raft_types!(
 
 pub type StorageResult<T> = Result<T, openraft::StorageError<KNodeId>>;
 pub type KLogId = LogId<KNodeId>;
-
 
 pub type KRaft = Raft<KTypeConfig>;
 pub type KRaftRef = Arc<KRaft>;

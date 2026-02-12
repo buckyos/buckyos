@@ -23,8 +23,12 @@ pub struct LogDirReader {
 
 impl LogDirReader {
     pub fn open(log_dir: &Path, excluded: Vec<String>) -> Result<Self, String> {
-        info!("opening log dir reader at dir: {}, excluded: {:?}", log_dir.display(), excluded);
-        
+        info!(
+            "opening log dir reader at dir: {}, excluded: {:?}",
+            log_dir.display(),
+            excluded
+        );
+
         let reader = LogDirReader {
             dir: log_dir.to_path_buf(),
             excluded,

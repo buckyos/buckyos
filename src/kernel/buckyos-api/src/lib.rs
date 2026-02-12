@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 mod content_mgr_client;
 mod control_panel;
+mod msg_center_client;
 pub mod msg_queue;
 mod scheduler_client;
 mod sn_client;
@@ -8,21 +9,21 @@ mod system_config;
 mod task_mgr;
 mod verify_hub_client;
 mod zone_gateway;
-mod msg_center_client;
 
+mod aicc_client;
 mod app_doc;
 mod app_mgr;
-mod aicc_client;
 mod gateway_control;
 mod permission;
 mod repo_client;
 mod runtime;
 pub mod test_config;
 
+pub use aicc_client::*;
 pub use app_doc::*;
 pub use content_mgr_client::*;
 pub use control_panel::*;
-pub use aicc_client::*;
+pub use msg_center_client::*;
 pub use repo_client::*;
 pub use scheduler_client::*;
 pub use sn_client::*;
@@ -30,7 +31,6 @@ pub use system_config::*;
 pub use task_mgr::*;
 pub use verify_hub_client::*;
 pub use zone_gateway::*;
-pub use msg_center_client::*;
 
 pub use app_mgr::*;
 pub use gateway_control::*;

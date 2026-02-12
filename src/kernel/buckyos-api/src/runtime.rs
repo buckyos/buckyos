@@ -873,8 +873,9 @@ impl BuckyOSRuntime {
         let token_str = req.token.as_deref().ok_or(RPCErrors::ParseRequestError(
             "Invalid params, session_token is none".to_string(),
         ))?;
-        let token = RPCSessionToken::from_string(token_str)
-            .map_err(|error| RPCErrors::InvalidToken(format!("Invalid session token: {}", error)))?;
+        let token = RPCSessionToken::from_string(token_str).map_err(|error| {
+            RPCErrors::InvalidToken(format!("Invalid session token: {}", error))
+        })?;
         if !token.is_self_verify() {
             return Err(RPCErrors::InvalidToken(
                 "Session token is not valid".to_string(),

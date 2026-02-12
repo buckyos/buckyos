@@ -5,28 +5,31 @@ mod sled_provider;
 mod zone_did_resolver;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::net::IpAddr;
+use std::sync::Arc;
 
 use jsonwebtoken::{Algorithm, DecodingKey};
 use log::*;
 
+use async_trait::async_trait;
 use lazy_static::lazy_static;
 use serde_json::Value;
 use tokio::sync::Mutex;
-use async_trait::async_trait;
 
 use ::kRPC::*;
 use buckyos_kit::*;
+use bytes::Bytes;
+use cyfs_gateway_lib::{
+    serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
+    StreamInfo,
+};
+use http::{Method, Version};
+use http_body_util::combinators::BoxBody;
 use kv_provider::KVStoreProvider;
 use name_lib::*;
 use rbac::*;
-use sled_provider::SledStore;
-use cyfs_gateway_lib::{HttpServer, ServerError, ServerResult, StreamInfo, serve_http_by_rpc_handler, server_err, ServerErrorCode};
 use server_runner::*;
-use bytes::Bytes;
-use http::{Method, Version};
-use http_body_util::combinators::BoxBody;
+use sled_provider::SledStore;
 
 use crate::zone_did_resolver::ZoneDidResolver;
 
@@ -42,18 +45,22 @@ lazy_static! {
         Arc::new(Mutex::new(SledStore::new().unwrap()));
 }
 
-fn get_full_res_path(key_path:&str) -> Result<(String,String)> {
+fn get_full_res_path(key_path: &str) -> Result<(String, String)> {
     let mut real_key_path = key_path;
     if key_path.starts_with("kv://") {
         real_key_path = &key_path[6..];
     }
 
-    let key = real_key_path.trim_start_matches('/').trim_start_matches('\\');
+    let key = real_key_path
+        .trim_start_matches('/')
+        .trim_start_matches('\\');
     let normalized_path = normalize_path(key);
-   
-    return Ok((format!("kv://{}", normalized_path.as_str()),normalized_path));
-}
 
+    return Ok((
+        format!("kv://{}", normalized_path.as_str()),
+        normalized_path,
+    ));
+}
 
 async fn handle_get(params: Value, session_token: &RPCSessionToken) -> Result<Value> {
     let key = params.get("key");
@@ -75,8 +82,11 @@ async fn handle_get(params: Value, session_token: &RPCSessionToken) -> Result<Va
 
     let appid = session_token.appid.as_deref().unwrap_or("kernel");
 
-    let (full_res_path,real_key_path) = get_full_res_path(key)?;
-    info!("GET: full_res_path:{},real_key_path:{:?},appid:{},userid:{},session_token:{:?}",full_res_path,real_key_path,appid,userid,session_token);
+    let (full_res_path, real_key_path) = get_full_res_path(key)?;
+    info!(
+        "GET: full_res_path:{},real_key_path:{:?},appid:{},userid:{},session_token:{:?}",
+        full_res_path, real_key_path, appid, userid, session_token
+    );
     let is_allowed = enforce(userid, Some(appid), full_res_path.as_str(), "read").await;
     if !is_allowed {
         warn!("No read permission");
@@ -116,7 +126,7 @@ async fn handle_set(params: Value, session_token: &RPCSessionToken) -> Result<Va
         return Err(RPCErrors::NoPermission("No sub(userid)".to_string()));
     }
     let userid = session_token.sub.as_ref().unwrap();
-    let (full_res_path,real_key_path) = get_full_res_path(key)?;
+    let (full_res_path, real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
         session_token.appid.as_deref(),
@@ -160,7 +170,7 @@ async fn handle_create(params: Value, session_token: &RPCSessionToken) -> Result
         return Err(RPCErrors::NoPermission("No sub(userid)".to_string()));
     }
     let userid = session_token.sub.as_ref().unwrap();
-    let (full_res_path,real_key_path) = get_full_res_path(key)?;
+    let (full_res_path, real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
         session_token.appid.as_deref(),
@@ -199,7 +209,7 @@ async fn handle_delete(params: Value, session_token: &RPCSessionToken) -> Result
         return Err(RPCErrors::NoPermission("No sub(userid)".to_string()));
     }
     let userid = session_token.sub.as_ref().unwrap();
-    let (full_res_path,real_key_path) = get_full_res_path(key)?;
+    let (full_res_path, real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
         session_token.appid.as_deref(),
@@ -242,7 +252,7 @@ async fn handle_append(params: Value, session_token: &RPCSessionToken) -> Result
         return Err(RPCErrors::NoPermission("No sub(userid)".to_string()));
     }
     let userid = session_token.sub.as_ref().unwrap();
-    let (full_res_path,real_key_path) = get_full_res_path(key)?;
+    let (full_res_path, real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
         session_token.appid.as_deref(),
@@ -304,7 +314,7 @@ async fn handle_set_by_json_path(params: Value, session_token: &RPCSessionToken)
         return Err(RPCErrors::NoPermission("No sub(userid)".to_string()));
     }
     let userid = session_token.sub.as_ref().unwrap();
-    let (full_res_path,real_key_path) = get_full_res_path(key)?;
+    let (full_res_path, real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
         session_token.appid.as_deref(),
@@ -349,7 +359,7 @@ async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Resul
 
     // Process each action into KVAction
     for (key, action) in actions.as_object().unwrap() {
-        let (full_res_path,real_key_path) = get_full_res_path(key)?;
+        let (full_res_path, real_key_path) = get_full_res_path(key)?;
         if !enforce(
             userid,
             session_token.appid.as_deref(),
@@ -459,8 +469,13 @@ async fn handle_list(params: Value, session_token: &RPCSessionToken) -> Result<V
         return Err(RPCErrors::NoPermission("No sub(userid)".to_string()));
     }
     let userid = session_token.sub.as_ref().unwrap();
-    let (full_res_path,real_key_path) = get_full_res_path(key)?;
-    info!("full_res_path: {},userid: {},appid: {}", full_res_path,userid,session_token.appid.as_deref().unwrap());
+    let (full_res_path, real_key_path) = get_full_res_path(key)?;
+    info!(
+        "full_res_path: {},userid: {},appid: {}",
+        full_res_path,
+        userid,
+        session_token.appid.as_deref().unwrap()
+    );
     if !enforce(
         userid,
         session_token.appid.as_deref(),
@@ -537,7 +552,6 @@ async fn handle_refresh_trust_keys() -> Result<Value> {
                 }
             }
         }
-        
     }
 
     let device_doc_str = std::env::var("BUCKYOS_THIS_DEVICE");
@@ -573,7 +587,7 @@ async fn handle_refresh_trust_keys() -> Result<Value> {
     } else {
         error!("Missing BUCKYOS_THIS_DEVICE");
     }
-    
+
     let rbac_model = store.get("system/rbac/model".to_string()).await;
     let rbac_policy = store.get("system/rbac/policy".to_string()).await;
     let mut set_rbac = false;
@@ -644,7 +658,6 @@ async fn dump_configs_for_scheduler(
         .await
         .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
     config_map.extend(node_config);
-
 
     let config_map = serde_json::to_value(&config_map).unwrap();
     return Ok(config_map);
@@ -719,21 +732,16 @@ impl RPCHandler for SystemConfigServer {
         req: RPCRequest,
         _ip_from: IpAddr,
     ) -> std::result::Result<RPCResponse, RPCErrors> {
-        let result = self.process_request(req.method, req.params, req.token).await;
-        
+        let result = self
+            .process_request(req.method, req.params, req.token)
+            .await;
+
         match result {
-            Ok(value) => {
-                Ok(RPCResponse::new(
-                    RPCResult::Success(value),
-                    req.seq,
-                ))
-            }
-            Err(err) => {
-                Ok(RPCResponse::new(
-                    RPCResult::Failed(err.to_string()),
-                    req.seq,
-                ))
-            }
+            Ok(value) => Ok(RPCResponse::new(RPCResult::Success(value), req.seq)),
+            Err(err) => Ok(RPCResponse::new(
+                RPCResult::Failed(err.to_string()),
+                req.seq,
+            )),
         }
     }
 }
@@ -748,7 +756,10 @@ impl HttpServer for SystemConfigServer {
         if *req.method() == Method::POST {
             return serve_http_by_rpc_handler(req, info, self).await;
         }
-        return Err(server_err!(ServerErrorCode::BadRequest, "Method not allowed"));
+        return Err(server_err!(
+            ServerErrorCode::BadRequest,
+            "Method not allowed"
+        ));
     }
 
     fn id(&self) -> String {
@@ -764,12 +775,17 @@ impl HttpServer for SystemConfigServer {
     }
 }
 
-async fn load_device_doc(device_name:&str) -> Result<DeviceConfig> {
+async fn load_device_doc(device_name: &str) -> Result<DeviceConfig> {
     let store = SYS_STORE.lock().await;
-    let device_doc = store.get(format!("devices/{}/doc", device_name))
-        .await.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    let device_doc = store
+        .get(format!("devices/{}/doc", device_name))
+        .await
+        .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
     if device_doc.is_none() {
-        return Err(RPCErrors::KeyNotExist(format!("devices/{}/doc", device_name)));
+        return Err(RPCErrors::KeyNotExist(format!(
+            "devices/{}/doc",
+            device_name
+        )));
     }
     let device_doc_str = device_doc.unwrap();
     let device_doc: EncodedDocument = EncodedDocument::from_str(device_doc_str.clone())
@@ -787,7 +803,9 @@ async fn verify_trusted_jwt(jwt: &str) -> Result<RPCSessionToken> {
     })?;
 
     if header.alg != Algorithm::EdDSA {
-        return Err(RPCErrors::ReasonError("JWT algorithm not allowed".to_string()));
+        return Err(RPCErrors::ReasonError(
+            "JWT algorithm not allowed".to_string(),
+        ));
     }
 
     // Decode claims without verification so we can pick a key fallback (iss) when kid is missing
@@ -824,9 +842,8 @@ async fn verify_trusted_jwt(jwt: &str) -> Result<RPCSessionToken> {
             )));
         }
         let device_key = device_key.unwrap();
-        let real_key = DecodingKey::from_jwk(&device_key).map_err(|err| {
-            RPCErrors::ReasonError(format!("parse device key failed: {}", err))
-        })?;
+        let real_key = DecodingKey::from_jwk(&device_key)
+            .map_err(|err| RPCErrors::ReasonError(format!("parse device key failed: {}", err)))?;
 
         // cache and reuse
         trust_keys = TRUST_KEYS.lock().await;
@@ -843,13 +860,11 @@ async fn verify_trusted_jwt(jwt: &str) -> Result<RPCSessionToken> {
     Ok(rpc_token)
 }
 
-
-
 // async fn verify_session_token(token: &mut RPCSessionToken) -> Result<()> {
 //     if token.is_self_verify() {
 //         let mut trust_keys = TRUST_KEYS.lock().await;
 //         let kid = token.verify_by_key_map(&trust_keys);
-        
+
 //         if kid.is_err() {
 //             let kid_err = kid.err().unwrap();
 //             match kid_err {
@@ -930,10 +945,13 @@ async fn service_main() {
     init_logging("system_config_service", true);
     info!("Starting system config service............................");
     init_by_boot_config().await.unwrap();
-    
+
     let server = SystemConfigServer::new();
     const SYSTEM_CONFIG_SERVICE_MAIN_PORT: u16 = 3200;
-    info!("Starting system config service on port {}", SYSTEM_CONFIG_SERVICE_MAIN_PORT);
+    info!(
+        "Starting system config service on port {}",
+        SYSTEM_CONFIG_SERVICE_MAIN_PORT
+    );
     let runner = Runner::new(SYSTEM_CONFIG_SERVICE_MAIN_PORT);
     let _ = runner.add_http_server("/kapi/system_config".to_string(), Arc::new(server));
 
@@ -1000,11 +1018,9 @@ mod test {
             jti: None,
             session: None,
             aud: None,
-            extra:HashMap::new(),
+            extra: HashMap::new(),
         };
-        let jwt = token
-            .generate_jwt(None, &private_key)
-            .unwrap();
+        let jwt = token.generate_jwt(None, &private_key).unwrap();
 
         sleep(Duration::from_millis(1000)).await;
 
@@ -1127,7 +1143,6 @@ mod test {
 
         let private_key = EncodingKey::from_ed_pem(test_owner_private_key_pem.as_bytes()).unwrap();
         let token = RPCSessionToken {
-
             sub: Some("alice".to_string()),
             appid: Some("test".to_string()),
             aud: None,
@@ -1137,11 +1152,9 @@ mod test {
             iss: Some("alice".to_string()),
             jti: None,
             session: None,
-            extra:HashMap::new(),
+            extra: HashMap::new(),
         };
-        let jwt = token
-            .generate_jwt(None, &private_key)
-            .unwrap();
+        let jwt = token.generate_jwt(None, &private_key).unwrap();
 
         sleep(Duration::from_millis(1000)).await;
         let client = kRPC::new("http://127.0.0.1:3200/kapi/system_config", Some(jwt));

@@ -1,8 +1,8 @@
-use super::storage::{LogRecords, LogStorage, LogQueryRequest};
+use super::storage::{LogQueryRequest, LogRecords, LogStorage};
 use rusqlite::Connection;
+use slog::SystemLogRecord;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use slog::SystemLogRecord;
 
 struct SystemLogRecordResult {
     pub level: u32,
@@ -252,20 +252,23 @@ impl SqliteLogStorage {
         })?;
 
         let log_iter = stmt
-            .query_map(rusqlite::params_from_iter(params.iter().map(|p| &**p)), |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    SystemLogRecordResult {
-                        time: row.get::<_, i64>(2)? as u64,
-                        level: row.get::<_, i32>(3)? as u32,
-                        target: row.get::<_, String>(4)?,
-                        file: row.get::<_, Option<String>>(5)?,
-                        line: row.get::<_, Option<i64>>(6)?.map(|v| v as u32),
-                        content: row.get::<_, String>(7)?,
-                    },
-                ))
-            })
+            .query_map(
+                rusqlite::params_from_iter(params.iter().map(|p| &**p)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        SystemLogRecordResult {
+                            time: row.get::<_, i64>(2)? as u64,
+                            level: row.get::<_, i32>(3)? as u32,
+                            target: row.get::<_, String>(4)?,
+                            file: row.get::<_, Option<String>>(5)?,
+                            line: row.get::<_, Option<i64>>(6)?.map(|v| v as u32),
+                            content: row.get::<_, String>(7)?,
+                        },
+                    ))
+                },
+            )
             .map_err(|e| {
                 let msg = format!("Failed to execute log query: {}", e);
                 error!("{}", msg);
@@ -282,10 +285,7 @@ impl SqliteLogStorage {
             let key = (node.clone(), service.clone());
             match record.try_into() {
                 Ok(rec) => {
-                    records_map
-                        .entry(key)
-                        .or_insert_with(Vec::new)
-                        .push(rec);
+                    records_map.entry(key).or_insert_with(Vec::new).push(rec);
                 }
                 Err(e) => {
                     let msg = format!("Failed to convert log record: {}", e);
@@ -297,7 +297,11 @@ impl SqliteLogStorage {
 
         let mut result = Vec::new();
         for ((node, service), logs) in records_map {
-            result.push(LogRecords { node, service, logs });
+            result.push(LogRecords {
+                node,
+                service,
+                logs,
+            });
         }
 
         Ok(result)
@@ -310,10 +314,7 @@ impl LogStorage for SqliteLogStorage {
         self.append(logs)
     }
 
-    async fn query_logs(
-        &self,
-        request: LogQueryRequest,
-    ) -> Result<Vec<LogRecords>, String> {
+    async fn query_logs(&self, request: LogQueryRequest) -> Result<Vec<LogRecords>, String> {
         self.query(request)
     }
 }

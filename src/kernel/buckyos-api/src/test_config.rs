@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 
 use crate::{
     AppDoc, LocalAppInstanceConfig, ServiceInstallConfig, ServiceInstanceState,
-    MSG_CENTER_SERVICE_UNIQUE_ID, REPO_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID,
-    VERIFY_HUB_UNIQUE_ID,
+    MSG_CENTER_SERVICE_UNIQUE_ID, REPO_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID,
+    SMB_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID,
 };
 
 // ============================================================================

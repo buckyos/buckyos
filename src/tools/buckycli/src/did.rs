@@ -2,7 +2,8 @@ use buckyos_kit::get_buckyos_system_etc_dir;
 use clap::ArgMatches;
 use jsonwebtoken::EncodingKey;
 use name_lib::{
-    DID, DIDDocumentTrait, DeviceConfig, DeviceMiniConfig, NodeIdentityConfig, OwnerConfig, ZoneBootConfig, generate_ed25519_key_pair
+    generate_ed25519_key_pair, DIDDocumentTrait, DeviceConfig, DeviceMiniConfig,
+    NodeIdentityConfig, OwnerConfig, ZoneBootConfig, DID,
 };
 use ndn_lib::named_obj_to_jwt;
 use std::fs::File;
@@ -113,7 +114,6 @@ pub(crate) fn did_matches(matches: &ArgMatches) {
         }
         return did_create_zoneboot(oods_vec, sn_host);
     }
-
 
     println!("no mathch arg")
 }
@@ -256,7 +256,6 @@ fn did_create_zoneboot(oods: Vec<String>, sn_host: Option<String>) {
         owner: None,
         owner_key: None,
         extra_info: std::collections::HashMap::new(),
-
     };
     let zone_boot_config_json_str = serde_json::to_string_pretty(&zone_boot_config).unwrap();
 
