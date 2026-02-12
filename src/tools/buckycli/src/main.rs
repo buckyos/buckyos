@@ -100,15 +100,12 @@ async fn main() -> Result<(), String> {
                         .index(1)
                         .long("pkg_id")
                         .help("pkg id is pkg name with version")
-                        .required(true),
-                        
-                )
+                        .required(true))
                 .arg(
                     Arg::new("env")
                         .long("env")
                         .help("target env path, default is current dir")
-                        .required(false),
-                )
+                        .required(false))
         )
         .subcommand(
             Command::new("load_pkg")
