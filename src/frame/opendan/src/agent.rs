@@ -15,6 +15,7 @@ use tokio::task::JoinSet;
 use crate::agent_enviroment::AgentEnvironment;
 use crate::agent_memory::{AgentMemory, AgentMemoryConfig, TOOL_LOAD_MEMORY};
 use crate::agent_tool::{ToolCall, ToolCallContext, ToolError, ToolManager, ToolSpec};
+use crate::ai_runtime::{AiRuntime, AiRuntimeConfig};
 use crate::behavior::{
     BehaviorConfig, BehaviorConfigError, EnvKV, Event, LLMBehavior, LLMBehaviorDeps, LLMStatus,
     Observation, ObservationSource, PolicyEngine, ProcessInput, TokenUsage, Tokenizer, TraceCtx,
@@ -50,6 +51,8 @@ pub enum AIAgentError {
     Tool(#[from] ToolError),
     #[error("behavior config error: {0}")]
     BehaviorConfig(#[from] BehaviorConfigError),
+    #[error("runtime error: {0}")]
+    Runtime(#[from] crate::ai_runtime::AiRuntimeError),
 }
 
 #[derive(Clone, Debug)]
@@ -202,6 +205,9 @@ impl AIAgent {
         let tool_mgr = Arc::new(ToolManager::new());
         environment.register_workshop_tools(tool_mgr.as_ref())?;
         memory.register_tools(tool_mgr.as_ref())?;
+        let runtime = AiRuntime::new(AiRuntimeConfig::new(&cfg.agent_root)).await?;
+        runtime.register_agent(&did, &cfg.agent_root).await?;
+        runtime.register_tools(tool_mgr.as_ref()).await?;
 
         let behavior_cfg_cache = Arc::new(RwLock::new(HashMap::<String, BehaviorConfig>::new()));
         preload_behavior_configs(&behaviors_dir, behavior_cfg_cache.clone()).await?;
