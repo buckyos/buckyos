@@ -8,6 +8,7 @@ use tokio::fs;
 use tokio::process::Command;
 use tokio::time::{timeout, Duration, Instant};
 
+use super::todo::{TodoTool, TodoToolConfig, TOOL_TODO_MANAGE};
 use crate::agent_tool::{
     AgentTool, MCPToolConfig, ToolCallContext, ToolError, ToolManager, ToolSpec,
 };
@@ -22,6 +23,9 @@ const DEFAULT_MAX_DIFF_LINES: usize = 200;
 const DEFAULT_MAX_FILE_WRITE_BYTES: usize = 256 * 1024;
 const DEFAULT_TOOLS_JSON_REL_PATH: &str = "tools/tools.json";
 const DEFAULT_TOOLS_MD_REL_PATH: &str = "tools/tools.md";
+const DEFAULT_TODO_DB_REL_PATH: &str = "todo/todo.db";
+const DEFAULT_TODO_LIST_LIMIT: usize = 32;
+const DEFAULT_TODO_MAX_LIST_LIMIT: usize = 128;
 
 #[derive(Clone, Debug)]
 pub struct AgentWorkshopConfig {
@@ -62,6 +66,7 @@ impl Default for AgentWorkshopToolsConfig {
             enabled_tools: vec![
                 WorkshopToolConfig::enabled(TOOL_EXEC_BASH),
                 WorkshopToolConfig::enabled(TOOL_EDIT_FILE),
+                WorkshopToolConfig::enabled(TOOL_TODO_MANAGE),
             ],
         }
     }
@@ -149,6 +154,14 @@ impl AgentWorkshop {
                             cfg: self.cfg.clone(),
                             policy: EditFilePolicy::from_tool_config(&self.cfg, tool)?,
                         })?;
+                    }
+                    TOOL_TODO_MANAGE => {
+                        let policy = TodoToolPolicy::from_tool_config(&self.cfg, tool)?;
+                        tool_mgr.register_tool(TodoTool::new(TodoToolConfig {
+                            db_path: policy.db_path,
+                            default_list_limit: policy.default_list_limit,
+                            max_list_limit: policy.max_list_limit,
+                        })?)?;
                     }
                     unsupported => {
                         return Err(ToolError::InvalidArgs(format!(
@@ -282,6 +295,55 @@ impl EditFilePolicy {
             max_write_bytes,
             max_diff_lines,
             allowed_write_roots,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+struct TodoToolPolicy {
+    db_path: PathBuf,
+    default_list_limit: usize,
+    max_list_limit: usize,
+}
+
+impl TodoToolPolicy {
+    fn from_tool_config(
+        workshop_cfg: &AgentWorkshopConfig,
+        tool_cfg: &WorkshopToolConfig,
+    ) -> Result<Self, ToolError> {
+        let params = tool_cfg.params.as_object().ok_or_else(|| {
+            ToolError::InvalidArgs(format!(
+                "tool `{}` params must be a json object",
+                tool_cfg.name
+            ))
+        })?;
+
+        let db_path = if let Some(raw_db_path) = read_string_from_map(params, "db_path")? {
+            resolve_path_in_workspace(&workshop_cfg.workspace_root, &raw_db_path)?
+        } else {
+            resolve_path_in_workspace(&workshop_cfg.workspace_root, DEFAULT_TODO_DB_REL_PATH)?
+        };
+
+        let default_list_limit = read_u64_from_map(params, "default_list_limit")?
+            .map(u64_to_usize)
+            .transpose()?
+            .unwrap_or(DEFAULT_TODO_LIST_LIMIT);
+        let max_list_limit = read_u64_from_map(params, "max_list_limit")?
+            .map(u64_to_usize)
+            .transpose()?
+            .unwrap_or(DEFAULT_TODO_MAX_LIST_LIMIT.max(default_list_limit));
+
+        if default_list_limit == 0 || max_list_limit == 0 || default_list_limit > max_list_limit {
+            return Err(ToolError::InvalidArgs(format!(
+                "tool `{}` has invalid list limit bounds",
+                tool_cfg.name
+            )));
+        }
+
+        Ok(Self {
+            db_path,
+            default_list_limit,
+            max_list_limit,
         })
     }
 }
@@ -1099,6 +1161,7 @@ mod tests {
 
         assert!(tool_mgr.has_tool(TOOL_EDIT_FILE));
         assert!(!tool_mgr.has_tool(TOOL_EXEC_BASH));
+        assert!(!tool_mgr.has_tool(TOOL_TODO_MANAGE));
 
         let err = call(
             &tool_mgr,
@@ -1201,6 +1264,7 @@ mod tests {
         assert!(tool_mgr.has_tool("mcp.weather"));
         assert!(!tool_mgr.has_tool(TOOL_EXEC_BASH));
         assert!(!tool_mgr.has_tool(TOOL_EDIT_FILE));
+        assert!(!tool_mgr.has_tool(TOOL_TODO_MANAGE));
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -1239,6 +1303,78 @@ mod tests {
 
         assert!(tool_mgr.has_tool(TOOL_EXEC_BASH));
         assert!(!tool_mgr.has_tool(TOOL_EDIT_FILE));
+        assert!(!tool_mgr.has_tool(TOOL_TODO_MANAGE));
+
+        let _ = fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn todo_manage_tool_supports_create_list_update_and_task_bridge_fields() {
+        let root = unique_workspace_root("todo-manage");
+        let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
+            .await
+            .expect("create workshop");
+        let tool_mgr = ToolManager::new();
+        workshop
+            .register_tools(&tool_mgr)
+            .expect("register workshop tools");
+
+        assert!(tool_mgr.has_tool(TOOL_TODO_MANAGE));
+
+        let created = call(
+            &tool_mgr,
+            TOOL_TODO_MANAGE,
+            json!({
+                "action": "create",
+                "title": "Implement todo bridge",
+                "description": "sync user todo and task execution state",
+                "status": "todo",
+                "priority": "high",
+                "tags": ["runtime", "bridge"]
+            }),
+        )
+        .await
+        .expect("create todo should succeed");
+        let todo_id = created["todo"]["id"]
+            .as_str()
+            .expect("todo id should exist")
+            .to_string();
+
+        let listed = call(
+            &tool_mgr,
+            TOOL_TODO_MANAGE,
+            json!({
+                "action": "list",
+                "include_closed": false
+            }),
+        )
+        .await
+        .expect("list todo should succeed");
+        let listed_todos = listed["todos"]
+            .as_array()
+            .expect("todos should be an array");
+        assert!(!listed_todos.is_empty());
+        assert!(listed_todos
+            .iter()
+            .any(|item| item.get("id").and_then(|v| v.as_str()) == Some(todo_id.as_str())));
+
+        let updated = call(
+            &tool_mgr,
+            TOOL_TODO_MANAGE,
+            json!({
+                "action": "update",
+                "id": todo_id,
+                "status": "in_progress",
+                "task_id": 42,
+                "task_status": "running"
+            }),
+        )
+        .await
+        .expect("update todo should succeed");
+        assert_eq!(updated["todo"]["status"], "in_progress");
+        assert_eq!(updated["todo"]["task_id"], 42);
+        assert_eq!(updated["todo"]["task_status"], "running");
+        assert!(fs::metadata(root.join("todo/todo.db")).await.is_ok());
 
         let _ = fs::remove_dir_all(root).await;
     }
