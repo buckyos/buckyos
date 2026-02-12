@@ -103,6 +103,7 @@ apps:
     - home/
     - library/
     - data/
+    - agents/jarvis
 
     # 清理路径，uninstall的时候会删除（所有的modules item都会删除)
     clean_paths: 

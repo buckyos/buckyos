@@ -1,0 +1,48 @@
+{
+  "enabled_tools": [
+    {
+      "name": "workshop.exec_bash",
+      "kind": "builtin",
+      "enabled": true,
+      "params": {
+        "default_timeout_ms": 15000,
+        "max_timeout_ms": 120000,
+        "allow_env": false,
+        "allowed_cwd_roots": [
+          ".",
+          "todo",
+          "artifacts",
+          "tools",
+          "worklog"
+        ]
+      }
+    },
+    {
+      "name": "workshop.edit_file",
+      "kind": "builtin",
+      "enabled": true,
+      "params": {
+        "allow_create": true,
+        "allow_replace": true,
+        "max_write_bytes": 262144,
+        "max_diff_lines": 200,
+        "allowed_write_roots": [
+          "todo",
+          "artifacts",
+          "tools",
+          "worklog"
+        ]
+      }
+    },
+    {
+      "name": "workshop.todo_manage",
+      "kind": "builtin",
+      "enabled": true,
+      "params": {
+        "db_path": "todo/todo.db",
+        "default_list_limit": 32,
+        "max_list_limit": 128
+      }
+    }
+  ]
+}

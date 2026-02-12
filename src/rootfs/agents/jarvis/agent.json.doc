@@ -1,0 +1,6 @@
+{
+  "id": "did:web:jarvis.test.buckyos.io",
+  "name": "Jarvis",
+  "kind": "root-agent",
+  "description": "Default built-in OpenDAN agent for BuckyOS"
+}

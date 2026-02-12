@@ -8,8 +8,8 @@ mod tg_tunnel;
 use ::kRPC::*;
 use anyhow::{Context, Result};
 use buckyos_api::{
-    init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType, MsgCenterServerHandler,
-    MSG_CENTER_SERVICE_NAME, MSG_CENTER_SERVICE_PORT,
+    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType,
+    MsgCenterServerHandler, MSG_CENTER_SERVICE_NAME, MSG_CENTER_SERVICE_PORT,
 };
 use buckyos_kit::{get_buckyos_service_data_dir, init_logging};
 use bytes::Bytes;
@@ -36,6 +36,10 @@ use crate::tg_tunnel::{GrammersTgGatewayConfig, TgBotBinding, TgTunnel, TgTunnel
 const MSG_CENTER_HTTP_PATH: &str = "/kapi/msg-center";
 const MSG_CENTER_DEFAULT_TG_TUNNEL_DID: &str = "did:bns:msg-center-default-tunnel";
 const TG_BINDING_BOT_TOKEN_KEY: &str = "bot_token";
+const METHOD_RELOAD_SETTINGS: &str = "reload_settings";
+const METHOD_SERVICE_RELOAD_SETTINGS: &str = "service.reload_settings";
+const METHOD_REALOAD_SETTINGS: &str = "reaload_settings";
+const METHOD_SERVICE_REALOAD_SETTINGS: &str = "service.reaload_settings";
 
 #[derive(Debug, Clone, Deserialize, Default)]
 struct MsgCenterSettings {
@@ -111,15 +115,36 @@ impl Default for TelegramTunnelSettings {
 
 struct MsgCenterHttpServer {
     rpc_handler: MsgCenterServerHandler<MessageCenter>,
-    _tunnel_mgr: MsgTunnelInstanceMgr,
+    tunnel_mgr: Arc<MsgTunnelInstanceMgr>,
 }
 
 impl MsgCenterHttpServer {
-    fn new(center: MessageCenter, tunnel_mgr: MsgTunnelInstanceMgr) -> Self {
+    fn new(center: MessageCenter, tunnel_mgr: Arc<MsgTunnelInstanceMgr>) -> Self {
         Self {
             rpc_handler: MsgCenterServerHandler::new(center),
-            _tunnel_mgr: tunnel_mgr,
+            tunnel_mgr,
         }
+    }
+
+    async fn handle_reload_settings(&self) -> std::result::Result<serde_json::Value, RPCErrors> {
+        let runtime = get_buckyos_api_runtime()
+            .map_err(|err| RPCErrors::ReasonError(format!("get runtime failed: {}", err)))?;
+        let settings = match runtime.get_my_settings().await {
+            Ok(settings) => settings,
+            Err(err) => {
+                warn!(
+                    "load msg-center settings failed during reload, use empty settings: {}",
+                    err
+                );
+                serde_json::json!({})
+            }
+        };
+
+        apply_tg_tunnel_settings(&self.rpc_handler.0, self.tunnel_mgr.as_ref(), &settings)
+            .await
+            .map_err(|err| {
+                RPCErrors::ReasonError(format!("reload msg-center settings failed: {}", err))
+            })
     }
 }
 
@@ -130,6 +155,18 @@ impl RPCHandler for MsgCenterHttpServer {
         req: RPCRequest,
         ip_from: IpAddr,
     ) -> std::result::Result<RPCResponse, RPCErrors> {
+        if req.method == METHOD_RELOAD_SETTINGS
+            || req.method == METHOD_SERVICE_RELOAD_SETTINGS
+            || req.method == METHOD_REALOAD_SETTINGS
+            || req.method == METHOD_SERVICE_REALOAD_SETTINGS
+        {
+            let result = self.handle_reload_settings().await?;
+            return Ok(RPCResponse {
+                result: RPCResult::Success(result),
+                seq: req.seq,
+                trace_id: req.trace_id,
+            });
+        }
         self.rpc_handler.handle_rpc_call(req, ip_from).await
     }
 }
@@ -297,14 +334,59 @@ fn bind_tg_tunnel_bots(tg_tunnel: &TgTunnel, settings: &TelegramTunnelSettings) 
     Ok(())
 }
 
-async fn init_tg_tunnel(
+async fn clear_tunnel_instances(tunnel_mgr: &MsgTunnelInstanceMgr) -> Result<()> {
+    let instances = tunnel_mgr
+        .list_instances()
+        .map_err(|err| anyhow::anyhow!("list tunnel instances failed: {}", err))?;
+    for instance in instances.iter() {
+        if let Err(err) = tunnel_mgr.stop_instance(&instance.tunnel_did).await {
+            warn!(
+                "stop tunnel {} failed during reload: {}",
+                instance.tunnel_did.to_string(),
+                err
+            );
+        }
+    }
+
+    let instances = tunnel_mgr
+        .list_instances()
+        .map_err(|err| anyhow::anyhow!("list tunnel instances failed: {}", err))?;
+    for instance in instances.iter() {
+        if let Err(err) = tunnel_mgr.unregister(&instance.tunnel_did) {
+            warn!(
+                "unregister tunnel {} failed during reload: {}",
+                instance.tunnel_did.to_string(),
+                err
+            );
+        }
+    }
+    let remaining = tunnel_mgr
+        .list_instances()
+        .map_err(|err| anyhow::anyhow!("list tunnel instances failed: {}", err))?;
+    if !remaining.is_empty() {
+        return Err(anyhow::anyhow!(
+            "clear tunnel instances incomplete, {} instance(s) still registered",
+            remaining.len()
+        ));
+    }
+    Ok(())
+}
+
+async fn apply_tg_tunnel_settings(
     center: &MessageCenter,
+    tunnel_mgr: &MsgTunnelInstanceMgr,
     raw_settings: &Value,
-) -> Result<MsgTunnelInstanceMgr> {
+) -> Result<serde_json::Value> {
     let settings = parse_msg_center_settings(raw_settings)?;
     if !settings.telegram_tunnel.enabled {
         info!("telegram tunnel is disabled by settings");
-        return Ok(MsgTunnelInstanceMgr::new());
+        clear_tunnel_instances(tunnel_mgr).await?;
+        return Ok(serde_json::json!({
+            "ok": true,
+            "tunnel_enabled": false,
+            "tunnel_started": false,
+            "bindings": 0
+        }));
     }
 
     let tunnel_did = resolve_tg_tunnel_did(&settings.telegram_tunnel)?;
@@ -323,13 +405,16 @@ async fn init_tg_tunnel(
         settings.telegram_tunnel.bindings.len()
     );
 
-    let tunnel_mgr = MsgTunnelInstanceMgr::new();
+    clear_tunnel_instances(tunnel_mgr).await?;
     tunnel_mgr
         .register(tg_tunnel.clone())
         .map_err(|e| anyhow::anyhow!("register telegram tunnel failed: {}", e))?;
 
+    let mut started = false;
+    let mut start_error: Option<String> = None;
     match tunnel_mgr.start_instance(&tunnel_did).await {
         Ok(_) => {
+            started = true;
             info!(
                 "telegram tunnel {} started (ingress={}, egress={})",
                 tunnel_did.to_string(),
@@ -343,10 +428,18 @@ async fn init_tg_tunnel(
                 tunnel_did.to_string(),
                 err
             );
+            start_error = Some(err.to_string());
         }
     }
 
-    Ok(tunnel_mgr)
+    Ok(serde_json::json!({
+        "ok": true,
+        "tunnel_enabled": true,
+        "tunnel_did": tunnel_did.to_string(),
+        "tunnel_started": started,
+        "bindings": settings.telegram_tunnel.bindings.len(),
+        "start_error": start_error
+    }))
 }
 
 pub async fn start_msg_center_service() -> Result<()> {
@@ -384,7 +477,18 @@ pub async fn start_msg_center_service() -> Result<()> {
 
     let center = MessageCenter::try_new()
         .map_err(|err| anyhow::anyhow!("create message center failed: {:?}", err))?;
-    let tunnel_mgr = init_tg_tunnel(&center, &settings).await?;
+    let tunnel_mgr = Arc::new(MsgTunnelInstanceMgr::new());
+    match apply_tg_tunnel_settings(&center, tunnel_mgr.as_ref(), &settings).await {
+        Ok(result) => {
+            info!("msg-center settings initialized: {}", result);
+        }
+        Err(err) => {
+            warn!(
+                "msg-center settings apply failed during startup, continue without tunnel: {}",
+                err
+            );
+        }
+    }
     let server = MsgCenterHttpServer::new(center, tunnel_mgr);
 
     let runner = Runner::new(MSG_CENTER_SERVICE_PORT);

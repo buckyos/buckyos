@@ -4,8 +4,8 @@ mod openai;
 use ::kRPC::*;
 use anyhow::Result;
 use buckyos_api::{
-    init_buckyos_api_runtime, set_buckyos_api_runtime, AiccServerHandler, BuckyOSRuntimeType,
-    AICC_SERVICE_SERVICE_NAME,
+    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AiccServerHandler,
+    BuckyOSRuntimeType, AICC_SERVICE_SERVICE_NAME,
 };
 use buckyos_kit::init_logging;
 use bytes::Bytes;
@@ -24,6 +24,10 @@ use crate::aicc::AIComputeCenter;
 use crate::openai::register_openai_llm_providers;
 
 const AICC_SERVICE_MAIN_PORT: u16 = 4040;
+const METHOD_RELOAD_SETTINGS: &str = "reload_settings";
+const METHOD_SERVICE_RELOAD_SETTINGS: &str = "service.reload_settings";
+const METHOD_REALOAD_SETTINGS: &str = "reaload_settings";
+const METHOD_SERVICE_REALOAD_SETTINGS: &str = "service.reaload_settings";
 
 struct AiccHttpServer {
     rpc_handler: AiccServerHandler<AIComputeCenter>,
@@ -35,6 +39,30 @@ impl AiccHttpServer {
             rpc_handler: AiccServerHandler::new(center),
         }
     }
+
+    async fn handle_reload_settings(&self) -> std::result::Result<serde_json::Value, RPCErrors> {
+        let runtime = get_buckyos_api_runtime()
+            .map_err(|err| RPCErrors::ReasonError(format!("get runtime failed: {}", err)))?;
+        let settings = match runtime.get_my_settings().await {
+            Ok(settings) => settings,
+            Err(err) => {
+                warn!(
+                    "load aicc settings failed during reload, use empty settings: {}",
+                    err
+                );
+                serde_json::json!({})
+            }
+        };
+
+        let registered =
+            register_openai_llm_providers(&self.rpc_handler.0, &settings).map_err(|err| {
+                RPCErrors::ReasonError(format!("reload aicc settings failed: {}", err))
+            })?;
+        Ok(serde_json::json!({
+            "ok": true,
+            "providers_registered": registered
+        }))
+    }
 }
 
 #[async_trait::async_trait]
@@ -44,6 +72,18 @@ impl RPCHandler for AiccHttpServer {
         req: RPCRequest,
         ip_from: IpAddr,
     ) -> std::result::Result<RPCResponse, RPCErrors> {
+        if req.method == METHOD_RELOAD_SETTINGS
+            || req.method == METHOD_SERVICE_RELOAD_SETTINGS
+            || req.method == METHOD_REALOAD_SETTINGS
+            || req.method == METHOD_SERVICE_REALOAD_SETTINGS
+        {
+            let result = self.handle_reload_settings().await?;
+            return Ok(RPCResponse {
+                result: RPCResult::Success(result),
+                seq: req.seq,
+                trace_id: req.trace_id,
+            });
+        }
         self.rpc_handler.handle_rpc_call(req, ip_from).await
     }
 }
@@ -107,11 +147,20 @@ pub async fn start_aicc_service(center: AIComputeCenter) -> Result<()> {
             serde_json::json!({})
         }
     };
-    let registered = register_openai_llm_providers(&center, &settings)?;
-    info!(
-        "aicc openai provider initialized with {} instances",
-        registered
-    );
+    match register_openai_llm_providers(&center, &settings) {
+        Ok(registered) => {
+            info!(
+                "aicc openai provider initialized with {} instances",
+                registered
+            );
+        }
+        Err(err) => {
+            warn!(
+                "aicc settings apply failed during startup, continue without providers: {}",
+                err
+            );
+        }
+    }
 
     set_buckyos_api_runtime(runtime);
 

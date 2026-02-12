@@ -581,6 +581,8 @@ fn register_default_aliases(
 
 pub fn register_openai_llm_providers(center: &AIComputeCenter, settings: &Value) -> Result<usize> {
     let Some(openai_settings) = parse_openai_settings(settings)? else {
+        center.registry().clear();
+        center.model_catalog().clear();
         info!("aicc openai provider is disabled (settings.openai missing or disabled)");
         return Ok(0);
     };
@@ -590,10 +592,17 @@ pub fn register_openai_llm_providers(center: &AIComputeCenter, settings: &Value)
         ));
     }
     let instances = build_openai_instances(&openai_settings)?;
-
+    let mut prepared = Vec::<(OpenAIInstanceConfig, Arc<dyn Provider>)>::new();
     for config in instances.iter() {
         let provider = OpenAIProvider::new(config.clone(), openai_settings.api_token.clone())?;
-        center.registry().add_provider(Arc::new(provider));
+        prepared.push((config.clone(), Arc::new(provider)));
+    }
+
+    center.registry().clear();
+    center.model_catalog().clear();
+
+    for (config, provider) in prepared.into_iter() {
+        center.registry().add_provider(provider);
 
         register_default_aliases(
             center,

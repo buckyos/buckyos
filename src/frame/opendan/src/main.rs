@@ -40,7 +40,7 @@ fn resolve_agents_root() -> Result<PathBuf> {
         }
     }
 
-    Ok(get_buckyos_root_dir().join("data").join("agents"))
+    Ok(get_buckyos_root_dir().join("agents"))
 }
 
 async fn discover_agent_roots(agents_root: &Path) -> Result<Vec<PathBuf>> {

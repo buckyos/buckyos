@@ -299,6 +299,14 @@ impl Registry {
         entries.remove(instance_id);
     }
 
+    pub fn clear(&self) {
+        let mut entries = self
+            .entries
+            .write()
+            .expect("registry lock should be available");
+        entries.clear();
+    }
+
     pub fn snapshot(&self, capability: Capability) -> RegistrySnapshot {
         let entries = self
             .entries
@@ -473,6 +481,15 @@ impl ModelCatalog {
 
         let mappings = self.mappings.read().ok()?;
         mappings.get(&key).cloned()
+    }
+
+    pub fn clear(&self) {
+        if let Ok(mut mappings) = self.mappings.write() {
+            mappings.clear();
+        }
+        if let Ok(mut tenant_overrides) = self.tenant_overrides.write() {
+            tenant_overrides.clear();
+        }
     }
 }
 

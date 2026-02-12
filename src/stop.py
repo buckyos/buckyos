@@ -48,4 +48,6 @@ def kill_all():
     kill_process("aicc")
     kill_process("task_manager")
     kill_process("kmsg")
+    kill_process("msg_center")
+    kill_process("opendan")
 kill_all()

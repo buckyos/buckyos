@@ -1,0 +1,31 @@
+process_rule: |
+  Handle inbox and event inputs safely.
+  Load memory when needed, update todo items if task planning is required,
+  and produce a compact structured result.
+
+output_protocol:
+  mode: json_v1
+  text: |
+    Return one compact JSON object only with this shape:
+    {
+      "summary": "string",
+      "next_behavior": "string|null",
+      "is_sleep": true,
+      "actions": [],
+      "output": {"ok": true, "note": "string"}
+    }
+
+tools:
+  mode: allow_list
+  names:
+    - load_memory
+    - load_things
+    - list
+    - workshop.todo_manage
+    - workshop.exec_bash
+    - workshop.edit_file
+
+limits:
+  max_tool_rounds: 3
+  max_tool_calls_per_round: 4
+  deadline_ms: 60000
