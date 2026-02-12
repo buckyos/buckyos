@@ -1,7 +1,7 @@
 {
   "telegram_tunnel": {
     "enabled": true,
-    "tunnel_did": "did:bns:msg-center-default-tunnel",
+    "tunnel_did": "did:web:tg-tunnel.test.buckyos.io",
     "supports_ingress": true,
     "supports_egress": true,
     "gateway": {

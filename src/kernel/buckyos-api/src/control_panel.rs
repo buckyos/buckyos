@@ -59,6 +59,32 @@ pub enum UserType {
     Guest,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct UserTunnelBinding {
+    pub platform: String,
+    pub account_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel_id: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub meta: HashMap<String, String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct UserContactSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub did: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bindings: Vec<UserTunnelBinding>,
+}
+
 //did:bns:$user_id user_id is-> UserSettings
 #[derive(Serialize, Deserialize)]
 pub struct UserSettings {
@@ -70,6 +96,8 @@ pub struct UserSettings {
     pub password: String,
     pub state: UserState,
     pub res_pool_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact: Option<UserContactSettings>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

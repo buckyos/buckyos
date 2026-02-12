@@ -1,4 +1,4 @@
-use crate::contact_mgr::ContactMgr;
+use crate::contact_mgr::{ContactMgr, ZoneUserContactSeed};
 use async_trait::async_trait;
 use buckyos_api::{
     AccessDecision, AccessGroupLevel, AccountBinding, BoxKind, Contact, ContactPatch, ContactQuery,
@@ -8,6 +8,7 @@ use buckyos_api::{
     ReadReceiptState, RouteInfo, SendContext, SetGroupSubscribersResult,
 };
 use kRPC::{RPCContext, RPCErrors};
+use log::{info, warn};
 use name_lib::DID;
 use ndn_lib::ObjId;
 use serde_json::Value;
@@ -58,6 +59,14 @@ impl MessageCenter {
 
     pub fn try_new() -> std::result::Result<Self, RPCErrors> {
         Ok(Self::new(ContactMgr::new()?))
+    }
+
+    pub fn upsert_zone_user_contacts(
+        &self,
+        contacts: Vec<ZoneUserContactSeed>,
+        owner: Option<DID>,
+    ) -> std::result::Result<usize, RPCErrors> {
+        self.contact_mgr.upsert_zone_user_contacts(contacts, owner)
     }
 
     fn now_ms() -> u64 {
@@ -511,7 +520,14 @@ impl MessageCenter {
 
             let stored_msg = Self::ensure_message(state, msg);
             let sender = Self::logical_sender(&stored_msg);
+            let context_id = ingress_ctx.as_ref().and_then(|ctx| ctx.context_id.clone());
             if self.is_contact_blocked(&sender, None)? {
+                warn!(
+                    "dispatch blocked by sender access policy: msg_id={}, sender={}, context_id={}",
+                    stored_msg.id.to_string(),
+                    sender.to_string(),
+                    context_id.as_deref().unwrap_or("-"),
+                );
                 let result = DispatchResult {
                     ok: false,
                     msg_id: stored_msg.id.clone(),
@@ -527,7 +543,6 @@ impl MessageCenter {
                 return Ok(result);
             }
 
-            let context_id = ingress_ctx.as_ref().and_then(|ctx| ctx.context_id.clone());
             let ingress_route = Self::route_from_ingress(ingress_ctx.as_ref());
             let mut result = DispatchResult {
                 ok: true,
@@ -541,6 +556,13 @@ impl MessageCenter {
 
             if Self::is_group_message(&stored_msg) {
                 let group_id = stored_msg.from.clone();
+                info!(
+                    "dispatch about to write inbox record: msg_id={}, sender={}, owner={}, box_kind=GROUP_INBOX, context_id={}",
+                    stored_msg.id.to_string(),
+                    sender.to_string(),
+                    group_id.to_string(),
+                    context_id.as_deref().unwrap_or("-"),
+                );
                 Self::create_or_get_record(
                     state,
                     group_id.clone(),
@@ -559,6 +581,13 @@ impl MessageCenter {
                 let readers = Self::dedupe_dids(readers);
                 for agent_did in readers.iter() {
                     let tag = format!("group:{}", group_id.to_string());
+                    info!(
+                        "dispatch about to write inbox record: msg_id={}, sender={}, owner={}, box_kind=INBOX, context_id={}",
+                        stored_msg.id.to_string(),
+                        sender.to_string(),
+                        agent_did.to_string(),
+                        context_id.as_deref().unwrap_or("-"),
+                    );
                     Self::create_or_get_record(
                         state,
                         agent_did.clone(),
@@ -576,11 +605,48 @@ impl MessageCenter {
                 result.delivered_agents = readers;
             } else {
                 let recipients = Self::dedupe_dids(stored_msg.to.clone());
+                if recipients.is_empty() {
+                    warn!(
+                        "dispatch has no recipients, cannot write inbox: msg_id={}, sender={}, context_id={}",
+                        stored_msg.id.to_string(),
+                        sender.to_string(),
+                        context_id.as_deref().unwrap_or("-"),
+                    );
+                }
                 for recipient in recipients {
-                    let decision =
-                        self.decide_inbox_kind(&sender, &recipient, context_id.clone())?;
+                    let decision = match self.decide_inbox_kind(&sender, &recipient, context_id.clone()) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            warn!(
+                                "dispatch failed while deciding inbox: msg_id={}, sender={}, recipient={}, context_id={}, error={}",
+                                stored_msg.id.to_string(),
+                                sender.to_string(),
+                                recipient.to_string(),
+                                context_id.as_deref().unwrap_or("-"),
+                                error,
+                            );
+                            return Err(error);
+                        }
+                    };
                     match decision {
                         Some(box_kind) => {
+                            if box_kind == BoxKind::Inbox {
+                                info!(
+                                    "dispatch about to write inbox record: msg_id={}, sender={}, owner={}, box_kind=INBOX, context_id={}",
+                                    stored_msg.id.to_string(),
+                                    sender.to_string(),
+                                    recipient.to_string(),
+                                    context_id.as_deref().unwrap_or("-"),
+                                );
+                            } else if box_kind == BoxKind::RequestBox {
+                                warn!(
+                                    "dispatch inbox not found, route to REQUEST_BOX: msg_id={}, sender={}, recipient={}, context_id={}",
+                                    stored_msg.id.to_string(),
+                                    sender.to_string(),
+                                    recipient.to_string(),
+                                    context_id.as_deref().unwrap_or("-"),
+                                );
+                            }
                             Self::create_or_get_record(
                                 state,
                                 recipient.clone(),
@@ -595,6 +661,13 @@ impl MessageCenter {
                             result.delivered_recipients.push(recipient);
                         }
                         None => {
+                            warn!(
+                                "dispatch inbox not found, dropping recipient: msg_id={}, sender={}, recipient={}, context_id={}",
+                                stored_msg.id.to_string(),
+                                sender.to_string(),
+                                recipient.to_string(),
+                                context_id.as_deref().unwrap_or("-"),
+                            );
                             result.dropped_recipients.push(recipient);
                         }
                     }

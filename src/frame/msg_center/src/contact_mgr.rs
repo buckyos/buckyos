@@ -5,6 +5,7 @@ use buckyos_api::{
 };
 use buckyos_kit::get_buckyos_service_data_dir;
 use kRPC::RPCErrors;
+use log::info;
 use name_lib::DID;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
@@ -27,6 +28,16 @@ struct ContactStore {
     contacts: HashMap<DID, Contact>,
     binding_index: HashMap<String, DID>,
     group_subscribers: HashMap<DID, Vec<DID>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ZoneUserContactSeed {
+    pub did: DID,
+    pub name: String,
+    pub note: Option<String>,
+    pub bindings: Vec<AccountBinding>,
+    pub groups: Vec<String>,
+    pub tags: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -649,6 +660,80 @@ impl ContactMgr {
         })
     }
 
+    pub fn upsert_zone_user_contacts(
+        &self,
+        contacts: Vec<ZoneUserContactSeed>,
+        owner: Option<DID>,
+    ) -> std::result::Result<usize, RPCErrors> {
+        let owner_scope = owner
+            .as_ref()
+            .map(|did| did.to_string())
+            .unwrap_or_else(|| SYSTEM_OWNER_SCOPE.to_string());
+        self.with_store_write(owner.as_ref(), |store| {
+            let now_ms = Self::now_ms();
+            let mut updated = 0usize;
+
+            for seed in contacts {
+                let ZoneUserContactSeed {
+                    did,
+                    name,
+                    note,
+                    bindings,
+                    groups,
+                    tags,
+                } = seed;
+
+                let prepared_bindings = Self::prepare_import_bindings(bindings, now_ms);
+                let binding_count = prepared_bindings.len();
+                let created = !store.contacts.contains_key(&did);
+                let contact =
+                    Self::ensure_contact_exists(store, did.clone(), now_ms, ContactSource::Shared);
+
+                let trimmed_name = name.trim();
+                if !trimmed_name.is_empty() {
+                    contact.name = trimmed_name.to_string();
+                } else if contact.name.trim().is_empty() {
+                    contact.name = did.to_string();
+                }
+                contact.source = ContactSource::Shared;
+                contact.is_verified = true;
+                if contact.access_level != AccessGroupLevel::Block {
+                    contact.access_level = AccessGroupLevel::Friend;
+                }
+                contact.note = note
+                    .as_ref()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .or(contact.note.clone());
+
+                let mut merged_groups = groups;
+                merged_groups.push("zone_user".to_string());
+                contact.groups = Self::merge_string_lists(&contact.groups, merged_groups);
+
+                let mut merged_tags = tags;
+                merged_tags.push("zone_user".to_string());
+                contact.tags = Self::merge_string_lists(&contact.tags, merged_tags);
+
+                for binding in prepared_bindings {
+                    Self::upsert_binding(contact, binding);
+                }
+                contact.updated_at = now_ms;
+                updated = updated.saturating_add(1);
+                if created {
+                    info!(
+                        "zone user contact added from system config scan: owner_scope={}, did={}, name={}, binding_count={}",
+                        owner_scope,
+                        did.to_string(),
+                        contact.name,
+                        binding_count
+                    );
+                }
+            }
+
+            Ok(updated)
+        })
+    }
+
     fn with_store_read<T, F>(&self, owner: Option<&DID>, f: F) -> std::result::Result<T, RPCErrors>
     where
         F: FnOnce(&ContactStore) -> std::result::Result<T, RPCErrors>,
@@ -989,14 +1074,21 @@ CREATE INDEX IF NOT EXISTS idx_group_subscribers_owner ON group_subscribers(owne
     }
 
     fn rebuild_binding_index(contacts: &HashMap<DID, Contact>) -> HashMap<String, DID> {
-        let mut weighted: HashMap<String, (u64, DID)> = HashMap::new();
+        let mut weighted: HashMap<String, (u8, u64, DID)> = HashMap::new();
         for contact in contacts.values() {
+            let candidate_priority = Self::binding_priority(contact);
             for binding in &contact.bindings {
                 let key = Self::binding_key(&binding.platform, &binding.account_id);
                 match weighted.get(&key) {
-                    Some((current_updated_at, _)) if *current_updated_at > contact.updated_at => {}
+                    Some((current_priority, current_updated_at, _))
+                        if *current_priority > candidate_priority
+                            || (*current_priority == candidate_priority
+                                && *current_updated_at > contact.updated_at) => {}
                     _ => {
-                        weighted.insert(key, (contact.updated_at, contact.did.clone()));
+                        weighted.insert(
+                            key,
+                            (candidate_priority, contact.updated_at, contact.did.clone()),
+                        );
                     }
                 }
             }
@@ -1004,8 +1096,22 @@ CREATE INDEX IF NOT EXISTS idx_group_subscribers_owner ON group_subscribers(owne
 
         weighted
             .into_iter()
-            .map(|(key, (_, did))| (key, did))
+            .map(|(key, (_, _, did))| (key, did))
             .collect()
+    }
+
+    fn binding_priority(contact: &Contact) -> u8 {
+        let is_zone_user = contact
+            .groups
+            .iter()
+            .any(|group| group.eq_ignore_ascii_case("zone_user"));
+        if is_zone_user {
+            return 3;
+        }
+        match contact.source {
+            ContactSource::ManualImport | ContactSource::ManualCreate => 2,
+            ContactSource::Shared | ContactSource::AutoInferred => 1,
+        }
     }
 
     fn parse_did(raw: &str, field: &str) -> std::result::Result<DID, RPCErrors> {
@@ -1677,5 +1783,88 @@ mod tests {
                 .unwrap();
             assert_eq!(subscribers, vec![did]);
         }
+    }
+
+    #[test]
+    fn upsert_zone_users_creates_friend_contact() {
+        let mgr = new_test_mgr("zone-user-create");
+        let owner = DID::new("web", "jarvis.test.buckyos.io");
+        let zone_user_did = DID::new("bns", "alice");
+
+        let updated = mgr
+            .upsert_zone_user_contacts(
+                vec![ZoneUserContactSeed {
+                    did: zone_user_did.clone(),
+                    name: "Alice".to_string(),
+                    note: Some("zone profile".to_string()),
+                    bindings: vec![binding("telegram", "user:10001")],
+                    groups: vec!["ops".to_string()],
+                    tags: vec!["internal".to_string()],
+                }],
+                Some(owner.clone()),
+            )
+            .unwrap();
+        assert_eq!(updated, 1);
+
+        let contact = mgr
+            .get_contact(zone_user_did.clone(), Some(owner.clone()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(contact.name, "Alice");
+        assert_eq!(contact.source, ContactSource::Shared);
+        assert_eq!(contact.access_level, AccessGroupLevel::Friend);
+        assert!(contact
+            .groups
+            .iter()
+            .any(|group| group.eq_ignore_ascii_case("zone_user")));
+
+        let resolved = mgr
+            .resolve_did(
+                "telegram".to_string(),
+                "user:10001".to_string(),
+                None,
+                Some(owner),
+            )
+            .unwrap();
+        assert_eq!(resolved, zone_user_did);
+    }
+
+    #[test]
+    fn zone_user_binding_has_higher_priority_than_shadow_contact() {
+        let mgr = new_test_mgr("zone-user-priority");
+        let owner = DID::new("web", "jarvis.test.buckyos.io");
+        let shadow = mgr
+            .resolve_did(
+                "telegram".to_string(),
+                "user:5397330802".to_string(),
+                None,
+                Some(owner.clone()),
+            )
+            .unwrap();
+
+        let zone_user_did = DID::new("bns", "liuzhicong");
+        mgr.upsert_zone_user_contacts(
+            vec![ZoneUserContactSeed {
+                did: zone_user_did.clone(),
+                name: "liuzhicong".to_string(),
+                note: None,
+                bindings: vec![binding("telegram", "user:5397330802")],
+                groups: vec![],
+                tags: vec![],
+            }],
+            Some(owner.clone()),
+        )
+        .unwrap();
+
+        let resolved = mgr
+            .resolve_did(
+                "telegram".to_string(),
+                "user:5397330802".to_string(),
+                None,
+                Some(owner),
+            )
+            .unwrap();
+        assert_ne!(shadow, resolved);
+        assert_eq!(resolved, zone_user_did);
     }
 }

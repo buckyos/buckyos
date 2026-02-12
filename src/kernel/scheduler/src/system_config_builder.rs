@@ -63,8 +63,9 @@ impl SystemConfigBuilder {
             password: config.admin_password_hash.clone(),
             state: UserState::Active,
             res_pool_id: "default".to_string(),
+            contact: None,
         };
-        self.insert_json("users/root/settings", &root_settings)?;
+        self.insert_json_if_absent("users/root/settings", &root_settings)?;
 
         let admin_key = format!("users/{}/settings", config.user_name);
         let admin_settings = UserSettings {
@@ -74,8 +75,9 @@ impl SystemConfigBuilder {
             password: config.admin_password_hash.clone(),
             state: UserState::Active,
             res_pool_id: "default".to_string(),
+            contact: None,
         };
-        self.insert_json(&admin_key, &admin_settings)?;
+        self.insert_json_if_absent(&admin_key, &admin_settings)?;
         self.append_policy(&format!("g, {}, admin", config.user_name));
         Ok(self)
     }
@@ -204,7 +206,7 @@ impl SystemConfigBuilder {
         self.insert_json("services/verify-hub/spec", &config)?;
 
         let settings = VerifyHubSettings { trust_keys: vec![] };
-        self.insert_json("services/verify-hub/settings", &settings)?;
+        self.insert_json_if_absent("services/verify-hub/settings", &settings)?;
 
         Ok(self)
     }
@@ -261,7 +263,7 @@ impl SystemConfigBuilder {
                 "instances": []
             }
         });
-        self.insert_json("services/aicc/settings", &settings)?;
+        self.insert_json_if_absent("services/aicc/settings", &settings)?;
         Ok(self)
     }
 
@@ -287,7 +289,7 @@ impl SystemConfigBuilder {
                 "bindings": []
             }
         });
-        self.insert_json("services/msg-center/settings", &settings)?;
+        self.insert_json_if_absent("services/msg-center/settings", &settings)?;
         Ok(self)
     }
 
@@ -342,7 +344,7 @@ impl SystemConfigBuilder {
             )]),
             enable_dev_mode: true,
         };
-        self.insert_json("services/repo-service/settings", &settings)?;
+        self.insert_json_if_absent("services/repo-service/settings", &settings)?;
 
         let pkg_list = HashMap::from([
             (
@@ -463,6 +465,17 @@ impl SystemConfigBuilder {
         let content = serde_json::to_string_pretty(value)?;
         self.entries.insert(key.to_string(), content);
         Ok(())
+    }
+
+    fn insert_json_if_absent<T: ?Sized + serde::Serialize>(
+        &mut self,
+        key: &str,
+        value: &T,
+    ) -> Result<()> {
+        if self.entries.contains_key(key) {
+            return Ok(());
+        }
+        self.insert_json(key, value)
     }
 }
 

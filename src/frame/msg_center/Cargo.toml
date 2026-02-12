@@ -28,3 +28,4 @@ buckyos-kit = { workspace = true }
 buckyos-api = { path = "../../kernel/buckyos-api" }
 grammers-client = "=0.8.0"
 grammers-mtsender = "=0.8.0"
+reqwest = { workspace = true }

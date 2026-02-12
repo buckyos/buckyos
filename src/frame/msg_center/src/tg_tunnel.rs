@@ -17,6 +17,9 @@ use kRPC::RPCContext;
 use log::{info, warn};
 use name_lib::DID;
 use ndn_lib::ObjId;
+use reqwest::Client as HttpClient;
+use serde::de::DeserializeOwned;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -31,6 +34,7 @@ const TG_API_ID_ENV_KEY: &str = "BUCKYOS_TG_API_ID";
 const TG_API_HASH_ENV_KEY: &str = "BUCKYOS_TG_API_HASH";
 const TG_SESSION_DIR_ENV_KEY: &str = "BUCKYOS_TG_SESSION_DIR";
 const TG_BINDING_EXTRA_BOT_TOKEN: &str = "bot_token";
+const TG_BOT_API_ENDPOINT: &str = "https://api.telegram.org";
 
 #[derive(Debug, Clone)]
 pub struct TgTunnelConfig {
@@ -325,6 +329,36 @@ fn default_tg_session_dir() -> PathBuf {
     get_buckyos_service_data_dir(MSG_CENTER_SERVICE_NAME).join("tg_sessions")
 }
 
+fn resolve_binding_bot_token(binding: &TgBotBinding) -> AnyResult<String> {
+    if let Some(token) = binding.extra.get(TG_BINDING_EXTRA_BOT_TOKEN) {
+        if !token.trim().is_empty() {
+            return Ok(token.to_string());
+        }
+    }
+
+    let env_key = binding.bot_token_env_key.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "bot_token_env_key is required for {}",
+            binding.owner_did.to_string()
+        )
+    })?;
+    let token = std::env::var(env_key).with_context(|| {
+        format!(
+            "env {} is required for {}",
+            env_key,
+            binding.owner_did.to_string()
+        )
+    })?;
+    if token.trim().is_empty() {
+        bail!(
+            "env {} is empty for {}",
+            env_key,
+            binding.owner_did.to_string()
+        );
+    }
+    Ok(token)
+}
+
 struct GrammersTgRuntime {
     owner_did: DID,
     bot_account_id: String,
@@ -352,36 +386,6 @@ impl GrammersTgGateway {
 
     pub fn from_env() -> AnyResult<Self> {
         Ok(Self::new(GrammersTgGatewayConfig::from_env()?))
-    }
-
-    fn resolve_bot_token(binding: &TgBotBinding) -> AnyResult<String> {
-        if let Some(token) = binding.extra.get(TG_BINDING_EXTRA_BOT_TOKEN) {
-            if !token.trim().is_empty() {
-                return Ok(token.to_string());
-            }
-        }
-
-        let env_key = binding.bot_token_env_key.as_ref().ok_or_else(|| {
-            anyhow::anyhow!(
-                "bot_token_env_key is required for {}",
-                binding.owner_did.to_string()
-            )
-        })?;
-        let token = std::env::var(env_key).with_context(|| {
-            format!(
-                "env {} is required for {}",
-                env_key,
-                binding.owner_did.to_string()
-            )
-        })?;
-        if token.trim().is_empty() {
-            bail!(
-                "env {} is empty for {}",
-                env_key,
-                binding.owner_did.to_string()
-            );
-        }
-        Ok(token)
     }
 
     fn session_file_name(binding: &TgBotBinding) -> String {
@@ -565,7 +569,17 @@ impl GrammersTgGateway {
             &bot_account_id,
             tunnel_did.as_ref(),
         )
-        .await?;
+        .await
+        .map_err(|error| {
+            warn!(
+                "telegram ingress resolve sender did failed (gateway=grammers): owner={}, bot={}, message_id={}, error={}",
+                owner_did.to_string(),
+                bot_account_id,
+                message.id(),
+                error
+            );
+            error
+        })?;
         let converted = TgMessageConverter::tg_message_to_msg_object(
             owner_did,
             sender_did,
@@ -575,16 +589,92 @@ impl GrammersTgGateway {
             &bot_account_id,
             tunnel_did,
             &message,
-        )?;
+        )
+        .map_err(|error| {
+            warn!(
+                "telegram ingress convert message failed (gateway=grammers): owner={}, bot={}, message_id={}, error={}",
+                owner_scope
+                    .as_ref()
+                    .map(|did| did.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                bot_account_id,
+                message.id(),
+                error
+            );
+            error
+        })?;
+        let owner_for_log = converted
+            .msg
+            .to
+            .first()
+            .map(|did| did.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        info!(
+            "telegram ingress message received (gateway=grammers): owner={}, bot={}, chat_id={}, message_id={}",
+            owner_for_log,
+            bot_account_id,
+            converted
+                .ingress_ctx
+                .chat_id
+                .as_deref()
+                .unwrap_or(""),
+            message.id()
+        );
 
-        dispatcher
+        let dispatch_result = dispatcher
             .handle_dispatch(
                 converted.msg,
                 Some(converted.ingress_ctx),
                 Some(converted.idempotency_key),
                 RPCContext::default(),
             )
-            .await?;
+            .await
+            .map_err(|error| {
+                warn!(
+                    "telegram ingress handle_dispatch failed (gateway=grammers): owner={}, bot={}, message_id={}, error={}",
+                    owner_for_log,
+                    bot_account_id,
+                    message.id(),
+                    error
+                );
+                error
+            })?;
+
+        if !dispatch_result.ok {
+            warn!(
+                "telegram ingress dispatch result not ok (gateway=grammers): owner={}, bot={}, message_id={}, reason={}",
+                owner_for_log,
+                bot_account_id,
+                message.id(),
+                dispatch_result.reason.as_deref().unwrap_or("-"),
+            );
+        }
+        if !dispatch_result.dropped_recipients.is_empty() {
+            warn!(
+                "telegram ingress dropped recipients (gateway=grammers): owner={}, bot={}, message_id={}, dropped={}",
+                owner_for_log,
+                bot_account_id,
+                message.id(),
+                dispatch_result
+                    .dropped_recipients
+                    .iter()
+                    .map(|did| did.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+        }
+        let delivered_count = dispatch_result.delivered_recipients.len()
+            + dispatch_result.delivered_agents.len()
+            + usize::from(dispatch_result.delivered_group.is_some());
+        if delivered_count == 0 {
+            warn!(
+                "telegram ingress dispatched but nothing delivered (gateway=grammers): owner={}, bot={}, message_id={}, reason={}",
+                owner_for_log,
+                bot_account_id,
+                message.id(),
+                dispatch_result.reason.as_deref().unwrap_or("-"),
+            );
+        }
 
         Ok(())
     }
@@ -609,11 +699,18 @@ impl GrammersTgGateway {
             loop {
                 match updates.next().await {
                     Ok(Update::NewMessage(message)) => {
+                        info!("tg_tunnel get tg msg:{}", message.text());
                         let dispatcher = {
                             let guard = dispatcher.lock().await;
                             guard.clone()
                         };
                         let Some(dispatcher) = dispatcher else {
+                            warn!(
+                                "telegram ingress dispatcher missing, dropping message (gateway=grammers): owner={}, bot={}, message_id={}",
+                                owner_did.to_string(),
+                                bot_account_id,
+                                message.id(),
+                            );
                             continue;
                         };
                         if let Err(error) = Self::dispatch_incoming_message(
@@ -633,7 +730,9 @@ impl GrammersTgGateway {
                             );
                         }
                     }
-                    Ok(_) => {}
+                    Ok(_) => {
+                        warn!("tg_tunnel get unknwon uupdate");
+                    }
                     Err(grammers_client::InvocationError::Dropped) => break,
                     Err(error) => {
                         warn!(
@@ -790,7 +889,7 @@ impl TgGateway for GrammersTgGateway {
         let mut started_tasks: HashMap<String, JoinHandle<()>> = HashMap::new();
         for binding in bindings {
             binding.validate()?;
-            let token = Self::resolve_bot_token(binding)?;
+            let token = resolve_binding_bot_token(binding)?;
             let (runtime, updates_rx) = match self.start_binding(binding, &token).await {
                 Ok(runtime) => runtime,
                 Err(error) => {
@@ -885,6 +984,14 @@ impl TgGateway for GrammersTgGateway {
         })?;
         let chat = Self::resolve_chat_peer(&client, chat_id).await?;
         let text = Self::resolve_text(&envelope);
+        info!(
+            "telegram egress about to send (gateway=grammers): sender={}, bot={}, chat_id={}, record_id={}, text_len={}",
+            envelope.sender_did.to_string(),
+            envelope.bot_account_id,
+            chat_id,
+            envelope.record_id,
+            text.len()
+        );
 
         let sent = client.send_message(chat, text).await?;
         Ok(DeliveryReportResult {
@@ -900,6 +1007,605 @@ impl TgGateway for GrammersTgGateway {
             let mut guard = self.dispatcher.lock().await;
             *guard = dispatcher;
         }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BotApiTgRuntime {
+    owner_did: DID,
+    bot_account_id: String,
+    token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TgBotApiResponse<T> {
+    ok: bool,
+    result: Option<T>,
+    description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TgBotApiUpdate {
+    update_id: i64,
+    #[serde(default)]
+    message: Option<TgBotApiMessage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TgBotApiMessage {
+    message_id: i64,
+    date: i64,
+    chat: TgBotApiChat,
+    #[serde(default)]
+    from: Option<TgBotApiUser>,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    caption: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TgBotApiChat {
+    id: i64,
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    first_name: Option<String>,
+    #[serde(default)]
+    last_name: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TgBotApiUser {
+    id: i64,
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    first_name: Option<String>,
+    #[serde(default)]
+    last_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TgBotApiMe {
+    id: i64,
+    #[serde(default)]
+    username: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TgBotApiSentMessage {
+    message_id: i64,
+}
+
+pub struct BotApiTgGateway {
+    http: HttpClient,
+    runtimes: Mutex<HashMap<String, BotApiTgRuntime>>,
+    dispatcher: Arc<Mutex<Option<Arc<dyn MsgCenterHandler>>>>,
+    ingress_tasks: Mutex<HashMap<String, JoinHandle<()>>>,
+    tunnel_did: Option<DID>,
+    poll_timeout_secs: u64,
+}
+
+impl BotApiTgGateway {
+    pub fn new(tunnel_did: Option<DID>) -> Self {
+        Self {
+            http: HttpClient::new(),
+            runtimes: Mutex::new(HashMap::new()),
+            dispatcher: Arc::new(Mutex::new(None)),
+            ingress_tasks: Mutex::new(HashMap::new()),
+            tunnel_did,
+            poll_timeout_secs: 20,
+        }
+    }
+
+    fn api_url(token: &str, method: &str) -> String {
+        format!(
+            "{}/bot{}/{}",
+            TG_BOT_API_ENDPOINT,
+            token.trim(),
+            method.trim_matches('/')
+        )
+    }
+
+    async fn call_api_with_client<T: DeserializeOwned>(
+        http: &HttpClient,
+        token: &str,
+        method: &str,
+        payload: Option<Value>,
+    ) -> AnyResult<T> {
+        let req = http.post(Self::api_url(token, method));
+        let req = if let Some(body) = payload {
+            req.json(&body)
+        } else {
+            req
+        };
+        let response = req
+            .send()
+            .await
+            .with_context(|| format!("telegram bot api {} request failed", method))?;
+        let status = response.status();
+        let body: TgBotApiResponse<T> = response
+            .json()
+            .await
+            .with_context(|| format!("telegram bot api {} parse response failed", method))?;
+
+        if !status.is_success() || !body.ok {
+            let desc = body
+                .description
+                .unwrap_or_else(|| "unknown telegram bot api error".to_string());
+            bail!("telegram bot api {} failed: {}", method, desc);
+        }
+
+        body.result
+            .ok_or_else(|| anyhow::anyhow!("telegram bot api {} missing result", method))
+    }
+
+    fn normalize_chat_kind(raw: &str) -> &str {
+        match raw {
+            "private" => "user",
+            "group" => "group",
+            "supergroup" => "channel",
+            "channel" => "channel",
+            _ => "user",
+        }
+    }
+
+    fn join_name(first_name: Option<&str>, last_name: Option<&str>) -> Option<String> {
+        let first = first_name.unwrap_or("").trim();
+        let last = last_name.unwrap_or("").trim();
+        let joined = if first.is_empty() {
+            last.to_string()
+        } else if last.is_empty() {
+            first.to_string()
+        } else {
+            format!("{} {}", first, last)
+        };
+        if joined.is_empty() {
+            None
+        } else {
+            Some(joined)
+        }
+    }
+
+    fn chat_name(chat: &TgBotApiChat) -> Option<String> {
+        chat.title
+            .clone()
+            .or_else(|| Self::join_name(chat.first_name.as_deref(), chat.last_name.as_deref()))
+    }
+
+    fn user_name(user: &TgBotApiUser) -> Option<String> {
+        Self::join_name(user.first_name.as_deref(), user.last_name.as_deref())
+    }
+
+    fn chat_account_id(chat_kind: &str, id: i64) -> String {
+        format!("{}:{}", chat_kind, id)
+    }
+
+    fn profile_hint(
+        chat_kind: &str,
+        chat_id: i64,
+        display_name: Option<&str>,
+        username: Option<&str>,
+        bot_account_id: &str,
+        tunnel_did: Option<&DID>,
+    ) -> Value {
+        let display_id = username
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| format!("@{}", value))
+            .unwrap_or_else(|| chat_id.to_string());
+        json!({
+            "chat_type": chat_kind,
+            "chat_id": chat_id,
+            "name": display_name,
+            "username": username,
+            "display_id": display_id,
+            "bot_account_id": bot_account_id,
+            "tunnel_id": tunnel_did.map(|did| did.to_string()).unwrap_or_default(),
+        })
+    }
+
+    fn text_from_message(message: &TgBotApiMessage) -> String {
+        message
+            .text
+            .as_ref()
+            .or(message.caption.as_ref())
+            .map(|value| value.to_string())
+            .unwrap_or_default()
+    }
+
+    async fn dispatch_incoming_message(
+        dispatcher: Arc<dyn MsgCenterHandler>,
+        owner_did: DID,
+        bot_account_id: String,
+        tunnel_did: Option<DID>,
+        message: TgBotApiMessage,
+    ) -> AnyResult<()> {
+        let chat_kind = Self::normalize_chat_kind(message.chat.kind.as_str());
+        let chat_id = message.chat.id;
+        let sender_kind;
+        let sender_chat_id;
+        let sender_name;
+        let sender_username;
+        if let Some(user) = message.from.as_ref() {
+            sender_kind = "user";
+            sender_chat_id = user.id;
+            sender_name = Self::user_name(user);
+            sender_username = user.username.clone();
+        } else {
+            sender_kind = chat_kind;
+            sender_chat_id = chat_id;
+            sender_name = Self::chat_name(&message.chat);
+            sender_username = message.chat.username.clone();
+        }
+        let sender_account_id = Self::chat_account_id(sender_kind, sender_chat_id);
+        let sender_did = dispatcher
+            .handle_resolve_did(
+                TELEGRAM_PLATFORM.to_string(),
+                sender_account_id.clone(),
+                Some(Self::profile_hint(
+                    sender_kind,
+                    sender_chat_id,
+                    sender_name.as_deref(),
+                    sender_username.as_deref(),
+                    &bot_account_id,
+                    tunnel_did.as_ref(),
+                )),
+                Some(owner_did.clone()),
+                RPCContext::default(),
+            )
+            .await
+            .map_err(|error| {
+                warn!(
+                    "telegram ingress resolve sender did failed (gateway=bot_api): owner={}, bot={}, message_id={}, error={}",
+                    owner_did.to_string(),
+                    bot_account_id,
+                    message.message_id,
+                    error
+                );
+                error
+            })?;
+
+        let message_id_i32 = i32::try_from(message.message_id).unwrap_or(i32::MAX);
+        let idempotency_key =
+            TgMessageConverter::build_dispatch_key(&bot_account_id, chat_id, message_id_i32);
+        let msg_obj_id = TgMessageConverter::build_msg_obj_id(&idempotency_key)?;
+        let text = Self::text_from_message(&message);
+        let payload_kind = if text.trim().is_empty() {
+            "telegram_event"
+        } else {
+            "text"
+        };
+        let created_at_ms = (message.date.max(0) as u64).saturating_mul(1000);
+        let msg = MsgObject {
+            id: msg_obj_id,
+            from: sender_did,
+            source: None,
+            to: vec![owner_did.clone()],
+            thread_key: Some(format!("tg:{}:{}", bot_account_id, chat_id)),
+            payload: json!({
+                "kind": payload_kind,
+                "text": text,
+                "telegram": {
+                    "message_id": message.message_id,
+                    "chat_id": chat_id,
+                    "chat_type": chat_kind,
+                    "chat_name": Self::chat_name(&message.chat),
+                }
+            }),
+            meta: Some(json!({
+                "telegram": {
+                    "chat_dialog_id": chat_id,
+                    "chat_username": message.chat.username,
+                    "sender_id": sender_chat_id,
+                    "sender_username": sender_username,
+                    "sender_name": sender_name,
+                    "bot_account_id": bot_account_id,
+                }
+            })),
+            created_at_ms,
+        };
+
+        let ingress_ctx = IngressContext {
+            tunnel_did,
+            platform: Some(TELEGRAM_PLATFORM.to_string()),
+            chat_id: Some(chat_id.to_string()),
+            source_account_id: Some(sender_account_id),
+            context_id: Some(format!("tg:{}:{}", owner_did.to_string(), chat_id)),
+            extra: Some(json!({
+                "tg_message_id": message.message_id,
+                "chat_type": chat_kind,
+            })),
+        };
+        info!(
+            "telegram ingress message received (gateway=bot_api): owner={}, bot={}, chat_id={}, message_id={}",
+            owner_did.to_string(),
+            bot_account_id,
+            chat_id,
+            message.message_id
+        );
+
+        let dispatch_result = dispatcher
+            .handle_dispatch(
+                msg,
+                Some(ingress_ctx),
+                Some(idempotency_key),
+                RPCContext::default(),
+            )
+            .await
+            .map_err(|error| {
+                warn!(
+                    "telegram ingress handle_dispatch failed (gateway=bot_api): owner={}, bot={}, message_id={}, error={}",
+                    owner_did.to_string(),
+                    bot_account_id,
+                    message.message_id,
+                    error
+                );
+                error
+            })?;
+
+        if !dispatch_result.ok {
+            warn!(
+                "telegram ingress dispatch result not ok (gateway=bot_api): owner={}, bot={}, message_id={}, reason={}",
+                owner_did.to_string(),
+                bot_account_id,
+                message.message_id,
+                dispatch_result.reason.as_deref().unwrap_or("-"),
+            );
+        }
+        if !dispatch_result.dropped_recipients.is_empty() {
+            warn!(
+                "telegram ingress dropped recipients (gateway=bot_api): owner={}, bot={}, message_id={}, dropped={}",
+                owner_did.to_string(),
+                bot_account_id,
+                message.message_id,
+                dispatch_result
+                    .dropped_recipients
+                    .iter()
+                    .map(|did| did.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+        }
+        let delivered_count = dispatch_result.delivered_recipients.len()
+            + dispatch_result.delivered_agents.len()
+            + usize::from(dispatch_result.delivered_group.is_some());
+        if delivered_count == 0 {
+            warn!(
+                "telegram ingress dispatched but nothing delivered (gateway=bot_api): owner={}, bot={}, message_id={}, reason={}",
+                owner_did.to_string(),
+                bot_account_id,
+                message.message_id,
+                dispatch_result.reason.as_deref().unwrap_or("-"),
+            );
+        }
+        Ok(())
+    }
+
+    fn normalize_chat_id_for_send(chat_id: &str) -> Value {
+        let trimmed = chat_id.trim();
+        if let Ok(value) = trimmed.parse::<i64>() {
+            return json!(value);
+        }
+        if trimmed.starts_with('@') {
+            return json!(trimmed);
+        }
+        if let Some(username) = GrammersTgGateway::username_from_chat_id(trimmed) {
+            return json!(format!("@{}", username));
+        }
+        json!(trimmed)
+    }
+
+    fn spawn_ingress_task(&self, runtime: BotApiTgRuntime) -> JoinHandle<()> {
+        let http = self.http.clone();
+        let dispatcher = self.dispatcher.clone();
+        let tunnel_did = self.tunnel_did.clone();
+        let poll_timeout_secs = self.poll_timeout_secs;
+        tokio::spawn(async move {
+            let mut offset = 0_i64;
+            loop {
+                let updates = Self::call_api_with_client::<Vec<TgBotApiUpdate>>(
+                    &http,
+                    &runtime.token,
+                    "getUpdates",
+                    Some(json!({
+                        "offset": offset,
+                        "timeout": poll_timeout_secs,
+                        "allowed_updates": ["message"]
+                    })),
+                )
+                .await;
+
+                let updates = match updates {
+                    Ok(updates) => updates,
+                    Err(error) => {
+                        warn!(
+                            "telegram bot api updates failed, owner={}, bot={}, error={}",
+                            runtime.owner_did.to_string(),
+                            runtime.bot_account_id,
+                            error
+                        );
+                        tokio::time::sleep(Duration::from_millis(1000)).await;
+                        continue;
+                    }
+                };
+
+                for update in updates {
+                    offset = offset.max(update.update_id.saturating_add(1));
+                    let Some(message) = update.message else {
+                        continue;
+                    };
+                    let dispatcher = {
+                        let guard = dispatcher.lock().await;
+                        guard.clone()
+                    };
+                    let Some(dispatcher) = dispatcher else {
+                        warn!(
+                            "telegram ingress dispatcher missing, dropping message (gateway=bot_api): owner={}, bot={}, message_id={}",
+                            runtime.owner_did.to_string(),
+                            runtime.bot_account_id,
+                            message.message_id,
+                        );
+                        continue;
+                    };
+                    if let Err(error) = Self::dispatch_incoming_message(
+                        dispatcher,
+                        runtime.owner_did.clone(),
+                        runtime.bot_account_id.clone(),
+                        tunnel_did.clone(),
+                        message,
+                    )
+                    .await
+                    {
+                        warn!(
+                            "telegram bot api ingress dispatch failed, owner={}, bot={}, error={}",
+                            runtime.owner_did.to_string(),
+                            runtime.bot_account_id,
+                            error
+                        );
+                    }
+                }
+            }
+        })
+    }
+}
+
+#[async_trait]
+impl TgGateway for BotApiTgGateway {
+    async fn start(&self, bindings: &[TgBotBinding]) -> AnyResult<()> {
+        {
+            let guard = self.runtimes.lock().await;
+            if !guard.is_empty() {
+                return Ok(());
+            }
+        }
+        if bindings.is_empty() {
+            warn!("bot-api tg gateway started with empty bindings");
+            return Ok(());
+        }
+
+        let mut started = HashMap::<String, BotApiTgRuntime>::new();
+        let mut started_tasks = HashMap::<String, JoinHandle<()>>::new();
+        for binding in bindings {
+            binding.validate()?;
+            let token = resolve_binding_bot_token(binding)?;
+            let me = Self::call_api_with_client::<TgBotApiMe>(&self.http, &token, "getMe", None)
+                .await
+                .with_context(|| {
+                    format!(
+                        "telegram bot api getMe failed for owner {} (bot account {})",
+                        binding.owner_did.to_string(),
+                        binding.bot_account_id
+                    )
+                })?;
+            info!(
+                "telegram bot api ready: owner={}, bot_id={}, username={:?}",
+                binding.owner_did.to_string(),
+                me.id,
+                me.username
+            );
+
+            let runtime = BotApiTgRuntime {
+                owner_did: binding.owner_did.clone(),
+                bot_account_id: binding.bot_account_id.clone(),
+                token,
+            };
+            let owner_key = binding.owner_did.to_string();
+            let task = self.spawn_ingress_task(runtime.clone());
+            started.insert(owner_key.clone(), runtime);
+            started_tasks.insert(owner_key, task);
+        }
+
+        let mut guard = self.runtimes.lock().await;
+        if !guard.is_empty() {
+            for (_, task) in started_tasks.drain() {
+                task.abort();
+            }
+            return Ok(());
+        }
+        *guard = started;
+        drop(guard);
+
+        let mut tasks_guard = self.ingress_tasks.lock().await;
+        *tasks_guard = started_tasks;
+        Ok(())
+    }
+
+    async fn stop(&self) -> AnyResult<()> {
+        {
+            let mut dispatcher = self.dispatcher.lock().await;
+            *dispatcher = None;
+        }
+        {
+            let mut tasks_guard = self.ingress_tasks.lock().await;
+            for (_, task) in tasks_guard.drain() {
+                task.abort();
+            }
+        }
+        let mut guard = self.runtimes.lock().await;
+        guard.clear();
+        Ok(())
+    }
+
+    async fn send(&self, envelope: TgEgressEnvelope) -> AnyResult<DeliveryReportResult> {
+        let sender_key = envelope.sender_did.to_string();
+        let runtime = {
+            let guard = self.runtimes.lock().await;
+            guard.get(&sender_key).cloned().ok_or_else(|| {
+                anyhow::anyhow!("no running telegram runtime for sender {}", sender_key)
+            })?
+        };
+        if runtime.bot_account_id != envelope.bot_account_id {
+            bail!(
+                "sender {} bound bot {} mismatches envelope bot {}",
+                sender_key,
+                runtime.bot_account_id,
+                envelope.bot_account_id
+            );
+        }
+
+        let chat_id = envelope.chat_id.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "chat_id is required for telegram send ({})",
+                envelope.record_id
+            )
+        })?;
+        let text = GrammersTgGateway::resolve_text(&envelope);
+        info!(
+            "telegram egress about to send (gateway=bot_api): sender={}, bot={}, chat_id={}, record_id={}, text_len={}",
+            sender_key,
+            envelope.bot_account_id,
+            chat_id,
+            envelope.record_id,
+            text.len()
+        );
+        let sent = Self::call_api_with_client::<TgBotApiSentMessage>(
+            &self.http,
+            runtime.token.as_str(),
+            "sendMessage",
+            Some(json!({
+                "chat_id": Self::normalize_chat_id_for_send(chat_id),
+                "text": text,
+            })),
+        )
+        .await?;
+
+        Ok(DeliveryReportResult {
+            ok: true,
+            external_msg_id: Some(sent.message_id.to_string()),
+            delivered_at_ms: Some(TgTunnel::now_ms()),
+            ..Default::default()
+        })
+    }
+
+    async fn set_dispatcher(&self, dispatcher: Option<Arc<dyn MsgCenterHandler>>) -> AnyResult<()> {
+        let mut guard = self.dispatcher.lock().await;
+        *guard = dispatcher;
         Ok(())
     }
 }
@@ -933,6 +1639,11 @@ impl TgTunnel {
             cfg,
             GrammersTgGatewayConfig::from_env()?,
         ))
+    }
+
+    pub fn with_bot_api_gateway(cfg: TgTunnelConfig) -> Self {
+        let tunnel_did = Some(cfg.tunnel_did.clone());
+        Self::with_gateway(cfg, Arc::new(BotApiTgGateway::new(tunnel_did)))
     }
 
     pub fn with_gateway(cfg: TgTunnelConfig, gateway: Arc<dyn TgGateway>) -> Self {

@@ -8,8 +8,9 @@ mod tg_tunnel;
 use ::kRPC::*;
 use anyhow::{Context, Result};
 use buckyos_api::{
-    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType,
-    MsgCenterServerHandler, MSG_CENTER_SERVICE_NAME, MSG_CENTER_SERVICE_PORT,
+    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AccountBinding,
+    BuckyOSRuntimeType, MsgCenterServerHandler, UserSettings, UserState, MSG_CENTER_SERVICE_NAME,
+    MSG_CENTER_SERVICE_PORT,
 };
 use buckyos_kit::{get_buckyos_service_data_dir, init_logging};
 use bytes::Bytes;
@@ -29,6 +30,7 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::contact_mgr::ZoneUserContactSeed;
 use crate::msg_center::MessageCenter;
 use crate::msg_tunnel::{MsgTunnel, MsgTunnelInstanceMgr};
 use crate::tg_tunnel::{GrammersTgGatewayConfig, TgBotBinding, TgTunnel, TgTunnelConfig};
@@ -41,10 +43,23 @@ const METHOD_SERVICE_RELOAD_SETTINGS: &str = "service.reload_settings";
 const METHOD_REALOAD_SETTINGS: &str = "reaload_settings";
 const METHOD_SERVICE_REALOAD_SETTINGS: &str = "service.reaload_settings";
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Default)]
 struct MsgCenterSettings {
-    #[serde(default)]
     telegram_tunnel: TelegramTunnelSettings,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct LegacyMsgTunnelsSettings {
+    #[serde(default)]
+    telegram_tunnel: Option<TelegramTunnelSettings>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct RawMsgCenterSettings {
+    #[serde(default)]
+    telegram_tunnel: Option<TelegramTunnelSettings>,
+    #[serde(default)]
+    msg_tunnels: LegacyMsgTunnelsSettings,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -52,6 +67,7 @@ struct MsgCenterSettings {
 enum TelegramGatewayMode {
     DryRun,
     Grammers,
+    BotApi,
 }
 
 impl Default for TelegramGatewayMode {
@@ -140,11 +156,18 @@ impl MsgCenterHttpServer {
             }
         };
 
-        apply_tg_tunnel_settings(&self.rpc_handler.0, self.tunnel_mgr.as_ref(), &settings)
-            .await
-            .map_err(|err| {
-                RPCErrors::ReasonError(format!("reload msg-center settings failed: {}", err))
-            })
+        let tunnel_result =
+            apply_tg_tunnel_settings(&self.rpc_handler.0, self.tunnel_mgr.as_ref(), &settings)
+                .await
+                .map_err(|err| {
+                    RPCErrors::ReasonError(format!("reload msg-center settings failed: {}", err))
+                })?;
+
+        if let Err(error) = sync_zone_user_contacts_once(&self.rpc_handler.0, &settings).await {
+            warn!("reload settings zone-user sync failed: {}", error);
+        }
+
+        Ok(tunnel_result)
     }
 }
 
@@ -220,8 +243,215 @@ fn parse_msg_center_settings(settings: &Value) -> Result<MsgCenterSettings> {
     if settings.is_null() {
         return Ok(MsgCenterSettings::default());
     }
-    serde_json::from_value::<MsgCenterSettings>(settings.clone())
-        .map_err(|err| anyhow::anyhow!("parse msg-center settings failed: {}", err))
+    let raw = serde_json::from_value::<RawMsgCenterSettings>(settings.clone())
+        .map_err(|err| anyhow::anyhow!("parse msg-center settings failed: {}", err))?;
+
+    if raw.telegram_tunnel.is_none() && raw.msg_tunnels.telegram_tunnel.is_some() {
+        info!("msg-center settings uses legacy key: msg_tunnels.telegram_tunnel");
+    }
+
+    let telegram_tunnel = raw
+        .telegram_tunnel
+        .or(raw.msg_tunnels.telegram_tunnel)
+        .unwrap_or_default();
+    Ok(MsgCenterSettings { telegram_tunnel })
+}
+
+fn collect_sync_owner_dids(raw_settings: &Value) -> Vec<DID> {
+    let mut owners = Vec::new();
+    let settings = match parse_msg_center_settings(raw_settings) {
+        Ok(settings) => settings,
+        Err(error) => {
+            warn!(
+                "parse msg-center settings failed while collecting sync owners: {}",
+                error
+            );
+            return owners;
+        }
+    };
+
+    for binding in settings.telegram_tunnel.bindings {
+        let owner_raw = binding.owner_did.trim();
+        if owner_raw.is_empty() {
+            continue;
+        }
+        match DID::from_str(owner_raw) {
+            Ok(owner) => {
+                if !owners.iter().any(|existing| existing == &owner) {
+                    owners.push(owner);
+                }
+            }
+            Err(error) => {
+                warn!(
+                    "skip invalid telegram binding owner_did while collecting sync owners: owner_did={}, error={}",
+                    owner_raw,
+                    error
+                );
+            }
+        }
+    }
+
+    owners
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn build_zone_user_seed(username: &str, settings: UserSettings) -> Option<ZoneUserContactSeed> {
+    if !matches!(settings.state, UserState::Active) {
+        return None;
+    }
+
+    let mut contact_did = DID::new("bns", username);
+    let mut note = None;
+    let mut groups = vec!["zone_user".to_string()];
+    let mut tags = vec!["zone_user".to_string()];
+    let mut bindings = Vec::new();
+
+    if let Some(contact_cfg) = settings.contact {
+        if let Some(raw_did) = contact_cfg.did.as_ref() {
+            let did = raw_did.trim();
+            if !did.is_empty() {
+                match DID::from_str(did) {
+                    Ok(parsed) => {
+                        contact_did = parsed;
+                    }
+                    Err(error) => {
+                        warn!(
+                            "invalid user contact.did, fallback to did:bns:{}: did={}, error={}",
+                            username, did, error
+                        );
+                    }
+                }
+            }
+        }
+
+        note = contact_cfg.note;
+        groups.extend(contact_cfg.groups);
+        tags.extend(contact_cfg.tags);
+
+        for binding in contact_cfg.bindings {
+            let platform = binding.platform.trim().to_string();
+            let account_id = binding.account_id.trim().to_string();
+            if platform.is_empty() || account_id.is_empty() {
+                warn!(
+                    "skip invalid user tunnel binding for {}: platform='{}', account_id='{}'",
+                    username, binding.platform, binding.account_id
+                );
+                continue;
+            }
+
+            let display_id = binding
+                .display_id
+                .as_ref()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| account_id.clone());
+            let tunnel_id = binding
+                .tunnel_id
+                .as_ref()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| format!("{}-default", platform.to_ascii_lowercase()));
+
+            bindings.push(AccountBinding {
+                platform,
+                account_id,
+                display_id,
+                tunnel_id,
+                last_active_at: now_ms(),
+                meta: binding.meta,
+            });
+        }
+    }
+
+    let name = settings.show_name.trim().to_string();
+    Some(ZoneUserContactSeed {
+        did: contact_did,
+        name: if name.is_empty() {
+            username.to_string()
+        } else {
+            name
+        },
+        note,
+        bindings,
+        groups,
+        tags,
+    })
+}
+
+async fn load_zone_user_contact_seeds() -> Result<Vec<ZoneUserContactSeed>> {
+    let runtime = get_buckyos_api_runtime()?;
+    let control_panel_client = runtime
+        .get_control_panel_client()
+        .await
+        .map_err(|error| anyhow::anyhow!("get control panel client failed: {}", error))?;
+
+    let users = control_panel_client
+        .get_user_list()
+        .await
+        .map_err(|error| anyhow::anyhow!("list users failed: {}", error))?;
+    let mut contacts = Vec::new();
+
+    for username in users {
+        let settings = match control_panel_client
+            .get_user_settings_by_username(username.as_str())
+            .await
+        {
+            Ok(settings) => settings,
+            Err(error) => {
+                warn!(
+                    "load user settings failed while syncing zone users: username={}, error={}",
+                    username, error
+                );
+                continue;
+            }
+        };
+
+        if let Some(seed) = build_zone_user_seed(username.as_str(), settings) {
+            contacts.push(seed);
+        }
+    }
+
+    Ok(contacts)
+}
+
+async fn sync_zone_user_contacts_once(center: &MessageCenter, raw_settings: &Value) -> Result<()> {
+    let contacts = load_zone_user_contact_seeds().await?;
+    let mut owner_scopes: Vec<Option<DID>> = vec![None];
+    for owner in collect_sync_owner_dids(raw_settings) {
+        owner_scopes.push(Some(owner));
+    }
+
+    for owner in owner_scopes {
+        let updated = center
+            .upsert_zone_user_contacts(contacts.clone(), owner.clone())
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "zone user sync failed for owner_scope={}: {}",
+                    owner
+                        .as_ref()
+                        .map(|did| did.to_string())
+                        .unwrap_or_else(|| "__system__".to_string()),
+                    error
+                )
+            })?;
+
+        info!(
+            "zone user sync applied on settings reload/startup: owner_scope={}, contacts={}",
+            owner
+                .as_ref()
+                .map(|did| did.to_string())
+                .unwrap_or_else(|| "__system__".to_string()),
+            updated
+        );
+    }
+
+    Ok(())
 }
 
 fn resolve_tg_tunnel_did(settings: &TelegramTunnelSettings) -> Result<DID> {
@@ -290,6 +520,10 @@ fn build_tg_tunnel(cfg: TgTunnelConfig, settings: &TelegramTunnelSettings) -> Re
                 gateway_cfg.session_dir.display()
             );
             Ok(TgTunnel::with_grammers_gateway(cfg, gateway_cfg))
+        }
+        TelegramGatewayMode::BotApi => {
+            info!("telegram tunnel initialized with bot-api gateway");
+            Ok(TgTunnel::with_bot_api_gateway(cfg))
         }
     }
 }
@@ -477,6 +711,7 @@ pub async fn start_msg_center_service() -> Result<()> {
 
     let center = MessageCenter::try_new()
         .map_err(|err| anyhow::anyhow!("create message center failed: {:?}", err))?;
+
     let tunnel_mgr = Arc::new(MsgTunnelInstanceMgr::new());
     match apply_tg_tunnel_settings(&center, tunnel_mgr.as_ref(), &settings).await {
         Ok(result) => {
@@ -488,6 +723,9 @@ pub async fn start_msg_center_service() -> Result<()> {
                 err
             );
         }
+    }
+    if let Err(error) = sync_zone_user_contacts_once(&center, &settings).await {
+        warn!("zone-user sync failed during startup: {}", error);
     }
     let server = MsgCenterHttpServer::new(center, tunnel_mgr);
 
