@@ -15,7 +15,7 @@ use cyfs_gateway_lib::{
 };
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
-use log::{error, info};
+use log::{error, info, warn};
 use server_runner::Runner;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -96,6 +96,23 @@ pub async fn start_aicc_service(center: AIComputeCenter) -> Result<()> {
         ));
     }
     runtime.set_main_service_port(AICC_SERVICE_MAIN_PORT).await;
+
+    let settings = match runtime.get_my_settings().await {
+        Ok(settings) => settings,
+        Err(err) => {
+            warn!(
+                "load aicc settings failed, fallback to empty settings, err={}",
+                err
+            );
+            serde_json::json!({})
+        }
+    };
+    let registered = register_openai_llm_providers(&center, &settings)?;
+    info!(
+        "aicc openai provider initialized with {} instances",
+        registered
+    );
+
     set_buckyos_api_runtime(runtime);
 
     let server = AiccHttpServer::new(center);
@@ -119,11 +136,6 @@ fn main() {
     if let Err(err) = rt.block_on(async {
         init_logging("aicc", true);
         let center = AIComputeCenter::default();
-        let registered = register_openai_llm_providers(&center)?;
-        info!(
-            "aicc openai provider initialized with {} instances",
-            registered
-        );
         start_aicc_service(center).await
     }) {
         error!("aicc service start failed: {:?}", err);

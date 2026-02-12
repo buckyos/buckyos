@@ -253,6 +253,15 @@ impl SystemConfigBuilder {
         )
         .await?;
         self.insert_json("services/aicc/spec", &config)?;
+        let settings = json!({
+            "openai": {
+                "enabled": false,
+                "api_token": "",
+                "alias_map": {},
+                "instances": []
+            }
+        });
+        self.insert_json("services/aicc/settings", &settings)?;
         Ok(self)
     }
 
@@ -266,6 +275,19 @@ impl SystemConfigBuilder {
         )
         .await?;
         self.insert_json("services/msg-center/spec", &config)?;
+        let settings = json!({
+            "telegram_tunnel": {
+                "enabled": true,
+                "tunnel_did": "did:bns:msg-center-default-tunnel",
+                "supports_ingress": true,
+                "supports_egress": true,
+                "gateway": {
+                    "mode": "dry_run"
+                },
+                "bindings": []
+            }
+        });
+        self.insert_json("services/msg-center/settings", &settings)?;
         Ok(self)
     }
 

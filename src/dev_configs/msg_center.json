@@ -1,0 +1,23 @@
+{
+  "telegram_tunnel": {
+    "enabled": true,
+    "tunnel_did": "did:bns:msg-center-default-tunnel",
+    "supports_ingress": true,
+    "supports_egress": true,
+    "gateway": {
+      "mode": "grammers",
+      "api_id": 123456,
+      "api_hash": "your_api_hash",
+      "session_dir": "/opt/buckyos/data/msg_center/tg_sessions"
+    },
+    "bindings": [
+      {
+        "owner_did": "did:bns:alice",
+        "bot_token": "123456:AA....",
+        "bot_account_id": "alice-bot",
+        "default_chat_id": "@alice",
+        "extra": {}
+      }
+    ]
+  }
+}

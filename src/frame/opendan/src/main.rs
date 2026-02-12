@@ -16,7 +16,7 @@ use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType,
     OPENDAN_SERVICE_NAME,
 };
-use buckyos_kit::init_logging;
+use buckyos_kit::{get_buckyos_root_dir, init_logging};
 use log::{error, info, warn};
 use tokio::fs;
 use tokio::task::JoinSet;
@@ -40,8 +40,7 @@ fn resolve_agents_root() -> Result<PathBuf> {
         }
     }
 
-    let runtime = get_buckyos_api_runtime().context("BuckyOSRuntime is not initialized")?;
-    Ok(runtime.buckyos_root_dir.join("data").join("agents"))
+    Ok(get_buckyos_root_dir().join("data").join("agents"))
 }
 
 async fn discover_agent_roots(agents_root: &Path) -> Result<Vec<PathBuf>> {

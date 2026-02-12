@@ -12,7 +12,6 @@ use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
-use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -402,8 +401,21 @@ impl Provider for OpenAIProvider {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct EnvOpenAIInstanceConfig {
+#[derive(Debug, Deserialize, Default)]
+struct OpenAISettings {
+    #[serde(default = "default_openai_enabled")]
+    enabled: bool,
+    #[serde(default)]
+    api_token: String,
+    #[serde(default)]
+    alias_map: HashMap<String, String>,
+    #[serde(default)]
+    instances: Vec<SettingsOpenAIInstanceConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SettingsOpenAIInstanceConfig {
+    #[serde(default = "default_instance_id")]
     instance_id: String,
     #[serde(default = "default_provider_type")]
     provider_type: String,
@@ -419,6 +431,14 @@ struct EnvOpenAIInstanceConfig {
     features: Vec<String>,
     #[serde(default)]
     alias_map: HashMap<String, String>,
+}
+
+fn default_openai_enabled() -> bool {
+    true
+}
+
+fn default_instance_id() -> String {
+    "openai-default".to_string()
 }
 
 fn default_provider_type() -> String {
@@ -450,90 +470,74 @@ fn parse_csv_list(value: &str) -> Vec<String> {
         .collect::<Vec<_>>()
 }
 
-fn read_global_alias_map_from_env() -> Result<HashMap<String, String>> {
-    let alias_map_raw = match env::var("OPENAI_ALIAS_MAP") {
-        Ok(value) => value,
-        Err(_) => return Ok(HashMap::new()),
+fn parse_openai_settings(settings: &Value) -> Result<Option<OpenAISettings>> {
+    let Some(raw_openai_settings) = settings.get("openai") else {
+        return Ok(None);
     };
+    if raw_openai_settings.is_null() {
+        return Ok(None);
+    }
 
-    serde_json::from_str::<HashMap<String, String>>(alias_map_raw.as_str())
-        .map_err(|err| anyhow!("failed to parse OPENAI_ALIAS_MAP: {}", err))
+    let openai_settings = serde_json::from_value::<OpenAISettings>(raw_openai_settings.clone())
+        .map_err(|err| anyhow!("failed to parse settings.openai: {}", err))?;
+    if !openai_settings.enabled {
+        return Ok(None);
+    }
+
+    Ok(Some(openai_settings))
 }
 
-fn read_openai_instances_from_env() -> Result<Vec<OpenAIInstanceConfig>> {
-    if let Ok(raw) = env::var("OPENAI_INSTANCES") {
-        let env_instances = serde_json::from_str::<Vec<EnvOpenAIInstanceConfig>>(raw.as_str())
-            .map_err(|err| anyhow!("failed to parse OPENAI_INSTANCES: {}", err))?;
+fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanceConfig>> {
+    let raw_instances = if settings.instances.is_empty() {
+        vec![SettingsOpenAIInstanceConfig {
+            instance_id: default_instance_id(),
+            provider_type: default_provider_type(),
+            base_url: default_base_url(),
+            timeout_ms: default_timeout_ms(),
+            models: vec![],
+            default_model: None,
+            features: vec![],
+            alias_map: HashMap::new(),
+        }]
+    } else {
+        settings.instances.clone()
+    };
 
-        let mut instances = vec![];
-        for env_instance in env_instances.into_iter() {
-            let mut models = env_instance.models;
-            if models.is_empty() {
-                models = parse_csv_list(DEFAULT_OPENAI_MODELS);
-            }
-            if models.is_empty() {
-                return Err(anyhow!(
-                    "openai instance {} has no models configured",
-                    env_instance.instance_id
-                ));
-            }
-
-            let default_model = env_instance
-                .default_model
-                .or_else(|| models.first().cloned());
-            let features = if env_instance.features.is_empty() {
-                default_features()
-            } else {
-                env_instance.features
-            };
-
-            instances.push(OpenAIInstanceConfig {
-                instance_id: env_instance.instance_id,
-                provider_type: env_instance.provider_type,
-                base_url: env_instance.base_url,
-                timeout_ms: env_instance.timeout_ms,
-                models,
-                default_model,
-                features,
-                alias_map: env_instance.alias_map,
-            });
+    let mut instances = vec![];
+    for raw_instance in raw_instances.into_iter() {
+        let mut models = raw_instance.models;
+        if models.is_empty() {
+            models = parse_csv_list(DEFAULT_OPENAI_MODELS);
+        }
+        if models.is_empty() {
+            return Err(anyhow!(
+                "openai instance {} has no models configured",
+                raw_instance.instance_id
+            ));
         }
 
-        return Ok(instances);
+        let default_model = raw_instance
+            .default_model
+            .or_else(|| models.first().cloned());
+        let features = if raw_instance.features.is_empty() {
+            default_features()
+        } else {
+            raw_instance.features
+        };
+
+        instances.push(OpenAIInstanceConfig {
+            instance_id: raw_instance.instance_id,
+            provider_type: raw_instance.provider_type,
+            base_url: raw_instance.base_url,
+            timeout_ms: raw_instance.timeout_ms,
+            models,
+            default_model,
+            features,
+            alias_map: raw_instance.alias_map,
+        });
     }
 
-    let instance_id =
-        env::var("OPENAI_INSTANCE_ID").unwrap_or_else(|_| "openai-default".to_string());
-    let provider_type = env::var("OPENAI_PROVIDER_TYPE").unwrap_or_else(|_| "openai".to_string());
-    let base_url =
-        env::var("OPENAI_BASE_URL").unwrap_or_else(|_| DEFAULT_OPENAI_BASE_URL.to_string());
-    let timeout_ms = env::var("OPENAI_TIMEOUT_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(DEFAULT_OPENAI_TIMEOUT_MS);
-
-    let models = env::var("OPENAI_MODELS")
-        .map(|value| parse_csv_list(value.as_str()))
-        .unwrap_or_else(|_| parse_csv_list(DEFAULT_OPENAI_MODELS));
-
-    if models.is_empty() {
-        return Err(anyhow!("OPENAI_MODELS is empty"));
-    }
-
-    let default_model = env::var("OPENAI_DEFAULT_MODEL")
-        .ok()
-        .or_else(|| models.first().cloned());
-
-    Ok(vec![OpenAIInstanceConfig {
-        instance_id,
-        provider_type,
-        base_url,
-        timeout_ms,
-        models,
-        default_model,
-        features: default_features(),
-        alias_map: HashMap::new(),
-    }])
+    Ok(instances)
 }
 
 fn register_default_aliases(
@@ -575,21 +579,20 @@ fn register_default_aliases(
     }
 }
 
-pub fn register_openai_llm_providers(center: &AIComputeCenter) -> Result<usize> {
-    let api_token = env::var("OPENAI_API_TOKEN").map_err(|_| {
-        anyhow!("OPENAI_API_TOKEN environment variable is required for openai provider")
-    })?;
-    if api_token.trim().is_empty() {
+pub fn register_openai_llm_providers(center: &AIComputeCenter, settings: &Value) -> Result<usize> {
+    let Some(openai_settings) = parse_openai_settings(settings)? else {
+        info!("aicc openai provider is disabled (settings.openai missing or disabled)");
+        return Ok(0);
+    };
+    if openai_settings.api_token.trim().is_empty() {
         return Err(anyhow!(
-            "OPENAI_API_TOKEN environment variable is empty for openai provider"
+            "settings.openai.api_token is required when openai provider is enabled"
         ));
     }
-
-    let global_alias_map = read_global_alias_map_from_env()?;
-    let instances = read_openai_instances_from_env()?;
+    let instances = build_openai_instances(&openai_settings)?;
 
     for config in instances.iter() {
-        let provider = OpenAIProvider::new(config.clone(), api_token.clone())?;
+        let provider = OpenAIProvider::new(config.clone(), openai_settings.api_token.clone())?;
         center.registry().add_provider(Arc::new(provider));
 
         register_default_aliases(
@@ -599,7 +602,7 @@ pub fn register_openai_llm_providers(center: &AIComputeCenter) -> Result<usize> 
             config.default_model.as_deref(),
         );
 
-        for (alias, model) in global_alias_map.iter() {
+        for (alias, model) in openai_settings.alias_map.iter() {
             center.model_catalog().set_mapping(
                 Capability::LlmRouter,
                 alias.as_str(),

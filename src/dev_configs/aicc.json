@@ -1,0 +1,23 @@
+{
+  "openai": {
+    "enabled": true,
+    "api_token": "sk-xxx",
+    "alias_map": {
+      "llm.default": "gpt-5-mini"
+    },
+    "instances": [
+      {
+        "instance_id": "openai-default",
+        "provider_type": "openai",
+        "base_url": "https://api.openai.com/v1",
+        "timeout_ms": 60000,
+        "models": ["gpt-5", "gpt-5-mini"],
+        "default_model": "gpt-5-mini",
+        "features": ["plan", "json_output", "tool_calling"],
+        "alias_map": {
+          "llm.chat.default": "gpt-5-mini"
+        }
+      }
+    ]
+  }
+}
