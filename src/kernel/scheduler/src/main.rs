@@ -121,6 +121,8 @@ async fn create_init_list_by_template(
         .add_msg_center()
         .await?
         .add_control_panel()
+        .await?
+        .add_opendan()
         .await?;
 
     info!("add_kernel_services success, add default apps and gateway settings...");

@@ -3,7 +3,9 @@ use anyhow::{bail, Context, Result as AnyResult};
 use async_trait::async_trait;
 use buckyos_api::{
     DeliveryReportResult, IngressContext, MsgCenterHandler, MsgObject, MsgRecordWithObject,
+    MSG_CENTER_SERVICE_NAME,
 };
+use buckyos_kit::get_buckyos_service_data_dir;
 use grammers_client::session::defs::{PeerAuth, PeerId, PeerRef};
 use grammers_client::session::storages::SqliteSession;
 use grammers_client::session::updates::UpdatesLike;
@@ -28,7 +30,6 @@ const TELEGRAM_PLATFORM: &str = "telegram";
 const TG_API_ID_ENV_KEY: &str = "BUCKYOS_TG_API_ID";
 const TG_API_HASH_ENV_KEY: &str = "BUCKYOS_TG_API_HASH";
 const TG_SESSION_DIR_ENV_KEY: &str = "BUCKYOS_TG_SESSION_DIR";
-const TG_DEFAULT_SESSION_DIR: &str = "/tmp/buckyos-msg-center-tg";
 const TG_BINDING_EXTRA_BOT_TOKEN: &str = "bot_token";
 
 #[derive(Debug, Clone)]
@@ -309,7 +310,7 @@ impl GrammersTgGatewayConfig {
         }
 
         let session_dir = std::env::var(TG_SESSION_DIR_ENV_KEY)
-            .unwrap_or_else(|_| TG_DEFAULT_SESSION_DIR.to_string());
+            .unwrap_or_else(|_| default_tg_session_dir().to_string_lossy().to_string());
 
         Ok(Self {
             api_id,
@@ -318,6 +319,10 @@ impl GrammersTgGatewayConfig {
             tunnel_did: None,
         })
     }
+}
+
+fn default_tg_session_dir() -> PathBuf {
+    get_buckyos_service_data_dir(MSG_CENTER_SERVICE_NAME).join("tg_sessions")
 }
 
 struct GrammersTgRuntime {

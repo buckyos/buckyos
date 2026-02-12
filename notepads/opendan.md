@@ -709,16 +709,32 @@ SubAgents
 
 ## 里程碑规划（Roadmap）
 
+核心目标 :
+
+- 让非工程师，能通过聊需求构建一个可以一直使用的完整网页
+- 与应用商店集成，可以很容易的发表自己的Agent
+- 
+
 * **MVP-1：单 Agent 可运行与可观测闭环**
-  on_wakeup + LLMBehavior + bash actions + workspace (最小集合)
+  on_wakeup + LLMBehavior + bash actions + agent workshop (最小集合)
 
 * **MVP-2：SubAgent 与能力包**
   SubAgent 独立进程、预算限制、workspace 协作交付
   集成BuckyOS提供的特殊能力
+    - 将一个目录发布成可访问的网页
+    - 将一个目录发布成buckyos的app
 
 * **MVP-3：Memory深化，UI完整化**
   compact_memory、things.sqlite 事实抽取、
 
-* **MPV-4: KB**
+* **MPV-4: Workspace深化**
+
+实现真正意义上的，用于协作的workspace
+- 基于git的协作
+- 基于文件系统(smb://)的协作
+
+* **MPV-5: KB**
   实现至少一种KB（全文搜索/矢量数据库/图数据库),建立其对应的管线
   实现专门的KB整理Agent Mia
+
+

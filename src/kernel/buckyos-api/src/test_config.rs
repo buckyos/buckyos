@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 
 use crate::{
     AppDoc, LocalAppInstanceConfig, ServiceInstallConfig, ServiceInstanceState,
-    MSG_CENTER_SERVICE_UNIQUE_ID, REPO_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID,
-    SMB_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID,
+    MSG_CENTER_SERVICE_UNIQUE_ID, OPENDAN_SERVICE_UNIQUE_ID, REPO_SERVICE_UNIQUE_ID,
+    SCHEDULER_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID,
 };
 
 // ============================================================================
@@ -330,6 +330,10 @@ pub fn gen_kernel_service_docs() -> HashMap<DID, EncodedDocument> {
     let msg_center_doc = crate::generate_msg_center_service_doc();
     let msg_center_json = serde_json::to_string(&msg_center_doc).unwrap();
     let msg_center_did = PackageId::unique_name_to_did(MSG_CENTER_SERVICE_UNIQUE_ID);
+
+    let opendan_doc = crate::generate_opendan_service_doc();
+    let opendan_json = serde_json::to_string(&opendan_doc).unwrap();
+    let opendan_did = PackageId::unique_name_to_did(OPENDAN_SERVICE_UNIQUE_ID);
     docs.insert(
         verify_hub_did,
         EncodedDocument::from_str(verify_hub_json).unwrap(),
@@ -343,6 +347,10 @@ pub fn gen_kernel_service_docs() -> HashMap<DID, EncodedDocument> {
     docs.insert(
         msg_center_did,
         EncodedDocument::from_str(msg_center_json).unwrap(),
+    );
+    docs.insert(
+        opendan_did,
+        EncodedDocument::from_str(opendan_json).unwrap(),
     );
     docs
 }

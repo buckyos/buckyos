@@ -44,6 +44,9 @@ use once_cell::sync::OnceCell;
 
 pub const SMB_SERVICE_UNIQUE_ID: &str = "smb-service";
 pub const SMB_SERVICE_SERVICE_NAME: &str = "smb-service";
+pub const OPENDAN_SERVICE_UNIQUE_ID: &str = "opendan";
+pub const OPENDAN_SERVICE_NAME: &str = "opendan";
+pub const OPENDAN_SERVICE_PORT: u16 = 4060;
 
 pub const BASE_APP_PORT: u16 = 10000;
 pub const MAX_APP_INDEX: u16 = 2048;
@@ -96,11 +99,6 @@ pub async fn init_buckyos_api_runtime(
                 ));
             }
         }
-        BuckyOSRuntimeType::FrameService => {
-            return Err(RPCErrors::ReasonError(
-                "FrameService is not supported yet".to_string(),
-            ));
-        }
         _ => {
             //do nothing
         }
@@ -112,6 +110,7 @@ pub async fn init_buckyos_api_runtime(
     if runtime_type == BuckyOSRuntimeType::Kernel
         || runtime_type == BuckyOSRuntimeType::AppClient
         || runtime_type == BuckyOSRuntimeType::KernelService
+        || runtime_type == BuckyOSRuntimeType::FrameService
     {
         runtime.fill_by_load_config().await?;
     }
@@ -132,6 +131,22 @@ pub fn generate_smb_service_doc() -> AppDoc {
     )
     .show_name("Samba Service")
     .selector_type(SelectorType::Random)
+    .build()
+    .unwrap()
+}
+
+pub fn generate_opendan_service_doc() -> AppDoc {
+    const VERSION: &str = env!("CARGO_PKG_VERSION");
+    let owner_did = DID::from_str("did:bns:buckyos").unwrap();
+    AppDoc::builder(
+        AppType::Service,
+        OPENDAN_SERVICE_UNIQUE_ID,
+        VERSION,
+        "did:bns:buckyos",
+        &owner_did,
+    )
+    .show_name("OpenDAN Runtime")
+    .selector_type(SelectorType::Single)
     .build()
     .unwrap()
 }

@@ -1,8 +1,9 @@
 use buckyos_api::{
     AccessDecision, AccessGroupLevel, AccountBinding, Contact, ContactPatch, ContactQuery,
     ContactSource, GrantTemporaryAccessResult, ImportContactEntry, ImportReport,
-    SetGroupSubscribersResult, TemporaryGrant, TemporaryGrantOutcome,
+    SetGroupSubscribersResult, TemporaryGrant, TemporaryGrantOutcome, MSG_CENTER_SERVICE_NAME,
 };
+use buckyos_kit::get_buckyos_service_data_dir;
 use kRPC::RPCErrors;
 use name_lib::DID;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -13,7 +14,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 const SYSTEM_OWNER_SCOPE: &str = "__system__";
-const DEFAULT_CONTACT_DB_PATH: &str = "/opt/buckyos/data/msg_center_contacts.sqlite3";
 const CONTACT_DB_PATH_ENV: &str = "BUCKYOS_MSG_CENTER_CONTACT_DB";
 const METADATA_DID_SEQ_KEY: &str = "did_seq";
 
@@ -39,7 +39,7 @@ pub struct ContactMgr {
 impl ContactMgr {
     pub fn new() -> std::result::Result<Self, RPCErrors> {
         let db_path = std::env::var(CONTACT_DB_PATH_ENV)
-            .unwrap_or_else(|_| DEFAULT_CONTACT_DB_PATH.to_string());
+            .unwrap_or_else(|_| default_contact_db_path().to_string_lossy().to_string());
         Self::new_with_path(db_path)
     }
 
@@ -1479,6 +1479,10 @@ CREATE INDEX IF NOT EXISTS idx_group_subscribers_owner ON group_subscribers(owne
                 })
         })
     }
+}
+
+fn default_contact_db_path() -> PathBuf {
+    get_buckyos_service_data_dir(MSG_CENTER_SERVICE_NAME).join("contacts.sqlite3")
 }
 
 #[cfg(test)]

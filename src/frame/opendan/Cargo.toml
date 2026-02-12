@@ -19,6 +19,8 @@ reqwest = { workspace = true }
 name-lib = { workspace = true }
 rusqlite = { workspace = true }
 log = { workspace = true }
+anyhow = { workspace = true }
+buckyos-kit = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

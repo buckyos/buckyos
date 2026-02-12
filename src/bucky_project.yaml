@@ -42,6 +42,9 @@ modules:
   msg_center:
     type: rust
     name: msg_center
+  opendan:
+    type: rust
+    name: opendan
   control_panel_web:
     type: web
     name: control_panel
@@ -78,6 +81,7 @@ apps:
       app-loader: bin/app-loader/
       aicc: bin/aicc/
       msg_center: bin/msg-center/
+      opendan: bin/opendan/
       scheduler-etc: etc/scheduler/
       boot-gateway-config: etc/boot_gateway.yaml
       util.py: bin/util.py

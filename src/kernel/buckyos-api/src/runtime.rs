@@ -17,8 +17,11 @@ use name_client::*;
 use name_lib::*;
 use rand::Rng;
 
+use crate::aicc_client::*;
 use crate::app_mgr::*;
 use crate::control_panel::*;
+use crate::msg_center_client::*;
+use crate::msg_queue::*;
 use crate::repo_client::*;
 use crate::scheduler_client::*;
 use crate::system_config::*;
@@ -32,7 +35,7 @@ const DEFAULT_NODE_GATEWAY_PORT: u16 = 3180;
 pub enum BuckyOSRuntimeType {
     AppClient,     //运行在所有设备上，通常不在容器里（唯一可能加载user private key的类型)
     AppService,    //R3 运行在Node上，指定用户，可能在容器里
-    FrameService,  //R2 运行在Node上，在容器里(目前系统里没有frame service)
+    FrameService,  //R2 运行在Node上，通常在容器里
     KernelService, //R1 由node-daemon启动的的系统基础服务
     Kernel,        //R0,node-daemon和cyfs-gateway使用，可以单独启动的组件
 }
@@ -1283,6 +1286,27 @@ impl BuckyOSRuntime {
         let krpc_client = self.get_zone_service_krpc_client("task-manager").await?;
         let client = TaskManagerClient::new(krpc_client);
         Ok(client)
+    }
+
+    pub async fn get_aicc_client(&self) -> Result<AiccClient> {
+        let krpc_client = self
+            .get_zone_service_krpc_client(AICC_SERVICE_SERVICE_NAME)
+            .await?;
+        let client = AiccClient::new(krpc_client);
+        Ok(client)
+    }
+
+    pub async fn get_msg_center_client(&self) -> Result<MsgCenterClient> {
+        let krpc_client = self
+            .get_zone_service_krpc_client(MSG_CENTER_SERVICE_NAME)
+            .await?;
+        let client = MsgCenterClient::new(krpc_client);
+        Ok(client)
+    }
+
+    pub async fn get_msg_queue_client(&self) -> Result<MsgQueueClient> {
+        let krpc_client = self.get_zone_service_krpc_client(KMSG_SERVICE_NAME).await?;
+        Ok(MsgQueueClient::new_krpc(Box::new(krpc_client)))
     }
 
     pub async fn get_scheduler_client(&self) -> Result<SchedulerClient> {
