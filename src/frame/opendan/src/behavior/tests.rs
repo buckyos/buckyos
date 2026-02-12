@@ -12,9 +12,12 @@ use buckyos_api::{
 };
 use kRPC::{RPCContext, RPCErrors, Result as KRPCResult};
 use serde_json::{json, Value as Json};
+use tempfile::tempdir;
+use tokio::fs;
 
 use super::*;
-use crate::agent_tool::{AgentTool, ToolCall, ToolManager, ToolSpec};
+use crate::agent_tool::{AgentTool, ToolCall, ToolCallContext, ToolManager, ToolSpec};
+use crate::workspace::{AgentWorkshop, AgentWorkshopConfig, TOOL_EXEC_BASH};
 
 struct MockTokenizer;
 
@@ -664,4 +667,229 @@ async fn run_step_then_run_actions_followup() {
         .iter()
         .any(|m| m.content.contains("<<OBSERVATIONS (UNTRUSTED)>>"));
     assert!(has_obs);
+}
+
+#[tokio::test]
+async fn run_step_with_workshop_list_dir_then_plan_python_actions() {
+    let tmp = tempdir().expect("create tempdir");
+    let root = tmp.path().to_path_buf();
+    let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
+        .await
+        .expect("create workshop");
+    fs::write(root.join("todo/seed.txt"), "seed\n")
+        .await
+        .expect("write seed file");
+
+    let tool_mgr = Arc::new(ToolManager::new());
+    workshop
+        .register_tools(tool_mgr.as_ref())
+        .expect("register workshop tools");
+
+    let responses = Arc::new(Mutex::new(VecDeque::from(vec![
+        CompleteResponse::new(
+            "".to_string(),
+            CompleteStatus::Succeeded,
+            Some(AiResponseSummary {
+                text: None,
+                json: Some(json!({
+                    "tool_calls": [{
+                        "name": TOOL_EXEC_BASH,
+                        "args": {
+                            "command": "ls -1 todo"
+                        },
+                        "call_id": "call-list-todo"
+                    }]
+                })),
+                artifacts: vec![],
+                usage: Some(AiUsage {
+                    input_tokens: Some(11),
+                    output_tokens: Some(7),
+                    total_tokens: Some(18),
+                }),
+                cost: None,
+                finish_reason: Some("tool_calls".to_string()),
+                provider_task_ref: Some("provider-workshop-1".to_string()),
+                extra: Some(json!({"provider":"mock","model":"mock-1","latency_ms":7})),
+            }),
+            None,
+        ),
+        CompleteResponse::new(
+            "".to_string(),
+            CompleteStatus::Succeeded,
+            Some(AiResponseSummary {
+                text: None,
+                json: Some(json!({
+                    "is_sleep": false,
+                    "next_behavior": "on_action",
+                    "actions": [{
+                        "kind": "bash",
+                        "title": "write test.py",
+                        "command": "cat > artifacts/test.py <<'PY'\nprint('hello workshop')\nPY",
+                        "execution_mode": "serial",
+                        "cwd": null,
+                        "timeout_ms": 1000,
+                        "allow_network": false,
+                        "fs_scope": {
+                            "read_roots": [],
+                            "write_roots": ["artifacts"]
+                        },
+                        "rationale": "create python test script"
+                    }, {
+                        "kind": "bash",
+                        "title": "chmod test.py executable",
+                        "command": "chmod +x artifacts/test.py",
+                        "execution_mode": "serial",
+                        "cwd": null,
+                        "timeout_ms": 1000,
+                        "allow_network": false,
+                        "fs_scope": {
+                            "read_roots": [],
+                            "write_roots": ["artifacts"]
+                        },
+                        "rationale": "make script executable"
+                    }],
+                    "output": {"phase":"actions_planned"}
+                })),
+                artifacts: vec![],
+                usage: Some(AiUsage {
+                    input_tokens: Some(9),
+                    output_tokens: Some(10),
+                    total_tokens: Some(19),
+                }),
+                cost: None,
+                finish_reason: Some("stop".to_string()),
+                provider_task_ref: Some("provider-workshop-2".to_string()),
+                extra: Some(json!({"provider":"mock","model":"mock-1","latency_ms":8})),
+            }),
+            None,
+        ),
+    ])));
+    let requests = Arc::new(Mutex::new(Vec::<CompleteRequest>::new()));
+
+    let deps = LLMBehaviorDeps {
+        taskmgr: Arc::new(TaskManagerClient::new_in_process(Box::new(
+            MockTaskMgrHandler {
+                counter: Mutex::new(0),
+                tasks: Arc::new(Mutex::new(HashMap::<i64, Task>::new())),
+            },
+        ))),
+        aicc: Arc::new(AiccClient::new_in_process(Box::new(MockAicc {
+            responses,
+            requests: requests.clone(),
+        }))),
+        tools: tool_mgr.clone(),
+        policy: Arc::new(MockPolicy {
+            tools: tool_mgr.list_tool_specs(),
+        }),
+        worklog: Arc::new(MockWorklog),
+        tokenizer: Arc::new(MockTokenizer),
+    };
+
+    let behavior = LLMBehavior::new(LLMBehaviorConfig::default(), deps);
+    let input = ProcessInput {
+        trace: TraceCtx {
+            trace_id: "trace-workshop-actions".to_string(),
+            agent_did: "did:example:agent".to_string(),
+            behavior: "on_wakeup".to_string(),
+            step_idx: 0,
+            wakeup_id: "wakeup-workshop-actions".to_string(),
+        },
+        role_md: "role".to_string(),
+        self_md: "self".to_string(),
+        behavior_prompt: "list todo and then plan python script actions".to_string(),
+        env_context: vec![],
+        inbox: json!({"event":"wake"}),
+        memory: json!({"facts":[]}),
+        last_observations: vec![],
+        limits: StepLimits::default(),
+    };
+
+    let result = behavior.run_step(input).await;
+    assert!(matches!(result.status, LLMStatus::Ok));
+    assert_eq!(result.tool_trace.len(), 1);
+    assert_eq!(result.tool_trace[0].tool_name, TOOL_EXEC_BASH);
+    assert_eq!(result.actions.len(), 2);
+    assert_eq!(
+        result.actions[0].execution_mode,
+        ActionExecutionMode::Serial
+    );
+    assert_eq!(
+        result.actions[1].execution_mode,
+        ActionExecutionMode::Serial
+    );
+    assert!(result.actions[0].command.contains("artifacts/test.py"));
+    assert_eq!(result.actions[1].command, "chmod +x artifacts/test.py");
+
+    let requests_guard = requests.lock().expect("requests lock");
+    assert_eq!(requests_guard.len(), 2);
+    let tool_messages = requests_guard[1]
+        .payload
+        .options
+        .as_ref()
+        .and_then(|v| v.get("tool_messages"))
+        .cloned()
+        .unwrap_or_else(|| json!([]))
+        .to_string();
+    assert!(tool_messages.contains(TOOL_EXEC_BASH));
+    assert!(tool_messages.contains("seed.txt"));
+
+    // Formally execute planned actions through workshop.exec_bash.
+    let action_ctx = ToolCallContext {
+        trace_id: "trace-workshop-actions".to_string(),
+        agent_did: "did:example:agent".to_string(),
+        behavior: "on_action".to_string(),
+        step_idx: 1,
+        wakeup_id: "wakeup-workshop-actions".to_string(),
+    };
+    for (idx, action) in result.actions.iter().enumerate() {
+        assert_eq!(
+            action.execution_mode,
+            ActionExecutionMode::Serial,
+            "test fixture expects serial actions before executing sequentially"
+        );
+
+        let mut args = json!({
+            "command": action.command,
+            "timeout_ms": action.timeout_ms,
+        });
+        if let Some(cwd) = &action.cwd {
+            args["cwd"] = json!(cwd);
+        }
+
+        let raw = tool_mgr
+            .call_tool(
+                &action_ctx,
+                ToolCall {
+                    name: TOOL_EXEC_BASH.to_string(),
+                    args,
+                    call_id: format!("action-exec-{idx}"),
+                },
+            )
+            .await
+            .expect("action command should run by workshop tool");
+        assert_eq!(
+            raw["ok"].as_bool(),
+            Some(true),
+            "action command returned non-zero: {}",
+            raw
+        );
+    }
+
+    // Verify workshop tool effect: file created and turned executable.
+    let test_py_path = root.join("artifacts/test.py");
+    let content = fs::read_to_string(&test_py_path)
+        .await
+        .expect("test.py should be created by executed action");
+    assert!(content.contains("hello workshop"));
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mode = std::fs::metadata(&test_py_path)
+            .expect("read test.py metadata")
+            .permissions()
+            .mode();
+        assert_ne!(mode & 0o111, 0, "test.py should have executable bit");
+    }
 }

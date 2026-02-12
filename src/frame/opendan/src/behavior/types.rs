@@ -115,6 +115,19 @@ impl Default for ActionKind {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionExecutionMode {
+    Serial,
+    Parallel,
+}
+
+impl Default for ActionExecutionMode {
+    fn default() -> Self {
+        Self::Serial
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FsScope {
     pub read_roots: Vec<String>,
@@ -127,6 +140,8 @@ pub struct ActionSpec {
     pub kind: ActionKind,
     pub title: String,
     pub command: String,
+    #[serde(default)]
+    pub execution_mode: ActionExecutionMode,
     #[serde(default)]
     pub cwd: Option<String>,
     #[serde(default = "default_action_timeout_ms")]

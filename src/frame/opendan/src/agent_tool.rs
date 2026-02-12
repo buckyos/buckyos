@@ -3,7 +3,8 @@ use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::Value as Json;
+use serde_json::{json, Value as Json};
+use tokio::time::{timeout, Duration};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ToolSpec {
@@ -49,10 +50,204 @@ pub enum ToolError {
     Timeout,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct MCPToolConfig {
+    pub name: String,
+    pub endpoint: String,
+    #[serde(default)]
+    pub mcp_tool_name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default = "default_json_object")]
+    pub args_schema: Json,
+    #[serde(default = "default_json_object")]
+    pub output_schema: Json,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    #[serde(default = "default_mcp_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+fn default_json_object() -> Json {
+    json!({"type":"object"})
+}
+
+fn default_mcp_timeout_ms() -> u64 {
+    30_000
+}
+
 #[async_trait]
 pub trait AgentTool: Send + Sync {
     fn spec(&self) -> ToolSpec;
     async fn call(&self, ctx: &ToolCallContext, args: Json) -> Result<Json, ToolError>;
+}
+
+pub struct MCPTool {
+    spec: ToolSpec,
+    endpoint: String,
+    mcp_tool_name: String,
+    headers: HashMap<String, String>,
+    timeout_ms: u64,
+    client: reqwest::Client,
+}
+
+impl MCPTool {
+    pub fn new(cfg: MCPToolConfig) -> Result<Self, ToolError> {
+        let tool_name = cfg.name.trim();
+        if tool_name.is_empty() {
+            return Err(ToolError::InvalidArgs(
+                "mcp tool `name` cannot be empty".to_string(),
+            ));
+        }
+
+        let endpoint = cfg.endpoint.trim();
+        if endpoint.is_empty() {
+            return Err(ToolError::InvalidArgs(
+                "mcp tool `endpoint` cannot be empty".to_string(),
+            ));
+        }
+
+        if cfg.timeout_ms == 0 {
+            return Err(ToolError::InvalidArgs(
+                "mcp tool `timeout_ms` must be > 0".to_string(),
+            ));
+        }
+
+        let mcp_tool_name = cfg
+            .mcp_tool_name
+            .unwrap_or_else(|| tool_name.to_string())
+            .trim()
+            .to_string();
+        if mcp_tool_name.is_empty() {
+            return Err(ToolError::InvalidArgs(
+                "mcp tool `mcp_tool_name` cannot be empty".to_string(),
+            ));
+        }
+
+        let description = cfg
+            .description
+            .unwrap_or_else(|| format!("MCP tool `{}`", mcp_tool_name));
+
+        let client = reqwest::Client::builder()
+            .build()
+            .map_err(|err| ToolError::ExecFailed(format!("build mcp http client failed: {err}")))?;
+
+        Ok(Self {
+            spec: ToolSpec {
+                name: tool_name.to_string(),
+                description,
+                args_schema: cfg.args_schema,
+                output_schema: cfg.output_schema,
+            },
+            endpoint: endpoint.to_string(),
+            mcp_tool_name,
+            headers: cfg.headers,
+            timeout_ms: cfg.timeout_ms,
+            client,
+        })
+    }
+}
+
+#[async_trait]
+impl AgentTool for MCPTool {
+    fn spec(&self) -> ToolSpec {
+        self.spec.clone()
+    }
+
+    async fn call(&self, ctx: &ToolCallContext, args: Json) -> Result<Json, ToolError> {
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "id": format!(
+                "{}:{}:{}:{}:{}",
+                ctx.trace_id, ctx.wakeup_id, ctx.behavior, ctx.step_idx, self.spec.name
+            ),
+            "method": "tools/call",
+            "params": {
+                "name": self.mcp_tool_name,
+                "arguments": args
+            }
+        });
+
+        let mut req = self.client.post(&self.endpoint).json(&request_body);
+        for (key, value) in &self.headers {
+            req = req.header(key, value);
+        }
+
+        let response = timeout(Duration::from_millis(self.timeout_ms), req.send())
+            .await
+            .map_err(|_| ToolError::Timeout)?
+            .map_err(|err| ToolError::ExecFailed(format!("mcp request failed: {err}")))?;
+
+        let status = response.status();
+        let body = timeout(Duration::from_millis(self.timeout_ms), response.text())
+            .await
+            .map_err(|_| ToolError::Timeout)?
+            .map_err(|err| ToolError::ExecFailed(format!("read mcp response failed: {err}")))?;
+
+        if !status.is_success() {
+            return Err(ToolError::ExecFailed(format!(
+                "mcp server returned http {}: {}",
+                status.as_u16(),
+                truncate_text(&body, 512)
+            )));
+        }
+
+        let payload: Json = serde_json::from_str(&body)
+            .map_err(|err| ToolError::ExecFailed(format!("invalid mcp response json: {err}")))?;
+
+        if let Some(err_obj) = payload.get("error") {
+            let msg = extract_jsonrpc_error_message(err_obj);
+            return Err(ToolError::ExecFailed(format!("mcp tool call error: {msg}")));
+        }
+
+        let result = payload.get("result").cloned().ok_or_else(|| {
+            ToolError::ExecFailed("mcp response missing `result` field".to_string())
+        })?;
+
+        if let Some(message) = extract_mcp_result_error(&result) {
+            return Err(ToolError::ExecFailed(format!(
+                "mcp tool returned error: {message}"
+            )));
+        }
+
+        Ok(result)
+    }
+}
+
+fn extract_jsonrpc_error_message(value: &Json) -> String {
+    if let Some(msg) = value.get("message").and_then(|v| v.as_str()) {
+        return msg.to_string();
+    }
+    truncate_text(&value.to_string(), 512)
+}
+
+fn extract_mcp_result_error(result: &Json) -> Option<String> {
+    let is_error = result
+        .get("isError")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !is_error {
+        return None;
+    }
+
+    if let Some(content) = result.get("content").and_then(|v| v.as_array()) {
+        for item in content {
+            if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                if !text.trim().is_empty() {
+                    return Some(text.to_string());
+                }
+            }
+        }
+    }
+
+    Some(truncate_text(&result.to_string(), 512))
+}
+
+fn truncate_text(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    text.chars().take(max_chars).collect::<String>() + "...[TRUNCATED]"
 }
 
 pub struct ToolManager {
@@ -90,6 +285,10 @@ impl ToolManager {
         }
         guard.insert(spec.name, tool);
         Ok(())
+    }
+
+    pub fn register_mcp_tool(&self, cfg: MCPToolConfig) -> Result<(), ToolError> {
+        self.register_tool(MCPTool::new(cfg)?)
     }
 
     pub fn unregister_tool(&self, name: &str) -> bool {
@@ -135,5 +334,159 @@ impl ToolManager {
             return Err(ToolError::NotFound(call.name));
         };
         tool.call(ctx, call.args).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::sync::oneshot;
+
+    async fn spawn_mcp_http_server_once(
+        response_json: Json,
+    ) -> (String, oneshot::Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test tcp listener");
+        let addr = listener.local_addr().expect("read local addr");
+        let (req_tx, req_rx) = oneshot::channel::<String>();
+
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept tcp connection");
+            let req_text = read_http_request(&mut stream).await;
+            let _ = req_tx.send(req_text.clone());
+
+            let body = serde_json::to_string(&response_json).expect("serialize response body");
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.as_bytes().len(),
+                body
+            );
+            stream
+                .write_all(resp.as_bytes())
+                .await
+                .expect("write response");
+        });
+
+        (format!("http://{}", addr), req_rx)
+    }
+
+    async fn read_http_request(stream: &mut tokio::net::TcpStream) -> String {
+        let mut buf = Vec::new();
+        let mut temp = [0_u8; 1024];
+        loop {
+            let n = stream.read(&mut temp).await.expect("read request");
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&temp[..n]);
+            if let Some(body_end) = find_header_end(&buf) {
+                let content_len = parse_content_length(&buf[..body_end]).unwrap_or(0);
+                let expected_total = body_end + content_len;
+                if buf.len() >= expected_total {
+                    break;
+                }
+            }
+        }
+        String::from_utf8_lossy(&buf).to_string()
+    }
+
+    fn find_header_end(data: &[u8]) -> Option<usize> {
+        data.windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .map(|idx| idx + 4)
+    }
+
+    fn parse_content_length(headers: &[u8]) -> Option<usize> {
+        let text = String::from_utf8_lossy(headers).to_lowercase();
+        for line in text.lines() {
+            if let Some(value) = line.strip_prefix("content-length:") {
+                return value.trim().parse::<usize>().ok();
+            }
+        }
+        None
+    }
+
+    fn test_call_ctx() -> ToolCallContext {
+        ToolCallContext {
+            trace_id: "trace-1".to_string(),
+            agent_did: "did:example:agent".to_string(),
+            behavior: "on_wakeup".to_string(),
+            step_idx: 0,
+            wakeup_id: "wakeup-1".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_can_call_jsonrpc_tools_call() {
+        let (endpoint, req_rx) = spawn_mcp_http_server_once(json!({
+            "jsonrpc": "2.0",
+            "id": "x",
+            "result": {
+                "isError": false,
+                "content": [{"type":"text","text":"done"}],
+                "data": {"answer": 42}
+            }
+        }))
+        .await;
+
+        let tool = MCPTool::new(MCPToolConfig {
+            name: "mcp.echo".to_string(),
+            endpoint,
+            mcp_tool_name: Some("echo".to_string()),
+            description: Some("echo mcp".to_string()),
+            args_schema: json!({"type":"object"}),
+            output_schema: json!({"type":"object"}),
+            headers: HashMap::new(),
+            timeout_ms: 5_000,
+        })
+        .expect("create mcp tool");
+
+        let output = tool
+            .call(&test_call_ctx(), json!({"message":"hello"}))
+            .await
+            .expect("mcp tool call should succeed");
+
+        assert_eq!(output["data"]["answer"], 42);
+
+        let request = req_rx.await.expect("receive http request");
+        assert!(request.contains("\"method\":\"tools/call\""));
+        assert!(request.contains("\"name\":\"echo\""));
+        assert!(request.contains("\"message\":\"hello\""));
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_maps_jsonrpc_error() {
+        let (endpoint, _req_rx) = spawn_mcp_http_server_once(json!({
+            "jsonrpc": "2.0",
+            "id": "x",
+            "error": {
+                "code": -32000,
+                "message": "boom"
+            }
+        }))
+        .await;
+
+        let tool = MCPTool::new(MCPToolConfig {
+            name: "mcp.fail".to_string(),
+            endpoint,
+            mcp_tool_name: Some("fail".to_string()),
+            description: None,
+            args_schema: json!({"type":"object"}),
+            output_schema: json!({"type":"object"}),
+            headers: HashMap::new(),
+            timeout_ms: 5_000,
+        })
+        .expect("create mcp tool");
+
+        let err = tool
+            .call(&test_call_ctx(), json!({}))
+            .await
+            .expect_err("mcp jsonrpc error should fail");
+
+        assert!(matches!(err, ToolError::ExecFailed(_)));
+        assert!(err.to_string().contains("boom"));
     }
 }

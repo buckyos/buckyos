@@ -539,7 +539,7 @@
                 <mxCell id="tiA9p3Jb5ky7PhftXdYa-95" value="" style="triangle;whiteSpace=wrap;html=1;shadow=0;dashed=0;strokeColor=#000000;strokeWidth=1;align=center;verticalAlign=middle;fontFamily=Helvetica;fontSize=12;fontColor=default;fillColor=default;rotation=90;" parent="1" vertex="1">
                     <mxGeometry x="505.56" y="-503.5" width="10" height="15" as="geometry"/>
                 </mxCell>
-                <mxCell id="tiA9p3Jb5ky7PhftXdYa-96" value="LLM Process, 20s, 2300 -&amp;gt; 130 Tokens" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontFamily=Helvetica;fontColor=default;" parent="1" vertex="1">
+                <mxCell id="tiA9p3Jb5ky7PhftXdYa-96" value="LLM Behavior, 20s, 2300 -&amp;gt; 130 Tokens" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontFamily=Helvetica;fontColor=default;" parent="1" vertex="1">
                     <mxGeometry x="526.56" y="-503.5" width="183.44" height="13" as="geometry"/>
                 </mxCell>
                 <mxCell id="tiA9p3Jb5ky7PhftXdYa-97" value="Prompt" style="swimlane;fontStyle=0;childLayout=stackLayout;horizontal=1;startSize=30;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=1;marginBottom=0;whiteSpace=wrap;html=1;shadow=0;dashed=0;strokeColor=#000000;strokeWidth=1;align=center;verticalAlign=middle;fontFamily=Helvetica;fontSize=11;fontColor=default;fillColor=default;" parent="1" vertex="1">
@@ -560,7 +560,7 @@
                 <mxCell id="tiA9p3Jb5ky7PhftXdYa-102" value="" style="triangle;whiteSpace=wrap;html=1;shadow=0;dashed=0;strokeColor=#000000;strokeWidth=1;align=center;verticalAlign=middle;fontFamily=Helvetica;fontSize=12;fontColor=default;fillColor=default;rotation=90;" parent="1" vertex="1">
                     <mxGeometry x="520" y="-112.5" width="10" height="15" as="geometry"/>
                 </mxCell>
-                <mxCell id="tiA9p3Jb5ky7PhftXdYa-103" value="LLM Process" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontFamily=Helvetica;fontColor=default;" parent="1" vertex="1">
+                <mxCell id="tiA9p3Jb5ky7PhftXdYa-103" value="LLM Behavior" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontFamily=Helvetica;fontColor=default;" parent="1" vertex="1">
                     <mxGeometry x="541" y="-112.5" width="113.12" height="13" as="geometry"/>
                 </mxCell>
                 <mxCell id="tiA9p3Jb5ky7PhftXdYa-104" value="Prompt" style="swimlane;fontStyle=0;childLayout=stackLayout;horizontal=1;startSize=30;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=1;marginBottom=0;whiteSpace=wrap;html=1;shadow=0;dashed=0;strokeColor=#000000;strokeWidth=1;align=center;verticalAlign=middle;fontFamily=Helvetica;fontSize=11;fontColor=default;fillColor=default;" parent="1" vertex="1">

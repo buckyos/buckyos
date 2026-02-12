@@ -14,3 +14,7 @@ kRPC = { workspace = true }
 ndn-lib = {workspace = true}
 named_store = {workspace = true}
 tokio = { workspace = true }
+reqwest = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
