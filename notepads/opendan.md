@@ -30,10 +30,10 @@ OpenDAN 原有的基础设施组件已经由 BuckyOS 实现（TaskMgr、MsgQueue
 
 OpenDAN 作为 AI Runtime，依赖并复用 BuckyOS 的以下基础组件：
 
-* **LLMCompute（已存在）**
+* **AI Compute Center（已存在）**
 
   * 负责：模型路由、推理请求、流式输出、token 统计、function call 协议适配、（可选）成本估算。
-  * OpenDAN：将每一次 LLM Process 的推理请求封装为 TaskMgr 任务，并委托 LLMCompute 执行。
+  * OpenDAN：将每一次 LLM Behavior 的推理请求封装为 TaskMgr 任务，并委托 LLMCompute 执行。
 
 * **TaskMgr（已存在）**
 
@@ -100,8 +100,10 @@ Agent 默认只有一种触发模式：定时触发（on_wakeup）。Agent 根�
 * **可选（配置开启）**：
 
   * `on_msg`：收到消息触发（由 MsgQueue/MsgCenter 推送或触发一次 wakeup）
-  * `on_event`：订阅事件触发
-  * `on_task`：TaskMgr 任务状态变化触发（例如某 Action 完成）
+  * `on_event`：订阅事件触发，与on_msg不同的是，永远不必考虑向msg.from恢复消息
+  * `on_task`：TaskMgr 任务状态变化触发（例如某 Action 完成）（也许可以合并到on_event内部)
+  * 参考on_task, 一些Agent Loop里的常用事件，为了方便开发，可以考虑抽象成独立的 触发点(hook point)
+
 
 > 设计原则：即便启用 on_msg/on_event，也推荐“最终都落为一次 wakeup”，以保持单入口、可观测一致。
 
@@ -110,20 +112,19 @@ Agent 默认只有一种触发模式：定时触发（on_wakeup）。Agent 根�
 为避免无意义 token 消耗，on_wakeup 分两段：
 
 1. **无 LLM 探测（必做）**：拉取 MsgQueue 游标，检查是否有新 msg/event/task；若没有，直接调整下一次 wakeup 并返回（不进入 LLM）。
-2. **进入 LLM Loop（有输入才做）**：将输入打包为 runtime input，交由 LLM Process + ActionExecutor 执行。
+2. **进入 LLM Loop（有输入才做）**：将输入打包为 runtime input，交由 LLM Behavior + ActionExecutor 执行。
 
 ### Agent Loop（伪代码）
 
 ```python
-def agent.on_wakeup(self):
-    # phase-0: no-llm polling
-    inbox = self.poll_inbox()  # msg/event/task via MsgQueue/MsgCenter/TaskMgr
-    if inbox.empty():
-        self.schedule_next_wakeup(backoff=True)
-        return
+def agent.on_wakeup(self,reason):
 
+    if reason == None:
+      process_input.new_msgs = self.read_new_msgs()
+    
+    behavior_task_id = TaskMgr.craete_task(self.agent_did,"on_wakeup")
     current_behavior = "on_wakeup"
-    llm_process = self.behavior[current_behavior]
+    llm_behavior = self.behavior[current_behavior]
     llm_result = None
 
     while True:
@@ -131,17 +132,16 @@ def agent.on_wakeup(self):
             disable_agent(self)
             return
 
-        llm_process.load_context(llm_result, inbox)
-        llm_result = llm_process.do_llm()  # may include function-call + 2nd inference
+        llm_behavior.set_context(self,new_msgs,llm_result)
+        llm_result = llm_behavior.do_llm(behavior_task)  
         self.update_agent_state(llm_result.token_usage)
-
-        if llm_result.is_sleep():
-            return
+        action_result = self.run_action(llm_result.actions(),behavior_task_id)
+        llm_result.action_result = action_result
 
         # behavior switch: agent任何时候只能进行一个behavior，但可切换直到sleep
         if current_behavior != llm_result.next_behavior:
             current_behavior = llm_result.next_behavior
-            llm_process = self.behavior[current_behavior]
+            llm_behavior = self.behavior[current_behavior]
             continue
 ```
 
@@ -200,14 +200,14 @@ Agent 可以有自己的钱包（基于 USDB，真钱），可在合适的时候
 
 Agent 可以自定义 behavior；有一些 behavior 是系统通用的（例如 self-improve 主要是对 Self 和 Agent Environment 的改进）。
 
-从实现角度：`agent.behavior["behavior_name"]` 得到的是一个 **LLM Process 对象**（见下文 LLM Process）。
+从实现角度：`agent.behavior["behavior_name"]` 得到的是一个 **LLM Behavior 对象**（见下文 LLM Behavior）。
 
 系统内置建议行为：
 
 * `on_wakeup`：定时唤醒后的统一入口（检查 inbox、规划/执行、必要时切换）
 * `on_msg`：消息处理（可作为 on_wakeup 的子行为）
 * `on_self_improve`：自我改进（Self/Tools/Workspace）
-* `on_compact_memory`：压缩记忆与归档（降低后续 token）
+* `on_compact_memory`：压缩记忆与归档（降低后续 token），通常是被动触发，也可能是on_self_improve的一部分
 * （可选）`on_report`：生成日报/周报（面向用户可见）
 * （可选）`on_reconcile`：对齐 workspace 与实际状态（修复 todo、补充日志）
 
@@ -268,17 +268,18 @@ Agent 可以自定义 behavior；有一些 behavior 是系统通用的（例如 
 
 若无 Memory 支持，Agent 每次处理输入会丢失过去知识。系统默认支持 2 种 Memory：
 
-* **Chat History**：对话历史（可由 MsgCenter/MsgQueue 索引）
+* **Chat History**：对话历史，通过MsgCenter提供的接口可以查询（有thread-id查询更快)
 * **Memory 文件夹**：包含 `memory.md` 与 `things.sqlite`（kv/结构化事实），Agent 自己决定保存方法
 
 ### memory.md（摘要性记忆）
 
 * 用于保存：
-
   * 长期任务背景
   * 用户偏好摘要
   * 当前项目状态（对齐 workspace todo）
 * 由 `on_compact_memory` 维护，避免无限增长（定期压缩、保留关键事实与决策依据）
+
+> memory 是一个独立目录，也允许Agent自己通过文件系统来管理复杂的记忆
 
 ### things.sqlite（结构化记忆）
 
@@ -315,16 +316,19 @@ OpenDAN 约定：**Agent Environment 内置一个 Workspace**，用于支持 Age
 
 ### Action 与 Tool 的差异（Runtime 约定）
 
-* **Function call（Tool）**：
+在Agent Envriment中可以防止tools, Agent使用tools两种模式
 
-  * LLM 产出 tool call
-  * Runtime 执行 tool
+* **(Function) Call Tool**：
+
+  * LLM 产出 Call Tool
+  * Runtime 执行 Tool
   * 将结果回填到下一次推理（通常需要第二次 LLM 调用）
-* **Action（bash 等）**：
 
-  * LLM 产出 action 列表
-  * Runtime 可并发执行多个 action
-  * action 结果结构化汇总后再进入下一次推理
+* **Tools Action（bash 等）**：
+
+  * LLM 产出 action 列表后结束
+  * Runtime 可并发执行多个 tools action
+  * 执行结果结构化汇总后再进入下一次推理 
   * 优势：一次推理产生多个执行，整体更省 token
 
 ---
@@ -484,7 +488,7 @@ SubAgent 用于处理专门工作。当 Task 类型领域相关时，创建更�
 
 负责执行 behavior（串行）、step-loop、切换与预算：
 
-* 一个 behavior = 一个 LLM Process 模板 + 工具/skills 集合 + 输出协议
+* 一个 behavior = 一个 LLM Behavior 模板 + 工具/skills 集合 + 输出协议
 * 单次 wakeup 的限制：
 
   * `max_steps_per_wakeup`
@@ -504,9 +508,9 @@ SubAgent 用于处理专门工作。当 Task 类型领域相关时，创建更�
 * privacy policy：哪些数据可写入 KB/ContentNetwork，哪些必须脱敏
 * safety policy：禁止自修改 runtime 核心、禁止绕过 gate
 
-### LLM Process
+### LLM Behavior
 
-LLM Process 是系统调用 LLM 的最小单位（内部不做重试，发生错误直接失败）。
+LLM Behavior 是系统调用 LLM 的最小单位（内部不做重试，发生错误直接失败）。
 
 能力范围：
 
@@ -584,10 +588,10 @@ LLM Process 是系统调用 LLM 的最小单位（内部不做重试，发生错
 
 > MVP 目标：先把“能跑、能看、能交付”的闭环做出来，再逐步加 SubAgent、KB、ContentNetwork、钱包等能力。
 
-### LLM Process（MVP）
+### LLM Behavior（MVP）
 
 * 定义 Tools（函数调用）、Actions（bash）、支持 MCP（先只做声明与选择，不做全量遍历）
-* LLM Process 内部流程：
+* LLM Behavior 内部流程：
 
   1. 构造提示词（插入正确的 Tools/Actions）
   2. 调用 LLMCompute 推理（挂到 TaskMgr）
@@ -616,7 +620,7 @@ LLM Process 是系统调用 LLM 的最小单位（内部不做重试，发生错
 
 * 通过 role.md + self.md 创建 Agent
 * 支持 on_wakeup loop
-* 支持 通过agent.behaviors[behavior_name] 构造 LLMProcess
+* 支持 通过agent.behaviors[behavior_name] 构造 LLMBehavior
 
 ### Policy（MVP 必需最小集）
 
@@ -706,7 +710,7 @@ SubAgents
 ## 里程碑规划（Roadmap）
 
 * **MVP-1：单 Agent 可运行与可观测闭环**
-  on_wakeup + LLMProcess + bash actions + workspace (最小集合)
+  on_wakeup + LLMBehavior + bash actions + workspace (最小集合)
 
 * **MVP-2：SubAgent 与能力包**
   SubAgent 独立进程、预算限制、workspace 协作交付

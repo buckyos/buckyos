@@ -19,6 +19,7 @@ members = [
     "./frame/aicc",
     "./frame/msg_center",
     "./frame/control_panel",
+    "./frame/opendan",
 
     "./tools/buckycli", 
     "./test/test_rbac"

@@ -7,6 +7,7 @@ use std::fmt;
 use std::net::IpAddr;
 use std::ops::Range;
 use std::str::FromStr;
+use std::time::Duration;
 
 use crate::{AppDoc, AppType, SelectorType};
 
@@ -56,6 +57,13 @@ impl TaskStatus {
                 s
             ))),
         }
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Canceled
+        )
     }
 }
 
@@ -592,6 +600,33 @@ impl TaskManagerClient {
                         RPCErrors::ParserResponseError("Expected task in response".to_string())
                     })
             }
+        }
+    }
+
+    pub async fn wait_for_task_end(&self, id: i64) -> Result<TaskStatus> {
+        const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+        self.wait_for_task_end_with_interval(id, DEFAULT_POLL_INTERVAL)
+            .await
+    }
+
+    pub async fn wait_for_task_end_with_interval(
+        &self,
+        id: i64,
+        poll_interval: Duration,
+    ) -> Result<TaskStatus> {
+        if poll_interval.is_zero() {
+            return Err(RPCErrors::ReasonError(
+                "poll_interval must be greater than 0".to_string(),
+            ));
+        }
+
+        loop {
+            let task = self.get_task(id).await?;
+            if task.status.is_terminal() {
+                return Ok(task.status);
+            }
+
+            tokio::time::sleep(poll_interval).await;
         }
     }
 
