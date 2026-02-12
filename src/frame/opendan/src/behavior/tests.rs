@@ -11,11 +11,13 @@ use buckyos_api::{
     TaskPermissions, TaskStatus,
 };
 use kRPC::{RPCContext, RPCErrors, Result as KRPCResult};
+use rusqlite::Connection;
 use serde_json::{json, Value as Json};
 use tempfile::tempdir;
 use tokio::fs;
 
 use super::*;
+use crate::agent_memory::{AgentMemory, AgentMemoryConfig, TOOL_LOAD_MEMORY, TOOL_LOAD_THINGS};
 use crate::agent_tool::{AgentTool, ToolCall, ToolCallContext, ToolManager, ToolSpec};
 use crate::workspace::{AgentWorkshop, AgentWorkshopConfig, TOOL_EXEC_BASH};
 
@@ -943,4 +945,272 @@ tools:
             .mode();
         assert_ne!(mode & 0o111, 0, "test.py should have executable bit");
     }
+}
+
+#[tokio::test]
+async fn run_step_with_agent_memory_tool_chain_then_insert_thing_by_action() {
+    let tmp = tempdir().expect("create tempdir");
+    let root = tmp.path().to_path_buf();
+
+    let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
+        .await
+        .expect("create workshop");
+    let memory = AgentMemory::new(AgentMemoryConfig::new(&root), None)
+        .await
+        .expect("create agent memory");
+
+    fs::write(
+        root.join("memory/memory.md"),
+        "## Long-term context\n- project: opendan memory integration\n- user: prefers concise updates\n",
+    )
+    .await
+    .expect("write memory.md");
+
+    // Seed a thing so load_things has queryable baseline.
+    let things_db = root.join("memory/things.db");
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::open(&things_db).expect("open things.db");
+        conn.execute(
+            "INSERT OR REPLACE INTO kv(key, value, updated_at, source, confidence)
+             VALUES ('project.plan', 'integrate memory tools into behavior loop', 100, 'seed', 0.8)",
+            [],
+        )
+        .expect("insert baseline kv");
+    })
+    .await
+    .expect("join seed things");
+
+    let tool_mgr = Arc::new(ToolManager::new());
+    workshop
+        .register_tools(tool_mgr.as_ref())
+        .expect("register workshop tools");
+    memory
+        .register_tools(tool_mgr.as_ref())
+        .expect("register memory tools");
+
+    let responses = Arc::new(Mutex::new(VecDeque::from(vec![
+        CompleteResponse::new(
+            "".to_string(),
+            CompleteStatus::Succeeded,
+            Some(AiResponseSummary {
+                text: None,
+                json: Some(json!({
+                    "tool_calls": [{
+                        "name": TOOL_LOAD_MEMORY,
+                        "args": {
+                            "token_limit": 128
+                        },
+                        "call_id": "call-load-memory"
+                    }]
+                })),
+                artifacts: vec![],
+                usage: Some(AiUsage {
+                    input_tokens: Some(10),
+                    output_tokens: Some(6),
+                    total_tokens: Some(16),
+                }),
+                cost: None,
+                finish_reason: Some("tool_calls".to_string()),
+                provider_task_ref: Some("provider-memory-step-1".to_string()),
+                extra: Some(json!({"provider":"mock","model":"mock-1","latency_ms":8})),
+            }),
+            None,
+        ),
+        CompleteResponse::new(
+            "".to_string(),
+            CompleteStatus::Succeeded,
+            Some(AiResponseSummary {
+                text: None,
+                json: Some(json!({
+                    "tool_calls": [{
+                        "name": TOOL_LOAD_THINGS,
+                        "args": {
+                            "name": "project",
+                            "limit": 8
+                        },
+                        "call_id": "call-load-things"
+                    }]
+                })),
+                artifacts: vec![],
+                usage: Some(AiUsage {
+                    input_tokens: Some(9),
+                    output_tokens: Some(7),
+                    total_tokens: Some(16),
+                }),
+                cost: None,
+                finish_reason: Some("tool_calls".to_string()),
+                provider_task_ref: Some("provider-memory-step-2".to_string()),
+                extra: Some(json!({"provider":"mock","model":"mock-1","latency_ms":7})),
+            }),
+            None,
+        ),
+        CompleteResponse::new(
+            "".to_string(),
+            CompleteStatus::Succeeded,
+            Some(AiResponseSummary {
+                text: None,
+                json: Some(json!({
+                    "is_sleep": false,
+                    "next_behavior": "on_action",
+                    "actions": [{
+                        "kind": "bash",
+                        "title": "insert project status into things",
+                        "command": "python3 - <<'PY'\nimport sqlite3, time\nconn = sqlite3.connect('memory/things.db')\nconn.execute(\"INSERT OR REPLACE INTO kv(key, value, updated_at, source, confidence) VALUES (?, ?, ?, ?, ?)\", (\"project.status\", \"action_inserted\", int(time.time() * 1000), \"behavior-test\", 0.95))\nconn.commit()\nconn.close()\nPY",
+                        "execution_mode": "serial",
+                        "cwd": null,
+                        "timeout_ms": 30000,
+                        "allow_network": false,
+                        "fs_scope": {
+                            "read_roots": ["memory"],
+                            "write_roots": ["memory"]
+                        },
+                        "rationale": "persist updated project status into structured memory"
+                    }],
+                    "output": {
+                        "phase": "memory_tools_complete"
+                    }
+                })),
+                artifacts: vec![],
+                usage: Some(AiUsage {
+                    input_tokens: Some(11),
+                    output_tokens: Some(10),
+                    total_tokens: Some(21),
+                }),
+                cost: None,
+                finish_reason: Some("stop".to_string()),
+                provider_task_ref: Some("provider-memory-step-3".to_string()),
+                extra: Some(json!({"provider":"mock","model":"mock-1","latency_ms":10})),
+            }),
+            None,
+        ),
+    ])));
+    let requests = Arc::new(Mutex::new(Vec::<CompleteRequest>::new()));
+    let behavior_cfg = load_behavior_config_yaml_for_test(
+        "on_wakeup",
+        r#"
+process_rule: use load_memory first, then load_things, then plan an action to update structured memory
+tools:
+  mode: allow_list
+  names:
+    - load_memory
+    - load_things
+limits:
+  max_tool_rounds: 3
+"#,
+    )
+    .await;
+
+    let deps = LLMBehaviorDeps {
+        taskmgr: Arc::new(TaskManagerClient::new_in_process(Box::new(
+            MockTaskMgrHandler {
+                counter: Mutex::new(0),
+                tasks: Arc::new(Mutex::new(HashMap::<i64, Task>::new())),
+            },
+        ))),
+        aicc: Arc::new(AiccClient::new_in_process(Box::new(MockAicc {
+            responses,
+            requests: requests.clone(),
+        }))),
+        tools: tool_mgr.clone(),
+        policy: Arc::new(MockPolicy {
+            tools: behavior_cfg
+                .tools
+                .filter_tool_specs(&tool_mgr.list_tool_specs()),
+        }),
+        worklog: Arc::new(MockWorklog),
+        tokenizer: Arc::new(MockTokenizer),
+    };
+
+    let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
+    let input = ProcessInput {
+        trace: TraceCtx {
+            trace_id: "trace-memory-action".to_string(),
+            agent_did: "did:example:agent".to_string(),
+            behavior: "on_wakeup".to_string(),
+            step_idx: 0,
+            wakeup_id: "wakeup-memory-action".to_string(),
+        },
+        role_md: "role".to_string(),
+        self_md: "self".to_string(),
+        behavior_prompt: behavior_cfg.process_rule.clone(),
+        env_context: vec![],
+        inbox: json!({"event":"wake"}),
+        memory: json!({}),
+        last_observations: vec![],
+        limits: behavior_cfg.limits.clone(),
+    };
+
+    let result = behavior.run_step(input).await;
+    assert!(matches!(result.status, LLMStatus::Ok));
+    assert_eq!(result.tool_trace.len(), 2);
+    assert_eq!(result.tool_trace[0].tool_name, TOOL_LOAD_MEMORY);
+    assert_eq!(result.tool_trace[1].tool_name, TOOL_LOAD_THINGS);
+    assert_eq!(result.actions.len(), 1);
+    assert!(result.actions[0].command.contains("memory/things.db"));
+
+    let requests_guard = requests.lock().expect("requests lock");
+    assert_eq!(requests_guard.len(), 3);
+    let round_2_tool_messages = requests_guard[1]
+        .payload
+        .options
+        .as_ref()
+        .and_then(|v| v.get("tool_messages"))
+        .cloned()
+        .unwrap_or_else(|| json!([]))
+        .to_string();
+    assert!(round_2_tool_messages.contains(TOOL_LOAD_MEMORY));
+    assert!(round_2_tool_messages.contains("Long-term context"));
+
+    let round_3_tool_messages = requests_guard[2]
+        .payload
+        .options
+        .as_ref()
+        .and_then(|v| v.get("tool_messages"))
+        .cloned()
+        .unwrap_or_else(|| json!([]))
+        .to_string();
+    assert!(round_3_tool_messages.contains(TOOL_LOAD_THINGS));
+    assert!(round_3_tool_messages.contains("project.plan"));
+
+    let action_ctx = ToolCallContext {
+        trace_id: "trace-memory-action".to_string(),
+        agent_did: "did:example:agent".to_string(),
+        behavior: "on_action".to_string(),
+        step_idx: 1,
+        wakeup_id: "wakeup-memory-action".to_string(),
+    };
+    let exec_raw = tool_mgr
+        .call_tool(
+            &action_ctx,
+            ToolCall {
+                name: TOOL_EXEC_BASH.to_string(),
+                args: json!({
+                    "command": result.actions[0].command,
+                    "timeout_ms": result.actions[0].timeout_ms
+                }),
+                call_id: "memory-action-exec-1".to_string(),
+            },
+        )
+        .await
+        .expect("execute action command");
+    assert_eq!(
+        exec_raw["ok"].as_bool(),
+        Some(true),
+        "action command returned non-zero: {}",
+        exec_raw
+    );
+
+    let readback_db = root.join("memory/things.db");
+    let inserted_value = tokio::task::spawn_blocking(move || {
+        let conn = Connection::open(&readback_db).expect("open things db for readback");
+        conn.query_row(
+            "SELECT value FROM kv WHERE key = 'project.status'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .expect("read inserted kv value")
+    })
+    .await
+    .expect("join readback");
+    assert_eq!(inserted_value, "action_inserted");
 }

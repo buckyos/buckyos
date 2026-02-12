@@ -16,6 +16,8 @@ ndn-lib = {workspace = true}
 named_store = {workspace = true}
 tokio = { workspace = true }
 reqwest = { workspace = true }
+name-lib = { workspace = true }
+rusqlite = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
