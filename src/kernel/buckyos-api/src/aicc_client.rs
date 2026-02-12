@@ -207,6 +207,14 @@ pub struct CompleteRequest {
     pub payload: AiPayload,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_options: Option<CompleteTaskOptions>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CompleteTaskOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<i64>,
 }
 
 impl CompleteRequest {
@@ -223,7 +231,13 @@ impl CompleteRequest {
             requirements,
             payload,
             idempotency_key,
+            task_options: None,
         }
+    }
+
+    pub fn with_task_options(mut self, task_options: Option<CompleteTaskOptions>) -> Self {
+        self.task_options = task_options;
+        self
     }
 
     pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {

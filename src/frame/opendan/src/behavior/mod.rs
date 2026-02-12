@@ -1,11 +1,13 @@
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use buckyos_api::{
     features, AiMessage, AiPayload, AiccClient, Capability, CompleteRequest, CompleteResponse,
-    CompleteStatus, CreateTaskOptions, ModelSpec, Requirements, TaskManagerClient, TaskStatus,
+    CompleteStatus, CompleteTaskOptions, CreateTaskOptions, ModelSpec, Requirements, TaskFilter,
+    TaskManagerClient, TaskStatus, AICC_SERVICE_SERVICE_NAME,
 };
 use serde_json::{json, Map, Value as Json};
 
@@ -44,6 +46,12 @@ pub struct LLMBehavior {
     pub deps: LLMBehaviorDeps,
 }
 
+const LLM_BEHAVIOR_TASK_TYPE: &str = "llm_behavior";
+const LLM_INFER_TASK_TYPE: &str = "llm_infer";
+const LLM_TASK_NAME_SEQ_BITS: u32 = 20;
+const LLM_TASK_NAME_SEQ_MASK: u64 = (1_u64 << LLM_TASK_NAME_SEQ_BITS) - 1;
+static LLM_TASK_NAME_SEQ: AtomicU64 = AtomicU64::new(0);
+
 impl LLMBehavior {
     pub fn new(cfg: LLMBehaviorConfig, deps: LLMBehaviorDeps) -> Self {
         Self { cfg, deps }
@@ -61,7 +69,7 @@ impl LLMBehavior {
 
     pub async fn run_step(&self, input: ProcessInput) -> LLMResult {
         let started = now_ms();
-        let mut track = TrackInfo {
+        let track = TrackInfo {
             trace_id: input.trace.trace_id.clone(),
             model: self.cfg.model_policy.preferred.clone(),
             provider: "unknown".to_string(),
@@ -69,10 +77,39 @@ impl LLMBehavior {
             llm_task_ids: vec![],
             errors: vec![],
         };
+        let behavior_task_id = match self.create_behavior_task(&input).await {
+            Ok(task_id) => task_id,
+            Err(err) => return self.err_from_llm(&input, track, started, err),
+        };
+        let _ = self
+            .deps
+            .taskmgr
+            .update_task(
+                behavior_task_id,
+                Some(TaskStatus::Running),
+                Some(0.05),
+                Some("behavior started".to_string()),
+                None,
+            )
+            .await;
 
+        let result = self
+            .run_step_inner(&input, started, track, behavior_task_id)
+            .await;
+        self.finalize_behavior_task(behavior_task_id, &result).await;
+        result
+    }
+
+    async fn run_step_inner(
+        &self,
+        input: &ProcessInput,
+        started: u64,
+        mut track: TrackInfo,
+        behavior_task_id: i64,
+    ) -> LLMResult {
         if is_deadline_exceeded(started, input.limits.deadline_ms) {
             return self.err(
-                &input,
+                input,
                 track,
                 started,
                 LLMErrorKind::Timeout,
@@ -80,18 +117,18 @@ impl LLMBehavior {
             );
         }
 
-        let allowed_tools = match self.deps.policy.allowed_tools(&input).await {
+        let allowed_tools = match self.deps.policy.allowed_tools(input).await {
             Ok(tools) => tools,
             Err(err) => {
-                return self.err(&input, track, started, LLMErrorKind::ToolDenied, err);
+                return self.err(input, track, started, LLMErrorKind::ToolDenied, err);
             }
         };
 
         let prompt =
-            match PromptBuilder::build(&input, &allowed_tools, &self.cfg, &*self.deps.tokenizer) {
+            match PromptBuilder::build(input, &allowed_tools, &self.cfg, &*self.deps.tokenizer) {
                 Ok(p) => p,
                 Err(err) => {
-                    return self.err(&input, track, started, LLMErrorKind::PromptBuildFailed, err);
+                    return self.err(input, track, started, LLMErrorKind::PromptBuildFailed, err);
                 }
             };
 
@@ -104,11 +141,17 @@ impl LLMBehavior {
             .await;
 
         let (mut usage, first_resp, first_task_id) = match self
-            .do_inference_once(&input, &allowed_tools, prompt.clone(), None)
+            .do_inference_once(
+                input,
+                &allowed_tools,
+                prompt.clone(),
+                None,
+                behavior_task_id,
+            )
             .await
         {
             Ok(v) => v,
-            Err(err) => return self.err_from_llm(&input, track, started, err),
+            Err(err) => return self.err_from_llm(input, track, started, err),
         };
         track.llm_task_ids.push(first_task_id);
         track.model = first_resp.model.clone();
@@ -117,7 +160,7 @@ impl LLMBehavior {
         let mut draft = match OutputParser::parse_first(&first_resp, self.cfg.force_json) {
             Ok(d) => d,
             Err(err) => {
-                return self.err(&input, track, started, LLMErrorKind::OutputParseFailed, err);
+                return self.err(input, track, started, LLMErrorKind::OutputParseFailed, err);
             }
         };
 
@@ -127,7 +170,7 @@ impl LLMBehavior {
         while !draft.tool_calls.is_empty() {
             if rounds_left == 0 {
                 return self.err(
-                    &input,
+                    input,
                     track,
                     started,
                     LLMErrorKind::ToolLoopExceeded,
@@ -138,7 +181,7 @@ impl LLMBehavior {
 
             if is_deadline_exceeded(started, input.limits.deadline_ms) {
                 return self.err(
-                    &input,
+                    input,
                     track,
                     started,
                     LLMErrorKind::Timeout,
@@ -149,18 +192,18 @@ impl LLMBehavior {
             let gated_calls = match self
                 .deps
                 .policy
-                .gate_tool_calls(&input, &draft.tool_calls)
+                .gate_tool_calls(input, &draft.tool_calls)
                 .await
             {
                 Ok(calls) => calls,
                 Err(err) => {
-                    return self.err(&input, track, started, LLMErrorKind::ToolDenied, err);
+                    return self.err(input, track, started, LLMErrorKind::ToolDenied, err);
                 }
             };
 
             if gated_calls.len() > input.limits.max_tool_calls_per_round as usize {
                 return self.err(
-                    &input,
+                    input,
                     track,
                     started,
                     LLMErrorKind::ToolLoopExceeded,
@@ -253,11 +296,17 @@ impl LLMBehavior {
             };
 
             let (usage2, followup_resp, followup_task_id) = match self
-                .do_inference_once(&input, &allowed_tools, prompt.clone(), Some(tool_ctx))
+                .do_inference_once(
+                    input,
+                    &allowed_tools,
+                    prompt.clone(),
+                    Some(tool_ctx),
+                    behavior_task_id,
+                )
                 .await
             {
                 Ok(v) => v,
-                Err(err) => return self.err_from_llm(&input, track, started, err),
+                Err(err) => return self.err_from_llm(input, track, started, err),
             };
             track.llm_task_ids.push(followup_task_id);
             track.model = followup_resp.model.clone();
@@ -267,7 +316,7 @@ impl LLMBehavior {
             draft = match OutputParser::parse_followup(&followup_resp, self.cfg.force_json) {
                 Ok(d) => d,
                 Err(err) => {
-                    return self.err(&input, track, started, LLMErrorKind::OutputParseFailed, err);
+                    return self.err(input, track, started, LLMErrorKind::OutputParseFailed, err);
                 }
             };
         }
@@ -294,16 +343,83 @@ impl LLMBehavior {
         }
     }
 
+    async fn create_behavior_task(&self, input: &ProcessInput) -> Result<i64, LLMComputeError> {
+        let data = json!({
+            "trace_id": input.trace.trace_id,
+            "agent_did": input.trace.agent_did,
+            "behavior": input.trace.behavior,
+            "step_idx": input.trace.step_idx,
+            "wakeup_id": input.trace.wakeup_id,
+            "kind": "behavior",
+        });
+        let task = self
+            .deps
+            .taskmgr
+            .create_task(
+                &format!(
+                    "LLM behavior: {}#{}@{}#{}",
+                    input.trace.behavior,
+                    input.trace.step_idx,
+                    input.trace.wakeup_id,
+                    next_task_name_suffix()
+                ),
+                LLM_BEHAVIOR_TASK_TYPE,
+                Some(data),
+                &input.trace.agent_did,
+                &self.cfg.process_name,
+                Some(CreateTaskOptions::default()),
+            )
+            .await
+            .map_err(|err| LLMComputeError::Internal(err.to_string()))?;
+        Ok(task.id)
+    }
+
+    async fn finalize_behavior_task(&self, behavior_task_id: i64, result: &LLMResult) {
+        match &result.status {
+            LLMStatus::Ok => {
+                let _ = self
+                    .deps
+                    .taskmgr
+                    .update_task(
+                        behavior_task_id,
+                        Some(TaskStatus::Running),
+                        Some(1.0),
+                        Some("behavior finished".to_string()),
+                        None,
+                    )
+                    .await;
+                let _ = self.deps.taskmgr.complete_task(behavior_task_id).await;
+            }
+            LLMStatus::Error(err) => {
+                let _ = self
+                    .deps
+                    .taskmgr
+                    .mark_task_as_failed(behavior_task_id, &err.message)
+                    .await;
+            }
+        }
+    }
+
     async fn do_inference_once(
         &self,
         input: &ProcessInput,
         allowed_tools: &[ToolSpec],
         prompt: PromptPack,
         tool_ctx: Option<ToolContext>,
+        behavior_task_id: i64,
     ) -> Result<(TokenUsage, LLMRawResponse, String), LLMComputeError> {
-        let task_id = self.create_infer_task(input).await?;
+        let task_id = self
+            .create_infer_task(input, Some(behavior_task_id))
+            .await?;
 
-        let req = AiccRequestBuilder::build(&self.cfg, input, allowed_tools, prompt, tool_ctx);
+        let req = AiccRequestBuilder::build(
+            &self.cfg,
+            input,
+            allowed_tools,
+            prompt,
+            tool_ctx,
+            Some(behavior_task_id),
+        );
         let _ = self
             .deps
             .taskmgr
@@ -353,15 +469,25 @@ impl LLMBehavior {
         response: CompleteResponse,
         fallback_model: &str,
     ) -> Result<(TokenUsage, LLMRawResponse), LLMComputeError> {
-        // Rule: if task_id exists, the complete task is still asynchronous and should be observed.
-        if !response.task_id.trim().is_empty() {
-            return self
-                .wait_and_load_aicc_task_result(response.task_id.trim(), fallback_model)
-                .await;
+        match response.status {
+            // AICC may return a non-empty string task_id (e.g. "aicc-...") even for
+            // immediate results. For succeeded status, consume response.result directly.
+            CompleteStatus::Succeeded => parse_aicc_complete_response(response, fallback_model),
+            // Only running status should go through async task observation.
+            CompleteStatus::Running => {
+                let aicc_task_id = response.task_id.trim();
+                if aicc_task_id.is_empty() {
+                    return Err(LLMComputeError::Provider(
+                        "aicc response status is running but task_id is empty".to_string(),
+                    ));
+                }
+                self.wait_and_load_aicc_task_result(aicc_task_id, fallback_model)
+                    .await
+            }
+            CompleteStatus::Failed => Err(LLMComputeError::Provider(
+                "aicc complete status is Failed".to_string(),
+            )),
         }
-
-        // Rule: if no task_id, this is immediate completion.
-        parse_aicc_complete_response(response, fallback_model)
     }
 
     async fn wait_and_load_aicc_task_result(
@@ -369,12 +495,13 @@ impl LLMBehavior {
         aicc_task_id: &str,
         fallback_model: &str,
     ) -> Result<(TokenUsage, LLMRawResponse), LLMComputeError> {
-        let task_id = aicc_task_id.parse::<i64>().map_err(|_| {
-            LLMComputeError::Provider(format!(
-                "aicc task_id '{}' is not a valid task manager id",
-                aicc_task_id
-            ))
-        })?;
+        let task_id = match aicc_task_id.parse::<i64>() {
+            Ok(task_id) => task_id,
+            Err(_) => {
+                self.resolve_aicc_task_id_from_task_manager(aicc_task_id)
+                    .await?
+            }
+        };
 
         let status = self
             .deps
@@ -400,27 +527,74 @@ impl LLMBehavior {
         parse_aicc_result_from_task_data(task.data, fallback_model)
     }
 
-    async fn create_infer_task(&self, input: &ProcessInput) -> Result<i64, LLMComputeError> {
+    async fn resolve_aicc_task_id_from_task_manager(
+        &self,
+        aicc_task_id: &str,
+    ) -> Result<i64, LLMComputeError> {
+        let filter = TaskFilter {
+            app_id: Some(AICC_SERVICE_SERVICE_NAME.to_string()),
+            task_type: None,
+            status: None,
+            parent_id: None,
+            root_id: None,
+        };
+        let tasks = self
+            .deps
+            .taskmgr
+            .list_tasks(Some(filter), None, None)
+            .await
+            .map_err(|err| LLMComputeError::Provider(err.to_string()))?;
+
+        for task in tasks {
+            let matched = task
+                .data
+                .pointer("/aicc/external_task_id")
+                .and_then(|value| value.as_str())
+                .map(|value| value == aicc_task_id)
+                .unwrap_or(false);
+            if matched {
+                return Ok(task.id);
+            }
+        }
+        Err(LLMComputeError::Provider(format!(
+            "aicc task_id '{}' is not a valid task manager id and no mapped task is found",
+            aicc_task_id
+        )))
+    }
+
+    async fn create_infer_task(
+        &self,
+        input: &ProcessInput,
+        parent_id: Option<i64>,
+    ) -> Result<i64, LLMComputeError> {
         let data = json!({
             "trace_id": input.trace.trace_id,
             "agent_did": input.trace.agent_did,
             "behavior": input.trace.behavior,
             "step_idx": input.trace.step_idx,
             "wakeup_id": input.trace.wakeup_id,
+            "kind": "inference",
+            "parent_behavior_task_id": parent_id,
         });
         let task = self
             .deps
             .taskmgr
             .create_task(
                 &format!(
-                    "LLM infer: {}#{}",
-                    input.trace.behavior, input.trace.step_idx
+                    "LLM infer: {}#{}@{}#{}",
+                    input.trace.behavior,
+                    input.trace.step_idx,
+                    input.trace.wakeup_id,
+                    next_task_name_suffix()
                 ),
-                "llm_infer",
+                LLM_INFER_TASK_TYPE,
                 Some(data),
                 &input.trace.agent_did,
                 &self.cfg.process_name,
-                Some(CreateTaskOptions::default()),
+                Some(CreateTaskOptions {
+                    parent_id,
+                    ..CreateTaskOptions::default()
+                }),
             )
             .await
             .map_err(|err| LLMComputeError::Internal(err.to_string()))?;
@@ -504,6 +678,7 @@ impl AiccRequestBuilder {
         allowed_tools: &[ToolSpec],
         prompt: PromptPack,
         tool_ctx: Option<ToolContext>,
+        parent_task_id: Option<i64>,
     ) -> CompleteRequest {
         let mut tool_messages = Vec::new();
 
@@ -586,6 +761,9 @@ impl AiccRequestBuilder {
                 input.trace.step_idx
             )),
         )
+        .with_task_options(parent_task_id.map(|parent_id| CompleteTaskOptions {
+            parent_id: Some(parent_id),
+        }))
     }
 }
 
@@ -728,6 +906,14 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     now.as_millis() as u64
+}
+
+fn next_task_name_suffix() -> u64 {
+    let time_high = now_ms()
+        .checked_shl(LLM_TASK_NAME_SEQ_BITS)
+        .unwrap_or(u64::MAX & !LLM_TASK_NAME_SEQ_MASK);
+    let seq_low = LLM_TASK_NAME_SEQ.fetch_add(1, Ordering::Relaxed) & LLM_TASK_NAME_SEQ_MASK;
+    time_high | seq_low
 }
 
 fn is_deadline_exceeded(started_ms: u64, deadline_ms: u64) -> bool {

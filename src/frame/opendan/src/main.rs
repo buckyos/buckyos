@@ -14,7 +14,7 @@ use anyhow::{anyhow, Context, Result};
 use buckyos_api::msg_queue::MsgQueueClient;
 use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType,
-    OPENDAN_SERVICE_NAME,
+    AICC_SERVICE_SERVICE_NAME, OPENDAN_SERVICE_NAME,
 };
 use buckyos_kit::{get_buckyos_root_dir, init_logging};
 use log::{error, info, warn};
@@ -131,6 +131,12 @@ async fn service_main() -> Result<()> {
             .await
             .context("init aicc client failed")?,
     );
+    if let Ok(url) = runtime
+        .get_zone_service_url(AICC_SERVICE_SERVICE_NAME, runtime.force_https)
+        .await
+    {
+        info!("opendan resolved aicc endpoint: {}", url);
+    }
     let msg_center = match runtime.get_msg_center_client().await {
         Ok(client) => Some(Arc::new(client)),
         Err(err) => {

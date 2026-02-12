@@ -93,6 +93,16 @@ impl TaskDb {
         )?;
 
         let id = conn.last_insert_rowid();
+        info!(
+            "task_db.create_task: id={} app_id={} user_id={} name={} task_type={} parent_id={:?} status={}",
+            id,
+            task.app_id,
+            task.user_id,
+            task.name,
+            task.task_type,
+            task.parent_id,
+            task.status
+        );
         Ok(id)
     }
 
@@ -214,10 +224,14 @@ impl TaskDb {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
         let updated_at = now_ts();
-        conn.execute(
+        let changed = conn.execute(
             "UPDATE task SET status = ?1, updated_at = ?2 WHERE id = ?3",
             params![status.to_string(), updated_at, id],
         )?;
+        info!(
+            "task_db.update_task_status: id={} status={} changed={}",
+            id, status, changed
+        );
         Ok(())
     }
 
@@ -229,10 +243,14 @@ impl TaskDb {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
         let updated_at = now_ts();
-        conn.execute(
+        let changed = conn.execute(
             "UPDATE task SET status = ?1, updated_at = ?2 WHERE root_id = ?3",
             params![status.to_string(), updated_at, root_id],
         )?;
+        info!(
+            "task_db.update_task_status_by_root_id: root_id={} status={} changed={}",
+            root_id, status, changed
+        );
         Ok(())
     }
 
@@ -246,10 +264,14 @@ impl TaskDb {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
         let updated_at = now_ts();
-        conn.execute(
+        let changed = conn.execute(
             "UPDATE task SET progress = ?1, completed_items = ?2, total_items = ?3, updated_at = ?4 WHERE id = ?5",
             params![progress, completed_items, total_items, updated_at, id],
         )?;
+        info!(
+            "task_db.update_task_progress: id={} progress={} completed_items={} total_items={} changed={}",
+            id, progress, completed_items, total_items, changed
+        );
         Ok(())
     }
 
@@ -257,7 +279,7 @@ impl TaskDb {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
         let updated_at = now_ts();
-        conn.execute(
+        let changed = conn.execute(
             "UPDATE task SET status = ?1, error_message = ?2, message = ?3, updated_at = ?4 WHERE id = ?5",
             params![
                 TaskStatus::Failed.to_string(),
@@ -267,6 +289,10 @@ impl TaskDb {
                 id,
             ],
         )?;
+        info!(
+            "task_db.update_task_error: id={} changed={} error_message={}",
+            id, changed, error_message
+        );
         Ok(())
     }
 
@@ -282,10 +308,11 @@ impl TaskDb {
             .unwrap_or_else(|_| Value::Object(Default::default()));
         let data_str = serde_json::to_string(&data_value).unwrap_or_else(|_| "{}".to_string());
         let updated_at = now_ts();
-        conn.execute(
+        let changed = conn.execute(
             "UPDATE task SET data = ?1, updated_at = ?2 WHERE id = ?3",
             params![data_str, updated_at, id],
         )?;
+        info!("task_db.update_task_data: id={} changed={}", id, changed);
         Ok(())
     }
 
@@ -312,10 +339,13 @@ impl TaskDb {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
         let updated_at = now_ts();
-        conn.execute(
+        let status_str = status.as_ref().map(|s| s.to_string());
+        let message_present = message.is_some();
+        let data_patch_present = data_str.is_some();
+        let changed = conn.execute(
             "UPDATE task SET status = COALESCE(?1, status), progress = COALESCE(?2, progress), message = COALESCE(?3, message), data = COALESCE(?4, data), updated_at = ?5 WHERE id = ?6",
             params![
-                status.map(|s| s.to_string()),
+                status_str,
                 progress,
                 message,
                 data_str,
@@ -323,6 +353,15 @@ impl TaskDb {
                 id
             ],
         )?;
+        info!(
+            "task_db.update_task: id={} status={:?} progress={:?} message_present={} data_patch_present={} changed={}",
+            id,
+            status,
+            progress,
+            message_present,
+            data_patch_present,
+            changed
+        );
         Ok(())
     }
 

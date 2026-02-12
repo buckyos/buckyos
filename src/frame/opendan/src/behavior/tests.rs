@@ -91,7 +91,14 @@ impl TaskManagerHandler for MockTaskMgrHandler {
         _source_app_id: Option<&str>,
         _ctx: RPCContext,
     ) -> KRPCResult<Vec<Task>> {
-        Ok(vec![])
+        let tasks = self
+            .tasks
+            .lock()
+            .expect("tasks lock")
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        Ok(tasks)
     }
 
     async fn handle_list_tasks_by_time_range(
@@ -512,6 +519,268 @@ tools:
         .map(|v| v.len())
         .unwrap_or(0);
     assert!(tool_messages_len >= 2);
+}
+
+#[tokio::test]
+async fn run_step_resolves_prefixed_running_aicc_task_id_from_task_data() {
+    let mapped_task_id = 9002_i64;
+    let external_aicc_task_id = "aicc-1770927904938-99";
+    let preloaded_tasks = Arc::new(Mutex::new(HashMap::<i64, Task>::new()));
+    preloaded_tasks.lock().expect("tasks lock").insert(
+        mapped_task_id,
+        Task {
+            id: mapped_task_id,
+            user_id: "did:example:agent".to_string(),
+            app_id: "aicc".to_string(),
+            parent_id: None,
+            root_id: None,
+            name: "aicc complete".to_string(),
+            task_type: "aicc.compute".to_string(),
+            status: TaskStatus::Completed,
+            progress: 1.0,
+            message: Some("done".to_string()),
+            data: json!({
+                "aicc": {
+                    "external_task_id": external_aicc_task_id
+                },
+                "result": {
+                    "json": {"is_sleep":true,"output":{"answer":"mapped"}},
+                    "usage": {"input_tokens": 5, "output_tokens": 4, "total_tokens": 9},
+                    "extra": {"provider":"mock","model":"mock-1","latency_ms":6}
+                }
+            }),
+            permissions: TaskPermissions::default(),
+            created_at: 0,
+            updated_at: 0,
+        },
+    );
+
+    let responses = Arc::new(Mutex::new(VecDeque::from(vec![CompleteResponse::new(
+        external_aicc_task_id.to_string(),
+        CompleteStatus::Running,
+        None,
+        None,
+    )])));
+    let requests = Arc::new(Mutex::new(Vec::<CompleteRequest>::new()));
+
+    let aicc = Arc::new(AiccClient::new_in_process(Box::new(MockAicc {
+        responses: responses.clone(),
+        requests: requests.clone(),
+    })));
+    let behavior_cfg = load_behavior_config_yaml_for_test(
+        "on_wakeup",
+        r#"
+process_rule: do work
+"#,
+    )
+    .await;
+
+    let deps = LLMBehaviorDeps {
+        taskmgr: Arc::new(TaskManagerClient::new_in_process(Box::new(
+            MockTaskMgrHandler {
+                counter: Mutex::new(0),
+                tasks: preloaded_tasks.clone(),
+            },
+        ))),
+        aicc,
+        tools: Arc::new(ToolManager::new()),
+        policy: Arc::new(MockPolicy { tools: vec![] }),
+        worklog: Arc::new(MockWorklog),
+        tokenizer: Arc::new(MockTokenizer),
+    };
+
+    let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
+    let input = ProcessInput {
+        trace: TraceCtx {
+            trace_id: "trace-3".to_string(),
+            agent_did: "did:example:agent".to_string(),
+            behavior: "on_wakeup".to_string(),
+            step_idx: 0,
+            wakeup_id: "wakeup-3".to_string(),
+        },
+        role_md: "role".to_string(),
+        self_md: "self".to_string(),
+        behavior_prompt: behavior_cfg.process_rule.clone(),
+        env_context: vec![],
+        inbox: json!({"event":"wake"}),
+        memory: json!({"facts":[]}),
+        last_observations: vec![],
+        limits: behavior_cfg.limits.clone(),
+    };
+
+    let result = behavior.run_step(input).await;
+    assert!(matches!(result.status, LLMStatus::Ok));
+    assert!(result.is_sleep);
+    assert_eq!(result.token_usage.total, 9);
+    assert_eq!(requests.lock().expect("requests lock").len(), 1);
+}
+
+#[tokio::test]
+async fn run_step_accepts_succeeded_response_with_string_task_id() {
+    let responses = Arc::new(Mutex::new(VecDeque::from(vec![CompleteResponse::new(
+        "aicc-1770927904938-1".to_string(),
+        CompleteStatus::Succeeded,
+        Some(AiResponseSummary {
+            text: None,
+            json: Some(json!({"is_sleep":true,"output":{"answer":"ok"}})),
+            artifacts: vec![],
+            usage: Some(AiUsage {
+                input_tokens: Some(11),
+                output_tokens: Some(7),
+                total_tokens: Some(18),
+            }),
+            cost: None,
+            finish_reason: Some("stop".to_string()),
+            provider_task_ref: Some("provider-task-3".to_string()),
+            extra: Some(json!({"provider":"mock","model":"mock-1","latency_ms":5})),
+        }),
+        None,
+    )])));
+    let requests = Arc::new(Mutex::new(Vec::<CompleteRequest>::new()));
+
+    let aicc = Arc::new(AiccClient::new_in_process(Box::new(MockAicc {
+        responses: responses.clone(),
+        requests: requests.clone(),
+    })));
+
+    let behavior_cfg = load_behavior_config_yaml_for_test(
+        "on_wakeup",
+        r#"
+process_rule: do work
+"#,
+    )
+    .await;
+
+    let tool_mgr = Arc::new(ToolManager::new());
+    let deps = LLMBehaviorDeps {
+        taskmgr: Arc::new(TaskManagerClient::new_in_process(Box::new(
+            MockTaskMgrHandler {
+                counter: Mutex::new(0),
+                tasks: Arc::new(Mutex::new(HashMap::new())),
+            },
+        ))),
+        aicc,
+        tools: tool_mgr,
+        policy: Arc::new(MockPolicy { tools: vec![] }),
+        worklog: Arc::new(MockWorklog),
+        tokenizer: Arc::new(MockTokenizer),
+    };
+
+    let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
+    let input = ProcessInput {
+        trace: TraceCtx {
+            trace_id: "trace-2".to_string(),
+            agent_did: "did:example:agent".to_string(),
+            behavior: "on_wakeup".to_string(),
+            step_idx: 0,
+            wakeup_id: "wakeup-2".to_string(),
+        },
+        role_md: "role".to_string(),
+        self_md: "self".to_string(),
+        behavior_prompt: behavior_cfg.process_rule.clone(),
+        env_context: vec![],
+        inbox: json!({"event":"wake"}),
+        memory: json!({"facts":[]}),
+        last_observations: vec![],
+        limits: behavior_cfg.limits.clone(),
+    };
+
+    let result = behavior.run_step(input).await;
+    assert!(matches!(result.status, LLMStatus::Ok));
+    assert!(result.is_sleep);
+    assert_eq!(result.token_usage.total, 18);
+    assert_eq!(requests.lock().expect("requests lock").len(), 1);
+}
+
+#[tokio::test]
+async fn run_step_sets_behavior_task_as_parent_for_aicc_requests() {
+    let responses = Arc::new(Mutex::new(VecDeque::from(vec![CompleteResponse::new(
+        "aicc-1770927904938-42".to_string(),
+        CompleteStatus::Succeeded,
+        Some(AiResponseSummary {
+            text: None,
+            json: Some(json!({"is_sleep":true,"output":{"answer":"ok"}})),
+            artifacts: vec![],
+            usage: Some(AiUsage {
+                input_tokens: Some(6),
+                output_tokens: Some(3),
+                total_tokens: Some(9),
+            }),
+            cost: None,
+            finish_reason: Some("stop".to_string()),
+            provider_task_ref: Some("provider-task-42".to_string()),
+            extra: Some(json!({"provider":"mock","model":"mock-1","latency_ms":5})),
+        }),
+        None,
+    )])));
+    let requests = Arc::new(Mutex::new(Vec::<CompleteRequest>::new()));
+    let tasks = Arc::new(Mutex::new(HashMap::<i64, Task>::new()));
+
+    let aicc = Arc::new(AiccClient::new_in_process(Box::new(MockAicc {
+        responses: responses.clone(),
+        requests: requests.clone(),
+    })));
+    let behavior_cfg = load_behavior_config_yaml_for_test(
+        "on_wakeup",
+        r#"
+process_rule: do work
+"#,
+    )
+    .await;
+    let deps = LLMBehaviorDeps {
+        taskmgr: Arc::new(TaskManagerClient::new_in_process(Box::new(
+            MockTaskMgrHandler {
+                counter: Mutex::new(0),
+                tasks: tasks.clone(),
+            },
+        ))),
+        aicc,
+        tools: Arc::new(ToolManager::new()),
+        policy: Arc::new(MockPolicy { tools: vec![] }),
+        worklog: Arc::new(MockWorklog),
+        tokenizer: Arc::new(MockTokenizer),
+    };
+    let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
+    let input = ProcessInput {
+        trace: TraceCtx {
+            trace_id: "trace-parent-1".to_string(),
+            agent_did: "did:example:agent".to_string(),
+            behavior: "on_wakeup".to_string(),
+            step_idx: 0,
+            wakeup_id: "wakeup-parent-1".to_string(),
+        },
+        role_md: "role".to_string(),
+        self_md: "self".to_string(),
+        behavior_prompt: behavior_cfg.process_rule.clone(),
+        env_context: vec![],
+        inbox: json!({"event":"wake"}),
+        memory: json!({"facts":[]}),
+        last_observations: vec![],
+        limits: behavior_cfg.limits.clone(),
+    };
+
+    let result = behavior.run_step(input).await;
+    assert!(matches!(result.status, LLMStatus::Ok));
+
+    let requests_guard = requests.lock().expect("requests lock");
+    assert_eq!(requests_guard.len(), 1);
+    let parent_id = requests_guard[0]
+        .task_options
+        .as_ref()
+        .and_then(|opts| opts.parent_id)
+        .expect("aicc request should carry parent task id");
+    drop(requests_guard);
+
+    let tasks_guard = tasks.lock().expect("tasks lock");
+    let behavior_task = tasks_guard
+        .get(&parent_id)
+        .expect("parent behavior task should exist");
+    assert_eq!(behavior_task.task_type, "llm_behavior");
+    assert_eq!(behavior_task.parent_id, None);
+    assert_eq!(behavior_task.status, TaskStatus::Completed);
+    assert!(tasks_guard
+        .values()
+        .any(|task| task.task_type == "llm_infer" && task.parent_id == Some(parent_id)));
 }
 
 fn run_actions_for_test(actions: &[ActionSpec]) -> Vec<Observation> {

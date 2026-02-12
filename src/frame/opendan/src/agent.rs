@@ -4,8 +4,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use buckyos_api::{AiccClient, MsgCenterClient, TaskManagerClient};
+use buckyos_api::{
+    AiccClient, BoxKind, MsgCenterClient, MsgRecordWithObject, MsgState, TaskManagerClient,
+};
 use log::{debug, error, info, warn};
+use name_lib::DID;
 use serde::Serialize;
 use serde_json::{json, Value as Json};
 use tokio::fs;
@@ -30,6 +33,7 @@ const DEFAULT_BEHAVIORS_DIR: &str = "behaviors";
 const DEFAULT_ENVIRONMENT_DIR: &str = "environment";
 const DEFAULT_WORKLOG_FILE: &str = "worklog/agent-loop.jsonl";
 const DEFAULT_SLEEP_REASON: &str = "no_new_input";
+const MSG_CENTER_INBOX_PULL_LIMIT: usize = 32;
 
 #[derive(thiserror::Error, Debug)]
 pub enum AIAgentError {
@@ -412,7 +416,7 @@ impl AIAgent {
             reason.is_some()
         );
 
-        let (wakeup_id, hp_before, trace_id, input_payload) = match self
+        let (wakeup_id, hp_before, trace_id, input_payload, inbox_record_ids) = match self
             .prepare_wakeup_context(reason, now)
             .await
         {
@@ -477,7 +481,14 @@ impl AIAgent {
                 hp_before,
                 trace_id,
                 input_payload,
-            } => (wakeup_id, hp_before, trace_id, input_payload),
+                inbox_record_ids,
+            } => (
+                wakeup_id,
+                hp_before,
+                trace_id,
+                input_payload,
+                inbox_record_ids,
+            ),
         };
         let (inbox_count, event_count) = wakeup_input_counts(&input_payload);
         info!(
@@ -636,6 +647,8 @@ impl AIAgent {
         }
 
         let hp_after = self.current_hp().await;
+        self.finalize_msg_center_inbox_states(&wakeup_id, &status, &inbox_record_ids)
+            .await;
         if hp_after == 0 {
             self.disable().await;
             warn!(
@@ -718,6 +731,13 @@ impl AIAgent {
     }
 
     async fn prepare_wakeup_context(&self, reason: Option<Json>, now: u64) -> PreparedWakeup {
+        let pulled_inbox = if reason.is_none() {
+            self.pull_inbox_from_msg_center(MSG_CENTER_INBOX_PULL_LIMIT)
+                .await
+        } else {
+            Vec::new()
+        };
+
         let mut guard = self.state.lock().await;
         guard.wakeup_seq = guard.wakeup_seq.saturating_add(1);
         let wakeup_id = format!("wakeup-{}", guard.wakeup_seq);
@@ -749,9 +769,14 @@ impl AIAgent {
             };
         }
 
+        let mut inbox_record_ids = Vec::<String>::new();
         let input_payload = if let Some(reason) = reason {
             reason
         } else {
+            for pulled in pulled_inbox {
+                inbox_record_ids.push(pulled.record_id);
+                guard.inbox_msgs.push_back(pulled.input);
+            }
             let inbox: Vec<Json> = guard.inbox_msgs.drain(..).collect();
             let events: Vec<Json> = guard.queued_events.drain(..).collect();
             if inbox.is_empty() && events.is_empty() {
@@ -792,6 +817,121 @@ impl AIAgent {
             hp_before,
             trace_id,
             input_payload,
+            inbox_record_ids,
+        }
+    }
+
+    async fn pull_inbox_from_msg_center(&self, limit: usize) -> Vec<PulledInboxMessage> {
+        let Some(msg_center) = self.deps.msg_center.as_ref() else {
+            return Vec::new();
+        };
+        let owner = match DID::from_str(self.did.as_str()) {
+            Ok(owner) => owner,
+            Err(err) => {
+                warn!(
+                    "ai_agent.msg_center pull_inbox skipped: did={} reason=invalid_did err={}",
+                    self.did, err
+                );
+                return Vec::new();
+            }
+        };
+
+        let mut inbox = Vec::<PulledInboxMessage>::new();
+        for _ in 0..limit {
+            let record = match msg_center
+                .get_next(
+                    owner.clone(),
+                    BoxKind::Inbox,
+                    Some(vec![MsgState::Unread]),
+                    Some(true),
+                )
+                .await
+            {
+                Ok(Some(record)) => record,
+                Ok(None) => break,
+                Err(err) => {
+                    warn!(
+                        "ai_agent.msg_center pull_inbox failed: did={} err={}",
+                        self.did, err
+                    );
+                    break;
+                }
+            };
+            inbox.push(msg_center_record_to_inbox_message(record));
+        }
+        if !inbox.is_empty() {
+            info!(
+                "ai_agent.msg_center pull_inbox: did={} pulled={}",
+                self.did,
+                inbox.len()
+            );
+        }
+        inbox
+    }
+
+    async fn finalize_msg_center_inbox_states(
+        &self,
+        wakeup_id: &str,
+        status: &WakeupStatus,
+        record_ids: &[String],
+    ) {
+        if record_ids.is_empty() {
+            return;
+        }
+        let Some(msg_center) = self.deps.msg_center.as_ref() else {
+            warn!(
+                "ai_agent.msg_center finalize_inbox skipped: did={} wakeup_id={} reason=no_client records={}",
+                self.did,
+                wakeup_id,
+                record_ids.len()
+            );
+            return;
+        };
+
+        let target_state = match status {
+            WakeupStatus::Completed => MsgState::Readed,
+            WakeupStatus::SafeStop | WakeupStatus::Error => MsgState::Unread,
+            WakeupStatus::Disabled | WakeupStatus::SkippedNoInput => return,
+        };
+
+        let mut ok = 0usize;
+        let mut failed = 0usize;
+        for record_id in record_ids {
+            match msg_center
+                .update_record_state(record_id.clone(), target_state.clone(), None)
+                .await
+            {
+                Ok(_) => ok = ok.saturating_add(1),
+                Err(err) => {
+                    failed = failed.saturating_add(1);
+                    warn!(
+                        "ai_agent.msg_center finalize_inbox failed: did={} wakeup_id={} record_id={} target_state={:?} err={}",
+                        self.did,
+                        wakeup_id,
+                        record_id,
+                        target_state,
+                        err
+                    );
+                }
+            }
+        }
+        if failed == 0 {
+            info!(
+                "ai_agent.msg_center finalize_inbox: did={} wakeup_id={} records={} target_state={:?}",
+                self.did,
+                wakeup_id,
+                ok,
+                target_state
+            );
+        } else {
+            warn!(
+                "ai_agent.msg_center finalize_inbox partial: did={} wakeup_id={} ok={} failed={} target_state={:?}",
+                self.did,
+                wakeup_id,
+                ok,
+                failed,
+                target_state
+            );
         }
     }
 
@@ -1051,7 +1191,13 @@ enum PreparedWakeup {
         hp_before: u32,
         trace_id: String,
         input_payload: Json,
+        inbox_record_ids: Vec<String>,
     },
+}
+
+struct PulledInboxMessage {
+    input: Json,
+    record_id: String,
 }
 
 struct WhitespaceTokenizer;
@@ -1649,6 +1795,16 @@ fn wakeup_status_name(status: &WakeupStatus) -> &'static str {
         WakeupStatus::Error => "error",
         WakeupStatus::Disabled => "disabled",
     }
+}
+
+fn msg_center_record_to_inbox_message(record: MsgRecordWithObject) -> PulledInboxMessage {
+    let record_id = record.record.record_id.clone();
+    let input = json!({
+        "source": "msg_center.krpc",
+        "record": record.record,
+        "msg": record.msg
+    });
+    PulledInboxMessage { input, record_id }
 }
 
 fn wakeup_input_counts(payload: &Json) -> (usize, usize) {

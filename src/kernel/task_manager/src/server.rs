@@ -418,6 +418,39 @@ fn request_context_from_source(user_id: Option<&str>, app_id: Option<&str>) -> R
     }
 }
 
+fn request_context_from_rpc(ctx: &RPCContext) -> RequestContext {
+    let Some(token) = ctx.token.as_ref() else {
+        return RequestContext::empty();
+    };
+    let Ok(session_token) = RPCSessionToken::from_string(token.as_str()) else {
+        return RequestContext::empty();
+    };
+    let Ok((user_id, app_id)) = session_token.get_subs() else {
+        return RequestContext::empty();
+    };
+    RequestContext { user_id, app_id }
+}
+
+fn request_context_from_source_or_rpc(
+    user_id: Option<&str>,
+    app_id: Option<&str>,
+    ctx: &RPCContext,
+) -> RequestContext {
+    let mut request_ctx = request_context_from_source(user_id, app_id);
+    if !request_ctx.user_id.is_empty() && !request_ctx.app_id.is_empty() {
+        return request_ctx;
+    }
+
+    let rpc_ctx = request_context_from_rpc(ctx);
+    if request_ctx.user_id.is_empty() {
+        request_ctx.user_id = rpc_ctx.user_id;
+    }
+    if request_ctx.app_id.is_empty() {
+        request_ctx.app_id = rpc_ctx.app_id;
+    }
+    request_ctx
+}
+
 #[async_trait]
 pub trait TaskManagerHandler: Send + Sync {
     async fn handle_create_task(
@@ -554,9 +587,9 @@ impl TaskManagerHandler for TaskManagerService {
         opts: CreateTaskOptions,
         user_id: &str,
         app_id: &str,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> Result<Task> {
-        let request_ctx = request_context_from_source(Some(user_id), Some(app_id));
+        let request_ctx = request_context_from_source_or_rpc(Some(user_id), Some(app_id), &ctx);
         let permissions = opts.permissions.unwrap_or_default();
         let data = data.unwrap_or_else(|| json!({}));
 

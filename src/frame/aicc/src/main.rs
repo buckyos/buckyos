@@ -117,7 +117,7 @@ impl HttpServer for AiccHttpServer {
     }
 }
 
-pub async fn start_aicc_service(center: AIComputeCenter) -> Result<()> {
+pub async fn start_aicc_service(mut center: AIComputeCenter) -> Result<()> {
     let mut runtime = init_buckyos_api_runtime(
         AICC_SERVICE_SERVICE_NAME,
         None,
@@ -136,6 +136,11 @@ pub async fn start_aicc_service(center: AIComputeCenter) -> Result<()> {
         ));
     }
     runtime.set_main_service_port(AICC_SERVICE_MAIN_PORT).await;
+    let taskmgr = runtime
+        .get_task_mgr_client()
+        .await
+        .map_err(|err| anyhow::anyhow!("init task-manager client for aicc failed: {}", err))?;
+    center.set_task_manager_client(Arc::new(taskmgr));
 
     let settings = match runtime.get_my_settings().await {
         Ok(settings) => settings,

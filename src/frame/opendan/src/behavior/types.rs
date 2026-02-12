@@ -241,7 +241,7 @@ pub struct ModelPolicy {
 impl Default for ModelPolicy {
     fn default() -> Self {
         Self {
-            preferred: "default".to_string(),
+            preferred: "llm.default".to_string(),
             fallback: vec![],
             temperature: 0.2,
         }
