@@ -2124,7 +2124,7 @@ process_rule: Handle incoming requests, update todo, then write an artifact.
 tools:
   mode: allow_list
   names:
-    - workshop.todo_manage
+    - todo_manage
 limits:
   max_tool_rounds: 2
   max_tool_calls_per_round: 4

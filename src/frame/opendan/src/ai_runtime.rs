@@ -10,9 +10,9 @@ use tokio::fs;
 
 use crate::agent_tool::{AgentTool, ToolCallContext, ToolError, ToolManager, ToolSpec};
 
-pub const TOOL_CREATE_SUB_AGENT: &str = "runtime.create_sub_agent";
-pub const TOOL_BIND_EXTERNAL_WORKSPACE: &str = "runtime.bind_external_workspace";
-pub const TOOL_LIST_EXTERNAL_WORKSPACES: &str = "runtime.list_external_workspaces";
+pub const TOOL_CREATE_SUB_AGENT: &str = "create_sub_agent";
+pub const TOOL_BIND_EXTERNAL_WORKSPACE: &str = "bind_external_workspace";
+pub const TOOL_LIST_EXTERNAL_WORKSPACES: &str = "list_external_workspaces";
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
 const DEFAULT_SUB_AGENTS_DIR: &str = "sub-agents";

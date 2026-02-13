@@ -1,7 +1,7 @@
 {
   "enabled_tools": [
     {
-      "name": "workshop.exec_bash",
+      "name": "exec_bash",
       "kind": "builtin",
       "enabled": true,
       "params": {
@@ -18,7 +18,7 @@
       }
     },
     {
-      "name": "workshop.edit_file",
+      "name": "edit_file",
       "kind": "builtin",
       "enabled": true,
       "params": {
@@ -35,7 +35,7 @@
       }
     },
     {
-      "name": "workshop.todo_manage",
+      "name": "todo_manage",
       "kind": "builtin",
       "enabled": true,
       "params": {

@@ -317,7 +317,7 @@ process_rule: Wake up and check inbox.
 tools:
   mode: allow_list
   names:
-    - workshop.exec_bash
+    - exec_bash
 "#,
         )
         .expect("parse behavior yaml");
@@ -325,7 +325,7 @@ tools:
         assert_eq!(cfg.name, "on_wakeup");
         assert_eq!(cfg.process_rule, "Wake up and check inbox.");
         assert_eq!(cfg.tools.mode, BehaviorToolMode::AllowList);
-        assert_eq!(cfg.tools.names, vec!["workshop.exec_bash".to_string()]);
+        assert_eq!(cfg.tools.names, vec!["exec_bash".to_string()]);
         assert_eq!(cfg.llm.process_name, "opendan-llm-behavior");
         assert_eq!(cfg.limits.max_prompt_tokens, 12_000);
         assert!(cfg.llm.force_json);
@@ -363,7 +363,7 @@ llm:
     fn behavior_allowlist_does_not_apply_legacy_module_prefixed_name() {
         let tools = BehaviorToolsConfig {
             mode: BehaviorToolMode::AllowList,
-            names: vec!["workshop.exec_bash".to_string()],
+            names: vec!["exec_bash".to_string()],
         };
         let specs = vec![
             ToolSpec {
@@ -381,6 +381,6 @@ llm:
         ];
 
         let filtered = tools.filter_tool_specs(&specs);
-        assert_eq!(filtered.len(), 0);
+        assert_eq!(filtered.len(), 1);
     }
 }

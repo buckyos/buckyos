@@ -13,8 +13,8 @@ use crate::agent_tool::{
     AgentTool, MCPToolConfig, ToolCallContext, ToolError, ToolManager, ToolSpec,
 };
 
-pub const TOOL_EXEC_BASH: &str = "workshop.exec_bash";
-pub const TOOL_EDIT_FILE: &str = "workshop.edit_file";
+pub const TOOL_EXEC_BASH: &str = "exec_bash";
+pub const TOOL_EDIT_FILE: &str = "edit_file";
 
 const DEFAULT_BASH_PATH: &str = "/bin/bash";
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
@@ -1145,7 +1145,7 @@ mod tests {
             &root,
             json!({
                 "enabled_tools": [
-                    { "name": "workshop.edit_file", "enabled": true, "params": {} }
+                    { "name": "edit_file", "enabled": true, "params": {} }
                 ]
             }),
         )
@@ -1183,7 +1183,7 @@ mod tests {
             json!({
                 "enabled_tools": [
                     {
-                        "name": "workshop.edit_file",
+                        "name": "edit_file",
                         "enabled": true,
                         "params": {
                             "allowed_write_roots": ["todo"],
@@ -1261,7 +1261,7 @@ mod tests {
             .register_tools(&tool_mgr)
             .expect("register workshop tools");
 
-        assert!(tool_mgr.has_tool("mcp.weather"));
+        assert!(tool_mgr.has_tool("weather"));
         assert!(!tool_mgr.has_tool(TOOL_EXEC_BASH));
         assert!(!tool_mgr.has_tool(TOOL_EDIT_FILE));
         assert!(!tool_mgr.has_tool(TOOL_TODO_MANAGE));
@@ -1284,7 +1284,7 @@ mod tests {
 ```json
 {
   "enabled_tools": [
-    { "name": "workshop.exec_bash", "enabled": true, "params": { "max_timeout_ms": 30 } }
+    { "name": "exec_bash", "enabled": true, "params": { "max_timeout_ms": 30 } }
   ]
 }
 ```

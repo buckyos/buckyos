@@ -7,7 +7,7 @@ This workshop only enables a subset and defines per-tool boundaries.
 {
   "enabled_tools": [
     {
-      "name": "workshop.exec_bash",
+      "name": "exec_bash",
       "kind": "builtin",
       "enabled": true,
       "params": {
@@ -18,7 +18,7 @@ This workshop only enables a subset and defines per-tool boundaries.
       }
     },
     {
-      "name": "workshop.edit_file",
+      "name": "edit_file",
       "kind": "builtin",
       "enabled": true,
       "params": {
@@ -27,19 +27,6 @@ This workshop only enables a subset and defines per-tool boundaries.
         "max_write_bytes": 262144,
         "max_diff_lines": 200,
         "allowed_write_roots": ["todo", "artifacts", "tools", "worklog"]
-      }
-    },
-    {
-      "name": "mcp.weather",
-      "kind": "mcp",
-      "enabled": false,
-      "params": {
-        "endpoint": "http://127.0.0.1:8931/mcp",
-        "mcp_tool_name": "weather.query",
-        "timeout_ms": 10000,
-        "headers": {
-          "Authorization": "Bearer ${MCP_TOKEN}"
-        }
       }
     }
   ]

@@ -1081,7 +1081,7 @@ process_rule: list todo and then plan python script actions
 tools:
   mode: allow_list
   names:
-    - workshop.exec_bash
+    - exec_bash
 "#,
     )
     .await;

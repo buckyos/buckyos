@@ -10,7 +10,7 @@ use tokio::task;
 
 use crate::agent_tool::{AgentTool, ToolCallContext, ToolError, ToolSpec};
 
-pub const TOOL_TODO_MANAGE: &str = "workshop.todo_manage";
+pub const TOOL_TODO_MANAGE: &str = "todo_manage";
 
 const DEFAULT_LIST_LIMIT: usize = 32;
 const DEFAULT_MAX_LIST_LIMIT: usize = 128;
