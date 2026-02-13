@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /Users/liuzhicong/.claude-worktrees/buckyos/relaxed-babbage log --oneline -5 --all -- \"doc/\")",
+      "Bash(git -C /Users/liuzhicong/.claude-worktrees/buckyos/relaxed-babbage log --oneline -3 -- \"*agent*\" \"*workspace*\" \"*workshop*\")",
+      "Bash(git -C /Users/liuzhicong/.claude-worktrees/buckyos/relaxed-babbage show 45aa5b0a --stat)",
+      "Bash(npx tsc:*)",
+      "Bash(npx vite:*)",
+      "Bash(npm install:*)",
+      "Bash(npm run build:*)"
+    ]
+  }
+}

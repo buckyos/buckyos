@@ -12,6 +12,7 @@ import DappStorePage from '../ui/pages/DappStorePage'
 import SettingsPage from '../ui/pages/SettingsPage'
 import RecentEventsPage from '../ui/pages/RecentEventsPage'
 import SystemLogsPage from '../ui/pages/SystemLogsPage'
+import WorkspaceLayout from '../ui/workspace/WorkspaceLayout'
 
 const router = createBrowserRouter([
   {
@@ -21,6 +22,10 @@ const router = createBrowserRouter([
   {
     path: '/login.html',
     element: <LoginPage />,
+  },
+  {
+    path: '/workspace',
+    element: <WorkspaceLayout />,
   },
   {
     path: '/',

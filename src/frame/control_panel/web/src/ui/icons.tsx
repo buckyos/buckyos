@@ -154,6 +154,98 @@ const icons: Record<IconName, ReactNode> = {
       <circle cx="8" cy="17" r="0.8" fill="currentColor" stroke="none" />
     </>
   ),
+  agent: (
+    <>
+      <circle cx="12" cy="8" r="4" />
+      <path d="M6 20c0-3.3 2.7-6 6-6s6 2.7 6 6" />
+      <path d="M12 4V2M8.5 5.5L7 4M15.5 5.5L17 4" />
+    </>
+  ),
+  loop: (
+    <>
+      <path d="M17 2l4 4-4 4" />
+      <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+      <path d="M7 22l-4-4 4-4" />
+      <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+    </>
+  ),
+  todo: (
+    <>
+      <rect x="4" y="4" width="16" height="16" rx="2" />
+      <path d="M9 12l2 2 4-4" />
+    </>
+  ),
+  branch: (
+    <>
+      <circle cx="6" cy="6" r="2" />
+      <circle cx="18" cy="18" r="2" />
+      <circle cx="18" cy="6" r="2" />
+      <path d="M6 8v4c0 2.2 1.8 4 4 4h4" />
+      <path d="M18 8v8" />
+    </>
+  ),
+  play: (
+    <>
+      <polygon points="6,4 20,12 6,20" />
+    </>
+  ),
+  pause: (
+    <>
+      <rect x="6" y="4" width="4" height="16" rx="1" />
+      <rect x="14" y="4" width="4" height="16" rx="1" />
+    </>
+  ),
+  'chevron-down': (
+    <>
+      <path d="M6 9l6 6 6-6" />
+    </>
+  ),
+  'chevron-right': (
+    <>
+      <path d="M9 6l6 6-6 6" />
+    </>
+  ),
+  close: (
+    <>
+      <path d="M18 6L6 18M6 6l12 12" />
+    </>
+  ),
+  copy: (
+    <>
+      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+    </>
+  ),
+  message: (
+    <>
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10z" />
+    </>
+  ),
+  function: (
+    <>
+      <path d="M10 3c-1.7 0-3 1.3-3 3v12c0 1.7-1.3 3-3 3" />
+      <path d="M14 3c1.7 0 3 1.3 3 3v12c0 1.7 1.3 3 3 3" />
+      <path d="M6 12h12" />
+    </>
+  ),
+  action: (
+    <>
+      <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+    </>
+  ),
+  search: (
+    <>
+      <circle cx="11" cy="11" r="7" />
+      <path d="M21 21l-4.3-4.3" />
+    </>
+  ),
+  external: (
+    <>
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+      <path d="M15 3h6v6" />
+      <path d="M10 14L21 3" />
+    </>
+  ),
 }
 
 const Icon = ({ name, className, title }: IconProps) => {
