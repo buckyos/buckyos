@@ -1,3 +1,4 @@
+use crate::complete_request_queue::QUEUE_STATUS_QUEUED;
 use ::kRPC::*;
 use async_trait::async_trait;
 use base64::engine::general_purpose;
@@ -131,6 +132,7 @@ impl std::error::Error for ProviderError {}
 pub enum ProviderStartResult {
     Immediate(AiResponseSummary),
     Started,
+    Queued { position: usize },
 }
 
 #[derive(Clone, Debug)]
@@ -147,6 +149,7 @@ impl ResolvedRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskEventKind {
+    Queued,
     Started,
     Final,
     Error,
@@ -323,6 +326,21 @@ impl PreparedTask {
     }
 }
 
+#[derive(Clone, Copy)]
+enum InitialTaskState {
+    Running,
+    Queued,
+}
+
+impl InitialTaskState {
+    fn as_status(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Queued => "queued",
+        }
+    }
+}
+
 impl AIComputeCenter {
     async fn resolve_task_scope(
         &self,
@@ -379,6 +397,7 @@ impl AIComputeCenter {
         invoke_ctx: &InvokeCtx,
         event_ref: Option<&str>,
         decision: &RouteDecision,
+        initial_state: InitialTaskState,
     ) -> std::result::Result<PreparedTask, RPCErrors> {
         let scope = self
             .resolve_task_scope(request, invoke_ctx, external_task_id)
@@ -386,7 +405,7 @@ impl AIComputeCenter {
 
         let mut task_data =
             build_initial_aicc_task_data(request, external_task_id, event_ref, invoke_ctx);
-        merge_route_decision_into_task_data(&mut task_data, decision);
+        merge_route_decision_into_task_data(&mut task_data, decision, initial_state.as_status());
 
         let taskmgr = self.taskmgr.as_ref().cloned().ok_or_else(|| {
             reason_error("task_manager_unavailable", "task manager is not configured")
@@ -428,6 +447,24 @@ impl TaskEventSink for TaskAuditSink {
         merge_task_data_with_event(&mut data, &event);
 
         match event.kind {
+            TaskEventKind::Queued => {
+                let message = event
+                    .data
+                    .as_ref()
+                    .and_then(|value| value.get("message"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or(QUEUE_STATUS_QUEUED)
+                    .to_string();
+                self.taskmgr
+                    .update_task(
+                        self.task_mgr_id,
+                        Some(TaskStatus::Pending),
+                        Some(0.0),
+                        Some(message),
+                        Some(data),
+                    )
+                    .await?;
+            }
             TaskEventKind::Started => {
                 let message = event
                     .data
@@ -1227,6 +1264,7 @@ impl AIComputeCenter {
                         &invoke_ctx,
                         event_ref.as_deref(),
                         &decision,
+                        InitialTaskState::Running,
                     )
                     .await?;
                 let task_mgr_id = prepared_task.id();
@@ -1242,6 +1280,38 @@ impl AIComputeCenter {
                     task_mgr_id,
                 );
                 self.emit_task_started(event_sink, external_task_id.as_str(), instance_id.as_str())
+                    .await;
+                Ok(CompleteResponse::new(
+                    external_task_id,
+                    CompleteStatus::Running,
+                    None,
+                    event_ref,
+                ))
+            }
+            Ok((ProviderStartResult::Queued { position }, instance_id)) => {
+                let prepared_task = self
+                    .create_provider_task(
+                        external_task_id.as_str(),
+                        &request,
+                        &invoke_ctx,
+                        event_ref.as_deref(),
+                        &decision,
+                        InitialTaskState::Queued,
+                    )
+                    .await?;
+                let task_mgr_id = prepared_task.id();
+                let task_audit_sink: Arc<dyn TaskEventSink> = Arc::new(TaskAuditSink::new(
+                    prepared_task.taskmgr.clone(),
+                    task_mgr_id,
+                ));
+                deferred_sink.promote(task_audit_sink).await?;
+                self.bind_task(
+                    external_task_id.as_str(),
+                    invoke_ctx.tenant_id.as_str(),
+                    instance_id.as_str(),
+                    task_mgr_id,
+                );
+                self.emit_task_queued(event_sink, external_task_id.as_str(), position)
                     .await;
                 Ok(CompleteResponse::new(
                     external_task_id,
@@ -1405,6 +1475,18 @@ impl AIComputeCenter {
                                 elapsed_ms
                             );
                         }
+                        ProviderStartResult::Queued { position } => {
+                            info!(
+                                "aicc.llm.output task_id={} tenant={} trace_id={:?} instance_id={} provider_model={} elapsed_ms={} status=queued queue_position={}",
+                                task_id,
+                                ctx.tenant_id,
+                                ctx.trace_id,
+                                attempt.instance_id,
+                                attempt.provider_model,
+                                elapsed_ms,
+                                position
+                            );
+                        }
                     }
                     return Ok((start_result, attempt.instance_id.clone()));
                 }
@@ -1541,6 +1623,19 @@ impl AIComputeCenter {
         let _ = sink.emit(event).await;
     }
 
+    async fn emit_task_queued(&self, sink: Arc<dyn TaskEventSink>, task_id: &str, position: usize) {
+        let event = TaskEvent {
+            task_id: task_id.to_string(),
+            kind: TaskEventKind::Queued,
+            timestamp_ms: now_ms(),
+            data: Some(json!({
+                "position": position,
+                "message": QUEUE_STATUS_QUEUED
+            })),
+        };
+        let _ = sink.emit(event).await;
+    }
+
     async fn emit_task_final(
         &self,
         sink: Arc<dyn TaskEventSink>,
@@ -1626,7 +1721,11 @@ fn build_initial_aicc_task_data(
     })
 }
 
-fn merge_route_decision_into_task_data(data: &mut serde_json::Value, decision: &RouteDecision) {
+fn merge_route_decision_into_task_data(
+    data: &mut serde_json::Value,
+    decision: &RouteDecision,
+    initial_status: &str,
+) {
     if !data.is_object() {
         *data = json!({});
     }
@@ -1646,7 +1745,7 @@ fn merge_route_decision_into_task_data(data: &mut serde_json::Value, decision: &
             "provider_model": decision.provider_model,
         }),
     );
-    aicc.insert("status".to_string(), json!("running"));
+    aicc.insert("status".to_string(), json!(initial_status));
     aicc.insert("updated_at_ms".to_string(), json!(now_ms()));
 }
 
@@ -1664,6 +1763,7 @@ fn merge_task_data_with_event(data: &mut serde_json::Value, event: &TaskEvent) {
         .expect("aicc task payload should be object");
 
     let status = match event.kind {
+        TaskEventKind::Queued => "queued",
         TaskEventKind::Started => "running",
         TaskEventKind::Final => "succeeded",
         TaskEventKind::Error => "failed",
@@ -1725,7 +1825,7 @@ fn merge_task_data_with_event(data: &mut serde_json::Value, event: &TaskEvent) {
                     .unwrap_or_else(|| json!({"message":"cancel requested"})),
             );
         }
-        TaskEventKind::Started => {}
+        TaskEventKind::Started | TaskEventKind::Queued => {}
     }
 }
 
@@ -2227,6 +2327,65 @@ mod tests {
             Some("request sent, waiting for provider response")
         );
         assert!(task.data.pointer("/aicc/request").is_some());
+    }
+
+    #[tokio::test]
+    async fn complete_persists_queued_task_state() {
+        let registry = Registry::default();
+        let catalog = ModelCatalog::default();
+        catalog.set_mapping(
+            Capability::LlmRouter,
+            "llm.plan.default",
+            "provider-a",
+            "gpt-4o-mini",
+        );
+
+        let provider = Arc::new(MockProvider::new(
+            mock_instance("provider-a-1", "provider-a"),
+            CostEstimate {
+                estimated_cost_usd: Some(0.001),
+                estimated_latency_ms: Some(100),
+            },
+            vec![Ok(ProviderStartResult::Queued { position: 3 })],
+        ));
+        registry.add_provider(provider);
+
+        let center = center_with_taskmgr(registry, catalog);
+        let response = center
+            .handle_complete(base_request(), RPCContext::default())
+            .await
+            .expect("complete should return queued task");
+        assert_eq!(response.status, CompleteStatus::Running);
+
+        let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
+        let tasks = taskmgr
+            .list_tasks(None, None, None)
+            .await
+            .expect("list tasks");
+        let task = tasks
+            .into_iter()
+            .find(|item| {
+                item.data
+                    .pointer("/aicc/external_task_id")
+                    .and_then(|value| value.as_str())
+                    == Some(response.task_id.as_str())
+            })
+            .expect("queued response should persist task");
+
+        assert_eq!(task.status, TaskStatus::Pending);
+        assert_eq!(task.message.as_deref(), Some(QUEUE_STATUS_QUEUED));
+        assert_eq!(
+            task.data
+                .pointer("/aicc/status")
+                .and_then(|value| value.as_str()),
+            Some("queued")
+        );
+        assert_eq!(
+            task.data
+                .pointer("/aicc/events/0/kind")
+                .and_then(|value| value.as_str()),
+            Some("queued")
+        );
     }
 
     #[tokio::test]

@@ -1,4 +1,6 @@
 mod aicc;
+mod claude_protocol;
+mod complete_request_queue;
 mod openai;
 mod openai_protocol;
 
