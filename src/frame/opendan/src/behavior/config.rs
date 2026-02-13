@@ -358,4 +358,29 @@ llm:
         assert_eq!(cfg.llm.model_policy.preferred, "fast-model");
         assert_eq!(cfg.llm.model_policy.temperature, 0.2);
     }
+
+    #[test]
+    fn behavior_allowlist_does_not_apply_legacy_module_prefixed_name() {
+        let tools = BehaviorToolsConfig {
+            mode: BehaviorToolMode::AllowList,
+            names: vec!["workshop.exec_bash".to_string()],
+        };
+        let specs = vec![
+            ToolSpec {
+                name: "exec_bash".to_string(),
+                description: "bash".to_string(),
+                args_schema: serde_json::json!({"type":"object"}),
+                output_schema: serde_json::json!({"type":"object"}),
+            },
+            ToolSpec {
+                name: "load_memory".to_string(),
+                description: "memory".to_string(),
+                args_schema: serde_json::json!({"type":"object"}),
+                output_schema: serde_json::json!({"type":"object"}),
+            },
+        ];
+
+        let filtered = tools.filter_tool_specs(&specs);
+        assert_eq!(filtered.len(), 0);
+    }
 }

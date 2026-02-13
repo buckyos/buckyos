@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
+use log::warn;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::time::{timeout, Duration};
@@ -74,6 +75,19 @@ fn default_json_object() -> Json {
 
 fn default_mcp_timeout_ms() -> u64 {
     30_000
+}
+
+pub(crate) fn normalize_tool_name(name: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    trimmed
+        .rsplit_once('.')
+        .map(|(_, suffix)| suffix.trim())
+        .filter(|suffix| !suffix.is_empty())
+        .unwrap_or(trimmed)
+        .to_string()
 }
 
 #[async_trait]
@@ -250,6 +264,22 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect::<String>() + "...[TRUNCATED]"
 }
 
+struct RegisteredTool {
+    spec: ToolSpec,
+    inner: Arc<dyn AgentTool>,
+}
+
+#[async_trait]
+impl AgentTool for RegisteredTool {
+    fn spec(&self) -> ToolSpec {
+        self.spec.clone()
+    }
+
+    async fn call(&self, ctx: &ToolCallContext, args: Json) -> Result<Json, ToolError> {
+        self.inner.call(ctx, args).await
+    }
+}
+
 pub struct ToolManager {
     tools: RwLock<HashMap<String, Arc<dyn AgentTool>>>,
 }
@@ -275,15 +305,37 @@ impl ToolManager {
     }
 
     pub fn register_tool_arc(&self, tool: Arc<dyn AgentTool>) -> Result<(), ToolError> {
-        let spec = tool.spec();
+        let mut spec = tool.spec();
+        let original_name = spec.name.trim().to_string();
+        if original_name.is_empty() {
+            return Err(ToolError::InvalidArgs(
+                "tool name cannot be empty".to_string(),
+            ));
+        }
+        let normalized_name = normalize_tool_name(original_name.as_str());
+        if normalized_name.is_empty() {
+            return Err(ToolError::InvalidArgs(format!(
+                "tool name `{}` is invalid after normalization",
+                original_name
+            )));
+        }
+        spec.name = normalized_name.clone();
+        let registered: Arc<dyn AgentTool> = Arc::new(RegisteredTool { spec, inner: tool });
+
         let mut guard = self
             .tools
             .write()
             .map_err(|_| ToolError::ExecFailed("tool registry lock poisoned".to_string()))?;
-        if guard.contains_key(&spec.name) {
-            return Err(ToolError::AlreadyExists(spec.name));
+        if guard.contains_key(&normalized_name) {
+            return Err(ToolError::AlreadyExists(normalized_name));
         }
-        guard.insert(spec.name, tool);
+        guard.insert(normalized_name.clone(), registered);
+        if normalized_name != original_name {
+            warn!(
+                "tool name normalized for provider compatibility: original={} normalized={}",
+                original_name, normalized_name
+            );
+        }
         Ok(())
     }
 
@@ -417,6 +469,78 @@ mod tests {
             step_idx: 0,
             wakeup_id: "wakeup-1".to_string(),
         }
+    }
+
+    struct DummyTool {
+        name: String,
+    }
+
+    #[async_trait]
+    impl AgentTool for DummyTool {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: self.name.clone(),
+                description: "dummy".to_string(),
+                args_schema: json!({"type":"object"}),
+                output_schema: json!({"type":"object"}),
+            }
+        }
+
+        async fn call(&self, _ctx: &ToolCallContext, _args: Json) -> Result<Json, ToolError> {
+            Ok(json!({"ok": true}))
+        }
+    }
+
+    #[tokio::test]
+    async fn register_tool_normalizes_module_prefixed_name_without_alias() {
+        let mgr = ToolManager::new();
+        mgr.register_tool(DummyTool {
+            name: "workshop.exec_bash".to_string(),
+        })
+        .expect("register tool");
+
+        assert!(mgr.has_tool("exec_bash"));
+        assert!(!mgr.has_tool("workshop.exec_bash"));
+
+        let specs = mgr.list_tool_specs();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].name, "exec_bash");
+
+        let err = mgr
+            .call_tool(
+                &test_call_ctx(),
+                ToolCall {
+                    name: "workshop.exec_bash".to_string(),
+                    args: json!({}),
+                    call_id: "call-1".to_string(),
+                },
+            )
+            .await
+            .expect_err("legacy alias should not call");
+        assert!(matches!(err, ToolError::NotFound(_)));
+
+        mgr.call_tool(
+            &test_call_ctx(),
+            ToolCall {
+                name: "exec_bash".to_string(),
+                args: json!({}),
+                call_id: "call-2".to_string(),
+            },
+        )
+        .await
+        .expect("normalized name should call");
+    }
+
+    #[test]
+    fn unregister_tool_by_normalized_name() {
+        let mgr = ToolManager::new();
+        mgr.register_tool(DummyTool {
+            name: "workshop.exec_bash".to_string(),
+        })
+        .expect("register tool");
+
+        assert!(mgr.unregister_tool("exec_bash"));
+        assert!(!mgr.has_tool("exec_bash"));
     }
 
     #[tokio::test]

@@ -1228,12 +1228,22 @@ impl AIComputeCenter {
         sink: Arc<dyn TaskEventSink>,
     ) -> std::result::Result<(ProviderStartResult, String), RPCErrors> {
         let mut last_err: Option<ProviderError> = None;
+        let request_log = serde_json::to_string(&req.request)
+            .unwrap_or_else(|err| format!("{{\"serialize_error\":\"{}\"}}", err));
+        info!(
+            "aicc.llm.input task_id={} tenant={} trace_id={:?} request={}",
+            task_id, ctx.tenant_id, ctx.trace_id, request_log
+        );
 
         for attempt in decision.attempts() {
             let provider = self.registry.get_provider(attempt.instance_id.as_str());
             let Some(provider) = provider else {
                 continue;
             };
+            info!(
+                "aicc.provider.start task_id={} tenant={} trace_id={:?} instance_id={} provider_model={}",
+                task_id, ctx.tenant_id, ctx.trace_id, attempt.instance_id, attempt.provider_model
+            );
 
             self.registry.mark_start_begin(attempt.instance_id.as_str());
             let started_at = Instant::now();
@@ -1251,11 +1261,51 @@ impl AIComputeCenter {
                 Ok(start_result) => {
                     self.registry
                         .record_start_success(attempt.instance_id.as_str(), elapsed_ms);
+                    match &start_result {
+                        ProviderStartResult::Immediate(summary) => {
+                            let summary_log =
+                                serde_json::to_string(summary).unwrap_or_else(|err| {
+                                    format!("{{\"serialize_error\":\"{}\"}}", err)
+                                });
+                            info!(
+                                "aicc.llm.output task_id={} tenant={} trace_id={:?} instance_id={} provider_model={} elapsed_ms={} summary={}",
+                                task_id,
+                                ctx.tenant_id,
+                                ctx.trace_id,
+                                attempt.instance_id,
+                                attempt.provider_model,
+                                elapsed_ms,
+                                summary_log
+                            );
+                        }
+                        ProviderStartResult::Started => {
+                            info!(
+                                "aicc.llm.output task_id={} tenant={} trace_id={:?} instance_id={} provider_model={} elapsed_ms={} status=running",
+                                task_id,
+                                ctx.tenant_id,
+                                ctx.trace_id,
+                                attempt.instance_id,
+                                attempt.provider_model,
+                                elapsed_ms
+                            );
+                        }
+                    }
                     return Ok((start_result, attempt.instance_id.clone()));
                 }
                 Err(error) => {
                     self.registry
                         .record_start_failure(attempt.instance_id.as_str(), elapsed_ms);
+                    warn!(
+                        "aicc.provider.start_failed task_id={} tenant={} trace_id={:?} instance_id={} provider_model={} elapsed_ms={} retryable={} err={}",
+                        task_id,
+                        ctx.tenant_id,
+                        ctx.trace_id,
+                        attempt.instance_id,
+                        attempt.provider_model,
+                        elapsed_ms,
+                        error.is_retryable(),
+                        error
+                    );
                     last_err = Some(error.clone());
                     if !error.is_retryable() {
                         break;

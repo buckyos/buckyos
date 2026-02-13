@@ -1,5 +1,6 @@
 mod aicc;
 mod openai;
+mod openai_protocol;
 
 use ::kRPC::*;
 use anyhow::Result;

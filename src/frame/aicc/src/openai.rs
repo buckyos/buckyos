@@ -2,12 +2,13 @@ use crate::aicc::{
     AIComputeCenter, CostEstimate, Provider, ProviderError, ProviderInstance, ProviderStartResult,
     ResolvedRequest, TaskEventSink,
 };
+use crate::openai_protocol::merge_options;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
     features, AiCost, AiResponseSummary, AiUsage, Capability, CompleteRequest, Feature, ResourceRef,
 };
-use log::info;
+use log::{info, warn};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -197,19 +198,6 @@ impl OpenAIProvider {
         Ok(messages)
     }
 
-    fn merge_options(target: &mut Map<String, Value>, options: &Value) {
-        let Some(options_map) = options.as_object() else {
-            return;
-        };
-
-        for (key, value) in options_map.iter() {
-            if key == "model" || key == "messages" {
-                continue;
-            }
-            target.insert(key.clone(), value.clone());
-        }
-    }
-
     fn extract_text_content(choice_message: &Value) -> Option<String> {
         let content = choice_message.get("content")?;
         if let Some(text) = content.as_str() {
@@ -274,7 +262,7 @@ impl Provider for OpenAIProvider {
 
     async fn start(
         &self,
-        _ctx: crate::aicc::InvokeCtx,
+        ctx: crate::aicc::InvokeCtx,
         provider_model: String,
         req: ResolvedRequest,
         _sink: Arc<dyn TaskEventSink>,
@@ -291,9 +279,22 @@ impl Provider for OpenAIProvider {
         request_obj.insert("model".to_string(), Value::String(provider_model.clone()));
         request_obj.insert("messages".to_string(), Value::Array(messages));
 
+        let mut ignored_options = vec![];
         if let Some(options) = req.request.payload.options.as_ref() {
-            Self::merge_options(&mut request_obj, options);
+            ignored_options = merge_options(&mut request_obj, options)?;
         }
+        if !ignored_options.is_empty() {
+            warn!(
+                "aicc.openai ignored unsupported options: instance_id={} model={} trace_id={:?} ignored={:?}",
+                self.instance.instance_id, provider_model, ctx.trace_id, ignored_options
+            );
+        }
+
+        let request_log = Value::Object(request_obj.clone()).to_string();
+        info!(
+            "aicc.llm.input provider=openai instance_id={} model={} trace_id={:?} request={}",
+            self.instance.instance_id, provider_model, ctx.trace_id, request_log
+        );
 
         let url = format!("{}/chat/completions", self.base_url);
         let response = self
@@ -319,8 +320,13 @@ impl Provider for OpenAIProvider {
                 ProviderError::fatal(format!("failed to parse openai response body: {}", err))
             }
         })?;
+        let response_log = body.to_string();
 
         if !status.is_success() {
+            warn!(
+                "aicc.llm.output provider=openai instance_id={} model={} trace_id={:?} status={} response={}",
+                self.instance.instance_id, provider_model, ctx.trace_id, status.as_u16(), response_log
+            );
             let message = body
                 .pointer("/error/message")
                 .and_then(|value| value.as_str())
@@ -335,6 +341,10 @@ impl Provider for OpenAIProvider {
                 format!("openai api error [{}]: {}", code, message),
             ));
         }
+        info!(
+            "aicc.llm.output provider=openai instance_id={} model={} trace_id={:?} status={} response={}",
+            self.instance.instance_id, provider_model, ctx.trace_id, status.as_u16(), response_log
+        );
 
         let message = body
             .pointer("/choices/0/message")

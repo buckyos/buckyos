@@ -21,9 +21,9 @@ tools:
     - load_memory
     - load_things
     - list
-    - workshop.todo_manage
-    - workshop.exec_bash
-    - workshop.edit_file
+    - todo_manage
+    - exec_bash
+    - edit_file
 
 limits:
   max_tool_rounds: 3
