@@ -778,9 +778,9 @@ process_rule: do work
     assert_eq!(behavior_task.task_type, "llm_behavior");
     assert_eq!(behavior_task.parent_id, None);
     assert_eq!(behavior_task.status, TaskStatus::Completed);
-    assert!(tasks_guard
+    assert!(!tasks_guard
         .values()
-        .any(|task| task.task_type == "llm_infer" && task.parent_id == Some(parent_id)));
+        .any(|task| task.task_type == "llm_infer"));
 }
 
 fn run_actions_for_test(actions: &[ActionSpec]) -> Vec<Observation> {

@@ -222,20 +222,14 @@ impl TaskEventSinkFactory for DefaultTaskEventSinkFactory {
 }
 
 struct TaskAuditSink {
-    inner: Arc<dyn TaskEventSink>,
     taskmgr: Arc<TaskManagerClient>,
     task_mgr_id: i64,
     lock: AsyncMutex<()>,
 }
 
 impl TaskAuditSink {
-    fn new(
-        inner: Arc<dyn TaskEventSink>,
-        taskmgr: Arc<TaskManagerClient>,
-        task_mgr_id: i64,
-    ) -> Self {
+    fn new(taskmgr: Arc<TaskManagerClient>, task_mgr_id: i64) -> Self {
         Self {
-            inner,
             taskmgr,
             task_mgr_id,
             lock: AsyncMutex::new(()),
@@ -243,14 +237,190 @@ impl TaskAuditSink {
     }
 }
 
+struct DeferredTaskEventSinkState {
+    delegate: Option<Arc<dyn TaskEventSink>>,
+    buffered: Vec<TaskEvent>,
+}
+
+struct DeferredTaskEventSink {
+    inner: Arc<dyn TaskEventSink>,
+    state: AsyncMutex<DeferredTaskEventSinkState>,
+}
+
+impl DeferredTaskEventSink {
+    fn new(inner: Arc<dyn TaskEventSink>) -> Self {
+        Self {
+            inner,
+            state: AsyncMutex::new(DeferredTaskEventSinkState {
+                delegate: None,
+                buffered: vec![],
+            }),
+        }
+    }
+
+    async fn promote(
+        &self,
+        delegate: Arc<dyn TaskEventSink>,
+    ) -> std::result::Result<(), RPCErrors> {
+        let buffered = {
+            let mut state = self.state.lock().await;
+            state.delegate = Some(delegate.clone());
+            std::mem::take(&mut state.buffered)
+        };
+
+        for event in buffered {
+            delegate.emit(event).await?;
+        }
+        Ok(())
+    }
+}
+
 #[async_trait]
-impl TaskEventSink for TaskAuditSink {
+impl TaskEventSink for DeferredTaskEventSink {
     fn event_ref(&self) -> Option<String> {
         self.inner.event_ref()
     }
 
     async fn emit(&self, event: TaskEvent) -> std::result::Result<(), RPCErrors> {
         self.inner.emit(event.clone()).await?;
+        let delegate = {
+            let mut state = self.state.lock().await;
+            if let Some(delegate) = state.delegate.as_ref() {
+                Some(delegate.clone())
+            } else {
+                state.buffered.push(event.clone());
+                None
+            }
+        };
+
+        if let Some(delegate) = delegate {
+            delegate.emit(event).await?;
+        }
+        Ok(())
+    }
+}
+
+struct TaskScope {
+    create_opts: CreateTaskOptions,
+    user_id: String,
+    app_id: String,
+}
+
+impl TaskScope {
+    fn parent_id(&self) -> Option<i64> {
+        self.create_opts.parent_id
+    }
+}
+
+struct PreparedTask {
+    taskmgr: Arc<TaskManagerClient>,
+    task: buckyos_api::Task,
+}
+
+impl PreparedTask {
+    fn id(&self) -> i64 {
+        self.task.id
+    }
+}
+
+impl AIComputeCenter {
+    async fn resolve_task_scope(
+        &self,
+        request: &CompleteRequest,
+        invoke_ctx: &InvokeCtx,
+        external_task_id: &str,
+    ) -> std::result::Result<TaskScope, RPCErrors> {
+        let mut create_task_opts = CreateTaskOptions::default();
+        if let Some(task_options) = request.task_options.as_ref() {
+            create_task_opts.parent_id = task_options.parent_id;
+        }
+
+        let taskmgr = self.taskmgr.as_ref().cloned().ok_or_else(|| {
+            warn!(
+                "aicc.complete failed: task_manager_unavailable task_id={} tenant={}",
+                external_task_id, invoke_ctx.tenant_id
+            );
+            reason_error("task_manager_unavailable", "task manager is not configured")
+        })?;
+
+        let parent_id = create_task_opts.parent_id;
+        let mut task_user_id = invoke_ctx.tenant_id.clone();
+        let mut task_app_id = AICC_SERVICE_SERVICE_NAME.to_string();
+        if let Some(pid) = parent_id {
+            let parent_task = match taskmgr.get_task(pid).await {
+                Ok(task) => task,
+                Err(err) => {
+                    warn!(
+                        "aicc.complete load_parent_task failed: task_id={} tenant={} parent_id={} err={}",
+                        external_task_id, invoke_ctx.tenant_id, pid, err
+                    );
+                    return Err(err);
+                }
+            };
+            task_user_id = parent_task.user_id;
+            task_app_id = parent_task.app_id;
+            info!(
+                "aicc.complete inherit_parent_scope: task_id={} parent_id={} user_id={} app_id={}",
+                external_task_id, pid, task_user_id, task_app_id
+            );
+        }
+
+        Ok(TaskScope {
+            create_opts: create_task_opts,
+            user_id: task_user_id,
+            app_id: task_app_id,
+        })
+    }
+
+    async fn create_provider_task(
+        &self,
+        external_task_id: &str,
+        request: &CompleteRequest,
+        invoke_ctx: &InvokeCtx,
+        event_ref: Option<&str>,
+        decision: &RouteDecision,
+    ) -> std::result::Result<PreparedTask, RPCErrors> {
+        let scope = self
+            .resolve_task_scope(request, invoke_ctx, external_task_id)
+            .await?;
+
+        let mut task_data =
+            build_initial_aicc_task_data(request, external_task_id, event_ref, invoke_ctx);
+        merge_route_decision_into_task_data(&mut task_data, decision);
+
+        let taskmgr = self.taskmgr.as_ref().cloned().ok_or_else(|| {
+            reason_error("task_manager_unavailable", "task manager is not configured")
+        })?;
+        let parent_id = scope.parent_id();
+        let task = taskmgr
+            .create_task(
+                &format!("aicc:{external_task_id}"),
+                AICC_TASK_TYPE,
+                Some(task_data.clone()),
+                scope.user_id.as_str(),
+                scope.app_id.as_str(),
+                Some(scope.create_opts),
+            )
+            .await
+            .map_err(|err| {
+                warn!(
+                    "aicc.complete create_task failed: task_id={} tenant={} parent_id={:?} err={}",
+                    external_task_id, invoke_ctx.tenant_id, parent_id, err
+                );
+                err
+            })?;
+
+        Ok(PreparedTask { taskmgr, task })
+    }
+}
+
+#[async_trait]
+impl TaskEventSink for TaskAuditSink {
+    fn event_ref(&self) -> Option<String> {
+        None
+    }
+
+    async fn emit(&self, event: TaskEvent) -> std::result::Result<(), RPCErrors> {
         let _guard = self.lock.lock().await;
 
         let task = self.taskmgr.get_task(self.task_mgr_id).await?;
@@ -259,12 +429,19 @@ impl TaskEventSink for TaskAuditSink {
 
         match event.kind {
             TaskEventKind::Started => {
+                let message = event
+                    .data
+                    .as_ref()
+                    .and_then(|value| value.get("message"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("aicc provider started")
+                    .to_string();
                 self.taskmgr
                     .update_task(
                         self.task_mgr_id,
                         Some(TaskStatus::Running),
                         Some(0.1),
-                        Some("aicc provider started".to_string()),
+                        Some(message),
                         Some(data),
                     )
                     .await?;
@@ -907,76 +1084,10 @@ impl AIComputeCenter {
             request.idempotency_key
         );
         let external_task_id = self.generate_task_id();
-        let sink = self.sink_factory.build(&invoke_ctx, &external_task_id);
-        let event_ref = sink.event_ref();
-        let taskmgr = match self.taskmgr.as_ref().cloned() {
-            Some(taskmgr) => taskmgr,
-            None => {
-                warn!(
-                    "aicc.complete failed: task_manager_unavailable task_id={} tenant={}",
-                    external_task_id, invoke_ctx.tenant_id
-                );
-                return Err(reason_error(
-                    "task_manager_unavailable",
-                    "task manager is not configured",
-                ));
-            }
-        };
-
-        let mut task_data = build_initial_aicc_task_data(
-            &request,
-            &external_task_id,
-            event_ref.as_deref(),
-            &invoke_ctx,
-        );
-        let mut create_task_opts = CreateTaskOptions::default();
-        if let Some(task_options) = request.task_options.as_ref() {
-            create_task_opts.parent_id = task_options.parent_id;
-        }
-        let parent_id = create_task_opts.parent_id;
-        let mut task_user_id = invoke_ctx.tenant_id.clone();
-        let mut task_app_id = AICC_SERVICE_SERVICE_NAME.to_string();
-        if let Some(pid) = parent_id {
-            let parent_task = match taskmgr.get_task(pid).await {
-                Ok(task) => task,
-                Err(err) => {
-                    warn!(
-                        "aicc.complete load_parent_task failed: task_id={} tenant={} parent_id={} err={}",
-                        external_task_id, invoke_ctx.tenant_id, pid, err
-                    );
-                    return Err(err);
-                }
-            };
-            task_user_id = parent_task.user_id;
-            task_app_id = parent_task.app_id;
-            info!(
-                "aicc.complete inherit_parent_scope: task_id={} parent_id={} user_id={} app_id={}",
-                external_task_id, pid, task_user_id, task_app_id
-            );
-        }
-        let task = match taskmgr
-            .create_task(
-                &format!("aicc:{external_task_id}"),
-                AICC_TASK_TYPE,
-                Some(task_data.clone()),
-                task_user_id.as_str(),
-                task_app_id.as_str(),
-                Some(create_task_opts),
-            )
-            .await
-        {
-            Ok(task) => task,
-            Err(err) => {
-                warn!(
-                    "aicc.complete create_task failed: task_id={} tenant={} parent_id={:?} err={}",
-                    external_task_id, invoke_ctx.tenant_id, parent_id, err
-                );
-                return Err(err);
-            }
-        };
-        let task_mgr_id = task.id;
-        let audit_sink: Arc<dyn TaskEventSink> =
-            Arc::new(TaskAuditSink::new(sink, taskmgr.clone(), task_mgr_id));
+        let base_sink = self.sink_factory.build(&invoke_ctx, &external_task_id);
+        let event_ref = base_sink.event_ref();
+        let deferred_sink = Arc::new(DeferredTaskEventSink::new(base_sink));
+        let event_sink: Arc<dyn TaskEventSink> = deferred_sink.clone();
 
         if let Err(error) = self.validate_request(&request) {
             warn!(
@@ -984,7 +1095,7 @@ impl AIComputeCenter {
                 external_task_id, invoke_ctx.tenant_id, error
             );
             self.emit_task_error(
-                audit_sink.clone(),
+                event_sink.clone(),
                 external_task_id.as_str(),
                 "bad_request",
                 error.to_string(),
@@ -1038,7 +1149,7 @@ impl AIComputeCenter {
                 );
                 let code = extract_error_code(&error);
                 self.emit_task_error(
-                    audit_sink.clone(),
+                    event_sink.clone(),
                     external_task_id.as_str(),
                     code.as_str(),
                     error.to_string(),
@@ -1068,22 +1179,12 @@ impl AIComputeCenter {
             decision.fallback_instance_ids,
             route_attempts
         );
-        merge_route_decision_into_task_data(&mut task_data, &decision);
-        taskmgr
-            .update_task(
-                task_mgr_id,
-                Some(TaskStatus::Running),
-                Some(0.05),
-                Some("aicc routing completed".to_string()),
-                Some(task_data.clone()),
-            )
-            .await?;
 
         let resolved = match self.resource_resolver.resolve(&invoke_ctx, &request).await {
             Ok(result) => result,
             Err(error) => {
                 self.emit_task_error(
-                    audit_sink.clone(),
+                    event_sink.clone(),
                     external_task_id.as_str(),
                     "resource_invalid",
                     error.to_string(),
@@ -1104,12 +1205,12 @@ impl AIComputeCenter {
                 external_task_id.as_str(),
                 resolved,
                 &decision,
-                audit_sink.clone(),
+                event_sink.clone(),
             )
             .await;
         match start_result {
             Ok((ProviderStartResult::Immediate(summary), _instance_id)) => {
-                self.emit_task_final(audit_sink, external_task_id.as_str(), &summary)
+                self.emit_task_final(event_sink, external_task_id.as_str(), &summary)
                     .await;
                 Ok(CompleteResponse::new(
                     external_task_id,
@@ -1119,13 +1220,28 @@ impl AIComputeCenter {
                 ))
             }
             Ok((ProviderStartResult::Started, instance_id)) => {
+                let prepared_task = self
+                    .create_provider_task(
+                        external_task_id.as_str(),
+                        &request,
+                        &invoke_ctx,
+                        event_ref.as_deref(),
+                        &decision,
+                    )
+                    .await?;
+                let task_mgr_id = prepared_task.id();
+                let task_audit_sink: Arc<dyn TaskEventSink> = Arc::new(TaskAuditSink::new(
+                    prepared_task.taskmgr.clone(),
+                    task_mgr_id,
+                ));
+                deferred_sink.promote(task_audit_sink).await?;
                 self.bind_task(
                     external_task_id.as_str(),
                     invoke_ctx.tenant_id.as_str(),
                     instance_id.as_str(),
                     task_mgr_id,
                 );
-                self.emit_task_started(audit_sink, external_task_id.as_str(), instance_id.as_str())
+                self.emit_task_started(event_sink, external_task_id.as_str(), instance_id.as_str())
                     .await;
                 Ok(CompleteResponse::new(
                     external_task_id,
@@ -1137,7 +1253,7 @@ impl AIComputeCenter {
             Err(error) => {
                 let code = extract_error_code(&error);
                 self.emit_task_error(
-                    audit_sink,
+                    event_sink,
                     external_task_id.as_str(),
                     code.as_str(),
                     error.to_string(),
@@ -1417,7 +1533,10 @@ impl AIComputeCenter {
             task_id: task_id.to_string(),
             kind: TaskEventKind::Started,
             timestamp_ms: now_ms(),
-            data: Some(json!({ "instance_id": instance_id })),
+            data: Some(json!({
+                "instance_id": instance_id,
+                "message": "request sent, waiting for provider response"
+            })),
         };
         let _ = sink.emit(event).await;
     }
@@ -1497,8 +1616,10 @@ fn build_initial_aicc_task_data(
             "tenant_id": invoke_ctx.tenant_id,
             "event_ref": event_ref,
             "request": request,
+            "provider_input": serde_json::Value::Null,
             "route": {},
             "output": serde_json::Value::Null,
+            "provider_output": serde_json::Value::Null,
             "error": serde_json::Value::Null,
             "events": []
         }
@@ -1572,6 +1693,16 @@ fn merge_task_data_with_event(data: &mut serde_json::Value, event: &TaskEvent) {
                     .get("summary")
                     .cloned()
                     .unwrap_or_else(|| payload.clone());
+                if let Some(extra) = summary.get("extra") {
+                    if let Some(provider_io) = extra.get("provider_io") {
+                        if let Some(input) = provider_io.get("input") {
+                            aicc.insert("provider_input".to_string(), input.clone());
+                        }
+                        if let Some(output) = provider_io.get("output") {
+                            aicc.insert("provider_output".to_string(), output.clone());
+                        }
+                    }
+                }
                 aicc.insert("output".to_string(), summary);
             }
             aicc.insert("error".to_string(), serde_json::Value::Null);
@@ -2018,23 +2149,15 @@ mod tests {
             .list_tasks(None, None, None)
             .await
             .expect("list tasks");
-        let task = tasks
-            .into_iter()
-            .find(|item| {
+        assert!(
+            tasks.iter().all(|item| {
                 item.data
                     .pointer("/aicc/external_task_id")
                     .and_then(|value| value.as_str())
-                    == Some(response.task_id.as_str())
-            })
-            .expect("task should be persisted");
-        assert_eq!(
-            task.data
-                .pointer("/aicc/status")
-                .and_then(|value| value.as_str()),
-            Some("succeeded")
+                    != Some(response.task_id.as_str())
+            }),
+            "immediate provider completion should not create persisted aicc task"
         );
-        assert!(task.data.pointer("/aicc/request").is_some());
-        assert!(task.data.pointer("/aicc/output").is_some());
     }
 
     #[tokio::test]
@@ -2083,6 +2206,27 @@ mod tests {
 
         assert_eq!(response.status, CompleteStatus::Running);
         assert!(!response.task_id.is_empty());
+
+        let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
+        let tasks = taskmgr
+            .list_tasks(None, None, None)
+            .await
+            .expect("list tasks");
+        let task = tasks
+            .into_iter()
+            .find(|item| {
+                item.data
+                    .pointer("/aicc/external_task_id")
+                    .and_then(|value| value.as_str())
+                    == Some(response.task_id.as_str())
+            })
+            .expect("running response should persist task");
+        assert_eq!(task.status, TaskStatus::Running);
+        assert_eq!(
+            task.message.as_deref(),
+            Some("request sent, waiting for provider response")
+        );
+        assert!(task.data.pointer("/aicc/request").is_some());
     }
 
     #[tokio::test]
@@ -2101,16 +2245,7 @@ mod tests {
                 estimated_cost_usd: Some(0.001),
                 estimated_latency_ms: Some(200),
             },
-            vec![Ok(ProviderStartResult::Immediate(AiResponseSummary {
-                text: Some("ok".to_string()),
-                json: None,
-                artifacts: vec![],
-                usage: None,
-                cost: None,
-                finish_reason: Some("stop".to_string()),
-                provider_task_ref: None,
-                extra: None,
-            }))],
+            vec![Ok(ProviderStartResult::Started)],
         ));
         registry.add_provider(provider);
 
@@ -2134,7 +2269,7 @@ mod tests {
             .handle_complete(request, RPCContext::default())
             .await
             .expect("complete should succeed");
-        assert_eq!(response.status, CompleteStatus::Succeeded);
+        assert_eq!(response.status, CompleteStatus::Running);
 
         let tasks = taskmgr
             .list_tasks(None, None, None)
@@ -2150,6 +2285,26 @@ mod tests {
             })
             .expect("aicc task should exist");
         assert_eq!(task.parent_id, Some(parent_task.id));
+    }
+
+    #[tokio::test]
+    async fn complete_no_provider_does_not_create_task() {
+        let registry = Registry::default();
+        let catalog = ModelCatalog::default();
+        let center = center_with_taskmgr(registry, catalog);
+
+        let response = center
+            .handle_complete(base_request(), RPCContext::default())
+            .await
+            .expect("complete should return failed response");
+        assert_eq!(response.status, CompleteStatus::Failed);
+
+        let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
+        let tasks = taskmgr
+            .list_tasks(None, None, None)
+            .await
+            .expect("list tasks");
+        assert!(tasks.is_empty(), "routing failure should not persist task");
     }
 
     #[tokio::test]

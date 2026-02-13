@@ -47,7 +47,6 @@ pub struct LLMBehavior {
 }
 
 const LLM_BEHAVIOR_TASK_TYPE: &str = "llm_behavior";
-const LLM_INFER_TASK_TYPE: &str = "llm_infer";
 const LLM_TASK_NAME_SEQ_BITS: u32 = 20;
 const LLM_TASK_NAME_SEQ_MASK: u64 = (1_u64 << LLM_TASK_NAME_SEQ_BITS) - 1;
 static LLM_TASK_NAME_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -153,7 +152,9 @@ impl LLMBehavior {
             Ok(v) => v,
             Err(err) => return self.err_from_llm(input, track, started, err),
         };
-        track.llm_task_ids.push(first_task_id);
+        if !first_task_id.trim().is_empty() {
+            track.llm_task_ids.push(first_task_id);
+        }
         track.model = first_resp.model.clone();
         track.provider = first_resp.provider.clone();
 
@@ -308,7 +309,9 @@ impl LLMBehavior {
                 Ok(v) => v,
                 Err(err) => return self.err_from_llm(input, track, started, err),
             };
-            track.llm_task_ids.push(followup_task_id);
+            if !followup_task_id.trim().is_empty() {
+                track.llm_task_ids.push(followup_task_id);
+            }
             track.model = followup_resp.model.clone();
             track.provider = followup_resp.provider.clone();
             usage = usage.add(usage2);
@@ -408,10 +411,6 @@ impl LLMBehavior {
         tool_ctx: Option<ToolContext>,
         behavior_task_id: i64,
     ) -> Result<(TokenUsage, LLMRawResponse, String), LLMComputeError> {
-        let task_id = self
-            .create_infer_task(input, Some(behavior_task_id))
-            .await?;
-
         let req = AiccRequestBuilder::build(
             &self.cfg,
             input,
@@ -420,48 +419,12 @@ impl LLMBehavior {
             tool_ctx,
             Some(behavior_task_id),
         );
-        let _ = self
-            .deps
-            .taskmgr
-            .update_task(
-                task_id,
-                Some(TaskStatus::Running),
-                Some(0.1),
-                Some("llm request submitted".to_string()),
-                None,
-            )
-            .await;
-
-        let result = self.deps.aicc.complete(req).await.map_err(map_aicc_error);
-
-        match result {
-            Ok(resp) => {
-                let (usage, raw) = self
-                    .resolve_aicc_complete_response(resp, &self.cfg.model_policy.preferred)
-                    .await?;
-                let _ = self
-                    .deps
-                    .taskmgr
-                    .update_task(
-                        task_id,
-                        Some(TaskStatus::Running),
-                        Some(1.0),
-                        Some("llm inference finished".to_string()),
-                        None,
-                    )
-                    .await;
-                let _ = self.deps.taskmgr.complete_task(task_id).await;
-                Ok((usage, raw, task_id.to_string()))
-            }
-            Err(err) => {
-                let _ = self
-                    .deps
-                    .taskmgr
-                    .mark_task_as_failed(task_id, &err.to_string())
-                    .await;
-                Err(err)
-            }
-        }
+        let resp = self.deps.aicc.complete(req).await.map_err(map_aicc_error)?;
+        let llm_task_id = resp.task_id.clone();
+        let (usage, raw) = self
+            .resolve_aicc_complete_response(resp, &self.cfg.model_policy.preferred)
+            .await?;
+        Ok((usage, raw, llm_task_id))
     }
 
     async fn resolve_aicc_complete_response(
@@ -560,45 +523,6 @@ impl LLMBehavior {
             "aicc task_id '{}' is not a valid task manager id and no mapped task is found",
             aicc_task_id
         )))
-    }
-
-    async fn create_infer_task(
-        &self,
-        input: &ProcessInput,
-        parent_id: Option<i64>,
-    ) -> Result<i64, LLMComputeError> {
-        let data = json!({
-            "trace_id": input.trace.trace_id,
-            "agent_did": input.trace.agent_did,
-            "behavior": input.trace.behavior,
-            "step_idx": input.trace.step_idx,
-            "wakeup_id": input.trace.wakeup_id,
-            "kind": "inference",
-            "parent_behavior_task_id": parent_id,
-        });
-        let task = self
-            .deps
-            .taskmgr
-            .create_task(
-                &format!(
-                    "LLM infer: {}#{}@{}#{}",
-                    input.trace.behavior,
-                    input.trace.step_idx,
-                    input.trace.wakeup_id,
-                    next_task_name_suffix()
-                ),
-                LLM_INFER_TASK_TYPE,
-                Some(data),
-                &input.trace.agent_did,
-                &self.cfg.process_name,
-                Some(CreateTaskOptions {
-                    parent_id,
-                    ..CreateTaskOptions::default()
-                }),
-            )
-            .await
-            .map_err(|err| LLMComputeError::Internal(err.to_string()))?;
-        Ok(task.id)
     }
 
     fn err(
@@ -816,6 +740,14 @@ fn parse_aicc_result_from_task_data(
     if let Some(result_value) = data.get("result") {
         if let Ok(summary) =
             serde_json::from_value::<buckyos_api::AiResponseSummary>(result_value.clone())
+        {
+            return parse_aicc_summary(summary, fallback_model);
+        }
+    }
+
+    if let Some(summary_value) = data.pointer("/aicc/output") {
+        if let Ok(summary) =
+            serde_json::from_value::<buckyos_api::AiResponseSummary>(summary_value.clone())
         {
             return parse_aicc_summary(summary, fallback_model);
         }

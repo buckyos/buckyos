@@ -296,6 +296,7 @@ impl Provider for OpenAIProvider {
             self.instance.instance_id, provider_model, ctx.trace_id, request_log
         );
 
+        let started_at = std::time::Instant::now();
         let url = format!("{}/chat/completions", self.base_url);
         let response = self
             .client
@@ -311,6 +312,7 @@ impl Provider for OpenAIProvider {
                     ProviderError::fatal(format!("openai request failed: {}", err))
                 }
             })?;
+        let latency_ms = started_at.elapsed().as_millis() as u64;
 
         let status = response.status();
         let body: Value = response.json().await.map_err(|err| {
@@ -379,6 +381,21 @@ impl Provider for OpenAIProvider {
             .as_ref()
             .and_then(|usage| self.estimate_cost_for_usage(provider_model.as_str(), usage));
 
+        let mut extra = Map::new();
+        extra.insert("provider".to_string(), Value::String("openai".to_string()));
+        extra.insert("model".to_string(), Value::String(provider_model.clone()));
+        extra.insert("latency_ms".to_string(), Value::from(latency_ms));
+        if let Some(tool_calls) = body.pointer("/choices/0/message/tool_calls").cloned() {
+            extra.insert("tool_calls".to_string(), tool_calls);
+        }
+        extra.insert(
+            "provider_io".to_string(),
+            json!({
+                "input": Value::Object(request_obj.clone()),
+                "output": body.clone()
+            }),
+        );
+
         let summary = AiResponseSummary {
             text: content,
             json: parsed_json,
@@ -393,10 +410,7 @@ impl Provider for OpenAIProvider {
                 .get("id")
                 .and_then(|value| value.as_str())
                 .map(|value| value.to_string()),
-            extra: body
-                .pointer("/choices/0/message/tool_calls")
-                .cloned()
-                .map(|tool_calls| json!({ "tool_calls": tool_calls })),
+            extra: Some(Value::Object(extra)),
         };
 
         Ok(ProviderStartResult::Immediate(summary))
