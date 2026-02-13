@@ -5,8 +5,11 @@ use crate::aicc::{
 use crate::openai_protocol::merge_options;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
+use base64::engine::general_purpose;
+use base64::Engine as _;
 use buckyos_api::{
-    features, AiCost, AiResponseSummary, AiUsage, Capability, CompleteRequest, Feature, ResourceRef,
+    features, AiArtifact, AiCost, AiResponseSummary, AiUsage, Capability, CompleteRequest, Feature,
+    ResourceRef,
 };
 use log::{info, warn};
 use reqwest::{Client, StatusCode};
@@ -19,6 +22,30 @@ use std::time::Duration;
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_OPENAI_TIMEOUT_MS: u64 = 60_000;
 const DEFAULT_OPENAI_MODELS: &str = "gpt-5,gpt-5-mini,gpt-5-nono,gpt-5-pro";
+const DEFAULT_OPENAI_IMAGE_MODELS: &str = "dall-e-3,dall-e-2";
+const OPENAI_IMAGE_OPTION_ALLOWLIST: &[&str] = &[
+    "background",
+    "n",
+    "output_compression",
+    "output_format",
+    "quality",
+    "response_format",
+    "size",
+    "style",
+    "user",
+];
+const OPENAI_IMAGE_INPUT_ALLOWLIST: &[&str] = &[
+    "background",
+    "n",
+    "output_compression",
+    "output_format",
+    "prompt",
+    "quality",
+    "response_format",
+    "size",
+    "style",
+    "user",
+];
 
 #[derive(Debug, Clone)]
 pub struct OpenAIInstanceConfig {
@@ -28,6 +55,8 @@ pub struct OpenAIInstanceConfig {
     pub timeout_ms: u64,
     pub models: Vec<String>,
     pub default_model: Option<String>,
+    pub image_models: Vec<String>,
+    pub default_image_model: Option<String>,
     pub features: Vec<Feature>,
     pub alias_map: HashMap<String, String>,
 }
@@ -56,7 +85,7 @@ impl OpenAIProvider {
         let instance = ProviderInstance {
             instance_id: cfg.instance_id,
             provider_type: cfg.provider_type,
-            capabilities: vec![Capability::LlmRouter],
+            capabilities: vec![Capability::LlmRouter, Capability::Text2Image],
             features: cfg.features,
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
@@ -121,6 +150,53 @@ impl OpenAIProvider {
             .unwrap_or(512);
 
         (input_tokens.max(1), output_tokens.max(1))
+    }
+
+    fn estimate_image_count(req: &CompleteRequest) -> u64 {
+        req.payload
+            .options
+            .as_ref()
+            .and_then(|value| value.get("n"))
+            .and_then(|value| value.as_u64())
+            .or_else(|| {
+                req.payload
+                    .input_json
+                    .as_ref()
+                    .and_then(|value| value.get("n"))
+                    .and_then(|value| value.as_u64())
+            })
+            .unwrap_or(1)
+            .max(1)
+    }
+
+    fn estimate_text2image_cost(req: &CompleteRequest, model: &str) -> Option<f64> {
+        let per_image = if model.starts_with("dall-e-2") {
+            0.02
+        } else if model.starts_with("dall-e-3") {
+            let quality = req
+                .payload
+                .options
+                .as_ref()
+                .and_then(|value| value.get("quality"))
+                .and_then(|value| value.as_str())
+                .or_else(|| {
+                    req.payload
+                        .input_json
+                        .as_ref()
+                        .and_then(|value| value.get("quality"))
+                        .and_then(|value| value.as_str())
+                })
+                .unwrap_or("standard");
+            if quality == "hd" {
+                0.08
+            } else {
+                0.04
+            }
+        } else {
+            0.04
+        };
+
+        Some((Self::estimate_image_count(req) as f64) * per_image)
     }
 
     fn estimate_cost_for_usage(&self, model: &str, usage: &AiUsage) -> Option<AiCost> {
@@ -234,75 +310,153 @@ impl OpenAIProvider {
             ProviderError::fatal(message)
         }
     }
-}
 
-#[async_trait]
-impl Provider for OpenAIProvider {
-    fn instance(&self) -> &ProviderInstance {
-        &self.instance
+    fn extract_text2image_prompt(req: &CompleteRequest) -> Option<String> {
+        if let Some(text) = req
+            .payload
+            .text
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        {
+            return Some(text.to_string());
+        }
+
+        let message_prompt = req
+            .payload
+            .messages
+            .iter()
+            .map(|msg| msg.content.trim())
+            .filter(|msg| !msg.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !message_prompt.is_empty() {
+            return Some(message_prompt);
+        }
+
+        if let Some(prompt) = req
+            .payload
+            .input_json
+            .as_ref()
+            .and_then(|value| value.get("prompt"))
+            .and_then(|value| value.as_str())
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        {
+            return Some(prompt.to_string());
+        }
+
+        req.payload
+            .options
+            .as_ref()
+            .and_then(|value| value.get("prompt"))
+            .and_then(|value| value.as_str())
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string())
     }
 
-    fn estimate_cost(&self, req: &CompleteRequest, provider_model: &str) -> CostEstimate {
-        let (input_tokens, output_tokens) = Self::estimate_tokens(req);
-        let usage = AiUsage {
-            input_tokens: Some(input_tokens),
-            output_tokens: Some(output_tokens),
-            total_tokens: Some(input_tokens.saturating_add(output_tokens)),
+    fn merge_text2image_options(
+        target: &mut Map<String, Value>,
+        options: &Value,
+    ) -> Result<Vec<String>, ProviderError> {
+        let Some(options_map) = options.as_object() else {
+            return Ok(vec![]);
         };
 
-        let estimated_cost_usd = self
-            .estimate_cost_for_usage(provider_model, &usage)
-            .map(|cost| cost.amount);
-
-        CostEstimate {
-            estimated_cost_usd,
-            estimated_latency_ms: Some(1200),
+        let mut ignored = vec![];
+        for (key, value) in options_map.iter() {
+            if key == "model" || key == "messages" || key == "prompt" {
+                continue;
+            }
+            if key == "protocol" || key == "process_name" || key == "tool_messages" {
+                ignored.push(key.clone());
+                continue;
+            }
+            if !OPENAI_IMAGE_OPTION_ALLOWLIST.contains(&key.as_str()) {
+                ignored.push(key.clone());
+                continue;
+            }
+            target.insert(key.clone(), value.clone());
         }
+        Ok(ignored)
     }
 
-    async fn start(
-        &self,
-        ctx: crate::aicc::InvokeCtx,
-        provider_model: String,
-        req: ResolvedRequest,
-        _sink: Arc<dyn TaskEventSink>,
-    ) -> std::result::Result<ProviderStartResult, ProviderError> {
-        if req.request.capability != Capability::LlmRouter {
+    fn parse_text2image_artifacts(body: &Value) -> Result<Vec<AiArtifact>, ProviderError> {
+        let Some(items) = body.get("data").and_then(|value| value.as_array()) else {
             return Err(ProviderError::fatal(
-                "openai provider currently supports capability llm_router only",
+                "openai image response is missing data array",
+            ));
+        };
+
+        let mut artifacts = vec![];
+        for (idx, item) in items.iter().enumerate() {
+            let metadata = item
+                .get("revised_prompt")
+                .and_then(|value| value.as_str())
+                .map(|prompt| json!({ "revised_prompt": prompt }));
+            if let Some(url) = item
+                .get("url")
+                .and_then(|value| value.as_str())
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+            {
+                artifacts.push(AiArtifact {
+                    name: format!("image_{}", idx + 1),
+                    resource: ResourceRef::Url {
+                        url: url.to_string(),
+                        mime_hint: Some("image/png".to_string()),
+                    },
+                    mime: Some("image/png".to_string()),
+                    metadata,
+                });
+                continue;
+            }
+
+            if let Some(b64_json) = item
+                .get("b64_json")
+                .and_then(|value| value.as_str())
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+            {
+                if general_purpose::STANDARD.decode(b64_json).is_err() {
+                    warn!(
+                        "aicc.openai received invalid b64_json at index {} in image response",
+                        idx
+                    );
+                    continue;
+                }
+                artifacts.push(AiArtifact {
+                    name: format!("image_{}", idx + 1),
+                    resource: ResourceRef::Base64 {
+                        mime: "image/png".to_string(),
+                        data_base64: b64_json.to_string(),
+                    },
+                    mime: Some("image/png".to_string()),
+                    metadata,
+                });
+            }
+        }
+
+        if artifacts.is_empty() {
+            return Err(ProviderError::fatal(
+                "openai image response has no usable image outputs",
             ));
         }
+        Ok(artifacts)
+    }
 
-        let messages = self.build_messages(&req.request)?;
-
-        let mut request_obj = Map::new();
-        request_obj.insert("model".to_string(), Value::String(provider_model.clone()));
-        request_obj.insert("messages".to_string(), Value::Array(messages));
-
-        let mut ignored_options = vec![];
-        if let Some(options) = req.request.payload.options.as_ref() {
-            ignored_options = merge_options(&mut request_obj, options)?;
-        }
-        if !ignored_options.is_empty() {
-            warn!(
-                "aicc.openai ignored unsupported options: instance_id={} model={} trace_id={:?} ignored={:?}",
-                self.instance.instance_id, provider_model, ctx.trace_id, ignored_options
-            );
-        }
-
-        let request_log = Value::Object(request_obj.clone()).to_string();
-        info!(
-            "aicc.llm.input provider=openai instance_id={} model={} trace_id={:?} request={}",
-            self.instance.instance_id, provider_model, ctx.trace_id, request_log
-        );
-
+    async fn post_json(
+        &self,
+        url: &str,
+        request_obj: &Map<String, Value>,
+    ) -> Result<(StatusCode, Value, u64), ProviderError> {
         let started_at = std::time::Instant::now();
-        let url = format!("{}/chat/completions", self.base_url);
         let response = self
             .client
             .post(url)
             .bearer_auth(self.api_token.as_str())
-            .json(&request_obj)
+            .json(request_obj)
             .send()
             .await
             .map_err(|err| {
@@ -322,12 +476,54 @@ impl Provider for OpenAIProvider {
                 ProviderError::fatal(format!("failed to parse openai response body: {}", err))
             }
         })?;
+
+        Ok((status, body, latency_ms))
+    }
+
+    async fn start_llm(
+        &self,
+        ctx: &crate::aicc::InvokeCtx,
+        provider_model: &str,
+        req: &CompleteRequest,
+    ) -> Result<ProviderStartResult, ProviderError> {
+        let messages = self.build_messages(req)?;
+
+        let mut request_obj = Map::new();
+        request_obj.insert(
+            "model".to_string(),
+            Value::String(provider_model.to_string()),
+        );
+        request_obj.insert("messages".to_string(), Value::Array(messages));
+
+        let mut ignored_options = vec![];
+        if let Some(options) = req.payload.options.as_ref() {
+            ignored_options = merge_options(&mut request_obj, options)?;
+        }
+        if !ignored_options.is_empty() {
+            warn!(
+                "aicc.openai ignored unsupported llm options: instance_id={} model={} trace_id={:?} ignored={:?}",
+                self.instance.instance_id, provider_model, ctx.trace_id, ignored_options
+            );
+        }
+
+        let request_log = Value::Object(request_obj.clone()).to_string();
+        info!(
+            "aicc.openai.llm.input instance_id={} model={} trace_id={:?} request={}",
+            self.instance.instance_id, provider_model, ctx.trace_id, request_log
+        );
+
+        let url = format!("{}/chat/completions", self.base_url);
+        let (status, body, latency_ms) = self.post_json(url.as_str(), &request_obj).await?;
         let response_log = body.to_string();
 
         if !status.is_success() {
             warn!(
-                "aicc.llm.output provider=openai instance_id={} model={} trace_id={:?} status={} response={}",
-                self.instance.instance_id, provider_model, ctx.trace_id, status.as_u16(), response_log
+                "aicc.openai.llm.output instance_id={} model={} trace_id={:?} status={} response={}",
+                self.instance.instance_id,
+                provider_model,
+                ctx.trace_id,
+                status.as_u16(),
+                response_log
             );
             let message = body
                 .pointer("/error/message")
@@ -344,8 +540,12 @@ impl Provider for OpenAIProvider {
             ));
         }
         info!(
-            "aicc.llm.output provider=openai instance_id={} model={} trace_id={:?} status={} response={}",
-            self.instance.instance_id, provider_model, ctx.trace_id, status.as_u16(), response_log
+            "aicc.openai.llm.output instance_id={} model={} trace_id={:?} status={} response={}",
+            self.instance.instance_id,
+            provider_model,
+            ctx.trace_id,
+            status.as_u16(),
+            response_log
         );
 
         let message = body
@@ -363,7 +563,6 @@ impl Provider for OpenAIProvider {
         });
 
         let json_output_required = req
-            .request
             .requirements
             .must_features
             .iter()
@@ -379,11 +578,14 @@ impl Provider for OpenAIProvider {
 
         let cost = usage
             .as_ref()
-            .and_then(|usage| self.estimate_cost_for_usage(provider_model.as_str(), usage));
+            .and_then(|usage| self.estimate_cost_for_usage(provider_model, usage));
 
         let mut extra = Map::new();
         extra.insert("provider".to_string(), Value::String("openai".to_string()));
-        extra.insert("model".to_string(), Value::String(provider_model.clone()));
+        extra.insert(
+            "model".to_string(),
+            Value::String(provider_model.to_string()),
+        );
         extra.insert("latency_ms".to_string(), Value::from(latency_ms));
         if let Some(tool_calls) = body.pointer("/choices/0/message/tool_calls").cloned() {
             extra.insert("tool_calls".to_string(), tool_calls);
@@ -414,6 +616,191 @@ impl Provider for OpenAIProvider {
         };
 
         Ok(ProviderStartResult::Immediate(summary))
+    }
+
+    async fn start_text2image(
+        &self,
+        ctx: &crate::aicc::InvokeCtx,
+        provider_model: &str,
+        req: &CompleteRequest,
+    ) -> Result<ProviderStartResult, ProviderError> {
+        let mut request_obj = Map::new();
+        request_obj.insert(
+            "model".to_string(),
+            Value::String(provider_model.to_string()),
+        );
+
+        if let Some(input_json) = req
+            .payload
+            .input_json
+            .as_ref()
+            .and_then(|value| value.as_object())
+        {
+            for (key, value) in input_json.iter() {
+                if OPENAI_IMAGE_INPUT_ALLOWLIST.contains(&key.as_str()) {
+                    request_obj.insert(key.clone(), value.clone());
+                }
+            }
+        }
+
+        if let Some(prompt) = Self::extract_text2image_prompt(req) {
+            request_obj.insert("prompt".to_string(), Value::String(prompt));
+        }
+
+        if !request_obj.contains_key("prompt") {
+            return Err(ProviderError::fatal(
+                "text2image request requires prompt in payload.text/messages/input_json/options",
+            ));
+        }
+
+        let mut ignored_options = vec![];
+        if let Some(options) = req.payload.options.as_ref() {
+            ignored_options = Self::merge_text2image_options(&mut request_obj, options)?;
+        }
+        if !ignored_options.is_empty() {
+            warn!(
+                "aicc.openai ignored unsupported text2image options: instance_id={} model={} trace_id={:?} ignored={:?}",
+                self.instance.instance_id, provider_model, ctx.trace_id, ignored_options
+            );
+        }
+
+        let request_log = Value::Object(request_obj.clone()).to_string();
+        info!(
+            "aicc.openai.text2image.input instance_id={} model={} trace_id={:?} request={}",
+            self.instance.instance_id, provider_model, ctx.trace_id, request_log
+        );
+
+        let url = format!("{}/images/generations", self.base_url);
+        let (status, body, latency_ms) = self.post_json(url.as_str(), &request_obj).await?;
+        let response_log = body.to_string();
+
+        if !status.is_success() {
+            warn!(
+                "aicc.openai.text2image.output instance_id={} model={} trace_id={:?} status={} response={}",
+                self.instance.instance_id,
+                provider_model,
+                ctx.trace_id,
+                status.as_u16(),
+                response_log
+            );
+            let message = body
+                .pointer("/error/message")
+                .and_then(|value| value.as_str())
+                .unwrap_or("openai api returned non-success status")
+                .to_string();
+            let code = body
+                .pointer("/error/code")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown");
+            return Err(Self::classify_api_error(
+                status,
+                format!("openai api error [{}]: {}", code, message),
+            ));
+        }
+        info!(
+            "aicc.openai.text2image.output instance_id={} model={} trace_id={:?} status={} response={}",
+            self.instance.instance_id,
+            provider_model,
+            ctx.trace_id,
+            status.as_u16(),
+            response_log
+        );
+
+        let artifacts = Self::parse_text2image_artifacts(&body)?;
+        let revised_prompt = body
+            .pointer("/data/0/revised_prompt")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string());
+        let estimated_cost =
+            Self::estimate_text2image_cost(req, provider_model).map(|amount| AiCost {
+                amount,
+                currency: "USD".to_string(),
+            });
+
+        let mut extra = Map::new();
+        extra.insert("provider".to_string(), Value::String("openai".to_string()));
+        extra.insert(
+            "model".to_string(),
+            Value::String(provider_model.to_string()),
+        );
+        extra.insert("latency_ms".to_string(), Value::from(latency_ms));
+        extra.insert(
+            "provider_io".to_string(),
+            json!({
+                "input": Value::Object(request_obj.clone()),
+                "output": body.clone()
+            }),
+        );
+
+        let summary = AiResponseSummary {
+            text: revised_prompt,
+            json: None,
+            artifacts,
+            usage: None,
+            cost: estimated_cost,
+            finish_reason: Some("stop".to_string()),
+            provider_task_ref: body
+                .get("id")
+                .and_then(|value| value.as_str())
+                .map(|value| value.to_string()),
+            extra: Some(Value::Object(extra)),
+        };
+        Ok(ProviderStartResult::Immediate(summary))
+    }
+}
+
+#[async_trait]
+impl Provider for OpenAIProvider {
+    fn instance(&self) -> &ProviderInstance {
+        &self.instance
+    }
+
+    fn estimate_cost(&self, req: &CompleteRequest, provider_model: &str) -> CostEstimate {
+        if req.capability == Capability::Text2Image {
+            return CostEstimate {
+                estimated_cost_usd: Self::estimate_text2image_cost(req, provider_model),
+                estimated_latency_ms: Some(5000),
+            };
+        }
+
+        let (input_tokens, output_tokens) = Self::estimate_tokens(req);
+        let usage = AiUsage {
+            input_tokens: Some(input_tokens),
+            output_tokens: Some(output_tokens),
+            total_tokens: Some(input_tokens.saturating_add(output_tokens)),
+        };
+
+        let estimated_cost_usd = self
+            .estimate_cost_for_usage(provider_model, &usage)
+            .map(|cost| cost.amount);
+
+        CostEstimate {
+            estimated_cost_usd,
+            estimated_latency_ms: Some(1200),
+        }
+    }
+
+    async fn start(
+        &self,
+        ctx: crate::aicc::InvokeCtx,
+        provider_model: String,
+        req: ResolvedRequest,
+        _sink: Arc<dyn TaskEventSink>,
+    ) -> std::result::Result<ProviderStartResult, ProviderError> {
+        match req.request.capability {
+            Capability::LlmRouter => {
+                self.start_llm(&ctx, provider_model.as_str(), &req.request)
+                    .await
+            }
+            Capability::Text2Image => {
+                self.start_text2image(&ctx, provider_model.as_str(), &req.request)
+                    .await
+            }
+            capability => Err(ProviderError::fatal(format!(
+                "openai provider does not support capability '{:?}'",
+                capability
+            ))),
+        }
     }
 
     async fn cancel(
@@ -452,6 +839,10 @@ struct SettingsOpenAIInstanceConfig {
     #[serde(default)]
     default_model: Option<String>,
     #[serde(default)]
+    image_models: Vec<String>,
+    #[serde(default)]
+    default_image_model: Option<String>,
+    #[serde(default)]
     features: Vec<String>,
     #[serde(default)]
     alias_map: HashMap<String, String>,
@@ -483,6 +874,26 @@ fn default_features() -> Vec<String> {
         features::JSON_OUTPUT.to_string(),
         features::TOOL_CALLING.to_string(),
     ]
+}
+
+fn is_text2image_model_name(model: &str) -> bool {
+    model.trim().to_ascii_lowercase().starts_with("dall-e")
+}
+
+fn normalize_model_list(models: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::<String>::new();
+    let mut normalized = vec![];
+    for model in models.into_iter() {
+        let value = model.trim();
+        if value.is_empty() {
+            continue;
+        }
+        let key = value.to_ascii_lowercase();
+        if seen.insert(key) {
+            normalized.push(value.to_string());
+        }
+    }
+    normalized
 }
 
 fn parse_csv_list(value: &str) -> Vec<String> {
@@ -520,6 +931,8 @@ fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanc
             timeout_ms: default_timeout_ms(),
             models: vec![],
             default_model: None,
+            image_models: vec![],
+            default_image_model: None,
             features: vec![],
             alias_map: HashMap::new(),
         }]
@@ -529,9 +942,9 @@ fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanc
 
     let mut instances = vec![];
     for raw_instance in raw_instances.into_iter() {
-        let mut models = raw_instance.models;
+        let mut models = normalize_model_list(raw_instance.models);
         if models.is_empty() {
-            models = parse_csv_list(DEFAULT_OPENAI_MODELS);
+            models = normalize_model_list(parse_csv_list(DEFAULT_OPENAI_MODELS));
         }
         if models.is_empty() {
             return Err(anyhow!(
@@ -542,7 +955,27 @@ fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanc
 
         let default_model = raw_instance
             .default_model
+            .or_else(|| {
+                models
+                    .iter()
+                    .find(|model| !is_text2image_model_name(model))
+                    .cloned()
+            })
             .or_else(|| models.first().cloned());
+        let mut image_models = normalize_model_list(raw_instance.image_models);
+        if image_models.is_empty() {
+            image_models = models
+                .iter()
+                .filter(|model| is_text2image_model_name(model))
+                .cloned()
+                .collect::<Vec<_>>();
+        }
+        if image_models.is_empty() {
+            image_models = normalize_model_list(parse_csv_list(DEFAULT_OPENAI_IMAGE_MODELS));
+        }
+        let default_image_model = raw_instance
+            .default_image_model
+            .or_else(|| image_models.first().cloned());
         let features = if raw_instance.features.is_empty() {
             default_features()
         } else {
@@ -556,6 +989,8 @@ fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanc
             timeout_ms: raw_instance.timeout_ms,
             models,
             default_model,
+            image_models,
+            default_image_model,
             features,
             alias_map: raw_instance.alias_map,
         });
@@ -569,8 +1004,13 @@ fn register_default_aliases(
     provider_type: &str,
     models: &[String],
     default_model: Option<&str>,
+    image_models: &[String],
+    default_image_model: Option<&str>,
 ) {
     for model in models.iter() {
+        if is_text2image_model_name(model) {
+            continue;
+        }
         center.model_catalog().set_mapping(
             Capability::LlmRouter,
             model.as_str(),
@@ -586,7 +1026,7 @@ fn register_default_aliases(
         );
     }
 
-    if let Some(default_model) = default_model {
+    if let Some(default_model) = default_model.filter(|model| !is_text2image_model_name(model)) {
         for alias in [
             "llm.default",
             "llm.chat.default",
@@ -600,6 +1040,63 @@ fn register_default_aliases(
                 default_model,
             );
         }
+    }
+
+    for model in image_models.iter() {
+        center.model_catalog().set_mapping(
+            Capability::Text2Image,
+            model.as_str(),
+            provider_type,
+            model.as_str(),
+        );
+
+        for alias in [
+            format!("text2image.{}", model),
+            format!("t2i.{}", model),
+            format!("image.{}", model),
+        ] {
+            center.model_catalog().set_mapping(
+                Capability::Text2Image,
+                alias,
+                provider_type,
+                model.as_str(),
+            );
+        }
+    }
+
+    if let Some(default_image_model) = default_image_model {
+        for alias in ["text2image.default", "t2i.default", "image.default"] {
+            center.model_catalog().set_mapping(
+                Capability::Text2Image,
+                alias,
+                provider_type,
+                default_image_model,
+            );
+        }
+    }
+}
+
+fn register_custom_aliases(
+    center: &AIComputeCenter,
+    provider_type: &str,
+    alias_map: &HashMap<String, String>,
+) {
+    for (alias, model) in alias_map.iter() {
+        let normalized_alias = alias.to_ascii_lowercase();
+        let capability = if normalized_alias.starts_with("text2image.")
+            || normalized_alias.starts_with("t2i.")
+            || normalized_alias.starts_with("image.")
+        {
+            Capability::Text2Image
+        } else {
+            Capability::LlmRouter
+        };
+        center.model_catalog().set_mapping(
+            capability,
+            alias.as_str(),
+            provider_type,
+            model.as_str(),
+        );
     }
 }
 
@@ -633,31 +1130,123 @@ pub fn register_openai_llm_providers(center: &AIComputeCenter, settings: &Value)
             config.provider_type.as_str(),
             &config.models,
             config.default_model.as_deref(),
+            &config.image_models,
+            config.default_image_model.as_deref(),
         );
 
-        for (alias, model) in openai_settings.alias_map.iter() {
-            center.model_catalog().set_mapping(
-                Capability::LlmRouter,
-                alias.as_str(),
-                config.provider_type.as_str(),
-                model.as_str(),
-            );
-        }
-
-        for (alias, model) in config.alias_map.iter() {
-            center.model_catalog().set_mapping(
-                Capability::LlmRouter,
-                alias.as_str(),
-                config.provider_type.as_str(),
-                model.as_str(),
-            );
-        }
+        register_custom_aliases(
+            center,
+            config.provider_type.as_str(),
+            &openai_settings.alias_map,
+        );
+        register_custom_aliases(center, config.provider_type.as_str(), &config.alias_map);
 
         info!(
-            "registered openai instance id={} provider_type={} base_url={} models={:?}",
-            config.instance_id, config.provider_type, config.base_url, config.models
+            "registered openai instance id={} provider_type={} base_url={} models={:?} image_models={:?}",
+            config.instance_id,
+            config.provider_type,
+            config.base_url,
+            config.models,
+            config.image_models
         );
     }
 
     Ok(instances.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::aicc::ModelCatalog;
+
+    #[test]
+    fn build_openai_instances_infers_image_models_from_dalle() {
+        let settings = OpenAISettings {
+            enabled: true,
+            api_token: "token".to_string(),
+            alias_map: HashMap::new(),
+            instances: vec![SettingsOpenAIInstanceConfig {
+                instance_id: "openai-1".to_string(),
+                provider_type: "openai".to_string(),
+                base_url: default_base_url(),
+                timeout_ms: default_timeout_ms(),
+                models: vec!["gpt-4o-mini".to_string(), "dall-e-3".to_string()],
+                default_model: None,
+                image_models: vec![],
+                default_image_model: None,
+                features: vec![],
+                alias_map: HashMap::new(),
+            }],
+        };
+
+        let instances = build_openai_instances(&settings).expect("instances should be built");
+        assert_eq!(instances.len(), 1);
+        assert_eq!(
+            instances[0].default_model.as_deref(),
+            Some("gpt-4o-mini"),
+            "llm default should prefer non-image model"
+        );
+        assert_eq!(
+            instances[0].image_models,
+            vec!["dall-e-3".to_string()],
+            "image models should infer from configured dall-e model"
+        );
+        assert_eq!(
+            instances[0].default_image_model.as_deref(),
+            Some("dall-e-3"),
+            "image default should point to inferred image model"
+        );
+    }
+
+    #[test]
+    fn register_custom_aliases_routes_image_prefix_to_text2image() {
+        let center = AIComputeCenter::new(Default::default(), ModelCatalog::default());
+        let aliases = HashMap::from([
+            ("llm.plan.default".to_string(), "gpt-4o-mini".to_string()),
+            ("text2image.poster".to_string(), "dall-e-3".to_string()),
+        ]);
+        register_custom_aliases(&center, "openai", &aliases);
+
+        let llm = center.model_catalog().resolve(
+            "",
+            &Capability::LlmRouter,
+            "llm.plan.default",
+            "openai",
+        );
+        let image = center.model_catalog().resolve(
+            "",
+            &Capability::Text2Image,
+            "text2image.poster",
+            "openai",
+        );
+        assert_eq!(llm.as_deref(), Some("gpt-4o-mini"));
+        assert_eq!(image.as_deref(), Some("dall-e-3"));
+    }
+
+    #[test]
+    fn parse_text2image_artifacts_supports_url_and_base64() {
+        let body = json!({
+            "data": [
+                {
+                    "url": "https://example.com/test.png",
+                    "revised_prompt": "a cat with glasses"
+                },
+                {
+                    "b64_json": "aGVsbG8="
+                }
+            ]
+        });
+
+        let artifacts =
+            OpenAIProvider::parse_text2image_artifacts(&body).expect("artifacts should parse");
+        assert_eq!(artifacts.len(), 2);
+        match &artifacts[0].resource {
+            ResourceRef::Url { url, .. } => assert_eq!(url, "https://example.com/test.png"),
+            other => panic!("unexpected first artifact resource: {:?}", other),
+        }
+        match &artifacts[1].resource {
+            ResourceRef::Base64 { data_base64, .. } => assert_eq!(data_base64, "aGVsbG8="),
+            other => panic!("unexpected second artifact resource: {:?}", other),
+        }
+    }
 }
