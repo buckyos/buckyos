@@ -3,6 +3,7 @@ export {}
 declare global {
   type IconName =
     | 'desktop'
+    | 'container'
     | 'dashboard'
     | 'users'
     | 'storage'
@@ -58,6 +59,38 @@ declare global {
     time: string
     rx: number
     tx: number
+    errors?: number
+    drops?: number
+  }
+
+  type NetworkInterfacePoint = {
+    name: string
+    rxBytes: number
+    txBytes: number
+    rxPerSec: number
+    txPerSec: number
+    rxErrors: number
+    txErrors: number
+    rxDrops: number
+    txDrops: number
+  }
+
+  type NetworkOverviewSummary = {
+    rxBytes: number
+    txBytes: number
+    rxPerSec: number
+    txPerSec: number
+    rxErrors: number
+    txErrors: number
+    rxDrops: number
+    txDrops: number
+    interfaceCount: number
+  }
+
+  type NetworkOverview = {
+    summary: NetworkOverviewSummary
+    timeline: NetworkPoint[]
+    perInterface: NetworkInterfacePoint[]
   }
 
   type StorageSlice = {
@@ -185,6 +218,12 @@ declare global {
     txBytes: number
     rxPerSec: number
     txPerSec: number
+    rxErrors?: number
+    txErrors?: number
+    rxDrops?: number
+    txDrops?: number
+    interfaceCount?: number
+    perInterface?: NetworkInterfacePoint[]
   }
 
   type SystemMetricsSwap = {
@@ -204,6 +243,8 @@ declare global {
     memory: DashboardMemory
     disk: SystemMetricsDisk
     network: SystemMetricsNetwork
+    resourceTimeline?: ResourcePoint[]
+    networkTimeline?: NetworkPoint[]
     swap?: SystemMetricsSwap
     loadAverage?: SystemLoadAverage
     processCount?: number
@@ -227,6 +268,136 @@ declare global {
     state: 'online' | 'warning' | 'critical'
     warnings: SystemWarning[]
     services: ServiceStatus[]
+  }
+
+  type GatewayConfigFile = {
+    name: string
+    path: string
+    exists: boolean
+    sizeBytes: number
+    modifiedAt: string
+  }
+
+  type GatewayConfigStack = {
+    name: string
+    id: string
+    protocol: string
+    bind: string
+  }
+
+  type GatewayConfigRoute = {
+    kind: 'path' | 'host' | 'fallback' | 'logic'
+    matcher: string
+    action: string
+    raw: string
+  }
+
+  type GatewayConfigOverride = {
+    name: string
+    preview: string
+  }
+
+  type GatewayOverview = {
+    mode: 'sn' | 'direct' | string
+    etcDir: string
+    files: GatewayConfigFile[]
+    includes: string[]
+    stacks: GatewayConfigStack[]
+    tlsDomains: string[]
+    routes: GatewayConfigRoute[]
+    routePreview: string
+    customOverrides: GatewayConfigOverride[]
+    notes: string[]
+  }
+
+  type GatewayFileContent = {
+    name: string
+    path: string
+    sizeBytes: number
+    modifiedAt: string
+    content: string
+  }
+
+  type ZoneConfigFile = {
+    name: string
+    path: string
+    exists: boolean
+    sizeBytes: number
+    modifiedAt: string
+  }
+
+  type ZoneOverview = {
+    etcDir: string
+    zone: {
+      name: string
+      domain: string
+      did: string
+      ownerDid: string
+      userName: string
+      zoneIat: number
+    }
+    device: {
+      name: string
+      did: string
+      type: string
+      netId: string
+    }
+    sn: {
+      url: string
+      username: string
+    }
+    files: ZoneConfigFile[]
+    notes: string[]
+  }
+
+  type ContainerServerInfo = {
+    name: string
+    version: string
+    apiVersion: string
+    os: string
+    kernel: string
+    driver: string
+    cgroupDriver: string
+    cpuCount: number
+    memTotalBytes: number
+  }
+
+  type ContainerSummary = {
+    total: number
+    running: number
+    paused: number
+    exited: number
+    restarting: number
+    dead: number
+  }
+
+  type ContainerItem = {
+    id: string
+    name: string
+    image: string
+    state: string
+    status: string
+    ports: string
+    networks: string
+    createdAt: string
+    runningFor: string
+    command: string
+  }
+
+  type ContainerOverview = {
+    available: boolean
+    daemonRunning: boolean
+    server: ContainerServerInfo
+    summary: ContainerSummary
+    containers: ContainerItem[]
+    notes: string[]
+  }
+
+  type ContainerActionResponse = {
+    id: string
+    action: 'start' | 'stop' | 'restart' | string
+    ok: boolean
+    stdout?: string
   }
 
   type SystemLogLevel = 'info' | 'warning' | 'error' | 'unknown'

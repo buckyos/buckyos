@@ -21,6 +21,8 @@ const mockLayoutData: RootLayoutData = {
   primaryNav: [
     { label: 'Desktop', icon: 'desktop', path: '/' },
     { label: 'Monitor', icon: 'dashboard', path: '/monitor' },
+    { label: 'Network', icon: 'network', path: '/network' },
+    { label: 'Containers', icon: 'container', path: '/containers' },
     { label: 'User Management', icon: 'users', path: '/users' },
     { label: 'Storage', icon: 'storage', path: '/storage' },
     { label: 'dApp Store', icon: 'apps', path: '/dapps' },
@@ -63,7 +65,7 @@ const mockDashboardData: DashboardState = {
   quickActions: [
     { label: 'Manage Users', icon: 'users', to: '/users' },
     { label: 'Storage Settings', icon: 'storage', to: '/storage' },
-    { label: 'Network Config', icon: 'network', to: '/settings' },
+    { label: 'Network Config', icon: 'network', to: '/network' },
     { label: 'System Logs', icon: 'chart', to: '/system-logs' },
   ],
   resourceTimeline: [
@@ -150,6 +152,204 @@ const mockSystemStatus: SystemStatusResponse = {
     { name: 'repo-service', status: 'running' },
     { name: 'cyfs-gateway', status: 'running' },
   ],
+}
+
+const mockNetworkOverview: NetworkOverview = {
+  summary: {
+    rxBytes: mockSystemMetrics.network.rxBytes,
+    txBytes: mockSystemMetrics.network.txBytes,
+    rxPerSec: mockSystemMetrics.network.rxPerSec,
+    txPerSec: mockSystemMetrics.network.txPerSec,
+    rxErrors: 0,
+    txErrors: 0,
+    rxDrops: 0,
+    txDrops: 0,
+    interfaceCount: 2,
+  },
+  timeline: [
+    { time: '00:00:00', rx: 1800000, tx: 1000000, errors: 0, drops: 0 },
+    { time: '00:00:01', rx: 2200000, tx: 1200000, errors: 0, drops: 0 },
+    { time: '00:00:02', rx: 2100000, tx: 1180000, errors: 0, drops: 0 },
+    { time: '00:00:03', rx: 2600000, tx: 1410000, errors: 0, drops: 0 },
+    { time: '00:00:04', rx: 2300000, tx: 1300000, errors: 0, drops: 0 },
+    { time: '00:00:05', rx: 2400000, tx: 1350000, errors: 0, drops: 0 },
+  ],
+  perInterface: [
+    {
+      name: 'eth0',
+      rxBytes: 480000000,
+      txBytes: 220000000,
+      rxPerSec: 2000000,
+      txPerSec: 1100000,
+      rxErrors: 0,
+      txErrors: 0,
+      rxDrops: 0,
+      txDrops: 0,
+    },
+    {
+      name: 'wlan0',
+      rxBytes: 100000000,
+      txBytes: 20900000,
+      rxPerSec: 200000,
+      txPerSec: 100000,
+      rxErrors: 0,
+      txErrors: 0,
+      rxDrops: 0,
+      txDrops: 0,
+    },
+  ],
+}
+
+const mockGatewayOverview: GatewayOverview = {
+  mode: 'sn',
+  etcDir: '/opt/buckyos/etc',
+  files: [
+    {
+      name: 'cyfs_gateway.json',
+      path: '/opt/buckyos/etc/cyfs_gateway.json',
+      exists: true,
+      sizeBytes: 186,
+      modifiedAt: '',
+    },
+    {
+      name: 'boot_gateway.yaml',
+      path: '/opt/buckyos/etc/boot_gateway.yaml',
+      exists: true,
+      sizeBytes: 2048,
+      modifiedAt: '',
+    },
+    {
+      name: 'node_gateway.json',
+      path: '/opt/buckyos/etc/node_gateway.json',
+      exists: true,
+      sizeBytes: 4096,
+      modifiedAt: '',
+    },
+  ],
+  includes: ['user_gateway.yaml', 'boot_gateway.yaml', 'node_gateway.json', 'post_gateway.yaml'],
+  stacks: [
+    { name: 'zone_gateway_http', id: 'zone_gateway_http', protocol: 'tcp', bind: '0.0.0.0:80' },
+    { name: 'node_gateway_http', id: 'node_gateway_http', protocol: 'tcp', bind: '0.0.0.0:3180' },
+  ],
+  tlsDomains: ['*.meteor101.web3.buckyos.ai', 'meteor101.web3.buckyos.ai'],
+  routes: [
+    {
+      kind: 'path',
+      matcher: '/kapi/control-panel/*',
+      action: 'forward http://127.0.0.1:4020',
+      raw: 'match ${REQ.path} "/kapi/control-panel/*" && return "forward http://127.0.0.1:4020"',
+    },
+    {
+      kind: 'host',
+      matcher: 'sys-*',
+      action: 'forward http://127.0.0.1:4020/',
+      raw: 'match ${REQ.host} "sys-*" && return "forward http://127.0.0.1:4020/"',
+    },
+  ],
+  routePreview:
+    'match ${REQ.path} "/kapi/control-panel/*" && return "forward http://127.0.0.1:4020"\nmatch ${REQ.host} "sys-*" && return "forward http://127.0.0.1:4020/"',
+  customOverrides: [],
+  notes: [
+    'Gateway config loaded from /opt/buckyos/etc.',
+    'No user override rules detected in user_gateway.yaml/post_gateway.yaml.',
+  ],
+}
+
+const mockZoneOverview: ZoneOverview = {
+  etcDir: '/opt/buckyos/etc',
+  zone: {
+    name: 'meteor101',
+    domain: 'meteor101.web3.buckyos.ai',
+    did: 'did:bns:meteor101',
+    ownerDid: 'did:bns:meteor101',
+    userName: 'meteor101',
+    zoneIat: 1770361152,
+  },
+  device: {
+    name: 'ood1',
+    did: 'did:dev:jocxyR8Ceskn6rjgDfDYmMQ5HXJDhw_TEyJj7sqCPZA',
+    type: 'ood',
+    netId: 'nat',
+  },
+  sn: {
+    url: 'http://sn.buckyos.ai/kapi/sn',
+    username: 'meteor101',
+  },
+  files: [
+    {
+      name: 'start_config.json',
+      path: '/opt/buckyos/etc/start_config.json',
+      exists: true,
+      sizeBytes: 1024,
+      modifiedAt: '',
+    },
+    {
+      name: 'node_device_config.json',
+      path: '/opt/buckyos/etc/node_device_config.json',
+      exists: true,
+      sizeBytes: 1024,
+      modifiedAt: '',
+    },
+    {
+      name: 'node_identity.json',
+      path: '/opt/buckyos/etc/node_identity.json',
+      exists: true,
+      sizeBytes: 1024,
+      modifiedAt: '',
+    },
+  ],
+  notes: [],
+}
+
+const mockContainerOverview: ContainerOverview = {
+  available: true,
+  daemonRunning: true,
+  server: {
+    name: 'docker-host',
+    version: '25.0.3',
+    apiVersion: '1.44',
+    os: 'Ubuntu 24.04 LTS',
+    kernel: '6.8.0',
+    driver: 'overlay2',
+    cgroupDriver: 'systemd',
+    cpuCount: 8,
+    memTotalBytes: 34_359_738_368,
+  },
+  summary: {
+    total: 4,
+    running: 2,
+    paused: 0,
+    exited: 2,
+    restarting: 0,
+    dead: 0,
+  },
+  containers: [
+    {
+      id: 'd8b7f2c9f4aa',
+      name: 'control-panel-dev',
+      image: 'buckyos/control-panel:nightly',
+      state: 'running',
+      status: 'Up 3 hours',
+      ports: '0.0.0.0:4020->4020/tcp',
+      networks: 'bridge',
+      createdAt: '2026-02-11 09:12:10 +0800 CST',
+      runningFor: '3 hours ago',
+      command: '"/bin/control_panel"',
+    },
+    {
+      id: '9ac721bc10f4',
+      name: 'repo-service-dev',
+      image: 'buckyos/repo-service:nightly',
+      state: 'running',
+      status: 'Up 3 hours',
+      ports: '0.0.0.0:3000->3000/tcp',
+      networks: 'bridge',
+      createdAt: '2026-02-11 09:12:10 +0800 CST',
+      runningFor: '3 hours ago',
+      command: '"/bin/repo_service"',
+    },
+  ],
+  notes: [],
 }
 
 const mockLogServices: SystemLogService[] = [
@@ -313,6 +513,27 @@ export const fetchSystemMetrics = async (
   return { data: merged, error }
 }
 
+export const fetchNetworkOverview = async (): Promise<{
+  data: NetworkOverview | null
+  error: unknown
+}> => {
+  const { data, error } = await callRpc<NetworkOverview>('network.overview', {})
+  if (!data) {
+    return { data: mockNetworkOverview, error }
+  }
+
+  const merged: NetworkOverview = {
+    ...mockNetworkOverview,
+    ...(data as Record<string, unknown>),
+    summary: { ...mockNetworkOverview.summary, ...(data.summary ?? {}) },
+    timeline: Array.isArray(data.timeline) ? data.timeline : mockNetworkOverview.timeline,
+    perInterface: Array.isArray(data.perInterface)
+      ? data.perInterface
+      : mockNetworkOverview.perInterface,
+  }
+  return { data: merged, error }
+}
+
 export const fetchSystemStatus = async (): Promise<{
   data: SystemStatusResponse | null
   error: unknown
@@ -329,6 +550,90 @@ export const fetchSystemStatus = async (): Promise<{
   }
   return { data: merged, error }
 }
+
+export const fetchGatewayOverview = async (): Promise<{
+  data: GatewayOverview | null
+  error: unknown
+}> => {
+  const { data, error } = await callRpc<GatewayOverview>('gateway.overview', {})
+  if (!data) {
+    return { data: mockGatewayOverview, error }
+  }
+
+  const merged: GatewayOverview = {
+    ...mockGatewayOverview,
+    ...(data as Record<string, unknown>),
+    files: Array.isArray(data.files) ? data.files : mockGatewayOverview.files,
+    includes: Array.isArray(data.includes) ? data.includes : mockGatewayOverview.includes,
+    stacks: Array.isArray(data.stacks) ? data.stacks : mockGatewayOverview.stacks,
+    tlsDomains: Array.isArray(data.tlsDomains) ? data.tlsDomains : mockGatewayOverview.tlsDomains,
+    routes: Array.isArray(data.routes) ? data.routes : mockGatewayOverview.routes,
+    customOverrides: Array.isArray(data.customOverrides)
+      ? data.customOverrides
+      : mockGatewayOverview.customOverrides,
+    notes: Array.isArray(data.notes) ? data.notes : mockGatewayOverview.notes,
+  }
+  return { data: merged, error }
+}
+
+export const fetchGatewayFile = async (
+  name: string,
+): Promise<{ data: GatewayFileContent | null; error: unknown }> => {
+  const { data, error } = await callRpc<GatewayFileContent>('gateway.file.get', { name })
+  if (!data || typeof data.content !== 'string') {
+    return { data: null, error }
+  }
+  return { data, error }
+}
+
+export const fetchZoneOverview = async (): Promise<{
+  data: ZoneOverview | null
+  error: unknown
+}> => {
+  const { data, error } = await callRpc<ZoneOverview>('zone.overview', {})
+  if (!data) {
+    return { data: mockZoneOverview, error }
+  }
+
+  const merged: ZoneOverview = {
+    ...mockZoneOverview,
+    ...(data as Record<string, unknown>),
+    zone: { ...mockZoneOverview.zone, ...(data.zone ?? {}) },
+    device: { ...mockZoneOverview.device, ...(data.device ?? {}) },
+    sn: { ...mockZoneOverview.sn, ...(data.sn ?? {}) },
+    files: Array.isArray(data.files) ? data.files : mockZoneOverview.files,
+    notes: Array.isArray(data.notes) ? data.notes : mockZoneOverview.notes,
+  }
+
+  return { data: merged, error }
+}
+
+export const fetchContainerOverview = async (): Promise<{
+  data: ContainerOverview | null
+  error: unknown
+}> => {
+  const { data, error } = await callRpc<ContainerOverview>('container.overview', {})
+  if (!data) {
+    return { data: mockContainerOverview, error }
+  }
+
+  const merged: ContainerOverview = {
+    ...mockContainerOverview,
+    ...(data as Record<string, unknown>),
+    server: { ...mockContainerOverview.server, ...(data.server ?? {}) },
+    summary: { ...mockContainerOverview.summary, ...(data.summary ?? {}) },
+    containers: Array.isArray(data.containers) ? data.containers : mockContainerOverview.containers,
+    notes: Array.isArray(data.notes) ? data.notes : mockContainerOverview.notes,
+  }
+
+  return { data: merged, error }
+}
+
+export const runContainerAction = async (
+  id: string,
+  action: 'start' | 'stop' | 'restart',
+): Promise<{ data: ContainerActionResponse | null; error: unknown }> =>
+  callRpc<ContainerActionResponse>('container.action', { id, action })
 
 type LogQueryParams = {
   services?: string[]
@@ -412,6 +717,10 @@ export {
   mockDappStoreData,
   mockSystemMetrics,
   mockSystemStatus,
+  mockNetworkOverview,
+  mockGatewayOverview,
+  mockZoneOverview,
+  mockContainerOverview,
   mockLogServices,
   mockLogEntries,
 }

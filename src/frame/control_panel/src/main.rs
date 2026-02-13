@@ -19,7 +19,7 @@ use log::info;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::*;
 use server_runner::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -46,6 +46,18 @@ const LOG_ROOT_DIR: &str = "/opt/buckyos/logs";
 const LOG_DOWNLOAD_TTL_SECS: u64 = 600;
 const DEFAULT_LOG_LIMIT: usize = 200;
 const MAX_LOG_LIMIT: usize = 1000;
+const METRICS_DISK_REFRESH_INTERVAL_SECS: u64 = 5;
+const NETWORK_TIMELINE_LIMIT: usize = 300;
+const SYS_CONFIG_TREE_MAX_DEPTH: u64 = 24;
+const GATEWAY_ETC_DIR: &str = "/opt/buckyos/etc";
+const GATEWAY_CONFIG_FILES: [&str; 5] = [
+    "cyfs_gateway.json",
+    "boot_gateway.yaml",
+    "node_gateway.json",
+    "user_gateway.yaml",
+    "post_gateway.yaml",
+];
+const ZONE_CONFIG_FILES: [&str; 3] = ["start_config.json", "node_device_config.json", "node_identity.json"];
 
 #[derive(Clone, Serialize, Deserialize)]
 struct LogQueryCursor {
@@ -80,61 +92,208 @@ struct NetworkStatsSnapshot {
     tx_bytes: u64,
     rx_per_sec: u64,
     tx_per_sec: u64,
+    rx_errors: u64,
+    tx_errors: u64,
+    rx_drops: u64,
+    tx_drops: u64,
     interface_count: usize,
+    per_interfaces: Vec<InterfaceNetworkStats>,
+    updated_at: Option<std::time::SystemTime>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct InterfaceNetworkStats {
+    name: String,
+    rx_bytes: u64,
+    tx_bytes: u64,
+    rx_per_sec: u64,
+    tx_per_sec: u64,
+    rx_errors: u64,
+    tx_errors: u64,
+    rx_drops: u64,
+    tx_drops: u64,
+}
+
+#[derive(Clone, Debug)]
+struct MetricsTimelinePoint {
+    time: String,
+    cpu: u64,
+    memory: u64,
+    rx: u64,
+    tx: u64,
+    errors: u64,
+    drops: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct NetworkInterfaceTotals {
+    rx_bytes: u64,
+    tx_bytes: u64,
+    rx_errors: u64,
+    tx_errors: u64,
+    rx_drops: u64,
+    tx_drops: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct NetworkCollectionSnapshot {
+    rx_bytes: u64,
+    tx_bytes: u64,
+    rx_errors: u64,
+    tx_errors: u64,
+    rx_drops: u64,
+    tx_drops: u64,
+    interface_count: usize,
+    per_interfaces: HashMap<String, NetworkInterfaceTotals>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ProcNetDevStats {
+    rx_errors: u64,
+    rx_drops: u64,
+    tx_errors: u64,
+    tx_drops: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct SystemMetricsSnapshot {
+    cpu_usage_percent: f64,
+    cpu_brand: String,
+    cpu_cores: u64,
+    memory_total_bytes: u64,
+    memory_used_bytes: u64,
+    swap_total_bytes: u64,
+    swap_used_bytes: u64,
+    load_one: f64,
+    load_five: f64,
+    load_fifteen: f64,
+    process_count: u64,
+    uptime_seconds: u64,
+    storage_capacity_bytes: u64,
+    storage_used_bytes: u64,
+    disks_detail: Vec<Value>,
+    network: NetworkStatsSnapshot,
+    timeline: VecDeque<MetricsTimelinePoint>,
     updated_at: Option<std::time::SystemTime>,
 }
 
 #[derive(Clone)]
 struct ControlPanelServer {
     log_downloads: Arc<Mutex<HashMap<String, LogDownloadEntry>>>,
-    network_stats: Arc<RwLock<NetworkStatsSnapshot>>,
+    metrics_snapshot: Arc<RwLock<SystemMetricsSnapshot>>,
 }
 
 impl ControlPanelServer {
     pub fn new() -> Self {
-        let network_stats = Arc::new(RwLock::new(NetworkStatsSnapshot::default()));
-        Self::start_network_sampler(network_stats.clone());
+        let metrics_snapshot = Arc::new(RwLock::new(SystemMetricsSnapshot::default()));
+        Self::start_metrics_sampler(metrics_snapshot.clone());
         ControlPanelServer {
             log_downloads: Arc::new(Mutex::new(HashMap::new())),
-            network_stats,
+            metrics_snapshot,
         }
     }
 
-    fn start_network_sampler(network_stats: Arc<RwLock<NetworkStatsSnapshot>>) {
-        // Background sampler so network rates are stable and independent of UI polling.
+    fn start_metrics_sampler(metrics_snapshot: Arc<RwLock<SystemMetricsSnapshot>>) {
+        // Background sampler so metrics timelines are produced server-side.
         tokio::spawn(async move {
+            let mut system = System::new_all();
             let mut networks = Networks::new_with_refreshed_list();
-            networks.refresh(true);
+            let mut disks = Disks::new_with_refreshed_list_specifics(DiskRefreshKind::everything());
 
-            let (mut prev_rx, mut prev_tx, iface_count) =
-                ControlPanelServer::sum_network_totals(&networks);
+            system.refresh_memory();
+            system.refresh_cpu_usage();
+            networks.refresh(true);
+            disks.refresh(true);
+
+            let cpu_brand = system
+                .cpus()
+                .first()
+                .map(|cpu| cpu.brand().to_string())
+                .unwrap_or_else(|| "Unknown CPU".to_string());
+            let cpu_cores = system.cpus().len() as u64;
+
+            let (storage_capacity_bytes, storage_used_bytes, disks_detail) =
+                ControlPanelServer::sum_disks(&disks);
+
+            let mut proc_net_dev_stats = ControlPanelServer::read_proc_net_dev_stats();
+            let mut network_totals =
+                ControlPanelServer::collect_network_snapshot(&networks, &proc_net_dev_stats);
+            let mut prev_interfaces = network_totals.per_interfaces.clone();
+            let mut prev_rx = network_totals.rx_bytes;
+            let mut prev_tx = network_totals.tx_bytes;
+            let mut prev_error_total =
+                network_totals.rx_errors.saturating_add(network_totals.tx_errors);
+            let mut prev_drop_total = network_totals.rx_drops.saturating_add(network_totals.tx_drops);
             {
-                let mut snapshot = network_stats.write().await;
-                snapshot.rx_bytes = prev_rx;
-                snapshot.tx_bytes = prev_tx;
-                snapshot.rx_per_sec = 0;
-                snapshot.tx_per_sec = 0;
-                snapshot.interface_count = iface_count;
+                let mut snapshot = metrics_snapshot.write().await;
+                snapshot.cpu_brand = cpu_brand;
+                snapshot.cpu_cores = cpu_cores;
+                snapshot.memory_total_bytes = system.total_memory();
+                snapshot.memory_used_bytes = system.used_memory();
+                snapshot.swap_total_bytes = system.total_swap();
+                snapshot.swap_used_bytes = system.used_swap();
+                snapshot.load_one = System::load_average().one;
+                snapshot.load_five = System::load_average().five;
+                snapshot.load_fifteen = System::load_average().fifteen;
+                snapshot.process_count = system.processes().len() as u64;
+                snapshot.uptime_seconds = System::uptime();
+                snapshot.storage_capacity_bytes = storage_capacity_bytes;
+                snapshot.storage_used_bytes = storage_used_bytes;
+                snapshot.disks_detail = disks_detail;
+                snapshot.network.rx_bytes = network_totals.rx_bytes;
+                snapshot.network.tx_bytes = network_totals.tx_bytes;
+                snapshot.network.rx_per_sec = 0;
+                snapshot.network.tx_per_sec = 0;
+                snapshot.network.rx_errors = network_totals.rx_errors;
+                snapshot.network.tx_errors = network_totals.tx_errors;
+                snapshot.network.rx_drops = network_totals.rx_drops;
+                snapshot.network.tx_drops = network_totals.tx_drops;
+                snapshot.network.interface_count = network_totals.interface_count;
+                snapshot.network.per_interfaces =
+                    ControlPanelServer::build_interface_rate_stats(&network_totals.per_interfaces, &prev_interfaces, 0.0);
+                snapshot.network.updated_at = Some(std::time::SystemTime::now());
                 snapshot.updated_at = Some(std::time::SystemTime::now());
             }
 
             let mut last_at = Instant::now();
             let mut ticker = tokio::time::interval(Duration::from_secs(1));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut disk_refresh_counter: u64 = 0;
 
             loop {
                 ticker.tick().await;
-                networks.refresh(true);
 
-                let (rx_bytes, tx_bytes, iface_count) =
-                    ControlPanelServer::sum_network_totals(&networks);
+                system.refresh_memory();
+                system.refresh_cpu_usage();
+                networks.refresh(true);
+                proc_net_dev_stats = ControlPanelServer::read_proc_net_dev_stats();
+
+                disk_refresh_counter = disk_refresh_counter.saturating_add(1);
+                let refresh_disks = disk_refresh_counter % METRICS_DISK_REFRESH_INTERVAL_SECS == 0;
+                if refresh_disks {
+                    disks.refresh(true);
+                }
+
+                network_totals =
+                    ControlPanelServer::collect_network_snapshot(&networks, &proc_net_dev_stats);
                 let dt = last_at.elapsed().as_secs_f64();
                 last_at = Instant::now();
 
-                let rx_delta = rx_bytes.saturating_sub(prev_rx);
-                let tx_delta = tx_bytes.saturating_sub(prev_tx);
-                prev_rx = rx_bytes;
-                prev_tx = tx_bytes;
+                let rx_delta = network_totals.rx_bytes.saturating_sub(prev_rx);
+                let tx_delta = network_totals.tx_bytes.saturating_sub(prev_tx);
+                prev_rx = network_totals.rx_bytes;
+                prev_tx = network_totals.tx_bytes;
+
+                let error_total = network_totals
+                    .rx_errors
+                    .saturating_add(network_totals.tx_errors);
+                let drop_total = network_totals
+                    .rx_drops
+                    .saturating_add(network_totals.tx_drops);
+                let error_delta = error_total.saturating_sub(prev_error_total);
+                let drop_delta = drop_total.saturating_sub(prev_drop_total);
+                prev_error_total = error_total;
+                prev_drop_total = drop_total;
 
                 let (rx_per_sec, tx_per_sec) = if dt > 0.0 {
                     (
@@ -145,32 +304,234 @@ impl ControlPanelServer {
                     (0, 0)
                 };
 
-                let mut snapshot = network_stats.write().await;
-                snapshot.rx_bytes = rx_bytes;
-                snapshot.tx_bytes = tx_bytes;
-                snapshot.rx_per_sec = rx_per_sec;
-                snapshot.tx_per_sec = tx_per_sec;
-                snapshot.interface_count = iface_count;
+                let total_memory_bytes = system.total_memory();
+                let used_memory_bytes = system.used_memory();
+                let memory_percent = if total_memory_bytes > 0 {
+                    ((used_memory_bytes as f64 / total_memory_bytes as f64) * 100.0).round() as u64
+                } else {
+                    0
+                };
+                let cpu_usage_percent = system.global_cpu_usage() as f64;
+                let cpu_percent = cpu_usage_percent.round() as u64;
+
+                let now = Utc::now();
+                let time_label = now.format("%H:%M:%S").to_string();
+
+                let mut snapshot = metrics_snapshot.write().await;
+                snapshot.cpu_usage_percent = cpu_usage_percent;
+                snapshot.memory_total_bytes = total_memory_bytes;
+                snapshot.memory_used_bytes = used_memory_bytes;
+                snapshot.swap_total_bytes = system.total_swap();
+                snapshot.swap_used_bytes = system.used_swap();
+
+                let load_avg = System::load_average();
+                snapshot.load_one = load_avg.one;
+                snapshot.load_five = load_avg.five;
+                snapshot.load_fifteen = load_avg.fifteen;
+                snapshot.process_count = system.processes().len() as u64;
+                snapshot.uptime_seconds = System::uptime();
+
+                if refresh_disks {
+                    let (capacity, used, details) = ControlPanelServer::sum_disks(&disks);
+                    snapshot.storage_capacity_bytes = capacity;
+                    snapshot.storage_used_bytes = used;
+                    snapshot.disks_detail = details;
+                }
+
+                snapshot.network.rx_bytes = network_totals.rx_bytes;
+                snapshot.network.tx_bytes = network_totals.tx_bytes;
+                snapshot.network.rx_per_sec = rx_per_sec;
+                snapshot.network.tx_per_sec = tx_per_sec;
+                snapshot.network.rx_errors = network_totals.rx_errors;
+                snapshot.network.tx_errors = network_totals.tx_errors;
+                snapshot.network.rx_drops = network_totals.rx_drops;
+                snapshot.network.tx_drops = network_totals.tx_drops;
+                snapshot.network.interface_count = network_totals.interface_count;
+                snapshot.network.per_interfaces =
+                    ControlPanelServer::build_interface_rate_stats(&network_totals.per_interfaces, &prev_interfaces, dt);
+                snapshot.network.updated_at = Some(std::time::SystemTime::now());
+                prev_interfaces = network_totals.per_interfaces.clone();
+
+                if snapshot.timeline.len() >= NETWORK_TIMELINE_LIMIT {
+                    snapshot.timeline.pop_front();
+                }
+                snapshot.timeline.push_back(MetricsTimelinePoint {
+                    time: time_label,
+                    cpu: cpu_percent.min(100),
+                    memory: memory_percent.min(100),
+                    rx: rx_per_sec,
+                    tx: tx_per_sec,
+                    errors: if dt > 0.0 {
+                        ((error_delta as f64) / dt).round() as u64
+                    } else {
+                        0
+                    },
+                    drops: if dt > 0.0 {
+                        ((drop_delta as f64) / dt).round() as u64
+                    } else {
+                        0
+                    },
+                });
                 snapshot.updated_at = Some(std::time::SystemTime::now());
             }
         });
     }
 
-    fn sum_network_totals(networks: &Networks) -> (u64, u64, usize) {
-        // Default behavior: sum all non-loopback interfaces.
-        let mut rx_bytes: u64 = 0;
-        let mut tx_bytes: u64 = 0;
-        let mut iface_count: usize = 0;
+    fn sum_disks(disks: &Disks) -> (u64, u64, Vec<Value>) {
+        let mut total_bytes: u64 = 0;
+        let mut used_bytes: u64 = 0;
+        let mut details: Vec<Value> = Vec::new();
+
+        for disk in disks.list().iter() {
+            let total = disk.total_space();
+            let available = disk.available_space();
+            let used = total.saturating_sub(available);
+            total_bytes = total_bytes.saturating_add(total);
+            used_bytes = used_bytes.saturating_add(used);
+            let usage_percent = if total > 0 {
+                ((used as f64 / total as f64) * 100.0).round()
+            } else {
+                0.0
+            };
+
+            details.push(json!({
+                "label": disk.name().to_string_lossy(),
+                "totalGb": bytes_to_gb(total),
+                "usedGb": bytes_to_gb(used),
+                "usagePercent": usage_percent,
+                "fs": disk.file_system().to_string_lossy(),
+                "mount": disk.mount_point().to_string_lossy(),
+            }));
+        }
+
+        (total_bytes, used_bytes, details)
+    }
+
+    fn read_proc_net_dev_stats() -> HashMap<String, ProcNetDevStats> {
+        let mut map: HashMap<String, ProcNetDevStats> = HashMap::new();
+        let content = match std::fs::read_to_string("/proc/net/dev") {
+            Ok(value) => value,
+            Err(_) => return map,
+        };
+
+        for line in content.lines().skip(2) {
+            let (iface_raw, metrics_raw) = match line.split_once(':') {
+                Some(value) => value,
+                None => continue,
+            };
+            let iface = iface_raw.trim().to_string();
+            if iface.is_empty() || iface == "lo" || iface == "lo0" {
+                continue;
+            }
+
+            let values: Vec<&str> = metrics_raw.split_whitespace().collect();
+            if values.len() < 12 {
+                continue;
+            }
+
+            let rx_errors = values.get(2).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+            let rx_drops = values.get(3).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+            let tx_errors = values.get(10).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+            let tx_drops = values.get(11).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+
+            map.insert(
+                iface,
+                ProcNetDevStats {
+                    rx_errors,
+                    rx_drops,
+                    tx_errors,
+                    tx_drops,
+                },
+            );
+        }
+
+        map
+    }
+
+    fn collect_network_snapshot(
+        networks: &Networks,
+        proc_net_dev_stats: &HashMap<String, ProcNetDevStats>,
+    ) -> NetworkCollectionSnapshot {
+        let mut snapshot = NetworkCollectionSnapshot::default();
+
         for (name, data) in networks.iter() {
             let iface = name.as_str();
             if iface == "lo" || iface == "lo0" {
                 continue;
             }
-            iface_count = iface_count.saturating_add(1);
-            rx_bytes = rx_bytes.saturating_add(data.total_received());
-            tx_bytes = tx_bytes.saturating_add(data.total_transmitted());
+
+            let mut totals = NetworkInterfaceTotals {
+                rx_bytes: data.total_received(),
+                tx_bytes: data.total_transmitted(),
+                rx_errors: data.total_errors_on_received(),
+                tx_errors: data.total_errors_on_transmitted(),
+                rx_drops: 0,
+                tx_drops: 0,
+            };
+
+            if let Some(proc_stats) = proc_net_dev_stats.get(iface) {
+                totals.rx_errors = proc_stats.rx_errors;
+                totals.tx_errors = proc_stats.tx_errors;
+                totals.rx_drops = proc_stats.rx_drops;
+                totals.tx_drops = proc_stats.tx_drops;
+            }
+
+            snapshot.interface_count = snapshot.interface_count.saturating_add(1);
+            snapshot.rx_bytes = snapshot.rx_bytes.saturating_add(totals.rx_bytes);
+            snapshot.tx_bytes = snapshot.tx_bytes.saturating_add(totals.tx_bytes);
+            snapshot.rx_errors = snapshot.rx_errors.saturating_add(totals.rx_errors);
+            snapshot.tx_errors = snapshot.tx_errors.saturating_add(totals.tx_errors);
+            snapshot.rx_drops = snapshot.rx_drops.saturating_add(totals.rx_drops);
+            snapshot.tx_drops = snapshot.tx_drops.saturating_add(totals.tx_drops);
+            snapshot.per_interfaces.insert(iface.to_string(), totals);
         }
-        (rx_bytes, tx_bytes, iface_count)
+
+        snapshot
+    }
+
+    fn build_interface_rate_stats(
+        current: &HashMap<String, NetworkInterfaceTotals>,
+        prev: &HashMap<String, NetworkInterfaceTotals>,
+        dt: f64,
+    ) -> Vec<InterfaceNetworkStats> {
+        let mut names: Vec<&String> = current.keys().collect();
+        names.sort();
+
+        names
+            .into_iter()
+            .filter_map(|name| {
+                let now = current.get(name)?;
+                let old = prev.get(name);
+
+                let rx_delta = old
+                    .map(|value| now.rx_bytes.saturating_sub(value.rx_bytes))
+                    .unwrap_or(0);
+                let tx_delta = old
+                    .map(|value| now.tx_bytes.saturating_sub(value.tx_bytes))
+                    .unwrap_or(0);
+
+                let (rx_per_sec, tx_per_sec) = if dt > 0.0 {
+                    (
+                        ((rx_delta as f64) / dt).round() as u64,
+                        ((tx_delta as f64) / dt).round() as u64,
+                    )
+                } else {
+                    (0, 0)
+                };
+
+                Some(InterfaceNetworkStats {
+                    name: name.to_string(),
+                    rx_bytes: now.rx_bytes,
+                    tx_bytes: now.tx_bytes,
+                    rx_per_sec,
+                    tx_per_sec,
+                    rx_errors: now.rx_errors,
+                    tx_errors: now.tx_errors,
+                    rx_drops: now.rx_drops,
+                    tx_drops: now.tx_drops,
+                })
+            })
+            .collect()
     }
 
     async fn handle_main(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
@@ -191,6 +552,105 @@ impl ControlPanelServer {
 
     fn require_param_str(req: &RPCRequest, key: &str) -> Result<String, RPCErrors> {
         Self::param_str(req, key).ok_or(RPCErrors::ParseRequestError(format!("Missing {}", key)))
+    }
+
+    fn parse_zone_name_from_did(did: &str) -> Option<String> {
+        did.strip_prefix("did:bns:")
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string())
+    }
+
+    async fn resolve_profile_name_from_req(req: &RPCRequest) -> Option<String> {
+        if let Ok(runtime) = get_buckyos_api_runtime() {
+            let zone_did = runtime.zone_id.to_string();
+            if let Some(zone_name) = Self::parse_zone_name_from_did(zone_did.as_str()) {
+                return Some(zone_name);
+            }
+
+            if let Ok(client) = runtime.get_system_config_client().await {
+                if let Ok(boot_config_str) = client.get("boot/config").await {
+                    if let Ok(boot_config) = serde_json::from_str::<Value>(boot_config_str.value.as_str()) {
+                        if let Some(zone_id) = boot_config.get("id").and_then(|value| value.as_str()) {
+                            if let Some(zone_name) = Self::parse_zone_name_from_did(zone_id) {
+                                return Some(zone_name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let token_str = req
+            .token
+            .as_ref()
+            .cloned()
+            .or_else(|| Self::param_str(req, "session_token"));
+
+        if let Some(token_str) = token_str {
+            if let Ok(token) = RPCSessionToken::from_string(token_str.as_str()) {
+                if let Some(subject) = token.sub {
+                    let subject = subject.trim();
+                    if !subject.is_empty() {
+                        return Some(subject.to_string());
+                    }
+                }
+            }
+        }
+
+        get_buckyos_api_runtime()
+            .ok()
+            .and_then(|runtime| {
+                runtime
+                    .user_config
+                    .as_ref()
+                    .map(|cfg| cfg.name.clone())
+                    .or_else(|| runtime.user_id.clone())
+                    .or_else(|| runtime.get_owner_user_id())
+            })
+            .and_then(|name| {
+                let name = name.trim().to_string();
+                if name.is_empty() {
+                    None
+                } else {
+                    Some(name)
+                }
+            })
+    }
+
+    fn resolve_device_name_from_req(req: &RPCRequest) -> Option<String> {
+        if let Ok(runtime) = get_buckyos_api_runtime() {
+            if let Some(device_name) = runtime
+                .device_config
+                .as_ref()
+                .map(|device| device.name.clone())
+                .or_else(|| runtime.user_id.clone())
+            {
+                let trimmed = device_name.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+
+        let token_str = req
+            .token
+            .as_ref()
+            .cloned()
+            .or_else(|| Self::param_str(req, "session_token"));
+
+        if let Some(token_str) = token_str {
+            if let Ok(token) = RPCSessionToken::from_string(token_str.as_str()) {
+                if let Some(subject) = token.sub {
+                    let subject = subject.trim();
+                    if !subject.is_empty() {
+                        return Some(subject.to_string());
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     fn encode_cursor<T: Serialize>(value: &T) -> String {
@@ -443,10 +903,21 @@ impl ControlPanelServer {
     }
 
     async fn handle_layout(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let profile_name = Self::resolve_profile_name_from_req(&req)
+            .await
+            .unwrap_or_else(|| "Admin User".to_string());
+        let profile_email = if let Some(device_name) = Self::resolve_device_name_from_req(&req) {
+            format!("{} @ {}", profile_name, device_name)
+        } else if profile_name.contains('@') {
+            profile_name.clone()
+        } else {
+            "admin@buckyos.io".to_string()
+        };
+
         let layout = json!({
             "profile": {
-                "name": "Admin User",
-                "email": "admin@buckyos.io",
+                "name": profile_name,
+                "email": profile_email,
                 "avatar": "https://i.pravatar.cc/64?img=12"
             },
             "systemStatus": {
@@ -1615,87 +2086,92 @@ impl ControlPanelServer {
     }
 
     async fn handle_system_metrics(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
-        let mut system = System::new_all();
-        system.refresh_memory();
-        system.refresh_cpu_usage();
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        system.refresh_cpu_usage();
+        let snapshot = { self.metrics_snapshot.read().await.clone() };
 
-        let cpu_usage = system.global_cpu_usage() as f64;
-        let cpu_brand = system
-            .cpus()
-            .get(0)
-            .map(|c| c.brand().to_string())
-            .unwrap_or_else(|| "Unknown CPU".to_string());
-        let cpu_cores = system.cpus().len() as u64;
-
-        let total_memory_bytes = system.total_memory();
-        let used_memory_bytes = system.used_memory();
+        let total_memory_bytes = snapshot.memory_total_bytes;
+        let used_memory_bytes = snapshot.memory_used_bytes;
         let memory_percent = if total_memory_bytes > 0 {
             ((used_memory_bytes as f64 / total_memory_bytes as f64) * 100.0).round()
         } else {
             0.0
         };
-        let total_swap_bytes = system.total_swap();
-        let used_swap_bytes = system.used_swap();
+        let total_swap_bytes = snapshot.swap_total_bytes;
+        let used_swap_bytes = snapshot.swap_used_bytes;
         let swap_percent = if total_swap_bytes > 0 {
             ((used_swap_bytes as f64 / total_swap_bytes as f64) * 100.0).round()
         } else {
             0.0
         };
-        let load_avg = System::load_average();
-        let process_count = system.processes().len() as u64;
-        let uptime_seconds = System::uptime();
+        let process_count = snapshot.process_count;
+        let uptime_seconds = snapshot.uptime_seconds;
 
         let lite = req
             .params
             .get("lite")
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
-        let mut disks_detail: Vec<Value> = Vec::new();
-        let mut storage_capacity_bytes: u64 = 0;
-        let mut storage_used_bytes: u64 = 0;
+        let disks_detail = if lite {
+            Vec::new()
+        } else {
+            snapshot.disks_detail.clone()
+        };
 
-        let network_stats = { self.network_stats.read().await.clone() };
-
-        if !lite {
-            let mut disks = Disks::new_with_refreshed_list_specifics(DiskRefreshKind::everything());
-            disks.refresh(true);
-
-            for disk in disks.list().iter() {
-                let total = disk.total_space();
-                let available = disk.available_space();
-                let used = total.saturating_sub(available);
-                storage_capacity_bytes = storage_capacity_bytes.saturating_add(total);
-                storage_used_bytes = storage_used_bytes.saturating_add(used);
-                let usage_percent = if total > 0 {
-                    ((used as f64 / total as f64) * 100.0).round()
-                } else {
-                    0.0
-                };
-
-                disks_detail.push(json!({
-                    "label": disk.name().to_string_lossy(),
-                    "totalGb": bytes_to_gb(total),
-                    "usedGb": bytes_to_gb(used),
-                    "usagePercent": usage_percent,
-                    "fs": disk.file_system().to_string_lossy(),
-                    "mount": disk.mount_point().to_string_lossy(),
-                }));
-            }
-        }
-
+        let storage_capacity_bytes = snapshot.storage_capacity_bytes;
+        let storage_used_bytes = snapshot.storage_used_bytes;
         let disk_usage_percent = if storage_capacity_bytes > 0 {
             ((storage_used_bytes as f64 / storage_capacity_bytes as f64) * 100.0).round()
         } else {
             0.0
         };
 
+        let resource_timeline: Vec<Value> = snapshot
+            .timeline
+            .iter()
+            .map(|point| {
+                json!({
+                    "time": point.time,
+                    "cpu": point.cpu,
+                    "memory": point.memory,
+                })
+            })
+            .collect();
+        let network_timeline: Vec<Value> = snapshot
+            .timeline
+            .iter()
+            .map(|point| {
+                json!({
+                    "time": point.time,
+                    "rx": point.rx,
+                    "tx": point.tx,
+                    "errors": point.errors,
+                    "drops": point.drops,
+                })
+            })
+            .collect();
+        let network_per_interface: Vec<Value> = snapshot
+            .network
+            .per_interfaces
+            .iter()
+            .map(|iface| {
+                json!({
+                    "name": iface.name,
+                    "rxBytes": iface.rx_bytes,
+                    "txBytes": iface.tx_bytes,
+                    "rxPerSec": iface.rx_per_sec,
+                    "txPerSec": iface.tx_per_sec,
+                    "rxErrors": iface.rx_errors,
+                    "txErrors": iface.tx_errors,
+                    "rxDrops": iface.rx_drops,
+                    "txDrops": iface.tx_drops,
+                })
+            })
+            .collect();
+
         let metrics = json!({
             "cpu": {
-                "usagePercent": cpu_usage,
-                "model": cpu_brand,
-                "cores": cpu_cores,
+                "usagePercent": snapshot.cpu_usage_percent,
+                "model": snapshot.cpu_brand,
+                "cores": snapshot.cpu_cores,
             },
             "memory": {
                 "totalGb": bytes_to_gb(total_memory_bytes),
@@ -1709,10 +2185,16 @@ impl ControlPanelServer {
                 "disks": disks_detail,
             },
             "network": {
-                "rxBytes": network_stats.rx_bytes,
-                "txBytes": network_stats.tx_bytes,
-                "rxPerSec": network_stats.rx_per_sec,
-                "txPerSec": network_stats.tx_per_sec,
+                "rxBytes": snapshot.network.rx_bytes,
+                "txBytes": snapshot.network.tx_bytes,
+                "rxPerSec": snapshot.network.rx_per_sec,
+                "txPerSec": snapshot.network.tx_per_sec,
+                "rxErrors": snapshot.network.rx_errors,
+                "txErrors": snapshot.network.tx_errors,
+                "rxDrops": snapshot.network.rx_drops,
+                "txDrops": snapshot.network.tx_drops,
+                "interfaceCount": snapshot.network.interface_count,
+                "perInterface": network_per_interface,
             },
             "swap": {
                 "totalGb": bytes_to_gb(total_swap_bytes),
@@ -1720,15 +2202,72 @@ impl ControlPanelServer {
                 "usagePercent": swap_percent,
             },
             "loadAverage": {
-                "one": load_avg.one,
-                "five": load_avg.five,
-                "fifteen": load_avg.fifteen,
+                "one": snapshot.load_one,
+                "five": snapshot.load_five,
+                "fifteen": snapshot.load_fifteen,
             },
             "processCount": process_count,
             "uptimeSeconds": uptime_seconds,
+            "resourceTimeline": resource_timeline,
+            "networkTimeline": network_timeline,
         });
 
         Ok(RPCResponse::new(RPCResult::Success(metrics), req.seq))
+    }
+
+    async fn handle_network_overview(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let snapshot = { self.metrics_snapshot.read().await.clone() };
+
+        let timeline: Vec<Value> = snapshot
+            .timeline
+            .iter()
+            .map(|point| {
+                json!({
+                    "time": point.time,
+                    "rx": point.rx,
+                    "tx": point.tx,
+                    "errors": point.errors,
+                    "drops": point.drops,
+                })
+            })
+            .collect();
+
+        let per_interface: Vec<Value> = snapshot
+            .network
+            .per_interfaces
+            .iter()
+            .map(|iface| {
+                json!({
+                    "name": iface.name,
+                    "rxBytes": iface.rx_bytes,
+                    "txBytes": iface.tx_bytes,
+                    "rxPerSec": iface.rx_per_sec,
+                    "txPerSec": iface.tx_per_sec,
+                    "rxErrors": iface.rx_errors,
+                    "txErrors": iface.tx_errors,
+                    "rxDrops": iface.rx_drops,
+                    "txDrops": iface.tx_drops,
+                })
+            })
+            .collect();
+
+        let response = json!({
+            "summary": {
+                "rxBytes": snapshot.network.rx_bytes,
+                "txBytes": snapshot.network.tx_bytes,
+                "rxPerSec": snapshot.network.rx_per_sec,
+                "txPerSec": snapshot.network.tx_per_sec,
+                "rxErrors": snapshot.network.rx_errors,
+                "txErrors": snapshot.network.tx_errors,
+                "rxDrops": snapshot.network.rx_drops,
+                "txDrops": snapshot.network.tx_drops,
+                "interfaceCount": snapshot.network.interface_count,
+            },
+            "timeline": timeline,
+            "perInterface": per_interface,
+        });
+
+        Ok(RPCResponse::new(RPCResult::Success(response), req.seq))
     }
 
     async fn handle_sys_config_get(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
@@ -1867,7 +2406,7 @@ impl ControlPanelServer {
             .get("depth")
             .and_then(|value| value.as_u64())
             .unwrap_or(2);
-        let depth = depth.min(6);
+        let depth = depth.min(SYS_CONFIG_TREE_MAX_DEPTH);
         let runtime = get_buckyos_api_runtime()?;
         let client = runtime.get_system_config_client().await?;
         let tree = self.build_sys_config_tree(&client, &key, depth).await?;
@@ -1939,6 +2478,734 @@ impl ControlPanelServer {
             RPCResult::Success(json!({
                 "key": key,
                 "items": apps,
+            })),
+            req.seq,
+        ))
+    }
+
+    fn gateway_file_summary(path: &Path) -> Value {
+        let metadata = std::fs::metadata(path).ok();
+        let size_bytes = metadata.as_ref().map(|meta| meta.len()).unwrap_or(0);
+        let modified_at = metadata
+            .as_ref()
+            .and_then(|meta| meta.modified().ok())
+            .map(|time| DateTime::<Utc>::from(time).to_rfc3339())
+            .unwrap_or_else(|| "".to_string());
+
+        json!({
+            "name": path.file_name().and_then(|value| value.to_str()).unwrap_or(""),
+            "path": path.display().to_string(),
+            "exists": path.exists(),
+            "sizeBytes": size_bytes,
+            "modifiedAt": modified_at,
+        })
+    }
+
+    fn gateway_config_file_path(name: &str) -> Option<PathBuf> {
+        if !GATEWAY_CONFIG_FILES.contains(&name) {
+            return None;
+        }
+        Some(Path::new(GATEWAY_ETC_DIR).join(name))
+    }
+
+    fn zone_config_file_path(name: &str) -> Option<PathBuf> {
+        if !ZONE_CONFIG_FILES.contains(&name) {
+            return None;
+        }
+        Some(Path::new(GATEWAY_ETC_DIR).join(name))
+    }
+
+    fn extract_first_quoted_after(value: &str, marker: &str) -> Option<String> {
+        let marker_index = value.find(marker)?;
+        let tail = &value[marker_index + marker.len()..];
+        let quote_start = tail.find('"')?;
+        let quoted_tail = &tail[quote_start + 1..];
+        let quote_end = quoted_tail.find('"')?;
+        Some(quoted_tail[..quote_end].to_string())
+    }
+
+    fn parse_gateway_route_rules(block: &str) -> Vec<Value> {
+        let mut rules: Vec<Value> = Vec::new();
+
+        for raw_line in block.lines() {
+            let line = raw_line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let kind = if line.contains("match ${REQ.path}") {
+                "path"
+            } else if line.contains("match ${REQ.host}") {
+                "host"
+            } else if line.starts_with("return ") {
+                "fallback"
+            } else {
+                "logic"
+            };
+
+            let matcher = if kind == "path" || kind == "host" {
+                Self::extract_first_quoted_after(line, "match ").unwrap_or_default()
+            } else {
+                "".to_string()
+            };
+
+            let action = Self::extract_first_quoted_after(line, "return ").unwrap_or_default();
+
+            rules.push(json!({
+                "kind": kind,
+                "matcher": matcher,
+                "action": action,
+                "raw": line,
+            }));
+        }
+
+        rules
+    }
+
+    fn parse_boot_gateway_stacks(yaml: &str) -> Vec<Value> {
+        let mut stacks: Vec<Value> = Vec::new();
+        let mut current_name: Option<String> = None;
+        let mut current_id = String::new();
+        let mut current_protocol = String::new();
+        let mut current_bind = String::new();
+
+        let flush_current = |stacks: &mut Vec<Value>,
+                             current_name: &mut Option<String>,
+                             current_id: &mut String,
+                             current_protocol: &mut String,
+                             current_bind: &mut String| {
+            if let Some(name) = current_name.take() {
+                stacks.push(json!({
+                    "name": name,
+                    "id": current_id.clone(),
+                    "protocol": current_protocol.clone(),
+                    "bind": current_bind.clone(),
+                }));
+            }
+            current_id.clear();
+            current_protocol.clear();
+            current_bind.clear();
+        };
+
+        let mut in_stacks = false;
+        for raw_line in yaml.lines() {
+            let line = raw_line.trim_end();
+            if line.trim().is_empty() || line.trim_start().starts_with('#') {
+                continue;
+            }
+
+            let indent = raw_line
+                .chars()
+                .take_while(|ch| ch.is_ascii_whitespace())
+                .count();
+            let trimmed = line.trim();
+
+            if trimmed == "stacks:" {
+                in_stacks = true;
+                continue;
+            }
+
+            if !in_stacks {
+                continue;
+            }
+
+            if indent == 0 || trimmed == "global_process_chains:" {
+                break;
+            }
+
+            if indent == 2 && trimmed.ends_with(':') {
+                flush_current(
+                    &mut stacks,
+                    &mut current_name,
+                    &mut current_id,
+                    &mut current_protocol,
+                    &mut current_bind,
+                );
+                current_name = Some(trimmed.trim_end_matches(':').to_string());
+                continue;
+            }
+
+            if current_name.is_none() {
+                continue;
+            }
+
+            if indent == 4 {
+                if let Some(value) = trimmed.strip_prefix("id:") {
+                    current_id = value.trim().to_string();
+                    continue;
+                }
+                if let Some(value) = trimmed.strip_prefix("protocol:") {
+                    current_protocol = value.trim().to_string();
+                    continue;
+                }
+                if let Some(value) = trimmed.strip_prefix("bind:") {
+                    current_bind = value.trim().to_string();
+                    continue;
+                }
+            }
+
+        }
+
+        flush_current(
+            &mut stacks,
+            &mut current_name,
+            &mut current_id,
+            &mut current_protocol,
+            &mut current_bind,
+        );
+
+        stacks
+    }
+
+    async fn handle_zone_overview(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let start_config_path = Self::zone_config_file_path("start_config.json")
+            .unwrap_or_else(|| Path::new(GATEWAY_ETC_DIR).join("start_config.json"));
+        let node_device_config_path = Self::zone_config_file_path("node_device_config.json")
+            .unwrap_or_else(|| Path::new(GATEWAY_ETC_DIR).join("node_device_config.json"));
+        let node_identity_path = Self::zone_config_file_path("node_identity.json")
+            .unwrap_or_else(|| Path::new(GATEWAY_ETC_DIR).join("node_identity.json"));
+
+        let files = vec![
+            Self::gateway_file_summary(&start_config_path),
+            Self::gateway_file_summary(&node_device_config_path),
+            Self::gateway_file_summary(&node_identity_path),
+        ];
+
+        let mut zone_name = String::new();
+        let mut zone_domain = String::new();
+        let mut zone_did = String::new();
+        let mut owner_did = String::new();
+        let mut user_name = String::new();
+        let mut device_name = String::new();
+        let mut device_did = String::new();
+        let mut device_type = String::new();
+        let mut net_id = String::new();
+        let mut sn_url = String::new();
+        let mut sn_username = String::new();
+        let mut zone_iat: i64 = 0;
+        let mut notes: Vec<String> = Vec::new();
+
+        if let Ok(content) = std::fs::read_to_string(&start_config_path) {
+            if let Ok(value) = serde_json::from_str::<Value>(content.as_str()) {
+                zone_domain = value
+                    .get("zone_name")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                user_name = value
+                    .get("user_name")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                sn_url = value
+                    .get("sn_url")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                sn_username = value
+                    .get("sn_username")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                if net_id.is_empty() {
+                    net_id = value
+                        .get("net_id")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                }
+            }
+        }
+
+        if let Ok(content) = std::fs::read_to_string(&node_device_config_path) {
+            if let Ok(value) = serde_json::from_str::<Value>(content.as_str()) {
+                device_did = value
+                    .get("id")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                device_name = value
+                    .get("name")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                device_type = value
+                    .get("device_type")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                if zone_did.is_empty() {
+                    zone_did = value
+                        .get("zone_did")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                }
+                if owner_did.is_empty() {
+                    owner_did = value
+                        .get("owner")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                }
+                if net_id.is_empty() {
+                    net_id = value
+                        .get("net_id")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                }
+            }
+        }
+
+        if let Ok(content) = std::fs::read_to_string(&node_identity_path) {
+            if let Ok(value) = serde_json::from_str::<Value>(content.as_str()) {
+                if zone_did.is_empty() {
+                    zone_did = value
+                        .get("zone_did")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                }
+                if owner_did.is_empty() {
+                    owner_did = value
+                        .get("owner_did")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                }
+                zone_iat = value.get("zone_iat").and_then(|item| item.as_i64()).unwrap_or(0);
+            }
+        }
+
+        if zone_name.is_empty() {
+            zone_name = Self::parse_zone_name_from_did(zone_did.as_str()).unwrap_or_default();
+        }
+
+        if zone_domain.is_empty() && !zone_name.is_empty() {
+            zone_domain = format!("{}.web3.buckyos.ai", zone_name);
+        }
+
+        if zone_name.is_empty() {
+            notes.push("zone name not found in start_config.json or zone_did".to_string());
+        }
+        if zone_did.is_empty() {
+            notes.push("zone_did not found in node_device_config.json/node_identity.json".to_string());
+        }
+        if device_name.is_empty() {
+            notes.push("device name not found in node_device_config.json".to_string());
+        }
+
+        let response = json!({
+            "etcDir": GATEWAY_ETC_DIR,
+            "zone": {
+                "name": zone_name,
+                "domain": zone_domain,
+                "did": zone_did,
+                "ownerDid": owner_did,
+                "userName": user_name,
+                "zoneIat": zone_iat,
+            },
+            "device": {
+                "name": device_name,
+                "did": device_did,
+                "type": device_type,
+                "netId": net_id,
+            },
+            "sn": {
+                "url": sn_url,
+                "username": sn_username,
+            },
+            "files": files,
+            "notes": notes,
+        });
+
+        Ok(RPCResponse::new(RPCResult::Success(response), req.seq))
+    }
+
+    async fn handle_gateway_overview(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let etc_dir = Path::new(GATEWAY_ETC_DIR);
+        let cyfs_gateway_path = etc_dir.join("cyfs_gateway.json");
+        let boot_gateway_path = etc_dir.join("boot_gateway.yaml");
+        let node_gateway_path = etc_dir.join("node_gateway.json");
+        let user_gateway_path = etc_dir.join("user_gateway.yaml");
+        let post_gateway_path = etc_dir.join("post_gateway.yaml");
+
+        let files = vec![
+            Self::gateway_file_summary(&cyfs_gateway_path),
+            Self::gateway_file_summary(&boot_gateway_path),
+            Self::gateway_file_summary(&node_gateway_path),
+            Self::gateway_file_summary(&user_gateway_path),
+            Self::gateway_file_summary(&post_gateway_path),
+        ];
+
+        let mut includes: Vec<String> = Vec::new();
+        let mut route_rules: Vec<Value> = Vec::new();
+        let mut route_preview = String::new();
+        let mut tls_domains: Vec<String> = Vec::new();
+        let mut stacks: Vec<Value> = Vec::new();
+        let mut custom_overrides: Vec<Value> = Vec::new();
+        let mut notes: Vec<String> = Vec::new();
+
+        if let Ok(content) = std::fs::read_to_string(&cyfs_gateway_path) {
+            if let Ok(value) = serde_json::from_str::<Value>(content.as_str()) {
+                if let Some(items) = value.get("includes").and_then(|item| item.as_array()) {
+                    includes = items
+                        .iter()
+                        .filter_map(|item| item.get("path").and_then(|value| value.as_str()))
+                        .map(|value| value.to_string())
+                        .collect();
+                }
+            }
+        }
+
+        if let Ok(content) = std::fs::read_to_string(&node_gateway_path) {
+            if let Ok(value) = serde_json::from_str::<Value>(content.as_str()) {
+                if let Some(block) = value
+                    .get("servers")
+                    .and_then(|item| item.get("node_gateway"))
+                    .and_then(|item| item.get("hook_point"))
+                    .and_then(|item| item.get("main"))
+                    .and_then(|item| item.get("blocks"))
+                    .and_then(|item| item.get("default"))
+                    .and_then(|item| item.get("block"))
+                    .and_then(|item| item.as_str())
+                {
+                    route_rules = Self::parse_gateway_route_rules(block);
+                    route_preview = block
+                        .lines()
+                        .take(8)
+                        .map(|line| line.trim())
+                        .filter(|line| !line.is_empty())
+                        .collect::<Vec<&str>>()
+                        .join("\n");
+                }
+
+                if let Some(certs) = value
+                    .get("stacks")
+                    .and_then(|item| item.get("zone_tls"))
+                    .and_then(|item| item.get("certs"))
+                    .and_then(|item| item.as_array())
+                {
+                    tls_domains = certs
+                        .iter()
+                        .filter_map(|item| item.get("domain").and_then(|value| value.as_str()))
+                        .map(|value| value.to_string())
+                        .collect();
+                }
+            }
+        }
+
+        if let Ok(content) = std::fs::read_to_string(&boot_gateway_path) {
+            stacks = Self::parse_boot_gateway_stacks(content.as_str());
+        }
+
+        for path in [&user_gateway_path, &post_gateway_path] {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                let normalized = content
+                    .lines()
+                    .map(|line| line.trim())
+                    .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                    .collect::<Vec<&str>>()
+                    .join(" ");
+
+                if normalized != "--- {}" && normalized != "{}" {
+                    custom_overrides.push(json!({
+                        "name": path.file_name().and_then(|value| value.to_str()).unwrap_or(""),
+                        "preview": content.lines().take(6).collect::<Vec<&str>>().join("\n"),
+                    }));
+                }
+            }
+        }
+
+        let mode = if tls_domains.iter().any(|domain| domain.contains("web3.buckyos.ai")) {
+            "sn"
+        } else {
+            "direct"
+        };
+
+        notes.push("Gateway config loaded from /opt/buckyos/etc.".to_string());
+        if custom_overrides.is_empty() {
+            notes.push("No user override rules detected in user_gateway.yaml/post_gateway.yaml.".to_string());
+        } else {
+            notes.push("User override rules detected; they may overwrite generated gateway blocks.".to_string());
+        }
+
+        let response = json!({
+            "mode": mode,
+            "etcDir": GATEWAY_ETC_DIR,
+            "files": files,
+            "includes": includes,
+            "stacks": stacks,
+            "tlsDomains": tls_domains,
+            "routes": route_rules,
+            "routePreview": route_preview,
+            "customOverrides": custom_overrides,
+            "notes": notes,
+        });
+
+        Ok(RPCResponse::new(RPCResult::Success(response), req.seq))
+    }
+
+    async fn handle_gateway_file_get(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let name = Self::require_param_str(&req, "name")?;
+        let path = Self::gateway_config_file_path(name.as_str()).ok_or_else(|| {
+            RPCErrors::ParseRequestError(format!("Unsupported gateway config file: {}", name))
+        })?;
+
+        if !path.exists() {
+            return Err(RPCErrors::ReasonError(format!(
+                "Gateway config file not found: {}",
+                path.display()
+            )));
+        }
+
+        let bytes = std::fs::read(&path)
+            .map_err(|err| RPCErrors::ReasonError(format!("Failed to read {}: {}", path.display(), err)))?;
+
+        if bytes.len() > 2 * 1024 * 1024 {
+            return Err(RPCErrors::ReasonError(format!(
+                "Gateway config file too large ({} bytes)",
+                bytes.len()
+            )));
+        }
+
+        let content = String::from_utf8_lossy(&bytes).to_string();
+        let metadata = std::fs::metadata(&path).ok();
+        let modified_at = metadata
+            .as_ref()
+            .and_then(|meta| meta.modified().ok())
+            .map(|time| DateTime::<Utc>::from(time).to_rfc3339())
+            .unwrap_or_else(|| "".to_string());
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "name": name,
+                "path": path.display().to_string(),
+                "sizeBytes": bytes.len(),
+                "modifiedAt": modified_at,
+                "content": content,
+            })),
+            req.seq,
+        ))
+    }
+
+    async fn handle_container_overview(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let mut notes: Vec<String> = Vec::new();
+
+        let server_info = match Command::new("docker")
+            .args(["info", "--format", "{{json .}}"])
+            .output()
+        {
+            Ok(output) => {
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                    let message = if stderr.is_empty() {
+                        "docker info returned non-zero exit code".to_string()
+                    } else {
+                        stderr
+                    };
+                    notes.push(format!("Docker daemon is unavailable: {}", message));
+                    let response = json!({
+                        "available": false,
+                        "daemonRunning": false,
+                        "server": {},
+                        "summary": {
+                            "total": 0,
+                            "running": 0,
+                            "paused": 0,
+                            "exited": 0,
+                            "restarting": 0,
+                            "dead": 0,
+                        },
+                        "containers": [],
+                        "notes": notes,
+                    });
+                    return Ok(RPCResponse::new(RPCResult::Success(response), req.seq));
+                }
+
+                let content = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                serde_json::from_str::<Value>(content.as_str()).unwrap_or_else(|_| json!({}))
+            }
+            Err(error) => {
+                notes.push(format!("docker command not available: {}", error));
+                let response = json!({
+                    "available": false,
+                    "daemonRunning": false,
+                    "server": {},
+                    "summary": {
+                        "total": 0,
+                        "running": 0,
+                        "paused": 0,
+                        "exited": 0,
+                        "restarting": 0,
+                        "dead": 0,
+                    },
+                    "containers": [],
+                    "notes": notes,
+                });
+                return Ok(RPCResponse::new(RPCResult::Success(response), req.seq));
+            }
+        };
+
+        let ps_output = Command::new("docker")
+            .args(["ps", "--all", "--format", "{{json .}}"])
+            .output()
+            .map_err(|error| RPCErrors::ReasonError(format!("docker ps failed: {}", error)))?;
+
+        if !ps_output.status.success() {
+            let stderr = String::from_utf8_lossy(&ps_output.stderr).trim().to_string();
+            let message = if stderr.is_empty() {
+                "docker ps returned non-zero exit code".to_string()
+            } else {
+                stderr
+            };
+            return Err(RPCErrors::ReasonError(format!("docker ps failed: {}", message)));
+        }
+
+        let mut containers: Vec<Value> = Vec::new();
+        for line in String::from_utf8_lossy(&ps_output.stdout).lines() {
+            let row = line.trim();
+            if row.is_empty() {
+                continue;
+            }
+
+            let item = match serde_json::from_str::<Value>(row) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+
+            containers.push(json!({
+                "id": item.get("ID").and_then(|v| v.as_str()).unwrap_or_default(),
+                "name": item.get("Names").and_then(|v| v.as_str()).unwrap_or_default(),
+                "image": item.get("Image").and_then(|v| v.as_str()).unwrap_or_default(),
+                "state": item.get("State").and_then(|v| v.as_str()).unwrap_or_default(),
+                "status": item.get("Status").and_then(|v| v.as_str()).unwrap_or_default(),
+                "ports": item.get("Ports").and_then(|v| v.as_str()).unwrap_or_default(),
+                "networks": item.get("Networks").and_then(|v| v.as_str()).unwrap_or_default(),
+                "createdAt": item.get("CreatedAt").and_then(|v| v.as_str()).unwrap_or_default(),
+                "runningFor": item.get("RunningFor").and_then(|v| v.as_str()).unwrap_or_default(),
+                "command": item.get("Command").and_then(|v| v.as_str()).unwrap_or_default(),
+            }));
+        }
+
+        let running = containers
+            .iter()
+            .filter(|item| {
+                item.get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .eq_ignore_ascii_case("running")
+            })
+            .count() as u64;
+        let paused = containers
+            .iter()
+            .filter(|item| {
+                item.get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .eq_ignore_ascii_case("paused")
+            })
+            .count() as u64;
+        let restarting = containers
+            .iter()
+            .filter(|item| {
+                item.get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .eq_ignore_ascii_case("restarting")
+            })
+            .count() as u64;
+        let dead = containers
+            .iter()
+            .filter(|item| {
+                item.get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .eq_ignore_ascii_case("dead")
+            })
+            .count() as u64;
+        let exited = containers
+            .iter()
+            .filter(|item| {
+                let state = item
+                    .get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                state == "exited" || state == "created"
+            })
+            .count() as u64;
+
+        let response = json!({
+            "available": true,
+            "daemonRunning": true,
+            "server": {
+                "name": server_info.get("Name").and_then(|v| v.as_str()).unwrap_or_default(),
+                "version": server_info.get("ServerVersion").and_then(|v| v.as_str()).unwrap_or_default(),
+                "apiVersion": server_info.get("APIVersion").and_then(|v| v.as_str()).unwrap_or_default(),
+                "os": server_info.get("OperatingSystem").and_then(|v| v.as_str()).unwrap_or_default(),
+                "kernel": server_info.get("KernelVersion").and_then(|v| v.as_str()).unwrap_or_default(),
+                "driver": server_info.get("Driver").and_then(|v| v.as_str()).unwrap_or_default(),
+                "cgroupDriver": server_info.get("CgroupDriver").and_then(|v| v.as_str()).unwrap_or_default(),
+                "cpuCount": server_info.get("NCPU").and_then(|v| v.as_u64()).unwrap_or_default(),
+                "memTotalBytes": server_info.get("MemTotal").and_then(|v| v.as_u64()).unwrap_or_default(),
+            },
+            "summary": {
+                "total": containers.len() as u64,
+                "running": running,
+                "paused": paused,
+                "exited": exited,
+                "restarting": restarting,
+                "dead": dead,
+            },
+            "containers": containers,
+            "notes": notes,
+        });
+
+        Ok(RPCResponse::new(RPCResult::Success(response), req.seq))
+    }
+
+    async fn handle_container_action(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let id = Self::require_param_str(&req, "id")?;
+        let action = Self::require_param_str(&req, "action")?;
+
+        let docker_action = match action.as_str() {
+            "start" => "start",
+            "stop" => "stop",
+            "restart" => "restart",
+            _ => {
+                return Err(RPCErrors::ParseRequestError(format!(
+                    "Unsupported container action: {}",
+                    action
+                )));
+            }
+        };
+
+        let output = Command::new("docker")
+            .arg(docker_action)
+            .arg(id.as_str())
+            .output()
+            .map_err(|error| RPCErrors::ReasonError(format!("docker {} failed: {}", docker_action, error)))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+        if !output.status.success() {
+            let reason = if stderr.is_empty() {
+                format!("docker {} returned non-zero exit code", docker_action)
+            } else {
+                stderr
+            };
+            return Err(RPCErrors::ReasonError(reason));
+        }
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "id": id,
+                "action": docker_action,
+                "ok": true,
+                "stdout": stdout,
             })),
             req.seq,
         ))
@@ -2049,12 +3316,22 @@ impl RPCHandler for ControlPanelServer {
                 self.handle_unimplemented(req, "Update interface config")
                     .await
             }
+            "network.overview" | "network.metrics" => self.handle_network_overview(req).await,
             "network.dns" => self.handle_unimplemented(req, "Get/set DNS").await,
             "network.ddns" => self.handle_unimplemented(req, "Get/set DDNS").await,
             "network.firewall.rules" => self.handle_unimplemented(req, "List firewall rules").await,
             "network.firewall.update" => {
                 self.handle_unimplemented(req, "Update firewall rules")
                     .await
+            }
+            "zone.overview" | "zone.config" => self.handle_zone_overview(req).await,
+            "gateway.overview" | "gateway.config" => self.handle_gateway_overview(req).await,
+            "gateway.file.get" => self.handle_gateway_file_get(req).await,
+            "container.overview" | "containers.overview" | "docker.overview" => {
+                self.handle_container_overview(req).await
+            }
+            "container.action" | "containers.action" | "docker.action" => {
+                self.handle_container_action(req).await
             }
             // Device
             "device.list" => self.handle_unimplemented(req, "List devices/clients").await,

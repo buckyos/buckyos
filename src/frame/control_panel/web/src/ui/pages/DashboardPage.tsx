@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import {
@@ -10,9 +10,9 @@ import {
   mockSystemStatus,
 } from '@/api'
 import Icon from '../icons'
+import { NetworkTrendChart, ResourceTrendChart } from '../components/MonitorTrendCharts'
 import DonutChart from '../charts/DonutChart'
 import HorizontalBarChart from '../charts/HorizontalBarChart'
-import LineAreaChart from '../charts/LineAreaChart'
 
 const DashboardPage = () => {
   const normalizeTimelineTime = (value: string) =>
@@ -56,11 +56,6 @@ const DashboardPage = () => {
   const [systemMetrics, setSystemMetrics] = useState<SystemMetrics | null>(mockSystemMetrics)
   const [systemStatus, setSystemStatus] = useState<SystemStatusResponse | null>(mockSystemStatus)
   const [statusError, setStatusError] = useState<unknown>(null)
-  const networkTotalsRef = useRef<{
-    rxBytes: number
-    txBytes: number
-    timestamp: number
-  } | null>(null)
 
   const [resourceSeries, setResourceSeries] = useState<ResourcePoint[]>(
     mockDashboardData.resourceTimeline.map((point) => ({
@@ -127,42 +122,55 @@ const DashboardPage = () => {
           disk: data.disk ?? prev?.disk ?? mockSystemMetrics.disk,
           network: data.network ?? prev?.network ?? mockSystemMetrics.network,
         }))
-        const cpuValue = Math.round(data.cpu?.usagePercent ?? 0)
-        const memoryValue = Math.round(data.memory?.usagePercent ?? 0)
-        const time = formatTimelineTime(new Date())
-        setResourceSeries((prev) => {
-          const trimmed = prev.length >= 6 ? prev.slice(prev.length - 5) : prev
-          return [
-            ...trimmed,
-            {
-              time,
-              cpu: Math.max(0, Math.min(cpuValue, 100)),
-              memory: Math.max(0, Math.min(memoryValue, 100)),
-            },
-          ]
-        })
-        const rxBytes = data.network?.rxBytes ?? 0
-        const txBytes = data.network?.txBytes ?? 0
-        let rxPerSec = data.network?.rxPerSec ?? 0
-        let txPerSec = data.network?.txPerSec ?? 0
-        const now = Date.now()
-        if (networkTotalsRef.current && (!rxPerSec || !txPerSec)) {
-          const elapsed = Math.max((now - networkTotalsRef.current.timestamp) / 1000, 1)
-          rxPerSec = Math.max(0, (rxBytes - networkTotalsRef.current.rxBytes) / elapsed)
-          txPerSec = Math.max(0, (txBytes - networkTotalsRef.current.txBytes) / elapsed)
+        if (data.resourceTimeline?.length) {
+          setResourceSeries(
+            data.resourceTimeline.slice(-6).map((point) => ({
+              time: normalizeTimelineTime(point.time),
+              cpu: Math.max(0, Math.min(Math.round(point.cpu), 100)),
+              memory: Math.max(0, Math.min(Math.round(point.memory), 100)),
+            })),
+          )
+        } else {
+          const cpuValue = Math.round(data.cpu?.usagePercent ?? 0)
+          const memoryValue = Math.round(data.memory?.usagePercent ?? 0)
+          const time = formatTimelineTime(new Date())
+          setResourceSeries((prev) => {
+            const trimmed = prev.length >= 6 ? prev.slice(prev.length - 5) : prev
+            return [
+              ...trimmed,
+              {
+                time,
+                cpu: Math.max(0, Math.min(cpuValue, 100)),
+                memory: Math.max(0, Math.min(memoryValue, 100)),
+              },
+            ]
+          })
         }
-        networkTotalsRef.current = { rxBytes, txBytes, timestamp: now }
-        setNetworkSeries((prev) => {
-          const trimmed = prev.length >= 6 ? prev.slice(prev.length - 5) : prev
-          return [
-            ...trimmed,
-            {
-              time,
-              rx: Math.round(rxPerSec),
-              tx: Math.round(txPerSec),
-            },
-          ]
-        })
+
+        if (data.networkTimeline?.length) {
+          setNetworkSeries(
+            data.networkTimeline.slice(-6).map((point) => ({
+              time: normalizeTimelineTime(point.time),
+              rx: Math.max(0, Math.round(point.rx)),
+              tx: Math.max(0, Math.round(point.tx)),
+            })),
+          )
+        } else {
+          const time = formatTimelineTime(new Date())
+          const rxPerSec = data.network?.rxPerSec ?? 0
+          const txPerSec = data.network?.txPerSec ?? 0
+          setNetworkSeries((prev) => {
+            const trimmed = prev.length >= 6 ? prev.slice(prev.length - 5) : prev
+            return [
+              ...trimmed,
+              {
+                time,
+                rx: Math.round(rxPerSec),
+                tx: Math.round(txPerSec),
+              },
+            ]
+          })
+        }
       }
     }
 
@@ -253,90 +261,12 @@ const DashboardPage = () => {
   const chartTimeline = resourceTimeline.slice(-6)
   const cpuUsage = chartTimeline.at(-1)?.cpu ?? 0
   const memoryUsage = chartTimeline.at(-1)?.memory ?? 0
-  const resourceLineData = [
-    {
-      id: 'CPU',
-      data: chartTimeline.map((point) => ({ x: point.time, y: point.cpu })),
-    },
-    {
-      id: 'Memory',
-      data: chartTimeline.map((point) => ({ x: point.time, y: point.memory })),
-    },
-  ]
-
   const networkTimeline = networkSeries.slice(-6)
-  const networkLineData = [
-    {
-      id: 'Download',
-      data: networkTimeline.map((point) => ({
-        x: point.time,
-        y: point.rx / 1024 / 1024,
-      })),
-    },
-    {
-      id: 'Upload',
-      data: networkTimeline.map((point) => ({
-        x: point.time,
-        y: point.tx / 1024 / 1024,
-      })),
-    },
-  ]
   const latestNetworkPoint = networkTimeline.at(-1)
   const rxRate = latestNetworkPoint?.rx ?? 0
   const txRate = latestNetworkPoint?.tx ?? 0
   const totalRxBytes = systemMetrics?.network?.rxBytes ?? 0
   const totalTxBytes = systemMetrics?.network?.txBytes ?? 0
-  const networkMaxValue = Math.max(
-    1,
-    ...networkTimeline.map((point) => Math.max(point.rx, point.tx)),
-  )
-  const networkScaleMax = Math.max(5, Math.ceil(networkMaxValue / 1024 / 1024 / 5) * 5)
-  const networkTickValues = [0, networkScaleMax / 2, networkScaleMax]
-
-  const resourceDefs = [
-    {
-      id: 'cpu-gradient',
-      type: 'linearGradient',
-      colors: [
-        { offset: 0, color: 'var(--cp-primary)', opacity: 0.35 },
-        { offset: 100, color: 'var(--cp-primary)', opacity: 0 },
-      ],
-    },
-    {
-      id: 'memory-gradient',
-      type: 'linearGradient',
-      colors: [
-        { offset: 0, color: 'var(--cp-accent)', opacity: 0.3 },
-        { offset: 100, color: 'var(--cp-accent)', opacity: 0 },
-      ],
-    },
-  ]
-  const resourceFill = [
-    { match: { id: 'CPU' }, id: 'cpu-gradient' },
-    { match: { id: 'Memory' }, id: 'memory-gradient' },
-  ]
-  const networkDefs = [
-    {
-      id: 'download-gradient',
-      type: 'linearGradient',
-      colors: [
-        { offset: 0, color: 'var(--cp-primary)', opacity: 0.3 },
-        { offset: 100, color: 'var(--cp-primary)', opacity: 0 },
-      ],
-    },
-    {
-      id: 'upload-gradient',
-      type: 'linearGradient',
-      colors: [
-        { offset: 0, color: 'var(--cp-accent)', opacity: 0.28 },
-        { offset: 100, color: 'var(--cp-accent)', opacity: 0 },
-      ],
-    },
-  ]
-  const networkFill = [
-    { match: { id: 'Download' }, id: 'download-gradient' },
-    { match: { id: 'Upload' }, id: 'upload-gradient' },
-  ]
 
   const storageSlicesTotal = storageSlices.reduce((sum, slice) => sum + slice.value, 0) || 1
   const storageBarSegments = storageSlices.map((slice) => ({
@@ -426,18 +356,7 @@ const DashboardPage = () => {
               </div>
             </div>
             <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-              <LineAreaChart
-                data={resourceLineData}
-                height={220}
-                colors={['var(--cp-primary)', 'var(--cp-accent)']}
-                axisBottom={{ tickSize: 0, tickPadding: 10 }}
-                axisLeft={{ tickSize: 0, tickPadding: 10, tickValues: [0, 25, 50, 75, 100] }}
-                yScaleMin={0}
-                yScaleMax={100}
-                defs={resourceDefs}
-                fill={resourceFill}
-                valueFormatter={(value) => `${Math.round(value)}%`}
-              />
+              <ResourceTrendChart timeline={chartTimeline} height={220} />
             </div>
           </div>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-1">
@@ -688,18 +607,7 @@ const DashboardPage = () => {
           </div>
           <div className="grid gap-6 lg:grid-cols-[1.6fr_1fr]">
             <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-              <LineAreaChart
-                data={networkLineData}
-                height={200}
-                colors={['var(--cp-primary)', 'var(--cp-accent)']}
-                axisBottom={{ tickSize: 0, tickPadding: 10 }}
-                axisLeft={{ tickSize: 0, tickPadding: 10, tickValues: networkTickValues }}
-                yScaleMin={0}
-                yScaleMax={networkScaleMax}
-                defs={networkDefs}
-                fill={networkFill}
-                valueFormatter={(value) => `${value.toFixed(1)} MB/s`}
-              />
+              <NetworkTrendChart timeline={networkTimeline} height={200} />
             </div>
             <div className="space-y-4 text-sm text-[var(--cp-muted)]">
               <div className="rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-4 py-3">

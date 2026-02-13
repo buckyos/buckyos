@@ -4,6 +4,8 @@ import DashboardPage from '../ui/pages/DashboardPage'
 import DesktopHomePage from '../ui/pages/DesktopHomePage'
 import LoginPage from '../ui/pages/LoginPage'
 import StoragePage from '../ui/pages/StoragePage'
+import ContainerPage from '../ui/pages/ContainerPage'
+import NetworkPage from '../ui/pages/NetworkPage'
 import PlaceholderPage from '../ui/pages/PlaceholderPage'
 import UserManagementPage from '../ui/pages/UserManagementPage'
 import DappStorePage from '../ui/pages/DappStorePage'
@@ -34,6 +36,10 @@ const router = createBrowserRouter([
             element: <DashboardPage />,
           },
           {
+            path: 'network',
+            element: <NetworkPage />,
+          },
+          {
             path: '0monitor',
             element: <Navigate to="/monitor" replace />,
           },
@@ -44,6 +50,10 @@ const router = createBrowserRouter([
           {
             path: 'storage',
             element: <StoragePage />,
+          },
+          {
+            path: 'containers',
+            element: <ContainerPage />,
           },
           {
             path: 'dapps',

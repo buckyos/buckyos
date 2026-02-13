@@ -1,7 +1,7 @@
-import type { FormEvent } from 'react'
 import { useEffect, useRef, useState } from 'react'
 
-import { fetchSysConfigTree, fetchSystemMetrics, fetchSystemOverview } from '@/api'
+import { fetchSystemMetrics, fetchSystemOverview } from '@/api'
+import SystemConfigTreeViewer from '../components/SystemConfigTreeViewer'
 import Icon from '../icons'
 
 const formatUptime = (seconds: number) => {
@@ -20,42 +20,96 @@ const formatUptime = (seconds: number) => {
   return parts.join(' ')
 }
 
-const settingsBlocks: SettingBlock[] = [
+type SettingsModule = {
+  title: string
+  description: string
+  icon: IconName
+  owner: string
+  updatedAt: string
+  state: 'ready' | 'review' | 'draft'
+  controls: string[]
+}
+
+const settingsModules: SettingsModule[] = [
   {
     title: 'General',
-    description: 'Node name, locale, and branding for your control panel.',
-    actions: ['Edit'],
+    description: 'Node naming, locale defaults, and branding baseline.',
     icon: 'settings',
+    owner: 'Platform Ops',
+    updatedAt: 'Today 09:20',
+    state: 'ready',
+    controls: ['Host label policy', 'Timezone + locale', 'Control panel banner'],
   },
   {
     title: 'Security',
-    description: 'MFA, session policies, device trust, and audit retention.',
-    actions: ['Configure'],
+    description: 'MFA rules, session behavior, and trusted-device posture.',
     icon: 'shield',
+    owner: 'Security Team',
+    updatedAt: 'Today 08:10',
+    state: 'review',
+    controls: ['Role-based MFA', 'Session timeout', 'Audit retention window'],
   },
   {
     title: 'Networking',
-    description: 'Ports, gateways, SN settings, and zero-trust policies.',
-    actions: ['Open'],
+    description: 'SN endpoints, DNS fallback, gateway forwarding, and ports.',
     icon: 'network',
+    owner: 'Network Ops',
+    updatedAt: 'Yesterday 21:42',
+    state: 'ready',
+    controls: ['SN host preference', 'Gateway host routes', 'DNS resolver policy'],
   },
   {
     title: 'Storage',
-    description: 'Replication, snapshots, and tiering preferences.',
-    actions: ['Review'],
+    description: 'Snapshot cadence, replication plan, and capacity thresholding.',
     icon: 'storage',
+    owner: 'Infra Team',
+    updatedAt: 'Yesterday 19:30',
+    state: 'review',
+    controls: ['Snapshot schedule', 'Capacity guardrails', 'Replica consistency checks'],
   },
   {
     title: 'Notifications',
-    description: 'Alert channels, thresholds, and escalations.',
-    actions: ['Tune'],
+    description: 'Alert channels, severity routing, and incident escalation.',
     icon: 'bell',
+    owner: 'SRE Team',
+    updatedAt: 'Today 06:54',
+    state: 'draft',
+    controls: ['Critical paging path', 'Digest cadence', 'Mute windows'],
   },
   {
     title: 'Integrations',
-    description: 'Connect CI, observability, and external identity providers.',
-    actions: ['Manage'],
+    description: 'Repo hooks, observability exports, and identity providers.',
     icon: 'link',
+    owner: 'DevEx Team',
+    updatedAt: 'Today 07:35',
+    state: 'ready',
+    controls: ['Webhook secrets', 'Metrics export endpoint', 'OIDC federation'],
+  },
+]
+
+const policyBaseline = [
+  { key: 'MFA', value: 'Required for Owner/Admin', tone: 'ready' as const },
+  { key: 'Session', value: '12h idle timeout', tone: 'ready' as const },
+  { key: 'Backups', value: 'Nightly 04:00 validation', tone: 'review' as const },
+  { key: 'Audit Logs', value: 'Retain 90 days', tone: 'ready' as const },
+  { key: 'Alert Escalation', value: 'P1 -> Pager + Email', tone: 'draft' as const },
+]
+
+const integrationChannels = [
+  {
+    name: 'Observability Export',
+    endpoint: 'https://metrics.example.net/v1/push',
+    state: 'Active',
+  },
+  {
+    name: 'Webhook Relay',
+    endpoint: 'https://hooks.example.net/control-panel',
+    state: 'Active',
+  },
+  {
+    name: 'OIDC Provider',
+    endpoint: 'https://identity.example.net',
+    state: 'Pending',
   },
 ]
 
@@ -63,15 +117,10 @@ const SettingsPage = () => {
   const mountedRef = useRef(true)
   const [overview, setOverview] = useState<SystemOverview | null>(null)
   const [metrics, setMetrics] = useState<SystemMetrics | null>(null)
-  const [configKey, setConfigKey] = useState('boot')
-  const [configDepth, setConfigDepth] = useState(2)
-  const [configTree, setConfigTree] = useState<SysConfigTreeResponse | null>(null)
   const [overviewError, setOverviewError] = useState<string | null>(null)
   const [metricsError, setMetricsError] = useState<string | null>(null)
-  const [configError, setConfigError] = useState<string | null>(null)
   const [loadingOverview, setLoadingOverview] = useState(true)
   const [loadingMetrics, setLoadingMetrics] = useState(true)
-  const [loadingConfig, setLoadingConfig] = useState(true)
 
   const loadSystemOverview = async () => {
     setLoadingOverview(true)
@@ -107,28 +156,10 @@ const SettingsPage = () => {
     setLoadingMetrics(false)
   }
 
-  const loadConfigTree = async (key: string, depth: number) => {
-    setLoadingConfig(true)
-    const { data, error } = await fetchSysConfigTree(key, depth)
-    if (!mountedRef.current) {
-      return
-    }
-    if (error) {
-      // eslint-disable-next-line no-console
-      console.warn('Sys config tree API unavailable', error)
-      setConfigError('System config tree is unavailable.')
-    } else {
-      setConfigError(null)
-    }
-    setConfigTree(data)
-    setLoadingConfig(false)
-  }
-
   useEffect(() => {
     mountedRef.current = true
     loadSystemOverview()
     loadSystemMetrics()
-    loadConfigTree(configKey, configDepth)
 
     return () => {
       mountedRef.current = false
@@ -143,25 +174,6 @@ const SettingsPage = () => {
   const diskUsed = metrics?.disk?.usedGb ?? 0
   const diskItems = metrics?.disk?.disks ?? []
   const uptimeLabel = overview ? formatUptime(overview.uptime_seconds) : '—'
-
-  const handleConfigDepthChange = (value: string) => {
-    const next = Number.parseInt(value, 10)
-    if (Number.isNaN(next)) {
-      setConfigDepth(1)
-      return
-    }
-    const clamped = Math.min(Math.max(next, 1), 6)
-    setConfigDepth(clamped)
-  }
-
-  const handleConfigSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    const key = configKey.trim()
-    const depth = Math.min(Math.max(configDepth, 1), 6)
-    setConfigKey(key)
-    setConfigDepth(depth)
-    await loadConfigTree(key, depth)
-  }
 
   return (
     <div className="space-y-6">
@@ -306,81 +318,129 @@ const SettingsPage = () => {
           </span>
           <h2>System Config Tree</h2>
         </div>
-        <form
-          className="flex flex-wrap items-end gap-3"
-          onSubmit={handleConfigSubmit}
-        >
-          <label className="flex min-w-[220px] flex-1 flex-col gap-1 text-xs text-[var(--cp-muted)]">
-            Config Key
-            <input
-              type="text"
-              value={configKey}
-              onChange={(event) => setConfigKey(event.target.value)}
-              placeholder="boot/config"
-              className="h-11 rounded-xl border border-[var(--cp-border)] bg-white px-3 text-sm text-[var(--cp-ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cp-primary)]"
-            />
-          </label>
-          <label className="flex w-28 flex-col gap-1 text-xs text-[var(--cp-muted)]">
-            Depth
-            <input
-              type="number"
-              min={1}
-              max={6}
-              value={configDepth}
-              onChange={(event) => handleConfigDepthChange(event.target.value)}
-              className="h-11 rounded-xl border border-[var(--cp-border)] bg-white px-3 text-sm text-[var(--cp-ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cp-primary)]"
-            />
-          </label>
-          <button
-            type="submit"
-            className="h-11 rounded-full bg-[var(--cp-primary)] px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-[var(--cp-primary-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cp-primary)]"
-          >
-            Load Tree
-          </button>
-        </form>
-        {configError ? (
-          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-700">
-            {configError}
-          </div>
-        ) : null}
-        <div className="mt-4 rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] p-4">
-          <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs text-[var(--cp-ink)]">
-            {loadingConfig
-              ? 'Loading system config tree...'
-              : JSON.stringify(configTree?.tree ?? {}, null, 2)}
-          </pre>
-        </div>
-        <p className="mt-2 text-xs text-[var(--cp-muted)]">
-          Key: {configTree?.key ?? configKey} · Depth: {configTree?.depth ?? configDepth}
-        </p>
+        <SystemConfigTreeViewer defaultKey="" depth={4} />
       </section>
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {settingsBlocks.map((block) => (
-          <div
-            key={block.title}
-            className="flex flex-col gap-3 rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface)] p-5 text-sm text-[var(--cp-muted)] shadow-sm"
-          >
-            <div className="flex items-center gap-2 text-[var(--cp-ink)]">
+      <section className="grid gap-6 xl:grid-cols-[1.25fr_0.75fr]">
+        <div className="cp-panel p-6">
+          <div className="mb-5 flex items-center gap-3 text-lg font-semibold text-[var(--cp-ink)]">
+            <span className="inline-flex size-9 items-center justify-center rounded-2xl bg-[var(--cp-primary-soft)] text-[var(--cp-primary-strong)]">
+              <Icon name="settings" className="size-4" />
+            </span>
+            <h2>Configuration Modules</h2>
+          </div>
+          <div className="space-y-3">
+            {settingsModules.map((module) => (
+              <div
+                key={module.title}
+                className="rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-4 py-4"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-start gap-3">
+                    <span className="inline-flex size-9 items-center justify-center rounded-2xl bg-white text-[var(--cp-primary-strong)]">
+                      <Icon name={module.icon} className="size-4" />
+                    </span>
+                    <div>
+                      <p className="text-sm font-semibold text-[var(--cp-ink)]">{module.title}</p>
+                      <p className="text-xs text-[var(--cp-muted)]">{module.description}</p>
+                    </div>
+                  </div>
+                  <span
+                    className={`rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide ${
+                      module.state === 'ready'
+                        ? 'bg-emerald-100 text-emerald-700'
+                        : module.state === 'review'
+                          ? 'bg-amber-100 text-amber-700'
+                          : 'bg-slate-100 text-slate-700'
+                    }`}
+                  >
+                    {module.state}
+                  </span>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {module.controls.map((control) => (
+                    <span
+                      key={control}
+                      className="rounded-full border border-[var(--cp-border)] bg-white px-2.5 py-1 text-[11px] text-[var(--cp-ink)]"
+                    >
+                      {control}
+                    </span>
+                  ))}
+                </div>
+                <div className="mt-3 flex items-center justify-between text-[11px] text-[var(--cp-muted)]">
+                  <span>Owner: {module.owner}</span>
+                  <span>Updated: {module.updatedAt}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="space-y-6">
+          <div className="cp-panel p-6">
+            <div className="mb-4 flex items-center gap-3 text-lg font-semibold text-[var(--cp-ink)]">
               <span className="inline-flex size-9 items-center justify-center rounded-2xl bg-[var(--cp-primary-soft)] text-[var(--cp-primary-strong)]">
-                <Icon name={block.icon} className="size-4" />
+                <Icon name="shield" className="size-4" />
               </span>
-              <p className="text-base font-semibold">{block.title}</p>
+              <h2>Policy Baseline</h2>
             </div>
-            <p className="text-xs text-[var(--cp-muted)]">{block.description}</p>
-            <div className="flex flex-wrap gap-2">
-              {block.actions.map((action) => (
-                <button
-                  key={action}
-                  type="button"
-                  className="rounded-full border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-1 text-xs text-[var(--cp-ink)] transition hover:border-[var(--cp-primary)] hover:text-[var(--cp-primary-strong)]"
+            <div className="space-y-2">
+              {policyBaseline.map((policy) => (
+                <div
+                  key={policy.key}
+                  className="flex items-center justify-between gap-3 rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2"
                 >
-                  {action}
-                </button>
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">{policy.key}</p>
+                    <p className="text-xs text-[var(--cp-ink)]">{policy.value}</p>
+                  </div>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                      policy.tone === 'ready'
+                        ? 'bg-emerald-100 text-emerald-700'
+                        : policy.tone === 'review'
+                          ? 'bg-amber-100 text-amber-700'
+                          : 'bg-slate-100 text-slate-700'
+                    }`}
+                  >
+                    {policy.tone}
+                  </span>
+                </div>
               ))}
             </div>
           </div>
-        ))}
+
+          <div className="cp-panel p-6">
+            <div className="mb-4 flex items-center gap-3 text-lg font-semibold text-[var(--cp-ink)]">
+              <span className="inline-flex size-9 items-center justify-center rounded-2xl bg-[var(--cp-primary-soft)] text-[var(--cp-primary-strong)]">
+                <Icon name="link" className="size-4" />
+              </span>
+              <h2>Integration Channels</h2>
+            </div>
+            <div className="space-y-2">
+              {integrationChannels.map((channel) => (
+                <div
+                  key={channel.name}
+                  className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-semibold text-[var(--cp-ink)]">{channel.name}</p>
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                        channel.state === 'Active'
+                          ? 'bg-emerald-100 text-emerald-700'
+                          : 'bg-amber-100 text-amber-700'
+                      }`}
+                    >
+                      {channel.state}
+                    </span>
+                  </div>
+                  <p className="mt-1 break-all text-[11px] text-[var(--cp-muted)]">{channel.endpoint}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
       </section>
     </div>
   )
