@@ -24,7 +24,7 @@ use crate::behavior::{
     Observation, ObservationSource, PolicyEngine, ProcessInput, TokenUsage, Tokenizer, TraceCtx,
     WorklogSink,
 };
-use crate::workspace::TOOL_EXEC_BASH;
+use crate::workspace::{TOOL_EXEC_BASH, TOOL_WORKLOG_MANAGE};
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
 const DEFAULT_ROLE_MD: &str = "role.md";
@@ -288,6 +288,15 @@ impl AIAgent {
         self.tool_mgr.list_tool_specs()
     }
 
+    fn is_sub_agent(&self) -> bool {
+        self.did_document
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .map(|v| v == "sub-agent")
+            .unwrap_or(false)
+            || self.did_document.get("parent_did").is_some()
+    }
+
     pub async fn enable(&self) {
         let mut guard = self.state.lock().await;
         guard.enabled = true;
@@ -304,16 +313,66 @@ impl AIAgent {
         let mut guard = self.state.lock().await;
         guard.enabled = false;
         info!("ai_agent.disable: did={} hp={}", self.did, guard.hp);
+        drop(guard);
+        if self.is_sub_agent() {
+            let ctx = ToolCallContext {
+                trace_id: format!("{}:disable:{}", self.did, now_ms()),
+                agent_did: self.did.clone(),
+                behavior: "on_wakeup".to_string(),
+                step_idx: 0,
+                wakeup_id: format!("disable-{}", now_ms()),
+            };
+            append_workspace_worklog_entry(
+                self.tool_mgr.clone(),
+                &ctx,
+                "sub_agent_disabled",
+                "info",
+                "sub-agent disabled".to_string(),
+                json!({"reason":"runtime.disable"}),
+                None,
+                vec!["sub_agent".to_string(), "disable".to_string()],
+                None,
+                None,
+            )
+            .await;
+        }
     }
 
     pub async fn push_inbox_message(&self, msg: Json) {
-        let mut guard = self.state.lock().await;
-        guard.inbox_msgs.push_back(msg);
+        let inbox_len = {
+            let mut guard = self.state.lock().await;
+            guard.inbox_msgs.push_back(msg.clone());
+            guard.inbox_msgs.len()
+        };
         debug!(
             "ai_agent.push_inbox_message: did={} inbox_len={}",
-            self.did,
-            guard.inbox_msgs.len()
+            self.did, inbox_len
         );
+        let ctx = ToolCallContext {
+            trace_id: format!("{}:inbox:{}", self.did, now_ms()),
+            agent_did: self.did.clone(),
+            behavior: "on_wakeup".to_string(),
+            step_idx: 0,
+            wakeup_id: format!("inbox-{}", now_ms()),
+        };
+        let thread_id = extract_thread_id_from_message_payload(&msg);
+        append_workspace_worklog_entry(
+            self.tool_mgr.clone(),
+            &ctx,
+            "message_reply",
+            "info",
+            "received runtime inbox message".to_string(),
+            json!({
+                "source": "runtime.push_inbox_message",
+                "inbox_len": inbox_len,
+                "message": compact_json_for_worklog(msg, 4 * 1024)
+            }),
+            thread_id,
+            vec!["message".to_string(), "recv".to_string()],
+            None,
+            None,
+        )
+        .await;
     }
 
     pub async fn push_event(&self, event: Json) {
@@ -415,6 +474,30 @@ impl AIAgent {
             self.did,
             reason.is_some()
         );
+        if self.is_sub_agent() {
+            let ctx = ToolCallContext {
+                trace_id: format!("{}:wakeup:{}", self.did, now),
+                agent_did: self.did.clone(),
+                behavior: "on_wakeup".to_string(),
+                step_idx: 0,
+                wakeup_id: format!("wakeup-start-{}", now),
+            };
+            append_workspace_worklog_entry(
+                self.tool_mgr.clone(),
+                &ctx,
+                "sub_agent_wake",
+                "info",
+                "sub-agent wakeup".to_string(),
+                json!({
+                    "explicit_reason": reason.is_some()
+                }),
+                None,
+                vec!["sub_agent".to_string(), "active".to_string()],
+                None,
+                None,
+            )
+            .await;
+        }
 
         let (wakeup_id, hp_before, trace_id, input_payload, inbox_record_ids) = match self
             .prepare_wakeup_context(reason, now)
@@ -857,7 +940,32 @@ impl AIAgent {
                     break;
                 }
             };
-            inbox.push(msg_center_record_to_inbox_message(record));
+            let pulled = msg_center_record_to_inbox_message(record);
+            let ctx = ToolCallContext {
+                trace_id: format!("{}:pull_inbox:{}", self.did, now_ms()),
+                agent_did: self.did.clone(),
+                behavior: "on_wakeup".to_string(),
+                step_idx: 0,
+                wakeup_id: format!("pull-{}", now_ms()),
+            };
+            append_workspace_worklog_entry(
+                self.tool_mgr.clone(),
+                &ctx,
+                "message_reply",
+                "info",
+                "received msg_center inbox message".to_string(),
+                json!({
+                    "source": "msg_center.get_next",
+                    "record_id": pulled.record_id,
+                    "message": compact_json_for_worklog(pulled.input.clone(), 6 * 1024)
+                }),
+                extract_thread_id_from_inbox_payload(&pulled.input),
+                vec!["message".to_string(), "recv".to_string()],
+                None,
+                None,
+            )
+            .await;
+            inbox.push(pulled);
         }
         if !inbox.is_empty() {
             info!(
@@ -1468,6 +1576,34 @@ async fn run_single_action(
         args["cwd"] = json!(cwd);
     }
 
+    let ctx = ToolCallContext {
+        trace_id: trace.trace_id.clone(),
+        agent_did: trace.agent_did.clone(),
+        behavior: trace.behavior.clone(),
+        step_idx: trace.step_idx,
+        wakeup_id: trace.wakeup_id.clone(),
+    };
+    append_workspace_worklog_entry(
+        tool_mgr.clone(),
+        &ctx,
+        "action",
+        "info",
+        format!("action `{}` started", action_title),
+        json!({
+            "title": action.title,
+            "command": action.command,
+            "execution_mode": action.execution_mode,
+            "timeout_ms": action.timeout_ms,
+            "cwd": action.cwd,
+            "rationale": action.rationale
+        }),
+        None,
+        vec!["action".to_string(), "exec".to_string()],
+        None,
+        None,
+    )
+    .await;
+
     let call_id = format!(
         "{}-{}-{}",
         trace.wakeup_id,
@@ -1476,13 +1612,7 @@ async fn run_single_action(
     );
     let result = tool_mgr
         .call_tool(
-            &ToolCallContext {
-                trace_id: trace.trace_id.clone(),
-                agent_did: trace.agent_did.clone(),
-                behavior: trace.behavior.clone(),
-                step_idx: trace.step_idx,
-                wakeup_id: trace.wakeup_id.clone(),
-            },
+            &ctx,
             ToolCall {
                 name: TOOL_EXEC_BASH.to_string(),
                 args,
@@ -1505,6 +1635,29 @@ async fn run_single_action(
                     trace.wakeup_id, trace.step_idx, action_title, raw
                 );
             }
+            append_workspace_worklog_entry(
+                tool_mgr.clone(),
+                &ctx,
+                "action",
+                if ok { "success" } else { "failed" },
+                format!(
+                    "action `{}` {}",
+                    action_title,
+                    if ok { "succeeded" } else { "failed" }
+                ),
+                json!({
+                    "title": action.title,
+                    "command": action.command,
+                    "execution_mode": action.execution_mode,
+                    "rationale": action.rationale,
+                    "result": compact_json_for_worklog(raw.clone(), 8 * 1024)
+                }),
+                None,
+                vec!["action".to_string(), "exec".to_string()],
+                None,
+                None,
+            )
+            .await;
             let content = json!({
                 "ok": ok,
                 "title": action.title,
@@ -1527,6 +1680,24 @@ async fn run_single_action(
                 "ai_agent.action failed: wakeup_id={} step={} title={} command={} err={}",
                 trace.wakeup_id, trace.step_idx, action_title, action_command, err
             );
+            append_workspace_worklog_entry(
+                tool_mgr.clone(),
+                &ctx,
+                "action",
+                "failed",
+                format!("action `{}` failed", action_title),
+                json!({
+                    "title": action.title,
+                    "command": action.command,
+                    "execution_mode": action.execution_mode,
+                    "error": err.to_string()
+                }),
+                None,
+                vec!["action".to_string(), "exec".to_string()],
+                None,
+                None,
+            )
+            .await;
             let content = json!({
                 "ok": false,
                 "title": action.title,
@@ -1795,6 +1966,93 @@ fn wakeup_status_name(status: &WakeupStatus) -> &'static str {
         WakeupStatus::Error => "error",
         WakeupStatus::Disabled => "disabled",
     }
+}
+
+async fn append_workspace_worklog_entry(
+    tool_mgr: Arc<ToolManager>,
+    ctx: &ToolCallContext,
+    log_type: &str,
+    status: &str,
+    summary: String,
+    payload: Json,
+    thread_id: Option<String>,
+    tags: Vec<String>,
+    related_agent_id: Option<String>,
+    task_id: Option<String>,
+) {
+    if !tool_mgr.has_tool(TOOL_WORKLOG_MANAGE) {
+        return;
+    }
+
+    let mut args = json!({
+        "action": "append",
+        "type": log_type,
+        "status": status,
+        "agent_id": ctx.agent_did.clone(),
+        "run_id": ctx.wakeup_id.clone(),
+        "step_id": format!("step-{}", ctx.step_idx),
+        "summary": summary,
+        "payload": compact_json_for_worklog(payload, 8 * 1024),
+        "tags": tags,
+        "timestamp": now_ms()
+    });
+    if let Some(v) = thread_id {
+        args["thread_id"] = Json::String(v);
+    }
+    if let Some(v) = related_agent_id {
+        args["related_agent_id"] = Json::String(v);
+    }
+    if let Some(v) = task_id {
+        args["task_id"] = Json::String(v);
+    }
+
+    let call = ToolCall {
+        name: TOOL_WORKLOG_MANAGE.to_string(),
+        args,
+        call_id: format!("{}-{}-wl-{}", ctx.wakeup_id, ctx.step_idx, now_ms()),
+    };
+    if let Err(err) = tool_mgr.call_tool(ctx, call).await {
+        warn!(
+            "ai_agent.worklog_append_failed: did={} wakeup_id={} step={} behavior={} err={}",
+            ctx.agent_did, ctx.wakeup_id, ctx.step_idx, ctx.behavior, err
+        );
+    }
+}
+
+fn compact_json_for_worklog(value: Json, max_bytes: usize) -> Json {
+    match serde_json::to_vec(&value) {
+        Ok(bytes) if bytes.len() > max_bytes => {
+            let text = String::from_utf8_lossy(&bytes);
+            Json::String(format!(
+                "{}...[TRUNCATED]",
+                text.chars().take(max_bytes).collect::<String>()
+            ))
+        }
+        Ok(_) => value,
+        Err(_) => json!({"error":"serialize_failed"}),
+    }
+}
+
+fn extract_thread_id_from_inbox_payload(payload: &Json) -> Option<String> {
+    payload
+        .pointer("/msg/thread_key")
+        .or_else(|| payload.pointer("/msg/thread"))
+        .or_else(|| payload.pointer("/record/thread_key"))
+        .or_else(|| payload.pointer("/record/thread_id"))
+        .or_else(|| payload.pointer("/record/reply_thread_key"))
+        .and_then(|v| v.as_str())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+fn extract_thread_id_from_message_payload(payload: &Json) -> Option<String> {
+    payload
+        .get("thread_id")
+        .or_else(|| payload.get("thread_key"))
+        .or_else(|| payload.get("thread"))
+        .and_then(|v| v.as_str())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 fn msg_center_record_to_inbox_message(record: MsgRecordWithObject) -> PulledInboxMessage {

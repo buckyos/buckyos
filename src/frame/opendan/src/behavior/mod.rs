@@ -9,9 +9,12 @@ use buckyos_api::{
     CompleteStatus, CompleteTaskOptions, CreateTaskOptions, ModelSpec, Requirements, TaskFilter,
     TaskManagerClient, TaskStatus, AICC_SERVICE_SERVICE_NAME,
 };
+use log::warn;
 use serde_json::{json, Map, Value as Json};
 
-use crate::agent_tool::{ToolCall, ToolManager, ToolSpec};
+use crate::agent_tool::{ToolCall, ToolError, ToolManager, ToolSpec};
+use crate::ai_runtime::TOOL_CREATE_SUB_AGENT;
+use crate::workspace::{TOOL_TODO_MANAGE, TOOL_WORKLOG_MANAGE};
 
 pub mod config;
 pub mod observability;
@@ -95,7 +98,8 @@ impl LLMBehavior {
         let result = self
             .run_step_inner(&input, started, track, behavior_task_id)
             .await;
-        self.finalize_behavior_task(behavior_task_id, &result).await;
+        self.finalize_behavior_task(&input.trace, behavior_task_id, &result)
+            .await;
         result
     }
 
@@ -231,13 +235,16 @@ impl LLMBehavior {
                 let ctx = tool_loop::trace_to_tool_call_context(&input.trace);
                 let exec = self.deps.tools.call_tool(&ctx, call.clone()).await;
                 let duration_ms = now_ms().saturating_sub(call_started);
+                let call_name = call.name.clone();
+                let call_id = call.call_id.clone();
+                let call_args = call.args.clone();
 
                 match exec {
                     Ok(raw) => {
                         let obs = Sanitizer::sanitize_observation(
                             ObservationSource::Tool,
                             &call.name,
-                            raw,
+                            raw.clone(),
                             input.limits.max_observation_bytes,
                         );
                         tool_observations.push(obs);
@@ -258,6 +265,38 @@ impl LLMBehavior {
                                 duration_ms,
                             })
                             .await;
+                        if call_name != TOOL_WORKLOG_MANAGE {
+                            append_workspace_worklog_via_tool(
+                                self.deps.tools.clone(),
+                                &input.trace,
+                                "function_call",
+                                "success",
+                                format!("tool `{}` call succeeded", call_name),
+                                json!({
+                                    "tool": call_name,
+                                    "call_id": call_id,
+                                    "args": compact_json_for_worklog(call_args.clone(), 8 * 1024),
+                                    "result": compact_json_for_worklog(raw.clone(), 8 * 1024),
+                                    "duration_ms": duration_ms
+                                }),
+                                vec!["tool".to_string(), "function_call".to_string()],
+                                None,
+                                None,
+                                None,
+                            )
+                            .await;
+
+                            append_todo_or_subagent_worklog(
+                                self.deps.tools.clone(),
+                                &input.trace,
+                                &call_name,
+                                &call_args,
+                                &raw,
+                                true,
+                                duration_ms,
+                            )
+                            .await;
+                        }
                     }
                     Err(err) => {
                         let err_msg = err.to_string();
@@ -287,6 +326,38 @@ impl LLMBehavior {
                                 duration_ms,
                             })
                             .await;
+                        if call_name != TOOL_WORKLOG_MANAGE {
+                            append_workspace_worklog_via_tool(
+                                self.deps.tools.clone(),
+                                &input.trace,
+                                "function_call",
+                                "failed",
+                                format!("tool `{}` call failed", call_name),
+                                json!({
+                                    "tool": call_name,
+                                    "call_id": call_id,
+                                    "args": compact_json_for_worklog(call_args.clone(), 8 * 1024),
+                                    "error": err_msg,
+                                    "duration_ms": duration_ms
+                                }),
+                                vec!["tool".to_string(), "function_call".to_string()],
+                                None,
+                                None,
+                                None,
+                            )
+                            .await;
+
+                            append_todo_or_subagent_worklog(
+                                self.deps.tools.clone(),
+                                &input.trace,
+                                &call_name,
+                                &call_args,
+                                &json!({}),
+                                false,
+                                duration_ms,
+                            )
+                            .await;
+                        }
                     }
                 }
             }
@@ -374,10 +445,37 @@ impl LLMBehavior {
             )
             .await
             .map_err(|err| LLMComputeError::Internal(err.to_string()))?;
+        append_workspace_worklog_via_tool(
+            self.deps.tools.clone(),
+            &input.trace,
+            "task_created",
+            "success",
+            format!(
+                "create behavior task for {}#{}",
+                input.trace.behavior, input.trace.step_idx
+            ),
+            json!({
+                "task_id": task.id,
+                "task_type": LLM_BEHAVIOR_TASK_TYPE,
+                "behavior": input.trace.behavior,
+                "step_idx": input.trace.step_idx,
+                "wakeup_id": input.trace.wakeup_id,
+            }),
+            vec!["task".to_string(), "llm".to_string()],
+            None,
+            None,
+            Some(task.id.to_string()),
+        )
+        .await;
         Ok(task.id)
     }
 
-    async fn finalize_behavior_task(&self, behavior_task_id: i64, result: &LLMResult) {
+    async fn finalize_behavior_task(
+        &self,
+        trace: &TraceCtx,
+        behavior_task_id: i64,
+        result: &LLMResult,
+    ) {
         match &result.status {
             LLMStatus::Ok => {
                 let _ = self
@@ -392,6 +490,22 @@ impl LLMBehavior {
                     )
                     .await;
                 let _ = self.deps.taskmgr.complete_task(behavior_task_id).await;
+                append_workspace_worklog_via_tool(
+                    self.deps.tools.clone(),
+                    trace,
+                    "task_finished",
+                    "success",
+                    format!("behavior task {} completed", behavior_task_id),
+                    json!({
+                        "task_id": behavior_task_id,
+                        "status": "completed",
+                    }),
+                    vec!["task".to_string(), "llm".to_string()],
+                    None,
+                    None,
+                    Some(behavior_task_id.to_string()),
+                )
+                .await;
             }
             LLMStatus::Error(err) => {
                 let _ = self
@@ -399,6 +513,23 @@ impl LLMBehavior {
                     .taskmgr
                     .mark_task_as_failed(behavior_task_id, &err.message)
                     .await;
+                append_workspace_worklog_via_tool(
+                    self.deps.tools.clone(),
+                    trace,
+                    "task_finished",
+                    "failed",
+                    format!("behavior task {} failed", behavior_task_id),
+                    json!({
+                        "task_id": behavior_task_id,
+                        "status": "failed",
+                        "error": err.message
+                    }),
+                    vec!["task".to_string(), "llm".to_string()],
+                    None,
+                    None,
+                    Some(behavior_task_id.to_string()),
+                )
+                .await;
             }
         }
     }
@@ -831,6 +962,176 @@ fn ai_usage_to_token_usage(usage: Option<&buckyos_api::AiUsage>) -> TokenUsage {
     } else {
         TokenUsage::default()
     }
+}
+
+async fn append_workspace_worklog_via_tool(
+    tool_mgr: Arc<ToolManager>,
+    trace: &TraceCtx,
+    log_type: &str,
+    status: &str,
+    summary: String,
+    payload: Json,
+    tags: Vec<String>,
+    related_agent_id: Option<String>,
+    thread_id: Option<String>,
+    task_id: Option<String>,
+) {
+    if !tool_mgr.has_tool(TOOL_WORKLOG_MANAGE) {
+        return;
+    }
+
+    let mut args = json!({
+        "action": "append",
+        "type": log_type,
+        "status": status,
+        "agent_id": trace.agent_did,
+        "run_id": trace.wakeup_id,
+        "step_id": format!("step-{}", trace.step_idx),
+        "summary": summary,
+        "payload": compact_json_for_worklog(payload, 8 * 1024),
+        "tags": tags,
+        "timestamp": now_ms()
+    });
+    if let Some(v) = related_agent_id {
+        args["related_agent_id"] = Json::String(v);
+    }
+    if let Some(v) = thread_id {
+        args["thread_id"] = Json::String(v);
+    }
+    if let Some(v) = task_id {
+        args["task_id"] = Json::String(v);
+    }
+
+    let ctx = tool_loop::trace_to_tool_call_context(trace);
+    let call = ToolCall {
+        name: TOOL_WORKLOG_MANAGE.to_string(),
+        args,
+        call_id: format!(
+            "{}-{}-wl-{}",
+            trace.wakeup_id,
+            trace.step_idx,
+            next_task_name_suffix()
+        ),
+    };
+    if let Err(err) = tool_mgr.call_tool(&ctx, call).await {
+        log_worklog_append_warn(trace, err);
+    }
+}
+
+async fn append_todo_or_subagent_worklog(
+    tool_mgr: Arc<ToolManager>,
+    trace: &TraceCtx,
+    tool_name: &str,
+    call_args: &Json,
+    tool_result: &Json,
+    ok: bool,
+    duration_ms: u64,
+) {
+    if tool_name == TOOL_TODO_MANAGE {
+        let Some(action) = call_args.get("action").and_then(|v| v.as_str()) else {
+            return;
+        };
+        if action != "create" && action != "update" {
+            return;
+        }
+        let log_type = if action == "create" {
+            "todo_created"
+        } else {
+            "todo_updated"
+        };
+        let parent_todo = call_args
+            .get("parent_todo_id")
+            .or_else(|| call_args.get("parent_id"))
+            .cloned();
+        let todo_id = tool_result
+            .pointer("/todo/id")
+            .and_then(|v| v.as_str())
+            .map(|v| v.to_string())
+            .or_else(|| {
+                call_args
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(|v| v.to_string())
+            });
+        append_workspace_worklog_via_tool(
+            tool_mgr,
+            trace,
+            log_type,
+            if ok { "success" } else { "failed" },
+            format!(
+                "todo `{}` action `{}`",
+                todo_id.as_deref().unwrap_or("-"),
+                action
+            ),
+            json!({
+                "action": action,
+                "todo_id": todo_id,
+                "parent_todo_id": parent_todo,
+                "args": compact_json_for_worklog(call_args.clone(), 4 * 1024),
+                "result": compact_json_for_worklog(tool_result.clone(), 4 * 1024),
+                "duration_ms": duration_ms
+            }),
+            vec!["todo".to_string(), action.to_string()],
+            None,
+            None,
+            None,
+        )
+        .await;
+        return;
+    }
+
+    if tool_name == TOOL_CREATE_SUB_AGENT {
+        let sub_agent_did = tool_result
+            .pointer("/sub_agent/did")
+            .and_then(|v| v.as_str())
+            .map(|v| v.to_string());
+        append_workspace_worklog_via_tool(
+            tool_mgr,
+            trace,
+            "sub_agent_created",
+            if ok { "success" } else { "failed" },
+            format!(
+                "create_sub_agent `{}` {}",
+                call_args
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("-"),
+                if ok { "succeeded" } else { "failed" }
+            ),
+            json!({
+                "name": call_args.get("name").cloned(),
+                "did": call_args.get("did").cloned(),
+                "result": compact_json_for_worklog(tool_result.clone(), 4 * 1024),
+                "duration_ms": duration_ms
+            }),
+            vec!["sub_agent".to_string(), "create".to_string()],
+            sub_agent_did,
+            None,
+            None,
+        )
+        .await;
+    }
+}
+
+fn compact_json_for_worklog(value: Json, max_bytes: usize) -> Json {
+    match serde_json::to_vec(&value) {
+        Ok(bytes) if bytes.len() > max_bytes => {
+            let text = String::from_utf8_lossy(&bytes);
+            Json::String(format!(
+                "{}...[TRUNCATED]",
+                text.chars().take(max_bytes).collect::<String>()
+            ))
+        }
+        Ok(_) => value,
+        Err(_) => json!({"error":"serialize_failed"}),
+    }
+}
+
+fn log_worklog_append_warn(trace: &TraceCtx, err: ToolError) {
+    warn!(
+        "llm_behavior.worklog_append_failed: trace_id={} wakeup_id={} step={} behavior={} err={}",
+        trace.trace_id, trace.wakeup_id, trace.step_idx, trace.behavior, err
+    );
 }
 
 fn now_ms() -> u64 {
