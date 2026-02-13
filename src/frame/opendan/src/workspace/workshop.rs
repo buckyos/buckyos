@@ -9,6 +9,7 @@ use tokio::process::Command;
 use tokio::time::{timeout, Duration, Instant};
 
 use super::todo::{TodoTool, TodoToolConfig, TOOL_TODO_MANAGE};
+use super::worklog::{WorklogTool, WorklogToolConfig, TOOL_WORKLOG_MANAGE};
 use crate::agent_tool::{
     AgentTool, MCPToolConfig, ToolCallContext, ToolError, ToolManager, ToolSpec,
 };
@@ -24,8 +25,11 @@ const DEFAULT_MAX_FILE_WRITE_BYTES: usize = 256 * 1024;
 const DEFAULT_TOOLS_JSON_REL_PATH: &str = "tools/tools.json";
 const DEFAULT_TOOLS_MD_REL_PATH: &str = "tools/tools.md";
 const DEFAULT_TODO_DB_REL_PATH: &str = "todo/todo.db";
+const DEFAULT_WORKLOG_DB_REL_PATH: &str = "worklog/worklog.db";
 const DEFAULT_TODO_LIST_LIMIT: usize = 32;
 const DEFAULT_TODO_MAX_LIST_LIMIT: usize = 128;
+const DEFAULT_WORKLOG_LIST_LIMIT: usize = 64;
+const DEFAULT_WORKLOG_MAX_LIST_LIMIT: usize = 256;
 
 #[derive(Clone, Debug)]
 pub struct AgentWorkshopConfig {
@@ -67,6 +71,7 @@ impl Default for AgentWorkshopToolsConfig {
                 WorkshopToolConfig::enabled(TOOL_EXEC_BASH),
                 WorkshopToolConfig::enabled(TOOL_EDIT_FILE),
                 WorkshopToolConfig::enabled(TOOL_TODO_MANAGE),
+                WorkshopToolConfig::enabled(TOOL_WORKLOG_MANAGE),
             ],
         }
     }
@@ -158,6 +163,14 @@ impl AgentWorkshop {
                     TOOL_TODO_MANAGE => {
                         let policy = TodoToolPolicy::from_tool_config(&self.cfg, tool)?;
                         tool_mgr.register_tool(TodoTool::new(TodoToolConfig {
+                            db_path: policy.db_path,
+                            default_list_limit: policy.default_list_limit,
+                            max_list_limit: policy.max_list_limit,
+                        })?)?;
+                    }
+                    TOOL_WORKLOG_MANAGE => {
+                        let policy = WorklogToolPolicy::from_tool_config(&self.cfg, tool)?;
+                        tool_mgr.register_tool(WorklogTool::new(WorklogToolConfig {
                             db_path: policy.db_path,
                             default_list_limit: policy.default_list_limit,
                             max_list_limit: policy.max_list_limit,
@@ -332,6 +345,55 @@ impl TodoToolPolicy {
             .map(u64_to_usize)
             .transpose()?
             .unwrap_or(DEFAULT_TODO_MAX_LIST_LIMIT.max(default_list_limit));
+
+        if default_list_limit == 0 || max_list_limit == 0 || default_list_limit > max_list_limit {
+            return Err(ToolError::InvalidArgs(format!(
+                "tool `{}` has invalid list limit bounds",
+                tool_cfg.name
+            )));
+        }
+
+        Ok(Self {
+            db_path,
+            default_list_limit,
+            max_list_limit,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+struct WorklogToolPolicy {
+    db_path: PathBuf,
+    default_list_limit: usize,
+    max_list_limit: usize,
+}
+
+impl WorklogToolPolicy {
+    fn from_tool_config(
+        workshop_cfg: &AgentWorkshopConfig,
+        tool_cfg: &WorkshopToolConfig,
+    ) -> Result<Self, ToolError> {
+        let params = tool_cfg.params.as_object().ok_or_else(|| {
+            ToolError::InvalidArgs(format!(
+                "tool `{}` params must be a json object",
+                tool_cfg.name
+            ))
+        })?;
+
+        let db_path = if let Some(raw_db_path) = read_string_from_map(params, "db_path")? {
+            resolve_path_in_workspace(&workshop_cfg.workspace_root, &raw_db_path)?
+        } else {
+            resolve_path_in_workspace(&workshop_cfg.workspace_root, DEFAULT_WORKLOG_DB_REL_PATH)?
+        };
+
+        let default_list_limit = read_u64_from_map(params, "default_list_limit")?
+            .map(u64_to_usize)
+            .transpose()?
+            .unwrap_or(DEFAULT_WORKLOG_LIST_LIMIT);
+        let max_list_limit = read_u64_from_map(params, "max_list_limit")?
+            .map(u64_to_usize)
+            .transpose()?
+            .unwrap_or(DEFAULT_WORKLOG_MAX_LIST_LIMIT.max(default_list_limit));
 
         if default_list_limit == 0 || max_list_limit == 0 || default_list_limit > max_list_limit {
             return Err(ToolError::InvalidArgs(format!(
@@ -1162,6 +1224,7 @@ mod tests {
         assert!(tool_mgr.has_tool(TOOL_EDIT_FILE));
         assert!(!tool_mgr.has_tool(TOOL_EXEC_BASH));
         assert!(!tool_mgr.has_tool(TOOL_TODO_MANAGE));
+        assert!(!tool_mgr.has_tool(TOOL_WORKLOG_MANAGE));
 
         let err = call(
             &tool_mgr,
@@ -1265,6 +1328,7 @@ mod tests {
         assert!(!tool_mgr.has_tool(TOOL_EXEC_BASH));
         assert!(!tool_mgr.has_tool(TOOL_EDIT_FILE));
         assert!(!tool_mgr.has_tool(TOOL_TODO_MANAGE));
+        assert!(!tool_mgr.has_tool(TOOL_WORKLOG_MANAGE));
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -1304,6 +1368,7 @@ mod tests {
         assert!(tool_mgr.has_tool(TOOL_EXEC_BASH));
         assert!(!tool_mgr.has_tool(TOOL_EDIT_FILE));
         assert!(!tool_mgr.has_tool(TOOL_TODO_MANAGE));
+        assert!(!tool_mgr.has_tool(TOOL_WORKLOG_MANAGE));
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -1320,6 +1385,7 @@ mod tests {
             .expect("register workshop tools");
 
         assert!(tool_mgr.has_tool(TOOL_TODO_MANAGE));
+        assert!(tool_mgr.has_tool(TOOL_WORKLOG_MANAGE));
 
         let created = call(
             &tool_mgr,
@@ -1375,6 +1441,72 @@ mod tests {
         assert_eq!(updated["todo"]["task_id"], 42);
         assert_eq!(updated["todo"]["task_status"], "running");
         assert!(fs::metadata(root.join("todo/todo.db")).await.is_ok());
+
+        let _ = fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn worklog_manage_tool_supports_append_and_query_fields() {
+        let root = unique_workspace_root("worklog-manage");
+        let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
+            .await
+            .expect("create workshop");
+        let tool_mgr = ToolManager::new();
+        workshop
+            .register_tools(&tool_mgr)
+            .expect("register workshop tools");
+
+        assert!(tool_mgr.has_tool(TOOL_WORKLOG_MANAGE));
+
+        let appended = call(
+            &tool_mgr,
+            TOOL_WORKLOG_MANAGE,
+            json!({
+                "action": "append",
+                "type": "function_call",
+                "status": "success",
+                "step_id": "step-1",
+                "thread_id": "thread-alpha",
+                "summary": "exec_bash finished",
+                "tags": ["tool", "runtime"],
+                "payload": { "tool": "exec_bash", "ok": true }
+            }),
+        )
+        .await
+        .expect("append worklog should succeed");
+        let log_id = appended["log"]["log_id"]
+            .as_str()
+            .expect("log id should exist")
+            .to_string();
+
+        let listed = call(
+            &tool_mgr,
+            TOOL_WORKLOG_MANAGE,
+            json!({
+                "action": "list",
+                "thread_id": "thread-alpha",
+                "tag": "runtime"
+            }),
+        )
+        .await
+        .expect("list worklog should succeed");
+        let listed_logs = listed["logs"].as_array().expect("logs should be an array");
+        assert_eq!(listed_logs.len(), 1);
+        assert_eq!(listed_logs[0]["log_id"], log_id);
+
+        let got = call(
+            &tool_mgr,
+            TOOL_WORKLOG_MANAGE,
+            json!({
+                "action": "get",
+                "log_id": log_id
+            }),
+        )
+        .await
+        .expect("get worklog should succeed");
+        assert_eq!(got["log"]["type"], "function_call");
+        assert_eq!(got["log"]["thread_id"], "thread-alpha");
+        assert!(fs::metadata(root.join("worklog/worklog.db")).await.is_ok());
 
         let _ = fs::remove_dir_all(root).await;
     }
