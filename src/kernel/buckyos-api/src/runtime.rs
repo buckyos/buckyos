@@ -22,12 +22,15 @@ use crate::app_mgr::*;
 use crate::control_panel::*;
 use crate::msg_center_client::*;
 use crate::msg_queue::*;
+use crate::opendan_client::*;
 use crate::repo_client::*;
 use crate::scheduler_client::*;
 use crate::system_config::*;
 use crate::task_mgr::*;
 use crate::verify_hub_client::*;
-use crate::{get_buckyos_api_runtime, get_full_appid, get_session_token_env_key};
+use crate::{
+    get_buckyos_api_runtime, get_full_appid, get_session_token_env_key, OPENDAN_SERVICE_NAME,
+};
 
 const DEFAULT_NODE_GATEWAY_PORT: u16 = 3180;
 
@@ -1331,6 +1334,13 @@ impl BuckyOSRuntime {
         let krpc_client = self.get_zone_service_krpc_client("repo-service").await?;
         let client = RepoClient::new(krpc_client);
         Ok(client)
+    }
+
+    pub async fn get_opendan_client(&self) -> Result<OpenDanClient> {
+        let krpc_client = self
+            .get_zone_service_krpc_client(OPENDAN_SERVICE_NAME)
+            .await?;
+        Ok(OpenDanClient::new(krpc_client))
     }
 
     pub fn get_zone_ndn_base_url(&self) -> String {

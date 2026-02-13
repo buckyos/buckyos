@@ -623,6 +623,11 @@ pub(crate) async fn update_node_gateway_config(
                     //TODO：处理zone-gateway中的快捷方式
                 } else {
                     let line_rule = format!(
+                        "match ${{REQ.path}} \"/kapi/{}\" && {}",
+                        spec_id, target_str
+                    );
+                    process_chain_lines.push_front(line_rule);
+                    let line_rule = format!(
                         "match ${{REQ.path}} \"/kapi/{}/*\" && {}",
                         spec_id, target_str
                     );
@@ -649,6 +654,7 @@ pub(crate) async fn update_node_gateway_config(
             r#"match ${REQ.path} "/.well-known/*" && return "forward http://127.0.0.1:3200/";"#
                 .to_string(),
         );
+        process_chain_lines.push_front(r#"match ${REQ.path} "/kapi/system_config" && return "forward http://127.0.0.1:3200/";"#.to_string());
         process_chain_lines.push_front(r#"match ${REQ.path} "/kapi/system_config/*" && return "forward http://127.0.0.1:3200/";"#.to_string());
 
         let web_app_list = get_web_app_list(input_system_config)?;

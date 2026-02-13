@@ -14,6 +14,7 @@ mod aicc_client;
 mod app_doc;
 mod app_mgr;
 mod gateway_control;
+mod opendan_client;
 mod permission;
 mod repo_client;
 mod runtime;
@@ -34,6 +35,7 @@ pub use zone_gateway::*;
 
 pub use app_mgr::*;
 pub use gateway_control::*;
+pub use opendan_client::*;
 pub use permission::*;
 pub use runtime::*;
 

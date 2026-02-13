@@ -16,6 +16,14 @@ export default defineConfig({
         target: 'http://127.0.0.1:3180',
         changeOrigin: true,
       },
+      '/kapi/opendan': {
+        target: 'http://127.0.0.1:3180',
+        changeOrigin: true,
+      },
+      '/kapi/task-manager': {
+        target: 'http://127.0.0.1:3180',
+        changeOrigin: true,
+      },
     },
   },
 })

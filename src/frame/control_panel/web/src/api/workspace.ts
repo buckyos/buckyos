@@ -1,6 +1,8 @@
+import { OpenDanClient, TaskManagerClient, buckyos } from 'buckyos'
+
 // ── Agent Workspace Data Abstraction Layer ──
 // All functions return { data, error } following the existing API pattern.
-// Currently backed by mock data. Swap internals to callRpc<T>() when connecting to real backend.
+// Prefer real OpenDan / TaskManager data, and fall back to mock data on error.
 
 // ── Mock Data ──
 
@@ -681,66 +683,861 @@ const mockTodos: Record<string, WsTodo[]> = {
 
 // ── API Functions ──
 
+type TaskManagerTask = Awaited<ReturnType<TaskManagerClient['getTask']>>
+type OpenDanAgent = Awaited<ReturnType<OpenDanClient['getAgent']>>
+type OpenDanWorklog = Awaited<ReturnType<OpenDanClient['listWorkspaceWorklogs']>>['items'][number]
+type OpenDanTodo = Awaited<ReturnType<OpenDanClient['listWorkspaceTodos']>>['items'][number]
+type OpenDanSubAgent = Awaited<ReturnType<OpenDanClient['listWorkspaceSubAgents']>>['items'][number]
+
+type RunMeta = {
+  run_id: string
+  agent_id: string
+  started_at_ms: number
+  ended_at_ms?: number
+  step_ids: Set<string>
+}
+
+type TaskRunRef = {
+  run_id: string
+  step_index: number
+}
+
+type ParsedAiccRequestId = {
+  run_id: string
+  behavior: string
+  step_index: number
+}
+
+type AgentRunData = {
+  runs: LoopRun[]
+  steps_by_run: Map<string, WsStep[]>
+  tasks_by_run: Map<string, WsTask[]>
+  run_metas: Map<string, RunMeta>
+}
+
+const opendanClient = new OpenDanClient(new buckyos.kRPCClient('/kapi/opendan/'))
+const taskMgrClient = new TaskManagerClient(new buckyos.kRPCClient('/kapi/task-manager/'))
+
+const WORKSPACE_TASK_APP_ID = 'opendan-llm-behavior'
+const AGENT_RUN_CACHE_TTL_MS = 5000
+const RUN_WORKLOG_CACHE_TTL_MS = 5000
+
+const agentRunCache = new Map<string, { at: number; data: AgentRunData }>()
+const runMetaCache = new Map<string, RunMeta>()
+const runWorklogCache = new Map<string, { at: number; logs: WsWorkLog[] }>()
+
+const normalizeKey = (value: string): string => value.trim().toLowerCase().replace(/[\s-]+/g, '_')
+
+const asObject = (value: unknown): Record<string, unknown> | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  return value as Record<string, unknown>
+}
+
+const readPath = (value: unknown, path: Array<string | number>): unknown => {
+  let cursor: unknown = value
+  for (const key of path) {
+    if (typeof key === 'number') {
+      if (!Array.isArray(cursor) || key < 0 || key >= cursor.length) return undefined
+      cursor = cursor[key]
+      continue
+    }
+    const obj = asObject(cursor)
+    if (!obj || !(key in obj)) return undefined
+    cursor = obj[key]
+  }
+  return cursor
+}
+
+const readString = (value: unknown, paths: Array<Array<string | number>>): string | undefined => {
+  for (const path of paths) {
+    const raw = readPath(value, path)
+    if (typeof raw === 'string') {
+      const trimmed = raw.trim()
+      if (trimmed) return trimmed
+    }
+  }
+  return undefined
+}
+
+const readNumber = (value: unknown, paths: Array<Array<string | number>>): number | undefined => {
+  for (const path of paths) {
+    const raw = readPath(value, path)
+    if (typeof raw === 'number' && Number.isFinite(raw)) return raw
+    if (typeof raw === 'string') {
+      const parsed = Number(raw)
+      if (Number.isFinite(parsed)) return parsed
+    }
+  }
+  return undefined
+}
+
+const toMillis = (value: unknown): number | undefined => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value < 1_000_000_000_000 ? Math.round(value * 1000) : Math.round(value)
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (!trimmed) return undefined
+    const numeric = Number(trimmed)
+    if (Number.isFinite(numeric)) {
+      return numeric < 1_000_000_000_000 ? Math.round(numeric * 1000) : Math.round(numeric)
+    }
+    const parsed = Date.parse(trimmed)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return undefined
+}
+
+const toIso = (value: unknown, fallback = now.toISOString()): string => {
+  const ms = toMillis(value)
+  if (ms == null) return fallback
+  return new Date(ms).toISOString()
+}
+
+const preview = (value: unknown, max = 140): string => {
+  if (value == null) return ''
+  const raw =
+    typeof value === 'string'
+      ? value
+      : typeof value === 'number' || typeof value === 'boolean'
+        ? String(value)
+        : JSON.stringify(value)
+  const text = raw.trim().replace(/\s+/g, ' ')
+  if (!text) return ''
+  return text.length > max ? `${text.slice(0, max - 3)}...` : text
+}
+
+const stringifyJson = (value: unknown): string | undefined => {
+  if (value == null) return undefined
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return undefined
+  }
+}
+
+const stepIdFromIndex = (stepIndex: number): string => `step-${Math.max(0, Math.trunc(stepIndex))}`
+
+const taskStatusToWsTaskStatus = (status: string): WsTaskStatus => {
+  switch (normalizeKey(status)) {
+    case 'running':
+      return 'running'
+    case 'completed':
+      return 'success'
+    case 'failed':
+    case 'canceled':
+      return 'failed'
+    default:
+      return 'queued'
+  }
+}
+
+const taskStatusToStepStatus = (status: string): StepStatus => {
+  switch (normalizeKey(status)) {
+    case 'running':
+      return 'running'
+    case 'completed':
+      return 'success'
+    case 'failed':
+      return 'failed'
+    case 'canceled':
+      return 'skipped'
+    default:
+      return 'running'
+  }
+}
+
+const taskStatusToRunStatus = (status: string): LoopRunStatus => {
+  switch (normalizeKey(status)) {
+    case 'running':
+      return 'running'
+    case 'completed':
+      return 'success'
+    case 'canceled':
+      return 'cancelled'
+    case 'failed':
+      return 'failed'
+    default:
+      return 'running'
+  }
+}
+
+const normalizeAgentType = (agentType: string | undefined): AgentType =>
+  normalizeKey(agentType ?? '') === 'sub' ? 'sub' : 'main'
+
+const normalizeAgentStatus = (status: string | undefined): AgentStatus => {
+  switch (normalizeKey(status ?? '')) {
+    case 'running':
+      return 'running'
+    case 'sleeping':
+    case 'paused':
+      return 'sleeping'
+    case 'error':
+    case 'failed':
+      return 'error'
+    case 'offline':
+    case 'disabled':
+    case 'stopped':
+      return 'offline'
+    default:
+      return 'idle'
+  }
+}
+
+const normalizeTodoStatus = (status: string | undefined): WsTodoStatus =>
+  normalizeKey(status ?? '') === 'done' || normalizeKey(status ?? '') === 'cancelled'
+    ? 'done'
+    : 'open'
+
+const normalizeWorkLogStatus = (status: string | undefined): WorkLogStatus => {
+  switch (normalizeKey(status ?? '')) {
+    case 'success':
+      return 'success'
+    case 'failed':
+      return 'failed'
+    case 'partial':
+      return 'partial'
+    default:
+      return 'info'
+  }
+}
+
+const normalizeWorkLogType = (logType: string | undefined): WorkLogType => {
+  switch (normalizeKey(logType ?? '')) {
+    case 'message_sent':
+      return 'message_sent'
+    case 'message_reply':
+      return 'message_reply'
+    case 'function_call':
+      return 'function_call'
+    case 'sub_agent_created':
+      return 'sub_agent_created'
+    case 'sub_agent_sleep':
+      return 'sub_agent_sleep'
+    case 'sub_agent_wake':
+      return 'sub_agent_wake'
+    case 'sub_agent_destroyed':
+      return 'sub_agent_destroyed'
+    default:
+      return 'action'
+  }
+}
+
+const taskBelongsToAgent = (task: TaskManagerTask, agentId: string): boolean => {
+  if (task.user_id === agentId) return true
+  return readString(task.data, [['agent_did'], ['trace', 'agent_did']]) === agentId
+}
+
+const isWorkspaceTask = (task: TaskManagerTask): boolean => {
+  if (task.task_type === 'llm_behavior') return true
+  if (task.task_type.startsWith('aicc.')) return true
+  const hasWakeup = readString(task.data, [['wakeup_id'], ['aicc', 'request', 'id']])
+  return Boolean(hasWakeup)
+}
+
+const parseAiccRequestId = (taskData: unknown): ParsedAiccRequestId | undefined => {
+  const requestId = readString(taskData, [['aicc', 'request', 'id']])
+  if (!requestId) return undefined
+  const parts = requestId.split(':')
+  if (parts.length < 4) return undefined
+  const runId = parts[1]?.trim()
+  const behavior = parts[2]?.trim()
+  const step = Number(parts[3])
+  if (!runId || !behavior || !Number.isFinite(step)) return undefined
+  return {
+    run_id: runId,
+    behavior,
+    step_index: Math.max(0, Math.trunc(step)),
+  }
+}
+
+const parseRefFromAiccRequestId = (taskData: unknown): TaskRunRef | undefined => {
+  const parsed = parseAiccRequestId(taskData)
+  if (!parsed) return undefined
+  return { run_id: parsed.run_id, step_index: parsed.step_index }
+}
+
+const resolveTaskRunRef = (
+  task: TaskManagerTask,
+  taskById: Map<number, TaskManagerTask>,
+  behaviorRefs: Map<number, TaskRunRef>,
+): TaskRunRef | undefined => {
+  const directRunId = readString(task.data, [['wakeup_id']])
+  const directStep = readNumber(task.data, [['step_idx']])
+  if (directRunId) {
+    return {
+      run_id: directRunId,
+      step_index: Math.max(0, Math.trunc(directStep ?? 0)),
+    }
+  }
+
+  const parsed = parseRefFromAiccRequestId(task.data)
+  if (parsed) return parsed
+
+  const firstParent = task.parent_id ?? task.root_id
+  if (firstParent == null) return undefined
+
+  let cursor: number | null = firstParent
+  const visited = new Set<number>()
+  while (cursor != null && !visited.has(cursor)) {
+    visited.add(cursor)
+    const ref = behaviorRefs.get(cursor)
+    if (ref) return ref
+    const parent = taskById.get(cursor)
+    if (!parent) break
+    const parentDirectRunId = readString(parent.data, [['wakeup_id']])
+    const parentStep = readNumber(parent.data, [['step_idx']])
+    if (parentDirectRunId) {
+      return {
+        run_id: parentDirectRunId,
+        step_index: Math.max(0, Math.trunc(parentStep ?? 0)),
+      }
+    }
+    const parentParsed = parseRefFromAiccRequestId(parent.data)
+    if (parentParsed) return parentParsed
+    cursor = parent.parent_id ?? parent.root_id
+  }
+
+  return undefined
+}
+
+const extractTaskPrompt = (task: TaskManagerTask): string => {
+  const messages = readPath(task.data, ['aicc', 'request', 'payload', 'messages'])
+  if (Array.isArray(messages)) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const msg = asObject(messages[index])
+      const content = msg?.content
+      if (typeof content === 'string' && content.trim()) return preview(content)
+    }
+  }
+  const fromData = readString(task.data, [['prompt'], ['input'], ['message'], ['aicc', 'request', 'id']])
+  if (fromData) return preview(fromData)
+  return preview(task.name)
+}
+
+const extractTaskResult = (task: TaskManagerTask): string => {
+  const resultText = readString(task.data, [
+    ['aicc', 'output', 'text'],
+    ['result', 'text'],
+    ['output', 'text'],
+    ['error', 'message'],
+    ['aicc', 'error', 'message'],
+  ])
+  if (resultText) return preview(resultText)
+  const resultJson =
+    readPath(task.data, ['aicc', 'output', 'json']) ??
+    readPath(task.data, ['result', 'json']) ??
+    readPath(task.data, ['result'])
+  return preview(resultJson)
+}
+
+const extractTaskBehavior = (task: TaskManagerTask): string | undefined => {
+  const fromTask = readString(task.data, [['behavior']])
+  if (fromTask) return fromTask
+  return parseAiccRequestId(task.data)?.behavior
+}
+
+const mapTaskToWsTask = (task: TaskManagerTask, runRef: TaskRunRef): WsTask => {
+  const createdAtMs = toMillis(task.created_at) ?? Date.now()
+  const updatedAtMs = toMillis(task.updated_at) ?? createdAtMs
+  const duration =
+    updatedAtMs >= createdAtMs ? Math.round((updatedAtMs - createdAtMs) / 1000) : undefined
+
+  const outputData =
+    readPath(task.data, ['aicc', 'output']) ??
+    readPath(task.data, ['result']) ??
+    readPath(task.data, ['output'])
+
+  const model =
+    readString(task.data, [
+      ['aicc', 'output', 'extra', 'model'],
+      ['result', 'extra', 'model'],
+      ['aicc', 'route', 'provider_model'],
+      ['aicc', 'request', 'model', 'id'],
+      ['task_type'],
+    ]) ?? task.task_type
+
+  const tokensIn = readNumber(task.data, [
+    ['aicc', 'output', 'usage', 'input_tokens'],
+    ['result', 'usage', 'input_tokens'],
+    ['usage', 'input_tokens'],
+  ])
+  const tokensOut = readNumber(task.data, [
+    ['aicc', 'output', 'usage', 'output_tokens'],
+    ['result', 'usage', 'output_tokens'],
+    ['usage', 'output_tokens'],
+  ])
+
+  return {
+    task_id: String(task.id),
+    step_id: stepIdFromIndex(runRef.step_index),
+    behavior_id: extractTaskBehavior(task),
+    status: taskStatusToWsTaskStatus(String(task.status)),
+    model,
+    tokens_in: tokensIn != null ? Math.max(0, Math.trunc(tokensIn)) : undefined,
+    tokens_out: tokensOut != null ? Math.max(0, Math.trunc(tokensOut)) : undefined,
+    prompt_preview: extractTaskPrompt(task),
+    result_preview: extractTaskResult(task),
+    raw_input: stringifyJson(readPath(task.data, ['aicc', 'request']) ?? task.data),
+    raw_output: stringifyJson(outputData),
+    created_at: new Date(createdAtMs).toISOString(),
+    duration,
+  }
+}
+
+const loadAgentTasks = async (agentId: string): Promise<TaskManagerTask[]> => {
+  const byWorkspaceApp = await taskMgrClient.listTasks({
+    filter: { app_id: WORKSPACE_TASK_APP_ID },
+  })
+  let tasks = byWorkspaceApp.filter((task) => taskBelongsToAgent(task, agentId))
+  if (tasks.length > 0) return tasks.filter(isWorkspaceTask)
+
+  const allTasks = await taskMgrClient.listTasks()
+  tasks = allTasks.filter((task) => taskBelongsToAgent(task, agentId))
+  return tasks.filter(isWorkspaceTask)
+}
+
+const buildAgentRunData = (agentId: string, tasks: TaskManagerTask[]): AgentRunData => {
+  const ordered = [...tasks].sort(
+    (a, b) => (toMillis(a.created_at) ?? 0) - (toMillis(b.created_at) ?? 0),
+  )
+  const taskById = new Map<number, TaskManagerTask>()
+  ordered.forEach((task) => taskById.set(task.id, task))
+
+  const behaviorRefs = new Map<number, TaskRunRef>()
+  for (const task of ordered) {
+    if (task.task_type !== 'llm_behavior') continue
+    const runId = readString(task.data, [['wakeup_id']]) ?? `run-${task.id}`
+    const stepIndex = Math.max(0, Math.trunc(readNumber(task.data, [['step_idx']]) ?? 0))
+    behaviorRefs.set(task.id, { run_id: runId, step_index: stepIndex })
+  }
+
+  const runTaskRefs = new Map<string, Array<{ task: TaskManagerTask; ref: TaskRunRef }>>()
+  for (const task of ordered) {
+    const ref = resolveTaskRunRef(task, taskById, behaviorRefs)
+    if (!ref) continue
+    const list = runTaskRefs.get(ref.run_id) ?? []
+    list.push({ task, ref })
+    runTaskRefs.set(ref.run_id, list)
+  }
+
+  const runs: LoopRun[] = []
+  const stepsByRun = new Map<string, WsStep[]>()
+  const tasksByRun = new Map<string, WsTask[]>()
+  const runMetas = new Map<string, RunMeta>()
+
+  for (const [runId, refs] of runTaskRefs.entries()) {
+    const wsTasks = refs
+      .map(({ task, ref }) => mapTaskToWsTask(task, ref))
+      .sort(
+        (a, b) => (toMillis(b.created_at) ?? 0) - (toMillis(a.created_at) ?? 0),
+      )
+
+    const stepAgg = new Map<
+      number,
+      {
+        items: WsTask[]
+        behaviorTasks: TaskManagerTask[]
+        startedAtMs: number
+        endedAtMs: number
+      }
+    >()
+
+    refs.forEach(({ task, ref }) => {
+      const step = stepAgg.get(ref.step_index) ?? {
+        items: [],
+        behaviorTasks: [],
+        startedAtMs: Number.MAX_SAFE_INTEGER,
+        endedAtMs: 0,
+      }
+      const wsTask = wsTasks.find((item) => item.task_id === String(task.id))
+      if (wsTask) step.items.push(wsTask)
+      if (task.task_type === 'llm_behavior') step.behaviorTasks.push(task)
+
+      const start = toMillis(task.created_at) ?? Date.now()
+      const end = toMillis(task.updated_at) ?? start
+      step.startedAtMs = Math.min(step.startedAtMs, start)
+      if (end > step.endedAtMs) step.endedAtMs = end
+      stepAgg.set(ref.step_index, step)
+    })
+
+    const steps = [...stepAgg.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([stepIndex, agg]) => {
+        const latestBehavior = [...agg.behaviorTasks].sort(
+          (a, b) => (toMillis(b.updated_at) ?? 0) - (toMillis(a.updated_at) ?? 0),
+        )[0]
+        const statusFromBehavior = latestBehavior
+          ? taskStatusToStepStatus(String(latestBehavior.status))
+          : undefined
+
+        const fallbackStatus: StepStatus =
+          agg.items.some((item) => item.status === 'running')
+            ? 'running'
+            : agg.items.some((item) => item.status === 'failed')
+              ? 'failed'
+              : 'success'
+        const status = statusFromBehavior ?? fallbackStatus
+        const endedAt =
+          status === 'running' ? undefined : new Date(agg.endedAtMs || agg.startedAtMs).toISOString()
+
+        const behaviorName = latestBehavior
+          ? readString(latestBehavior.data, [['behavior']])
+          : undefined
+        const outputSnapshot = latestBehavior
+          ? preview(readPath(latestBehavior.data, ['result']), 260) || undefined
+          : undefined
+
+        return {
+          step_id: stepIdFromIndex(stepIndex),
+          step_index: stepIndex,
+          title: behaviorName ? `Behavior: ${behaviorName}` : undefined,
+          status,
+          started_at: new Date(agg.startedAtMs).toISOString(),
+          ended_at: endedAt,
+          duration:
+            status === 'running'
+              ? undefined
+              : Math.max(0, Math.round((agg.endedAtMs - agg.startedAtMs) / 1000)),
+          task_count: agg.items.length,
+          log_counts: { message: 0, function_call: 0, action: 0, sub_agent: 0 },
+          output_snapshot: outputSnapshot,
+        }
+      })
+
+    const runStartMs = steps.length
+      ? Math.min(...steps.map((step) => toMillis(step.started_at) ?? Date.now()))
+      : Date.now()
+    const runEndMs = steps
+      .map((step) => toMillis(step.ended_at))
+      .filter((value): value is number => value != null)
+    const hasRunning = steps.some((step) => step.status === 'running')
+    const hasFailed = steps.some((step) => step.status === 'failed')
+    const hasCancelled = refs.some(
+      ({ task }) => normalizeKey(String(task.status)) === 'canceled',
+    )
+    const runStatus: LoopRunStatus = hasRunning
+      ? 'running'
+      : hasFailed
+        ? 'failed'
+        : hasCancelled
+          ? 'cancelled'
+          : taskStatusToRunStatus(String(refs[refs.length - 1]?.task.status ?? 'Completed'))
+
+    const currentStepIndex =
+      [...steps]
+        .reverse()
+        .find((step) => step.status === 'running')?.step_index ??
+      steps[steps.length - 1]?.step_index ??
+      0
+
+    const triggerBehavior = refs
+      .map(({ task }) => extractTaskBehavior(task))
+      .find((value): value is string => Boolean(value))
+    const triggerEvent = triggerBehavior ? `behavior:${triggerBehavior}` : `wakeup:${runId}`
+
+    const run: LoopRun = {
+      run_id: runId,
+      agent_id: agentId,
+      trigger_event: triggerEvent,
+      status: runStatus,
+      started_at: new Date(runStartMs).toISOString(),
+      ended_at: hasRunning
+        ? undefined
+        : new Date(Math.max(...(runEndMs.length > 0 ? runEndMs : [runStartMs]))).toISOString(),
+      duration: hasRunning
+        ? Math.max(0, Math.round((Date.now() - runStartMs) / 1000))
+        : Math.max(
+            0,
+            Math.round(
+              ((runEndMs.length > 0 ? Math.max(...runEndMs) : runStartMs) - runStartMs) / 1000,
+            ),
+          ),
+      current_step_index: currentStepIndex,
+      summary: {
+        step_count: steps.length,
+        task_count: wsTasks.length,
+        log_count: 0,
+        todo_count: 0,
+        sub_agent_count: 0,
+      },
+    }
+
+    runs.push(run)
+    stepsByRun.set(runId, steps)
+    tasksByRun.set(runId, wsTasks)
+    runMetas.set(runId, {
+      run_id: runId,
+      agent_id: agentId,
+      started_at_ms: runStartMs,
+      ended_at_ms: hasRunning ? undefined : Math.max(...(runEndMs.length > 0 ? runEndMs : [runStartMs])),
+      step_ids: new Set(steps.map((step) => step.step_id)),
+    })
+  }
+
+  runs.sort((a, b) => (toMillis(b.started_at) ?? 0) - (toMillis(a.started_at) ?? 0))
+  return {
+    runs,
+    steps_by_run: stepsByRun,
+    tasks_by_run: tasksByRun,
+    run_metas: runMetas,
+  }
+}
+
+const loadAgentRunData = async (agentId: string): Promise<AgentRunData> => {
+  const cached = agentRunCache.get(agentId)
+  if (cached && Date.now() - cached.at < AGENT_RUN_CACHE_TTL_MS) return cached.data
+
+  const tasks = await loadAgentTasks(agentId)
+  const data = buildAgentRunData(agentId, tasks)
+  agentRunCache.set(agentId, { at: Date.now(), data })
+  data.run_metas.forEach((meta, runId) => {
+    runMetaCache.set(runId, meta)
+  })
+  return data
+}
+
+const findRunMeta = (runId: string): RunMeta | undefined => {
+  const fromIndex = runMetaCache.get(runId)
+  if (fromIndex) return fromIndex
+  for (const item of agentRunCache.values()) {
+    const meta = item.data.run_metas.get(runId)
+    if (meta) return meta
+  }
+  return undefined
+}
+
+const mapOpenDanWorklog = (item: OpenDanWorklog): WsWorkLog => {
+  const payloadObj = asObject(item.payload) ?? undefined
+  const durationMs =
+    readNumber(payloadObj, [['duration_ms'], ['duration'], ['elapsed_ms']]) ??
+    readNumber(item.payload, [['duration_ms'], ['duration'], ['elapsed_ms']])
+  const duration = durationMs != null ? Math.max(0, Math.round(durationMs / 1000)) : undefined
+
+  return {
+    log_id: item.log_id,
+    type: normalizeWorkLogType(item.log_type),
+    agent_id: item.agent_id ?? '',
+    related_agent_id: item.related_agent_id ?? undefined,
+    step_id: item.step_id ?? undefined,
+    status: normalizeWorkLogStatus(item.status),
+    timestamp: toIso(item.timestamp),
+    duration,
+    summary: item.summary?.trim() || preview(item.payload) || item.log_type,
+    payload: payloadObj,
+  }
+}
+
+const loadRunWorklogs = async (runMeta: RunMeta): Promise<WsWorkLog[]> => {
+  const cached = runWorklogCache.get(runMeta.run_id)
+  if (cached && Date.now() - cached.at < RUN_WORKLOG_CACHE_TTL_MS) return cached.logs
+
+  const result = await opendanClient.listWorkspaceWorklogs({
+    agentId: runMeta.agent_id,
+    limit: 500,
+  })
+  const startMs = runMeta.started_at_ms - 120_000
+  const endMs = (runMeta.ended_at_ms ?? Date.now()) + 120_000
+
+  const logs = result.items
+    .map(mapOpenDanWorklog)
+    .filter((log) => {
+      const ts = toMillis(log.timestamp)
+      if (ts != null && (ts < startMs || ts > endMs)) return false
+      if (!log.step_id) return true
+      return runMeta.step_ids.has(log.step_id)
+    })
+    .sort((a, b) => (toMillis(b.timestamp) ?? 0) - (toMillis(a.timestamp) ?? 0))
+
+  runWorklogCache.set(runMeta.run_id, { at: Date.now(), logs })
+  return logs
+}
+
+const applyTaskFilters = (tasks: WsTask[], filters?: WsTaskFilters): WsTask[] => {
+  let filtered = tasks
+  if (filters?.stepId) filtered = filtered.filter((task) => task.step_id === filters.stepId)
+  if (filters?.status) filtered = filtered.filter((task) => task.status === filters.status)
+  return filtered
+}
+
+const applyWorkLogFilters = (logs: WsWorkLog[], filters?: WsWorkLogFilters): WsWorkLog[] => {
+  let filtered = logs
+  if (filters?.stepId) filtered = filtered.filter((log) => log.step_id === filters.stepId)
+  if (filters?.type) filtered = filtered.filter((log) => log.type === filters.type)
+  if (filters?.status) filtered = filtered.filter((log) => log.status === filters.status)
+  if (filters?.keyword) {
+    const keyword = filters.keyword.toLowerCase()
+    filtered = filtered.filter((log) => log.summary.toLowerCase().includes(keyword))
+  }
+  return filtered
+}
+
+const withStepLogCounts = (steps: WsStep[], logs: WsWorkLog[]): WsStep[] => {
+  const counter = new Map<string, StepLogCounts>()
+
+  for (const log of logs) {
+    if (!log.step_id) continue
+    const curr = counter.get(log.step_id) ?? { message: 0, function_call: 0, action: 0, sub_agent: 0 }
+    if (log.type === 'message_sent' || log.type === 'message_reply') curr.message += 1
+    else if (log.type === 'function_call') curr.function_call += 1
+    else if (log.type === 'action') curr.action += 1
+    else curr.sub_agent += 1
+    counter.set(log.step_id, curr)
+  }
+
+  return steps.map((step) => ({
+    ...step,
+    log_counts: counter.get(step.step_id) ?? step.log_counts,
+  }))
+}
+
+const mapOpenDanAgent = (item: OpenDanAgent): WsAgent => ({
+  agent_id: item.agent_id,
+  agent_name: item.agent_name?.trim() || item.agent_id,
+  agent_type: normalizeAgentType(item.agent_type),
+  status: normalizeAgentStatus(item.status),
+  parent_agent_id: item.parent_agent_id ?? undefined,
+  current_run_id: item.current_run_id ?? undefined,
+  last_active_at: toIso(item.last_active_at ?? item.updated_at),
+})
+
+const mapOpenDanTodo = (item: OpenDanTodo, agentId: string): WsTodo => {
+  const extra = asObject(item.extra)
+  return {
+    todo_id: item.todo_id,
+    agent_id: item.agent_id ?? agentId,
+    title: item.title,
+    description: item.description ?? undefined,
+    status: normalizeTodoStatus(item.status),
+    created_at: toIso(item.created_at ?? readNumber(extra, [['created_at']])),
+    completed_at:
+      normalizeTodoStatus(item.status) === 'done'
+        ? toIso(item.completed_at ?? readNumber(extra, [['completed_at']]))
+        : undefined,
+    created_in_step_id:
+      item.created_in_step_id ??
+      readString(extra, [['created_in_step_id'], ['created_step_id']]),
+    completed_in_step_id:
+      item.completed_in_step_id ??
+      readString(extra, [['completed_in_step_id'], ['completed_step_id']]),
+  }
+}
+
+const mapOpenDanSubAgent = (item: OpenDanSubAgent, parentAgentId: string): WsAgent => ({
+  agent_id: item.agent_id,
+  agent_name: item.agent_name?.trim() || item.agent_id,
+  agent_type: 'sub',
+  status: normalizeAgentStatus(item.status),
+  parent_agent_id: parentAgentId,
+  current_run_id: item.current_run_id ?? undefined,
+  last_active_at: toIso(item.last_active_at),
+})
+
 export const fetchAgents = async (): Promise<{ data: WsAgent[] | null; error: unknown }> => {
-  return { data: mockAgents, error: null }
+  try {
+    const result = await opendanClient.listAgents({
+      includeSubAgents: true,
+      limit: 200,
+    })
+    return { data: result.items.map(mapOpenDanAgent), error: null }
+  } catch (error) {
+    console.warn('fetchAgents failed, fallback to mock data', error)
+    return { data: mockAgents, error }
+  }
 }
 
 export const fetchLoopRuns = async (
   agentId: string,
 ): Promise<{ data: LoopRun[] | null; error: unknown }> => {
-  return { data: mockLoopRuns[agentId] ?? [], error: null }
+  try {
+    const data = await loadAgentRunData(agentId)
+    return { data: data.runs, error: null }
+  } catch (error) {
+    console.warn('fetchLoopRuns failed, fallback to mock data', error)
+    return { data: mockLoopRuns[agentId] ?? [], error }
+  }
 }
 
 export const fetchSteps = async (
   runId: string,
 ): Promise<{ data: WsStep[] | null; error: unknown }> => {
-  return { data: mockSteps[runId] ?? [], error: null }
+  try {
+    const runMeta = findRunMeta(runId)
+    if (!runMeta) throw new Error(`run not found: ${runId}`)
+    const runData = await loadAgentRunData(runMeta.agent_id)
+    const baseSteps = runData.steps_by_run.get(runId) ?? []
+    const runLogs = await loadRunWorklogs(runMeta)
+    const steps = withStepLogCounts(baseSteps, runLogs)
+    return { data: steps, error: null }
+  } catch (error) {
+    console.warn('fetchSteps failed, fallback to mock data', error)
+    return { data: mockSteps[runId] ?? [], error }
+  }
 }
 
 export const fetchWsTasks = async (
   runId: string,
   filters?: WsTaskFilters,
 ): Promise<{ data: WsTask[] | null; error: unknown }> => {
-  let tasks = mockTasks[runId] ?? []
-  if (filters?.stepId) {
-    tasks = tasks.filter((t) => t.step_id === filters.stepId)
+  try {
+    const runMeta = findRunMeta(runId)
+    if (!runMeta) throw new Error(`run not found: ${runId}`)
+    const runData = await loadAgentRunData(runMeta.agent_id)
+    const tasks = runData.tasks_by_run.get(runId) ?? []
+    return { data: applyTaskFilters(tasks, filters), error: null }
+  } catch (error) {
+    console.warn('fetchWsTasks failed, fallback to mock data', error)
+    return { data: applyTaskFilters(mockTasks[runId] ?? [], filters), error }
   }
-  if (filters?.status) {
-    tasks = tasks.filter((t) => t.status === filters.status)
-  }
-  return { data: tasks, error: null }
 }
 
 export const fetchWorkLogs = async (
   runId: string,
   filters?: WsWorkLogFilters,
 ): Promise<{ data: WsWorkLog[] | null; error: unknown }> => {
-  let logs = mockWorkLogs[runId] ?? []
-  if (filters?.stepId) {
-    logs = logs.filter((l) => l.step_id === filters.stepId)
+  try {
+    const runMeta = findRunMeta(runId)
+    if (!runMeta) throw new Error(`run not found: ${runId}`)
+    const logs = await loadRunWorklogs(runMeta)
+    return { data: applyWorkLogFilters(logs, filters), error: null }
+  } catch (error) {
+    console.warn('fetchWorkLogs failed, fallback to mock data', error)
+    return { data: applyWorkLogFilters(mockWorkLogs[runId] ?? [], filters), error }
   }
-  if (filters?.type) {
-    logs = logs.filter((l) => l.type === filters.type)
-  }
-  if (filters?.status) {
-    logs = logs.filter((l) => l.status === filters.status)
-  }
-  if (filters?.keyword) {
-    const kw = filters.keyword.toLowerCase()
-    logs = logs.filter((l) => l.summary.toLowerCase().includes(kw))
-  }
-  return { data: logs, error: null }
 }
 
 export const fetchTodos = async (
   agentId: string,
 ): Promise<{ data: WsTodo[] | null; error: unknown }> => {
-  return { data: mockTodos[agentId] ?? [], error: null }
+  try {
+    const result = await opendanClient.listWorkspaceTodos({
+      agentId,
+      includeClosed: true,
+      limit: 200,
+    })
+    return { data: result.items.map((item) => mapOpenDanTodo(item, agentId)), error: null }
+  } catch (error) {
+    console.warn('fetchTodos failed, fallback to mock data', error)
+    return { data: mockTodos[agentId] ?? [], error }
+  }
 }
 
 export const fetchSubAgents = async (
   agentId: string,
 ): Promise<{ data: WsAgent[] | null; error: unknown }> => {
-  const subs = mockAgents.filter((a) => a.parent_agent_id === agentId)
-  return { data: subs, error: null }
+  try {
+    const result = await opendanClient.listWorkspaceSubAgents({
+      agentId,
+      includeDisabled: true,
+      limit: 200,
+    })
+    return {
+      data: result.items.map((item) => mapOpenDanSubAgent(item, agentId)),
+      error: null,
+    }
+  } catch (error) {
+    console.warn('fetchSubAgents failed, fallback to mock data', error)
+    const subs = mockAgents.filter((agent) => agent.parent_agent_id === agentId)
+    return { data: subs, error }
+  }
 }

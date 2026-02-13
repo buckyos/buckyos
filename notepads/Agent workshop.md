@@ -113,3 +113,17 @@ Agent Workspace 的 UI 不以“列表堆砌”为目标，而是专注解决：
   * 与主 Agent 的交互如何发生、何时发生
 
 最终效果：用户打开一个 Agent Workspace，就能快速理解它的工作推进链路与当前状态。
+
+
+// worklog用sqlite记录workspace里的工作日志
+// 通过worklog，可以看到agent(包括sub agent)是如何完成工作的
+// worklog除了常规字段为，先增加thread-id和tag字段，方便用不同的方法查询和汇聚worklog
+// worklog的主要接口是 append 和 必要的查询接口
+//
+// 下面是worklog中可能会出现的log类型
+// create task / task complete/finish 
+// send msg / recv msg
+// create/active subagent, delete/disable subagent
+// toos usage record (function call & action)
+// create todo / update todo (注意记录todo的父todo)
+//

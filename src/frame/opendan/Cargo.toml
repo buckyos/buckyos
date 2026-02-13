@@ -21,6 +21,11 @@ rusqlite = { workspace = true }
 log = { workspace = true }
 anyhow = { workspace = true }
 buckyos-kit = { workspace = true }
+server-runner = { workspace = true }
+cyfs-gateway-lib = { workspace = true }
+bytes = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
