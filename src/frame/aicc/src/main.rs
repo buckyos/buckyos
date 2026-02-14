@@ -1,6 +1,7 @@
 mod aicc;
 mod claude_protocol;
 mod complete_request_queue;
+mod gimini;
 mod openai;
 mod openai_protocol;
 
@@ -24,6 +25,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use crate::aicc::AIComputeCenter;
+use crate::gimini::register_google_gimini_providers;
 use crate::openai::register_openai_llm_providers;
 
 const AICC_SERVICE_MAIN_PORT: u16 = 4040;
@@ -34,6 +36,52 @@ const METHOD_SERVICE_REALOAD_SETTINGS: &str = "service.reaload_settings";
 
 struct AiccHttpServer {
     rpc_handler: AiccServerHandler<AIComputeCenter>,
+}
+
+fn apply_provider_settings(
+    center: &AIComputeCenter,
+    settings: &serde_json::Value,
+) -> Result<usize> {
+    center.registry().clear();
+    center.model_catalog().clear();
+
+    let mut registered_total = 0usize;
+    let mut errors = vec![];
+
+    match register_openai_llm_providers(center, settings) {
+        Ok(count) => {
+            registered_total = registered_total.saturating_add(count);
+        }
+        Err(err) => {
+            errors.push(format!("openai: {}", err));
+        }
+    }
+
+    match register_google_gimini_providers(center, settings) {
+        Ok(count) => {
+            registered_total = registered_total.saturating_add(count);
+        }
+        Err(err) => {
+            errors.push(format!("gimini: {}", err));
+        }
+    }
+
+    if !errors.is_empty() {
+        warn!(
+            "aicc provider registration has errors: registered_total={} errors={}",
+            registered_total,
+            errors.join(" | ")
+        );
+    }
+
+    if registered_total == 0 && !errors.is_empty() {
+        return Err(anyhow::anyhow!(
+            "all provider registrations failed: {}",
+            errors.join(" | ")
+        ));
+    }
+
+    Ok(registered_total)
 }
 
 impl AiccHttpServer {
@@ -58,7 +106,7 @@ impl AiccHttpServer {
         };
 
         let registered =
-            register_openai_llm_providers(&self.rpc_handler.0, &settings).map_err(|err| {
+            apply_provider_settings(&self.rpc_handler.0, &settings).map_err(|err| {
                 RPCErrors::ReasonError(format!("reload aicc settings failed: {}", err))
             })?;
         Ok(serde_json::json!({
@@ -155,12 +203,9 @@ pub async fn start_aicc_service(mut center: AIComputeCenter) -> Result<()> {
             serde_json::json!({})
         }
     };
-    match register_openai_llm_providers(&center, &settings) {
+    match apply_provider_settings(&center, &settings) {
         Ok(registered) => {
-            info!(
-                "aicc openai provider initialized with {} instances",
-                registered
-            );
+            info!("aicc providers initialized with {} instances", registered);
         }
         Err(err) => {
             warn!(
