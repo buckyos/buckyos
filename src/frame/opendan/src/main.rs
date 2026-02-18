@@ -4,6 +4,7 @@ pub mod agent_enviroment;
 pub mod agent_memory;
 pub mod agent_tool;
 pub mod ai_runtime;
+pub mod ai_thread;
 pub mod behavior;
 pub mod workspace;
 

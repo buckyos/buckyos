@@ -350,6 +350,57 @@ fn parse_json_in_code_fence() {
     let draft = OutputParser::parse_first(&raw, true).expect("parse should succeed");
     assert!(draft.is_sleep);
     assert!(matches!(draft.output, LLMOutput::Json(_)));
+    assert!(draft.executor.is_none());
+}
+
+#[test]
+fn parse_executor_result_payload() {
+    let raw = LLMRawResponse {
+        content: json!({
+            "thinking": "collect evidence first",
+            "reply": [{
+                "audience": "user",
+                "format": "markdown",
+                "content": "Gather evidence first, then answer."
+            }],
+            "tool_calls": [{
+                "name": "tool.echo",
+                "args": {"msg":"hello"}
+            }],
+            "todo_delta": [{"op":"add","item":{"title":"check"}}],
+            "thinks": ["need more data"],
+            "memory_writes": [{"content":"x"}],
+            "facts_writes": [{"subject":"a","predicate":"b","object":"c"}],
+            "thread_delta": {"title":"T"},
+            "stop": {"should_stop": true, "reason": "done", "finalized": true},
+            "diagnostics": {"risk_flags":["none"]}
+        })
+        .to_string(),
+        tool_calls: vec![],
+        model: "m".to_string(),
+        provider: "p".to_string(),
+        latency_ms: 1,
+    };
+
+    let draft = OutputParser::parse_first(&raw, true).expect("executor parse should succeed");
+    assert!(draft.is_sleep);
+    assert!(draft.executor.is_some());
+    assert_eq!(
+        draft
+            .executor
+            .as_ref()
+            .map(|v| v.stop.reason.as_str())
+            .unwrap_or_default(),
+        "done"
+    );
+    assert_eq!(
+        draft
+            .executor
+            .as_ref()
+            .map(|v| v.tool_calls.len())
+            .unwrap_or_default(),
+        1
+    );
 }
 
 #[tokio::test]

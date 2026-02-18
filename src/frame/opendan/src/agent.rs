@@ -9,7 +9,7 @@ use buckyos_api::{
 };
 use log::{debug, error, info, warn};
 use name_lib::DID;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::fs;
 use tokio::sync::{Mutex, RwLock};
@@ -20,9 +20,9 @@ use crate::agent_memory::{AgentMemory, AgentMemoryConfig, TOOL_LOAD_MEMORY};
 use crate::agent_tool::{ToolCall, ToolCallContext, ToolError, ToolManager, ToolSpec};
 use crate::ai_runtime::{AiRuntime, AiRuntimeConfig};
 use crate::behavior::{
-    BehaviorConfig, BehaviorConfigError, EnvKV, Event, LLMBehavior, LLMBehaviorDeps, LLMStatus,
-    Observation, ObservationSource, PolicyEngine, ProcessInput, TokenUsage, Tokenizer, TraceCtx,
-    WorklogSink,
+    BehaviorConfig, BehaviorConfigError, EnvKV, Event, LLMBehavior, LLMBehaviorDeps, LLMOutput,
+    LLMStatus, Observation, ObservationSource, PolicyEngine, ProcessInput, Sanitizer, TokenUsage,
+    Tokenizer, TraceCtx, WorklogSink,
 };
 use crate::workspace::{TOOL_EXEC_BASH, TOOL_WORKLOG_MANAGE};
 
@@ -34,6 +34,11 @@ const DEFAULT_ENVIRONMENT_DIR: &str = "environment";
 const DEFAULT_WORKLOG_FILE: &str = "worklog/agent-loop.jsonl";
 const DEFAULT_SLEEP_REASON: &str = "no_new_input";
 const MSG_CENTER_INBOX_PULL_LIMIT: usize = 32;
+const STAGE_THREAD_RESOLVER: &str = "thread_resolver";
+const STAGE_ROUTER: &str = "router";
+const STAGE_EXECUTOR_DEFAULT: &str = "on_wakeup";
+const MAX_RECENT_TURNS: usize = 6;
+const MAX_ROUTER_TOOL_CALLS: usize = 8;
 
 #[derive(thiserror::Error, Debug)]
 pub enum AIAgentError {
@@ -499,7 +504,7 @@ impl AIAgent {
             .await;
         }
 
-        let (wakeup_id, hp_before, trace_id, input_payload, inbox_record_ids) = match self
+        let (wakeup_id, hp_before, trace_id, mut input_payload, inbox_record_ids) = match self
             .prepare_wakeup_context(reason, now)
             .await
         {
@@ -573,10 +578,18 @@ impl AIAgent {
                 inbox_record_ids,
             ),
         };
+        let mut loop_ctx = derive_wakeup_loop_context(&wakeup_id, &input_payload);
+        enrich_wakeup_payload_with_loop_context(&mut input_payload, &loop_ctx);
         let (inbox_count, event_count) = wakeup_input_counts(&input_payload);
         info!(
-            "ai_agent.on_wakeup ready: did={} wakeup_id={} hp_before={} inbox_count={} event_count={}",
-            self.did, wakeup_id, hp_before, inbox_count, event_count
+            "ai_agent.on_wakeup ready: did={} wakeup_id={} hp_before={} inbox_count={} event_count={} thread_id={} session_id={}",
+            self.did,
+            wakeup_id,
+            hp_before,
+            inbox_count,
+            event_count,
+            loop_ctx.thread_id.as_str(),
+            loop_ctx.session_id.as_str()
         );
 
         let mut status = WakeupStatus::Completed;
@@ -584,8 +597,148 @@ impl AIAgent {
         let mut token_usage = TokenUsage::default();
         let mut steps: u32 = 0;
         let mut behavior_hops: u32 = 0;
-        let mut current_behavior = "on_wakeup".to_string();
+        let mut current_behavior = STAGE_EXECUTOR_DEFAULT.to_string();
         let mut pending_observations: Vec<Observation> = vec![];
+        let mut memory_queries = Vec::<String>::new();
+
+        if let Some((trace, llm_result)) = self
+            .run_optional_stage_behavior(
+                STAGE_THREAD_RESOLVER,
+                &trace_id,
+                &wakeup_id,
+                0,
+                now_ms(),
+                json!({
+                    "loop_context": loop_ctx.clone(),
+                    "input_event": compact_json_for_worklog(input_payload.clone(), 8 * 1024)
+                }),
+                json!({}),
+                vec![],
+                vec![EnvKV {
+                    key: "stage.name".to_string(),
+                    value: STAGE_THREAD_RESOLVER.to_string(),
+                }],
+            )
+            .await?
+        {
+            token_usage = token_usage.add(llm_result.token_usage.clone());
+            self.consume_hp(
+                llm_result.token_usage.total,
+                llm_result.actions.len() as u32,
+            )
+            .await;
+            if let LLMStatus::Error(err) = llm_result.status {
+                status = WakeupStatus::Error;
+                last_error = Some(err.message);
+            } else {
+                if let Some(parsed) = parse_thread_resolver_output(&llm_result.output) {
+                    if let Some(thread_id) = sanitize_non_empty_string(parsed.thread_id.clone()) {
+                        loop_ctx.thread_id = thread_id;
+                    }
+                    append_unique_strings(&mut memory_queries, &parsed.memory_queries);
+                    input_payload["thread_resolver"] =
+                        serde_json::to_value(&parsed).unwrap_or_else(|_| json!({}));
+                    if let Some(user_question) = sanitize_non_empty_string(parsed.user_question) {
+                        input_payload["thread_resolver_user_question"] = json!(user_question);
+                    }
+                }
+                let stage_actions = self.execute_actions(&trace, &llm_result.actions).await;
+                if !stage_actions.is_empty() {
+                    pending_observations.extend(stage_actions);
+                }
+            }
+            enrich_wakeup_payload_with_loop_context(&mut input_payload, &loop_ctx);
+        }
+
+        if matches!(status, WakeupStatus::Completed) {
+            if let Some((trace, llm_result)) = self
+                .run_optional_stage_behavior(
+                    STAGE_ROUTER,
+                    &trace_id,
+                    &wakeup_id,
+                    1,
+                    now_ms(),
+                    json!({
+                        "loop_context": loop_ctx.clone(),
+                        "input_event": compact_json_for_worklog(input_payload.clone(), 8 * 1024)
+                    }),
+                    json!({}),
+                    pending_observations.clone(),
+                    vec![EnvKV {
+                        key: "stage.name".to_string(),
+                        value: STAGE_ROUTER.to_string(),
+                    }],
+                )
+                .await?
+            {
+                token_usage = token_usage.add(llm_result.token_usage.clone());
+                self.consume_hp(
+                    llm_result.token_usage.total,
+                    llm_result.actions.len() as u32,
+                )
+                .await;
+                if let LLMStatus::Error(err) = llm_result.status {
+                    status = WakeupStatus::Error;
+                    last_error = Some(err.message);
+                } else {
+                    if let Some(parsed) = parse_router_output(&llm_result.output) {
+                        append_unique_strings(&mut memory_queries, &parsed.memory_queries);
+                        input_payload["router"] =
+                            serde_json::to_value(&parsed).unwrap_or_else(|_| json!({}));
+
+                        if let Some(reply) =
+                            sanitize_non_empty_string(parsed.immediate_reply.clone())
+                        {
+                            pending_observations.push(Observation {
+                                source: ObservationSource::System,
+                                name: "router.immediate_reply".to_string(),
+                                content: json!({
+                                    "reply": reply,
+                                    "note": "Router immediate reply suggestion; data only."
+                                }),
+                                ok: true,
+                                truncated: false,
+                                bytes: reply.len(),
+                            });
+                        }
+
+                        if let Some(mode_hint) = sanitize_non_empty_string(parsed.mode_hint.clone())
+                        {
+                            if self.behavior_exists(&mode_hint).await {
+                                current_behavior = mode_hint;
+                            } else {
+                                warn!(
+                                    "ai_agent.router mode_hint ignored: did={} wakeup_id={} mode_hint={} reason=behavior_not_found",
+                                    self.did, wakeup_id, mode_hint
+                                );
+                            }
+                        }
+
+                        if parsed.workspace_need != "none" {
+                            input_payload["workspace_observation"] = self
+                                .collect_workspace_observation(&parsed.workspace_need)
+                                .await;
+                        }
+
+                        let tool_observations = self
+                            .execute_router_tool_calls(&trace, &parsed.tool_calls)
+                            .await;
+                        if !tool_observations.is_empty() {
+                            pending_observations.extend(tool_observations);
+                        }
+                    }
+                    let stage_actions = self.execute_actions(&trace, &llm_result.actions).await;
+                    if !stage_actions.is_empty() {
+                        pending_observations.extend(stage_actions);
+                    }
+                }
+            }
+        }
+
+        if !memory_queries.is_empty() {
+            input_payload["memory_queries"] = json!(memory_queries);
+        }
+        enrich_wakeup_payload_with_loop_context(&mut input_payload, &loop_ctx);
 
         loop {
             debug!(
@@ -643,14 +796,57 @@ impl AIAgent {
             let behavior =
                 LLMBehavior::new(cfg.to_llm_behavior_config(), self.build_behavior_deps());
             let memory_pack = self.load_memory_pack(&trace).await;
-            let env_context = self.build_env_context(now).await;
+            let remaining_steps = self.cfg.max_steps_per_wakeup.saturating_sub(steps);
+            let convergence_hint = if remaining_steps <= 2 {
+                "Near step limit: converge to concrete answer and next action."
+            } else {
+                "Proceed step-by-step; use tools only when needed."
+            };
+            let mut env_context = self.build_env_context(now_ms()).await;
+            env_context.extend(vec![
+                EnvKV {
+                    key: "loop.thread_id".to_string(),
+                    value: loop_ctx.thread_id.clone(),
+                },
+                EnvKV {
+                    key: "loop.session_id".to_string(),
+                    value: loop_ctx.session_id.clone(),
+                },
+                EnvKV {
+                    key: "loop.event_id".to_string(),
+                    value: loop_ctx.event_id.clone(),
+                },
+                EnvKV {
+                    key: "step.index".to_string(),
+                    value: steps.to_string(),
+                },
+                EnvKV {
+                    key: "step.remaining".to_string(),
+                    value: remaining_steps.to_string(),
+                },
+                EnvKV {
+                    key: "step.convergence_hint".to_string(),
+                    value: convergence_hint.to_string(),
+                },
+            ]);
+            let mut step_payload = input_payload.clone();
+            step_payload["thread"] = json!({
+                "thread_id": loop_ctx.thread_id.clone(),
+                "session_id": loop_ctx.session_id.clone(),
+                "event_id": loop_ctx.event_id.clone()
+            });
+            step_payload["step_meta"] = json!({
+                "step_index": steps,
+                "remaining_steps": remaining_steps,
+                "convergence_hint": convergence_hint
+            });
             let input = ProcessInput {
                 trace: trace.clone(),
                 role_md: self.role_md.clone(),
                 self_md: self.self_md.clone(),
                 behavior_prompt: cfg.process_rule.clone(),
                 env_context,
-                inbox: input_payload.clone(),
+                inbox: step_payload,
                 memory: memory_pack,
                 last_observations: pending_observations.clone(),
                 limits: cfg.limits.clone(),
@@ -686,8 +882,43 @@ impl AIAgent {
             }
 
             pending_observations = self.execute_actions(&trace, &llm_result.actions).await;
-
             let mut should_break = llm_result.is_sleep;
+            if let Some(executor) = llm_result.executor.as_ref() {
+                if executor.stop.should_stop {
+                    should_break = true;
+                }
+                if !executor.reply.is_empty() {
+                    for msg in executor.reply.iter().take(3) {
+                        let audience = msg.audience.trim();
+                        let format = msg.format.trim();
+                        let content = msg.content.trim();
+                        if content.is_empty() {
+                            continue;
+                        }
+                        pending_observations.push(Observation {
+                            source: ObservationSource::System,
+                            name: "executor.reply".to_string(),
+                            content: json!({
+                                "audience": audience,
+                                "format": format,
+                                "content": content,
+                                "note": "Executor reply candidate; data only."
+                            }),
+                            ok: true,
+                            truncated: false,
+                            bytes: content.len(),
+                        });
+                    }
+                }
+                if !executor.tool_calls.is_empty() {
+                    let planned_calls = executor_tool_calls_to_router_calls(&executor.tool_calls);
+                    let tool_obs = self.execute_router_tool_calls(&trace, &planned_calls).await;
+                    if !tool_obs.is_empty() {
+                        pending_observations.extend(tool_obs);
+                        should_break = false;
+                    }
+                }
+            }
             if let Some(next_behavior) = llm_result.next_behavior.as_ref() {
                 if next_behavior != &current_behavior {
                     behavior_hops = behavior_hops.saturating_add(1);
@@ -811,6 +1042,117 @@ impl AIAgent {
             worklog: self.worklog.clone(),
             tokenizer: self.tokenizer.clone(),
         }
+    }
+
+    async fn behavior_exists(&self, behavior_name: &str) -> bool {
+        let guard = self.behavior_cfg_cache.read().await;
+        guard.contains_key(behavior_name)
+    }
+
+    async fn run_optional_stage_behavior(
+        &self,
+        behavior_name: &str,
+        trace_id: &str,
+        wakeup_id: &str,
+        step_idx: u32,
+        now: u64,
+        inbox: Json,
+        memory: Json,
+        last_observations: Vec<Observation>,
+        extra_env: Vec<EnvKV>,
+    ) -> Result<Option<(TraceCtx, crate::behavior::LLMResult)>, AIAgentError> {
+        if !self.behavior_exists(behavior_name).await {
+            return Ok(None);
+        }
+        let cfg = self.ensure_behavior_config(behavior_name).await?;
+        let trace = TraceCtx {
+            trace_id: trace_id.to_string(),
+            agent_did: self.did.clone(),
+            behavior: behavior_name.to_string(),
+            step_idx,
+            wakeup_id: wakeup_id.to_string(),
+        };
+        let mut env_context = self.build_env_context(now).await;
+        env_context.extend(extra_env);
+        let input = ProcessInput {
+            trace: trace.clone(),
+            role_md: self.role_md.clone(),
+            self_md: self.self_md.clone(),
+            behavior_prompt: cfg.process_rule.clone(),
+            env_context,
+            inbox,
+            memory,
+            last_observations,
+            limits: cfg.limits.clone(),
+        };
+        let llm_result = LLMBehavior::new(cfg.to_llm_behavior_config(), self.build_behavior_deps())
+            .run_step(input)
+            .await;
+        Ok(Some((trace, llm_result)))
+    }
+
+    async fn execute_router_tool_calls(
+        &self,
+        trace: &TraceCtx,
+        calls: &[RouterToolCallPayload],
+    ) -> Vec<Observation> {
+        if calls.is_empty() {
+            return vec![];
+        }
+
+        let mut observations = Vec::<Observation>::new();
+        for (idx, call) in calls.iter().take(MAX_ROUTER_TOOL_CALLS).enumerate() {
+            if call.name.trim().is_empty() {
+                continue;
+            }
+            let tool_call = ToolCall {
+                name: call.name.clone(),
+                args: call.args.clone(),
+                call_id: format!("{}-router-{}-{}", trace.wakeup_id, trace.step_idx, idx),
+            };
+            let ctx = ToolCallContext {
+                trace_id: trace.trace_id.clone(),
+                agent_did: trace.agent_did.clone(),
+                behavior: trace.behavior.clone(),
+                step_idx: trace.step_idx,
+                wakeup_id: trace.wakeup_id.clone(),
+            };
+            match self.tool_mgr.call_tool(&ctx, tool_call).await {
+                Ok(raw) => observations.push(Sanitizer::sanitize_observation(
+                    ObservationSource::Tool,
+                    &call.name,
+                    raw,
+                    8 * 1024,
+                )),
+                Err(err) => observations.push(Sanitizer::tool_error_observation(
+                    &call.name,
+                    err.to_string(),
+                    8 * 1024,
+                )),
+            }
+        }
+
+        observations
+    }
+
+    async fn collect_workspace_observation(&self, level: &str) -> Json {
+        let mut recent_entries = Vec::<String>::new();
+        if let Ok(mut read_dir) = fs::read_dir(self.environment.workspace_root()).await {
+            while let Ok(Some(entry)) = read_dir.next_entry().await {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !name.is_empty() {
+                    recent_entries.push(name);
+                }
+                if recent_entries.len() >= 20 {
+                    break;
+                }
+            }
+        }
+        json!({
+            "level": level,
+            "summary": format!("workspace observation requested at level={level}"),
+            "recent_changes": recent_entries
+        })
     }
 
     async fn prepare_wakeup_context(&self, reason: Option<Json>, now: u64) -> PreparedWakeup {
@@ -1301,6 +1643,43 @@ enum PreparedWakeup {
         input_payload: Json,
         inbox_record_ids: Vec<String>,
     },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct WakeupLoopContext {
+    thread_id: String,
+    session_id: String,
+    event_id: String,
+    recent_turns: Vec<Json>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct ThreadResolverResultPayload {
+    action: String,
+    thread_id: Option<String>,
+    memory_queries: Vec<String>,
+    risk_flags: Vec<String>,
+    user_question: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct RouterResultPayload {
+    need_tools: bool,
+    tool_calls: Vec<RouterToolCallPayload>,
+    memory_queries: Vec<String>,
+    workspace_need: String,
+    immediate_reply: Option<String>,
+    mode_hint: Option<String>,
+    risk_flags: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct RouterToolCallPayload {
+    name: String,
+    args: Json,
 }
 
 struct PulledInboxMessage {
@@ -2079,6 +2458,185 @@ fn wakeup_input_counts(payload: &Json) -> (usize, usize) {
     (inbox, events)
 }
 
+fn derive_wakeup_loop_context(wakeup_id: &str, payload: &Json) -> WakeupLoopContext {
+    let thread_id = extract_thread_id_from_wakeup_payload(payload)
+        .unwrap_or_else(|| format!("thread-{wakeup_id}"));
+    let session_id = extract_session_id_from_wakeup_payload(payload)
+        .unwrap_or_else(|| format!("session-{wakeup_id}"));
+    let event_id = extract_event_id_from_wakeup_payload(payload)
+        .unwrap_or_else(|| format!("event-{wakeup_id}"));
+    let recent_turns = collect_recent_turns(payload, MAX_RECENT_TURNS);
+    WakeupLoopContext {
+        thread_id,
+        session_id,
+        event_id,
+        recent_turns,
+    }
+}
+
+fn enrich_wakeup_payload_with_loop_context(payload: &mut Json, loop_ctx: &WakeupLoopContext) {
+    if !payload.is_object() {
+        *payload = json!({ "trigger": "on_wakeup", "raw_payload": payload.clone() });
+    }
+    payload["thread_id"] = json!(loop_ctx.thread_id);
+    payload["session_id"] = json!(loop_ctx.session_id);
+    payload["event_id"] = json!(loop_ctx.event_id);
+    payload["recent_turns"] = json!(loop_ctx.recent_turns);
+}
+
+fn extract_thread_id_from_wakeup_payload(payload: &Json) -> Option<String> {
+    payload
+        .get("thread_id")
+        .or_else(|| payload.get("thread_key"))
+        .or_else(|| payload.get("thread"))
+        .and_then(|v| v.as_str())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            payload
+                .get("inbox")
+                .and_then(|v| v.as_array())
+                .and_then(|items| {
+                    items.iter().find_map(|item| {
+                        extract_thread_id_from_message_payload(item)
+                            .or_else(|| extract_thread_id_from_inbox_payload(item))
+                    })
+                })
+        })
+}
+
+fn extract_session_id_from_wakeup_payload(payload: &Json) -> Option<String> {
+    payload
+        .get("session_id")
+        .or_else(|| payload.get("session"))
+        .and_then(|v| v.as_str())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            payload
+                .pointer("/record/session_id")
+                .and_then(|v| v.as_str())
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        })
+}
+
+fn extract_event_id_from_wakeup_payload(payload: &Json) -> Option<String> {
+    payload
+        .get("event_id")
+        .and_then(|v| v.as_str())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            payload
+                .get("inbox")
+                .and_then(|v| v.as_array())
+                .and_then(|inbox| {
+                    inbox.iter().find_map(|msg| {
+                        msg.get("event_id")
+                            .or_else(|| msg.get("id"))
+                            .or_else(|| msg.pointer("/record/record_id"))
+                            .and_then(|v| v.as_str())
+                            .map(|v| v.trim().to_string())
+                            .filter(|v| !v.is_empty())
+                    })
+                })
+        })
+}
+
+fn collect_recent_turns(payload: &Json, max_turns: usize) -> Vec<Json> {
+    let mut turns = payload
+        .get("inbox")
+        .and_then(|v| v.as_array())
+        .map(|inbox| {
+            inbox
+                .iter()
+                .filter_map(|item| {
+                    extract_message_text(item).map(|text| {
+                        json!({
+                            "role": "user",
+                            "text": text
+                        })
+                    })
+                })
+                .collect::<Vec<Json>>()
+        })
+        .unwrap_or_default();
+    if turns.len() > max_turns {
+        turns = turns.split_off(turns.len().saturating_sub(max_turns));
+    }
+    turns
+}
+
+fn extract_message_text(value: &Json) -> Option<String> {
+    let candidate = value
+        .get("text")
+        .or_else(|| value.get("message"))
+        .or_else(|| value.pointer("/msg/text"))
+        .or_else(|| value.pointer("/msg/body"))
+        .or_else(|| value.pointer("/record/summary"))
+        .or_else(|| value.pointer("/payload/text"))
+        .and_then(|v| v.as_str())
+        .map(|v| v.trim().to_string())?;
+    if candidate.is_empty() {
+        return None;
+    }
+    Some(candidate)
+}
+
+fn parse_thread_resolver_output(output: &LLMOutput) -> Option<ThreadResolverResultPayload> {
+    llm_output_to_json(output)
+        .and_then(|value| serde_json::from_value::<ThreadResolverResultPayload>(value).ok())
+}
+
+fn parse_router_output(output: &LLMOutput) -> Option<RouterResultPayload> {
+    llm_output_to_json(output)
+        .and_then(|value| serde_json::from_value::<RouterResultPayload>(value).ok())
+}
+
+fn llm_output_to_json(output: &LLMOutput) -> Option<Json> {
+    match output {
+        LLMOutput::Json(value) => Some(value.clone()),
+        LLMOutput::Text(text) => serde_json::from_str::<Json>(text).ok(),
+    }
+}
+
+fn sanitize_non_empty_string(value: Option<String>) -> Option<String> {
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+fn append_unique_strings(target: &mut Vec<String>, values: &[String]) {
+    for value in values {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !target.iter().any(|item| item == trimmed) {
+            target.push(trimmed.to_string());
+        }
+    }
+}
+
+fn executor_tool_calls_to_router_calls(
+    calls: &[crate::behavior::ExecutorToolCall],
+) -> Vec<RouterToolCallPayload> {
+    calls
+        .iter()
+        .filter_map(|call| {
+            let name = call.name.trim();
+            if name.is_empty() {
+                return None;
+            }
+            Some(RouterToolCallPayload {
+                name: name.to_string(),
+                args: call.args.clone(),
+            })
+        })
+        .collect::<Vec<_>>()
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, VecDeque};
@@ -2553,5 +3111,169 @@ limits:
             .to_string();
         assert!(tool_messages_text.contains(TOOL_TODO_MANAGE));
         assert!(tool_messages_text.contains("Reply project status"));
+    }
+
+    #[tokio::test]
+    async fn ai_agent_manual_wakeup_runs_staged_loop_when_stage_behaviors_exist() {
+        let tmp = tempdir().expect("create tmpdir");
+        let agent_root = tmp.path().join("jarvis");
+        write_agent_fixture(&agent_root).await;
+
+        fs::write(
+            agent_root.join("behaviors/thread_resolver.yaml"),
+            r#"
+process_rule: Resolve thread/session ids and memory queries.
+limits:
+  max_tool_rounds: 0
+  max_tool_calls_per_round: 0
+  deadline_ms: 60000
+"#,
+        )
+        .await
+        .expect("write thread_resolver yaml");
+        fs::write(
+            agent_root.join("behaviors/router.yaml"),
+            r#"
+process_rule: Route initial tool calls and mode hints.
+limits:
+  max_tool_rounds: 0
+  max_tool_calls_per_round: 0
+  deadline_ms: 60000
+"#,
+        )
+        .await
+        .expect("write router yaml");
+
+        let requests = Arc::new(Mutex::new(Vec::<CompleteRequest>::new()));
+        let responses = Arc::new(Mutex::new(VecDeque::from(vec![
+            mocked_response(
+                json!({
+                    "is_sleep": true,
+                    "next_behavior": null,
+                    "actions": [],
+                    "output": {
+                        "action": "use_existing",
+                        "thread_id": "thread-router-1",
+                        "memory_queries": ["project status", "todo follow-up"]
+                    }
+                }),
+                10,
+                8,
+            ),
+            mocked_response(
+                json!({
+                    "is_sleep": true,
+                    "next_behavior": null,
+                    "actions": [],
+                    "output": {
+                        "need_tools": true,
+                        "tool_calls": [{
+                            "name": TOOL_TODO_MANAGE,
+                            "args": {
+                                "action": "create",
+                                "title": "Router created todo",
+                                "description": "Created during router stage",
+                                "status": "in_progress",
+                                "priority": "high"
+                            }
+                        }],
+                        "memory_queries": ["router query"],
+                        "workspace_need": "light",
+                        "immediate_reply": "收到，先整理项目状态。",
+                        "mode_hint": "on_wakeup"
+                    }
+                }),
+                11,
+                9,
+            ),
+            mocked_response(
+                json!({
+                    "is_sleep": true,
+                    "next_behavior": null,
+                    "actions": [{
+                        "kind": "bash",
+                        "title": "write staged artifact",
+                        "command": "cat > artifacts/staged_report.md <<'MD'\n# Staged Report\n- resolver and router executed\nMD",
+                        "execution_mode": "serial",
+                        "cwd": null,
+                        "timeout_ms": 20000,
+                        "allow_network": false,
+                        "fs_scope": {
+                            "read_roots": [],
+                            "write_roots": ["artifacts"]
+                        },
+                        "rationale": "persist staged loop execution marker"
+                    }],
+                    "output": {
+                        "ok": true,
+                        "summary": "staged loop done"
+                    }
+                }),
+                12,
+                10,
+            ),
+        ])));
+
+        let deps = AIAgentDeps {
+            taskmgr: Arc::new(TaskManagerClient::new_in_process(Box::new(
+                MockTaskMgrHandler {
+                    counter: Mutex::new(0),
+                    tasks: Arc::new(Mutex::new(HashMap::new())),
+                },
+            ))),
+            aicc: Arc::new(AiccClient::new_in_process(Box::new(MockAicc {
+                responses,
+                requests: requests.clone(),
+            }))),
+            msg_center: None,
+        };
+
+        let agent = AIAgent::load(AIAgentConfig::new(&agent_root), deps)
+            .await
+            .expect("load ai agent");
+        agent
+            .push_inbox_message(json!({
+                "from": "did:example:alice",
+                "text": "请更新项目状态",
+                "thread_id": "thread-user-1"
+            }))
+            .await;
+
+        let report = agent.on_wakeup(None).await.expect("run staged wakeup");
+        assert!(matches!(report.status, WakeupStatus::Completed));
+        assert_eq!(report.steps, 1);
+        assert!(report.token_total > 0);
+        assert_eq!(report.reason["thread_id"], "thread-router-1");
+        assert_eq!(report.reason["session_id"].is_string(), true);
+        assert_eq!(report.reason["event_id"].is_string(), true);
+        assert!(report.reason["memory_queries"]
+            .as_array()
+            .map(|v| v.iter().any(|q| q == "router query"))
+            .unwrap_or(false));
+
+        let artifact_path = agent_root.join("environment/artifacts/staged_report.md");
+        let artifact_content = fs::read_to_string(&artifact_path)
+            .await
+            .expect("read staged artifact");
+        assert!(artifact_content.contains("Staged Report"));
+
+        let todo_count = tokio::task::spawn_blocking({
+            let todo_db_path = agent_root.join("environment/todo/todo.db");
+            move || {
+                let conn = Connection::open(todo_db_path).expect("open todo db");
+                conn.query_row(
+                    "SELECT COUNT(1) FROM todos WHERE title = 'Router created todo'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("query staged todo count")
+            }
+        })
+        .await
+        .expect("join staged todo query");
+        assert_eq!(todo_count, 1);
+
+        let requests_guard = requests.lock().expect("requests lock");
+        assert_eq!(requests_guard.len(), 3);
     }
 }

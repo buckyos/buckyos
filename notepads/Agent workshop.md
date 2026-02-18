@@ -94,6 +94,9 @@ Agent Workspace 需要统一管理并可视化展现的状态集合为：
   * 包含 Function Call & Action 的调用与结果
   * 包含 Sub-Agent 生命周期与通信记录
 * **Todo List**
+* **状态落地基础设施要求**
+
+  * WorkLog / Message / TodoList 的存储与索引都必须支持基于 `session_id` 的查询（单 Session 明细查询 + 跨 Session 汇聚查询）
 
 这些共同构成一个 Agent 在运行过程中的“可观察状态”。
 
@@ -117,7 +120,8 @@ Agent Workspace 的 UI 不以“列表堆砌”为目标，而是专注解决：
 
 // worklog用sqlite记录workspace里的工作日志
 // 通过worklog，可以看到agent(包括sub agent)是如何完成工作的
-// worklog除了常规字段为，先增加thread-id和tag字段，方便用不同的方法查询和汇聚worklog
+// worklog/message/todolist 的落地基础设施都支持基于session_id的查找
+// worklog除了常规字段外，先增加session_id和tag字段，方便用不同的方法查询和汇聚worklog
 // worklog的主要接口是 append 和 必要的查询接口
 //
 // 下面是worklog中可能会出现的log类型

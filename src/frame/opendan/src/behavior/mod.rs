@@ -408,6 +408,7 @@ impl LLMBehavior {
         LLMResult {
             status: LLMStatus::Ok,
             token_usage: usage,
+            executor: draft.executor,
             actions: draft.actions,
             output: draft.output,
             next_behavior: draft.next_behavior,
@@ -673,6 +674,7 @@ impl LLMBehavior {
                 retriable: false,
             }),
             token_usage: TokenUsage::default(),
+            executor: None,
             actions: vec![],
             output: LLMOutput::Text(String::new()),
             next_behavior: Some(input.trace.behavior.clone()),

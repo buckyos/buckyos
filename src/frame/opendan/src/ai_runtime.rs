@@ -3,6 +3,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use ::kRPC::{RPCContext, RPCErrors, Result as KRPCResult};
 use async_trait::async_trait;
 use buckyos_api::{
     OpenDanAgentInfo, OpenDanAgentListResult, OpenDanHandler, OpenDanListAgentsReq,
@@ -11,7 +12,6 @@ use buckyos_api::{
     OpenDanWorklogItem, OpenDanWorkspaceInfo, OpenDanWorkspaceSubAgentsResult,
     OpenDanWorkspaceTodosResult, OpenDanWorkspaceWorklogsResult,
 };
-use ::kRPC::{Result as KRPCResult, RPCContext, RPCErrors};
 use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
@@ -554,7 +554,9 @@ impl OpenDanRuntimeKrpcHandler {
     async fn find_agent(&self, agent_id: &str) -> KRPCResult<RuntimeAgentInfo> {
         let agent_id = agent_id.trim();
         if agent_id.is_empty() {
-            return Err(RPCErrors::ReasonError("agent_id cannot be empty".to_string()));
+            return Err(RPCErrors::ReasonError(
+                "agent_id cannot be empty".to_string(),
+            ));
         }
 
         let agents = self
@@ -638,7 +640,11 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
         mapped.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
 
         let total = mapped.len() as u64;
-        let items = mapped.into_iter().skip(offset).take(limit).collect::<Vec<_>>();
+        let items = mapped
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect::<Vec<_>>();
         let next_cursor = build_next_cursor(offset, items.len(), total);
 
         Ok(OpenDanAgentListResult {
@@ -663,7 +669,8 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
         _ctx: RPCContext,
     ) -> KRPCResult<OpenDanWorkspaceInfo> {
         let agent = self.find_agent(agent_id).await?;
-        let workspace_root = workspace_root_from_agent_root(&self.runtime.cfg, Path::new(&agent.root));
+        let workspace_root =
+            workspace_root_from_agent_root(&self.runtime.cfg, Path::new(&agent.root));
         let todo_db = todo_db_path(&workspace_root);
         let worklog_db = worklog_db_path(&workspace_root);
 
@@ -702,7 +709,9 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
                 Ok((todo_total, worklog_total))
             })
             .await
-            .map_err(|error| RPCErrors::ReasonError(format!("query workspace summary failed: {error}")))??;
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!("query workspace summary failed: {error}"))
+            })??;
 
         Ok(OpenDanWorkspaceInfo {
             workspace_id: format!("workspace:{}", agent.did),
@@ -725,7 +734,8 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
         _ctx: RPCContext,
     ) -> KRPCResult<OpenDanWorkspaceWorklogsResult> {
         let agent = self.find_agent(&request.agent_id).await?;
-        let workspace_root = workspace_root_from_agent_root(&self.runtime.cfg, Path::new(&agent.root));
+        let workspace_root =
+            workspace_root_from_agent_root(&self.runtime.cfg, Path::new(&agent.root));
         let db_path = worklog_db_path(&workspace_root);
 
         let limit = normalize_limit(request.limit);
@@ -736,23 +746,22 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
         let status = request.status.clone();
         let step_id = request.step_id.clone();
         let keyword = request.keyword.clone();
-        let (items, total) =
-            task::spawn_blocking(move || {
-                query_workspace_worklogs_sync(
-                    &db_path,
-                    &agent_id,
-                    log_type.as_deref(),
-                    status.as_deref(),
-                    step_id.as_deref(),
-                    keyword.as_deref(),
-                    limit,
-                    offset,
-                )
-            })
-            .await
-            .map_err(|error| {
-                RPCErrors::ReasonError(format!("list workspace worklogs join failed: {error}"))
-            })??;
+        let (items, total) = task::spawn_blocking(move || {
+            query_workspace_worklogs_sync(
+                &db_path,
+                &agent_id,
+                log_type.as_deref(),
+                status.as_deref(),
+                step_id.as_deref(),
+                keyword.as_deref(),
+                limit,
+                offset,
+            )
+        })
+        .await
+        .map_err(|error| {
+            RPCErrors::ReasonError(format!("list workspace worklogs join failed: {error}"))
+        })??;
 
         Ok(OpenDanWorkspaceWorklogsResult {
             next_cursor: build_next_cursor(offset, items.len(), total),
@@ -767,7 +776,8 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
         _ctx: RPCContext,
     ) -> KRPCResult<OpenDanWorkspaceTodosResult> {
         let agent = self.find_agent(&request.agent_id).await?;
-        let workspace_root = workspace_root_from_agent_root(&self.runtime.cfg, Path::new(&agent.root));
+        let workspace_root =
+            workspace_root_from_agent_root(&self.runtime.cfg, Path::new(&agent.root));
         let db_path = todo_db_path(&workspace_root);
 
         let limit = normalize_limit(request.limit);
@@ -786,7 +796,9 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
             )
         })
         .await
-        .map_err(|error| RPCErrors::ReasonError(format!("list workspace todos join failed: {error}")))??;
+        .map_err(|error| {
+            RPCErrors::ReasonError(format!("list workspace todos join failed: {error}"))
+        })??;
 
         Ok(OpenDanWorkspaceTodosResult {
             next_cursor: build_next_cursor(offset, items.len(), total),
@@ -864,7 +876,9 @@ fn parse_cursor(cursor: Option<&str>) -> KRPCResult<usize> {
         return Ok(0);
     }
     let parsed = cursor.parse::<u64>().map_err(|_| {
-        RPCErrors::ReasonError(format!("invalid cursor `{cursor}`, expected numeric offset"))
+        RPCErrors::ReasonError(format!(
+            "invalid cursor `{cursor}`, expected numeric offset"
+        ))
     })?;
     usize::try_from(parsed)
         .map_err(|_| RPCErrors::ReasonError(format!("cursor too large: `{cursor}`")))
@@ -944,13 +958,11 @@ fn has_table(conn: &Connection, table_name: &str) -> KRPCResult<bool> {
             "query sqlite table check failed for `{table_name}`: {error}"
         ))
     })?;
-    rows.next()
-        .map(|row| row.is_some())
-        .map_err(|error| {
-            RPCErrors::ReasonError(format!(
-                "read sqlite table check failed for `{table_name}`: {error}"
-            ))
-        })
+    rows.next().map(|row| row.is_some()).map_err(|error| {
+        RPCErrors::ReasonError(format!(
+            "read sqlite table check failed for `{table_name}`: {error}"
+        ))
+    })
 }
 
 fn query_workspace_todos_sync(
@@ -965,7 +977,10 @@ fn query_workspace_todos_sync(
         return Ok((vec![], 0));
     }
     let conn = Connection::open(db_path).map_err(|error| {
-        RPCErrors::ReasonError(format!("open todo db `{}` failed: {error}", db_path.display()))
+        RPCErrors::ReasonError(format!(
+            "open todo db `{}` failed: {error}",
+            db_path.display()
+        ))
     })?;
     if !has_table(&conn, "todos")? {
         return Ok((vec![], 0));
@@ -993,7 +1008,9 @@ fn query_workspace_todos_sync(
         RPCErrors::ReasonError(format!("prepare todo count query failed: {error}"))
     })?;
     let total = count_stmt
-        .query_row(params_from_iter(where_params.clone()), |row| row.get::<_, i64>(0))
+        .query_row(params_from_iter(where_params.clone()), |row| {
+            row.get::<_, i64>(0)
+        })
         .map_err(|error| RPCErrors::ReasonError(format!("query todo count failed: {error}")))?;
     let total = total.max(0) as u64;
 
@@ -1011,14 +1028,15 @@ fn query_workspace_todos_sync(
     let mut stmt = conn.prepare(&list_sql).map_err(|error| {
         RPCErrors::ReasonError(format!("prepare todo list query failed: {error}"))
     })?;
-    let mut rows = stmt.query(params_from_iter(list_params)).map_err(|error| {
-        RPCErrors::ReasonError(format!("query todo list failed: {error}"))
-    })?;
+    let mut rows = stmt
+        .query(params_from_iter(list_params))
+        .map_err(|error| RPCErrors::ReasonError(format!("query todo list failed: {error}")))?;
 
     let mut items = Vec::<OpenDanTodoItem>::new();
-    while let Some(row) = rows.next().map_err(|error| {
-        RPCErrors::ReasonError(format!("read todo row failed: {error}"))
-    })? {
+    while let Some(row) = rows
+        .next()
+        .map_err(|error| RPCErrors::ReasonError(format!("read todo row failed: {error}")))?
+    {
         let todo_id: String = row.get(0).unwrap_or_default();
         let title: String = row.get(1).unwrap_or_default();
         let description: String = row.get(2).unwrap_or_default();
@@ -1118,7 +1136,9 @@ fn query_workspace_worklogs_sync(
         RPCErrors::ReasonError(format!("prepare worklog count query failed: {error}"))
     })?;
     let total = count_stmt
-        .query_row(params_from_iter(where_params.clone()), |row| row.get::<_, i64>(0))
+        .query_row(params_from_iter(where_params.clone()), |row| {
+            row.get::<_, i64>(0)
+        })
         .map_err(|error| RPCErrors::ReasonError(format!("query worklog count failed: {error}")))?;
     let total = total.max(0) as u64;
 
@@ -1136,14 +1156,15 @@ fn query_workspace_worklogs_sync(
     let mut stmt = conn.prepare(&list_sql).map_err(|error| {
         RPCErrors::ReasonError(format!("prepare worklog list query failed: {error}"))
     })?;
-    let mut rows = stmt.query(params_from_iter(list_params)).map_err(|error| {
-        RPCErrors::ReasonError(format!("query worklog list failed: {error}"))
-    })?;
+    let mut rows = stmt
+        .query(params_from_iter(list_params))
+        .map_err(|error| RPCErrors::ReasonError(format!("query worklog list failed: {error}")))?;
 
     let mut items = Vec::<OpenDanWorklogItem>::new();
-    while let Some(row) = rows.next().map_err(|error| {
-        RPCErrors::ReasonError(format!("read worklog row failed: {error}"))
-    })? {
+    while let Some(row) = rows
+        .next()
+        .map_err(|error| RPCErrors::ReasonError(format!("read worklog row failed: {error}")))?
+    {
         let log_id: String = row.get(0).unwrap_or_default();
         let row_log_type: String = row.get(1).unwrap_or_default();
         let row_status: String = row.get(2).unwrap_or_else(|_| "info".to_string());

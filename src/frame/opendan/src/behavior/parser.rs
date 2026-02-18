@@ -1,13 +1,14 @@
 use serde::Deserialize;
 use serde_json::Value as Json;
 
-use super::types::{ActionSpec, LLMOutput};
+use super::types::{ActionSpec, ExecutorResult, LLMOutput};
 use super::LLMRawResponse;
 use crate::agent_tool::ToolCall;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct StepDraft {
     pub tool_calls: Vec<ToolCall>,
+    pub executor: Option<ExecutorResult>,
     pub actions: Vec<ActionSpec>,
     pub output: LLMOutput,
     pub next_behavior: Option<String>,
@@ -21,6 +22,7 @@ impl OutputParser {
         if !raw.tool_calls.is_empty() {
             return Ok(StepDraft {
                 tool_calls: raw.tool_calls.clone(),
+                executor: None,
                 actions: vec![],
                 output: LLMOutput::Text(String::new()),
                 next_behavior: None,
@@ -34,6 +36,7 @@ impl OutputParser {
         if !raw.tool_calls.is_empty() {
             return Ok(StepDraft {
                 tool_calls: raw.tool_calls.clone(),
+                executor: None,
                 actions: vec![],
                 output: LLMOutput::Text(String::new()),
                 next_behavior: None,
@@ -59,6 +62,7 @@ impl OutputParser {
 
         Ok(StepDraft {
             tool_calls: vec![],
+            executor: None,
             actions: vec![],
             output: LLMOutput::Text(content.to_string()),
             next_behavior: None,
@@ -67,17 +71,27 @@ impl OutputParser {
     }
 
     fn from_json(value: Json) -> Result<StepDraft, String> {
-        let payload: FinalPayload =
-            serde_json::from_value(value).map_err(|err| format!("invalid output schema: {err}"))?;
-
-        let output: LLMOutput = payload.output.into();
+        let payload: FinalPayload = serde_json::from_value(value.clone())
+            .map_err(|err| format!("invalid output schema: {err}"))?;
+        let executor = maybe_parse_executor_result(&value);
+        let mut output: LLMOutput = payload.output.into();
+        if matches!(output, LLMOutput::Json(Json::Null)) && executor.is_some() {
+            output = LLMOutput::Json(value.clone());
+        }
+        let is_sleep = payload.is_sleep.unwrap_or_else(|| {
+            executor
+                .as_ref()
+                .map(|r| r.stop.should_stop)
+                .unwrap_or(false)
+        });
 
         Ok(StepDraft {
             tool_calls: vec![],
+            executor,
             actions: payload.actions,
             output,
             next_behavior: payload.next_behavior,
-            is_sleep: payload.is_sleep,
+            is_sleep,
         })
     }
 }
@@ -87,7 +101,7 @@ struct FinalPayload {
     #[serde(default)]
     pub next_behavior: Option<String>,
     #[serde(default)]
-    pub is_sleep: bool,
+    pub is_sleep: Option<bool>,
     #[serde(default)]
     pub actions: Vec<ActionSpec>,
     #[serde(default)]
@@ -117,6 +131,32 @@ impl From<OutputPayload> for LLMOutput {
     fn from(value: OutputPayload) -> Self {
         value.into_llm_output()
     }
+}
+
+fn maybe_parse_executor_result(value: &Json) -> Option<ExecutorResult> {
+    if !looks_like_executor_result(value) {
+        return None;
+    }
+    serde_json::from_value::<ExecutorResult>(value.clone()).ok()
+}
+
+fn looks_like_executor_result(value: &Json) -> bool {
+    let Some(obj) = value.as_object() else {
+        return false;
+    };
+    [
+        "thinking",
+        "reply",
+        "todo_delta",
+        "thinks",
+        "memory_writes",
+        "facts_writes",
+        "thread_delta",
+        "stop",
+        "diagnostics",
+    ]
+    .iter()
+    .any(|key| obj.contains_key(*key))
 }
 
 fn try_extract_json_block(content: &str) -> Option<String> {

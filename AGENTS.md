@@ -1,7 +1,7 @@
 # AGENTS
 
 ## Scope
-- Repo root: /root/app/buckyos/buckyos
+
 - Rust workspace root: `src/` (Cargo workspace; most crates live here)
 - Control panel service (Rust + kRPC): `src/frame/control_panel/`
 - Control panel UI (React/Vite/Tailwind): `src/frame/control_panel/web/`
