@@ -5,7 +5,6 @@ pub mod agent_memory;
 pub mod agent_session;
 pub mod agent_tool;
 pub mod ai_runtime;
-pub mod ai_thread;
 pub mod behavior;
 pub mod workspace;
 
@@ -187,6 +186,7 @@ async fn run_agents_supervisor(agent_roots: Vec<PathBuf>, deps: AIAgentDeps) -> 
     }
 
     Err(anyhow!("all opendan agents exited"))
+    //TODO:是否需要保留服务进程等待扫描到新的Agent?
 }
 
 async fn service_main() -> Result<()> {
