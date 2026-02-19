@@ -35,6 +35,8 @@ pub struct ToolCallContext {
     pub behavior: String,
     pub step_idx: u32,
     pub wakeup_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_session_id: Option<String>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -468,6 +470,7 @@ mod tests {
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-1".to_string(),
+            current_session_id: None,
         }
     }
 

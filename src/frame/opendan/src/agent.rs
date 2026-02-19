@@ -17,6 +17,7 @@ use tokio::task::JoinSet;
 
 use crate::agent_enviroment::AgentEnvironment;
 use crate::agent_memory::{AgentMemory, AgentMemoryConfig, TOOL_LOAD_MEMORY};
+use crate::agent_session::{AgentSession, AgentSessionConfig};
 use crate::agent_tool::{ToolCall, ToolCallContext, ToolError, ToolManager, ToolSpec};
 use crate::ai_runtime::{AiRuntime, AiRuntimeConfig};
 use crate::behavior::{
@@ -207,12 +208,17 @@ impl AIAgent {
             })?;
 
         let environment_root = agent_root.join(&cfg.environment_dir_name);
-        let environment = AgentEnvironment::new(environment_root).await?;
-        let memory =
-            AgentMemory::new(AgentMemoryConfig::new(&agent_root), deps.msg_center.clone()).await?;
+        let environment = AgentEnvironment::new(environment_root.clone()).await?;
+        let session = AgentSession::new(
+            AgentSessionConfig::new(&environment_root),
+            deps.msg_center.clone(),
+        )
+        .await?;
+        let memory = AgentMemory::new(AgentMemoryConfig::new(&agent_root)).await?;
 
         let tool_mgr = Arc::new(ToolManager::new());
         environment.register_workshop_tools(tool_mgr.as_ref())?;
+        session.register_tools(tool_mgr.as_ref())?;
         memory.register_tools(tool_mgr.as_ref())?;
         let runtime = AiRuntime::new(AiRuntimeConfig::new(&cfg.agent_root)).await?;
         runtime.register_agent(&did, &cfg.agent_root).await?;
@@ -326,6 +332,7 @@ impl AIAgent {
                 behavior: "on_wakeup".to_string(),
                 step_idx: 0,
                 wakeup_id: format!("disable-{}", now_ms()),
+                current_session_id: None,
             };
             append_workspace_worklog_entry(
                 self.tool_mgr.clone(),
@@ -359,6 +366,7 @@ impl AIAgent {
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: format!("inbox-{}", now_ms()),
+            current_session_id: None,
         };
         let thread_id = extract_thread_id_from_message_payload(&msg);
         append_workspace_worklog_entry(
@@ -486,6 +494,7 @@ impl AIAgent {
                 behavior: "on_wakeup".to_string(),
                 step_idx: 0,
                 wakeup_id: format!("wakeup-start-{}", now),
+                current_session_id: None,
             };
             append_workspace_worklog_entry(
                 self.tool_mgr.clone(),
@@ -1116,6 +1125,7 @@ impl AIAgent {
                 behavior: trace.behavior.clone(),
                 step_idx: trace.step_idx,
                 wakeup_id: trace.wakeup_id.clone(),
+                current_session_id: None,
             };
             match self.tool_mgr.call_tool(&ctx, tool_call).await {
                 Ok(raw) => observations.push(Sanitizer::sanitize_observation(
@@ -1289,6 +1299,7 @@ impl AIAgent {
                 behavior: "on_wakeup".to_string(),
                 step_idx: 0,
                 wakeup_id: format!("pull-{}", now_ms()),
+                current_session_id: None,
             };
             append_workspace_worklog_entry(
                 self.tool_mgr.clone(),
@@ -1463,6 +1474,7 @@ impl AIAgent {
                     behavior: trace.behavior.clone(),
                     step_idx: trace.step_idx,
                     wakeup_id: trace.wakeup_id.clone(),
+                    current_session_id: None,
                 },
                 call,
             )
@@ -1961,6 +1973,7 @@ async fn run_single_action(
         behavior: trace.behavior.clone(),
         step_idx: trace.step_idx,
         wakeup_id: trace.wakeup_id.clone(),
+        current_session_id: None,
     };
     append_workspace_worklog_entry(
         tool_mgr.clone(),
@@ -2980,6 +2993,7 @@ limits:
                             "action": "create",
                             "title": "Reply project status",
                             "description": "Prepare status update for Alice",
+                            "owner_session_id": null,
                             "status": "in_progress",
                             "priority": "high",
                             "tags": ["inbox", "report"]
@@ -3173,6 +3187,7 @@ limits:
                                 "action": "create",
                                 "title": "Router created todo",
                                 "description": "Created during router stage",
+                                "owner_session_id": null,
                                 "status": "in_progress",
                                 "priority": "high"
                             }

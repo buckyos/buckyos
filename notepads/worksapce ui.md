@@ -41,7 +41,7 @@
 1. **以 Agent 为中心**：任何信息都能回答“这个 Agent 在做什么/做到哪一步/做过什么/并行做了什么”。
 2. **结构优先于堆列表**：先给 Loop/Step 的结构，再逐层展开 Task/WorkLog/Todo 细节。
 3. **可追溯**：所有 Task / WorkLog / Todo 必须能回溯到：
-
+   * 哪个 Session
    * 哪个 Agent（主/子）
    * 哪个 Loop Run
    * 哪个 Step（如果适用）

@@ -1104,6 +1104,7 @@ mod tests {
                     behavior: "on_wakeup".to_string(),
                     step_idx: 0,
                     wakeup_id: "wakeup-test".to_string(),
+                    current_session_id: None,
                 },
                 ToolCall {
                     name: name.to_string(),
@@ -1394,6 +1395,7 @@ mod tests {
                 "action": "create",
                 "title": "Implement todo bridge",
                 "description": "sync user todo and task execution state",
+                "owner_session_id": null,
                 "status": "todo",
                 "priority": "high",
                 "tags": ["runtime", "bridge"]

@@ -10,10 +10,12 @@ Agent的所有状态数据，都保存在Agent的Enviriment中
 ### Agent Memory
 
 Agent专用的文件夹，保存Agent的所有记忆
-- 最小加载内容（的更新）
-- Memory的搜索机制
-- 插入机制
-- Memory的整理机制
+- memory.md 最小加载内容（通常在self-improve环节更新）
+- Memory的搜索机制（因为是文件系统，所以鼓励使用 bash的find命令去搜索)
+- 插入机制：
+  - things(包含fact) 的插入机制，该机制带有执行度查询和来源查询
+  - 通过新建文件保存任意内容
+- Memory的整理机制: 在self-improve环节，会对memory目录的文件进行整理
 
 ### Agent (Task) Session
 
@@ -77,9 +79,11 @@ Agent总是有一个私有的Workspace(不会因为协作冲突)
 ## 提示词的构造
 
 ### Agent Router 提示词(快速响应提示词)
-
+<TODO>
+要求必须能准确的router到一个session,如果不能判断的话，反问用户并收集足够的信息，确认选择后才会离开Router behavior
 
 ### behavior提示词
+
 - Agent 角色配置
 - 全局的Memory 
 - workspace的全局信息(如有)
@@ -95,7 +99,7 @@ Agent总是有一个私有的Workspace(不会因为协作冲突)
 
 
 ### Self-Improve 提示词
-
+<TODO>
 
    
 ## 一些结论
@@ -105,6 +109,32 @@ Agent总是有一个私有的Workspace(不会因为协作冲突)
 - Session是focus(topic)相关的，偏局部的，偏一次任务的 （用户可以整体性的删除）
 - Workspace是 协作相关的，是跨越多个实体（人和Agent），每次工作前都可能变化的（很明显是高级特性） （用户经常日常干预)
 
+
+### Agent的磁盘结构
+
+agents/$agent_name agent根目录,readonly,安装时的目录，性质类似与 bin/$appname
+- behaviors 目录
+- skills 目录
+
+data/$agent_name agent的数据目录
+- behaviors 目录，自演进后修改的行为，会覆盖安装目录的同名behaviors
+- skills 目录，自演进后添加的skills,会覆盖安装目录的同名skill
+- enviroment 
+  - workspace (准备好了以主机身份进行协作) 
+    - $project_name
+     
+  - todo  
+  - tools 
+  - worklog
+- memory
+  - calendar.db 
+- sessions
+  - $sessionid
+    - summary.json
+- sub-agents
+
+
+### Agent默认可用的工具列表
 
 
 

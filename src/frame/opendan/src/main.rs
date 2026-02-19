@@ -2,6 +2,7 @@
 pub mod agent;
 pub mod agent_enviroment;
 pub mod agent_memory;
+pub mod agent_session;
 pub mod agent_tool;
 pub mod ai_runtime;
 pub mod ai_thread;

@@ -51,6 +51,68 @@ const mockAgents: WsAgent[] = [
   },
 ]
 
+const mockAgentSessions: Record<string, WsAgentSession[]> = {
+  'agent-main-001': [
+    {
+      session_id: 'sess-main-001-a',
+      owner_agent: 'agent-main-001',
+      title: 'Feature planning session',
+      summary: 'Current planning and decomposition workflow',
+      status: 'active',
+      created_at: ago(20),
+      updated_at: ago(2),
+      last_activity_at: ago(2),
+    },
+    {
+      session_id: 'sess-main-001-b',
+      owner_agent: 'agent-main-001',
+      title: 'Daily review session',
+      summary: 'Periodic review and housekeeping',
+      status: 'closed',
+      created_at: ago(150),
+      updated_at: ago(90),
+      last_activity_at: ago(90),
+    },
+  ],
+  'agent-sub-001': [
+    {
+      session_id: 'sess-sub-001-a',
+      owner_agent: 'agent-sub-001',
+      title: 'Research thread',
+      summary: 'Collecting references for UI implementation',
+      status: 'active',
+      created_at: ago(20),
+      updated_at: ago(4),
+      last_activity_at: ago(4),
+    },
+  ],
+  'agent-sub-002': [
+    {
+      session_id: 'sess-sub-002-a',
+      owner_agent: 'agent-sub-002',
+      title: 'Code generation buffer',
+      summary: 'Pending updates after plan confirmation',
+      status: 'sleeping',
+      created_at: ago(30),
+      updated_at: ago(12),
+      last_activity_at: ago(12),
+    },
+  ],
+  'agent-main-002': [],
+  'agent-main-003': [
+    {
+      session_id: 'sess-main-003-a',
+      owner_agent: 'agent-main-003',
+      title: 'Deploy retry session',
+      summary: 'Last deployment run',
+      status: 'error',
+      created_at: ago(40),
+      updated_at: ago(28),
+      last_activity_at: ago(28),
+    },
+  ],
+}
+
 const mockLoopRuns: Record<string, LoopRun[]> = {
   'agent-main-001': [
     {
@@ -688,10 +750,13 @@ type OpenDanAgent = Awaited<ReturnType<OpenDanClient['getAgent']>>
 type OpenDanWorklog = Awaited<ReturnType<OpenDanClient['listWorkspaceWorklogs']>>['items'][number]
 type OpenDanTodo = Awaited<ReturnType<OpenDanClient['listWorkspaceTodos']>>['items'][number]
 type OpenDanSubAgent = Awaited<ReturnType<OpenDanClient['listWorkspaceSubAgents']>>['items'][number]
+type OpenDanAgentSessionId = Awaited<ReturnType<OpenDanClient['listAgentSessions']>>['items'][number]
+type OpenDanAgentSession = Awaited<ReturnType<OpenDanClient['getAgentSession']>>
 
 type RunMeta = {
   run_id: string
   agent_id: string
+  owner_session_id?: string
   started_at_ms: number
   ended_at_ms?: number
   step_ids: Set<string>
@@ -721,10 +786,12 @@ const taskMgrClient = new TaskManagerClient(new buckyos.kRPCClient('/kapi/task-m
 const WORKSPACE_TASK_APP_ID = 'opendan-llm-behavior'
 const AGENT_RUN_CACHE_TTL_MS = 5000
 const RUN_WORKLOG_CACHE_TTL_MS = 5000
+const AGENT_SESSION_CACHE_TTL_MS = 5000
 
 const agentRunCache = new Map<string, { at: number; data: AgentRunData }>()
 const runMetaCache = new Map<string, RunMeta>()
 const runWorklogCache = new Map<string, { at: number; logs: WsWorkLog[] }>()
+const agentSessionCache = new Map<string, { at: number; sessions: WsAgentSession[] }>()
 
 const normalizeKey = (value: string): string => value.trim().toLowerCase().replace(/[\s-]+/g, '_')
 
@@ -1037,6 +1104,20 @@ const extractTaskBehavior = (task: TaskManagerTask): string | undefined => {
   return parseAiccRequestId(task.data)?.behavior
 }
 
+const extractTaskOwnerSessionId = (task: TaskManagerTask): string | undefined =>
+  readString(task.data, [
+    ['owner_session_id'],
+    ['ownerSessionId'],
+    ['session_id'],
+    ['sessionId'],
+    ['aicc', 'request', 'owner_session_id'],
+    ['aicc', 'request', 'ownerSessionId'],
+    ['aicc', 'request', 'session_id'],
+    ['aicc', 'request', 'sessionId'],
+    ['trace', 'owner_session_id'],
+    ['trace', 'session_id'],
+  ])
+
 const mapTaskToWsTask = (task: TaskManagerTask, runRef: TaskRunRef): WsTask => {
   const createdAtMs = toMillis(task.created_at) ?? Date.now()
   const updatedAtMs = toMillis(task.updated_at) ?? createdAtMs
@@ -1234,6 +1315,9 @@ const buildAgentRunData = (agentId: string, tasks: TaskManagerTask[]): AgentRunD
     const triggerBehavior = refs
       .map(({ task }) => extractTaskBehavior(task))
       .find((value): value is string => Boolean(value))
+    const ownerSessionId = refs
+      .map(({ task }) => extractTaskOwnerSessionId(task))
+      .find((value): value is string => Boolean(value))
     const triggerEvent = triggerBehavior ? `behavior:${triggerBehavior}` : `wakeup:${runId}`
 
     const run: LoopRun = {
@@ -1269,6 +1353,7 @@ const buildAgentRunData = (agentId: string, tasks: TaskManagerTask[]): AgentRunD
     runMetas.set(runId, {
       run_id: runId,
       agent_id: agentId,
+      owner_session_id: ownerSessionId,
       started_at_ms: runStartMs,
       ended_at_ms: hasRunning ? undefined : Math.max(...(runEndMs.length > 0 ? runEndMs : [runStartMs])),
       step_ids: new Set(steps.map((step) => step.step_id)),
@@ -1307,6 +1392,59 @@ const findRunMeta = (runId: string): RunMeta | undefined => {
   return undefined
 }
 
+const mapOpenDanSession = (
+  item: Partial<OpenDanAgentSession> & { session_id: string },
+  agentId: string,
+): WsAgentSession => ({
+  session_id: item.session_id,
+  owner_agent: item.owner_agent ?? agentId,
+  title: item.title?.trim() || `Session ${item.session_id.slice(0, 8)}`,
+  summary: item.summary?.trim() || undefined,
+  status: item.status?.trim() || 'unknown',
+  created_at: toIso(item.created_at_ms),
+  updated_at: toIso(item.updated_at_ms),
+  last_activity_at: toIso(item.last_activity_ms ?? item.updated_at_ms ?? item.created_at_ms),
+})
+
+const loadAgentSessions = async (agentId: string): Promise<WsAgentSession[]> => {
+  const cached = agentSessionCache.get(agentId)
+  if (cached && Date.now() - cached.at < AGENT_SESSION_CACHE_TTL_MS) return cached.sessions
+
+  const listed = await opendanClient.listAgentSessions({
+    agentId,
+    limit: 200,
+  })
+  const sessionIds = listed.items.filter((item): item is OpenDanAgentSessionId => Boolean(item?.trim()))
+  if (sessionIds.length === 0) {
+    agentSessionCache.set(agentId, { at: Date.now(), sessions: [] })
+    return []
+  }
+
+  const details = await Promise.all(
+    sessionIds.map(async (sessionId) => {
+      try {
+        const record = await opendanClient.getAgentSession(agentId, sessionId)
+        return mapOpenDanSession(record, agentId)
+      } catch {
+        return mapOpenDanSession({ session_id: sessionId }, agentId)
+      }
+    }),
+  )
+
+  details.sort((a, b) => (toMillis(b.last_activity_at) ?? 0) - (toMillis(a.last_activity_at) ?? 0))
+  agentSessionCache.set(agentId, { at: Date.now(), sessions: details })
+  return details
+}
+
+const resolveOwnerSessionId = async (
+  agentId: string,
+  preferredSessionId?: string,
+): Promise<string | undefined> => {
+  if (preferredSessionId?.trim()) return preferredSessionId.trim()
+  const sessions = await loadAgentSessions(agentId)
+  return sessions[0]?.session_id
+}
+
 const mapOpenDanWorklog = (item: OpenDanWorklog): WsWorkLog => {
   const payloadObj = asObject(item.payload) ?? undefined
   const durationMs =
@@ -1332,8 +1470,16 @@ const loadRunWorklogs = async (runMeta: RunMeta): Promise<WsWorkLog[]> => {
   const cached = runWorklogCache.get(runMeta.run_id)
   if (cached && Date.now() - cached.at < RUN_WORKLOG_CACHE_TTL_MS) return cached.logs
 
+  const ownerSessionId = await resolveOwnerSessionId(runMeta.agent_id, runMeta.owner_session_id)
+  if (!ownerSessionId) {
+    console.warn(`loadRunWorklogs skipped: missing ownerSessionId for agent ${runMeta.agent_id}`)
+    runWorklogCache.set(runMeta.run_id, { at: Date.now(), logs: [] })
+    return []
+  }
+
   const result = await opendanClient.listWorkspaceWorklogs({
     agentId: runMeta.agent_id,
+    ownerSessionId,
     limit: 500,
   })
   const startMs = runMeta.started_at_ms - 120_000
@@ -1446,6 +1592,18 @@ export const fetchAgents = async (): Promise<{ data: WsAgent[] | null; error: un
   }
 }
 
+export const fetchAgentSessions = async (
+  agentId: string,
+): Promise<{ data: WsAgentSession[] | null; error: unknown }> => {
+  try {
+    const sessions = await loadAgentSessions(agentId)
+    return { data: sessions, error: null }
+  } catch (error) {
+    console.warn('fetchAgentSessions failed, fallback to mock data', error)
+    return { data: mockAgentSessions[agentId] ?? [], error }
+  }
+}
+
 export const fetchLoopRuns = async (
   agentId: string,
 ): Promise<{ data: LoopRun[] | null; error: unknown }> => {
@@ -1466,7 +1624,12 @@ export const fetchSteps = async (
     if (!runMeta) throw new Error(`run not found: ${runId}`)
     const runData = await loadAgentRunData(runMeta.agent_id)
     const baseSteps = runData.steps_by_run.get(runId) ?? []
-    const runLogs = await loadRunWorklogs(runMeta)
+    let runLogs: WsWorkLog[] = []
+    try {
+      runLogs = await loadRunWorklogs(runMeta)
+    } catch (error) {
+      console.warn(`fetchSteps failed to load worklogs for run ${runId}, keep base steps`, error)
+    }
     const steps = withStepLogCounts(baseSteps, runLogs)
     return { data: steps, error: null }
   } catch (error) {
@@ -1510,8 +1673,12 @@ export const fetchTodos = async (
   agentId: string,
 ): Promise<{ data: WsTodo[] | null; error: unknown }> => {
   try {
+    const ownerSessionId = await resolveOwnerSessionId(agentId)
+    if (!ownerSessionId) throw new Error(`owner session not found for agent ${agentId}`)
+
     const result = await opendanClient.listWorkspaceTodos({
       agentId,
+      ownerSessionId,
       includeClosed: true,
       limit: 200,
     })

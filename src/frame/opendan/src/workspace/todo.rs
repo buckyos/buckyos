@@ -121,6 +121,7 @@ impl AgentTool for TodoTool {
                     "clear_due_at": { "type": "boolean", "default": false },
                     "task_id": { "type": "integer" },
                     "task_status": { "type": "string" },
+                    "owner_session_id": { "type": ["string", "null"] },
                     "clear_task_id": { "type": "boolean", "default": false },
                     "include_closed": { "type": "boolean", "default": true },
                     "query": { "type": "string" },
@@ -176,6 +177,8 @@ impl TodoTool {
         let status = optional_string(&args, "status")?
             .map(normalize_status)
             .transpose()?;
+        let owner_session_id =
+            optional_string_alias(&args, "owner_session_id", "owner-session-id")?;
         let include_closed = optional_bool(&args, "include_closed")?.unwrap_or(true);
         let query = optional_string(&args, "query")?.map(|s| s.trim().to_string());
         let limit = optional_u64(&args, "limit")?
@@ -194,6 +197,7 @@ impl TodoTool {
                 list_todos(
                     conn,
                     status.as_deref(),
+                    owner_session_id.as_deref(),
                     include_closed,
                     query.as_deref(),
                     limit,
@@ -259,6 +263,7 @@ struct TodoCreateInput {
     description: String,
     status: String,
     priority: String,
+    owner_session_id: Option<String>,
     tags: Vec<String>,
     due_at: Option<u64>,
     task_id: Option<i64>,
@@ -267,6 +272,15 @@ struct TodoCreateInput {
 
 impl TodoCreateInput {
     fn from_args(args: &Json) -> Result<Self, ToolError> {
+        let has_owner_session_id =
+            args.get("owner_session_id").is_some() || args.get("owner-session-id").is_some();
+        if !has_owner_session_id {
+            return Err(ToolError::InvalidArgs(
+                "missing `owner_session_id` (nullable), or use alias `owner-session-id`"
+                    .to_string(),
+            ));
+        }
+
         let id = optional_string(args, "id")?.unwrap_or_else(generate_todo_id);
         let title = require_string(args, "title")?;
         let description = optional_string(args, "description")?.unwrap_or_default();
@@ -278,6 +292,7 @@ impl TodoCreateInput {
             .map(normalize_priority)
             .transpose()?
             .unwrap_or_else(|| "normal".to_string());
+        let owner_session_id = optional_string_alias(args, "owner_session_id", "owner-session-id")?;
         let tags = parse_tags(args.get("tags"))?;
         let due_at = optional_u64(args, "due_at")?;
         let task_id = optional_i64(args, "task_id")?;
@@ -290,6 +305,7 @@ impl TodoCreateInput {
             description,
             status,
             priority,
+            owner_session_id,
             tags,
             due_at,
             task_id,
@@ -391,6 +407,7 @@ struct TodoItem {
     description: String,
     status: String,
     priority: String,
+    owner_session_id: Option<String>,
     tags: Vec<String>,
     due_at: Option<u64>,
     task_id: Option<i64>,
@@ -408,6 +425,7 @@ CREATE TABLE IF NOT EXISTS todos (
     description TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'todo',
     priority TEXT NOT NULL DEFAULT 'normal',
+    owner_session_id TEXT,
     tags_json TEXT NOT NULL DEFAULT '[]',
     due_at INTEGER,
     task_id INTEGER,
@@ -419,7 +437,50 @@ CREATE INDEX IF NOT EXISTS idx_todos_status_updated ON todos(status, updated_at 
 CREATE INDEX IF NOT EXISTS idx_todos_task_id ON todos(task_id);
 "#,
     )
-    .map_err(|err| ToolError::ExecFailed(format!("ensure todo schema failed: {err}")))
+    .map_err(|err| ToolError::ExecFailed(format!("ensure todo schema failed: {err}")))?;
+
+    ensure_todo_column_exists(conn, "owner_session_id", "TEXT")?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_todos_owner_session_updated ON todos(owner_session_id, updated_at DESC);",
+    )
+    .map_err(|err| ToolError::ExecFailed(format!("ensure todo owner_session index failed: {err}")))?;
+    Ok(())
+}
+
+fn ensure_todo_column_exists(
+    conn: &Connection,
+    column_name: &str,
+    column_def_sql: &str,
+) -> Result<(), ToolError> {
+    if todo_table_has_column(conn, column_name)? {
+        return Ok(());
+    }
+    let sql = format!("ALTER TABLE todos ADD COLUMN {column_name} {column_def_sql}");
+    conn.execute(&sql, []).map_err(|err| {
+        ToolError::ExecFailed(format!("add todo column `{column_name}` failed: {err}"))
+    })?;
+    Ok(())
+}
+
+fn todo_table_has_column(conn: &Connection, column_name: &str) -> Result<bool, ToolError> {
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(todos)")
+        .map_err(|err| ToolError::ExecFailed(format!("prepare todo table_info failed: {err}")))?;
+    let mut rows = stmt
+        .query([])
+        .map_err(|err| ToolError::ExecFailed(format!("query todo table_info failed: {err}")))?;
+    while let Some(row) = rows
+        .next()
+        .map_err(|err| ToolError::ExecFailed(format!("read todo table_info failed: {err}")))?
+    {
+        let name: String = row.get(1).map_err(|err| {
+            ToolError::ExecFailed(format!("decode todo table_info failed: {err}"))
+        })?;
+        if name == column_name {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn create_todo(conn: &Connection, input: TodoCreateInput) -> Result<TodoItem, ToolError> {
@@ -428,14 +489,15 @@ fn create_todo(conn: &Connection, input: TodoCreateInput) -> Result<TodoItem, To
         .map_err(|err| ToolError::ExecFailed(format!("serialize tags failed: {err}")))?;
     conn.execute(
         "INSERT INTO todos (
-            id, title, description, status, priority, tags_json, due_at, task_id, task_status, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            id, title, description, status, priority, owner_session_id, tags_json, due_at, task_id, task_status, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             input.id,
             input.title,
             input.description,
             input.status,
             input.priority,
+            input.owner_session_id,
             tags_json,
             input.due_at.map(u64_to_i64),
             input.task_id,
@@ -454,13 +516,14 @@ fn create_todo(conn: &Connection, input: TodoCreateInput) -> Result<TodoItem, To
 fn list_todos(
     conn: &Connection,
     status: Option<&str>,
+    owner_session_id: Option<&str>,
     include_closed: bool,
     query: Option<&str>,
     limit: usize,
     offset: usize,
 ) -> Result<Vec<TodoItem>, ToolError> {
     let mut sql = String::from(
-        "SELECT id, title, description, status, priority, tags_json, due_at, task_id, task_status, created_at, updated_at
+        "SELECT id, title, description, status, priority, owner_session_id, tags_json, due_at, task_id, task_status, created_at, updated_at
          FROM todos
          WHERE 1 = 1",
     );
@@ -469,6 +532,10 @@ fn list_todos(
     if let Some(status) = status {
         sql.push_str(" AND status = ?");
         params_vec.push(SqlValue::Text(status.to_string()));
+    }
+    if let Some(owner_session_id) = owner_session_id {
+        sql.push_str(" AND owner_session_id = ?");
+        params_vec.push(SqlValue::Text(owner_session_id.to_string()));
     }
     if !include_closed {
         sql.push_str(" AND status NOT IN ('done', 'cancelled')");
@@ -503,7 +570,7 @@ fn list_todos(
 fn get_todo_by_id(conn: &Connection, id: &str) -> Result<Option<TodoItem>, ToolError> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, title, description, status, priority, tags_json, due_at, task_id, task_status, created_at, updated_at
+            "SELECT id, title, description, status, priority, owner_session_id, tags_json, due_at, task_id, task_status, created_at, updated_at
              FROM todos
              WHERE id = ?1
              LIMIT 1",
@@ -596,7 +663,7 @@ fn delete_todo(conn: &Connection, id: &str) -> Result<bool, ToolError> {
 }
 
 fn map_todo_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TodoItem> {
-    let tags_json: String = row.get(5)?;
+    let tags_json: String = row.get(6)?;
     let tags = serde_json::from_str::<Vec<String>>(&tags_json).unwrap_or_default();
     Ok(TodoItem {
         id: row.get(0)?,
@@ -604,12 +671,13 @@ fn map_todo_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TodoItem> {
         description: row.get(2)?,
         status: row.get(3)?,
         priority: row.get(4)?,
+        owner_session_id: row.get(5)?,
         tags,
-        due_at: row.get::<_, Option<i64>>(6)?.and_then(i64_to_u64),
-        task_id: row.get(7)?,
-        task_status: row.get(8)?,
-        created_at: row.get::<_, i64>(9).map_or(0, |v| v.max(0) as u64),
-        updated_at: row.get::<_, i64>(10).map_or(0, |v| v.max(0) as u64),
+        due_at: row.get::<_, Option<i64>>(7)?.and_then(i64_to_u64),
+        task_id: row.get(8)?,
+        task_status: row.get(9)?,
+        created_at: row.get::<_, i64>(10).map_or(0, |v| v.max(0) as u64),
+        updated_at: row.get::<_, i64>(11).map_or(0, |v| v.max(0) as u64),
     })
 }
 
@@ -640,6 +708,17 @@ fn optional_string(args: &Json, key: &str) -> Result<Option<String>, ToolError> 
         .as_str()
         .ok_or_else(|| ToolError::InvalidArgs(format!("`{key}` must be a string")))?;
     Ok(Some(raw.trim().to_string()))
+}
+
+fn optional_string_alias(
+    args: &Json,
+    primary_key: &str,
+    alias_key: &str,
+) -> Result<Option<String>, ToolError> {
+    if args.get(primary_key).is_some() {
+        return optional_string(args, primary_key);
+    }
+    optional_string(args, alias_key)
 }
 
 fn optional_bool(args: &Json, key: &str) -> Result<Option<bool>, ToolError> {
@@ -821,6 +900,7 @@ mod tests {
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-test".to_string(),
+            current_session_id: None,
         }
     }
 
@@ -841,14 +921,16 @@ mod tests {
                 "id": "todo-crud-1",
                 "title": "Implement todo tool test",
                 "description": "validate create/list/get/update/delete",
+                "owner_session_id": "session-001",
                 "status": "todo",
                 "priority": "high",
-                "tags": ["runtime", "runtime", "test"]
+                "tags": [ "runtime", "test"]
             }),
         )
         .await
         .expect("create todo");
         assert_eq!(created["todo"]["id"], "todo-crud-1");
+        assert_eq!(created["todo"]["owner_session_id"], "session-001");
         assert_eq!(created["todo"]["tags"], json!(["runtime", "test"]));
 
         let listed = call(
@@ -856,6 +938,7 @@ mod tests {
             json!({
                 "action": "list",
                 "status": "todo",
+                "owner_session_id": "session-001",
                 "include_closed": false
             }),
         )
@@ -891,6 +974,7 @@ mod tests {
         .await
         .expect("get todo");
         assert_eq!(got["todo"]["status"], "in_progress");
+        assert_eq!(got["todo"]["owner_session_id"], "session-001");
 
         let deleted = call(
             &tool,
@@ -915,7 +999,8 @@ mod tests {
             json!({
                 "action": "create",
                 "id": "todo-open",
-                "title": "open item"
+                "title": "open item",
+                "owner_session_id": null
             }),
         )
         .await
@@ -926,6 +1011,7 @@ mod tests {
                 "action": "create",
                 "id": "todo-done",
                 "title": "done item",
+                "owner_session_id": null,
                 "status": "done"
             }),
         )
@@ -947,6 +1033,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn todo_tool_list_can_filter_by_owner_session_id() {
+        let tmp = tempdir().expect("create tempdir");
+        let db_path = tmp.path().join("todo").join("todo.db");
+        let tool = TodoTool::new(TodoToolConfig::with_db_path(db_path)).expect("create todo tool");
+
+        call(
+            &tool,
+            json!({
+                "action": "create",
+                "id": "todo-owner-empty",
+                "title": "owner is empty string",
+                "owner_session_id": ""
+            }),
+        )
+        .await
+        .expect("create todo with empty owner session id");
+        call(
+            &tool,
+            json!({
+                "action": "create",
+                "id": "todo-owner-a",
+                "title": "owner A",
+                "owner-session-id": "session-A"
+            }),
+        )
+        .await
+        .expect("create todo with owner-session-id alias");
+        call(
+            &tool,
+            json!({
+                "action": "create",
+                "id": "todo-owner-none",
+                "title": "owner is null",
+                "owner_session_id": null
+            }),
+        )
+        .await
+        .expect("create todo with null owner");
+
+        let list_owner_a = call(
+            &tool,
+            json!({
+                "action": "list",
+                "owner_session_id": "session-A"
+            }),
+        )
+        .await
+        .expect("list todos by owner session id");
+        let owner_a = list_owner_a["todos"].as_array().expect("todos array");
+        assert_eq!(owner_a.len(), 1);
+        assert_eq!(owner_a[0]["id"], "todo-owner-a");
+
+        let list_empty_owner = call(
+            &tool,
+            json!({
+                "action": "list",
+                "owner-session-id": ""
+            }),
+        )
+        .await
+        .expect("list todos by empty owner session id");
+        let empty_owner = list_empty_owner["todos"].as_array().expect("todos array");
+        assert_eq!(empty_owner.len(), 1);
+        assert_eq!(empty_owner[0]["id"], "todo-owner-empty");
+    }
+
+    #[tokio::test]
     async fn todo_tool_validates_invalid_args() {
         let tmp = tempdir().expect("create tempdir");
         let db_path = tmp.path().join("todo").join("todo.db");
@@ -957,6 +1110,7 @@ mod tests {
             json!({
                 "action": "create",
                 "title": "bad status",
+                "owner_session_id": null,
                 "status": "unknown_status"
             }),
         )
@@ -969,7 +1123,8 @@ mod tests {
             json!({
                 "action": "create",
                 "id": "todo-update-noop",
-                "title": "noop"
+                "title": "noop",
+                "owner_session_id": null
             }),
         )
         .await

@@ -1213,6 +1213,7 @@ tools:
         behavior: "on_action".to_string(),
         step_idx: 1,
         wakeup_id: "wakeup-workshop-actions".to_string(),
+        current_session_id: None,
     };
     for (idx, action) in result.actions.iter().enumerate() {
         assert_eq!(
@@ -1275,7 +1276,7 @@ async fn run_step_with_agent_memory_tool_chain_then_insert_thing_by_action() {
     let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
         .await
         .expect("create workshop");
-    let memory = AgentMemory::new(AgentMemoryConfig::new(&root), None)
+    let memory = AgentMemory::new(AgentMemoryConfig::new(&root))
         .await
         .expect("create agent memory");
 
@@ -1498,6 +1499,7 @@ limits:
         behavior: "on_action".to_string(),
         step_idx: 1,
         wakeup_id: "wakeup-memory-action".to_string(),
+        current_session_id: None,
     };
     let exec_raw = tool_mgr
         .call_tool(

@@ -6,11 +6,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ::kRPC::{RPCContext, RPCErrors, Result as KRPCResult};
 use async_trait::async_trait;
 use buckyos_api::{
-    OpenDanAgentInfo, OpenDanAgentListResult, OpenDanHandler, OpenDanListAgentsReq,
-    OpenDanListWorkspaceSubAgentsReq, OpenDanListWorkspaceTodosReq,
-    OpenDanListWorkspaceWorklogsReq, OpenDanServerHandler, OpenDanSubAgentInfo, OpenDanTodoItem,
-    OpenDanWorklogItem, OpenDanWorkspaceInfo, OpenDanWorkspaceSubAgentsResult,
-    OpenDanWorkspaceTodosResult, OpenDanWorkspaceWorklogsResult,
+    OpenDanAgentInfo, OpenDanAgentListResult, OpenDanAgentSessionListResult,
+    OpenDanAgentSessionRecord, OpenDanHandler, OpenDanListAgentSessionsReq, OpenDanListAgentsReq,
+    OpenDanListWorkshopSubAgentsReq, OpenDanListWorkshopTodosReq, OpenDanListWorkshopWorklogsReq,
+    OpenDanServerHandler, OpenDanSubAgentInfo, OpenDanTodoItem, OpenDanWorklogItem,
+    OpenDanWorkspaceInfo, OpenDanWorkspaceSubAgentsResult, OpenDanWorkspaceTodosResult,
+    OpenDanWorkspaceWorklogsResult,
 };
 use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection};
 use serde::{Deserialize, Serialize};
@@ -32,10 +33,13 @@ const DEFAULT_MEMORY_DIR: &str = "memory";
 const DEFAULT_ROLE_FILE: &str = "role.md";
 const DEFAULT_SELF_FILE: &str = "self.md";
 const DEFAULT_WORKSPACE_BINDINGS_FILE: &str = "bindings.json";
+const DEFAULT_AGENT_SESSIONS_DIR: &str = "session";
+const DEFAULT_AGENT_SESSION_FILE_NAME: &str = "session.json";
 const DEFAULT_SUB_AGENT_ROLE: &str = "# Role\nYou are a specialized sub-agent.\n";
 const DEFAULT_SUB_AGENT_SELF: &str = "# Self\n- Follow parent constraints\n- Keep output concise\n";
 const DEFAULT_KRPC_LIST_LIMIT: usize = 64;
 const MAX_KRPC_LIST_LIMIT: usize = 512;
+const MAX_SESSION_ID_LEN: usize = 180;
 const ACTIVE_WINDOW_MS: u64 = 120_000;
 
 #[derive(thiserror::Error, Debug)]
@@ -663,7 +667,7 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
         Ok(self.to_agent_info(&agent).await)
     }
 
-    async fn handle_get_workspace(
+    async fn handle_get_workshop(
         &self,
         agent_id: &str,
         _ctx: RPCContext,
@@ -688,17 +692,19 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
         let agent_id_owned = agent.did.clone();
         let (todo_total, worklog_total) =
             task::spawn_blocking(move || -> KRPCResult<(u64, u64)> {
-                let (_, todo_total) = query_workspace_todos_sync(
+                let (_, todo_total) = query_workshop_todos_sync(
                     &todo_db_for_count,
                     &agent_id_owned,
                     None,
                     true,
+                    None,
                     1,
                     0,
                 )?;
-                let (_, worklog_total) = query_workspace_worklogs_sync(
+                let (_, worklog_total) = query_workshop_worklogs_sync(
                     &worklog_db_for_count,
                     &agent_id_owned,
+                    None,
                     None,
                     None,
                     None,
@@ -728,9 +734,9 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
         })
     }
 
-    async fn handle_list_workspace_worklogs(
+    async fn handle_list_workshop_worklogs(
         &self,
-        request: OpenDanListWorkspaceWorklogsReq,
+        request: OpenDanListWorkshopWorklogsReq,
         _ctx: RPCContext,
     ) -> KRPCResult<OpenDanWorkspaceWorklogsResult> {
         let agent = self.find_agent(&request.agent_id).await?;
@@ -742,14 +748,16 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
         let offset = parse_cursor(request.cursor.as_deref())?;
 
         let agent_id = request.agent_id.clone();
+        let owner_session_id = normalize_owner_session_id(request.owner_session_id.as_str())?;
         let log_type = request.log_type.clone();
         let status = request.status.clone();
         let step_id = request.step_id.clone();
         let keyword = request.keyword.clone();
         let (items, total) = task::spawn_blocking(move || {
-            query_workspace_worklogs_sync(
+            query_workshop_worklogs_sync(
                 &db_path,
                 &agent_id,
+                Some(owner_session_id.as_str()),
                 log_type.as_deref(),
                 status.as_deref(),
                 step_id.as_deref(),
@@ -760,7 +768,7 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
         })
         .await
         .map_err(|error| {
-            RPCErrors::ReasonError(format!("list workspace worklogs join failed: {error}"))
+            RPCErrors::ReasonError(format!("list workshop worklogs join failed: {error}"))
         })??;
 
         Ok(OpenDanWorkspaceWorklogsResult {
@@ -770,9 +778,9 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
         })
     }
 
-    async fn handle_list_workspace_todos(
+    async fn handle_list_workshop_todos(
         &self,
-        request: OpenDanListWorkspaceTodosReq,
+        request: OpenDanListWorkshopTodosReq,
         _ctx: RPCContext,
     ) -> KRPCResult<OpenDanWorkspaceTodosResult> {
         let agent = self.find_agent(&request.agent_id).await?;
@@ -784,20 +792,22 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
         let offset = parse_cursor(request.cursor.as_deref())?;
         let include_closed = request.include_closed.unwrap_or(true);
         let agent_id = request.agent_id.clone();
+        let owner_session_id = normalize_owner_session_id(request.owner_session_id.as_str())?;
         let status = request.status.clone();
         let (items, total) = task::spawn_blocking(move || {
-            query_workspace_todos_sync(
+            query_workshop_todos_sync(
                 &db_path,
                 &agent_id,
                 status.as_deref(),
                 include_closed,
+                Some(owner_session_id.as_str()),
                 limit,
                 offset,
             )
         })
         .await
         .map_err(|error| {
-            RPCErrors::ReasonError(format!("list workspace todos join failed: {error}"))
+            RPCErrors::ReasonError(format!("list workshop todos join failed: {error}"))
         })??;
 
         Ok(OpenDanWorkspaceTodosResult {
@@ -807,9 +817,9 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
         })
     }
 
-    async fn handle_list_workspace_sub_agents(
+    async fn handle_list_workshop_sub_agents(
         &self,
-        request: OpenDanListWorkspaceSubAgentsReq,
+        request: OpenDanListWorkshopSubAgentsReq,
         _ctx: RPCContext,
     ) -> KRPCResult<OpenDanWorkspaceSubAgentsResult> {
         let _ = self.find_agent(&request.agent_id).await?;
@@ -856,6 +866,66 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
             total: Some(total),
         })
     }
+
+    async fn handle_list_agent_sessions(
+        &self,
+        request: OpenDanListAgentSessionsReq,
+        _ctx: RPCContext,
+    ) -> KRPCResult<OpenDanAgentSessionListResult> {
+        let agent = self.find_agent(&request.agent_id).await?;
+        let workspace_root =
+            workspace_root_from_agent_root(&self.runtime.cfg, Path::new(&agent.root));
+        let sessions_dir = workspace_root.join(DEFAULT_AGENT_SESSIONS_DIR);
+        let limit = normalize_limit(request.limit);
+        let offset = parse_cursor(request.cursor.as_deref())?;
+
+        let (items, total) =
+            task::spawn_blocking(move || list_agent_session_ids_sync(&sessions_dir, limit, offset))
+                .await
+                .map_err(|error| {
+                    RPCErrors::ReasonError(format!("list agent sessions join failed: {error}"))
+                })??;
+
+        Ok(OpenDanAgentSessionListResult {
+            next_cursor: build_next_cursor(offset, items.len(), total),
+            items,
+            total: Some(total),
+        })
+    }
+
+    async fn handle_get_session_record(
+        &self,
+        session_id: &str,
+        _ctx: RPCContext,
+    ) -> KRPCResult<OpenDanAgentSessionRecord> {
+        let session_id = sanitize_session_id_for_path(session_id)?;
+        let session_id_for_search = session_id.clone();
+        let runtime_cfg = self.runtime.cfg.clone();
+        let agents = self
+            .runtime
+            .scan_agents()
+            .await
+            .map_err(runtime_error_to_rpc)?;
+        let matched_path = task::spawn_blocking(move || {
+            find_session_record_path_sync(
+                &runtime_cfg,
+                agents.as_slice(),
+                session_id_for_search.as_str(),
+            )
+        })
+        .await
+        .map_err(|error| {
+            RPCErrors::ReasonError(format!("find session record path join failed: {error}"))
+        })??;
+
+        task::spawn_blocking(move || {
+            load_agent_session_record_sync(matched_path.as_path(), session_id.as_str())
+        })
+        .await
+        .map_err(|error| {
+            RPCErrors::ReasonError(format!("get session record join failed: {error}"))
+        })?
+    }
 }
 
 fn runtime_error_to_rpc(err: AiRuntimeError) -> RPCErrors {
@@ -899,6 +969,16 @@ fn normalize_filter(value: &str) -> String {
         .to_lowercase()
         .replace([' ', '-'], "_")
         .to_string()
+}
+
+fn normalize_owner_session_id(value: &str) -> KRPCResult<String> {
+    let normalized = value.trim();
+    if normalized.is_empty() {
+        return Err(RPCErrors::ReasonError(
+            "owner_session_id cannot be empty".to_string(),
+        ));
+    }
+    Ok(normalized.to_string())
 }
 
 fn workspace_root_from_agent_root(cfg: &AiRuntimeConfig, agent_root: &Path) -> PathBuf {
@@ -965,11 +1045,12 @@ fn has_table(conn: &Connection, table_name: &str) -> KRPCResult<bool> {
     })
 }
 
-fn query_workspace_todos_sync(
+fn query_workshop_todos_sync(
     db_path: &Path,
     agent_id: &str,
     status: Option<&str>,
     include_closed: bool,
+    owner_session_id: Option<&str>,
     limit: usize,
     offset: usize,
 ) -> KRPCResult<(Vec<OpenDanTodoItem>, u64)> {
@@ -1001,6 +1082,10 @@ fn query_workspace_todos_sync(
     }
     if !include_closed {
         where_sql.push_str(" AND status NOT IN ('done','cancelled')");
+    }
+    if let Some(v) = owner_session_id.map(str::trim).filter(|v| !v.is_empty()) {
+        where_sql.push_str(" AND owner_session_id = ?");
+        where_params.push(SqlValue::Text(v.to_string()));
     }
 
     let count_sql = format!("SELECT COUNT(1) FROM todos{}", where_sql);
@@ -1086,9 +1171,10 @@ fn query_workspace_todos_sync(
     Ok((items, total))
 }
 
-fn query_workspace_worklogs_sync(
+fn query_workshop_worklogs_sync(
     db_path: &Path,
     agent_id_hint: &str,
+    owner_session_id: Option<&str>,
     log_type: Option<&str>,
     status: Option<&str>,
     step_id: Option<&str>,
@@ -1129,6 +1215,10 @@ fn query_workspace_worklogs_sync(
         where_sql.push_str(" AND (summary LIKE ? OR payload_json LIKE ?)");
         where_params.push(SqlValue::Text(pattern.clone()));
         where_params.push(SqlValue::Text(pattern));
+    }
+    if let Some(v) = owner_session_id.map(str::trim).filter(|v| !v.is_empty()) {
+        where_sql.push_str(" AND owner_session_id = ?");
+        where_params.push(SqlValue::Text(v.to_string()));
     }
 
     let count_sql = format!("SELECT COUNT(1) FROM worklogs{}", where_sql);
@@ -1190,6 +1280,151 @@ fn query_workspace_worklogs_sync(
     }
 
     Ok((items, total))
+}
+
+fn list_agent_session_ids_sync(
+    sessions_dir: &Path,
+    limit: usize,
+    offset: usize,
+) -> KRPCResult<(Vec<String>, u64)> {
+    if !sessions_dir.exists() {
+        return Ok((vec![], 0));
+    }
+
+    let mut ids = Vec::<String>::new();
+    let read_dir = std::fs::read_dir(sessions_dir).map_err(|error| {
+        RPCErrors::ReasonError(format!(
+            "read sessions dir `{}` failed: {error}",
+            sessions_dir.display()
+        ))
+    })?;
+
+    for entry in read_dir {
+        let entry = entry.map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "iterate sessions dir `{}` failed: {error}",
+                sessions_dir.display()
+            ))
+        })?;
+        let file_type = entry.file_type().map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "read session entry type `{}` failed: {error}",
+                entry.path().display()
+            ))
+        })?;
+        if !file_type.is_dir() {
+            continue;
+        }
+
+        let Some(raw_session_id) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if sanitize_session_id_for_path(raw_session_id.as_str()).is_err() {
+            continue;
+        }
+
+        let session_file_path = entry.path().join(DEFAULT_AGENT_SESSION_FILE_NAME);
+        if !session_file_path.is_file() {
+            continue;
+        }
+        ids.push(raw_session_id);
+    }
+
+    ids.sort();
+    let total = ids.len() as u64;
+    let items = ids.into_iter().skip(offset).take(limit).collect::<Vec<_>>();
+    Ok((items, total))
+}
+
+fn find_session_record_path_sync(
+    runtime_cfg: &AiRuntimeConfig,
+    agents: &[RuntimeAgentInfo],
+    session_id: &str,
+) -> KRPCResult<PathBuf> {
+    let mut matched = Vec::<PathBuf>::new();
+    for agent in agents {
+        let workspace_root =
+            workspace_root_from_agent_root(runtime_cfg, Path::new(agent.root.as_str()));
+        let candidate = workspace_root
+            .join(DEFAULT_AGENT_SESSIONS_DIR)
+            .join(session_id)
+            .join(DEFAULT_AGENT_SESSION_FILE_NAME);
+        if candidate.is_file() {
+            matched.push(candidate);
+            if matched.len() > 1 {
+                break;
+            }
+        }
+    }
+
+    match matched.len() {
+        0 => Err(RPCErrors::ReasonError(format!(
+            "session not found: {session_id}"
+        ))),
+        1 => Ok(matched.remove(0)),
+        _ => Err(RPCErrors::ReasonError(format!(
+            "duplicate session_id detected (expected globally unique): {session_id}"
+        ))),
+    }
+}
+
+fn load_agent_session_record_sync(
+    session_file_path: &Path,
+    session_id: &str,
+) -> KRPCResult<OpenDanAgentSessionRecord> {
+    if !session_file_path.is_file() {
+        return Err(RPCErrors::ReasonError(format!(
+            "session not found: {session_id}"
+        )));
+    }
+
+    let raw = std::fs::read_to_string(session_file_path).map_err(|error| {
+        RPCErrors::ReasonError(format!(
+            "read session `{}` failed: {error}",
+            session_file_path.display()
+        ))
+    })?;
+    let mut record = serde_json::from_str::<OpenDanAgentSessionRecord>(&raw).map_err(|error| {
+        RPCErrors::ReasonError(format!(
+            "parse session `{}` failed: {error}",
+            session_file_path.display()
+        ))
+    })?;
+    record.session_id = session_id.to_string();
+    if !record.meta.is_object() {
+        record.meta = json!({});
+    }
+    Ok(record)
+}
+
+fn sanitize_session_id_for_path(session_id: &str) -> KRPCResult<String> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return Err(RPCErrors::ReasonError(
+            "session_id cannot be empty".to_string(),
+        ));
+    }
+    if session_id.len() > MAX_SESSION_ID_LEN {
+        return Err(RPCErrors::ReasonError(format!(
+            "session_id too long (>{MAX_SESSION_ID_LEN})"
+        )));
+    }
+    if session_id == "." || session_id == ".." {
+        return Err(RPCErrors::ReasonError(
+            "session_id cannot be `.` or `..`".to_string(),
+        ));
+    }
+    if session_id.contains('/') || session_id.contains('\\') {
+        return Err(RPCErrors::ReasonError(
+            "session_id cannot contain path separators".to_string(),
+        ));
+    }
+    if session_id.chars().any(|ch| ch.is_control()) {
+        return Err(RPCErrors::ReasonError(
+            "session_id cannot contain control characters".to_string(),
+        ));
+    }
+    Ok(session_id.to_string())
 }
 
 #[derive(Clone)]
@@ -1614,6 +1849,8 @@ fn optional_string(args: &Json, key: &str) -> Result<Option<String>, ToolError> 
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use tempfile::tempdir;
 
     use super::*;
@@ -1632,6 +1869,41 @@ mod tests {
         .expect("write agent doc");
     }
 
+    async fn write_session_record(
+        agent_root: &Path,
+        session_id: &str,
+        owner_agent: &str,
+        title: &str,
+        last_activity_ms: u64,
+    ) {
+        let session_path = agent_root
+            .join(DEFAULT_ENVIRONMENT_DIR)
+            .join(DEFAULT_AGENT_SESSIONS_DIR)
+            .join(session_id);
+        fs::create_dir_all(&session_path)
+            .await
+            .expect("create session dir");
+        fs::write(
+            session_path.join(DEFAULT_AGENT_SESSION_FILE_NAME),
+            json!({
+                "session_id": session_id,
+                "owner_agent": owner_agent,
+                "title": title,
+                "summary": "",
+                "status": "active",
+                "created_at_ms": 1,
+                "updated_at_ms": 2,
+                "last_activity_ms": last_activity_ms,
+                "links": [],
+                "tags": [],
+                "meta": {}
+            })
+            .to_string(),
+        )
+        .await
+        .expect("write session record");
+    }
+
     fn call_ctx(agent_did: &str) -> ToolCallContext {
         ToolCallContext {
             trace_id: "trace-1".to_string(),
@@ -1639,6 +1911,7 @@ mod tests {
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-1".to_string(),
+            current_session_id: None,
         }
     }
 
@@ -1782,5 +2055,123 @@ mod tests {
             workspaces[0]["source"],
             external_workspace.to_string_lossy().to_string()
         );
+    }
+
+    #[tokio::test]
+    async fn opendan_handler_lists_agent_sessions_with_pagination() {
+        let tmp = tempdir().expect("create tempdir");
+        let agents_root = tmp.path().join("agents");
+        let agent_root = agents_root.join("jarvis");
+        let did = "did:test:jarvis";
+
+        write_agent_doc(&agent_root, did).await;
+        write_session_record(&agent_root, "session-c", did, "Session C", 30).await;
+        write_session_record(&agent_root, "session-a", did, "Session A", 10).await;
+        write_session_record(&agent_root, "session-b", did, "Session B", 20).await;
+        fs::create_dir_all(
+            agent_root
+                .join(DEFAULT_ENVIRONMENT_DIR)
+                .join(DEFAULT_AGENT_SESSIONS_DIR)
+                .join("session-without-file"),
+        )
+        .await
+        .expect("create ignored session dir");
+
+        let runtime = Arc::new(
+            AiRuntime::new(AiRuntimeConfig::new(&agents_root))
+                .await
+                .expect("create runtime"),
+        );
+        let handler = OpenDanRuntimeKrpcHandler::new(runtime);
+
+        let first_page = handler
+            .handle_list_agent_sessions(
+                OpenDanListAgentSessionsReq::new(did.to_string(), Some(2), None),
+                RPCContext::default(),
+            )
+            .await
+            .expect("list first page");
+        assert_eq!(first_page.items, vec!["session-a", "session-b"]);
+        assert_eq!(first_page.total, Some(3));
+        assert_eq!(first_page.next_cursor.as_deref(), Some("2"));
+
+        let second_page = handler
+            .handle_list_agent_sessions(
+                OpenDanListAgentSessionsReq::new(
+                    did.to_string(),
+                    Some(2),
+                    first_page.next_cursor.clone(),
+                ),
+                RPCContext::default(),
+            )
+            .await
+            .expect("list second page");
+        assert_eq!(second_page.items, vec!["session-c"]);
+        assert_eq!(second_page.total, Some(3));
+        assert!(second_page.next_cursor.is_none());
+    }
+
+    #[tokio::test]
+    async fn opendan_handler_can_get_session_record() {
+        let tmp = tempdir().expect("create tempdir");
+        let agents_root = tmp.path().join("agents");
+        let agent_root = agents_root.join("jarvis");
+        let did = "did:test:jarvis";
+
+        write_agent_doc(&agent_root, did).await;
+        write_session_record(&agent_root, "session-001", did, "Primary Session", 88).await;
+
+        let runtime = Arc::new(
+            AiRuntime::new(AiRuntimeConfig::new(&agents_root))
+                .await
+                .expect("create runtime"),
+        );
+        let handler = OpenDanRuntimeKrpcHandler::new(runtime);
+
+        let session = handler
+            .handle_get_session_record("session-001", RPCContext::default())
+            .await
+            .expect("get session");
+        assert_eq!(session.session_id, "session-001");
+        assert_eq!(session.owner_agent, did);
+        assert_eq!(session.title, "Primary Session");
+        assert_eq!(session.last_activity_ms, 88);
+
+        let missing = handler
+            .handle_get_session_record("session-404", RPCContext::default())
+            .await;
+        assert!(missing.is_err());
+
+        let invalid = handler
+            .handle_get_session_record("../bad", RPCContext::default())
+            .await;
+        assert!(invalid.is_err());
+    }
+
+    #[tokio::test]
+    async fn opendan_handler_rejects_duplicate_global_session_id() {
+        let tmp = tempdir().expect("create tempdir");
+        let agents_root = tmp.path().join("agents");
+        let agent_root_a = agents_root.join("jarvis");
+        let agent_root_b = agents_root.join("vision");
+        let did_a = "did:test:jarvis";
+        let did_b = "did:test:vision";
+
+        write_agent_doc(&agent_root_a, did_a).await;
+        write_agent_doc(&agent_root_b, did_b).await;
+        write_session_record(&agent_root_a, "session-dup-001", did_a, "Session A", 11).await;
+        write_session_record(&agent_root_b, "session-dup-001", did_b, "Session B", 22).await;
+
+        let runtime = Arc::new(
+            AiRuntime::new(AiRuntimeConfig::new(&agents_root))
+                .await
+                .expect("create runtime"),
+        );
+        let handler = OpenDanRuntimeKrpcHandler::new(runtime);
+
+        let result = handler
+            .handle_get_session_record("session-dup-001", RPCContext::default())
+            .await;
+        assert!(result.is_err());
     }
 }

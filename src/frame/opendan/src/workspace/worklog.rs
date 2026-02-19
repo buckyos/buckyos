@@ -115,11 +115,11 @@ impl AgentTool for WorklogTool {
                     "type": { "type": "string" },
                     "status": { "type": "string", "enum": ["info", "success", "failed", "partial"] },
                     "agent_id": { "type": "string" },
+                    "owner_session_id": { "type": ["string", "null"] },
                     "related_agent_id": { "type": "string" },
                     "run_id": { "type": "string" },
                     "step_id": { "type": "string" },
                     "task_id": { "type": "string" },
-                    "thread_id": { "type": "string" },
                     "summary": { "type": "string" },
                     "payload": { "type": "object" },
                     "tags": {
@@ -236,11 +236,11 @@ struct WorklogAppendInput {
     log_type: String,
     status: String,
     agent_id: String,
+    owner_session_id: Option<String>,
     related_agent_id: Option<String>,
     run_id: Option<String>,
     step_id: Option<String>,
     task_id: Option<String>,
-    thread_id: Option<String>,
     summary: String,
     payload: Json,
     tags: Vec<String>,
@@ -257,11 +257,15 @@ impl WorklogAppendInput {
             .transpose()?
             .unwrap_or_else(|| "info".to_string());
         let agent_id = optional_string(args, "agent_id")?.unwrap_or_else(|| ctx.agent_did.clone());
+        let owner_session_id = ctx
+            .current_session_id
+            .as_ref()
+            .map(|session_id| session_id.trim().to_string())
+            .filter(|session_id| !session_id.is_empty());
         let related_agent_id = optional_string(args, "related_agent_id")?;
         let run_id = optional_string(args, "run_id")?;
         let step_id = optional_string(args, "step_id")?;
         let task_id = optional_string(args, "task_id")?;
-        let thread_id = optional_string(args, "thread_id")?;
         let summary = require_string(args, "summary")?;
         let payload = parse_payload(args.get("payload"))?;
         let tags = parse_tags(args.get("tags"))?;
@@ -271,6 +275,9 @@ impl WorklogAppendInput {
         validate_text_field("log_id", &log_id, MAX_TEXT_FIELD_LEN)?;
         validate_text_field("type", &log_type, MAX_TEXT_FIELD_LEN)?;
         validate_text_field("agent_id", &agent_id, MAX_TEXT_FIELD_LEN)?;
+        if let Some(v) = owner_session_id.as_deref() {
+            validate_text_field("owner_session_id", v, MAX_TEXT_FIELD_LEN)?;
+        }
         if let Some(v) = related_agent_id.as_deref() {
             validate_text_field("related_agent_id", v, MAX_TEXT_FIELD_LEN)?;
         }
@@ -283,9 +290,6 @@ impl WorklogAppendInput {
         if let Some(v) = task_id.as_deref() {
             validate_text_field("task_id", v, MAX_TEXT_FIELD_LEN)?;
         }
-        if let Some(v) = thread_id.as_deref() {
-            validate_text_field("thread_id", v, MAX_TEXT_FIELD_LEN)?;
-        }
         validate_summary(&summary)?;
 
         Ok(Self {
@@ -293,11 +297,11 @@ impl WorklogAppendInput {
             log_type,
             status,
             agent_id,
+            owner_session_id,
             related_agent_id,
             run_id,
             step_id,
             task_id,
-            thread_id,
             summary,
             payload,
             tags,
@@ -312,11 +316,11 @@ struct WorklogListFilters {
     log_type: Option<String>,
     status: Option<String>,
     agent_id: Option<String>,
+    owner_session_id: Option<String>,
     related_agent_id: Option<String>,
     run_id: Option<String>,
     step_id: Option<String>,
     task_id: Option<String>,
-    thread_id: Option<String>,
     tag: Option<String>,
     query: Option<String>,
     from_ts: Option<u64>,
@@ -332,11 +336,11 @@ impl WorklogListFilters {
         let status =
             optional_string(args, "status").and_then(|v| v.map(normalize_status).transpose())?;
         let agent_id = optional_string(args, "agent_id")?;
+        let owner_session_id = optional_string(args, "owner_session_id")?;
         let related_agent_id = optional_string(args, "related_agent_id")?;
         let run_id = optional_string(args, "run_id")?;
         let step_id = optional_string(args, "step_id")?;
         let task_id = optional_string(args, "task_id")?;
-        let thread_id = optional_string(args, "thread_id")?;
         let tag = optional_string(args, "tag")?;
         let query = optional_string(args, "query")?;
         let from_ts = optional_u64(args, "from_ts")?;
@@ -355,11 +359,11 @@ impl WorklogListFilters {
             log_type,
             status,
             agent_id,
+            owner_session_id,
             related_agent_id,
             run_id,
             step_id,
             task_id,
-            thread_id,
             tag,
             query: query.filter(|v| !v.is_empty()),
             from_ts,
@@ -378,11 +382,11 @@ struct WorklogItem {
     log_type: String,
     status: String,
     agent_id: String,
+    owner_session_id: Option<String>,
     related_agent_id: Option<String>,
     run_id: Option<String>,
     step_id: Option<String>,
     task_id: Option<String>,
-    thread_id: Option<String>,
     summary: String,
     payload: Json,
     tags: Vec<String>,
@@ -400,11 +404,11 @@ CREATE TABLE IF NOT EXISTS worklogs (
     log_type TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'info',
     agent_id TEXT NOT NULL,
+    owner_session_id TEXT,
     related_agent_id TEXT,
     run_id TEXT,
     step_id TEXT,
     task_id TEXT,
-    thread_id TEXT,
     summary TEXT NOT NULL,
     payload_json TEXT NOT NULL DEFAULT '{}',
     tags_json TEXT NOT NULL DEFAULT '[]',
@@ -423,11 +427,56 @@ CREATE INDEX IF NOT EXISTS idx_worklogs_type_ts ON worklogs(log_type, timestamp 
 CREATE INDEX IF NOT EXISTS idx_worklogs_status_ts ON worklogs(status, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_worklogs_agent_ts ON worklogs(agent_id, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_worklogs_step_ts ON worklogs(step_id, timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_worklogs_thread_ts ON worklogs(thread_id, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_worklog_tags_tag ON worklog_tags(tag, log_id);
 "#,
     )
-    .map_err(|err| ToolError::ExecFailed(format!("ensure worklog schema failed: {err}")))
+    .map_err(|err| ToolError::ExecFailed(format!("ensure worklog schema failed: {err}")))?;
+
+    ensure_worklog_column_exists(conn, "owner_session_id", "TEXT")?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_worklogs_owner_session_ts ON worklogs(owner_session_id, timestamp DESC);",
+    )
+    .map_err(|err| {
+        ToolError::ExecFailed(format!("ensure worklog owner_session index failed: {err}"))
+    })?;
+
+    Ok(())
+}
+
+fn ensure_worklog_column_exists(
+    conn: &Connection,
+    column_name: &str,
+    column_def_sql: &str,
+) -> Result<(), ToolError> {
+    if worklog_table_has_column(conn, column_name)? {
+        return Ok(());
+    }
+    let sql = format!("ALTER TABLE worklogs ADD COLUMN {column_name} {column_def_sql}");
+    conn.execute(&sql, []).map_err(|err| {
+        ToolError::ExecFailed(format!("add worklog column `{column_name}` failed: {err}"))
+    })?;
+    Ok(())
+}
+
+fn worklog_table_has_column(conn: &Connection, column_name: &str) -> Result<bool, ToolError> {
+    let mut stmt = conn.prepare("PRAGMA table_info(worklogs)").map_err(|err| {
+        ToolError::ExecFailed(format!("prepare worklog table_info failed: {err}"))
+    })?;
+    let mut rows = stmt
+        .query([])
+        .map_err(|err| ToolError::ExecFailed(format!("query worklog table_info failed: {err}")))?;
+    while let Some(row) = rows
+        .next()
+        .map_err(|err| ToolError::ExecFailed(format!("read worklog table_info failed: {err}")))?
+    {
+        let name: String = row.get(1).map_err(|err| {
+            ToolError::ExecFailed(format!("decode worklog table_info failed: {err}"))
+        })?;
+        if name == column_name {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn append_worklog(conn: &Connection, input: WorklogAppendInput) -> Result<WorklogItem, ToolError> {
@@ -450,7 +499,7 @@ fn append_worklog(conn: &Connection, input: WorklogAppendInput) -> Result<Worklo
 
     tx.execute(
         "INSERT INTO worklogs (
-            log_id, log_type, status, agent_id, related_agent_id, run_id, step_id, task_id, thread_id,
+            log_id, log_type, status, agent_id, owner_session_id, related_agent_id, run_id, step_id, task_id,
             summary, payload_json, tags_json, timestamp, duration_ms, created_at, updated_at
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         params![
@@ -458,11 +507,11 @@ fn append_worklog(conn: &Connection, input: WorklogAppendInput) -> Result<Worklo
             input.log_type,
             input.status,
             input.agent_id,
+            input.owner_session_id,
             input.related_agent_id,
             input.run_id,
             input.step_id,
             input.task_id,
-            input.thread_id,
             input.summary,
             payload_json,
             tags_json,
@@ -495,8 +544,8 @@ fn list_worklogs(
     max_list_limit: usize,
 ) -> Result<Vec<WorklogItem>, ToolError> {
     let mut sql = String::from(
-        "SELECT DISTINCT w.log_id, w.log_type, w.status, w.agent_id, w.related_agent_id, w.run_id,
-            w.step_id, w.task_id, w.thread_id, w.summary, w.payload_json, w.tags_json,
+        "SELECT DISTINCT w.log_id, w.log_type, w.status, w.agent_id, w.owner_session_id, w.related_agent_id, w.run_id,
+            w.step_id, w.task_id, w.summary, w.payload_json, w.tags_json,
             w.timestamp, w.duration_ms, w.created_at, w.updated_at
         FROM worklogs w",
     );
@@ -520,6 +569,10 @@ fn list_worklogs(
         sql.push_str(" AND w.agent_id = ?");
         params_vec.push(SqlValue::Text(v));
     }
+    if let Some(v) = filters.owner_session_id {
+        sql.push_str(" AND w.owner_session_id = ?");
+        params_vec.push(SqlValue::Text(v));
+    }
     if let Some(v) = filters.related_agent_id {
         sql.push_str(" AND w.related_agent_id = ?");
         params_vec.push(SqlValue::Text(v));
@@ -534,10 +587,6 @@ fn list_worklogs(
     }
     if let Some(v) = filters.task_id {
         sql.push_str(" AND w.task_id = ?");
-        params_vec.push(SqlValue::Text(v));
-    }
-    if let Some(v) = filters.thread_id {
-        sql.push_str(" AND w.thread_id = ?");
         params_vec.push(SqlValue::Text(v));
     }
     if let Some(v) = filters.tag {
@@ -588,8 +637,8 @@ fn list_worklogs(
 fn get_worklog_by_id(conn: &Connection, log_id: &str) -> Result<Option<WorklogItem>, ToolError> {
     let mut stmt = conn
         .prepare(
-            "SELECT log_id, log_type, status, agent_id, related_agent_id, run_id,
-                step_id, task_id, thread_id, summary, payload_json, tags_json,
+            "SELECT log_id, log_type, status, agent_id, owner_session_id, related_agent_id, run_id,
+                step_id, task_id, summary, payload_json, tags_json,
                 timestamp, duration_ms, created_at, updated_at
             FROM worklogs
             WHERE log_id = ?1
@@ -644,11 +693,11 @@ fn map_worklog_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorklogItem> {
         log_type: row.get(1)?,
         status: row.get(2)?,
         agent_id: row.get(3)?,
-        related_agent_id: row.get(4)?,
-        run_id: row.get(5)?,
-        step_id: row.get(6)?,
-        task_id: row.get(7)?,
-        thread_id: row.get(8)?,
+        owner_session_id: row.get(4)?,
+        related_agent_id: row.get(5)?,
+        run_id: row.get(6)?,
+        step_id: row.get(7)?,
+        task_id: row.get(8)?,
         summary: row.get(9)?,
         payload,
         tags,
@@ -857,11 +906,20 @@ mod tests {
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-test".to_string(),
+            current_session_id: None,
         }
     }
 
     async fn call(tool: &WorklogTool, args: Json) -> Result<Json, ToolError> {
         tool.call(&test_ctx(), args).await
+    }
+
+    async fn call_with_ctx(
+        tool: &WorklogTool,
+        ctx: &ToolCallContext,
+        args: Json,
+    ) -> Result<Json, ToolError> {
+        tool.call(ctx, args).await
     }
 
     #[tokio::test]
@@ -879,7 +937,6 @@ mod tests {
                 "type": "function_call",
                 "status": "success",
                 "step_id": "step-001",
-                "thread_id": "thread-42",
                 "summary": "Tool execution succeeded",
                 "payload": {"tool": "exec_bash", "ok": true},
                 "tags": ["tool", "runtime"]
@@ -889,6 +946,7 @@ mod tests {
         .expect("append first log");
         assert_eq!(first["log"]["log_id"], "log-1");
         assert_eq!(first["log"]["agent_id"], "did:example:agent");
+        assert!(first["log"]["owner_session_id"].is_null());
 
         call(
             &tool,
@@ -897,7 +955,6 @@ mod tests {
                 "log_id": "log-2",
                 "type": "message_sent",
                 "status": "info",
-                "thread_id": "thread-42",
                 "summary": "Message sent to sub-agent",
                 "payload": {"to": "did:example:web-agent"},
                 "tags": ["message"]
@@ -905,19 +962,6 @@ mod tests {
         )
         .await
         .expect("append second log");
-
-        let by_thread = call(
-            &tool,
-            json!({
-                "action": "list",
-                "thread_id": "thread-42",
-                "asc": true
-            }),
-        )
-        .await
-        .expect("list by thread");
-        let thread_logs = by_thread["logs"].as_array().expect("logs array");
-        assert_eq!(thread_logs.len(), 2);
 
         let by_tag = call(
             &tool,
@@ -1013,5 +1057,42 @@ mod tests {
         .await
         .expect_err("invalid limit should fail");
         assert!(matches!(err, ToolError::InvalidArgs(_)));
+    }
+
+    #[tokio::test]
+    async fn worklog_tool_can_save_and_filter_owner_session_id() {
+        let tmp = tempdir().expect("create tempdir");
+        let db_path = tmp.path().join("worklog").join("worklog.db");
+        let tool =
+            WorklogTool::new(WorklogToolConfig::with_db_path(db_path)).expect("create worklog");
+
+        let mut ctx = test_ctx();
+        ctx.current_session_id = Some("session-001".to_string());
+        let created = call_with_ctx(
+            &tool,
+            &ctx,
+            json!({
+                "action": "append",
+                "log_id": "log-owner-1",
+                "type": "function_call",
+                "summary": "owner session log"
+            }),
+        )
+        .await
+        .expect("append with owner session");
+        assert_eq!(created["log"]["owner_session_id"], "session-001");
+
+        let filtered = call(
+            &tool,
+            json!({
+                "action": "list",
+                "owner_session_id": "session-001"
+            }),
+        )
+        .await
+        .expect("list by owner session id");
+        let logs = filtered["logs"].as_array().expect("logs array");
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0]["log_id"], "log-owner-1");
     }
 }

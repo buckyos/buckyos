@@ -495,6 +495,17 @@ declare global {
     last_active_at: string
   }
 
+  type WsAgentSession = {
+    session_id: string
+    owner_agent: string
+    title: string
+    summary?: string
+    status: string
+    created_at: string
+    updated_at: string
+    last_activity_at: string
+  }
+
   type LoopRunStatus = 'running' | 'success' | 'failed' | 'cancelled'
 
   type LoopRunSummary = {
