@@ -457,7 +457,6 @@ impl AgentSession {
         owner_did: String,
         box_kind: BoxKind,
         session_id: Option<String>,
-        thread_key: Option<String>,
         limit: usize,
         token_limit: u32,
         cursor_sort_key: Option<u64>,
@@ -489,29 +488,17 @@ impl AgentSession {
         let filter_session_id = session_id
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty());
-        let filter_thread_key = thread_key
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty());
 
         let mut messages = Vec::new();
         for item in page.items {
-            let msg_thread_key = item
-                .msg
-                .thread_key
-                .clone()
-                .or_else(|| item.record.thread_key.clone());
-
-            if let Some(expect_thread) = filter_thread_key.as_ref() {
-                if msg_thread_key.as_deref() != Some(expect_thread.as_str()) {
-                    continue;
-                }
-            }
+            let payload = serde_json::to_value(&item.msg.payload).unwrap_or(Json::Null);
+            let meta = serde_json::to_value(&item.msg.meta).unwrap_or(Json::Null);
+            let msg_session_id =
+                json_extract_session_id(&payload).or_else(|| json_extract_session_id(&meta));
 
             if let Some(expect_session) = filter_session_id.as_ref() {
-                let mut matched = msg_thread_key.as_deref() == Some(expect_session.as_str());
+                let mut matched = msg_session_id.as_deref() == Some(expect_session.as_str());
                 if !matched {
-                    let payload = serde_json::to_value(&item.msg.payload).unwrap_or(Json::Null);
-                    let meta = serde_json::to_value(&item.msg.meta).unwrap_or(Json::Null);
                     matched = json_matches_session_id(&payload, expect_session.as_str())
                         || json_matches_session_id(&meta, expect_session.as_str());
                 }
@@ -522,7 +509,7 @@ impl AgentSession {
 
             messages.push(json!({
                 "record_id": item.record.record_id,
-                "thread_key": msg_thread_key,
+                "session_id": msg_session_id,
                 "box_kind": format!("{:?}", item.record.box_kind),
                 "state": format!("{:?}", item.record.state),
                 "from": item.msg.from.to_string(),
@@ -538,7 +525,6 @@ impl AgentSession {
 
         Ok(json!({
             "session_id": filter_session_id,
-            "thread_key": filter_thread_key,
             "limit": limit.max(1),
             "token_limit": token_limit.max(1),
             "used_tokens": used_tokens,
@@ -881,16 +867,14 @@ impl AgentTool for LoadChatHistoryTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: self.tool_name.clone(),
-            description:
-                "Load chat history via MsgCenter and optionally filter by session_id/thread_key."
-                    .to_string(),
+            description: "Load chat history via MsgCenter and optionally filter by session_id."
+                .to_string(),
             args_schema: json!({
                 "type":"object",
                 "properties": {
                     "owner_did": {"type":"string"},
                     "box_kind": {"type":"string"},
                     "session_id": {"type":"string"},
-                    "thread_key": {"type":"string"},
                     "limit": {"type":"integer", "minimum": 1},
                     "token_limit": {"type":"integer", "minimum": 1},
                     "cursor_sort_key": {"type":"integer", "minimum": 0},
@@ -904,7 +888,6 @@ impl AgentTool for LoadChatHistoryTool {
                 "type":"object",
                 "properties": {
                     "session_id": {"type":["string","null"]},
-                    "thread_key": {"type":["string","null"]},
                     "limit": {"type":"integer"},
                     "token_limit": {"type":"integer"},
                     "used_tokens": {"type":"integer"},
@@ -921,7 +904,6 @@ impl AgentTool for LoadChatHistoryTool {
         let owner_did = require_string(&args, "owner_did")?;
         let box_kind = parse_box_kind(optional_string(&args, "box_kind")?)?;
         let session_id = optional_string(&args, "session_id")?;
-        let thread_key = optional_string(&args, "thread_key")?;
         let limit = optional_usize(&args, "limit")?.unwrap_or(self.session.cfg.default_chat_limit);
         let token_limit = optional_u32(&args, "token_limit")?
             .unwrap_or(self.session.cfg.default_chat_token_limit);
@@ -934,7 +916,6 @@ impl AgentTool for LoadChatHistoryTool {
                 owner_did,
                 box_kind,
                 session_id,
-                thread_key,
                 limit,
                 token_limit,
                 cursor_sort_key,
@@ -1101,9 +1082,9 @@ fn parse_box_kind(raw: Option<String>) -> Result<BoxKind, ToolError> {
     }
 }
 
-fn json_matches_session_id(value: &Json, session_id: &str) -> bool {
+fn json_extract_session_id(value: &Json) -> Option<String> {
     if value.is_null() {
-        return false;
+        return None;
     }
 
     let keys = [
@@ -1114,11 +1095,22 @@ fn json_matches_session_id(value: &Json, session_id: &str) -> bool {
         "/record/session_id",
     ];
     for key in keys {
-        if value.pointer(key).and_then(|v| v.as_str()) == Some(session_id) {
-            return true;
+        let found = value
+            .pointer(key)
+            .and_then(|v| v.as_str())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        if found.is_some() {
+            return found;
         }
     }
-    false
+    None
+}
+
+fn json_matches_session_id(value: &Json, session_id: &str) -> bool {
+    json_extract_session_id(value)
+        .as_deref()
+        .is_some_and(|v| v == session_id)
 }
 
 fn approx_tokens(text: &str) -> u32 {

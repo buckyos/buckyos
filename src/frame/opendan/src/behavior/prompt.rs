@@ -4,7 +4,7 @@ use serde_json::Value as Json;
 use crate::agent_tool::ToolSpec;
 
 use super::sanitize::{sanitize_json_compact, sanitize_text};
-use super::types::{default_output_protocol_text, LLMBehaviorConfig, ProcessInput};
+use super::types::{default_output_protocol_text, BehaviorExecInput, LLMBehaviorConfig};
 use super::{Sanitizer, Tokenizer};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -32,7 +32,7 @@ pub struct PromptBuilder;
 
 impl PromptBuilder {
     pub fn build(
-        input: &ProcessInput,
+        input: &BehaviorExecInput,
         tools: &[ToolSpec],
         cfg: &LLMBehaviorConfig,
         tokenizer: &dyn Tokenizer,
@@ -245,7 +245,7 @@ fn message_tokens(messages: &[ChatMessage], tokenizer: &dyn Tokenizer) -> u32 {
         .sum()
 }
 
-fn build_policy_summary(input: &ProcessInput) -> Option<String> {
+fn build_policy_summary(input: &BehaviorExecInput) -> Option<String> {
     if input.env_context.is_empty() {
         return None;
     }
@@ -260,7 +260,7 @@ fn build_policy_summary(input: &ProcessInput) -> Option<String> {
     )
 }
 
-fn build_step_hints(input: &ProcessInput) -> Option<String> {
+fn build_step_hints(input: &BehaviorExecInput) -> Option<String> {
     let hints = input
         .env_context
         .iter()

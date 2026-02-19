@@ -154,7 +154,7 @@ async fn run_agent(agent_root: PathBuf, deps: AIAgentDeps) -> Result<()> {
         agent.did(),
         agent_root.display()
     );
-    agent.start(None).await.map_err(|err| {
+    agent.run_agent_loop(None).await.map_err(|err| {
         anyhow!(
             "agent loop failed: did={} root={}, err={}",
             agent.did(),

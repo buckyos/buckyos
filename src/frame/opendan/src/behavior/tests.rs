@@ -224,13 +224,13 @@ struct MockPolicy {
 
 #[async_trait]
 impl PolicyEngine for MockPolicy {
-    async fn allowed_tools(&self, _input: &ProcessInput) -> Result<Vec<ToolSpec>, String> {
+    async fn allowed_tools(&self, _input: &BehaviorExecInput) -> Result<Vec<ToolSpec>, String> {
         Ok(self.tools.clone())
     }
 
     async fn gate_tool_calls(
         &self,
-        _input: &ProcessInput,
+        _input: &BehaviorExecInput,
         calls: &[ToolCall],
     ) -> Result<Vec<ToolCall>, String> {
         Ok(calls.to_vec())
@@ -347,10 +347,9 @@ fn parse_json_in_code_fence() {
         latency_ms: 1,
     };
 
-    let draft = OutputParser::parse_first(&raw, true).expect("parse should succeed");
-    assert!(draft.is_sleep);
-    assert!(matches!(draft.output, LLMOutput::Json(_)));
-    assert!(draft.executor.is_none());
+    let (parsed, output) = StepOutputParser::parse_first(&raw, true).expect("parse should succeed");
+    assert_eq!(parsed.next_behavior.as_deref(), Some("END"));
+    assert!(matches!(output, LLMOutput::Json(_)));
 }
 
 #[test]
@@ -365,15 +364,14 @@ fn parse_executor_result_payload() {
             }],
             "tool_calls": [{
                 "name": "tool.echo",
-                "args": {"msg":"hello"}
+                "args": {"msg":"hello"},
+                "call_id": "call-1"
             }],
-            "todo_delta": [{"op":"add","item":{"title":"check"}}],
-            "thinks": ["need more data"],
-            "memory_writes": [{"content":"x"}],
-            "facts_writes": [{"subject":"a","predicate":"b","object":"c"}],
-            "thread_delta": {"title":"T"},
-            "stop": {"should_stop": true, "reason": "done", "finalized": true},
-            "diagnostics": {"risk_flags":["none"]}
+            "todo": [{"op":"add","item":{"title":"check"}}],
+            "set_memory": [{"content":"x"}],
+            "actions": [],
+            "session_delta": [{"title":"T"}],
+            "next_behavior": "END"
         })
         .to_string(),
         tool_calls: vec![],
@@ -382,25 +380,9 @@ fn parse_executor_result_payload() {
         latency_ms: 1,
     };
 
-    let draft = OutputParser::parse_first(&raw, true).expect("executor parse should succeed");
-    assert!(draft.is_sleep);
-    assert!(draft.executor.is_some());
-    assert_eq!(
-        draft
-            .executor
-            .as_ref()
-            .map(|v| v.stop.reason.as_str())
-            .unwrap_or_default(),
-        "done"
-    );
-    assert_eq!(
-        draft
-            .executor
-            .as_ref()
-            .map(|v| v.tool_calls.len())
-            .unwrap_or_default(),
-        1
-    );
+    let (parsed, _) = StepOutputParser::parse_first(&raw, true).expect("executor parse should succeed");
+    assert_eq!(parsed.next_behavior.as_deref(), Some("END"));
+    assert_eq!(parsed.tool_calls.len(), 1);
 }
 
 #[tokio::test]
@@ -465,7 +447,7 @@ async fn run_step_with_tool_followup() {
             Some(AiResponseSummary {
                 text: None,
                 json: Some(
-                    json!({"is_sleep":true,"next_behavior":"idle","output":{"answer":"done"}}),
+                    json!({"is_sleep":true,"next_behavior":"END","output":{"answer":"done"}}),
                 ),
                 artifacts: vec![],
                 usage: Some(AiUsage {
@@ -526,7 +508,7 @@ tools:
     };
 
     let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
-    let input = ProcessInput {
+    let input = BehaviorExecInput {
         trace: TraceCtx {
             trace_id: "trace-1".to_string(),
             agent_did: "did:example:agent".to_string(),
@@ -544,20 +526,21 @@ tools:
         limits: behavior_cfg.limits.clone(),
     };
 
-    let result = behavior.run_step(input).await;
+    let (result, tracking) = behavior
+        .run_step(input)
+        .await
+        .expect("run_step should succeed");
     println!(
-        "[TEST][RUN_STEP] tool_followup result: status={:?} next_behavior={:?} is_sleep={} actions={} usage_total={}",
-        result.status,
+        "[TEST][RUN_STEP] tool_followup result: next_behavior={:?} is_sleep={} actions={} usage_total={}",
         result.next_behavior,
-        result.is_sleep,
+        result.is_sleep(),
         result.actions.len(),
-        result.token_usage.total
+        tracking.token_usage.total
     );
-    assert!(matches!(result.status, LLMStatus::Ok));
-    assert!(result.is_sleep);
-    assert_eq!(result.next_behavior.as_deref(), Some("idle"));
-    assert_eq!(result.tool_trace.len(), 1);
-    assert_eq!(result.token_usage.total, 25);
+    assert!(result.is_sleep());
+    assert_eq!(result.next_behavior.as_deref(), Some("END"));
+    assert_eq!(tracking.tool_trace.len(), 1);
+    assert_eq!(tracking.token_usage.total, 25);
 
     let requests = requests.lock().expect("requests lock");
     assert_eq!(requests.len(), 2);
@@ -641,7 +624,7 @@ process_rule: do work
     };
 
     let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
-    let input = ProcessInput {
+    let input = BehaviorExecInput {
         trace: TraceCtx {
             trace_id: "trace-3".to_string(),
             agent_did: "did:example:agent".to_string(),
@@ -659,10 +642,12 @@ process_rule: do work
         limits: behavior_cfg.limits.clone(),
     };
 
-    let result = behavior.run_step(input).await;
-    assert!(matches!(result.status, LLMStatus::Ok));
-    assert!(result.is_sleep);
-    assert_eq!(result.token_usage.total, 9);
+    let (result, tracking) = behavior
+        .run_step(input)
+        .await
+        .expect("run_step should succeed");
+    assert!(result.is_sleep());
+    assert_eq!(tracking.token_usage.total, 9);
     assert_eq!(requests.lock().expect("requests lock").len(), 1);
 }
 
@@ -718,7 +703,7 @@ process_rule: do work
     };
 
     let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
-    let input = ProcessInput {
+    let input = BehaviorExecInput {
         trace: TraceCtx {
             trace_id: "trace-2".to_string(),
             agent_did: "did:example:agent".to_string(),
@@ -736,10 +721,12 @@ process_rule: do work
         limits: behavior_cfg.limits.clone(),
     };
 
-    let result = behavior.run_step(input).await;
-    assert!(matches!(result.status, LLMStatus::Ok));
-    assert!(result.is_sleep);
-    assert_eq!(result.token_usage.total, 18);
+    let (result, tracking) = behavior
+        .run_step(input)
+        .await
+        .expect("run_step should succeed");
+    assert!(result.is_sleep());
+    assert_eq!(tracking.token_usage.total, 18);
     assert_eq!(requests.lock().expect("requests lock").len(), 1);
 }
 
@@ -792,7 +779,7 @@ process_rule: do work
         tokenizer: Arc::new(MockTokenizer),
     };
     let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
-    let input = ProcessInput {
+    let input = BehaviorExecInput {
         trace: TraceCtx {
             trace_id: "trace-parent-1".to_string(),
             agent_did: "did:example:agent".to_string(),
@@ -810,8 +797,10 @@ process_rule: do work
         limits: behavior_cfg.limits.clone(),
     };
 
-    let result = behavior.run_step(input).await;
-    assert!(matches!(result.status, LLMStatus::Ok));
+    let (_result, _tracking) = behavior
+        .run_step(input)
+        .await
+        .expect("run_step should succeed");
 
     let requests_guard = requests.lock().expect("requests lock");
     assert_eq!(requests_guard.len(), 1);
@@ -908,7 +897,7 @@ async fn run_step_then_run_actions_followup() {
                 text: None,
                 json: Some(json!({
                     "is_sleep": true,
-                    "next_behavior": "idle",
+                    "next_behavior": "END",
                     "actions": [],
                     "output": {"final":"after_action"}
                 })),
@@ -964,7 +953,7 @@ tools:
         wakeup_id: "wakeup-actions".to_string(),
     };
 
-    let first_input = ProcessInput {
+    let first_input = BehaviorExecInput {
         trace: base_trace.clone(),
         role_md: "role".to_string(),
         self_md: "self".to_string(),
@@ -976,22 +965,23 @@ tools:
         limits: behavior_cfg.limits.clone(),
     };
 
-    let first_result = behavior.run_step(first_input).await;
+    let (first_result, first_tracking) = behavior
+        .run_step(first_input)
+        .await
+        .expect("first run_step should succeed");
     println!(
-        "[TEST][RUN_STEP] first result: status={:?} next_behavior={:?} is_sleep={} actions={} usage_total={}",
-        first_result.status,
+        "[TEST][RUN_STEP] first result: next_behavior={:?} is_sleep={} actions={} usage_total={}",
         first_result.next_behavior,
-        first_result.is_sleep,
+        first_result.is_sleep(),
         first_result.actions.len(),
-        first_result.token_usage.total
+        first_tracking.token_usage.total
     );
-    assert!(matches!(first_result.status, LLMStatus::Ok));
     assert_eq!(first_result.actions.len(), 1);
-    assert!(!first_result.is_sleep);
+    assert!(!first_result.is_sleep());
 
     let action_observations = run_actions_for_test(&first_result.actions);
 
-    let second_input = ProcessInput {
+    let second_input = BehaviorExecInput {
         trace: TraceCtx {
             step_idx: 1,
             ..base_trace
@@ -1006,18 +996,19 @@ tools:
         limits: behavior_cfg.limits.clone(),
     };
 
-    let second_result = behavior.run_step(second_input).await;
+    let (second_result, second_tracking) = behavior
+        .run_step(second_input)
+        .await
+        .expect("second run_step should succeed");
     println!(
-        "[TEST][RUN_STEP] second result: status={:?} next_behavior={:?} is_sleep={} actions={} usage_total={}",
-        second_result.status,
+        "[TEST][RUN_STEP] second result: next_behavior={:?} is_sleep={} actions={} usage_total={}",
         second_result.next_behavior,
-        second_result.is_sleep,
+        second_result.is_sleep(),
         second_result.actions.len(),
-        second_result.token_usage.total
+        second_tracking.token_usage.total
     );
-    assert!(matches!(second_result.status, LLMStatus::Ok));
-    assert!(second_result.is_sleep);
-    assert_eq!(second_result.next_behavior.as_deref(), Some("idle"));
+    assert!(second_result.is_sleep());
+    assert_eq!(second_result.next_behavior.as_deref(), Some("END"));
 
     let requests_guard = requests.lock().expect("requests lock");
     assert_eq!(requests_guard.len(), 2);
@@ -1159,7 +1150,7 @@ tools:
     };
 
     let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
-    let input = ProcessInput {
+    let input = BehaviorExecInput {
         trace: TraceCtx {
             trace_id: "trace-workshop-actions".to_string(),
             agent_did: "did:example:agent".to_string(),
@@ -1177,10 +1168,12 @@ tools:
         limits: behavior_cfg.limits.clone(),
     };
 
-    let result = behavior.run_step(input).await;
-    assert!(matches!(result.status, LLMStatus::Ok));
-    assert_eq!(result.tool_trace.len(), 1);
-    assert_eq!(result.tool_trace[0].tool_name, TOOL_EXEC_BASH);
+    let (result, tracking) = behavior
+        .run_step(input)
+        .await
+        .expect("run_step should succeed");
+    assert_eq!(tracking.tool_trace.len(), 1);
+    assert_eq!(tracking.tool_trace[0].tool_name, TOOL_EXEC_BASH);
     assert_eq!(result.actions.len(), 2);
     assert_eq!(
         result.actions[0].execution_mode,
@@ -1443,7 +1436,7 @@ limits:
     };
 
     let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
-    let input = ProcessInput {
+    let input = BehaviorExecInput {
         trace: TraceCtx {
             trace_id: "trace-memory-action".to_string(),
             agent_did: "did:example:agent".to_string(),
@@ -1461,11 +1454,13 @@ limits:
         limits: behavior_cfg.limits.clone(),
     };
 
-    let result = behavior.run_step(input).await;
-    assert!(matches!(result.status, LLMStatus::Ok));
-    assert_eq!(result.tool_trace.len(), 2);
-    assert_eq!(result.tool_trace[0].tool_name, TOOL_LOAD_MEMORY);
-    assert_eq!(result.tool_trace[1].tool_name, TOOL_LOAD_THINGS);
+    let (result, tracking) = behavior
+        .run_step(input)
+        .await
+        .expect("run_step should succeed");
+    assert_eq!(tracking.tool_trace.len(), 2);
+    assert_eq!(tracking.tool_trace[0].tool_name, TOOL_LOAD_MEMORY);
+    assert_eq!(tracking.tool_trace[1].tool_name, TOOL_LOAD_THINGS);
     assert_eq!(result.actions.len(), 1);
     assert!(result.actions[0].command.contains("memory/things.db"));
 

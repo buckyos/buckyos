@@ -272,7 +272,13 @@ class MemoryIndex:
 # ============================================================
 # 7) LLM 输出结构：SessionResolver / Router / Executor
 # ============================================================
-
+# Router: 快速回复 + SessionResolver: 
+# 1) Router主要是做快速回复，并决定下一个使用的行为是什么
+# 2) 如果上层没有可靠的session_id,那么还需要加入Session Resolver，来决定是用哪个session，或者创建新的session
+# BehaviorLLMResult:
+# 选择Behavior后，进入的主执行器，支持NextStep / SwitchBehavior, 如果Behavior选择为END，则结束当前Behavior的执行
+# 3）用户如何Cancel?
+# 4) 如何等待用户的决策：补充信息/授权?
 class SessionResolverResult(TypedDict):
     action: Literal["use_existing", "create_new", "ask_user", "ambiguous_use_best"]
     session_id: Optional[str]
@@ -292,7 +298,7 @@ class RouterResult(TypedDict):
     mode_hint: Optional[str]
     risk_flags: List[str]
 
-class ExecutorResult(TypedDict):
+class BehaviorLLMResult(TypedDict):
     thinking: str
     reply: List[Dict[str, Any]]             # [{"audience":"user|owner|broadcast","format":"markdown|text|json","content":"..."}]
     tool_calls: List[Dict[str, Any]]        # 下一步工具调用
@@ -739,7 +745,7 @@ def behavior_execute_steps(
 
         # 3) LLM Executor（强制 JSON 合同）
         exec_messages = build_executor_prompt(compiled)
-        out: ExecutorResult = call_llm_json(exec_messages, schema="ExecutorResult")
+        out: BehaviorLLMResult = call_llm_json(exec_messages, schema="ExecutorResult")
 
         prev_thinking = (out.get("thinking") or "")[:2000]  # 防增长（示意）
 
@@ -1132,7 +1138,7 @@ def execute_tools_and_summarize(calls: List[ToolCall]) -> List[ToolResult]:
 # 20) 收敛判定（启发式）
 # ============================================================
 
-def is_sufficiently_closed(out: ExecutorResult, mode: BehaviorModeConfig) -> bool:
+def is_sufficiently_closed(out: BehaviorLLMResult, mode: BehaviorModeConfig) -> bool:
     stop = out.get("stop") or {}
     if stop.get("finalized") and not out.get("tool_calls"):
         return True

@@ -1096,6 +1096,15 @@ mod tests {
     }
 
     async fn call(tool_mgr: &ToolManager, name: &str, args: Json) -> Result<Json, ToolError> {
+        call_with_session(tool_mgr, name, args, None).await
+    }
+
+    async fn call_with_session(
+        tool_mgr: &ToolManager,
+        name: &str,
+        args: Json,
+        current_session_id: Option<&str>,
+    ) -> Result<Json, ToolError> {
         tool_mgr
             .call_tool(
                 &ToolCallContext {
@@ -1104,7 +1113,7 @@ mod tests {
                     behavior: "on_wakeup".to_string(),
                     step_idx: 0,
                     wakeup_id: "wakeup-test".to_string(),
-                    current_session_id: None,
+                    current_session_id: current_session_id.map(|v| v.to_string()),
                 },
                 ToolCall {
                     name: name.to_string(),
@@ -1460,7 +1469,7 @@ mod tests {
 
         assert!(tool_mgr.has_tool(TOOL_WORKLOG_MANAGE));
 
-        let appended = call(
+        let appended = call_with_session(
             &tool_mgr,
             TOOL_WORKLOG_MANAGE,
             json!({
@@ -1468,11 +1477,12 @@ mod tests {
                 "type": "function_call",
                 "status": "success",
                 "step_id": "step-1",
-                "thread_id": "thread-alpha",
+                "owner_session_id": "session-alpha",
                 "summary": "exec_bash finished",
                 "tags": ["tool", "runtime"],
                 "payload": { "tool": "exec_bash", "ok": true }
             }),
+            Some("session-alpha"),
         )
         .await
         .expect("append worklog should succeed");
@@ -1486,7 +1496,7 @@ mod tests {
             TOOL_WORKLOG_MANAGE,
             json!({
                 "action": "list",
-                "thread_id": "thread-alpha",
+                "owner_session_id": "session-alpha",
                 "tag": "runtime"
             }),
         )
@@ -1507,7 +1517,7 @@ mod tests {
         .await
         .expect("get worklog should succeed");
         assert_eq!(got["log"]["type"], "function_call");
-        assert_eq!(got["log"]["thread_id"], "thread-alpha");
+        assert_eq!(got["log"]["owner_session_id"], "session-alpha");
         assert!(fs::metadata(root.join("worklog/worklog.db")).await.is_ok());
 
         let _ = fs::remove_dir_all(root).await;

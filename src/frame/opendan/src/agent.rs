@@ -21,9 +21,9 @@ use crate::agent_session::{AgentSession, AgentSessionConfig};
 use crate::agent_tool::{ToolCall, ToolCallContext, ToolError, ToolManager, ToolSpec};
 use crate::ai_runtime::{AiRuntime, AiRuntimeConfig};
 use crate::behavior::{
-    BehaviorConfig, BehaviorConfigError, EnvKV, Event, LLMBehavior, LLMBehaviorDeps, LLMOutput,
-    LLMStatus, Observation, ObservationSource, PolicyEngine, ProcessInput, Sanitizer, TokenUsage,
-    Tokenizer, TraceCtx, WorklogSink,
+    BehaviorConfig, BehaviorConfigError, BehaviorExecInput, BehaviorLLMResult, EnvKV, Event,
+    LLMBehavior, LLMBehaviorDeps, LLMOutput, LLMTrackingInfo, Observation, ObservationSource,
+    PolicyEngine, Sanitizer, TokenUsage, Tokenizer, TraceCtx, WorklogSink,
 };
 use crate::workspace::{TOOL_EXEC_BASH, TOOL_WORKLOG_MANAGE};
 
@@ -35,8 +35,7 @@ const DEFAULT_ENVIRONMENT_DIR: &str = "environment";
 const DEFAULT_WORKLOG_FILE: &str = "worklog/agent-loop.jsonl";
 const DEFAULT_SLEEP_REASON: &str = "no_new_input";
 const MSG_CENTER_INBOX_PULL_LIMIT: usize = 32;
-const STAGE_THREAD_RESOLVER: &str = "thread_resolver";
-const STAGE_ROUTER: &str = "router";
+const STAGE_RESOLVE_ROUTER: &str = "resolve_router";
 const STAGE_EXECUTOR_DEFAULT: &str = "on_wakeup";
 const MAX_RECENT_TURNS: usize = 6;
 const MAX_ROUTER_TOOL_CALLS: usize = 8;
@@ -63,6 +62,8 @@ pub enum AIAgentError {
     BehaviorConfig(#[from] BehaviorConfigError),
     #[error("runtime error: {0}")]
     Runtime(#[from] crate::ai_runtime::AiRuntimeError),
+    #[error("llm behavior failed: {0}")]
+    LLMBehavior(String),
 }
 
 #[derive(Clone, Debug)]
@@ -368,7 +369,7 @@ impl AIAgent {
             wakeup_id: format!("inbox-{}", now_ms()),
             current_session_id: None,
         };
-        let thread_id = extract_thread_id_from_message_payload(&msg);
+        let session_id = extract_session_id_from_message_payload(&msg);
         append_workspace_worklog_entry(
             self.tool_mgr.clone(),
             &ctx,
@@ -380,7 +381,7 @@ impl AIAgent {
                 "inbox_len": inbox_len,
                 "message": compact_json_for_worklog(msg, 4 * 1024)
             }),
-            thread_id,
+            session_id,
             vec!["message".to_string(), "recv".to_string()],
             None,
             None,
@@ -398,29 +399,20 @@ impl AIAgent {
         );
     }
 
-    pub async fn start(&self, max_wakeups: Option<u32>) -> Result<(), AIAgentError> {
+    pub async fn run_agent_loop(&self, max_wakeups: Option<u32>) -> Result<(), AIAgentError> {
         info!(
-            "ai_agent.start: did={} max_wakeups={:?}",
+            "ai_agent.run_agent_loop: did={} max_wakeups={:?}",
             self.did, max_wakeups
         );
         let mut rounds = 0_u32;
         loop {
-            if let Some(limit) = max_wakeups {
-                if rounds >= limit {
-                    info!(
-                        "ai_agent.start stop: did={} reached max_wakeups={}",
-                        self.did, limit
-                    );
-                    break;
-                }
-            }
-
-            let report = self.on_wakeup(None).await?;
+            //wait for events or inbox messages
+            let report = self.wait_wakeup(None).await?;
             rounds = rounds.saturating_add(1);
             match report.status {
                 WakeupStatus::Error => {
                     error!(
-                        "ai_agent.wakeup report: did={} wakeup_id={} status=error behavior={} steps={} hops={} hp={}=>{} tokens={} sleep_ms={} err={:?}",
+                        "ai_agent.wait_wakeup report: did={} wakeup_id={} status=error behavior={} steps={} hops={} hp={}=>{} tokens={} sleep_ms={} err={:?}",
                         self.did,
                         report.wakeup_id,
                         report.final_behavior,
@@ -435,7 +427,7 @@ impl AIAgent {
                 }
                 WakeupStatus::SafeStop => {
                     warn!(
-                        "ai_agent.wakeup report: did={} wakeup_id={} status=safe_stop behavior={} steps={} hops={} hp={}=>{} tokens={} sleep_ms={} err={:?}",
+                        "ai_agent.wait_wakeup report: did={} wakeup_id={} status=safe_stop behavior={} steps={} hops={} hp={}=>{} tokens={} sleep_ms={} err={:?}",
                         self.did,
                         report.wakeup_id,
                         report.final_behavior,
@@ -450,7 +442,7 @@ impl AIAgent {
                 }
                 _ => {
                     info!(
-                        "ai_agent.wakeup report: did={} wakeup_id={} status={} behavior={} steps={} hops={} hp={}=>{} tokens={} sleep_ms={}",
+                        "ai_agent.wait_wakeup report: did={} wakeup_id={} status={} behavior={} steps={} hops={} hp={}=>{} tokens={} sleep_ms={}",
                         self.did,
                         report.wakeup_id,
                         wakeup_status_name(&report.status),
@@ -479,44 +471,17 @@ impl AIAgent {
         Ok(())
     }
 
-    pub async fn on_wakeup(&self, reason: Option<Json>) -> Result<WakeupReport, AIAgentError> {
-        let wakeup_started = Instant::now();
+    pub async fn wait_wakeup(&self, reason: Option<Json>) -> Result<WakeupReport, AIAgentError> {
         let now = now_ms();
+        let explicit_reason = reason.is_some();
         info!(
-            "ai_agent.on_wakeup start: did={} explicit_reason={}",
-            self.did,
-            reason.is_some()
+            "ai_agent.wait_wakeup start: did={} explicit_reason={}",
+            self.did, explicit_reason
         );
-        if self.is_sub_agent() {
-            let ctx = ToolCallContext {
-                trace_id: format!("{}:wakeup:{}", self.did, now),
-                agent_did: self.did.clone(),
-                behavior: "on_wakeup".to_string(),
-                step_idx: 0,
-                wakeup_id: format!("wakeup-start-{}", now),
-                current_session_id: None,
-            };
-            append_workspace_worklog_entry(
-                self.tool_mgr.clone(),
-                &ctx,
-                "sub_agent_wake",
-                "info",
-                "sub-agent wakeup".to_string(),
-                json!({
-                    "explicit_reason": reason.is_some()
-                }),
-                None,
-                vec!["sub_agent".to_string(), "active".to_string()],
-                None,
-                None,
-            )
-            .await;
-        }
 
-        let (wakeup_id, hp_before, trace_id, mut input_payload, inbox_record_ids) = match self
-            .prepare_wakeup_context(reason, now)
-            .await
-        {
+        // Step 1: wait_for_event (collect external input or explicit trigger)
+        self.log_sub_agent_wakeup(explicit_reason, now).await;
+        let mut loop_state = match self.wait_for_wakeup_events(reason, now).await {
             PreparedWakeup::Disabled {
                 wakeup_id,
                 trace_id,
@@ -525,25 +490,17 @@ impl AIAgent {
                 reason,
             } => {
                 warn!(
-                        "ai_agent.on_wakeup skip: did={} wakeup_id={} status=disabled hp={} sleep_ms={}",
-                        self.did, wakeup_id, hp, sleep_ms
-                    );
-                return Ok(WakeupReport {
+                    "ai_agent.wait_wakeup skip: did={} wakeup_id={} status=disabled hp={} sleep_ms={}",
+                    self.did, wakeup_id, hp, sleep_ms
+                );
+                return Ok(self.build_skip_report(
                     wakeup_id,
                     trace_id,
-                    status: WakeupStatus::Disabled,
-                    final_behavior: "on_wakeup".to_string(),
-                    steps: 0,
-                    behavior_hops: 0,
-                    hp_before: hp,
-                    hp_after: hp,
-                    token_prompt: 0,
-                    token_completion: 0,
-                    token_total: 0,
+                    WakeupStatus::Disabled,
+                    hp,
                     sleep_ms,
                     reason,
-                    last_error: None,
-                });
+                ));
             }
             PreparedWakeup::SkippedNoInput {
                 wakeup_id,
@@ -553,25 +510,17 @@ impl AIAgent {
                 reason,
             } => {
                 debug!(
-                        "ai_agent.on_wakeup skip: did={} wakeup_id={} status=no_input hp={} sleep_ms={}",
-                        self.did, wakeup_id, hp, sleep_ms
-                    );
-                return Ok(WakeupReport {
+                    "ai_agent.wait_wakeup skip: did={} wakeup_id={} status=no_input hp={} sleep_ms={}",
+                    self.did, wakeup_id, hp, sleep_ms
+                );
+                return Ok(self.build_skip_report(
                     wakeup_id,
                     trace_id,
-                    status: WakeupStatus::SkippedNoInput,
-                    final_behavior: "on_wakeup".to_string(),
-                    steps: 0,
-                    behavior_hops: 0,
-                    hp_before: hp,
-                    hp_after: hp,
-                    token_prompt: 0,
-                    token_completion: 0,
-                    token_total: 0,
+                    WakeupStatus::SkippedNoInput,
+                    hp,
                     sleep_ms,
                     reason,
-                    last_error: None,
-                });
+                ));
             }
             PreparedWakeup::Ready {
                 wakeup_id,
@@ -579,7 +528,7 @@ impl AIAgent {
                 trace_id,
                 input_payload,
                 inbox_record_ids,
-            } => (
+            } => self.init_agent_loop_state(
                 wakeup_id,
                 hp_before,
                 trace_id,
@@ -587,225 +536,286 @@ impl AIAgent {
                 inbox_record_ids,
             ),
         };
-        let mut loop_ctx = derive_wakeup_loop_context(&wakeup_id, &input_payload);
+
+        // Step 2: Mode Selection (default executor mode, may be overridden later)
+        let mode_selection = self.select_behavior_mode(&loop_state).await;
+        self.apply_mode_selection(&mut loop_state, &mode_selection);
+
+        // Step 3: Resolve Router Pass (session resolution + tool/workspace planning)
+        let (resolve_router, resolve_tracking, resolve_actions) =
+            self.resolve_router(&loop_state).await?;
+        if let Some(tracking) = resolve_tracking.as_ref() {
+            self.record_stage_cost(&mut loop_state, tracking, resolve_actions)
+                .await;
+        }
+        self.apply_resolve_router(&mut loop_state, &resolve_router);
+
+        // Step 4: Context Hydration (memory query marks + loop context injection)
+        self.hydrate_context(&mut loop_state);
+
+        // Step 5: Step Loop (behavior execution engine)
+        self.execute_behavior_steps(&mut loop_state).await?;
+
+        // Step 6: State Persistence
+        self.agent_loop_persist_state(loop_state).await
+    }
+
+    async fn log_sub_agent_wakeup(&self, explicit_reason: bool, now: u64) {
+        if !self.is_sub_agent() {
+            return;
+        }
+        let ctx = ToolCallContext {
+            trace_id: format!("{}:wakeup:{}", self.did, now),
+            agent_did: self.did.clone(),
+            behavior: "on_wakeup".to_string(),
+            step_idx: 0,
+            wakeup_id: format!("wakeup-start-{}", now),
+            current_session_id: None,
+        };
+        append_workspace_worklog_entry(
+            self.tool_mgr.clone(),
+            &ctx,
+            "sub_agent_wake",
+            "info",
+            "sub-agent wakeup".to_string(),
+            json!({
+                "explicit_reason": explicit_reason
+            }),
+            None,
+            vec!["sub_agent".to_string(), "active".to_string()],
+            None,
+            None,
+        )
+        .await;
+    }
+
+    fn build_skip_report(
+        &self,
+        wakeup_id: String,
+        trace_id: String,
+        status: WakeupStatus,
+        hp: u32,
+        sleep_ms: u64,
+        reason: Json,
+    ) -> WakeupReport {
+        WakeupReport {
+            wakeup_id,
+            trace_id,
+            status,
+            final_behavior: STAGE_EXECUTOR_DEFAULT.to_string(),
+            steps: 0,
+            behavior_hops: 0,
+            hp_before: hp,
+            hp_after: hp,
+            token_prompt: 0,
+            token_completion: 0,
+            token_total: 0,
+            sleep_ms,
+            reason,
+            last_error: None,
+        }
+    }
+
+    fn init_agent_loop_state(
+        &self,
+        wakeup_id: String,
+        hp_before: u32,
+        trace_id: String,
+        mut input_payload: Json,
+        inbox_record_ids: Vec<String>,
+    ) -> AgentLoopState {
+        let loop_ctx = derive_wakeup_loop_context(&wakeup_id, &input_payload);
         enrich_wakeup_payload_with_loop_context(&mut input_payload, &loop_ctx);
         let (inbox_count, event_count) = wakeup_input_counts(&input_payload);
         info!(
-            "ai_agent.on_wakeup ready: did={} wakeup_id={} hp_before={} inbox_count={} event_count={} thread_id={} session_id={}",
+            "ai_agent.on_wakeup ready: did={} wakeup_id={} hp_before={} inbox_count={} event_count={} session_id={}",
             self.did,
             wakeup_id,
             hp_before,
             inbox_count,
             event_count,
-            loop_ctx.thread_id.as_str(),
             loop_ctx.session_id.as_str()
         );
 
-        let mut status = WakeupStatus::Completed;
-        let mut last_error = None::<String>;
-        let mut token_usage = TokenUsage::default();
-        let mut steps: u32 = 0;
-        let mut behavior_hops: u32 = 0;
-        let mut current_behavior = STAGE_EXECUTOR_DEFAULT.to_string();
-        let mut pending_observations: Vec<Observation> = vec![];
-        let mut memory_queries = Vec::<String>::new();
+        AgentLoopState {
+            wakeup_started: Instant::now(),
+            wakeup_id,
+            hp_before,
+            trace_id,
+            input_payload,
+            inbox_record_ids,
+            loop_ctx,
+            status: WakeupStatus::Completed,
+            last_error: None,
+            token_usage: TokenUsage::default(),
+            steps: 0,
+            behavior_hops: 0,
+            current_behavior: STAGE_EXECUTOR_DEFAULT.to_string(),
+            pending_observations: vec![],
+            memory_queries: Vec::new(),
+        }
+    }
 
-        if let Some((trace, llm_result)) = self
+    async fn resolve_router(
+        &self,
+        state: &AgentLoopState,
+    ) -> Result<(ResolveRouterResult, Option<LLMTrackingInfo>, usize), AIAgentError> {
+        if !matches!(state.status, WakeupStatus::Completed) {
+            return Ok((ResolveRouterResult::default(), None, 0));
+        }
+        let Some((trace, llm_result, tracking)) = self
             .run_optional_stage_behavior(
-                STAGE_THREAD_RESOLVER,
-                &trace_id,
-                &wakeup_id,
+                STAGE_RESOLVE_ROUTER,
+                &state.trace_id,
+                &state.wakeup_id,
                 0,
                 now_ms(),
                 json!({
-                    "loop_context": loop_ctx.clone(),
-                    "input_event": compact_json_for_worklog(input_payload.clone(), 8 * 1024)
+                    "loop_context": state.loop_ctx.clone(),
+                    "input_event": compact_json_for_worklog(state.input_payload.clone(), 8 * 1024)
                 }),
                 json!({}),
-                vec![],
+                state.pending_observations.clone(),
                 vec![EnvKV {
                     key: "stage.name".to_string(),
-                    value: STAGE_THREAD_RESOLVER.to_string(),
+                    value: STAGE_RESOLVE_ROUTER.to_string(),
                 }],
             )
             .await?
-        {
-            token_usage = token_usage.add(llm_result.token_usage.clone());
-            self.consume_hp(
-                llm_result.token_usage.total,
-                llm_result.actions.len() as u32,
-            )
-            .await;
-            if let LLMStatus::Error(err) = llm_result.status {
-                status = WakeupStatus::Error;
-                last_error = Some(err.message);
-            } else {
-                if let Some(parsed) = parse_thread_resolver_output(&llm_result.output) {
-                    if let Some(thread_id) = sanitize_non_empty_string(parsed.thread_id.clone()) {
-                        loop_ctx.thread_id = thread_id;
-                    }
-                    append_unique_strings(&mut memory_queries, &parsed.memory_queries);
-                    input_payload["thread_resolver"] =
-                        serde_json::to_value(&parsed).unwrap_or_else(|_| json!({}));
-                    if let Some(user_question) = sanitize_non_empty_string(parsed.user_question) {
-                        input_payload["thread_resolver_user_question"] = json!(user_question);
-                    }
-                }
-                let stage_actions = self.execute_actions(&trace, &llm_result.actions).await;
-                if !stage_actions.is_empty() {
-                    pending_observations.extend(stage_actions);
-                }
-            }
-            enrich_wakeup_payload_with_loop_context(&mut input_payload, &loop_ctx);
-        }
+        else {
+            return Ok((ResolveRouterResult::default(), None, 0));
+        };
 
-        if matches!(status, WakeupStatus::Completed) {
-            if let Some((trace, llm_result)) = self
-                .run_optional_stage_behavior(
-                    STAGE_ROUTER,
-                    &trace_id,
-                    &wakeup_id,
-                    1,
-                    now_ms(),
-                    json!({
-                        "loop_context": loop_ctx.clone(),
-                        "input_event": compact_json_for_worklog(input_payload.clone(), 8 * 1024)
-                    }),
-                    json!({}),
-                    pending_observations.clone(),
-                    vec![EnvKV {
-                        key: "stage.name".to_string(),
-                        value: STAGE_ROUTER.to_string(),
-                    }],
-                )
-                .await?
-            {
-                token_usage = token_usage.add(llm_result.token_usage.clone());
-                self.consume_hp(
-                    llm_result.token_usage.total,
-                    llm_result.actions.len() as u32,
-                )
-                .await;
-                if let LLMStatus::Error(err) = llm_result.status {
-                    status = WakeupStatus::Error;
-                    last_error = Some(err.message);
-                } else {
-                    if let Some(parsed) = parse_router_output(&llm_result.output) {
-                        append_unique_strings(&mut memory_queries, &parsed.memory_queries);
-                        input_payload["router"] =
-                            serde_json::to_value(&parsed).unwrap_or_else(|_| json!({}));
-
-                        if let Some(reply) =
-                            sanitize_non_empty_string(parsed.immediate_reply.clone())
-                        {
-                            pending_observations.push(Observation {
-                                source: ObservationSource::System,
-                                name: "router.immediate_reply".to_string(),
-                                content: json!({
-                                    "reply": reply,
-                                    "note": "Router immediate reply suggestion; data only."
-                                }),
-                                ok: true,
-                                truncated: false,
-                                bytes: reply.len(),
-                            });
-                        }
-
-                        if let Some(mode_hint) = sanitize_non_empty_string(parsed.mode_hint.clone())
-                        {
-                            if self.behavior_exists(&mode_hint).await {
-                                current_behavior = mode_hint;
-                            } else {
-                                warn!(
-                                    "ai_agent.router mode_hint ignored: did={} wakeup_id={} mode_hint={} reason=behavior_not_found",
-                                    self.did, wakeup_id, mode_hint
-                                );
-                            }
-                        }
-
-                        if parsed.workspace_need != "none" {
-                            input_payload["workspace_observation"] = self
-                                .collect_workspace_observation(&parsed.workspace_need)
-                                .await;
-                        }
-
-                        let tool_observations = self
-                            .execute_router_tool_calls(&trace, &parsed.tool_calls)
-                            .await;
-                        if !tool_observations.is_empty() {
-                            pending_observations.extend(tool_observations);
-                        }
-                    }
-                    let stage_actions = self.execute_actions(&trace, &llm_result.actions).await;
-                    if !stage_actions.is_empty() {
-                        pending_observations.extend(stage_actions);
-                    }
-                }
+        let mut output = parse_resolve_router_result(&tracking.raw_output).unwrap_or_default();
+        output.session_id = sanitize_non_empty_string(output.session_id.clone());
+        output.reply = sanitize_non_empty_string(output.reply.clone());
+        if let Some(next_behavior) = output.next_behavior.clone() {
+            if !self.behavior_exists(&next_behavior).await {
+                warn!(
+                    "ai_agent.resolve_router next_behavior ignored: did={} wakeup_id={} next_behavior={} reason=behavior_not_found",
+                    self.did, state.wakeup_id, next_behavior
+                );
+                output.next_behavior = None;
             }
         }
-
-        if !memory_queries.is_empty() {
-            input_payload["memory_queries"] = json!(memory_queries);
+        if !llm_result.tool_calls.is_empty() {
+            let planned_calls = behavior_tool_calls_to_router_calls(&llm_result.tool_calls);
+            if !planned_calls.is_empty() {
+                let _ = self.execute_router_tool_calls(&trace, &planned_calls).await;
+            }
         }
-        enrich_wakeup_payload_with_loop_context(&mut input_payload, &loop_ctx);
+        Ok((output, Some(tracking), llm_result.actions.len()))
+    }
+
+    async fn select_behavior_mode(&self, state: &AgentLoopState) -> ModeSelectionResult {
+        let selected_mode = STAGE_EXECUTOR_DEFAULT.to_string();
+        debug!(
+            "ai_agent.mode_select: did={} wakeup_id={} mode={} source=default",
+            self.did, state.wakeup_id, selected_mode
+        );
+        ModeSelectionResult {
+            behavior: selected_mode,
+            source: "default",
+        }
+    }
+
+    fn apply_mode_selection(&self, state: &mut AgentLoopState, result: &ModeSelectionResult) {
+        state.current_behavior = result.behavior.clone();
+        debug!(
+            "ai_agent.mode_apply: did={} wakeup_id={} mode={} source={}",
+            self.did, state.wakeup_id, state.current_behavior, result.source
+        );
+    }
+
+    fn apply_resolve_router(&self, state: &mut AgentLoopState, result: &ResolveRouterResult) {
+        if let Some(session_id) = result.session_id.as_ref() {
+            state.loop_ctx.session_id = session_id.clone();
+        }
+        append_unique_strings(&mut state.memory_queries, &result.memory_queries);
+        if let Some((title, description)) = result.new_session.as_ref() {
+            state.input_payload["new_session"] = json!({
+                "title": title,
+                "description": description
+            });
+        }
+        if let Some(reply) = result.reply.as_ref() {
+            state.input_payload["router_reply"] = json!(reply);
+        }
+        if let Some(next_behavior) = result.next_behavior.as_ref() {
+            state.current_behavior = next_behavior.clone();
+        }
+        enrich_wakeup_payload_with_loop_context(&mut state.input_payload, &state.loop_ctx);
+    }
+
+    fn hydrate_context(&self, state: &mut AgentLoopState) {
+        if !state.memory_queries.is_empty() {
+            state.input_payload["memory_queries"] = json!(state.memory_queries.clone());
+        }
+        enrich_wakeup_payload_with_loop_context(&mut state.input_payload, &state.loop_ctx);
+    }
+
+    async fn execute_behavior_steps(&self, state: &mut AgentLoopState) -> Result<(), AIAgentError> {
+        if !matches!(state.status, WakeupStatus::Completed) {
+            return Ok(());
+        }
 
         loop {
             debug!(
                 "ai_agent.loop step: did={} wakeup_id={} step={} behavior={} pending_observations={}",
                 self.did,
-                wakeup_id,
-                steps,
-                current_behavior,
-                pending_observations.len()
+                state.wakeup_id,
+                state.steps,
+                state.current_behavior,
+                state.pending_observations.len()
             );
-            if steps >= self.cfg.max_steps_per_wakeup {
-                status = WakeupStatus::SafeStop;
-                last_error = Some(format!(
+            if state.steps >= self.cfg.max_steps_per_wakeup {
+                state.status = WakeupStatus::SafeStop;
+                state.last_error = Some(format!(
                     "max_steps_per_wakeup reached: {}",
                     self.cfg.max_steps_per_wakeup
                 ));
                 warn!(
                     "ai_agent.loop safe_stop: did={} wakeup_id={} reason=max_steps limit={}",
-                    self.did, wakeup_id, self.cfg.max_steps_per_wakeup
+                    self.did, state.wakeup_id, self.cfg.max_steps_per_wakeup
                 );
                 break;
             }
-            if wakeup_started.elapsed().as_millis() as u64 >= self.cfg.max_walltime_ms {
-                status = WakeupStatus::SafeStop;
-                last_error = Some(format!(
+            if state.wakeup_started.elapsed().as_millis() as u64 >= self.cfg.max_walltime_ms {
+                state.status = WakeupStatus::SafeStop;
+                state.last_error = Some(format!(
                     "max_walltime_ms reached: {}",
                     self.cfg.max_walltime_ms
                 ));
                 warn!(
                     "ai_agent.loop safe_stop: did={} wakeup_id={} reason=max_walltime limit_ms={}",
-                    self.did, wakeup_id, self.cfg.max_walltime_ms
+                    self.did, state.wakeup_id, self.cfg.max_walltime_ms
                 );
                 break;
             }
 
             if self.current_hp().await <= self.cfg.hp_floor {
-                status = WakeupStatus::SafeStop;
-                last_error = Some(format!("hp <= hp_floor ({})", self.cfg.hp_floor));
+                state.status = WakeupStatus::SafeStop;
+                state.last_error = Some(format!("hp <= hp_floor ({})", self.cfg.hp_floor));
                 warn!(
                     "ai_agent.loop safe_stop: did={} wakeup_id={} reason=hp_floor hp_floor={}",
-                    self.did, wakeup_id, self.cfg.hp_floor
+                    self.did, state.wakeup_id, self.cfg.hp_floor
                 );
                 break;
             }
 
-            let cfg = self.ensure_behavior_config(&current_behavior).await?;
+            let cfg = self.ensure_behavior_config(&state.current_behavior).await?;
             let trace = TraceCtx {
-                trace_id: trace_id.clone(),
+                trace_id: state.trace_id.clone(),
                 agent_did: self.did.clone(),
-                behavior: current_behavior.clone(),
-                step_idx: steps,
-                wakeup_id: wakeup_id.clone(),
+                behavior: state.current_behavior.clone(),
+                step_idx: state.steps,
+                wakeup_id: state.wakeup_id.clone(),
             };
 
             let behavior =
                 LLMBehavior::new(cfg.to_llm_behavior_config(), self.build_behavior_deps());
             let memory_pack = self.load_memory_pack(&trace).await;
-            let remaining_steps = self.cfg.max_steps_per_wakeup.saturating_sub(steps);
+            let remaining_steps = self.cfg.max_steps_per_wakeup.saturating_sub(state.steps);
             let convergence_hint = if remaining_steps <= 2 {
                 "Near step limit: converge to concrete answer and next action."
             } else {
@@ -814,20 +824,16 @@ impl AIAgent {
             let mut env_context = self.build_env_context(now_ms()).await;
             env_context.extend(vec![
                 EnvKV {
-                    key: "loop.thread_id".to_string(),
-                    value: loop_ctx.thread_id.clone(),
-                },
-                EnvKV {
                     key: "loop.session_id".to_string(),
-                    value: loop_ctx.session_id.clone(),
+                    value: state.loop_ctx.session_id.clone(),
                 },
                 EnvKV {
                     key: "loop.event_id".to_string(),
-                    value: loop_ctx.event_id.clone(),
+                    value: state.loop_ctx.event_id.clone(),
                 },
                 EnvKV {
                     key: "step.index".to_string(),
-                    value: steps.to_string(),
+                    value: state.steps.to_string(),
                 },
                 EnvKV {
                     key: "step.remaining".to_string(),
@@ -838,18 +844,17 @@ impl AIAgent {
                     value: convergence_hint.to_string(),
                 },
             ]);
-            let mut step_payload = input_payload.clone();
-            step_payload["thread"] = json!({
-                "thread_id": loop_ctx.thread_id.clone(),
-                "session_id": loop_ctx.session_id.clone(),
-                "event_id": loop_ctx.event_id.clone()
+            let mut step_payload = state.input_payload.clone();
+            step_payload["session"] = json!({
+                "session_id": state.loop_ctx.session_id.clone(),
+                "event_id": state.loop_ctx.event_id.clone()
             });
             step_payload["step_meta"] = json!({
-                "step_index": steps,
+                "step_index": state.steps,
                 "remaining_steps": remaining_steps,
                 "convergence_hint": convergence_hint
             });
-            let input = ProcessInput {
+            let input = BehaviorExecInput {
                 trace: trace.clone(),
                 role_md: self.role_md.clone(),
                 self_md: self.self_md.clone(),
@@ -857,189 +862,219 @@ impl AIAgent {
                 env_context,
                 inbox: step_payload,
                 memory: memory_pack,
-                last_observations: pending_observations.clone(),
+                last_observations: state.pending_observations.clone(),
                 limits: cfg.limits.clone(),
             };
 
-            let llm_result = behavior.run_step(input).await;
-            token_usage = token_usage.add(llm_result.token_usage.clone());
-            self.consume_hp(
-                llm_result.token_usage.total,
-                llm_result.actions.len() as u32,
-            )
-            .await;
+            let (llm_result, tracking) = match behavior.run_step(input).await {
+                Ok(v) => v,
+                Err(err) => {
+                    state.status = WakeupStatus::Error;
+                    state.last_error = Some(err.to_string());
+                    error!(
+                        "ai_agent.loop llm_error: did={} wakeup_id={} step={} behavior={} err={:?}",
+                        self.did,
+                        state.wakeup_id,
+                        state.steps,
+                        state.current_behavior,
+                        state.last_error
+                    );
+                    break;
+                }
+            };
+            self.record_stage_cost(state, &tracking, llm_result.actions.len())
+                .await;
             debug!(
                 "ai_agent.loop llm_done: did={} wakeup_id={} step={} behavior={} tokens={} actions={} is_sleep={} next_behavior={:?}",
                 self.did,
-                wakeup_id,
-                steps,
-                current_behavior,
-                llm_result.token_usage.total,
+                state.wakeup_id,
+                state.steps,
+                state.current_behavior,
+                tracking.token_usage.total,
                 llm_result.actions.len(),
-                llm_result.is_sleep,
+                llm_result.is_sleep(),
                 llm_result.next_behavior
             );
 
-            if let LLMStatus::Error(err) = llm_result.status {
-                status = WakeupStatus::Error;
-                last_error = Some(err.message);
-                error!(
-                    "ai_agent.loop llm_error: did={} wakeup_id={} step={} behavior={} err={:?}",
-                    self.did, wakeup_id, steps, current_behavior, last_error
-                );
-                break;
-            }
+            state.pending_observations = self.execute_actions(&trace, &llm_result.actions).await;
+            let mut should_break = llm_result.is_sleep();
 
-            pending_observations = self.execute_actions(&trace, &llm_result.actions).await;
-            let mut should_break = llm_result.is_sleep;
-            if let Some(executor) = llm_result.executor.as_ref() {
-                if executor.stop.should_stop {
-                    should_break = true;
-                }
-                if !executor.reply.is_empty() {
-                    for msg in executor.reply.iter().take(3) {
-                        let audience = msg.audience.trim();
-                        let format = msg.format.trim();
-                        let content = msg.content.trim();
-                        if content.is_empty() {
-                            continue;
-                        }
-                        pending_observations.push(Observation {
-                            source: ObservationSource::System,
-                            name: "executor.reply".to_string(),
-                            content: json!({
-                                "audience": audience,
-                                "format": format,
-                                "content": content,
-                                "note": "Executor reply candidate; data only."
-                            }),
-                            ok: true,
-                            truncated: false,
-                            bytes: content.len(),
-                        });
+            if !llm_result.reply.is_empty() {
+                for msg in llm_result.reply.iter().take(3) {
+                    let audience = msg.audience.trim();
+                    let format = msg.format.trim();
+                    let content = msg.content.trim();
+                    if content.is_empty() {
+                        continue;
                     }
+                    state.pending_observations.push(Observation {
+                        source: ObservationSource::System,
+                        name: "executor.reply".to_string(),
+                        content: json!({
+                            "audience": audience,
+                            "format": format,
+                            "content": content,
+                            "note": "Executor reply candidate; data only."
+                        }),
+                        ok: true,
+                        truncated: false,
+                        bytes: content.len(),
+                    });
                 }
-                if !executor.tool_calls.is_empty() {
-                    let planned_calls = executor_tool_calls_to_router_calls(&executor.tool_calls);
-                    let tool_obs = self.execute_router_tool_calls(&trace, &planned_calls).await;
-                    if !tool_obs.is_empty() {
-                        pending_observations.extend(tool_obs);
-                        should_break = false;
-                    }
+            }
+            if !llm_result.tool_calls.is_empty() {
+                let planned_calls = behavior_tool_calls_to_router_calls(&llm_result.tool_calls);
+                let tool_obs = self.execute_router_tool_calls(&trace, &planned_calls).await;
+                if !tool_obs.is_empty() {
+                    state.pending_observations.extend(tool_obs);
+                    should_break = false;
                 }
             }
             if let Some(next_behavior) = llm_result.next_behavior.as_ref() {
-                if next_behavior != &current_behavior {
-                    behavior_hops = behavior_hops.saturating_add(1);
-                    if behavior_hops > self.cfg.max_behavior_hops {
-                        status = WakeupStatus::SafeStop;
-                        last_error = Some(format!(
+                if next_behavior == "END" {
+                    debug!(
+                        "ai_agent.loop stop_marker: did={} wakeup_id={} behavior={} marker=END",
+                        self.did, state.wakeup_id, state.current_behavior
+                    );
+                } else if next_behavior != &state.current_behavior {
+                    state.behavior_hops = state.behavior_hops.saturating_add(1);
+                    if state.behavior_hops > self.cfg.max_behavior_hops {
+                        state.status = WakeupStatus::SafeStop;
+                        state.last_error = Some(format!(
                             "max_behavior_hops reached: {}",
                             self.cfg.max_behavior_hops
                         ));
                         warn!(
                             "ai_agent.loop safe_stop: did={} wakeup_id={} reason=max_behavior_hops limit={}",
-                            self.did, wakeup_id, self.cfg.max_behavior_hops
+                            self.did, state.wakeup_id, self.cfg.max_behavior_hops
                         );
                         break;
                     }
                     info!(
                         "ai_agent.loop behavior_switch: did={} wakeup_id={} from={} to={} hops={}",
-                        self.did, wakeup_id, current_behavior, next_behavior, behavior_hops
+                        self.did,
+                        state.wakeup_id,
+                        state.current_behavior,
+                        next_behavior,
+                        state.behavior_hops
                     );
-                    current_behavior = next_behavior.to_string();
+                    state.current_behavior = next_behavior.to_string();
                     should_break = false;
                 }
             }
 
-            steps = steps.saturating_add(1);
+            state.steps = state.steps.saturating_add(1);
             if should_break {
                 debug!(
                     "ai_agent.loop stop: did={} wakeup_id={} reason=llm_sleep",
-                    self.did, wakeup_id
+                    self.did, state.wakeup_id
                 );
                 break;
             }
             if llm_result.actions.is_empty() && llm_result.next_behavior.is_none() {
                 debug!(
                     "ai_agent.loop stop: did={} wakeup_id={} reason=no_actions_no_next_behavior",
-                    self.did, wakeup_id
+                    self.did, state.wakeup_id
                 );
                 break;
             }
         }
+        Ok(())
+    }
 
+    async fn agent_loop_persist_state(
+        &self,
+        state: AgentLoopState,
+    ) -> Result<WakeupReport, AIAgentError> {
         let hp_after = self.current_hp().await;
-        self.finalize_msg_center_inbox_states(&wakeup_id, &status, &inbox_record_ids)
-            .await;
+        self.finalize_msg_center_inbox_states(
+            &state.wakeup_id,
+            &state.status,
+            &state.inbox_record_ids,
+        )
+        .await;
         if hp_after == 0 {
             self.disable().await;
             warn!(
                 "ai_agent.on_wakeup disable: did={} wakeup_id={} reason=hp_exhausted",
-                self.did, wakeup_id
+                self.did, state.wakeup_id
             );
         }
-        let sleep_ms = self.update_sleep_after_wakeup(&status).await;
-        if matches!(status, WakeupStatus::Error) {
+        let sleep_ms = self.update_sleep_after_wakeup(&state.status).await;
+        if matches!(state.status, WakeupStatus::Error) {
             error!(
                 "ai_agent.on_wakeup finish: did={} wakeup_id={} status=error behavior={} steps={} hops={} hp={}=>{} tokens={} sleep_ms={} err={:?}",
                 self.did,
-                wakeup_id,
-                current_behavior,
-                steps,
-                behavior_hops,
-                hp_before,
+                state.wakeup_id,
+                state.current_behavior,
+                state.steps,
+                state.behavior_hops,
+                state.hp_before,
                 hp_after,
-                token_usage.total,
+                state.token_usage.total,
                 sleep_ms,
-                last_error
+                state.last_error
             );
-        } else if matches!(status, WakeupStatus::SafeStop) {
+        } else if matches!(state.status, WakeupStatus::SafeStop) {
             warn!(
                 "ai_agent.on_wakeup finish: did={} wakeup_id={} status=safe_stop behavior={} steps={} hops={} hp={}=>{} tokens={} sleep_ms={} err={:?}",
                 self.did,
-                wakeup_id,
-                current_behavior,
-                steps,
-                behavior_hops,
-                hp_before,
+                state.wakeup_id,
+                state.current_behavior,
+                state.steps,
+                state.behavior_hops,
+                state.hp_before,
                 hp_after,
-                token_usage.total,
+                state.token_usage.total,
                 sleep_ms,
-                last_error
+                state.last_error
             );
         } else {
             info!(
                 "ai_agent.on_wakeup finish: did={} wakeup_id={} status={} behavior={} steps={} hops={} hp={}=>{} tokens={} sleep_ms={}",
                 self.did,
-                wakeup_id,
-                wakeup_status_name(&status),
-                current_behavior,
-                steps,
-                behavior_hops,
-                hp_before,
+                state.wakeup_id,
+                wakeup_status_name(&state.status),
+                state.current_behavior,
+                state.steps,
+                state.behavior_hops,
+                state.hp_before,
                 hp_after,
-                token_usage.total,
+                state.token_usage.total,
                 sleep_ms
             );
         }
 
         Ok(WakeupReport {
-            wakeup_id,
-            trace_id,
-            status,
-            final_behavior: current_behavior,
-            steps,
-            behavior_hops,
-            hp_before,
+            wakeup_id: state.wakeup_id,
+            trace_id: state.trace_id,
+            status: state.status,
+            final_behavior: state.current_behavior,
+            steps: state.steps,
+            behavior_hops: state.behavior_hops,
+            hp_before: state.hp_before,
             hp_after,
-            token_prompt: token_usage.prompt,
-            token_completion: token_usage.completion,
-            token_total: token_usage.total,
+            token_prompt: state.token_usage.prompt,
+            token_completion: state.token_usage.completion,
+            token_total: state.token_usage.total,
             sleep_ms,
-            reason: input_payload,
-            last_error,
+            reason: state.input_payload,
+            last_error: state.last_error,
         })
+    }
+
+    async fn record_stage_cost(
+        &self,
+        state: &mut AgentLoopState,
+        tracking: &LLMTrackingInfo,
+        action_count: usize,
+    ) {
+        state.token_usage = state
+            .token_usage
+            .clone()
+            .add(tracking.token_usage.clone());
+        self.consume_hp(tracking.token_usage.total, action_count as u32)
+            .await;
     }
 
     fn build_behavior_deps(&self) -> LLMBehaviorDeps {
@@ -1069,7 +1104,7 @@ impl AIAgent {
         memory: Json,
         last_observations: Vec<Observation>,
         extra_env: Vec<EnvKV>,
-    ) -> Result<Option<(TraceCtx, crate::behavior::LLMResult)>, AIAgentError> {
+    ) -> Result<Option<(TraceCtx, BehaviorLLMResult, LLMTrackingInfo)>, AIAgentError> {
         if !self.behavior_exists(behavior_name).await {
             return Ok(None);
         }
@@ -1083,7 +1118,7 @@ impl AIAgent {
         };
         let mut env_context = self.build_env_context(now).await;
         env_context.extend(extra_env);
-        let input = ProcessInput {
+        let input = BehaviorExecInput {
             trace: trace.clone(),
             role_md: self.role_md.clone(),
             self_md: self.self_md.clone(),
@@ -1094,10 +1129,12 @@ impl AIAgent {
             last_observations,
             limits: cfg.limits.clone(),
         };
-        let llm_result = LLMBehavior::new(cfg.to_llm_behavior_config(), self.build_behavior_deps())
-            .run_step(input)
-            .await;
-        Ok(Some((trace, llm_result)))
+        let (llm_result, tracking) =
+            LLMBehavior::new(cfg.to_llm_behavior_config(), self.build_behavior_deps())
+                .run_step(input)
+                .await
+                .map_err(|err| AIAgentError::LLMBehavior(err.to_string()))?;
+        Ok(Some((trace, llm_result, tracking)))
     }
 
     async fn execute_router_tool_calls(
@@ -1145,27 +1182,7 @@ impl AIAgent {
         observations
     }
 
-    async fn collect_workspace_observation(&self, level: &str) -> Json {
-        let mut recent_entries = Vec::<String>::new();
-        if let Ok(mut read_dir) = fs::read_dir(self.environment.workspace_root()).await {
-            while let Ok(Some(entry)) = read_dir.next_entry().await {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if !name.is_empty() {
-                    recent_entries.push(name);
-                }
-                if recent_entries.len() >= 20 {
-                    break;
-                }
-            }
-        }
-        json!({
-            "level": level,
-            "summary": format!("workspace observation requested at level={level}"),
-            "recent_changes": recent_entries
-        })
-    }
-
-    async fn prepare_wakeup_context(&self, reason: Option<Json>, now: u64) -> PreparedWakeup {
+    async fn wait_for_wakeup_events(&self, reason: Option<Json>, now: u64) -> PreparedWakeup {
         let pulled_inbox = if reason.is_none() {
             self.pull_inbox_from_msg_center(MSG_CENTER_INBOX_PULL_LIMIT)
                 .await
@@ -1312,7 +1329,7 @@ impl AIAgent {
                     "record_id": pulled.record_id,
                     "message": compact_json_for_worklog(pulled.input.clone(), 6 * 1024)
                 }),
-                extract_thread_id_from_inbox_payload(&pulled.input),
+                extract_session_id_from_inbox_payload(&pulled.input),
                 vec!["message".to_string(), "recv".to_string()],
                 None,
                 None,
@@ -1657,35 +1674,50 @@ enum PreparedWakeup {
     },
 }
 
+struct AgentLoopState {
+    wakeup_started: Instant,
+    wakeup_id: String,
+    hp_before: u32,
+    trace_id: String,
+    input_payload: Json,
+    inbox_record_ids: Vec<String>,
+    loop_ctx: WakeupLoopContext,
+    status: WakeupStatus,
+    last_error: Option<String>,
+    token_usage: TokenUsage,
+    steps: u32,
+    behavior_hops: u32,
+    current_behavior: String,
+    pending_observations: Vec<Observation>,
+    memory_queries: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct ResolveRouterResult {
+    session_id: Option<String>,
+    //(title,description)
+    new_session: Option<(String, String)>,
+    next_behavior: Option<String>,
+    memory_queries: Vec<String>,
+    reply: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ModeSelectionResult {
+    behavior: String,
+    source: &'static str,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct WakeupLoopContext {
-    thread_id: String,
     session_id: String,
     event_id: String,
     recent_turns: Vec<Json>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(default)]
-struct ThreadResolverResultPayload {
-    action: String,
-    thread_id: Option<String>,
-    memory_queries: Vec<String>,
-    risk_flags: Vec<String>,
-    user_question: Option<String>,
-}
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(default)]
-struct RouterResultPayload {
-    need_tools: bool,
-    tool_calls: Vec<RouterToolCallPayload>,
-    memory_queries: Vec<String>,
-    workspace_need: String,
-    immediate_reply: Option<String>,
-    mode_hint: Option<String>,
-    risk_flags: Vec<String>,
-}
+
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -1727,7 +1759,7 @@ impl AgentPolicy {
 
 #[async_trait]
 impl PolicyEngine for AgentPolicy {
-    async fn allowed_tools(&self, input: &ProcessInput) -> Result<Vec<ToolSpec>, String> {
+    async fn allowed_tools(&self, input: &BehaviorExecInput) -> Result<Vec<ToolSpec>, String> {
         let all = self.tool_mgr.list_tool_specs();
         let cfg = {
             let guard = self.behavior_cfg_cache.read().await;
@@ -1753,7 +1785,7 @@ impl PolicyEngine for AgentPolicy {
 
     async fn gate_tool_calls(
         &self,
-        input: &ProcessInput,
+        input: &BehaviorExecInput,
         calls: &[ToolCall],
     ) -> Result<Vec<ToolCall>, String> {
         let allowed = self.allowed_tools(input).await?;
@@ -2367,7 +2399,7 @@ async fn append_workspace_worklog_entry(
     status: &str,
     summary: String,
     payload: Json,
-    thread_id: Option<String>,
+    session_id: Option<String>,
     tags: Vec<String>,
     related_agent_id: Option<String>,
     task_id: Option<String>,
@@ -2388,8 +2420,8 @@ async fn append_workspace_worklog_entry(
         "tags": tags,
         "timestamp": now_ms()
     });
-    if let Some(v) = thread_id {
-        args["thread_id"] = Json::String(v);
+    if let Some(v) = session_id {
+        args["owner_session_id"] = Json::String(v);
     }
     if let Some(v) = related_agent_id {
         args["related_agent_id"] = Json::String(v);
@@ -2425,23 +2457,19 @@ fn compact_json_for_worklog(value: Json, max_bytes: usize) -> Json {
     }
 }
 
-fn extract_thread_id_from_inbox_payload(payload: &Json) -> Option<String> {
+fn extract_session_id_from_inbox_payload(payload: &Json) -> Option<String> {
     payload
-        .pointer("/msg/thread_key")
-        .or_else(|| payload.pointer("/msg/thread"))
-        .or_else(|| payload.pointer("/record/thread_key"))
-        .or_else(|| payload.pointer("/record/thread_id"))
-        .or_else(|| payload.pointer("/record/reply_thread_key"))
+        .pointer("/msg/session_id")
+        .or_else(|| payload.pointer("/record/session_id"))
         .and_then(|v| v.as_str())
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
 }
 
-fn extract_thread_id_from_message_payload(payload: &Json) -> Option<String> {
+fn extract_session_id_from_message_payload(payload: &Json) -> Option<String> {
     payload
-        .get("thread_id")
-        .or_else(|| payload.get("thread_key"))
-        .or_else(|| payload.get("thread"))
+        .get("session_id")
+        .or_else(|| payload.get("session"))
         .and_then(|v| v.as_str())
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
@@ -2472,15 +2500,12 @@ fn wakeup_input_counts(payload: &Json) -> (usize, usize) {
 }
 
 fn derive_wakeup_loop_context(wakeup_id: &str, payload: &Json) -> WakeupLoopContext {
-    let thread_id = extract_thread_id_from_wakeup_payload(payload)
-        .unwrap_or_else(|| format!("thread-{wakeup_id}"));
     let session_id = extract_session_id_from_wakeup_payload(payload)
         .unwrap_or_else(|| format!("session-{wakeup_id}"));
     let event_id = extract_event_id_from_wakeup_payload(payload)
         .unwrap_or_else(|| format!("event-{wakeup_id}"));
     let recent_turns = collect_recent_turns(payload, MAX_RECENT_TURNS);
     WakeupLoopContext {
-        thread_id,
         session_id,
         event_id,
         recent_turns,
@@ -2491,31 +2516,9 @@ fn enrich_wakeup_payload_with_loop_context(payload: &mut Json, loop_ctx: &Wakeup
     if !payload.is_object() {
         *payload = json!({ "trigger": "on_wakeup", "raw_payload": payload.clone() });
     }
-    payload["thread_id"] = json!(loop_ctx.thread_id);
     payload["session_id"] = json!(loop_ctx.session_id);
     payload["event_id"] = json!(loop_ctx.event_id);
     payload["recent_turns"] = json!(loop_ctx.recent_turns);
-}
-
-fn extract_thread_id_from_wakeup_payload(payload: &Json) -> Option<String> {
-    payload
-        .get("thread_id")
-        .or_else(|| payload.get("thread_key"))
-        .or_else(|| payload.get("thread"))
-        .and_then(|v| v.as_str())
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .or_else(|| {
-            payload
-                .get("inbox")
-                .and_then(|v| v.as_array())
-                .and_then(|items| {
-                    items.iter().find_map(|item| {
-                        extract_thread_id_from_message_payload(item)
-                            .or_else(|| extract_thread_id_from_inbox_payload(item))
-                    })
-                })
-        })
 }
 
 fn extract_session_id_from_wakeup_payload(payload: &Json) -> Option<String> {
@@ -2531,6 +2534,17 @@ fn extract_session_id_from_wakeup_payload(payload: &Json) -> Option<String> {
                 .and_then(|v| v.as_str())
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty())
+        })
+        .or_else(|| {
+            payload
+                .get("inbox")
+                .and_then(|v| v.as_array())
+                .and_then(|items| {
+                    items.iter().find_map(|item| {
+                        extract_session_id_from_message_payload(item)
+                            .or_else(|| extract_session_id_from_inbox_payload(item))
+                    })
+                })
         })
 }
 
@@ -2597,21 +2611,18 @@ fn extract_message_text(value: &Json) -> Option<String> {
     Some(candidate)
 }
 
-fn parse_thread_resolver_output(output: &LLMOutput) -> Option<ThreadResolverResultPayload> {
-    llm_output_to_json(output)
-        .and_then(|value| serde_json::from_value::<ThreadResolverResultPayload>(value).ok())
-}
 
-fn parse_router_output(output: &LLMOutput) -> Option<RouterResultPayload> {
-    llm_output_to_json(output)
-        .and_then(|value| serde_json::from_value::<RouterResultPayload>(value).ok())
-}
+
 
 fn llm_output_to_json(output: &LLMOutput) -> Option<Json> {
     match output {
         LLMOutput::Json(value) => Some(value.clone()),
         LLMOutput::Text(text) => serde_json::from_str::<Json>(text).ok(),
     }
+}
+
+fn parse_resolve_router_result(output: &LLMOutput) -> Option<ResolveRouterResult> {
+    llm_output_to_json(output).and_then(|value| serde_json::from_value(value).ok())
 }
 
 fn sanitize_non_empty_string(value: Option<String>) -> Option<String> {
@@ -2632,8 +2643,8 @@ fn append_unique_strings(target: &mut Vec<String>, values: &[String]) {
     }
 }
 
-fn executor_tool_calls_to_router_calls(
-    calls: &[crate::behavior::ExecutorToolCall],
+fn behavior_tool_calls_to_router_calls(
+    calls: &[ToolCall],
 ) -> Vec<RouterToolCallPayload> {
     calls
         .iter()
@@ -3070,7 +3081,7 @@ limits:
             .await;
 
         // Manual single wakeup trigger.
-        let report = agent.on_wakeup(None).await.expect("run on_wakeup");
+        let report = agent.wait_wakeup(None).await.expect("run on_wakeup");
         assert!(matches!(report.status, WakeupStatus::Completed));
         assert_eq!(report.steps, 1);
         assert_eq!(report.behavior_hops, 0);
@@ -3134,9 +3145,9 @@ limits:
         write_agent_fixture(&agent_root).await;
 
         fs::write(
-            agent_root.join("behaviors/thread_resolver.yaml"),
+            agent_root.join("behaviors/resolve_router.yaml"),
             r#"
-process_rule: Resolve thread/session ids and memory queries.
+process_rule: Resolve session + route tools/mode in one pass.
 limits:
   max_tool_rounds: 0
   max_tool_calls_per_round: 0
@@ -3144,19 +3155,7 @@ limits:
 "#,
         )
         .await
-        .expect("write thread_resolver yaml");
-        fs::write(
-            agent_root.join("behaviors/router.yaml"),
-            r#"
-process_rule: Route initial tool calls and mode hints.
-limits:
-  max_tool_rounds: 0
-  max_tool_calls_per_round: 0
-  deadline_ms: 60000
-"#,
-        )
-        .await
-        .expect("write router yaml");
+        .expect("write resolve_router yaml");
 
         let requests = Arc::new(Mutex::new(Vec::<CompleteRequest>::new()));
         let responses = Arc::new(Mutex::new(VecDeque::from(vec![
@@ -3167,19 +3166,7 @@ limits:
                     "actions": [],
                     "output": {
                         "action": "use_existing",
-                        "thread_id": "thread-router-1",
-                        "memory_queries": ["project status", "todo follow-up"]
-                    }
-                }),
-                10,
-                8,
-            ),
-            mocked_response(
-                json!({
-                    "is_sleep": true,
-                    "next_behavior": null,
-                    "actions": [],
-                    "output": {
+                        "session_id": "session-router-1",
                         "need_tools": true,
                         "tool_calls": [{
                             "name": TOOL_TODO_MANAGE,
@@ -3190,16 +3177,17 @@ limits:
                                 "owner_session_id": null,
                                 "status": "in_progress",
                                 "priority": "high"
-                            }
+                            },
+                            "call_id": "call-router-todo-create-1"
                         }],
-                        "memory_queries": ["router query"],
+                        "memory_queries": ["project status", "todo follow-up", "router query"],
                         "workspace_need": "light",
                         "immediate_reply": "收到，先整理项目状态。",
                         "mode_hint": "on_wakeup"
                     }
                 }),
-                11,
-                9,
+                21,
+                17,
             ),
             mocked_response(
                 json!({
@@ -3250,16 +3238,15 @@ limits:
             .push_inbox_message(json!({
                 "from": "did:example:alice",
                 "text": "请更新项目状态",
-                "thread_id": "thread-user-1"
+                "session_id": "session-user-1"
             }))
             .await;
 
-        let report = agent.on_wakeup(None).await.expect("run staged wakeup");
+        let report = agent.wait_wakeup(None).await.expect("run staged wakeup");
         assert!(matches!(report.status, WakeupStatus::Completed));
         assert_eq!(report.steps, 1);
         assert!(report.token_total > 0);
-        assert_eq!(report.reason["thread_id"], "thread-router-1");
-        assert_eq!(report.reason["session_id"].is_string(), true);
+        assert_eq!(report.reason["session_id"], "session-router-1");
         assert_eq!(report.reason["event_id"].is_string(), true);
         assert!(report.reason["memory_queries"]
             .as_array()
@@ -3289,6 +3276,6 @@ limits:
         assert_eq!(todo_count, 1);
 
         let requests_guard = requests.lock().expect("requests lock");
-        assert_eq!(requests_guard.len(), 3);
+        assert_eq!(requests_guard.len(), 2);
     }
 }
