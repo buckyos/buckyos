@@ -149,8 +149,27 @@ impl LLMBehavior {
         track.model = first_resp.model.clone();
         track.provider = first_resp.provider.clone();
 
-        let (mut draft, mut raw_output) = BehaviorResultParser::parse_first(&first_resp, self.cfg.force_json)
-            .map_err(|err| LLMComputeError::Internal(format!("output parse failed: {err}")))?;
+        let (mut draft, mut raw_output) = match BehaviorResultParser::parse_first(
+            &first_resp,
+            self.cfg.force_json,
+        ) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                warn!(
+                        "llm_behavior.output_parse_failed: trace_id={} wakeup_id={} behavior={} step={} force_json={} parser_err={} raw_content={}",
+                        input.trace.trace_id,
+                        input.trace.wakeup_id,
+                        input.trace.behavior,
+                        input.trace.step_idx,
+                        self.cfg.force_json,
+                        err,
+                        compact_text_for_log(&first_resp.content, 8 * 1024)
+                    );
+                return Err(LLMComputeError::Internal(format!(
+                    "output parse failed: {err}"
+                )));
+            }
+        };
 
         let mut rounds_left = input.limits.max_tool_rounds;
         let tool_loop_enabled = input.limits.max_tool_rounds > 0;
@@ -350,11 +369,27 @@ impl LLMBehavior {
             track.provider = followup_resp.provider.clone();
             usage = usage.add(usage2);
 
-            let (next_draft, next_raw_output) =
-                BehaviorResultParser::parse_followup(&followup_resp, self.cfg.force_json)
-                    .map_err(|err| {
-                        LLMComputeError::Internal(format!("output parse failed: {err}"))
-                    })?;
+            let (next_draft, next_raw_output) = match BehaviorResultParser::parse_followup(
+                &followup_resp,
+                self.cfg.force_json,
+            ) {
+                Ok(parsed) => parsed,
+                Err(err) => {
+                    warn!(
+                            "llm_behavior.output_parse_failed: trace_id={} wakeup_id={} behavior={} step={} force_json={} parser_err={} raw_content={}",
+                            input.trace.trace_id,
+                            input.trace.wakeup_id,
+                            input.trace.behavior,
+                            input.trace.step_idx,
+                            self.cfg.force_json,
+                            err,
+                            compact_text_for_log(&followup_resp.content, 8 * 1024)
+                        );
+                    return Err(LLMComputeError::Internal(format!(
+                        "output parse failed: {err}"
+                    )));
+                }
+            };
             draft = next_draft;
             raw_output = next_raw_output;
         }
@@ -387,6 +422,8 @@ impl LLMBehavior {
         &self,
         input: &BehaviorExecInput,
     ) -> Result<i64, LLMComputeError> {
+        let session_id = input.session_id.clone();
+        let rootid = resolve_rootid_for_task(input.trace.agent_did.as_str(), session_id.as_deref());
         let data = json!({
             "trace_id": input.trace.trace_id,
             "agent_did": input.trace.agent_did,
@@ -394,6 +431,9 @@ impl LLMBehavior {
             "step_idx": input.trace.step_idx,
             "wakeup_id": input.trace.wakeup_id,
             "kind": "behavior",
+            "session_id": session_id.clone(),
+            "owner_session_id": session_id,
+            "rootid": rootid,
         });
         let task = self
             .deps
@@ -410,7 +450,7 @@ impl LLMBehavior {
                 Some(data),
                 &input.trace.agent_did,
                 &self.cfg.process_name,
-                Some(CreateTaskOptions::default()),
+                Some(CreateTaskOptions::with_root_id(rootid)),
             )
             .await
             .map_err(|err| LLMComputeError::Internal(err.to_string()))?;
@@ -624,7 +664,6 @@ impl LLMBehavior {
             aicc_task_id
         )))
     }
-
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -699,6 +738,8 @@ impl AiccRequestBuilder {
         }
 
         let mut options = Map::new();
+        let session_id = extract_session_id_for_task(input);
+        let rootid = resolve_rootid_for_task(input.trace.agent_did.as_str(), session_id.as_deref());
         options.insert(
             "protocol".to_string(),
             Json::String("opendan_llm_behavior_v1".to_string()),
@@ -729,6 +770,11 @@ impl AiccRequestBuilder {
                 "tool_messages".to_string(),
                 serde_json::to_value(tool_messages).unwrap_or_else(|_| json!([])),
             );
+        }
+        options.insert("rootid".to_string(), Json::String(rootid));
+        if let Some(session_id) = session_id {
+            options.insert("session_id".to_string(), Json::String(session_id.clone()));
+            options.insert("owner_session_id".to_string(), Json::String(session_id));
         }
 
         CompleteRequest::new(
@@ -1041,6 +1087,64 @@ async fn append_todo_or_subagent_worklog(
     }
 }
 
+fn extract_session_id_for_task(input: &BehaviorExecInput) -> Option<String> {
+    if let Some(value) = input.session_id.as_deref().and_then(normalize_non_empty_str) {
+        return Some(value);
+    }
+
+    for key in ["loop.session_id", "session_id", "owner_session_id"] {
+        let value = input
+            .env_context
+            .iter()
+            .find(|item| item.key == key)
+            .map(|item| item.value.as_str())
+            .and_then(normalize_non_empty_str);
+        if value.is_some() {
+            return value;
+        }
+    }
+
+    for pointer in [
+        "/session_id",
+        "/owner_session_id",
+        "/session/session_id",
+        "/record/session_id",
+        "/msg/session_id",
+    ] {
+        let value = input
+            .inbox
+            .pointer(pointer)
+            .and_then(|item| item.as_str())
+            .and_then(normalize_non_empty_str);
+        if value.is_some() {
+            return value;
+        }
+    }
+    None
+}
+
+fn normalize_non_empty_str(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+fn resolve_rootid_for_task(agent_did: &str, session_id: Option<&str>) -> String {
+    if let Some(session_id) = session_id.and_then(normalize_non_empty_str) {
+        return session_id;
+    }
+
+    let agent_name = agent_did
+        .split(|ch| ch == ':' || ch == '/' || ch == '#')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .last()
+        .unwrap_or("agent");
+    format!("{agent_name}#default")
+}
+
 fn compact_json_for_worklog(value: Json, max_bytes: usize) -> Json {
     match serde_json::to_vec(&value) {
         Ok(bytes) if bytes.len() > max_bytes => {
@@ -1053,6 +1157,17 @@ fn compact_json_for_worklog(value: Json, max_bytes: usize) -> Json {
         Ok(_) => value,
         Err(_) => json!({"error":"serialize_failed"}),
     }
+}
+
+fn compact_text_for_log(value: &str, max_chars: usize) -> String {
+    let escaped = value.replace('\n', "\\n").replace('\r', "\\r");
+    if escaped.chars().count() <= max_chars {
+        return escaped;
+    }
+    format!(
+        "{}...[TRUNCATED]",
+        escaped.chars().take(max_chars).collect::<String>()
+    )
 }
 
 fn log_worklog_append_warn(trace: &TraceCtx, err: ToolError) {

@@ -103,7 +103,8 @@ fn parse_json_in_code_fence() {
         latency_ms: 1,
     };
 
-    let (parsed, output) = BehaviorResultParser::parse_first(&raw, true).expect("parse should succeed");
+    let (parsed, output) =
+        BehaviorResultParser::parse_first(&raw, true).expect("parse should succeed");
     assert_eq!(parsed.next_behavior.as_deref(), Some("END"));
     assert!(matches!(output, LLMOutput::Json(_)));
 }
@@ -136,7 +137,8 @@ fn parse_executor_result_payload() {
         latency_ms: 1,
     };
 
-    let (parsed, _) = BehaviorResultParser::parse_first(&raw, true).expect("executor parse should succeed");
+    let (parsed, _) =
+        BehaviorResultParser::parse_first(&raw, true).expect("executor parse should succeed");
     assert_eq!(parsed.next_behavior.as_deref(), Some("END"));
     assert_eq!(parsed.tool_calls.len(), 1);
 }
@@ -152,7 +154,7 @@ async fn run_step_with_tool_followup() {
             user_id: "did:example:agent".to_string(),
             app_id: "opendan-llm-behavior".to_string(),
             parent_id: None,
-            root_id: None,
+            root_id: String::new(),
             name: "aicc complete".to_string(),
             task_type: "aicc.complete".to_string(),
             status: TaskStatus::Completed,
@@ -274,6 +276,7 @@ tools:
         },
         role_md: "role".to_string(),
         self_md: "self".to_string(),
+        session_id: None,
         behavior_prompt: behavior_cfg.process_rule.clone(),
         env_context: vec![],
         inbox: json!({"event":"wake"}),
@@ -323,7 +326,7 @@ async fn run_step_resolves_prefixed_running_aicc_task_id_from_task_data() {
             user_id: "did:example:agent".to_string(),
             app_id: "aicc".to_string(),
             parent_id: None,
-            root_id: None,
+            root_id: String::new(),
             name: "aicc complete".to_string(),
             task_type: "aicc.compute".to_string(),
             status: TaskStatus::Completed,
@@ -390,6 +393,7 @@ process_rule: test_rule
         },
         role_md: "role".to_string(),
         self_md: "self".to_string(),
+        session_id: None,
         behavior_prompt: behavior_cfg.process_rule.clone(),
         env_context: vec![],
         inbox: json!({"event":"wake"}),
@@ -469,6 +473,7 @@ process_rule: test_rule
         },
         role_md: "role".to_string(),
         self_md: "self".to_string(),
+        session_id: None,
         behavior_prompt: behavior_cfg.process_rule.clone(),
         env_context: vec![],
         inbox: json!({"event":"wake"}),
@@ -545,6 +550,7 @@ process_rule: test_rule
         },
         role_md: "role".to_string(),
         self_md: "self".to_string(),
+        session_id: None,
         behavior_prompt: behavior_cfg.process_rule.clone(),
         env_context: vec![],
         inbox: json!({"event":"wake"}),
@@ -565,6 +571,21 @@ process_rule: test_rule
         .as_ref()
         .and_then(|opts| opts.parent_id)
         .expect("aicc request should carry parent task id");
+    assert_eq!(
+        requests_guard[0]
+            .payload
+            .options
+            .as_ref()
+            .and_then(|value| value.get("rootid"))
+            .and_then(|value| value.as_str()),
+        Some("agent#default")
+    );
+    assert!(requests_guard[0]
+        .payload
+        .options
+        .as_ref()
+        .and_then(|value| value.get("session_id"))
+        .is_none());
     drop(requests_guard);
 
     let tasks_guard = tasks.lock().expect("tasks lock");
@@ -574,9 +595,146 @@ process_rule: test_rule
     assert_eq!(behavior_task.task_type, "llm_behavior");
     assert_eq!(behavior_task.parent_id, None);
     assert_eq!(behavior_task.status, TaskStatus::Completed);
+    assert_eq!(
+        behavior_task
+            .data
+            .get("rootid")
+            .and_then(|value| value.as_str()),
+        Some("agent#default")
+    );
+    assert_eq!(
+        behavior_task
+            .data
+            .get("session_id")
+            .and_then(|value| value.as_str()),
+        None
+    );
     assert!(!tasks_guard
         .values()
         .any(|task| task.task_type == "llm_infer"));
+}
+
+#[tokio::test]
+async fn run_step_uses_session_id_as_task_rootid_when_present() {
+    let responses = Arc::new(Mutex::new(VecDeque::from(vec![CompleteResponse::new(
+        "aicc-1770927904938-77".to_string(),
+        CompleteStatus::Succeeded,
+        Some(AiResponseSummary {
+            text: None,
+            json: Some(json!({"is_sleep":true,"output":{"answer":"ok"}})),
+            artifacts: vec![],
+            usage: Some(AiUsage {
+                input_tokens: Some(7),
+                output_tokens: Some(5),
+                total_tokens: Some(12),
+            }),
+            cost: None,
+            finish_reason: Some("stop".to_string()),
+            provider_task_ref: Some("provider-task-77".to_string()),
+            extra: Some(json!({"provider":"mock","model":"mock-1","latency_ms":6})),
+        }),
+        None,
+    )])));
+    let requests = Arc::new(Mutex::new(Vec::<CompleteRequest>::new()));
+    let tasks = Arc::new(Mutex::new(HashMap::<i64, Task>::new()));
+
+    let aicc = Arc::new(AiccClient::new_in_process(Box::new(MockAicc {
+        responses: responses.clone(),
+        requests: requests.clone(),
+    })));
+    let behavior_cfg = load_behavior_config_yaml_for_test(
+        "on_wakeup",
+        r#"
+process_rule: test_rule
+"#,
+    )
+    .await;
+    let deps = LLMBehaviorDeps {
+        taskmgr: Arc::new(TaskManagerClient::new_in_process(Box::new(
+            MockTaskMgrHandler {
+                counter: Mutex::new(0),
+                tasks: tasks.clone(),
+            },
+        ))),
+        aicc,
+        tools: Arc::new(ToolManager::new()),
+        policy: Arc::new(MockPolicy { tools: vec![] }),
+        worklog: Arc::new(MockWorklog),
+        tokenizer: Arc::new(MockTokenizer),
+    };
+    let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
+    let input = BehaviorExecInput {
+        trace: TraceCtx {
+            trace_id: "trace-parent-2".to_string(),
+            agent_did: "did:example:agent".to_string(),
+            behavior: "on_wakeup".to_string(),
+            step_idx: 0,
+            wakeup_id: "wakeup-parent-2".to_string(),
+        },
+        role_md: "role".to_string(),
+        self_md: "self".to_string(),
+        session_id: None,
+        behavior_prompt: behavior_cfg.process_rule.clone(),
+        env_context: vec![EnvKV {
+            key: "loop.session_id".to_string(),
+            value: "session-user-1".to_string(),
+        }],
+        inbox: json!({"event":"wake"}),
+        memory: json!({"facts":[]}),
+        last_observations: vec![],
+        limits: behavior_cfg.limits.clone(),
+    };
+
+    let (_result, _tracking) = behavior
+        .run_step(input)
+        .await
+        .expect("run_step should succeed");
+
+    let requests_guard = requests.lock().expect("requests lock");
+    assert_eq!(requests_guard.len(), 1);
+    let parent_id = requests_guard[0]
+        .task_options
+        .as_ref()
+        .and_then(|opts| opts.parent_id)
+        .expect("aicc request should carry parent task id");
+    assert_eq!(
+        requests_guard[0]
+            .payload
+            .options
+            .as_ref()
+            .and_then(|value| value.get("rootid"))
+            .and_then(|value| value.as_str()),
+        Some("session-user-1")
+    );
+    assert_eq!(
+        requests_guard[0]
+            .payload
+            .options
+            .as_ref()
+            .and_then(|value| value.get("session_id"))
+            .and_then(|value| value.as_str()),
+        Some("session-user-1")
+    );
+    drop(requests_guard);
+
+    let tasks_guard = tasks.lock().expect("tasks lock");
+    let behavior_task = tasks_guard
+        .get(&parent_id)
+        .expect("parent behavior task should exist");
+    assert_eq!(
+        behavior_task
+            .data
+            .get("rootid")
+            .and_then(|value| value.as_str()),
+        Some("session-user-1")
+    );
+    assert_eq!(
+        behavior_task
+            .data
+            .get("session_id")
+            .and_then(|value| value.as_str()),
+        Some("session-user-1")
+    );
 }
 
 fn run_actions_for_test(actions: &[ActionSpec]) -> Vec<Observation> {
@@ -713,6 +871,7 @@ tools:
         trace: base_trace.clone(),
         role_md: "role".to_string(),
         self_md: "self".to_string(),
+        session_id: None,
         behavior_prompt: behavior_cfg.process_rule.clone(),
         env_context: vec![],
         inbox: json!({"event":"wake"}),
@@ -744,6 +903,7 @@ tools:
         },
         role_md: "role".to_string(),
         self_md: "self".to_string(),
+        session_id: None,
         behavior_prompt: behavior_cfg.process_rule.clone(),
         env_context: vec![],
         inbox: json!({"event":"action_done"}),
@@ -916,6 +1076,7 @@ tools:
         },
         role_md: "role".to_string(),
         self_md: "self".to_string(),
+        session_id: None,
         behavior_prompt: behavior_cfg.process_rule.clone(),
         env_context: vec![],
         inbox: json!({"event":"wake"}),
@@ -1201,6 +1362,7 @@ limits:
         },
         role_md: "role".to_string(),
         self_md: "self".to_string(),
+        session_id: None,
         behavior_prompt: behavior_cfg.process_rule.clone(),
         env_context: vec![],
         inbox: json!({"event":"wake"}),

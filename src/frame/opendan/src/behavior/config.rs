@@ -358,10 +358,7 @@ llm:
         .expect("parse behavior yaml");
 
         assert_eq!(cfg.name, "on_msg");
-        assert_eq!(
-            cfg.llm.output_protocol,
-            "protocol_from_cfg".to_string()
-        );
+        assert_eq!(cfg.llm.output_protocol, "protocol_from_cfg".to_string());
         assert_eq!(cfg.llm.process_name, "custom-process");
         assert_eq!(cfg.llm.model_policy.preferred, "fast-model");
         assert_eq!(cfg.llm.model_policy.temperature, 0.2);

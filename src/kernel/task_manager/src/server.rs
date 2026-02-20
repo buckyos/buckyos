@@ -22,6 +22,7 @@ use std::sync::Arc;
 pub struct CreateTaskOptions {
     pub permissions: Option<TaskPermissions>,
     pub parent_id: Option<i64>,
+    pub root_id: Option<String>,
     pub priority: Option<u8>,
 }
 
@@ -31,7 +32,7 @@ pub struct TaskFilter {
     pub task_type: Option<String>,
     pub status: Option<TaskStatus>,
     pub parent_id: Option<i64>,
-    pub root_id: Option<i64>,
+    pub root_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -74,6 +75,8 @@ pub struct TaskManagerCreateTaskReq {
     #[serde(default)]
     pub parent_id: Option<i64>,
     #[serde(default)]
+    pub root_id: Option<String>,
+    #[serde(default)]
     pub priority: Option<u8>,
     #[serde(default)]
     pub user_id: String,
@@ -90,6 +93,7 @@ impl TaskManagerCreateTaskReq {
         data: Option<Value>,
         permissions: Option<TaskPermissions>,
         parent_id: Option<i64>,
+        root_id: Option<String>,
         priority: Option<u8>,
         user_id: String,
         app_id: String,
@@ -105,6 +109,7 @@ impl TaskManagerCreateTaskReq {
             data,
             permissions,
             parent_id,
+            root_id,
             priority,
             user_id,
             app_id,
@@ -147,7 +152,7 @@ pub struct TaskManagerListTasksReq {
     #[serde(default)]
     pub parent_id: Option<i64>,
     #[serde(default)]
-    pub root_id: Option<i64>,
+    pub root_id: Option<String>,
     #[serde(default)]
     pub source_user_id: Option<String>,
     #[serde(default)]
@@ -451,6 +456,21 @@ fn request_context_from_source_or_rpc(
     request_ctx
 }
 
+fn parse_root_id_from_task_data(data: &Value) -> Option<String> {
+    for pointer in ["/root_id", "/rootid", "/meta/root_id", "/meta/rootid"] {
+        let value = data
+            .pointer(pointer)
+            .and_then(|item| item.as_str())
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(|item| item.to_string());
+        if value.is_some() {
+            return value;
+        }
+    }
+    None
+}
+
 #[async_trait]
 pub trait TaskManagerHandler: Send + Sync {
     async fn handle_create_task(
@@ -610,7 +630,17 @@ impl TaskManagerHandler for TaskManagerService {
                     "No permission to create subtasks".to_string(),
                 ));
             }
-            task.root_id = parent.root_id.or(Some(parent.id));
+            task.root_id = parent.root_id;
+        } else if let Some(root_id) = opts
+            .root_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string())
+        {
+            task.root_id = root_id;
+        } else if let Some(root_id) = parse_root_id_from_task_data(&task.data) {
+            task.root_id = root_id;
         }
 
         let db_manager = DB_MANAGER.lock().await;
@@ -619,12 +649,13 @@ impl TaskManagerHandler for TaskManagerService {
             .await
             .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
 
-        if task.root_id.is_none() {
+        if task.root_id.trim().is_empty() {
+            let root_id = task_id.to_string();
             db_manager
-                .set_root_id(task_id, task_id)
+                .set_root_id(task_id, root_id.as_str())
                 .await
                 .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-            task.root_id = Some(task_id);
+            task.root_id = root_id;
         }
 
         task.id = task_id;
@@ -658,7 +689,7 @@ impl TaskManagerHandler for TaskManagerService {
                 filter.task_type.as_deref(),
                 filter.status,
                 filter.parent_id,
-                filter.root_id,
+                filter.root_id.as_deref(),
                 None,
             )
             .await
@@ -736,9 +767,13 @@ impl TaskManagerHandler for TaskManagerService {
 
         let db_manager = DB_MANAGER.lock().await;
         if recursive {
-            let root_id = task.root_id.unwrap_or(task.id);
+            let root_id = if task.root_id.trim().is_empty() {
+                task.id.to_string()
+            } else {
+                task.root_id.clone()
+            };
             db_manager
-                .update_task_status_by_root_id(root_id, TaskStatus::Canceled)
+                .update_task_status_by_root_id(root_id.as_str(), TaskStatus::Canceled)
                 .await
                 .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
         } else {
@@ -916,6 +951,7 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
                     data,
                     permissions,
                     parent_id,
+                    root_id,
                     priority,
                     user_id,
                     app_id,
@@ -929,6 +965,7 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
                 let opts = CreateTaskOptions {
                     permissions,
                     parent_id,
+                    root_id,
                     priority,
                 };
                 let result = self
@@ -1250,6 +1287,83 @@ mod tests {
         } else {
             panic!("Failed to create task");
         }
+        clean_test_environment(_temp_dir).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_create_task_uses_data_rootid_for_record_root_id() {
+        let (server, _temp_dir, _guard) = setup_test_environment().await;
+        let ip = IpAddr::from_str("127.0.0.1").unwrap();
+
+        let create_params = json!({
+            "name": "grouped_task",
+            "task_type": "test_type",
+            "app_name": "test_app",
+            "data": {
+                "rootid": "session-alpha"
+            }
+        });
+        let create_req = create_rpc_request("create_task", create_params);
+        let create_resp = server.handle_rpc_call(create_req, ip).await.unwrap();
+        let task_id = if let RPCResult::Success(result) = create_resp.result {
+            assert_eq!(result["task"]["root_id"], "session-alpha");
+            result["task_id"]
+                .as_i64()
+                .expect("task_id should be present")
+        } else {
+            panic!("Failed to create task");
+        };
+
+        let list_req = create_rpc_request("list_tasks", json!({ "root_id": "session-alpha" }));
+        let list_resp = server.handle_rpc_call(list_req, ip).await.unwrap();
+        if let RPCResult::Success(result) = list_resp.result {
+            let tasks = result["tasks"].as_array().expect("tasks should be array");
+            assert_eq!(tasks.len(), 1);
+            assert_eq!(tasks[0]["id"], task_id);
+            assert_eq!(tasks[0]["root_id"], "session-alpha");
+        } else {
+            panic!("Failed to list tasks by root_id");
+        }
+
+        clean_test_environment(_temp_dir).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_create_task_uses_request_root_id_field() {
+        let (server, _temp_dir, _guard) = setup_test_environment().await;
+        let ip = IpAddr::from_str("127.0.0.1").unwrap();
+
+        let create_params = json!({
+            "name": "grouped_task_req_root",
+            "task_type": "test_type",
+            "app_name": "test_app",
+            "root_id": "session-beta",
+            "data": {
+                "rootid": "session-alpha"
+            }
+        });
+        let create_req = create_rpc_request("create_task", create_params);
+        let create_resp = server.handle_rpc_call(create_req, ip).await.unwrap();
+        let task_id = if let RPCResult::Success(result) = create_resp.result {
+            assert_eq!(result["task"]["root_id"], "session-beta");
+            result["task_id"]
+                .as_i64()
+                .expect("task_id should be present")
+        } else {
+            panic!("Failed to create task");
+        };
+
+        let list_req = create_rpc_request("list_tasks", json!({ "root_id": "session-beta" }));
+        let list_resp = server.handle_rpc_call(list_req, ip).await.unwrap();
+        if let RPCResult::Success(result) = list_resp.result {
+            let tasks = result["tasks"].as_array().expect("tasks should be array");
+            assert_eq!(tasks.len(), 1);
+            assert_eq!(tasks[0]["id"], task_id);
+            assert_eq!(tasks[0]["root_id"], "session-beta");
+        } else {
+            panic!("Failed to list tasks by root_id");
+        }
+
         clean_test_environment(_temp_dir).await;
     }
 

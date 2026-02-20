@@ -44,7 +44,10 @@ impl BehaviorResultParser {
             return Err("force_json enabled but failed to parse JSON".to_string());
         }
 
-        Ok((BehaviorLLMResult::default(), LLMOutput::Text(content.to_string())))
+        Ok((
+            BehaviorLLMResult::default(),
+            LLMOutput::Text(content.to_string()),
+        ))
     }
 
     fn from_json(value: Json) -> Result<(BehaviorLLMResult, LLMOutput), String> {
@@ -218,8 +221,8 @@ mod tests {
         };
         let raw = raw_response("still-not-json", vec![call.clone()]);
 
-        let (parsed, output) =
-            BehaviorResultParser::parse_followup(&raw, false).expect("parse_followup should succeed");
+        let (parsed, output) = BehaviorResultParser::parse_followup(&raw, false)
+            .expect("parse_followup should succeed");
         assert_eq!(parsed.tool_calls, vec![call]);
         assert!(matches!(output, LLMOutput::Json(_)));
     }
@@ -228,14 +231,11 @@ mod tests {
     fn parse_plain_text_when_force_json_disabled() {
         let raw = raw_response("plain text output", vec![]);
 
-        let (parsed, output) =
-            BehaviorResultParser::parse_first(&raw, false).expect("plain text parsing should succeed");
+        let (parsed, output) = BehaviorResultParser::parse_first(&raw, false)
+            .expect("plain text parsing should succeed");
         assert!(parsed.tool_calls.is_empty());
         assert!(parsed.actions.is_empty());
-        assert_eq!(
-            output,
-            LLMOutput::Text("plain text output".to_string())
-        );
+        assert_eq!(output, LLMOutput::Text("plain text output".to_string()));
         assert_eq!(parsed.next_behavior, None);
     }
 
@@ -324,7 +324,8 @@ mod tests {
             vec![],
         );
 
-        let (parsed, _) = BehaviorResultParser::parse_first(&raw, true).expect("parse should succeed");
+        let (parsed, _) =
+            BehaviorResultParser::parse_first(&raw, true).expect("parse should succeed");
         assert_eq!(parsed.tool_calls.len(), 1);
         assert_eq!(parsed.tool_calls[0].name, "tool.echo");
         assert_eq!(parsed.tool_calls[0].call_id, "executor-call-1");
@@ -351,7 +352,8 @@ mod tests {
             vec![],
         );
 
-        let (parsed, _) = BehaviorResultParser::parse_first(&raw, true).expect("parse should succeed");
+        let (parsed, _) =
+            BehaviorResultParser::parse_first(&raw, true).expect("parse should succeed");
         assert_eq!(parsed.next_behavior, None);
     }
 

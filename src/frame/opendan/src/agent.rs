@@ -1,14 +1,17 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use buckyos_api::{
-    AiccClient, BoxKind, MsgCenterClient, MsgRecordWithObject, MsgState, TaskManagerClient,
+    AiccClient, BoxKind, MsgCenterClient, MsgObject, MsgRecordWithObject, MsgState, SendContext,
+    TaskManagerClient,
 };
 use log::{debug, error, info, warn};
 use name_lib::DID;
+use ndn_lib::ObjId;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::fs;
@@ -40,6 +43,7 @@ const BEHAVIOR_ROUTER_PASS: &str = "router_pass";
 const BEHAVIOR_ON_WAKEUP: &str = "on_wakeup";
 const MAX_RECENT_TURNS: usize = 6;
 const MAX_ROUTER_TOOL_CALLS: usize = 8;
+static REPLY_MSG_SEQ: AtomicU64 = AtomicU64::new(1);
 
 #[derive(thiserror::Error, Debug)]
 pub enum AIAgentError {
@@ -547,6 +551,20 @@ impl AIAgent {
                 .await;
         }
         self.apply_resolve_router(&mut loop_state, &resolve_router);
+        self.send_router_reply_via_msg_center(&loop_state, &resolve_router)
+            .await;
+        if resolve_router.is_sleep() {
+            self.hydrate_context(&mut loop_state);
+            loop_state.input_payload["resolve_router_sleep"] = json!({
+                "enabled": true,
+                "is_sleep": true
+            });
+            info!(
+                "ai_agent.wait_wakeup sleep after resolve_router: did={} wakeup_id={}",
+                self.did, loop_state.wakeup_id,
+            );
+            return self.agent_loop_persist_state(loop_state).await;
+        }
 
         // Step 4: Context Hydration (memory query marks + loop context injection)
         self.hydrate_context(&mut loop_state);
@@ -686,8 +704,13 @@ impl AIAgent {
         let mut output = parse_resolve_router_result(&tracking.raw_output).unwrap_or_default();
         output.session_id = sanitize_non_empty_string(output.session_id.clone());
         output.reply = sanitize_non_empty_string(output.reply.clone());
+        if output.next_behavior.is_none() {
+            output.next_behavior = Some("END".to_string());
+        }
         if let Some(next_behavior) = output.next_behavior.clone() {
-            if !self.behavior_exists(&next_behavior).await {
+            if next_behavior == "END" {
+                output.next_behavior = Some("END".to_string());
+            } else if !self.behavior_exists(&next_behavior).await {
                 warn!(
                     "ai_agent.resolve_router next_behavior ignored: did={} wakeup_id={} next_behavior={} reason=behavior_not_found",
                     self.did, state.wakeup_id, next_behavior
@@ -853,6 +876,7 @@ impl AIAgent {
                 trace: trace.clone(),
                 role_md: self.role_md.clone(),
                 self_md: self.self_md.clone(),
+                session_id: Some(state.loop_ctx.session_id.clone()),
                 behavior_prompt: cfg.process_rule.clone(),
                 env_context,
                 inbox: step_payload,
@@ -1064,10 +1088,7 @@ impl AIAgent {
         tracking: &LLMTrackingInfo,
         action_count: usize,
     ) {
-        state.token_usage = state
-            .token_usage
-            .clone()
-            .add(tracking.token_usage.clone());
+        state.token_usage = state.token_usage.clone().add(tracking.token_usage.clone());
         self.consume_hp(tracking.token_usage.total, action_count as u32)
             .await;
     }
@@ -1117,6 +1138,12 @@ impl AIAgent {
             trace: trace.clone(),
             role_md: self.role_md.clone(),
             self_md: self.self_md.clone(),
+            session_id: inbox
+                .pointer("/loop_context/session_id")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string()),
             behavior_prompt: cfg.process_rule.clone(),
             env_context,
             inbox,
@@ -1173,6 +1200,125 @@ impl AIAgent {
         }
 
         observations
+    }
+
+    async fn send_router_reply_via_msg_center(
+        &self,
+        state: &AgentLoopState,
+        result: &ResolveRouterResult,
+    ) {
+        let Some(reply_text) = result.reply.as_ref() else {
+            return;
+        };
+        let reply_text = reply_text.trim();
+        if reply_text.is_empty() {
+            return;
+        }
+
+        let Some(msg_center) = self.deps.msg_center.as_ref() else {
+            debug!(
+                "ai_agent.router_reply skip: did={} wakeup_id={} reason=no_msg_center",
+                self.did, state.wakeup_id
+            );
+            return;
+        };
+
+        let Some(reply_target) = extract_msg_center_reply_target(&state.input_payload) else {
+            debug!(
+                "ai_agent.router_reply skip: did={} wakeup_id={} reason=no_reply_target",
+                self.did, state.wakeup_id
+            );
+            return;
+        };
+
+        let from = match DID::from_str(self.did.as_str()) {
+            Ok(v) => v,
+            Err(err) => {
+                warn!(
+                    "ai_agent.router_reply skip: did={} wakeup_id={} reason=invalid_agent_did err={}",
+                    self.did, state.wakeup_id, err
+                );
+                return;
+            }
+        };
+
+        let msg_id = match build_msg_center_reply_obj_id() {
+            Some(v) => v,
+            None => {
+                warn!(
+                    "ai_agent.router_reply skip: did={} wakeup_id={} reason=msg_id_alloc_failed",
+                    self.did, state.wakeup_id
+                );
+                return;
+            }
+        };
+
+        let session_id = result
+            .session_id
+            .clone()
+            .unwrap_or_else(|| state.loop_ctx.session_id.clone());
+        let mut payload = json!({
+            "kind": "text",
+            "text": reply_text,
+            "session_id": session_id,
+            "event_id": state.loop_ctx.event_id,
+            "meta": {
+                "source": "ai_agent.resolve_router",
+                "wakeup_id": state.wakeup_id
+            }
+        });
+        if let Some(record_id) = reply_target.record_id.as_ref() {
+            payload["reply_record_id"] = json!(record_id);
+        }
+        if let Some(msg_id) = reply_target.origin_msg_id.as_ref() {
+            payload["reply_msg_id"] = json!(msg_id);
+        }
+
+        let mut out_msg = MsgObject::new(
+            msg_id,
+            from,
+            None,
+            vec![reply_target.target_did.clone()],
+            payload,
+            now_ms(),
+        );
+        out_msg.thread_key = reply_target.thread_key.clone();
+        out_msg.meta = Some(json!({
+            "source": "opendan.ai_agent",
+            "wakeup_id": state.wakeup_id,
+            "reply_origin": "resolve_router"
+        }));
+
+        let idempotency_target = reply_target
+            .record_id
+            .as_deref()
+            .unwrap_or("no_record")
+            .to_string();
+        let idempotency_key = Some(format!(
+            "opendan-router-reply:{}:{}:{}",
+            self.did, state.wakeup_id, idempotency_target
+        ));
+
+        match msg_center
+            .post_send(out_msg, reply_target.send_ctx, idempotency_key)
+            .await
+        {
+            Ok(posted) => {
+                info!(
+                    "ai_agent.router_reply queued: did={} wakeup_id={} msg_id={} deliveries={}",
+                    self.did,
+                    state.wakeup_id,
+                    posted.msg_id.to_string(),
+                    posted.deliveries.len()
+                );
+            }
+            Err(err) => {
+                warn!(
+                    "ai_agent.router_reply failed: did={} wakeup_id={} err={}",
+                    self.did, state.wakeup_id, err
+                );
+            }
+        }
     }
 
     async fn wait_for_wakeup_events(&self, reason: Option<Json>, now: u64) -> PreparedWakeup {
@@ -1694,6 +1840,12 @@ struct ResolveRouterResult {
     reply: Option<String>,
 }
 
+impl ResolveRouterResult {
+    fn is_sleep(&self) -> bool {
+        self.next_behavior.as_deref() == Some("END") || self.next_behavior.is_none()
+    }
+}
+
 #[derive(Clone, Debug)]
 struct ModeSelectionResult {
     behavior: String,
@@ -1709,6 +1861,15 @@ struct WakeupLoopContext {
 struct PulledInboxMessage {
     input: Json,
     record_id: String,
+}
+
+#[derive(Debug)]
+struct MsgCenterReplyTarget {
+    target_did: DID,
+    send_ctx: Option<SendContext>,
+    thread_key: Option<String>,
+    record_id: Option<String>,
+    origin_msg_id: Option<String>,
 }
 
 struct WhitespaceTokenizer;
@@ -2451,6 +2612,87 @@ fn msg_center_record_to_inbox_message(record: MsgRecordWithObject) -> PulledInbo
     PulledInboxMessage { input, record_id }
 }
 
+fn extract_msg_center_reply_target(payload: &Json) -> Option<MsgCenterReplyTarget> {
+    let inbox = payload.get("inbox").and_then(|v| v.as_array())?;
+    for item in inbox.iter().rev() {
+        if item
+            .get("source")
+            .and_then(|v| v.as_str())
+            .map(|v| v != "msg_center.krpc")
+            .unwrap_or(true)
+        {
+            continue;
+        }
+
+        let raw_target = item
+            .pointer("/msg/source")
+            .or_else(|| item.pointer("/msg/from"))
+            .and_then(|v| v.as_str())
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty());
+        let Some(raw_target) = raw_target else {
+            continue;
+        };
+        let target_did = match DID::from_str(raw_target) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let preferred_tunnel = item
+            .pointer("/record/route/tunnel_did")
+            .and_then(|v| v.as_str())
+            .and_then(|v| DID::from_str(v.trim()).ok());
+        let priority = item
+            .pointer("/record/route/priority")
+            .and_then(|v| v.as_i64())
+            .and_then(|v| i32::try_from(v).ok());
+        let mut extra = item.pointer("/record/route/extra").cloned();
+        if let Some(route_snapshot) = item.pointer("/record/route").cloned() {
+            extra = Some(json!({
+                "source": "msg_center.reply.original_route",
+                "route": route_snapshot
+            }));
+        }
+        let send_ctx = Some(SendContext {
+            context_id: None,
+            preferred_tunnel,
+            priority,
+            extra,
+        });
+        let thread_key = item
+            .pointer("/msg/thread_key")
+            .or_else(|| item.pointer("/record/thread_key"))
+            .and_then(|v| v.as_str())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        let record_id = item
+            .pointer("/record/record_id")
+            .and_then(|v| v.as_str())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        let origin_msg_id = item
+            .pointer("/record/msg_id")
+            .and_then(|v| v.as_str())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+
+        return Some(MsgCenterReplyTarget {
+            target_did,
+            send_ctx,
+            thread_key,
+            record_id,
+            origin_msg_id,
+        });
+    }
+    None
+}
+
+fn build_msg_center_reply_obj_id() -> Option<ObjId> {
+    let seq = REPLY_MSG_SEQ.fetch_add(1, Ordering::Relaxed);
+    let raw = format!("chunk:{:016x}", now_ms().saturating_add(seq));
+    ObjId::new(raw.as_str()).ok()
+}
+
 fn wakeup_input_counts(payload: &Json) -> (usize, usize) {
     let inbox = payload
         .get("inbox")
@@ -2577,9 +2819,6 @@ fn extract_message_text(value: &Json) -> Option<String> {
     Some(candidate)
 }
 
-
-
-
 fn llm_output_to_json(output: &LLMOutput) -> Option<Json> {
     match output {
         LLMOutput::Json(value) => Some(value.clone()),
@@ -2671,6 +2910,81 @@ mod tests {
             }),
             None,
         )
+    }
+
+    #[test]
+    fn extract_msg_center_reply_target_uses_latest_msg_center_item() {
+        let payload = json!({
+            "inbox": [
+                {
+                    "source": "runtime.push_inbox_message",
+                    "from": "did:example:alice",
+                    "text": "hello"
+                },
+                {
+                    "source": "msg_center.krpc",
+                    "record": {
+                        "record_id": "record-1",
+                        "msg_id": "chunk:0001",
+                        "thread_key": "thread-1",
+                        "route": {
+                            "tunnel_did": "did:example:tunnel-a",
+                            "priority": 3,
+                            "chat_id": "10086"
+                        }
+                    },
+                    "msg": {
+                        "from": "did:example:old-user",
+                        "thread_key": "thread-1"
+                    }
+                },
+                {
+                    "source": "msg_center.krpc",
+                    "record": {
+                        "record_id": "record-2",
+                        "msg_id": "chunk:0002",
+                        "route": {
+                            "tunnel_did": "did:example:tunnel-b",
+                            "priority": 7
+                        }
+                    },
+                    "msg": {
+                        "source": "did:example:target-user",
+                        "from": "did:example:group"
+                    }
+                }
+            ]
+        });
+
+        let target =
+            extract_msg_center_reply_target(&payload).expect("extract latest msg_center target");
+        assert_eq!(target.target_did.to_string(), "did:example:target-user");
+        assert_eq!(target.record_id.as_deref(), Some("record-2"));
+        assert_eq!(target.origin_msg_id.as_deref(), Some("chunk:0002"));
+        assert_eq!(target.thread_key, None);
+
+        let send_ctx = target.send_ctx.expect("send_ctx");
+        assert_eq!(
+            send_ctx
+                .preferred_tunnel
+                .expect("preferred tunnel")
+                .to_string(),
+            "did:example:tunnel-b"
+        );
+        assert_eq!(send_ctx.priority, Some(7));
+        assert!(send_ctx.extra.is_some());
+    }
+
+    #[test]
+    fn extract_msg_center_reply_target_returns_none_without_msg_center_inbox() {
+        let payload = json!({
+            "inbox": [{
+                "source": "runtime.push_inbox_message",
+                "from": "did:example:alice",
+                "text": "hello"
+            }]
+        });
+        assert!(extract_msg_center_reply_target(&payload).is_none());
     }
 
     async fn write_agent_fixture(agent_root: &Path) {
@@ -3002,5 +3316,80 @@ limits:
 
         let requests_guard = requests.lock().expect("requests lock");
         assert_eq!(requests_guard.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn ai_agent_resolve_router_end_uses_fast_sleep_path() {
+        let tmp = tempdir().expect("create tmpdir");
+        let agent_root = tmp.path().join("jarvis");
+        write_agent_fixture(&agent_root).await;
+
+        fs::write(
+            agent_root.join("behaviors/resolve_router.yaml"),
+            r#"
+process_rule: test_rule
+limits:
+  max_tool_rounds: 0
+  max_tool_calls_per_round: 0
+  deadline_ms: 60000
+"#,
+        )
+        .await
+        .expect("write resolve_router yaml");
+
+        let requests = Arc::new(Mutex::new(Vec::<CompleteRequest>::new()));
+        let responses = Arc::new(Mutex::new(VecDeque::from(vec![mocked_response(
+            json!({
+                "session_id": "session-router-end",
+                "new_session": null,
+                "next_behavior": "END",
+                "memory_queries": ["router done"],
+                "reply": "收到，先暂停。"
+            }),
+            9,
+            6,
+        )])));
+
+        let deps = AIAgentDeps {
+            taskmgr: Arc::new(TaskManagerClient::new_in_process(Box::new(
+                MockTaskMgrHandler {
+                    counter: Mutex::new(0),
+                    tasks: Arc::new(Mutex::new(HashMap::new())),
+                },
+            ))),
+            aicc: Arc::new(AiccClient::new_in_process(Box::new(MockAicc {
+                responses,
+                requests: requests.clone(),
+            }))),
+            msg_center: None,
+        };
+
+        let agent = AIAgent::load(AIAgentConfig::new(&agent_root), deps)
+            .await
+            .expect("load ai agent");
+        agent
+            .push_inbox_message(json!({
+                "from": "did:example:alice",
+                "text": "请先给我一个简短结论",
+                "session_id": "session-user-quick"
+            }))
+            .await;
+
+        let report = agent
+            .wait_wakeup(None)
+            .await
+            .expect("run fast sleep wakeup");
+        assert!(matches!(report.status, WakeupStatus::Completed));
+        assert_eq!(report.steps, 0);
+        assert_eq!(report.final_behavior, "END");
+        assert_eq!(report.reason["session_id"], "session-router-end");
+        assert!(report.reason["memory_queries"]
+            .as_array()
+            .map(|v| v.iter().any(|q| q == "router done"))
+            .unwrap_or(false));
+        assert_eq!(report.reason["resolve_router_sleep"]["enabled"], true);
+
+        let requests_guard = requests.lock().expect("requests lock");
+        assert_eq!(requests_guard.len(), 1);
     }
 }

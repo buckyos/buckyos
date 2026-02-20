@@ -41,7 +41,7 @@ impl TaskDb {
                 user_id         TEXT NOT NULL DEFAULT '',
                 app_id          TEXT NOT NULL DEFAULT '',
                 parent_id       INTEGER,
-                root_id         INTEGER,
+                root_id         TEXT NOT NULL DEFAULT '',
                 permissions     TEXT,
                 message         TEXT,
                 FOREIGN KEY(parent_id) REFERENCES task(id) ON DELETE CASCADE
@@ -106,7 +106,7 @@ impl TaskDb {
         Ok(id)
     }
 
-    pub async fn set_root_id(&self, id: i64, root_id: i64) -> Result<()> {
+    pub async fn set_root_id(&self, id: i64, root_id: &str) -> Result<()> {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
         conn.execute(
@@ -153,7 +153,7 @@ impl TaskDb {
         task_type: Option<&str>,
         status: Option<TaskStatus>,
         parent_id: Option<i64>,
-        root_id: Option<i64>,
+        root_id: Option<&str>,
         user_id: Option<&str>,
     ) -> rusqlite::Result<Vec<Task>> {
         let mut sql = "SELECT * FROM task".to_string();
@@ -182,7 +182,7 @@ impl TaskDb {
         }
         if let Some(root_id) = root_id {
             conditions.push("root_id = ?".to_string());
-            params_vec.push(root_id.into());
+            params_vec.push(rusqlite::types::Value::Text(root_id.to_string()));
         }
 
         if !conditions.is_empty() {
@@ -237,7 +237,7 @@ impl TaskDb {
 
     pub async fn update_task_status_by_root_id(
         &self,
-        root_id: i64,
+        root_id: &str,
         status: TaskStatus,
     ) -> Result<()> {
         let conn = self.conn.as_ref().unwrap();
@@ -401,16 +401,16 @@ fn task_from_row(row: &Row) -> rusqlite::Result<Task> {
     let data_str: Option<String> = row.get("data")?;
     let permissions_str: Option<String> = row.get("permissions")?;
     let parent_id: Option<i64> = row.get("parent_id")?;
-    let root_id: Option<i64> = row.get("root_id")?;
+    let root_id: Option<String> = row.get("root_id")?;
     let user_id: Option<String> = row.get("user_id")?;
     let app_id: Option<String> = row.get("app_id")?;
     let created_at: i64 = row.get("created_at")?;
     let updated_at: i64 = row.get("updated_at")?;
 
-    let mut resolved_root_id = root_id;
-    if resolved_root_id.is_none() {
-        resolved_root_id = Some(id);
-    }
+    let resolved_root_id = root_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| id.to_string());
 
     let resolved_app_id = app_id.unwrap_or_else(|| "".to_string());
     let resolved_user_id = user_id.unwrap_or_else(|| "".to_string());
@@ -483,7 +483,7 @@ mod tests {
             user_id: "user1".to_string(),
             app_id: "app1".to_string(),
             parent_id: None,
-            root_id: None,
+            root_id: String::new(),
             status: TaskStatus::Pending,
             progress: 0.0,
             message: None,

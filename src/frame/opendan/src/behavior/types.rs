@@ -1,6 +1,6 @@
+use crate::agent_tool::ToolCall;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
-use crate::agent_tool::ToolCall;
 
 pub type InboxPack = Json;
 pub type MemoryPack = Json;
@@ -49,6 +49,7 @@ pub struct BehaviorExecInput {
     pub trace: TraceCtx,
     pub role_md: String,
     pub self_md: String,
+    pub session_id:Option<String>,
     pub behavior_prompt: String,
     pub env_context: Vec<EnvKV>,
     pub inbox: InboxPack,
@@ -87,9 +88,6 @@ pub struct ExecutorReply {
     pub format: String,
     pub content: String,
 }
-
-
-
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]

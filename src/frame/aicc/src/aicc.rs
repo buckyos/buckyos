@@ -1246,7 +1246,28 @@ impl AIComputeCenter {
             )
             .await;
         match start_result {
-            Ok((ProviderStartResult::Immediate(summary), _instance_id)) => {
+            Ok((ProviderStartResult::Immediate(summary), instance_id)) => {
+                let prepared_task = self
+                    .create_provider_task(
+                        external_task_id.as_str(),
+                        &request,
+                        &invoke_ctx,
+                        event_ref.as_deref(),
+                        &decision,
+                        InitialTaskState::Running,
+                    )
+                    .await?;
+                let task_audit_sink: Arc<dyn TaskEventSink> = Arc::new(TaskAuditSink::new(
+                    prepared_task.taskmgr.clone(),
+                    prepared_task.id(),
+                ));
+                deferred_sink.promote(task_audit_sink).await?;
+                self.emit_task_started(
+                    event_sink.clone(),
+                    external_task_id.as_str(),
+                    instance_id.as_str(),
+                )
+                .await;
                 self.emit_task_final(event_sink, external_task_id.as_str(), &summary)
                     .await;
                 Ok(CompleteResponse::new(
@@ -1695,13 +1716,63 @@ impl AiccHandler for AIComputeCenter {
     }
 }
 
+fn json_non_empty_string(value: Option<&serde_json::Value>) -> Option<String> {
+    value
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(|item| item.to_string())
+}
+
+fn extract_session_id_from_complete_request(request: &CompleteRequest) -> Option<String> {
+    let from_options = request.payload.options.as_ref().and_then(|options| {
+        json_non_empty_string(options.get("session_id"))
+            .or_else(|| json_non_empty_string(options.get("owner_session_id")))
+    });
+    if from_options.is_some() {
+        return from_options;
+    }
+
+    let input = request.payload.input_json.as_ref();
+    json_non_empty_string(input.and_then(|value| value.get("session_id")))
+        .or_else(|| json_non_empty_string(input.and_then(|value| value.get("owner_session_id"))))
+        .or_else(|| {
+            json_non_empty_string(input.and_then(|value| value.pointer("/session/session_id")))
+        })
+}
+
+fn extract_rootid_from_complete_request(request: &CompleteRequest) -> Option<String> {
+    request.payload.options.as_ref().and_then(|options| {
+        json_non_empty_string(options.get("rootid"))
+            .or_else(|| json_non_empty_string(options.get("root_id")))
+    })
+}
+
+fn resolve_default_rootid(invoke_ctx: &InvokeCtx) -> String {
+    let app_seed = invoke_ctx
+        .caller_app_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .unwrap_or(AICC_SERVICE_SERVICE_NAME);
+    format!("{app_seed}#default")
+}
+
 fn build_initial_aicc_task_data(
     request: &CompleteRequest,
     external_task_id: &str,
     event_ref: Option<&str>,
     invoke_ctx: &InvokeCtx,
 ) -> serde_json::Value {
+    let session_id = extract_session_id_from_complete_request(request);
+    let rootid = extract_rootid_from_complete_request(request)
+        .or_else(|| session_id.clone())
+        .unwrap_or_else(|| resolve_default_rootid(invoke_ctx));
+
     json!({
+        "rootid": rootid.clone(),
+        "session_id": session_id.clone(),
+        "owner_session_id": session_id.clone(),
         "aicc": {
             "version": 1,
             "external_task_id": external_task_id,
@@ -1710,6 +1781,8 @@ fn build_initial_aicc_task_data(
             "updated_at_ms": now_ms(),
             "tenant_id": invoke_ctx.tenant_id,
             "event_ref": event_ref,
+            "rootid": rootid,
+            "session_id": session_id,
             "request": request,
             "provider_input": serde_json::Value::Null,
             "route": {},
@@ -1925,7 +1998,7 @@ mod tests {
                 user_id: user_id.to_string(),
                 app_id: app_id.to_string(),
                 parent_id: opts.parent_id,
-                root_id: None,
+                root_id: String::new(),
                 name: name.to_string(),
                 task_type: task_type.to_string(),
                 status: TaskStatus::Pending,
@@ -2249,14 +2322,25 @@ mod tests {
             .list_tasks(None, None, None)
             .await
             .expect("list tasks");
-        assert!(
-            tasks.iter().all(|item| {
+        let task = tasks
+            .into_iter()
+            .find(|item| {
                 item.data
                     .pointer("/aicc/external_task_id")
                     .and_then(|value| value.as_str())
-                    != Some(response.task_id.as_str())
-            }),
-            "immediate provider completion should not create persisted aicc task"
+                    == Some(response.task_id.as_str())
+            })
+            .expect("immediate provider completion should persist aicc task");
+        assert_eq!(task.status, TaskStatus::Completed);
+        assert_eq!(
+            task.data
+                .pointer("/aicc/status")
+                .and_then(|value| value.as_str()),
+            Some("succeeded")
+        );
+        assert_eq!(
+            task.data.get("rootid").and_then(|value| value.as_str()),
+            Some("aicc#default")
         );
     }
 
@@ -2444,6 +2528,71 @@ mod tests {
             })
             .expect("aicc task should exist");
         assert_eq!(task.parent_id, Some(parent_task.id));
+    }
+
+    #[tokio::test]
+    async fn complete_persists_rootid_and_session_id_from_request_options() {
+        let registry = Registry::default();
+        let catalog = ModelCatalog::default();
+        catalog.set_mapping(
+            Capability::LlmRouter,
+            "llm.plan.default",
+            "provider-a",
+            "gpt-4o-mini",
+        );
+        let provider = Arc::new(MockProvider::new(
+            mock_instance("provider-a-1", "provider-a"),
+            CostEstimate {
+                estimated_cost_usd: Some(0.001),
+                estimated_latency_ms: Some(120),
+            },
+            vec![Ok(ProviderStartResult::Started)],
+        ));
+        registry.add_provider(provider);
+
+        let center = center_with_taskmgr(registry, catalog);
+        let mut request = base_request();
+        if let Some(options) = request.payload.options.as_mut() {
+            if let Some(map) = options.as_object_mut() {
+                map.insert("session_id".to_string(), json!("session-xyz"));
+                map.insert("rootid".to_string(), json!("session-xyz"));
+            }
+        }
+
+        let response = center
+            .handle_complete(request, RPCContext::default())
+            .await
+            .expect("complete should succeed");
+        assert_eq!(response.status, CompleteStatus::Running);
+
+        let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
+        let tasks = taskmgr
+            .list_tasks(None, None, None)
+            .await
+            .expect("list tasks");
+        let task = tasks
+            .into_iter()
+            .find(|item| {
+                item.data
+                    .pointer("/aicc/external_task_id")
+                    .and_then(|value| value.as_str())
+                    == Some(response.task_id.as_str())
+            })
+            .expect("aicc task should exist");
+        assert_eq!(
+            task.data.get("rootid").and_then(|value| value.as_str()),
+            Some("session-xyz")
+        );
+        assert_eq!(
+            task.data.get("session_id").and_then(|value| value.as_str()),
+            Some("session-xyz")
+        );
+        assert_eq!(
+            task.data
+                .pointer("/aicc/rootid")
+                .and_then(|value| value.as_str()),
+            Some("session-xyz")
+        );
     }
 
     #[tokio::test]

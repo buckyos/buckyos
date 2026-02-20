@@ -1757,17 +1757,108 @@ impl TgTunnel {
             .unwrap_or_else(|| record.msg.from.clone())
     }
 
+    fn parse_chat_id_from_route_extra(extra: &Value) -> Option<String> {
+        let raw = extra
+            .pointer("/route/chat_id")
+            .or_else(|| extra.get("chat_id"))
+            .and_then(Self::json_value_to_chat_id)?;
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        Some(trimmed.to_string())
+    }
+
+    fn parse_chat_id_from_account_id(account_id: &str) -> Option<String> {
+        let trimmed = account_id.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        if Self::is_telegram_chat_id(trimmed) {
+            return Some(trimmed.to_string());
+        }
+
+        if let Some((_, tail)) = trimmed.split_once(':') {
+            let candidate = tail.trim();
+            if !candidate.is_empty() && Self::is_telegram_chat_id(candidate) {
+                return Some(candidate.to_string());
+            }
+        }
+        Self::parse_numeric_chat_id_tail(trimmed)
+    }
+
+    fn json_value_to_chat_id(value: &Value) -> Option<String> {
+        match value {
+            Value::String(text) => Some(text.to_string()),
+            Value::Number(number) => Some(number.to_string()),
+            _ => None,
+        }
+    }
+
+    fn is_telegram_chat_id(value: &str) -> bool {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        if GrammersTgGateway::username_from_chat_id(trimmed).is_some() {
+            return true;
+        }
+        trimmed.parse::<i64>().is_ok()
+    }
+
+    fn parse_numeric_chat_id_tail(value: &str) -> Option<String> {
+        let bytes = value.as_bytes();
+        if bytes.is_empty() {
+            return None;
+        }
+
+        let mut end = bytes.len();
+        while end > 0 && !bytes[end - 1].is_ascii_digit() {
+            end = end.saturating_sub(1);
+        }
+        if end == 0 {
+            return None;
+        }
+
+        let mut start = end;
+        while start > 0 && bytes[start - 1].is_ascii_digit() {
+            start = start.saturating_sub(1);
+        }
+        if start > 0 && bytes[start - 1] == b'-' {
+            start = start.saturating_sub(1);
+        }
+
+        let candidate = value[start..end].trim();
+        if candidate.is_empty() {
+            return None;
+        }
+        if candidate.parse::<i64>().is_ok() {
+            Some(candidate.to_string())
+        } else {
+            None
+        }
+    }
+
     fn build_egress_envelope(
         &self,
         record: &MsgRecordWithObject,
         binding: &TgBotBinding,
     ) -> TgEgressEnvelope {
         let sender_did = Self::resolve_sender_did(record);
-        let chat_id = record
-            .record
-            .route
-            .as_ref()
+        let route = record.record.route.as_ref();
+        let chat_id = route
             .and_then(|route| route.chat_id.clone())
+            .or_else(|| {
+                route
+                    .and_then(|route| route.extra.as_ref())
+                    .and_then(Self::parse_chat_id_from_route_extra)
+            })
+            .or_else(|| {
+                route
+                    .and_then(|route| route.account_id.as_deref())
+                    .and_then(Self::parse_chat_id_from_account_id)
+            })
             .or_else(|| binding.default_chat_id.clone());
 
         let (text, payload) = TgMessageConverter::msg_object_to_tg_content(&record.msg);

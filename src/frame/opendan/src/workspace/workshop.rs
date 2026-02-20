@@ -10,9 +10,7 @@ use tokio::time::{timeout, Duration, Instant};
 
 use super::todo::{TodoTool, TodoToolConfig, TOOL_TODO_MANAGE};
 use super::worklog::{WorklogTool, WorklogToolConfig, TOOL_WORKLOG_MANAGE};
-use crate::agent_tool::{
-    AgentTool, MCPToolConfig, ToolError, ToolManager, ToolSpec,
-};
+use crate::agent_tool::{AgentTool, MCPToolConfig, ToolError, ToolManager, ToolSpec};
 use crate::behavior::TraceCtx;
 
 pub const TOOL_EXEC_BASH: &str = "exec_bash";
@@ -197,8 +195,6 @@ impl AgentWorkshop {
         Ok(())
     }
 }
-
-
 
 #[derive(Clone, Debug)]
 struct ExecBashPolicy {

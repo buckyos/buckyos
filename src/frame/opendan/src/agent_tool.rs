@@ -370,11 +370,7 @@ impl ToolManager {
         specs
     }
 
-    pub async fn call_tool(
-        &self,
-        ctx: &TraceCtx,
-        call: ToolCall,
-    ) -> Result<Json, ToolError> {
+    pub async fn call_tool(&self, ctx: &TraceCtx, call: ToolCall) -> Result<Json, ToolError> {
         let Some(tool) = self.get_tool(&call.name) else {
             return Err(ToolError::NotFound(call.name));
         };

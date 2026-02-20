@@ -9,8 +9,8 @@ use ::kRPC::*;
 use anyhow::{Context, Result};
 use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AccountBinding,
-    BuckyOSRuntimeType, MsgCenterServerHandler, UserSettings, UserState, MSG_CENTER_SERVICE_NAME,
-    MSG_CENTER_SERVICE_PORT,
+    BoxKind, BuckyOSRuntimeType, DeliveryReportResult, MsgCenterClient, MsgCenterServerHandler,
+    MsgState, UserSettings, UserState, MSG_CENTER_SERVICE_NAME, MSG_CENTER_SERVICE_PORT,
 };
 use buckyos_kit::{get_buckyos_service_data_dir, init_logging};
 use bytes::Bytes;
@@ -32,7 +32,7 @@ use std::sync::Arc;
 
 use crate::contact_mgr::ZoneUserContactSeed;
 use crate::msg_center::MessageCenter;
-use crate::msg_tunnel::{MsgTunnel, MsgTunnelInstanceMgr};
+use crate::msg_tunnel::{MsgTunnel, MsgTunnelInstanceMgr, MsgTunnelInstanceState};
 use crate::tg_tunnel::{GrammersTgGatewayConfig, TgBotBinding, TgTunnel, TgTunnelConfig};
 
 const MSG_CENTER_HTTP_PATH: &str = "/kapi/msg-center";
@@ -42,6 +42,9 @@ const METHOD_RELOAD_SETTINGS: &str = "reload_settings";
 const METHOD_SERVICE_RELOAD_SETTINGS: &str = "service.reload_settings";
 const METHOD_REALOAD_SETTINGS: &str = "reaload_settings";
 const METHOD_SERVICE_REALOAD_SETTINGS: &str = "service.reaload_settings";
+const TUNNEL_EGRESS_IDLE_SLEEP_MS: u64 = 300;
+const TUNNEL_EGRESS_ERROR_SLEEP_MS: u64 = 1_000;
+const TUNNEL_EGRESS_RETRY_AFTER_MS: u64 = 2_000;
 
 #[derive(Debug, Clone, Default)]
 struct MsgCenterSettings {
@@ -299,6 +302,151 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+async fn pump_tunnel_egress_once(
+    msg_center: &MsgCenterClient,
+    tunnel_mgr: &MsgTunnelInstanceMgr,
+) -> Result<bool> {
+    let instances = tunnel_mgr
+        .list_instances()
+        .map_err(|err| anyhow::anyhow!("list tunnel instances failed: {}", err))?;
+    let mut worked = false;
+
+    for instance in instances {
+        if instance.state != MsgTunnelInstanceState::Running || !instance.supports_egress {
+            continue;
+        }
+
+        let tunnel_did = instance.tunnel_did.clone();
+        let maybe_record = msg_center
+            .get_next(
+                tunnel_did.clone(),
+                BoxKind::TunnelOutbox,
+                Some(vec![MsgState::Wait]),
+                Some(true),
+            )
+            .await
+            .map_err(|err| {
+                anyhow::anyhow!(
+                    "load tunnel outbox next record failed for {}: {}",
+                    tunnel_did.to_string(),
+                    err
+                )
+            })?;
+        let Some(record) = maybe_record else {
+            continue;
+        };
+        let record_id = record.record.record_id.clone();
+        if let Some(next_retry_at_ms) = record
+            .record
+            .delivery
+            .as_ref()
+            .and_then(|delivery| delivery.next_retry_at_ms)
+        {
+            if next_retry_at_ms > now_ms() {
+                let _ = msg_center
+                    .update_record_state(record_id.clone(), MsgState::Wait, None)
+                    .await;
+                continue;
+            }
+        }
+        worked = true;
+
+        match tunnel_mgr.send_record(record).await {
+            Ok(report) => {
+                let report_ok = report.ok;
+                if let Err(err) = msg_center.report_delivery(record_id.clone(), report).await {
+                    warn!(
+                        "msg-center tunnel egress report_delivery failed: tunnel={} record_id={} err={}",
+                        tunnel_did.to_string(),
+                        record_id,
+                        err
+                    );
+                    let _ = msg_center
+                        .update_record_state(
+                            record_id.clone(),
+                            MsgState::Wait,
+                            Some(format!("report_delivery_failed: {}", err)),
+                        )
+                        .await;
+                } else if report_ok {
+                    info!(
+                        "msg-center tunnel egress delivered: tunnel={} record_id={}",
+                        tunnel_did.to_string(),
+                        record_id
+                    );
+                } else {
+                    warn!(
+                        "msg-center tunnel egress reported failure: tunnel={} record_id={}",
+                        tunnel_did.to_string(),
+                        record_id
+                    );
+                }
+            }
+            Err(err) => {
+                let reason = err.to_string();
+                warn!(
+                    "msg-center tunnel egress send failed: tunnel={} record_id={} err={}",
+                    tunnel_did.to_string(),
+                    record_id,
+                    reason
+                );
+
+                let report = DeliveryReportResult {
+                    ok: false,
+                    error_message: Some(reason.clone()),
+                    retry_after_ms: Some(TUNNEL_EGRESS_RETRY_AFTER_MS),
+                    retryable: Some(true),
+                    ..Default::default()
+                };
+                if let Err(report_err) = msg_center.report_delivery(record_id.clone(), report).await
+                {
+                    warn!(
+                        "msg-center tunnel egress fallback report_delivery failed: tunnel={} record_id={} err={}",
+                        tunnel_did.to_string(),
+                        record_id,
+                        report_err
+                    );
+                    let _ = msg_center
+                        .update_record_state(
+                            record_id.clone(),
+                            MsgState::Wait,
+                            Some(format!("send_failed: {}", reason)),
+                        )
+                        .await;
+                }
+            }
+        }
+    }
+
+    Ok(worked)
+}
+
+fn start_tunnel_egress_worker(center: MessageCenter, tunnel_mgr: Arc<MsgTunnelInstanceMgr>) {
+    tokio::spawn(async move {
+        let msg_center = MsgCenterClient::new_in_process(Box::new(center));
+        info!("msg-center tunnel egress worker started");
+
+        loop {
+            match pump_tunnel_egress_once(&msg_center, tunnel_mgr.as_ref()).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        TUNNEL_EGRESS_IDLE_SLEEP_MS,
+                    ))
+                    .await;
+                }
+                Err(err) => {
+                    warn!("msg-center tunnel egress worker error: {}", err);
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        TUNNEL_EGRESS_ERROR_SLEEP_MS,
+                    ))
+                    .await;
+                }
+            }
+        }
+    });
 }
 
 fn build_zone_user_seed(username: &str, settings: UserSettings) -> Option<ZoneUserContactSeed> {
@@ -727,6 +875,7 @@ pub async fn start_msg_center_service() -> Result<()> {
     if let Err(error) = sync_zone_user_contacts_once(&center, &settings).await {
         warn!("zone-user sync failed during startup: {}", error);
     }
+    start_tunnel_egress_worker(center.clone(), tunnel_mgr.clone());
     let server = MsgCenterHttpServer::new(center, tunnel_mgr);
 
     let runner = Runner::new(MSG_CENTER_SERVICE_PORT);

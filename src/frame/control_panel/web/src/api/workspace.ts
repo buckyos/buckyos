@@ -787,11 +787,27 @@ const WORKSPACE_TASK_APP_ID = 'opendan-llm-behavior'
 const AGENT_RUN_CACHE_TTL_MS = 5000
 const RUN_WORKLOG_CACHE_TTL_MS = 5000
 const AGENT_SESSION_CACHE_TTL_MS = 5000
+const DISABLE_WORKSPACE_MOCK_DATA = ['1', 'true'].includes(
+  String(import.meta.env.VITE_CP_DISABLE_MOCK_DATA ?? '').toLowerCase(),
+)
 
 const agentRunCache = new Map<string, { at: number; data: AgentRunData }>()
 const runMetaCache = new Map<string, RunMeta>()
 const runWorklogCache = new Map<string, { at: number; logs: WsWorkLog[] }>()
 const agentSessionCache = new Map<string, { at: number; sessions: WsAgentSession[] }>()
+
+const resolveWorkspaceFallback = <T>(
+  apiName: string,
+  error: unknown,
+  mockData: T[],
+): { data: T[]; error: unknown } => {
+  if (DISABLE_WORKSPACE_MOCK_DATA) {
+    console.warn(`${apiName} failed, mock data disabled`, error)
+    return { data: [], error }
+  }
+  console.warn(`${apiName} failed, fallback to mock data`, error)
+  return { data: mockData, error }
+}
 
 const normalizeKey = (value: string): string => value.trim().toLowerCase().replace(/[\s-]+/g, '_')
 
@@ -1041,7 +1057,7 @@ const resolveTaskRunRef = (
   const parsed = parseRefFromAiccRequestId(task.data)
   if (parsed) return parsed
 
-  const firstParent = task.parent_id ?? task.root_id
+  const firstParent = task.parent_id ?? null
   if (firstParent == null) return undefined
 
   let cursor: number | null = firstParent
@@ -1062,7 +1078,7 @@ const resolveTaskRunRef = (
     }
     const parentParsed = parseRefFromAiccRequestId(parent.data)
     if (parentParsed) return parentParsed
-    cursor = parent.parent_id ?? parent.root_id
+    cursor = parent.parent_id ?? null
   }
 
   return undefined
@@ -1587,8 +1603,7 @@ export const fetchAgents = async (): Promise<{ data: WsAgent[] | null; error: un
     })
     return { data: result.items.map(mapOpenDanAgent), error: null }
   } catch (error) {
-    console.warn('fetchAgents failed, fallback to mock data', error)
-    return { data: mockAgents, error }
+    return resolveWorkspaceFallback('fetchAgents', error, mockAgents)
   }
 }
 
@@ -1599,8 +1614,7 @@ export const fetchAgentSessions = async (
     const sessions = await loadAgentSessions(agentId)
     return { data: sessions, error: null }
   } catch (error) {
-    console.warn('fetchAgentSessions failed, fallback to mock data', error)
-    return { data: mockAgentSessions[agentId] ?? [], error }
+    return resolveWorkspaceFallback('fetchAgentSessions', error, mockAgentSessions[agentId] ?? [])
   }
 }
 
@@ -1611,8 +1625,7 @@ export const fetchLoopRuns = async (
     const data = await loadAgentRunData(agentId)
     return { data: data.runs, error: null }
   } catch (error) {
-    console.warn('fetchLoopRuns failed, fallback to mock data', error)
-    return { data: mockLoopRuns[agentId] ?? [], error }
+    return resolveWorkspaceFallback('fetchLoopRuns', error, mockLoopRuns[agentId] ?? [])
   }
 }
 
@@ -1633,8 +1646,7 @@ export const fetchSteps = async (
     const steps = withStepLogCounts(baseSteps, runLogs)
     return { data: steps, error: null }
   } catch (error) {
-    console.warn('fetchSteps failed, fallback to mock data', error)
-    return { data: mockSteps[runId] ?? [], error }
+    return resolveWorkspaceFallback('fetchSteps', error, mockSteps[runId] ?? [])
   }
 }
 
@@ -1649,8 +1661,11 @@ export const fetchWsTasks = async (
     const tasks = runData.tasks_by_run.get(runId) ?? []
     return { data: applyTaskFilters(tasks, filters), error: null }
   } catch (error) {
-    console.warn('fetchWsTasks failed, fallback to mock data', error)
-    return { data: applyTaskFilters(mockTasks[runId] ?? [], filters), error }
+    return resolveWorkspaceFallback(
+      'fetchWsTasks',
+      error,
+      applyTaskFilters(mockTasks[runId] ?? [], filters),
+    )
   }
 }
 
@@ -1664,8 +1679,11 @@ export const fetchWorkLogs = async (
     const logs = await loadRunWorklogs(runMeta)
     return { data: applyWorkLogFilters(logs, filters), error: null }
   } catch (error) {
-    console.warn('fetchWorkLogs failed, fallback to mock data', error)
-    return { data: applyWorkLogFilters(mockWorkLogs[runId] ?? [], filters), error }
+    return resolveWorkspaceFallback(
+      'fetchWorkLogs',
+      error,
+      applyWorkLogFilters(mockWorkLogs[runId] ?? [], filters),
+    )
   }
 }
 
@@ -1684,8 +1702,7 @@ export const fetchTodos = async (
     })
     return { data: result.items.map((item) => mapOpenDanTodo(item, agentId)), error: null }
   } catch (error) {
-    console.warn('fetchTodos failed, fallback to mock data', error)
-    return { data: mockTodos[agentId] ?? [], error }
+    return resolveWorkspaceFallback('fetchTodos', error, mockTodos[agentId] ?? [])
   }
 }
 
@@ -1703,8 +1720,7 @@ export const fetchSubAgents = async (
       error: null,
     }
   } catch (error) {
-    console.warn('fetchSubAgents failed, fallback to mock data', error)
     const subs = mockAgents.filter((agent) => agent.parent_agent_id === agentId)
-    return { data: subs, error }
+    return resolveWorkspaceFallback('fetchSubAgents', error, subs)
   }
 }

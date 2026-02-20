@@ -109,7 +109,7 @@ pub struct Task {
     pub user_id: String,
     pub app_id: String,
     pub parent_id: Option<i64>,
-    pub root_id: Option<i64>,
+    pub root_id: String,
     pub name: String,
     pub task_type: String,
     pub status: TaskStatus,
@@ -125,7 +125,17 @@ pub struct Task {
 pub struct CreateTaskOptions {
     pub permissions: Option<TaskPermissions>,
     pub parent_id: Option<i64>,
+    pub root_id: Option<String>,
     pub priority: Option<u8>,
+}
+
+impl CreateTaskOptions {
+    pub fn with_root_id(root_id: String) -> Self {
+        Self {
+            root_id: Some(root_id),
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -134,7 +144,7 @@ pub struct TaskFilter {
     pub task_type: Option<String>,
     pub status: Option<TaskStatus>,
     pub parent_id: Option<i64>,
-    pub root_id: Option<i64>,
+    pub root_id: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -177,6 +187,8 @@ pub struct TaskManagerCreateTaskReq {
     #[serde(default)]
     pub parent_id: Option<i64>,
     #[serde(default)]
+    pub root_id: Option<String>,
+    #[serde(default)]
     pub priority: Option<u8>,
     #[serde(default)]
     pub user_id: String,
@@ -193,6 +205,7 @@ impl TaskManagerCreateTaskReq {
         data: Option<Value>,
         permissions: Option<TaskPermissions>,
         parent_id: Option<i64>,
+        root_id: Option<String>,
         priority: Option<u8>,
         user_id: String,
         app_id: String,
@@ -208,6 +221,7 @@ impl TaskManagerCreateTaskReq {
             data,
             permissions,
             parent_id,
+            root_id,
             priority,
             user_id,
             app_id,
@@ -250,7 +264,7 @@ pub struct TaskManagerListTasksReq {
     #[serde(default)]
     pub parent_id: Option<i64>,
     #[serde(default)]
-    pub root_id: Option<i64>,
+    pub root_id: Option<String>,
     #[serde(default)]
     pub source_user_id: Option<String>,
     #[serde(default)]
@@ -550,6 +564,7 @@ impl TaskManagerClient {
                     data,
                     opts.permissions,
                     opts.parent_id,
+                    opts.root_id,
                     opts.priority,
                     user_id.to_string(),
                     app_id.to_string(),
@@ -1067,6 +1082,7 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
                     data,
                     permissions,
                     parent_id,
+                    root_id,
                     priority,
                     user_id,
                     app_id,
@@ -1075,6 +1091,7 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
                 let opts = CreateTaskOptions {
                     permissions,
                     parent_id,
+                    root_id,
                     priority,
                 };
                 let task = self

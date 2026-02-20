@@ -36,7 +36,7 @@ impl TaskManagerHandler for MockTaskMgrHandler {
             user_id: user_id.to_string(),
             app_id: app_id.to_string(),
             parent_id: opts.parent_id,
-            root_id: None,
+            root_id: String::new(),
             name: name.to_string(),
             task_type: task_type.to_string(),
             status: TaskStatus::Pending,
@@ -92,7 +92,11 @@ impl TaskManagerHandler for MockTaskMgrHandler {
         Ok(vec![])
     }
 
-    async fn handle_get_subtasks(&self, _parent_id: i64, _ctx: RPCContext) -> KRPCResult<Vec<Task>> {
+    async fn handle_get_subtasks(
+        &self,
+        _parent_id: i64,
+        _ctx: RPCContext,
+    ) -> KRPCResult<Vec<Task>> {
         Ok(vec![])
     }
 
@@ -160,14 +164,24 @@ impl TaskManagerHandler for MockTaskMgrHandler {
         Ok(())
     }
 
-    async fn handle_update_task_data(&self, id: i64, data: Json, _ctx: RPCContext) -> KRPCResult<()> {
+    async fn handle_update_task_data(
+        &self,
+        id: i64,
+        data: Json,
+        _ctx: RPCContext,
+    ) -> KRPCResult<()> {
         if let Some(task) = self.tasks.lock().expect("tasks lock").get_mut(&id) {
             task.data = data;
         }
         Ok(())
     }
 
-    async fn handle_cancel_task(&self, _id: i64, _recursive: bool, _ctx: RPCContext) -> KRPCResult<()> {
+    async fn handle_cancel_task(
+        &self,
+        _id: i64,
+        _recursive: bool,
+        _ctx: RPCContext,
+    ) -> KRPCResult<()> {
         Ok(())
     }
 
