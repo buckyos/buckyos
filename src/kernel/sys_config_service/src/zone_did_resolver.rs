@@ -267,6 +267,53 @@ impl ZoneDidResolver {
         Ok((owner_config, obj_config_str))
     }
 
+    async fn load_agent_doc(&self, agent_id: &str) -> NSResult<(AgentDocument, String)> {
+        let obj_path = format!("agents/{}/doc", agent_id);
+        let store = SYS_STORE.lock().await;
+        let obj_config_str = store.get(obj_path.clone()).await.map_err(|e| {
+            warn!("ZoneDidResolver get {} failed: {}", obj_path, e);
+            NSError::Failed(format!("get {} failed: {}", obj_path, e))
+        })?;
+        drop(store);
+
+        let obj_config_str = obj_config_str
+            .ok_or_else(|| NSError::NotFound(format!("agent {} not found", agent_id)))?;
+
+        let encoded_doc = EncodedDocument::from_str(obj_config_str.clone()).map_err(|e| {
+            warn!("ZoneDidResolver parse agent config failed: {}", e);
+            NSError::Failed(format!("parse agent config failed: {}", e))
+        })?;
+        let agent_doc: AgentDocument = AgentDocument::decode(&encoded_doc, None).map_err(|e| {
+            warn!("ZoneDidResolver decode agent config failed: {}", e);
+            NSError::Failed(format!("decode agent config failed: {}", e))
+        })?;
+
+        Ok((agent_doc, obj_config_str))
+    }
+
+    async fn load_agent_doc_by_did(&self, did_str: &str) -> NSResult<(AgentDocument, String)> {
+        let did = DID::from_str(did_str)?;
+        let store = SYS_STORE.lock().await;
+        let agent_ids = store
+            .list_direct_children("agents".to_string())
+            .await
+            .map_err(|e| {
+                warn!("ZoneDidResolver list agents failed: {}", e);
+                NSError::Failed(format!("list agents failed: {}", e))
+            })?;
+        drop(store);
+
+        for agent_id in agent_ids {
+            if let Ok((agent_doc, obj_config_str)) = self.load_agent_doc(agent_id.as_str()).await {
+                if agent_doc.id == did {
+                    return Ok((agent_doc, obj_config_str));
+                }
+            }
+        }
+
+        Err(NSError::NotFound(format!("agent did {} not found", did_str)))
+    }
+
     async fn load_device_info(&self, name: &str) -> NSResult<DeviceInfo> {
         let obj_path = format!("devices/{}/info", name);
         let store = SYS_STORE.lock().await;
@@ -287,9 +334,18 @@ impl ZoneDidResolver {
 
     async fn do_query_did(&self, did_str: &str, typ: Option<String>) -> NSResult<String> {
         if DID::is_did(did_str) {
+            if let Ok((_agent_doc, obj_config_str)) = self.load_agent_doc_by_did(did_str).await {
+                info!(
+                    "zone_provider resolve Agent did {} => {}",
+                    did_str,
+                    obj_config_str.as_str()
+                );
+                return Ok(obj_config_str);
+            }
+
             if let Ok((_device_config, obj_config_str)) = self.load_device_doc(did_str).await {
                 info!(
-                    "zone_provider resolve did {} => {}",
+                    "zone_provider resolve Device did {} => {}",
                     did_str,
                     obj_config_str.as_str()
                 );
@@ -298,7 +354,7 @@ impl ZoneDidResolver {
 
             if let Ok((_owner_config, obj_config_str)) = self.load_owner_doc(did_str).await {
                 info!(
-                    "zone_provider resolve did {} => {}",
+                    "zone_provider resolve Owner did {} => {}",
                     did_str,
                     obj_config_str.as_str()
                 );
@@ -312,27 +368,19 @@ impl ZoneDidResolver {
                     let zone_config_str = self.load_zone_config_json().await?;
                     return Ok(zone_config_str);
                 }
-                // "this_device" => {
-                //     let device_config = CURRENT_DEVICE_CONFIG.get();
-                //     if device_config.is_none() {
-                //         return Err(NSError::NotFound("current device config not found".to_string()));
-                //     }
-                //     let device_config = device_config.unwrap();
-                //     return Ok(serde_json::to_string(&device_config).unwrap());
-                // },
-                // "owner" => {
-                //     // let owner_config = CURRENT_USER_CONFIG.get();
-                //     // if owner_config.is_none() {
-                //     //     return Err(NSError::NotFound("current owner config not found".to_string()));
-                //     // }
-                //     // let owner_config = owner_config.unwrap();
-                //     // return Ok(serde_json::to_string(&owner_config).unwrap());
-                //     unimplemented!()
-                // },
                 _ => {
                     if let Ok((_device_config, obj_config_str)) =
                         self.load_device_doc(did_str).await
                     {
+                        info!(
+                            "zone_provider resolve name {} => {}",
+                            did_str,
+                            obj_config_str.as_str()
+                        );
+                        return Ok(obj_config_str);
+                    }
+
+                    if let Ok((_agent_doc, obj_config_str)) = self.load_agent_doc(did_str).await {
                         info!(
                             "zone_provider resolve name {} => {}",
                             did_str,

@@ -22,7 +22,10 @@ use buckyos_kit::get_buckyos_root_dir;
 use jsonwebtoken::jwk::Jwk;
 use log::{debug, info, warn};
 use name_client::resolve_did;
-use name_lib::{OwnerConfig, VerifyHubInfo, ZoneBootConfig, ZoneConfig, DID};
+use name_lib::{
+    generate_ed25519_key_pair, AgentDocument, DID, OwnerConfig, VerifyHubInfo, ZoneBootConfig,
+    ZoneConfig,
+};
 use package_lib::PackageId;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -125,6 +128,39 @@ impl SystemConfigBuilder {
         let doc_value = app_doc.to_json_value()?;
         let app_doc = serde_json::from_value(doc_value)?;
         Ok(app_doc)
+    }
+
+    pub async fn add_default_agents(&mut self, config: &StartConfigSummary) -> Result<&mut Self> {
+        //add jarvis agent as default agent
+        // agents/jarvis/doc -> agent doc
+        let zone_did = DID::from_str(&config.zone_name)?;
+        let jarvis_did = DID::new(
+            zone_did.method.as_str(),
+            format!("jarvis.{}", zone_did.id.as_str()).as_str(),
+        );
+        let owner_did = DID::new("bns", &config.user_name);
+
+
+        let (jarvis_private_key_pem, jarvis_public_key_jwk) = generate_ed25519_key_pair();
+        let jarvis_public_key_jwk: Jwk = serde_json::from_value(jarvis_public_key_jwk)
+            .map_err(|e| anyhow!("invalid generated jarvis public key: {}", e))?;
+
+        let mut jarvis_doc = AgentDocument::new(jarvis_did, owner_did, jarvis_public_key_jwk);
+        jarvis_doc.public_description =
+            Some("Default built-in OpenDAN agent for BuckyOS".into());
+
+        self.insert_json("agents/jarvis/doc", &jarvis_doc)?;
+        self.entries
+            .insert("agents/jarvis/key".to_string(), jarvis_private_key_pem);
+    
+
+        // agents/jarvis/settings -> agent settings,
+        let jarvis_settings = json!({
+            "enabled": true,
+            "auto_start": true
+        });
+        self.insert_json_if_absent("agents/jarvis/settings", &jarvis_settings)?;
+        Ok(self)
     }
 
     pub async fn add_default_apps(&mut self, config: &StartConfigSummary) -> Result<&mut Self> {
@@ -477,6 +513,20 @@ impl SystemConfigBuilder {
         }
         self.insert_json(key, value)
     }
+}
+
+fn default_jarvis_agent_doc(config: &StartConfigSummary) -> Value {
+    let jarvis_did = config
+        .zone_name
+        .strip_prefix("did:web:")
+        .map(|zone_host| format!("did:web:jarvis.{zone_host}"))
+        .unwrap_or_else(|| "did:web:jarvis.test.buckyos.io".to_string());
+    json!({
+        "id": jarvis_did,
+        "name": "Jarvis",
+        "kind": "root-agent",
+        "description": "Default built-in OpenDAN agent for BuckyOS"
+    })
 }
 
 async fn build_kernel_service_spec(

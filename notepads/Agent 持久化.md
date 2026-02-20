@@ -121,8 +121,7 @@ data/$agent_name agent的数据目录
 - skills 目录，自演进后添加的skills,会覆盖安装目录的同名skill
 - enviroment 
   - workspace (准备好了以主机身份进行协作) 
-    - $project_name
-     
+    - $project_name 
   - todo  
   - tools 
   - worklog

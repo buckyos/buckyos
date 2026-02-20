@@ -130,6 +130,8 @@ async fn create_init_list_by_template(
         //.add_smb_service().await?
         .add_default_apps(&start_config)
         .await?
+        .add_default_agents(&start_config)
+        .await?
         .add_gateway_settings(&start_config)?
         .add_node(ood_name)?;
     let mut config = builder.build();
