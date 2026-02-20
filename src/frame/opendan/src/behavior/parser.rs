@@ -48,8 +48,17 @@ impl BehaviorResultParser {
     }
 
     fn from_json(value: Json) -> Result<(BehaviorLLMResult, LLMOutput), String> {
-        let mut result = serde_json::from_value::<BehaviorLLMResult>(value.clone())
-            .map_err(|err| format!("invalid behavior output schema: {err}"))?;
+        let mut result = match serde_json::from_value::<BehaviorLLMResult>(value.clone()) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                // Some stage behaviors (for example resolve_router) emit
+                // business-shaped JSON instead of BehaviorLLMResult.
+                if !contains_non_executor_fields(&value) {
+                    return Err(format!("invalid behavior output schema: {err}"));
+                }
+                BehaviorLLMResult::default()
+            }
+        };
 
         if result.actions.is_empty() {
             if let Some(actions_value) = value.get("actions") {
@@ -102,6 +111,27 @@ fn json_value_to_llm_output(value: Json) -> LLMOutput {
         Json::Null => LLMOutput::Json(Json::Null),
         other => LLMOutput::Json(other),
     }
+}
+
+fn contains_non_executor_fields(value: &Json) -> bool {
+    let Some(obj) = value.as_object() else {
+        return false;
+    };
+    obj.keys().any(|k| {
+        !matches!(
+            k.as_str(),
+            "next_behavior"
+                | "thinking"
+                | "reply"
+                | "tool_calls"
+                | "todo"
+                | "set_memory"
+                | "actions"
+                | "session_delta"
+                | "is_sleep"
+                | "output"
+        )
+    })
 }
 
 fn try_extract_json_block(content: &str) -> Option<String> {
@@ -260,6 +290,23 @@ mod tests {
         let (parsed, output) =
             BehaviorResultParser::parse_first(&raw, true).expect("behavior parse should work");
         assert_eq!(parsed.next_behavior.as_deref(), Some("END"));
+        assert_eq!(output, LLMOutput::Json(payload));
+    }
+
+    #[test]
+    fn parse_router_style_json_as_raw_output() {
+        let payload = json!({
+            "session_id": "session-router-1",
+            "new_session": null,
+            "next_behavior": "on_wakeup",
+            "memory_queries": ["project status", "todo follow-up"],
+            "reply": "收到，先整理项目状态。"
+        });
+        let raw = raw_response(&payload.to_string(), vec![]);
+
+        let (parsed, output) =
+            BehaviorResultParser::parse_first(&raw, true).expect("router-style parse should work");
+        assert_eq!(parsed.next_behavior.as_deref(), Some("on_wakeup"));
         assert_eq!(output, LLMOutput::Json(payload));
     }
 

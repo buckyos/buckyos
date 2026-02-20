@@ -2921,30 +2921,11 @@ limits:
         let responses = Arc::new(Mutex::new(VecDeque::from(vec![
             mocked_response(
                 json!({
-                    "is_sleep": true,
-                    "next_behavior": null,
-                    "actions": [],
-                    "output": {
-                        "action": "use_existing",
-                        "session_id": "session-router-1",
-                        "need_tools": true,
-                        "tool_calls": [{
-                            "name": TOOL_TODO_MANAGE,
-                            "args": {
-                                "action": "create",
-                                "title": "Router created todo",
-                                "description": "Created during router stage",
-                                "owner_session_id": null,
-                                "status": "in_progress",
-                                "priority": "high"
-                            },
-                            "call_id": "call-router-todo-create-1"
-                        }],
-                        "memory_queries": ["project status", "todo follow-up", "router query"],
-                        "workspace_need": "light",
-                        "immediate_reply": "收到，先整理项目状态。",
-                        "mode_hint": "on_wakeup"
-                    }
+                    "session_id": "session-router-1",
+                    "new_session": null,
+                    "next_behavior": "on_wakeup",
+                    "memory_queries": ["project status", "todo follow-up", "router query"],
+                    "reply": "收到，先整理项目状态。"
                 }),
                 21,
                 17,
@@ -3018,22 +2999,6 @@ limits:
             .await
             .expect("read staged artifact");
         assert!(artifact_content.contains("Staged Report"));
-
-        let todo_count = tokio::task::spawn_blocking({
-            let todo_db_path = agent_root.join("environment/todo/todo.db");
-            move || {
-                let conn = Connection::open(todo_db_path).expect("open todo db");
-                conn.query_row(
-                    "SELECT COUNT(1) FROM todos WHERE title = 'Router created todo'",
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )
-                .expect("query staged todo count")
-            }
-        })
-        .await
-        .expect("join staged todo query");
-        assert_eq!(todo_count, 1);
 
         let requests_guard = requests.lock().expect("requests lock");
         assert_eq!(requests_guard.len(), 2);

@@ -41,21 +41,11 @@
 #
 # Typical LLM return example (JSON only):
 # {
-#   "next_behavior": null,
-#   "thinking": "bind session and collect minimal context",
-#   "reply": [],
-#   "tool_calls": [],
-#   "todo": [],
-#   "set_memory": [],
-#   "actions": [],
-#   "session_delta": [],
-#   "output": {
-#     "session_id": "session-user-1",
-#     "new_session": null,
-#     "next_behavior": "on_wakeup",
-#     "memory_queries": ["project status", "todo follow-up"],
-#     "reply": "收到，先整理项目状态。"
-#   }
+#   "session_id": "session-user-1",
+#   "new_session": null,
+#   "next_behavior": "on_wakeup",
+#   "memory_queries": ["project status", "todo follow-up"],
+#   "reply": "收到，先整理项目状态。"
 # }
 
 process_rule: |
@@ -66,31 +56,21 @@ output_protocol:
   mode: json_v1
   text: |
     Return exactly one JSON object and no extra text.
-    Use this schema:
+    The JSON object must match ResolveRouterResult exactly:
     {
-      "next_behavior": "string|null",
-      "thinking": "string|null",
-      "reply": [],
-      "tool_calls": [
-        {
-          "name": "string",
-          "args": {},
-          "call_id": "string"
-        }
+      "session_id": "string|null (optional)",
+      "new_session": [
+        "title (string)",
+        "description (string)"
       ],
-      "todo": [],
-      "set_memory": [],
-      "actions": [],
-      "session_delta": [],
-      "output": {
-        "session_id": "string|null",
-        "new_session": ["string", "string"],
-        "next_behavior": "string|null",
-        "memory_queries": ["string"],
-        "reply": "string|null"
-      }
+      "next_behavior": "string|null (optional)",
+      "memory_queries": ["string", "..."],
+      "reply": "string|null (optional)"
     }
-    Keep "output" as an object even when some fields are null/empty.
+    Notes:
+    - If no new session is needed, set "new_session" to null.
+    - If no behavior switch is needed, set "next_behavior" to null.
+    - "memory_queries" should be an array; use [] when not needed.
 
 tools:
   mode: allow_list

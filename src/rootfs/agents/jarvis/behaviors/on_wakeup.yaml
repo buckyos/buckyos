@@ -78,18 +78,16 @@ output_protocol:
           "content": "string"
         }
       ],
-      "tool_calls": [
-        {
+      "todo": [],
+      "set_memory": [],
+      "actions": [{
           "name": "string",
           "args": {},
           "call_id": "string"
-        }
-      ],
-      "todo": [],
-      "set_memory": [],
-      "actions": [],
+        }],
       "session_delta": []
     }
+    Use provider-native tool calling protocol when tools are needed.
     Set "next_behavior" to "END" when this wakeup can stop.
 
 tools:
