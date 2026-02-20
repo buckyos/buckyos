@@ -726,14 +726,14 @@ process_rule: test_rule
             .data
             .get("rootid")
             .and_then(|value| value.as_str()),
-        Some("session-user-1")
+        Some("agent#default")
     );
     assert_eq!(
         behavior_task
             .data
             .get("session_id")
             .and_then(|value| value.as_str()),
-        Some("session-user-1")
+        None,
     );
 }
 

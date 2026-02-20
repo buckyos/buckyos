@@ -451,6 +451,26 @@ impl OpenDanGetSessionRecordReq {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenDanUpdateSessionStatusReq {
+    pub session_id: String,
+}
+
+impl OpenDanUpdateSessionStatusReq {
+    pub fn new(session_id: String) -> Self {
+        Self { session_id }
+    }
+
+    pub fn from_json(value: Value) -> Result<Self> {
+        serde_json::from_value(value).map_err(|error| {
+            RPCErrors::ParseRequestError(format!(
+                "Failed to parse OpenDanUpdateSessionStatusReq: {}",
+                error
+            ))
+        })
+    }
+}
+
 pub enum OpenDanClient {
     InProcess(Box<dyn OpenDanHandler>),
     KRPC(Box<kRPC>),
@@ -785,6 +805,56 @@ impl OpenDanClient {
             }
         }
     }
+
+    pub async fn pause_session(&self, session_id: &str) -> Result<OpenDanAgentSessionRecord> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler.handle_pause_session(session_id, ctx).await
+            }
+            Self::KRPC(client) => {
+                let req = OpenDanUpdateSessionStatusReq::new(session_id.to_string());
+                let req_json = serde_json::to_value(&req).map_err(|error| {
+                    RPCErrors::ReasonError(format!(
+                        "Failed to serialize OpenDanUpdateSessionStatusReq: {}",
+                        error
+                    ))
+                })?;
+                let result = client.call("pause_session", req_json).await?;
+                serde_json::from_value(result).map_err(|error| {
+                    RPCErrors::ParserResponseError(format!(
+                        "Failed to parse pause_session response: {}",
+                        error
+                    ))
+                })
+            }
+        }
+    }
+
+    pub async fn resume_session(&self, session_id: &str) -> Result<OpenDanAgentSessionRecord> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler.handle_resume_session(session_id, ctx).await
+            }
+            Self::KRPC(client) => {
+                let req = OpenDanUpdateSessionStatusReq::new(session_id.to_string());
+                let req_json = serde_json::to_value(&req).map_err(|error| {
+                    RPCErrors::ReasonError(format!(
+                        "Failed to serialize OpenDanUpdateSessionStatusReq: {}",
+                        error
+                    ))
+                })?;
+                let result = client.call("resume_session", req_json).await?;
+                serde_json::from_value(result).map_err(|error| {
+                    RPCErrors::ParserResponseError(format!(
+                        "Failed to parse resume_session response: {}",
+                        error
+                    ))
+                })
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -828,6 +898,18 @@ pub trait OpenDanHandler: Send + Sync {
     ) -> Result<OpenDanAgentSessionListResult>;
 
     async fn handle_get_session_record(
+        &self,
+        session_id: &str,
+        ctx: RPCContext,
+    ) -> Result<OpenDanAgentSessionRecord>;
+
+    async fn handle_pause_session(
+        &self,
+        session_id: &str,
+        ctx: RPCContext,
+    ) -> Result<OpenDanAgentSessionRecord>;
+
+    async fn handle_resume_session(
         &self,
         session_id: &str,
         ctx: RPCContext,
@@ -898,6 +980,22 @@ impl<T: OpenDanHandler> RPCHandler for OpenDanServerHandler<T> {
                 let result = self
                     .0
                     .handle_get_session_record(request.session_id.as_str(), ctx)
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            "pause_session" => {
+                let request = OpenDanUpdateSessionStatusReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_pause_session(request.session_id.as_str(), ctx)
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            "resume_session" => {
+                let request = OpenDanUpdateSessionStatusReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_resume_session(request.session_id.as_str(), ctx)
                     .await?;
                 RPCResult::Success(json!(result))
             }

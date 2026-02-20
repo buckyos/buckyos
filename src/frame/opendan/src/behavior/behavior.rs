@@ -20,6 +20,7 @@ use super::prompt::{ChatMessage, ChatRole, PromptBuilder, PromptPack};
 use super::sanitize::Sanitizer;
 use super::tool_loop::{self, ToolContext};
 use super::types::*;
+use crate::agent_session::TOOL_GET_SESSION;
 use crate::agent_tool::{ToolCall, ToolError, ToolManager, ToolSpec};
 use crate::ai_runtime::TOOL_CREATE_SUB_AGENT;
 use crate::workspace::{TOOL_TODO_MANAGE, TOOL_WORKLOG_MANAGE};
@@ -129,6 +130,8 @@ impl LLMBehavior {
                 model: self.cfg.model_policy.preferred.clone(),
             })
             .await;
+
+        self.ensure_session_normal_before_next_llm(input).await?;
 
         let (mut usage, first_resp, first_task_id) = match self
             .do_inference_once(
@@ -349,6 +352,8 @@ impl LLMBehavior {
                 observations: tool_observations,
             };
 
+            self.ensure_session_normal_before_next_llm(input).await?;
+
             let (usage2, followup_resp, followup_task_id) = match self
                 .do_inference_once(
                     input,
@@ -416,6 +421,64 @@ impl LLMBehavior {
             raw_output,
         };
         Ok((draft, tracking))
+    }
+
+    async fn ensure_session_normal_before_next_llm(
+        &self,
+        input: &BehaviorExecInput,
+    ) -> Result<(), LLMComputeError> {
+        let Some(session_id) = extract_session_id_for_task(input) else {
+            return Ok(());
+        };
+        if session_id.trim().is_empty() {
+            return Ok(());
+        }
+        if !self.deps.tools.has_tool(TOOL_GET_SESSION) {
+            return Ok(());
+        }
+
+        let call = ToolCall {
+            name: TOOL_GET_SESSION.to_string(),
+            call_id: format!("session-status-check-{}-{}", input.trace.step_idx, now_ms()),
+            args: json!({
+                "session_id": session_id
+            }),
+        };
+        let ctx = tool_loop::trace_to_tool_call_context(&input.trace);
+        let result = self.deps.tools.call_tool(&ctx, call).await;
+        let raw = match result {
+            Ok(raw) => raw,
+            Err(ToolError::InvalidArgs(msg))
+                if msg.to_ascii_lowercase().contains("session not found") =>
+            {
+                return Ok(());
+            }
+            Err(err) => {
+                return Err(LLMComputeError::Internal(format!(
+                    "session status check failed: {err}"
+                )));
+            }
+        };
+
+        let status = raw
+            .pointer("/session/status")
+            .and_then(|value| value.as_str())
+            .map(|value| value.trim().to_ascii_lowercase())
+            .unwrap_or_default();
+
+        if status == "normal" {
+            return Ok(());
+        }
+
+        if status.is_empty() {
+            return Err(LLMComputeError::Internal(
+                "session status check failed: missing session.status".to_string(),
+            ));
+        }
+
+        Err(LLMComputeError::Internal(format!(
+            "user canceled: session is `{status}`"
+        )))
     }
 
     async fn create_behavior_task(
@@ -1088,7 +1151,11 @@ async fn append_todo_or_subagent_worklog(
 }
 
 fn extract_session_id_for_task(input: &BehaviorExecInput) -> Option<String> {
-    if let Some(value) = input.session_id.as_deref().and_then(normalize_non_empty_str) {
+    if let Some(value) = input
+        .session_id
+        .as_deref()
+        .and_then(normalize_non_empty_str)
+    {
         return Some(value);
     }
 

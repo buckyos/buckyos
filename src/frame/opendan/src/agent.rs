@@ -2879,6 +2879,7 @@ mod tests {
     use tokio::fs;
 
     use super::*;
+    use crate::agent_session::{TOOL_CREATE_SESSION, TOOL_UPDATE_SESSION};
     use crate::test_utils::{MockAicc, MockTaskMgrHandler};
     use crate::workspace::{TOOL_EXEC_BASH, TOOL_TODO_MANAGE};
 
@@ -3391,5 +3392,122 @@ limits:
 
         let requests_guard = requests.lock().expect("requests lock");
         assert_eq!(requests_guard.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn ai_agent_stops_next_llm_when_session_paused_by_tool_call() {
+        let tmp = tempdir().expect("create tmpdir");
+        let agent_root = tmp.path().join("jarvis");
+        write_agent_fixture(&agent_root).await;
+
+        fs::write(
+            agent_root.join("behaviors/resolve_router.yaml"),
+            r#"
+process_rule: test_rule
+limits:
+  max_tool_rounds: 0
+  max_tool_calls_per_round: 0
+  deadline_ms: 60000
+"#,
+        )
+        .await
+        .expect("write resolve_router yaml");
+
+        fs::write(
+            agent_root.join("behaviors/on_wakeup.yaml"),
+            r#"
+process_rule: test_rule
+tools:
+  mode: allow_list
+  names:
+    - create_session
+    - update_session
+limits:
+  max_tool_rounds: 2
+  max_tool_calls_per_round: 4
+  deadline_ms: 60000
+"#,
+        )
+        .await
+        .expect("write on_wakeup yaml");
+
+        let requests = Arc::new(Mutex::new(Vec::<CompleteRequest>::new()));
+        let responses = Arc::new(Mutex::new(VecDeque::from(vec![
+            mocked_response(
+                json!({
+                    "session_id": "session-pause-1",
+                    "new_session": null,
+                    "next_behavior": "on_wakeup",
+                    "memory_queries": [],
+                    "reply": null
+                }),
+                10,
+                6,
+            ),
+            mocked_response(
+                json!({
+                    "tool_calls": [
+                        {
+                            "name": TOOL_CREATE_SESSION,
+                            "args": {
+                                "session_id": "session-pause-1",
+                                "owner_agent": "did:example:jarvis",
+                                "title": "pause session",
+                                "summary": "",
+                                "status": "normal"
+                            },
+                            "call_id": "call-create-session"
+                        },
+                        {
+                            "name": TOOL_UPDATE_SESSION,
+                            "args": {
+                                "session_id": "session-pause-1",
+                                "status": "pause"
+                            },
+                            "call_id": "call-pause-session"
+                        }
+                    ]
+                }),
+                14,
+                8,
+            ),
+        ])));
+
+        let deps = AIAgentDeps {
+            taskmgr: Arc::new(TaskManagerClient::new_in_process(Box::new(
+                MockTaskMgrHandler {
+                    counter: Mutex::new(0),
+                    tasks: Arc::new(Mutex::new(HashMap::new())),
+                },
+            ))),
+            aicc: Arc::new(AiccClient::new_in_process(Box::new(MockAicc {
+                responses,
+                requests: requests.clone(),
+            }))),
+            msg_center: None,
+        };
+
+        let agent = AIAgent::load(AIAgentConfig::new(&agent_root), deps)
+            .await
+            .expect("load ai agent");
+        agent
+            .push_inbox_message(json!({
+                "from": "did:example:alice",
+                "text": "请暂停本会话",
+                "session_id": "session-pause-1"
+            }))
+            .await;
+
+        let report = agent.wait_wakeup(None).await.expect("run paused wakeup");
+        assert!(matches!(report.status, WakeupStatus::Error));
+        assert_eq!(report.steps, 0);
+        assert!(report
+            .last_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("user canceled"));
+
+        let requests_guard = requests.lock().expect("requests lock");
+        assert_eq!(requests_guard.len(), 2);
     }
 }

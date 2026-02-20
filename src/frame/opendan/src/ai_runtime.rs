@@ -36,11 +36,14 @@ const DEFAULT_SELF_FILE: &str = "self.md";
 const DEFAULT_WORKSPACE_BINDINGS_FILE: &str = "bindings.json";
 const DEFAULT_AGENT_SESSIONS_DIR: &str = "session";
 const DEFAULT_AGENT_SESSION_FILE_NAME: &str = "session.json";
+const DEFAULT_AGENT_SESSION_DB_FILE_NAME: &str = "sessions.db";
 const DEFAULT_SUB_AGENT_ROLE: &str = "# Role\nYou are a specialized sub-agent.\n";
 const DEFAULT_SUB_AGENT_SELF: &str = "# Self\n- Follow parent constraints\n- Keep output concise\n";
 const DEFAULT_KRPC_LIST_LIMIT: usize = 64;
 const MAX_KRPC_LIST_LIMIT: usize = 512;
 const MAX_SESSION_ID_LEN: usize = 180;
+const SESSION_STATUS_NORMAL: &str = "normal";
+const SESSION_STATUS_PAUSE: &str = "pause";
 const ACTIVE_WINDOW_MS: u64 = 120_000;
 
 #[derive(thiserror::Error, Debug)]
@@ -575,6 +578,34 @@ impl OpenDanRuntimeKrpcHandler {
             .ok_or_else(|| RPCErrors::ReasonError(format!("agent not found: {agent_id}")))
     }
 
+    async fn update_session_status(
+        &self,
+        session_id: &str,
+        status: &str,
+    ) -> KRPCResult<OpenDanAgentSessionRecord> {
+        let session_id = sanitize_session_id_for_path(session_id)?;
+        let session_id_for_update = session_id.clone();
+        let status = status.to_string();
+        let runtime_cfg = self.runtime.cfg.clone();
+        let agents = self
+            .runtime
+            .scan_agents()
+            .await
+            .map_err(runtime_error_to_rpc)?;
+        task::spawn_blocking(move || {
+            update_agent_session_status_globally_sync(
+                &runtime_cfg,
+                agents.as_slice(),
+                session_id_for_update.as_str(),
+                status.as_str(),
+            )
+        })
+        .await
+        .map_err(|error| {
+            RPCErrors::ReasonError(format!("update session status join failed: {error}"))
+        })?
+    }
+
     async fn to_agent_info(&self, agent: &RuntimeAgentInfo) -> OpenDanAgentInfo {
         let agent_root = PathBuf::from(&agent.root);
         let workspace_root = workspace_root_from_agent_root(&self.runtime.cfg, &agent_root);
@@ -907,8 +938,8 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
             .scan_agents()
             .await
             .map_err(runtime_error_to_rpc)?;
-        let matched_path = task::spawn_blocking(move || {
-            find_session_record_path_sync(
+        task::spawn_blocking(move || {
+            load_agent_session_record_globally_sync(
                 &runtime_cfg,
                 agents.as_slice(),
                 session_id_for_search.as_str(),
@@ -916,16 +947,26 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
         })
         .await
         .map_err(|error| {
-            RPCErrors::ReasonError(format!("find session record path join failed: {error}"))
-        })??;
-
-        task::spawn_blocking(move || {
-            load_agent_session_record_sync(matched_path.as_path(), session_id.as_str())
-        })
-        .await
-        .map_err(|error| {
             RPCErrors::ReasonError(format!("get session record join failed: {error}"))
         })?
+    }
+
+    async fn handle_pause_session(
+        &self,
+        session_id: &str,
+        _ctx: RPCContext,
+    ) -> KRPCResult<OpenDanAgentSessionRecord> {
+        self.update_session_status(session_id, SESSION_STATUS_PAUSE)
+            .await
+    }
+
+    async fn handle_resume_session(
+        &self,
+        session_id: &str,
+        _ctx: RPCContext,
+    ) -> KRPCResult<OpenDanAgentSessionRecord> {
+        self.update_session_status(session_id, SESSION_STATUS_NORMAL)
+            .await
     }
 }
 
@@ -1292,6 +1333,76 @@ fn list_agent_session_ids_sync(
         return Ok((vec![], 0));
     }
 
+    if let Some(result) = list_agent_session_ids_from_db_sync(sessions_dir, limit, offset)? {
+        return Ok(result);
+    }
+    list_agent_session_ids_from_legacy_files_sync(sessions_dir, limit, offset)
+}
+
+fn list_agent_session_ids_from_db_sync(
+    sessions_dir: &Path,
+    limit: usize,
+    offset: usize,
+) -> KRPCResult<Option<(Vec<String>, u64)>> {
+    let db_path = sessions_dir.join(DEFAULT_AGENT_SESSION_DB_FILE_NAME);
+    if !db_path.is_file() {
+        return Ok(None);
+    }
+
+    let conn = Connection::open(&db_path).map_err(|error| {
+        RPCErrors::ReasonError(format!(
+            "open session db `{}` failed: {error}",
+            db_path.display()
+        ))
+    })?;
+    if !has_table(&conn, "agent_sessions")? {
+        return Ok(None);
+    }
+
+    let total = conn
+        .query_row("SELECT COUNT(*) FROM agent_sessions", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map_err(|error| {
+            RPCErrors::ReasonError(format!("query session count from sqlite failed: {error}"))
+        })?
+        .max(0) as u64;
+
+    let limit_i64 = i64::try_from(limit)
+        .map_err(|_| RPCErrors::ReasonError(format!("limit too large: {limit}")))?;
+    let offset_i64 = i64::try_from(offset)
+        .map_err(|_| RPCErrors::ReasonError(format!("cursor offset too large: {offset}")))?;
+
+    let mut stmt = conn
+        .prepare("SELECT session_id FROM agent_sessions ORDER BY session_id ASC LIMIT ?1 OFFSET ?2")
+        .map_err(|error| {
+            RPCErrors::ReasonError(format!("prepare session list sqlite query failed: {error}"))
+        })?;
+    let rows = stmt
+        .query_map(params![limit_i64, offset_i64], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|error| {
+            RPCErrors::ReasonError(format!("query session ids from sqlite failed: {error}"))
+        })?;
+
+    let mut items = Vec::<String>::new();
+    for row in rows {
+        let session_id = row.map_err(|error| {
+            RPCErrors::ReasonError(format!("decode session sqlite row failed: {error}"))
+        })?;
+        if sanitize_session_id_for_path(session_id.as_str()).is_ok() {
+            items.push(session_id);
+        }
+    }
+    Ok(Some((items, total)))
+}
+
+fn list_agent_session_ids_from_legacy_files_sync(
+    sessions_dir: &Path,
+    limit: usize,
+    offset: usize,
+) -> KRPCResult<(Vec<String>, u64)> {
     let mut ids = Vec::<String>::new();
     let read_dir = std::fs::read_dir(sessions_dir).map_err(|error| {
         RPCErrors::ReasonError(format!(
@@ -1337,21 +1448,18 @@ fn list_agent_session_ids_sync(
     Ok((items, total))
 }
 
-fn find_session_record_path_sync(
+fn load_agent_session_record_globally_sync(
     runtime_cfg: &AiRuntimeConfig,
     agents: &[RuntimeAgentInfo],
     session_id: &str,
-) -> KRPCResult<PathBuf> {
-    let mut matched = Vec::<PathBuf>::new();
+) -> KRPCResult<OpenDanAgentSessionRecord> {
+    let mut matched = Vec::<OpenDanAgentSessionRecord>::new();
     for agent in agents {
         let workspace_root =
             workspace_root_from_agent_root(runtime_cfg, Path::new(agent.root.as_str()));
-        let candidate = workspace_root
-            .join(DEFAULT_AGENT_SESSIONS_DIR)
-            .join(session_id)
-            .join(DEFAULT_AGENT_SESSION_FILE_NAME);
-        if candidate.is_file() {
-            matched.push(candidate);
+        if let Some(record) = load_agent_session_record_for_agent_sync(&workspace_root, session_id)?
+        {
+            matched.push(record);
             if matched.len() > 1 {
                 break;
             }
@@ -1362,11 +1470,236 @@ fn find_session_record_path_sync(
         0 => Err(RPCErrors::ReasonError(format!(
             "session not found: {session_id}"
         ))),
-        1 => Ok(matched.remove(0)),
+        1 => Ok(matched.swap_remove(0)),
         _ => Err(RPCErrors::ReasonError(format!(
             "duplicate session_id detected (expected globally unique): {session_id}"
         ))),
     }
+}
+
+fn load_agent_session_record_for_agent_sync(
+    workspace_root: &Path,
+    session_id: &str,
+) -> KRPCResult<Option<OpenDanAgentSessionRecord>> {
+    let sessions_dir = workspace_root.join(DEFAULT_AGENT_SESSIONS_DIR);
+    if !sessions_dir.exists() {
+        return Ok(None);
+    }
+
+    if let Some(record) = load_agent_session_record_from_db_sync(&sessions_dir, session_id)? {
+        return Ok(Some(record));
+    }
+
+    let legacy_file = sessions_dir
+        .join(session_id)
+        .join(DEFAULT_AGENT_SESSION_FILE_NAME);
+    if !legacy_file.is_file() {
+        return Ok(None);
+    }
+    load_agent_session_record_sync(legacy_file.as_path(), session_id).map(Some)
+}
+
+fn update_agent_session_status_globally_sync(
+    runtime_cfg: &AiRuntimeConfig,
+    agents: &[RuntimeAgentInfo],
+    session_id: &str,
+    status: &str,
+) -> KRPCResult<OpenDanAgentSessionRecord> {
+    let mut matched_workspaces = Vec::<PathBuf>::new();
+    for agent in agents {
+        let workspace_root =
+            workspace_root_from_agent_root(runtime_cfg, Path::new(agent.root.as_str()));
+        if load_agent_session_record_for_agent_sync(&workspace_root, session_id)?.is_some() {
+            matched_workspaces.push(workspace_root);
+            if matched_workspaces.len() > 1 {
+                break;
+            }
+        }
+    }
+
+    match matched_workspaces.len() {
+        0 => Err(RPCErrors::ReasonError(format!(
+            "session not found: {session_id}"
+        ))),
+        1 => update_agent_session_status_for_agent_sync(
+            matched_workspaces[0].as_path(),
+            session_id,
+            status,
+        )?
+        .ok_or_else(|| {
+            RPCErrors::ReasonError(format!(
+                "session not found when updating status: {session_id}"
+            ))
+        }),
+        _ => Err(RPCErrors::ReasonError(format!(
+            "duplicate session_id detected (expected globally unique): {session_id}"
+        ))),
+    }
+}
+
+fn update_agent_session_status_for_agent_sync(
+    workspace_root: &Path,
+    session_id: &str,
+    status: &str,
+) -> KRPCResult<Option<OpenDanAgentSessionRecord>> {
+    let sessions_dir = workspace_root.join(DEFAULT_AGENT_SESSIONS_DIR);
+    if !sessions_dir.exists() {
+        return Ok(None);
+    }
+
+    if let Some(record) = update_agent_session_status_in_db_sync(&sessions_dir, session_id, status)?
+    {
+        return Ok(Some(record));
+    }
+
+    update_agent_session_status_in_legacy_file_sync(&sessions_dir, session_id, status)
+}
+
+fn update_agent_session_status_in_db_sync(
+    sessions_dir: &Path,
+    session_id: &str,
+    status: &str,
+) -> KRPCResult<Option<OpenDanAgentSessionRecord>> {
+    let db_path = sessions_dir.join(DEFAULT_AGENT_SESSION_DB_FILE_NAME);
+    if !db_path.is_file() {
+        return Ok(None);
+    }
+
+    let conn = Connection::open(&db_path).map_err(|error| {
+        RPCErrors::ReasonError(format!(
+            "open session db `{}` failed: {error}",
+            db_path.display()
+        ))
+    })?;
+    if !has_table(&conn, "agent_sessions")? {
+        return Ok(None);
+    }
+
+    let ts = i64::try_from(now_ms())
+        .map_err(|_| RPCErrors::ReasonError("timestamp overflow".to_string()))?;
+    let changed = conn
+        .execute(
+            "UPDATE agent_sessions
+             SET status = ?2, updated_at_ms = ?3, last_activity_ms = ?3
+             WHERE session_id = ?1",
+            params![session_id, status, ts],
+        )
+        .map_err(|error| {
+            RPCErrors::ReasonError(format!("update session status in sqlite failed: {error}"))
+        })?;
+    if changed == 0 {
+        return Ok(None);
+    }
+
+    let Some(mut record) = load_agent_session_record_from_db_sync(sessions_dir, session_id)? else {
+        return Err(RPCErrors::ReasonError(format!(
+            "session updated but failed to reload from sqlite: {session_id}"
+        )));
+    };
+    record.status = status.to_string();
+    Ok(Some(record))
+}
+
+fn update_agent_session_status_in_legacy_file_sync(
+    sessions_dir: &Path,
+    session_id: &str,
+    status: &str,
+) -> KRPCResult<Option<OpenDanAgentSessionRecord>> {
+    let session_file = sessions_dir
+        .join(session_id)
+        .join(DEFAULT_AGENT_SESSION_FILE_NAME);
+    if !session_file.is_file() {
+        return Ok(None);
+    }
+
+    let mut record = load_agent_session_record_sync(&session_file, session_id)?;
+    let ts = now_ms();
+    record.status = status.to_string();
+    record.updated_at_ms = ts;
+    record.last_activity_ms = ts;
+
+    let serialized = serde_json::to_vec_pretty(&record).map_err(|error| {
+        RPCErrors::ReasonError(format!(
+            "serialize session `{}` failed: {error}",
+            session_file.display()
+        ))
+    })?;
+    std::fs::write(&session_file, serialized).map_err(|error| {
+        RPCErrors::ReasonError(format!(
+            "write session `{}` failed: {error}",
+            session_file.display()
+        ))
+    })?;
+    Ok(Some(record))
+}
+
+fn load_agent_session_record_from_db_sync(
+    sessions_dir: &Path,
+    session_id: &str,
+) -> KRPCResult<Option<OpenDanAgentSessionRecord>> {
+    let db_path = sessions_dir.join(DEFAULT_AGENT_SESSION_DB_FILE_NAME);
+    if !db_path.is_file() {
+        return Ok(None);
+    }
+
+    let conn = Connection::open(&db_path).map_err(|error| {
+        RPCErrors::ReasonError(format!(
+            "open session db `{}` failed: {error}",
+            db_path.display()
+        ))
+    })?;
+    if !has_table(&conn, "agent_sessions")? {
+        return Ok(None);
+    }
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT owner_agent, title, summary, status, created_at_ms, updated_at_ms, last_activity_ms, links_json, tags_json, meta_json
+             FROM agent_sessions
+             WHERE session_id = ?1
+             LIMIT 1",
+        )
+        .map_err(|error| {
+            RPCErrors::ReasonError(format!("prepare session sqlite lookup failed: {error}"))
+        })?;
+    let mut rows = stmt.query(params![session_id]).map_err(|error| {
+        RPCErrors::ReasonError(format!("query session sqlite lookup failed: {error}"))
+    })?;
+
+    let Some(row) = rows.next().map_err(|error| {
+        RPCErrors::ReasonError(format!("read session sqlite row failed: {error}"))
+    })?
+    else {
+        return Ok(None);
+    };
+
+    let links_json: String = row.get(7).unwrap_or_else(|_| "[]".to_string());
+    let tags_json: String = row.get(8).unwrap_or_else(|_| "[]".to_string());
+    let meta_json: String = row.get(9).unwrap_or_else(|_| "{}".to_string());
+    let links = serde_json::from_str(&links_json).unwrap_or_default();
+    let tags = serde_json::from_str(&tags_json).unwrap_or_default();
+    let mut meta = serde_json::from_str::<Json>(&meta_json).unwrap_or_else(|_| json!({}));
+    if !meta.is_object() {
+        meta = json!({});
+    }
+
+    Ok(Some(OpenDanAgentSessionRecord {
+        session_id: session_id.to_string(),
+        owner_agent: row.get(0).unwrap_or_default(),
+        title: row
+            .get::<_, String>(1)
+            .unwrap_or_else(|_| "Untitled Session".to_string()),
+        summary: row.get(2).unwrap_or_default(),
+        status: row
+            .get::<_, String>(3)
+            .unwrap_or_else(|_| "active".to_string()),
+        created_at_ms: row.get::<_, i64>(4).unwrap_or(0).max(0) as u64,
+        updated_at_ms: row.get::<_, i64>(5).unwrap_or(0).max(0) as u64,
+        last_activity_ms: row.get::<_, i64>(6).unwrap_or(0).max(0) as u64,
+        links,
+        tags,
+        meta,
+    }))
 }
 
 fn load_agent_session_record_sync(
@@ -1905,6 +2238,57 @@ mod tests {
         .expect("write session record");
     }
 
+    async fn write_session_record_sqlite(
+        agent_root: &Path,
+        session_id: &str,
+        owner_agent: &str,
+        title: &str,
+        last_activity_ms: u64,
+    ) {
+        let sessions_root = agent_root
+            .join(DEFAULT_ENVIRONMENT_DIR)
+            .join(DEFAULT_AGENT_SESSIONS_DIR);
+        let session_dir = sessions_root.join(session_id);
+        fs::create_dir_all(&session_dir)
+            .await
+            .expect("create sqlite session dir");
+        let db_path = sessions_root.join(DEFAULT_AGENT_SESSION_DB_FILE_NAME);
+
+        let session_id = session_id.to_string();
+        let owner_agent = owner_agent.to_string();
+        let title = title.to_string();
+        task::spawn_blocking(move || {
+            let conn = Connection::open(&db_path).expect("open session sqlite db");
+            conn.execute_batch(
+                r#"
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    session_id TEXT PRIMARY KEY,
+    owner_agent TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at_ms INTEGER NOT NULL DEFAULT 0,
+    updated_at_ms INTEGER NOT NULL DEFAULT 0,
+    last_activity_ms INTEGER NOT NULL DEFAULT 0,
+    links_json TEXT NOT NULL DEFAULT '[]',
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    meta_json TEXT NOT NULL DEFAULT '{}'
+);
+"#,
+            )
+            .expect("ensure sqlite session schema");
+            conn.execute(
+                "INSERT OR REPLACE INTO agent_sessions (
+                    session_id, owner_agent, title, summary, status, created_at_ms, updated_at_ms, last_activity_ms, links_json, tags_json, meta_json
+                 ) VALUES (?1, ?2, ?3, '', 'active', 1, 2, ?4, '[]', '[]', '{}')",
+                params![session_id, owner_agent, title, last_activity_ms as i64],
+            )
+            .expect("insert sqlite session record");
+        })
+        .await
+        .expect("join sqlite session writer");
+    }
+
     fn call_ctx(agent_did: &str) -> TraceCtx {
         TraceCtx {
             trace_id: "trace-1".to_string(),
@@ -2112,6 +2496,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn opendan_handler_reads_sessions_from_sqlite_with_empty_session_dirs() {
+        let tmp = tempdir().expect("create tempdir");
+        let agents_root = tmp.path().join("agents");
+        let agent_root = agents_root.join("jarvis");
+        let did = "did:test:jarvis";
+
+        write_agent_doc(&agent_root, did).await;
+        write_session_record_sqlite(&agent_root, "session-c", did, "Session C", 30).await;
+        write_session_record_sqlite(&agent_root, "session-a", did, "Session A", 10).await;
+        write_session_record_sqlite(&agent_root, "session-b", did, "Session B", 20).await;
+
+        let runtime = Arc::new(
+            AiRuntime::new(AiRuntimeConfig::new(&agents_root))
+                .await
+                .expect("create runtime"),
+        );
+        let handler = OpenDanRuntimeKrpcHandler::new(runtime);
+
+        let list = handler
+            .handle_list_agent_sessions(
+                OpenDanListAgentSessionsReq::new(did.to_string(), Some(10), None),
+                RPCContext::default(),
+            )
+            .await
+            .expect("list sessions from sqlite");
+        assert_eq!(list.items, vec!["session-a", "session-b", "session-c"]);
+        assert_eq!(list.total, Some(3));
+
+        let got = handler
+            .handle_get_session_record("session-b", RPCContext::default())
+            .await
+            .expect("get sqlite session");
+        assert_eq!(got.session_id, "session-b");
+        assert_eq!(got.owner_agent, did);
+        assert_eq!(got.title, "Session B");
+    }
+
+    #[tokio::test]
     async fn opendan_handler_can_get_session_record() {
         let tmp = tempdir().expect("create tempdir");
         let agents_root = tmp.path().join("agents");
@@ -2146,6 +2568,42 @@ mod tests {
             .handle_get_session_record("../bad", RPCContext::default())
             .await;
         assert!(invalid.is_err());
+    }
+
+    #[tokio::test]
+    async fn opendan_handler_can_pause_and_resume_session() {
+        let tmp = tempdir().expect("create tempdir");
+        let agents_root = tmp.path().join("agents");
+        let agent_root = agents_root.join("jarvis");
+        let did = "did:test:jarvis";
+
+        write_agent_doc(&agent_root, did).await;
+        write_session_record_sqlite(&agent_root, "session-001", did, "Primary Session", 88).await;
+
+        let runtime = Arc::new(
+            AiRuntime::new(AiRuntimeConfig::new(&agents_root))
+                .await
+                .expect("create runtime"),
+        );
+        let handler = OpenDanRuntimeKrpcHandler::new(runtime);
+
+        let paused = handler
+            .handle_pause_session("session-001", RPCContext::default())
+            .await
+            .expect("pause session");
+        assert_eq!(paused.status, "pause");
+
+        let resumed = handler
+            .handle_resume_session("session-001", RPCContext::default())
+            .await
+            .expect("resume session");
+        assert_eq!(resumed.status, "normal");
+
+        let reloaded = handler
+            .handle_get_session_record("session-001", RPCContext::default())
+            .await
+            .expect("get session after resume");
+        assert_eq!(reloaded.status, "normal");
     }
 
     #[tokio::test]

@@ -49,7 +49,7 @@ pub struct BehaviorExecInput {
     pub trace: TraceCtx,
     pub role_md: String,
     pub self_md: String,
-    pub session_id:Option<String>,
+    pub session_id: Option<String>,
     pub behavior_prompt: String,
     pub env_context: Vec<EnvKV>,
     pub inbox: InboxPack,

@@ -6,9 +6,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use buckyos_api::{BoxKind, MsgCenterClient};
 use name_lib::DID;
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
-use tokio::fs;
+use tokio::{fs, task};
 
 use crate::agent_tool::{AgentTool, ToolError, ToolManager, ToolSpec};
 use crate::behavior::TraceCtx;
@@ -23,11 +24,15 @@ pub const TOOL_LOAC_CHAT_HISTORY_ALIAS: &str = "loac_chat_history";
 
 const DEFAULT_SESSIONS_DIR_REL_PATH: &str = "session";
 const DEFAULT_SESSION_FILE_NAME: &str = "session.json";
+const DEFAULT_SESSION_DB_FILE_NAME: &str = "sessions.db";
 const DEFAULT_LIST_LIMIT: usize = 20;
 const DEFAULT_MAX_LIST_LIMIT: usize = 200;
 const DEFAULT_CHAT_LIMIT: usize = 32;
 const DEFAULT_CHAT_TOKEN_LIMIT: u32 = 2_000;
-const DEFAULT_SESSION_STATUS: &str = "active";
+const DEFAULT_SESSION_STATUS: &str = "normal";
+const SESSION_STATUS_NORMAL: &str = "normal";
+const SESSION_STATUS_PAUSE: &str = "pause";
+const SESSION_STATUS_ARCHIVE: &str = "archive";
 const MAX_SESSION_ID_LEN: usize = 180;
 const MAX_TITLE_LEN: usize = 200;
 const MAX_SUMMARY_LEN: usize = 4_000;
@@ -39,6 +44,7 @@ pub struct AgentSessionConfig {
     pub agent_root: PathBuf,
     pub sessions_dir_rel_path: PathBuf,
     pub session_file_name: String,
+    pub session_db_file_name: String,
     pub default_list_limit: usize,
     pub max_list_limit: usize,
     pub default_chat_limit: usize,
@@ -51,6 +57,7 @@ impl AgentSessionConfig {
             agent_root: agent_root.into(),
             sessions_dir_rel_path: PathBuf::from(DEFAULT_SESSIONS_DIR_REL_PATH),
             session_file_name: DEFAULT_SESSION_FILE_NAME.to_string(),
+            session_db_file_name: DEFAULT_SESSION_DB_FILE_NAME.to_string(),
             default_list_limit: DEFAULT_LIST_LIMIT,
             max_list_limit: DEFAULT_MAX_LIST_LIMIT,
             default_chat_limit: DEFAULT_CHAT_LIMIT,
@@ -63,6 +70,7 @@ impl AgentSessionConfig {
 pub struct AgentSession {
     cfg: AgentSessionConfig,
     sessions_dir: PathBuf,
+    sessions_db_path: PathBuf,
     msg_center: Option<Arc<MsgCenterClient>>,
 }
 
@@ -90,6 +98,10 @@ impl AgentSession {
             cfg.session_file_name = DEFAULT_SESSION_FILE_NAME.to_string();
         }
         ensure_safe_file_name(cfg.session_file_name.as_str())?;
+        if cfg.session_db_file_name.trim().is_empty() {
+            cfg.session_db_file_name = DEFAULT_SESSION_DB_FILE_NAME.to_string();
+        }
+        ensure_safe_file_name(cfg.session_db_file_name.as_str())?;
 
         let agent_root = normalize_root(&cfg.agent_root).await?;
         cfg.agent_root = agent_root.clone();
@@ -98,15 +110,69 @@ impl AgentSession {
             .await
             .map_err(|err| ToolError::ExecFailed(format!("create session dir failed: {err}")))?;
 
-        Ok(Self {
+        let sessions_db_path = sessions_dir.join(cfg.session_db_file_name.as_str());
+        let store = Self {
             cfg,
             sessions_dir,
+            sessions_db_path,
             msg_center,
-        })
+        };
+        store.ensure_db_ready().await?;
+        store.migrate_legacy_session_files().await?;
+        Ok(store)
     }
 
     pub fn sessions_dir(&self) -> &Path {
         &self.sessions_dir
+    }
+
+    async fn run_db<F, T>(&self, op_name: &str, op: F) -> Result<T, ToolError>
+    where
+        F: FnOnce(&Connection) -> Result<T, ToolError> + Send + 'static,
+        T: Send + 'static,
+    {
+        let db_path = self.sessions_db_path.clone();
+        task::spawn_blocking(move || {
+            let conn = Connection::open(&db_path).map_err(|err| {
+                ToolError::ExecFailed(format!(
+                    "open session db `{}` failed: {err}",
+                    db_path.display()
+                ))
+            })?;
+            ensure_session_schema(&conn)?;
+            op(&conn)
+        })
+        .await
+        .map_err(|err| ToolError::ExecFailed(format!("{op_name} join error: {err}")))?
+    }
+
+    async fn ensure_db_ready(&self) -> Result<(), ToolError> {
+        self.run_db("ensure session db schema", |_| Ok(())).await
+    }
+
+    async fn migrate_legacy_session_files(&self) -> Result<(), ToolError> {
+        let sessions_dir = self.sessions_dir.clone();
+        let legacy_file_name = self.cfg.session_file_name.clone();
+        self.run_db("migrate legacy session files", move |conn| {
+            migrate_legacy_session_files_sync(conn, &sessions_dir, legacy_file_name.as_str())
+        })
+        .await
+    }
+
+    fn session_dir_path(&self, session_id: &str) -> Result<PathBuf, ToolError> {
+        let session_id = sanitize_session_id(session_id)?;
+        Ok(self.sessions_dir.join(session_id))
+    }
+
+    async fn ensure_session_dir(&self, session_id: &str) -> Result<(), ToolError> {
+        let path = self.session_dir_path(session_id)?;
+        fs::create_dir_all(&path).await.map_err(|err| {
+            ToolError::ExecFailed(format!(
+                "create session dir `{}` failed: {err}",
+                path.display()
+            ))
+        })?;
+        Ok(())
     }
 
     pub fn register_tools(&self, tool_mgr: &ToolManager) -> Result<(), ToolError> {
@@ -162,14 +228,7 @@ impl AgentSession {
             Self::generate_session_id(req.id_prefix.as_deref())
         };
         let owner_agent = sanitize_non_empty(req.owner_agent.as_str(), "owner_agent")?;
-
-        let session_file_path = self.session_file_path(session_id.as_str())?;
-        if fs::try_exists(&session_file_path).await.unwrap_or(false) {
-            return Err(ToolError::AlreadyExists(format!(
-                "session `{session_id}` already exists"
-            )));
-        }
-        ensure_parent_dir(&session_file_path).await?;
+        self.ensure_session_dir(session_id.as_str()).await?;
 
         let ts = now_ms();
         let mut links = Vec::<SessionLink>::new();
@@ -196,7 +255,17 @@ impl AgentSession {
             tags,
             meta,
         };
-        self.save_session(&record).await?;
+        let record_for_insert = record.clone();
+        self.run_db("create session", move |conn| {
+            if session_exists(conn, record_for_insert.session_id.as_str())? {
+                return Err(ToolError::AlreadyExists(format!(
+                    "session `{}` already exists",
+                    record_for_insert.session_id
+                )));
+            }
+            upsert_session(conn, &record_for_insert)
+        })
+        .await?;
         Ok(record)
     }
 
@@ -205,41 +274,10 @@ impl AgentSession {
         session_id: impl AsRef<str>,
     ) -> Result<Option<AgentSessionRecord>, ToolError> {
         let session_id = sanitize_session_id(session_id.as_ref())?;
-        let path = self.session_file_path(session_id.as_str())?;
-        if !fs::try_exists(&path).await.unwrap_or(false) {
-            return Ok(None);
-        }
-        let raw = fs::read_to_string(&path).await.map_err(|err| {
-            ToolError::ExecFailed(format!("read session `{}` failed: {err}", path.display()))
-        })?;
-        let mut session: AgentSessionRecord = serde_json::from_str(&raw).map_err(|err| {
-            ToolError::ExecFailed(format!("parse session `{}` failed: {err}", path.display()))
-        })?;
-        session.session_id = session_id;
-        session.owner_agent = sanitize_non_empty(session.owner_agent.as_str(), "owner_agent")
-            .unwrap_or_else(|_| "unknown".to_string());
-        session.title =
-            sanitize_title(session.title).unwrap_or_else(|_| "Untitled Session".to_string());
-        session.summary = sanitize_summary(session.summary).unwrap_or_default();
-        session.status = normalize_status(session.status.as_str())
-            .unwrap_or_else(|_| DEFAULT_SESSION_STATUS.to_string());
-        session.tags = normalize_tags(session.tags);
-        session.links = session
-            .links
-            .into_iter()
-            .filter_map(|link| normalize_session_link(link).ok())
-            .collect();
-        session.meta = normalize_meta(session.meta);
-        if session.created_at_ms == 0 {
-            session.created_at_ms = now_ms();
-        }
-        if session.updated_at_ms == 0 {
-            session.updated_at_ms = session.created_at_ms;
-        }
-        if session.last_activity_ms == 0 {
-            session.last_activity_ms = session.updated_at_ms;
-        }
-        Ok(Some(session))
+        self.run_db("load session", move |conn| {
+            get_session_by_id(conn, session_id.as_str())
+        })
+        .await
     }
 
     pub async fn list_sessions(
@@ -248,50 +286,10 @@ impl AgentSession {
         include_deleted: bool,
     ) -> Result<Vec<AgentSessionRecord>, ToolError> {
         let limit = limit.clamp(1, self.cfg.max_list_limit);
-        let mut sessions = Vec::<AgentSessionRecord>::new();
-
-        let mut read_dir = fs::read_dir(&self.sessions_dir).await.map_err(|err| {
-            ToolError::ExecFailed(format!(
-                "read sessions dir `{}` failed: {err}",
-                self.sessions_dir.display()
-            ))
-        })?;
-        while let Some(entry) = read_dir
-            .next_entry()
-            .await
-            .map_err(|err| ToolError::ExecFailed(format!("iterate sessions dir failed: {err}")))?
-        {
-            let file_type = entry.file_type().await.map_err(|err| {
-                ToolError::ExecFailed(format!(
-                    "read entry type `{}` failed: {err}",
-                    entry.path().display()
-                ))
-            })?;
-            if !file_type.is_dir() {
-                continue;
-            }
-            let Some(raw_id) = entry.file_name().to_str().map(str::to_string) else {
-                continue;
-            };
-            let Ok(session_id) = sanitize_session_id(raw_id.as_str()) else {
-                continue;
-            };
-            if let Some(session) = self.load_session(session_id.as_str()).await? {
-                if !include_deleted && session.status == "deleted" {
-                    continue;
-                }
-                sessions.push(session);
-            }
-        }
-
-        sessions.sort_by(|a, b| {
-            b.last_activity_ms
-                .cmp(&a.last_activity_ms)
-                .then_with(|| b.updated_at_ms.cmp(&a.updated_at_ms))
-                .then_with(|| a.session_id.cmp(&b.session_id))
-        });
-        sessions.truncate(limit);
-        Ok(sessions)
+        self.run_db("list sessions", move |conn| {
+            list_sessions_from_db(conn, limit, include_deleted)
+        })
+        .await
     }
 
     pub async fn update_session(
@@ -435,22 +433,10 @@ impl AgentSession {
     }
 
     async fn save_session(&self, session: &AgentSessionRecord) -> Result<(), ToolError> {
-        let path = self.session_file_path(session.session_id.as_str())?;
-        ensure_parent_dir(&path).await?;
-        let serialized = serde_json::to_vec_pretty(session)
-            .map_err(|err| ToolError::ExecFailed(format!("serialize session failed: {err}")))?;
-        fs::write(&path, serialized).await.map_err(|err| {
-            ToolError::ExecFailed(format!("write session `{}` failed: {err}", path.display()))
-        })?;
-        Ok(())
-    }
-
-    fn session_file_path(&self, session_id: &str) -> Result<PathBuf, ToolError> {
-        let session_id = sanitize_session_id(session_id)?;
-        Ok(self
-            .sessions_dir
-            .join(session_id)
-            .join(self.cfg.session_file_name.as_str()))
+        self.ensure_session_dir(session.session_id.as_str()).await?;
+        let session = session.clone();
+        self.run_db("save session", move |conn| upsert_session(conn, &session))
+            .await
     }
 
     async fn load_chat_history(
@@ -626,7 +612,9 @@ impl AgentTool for ListSessionsTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_LIST_SESSIONS.to_string(),
-            description: "List session objects under agent/session directory.".to_string(),
+            description:
+                "List session objects from SQLite (session directory kept for discoverability)."
+                    .to_string(),
             args_schema: json!({
                 "type":"object",
                 "properties": {
@@ -1003,9 +991,12 @@ fn sanitize_summary(summary: String) -> Result<String, ToolError> {
 fn normalize_status(status: &str) -> Result<String, ToolError> {
     let normalized = status.trim().to_ascii_lowercase();
     match normalized.as_str() {
-        "active" | "archived" | "deleted" => Ok(normalized),
+        SESSION_STATUS_NORMAL | SESSION_STATUS_PAUSE | SESSION_STATUS_ARCHIVE => Ok(normalized),
+        // Legacy states mapping for backward compatibility.
+        "active" => Ok(SESSION_STATUS_NORMAL.to_string()),
+        "archived" | "deleted" => Ok(SESSION_STATUS_ARCHIVE.to_string()),
         _ => Err(ToolError::InvalidArgs(format!(
-            "unsupported status `{status}`"
+            "unsupported status `{status}` (supported: normal, pause, archive)"
         ))),
     }
 }
@@ -1142,6 +1133,266 @@ fn apply_token_budget(items: Vec<Json>, token_limit: u32) -> (Vec<Json>, u32, bo
     (selected, used_tokens, truncated)
 }
 
+fn ensure_session_schema(conn: &Connection) -> Result<(), ToolError> {
+    conn.execute_batch(
+        r#"
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    session_id TEXT PRIMARY KEY,
+    owner_agent TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'normal',
+    created_at_ms INTEGER NOT NULL DEFAULT 0,
+    updated_at_ms INTEGER NOT NULL DEFAULT 0,
+    last_activity_ms INTEGER NOT NULL DEFAULT 0,
+    links_json TEXT NOT NULL DEFAULT '[]',
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    meta_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_last_activity
+    ON agent_sessions(last_activity_ms DESC, updated_at_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_status
+    ON agent_sessions(status, last_activity_ms DESC);
+"#,
+    )
+    .map_err(|err| ToolError::ExecFailed(format!("ensure session schema failed: {err}")))?;
+    Ok(())
+}
+
+fn session_exists(conn: &Connection, session_id: &str) -> Result<bool, ToolError> {
+    let mut stmt = conn
+        .prepare("SELECT 1 FROM agent_sessions WHERE session_id = ?1 LIMIT 1")
+        .map_err(|err| ToolError::ExecFailed(format!("prepare session exists failed: {err}")))?;
+    let mut rows = stmt
+        .query(params![session_id])
+        .map_err(|err| ToolError::ExecFailed(format!("query session exists failed: {err}")))?;
+    Ok(rows
+        .next()
+        .map_err(|err| ToolError::ExecFailed(format!("read session exists row failed: {err}")))?
+        .is_some())
+}
+
+fn upsert_session(conn: &Connection, session: &AgentSessionRecord) -> Result<(), ToolError> {
+    let links_json = serde_json::to_string(&session.links)
+        .map_err(|err| ToolError::ExecFailed(format!("serialize session links failed: {err}")))?;
+    let tags_json = serde_json::to_string(&session.tags)
+        .map_err(|err| ToolError::ExecFailed(format!("serialize session tags failed: {err}")))?;
+    let meta_json = serde_json::to_string(&session.meta)
+        .map_err(|err| ToolError::ExecFailed(format!("serialize session meta failed: {err}")))?;
+    conn.execute(
+        r#"
+INSERT INTO agent_sessions (
+    session_id,
+    owner_agent,
+    title,
+    summary,
+    status,
+    created_at_ms,
+    updated_at_ms,
+    last_activity_ms,
+    links_json,
+    tags_json,
+    meta_json
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+ON CONFLICT(session_id) DO UPDATE SET
+    owner_agent = excluded.owner_agent,
+    title = excluded.title,
+    summary = excluded.summary,
+    status = excluded.status,
+    created_at_ms = excluded.created_at_ms,
+    updated_at_ms = excluded.updated_at_ms,
+    last_activity_ms = excluded.last_activity_ms,
+    links_json = excluded.links_json,
+    tags_json = excluded.tags_json,
+    meta_json = excluded.meta_json
+"#,
+        params![
+            session.session_id,
+            session.owner_agent,
+            session.title,
+            session.summary,
+            session.status,
+            u64_to_i64(session.created_at_ms),
+            u64_to_i64(session.updated_at_ms),
+            u64_to_i64(session.last_activity_ms),
+            links_json,
+            tags_json,
+            meta_json,
+        ],
+    )
+    .map_err(|err| ToolError::ExecFailed(format!("upsert session failed: {err}")))?;
+    Ok(())
+}
+
+fn get_session_by_id(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Option<AgentSessionRecord>, ToolError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT session_id, owner_agent, title, summary, status, created_at_ms, updated_at_ms, last_activity_ms, links_json, tags_json, meta_json
+             FROM agent_sessions
+             WHERE session_id = ?1
+             LIMIT 1",
+        )
+        .map_err(|err| ToolError::ExecFailed(format!("prepare get session failed: {err}")))?;
+    let mut rows = stmt
+        .query(params![session_id])
+        .map_err(|err| ToolError::ExecFailed(format!("query get session failed: {err}")))?;
+    if let Some(row) = rows
+        .next()
+        .map_err(|err| ToolError::ExecFailed(format!("read get session row failed: {err}")))?
+    {
+        return map_session_row(row)
+            .map(Some)
+            .map_err(|err| ToolError::ExecFailed(format!("decode session row failed: {err}")));
+    }
+    Ok(None)
+}
+
+fn list_sessions_from_db(
+    conn: &Connection,
+    limit: usize,
+    include_deleted: bool,
+) -> Result<Vec<AgentSessionRecord>, ToolError> {
+    let mut sql = String::from(
+        "SELECT session_id, owner_agent, title, summary, status, created_at_ms, updated_at_ms, last_activity_ms, links_json, tags_json, meta_json
+         FROM agent_sessions",
+    );
+    if !include_deleted {
+        sql.push_str(" WHERE status NOT IN ('archive', 'archived', 'deleted')");
+    }
+    sql.push_str(" ORDER BY last_activity_ms DESC, updated_at_ms DESC, session_id ASC LIMIT ?1");
+
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|err| ToolError::ExecFailed(format!("prepare list sessions failed: {err}")))?;
+    let rows = stmt
+        .query_map(params![usize_to_i64(limit, "limit")?], map_session_row)
+        .map_err(|err| ToolError::ExecFailed(format!("query list sessions failed: {err}")))?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(
+            row.map_err(|err| ToolError::ExecFailed(format!("decode session row failed: {err}")))?,
+        );
+    }
+    Ok(out)
+}
+
+fn map_session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentSessionRecord> {
+    let session_id: String = row.get(0)?;
+    let links_json: String = row.get(8)?;
+    let tags_json: String = row.get(9)?;
+    let meta_json: String = row.get(10)?;
+    let mut session = AgentSessionRecord {
+        session_id,
+        owner_agent: row.get(1)?,
+        title: row.get(2)?,
+        summary: row.get(3)?,
+        status: row.get(4)?,
+        created_at_ms: row.get::<_, i64>(5).map_or(0, |v| v.max(0) as u64),
+        updated_at_ms: row.get::<_, i64>(6).map_or(0, |v| v.max(0) as u64),
+        last_activity_ms: row.get::<_, i64>(7).map_or(0, |v| v.max(0) as u64),
+        links: serde_json::from_str::<Vec<SessionLink>>(&links_json).unwrap_or_default(),
+        tags: serde_json::from_str::<Vec<String>>(&tags_json).unwrap_or_default(),
+        meta: serde_json::from_str::<Json>(&meta_json).unwrap_or_else(|_| default_json_object()),
+    };
+    normalize_session_record_in_place(&mut session);
+    Ok(session)
+}
+
+fn migrate_legacy_session_files_sync(
+    conn: &Connection,
+    sessions_dir: &Path,
+    session_file_name: &str,
+) -> Result<(), ToolError> {
+    let read_dir = match std::fs::read_dir(sessions_dir) {
+        Ok(read_dir) => read_dir,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(ToolError::ExecFailed(format!(
+                "read sessions dir `{}` failed: {err}",
+                sessions_dir.display()
+            )));
+        }
+    };
+
+    for entry in read_dir {
+        let entry = entry.map_err(|err| {
+            ToolError::ExecFailed(format!(
+                "iterate sessions dir `{}` failed: {err}",
+                sessions_dir.display()
+            ))
+        })?;
+        let file_type = entry.file_type().map_err(|err| {
+            ToolError::ExecFailed(format!(
+                "read session dir entry type `{}` failed: {err}",
+                entry.path().display()
+            ))
+        })?;
+        if !file_type.is_dir() {
+            continue;
+        }
+        let Some(raw_session_id) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let Ok(session_id) = sanitize_session_id(raw_session_id.as_str()) else {
+            continue;
+        };
+        if session_exists(conn, session_id.as_str())? {
+            continue;
+        }
+
+        let session_file = entry.path().join(session_file_name);
+        if !session_file.is_file() {
+            continue;
+        }
+
+        let raw = std::fs::read_to_string(&session_file).map_err(|err| {
+            ToolError::ExecFailed(format!(
+                "read legacy session `{}` failed: {err}",
+                session_file.display()
+            ))
+        })?;
+        let mut record = serde_json::from_str::<AgentSessionRecord>(&raw).map_err(|err| {
+            ToolError::ExecFailed(format!(
+                "parse legacy session `{}` failed: {err}",
+                session_file.display()
+            ))
+        })?;
+        record.session_id = session_id;
+        normalize_session_record_in_place(&mut record);
+        upsert_session(conn, &record)?;
+    }
+    Ok(())
+}
+
+fn normalize_session_record_in_place(session: &mut AgentSessionRecord) {
+    session.owner_agent = sanitize_non_empty(session.owner_agent.as_str(), "owner_agent")
+        .unwrap_or_else(|_| "unknown".to_string());
+    session.title =
+        sanitize_title(session.title.clone()).unwrap_or_else(|_| "Untitled Session".to_string());
+    session.summary = sanitize_summary(session.summary.clone()).unwrap_or_default();
+    session.status = normalize_status(session.status.as_str())
+        .unwrap_or_else(|_| DEFAULT_SESSION_STATUS.to_string());
+    session.tags = normalize_tags(std::mem::take(&mut session.tags));
+    session.links = std::mem::take(&mut session.links)
+        .into_iter()
+        .filter_map(|link| normalize_session_link(link).ok())
+        .collect();
+    session.meta = normalize_meta(std::mem::take(&mut session.meta));
+    if session.created_at_ms == 0 {
+        session.created_at_ms = now_ms();
+    }
+    if session.updated_at_ms == 0 {
+        session.updated_at_ms = session.created_at_ms;
+    }
+    if session.last_activity_ms == 0 {
+        session.last_activity_ms = session.updated_at_ms;
+    }
+}
+
 fn ensure_safe_file_name(file_name: &str) -> Result<(), ToolError> {
     let file_name = file_name.trim();
     if file_name.is_empty() {
@@ -1196,24 +1447,23 @@ fn resolve_relative_path(root: &Path, rel_path: &Path) -> Result<PathBuf, ToolEr
     Ok(root.join(rel_path))
 }
 
-async fn ensure_parent_dir(path: &Path) -> Result<(), ToolError> {
-    let Some(parent) = path.parent() else {
-        return Ok(());
-    };
-    fs::create_dir_all(parent).await.map_err(|err| {
-        ToolError::ExecFailed(format!(
-            "create parent dir `{}` failed: {err}",
-            parent.display()
-        ))
-    })?;
-    Ok(())
-}
-
 fn now_ms() -> u64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => duration.as_millis().min(u128::from(u64::MAX)) as u64,
         Err(_) => 0,
     }
+}
+
+fn u64_to_i64(v: u64) -> i64 {
+    if v > i64::MAX as u64 {
+        i64::MAX
+    } else {
+        v as i64
+    }
+}
+
+fn usize_to_i64(v: usize, field: &str) -> Result<i64, ToolError> {
+    i64::try_from(v).map_err(|_| ToolError::InvalidArgs(format!("arg `{field}` is too large")))
 }
 
 fn require_string(args: &Json, key: &str) -> Result<String, ToolError> {
@@ -1335,6 +1585,7 @@ mod tests {
     use crate::agent_tool::ToolCall;
     use crate::behavior::TraceCtx;
     use tempfile::tempdir;
+    use tokio::fs;
 
     fn test_ctx() -> TraceCtx {
         TraceCtx {
@@ -1415,6 +1666,21 @@ mod tests {
 
         let list = store.list_sessions(10, false).await.expect("list sessions");
         assert_eq!(list.len(), 2);
+
+        let main_dir = store.sessions_dir().join("session-main");
+        let sub_dir = store.sessions_dir().join("session-sub");
+        assert!(fs::try_exists(&main_dir)
+            .await
+            .expect("check main session dir"));
+        assert!(fs::try_exists(&sub_dir)
+            .await
+            .expect("check sub session dir"));
+        assert!(!fs::try_exists(main_dir.join(DEFAULT_SESSION_FILE_NAME))
+            .await
+            .expect("check legacy session file absence"));
+        assert!(!fs::try_exists(sub_dir.join(DEFAULT_SESSION_FILE_NAME))
+            .await
+            .expect("check legacy session file absence"));
     }
 
     #[tokio::test]
@@ -1433,6 +1699,143 @@ mod tests {
             .await
             .expect_err("invalid session id should fail");
         assert!(matches!(err, ToolError::InvalidArgs(_)));
+    }
+
+    #[tokio::test]
+    async fn session_status_accepts_new_values_and_maps_legacy_values() {
+        let tmp = tempdir().expect("create tempdir");
+        let store = AgentSession::new(AgentSessionConfig::new(tmp.path()), None)
+            .await
+            .expect("create session store");
+
+        let s_normal = store
+            .create_session(CreateSessionRequest {
+                session_id: Some("session-normal".to_string()),
+                owner_agent: "did:example:agent".to_string(),
+                ..Default::default()
+            })
+            .await
+            .expect("create normal session");
+        assert_eq!(s_normal.status, "normal");
+
+        let s_pause = store
+            .create_session(CreateSessionRequest {
+                session_id: Some("session-pause".to_string()),
+                owner_agent: "did:example:agent".to_string(),
+                status: Some("pause".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("create pause session");
+        assert_eq!(s_pause.status, "pause");
+
+        let s_archive = store
+            .create_session(CreateSessionRequest {
+                session_id: Some("session-archive".to_string()),
+                owner_agent: "did:example:agent".to_string(),
+                status: Some("archive".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("create archive session");
+        assert_eq!(s_archive.status, "archive");
+
+        let s_legacy = store
+            .create_session(CreateSessionRequest {
+                session_id: Some("session-legacy".to_string()),
+                owner_agent: "did:example:agent".to_string(),
+                status: Some("active".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("create legacy status session");
+        assert_eq!(s_legacy.status, "normal");
+
+        let updated = store
+            .update_session(UpdateSessionPatch {
+                session_id: "session-legacy".to_string(),
+                status: Some("deleted".to_string()),
+                touch_activity: true,
+                ..Default::default()
+            })
+            .await
+            .expect("update legacy status");
+        assert_eq!(updated.status, "archive");
+
+        let visible = store.list_sessions(10, false).await.expect("list visible");
+        assert_eq!(visible.len(), 2);
+        assert!(visible
+            .iter()
+            .all(|item| item.status == "normal" || item.status == "pause"));
+
+        let all = store.list_sessions(10, true).await.expect("list all");
+        assert_eq!(all.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn legacy_session_file_migrated_once_then_db_is_source_of_truth() {
+        let tmp = tempdir().expect("create tempdir");
+        let sessions_dir = tmp.path().join(DEFAULT_SESSIONS_DIR_REL_PATH);
+        let legacy_dir = sessions_dir.join("session-legacy");
+        fs::create_dir_all(&legacy_dir)
+            .await
+            .expect("create legacy session dir");
+        fs::write(
+            legacy_dir.join(DEFAULT_SESSION_FILE_NAME),
+            json!({
+                "session_id": "session-legacy",
+                "owner_agent": "did:example:agent",
+                "title": "Legacy Title",
+                "summary": "legacy summary",
+                "status": "normal",
+                "created_at_ms": 1,
+                "updated_at_ms": 2,
+                "last_activity_ms": 3,
+                "links": [],
+                "tags": [],
+                "meta": {}
+            })
+            .to_string(),
+        )
+        .await
+        .expect("write legacy file");
+
+        let store = AgentSession::new(AgentSessionConfig::new(tmp.path()), None)
+            .await
+            .expect("create store");
+        let migrated = store
+            .load_session("session-legacy")
+            .await
+            .expect("load migrated")
+            .expect("migrated record exists");
+        assert_eq!(migrated.title, "Legacy Title");
+
+        fs::write(
+            legacy_dir.join(DEFAULT_SESSION_FILE_NAME),
+            json!({
+                "session_id": "session-legacy",
+                "owner_agent": "did:example:agent",
+                "title": "Mutated On Disk",
+                "summary": "disk only",
+                "status": "normal",
+                "created_at_ms": 1,
+                "updated_at_ms": 2,
+                "last_activity_ms": 3,
+                "links": [],
+                "tags": [],
+                "meta": {}
+            })
+            .to_string(),
+        )
+        .await
+        .expect("mutate legacy file");
+
+        let still_from_db = store
+            .load_session("session-legacy")
+            .await
+            .expect("reload from db")
+            .expect("session exists");
+        assert_eq!(still_from_db.title, "Legacy Title");
     }
 
     #[tokio::test]

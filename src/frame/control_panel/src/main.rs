@@ -57,7 +57,11 @@ const GATEWAY_CONFIG_FILES: [&str; 5] = [
     "user_gateway.yaml",
     "post_gateway.yaml",
 ];
-const ZONE_CONFIG_FILES: [&str; 3] = ["start_config.json", "node_device_config.json", "node_identity.json"];
+const ZONE_CONFIG_FILES: [&str; 3] = [
+    "start_config.json",
+    "node_device_config.json",
+    "node_identity.json",
+];
 
 #[derive(Clone, Serialize, Deserialize)]
 struct LogQueryCursor {
@@ -221,9 +225,12 @@ impl ControlPanelServer {
             let mut prev_interfaces = network_totals.per_interfaces.clone();
             let mut prev_rx = network_totals.rx_bytes;
             let mut prev_tx = network_totals.tx_bytes;
-            let mut prev_error_total =
-                network_totals.rx_errors.saturating_add(network_totals.tx_errors);
-            let mut prev_drop_total = network_totals.rx_drops.saturating_add(network_totals.tx_drops);
+            let mut prev_error_total = network_totals
+                .rx_errors
+                .saturating_add(network_totals.tx_errors);
+            let mut prev_drop_total = network_totals
+                .rx_drops
+                .saturating_add(network_totals.tx_drops);
             {
                 let mut snapshot = metrics_snapshot.write().await;
                 snapshot.cpu_brand = cpu_brand;
@@ -249,8 +256,11 @@ impl ControlPanelServer {
                 snapshot.network.rx_drops = network_totals.rx_drops;
                 snapshot.network.tx_drops = network_totals.tx_drops;
                 snapshot.network.interface_count = network_totals.interface_count;
-                snapshot.network.per_interfaces =
-                    ControlPanelServer::build_interface_rate_stats(&network_totals.per_interfaces, &prev_interfaces, 0.0);
+                snapshot.network.per_interfaces = ControlPanelServer::build_interface_rate_stats(
+                    &network_totals.per_interfaces,
+                    &prev_interfaces,
+                    0.0,
+                );
                 snapshot.network.updated_at = Some(std::time::SystemTime::now());
                 snapshot.updated_at = Some(std::time::SystemTime::now());
             }
@@ -347,8 +357,11 @@ impl ControlPanelServer {
                 snapshot.network.rx_drops = network_totals.rx_drops;
                 snapshot.network.tx_drops = network_totals.tx_drops;
                 snapshot.network.interface_count = network_totals.interface_count;
-                snapshot.network.per_interfaces =
-                    ControlPanelServer::build_interface_rate_stats(&network_totals.per_interfaces, &prev_interfaces, dt);
+                snapshot.network.per_interfaces = ControlPanelServer::build_interface_rate_stats(
+                    &network_totals.per_interfaces,
+                    &prev_interfaces,
+                    dt,
+                );
                 snapshot.network.updated_at = Some(std::time::SystemTime::now());
                 prev_interfaces = network_totals.per_interfaces.clone();
 
@@ -429,10 +442,22 @@ impl ControlPanelServer {
                 continue;
             }
 
-            let rx_errors = values.get(2).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
-            let rx_drops = values.get(3).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
-            let tx_errors = values.get(10).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
-            let tx_drops = values.get(11).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+            let rx_errors = values
+                .get(2)
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0);
+            let rx_drops = values
+                .get(3)
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0);
+            let tx_errors = values
+                .get(10)
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0);
+            let tx_drops = values
+                .get(11)
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0);
 
             map.insert(
                 iface,
@@ -570,8 +595,12 @@ impl ControlPanelServer {
 
             if let Ok(client) = runtime.get_system_config_client().await {
                 if let Ok(boot_config_str) = client.get("boot/config").await {
-                    if let Ok(boot_config) = serde_json::from_str::<Value>(boot_config_str.value.as_str()) {
-                        if let Some(zone_id) = boot_config.get("id").and_then(|value| value.as_str()) {
+                    if let Ok(boot_config) =
+                        serde_json::from_str::<Value>(boot_config_str.value.as_str())
+                    {
+                        if let Some(zone_id) =
+                            boot_config.get("id").and_then(|value| value.as_str())
+                        {
                             if let Some(zone_name) = Self::parse_zone_name_from_did(zone_id) {
                                 return Some(zone_name);
                             }
@@ -2643,7 +2672,6 @@ impl ControlPanelServer {
                     continue;
                 }
             }
-
         }
 
         flush_current(
@@ -2774,7 +2802,10 @@ impl ControlPanelServer {
                         .unwrap_or_default()
                         .to_string();
                 }
-                zone_iat = value.get("zone_iat").and_then(|item| item.as_i64()).unwrap_or(0);
+                zone_iat = value
+                    .get("zone_iat")
+                    .and_then(|item| item.as_i64())
+                    .unwrap_or(0);
             }
         }
 
@@ -2790,7 +2821,9 @@ impl ControlPanelServer {
             notes.push("zone name not found in start_config.json or zone_did".to_string());
         }
         if zone_did.is_empty() {
-            notes.push("zone_did not found in node_device_config.json/node_identity.json".to_string());
+            notes.push(
+                "zone_did not found in node_device_config.json/node_identity.json".to_string(),
+            );
         }
         if device_name.is_empty() {
             notes.push("device name not found in node_device_config.json".to_string());
@@ -2918,7 +2951,10 @@ impl ControlPanelServer {
             }
         }
 
-        let mode = if tls_domains.iter().any(|domain| domain.contains("web3.buckyos.ai")) {
+        let mode = if tls_domains
+            .iter()
+            .any(|domain| domain.contains("web3.buckyos.ai"))
+        {
             "sn"
         } else {
             "direct"
@@ -2926,9 +2962,15 @@ impl ControlPanelServer {
 
         notes.push("Gateway config loaded from /opt/buckyos/etc.".to_string());
         if custom_overrides.is_empty() {
-            notes.push("No user override rules detected in user_gateway.yaml/post_gateway.yaml.".to_string());
+            notes.push(
+                "No user override rules detected in user_gateway.yaml/post_gateway.yaml."
+                    .to_string(),
+            );
         } else {
-            notes.push("User override rules detected; they may overwrite generated gateway blocks.".to_string());
+            notes.push(
+                "User override rules detected; they may overwrite generated gateway blocks."
+                    .to_string(),
+            );
         }
 
         let response = json!({
@@ -2960,8 +3002,9 @@ impl ControlPanelServer {
             )));
         }
 
-        let bytes = std::fs::read(&path)
-            .map_err(|err| RPCErrors::ReasonError(format!("Failed to read {}: {}", path.display(), err)))?;
+        let bytes = std::fs::read(&path).map_err(|err| {
+            RPCErrors::ReasonError(format!("Failed to read {}: {}", path.display(), err))
+        })?;
 
         if bytes.len() > 2 * 1024 * 1024 {
             return Err(RPCErrors::ReasonError(format!(
@@ -3054,13 +3097,18 @@ impl ControlPanelServer {
             .map_err(|error| RPCErrors::ReasonError(format!("docker ps failed: {}", error)))?;
 
         if !ps_output.status.success() {
-            let stderr = String::from_utf8_lossy(&ps_output.stderr).trim().to_string();
+            let stderr = String::from_utf8_lossy(&ps_output.stderr)
+                .trim()
+                .to_string();
             let message = if stderr.is_empty() {
                 "docker ps returned non-zero exit code".to_string()
             } else {
                 stderr
             };
-            return Err(RPCErrors::ReasonError(format!("docker ps failed: {}", message)));
+            return Err(RPCErrors::ReasonError(format!(
+                "docker ps failed: {}",
+                message
+            )));
         }
 
         let mut containers: Vec<Value> = Vec::new();
@@ -3186,7 +3234,9 @@ impl ControlPanelServer {
             .arg(docker_action)
             .arg(id.as_str())
             .output()
-            .map_err(|error| RPCErrors::ReasonError(format!("docker {} failed: {}", docker_action, error)))?;
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!("docker {} failed: {}", docker_action, error))
+            })?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
