@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::{fs, task};
 
-use crate::agent_tool::{AgentTool, ToolCallContext, ToolError, ToolManager, ToolSpec};
+use crate::agent_tool::{AgentTool, ToolError, ToolManager, ToolSpec};
+use crate::behavior::TraceCtx;
 
 pub const TOOL_CREATE_SUB_AGENT: &str = "create_sub_agent";
 pub const TOOL_BIND_EXTERNAL_WORKSPACE: &str = "bind_external_workspace";
@@ -1460,7 +1461,7 @@ impl AgentTool for RuntimeCreateSubAgentTool {
         }
     }
 
-    async fn call(&self, ctx: &ToolCallContext, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
         let parent_did = optional_string(&args, "parent_did")?.unwrap_or(ctx.agent_did.clone());
         let req = CreateSubAgentRequest {
             name: require_string(&args, "name")?,
@@ -1510,7 +1511,7 @@ impl AgentTool for RuntimeBindExternalWorkspaceTool {
         }
     }
 
-    async fn call(&self, ctx: &ToolCallContext, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
         let agent_did = optional_string(&args, "agent_did")?.unwrap_or(ctx.agent_did.clone());
         let req = BindExternalWorkspaceRequest {
             name: require_string(&args, "name")?,
@@ -1556,7 +1557,7 @@ impl AgentTool for RuntimeListExternalWorkspacesTool {
         }
     }
 
-    async fn call(&self, ctx: &ToolCallContext, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
         let agent_did = optional_string(&args, "agent_did")?.unwrap_or(ctx.agent_did.clone());
         let workspaces = self.runtime.list_external_workspaces(&agent_did).await?;
         Ok(json!({
@@ -1904,14 +1905,13 @@ mod tests {
         .expect("write session record");
     }
 
-    fn call_ctx(agent_did: &str) -> ToolCallContext {
-        ToolCallContext {
+    fn call_ctx(agent_did: &str) -> TraceCtx {
+        TraceCtx {
             trace_id: "trace-1".to_string(),
             agent_did: agent_did.to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-1".to_string(),
-            current_session_id: None,
         }
     }
 

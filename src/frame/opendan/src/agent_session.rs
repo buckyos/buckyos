@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::fs;
 
-use crate::agent_tool::{AgentTool, ToolCallContext, ToolError, ToolManager, ToolSpec};
+use crate::agent_tool::{AgentTool, ToolError, ToolManager, ToolSpec};
+use crate::behavior::TraceCtx;
 
 pub const TOOL_LIST_SESSIONS: &str = "list_sessions";
 pub const TOOL_CREATE_SESSION: &str = "create_session";
@@ -644,7 +645,7 @@ impl AgentTool for ListSessionsTool {
         }
     }
 
-    async fn call(&self, _ctx: &ToolCallContext, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
         let limit = optional_usize(&args, "limit")?.unwrap_or(self.session.cfg.default_list_limit);
         let include_deleted = optional_bool(&args, "include_deleted")?.unwrap_or(false);
         let sessions = self.session.list_sessions(limit, include_deleted).await?;
@@ -690,7 +691,7 @@ impl AgentTool for CreateSessionTool {
         }
     }
 
-    async fn call(&self, ctx: &ToolCallContext, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
         let owner_agent = optional_string(&args, "owner_agent")?.unwrap_or(ctx.agent_did.clone());
         let links = optional_links(&args, "links")?;
         let req = CreateSessionRequest {
@@ -737,7 +738,7 @@ impl AgentTool for GetSessionTool {
         }
     }
 
-    async fn call(&self, _ctx: &ToolCallContext, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
         let session_id = require_string(&args, "session_id")?;
         let Some(session) = self.session.load_session(session_id).await? else {
             return Err(ToolError::InvalidArgs("session not found".to_string()));
@@ -781,7 +782,7 @@ impl AgentTool for UpdateSessionTool {
         }
     }
 
-    async fn call(&self, _ctx: &ToolCallContext, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
         let patch = UpdateSessionPatch {
             session_id: require_string(&args, "session_id")?,
             title: optional_string(&args, "title")?,
@@ -830,7 +831,7 @@ impl AgentTool for LinkSessionsTool {
         }
     }
 
-    async fn call(&self, _ctx: &ToolCallContext, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
         let session_id = require_string(&args, "session_id")?;
         let target_session_id = require_string(&args, "target_session_id")?;
         let relation = optional_string(&args, "relation")?.unwrap_or_else(|| "related".to_string());
@@ -900,7 +901,7 @@ impl AgentTool for LoadChatHistoryTool {
         }
     }
 
-    async fn call(&self, _ctx: &ToolCallContext, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
         let owner_did = require_string(&args, "owner_did")?;
         let box_kind = parse_box_kind(optional_string(&args, "box_kind")?)?;
         let session_id = optional_string(&args, "session_id")?;
@@ -1331,17 +1332,17 @@ fn optional_links(args: &Json, key: &str) -> Result<Vec<SessionLink>, ToolError>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_tool::{ToolCall, ToolCallContext};
+    use crate::agent_tool::ToolCall;
+    use crate::behavior::TraceCtx;
     use tempfile::tempdir;
 
-    fn test_ctx() -> ToolCallContext {
-        ToolCallContext {
+    fn test_ctx() -> TraceCtx {
+        TraceCtx {
             trace_id: "trace-session".to_string(),
             agent_did: "did:example:agent".to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-session".to_string(),
-            current_session_id: None,
         }
     }
 

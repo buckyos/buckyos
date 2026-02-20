@@ -1,4 +1,4 @@
-use crate::agent_tool::{ToolCall, ToolCallContext};
+use crate::agent_tool::ToolCall;
 
 use super::types::{Observation, TraceCtx};
 
@@ -8,13 +8,6 @@ pub struct ToolContext {
     pub observations: Vec<Observation>,
 }
 
-pub(crate) fn trace_to_tool_call_context(trace: &TraceCtx) -> ToolCallContext {
-    ToolCallContext {
-        trace_id: trace.trace_id.clone(),
-        agent_did: trace.agent_did.clone(),
-        behavior: trace.behavior.clone(),
-        step_idx: trace.step_idx,
-        wakeup_id: trace.wakeup_id.clone(),
-        current_session_id: None,
-    }
+pub(crate) fn trace_to_tool_call_context(trace: &TraceCtx) -> TraceCtx {
+    trace.clone()
 }

@@ -1,16 +1,12 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::ops::Range;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use buckyos_api::{
-    AiResponseSummary, AiUsage, AiccClient, AiccHandler, CompleteRequest, CompleteResponse,
-    CompleteStatus, CreateTaskOptions, Task, TaskFilter, TaskManagerClient, TaskManagerHandler,
-    TaskPermissions, TaskStatus,
+    AiResponseSummary, AiUsage, AiccClient, CompleteRequest, CompleteResponse, CompleteStatus,
+    Task, TaskManagerClient, TaskPermissions, TaskStatus,
 };
-use kRPC::{RPCContext, RPCErrors, Result as KRPCResult};
 use rusqlite::Connection;
 use serde_json::{json, Value as Json};
 use tempfile::tempdir;
@@ -18,7 +14,8 @@ use tokio::fs;
 
 use super::*;
 use crate::agent_memory::{AgentMemory, AgentMemoryConfig, TOOL_LOAD_MEMORY, TOOL_LOAD_THINGS};
-use crate::agent_tool::{AgentTool, ToolCall, ToolCallContext, ToolManager, ToolSpec};
+use crate::agent_tool::{AgentTool, ToolCall, ToolManager, ToolSpec};
+use crate::test_utils::{MockAicc, MockTaskMgrHandler};
 use crate::workspace::{AgentWorkshop, AgentWorkshopConfig, TOOL_EXEC_BASH};
 
 struct MockTokenizer;
@@ -26,188 +23,6 @@ struct MockTokenizer;
 impl Tokenizer for MockTokenizer {
     fn count_tokens(&self, text: &str) -> u32 {
         text.split_whitespace().count() as u32
-    }
-}
-
-struct MockTaskMgrHandler {
-    counter: Mutex<u64>,
-    tasks: Arc<Mutex<HashMap<i64, Task>>>,
-}
-
-#[async_trait]
-impl TaskManagerHandler for MockTaskMgrHandler {
-    async fn handle_create_task(
-        &self,
-        name: &str,
-        task_type: &str,
-        data: Option<Json>,
-        opts: CreateTaskOptions,
-        user_id: &str,
-        app_id: &str,
-        _ctx: RPCContext,
-    ) -> KRPCResult<Task> {
-        let mut guard = self.counter.lock().expect("counter lock");
-        *guard += 1;
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-        let task = Task {
-            id: *guard as i64,
-            user_id: user_id.to_string(),
-            app_id: app_id.to_string(),
-            parent_id: opts.parent_id,
-            root_id: None,
-            name: name.to_string(),
-            task_type: task_type.to_string(),
-            status: TaskStatus::Pending,
-            progress: 0.0,
-            message: None,
-            data: data.unwrap_or_else(|| json!({})),
-            permissions: opts.permissions.unwrap_or(TaskPermissions::default()),
-            created_at: now,
-            updated_at: now,
-        };
-        self.tasks
-            .lock()
-            .expect("tasks lock")
-            .insert(task.id, task.clone());
-        Ok(task)
-    }
-
-    async fn handle_get_task(&self, id: i64, _ctx: RPCContext) -> KRPCResult<Task> {
-        self.tasks
-            .lock()
-            .expect("tasks lock")
-            .get(&id)
-            .cloned()
-            .ok_or_else(|| RPCErrors::ReasonError(format!("mock task {} not found", id)))
-    }
-
-    async fn handle_list_tasks(
-        &self,
-        _filter: TaskFilter,
-        _source_user_id: Option<&str>,
-        _source_app_id: Option<&str>,
-        _ctx: RPCContext,
-    ) -> KRPCResult<Vec<Task>> {
-        let tasks = self
-            .tasks
-            .lock()
-            .expect("tasks lock")
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        Ok(tasks)
-    }
-
-    async fn handle_list_tasks_by_time_range(
-        &self,
-        _app_id: Option<&str>,
-        _task_type: Option<&str>,
-        _source_user_id: Option<&str>,
-        _source_app_id: Option<&str>,
-        _time_range: Range<u64>,
-        _ctx: RPCContext,
-    ) -> KRPCResult<Vec<Task>> {
-        Ok(vec![])
-    }
-
-    async fn handle_get_subtasks(
-        &self,
-        _parent_id: i64,
-        _ctx: RPCContext,
-    ) -> KRPCResult<Vec<Task>> {
-        Ok(vec![])
-    }
-
-    async fn handle_update_task(
-        &self,
-        id: i64,
-        status: Option<TaskStatus>,
-        progress: Option<f32>,
-        message: Option<String>,
-        data: Option<Json>,
-        _ctx: RPCContext,
-    ) -> KRPCResult<()> {
-        if let Some(task) = self.tasks.lock().expect("tasks lock").get_mut(&id) {
-            if let Some(s) = status {
-                task.status = s;
-            }
-            if let Some(p) = progress {
-                task.progress = p;
-            }
-            task.message = message;
-            if let Some(patch) = data {
-                task.data = patch;
-            }
-        }
-        Ok(())
-    }
-
-    async fn handle_update_task_progress(
-        &self,
-        id: i64,
-        completed_items: u64,
-        total_items: u64,
-        _ctx: RPCContext,
-    ) -> KRPCResult<()> {
-        if let Some(task) = self.tasks.lock().expect("tasks lock").get_mut(&id) {
-            if total_items > 0 {
-                task.progress = (completed_items as f32 / total_items as f32).clamp(0.0, 1.0);
-            }
-        }
-        Ok(())
-    }
-
-    async fn handle_update_task_status(
-        &self,
-        id: i64,
-        status: TaskStatus,
-        _ctx: RPCContext,
-    ) -> KRPCResult<()> {
-        if let Some(task) = self.tasks.lock().expect("tasks lock").get_mut(&id) {
-            task.status = status;
-        }
-        Ok(())
-    }
-
-    async fn handle_update_task_error(
-        &self,
-        id: i64,
-        error_message: &str,
-        _ctx: RPCContext,
-    ) -> KRPCResult<()> {
-        if let Some(task) = self.tasks.lock().expect("tasks lock").get_mut(&id) {
-            task.status = TaskStatus::Failed;
-            task.message = Some(error_message.to_string());
-        }
-        Ok(())
-    }
-
-    async fn handle_update_task_data(
-        &self,
-        id: i64,
-        data: Json,
-        _ctx: RPCContext,
-    ) -> KRPCResult<()> {
-        if let Some(task) = self.tasks.lock().expect("tasks lock").get_mut(&id) {
-            task.data = data;
-        }
-        Ok(())
-    }
-
-    async fn handle_cancel_task(
-        &self,
-        _id: i64,
-        _recursive: bool,
-        _ctx: RPCContext,
-    ) -> KRPCResult<()> {
-        Ok(())
-    }
-
-    async fn handle_delete_task(&self, _id: i64, _ctx: RPCContext) -> KRPCResult<()> {
-        Ok(())
     }
 }
 
@@ -252,70 +67,11 @@ impl AgentTool for EchoTool {
 
     async fn call(
         &self,
-        _ctx: &crate::agent_tool::ToolCallContext,
+        _ctx: &TraceCtx,
         args: Json,
     ) -> Result<Json, crate::agent_tool::ToolError> {
         println!("[TEST][TOOL] tool.echo called with args: {}", args);
         Ok(json!({"tool": "tool.echo", "ok": true, "args": args}))
-    }
-}
-
-struct MockAicc {
-    responses: Arc<Mutex<VecDeque<CompleteResponse>>>,
-    requests: Arc<Mutex<Vec<CompleteRequest>>>,
-}
-
-#[async_trait]
-impl AiccHandler for MockAicc {
-    async fn handle_complete(
-        &self,
-        request: CompleteRequest,
-        _ctx: RPCContext,
-    ) -> KRPCResult<CompleteResponse> {
-        let prompt = request
-            .payload
-            .messages
-            .iter()
-            .map(|m| format!("role={}\n{}", m.role, m.content))
-            .collect::<Vec<_>>()
-            .join("\n\n---\n\n");
-        println!(
-            "[TEST][AICC] complete request incoming prompt/messages:\n{}",
-            prompt
-        );
-        if let Some(options) = &request.payload.options {
-            println!("[TEST][AICC] complete request options: {}", options);
-        }
-
-        self.requests.lock().expect("requests lock").push(request);
-        let resp = self
-            .responses
-            .lock()
-            .expect("responses lock")
-            .pop_front()
-            .ok_or_else(|| RPCErrors::ReasonError("no response queued".to_string()))?;
-        if let Some(result) = &resp.result {
-            if let Some(output_json) = &result.json {
-                println!("[TEST][AICC] llm output (json): {}", output_json);
-            } else if let Some(output_text) = &result.text {
-                println!("[TEST][AICC] llm output (text): {}", output_text);
-            } else {
-                println!("[TEST][AICC] llm output: <empty>");
-            }
-        } else if !resp.task_id.is_empty() {
-            println!("[TEST][AICC] llm output: <pending task {}>", resp.task_id);
-        } else {
-            println!("[TEST][AICC] llm output: <none>");
-        }
-        Ok(resp)
-    }
-
-    async fn handle_cancel(
-        &self,
-        task_id: &str,
-        _ctx: RPCContext,
-    ) -> KRPCResult<buckyos_api::CancelResponse> {
-        Ok(buckyos_api::CancelResponse::new(task_id.to_string(), true))
     }
 }
 
@@ -1200,13 +956,12 @@ tools:
     assert!(tool_messages.contains("seed.txt"));
 
     // Formally execute planned actions through workshop.exec_bash.
-    let action_ctx = ToolCallContext {
+    let action_ctx = TraceCtx {
         trace_id: "trace-workshop-actions".to_string(),
         agent_did: "did:example:agent".to_string(),
         behavior: "on_action".to_string(),
         step_idx: 1,
         wakeup_id: "wakeup-workshop-actions".to_string(),
-        current_session_id: None,
     };
     for (idx, action) in result.actions.iter().enumerate() {
         assert_eq!(
@@ -1488,13 +1243,12 @@ limits:
     assert!(round_3_tool_messages.contains(TOOL_LOAD_THINGS));
     assert!(round_3_tool_messages.contains("project.plan"));
 
-    let action_ctx = ToolCallContext {
+    let action_ctx = TraceCtx {
         trace_id: "trace-memory-action".to_string(),
         agent_did: "did:example:agent".to_string(),
         behavior: "on_action".to_string(),
         step_idx: 1,
         wakeup_id: "wakeup-memory-action".to_string(),
-        current_session_id: None,
     };
     let exec_raw = tool_mgr
         .call_tool(

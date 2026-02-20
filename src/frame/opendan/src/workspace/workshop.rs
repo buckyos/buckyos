@@ -11,8 +11,9 @@ use tokio::time::{timeout, Duration, Instant};
 use super::todo::{TodoTool, TodoToolConfig, TOOL_TODO_MANAGE};
 use super::worklog::{WorklogTool, WorklogToolConfig, TOOL_WORKLOG_MANAGE};
 use crate::agent_tool::{
-    AgentTool, MCPToolConfig, ToolCallContext, ToolError, ToolManager, ToolSpec,
+    AgentTool, MCPToolConfig, ToolError, ToolManager, ToolSpec,
 };
+use crate::behavior::TraceCtx;
 
 pub const TOOL_EXEC_BASH: &str = "exec_bash";
 pub const TOOL_EDIT_FILE: &str = "edit_file";
@@ -197,9 +198,7 @@ impl AgentWorkshop {
     }
 }
 
-// Backward compatibility alias for existing callers.
-pub type BasicWorkshop = AgentWorkshop;
-pub type BasicWorkshopConfig = AgentWorkshopConfig;
+
 
 #[derive(Clone, Debug)]
 struct ExecBashPolicy {
@@ -452,7 +451,7 @@ impl AgentTool for ExecBashTool {
         }
     }
 
-    async fn call(&self, _ctx: &ToolCallContext, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
         let command = require_string(&args, "command")?;
         let cwd = if let Some(raw_cwd) = optional_string(&args, "cwd")? {
             resolve_path_in_workspace(&self.cfg.workspace_root, &raw_cwd)?
@@ -571,7 +570,7 @@ impl AgentTool for EditFileTool {
         }
     }
 
-    async fn call(&self, _ctx: &ToolCallContext, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
         let file_path = require_string(&args, "path")?;
         let abs_path = resolve_path_in_workspace(&self.cfg.workspace_root, &file_path)?;
         if !is_path_under_any(&abs_path, &self.policy.allowed_write_roots) {
@@ -1084,7 +1083,8 @@ fn u64_to_usize(v: u64) -> Result<usize, ToolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_tool::{ToolCall, ToolCallContext};
+    use crate::agent_tool::ToolCall;
+    use crate::behavior::TraceCtx;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_workspace_root(test_name: &str) -> PathBuf {
@@ -1096,24 +1096,14 @@ mod tests {
     }
 
     async fn call(tool_mgr: &ToolManager, name: &str, args: Json) -> Result<Json, ToolError> {
-        call_with_session(tool_mgr, name, args, None).await
-    }
-
-    async fn call_with_session(
-        tool_mgr: &ToolManager,
-        name: &str,
-        args: Json,
-        current_session_id: Option<&str>,
-    ) -> Result<Json, ToolError> {
         tool_mgr
             .call_tool(
-                &ToolCallContext {
+                &TraceCtx {
                     trace_id: "trace-test".to_string(),
                     agent_did: "did:example:agent".to_string(),
                     behavior: "on_wakeup".to_string(),
                     step_idx: 0,
                     wakeup_id: "wakeup-test".to_string(),
-                    current_session_id: current_session_id.map(|v| v.to_string()),
                 },
                 ToolCall {
                     name: name.to_string(),
@@ -1469,7 +1459,7 @@ mod tests {
 
         assert!(tool_mgr.has_tool(TOOL_WORKLOG_MANAGE));
 
-        let appended = call_with_session(
+        let appended = call(
             &tool_mgr,
             TOOL_WORKLOG_MANAGE,
             json!({
@@ -1482,7 +1472,6 @@ mod tests {
                 "tags": ["tool", "runtime"],
                 "payload": { "tool": "exec_bash", "ok": true }
             }),
-            Some("session-alpha"),
         )
         .await
         .expect("append worklog should succeed");

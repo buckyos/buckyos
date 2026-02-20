@@ -7,7 +7,8 @@ use serde_json::{json, Value as Json};
 use tokio::fs;
 use tokio::task;
 
-use crate::agent_tool::{AgentTool, ToolCallContext, ToolError, ToolManager, ToolSpec};
+use crate::agent_tool::{AgentTool, ToolError, ToolManager, ToolSpec};
+use crate::behavior::TraceCtx;
 
 pub const TOOL_LIST: &str = "list";
 pub const TOOL_LOAD_MEMORY: &str = "load_memory";
@@ -333,7 +334,7 @@ impl AgentTool for ListMemoryTool {
         }
     }
 
-    async fn call(&self, _ctx: &ToolCallContext, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
         let recursive = optional_bool(&args, "recursive")?.unwrap_or(true);
         let max_entries =
             optional_usize(&args, "max_entries")?.unwrap_or(self.memory.cfg.max_list_entries);
@@ -380,7 +381,7 @@ impl AgentTool for LoadMemoryTool {
         }
     }
 
-    async fn call(&self, _ctx: &ToolCallContext, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
         let token_limit = optional_u32(&args, "token_limit")?
             .unwrap_or(self.memory.cfg.default_memory_token_limit);
         self.memory.load_memory_md(token_limit).await
@@ -420,7 +421,7 @@ impl AgentTool for LoadThingsTool {
         }
     }
 
-    async fn call(&self, _ctx: &ToolCallContext, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
         let name = optional_string(&args, "name")?;
         let limit = optional_usize(&args, "limit")?.unwrap_or(self.memory.cfg.default_table_limit);
         self.memory.load_things(name, limit).await
@@ -459,7 +460,7 @@ impl AgentTool for DeleteBySourceSessionTool {
         }
     }
 
-    async fn call(&self, _ctx: &ToolCallContext, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
         let source_session = required_string_arg(&args, "source_session")?;
         self.memory.delete_by_source_session(source_session).await
     }
@@ -1133,17 +1134,17 @@ fn truncate_by_token_limit(content: &str, token_limit: u32) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_tool::{ToolCall, ToolCallContext};
+    use crate::agent_tool::ToolCall;
+    use crate::behavior::TraceCtx;
     use tempfile::tempdir;
 
-    fn test_ctx() -> ToolCallContext {
-        ToolCallContext {
+    fn test_ctx() -> TraceCtx {
+        TraceCtx {
             trace_id: "trace-memory".to_string(),
             agent_did: "did:example:agent".to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-memory".to_string(),
-            current_session_id: None,
         }
     }
 

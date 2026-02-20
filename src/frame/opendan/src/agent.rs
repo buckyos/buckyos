@@ -18,7 +18,7 @@ use tokio::task::JoinSet;
 use crate::agent_enviroment::AgentEnvironment;
 use crate::agent_memory::{AgentMemory, AgentMemoryConfig, TOOL_LOAD_MEMORY};
 use crate::agent_session::{AgentSession, AgentSessionConfig};
-use crate::agent_tool::{ToolCall, ToolCallContext, ToolError, ToolManager, ToolSpec};
+use crate::agent_tool::{ToolCall, ToolError, ToolManager, ToolSpec};
 use crate::ai_runtime::{AiRuntime, AiRuntimeConfig};
 use crate::behavior::{
     BehaviorConfig, BehaviorConfigError, BehaviorExecInput, BehaviorLLMResult, EnvKV, Event,
@@ -327,13 +327,12 @@ impl AIAgent {
         info!("ai_agent.disable: did={} hp={}", self.did, guard.hp);
         drop(guard);
         if self.is_sub_agent() {
-            let ctx = ToolCallContext {
+            let ctx = TraceCtx {
                 trace_id: format!("{}:disable:{}", self.did, now_ms()),
                 agent_did: self.did.clone(),
                 behavior: "on_wakeup".to_string(),
                 step_idx: 0,
                 wakeup_id: format!("disable-{}", now_ms()),
-                current_session_id: None,
             };
             append_workspace_worklog_entry(
                 self.tool_mgr.clone(),
@@ -361,13 +360,12 @@ impl AIAgent {
             "ai_agent.push_inbox_message: did={} inbox_len={}",
             self.did, inbox_len
         );
-        let ctx = ToolCallContext {
+        let ctx = TraceCtx {
             trace_id: format!("{}:inbox:{}", self.did, now_ms()),
             agent_did: self.did.clone(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: format!("inbox-{}", now_ms()),
-            current_session_id: None,
         };
         let session_id = extract_session_id_from_message_payload(&msg);
         append_workspace_worklog_entry(
@@ -564,13 +562,12 @@ impl AIAgent {
         if !self.is_sub_agent() {
             return;
         }
-        let ctx = ToolCallContext {
+        let ctx = TraceCtx {
             trace_id: format!("{}:wakeup:{}", self.did, now),
             agent_did: self.did.clone(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: format!("wakeup-start-{}", now),
-            current_session_id: None,
         };
         append_workspace_worklog_entry(
             self.tool_mgr.clone(),
@@ -699,7 +696,7 @@ impl AIAgent {
             }
         }
         if !llm_result.tool_calls.is_empty() {
-            let planned_calls = behavior_tool_calls_to_router_calls(&llm_result.tool_calls);
+            let planned_calls = sanitize_tool_calls(&llm_result.tool_calls);
             if !planned_calls.is_empty() {
                 let _ = self.execute_router_tool_calls(&trace, &planned_calls).await;
             }
@@ -923,7 +920,7 @@ impl AIAgent {
                 }
             }
             if !llm_result.tool_calls.is_empty() {
-                let planned_calls = behavior_tool_calls_to_router_calls(&llm_result.tool_calls);
+                let planned_calls = sanitize_tool_calls(&llm_result.tool_calls);
                 let tool_obs = self.execute_router_tool_calls(&trace, &planned_calls).await;
                 if !tool_obs.is_empty() {
                     state.pending_observations.extend(tool_obs);
@@ -1140,7 +1137,7 @@ impl AIAgent {
     async fn execute_router_tool_calls(
         &self,
         trace: &TraceCtx,
-        calls: &[RouterToolCallPayload],
+        calls: &[ToolCall],
     ) -> Vec<Observation> {
         if calls.is_empty() {
             return vec![];
@@ -1148,31 +1145,29 @@ impl AIAgent {
 
         let mut observations = Vec::<Observation>::new();
         for (idx, call) in calls.iter().take(MAX_ROUTER_TOOL_CALLS).enumerate() {
-            if call.name.trim().is_empty() {
+            let name = call.name.trim();
+            if name.is_empty() {
                 continue;
             }
+            let call_id = if call.call_id.trim().is_empty() {
+                format!("{}-router-{}-{}", trace.wakeup_id, trace.step_idx, idx)
+            } else {
+                call.call_id.trim().to_string()
+            };
             let tool_call = ToolCall {
-                name: call.name.clone(),
+                name: name.to_string(),
                 args: call.args.clone(),
-                call_id: format!("{}-router-{}-{}", trace.wakeup_id, trace.step_idx, idx),
+                call_id,
             };
-            let ctx = ToolCallContext {
-                trace_id: trace.trace_id.clone(),
-                agent_did: trace.agent_did.clone(),
-                behavior: trace.behavior.clone(),
-                step_idx: trace.step_idx,
-                wakeup_id: trace.wakeup_id.clone(),
-                current_session_id: None,
-            };
-            match self.tool_mgr.call_tool(&ctx, tool_call).await {
+            match self.tool_mgr.call_tool(trace, tool_call).await {
                 Ok(raw) => observations.push(Sanitizer::sanitize_observation(
                     ObservationSource::Tool,
-                    &call.name,
+                    name,
                     raw,
                     8 * 1024,
                 )),
                 Err(err) => observations.push(Sanitizer::tool_error_observation(
-                    &call.name,
+                    name,
                     err.to_string(),
                     8 * 1024,
                 )),
@@ -1310,13 +1305,12 @@ impl AIAgent {
                 }
             };
             let pulled = msg_center_record_to_inbox_message(record);
-            let ctx = ToolCallContext {
+            let ctx = TraceCtx {
                 trace_id: format!("{}:pull_inbox:{}", self.did, now_ms()),
                 agent_did: self.did.clone(),
                 behavior: "on_wakeup".to_string(),
                 step_idx: 0,
                 wakeup_id: format!("pull-{}", now_ms()),
-                current_session_id: None,
             };
             append_workspace_worklog_entry(
                 self.tool_mgr.clone(),
@@ -1485,13 +1479,12 @@ impl AIAgent {
         match self
             .tool_mgr
             .call_tool(
-                &ToolCallContext {
+                &TraceCtx {
                     trace_id: trace.trace_id.clone(),
                     agent_did: trace.agent_did.clone(),
                     behavior: trace.behavior.clone(),
                     step_idx: trace.step_idx,
                     wakeup_id: trace.wakeup_id.clone(),
-                    current_session_id: None,
                 },
                 call,
             )
@@ -1715,17 +1708,6 @@ struct WakeupLoopContext {
     event_id: String,
     recent_turns: Vec<Json>,
 }
-
-
-
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(default)]
-struct RouterToolCallPayload {
-    name: String,
-    args: Json,
-}
-
 struct PulledInboxMessage {
     input: Json,
     record_id: String,
@@ -1999,13 +1981,12 @@ async fn run_single_action(
         args["cwd"] = json!(cwd);
     }
 
-    let ctx = ToolCallContext {
+    let ctx = TraceCtx {
         trace_id: trace.trace_id.clone(),
         agent_did: trace.agent_did.clone(),
         behavior: trace.behavior.clone(),
         step_idx: trace.step_idx,
         wakeup_id: trace.wakeup_id.clone(),
-        current_session_id: None,
     };
     append_workspace_worklog_entry(
         tool_mgr.clone(),
@@ -2394,7 +2375,7 @@ fn wakeup_status_name(status: &WakeupStatus) -> &'static str {
 
 async fn append_workspace_worklog_entry(
     tool_mgr: Arc<ToolManager>,
-    ctx: &ToolCallContext,
+    ctx: &TraceCtx,
     log_type: &str,
     status: &str,
     summary: String,
@@ -2643,9 +2624,7 @@ fn append_unique_strings(target: &mut Vec<String>, values: &[String]) {
     }
 }
 
-fn behavior_tool_calls_to_router_calls(
-    calls: &[ToolCall],
-) -> Vec<RouterToolCallPayload> {
+fn sanitize_tool_calls(calls: &[ToolCall]) -> Vec<ToolCall> {
     calls
         .iter()
         .filter_map(|call| {
@@ -2653,9 +2632,10 @@ fn behavior_tool_calls_to_router_calls(
             if name.is_empty() {
                 return None;
             }
-            Some(RouterToolCallPayload {
+            Some(ToolCall {
                 name: name.to_string(),
                 args: call.args.clone(),
+                call_id: call.call_id.trim().to_string(),
             })
         })
         .collect::<Vec<_>>()
@@ -2664,224 +2644,19 @@ fn behavior_tool_calls_to_router_calls(
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, VecDeque};
-    use std::ops::Range;
     use std::sync::{Arc, Mutex};
 
-    use async_trait::async_trait;
     use buckyos_api::{
-        AiResponseSummary, AiUsage, AiccHandler, CancelResponse, CompleteRequest, CompleteResponse,
-        CompleteStatus, CreateTaskOptions, Task, TaskFilter, TaskManagerHandler, TaskPermissions,
-        TaskStatus,
+        AiResponseSummary, AiUsage, CompleteRequest, CompleteResponse, CompleteStatus,
     };
-    use kRPC::{RPCContext, RPCErrors, Result as KRPCResult};
     use rusqlite::Connection;
     use serde_json::json;
     use tempfile::tempdir;
     use tokio::fs;
 
     use super::*;
+    use crate::test_utils::{MockAicc, MockTaskMgrHandler};
     use crate::workspace::{TOOL_EXEC_BASH, TOOL_TODO_MANAGE};
-
-    struct MockTaskMgrHandler {
-        counter: Mutex<u64>,
-        tasks: Arc<Mutex<HashMap<i64, Task>>>,
-    }
-
-    #[async_trait]
-    impl TaskManagerHandler for MockTaskMgrHandler {
-        async fn handle_create_task(
-            &self,
-            name: &str,
-            task_type: &str,
-            data: Option<Json>,
-            opts: CreateTaskOptions,
-            user_id: &str,
-            app_id: &str,
-            _ctx: RPCContext,
-        ) -> KRPCResult<Task> {
-            let mut guard = self.counter.lock().expect("counter lock");
-            *guard += 1;
-            let now = now_ms();
-            let task = Task {
-                id: *guard as i64,
-                user_id: user_id.to_string(),
-                app_id: app_id.to_string(),
-                parent_id: opts.parent_id,
-                root_id: None,
-                name: name.to_string(),
-                task_type: task_type.to_string(),
-                status: TaskStatus::Pending,
-                progress: 0.0,
-                message: None,
-                data: data.unwrap_or_else(|| json!({})),
-                permissions: opts.permissions.unwrap_or(TaskPermissions::default()),
-                created_at: now,
-                updated_at: now,
-            };
-            self.tasks
-                .lock()
-                .expect("tasks lock")
-                .insert(task.id, task.clone());
-            Ok(task)
-        }
-
-        async fn handle_get_task(&self, id: i64, _ctx: RPCContext) -> KRPCResult<Task> {
-            self.tasks
-                .lock()
-                .expect("tasks lock")
-                .get(&id)
-                .cloned()
-                .ok_or_else(|| RPCErrors::ReasonError(format!("mock task {} not found", id)))
-        }
-
-        async fn handle_list_tasks(
-            &self,
-            _filter: TaskFilter,
-            _source_user_id: Option<&str>,
-            _source_app_id: Option<&str>,
-            _ctx: RPCContext,
-        ) -> KRPCResult<Vec<Task>> {
-            Ok(vec![])
-        }
-
-        async fn handle_list_tasks_by_time_range(
-            &self,
-            _app_id: Option<&str>,
-            _task_type: Option<&str>,
-            _source_user_id: Option<&str>,
-            _source_app_id: Option<&str>,
-            _time_range: Range<u64>,
-            _ctx: RPCContext,
-        ) -> KRPCResult<Vec<Task>> {
-            Ok(vec![])
-        }
-
-        async fn handle_get_subtasks(
-            &self,
-            _parent_id: i64,
-            _ctx: RPCContext,
-        ) -> KRPCResult<Vec<Task>> {
-            Ok(vec![])
-        }
-
-        async fn handle_update_task(
-            &self,
-            id: i64,
-            status: Option<TaskStatus>,
-            progress: Option<f32>,
-            message: Option<String>,
-            data: Option<Json>,
-            _ctx: RPCContext,
-        ) -> KRPCResult<()> {
-            if let Some(task) = self.tasks.lock().expect("tasks lock").get_mut(&id) {
-                if let Some(s) = status {
-                    task.status = s;
-                }
-                if let Some(p) = progress {
-                    task.progress = p;
-                }
-                task.message = message;
-                if let Some(patch) = data {
-                    task.data = patch;
-                }
-            }
-            Ok(())
-        }
-
-        async fn handle_update_task_progress(
-            &self,
-            id: i64,
-            completed_items: u64,
-            total_items: u64,
-            _ctx: RPCContext,
-        ) -> KRPCResult<()> {
-            if let Some(task) = self.tasks.lock().expect("tasks lock").get_mut(&id) {
-                if total_items > 0 {
-                    task.progress = (completed_items as f32 / total_items as f32).clamp(0.0, 1.0);
-                }
-            }
-            Ok(())
-        }
-
-        async fn handle_update_task_status(
-            &self,
-            id: i64,
-            status: TaskStatus,
-            _ctx: RPCContext,
-        ) -> KRPCResult<()> {
-            if let Some(task) = self.tasks.lock().expect("tasks lock").get_mut(&id) {
-                task.status = status;
-            }
-            Ok(())
-        }
-
-        async fn handle_update_task_error(
-            &self,
-            id: i64,
-            error_message: &str,
-            _ctx: RPCContext,
-        ) -> KRPCResult<()> {
-            if let Some(task) = self.tasks.lock().expect("tasks lock").get_mut(&id) {
-                task.status = TaskStatus::Failed;
-                task.message = Some(error_message.to_string());
-            }
-            Ok(())
-        }
-
-        async fn handle_update_task_data(
-            &self,
-            id: i64,
-            data: Json,
-            _ctx: RPCContext,
-        ) -> KRPCResult<()> {
-            if let Some(task) = self.tasks.lock().expect("tasks lock").get_mut(&id) {
-                task.data = data;
-            }
-            Ok(())
-        }
-
-        async fn handle_cancel_task(
-            &self,
-            _id: i64,
-            _recursive: bool,
-            _ctx: RPCContext,
-        ) -> KRPCResult<()> {
-            Ok(())
-        }
-
-        async fn handle_delete_task(&self, _id: i64, _ctx: RPCContext) -> KRPCResult<()> {
-            Ok(())
-        }
-    }
-
-    struct MockAicc {
-        responses: Arc<Mutex<VecDeque<CompleteResponse>>>,
-        requests: Arc<Mutex<Vec<CompleteRequest>>>,
-    }
-
-    #[async_trait]
-    impl AiccHandler for MockAicc {
-        async fn handle_complete(
-            &self,
-            request: CompleteRequest,
-            _ctx: RPCContext,
-        ) -> KRPCResult<CompleteResponse> {
-            self.requests.lock().expect("requests lock").push(request);
-            self.responses
-                .lock()
-                .expect("responses lock")
-                .pop_front()
-                .ok_or_else(|| RPCErrors::ReasonError("no response queued".to_string()))
-        }
-
-        async fn handle_cancel(
-            &self,
-            task_id: &str,
-            _ctx: RPCContext,
-        ) -> KRPCResult<CancelResponse> {
-            Ok(CancelResponse::new(task_id.to_string(), true))
-        }
-    }
 
     fn mocked_response(
         payload: Json,

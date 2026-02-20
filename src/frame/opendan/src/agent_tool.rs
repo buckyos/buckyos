@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::time::{timeout, Duration};
 
+use crate::behavior::TraceCtx;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ToolSpec {
     pub name: String,
@@ -26,17 +28,6 @@ pub struct ToolCall {
     pub name: String,
     pub args: Json,
     pub call_id: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct ToolCallContext {
-    pub trace_id: String,
-    pub agent_did: String,
-    pub behavior: String,
-    pub step_idx: u32,
-    pub wakeup_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_session_id: Option<String>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -95,7 +86,7 @@ pub(crate) fn normalize_tool_name(name: &str) -> String {
 #[async_trait]
 pub trait AgentTool: Send + Sync {
     fn spec(&self) -> ToolSpec;
-    async fn call(&self, ctx: &ToolCallContext, args: Json) -> Result<Json, ToolError>;
+    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError>;
 }
 
 pub struct MCPTool {
@@ -170,7 +161,7 @@ impl AgentTool for MCPTool {
         self.spec.clone()
     }
 
-    async fn call(&self, ctx: &ToolCallContext, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
         let request_body = json!({
             "jsonrpc": "2.0",
             "id": format!(
@@ -277,7 +268,7 @@ impl AgentTool for RegisteredTool {
         self.spec.clone()
     }
 
-    async fn call(&self, ctx: &ToolCallContext, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
         self.inner.call(ctx, args).await
     }
 }
@@ -381,7 +372,7 @@ impl ToolManager {
 
     pub async fn call_tool(
         &self,
-        ctx: &ToolCallContext,
+        ctx: &TraceCtx,
         call: ToolCall,
     ) -> Result<Json, ToolError> {
         let Some(tool) = self.get_tool(&call.name) else {
@@ -463,14 +454,13 @@ mod tests {
         None
     }
 
-    fn test_call_ctx() -> ToolCallContext {
-        ToolCallContext {
+    fn test_call_ctx() -> TraceCtx {
+        TraceCtx {
             trace_id: "trace-1".to_string(),
             agent_did: "did:example:agent".to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-1".to_string(),
-            current_session_id: None,
         }
     }
 
@@ -489,7 +479,7 @@ mod tests {
             }
         }
 
-        async fn call(&self, _ctx: &ToolCallContext, _args: Json) -> Result<Json, ToolError> {
+        async fn call(&self, _ctx: &TraceCtx, _args: Json) -> Result<Json, ToolError> {
             Ok(json!({"ok": true}))
         }
     }

@@ -8,7 +8,8 @@ use serde::Serialize;
 use serde_json::{json, Value as Json};
 use tokio::task;
 
-use crate::agent_tool::{AgentTool, ToolCallContext, ToolError, ToolSpec};
+use crate::agent_tool::{AgentTool, ToolError, ToolSpec};
+use crate::behavior::TraceCtx;
 
 pub const TOOL_TODO_MANAGE: &str = "todo_manage";
 
@@ -145,7 +146,7 @@ impl AgentTool for TodoTool {
         }
     }
 
-    async fn call(&self, _ctx: &ToolCallContext, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
         let action = require_action(&args)?;
         match action.as_str() {
             "create" => self.call_create(args).await,
@@ -893,14 +894,13 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
-    fn test_ctx() -> ToolCallContext {
-        ToolCallContext {
+    fn test_ctx() -> TraceCtx {
+        TraceCtx {
             trace_id: "trace-test".to_string(),
             agent_did: "did:example:agent".to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-test".to_string(),
-            current_session_id: None,
         }
     }
 

@@ -8,7 +8,8 @@ use serde::Serialize;
 use serde_json::{json, Value as Json};
 use tokio::task;
 
-use crate::agent_tool::{AgentTool, ToolCallContext, ToolError, ToolSpec};
+use crate::agent_tool::{AgentTool, ToolError, ToolSpec};
+use crate::behavior::TraceCtx;
 
 pub const TOOL_WORKLOG_MANAGE: &str = "worklog_manage";
 
@@ -153,7 +154,7 @@ impl AgentTool for WorklogTool {
         }
     }
 
-    async fn call(&self, ctx: &ToolCallContext, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
         let action = require_action(&args)?;
         match action.as_str() {
             "append" => self.call_append(ctx, args).await,
@@ -168,7 +169,7 @@ impl AgentTool for WorklogTool {
 }
 
 impl WorklogTool {
-    async fn call_append(&self, ctx: &ToolCallContext, args: Json) -> Result<Json, ToolError> {
+    async fn call_append(&self, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
         let input = WorklogAppendInput::from_args(ctx, &args)?;
         let item = self
             .run_db("append worklog", move |conn| append_worklog(conn, input))
@@ -249,7 +250,7 @@ struct WorklogAppendInput {
 }
 
 impl WorklogAppendInput {
-    fn from_args(ctx: &ToolCallContext, args: &Json) -> Result<Self, ToolError> {
+    fn from_args(ctx: &TraceCtx, args: &Json) -> Result<Self, ToolError> {
         let log_id = optional_string(args, "log_id")?.unwrap_or_else(generate_worklog_id);
         let log_type = require_string(args, "type")?;
         let status = optional_string(args, "status")?
@@ -257,11 +258,7 @@ impl WorklogAppendInput {
             .transpose()?
             .unwrap_or_else(|| "info".to_string());
         let agent_id = optional_string(args, "agent_id")?.unwrap_or_else(|| ctx.agent_did.clone());
-        let owner_session_id = ctx
-            .current_session_id
-            .as_ref()
-            .map(|session_id| session_id.trim().to_string())
-            .filter(|session_id| !session_id.is_empty());
+        let owner_session_id = optional_string(args, "owner_session_id")?;
         let related_agent_id = optional_string(args, "related_agent_id")?;
         let run_id = optional_string(args, "run_id")?;
         let step_id = optional_string(args, "step_id")?;
@@ -899,14 +896,13 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
-    fn test_ctx() -> ToolCallContext {
-        ToolCallContext {
+    fn test_ctx() -> TraceCtx {
+        TraceCtx {
             trace_id: "trace-test".to_string(),
             agent_did: "did:example:agent".to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-test".to_string(),
-            current_session_id: None,
         }
     }
 
@@ -916,7 +912,7 @@ mod tests {
 
     async fn call_with_ctx(
         tool: &WorklogTool,
-        ctx: &ToolCallContext,
+        ctx: &TraceCtx,
         args: Json,
     ) -> Result<Json, ToolError> {
         tool.call(ctx, args).await
@@ -1066,16 +1062,15 @@ mod tests {
         let tool =
             WorklogTool::new(WorklogToolConfig::with_db_path(db_path)).expect("create worklog");
 
-        let mut ctx = test_ctx();
-        ctx.current_session_id = Some("session-001".to_string());
         let created = call_with_ctx(
             &tool,
-            &ctx,
+            &test_ctx(),
             json!({
                 "action": "append",
                 "log_id": "log-owner-1",
                 "type": "function_call",
-                "summary": "owner session log"
+                "summary": "owner session log",
+                "owner_session_id": "session-001"
             }),
         )
         .await

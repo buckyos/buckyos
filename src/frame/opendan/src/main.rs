@@ -6,6 +6,8 @@ pub mod agent_session;
 pub mod agent_tool;
 pub mod ai_runtime;
 pub mod behavior;
+#[cfg(test)]
+pub mod test_utils;
 pub mod workspace;
 
 use std::path::{Path, PathBuf};
