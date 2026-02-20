@@ -203,7 +203,7 @@
 
 - behavior config
   - 关键配置实际落在：`BehaviorConfig` + `LLMBehaviorConfig` + `ModelPolicy` + `StepLimits`
-
+  - 一些约定的behavior_name : `resolve_router`,`on_wakeup`
 - Input
   - `InboxPack = Json`
   - `MemoryPack = Json`

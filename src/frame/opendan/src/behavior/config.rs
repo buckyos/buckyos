@@ -7,7 +7,7 @@ use tokio::fs;
 
 use crate::agent_tool::ToolSpec;
 
-use super::types::{default_output_protocol_text, LLMBehaviorConfig, StepLimits};
+use super::types::{LLMBehaviorConfig, StepLimits};
 
 const BEHAVIOR_CONFIG_EXTENSIONS: [&str; 3] = ["yaml", "yml", "json"];
 
@@ -49,7 +49,7 @@ impl Default for BehaviorConfig {
     fn default() -> Self {
         Self {
             name: String::new(),
-            process_rule: default_process_rule(),
+            process_rule: String::new(),
             output_protocol: BehaviorOutputProtocol::default(),
             tools: BehaviorToolsConfig::default(),
             llm: LLMBehaviorConfig::default(),
@@ -137,7 +137,10 @@ impl BehaviorConfig {
                 .to_string();
         }
         if cfg.process_rule.trim().is_empty() {
-            cfg.process_rule = default_process_rule();
+            return Err(BehaviorConfigError::Invalid {
+                path: path.display().to_string(),
+                message: "process_rule must be provided in behavior config".to_string(),
+            });
         }
 
         cfg.tools.normalize();
@@ -229,33 +232,24 @@ pub enum BehaviorOutputProtocol {
 
 impl Default for BehaviorOutputProtocol {
     fn default() -> Self {
-        Self::Text(default_output_protocol_text())
+        Self::Text(String::new())
     }
 }
 
 impl BehaviorOutputProtocol {
     pub fn to_prompt_text(&self) -> String {
         match self {
-            BehaviorOutputProtocol::Text(text) => {
-                if text.trim().is_empty() {
-                    default_output_protocol_text()
-                } else {
-                    text.clone()
-                }
-            }
+            BehaviorOutputProtocol::Text(text) => text.trim().to_string(),
             BehaviorOutputProtocol::Structured(spec) => {
                 if let Some(text) = &spec.text {
                     if !text.trim().is_empty() {
                         return text.clone();
                     }
                 }
-
-                let mut protocol = default_output_protocol_text();
-                if let Some(schema_hint) = &spec.schema_hint {
-                    protocol.push_str("\nSchema hint: ");
-                    protocol.push_str(&schema_hint.to_string());
-                }
-                protocol
+                spec.schema_hint
+                    .as_ref()
+                    .map(|schema_hint| schema_hint.to_string())
+                    .unwrap_or_default()
             }
         }
     }
@@ -299,21 +293,35 @@ async fn is_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn default_process_rule() -> String {
-    "Process current behavior safely and produce the required structured result.".to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn behavior_config_yaml_supports_defaults() {
+    fn behavior_config_yaml_requires_process_rule() {
+        let path = Path::new("on_wakeup.yaml");
+        let err = BehaviorConfig::parse_from_str(
+            path,
+            r#"
+tools:
+  mode: allow_list
+  names:
+    - exec_bash
+"#,
+        )
+        .expect_err("process_rule should be required");
+
+        let msg = err.to_string();
+        assert!(msg.contains("process_rule"));
+    }
+
+    #[test]
+    fn behavior_config_yaml_parses_process_rule_and_allowlist() {
         let path = Path::new("on_wakeup.yaml");
         let cfg = BehaviorConfig::parse_from_str(
             path,
             r#"
-process_rule: Wake up and check inbox.
+process_rule: test_rule
 tools:
   mode: allow_list
   names:
@@ -321,15 +329,14 @@ tools:
 "#,
         )
         .expect("parse behavior yaml");
-
         assert_eq!(cfg.name, "on_wakeup");
-        assert_eq!(cfg.process_rule, "Wake up and check inbox.");
+        assert_eq!(cfg.process_rule, "test_rule");
         assert_eq!(cfg.tools.mode, BehaviorToolMode::AllowList);
         assert_eq!(cfg.tools.names, vec!["exec_bash".to_string()]);
         assert_eq!(cfg.llm.process_name, "opendan-llm-behavior");
         assert_eq!(cfg.limits.max_prompt_tokens, 12_000);
         assert!(cfg.llm.force_json);
-        assert!(!cfg.llm.output_protocol.trim().is_empty());
+        assert!(cfg.llm.output_protocol.trim().is_empty());
     }
 
     #[test]
@@ -338,9 +345,10 @@ tools:
         let cfg = BehaviorConfig::parse_from_str(
             path,
             r#"
+process_rule: test_rule
 output_protocol:
   mode: json_v1
-  text: Return one compact JSON object only.
+  text: protocol_from_cfg
 llm:
   process_name: custom-process
   model_policy:
@@ -352,7 +360,7 @@ llm:
         assert_eq!(cfg.name, "on_msg");
         assert_eq!(
             cfg.llm.output_protocol,
-            "Return one compact JSON object only.".to_string()
+            "protocol_from_cfg".to_string()
         );
         assert_eq!(cfg.llm.process_name, "custom-process");
         assert_eq!(cfg.llm.model_policy.preferred, "fast-model");

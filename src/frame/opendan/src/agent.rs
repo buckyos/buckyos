@@ -35,8 +35,9 @@ const DEFAULT_ENVIRONMENT_DIR: &str = "environment";
 const DEFAULT_WORKLOG_FILE: &str = "worklog/agent-loop.jsonl";
 const DEFAULT_SLEEP_REASON: &str = "no_new_input";
 const MSG_CENTER_INBOX_PULL_LIMIT: usize = 32;
-const STAGE_RESOLVE_ROUTER: &str = "resolve_router";
-const STAGE_EXECUTOR_DEFAULT: &str = "on_wakeup";
+const BEHAVIOR_RESOLVE_ROUTER: &str = "resolve_router";
+const BEHAVIOR_ROUTER_PASS: &str = "router_pass";
+const BEHAVIOR_ON_WAKEUP: &str = "on_wakeup";
 const MAX_RECENT_TURNS: usize = 6;
 const MAX_ROUTER_TOOL_CALLS: usize = 8;
 
@@ -227,7 +228,6 @@ impl AIAgent {
 
         let behavior_cfg_cache = Arc::new(RwLock::new(HashMap::<String, BehaviorConfig>::new()));
         preload_behavior_configs(&behaviors_dir, behavior_cfg_cache.clone()).await?;
-        ensure_on_wakeup_behavior(behavior_cfg_cache.clone()).await;
 
         let policy = Arc::new(AgentPolicy::new(
             tool_mgr.clone(),
@@ -599,7 +599,7 @@ impl AIAgent {
             wakeup_id,
             trace_id,
             status,
-            final_behavior: STAGE_EXECUTOR_DEFAULT.to_string(),
+            final_behavior: BEHAVIOR_ON_WAKEUP.to_string(),
             steps: 0,
             behavior_hops: 0,
             hp_before: hp,
@@ -647,7 +647,7 @@ impl AIAgent {
             token_usage: TokenUsage::default(),
             steps: 0,
             behavior_hops: 0,
-            current_behavior: STAGE_EXECUTOR_DEFAULT.to_string(),
+            current_behavior: BEHAVIOR_ON_WAKEUP.to_string(),
             pending_observations: vec![],
             memory_queries: Vec::new(),
         }
@@ -662,7 +662,7 @@ impl AIAgent {
         }
         let Some((trace, llm_result, tracking)) = self
             .run_optional_stage_behavior(
-                STAGE_RESOLVE_ROUTER,
+                BEHAVIOR_RESOLVE_ROUTER,
                 &state.trace_id,
                 &state.wakeup_id,
                 0,
@@ -675,7 +675,7 @@ impl AIAgent {
                 state.pending_observations.clone(),
                 vec![EnvKV {
                     key: "stage.name".to_string(),
-                    value: STAGE_RESOLVE_ROUTER.to_string(),
+                    value: BEHAVIOR_RESOLVE_ROUTER.to_string(),
                 }],
             )
             .await?
@@ -705,7 +705,7 @@ impl AIAgent {
     }
 
     async fn select_behavior_mode(&self, state: &AgentLoopState) -> ModeSelectionResult {
-        let selected_mode = STAGE_EXECUTOR_DEFAULT.to_string();
+        let selected_mode = BEHAVIOR_ON_WAKEUP.to_string();
         debug!(
             "ai_agent.mode_select: did={} wakeup_id={} mode={} source=default",
             self.did, state.wakeup_id, selected_mode
@@ -800,6 +800,14 @@ impl AIAgent {
                 break;
             }
 
+            if !self.behavior_exists(&state.current_behavior).await {
+                warn!(
+                    "ai_agent.loop skip: did={} wakeup_id={} reason=behavior_not_found behavior={}",
+                    self.did, state.wakeup_id, state.current_behavior
+                );
+                break;
+            }
+
             let cfg = self.ensure_behavior_config(&state.current_behavior).await?;
             let trace = TraceCtx {
                 trace_id: state.trace_id.clone(),
@@ -813,11 +821,6 @@ impl AIAgent {
                 LLMBehavior::new(cfg.to_llm_behavior_config(), self.build_behavior_deps());
             let memory_pack = self.load_memory_pack(&trace).await;
             let remaining_steps = self.cfg.max_steps_per_wakeup.saturating_sub(state.steps);
-            let convergence_hint = if remaining_steps <= 2 {
-                "Near step limit: converge to concrete answer and next action."
-            } else {
-                "Proceed step-by-step; use tools only when needed."
-            };
             let mut env_context = self.build_env_context(now_ms()).await;
             env_context.extend(vec![
                 EnvKV {
@@ -836,10 +839,6 @@ impl AIAgent {
                     key: "step.remaining".to_string(),
                     value: remaining_steps.to_string(),
                 },
-                EnvKV {
-                    key: "step.convergence_hint".to_string(),
-                    value: convergence_hint.to_string(),
-                },
             ]);
             let mut step_payload = state.input_payload.clone();
             step_payload["session"] = json!({
@@ -848,8 +847,7 @@ impl AIAgent {
             });
             step_payload["step_meta"] = json!({
                 "step_index": state.steps,
-                "remaining_steps": remaining_steps,
-                "convergence_hint": convergence_hint
+                "remaining_steps": remaining_steps
             });
             let input = BehaviorExecInput {
                 trace: trace.clone(),
@@ -911,7 +909,7 @@ impl AIAgent {
                             "audience": audience,
                             "format": format,
                             "content": content,
-                            "note": "Executor reply candidate; data only."
+                            "untrusted": true
                         }),
                         ok: true,
                         truncated: false,
@@ -2147,19 +2145,6 @@ async fn preload_behavior_configs(
     Ok(())
 }
 
-async fn ensure_on_wakeup_behavior(cache: Arc<RwLock<HashMap<String, BehaviorConfig>>>) {
-    let mut guard = cache.write().await;
-    if guard.contains_key("on_wakeup") {
-        return;
-    }
-    warn!("ai_agent.behavior fallback: injecting default on_wakeup behavior");
-    let mut fallback = BehaviorConfig::default();
-    fallback.name = "on_wakeup".to_string();
-    fallback.process_rule =
-        "Check inbox/events, run safe steps, and return structured output.".to_string();
-    guard.insert("on_wakeup".to_string(), fallback);
-}
-
 async fn discover_behavior_names(behaviors_dir: &Path) -> Result<Vec<String>, AIAgentError> {
     let exists = fs::try_exists(behaviors_dir)
         .await
@@ -2735,7 +2720,7 @@ mod tests {
         fs::write(
             agent_root.join("behaviors/on_wakeup.yaml"),
             r#"
-process_rule: Handle incoming requests, update todo, then write an artifact.
+process_rule: test_rule
 tools:
   mode: allow_list
   names:
@@ -2922,7 +2907,7 @@ limits:
         fs::write(
             agent_root.join("behaviors/resolve_router.yaml"),
             r#"
-process_rule: Resolve session + route tools/mode in one pass.
+process_rule: test_rule
 limits:
   max_tool_rounds: 0
   max_tool_calls_per_round: 0

@@ -233,7 +233,7 @@ async fn run_step_with_tool_followup() {
     let behavior_cfg = load_behavior_config_yaml_for_test(
         "on_wakeup",
         r#"
-process_rule: do work
+process_rule: test_rule
 tools:
   mode: allow_list
   names:
@@ -360,7 +360,7 @@ async fn run_step_resolves_prefixed_running_aicc_task_id_from_task_data() {
     let behavior_cfg = load_behavior_config_yaml_for_test(
         "on_wakeup",
         r#"
-process_rule: do work
+process_rule: test_rule
 "#,
     )
     .await;
@@ -438,7 +438,7 @@ async fn run_step_accepts_succeeded_response_with_string_task_id() {
     let behavior_cfg = load_behavior_config_yaml_for_test(
         "on_wakeup",
         r#"
-process_rule: do work
+process_rule: test_rule
 "#,
     )
     .await;
@@ -517,7 +517,7 @@ async fn run_step_sets_behavior_task_as_parent_for_aicc_requests() {
     let behavior_cfg = load_behavior_config_yaml_for_test(
         "on_wakeup",
         r#"
-process_rule: do work
+process_rule: test_rule
 "#,
     )
     .await;
@@ -675,7 +675,7 @@ async fn run_step_then_run_actions_followup() {
     let behavior_cfg = load_behavior_config_yaml_for_test(
         "on_wakeup",
         r#"
-process_rule: plan action and summarize action result
+process_rule: test_rule
 tools:
   mode: none
 "#,
@@ -772,7 +772,7 @@ tools:
         .payload
         .messages
         .iter()
-        .any(|m| m.content.contains("<<OBSERVATIONS (UNTRUSTED)>>"));
+        .any(|m| m.content.contains("<<OBSERVATIONS>>"));
     assert!(has_obs);
 }
 
@@ -875,7 +875,7 @@ async fn run_step_with_workshop_list_dir_then_plan_python_actions() {
     let behavior_cfg = load_behavior_config_yaml_for_test(
         "on_wakeup",
         r#"
-process_rule: list todo and then plan python script actions
+process_rule: test_rule
 tools:
   mode: allow_list
   names:
@@ -1157,7 +1157,7 @@ async fn run_step_with_agent_memory_tool_chain_then_insert_thing_by_action() {
     let behavior_cfg = load_behavior_config_yaml_for_test(
         "on_wakeup",
         r#"
-process_rule: use load_memory first, then load_things, then plan an action to update structured memory
+process_rule: test_rule
 tools:
   mode: allow_list
   names:

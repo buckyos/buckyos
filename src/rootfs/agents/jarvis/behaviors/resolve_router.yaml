@@ -7,21 +7,20 @@
 # ...content from self.md...
 # <</SELF>>
 # <<BEHAVIOR>>
-# Handle inbox and event inputs safely.
-# Use tools only when needed, keep steps concise, and finish by setting
-# next_behavior to "END" when no further action is required.
+# Resolve session context for the current wakeup and decide optional routing.
+# Keep tool usage minimal. If no behavior switch is needed, keep next_behavior null.
 # <</BEHAVIOR>>
 # <<POLICY_SUMMARY>>
 # agent.did: did:example:jarvis
 # loop.session_id: session-user-1
-# step.index: 1
-# step.remaining: 7
+# step.index: 0
+# step.remaining: 8
 # <</POLICY_SUMMARY>>
 # <<STEP_HINTS>>
 # loop.session_id: session-user-1
 # loop.event_id: evt-123
-# step.index: 1
-# step.remaining: 7
+# step.index: 0
+# step.remaining: 8
 # <</STEP_HINTS>>
 # <<OUTPUT_PROTOCOL>>
 # Return exactly one JSON object and no extra text.
@@ -29,11 +28,11 @@
 # <</OUTPUT_PROTOCOL>>
 # [user]
 # <<INBOX>>
-# {"trigger":"on_wakeup","router_reply":"收到，先整理项目状态。"}
+# {"trigger":"on_wakeup","raw_payload":{"message":"帮我总结项目状态"}}
 # <</INBOX>>
 # [user]
 # <<MEMORY>>
-# {"facts":[{"kind":"todo","title":"Reply project status"}]}
+# {"facts":[{"kind":"project","name":"opendan"}]}
 # <</MEMORY>>
 # [user]
 # <<TOOLS>>
@@ -42,26 +41,26 @@
 #
 # Typical LLM return example (JSON only):
 # {
-#   "next_behavior": "END",
-#   "thinking": "work completed for this wakeup",
-#   "reply": [
-#     {
-#       "audience": "user",
-#       "format": "markdown",
-#       "content": "已完成本轮处理，项目状态已整理。"
-#     }
-#   ],
+#   "next_behavior": null,
+#   "thinking": "bind session and collect minimal context",
+#   "reply": [],
 #   "tool_calls": [],
 #   "todo": [],
 #   "set_memory": [],
 #   "actions": [],
-#   "session_delta": []
+#   "session_delta": [],
+#   "output": {
+#     "session_id": "session-user-1",
+#     "new_session": null,
+#     "next_behavior": "on_wakeup",
+#     "memory_queries": ["project status", "todo follow-up"],
+#     "reply": "收到，先整理项目状态。"
+#   }
 # }
 
 process_rule: |
-  Handle inbox and event inputs safely.
-  Use tools only when needed, keep steps concise, and finish by setting
-  next_behavior to "END" when no further action is required.
+  Resolve session context for the current wakeup and decide optional routing.
+  Keep tool usage minimal. If no behavior switch is needed, keep next_behavior null.
 
 output_protocol:
   mode: json_v1
@@ -71,13 +70,7 @@ output_protocol:
     {
       "next_behavior": "string|null",
       "thinking": "string|null",
-      "reply": [
-        {
-          "audience": "user|owner|broadcast",
-          "format": "markdown|text|json",
-          "content": "string"
-        }
-      ],
+      "reply": [],
       "tool_calls": [
         {
           "name": "string",
@@ -88,9 +81,16 @@ output_protocol:
       "todo": [],
       "set_memory": [],
       "actions": [],
-      "session_delta": []
+      "session_delta": [],
+      "output": {
+        "session_id": "string|null",
+        "new_session": ["string", "string"],
+        "next_behavior": "string|null",
+        "memory_queries": ["string"],
+        "reply": "string|null"
+      }
     }
-    Set "next_behavior" to "END" when this wakeup can stop.
+    Keep "output" as an object even when some fields are null/empty.
 
 tools:
   mode: allow_list
@@ -99,10 +99,8 @@ tools:
     - load_things
     - list
     - todo_manage
-    - exec_bash
-    - edit_file
 
 limits:
-  max_tool_rounds: 3
+  max_tool_rounds: 1
   max_tool_calls_per_round: 4
-  deadline_ms: 60000
+  deadline_ms: 45000
