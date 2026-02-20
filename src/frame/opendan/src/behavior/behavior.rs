@@ -14,7 +14,7 @@ use serde_json::{json, Map, Value as Json};
 
 use super::config::{BehaviorConfig, BehaviorConfigError};
 use super::observability::{Event, WorklogSink};
-use super::parser::StepOutputParser;
+use super::parser::BehaviorResultParser;
 use super::policy_adapter::PolicyEngine;
 use super::prompt::{ChatMessage, ChatRole, PromptBuilder, PromptPack};
 use super::sanitize::Sanitizer;
@@ -149,7 +149,7 @@ impl LLMBehavior {
         track.model = first_resp.model.clone();
         track.provider = first_resp.provider.clone();
 
-        let (mut draft, mut raw_output) = StepOutputParser::parse_first(&first_resp, self.cfg.force_json)
+        let (mut draft, mut raw_output) = BehaviorResultParser::parse_first(&first_resp, self.cfg.force_json)
             .map_err(|err| LLMComputeError::Internal(format!("output parse failed: {err}")))?;
 
         let mut rounds_left = input.limits.max_tool_rounds;
@@ -351,7 +351,7 @@ impl LLMBehavior {
             usage = usage.add(usage2);
 
             let (next_draft, next_raw_output) =
-                StepOutputParser::parse_followup(&followup_resp, self.cfg.force_json)
+                BehaviorResultParser::parse_followup(&followup_resp, self.cfg.force_json)
                     .map_err(|err| {
                         LLMComputeError::Internal(format!("output parse failed: {err}"))
                     })?;

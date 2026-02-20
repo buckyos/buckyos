@@ -11,7 +11,7 @@ pub mod types;
 pub use behavior::*;
 pub use config::{BehaviorConfig, BehaviorConfigError};
 pub use observability::{Event, WorklogSink};
-pub use parser::StepOutputParser;
+pub use parser::BehaviorResultParser;
 pub use policy_adapter::PolicyEngine;
 pub use prompt::{ChatMessage, ChatRole, PromptBuilder, PromptPack, Truncator};
 pub use sanitize::Sanitizer;

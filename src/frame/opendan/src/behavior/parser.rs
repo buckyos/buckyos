@@ -4,9 +4,9 @@ use super::types::{BehaviorLLMResult, LLMOutput};
 use super::LLMRawResponse;
 use crate::agent_tool::ToolCall;
 
-pub struct StepOutputParser;
+pub struct BehaviorResultParser;
 
-impl StepOutputParser {
+impl BehaviorResultParser {
     pub fn parse_first(
         raw: &LLMRawResponse,
         force_json: bool,
@@ -172,7 +172,7 @@ mod tests {
         let raw = raw_response("not-json", vec![call.clone()]);
 
         let (parsed, output) =
-            StepOutputParser::parse_first(&raw, true).expect("parse_first should succeed");
+            BehaviorResultParser::parse_first(&raw, true).expect("parse_first should succeed");
         assert_eq!(parsed.tool_calls, vec![call]);
         assert!(parsed.actions.is_empty());
         assert!(matches!(output, LLMOutput::Json(_)));
@@ -189,7 +189,7 @@ mod tests {
         let raw = raw_response("still-not-json", vec![call.clone()]);
 
         let (parsed, output) =
-            StepOutputParser::parse_followup(&raw, false).expect("parse_followup should succeed");
+            BehaviorResultParser::parse_followup(&raw, false).expect("parse_followup should succeed");
         assert_eq!(parsed.tool_calls, vec![call]);
         assert!(matches!(output, LLMOutput::Json(_)));
     }
@@ -199,7 +199,7 @@ mod tests {
         let raw = raw_response("plain text output", vec![]);
 
         let (parsed, output) =
-            StepOutputParser::parse_first(&raw, false).expect("plain text parsing should succeed");
+            BehaviorResultParser::parse_first(&raw, false).expect("plain text parsing should succeed");
         assert!(parsed.tool_calls.is_empty());
         assert!(parsed.actions.is_empty());
         assert_eq!(
@@ -215,7 +215,7 @@ mod tests {
         let raw = raw_response(content, vec![]);
 
         let (parsed, output) =
-            StepOutputParser::parse_first(&raw, true).expect("json fence parse should work");
+            BehaviorResultParser::parse_first(&raw, true).expect("json fence parse should work");
         assert_eq!(output, LLMOutput::Text("ok".to_string()));
         assert_eq!(parsed.next_behavior.as_deref(), Some("END"));
     }
@@ -226,7 +226,7 @@ mod tests {
         let raw = raw_response(content, vec![]);
 
         let (parsed, output) =
-            StepOutputParser::parse_first(&raw, true).expect("brace-slice parse should work");
+            BehaviorResultParser::parse_first(&raw, true).expect("brace-slice parse should work");
         assert_eq!(output, LLMOutput::Json(json!({ "v": 1 })));
         assert_eq!(parsed.next_behavior.as_deref(), Some("NEXT"));
     }
@@ -235,7 +235,7 @@ mod tests {
     fn force_json_returns_error_when_no_json_found() {
         let raw = raw_response("no json here", vec![]);
 
-        let err = StepOutputParser::parse_first(&raw, true).expect_err("should fail");
+        let err = BehaviorResultParser::parse_first(&raw, true).expect_err("should fail");
         assert!(err.contains("force_json enabled"));
     }
 
@@ -258,7 +258,7 @@ mod tests {
         let raw = raw_response(&payload.to_string(), vec![]);
 
         let (parsed, output) =
-            StepOutputParser::parse_first(&raw, true).expect("behavior parse should work");
+            BehaviorResultParser::parse_first(&raw, true).expect("behavior parse should work");
         assert_eq!(parsed.next_behavior.as_deref(), Some("END"));
         assert_eq!(output, LLMOutput::Json(payload));
     }
@@ -277,7 +277,7 @@ mod tests {
             vec![],
         );
 
-        let (parsed, _) = StepOutputParser::parse_first(&raw, true).expect("parse should succeed");
+        let (parsed, _) = BehaviorResultParser::parse_first(&raw, true).expect("parse should succeed");
         assert_eq!(parsed.tool_calls.len(), 1);
         assert_eq!(parsed.tool_calls[0].name, "tool.echo");
         assert_eq!(parsed.tool_calls[0].call_id, "executor-call-1");
@@ -304,7 +304,7 @@ mod tests {
             vec![],
         );
 
-        let (parsed, _) = StepOutputParser::parse_first(&raw, true).expect("parse should succeed");
+        let (parsed, _) = BehaviorResultParser::parse_first(&raw, true).expect("parse should succeed");
         assert_eq!(parsed.next_behavior, None);
     }
 
@@ -321,7 +321,7 @@ mod tests {
             vec![],
         );
 
-        let err = StepOutputParser::parse_first(&raw, true).expect_err("schema should fail");
+        let err = BehaviorResultParser::parse_first(&raw, true).expect_err("schema should fail");
         assert!(err.contains("invalid behavior output schema"));
     }
 
