@@ -1,51 +1,60 @@
 # Compiled prompt example (from PromptBuilder, simplified):
 # [system]
 # <<ROLE>>
+# # 别人眼中的我
 # ...content from role.md...
-# <</ROLE>>
-# <<SELF>>
+# # 我自己心中的我
 # ...content from self.md...
-# <</SELF>>
-# <<BEHAVIOR>>
-# Resolve session context for the current wakeup and decide optional routing.
-# Keep tool usage minimal. If no behavior switch is needed, keep next_behavior null.
-# <</BEHAVIOR>>
-# <<POLICY_SUMMARY>>
-# agent.did: did:example:jarvis
-# loop.session_id: session-user-1
-# step.index: 0
-# step.remaining: 8
-# <</POLICY_SUMMARY>>
-# <<STEP_HINTS>>
-# loop.session_id: session-user-1
-# loop.event_id: evt-123
-# step.index: 0
-# step.remaining: 8
-# <</STEP_HINTS>>
+# <</ROLE>>
+
+# <<process_rule>>
+# 当前行为模式：快速判断输入的信息，并决定后续的处理逻辑
+
+# - 简单,没有特定内容的输入，立刻replay，否则在behavior模式列表中选择一个合适的behavior来处理后续的信息
+# - 根据输入选择正确的session_id，或创建一个新的session
+
+# ## 我的behavior模式列表：
+
+# - PLAN :
+# - DO_TASK
+
+# <</process_rule>>
 # <<OUTPUT_PROTOCOL>>
 # Return exactly one JSON object and no extra text.
-# ... (exactly the text configured in output_protocol.text below) ...
+# The JSON object must match ResolveRouterResult exactly:
+# {
+#   "session_id": "string",
+#   "new_session": [
+#     "title (string)",
+#     "description (string)"
+#   ],
+#   "next_behavior": "string",
+#   "reply": "string"
+# }
+# Notes:
+# - If no new session is needed, set "new_session" to null.
+# - If no behavior switch is needed, set "next_behavior" to END.
+# - "memory_queries" should be an array; use [] when not needed.
 # <</OUTPUT_PROTOCOL>>
-# [user]
-# <<INBOX>>
-# {"trigger":"on_wakeup","raw_payload":{"message":"帮我总结项目状态"}}
-# <</INBOX>>
+# [system]
+
 # [user]
 # <<MEMORY>>
-# {"facts":[{"kind":"project","name":"opendan"}]}
+# Agent全局记忆:知道用户居住在湾区
+# 当输入的信息没有session-id则下面该段
+# {{recent_sessions}}
 # <</MEMORY>>
+# <<INPUT>>
+# {"from":"Zhicong Liu","content":"NFL 2026赛季有哪些强队？","session_id":null}
+# <</INPUT>>
 # [user]
-# <<TOOLS>>
-# ...tool specs filtered by allow_list...
-# <</TOOLS>>
-#
+
 # Typical LLM return example (JSON only):
 # {
-#   "session_id": "session-user-1",
-#   "new_session": null,
-#   "next_behavior": "on_wakeup",
-#   "memory_queries": ["project status", "todo follow-up"],
-#   "reply": "收到，先整理项目状态。"
+#   "new_session": ["discuss NFL 2026", "讨论NFL 2026的相关话题"],
+#   "next_behavior": "END",
+#   "memory_queries": ["NFL 2026"],
+#   "reply": "我没有NFL2026的实时信息，你在的湾区拥有NFL的传统强队:SF 49er"
 # }
 
 process_rule: |
@@ -71,14 +80,6 @@ output_protocol:
     - If no new session is needed, set "new_session" to null.
     - If no behavior switch is needed, set "next_behavior" to null.
     - "memory_queries" should be an array; use [] when not needed.
-
-tools:
-  mode: allow_list
-  names:
-    - load_memory
-    - load_things
-    - list
-    - todo_manage
 
 limits:
   max_tool_rounds: 1

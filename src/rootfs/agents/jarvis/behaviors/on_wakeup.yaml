@@ -39,7 +39,7 @@
 # <<TOOLS>>
 # ...tool specs filtered by allow_list...
 # <</TOOLS>>
-#
+
 # Typical LLM return example (JSON only):
 # {
 #   "next_behavior": "END",
