@@ -1,5 +1,6 @@
 #[allow(non_snake_case)]
 pub mod agent;
+pub mod agent_config;
 pub mod agent_enviroment;
 pub mod agent_memory;
 pub mod agent_session;
@@ -32,7 +33,8 @@ use server_runner::Runner;
 use tokio::fs;
 use tokio::task::JoinSet;
 
-use crate::agent::{AIAgent, AIAgentConfig, AIAgentDeps};
+use crate::agent::{AIAgent, AIAgentDeps};
+use crate::agent_config::AIAgentConfig;
 use crate::ai_runtime::{AiRuntime, AiRuntimeConfig, OpenDanRuntimeKrpcHandler};
 
 struct OpenDanHttpServer {

@@ -145,8 +145,16 @@ impl OpenAIProvider {
             .payload
             .options
             .as_ref()
-            .and_then(|value| value.get("max_tokens"))
-            .and_then(|value| value.as_u64())
+            .and_then(|value| {
+                value
+                    .get("max_tokens")
+                    .and_then(|value| value.as_u64())
+                    .or_else(|| {
+                        value
+                            .get("max_completion_tokens")
+                            .and_then(|value| value.as_u64())
+                    })
+            })
             .unwrap_or(512);
 
         (input_tokens.max(1), output_tokens.max(1))
@@ -1158,6 +1166,53 @@ pub fn register_openai_llm_providers(center: &AIComputeCenter, settings: &Value)
 mod tests {
     use super::*;
     use crate::aicc::ModelCatalog;
+    use buckyos_api::{AiPayload, ModelSpec, Requirements};
+    use serde_json::json;
+
+    fn build_llm_request(options: Option<Value>) -> CompleteRequest {
+        CompleteRequest::new(
+            Capability::LlmRouter,
+            ModelSpec::new("llm.default".to_string(), None),
+            Requirements::default(),
+            AiPayload::new(
+                Some("hello world".to_string()),
+                vec![],
+                vec![],
+                None,
+                options,
+            ),
+            None,
+        )
+    }
+
+    #[test]
+    fn estimate_tokens_uses_max_tokens_first() {
+        let request = build_llm_request(Some(json!({
+            "max_tokens": 120,
+            "max_completion_tokens": 456
+        })));
+
+        let (_input_tokens, output_tokens) = OpenAIProvider::estimate_tokens(&request);
+        assert_eq!(output_tokens, 120);
+    }
+
+    #[test]
+    fn estimate_tokens_falls_back_to_max_completion_tokens() {
+        let request = build_llm_request(Some(json!({
+            "max_completion_tokens": 333
+        })));
+
+        let (_input_tokens, output_tokens) = OpenAIProvider::estimate_tokens(&request);
+        assert_eq!(output_tokens, 333);
+    }
+
+    #[test]
+    fn estimate_tokens_defaults_output_tokens() {
+        let request = build_llm_request(None);
+
+        let (_input_tokens, output_tokens) = OpenAIProvider::estimate_tokens(&request);
+        assert_eq!(output_tokens, 512);
+    }
 
     #[test]
     fn build_openai_instances_infers_image_models_from_dalle() {

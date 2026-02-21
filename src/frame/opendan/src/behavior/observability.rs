@@ -4,11 +4,11 @@ use super::types::{TokenUsage, TraceCtx};
 
 #[async_trait]
 pub trait WorklogSink: Send + Sync {
-    async fn emit(&self, event: Event);
+    async fn emit(&self, event: AgentWorkEvent);
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum Event {
+pub enum AgentWorkEvent {
     LLMStarted {
         trace: TraceCtx,
         model: String,

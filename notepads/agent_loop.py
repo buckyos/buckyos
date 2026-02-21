@@ -745,7 +745,7 @@ def behavior_execute_steps(
 
         # 3) LLM Executor（强制 JSON 合同）
         exec_messages = build_executor_prompt(compiled)
-        out: BehaviorLLMResult = call_llm_json(exec_messages, schema="ExecutorResult")
+        out: BehaviorLLMResult = call_llm_json(exec_messages, schema="BehaviorLLMResult")
 
         prev_thinking = (out.get("thinking") or "")[:2000]  # 防增长（示意）
 

@@ -1,13 +1,14 @@
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
-use log::warn;
+use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
+use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
 
-use crate::behavior::TraceCtx;
+use crate::behavior::{BehaviorConfig, BehaviorExecInput, PolicyEngine, TraceCtx};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ToolSpec {
@@ -274,7 +275,7 @@ impl AgentTool for RegisteredTool {
 }
 
 pub struct ToolManager {
-    tools: RwLock<HashMap<String, Arc<dyn AgentTool>>>,
+    tools: StdRwLock<HashMap<String, Arc<dyn AgentTool>>>,
 }
 
 impl Default for ToolManager {
@@ -286,7 +287,7 @@ impl Default for ToolManager {
 impl ToolManager {
     pub fn new() -> Self {
         Self {
-            tools: RwLock::new(HashMap::new()),
+            tools: StdRwLock::new(HashMap::new()),
         }
     }
 
@@ -375,6 +376,81 @@ impl ToolManager {
             return Err(ToolError::NotFound(call.name));
         };
         tool.call(ctx, call.args).await
+    }
+}
+
+#[derive(Clone)]
+pub struct AgentPolicy {
+    tool_mgr: Arc<ToolManager>,
+    behavior_cfg_cache: Arc<RwLock<HashMap<String, BehaviorConfig>>>,
+}
+
+impl AgentPolicy {
+    pub fn new(
+        tool_mgr: Arc<ToolManager>,
+        behavior_cfg_cache: Arc<RwLock<HashMap<String, BehaviorConfig>>>,
+    ) -> Self {
+        Self {
+            tool_mgr,
+            behavior_cfg_cache,
+        }
+    }
+}
+
+#[async_trait]
+impl PolicyEngine for AgentPolicy {
+    async fn allowed_tools(&self, input: &BehaviorExecInput) -> Result<Vec<ToolSpec>, String> {
+        let all = self.tool_mgr.list_tool_specs();
+        let cfg = {
+            let guard = self.behavior_cfg_cache.read().await;
+            guard.get(&input.trace.behavior).cloned()
+        };
+        if let Some(cfg) = cfg {
+            let filtered = cfg.tools.filter_tool_specs(&all);
+            debug!(
+                "ai_agent.policy allowed_tools: behavior={} all={} filtered={}",
+                input.trace.behavior,
+                all.len(),
+                filtered.len()
+            );
+            return Ok(filtered);
+        }
+        debug!(
+            "ai_agent.policy allowed_tools: behavior={} all={} (no_behavior_cfg)",
+            input.trace.behavior,
+            all.len()
+        );
+        Ok(all)
+    }
+
+    async fn gate_tool_calls(
+        &self,
+        input: &BehaviorExecInput,
+        calls: &[ToolCall],
+    ) -> Result<Vec<ToolCall>, String> {
+        let allowed = self.allowed_tools(input).await?;
+        let allowed_set = allowed
+            .into_iter()
+            .map(|item| item.name)
+            .collect::<HashSet<_>>();
+
+        let mut out = Vec::with_capacity(calls.len());
+        for call in calls {
+            if !allowed_set.contains(&call.name) {
+                warn!(
+                    "ai_agent.policy deny_tool_call: behavior={} tool={} calls={}",
+                    input.trace.behavior,
+                    call.name,
+                    calls.len()
+                );
+                return Err(format!(
+                    "tool `{}` is not allowed for behavior `{}`",
+                    call.name, input.trace.behavior
+                ));
+            }
+            out.push(call.clone());
+        }
+        Ok(out)
     }
 }
 

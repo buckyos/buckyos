@@ -30,7 +30,7 @@ struct MockWorklog;
 
 #[async_trait]
 impl WorklogSink for MockWorklog {
-    async fn emit(&self, _event: Event) {}
+    async fn emit(&self, _event: AgentWorkEvent) {}
 }
 
 struct MockPolicy {
@@ -724,7 +724,7 @@ process_rule: test_rule
     assert_eq!(
         behavior_task
             .data
-            // .get("rootid")
+            .get("rootid")
             .and_then(|value| value.as_str()),
         Some("agent#default")
     );

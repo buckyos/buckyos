@@ -13,7 +13,7 @@ use log::warn;
 use serde_json::{json, Map, Value as Json};
 
 use super::config::{BehaviorConfig, BehaviorConfigError};
-use super::observability::{Event, WorklogSink};
+use super::observability::{AgentWorkEvent, WorklogSink};
 use super::parser::BehaviorResultParser;
 use super::policy_adapter::PolicyEngine;
 use super::prompt::{ChatMessage, ChatRole, PromptBuilder, PromptPack};
@@ -125,7 +125,7 @@ impl LLMBehavior {
 
         self.deps
             .worklog
-            .emit(Event::LLMStarted {
+            .emit(AgentWorkEvent::LLMStarted {
                 trace: input.trace.clone(),
                 model: self.cfg.model_policy.preferred.clone(),
             })
@@ -210,7 +210,7 @@ impl LLMBehavior {
                 let call_started = now_ms();
                 self.deps
                     .worklog
-                    .emit(Event::ToolCallPlanned {
+                    .emit(AgentWorkEvent::ToolCallPlanned {
                         trace: input.trace.clone(),
                         tool: call.name.clone(),
                         call_id: call.call_id.clone(),
@@ -242,7 +242,7 @@ impl LLMBehavior {
                         });
                         self.deps
                             .worklog
-                            .emit(Event::ToolCallFinished {
+                            .emit(AgentWorkEvent::ToolCallFinished {
                                 trace: input.trace.clone(),
                                 tool: call.name,
                                 call_id: call.call_id,
@@ -303,7 +303,7 @@ impl LLMBehavior {
                             .push(format!("tool {} failed: {}", call.name, err_msg));
                         self.deps
                             .worklog
-                            .emit(Event::ToolCallFinished {
+                            .emit(AgentWorkEvent::ToolCallFinished {
                                 trace: input.trace.clone(),
                                 tool: call.name,
                                 call_id: call.call_id,
@@ -407,7 +407,7 @@ impl LLMBehavior {
         track.latency_ms = now_ms().saturating_sub(started);
         self.deps
             .worklog
-            .emit(Event::LLMFinished {
+            .emit(AgentWorkEvent::LLMFinished {
                 trace: input.trace.clone(),
                 usage: usage.clone(),
                 ok: true,

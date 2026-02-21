@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -18,24 +18,21 @@ use tokio::fs;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinSet;
 
+use crate::agent_config::AIAgentConfig;
 use crate::agent_enviroment::AgentEnvironment;
 use crate::agent_memory::{AgentMemory, AgentMemoryConfig, TOOL_LOAD_MEMORY};
 use crate::agent_session::{AgentSession, AgentSessionConfig};
-use crate::agent_tool::{ToolCall, ToolError, ToolManager, ToolSpec};
+use crate::agent_tool::{AgentPolicy, ToolCall, ToolError, ToolManager, ToolSpec};
 use crate::ai_runtime::{AiRuntime, AiRuntimeConfig};
 use crate::behavior::{
-    BehaviorConfig, BehaviorConfigError, BehaviorExecInput, BehaviorLLMResult, EnvKV, Event,
+    BehaviorConfig, BehaviorConfigError, BehaviorExecInput, BehaviorLLMResult, EnvKV, AgentWorkEvent,
     LLMBehavior, LLMBehaviorDeps, LLMOutput, LLMTrackingInfo, Observation, ObservationSource,
     PolicyEngine, Sanitizer, TokenUsage, Tokenizer, TraceCtx, WorklogSink,
 };
 use crate::workspace::{TOOL_EXEC_BASH, TOOL_WORKLOG_MANAGE};
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
-const DEFAULT_ROLE_MD: &str = "role.md";
-const DEFAULT_SELF_MD: &str = "self.md";
-const DEFAULT_BEHAVIORS_DIR: &str = "behaviors";
-const DEFAULT_ENVIRONMENT_DIR: &str = "environment";
-const DEFAULT_WORKLOG_FILE: &str = "worklog/agent-loop.jsonl";
+const DEFAULT_SESSION_LOOP_STATE_FILE: &str = "session/session_loop_state.json";
 const DEFAULT_SLEEP_REASON: &str = "no_new_input";
 const MSG_CENTER_INBOX_PULL_LIMIT: usize = 32;
 const BEHAVIOR_RESOLVE_ROUTER: &str = "resolve_router";
@@ -69,49 +66,6 @@ pub enum AIAgentError {
     Runtime(#[from] crate::ai_runtime::AiRuntimeError),
     #[error("llm behavior failed: {0}")]
     LLMBehavior(String),
-}
-
-#[derive(Clone, Debug)]
-pub struct AIAgentConfig {
-    pub agent_root: PathBuf,
-    pub behaviors_dir_name: String,
-    pub environment_dir_name: String,
-    pub role_file_name: String,
-    pub self_file_name: String,
-    pub worklog_file_rel_path: PathBuf,
-    pub max_steps_per_wakeup: u32,
-    pub max_behavior_hops: u32,
-    pub max_walltime_ms: u64,
-    pub hp_max: u32,
-    pub hp_floor: u32,
-    pub hp_per_token: u32,
-    pub hp_per_action: u32,
-    pub default_sleep_ms: u64,
-    pub max_sleep_ms: u64,
-    pub memory_token_limit: u32,
-}
-
-impl AIAgentConfig {
-    pub fn new(agent_root: impl Into<PathBuf>) -> Self {
-        Self {
-            agent_root: agent_root.into(),
-            behaviors_dir_name: DEFAULT_BEHAVIORS_DIR.to_string(),
-            environment_dir_name: DEFAULT_ENVIRONMENT_DIR.to_string(),
-            role_file_name: DEFAULT_ROLE_MD.to_string(),
-            self_file_name: DEFAULT_SELF_MD.to_string(),
-            worklog_file_rel_path: PathBuf::from(DEFAULT_WORKLOG_FILE),
-            max_steps_per_wakeup: 8,
-            max_behavior_hops: 3,
-            max_walltime_ms: 120_000,
-            hp_max: 10_000,
-            hp_floor: 1,
-            hp_per_token: 1,
-            hp_per_action: 10,
-            default_sleep_ms: 2_000,
-            max_sleep_ms: 120_000,
-            memory_token_limit: 1_500,
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -158,6 +112,8 @@ struct AIAgentState {
     inbox_msgs: VecDeque<Json>,
     queued_events: VecDeque<Json>,
     last_wakeup_ms: Option<u64>,
+    session_runtime_states: HashMap<String, SessionRuntimeState>,
+    active_session_loop: Option<String>,
 }
 
 impl AIAgentState {
@@ -170,6 +126,8 @@ impl AIAgentState {
             inbox_msgs: VecDeque::new(),
             queued_events: VecDeque::new(),
             last_wakeup_ms: None,
+            session_runtime_states: HashMap::new(),
+            active_session_loop: None,
         }
     }
 }
@@ -189,13 +147,22 @@ pub struct AIAgent {
     policy: Arc<dyn PolicyEngine>,
     worklog: Arc<dyn WorklogSink>,
     tokenizer: Arc<dyn Tokenizer>,
+    session_runtime_store_path: PathBuf,
     state: Mutex<AIAgentState>,
 }
 
+/*
+Main Loop更清晰
+核心要点
+- 构造wakeup的input,并处理rouer result
+- 构造behavior step的input,并处理BehaviorLLMResult
+- Agent Loop 关注激活Session的调度
+- Session里面关注切换不同的Behavior和执行Behavior Step，并保存状态
+*/
 impl AIAgent {
     pub async fn load(mut cfg: AIAgentConfig, deps: AIAgentDeps) -> Result<Self, AIAgentError> {
         info!("ai_agent.load start: root={}", cfg.agent_root.display());
-        normalize_config(&mut cfg)?;
+        cfg.normalize().map_err(AIAgentError::InvalidConfig)?;
         let agent_root = normalize_agent_root(&cfg.agent_root).await?;
         cfg.agent_root = agent_root.clone();
 
@@ -215,6 +182,7 @@ impl AIAgent {
 
         let environment_root = agent_root.join(&cfg.environment_dir_name);
         let environment = AgentEnvironment::new(environment_root.clone()).await?;
+        let session_runtime_store_path = environment_root.join(DEFAULT_SESSION_LOOP_STATE_FILE);
         let session = AgentSession::new(
             AgentSessionConfig::new(&environment_root),
             deps.msg_center.clone(),
@@ -242,6 +210,11 @@ impl AIAgent {
             .join(&cfg.worklog_file_rel_path);
         let worklog = Arc::new(JsonlFileWorklogSink::new(worklog_path).await?);
         let tokenizer = Arc::new(WhitespaceTokenizer {});
+        let runtime_store =
+            load_session_runtime_store(&session_runtime_store_path, did.as_str()).await;
+        let mut initial_state = AIAgentState::new(&cfg);
+        initial_state.session_runtime_states = runtime_store.sessions;
+        initial_state.active_session_loop = None;
 
         let behavior_count = behavior_cfg_cache.read().await.len();
         let tool_count = tool_mgr.list_tool_specs().len();
@@ -269,7 +242,8 @@ impl AIAgent {
             policy,
             worklog,
             tokenizer,
-            state: Mutex::new(AIAgentState::new(&cfg)),
+            session_runtime_store_path,
+            state: Mutex::new(initial_state),
         })
     }
 
@@ -539,41 +513,331 @@ impl AIAgent {
             ),
         };
 
-        // Step 2: Mode Selection (default executor mode, may be overridden later)
-        let mode_selection = self.select_behavior_mode(&loop_state).await;
-        self.apply_mode_selection(&mut loop_state, &mode_selection);
+        // Step 2~5: Main Loop Flow (session runtime + staged behavior engine)
+        self.run_agent_loop_main_flow(&mut loop_state).await?;
 
-        // Step 3: Resolve Router Pass (session resolution + tool/workspace planning)
-        let (resolve_router, resolve_tracking, resolve_actions) =
-            self.resolve_router(&loop_state).await?;
-        if let Some(tracking) = resolve_tracking.as_ref() {
-            self.record_stage_cost(&mut loop_state, tracking, resolve_actions)
-                .await;
-        }
-        self.apply_resolve_router(&mut loop_state, &resolve_router);
-        self.send_router_reply_via_msg_center(&loop_state, &resolve_router)
+        // Step 6: State Persistence
+        self.agent_loop_persist_state(loop_state).await
+    }
+
+    async fn run_agent_loop_main_flow(
+        &self,
+        state: &mut AgentLoopState,
+    ) -> Result<(), AIAgentError> {
+        // Agent loop only resolves router and dispatches to session loop.
+        let mut session_runtime = self.load_or_init_session_runtime_state(state).await?;
+        self.maybe_force_route_on_new_input(state, &mut session_runtime)
             .await;
+
+        // Stage 1: Mode Selection
+        let mode_selection = self.select_behavior_mode(state).await;
+        self.apply_mode_selection(state, &mode_selection);
+        session_runtime.current_behavior = state.current_behavior.clone();
+
+        // Stage 2: Resolve Router
+        let should_sleep = self
+            .run_resolve_router_stage(state, &mut session_runtime)
+            .await?;
+        self.persist_session_runtime_state(&session_runtime).await;
+        if should_sleep {
+            session_runtime.phase = SessionLoopPhase::Waiting;
+            session_runtime.waiting = Some(WaitSpec::default_router_sleep());
+            self.persist_session_checkpoint_placeholder(state, &session_runtime)
+                .await;
+            return Ok(());
+        }
+
+        // Stage 3: Session Loop Dispatch
+        self.dispatch_session_loop(state, session_runtime).await
+    }
+
+    async fn load_or_init_session_runtime_state(
+        &self,
+        state: &AgentLoopState,
+    ) -> Result<SessionRuntimeState, AIAgentError> {
+        let session_id = state.loop_ctx.session_id.clone();
+        let (runtime, created_snapshot) = {
+            let mut guard = self.state.lock().await;
+            if let Some(existing) = guard.session_runtime_states.get(&session_id).cloned() {
+                return Ok(existing);
+            }
+
+            let created = SessionRuntimeState {
+                agent_id: self.did.clone(),
+                session_id: session_id.clone(),
+                current_behavior: state.current_behavior.clone(),
+                step_idx: state.steps,
+                phase: SessionLoopPhase::CollectInput,
+                waiting: None,
+                last_input: state.input_payload.clone(),
+            };
+            guard
+                .session_runtime_states
+                .insert(session_id.clone(), created.clone());
+            let snapshot = self.build_session_runtime_store_snapshot(&guard);
+            (created, Some(snapshot))
+        };
+        if let Some(snapshot) = created_snapshot {
+            self.persist_session_runtime_store_snapshot(snapshot).await;
+        }
+        Ok(runtime)
+    }
+
+    async fn maybe_force_route_on_new_input(
+        &self,
+        _state: &AgentLoopState,
+        _runtime: &mut SessionRuntimeState,
+    ) {
+        // Placeholder: event-driven forced route switching will be added later.
+    }
+
+    async fn run_resolve_router_stage(
+        &self,
+        state: &mut AgentLoopState,
+        runtime: &mut SessionRuntimeState,
+    ) -> Result<bool, AIAgentError> {
+        runtime.phase = SessionLoopPhase::ResolveRouter;
+
+        let (resolve_router, resolve_tracking, resolve_actions) = self.resolve_router(state).await?;
+        if let Some(tracking) = resolve_tracking.as_ref() {
+            self.record_stage_cost(state, tracking, resolve_actions).await;
+        }
+        self.apply_resolve_router(state, &resolve_router);
+        self.send_router_reply_via_msg_center(state, &resolve_router).await;
+
+        runtime.session_id = state.loop_ctx.session_id.clone();
+        runtime.current_behavior = state.current_behavior.clone();
+        runtime.step_idx = state.steps;
+        runtime.last_input = state.input_payload.clone();
+
         if resolve_router.is_sleep() {
-            self.hydrate_context(&mut loop_state);
-            loop_state.input_payload["resolve_router_sleep"] = json!({
+            self.hydrate_context(state);
+            state.input_payload["resolve_router_sleep"] = json!({
                 "enabled": true,
                 "is_sleep": true
             });
             info!(
                 "ai_agent.wait_wakeup sleep after resolve_router: did={} wakeup_id={}",
-                self.did, loop_state.wakeup_id,
+                self.did, state.wakeup_id,
             );
-            return self.agent_loop_persist_state(loop_state).await;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    async fn dispatch_session_loop(
+        &self,
+        state: &mut AgentLoopState,
+        mut runtime: SessionRuntimeState,
+    ) -> Result<(), AIAgentError> {
+        match self.try_enter_session_loop(runtime.session_id.as_str()).await {
+            Some(active_session) => {
+                runtime.phase = SessionLoopPhase::Waiting;
+                runtime.waiting =
+                    Some(WaitSpec::default_session_loop_busy(active_session.as_str()));
+                self.persist_session_checkpoint_placeholder(state, &runtime).await;
+                debug!(
+                    "ai_agent.session_loop dispatch_skipped: did={} wakeup_id={} target_session={} active_session={}",
+                    self.did,
+                    state.wakeup_id,
+                    runtime.session_id,
+                    active_session
+                );
+                return Ok(());
+            }
+            None => {
+                debug!(
+                    "ai_agent.session_loop dispatch_start: did={} wakeup_id={} session_id={}",
+                    self.did, state.wakeup_id, runtime.session_id
+                );
+            }
         }
 
-        // Step 4: Context Hydration (memory query marks + loop context injection)
-        self.hydrate_context(&mut loop_state);
+        let run_result = self.run_single_session_loop(state, &mut runtime).await;
+        self.exit_session_loop(runtime.session_id.as_str()).await;
+        run_result
+    }
 
-        // Step 5: Step Loop (behavior execution engine)
-        self.execute_behavior_steps(&mut loop_state).await?;
+    async fn run_single_session_loop(
+        &self,
+        state: &mut AgentLoopState,
+        runtime: &mut SessionRuntimeState,
+    ) -> Result<(), AIAgentError> {
+        // Keep backward-compatible behavior while moving execution ownership into
+        // session-loop pipeline.
+        self.hydrate_context(state);
+        self.run_session_step_state_machine(state, runtime).await?;
+        self.persist_session_checkpoint_placeholder(state, runtime).await;
+        Ok(())
+    }
 
-        // Step 6: State Persistence
-        self.agent_loop_persist_state(loop_state).await
+    async fn run_session_step_state_machine(
+        &self,
+        state: &mut AgentLoopState,
+        runtime: &mut SessionRuntimeState,
+    ) -> Result<(), AIAgentError> {
+        runtime.phase = SessionLoopPhase::CollectInput;
+
+        loop {
+            match runtime.phase {
+                SessionLoopPhase::CollectInput => {
+                    let has_input = self
+                        .generate_step_input_from_session_state_placeholder(state, runtime)
+                        .await;
+                    if !has_input {
+                        runtime.phase = SessionLoopPhase::Waiting;
+                        runtime.waiting = Some(WaitSpec::default_no_input());
+                        self.persist_session_checkpoint_placeholder(state, runtime).await;
+                        break;
+                    }
+                    runtime.waiting = None;
+                    runtime.phase = SessionLoopPhase::RunBehaviorStep;
+                }
+                SessionLoopPhase::RunBehaviorStep => {
+                    state.current_behavior = runtime.current_behavior.clone();
+                    state.steps = runtime.step_idx;
+                    self.execute_behavior_steps(state).await?;
+                    runtime.current_behavior = state.current_behavior.clone();
+                    runtime.step_idx = state.steps;
+                    runtime.last_input = state.input_payload.clone();
+                    runtime.phase = SessionLoopPhase::ApplyStepEffects;
+                }
+                SessionLoopPhase::ApplyStepEffects => {
+                    self.apply_step_side_effects_placeholder(state, runtime).await?;
+                    self.persist_session_checkpoint_placeholder(state, runtime).await;
+                    break;
+                }
+                SessionLoopPhase::Waiting => break,
+                SessionLoopPhase::ResolveRouter => {
+                    runtime.phase = SessionLoopPhase::CollectInput;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn persist_session_runtime_state(&self, runtime: &SessionRuntimeState) {
+        let snapshot = {
+            let mut guard = self.state.lock().await;
+            guard
+                .session_runtime_states
+                .insert(runtime.session_id.clone(), runtime.clone());
+            self.build_session_runtime_store_snapshot(&guard)
+        };
+        self.persist_session_runtime_store_snapshot(snapshot).await;
+    }
+
+    async fn try_enter_session_loop(&self, session_id: &str) -> Option<String> {
+        let snapshot = {
+            let mut guard = self.state.lock().await;
+            if let Some(active) = guard.active_session_loop.as_ref() {
+                if active != session_id {
+                    return Some(active.clone());
+                }
+                return None;
+            }
+            guard.active_session_loop = Some(session_id.to_string());
+            self.build_session_runtime_store_snapshot(&guard)
+        };
+        self.persist_session_runtime_store_snapshot(snapshot).await;
+        None
+    }
+
+    async fn exit_session_loop(&self, session_id: &str) {
+        let snapshot = {
+            let mut guard = self.state.lock().await;
+            if guard.active_session_loop.as_deref() == Some(session_id) {
+                guard.active_session_loop = None;
+                Some(self.build_session_runtime_store_snapshot(&guard))
+            } else {
+                None
+            }
+        };
+        if let Some(snapshot) = snapshot {
+            self.persist_session_runtime_store_snapshot(snapshot).await;
+        }
+    }
+
+    fn build_session_runtime_store_snapshot(&self, state: &AIAgentState) -> SessionRuntimeStore {
+        SessionRuntimeStore {
+            agent_id: self.did.clone(),
+            active_session_loop: state.active_session_loop.clone(),
+            sessions: state.session_runtime_states.clone(),
+            updated_at_ms: now_ms(),
+        }
+    }
+
+    async fn persist_session_runtime_store_snapshot(&self, snapshot: SessionRuntimeStore) {
+        if let Some(parent) = self.session_runtime_store_path.parent() {
+            if let Err(err) = fs::create_dir_all(parent).await {
+                warn!(
+                    "ai_agent.session_runtime persist_failed: did={} path={} err={}",
+                    self.did,
+                    self.session_runtime_store_path.display(),
+                    err
+                );
+                return;
+            }
+        }
+
+        let payload = match serde_json::to_string_pretty(&snapshot) {
+            Ok(v) => v,
+            Err(err) => {
+                warn!(
+                    "ai_agent.session_runtime serialize_failed: did={} err={}",
+                    self.did, err
+                );
+                return;
+            }
+        };
+        if let Err(err) = fs::write(&self.session_runtime_store_path, payload).await {
+            warn!(
+                "ai_agent.session_runtime write_failed: did={} path={} err={}",
+                self.did,
+                self.session_runtime_store_path.display(),
+                err
+            );
+        }
+    }
+
+    async fn generate_step_input_from_session_state_placeholder(
+        &self,
+        state: &mut AgentLoopState,
+        runtime: &mut SessionRuntimeState,
+    ) -> bool {
+        // Placeholder: the final implementation should rebuild prompt input by
+        // session runtime + newly arrived messages/events for each step.
+        runtime.last_input = state.input_payload.clone();
+        let (inbox_count, event_count) = wakeup_input_counts(&state.input_payload);
+        inbox_count > 0 || event_count > 0 || runtime.waiting.is_none()
+    }
+
+    async fn apply_step_side_effects_placeholder(
+        &self,
+        _state: &mut AgentLoopState,
+        _runtime: &mut SessionRuntimeState,
+    ) -> Result<(), AIAgentError> {
+        // Placeholder: apply session_delta / set_memory / todo patches in follow-up.
+        Ok(())
+    }
+
+    async fn persist_session_checkpoint_placeholder(
+        &self,
+        state: &AgentLoopState,
+        runtime: &SessionRuntimeState,
+    ) {
+        self.persist_session_runtime_state(runtime).await;
+        // Placeholder: durable checkpoint persistence is not wired yet.
+        debug!(
+            "ai_agent.session_checkpoint placeholder: did={} wakeup_id={} session_id={} behavior={} step={} phase={}",
+            self.did,
+            state.wakeup_id,
+            runtime.session_id,
+            runtime.current_behavior,
+            runtime.step_idx,
+            runtime.phase.as_str()
+        );
     }
 
     async fn log_sub_agent_wakeup(&self, explicit_reason: bool, now: u64) {
@@ -1829,6 +2093,106 @@ struct AgentLoopState {
     memory_queries: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum SessionLoopPhase {
+    CollectInput,
+    ResolveRouter,
+    RunBehaviorStep,
+    ApplyStepEffects,
+    Waiting,
+}
+
+impl SessionLoopPhase {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::CollectInput => "collect_input",
+            Self::ResolveRouter => "resolve_router",
+            Self::RunBehaviorStep => "run_behavior_step",
+            Self::ApplyStepEffects => "apply_step_effects",
+            Self::Waiting => "waiting",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+struct WaitSpec {
+    kind: String,
+    events: Vec<String>,
+    note: Option<String>,
+}
+
+impl Default for WaitSpec {
+    fn default() -> Self {
+        Self {
+            kind: "input".to_string(),
+            events: vec!["message".to_string(), "event".to_string()],
+            note: None,
+        }
+    }
+}
+
+impl WaitSpec {
+    fn default_no_input() -> Self {
+        Self {
+            note: Some("no_input_for_next_step".to_string()),
+            ..Self::default()
+        }
+    }
+
+    fn default_router_sleep() -> Self {
+        Self {
+            kind: "router_sleep".to_string(),
+            events: vec!["message".to_string(), "event".to_string()],
+            note: Some("resolve_router_requested_sleep".to_string()),
+        }
+    }
+
+    fn default_session_loop_busy(active_session: &str) -> Self {
+        Self {
+            kind: "session_loop_busy".to_string(),
+            events: vec!["message".to_string(), "event".to_string()],
+            note: Some(format!("active_session_loop={active_session}")),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+struct SessionRuntimeState {
+    agent_id: String,
+    session_id: String,
+    current_behavior: String,
+    step_idx: u32,
+    phase: SessionLoopPhase,
+    waiting: Option<WaitSpec>,
+    last_input: Json,
+}
+
+impl Default for SessionRuntimeState {
+    fn default() -> Self {
+        Self {
+            agent_id: String::new(),
+            session_id: String::new(),
+            current_behavior: BEHAVIOR_ON_WAKEUP.to_string(),
+            step_idx: 0,
+            phase: SessionLoopPhase::CollectInput,
+            waiting: None,
+            last_input: json!({}),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct SessionRuntimeStore {
+    agent_id: String,
+    active_session_loop: Option<String>,
+    sessions: HashMap<String, SessionRuntimeState>,
+    updated_at_ms: u64,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 struct ResolveRouterResult {
@@ -1880,81 +2244,6 @@ impl Tokenizer for WhitespaceTokenizer {
     }
 }
 
-#[derive(Clone)]
-struct AgentPolicy {
-    tool_mgr: Arc<ToolManager>,
-    behavior_cfg_cache: Arc<RwLock<HashMap<String, BehaviorConfig>>>,
-}
-
-impl AgentPolicy {
-    fn new(
-        tool_mgr: Arc<ToolManager>,
-        behavior_cfg_cache: Arc<RwLock<HashMap<String, BehaviorConfig>>>,
-    ) -> Self {
-        Self {
-            tool_mgr,
-            behavior_cfg_cache,
-        }
-    }
-}
-
-#[async_trait]
-impl PolicyEngine for AgentPolicy {
-    async fn allowed_tools(&self, input: &BehaviorExecInput) -> Result<Vec<ToolSpec>, String> {
-        let all = self.tool_mgr.list_tool_specs();
-        let cfg = {
-            let guard = self.behavior_cfg_cache.read().await;
-            guard.get(&input.trace.behavior).cloned()
-        };
-        if let Some(cfg) = cfg {
-            let filtered = cfg.tools.filter_tool_specs(&all);
-            debug!(
-                "ai_agent.policy allowed_tools: behavior={} all={} filtered={}",
-                input.trace.behavior,
-                all.len(),
-                filtered.len()
-            );
-            return Ok(filtered);
-        }
-        debug!(
-            "ai_agent.policy allowed_tools: behavior={} all={} (no_behavior_cfg)",
-            input.trace.behavior,
-            all.len()
-        );
-        Ok(all)
-    }
-
-    async fn gate_tool_calls(
-        &self,
-        input: &BehaviorExecInput,
-        calls: &[ToolCall],
-    ) -> Result<Vec<ToolCall>, String> {
-        let allowed = self.allowed_tools(input).await?;
-        let allowed_set = allowed
-            .into_iter()
-            .map(|item| item.name)
-            .collect::<HashSet<_>>();
-
-        let mut out = Vec::with_capacity(calls.len());
-        for call in calls {
-            if !allowed_set.contains(&call.name) {
-                warn!(
-                    "ai_agent.policy deny_tool_call: behavior={} tool={} calls={}",
-                    input.trace.behavior,
-                    call.name,
-                    calls.len()
-                );
-                return Err(format!(
-                    "tool `{}` is not allowed for behavior `{}`",
-                    call.name, input.trace.behavior
-                ));
-            }
-            out.push(call.clone());
-        }
-        Ok(out)
-    }
-}
-
 struct JsonlFileWorklogSink {
     worklog_path: PathBuf,
     write_lock: Mutex<()>,
@@ -1980,7 +2269,7 @@ impl JsonlFileWorklogSink {
 
 #[async_trait]
 impl WorklogSink for JsonlFileWorklogSink {
-    async fn emit(&self, event: Event) {
+    async fn emit(&self, event: AgentWorkEvent) {
         let line = json!({
             "ts": now_ms(),
             "event": worklog_event_to_json(event),
@@ -2012,14 +2301,14 @@ impl WorklogSink for JsonlFileWorklogSink {
     }
 }
 
-fn worklog_event_to_json(event: Event) -> Json {
+fn worklog_event_to_json(event: AgentWorkEvent) -> Json {
     match event {
-        Event::LLMStarted { trace, model } => json!({
+        AgentWorkEvent::LLMStarted { trace, model } => json!({
             "kind": "llm_started",
             "trace": trace_to_json(trace),
             "model": model
         }),
-        Event::LLMFinished { trace, usage, ok } => json!({
+        AgentWorkEvent::LLMFinished { trace, usage, ok } => json!({
             "kind": "llm_finished",
             "trace": trace_to_json(trace),
             "usage": {
@@ -2029,7 +2318,7 @@ fn worklog_event_to_json(event: Event) -> Json {
             },
             "ok": ok
         }),
-        Event::ToolCallPlanned {
+        AgentWorkEvent::ToolCallPlanned {
             trace,
             tool,
             call_id,
@@ -2039,7 +2328,7 @@ fn worklog_event_to_json(event: Event) -> Json {
             "tool": tool,
             "call_id": call_id
         }),
-        Event::ToolCallFinished {
+        AgentWorkEvent::ToolCallFinished {
             trace,
             tool,
             call_id,
@@ -2053,7 +2342,7 @@ fn worklog_event_to_json(event: Event) -> Json {
             "ok": ok,
             "duration_ms": duration_ms
         }),
-        Event::ParseWarning { trace, msg } => json!({
+        AgentWorkEvent::ParseWarning { trace, msg } => json!({
             "kind": "parse_warning",
             "trace": trace_to_json(trace),
             "msg": msg
@@ -2369,34 +2658,6 @@ async fn discover_behavior_names(behaviors_dir: &Path) -> Result<Vec<String>, AI
     Ok(names)
 }
 
-fn normalize_config(cfg: &mut AIAgentConfig) -> Result<(), AIAgentError> {
-    if cfg.max_steps_per_wakeup == 0 {
-        return Err(AIAgentError::InvalidConfig(
-            "max_steps_per_wakeup must be > 0".to_string(),
-        ));
-    }
-    if cfg.max_walltime_ms == 0 {
-        return Err(AIAgentError::InvalidConfig(
-            "max_walltime_ms must be > 0".to_string(),
-        ));
-    }
-    if cfg.default_sleep_ms == 0 || cfg.max_sleep_ms == 0 || cfg.default_sleep_ms > cfg.max_sleep_ms
-    {
-        return Err(AIAgentError::InvalidConfig(
-            "sleep config invalid: require 0 < default_sleep_ms <= max_sleep_ms".to_string(),
-        ));
-    }
-    if cfg.hp_max == 0 {
-        return Err(AIAgentError::InvalidConfig(
-            "hp_max must be > 0".to_string(),
-        ));
-    }
-    if cfg.memory_token_limit == 0 {
-        cfg.memory_token_limit = 1_500;
-    }
-    Ok(())
-}
-
 async fn normalize_agent_root(root: &Path) -> Result<PathBuf, AIAgentError> {
     let abs = if root.is_absolute() {
         root.to_path_buf()
@@ -2483,6 +2744,60 @@ async fn load_text_or_empty(path: PathBuf) -> Result<String, AIAgentError> {
             source,
         }),
     }
+}
+
+async fn load_session_runtime_store(path: &Path, agent_id: &str) -> SessionRuntimeStore {
+    let mut default = SessionRuntimeStore {
+        agent_id: agent_id.to_string(),
+        active_session_loop: None,
+        sessions: HashMap::new(),
+        updated_at_ms: now_ms(),
+    };
+
+    let raw = match fs::read_to_string(path).await {
+        Ok(v) => v,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return default;
+        }
+        Err(err) => {
+            warn!(
+                "ai_agent.session_runtime load_failed: path={} err={}",
+                path.display(),
+                err
+            );
+            return default;
+        }
+    };
+
+    let mut parsed = match serde_json::from_str::<SessionRuntimeStore>(&raw) {
+        Ok(v) => v,
+        Err(err) => {
+            warn!(
+                "ai_agent.session_runtime parse_failed: path={} err={}",
+                path.display(),
+                err
+            );
+            return default;
+        }
+    };
+
+    if parsed.agent_id.trim().is_empty() {
+        parsed.agent_id = agent_id.to_string();
+    }
+    // Never restore active execution slot from disk, otherwise stale value may
+    // block all session loops after an unexpected restart.
+    parsed.active_session_loop = None;
+    for (session_id, runtime) in parsed.sessions.iter_mut() {
+        if runtime.agent_id.trim().is_empty() {
+            runtime.agent_id = parsed.agent_id.clone();
+        }
+        if runtime.session_id.trim().is_empty() {
+            runtime.session_id = session_id.clone();
+        }
+    }
+    default.sessions = parsed.sessions;
+    default.updated_at_ms = parsed.updated_at_ms;
+    default
 }
 
 fn normalize_abs_path(path: &Path) -> PathBuf {
