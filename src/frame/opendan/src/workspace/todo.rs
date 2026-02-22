@@ -1,3 +1,6 @@
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -15,11 +18,17 @@ pub const TOOL_TODO_MANAGE: &str = "todo_manage";
 
 const DEFAULT_LIST_LIMIT: usize = 32;
 const DEFAULT_MAX_LIST_LIMIT: usize = 128;
-const MAX_TITLE_LEN: usize = 256;
-const MAX_DESCRIPTION_LEN: usize = 4096;
-const MAX_TAGS: usize = 16;
+const MAX_TEXT_256: usize = 256;
+const MAX_TEXT_1024: usize = 1024;
+const MAX_TEXT_4096: usize = 4096;
+const MAX_LABELS: usize = 32;
+const MAX_SKILLS: usize = 32;
+const MAX_DEPS: usize = 128;
+const MAX_NOTES_FETCH: usize = 100;
+const RENDER_ITEM_LIMIT: usize = 64;
+const DEFAULT_TOKEN_BUDGET: usize = 1600;
 
-static TODO_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug)]
 pub struct TodoToolConfig {
@@ -41,6 +50,7 @@ impl TodoToolConfig {
 #[derive(Clone, Debug)]
 pub struct TodoTool {
     cfg: TodoToolConfig,
+    oplog_path: PathBuf,
 }
 
 impl TodoTool {
@@ -72,24 +82,30 @@ impl TodoTool {
         })?;
         ensure_todo_schema(&conn)?;
 
-        Ok(Self { cfg })
+        let oplog_path = cfg
+            .db_path
+            .parent()
+            .map(|v| v.join("oplog.jsonl"))
+            .unwrap_or_else(|| PathBuf::from("oplog.jsonl"));
+
+        Ok(Self { cfg, oplog_path })
     }
 
     async fn run_db<F, T>(&self, op_name: &str, op: F) -> Result<T, ToolError>
     where
-        F: FnOnce(&Connection) -> Result<T, ToolError> + Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<T, ToolError> + Send + 'static,
         T: Send + 'static,
     {
         let db_path = self.cfg.db_path.clone();
         task::spawn_blocking(move || {
-            let conn = Connection::open(&db_path).map_err(|err| {
+            let mut conn = Connection::open(&db_path).map_err(|err| {
                 ToolError::ExecFailed(format!(
                     "open todo db `{}` failed: {err}",
                     db_path.display()
                 ))
             })?;
             ensure_todo_schema(&conn)?;
-            op(&conn)
+            op(&mut conn)
         })
         .await
         .map_err(|err| ToolError::ExecFailed(format!("{op_name} join error: {err}")))?
@@ -101,33 +117,53 @@ impl AgentTool for TodoTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_TODO_MANAGE.to_string(),
-            description: "Manage workspace todo items backed by todo/todo.db.".to_string(),
+            description:
+                "Workspace todo delta engine with sqlite/oplog persistence and PDCA state guardrails."
+                    .to_string(),
             args_schema: json!({
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["create", "list", "get", "update", "delete"]
+                        "enum": [
+                            "list",
+                            "get",
+                            "apply_delta",
+                            "query_pending",
+                            "render_for_prompt",
+                            "render_current_details"
+                        ]
                     },
-                    "id": { "type": "string" },
-                    "title": { "type": "string" },
-                    "description": { "type": "string" },
-                    "status": { "type": "string", "enum": ["todo","in_progress","blocked","done","cancelled"] },
-                    "priority": { "type": "string", "enum": ["low","normal","high","urgent"] },
-                    "tags": {
+                    "workspace_id": { "type": "string" },
+                    "todo_ref": { "type": "string", "description": "todo_code like T001 or item id" },
+                    "filters": { "type": "object" },
+                    "limit": { "type": "integer", "minimum": 1 },
+                    "offset": { "type": "integer", "minimum": 0 },
+                    "states": {
                         "type": "array",
                         "items": { "type": "string" }
                     },
-                    "due_at": { "type": "integer", "minimum": 1 },
-                    "clear_due_at": { "type": "boolean", "default": false },
-                    "task_id": { "type": "integer" },
-                    "task_status": { "type": "string" },
-                    "owner_session_id": { "type": ["string", "null"] },
-                    "clear_task_id": { "type": "boolean", "default": false },
-                    "include_closed": { "type": "boolean", "default": true },
-                    "query": { "type": "string" },
-                    "limit": { "type": "integer", "minimum": 1 },
-                    "offset": { "type": "integer", "minimum": 0 }
+                    "token_budget": { "type": "integer", "minimum": 1 },
+                    "session_id": { "type": "string" },
+                    "delta": {
+                        "type": "object",
+                        "properties": {
+                            "op_id": { "type": "string" },
+                            "ops": {
+                                "type": "array",
+                                "items": { "type": "object" }
+                            }
+                        }
+                    },
+                    "actor_ctx": {
+                        "type": "object",
+                        "properties": {
+                            "kind": { "type": "string", "enum": ["root_agent", "sub_agent", "user", "system"] },
+                            "did": { "type": "string" },
+                            "session_id": { "type": "string" },
+                            "trace_id": { "type": "string" }
+                        }
+                    }
                 },
                 "required": ["action"],
                 "additionalProperties": true
@@ -137,553 +173,2524 @@ impl AgentTool for TodoTool {
                 "properties": {
                     "ok": { "type": "boolean" },
                     "action": { "type": "string" },
-                    "todo": { "type": "object" },
-                    "todos": { "type": "array", "items": { "type": "object" } },
-                    "deleted": { "type": "boolean" },
-                    "total": { "type": "integer" }
+                    "items": { "type": "array", "items": { "type": "object" } },
+                    "item": { "type": "object" },
+                    "notes": { "type": "array", "items": { "type": "object" } },
+                    "deps": { "type": "array", "items": { "type": "string" } },
+                    "version": { "type": "integer" },
+                    "new_version": { "type": "integer" },
+                    "before_version": { "type": "integer" },
+                    "op_id": { "type": "string" },
+                    "errors": { "type": "array", "items": { "type": "object" } },
+                    "counts_by_status": { "type": "object" },
+                    "has_pending": { "type": "boolean" },
+                    "text": { "type": "string" }
                 }
             }),
         }
     }
 
-    async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
-        let action = require_action(&args)?;
+    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
+        let action = require_string(&args, "action")?;
         match action.as_str() {
-            "create" => self.call_create(args).await,
             "list" => self.call_list(args).await,
             "get" => self.call_get(args).await,
-            "update" => self.call_update(args).await,
-            "delete" => self.call_delete(args).await,
+            "apply_delta" => self.call_apply_delta(ctx, args).await,
+            "query_pending" => self.call_query_pending(args).await,
+            "render_for_prompt" => self.call_render_for_prompt(args).await,
+            "render_current_details" => self.call_render_current_details(args).await,
             _ => Err(ToolError::InvalidArgs(format!(
-                "unsupported action `{action}`, expected create/list/get/update/delete"
+                "unsupported action `{action}`, expected list/get/apply_delta/query_pending/render_for_prompt/render_current_details"
             ))),
         }
     }
 }
 
 impl TodoTool {
-    async fn call_create(&self, args: Json) -> Result<Json, ToolError> {
-        let input = TodoCreateInput::from_args(&args)?;
-        let item = self
-            .run_db("create todo", move |conn| create_todo(conn, input))
-            .await?;
-        Ok(json!({
-            "ok": true,
-            "action": "create",
-            "todo": item
-        }))
-    }
-
     async fn call_list(&self, args: Json) -> Result<Json, ToolError> {
-        let status = optional_string(&args, "status")?
-            .map(normalize_status)
-            .transpose()?;
-        let owner_session_id =
-            optional_string_alias(&args, "owner_session_id", "owner-session-id")?;
-        let include_closed = optional_bool(&args, "include_closed")?.unwrap_or(true);
-        let query = optional_string(&args, "query")?.map(|s| s.trim().to_string());
+        let workspace_id = require_workspace_id(&args)?;
+        let filters = TodoListFilters::from_args(&args)?;
         let limit = optional_u64(&args, "limit")?
             .map(|v| u64_to_usize(v, "limit"))
             .transpose()?
-            .unwrap_or(self.cfg.default_list_limit);
+            .unwrap_or(self.cfg.default_list_limit)
+            .clamp(1, self.cfg.max_list_limit);
         let offset = optional_u64(&args, "offset")?
             .map(|v| u64_to_usize(v, "offset"))
             .transpose()?
             .unwrap_or(0);
-        let limit = limit.clamp(1, self.cfg.max_list_limit);
-        let query = query.filter(|v| !v.is_empty());
 
+        let workspace_id_for_db = workspace_id.clone();
         let rows = self
-            .run_db("list todo", move |conn| {
-                list_todos(
-                    conn,
-                    status.as_deref(),
-                    owner_session_id.as_deref(),
-                    include_closed,
-                    query.as_deref(),
-                    limit,
-                    offset,
-                )
+            .run_db("todo list", move |conn| {
+                list_todo_items(conn, &workspace_id_for_db, &filters, limit, offset)
+            })
+            .await?;
+
+        let version_ws = workspace_id.clone();
+        let version = self
+            .run_db("todo read version", move |conn| {
+                read_workspace_version(conn, &version_ws)
             })
             .await?;
 
         Ok(json!({
             "ok": true,
             "action": "list",
-            "todos": rows,
-            "total": rows.len()
+            "workspace_id": workspace_id,
+            "items": rows,
+            "total": rows.len(),
+            "version": version
         }))
     }
 
     async fn call_get(&self, args: Json) -> Result<Json, ToolError> {
-        let id = require_string(&args, "id")?;
-        let lookup_id = id.clone();
-        let item = self
-            .run_db("get todo", move |conn| get_todo_by_id(conn, &lookup_id))
+        let workspace_id = require_workspace_id(&args)?;
+        let todo_ref = require_string(&args, "todo_ref")?;
+
+        let ws_for_db = workspace_id.clone();
+        let ref_for_db = todo_ref.clone();
+        let detail = self
+            .run_db("todo get", move |conn| {
+                get_todo_detail(conn, &ws_for_db, &ref_for_db, MAX_NOTES_FETCH)
+            })
             .await?;
-        let Some(item) = item else {
-            return Err(ToolError::InvalidArgs(format!("todo `{id}` not found")));
+
+        let Some(detail) = detail else {
+            return Err(ToolError::InvalidArgs(format!(
+                "todo `{todo_ref}` not found in workspace `{workspace_id}`"
+            )));
         };
+
+        let version_ws = workspace_id.clone();
+        let version = self
+            .run_db("todo read version", move |conn| {
+                read_workspace_version(conn, &version_ws)
+            })
+            .await?;
+
         Ok(json!({
             "ok": true,
             "action": "get",
-            "todo": item
+            "workspace_id": workspace_id,
+            "item": detail.item,
+            "notes": detail.notes,
+            "deps": detail.dep_codes,
+            "version": version
         }))
     }
 
-    async fn call_update(&self, args: Json) -> Result<Json, ToolError> {
-        let id = require_string(&args, "id")?;
-        let patch = TodoPatch::from_args(&args)?;
-        let item = self
-            .run_db("update todo", move |conn| update_todo(conn, &id, patch))
+    async fn call_apply_delta(&self, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
+        let input = ApplyDeltaInput::from_args(ctx, &args)?;
+        let oplog_path = self.oplog_path.clone();
+        let rsp = self
+            .run_db("todo apply delta", move |conn| {
+                apply_todo_delta(conn, &oplog_path, input)
+            })
             .await?;
+
         Ok(json!({
-            "ok": true,
-            "action": "update",
-            "todo": item
+            "ok": rsp.ok,
+            "action": "apply_delta",
+            "workspace_id": rsp.workspace_id,
+            "op_id": rsp.op_id,
+            "before_version": rsp.before_version,
+            "new_version": rsp.new_version,
+            "idempotent": rsp.idempotent,
+            "errors": rsp.errors,
+            "applied_count": rsp.applied_count,
         }))
     }
 
-    async fn call_delete(&self, args: Json) -> Result<Json, ToolError> {
-        let id = require_string(&args, "id")?;
-        let deleted = self
-            .run_db("delete todo", move |conn| delete_todo(conn, &id))
+    async fn call_query_pending(&self, args: Json) -> Result<Json, ToolError> {
+        let workspace_id = require_workspace_id(&args)?;
+        let states = parse_status_set(args.get("states"))?;
+        let ws_for_db = workspace_id.clone();
+        let status_counts = self
+            .run_db("todo query pending", move |conn| {
+                query_pending_counts(conn, &ws_for_db)
+            })
             .await?;
+
+        let states_to_check = if states.is_empty() {
+            vec![
+                TodoStatus::Wait,
+                TodoStatus::InProgress,
+                TodoStatus::Complete,
+                TodoStatus::CheckFailed,
+            ]
+        } else {
+            states.into_iter().collect::<Vec<_>>()
+        };
+
+        let has_pending = states_to_check
+            .iter()
+            .any(|status| status_counts.get(status.as_str()).copied().unwrap_or(0) > 0);
+
         Ok(json!({
             "ok": true,
-            "action": "delete",
-            "deleted": deleted
+            "action": "query_pending",
+            "workspace_id": workspace_id,
+            "has_pending": has_pending,
+            "counts_by_status": status_counts
         }))
+    }
+
+    async fn call_render_for_prompt(&self, args: Json) -> Result<Json, ToolError> {
+        let workspace_id = require_workspace_id(&args)?;
+        let token_budget = optional_u64(&args, "token_budget")?
+            .map(|v| u64_to_usize(v, "token_budget"))
+            .transpose()?
+            .unwrap_or(DEFAULT_TOKEN_BUDGET);
+
+        let ws_for_db = workspace_id.clone();
+        let items = self
+            .run_db("todo render for prompt", move |conn| {
+                list_for_prompt(conn, &ws_for_db, RENDER_ITEM_LIMIT)
+            })
+            .await?;
+
+        let version_ws = workspace_id.clone();
+        let version = self
+            .run_db("todo read version", move |conn| {
+                read_workspace_version(conn, &version_ws)
+            })
+            .await?;
+
+        let text = render_workspace_todo_text(&workspace_id, version, &items, token_budget);
+        Ok(json!({
+            "ok": true,
+            "action": "render_for_prompt",
+            "workspace_id": workspace_id,
+            "version": version,
+            "text": text
+        }))
+    }
+
+    async fn call_render_current_details(&self, args: Json) -> Result<Json, ToolError> {
+        let workspace_id = require_workspace_id(&args)?;
+        let session_id = optional_string(&args, "session_id")?;
+        let todo_ref = optional_string(&args, "todo_ref")?;
+
+        let ws_for_db = workspace_id.clone();
+        let sid_for_db = session_id.clone();
+        let todo_ref_for_db = todo_ref.clone();
+        let detail = self
+            .run_db("todo render current details", move |conn| {
+                select_current_todo_details(
+                    conn,
+                    &ws_for_db,
+                    sid_for_db.as_deref(),
+                    todo_ref_for_db.as_deref(),
+                )
+            })
+            .await?;
+
+        let text = if let Some(detail) = detail {
+            render_current_todo_text(&detail)
+        } else {
+            "No active todo found for current context.".to_string()
+        };
+
+        Ok(json!({
+            "ok": true,
+            "action": "render_current_details",
+            "workspace_id": workspace_id,
+            "session_id": session_id,
+            "todo_ref": todo_ref,
+            "text": text
+        }))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TodoType {
+    Task,
+    Bench,
+}
+
+impl TodoType {
+    fn parse(raw: &str) -> Result<Self, ToolError> {
+        let value = normalize_enum(raw);
+        match value.as_str() {
+            "task" => Ok(Self::Task),
+            "bench" => Ok(Self::Bench),
+            _ => Err(ToolError::InvalidArgs(format!(
+                "invalid todo type `{raw}`; allowed: Task|Bench"
+            ))),
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Task => "Task",
+            Self::Bench => "Bench",
+        }
+    }
+
+    fn from_db(raw: &str) -> Result<Self, ToolError> {
+        Self::parse(raw)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum TodoStatus {
+    Wait,
+    InProgress,
+    Complete,
+    Failed,
+    Done,
+    CheckFailed,
+}
+
+impl TodoStatus {
+    fn parse(raw: &str) -> Result<Self, ToolError> {
+        let value = normalize_enum(raw);
+        match value.as_str() {
+            "wait" => Ok(Self::Wait),
+            "in_progress" => Ok(Self::InProgress),
+            "complete" => Ok(Self::Complete),
+            "failed" => Ok(Self::Failed),
+            "done" => Ok(Self::Done),
+            "check_failed" => Ok(Self::CheckFailed),
+            _ => Err(ToolError::InvalidArgs(format!(
+                "invalid todo status `{raw}`; allowed: WAIT|IN_PROGRESS|COMPLETE|FAILED|DONE|CHECK_FAILED"
+            ))),
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Wait => "WAIT",
+            Self::InProgress => "IN_PROGRESS",
+            Self::Complete => "COMPLETE",
+            Self::Failed => "FAILED",
+            Self::Done => "DONE",
+            Self::CheckFailed => "CHECK_FAILED",
+        }
+    }
+
+    fn from_db(raw: &str) -> Result<Self, ToolError> {
+        Self::parse(raw)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ActorKind {
+    RootAgent,
+    SubAgent,
+    User,
+    System,
+}
+
+impl ActorKind {
+    fn parse(raw: &str) -> Result<Self, ToolError> {
+        let value = normalize_enum(raw);
+        match value.as_str() {
+            "root_agent" => Ok(Self::RootAgent),
+            "sub_agent" => Ok(Self::SubAgent),
+            "user" => Ok(Self::User),
+            "system" => Ok(Self::System),
+            _ => Err(ToolError::InvalidArgs(format!(
+                "invalid actor kind `{raw}`; allowed: root_agent|sub_agent|user|system"
+            ))),
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::RootAgent => "root_agent",
+            Self::SubAgent => "sub_agent",
+            Self::User => "user",
+            Self::System => "system",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ActorRefOut {
+    kind: String,
+    did: String,
+}
+
+#[derive(Clone, Debug)]
+struct ActorCtx {
+    kind: ActorKind,
+    did: String,
+    session_id: Option<String>,
+    trace_id: Option<String>,
+}
+
+impl ActorCtx {
+    fn from_args(ctx: &TraceCtx, args: &Json) -> Result<Self, ToolError> {
+        let actor_raw = args.get("actor_ctx").and_then(|v| v.as_object());
+        let kind = actor_raw
+            .and_then(|m| m.get("kind"))
+            .and_then(|v| v.as_str())
+            .map(ActorKind::parse)
+            .transpose()?
+            .unwrap_or(ActorKind::RootAgent);
+
+        let did = actor_raw
+            .and_then(|m| m.get("did"))
+            .and_then(|v| v.as_str())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| {
+                let v = ctx.agent_did.trim();
+                if v.is_empty() {
+                    "did:opendan:unknown".to_string()
+                } else {
+                    v.to_string()
+                }
+            });
+
+        let session_id = actor_raw
+            .and_then(|m| m.get("session_id"))
+            .and_then(|v| v.as_str())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .or_else(|| optional_string(args, "session_id").ok().flatten());
+
+        let trace_id = actor_raw
+            .and_then(|m| m.get("trace_id"))
+            .and_then(|v| v.as_str())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .or_else(|| {
+                let v = ctx.trace_id.trim();
+                if v.is_empty() {
+                    None
+                } else {
+                    Some(v.to_string())
+                }
+            });
+
+        Ok(Self {
+            kind,
+            did,
+            session_id,
+            trace_id,
+        })
+    }
+
+    fn out(&self) -> ActorRefOut {
+        ActorRefOut {
+            kind: self.kind.as_str().to_string(),
+            did: self.did.clone(),
+        }
     }
 }
 
 #[derive(Clone, Debug)]
-struct TodoCreateInput {
-    id: String,
-    title: String,
-    description: String,
-    status: String,
-    priority: String,
-    owner_session_id: Option<String>,
-    tags: Vec<String>,
-    due_at: Option<u64>,
-    task_id: Option<i64>,
-    task_status: Option<String>,
+struct TodoListFilters {
+    statuses: Vec<TodoStatus>,
+    todo_type: Option<TodoType>,
+    assignee: Option<String>,
+    label: Option<String>,
+    query: Option<String>,
+    sort_by: Option<String>,
+    asc: bool,
 }
 
-impl TodoCreateInput {
+impl TodoListFilters {
     fn from_args(args: &Json) -> Result<Self, ToolError> {
-        let has_owner_session_id =
-            args.get("owner_session_id").is_some() || args.get("owner-session-id").is_some();
-        if !has_owner_session_id {
-            return Err(ToolError::InvalidArgs(
-                "missing `owner_session_id` (nullable), or use alias `owner-session-id`"
-                    .to_string(),
-            ));
+        let mut statuses = Vec::new();
+        let mut todo_type = None;
+        let mut assignee = None;
+        let mut label = None;
+        let mut query = None;
+        let mut sort_by = None;
+        let mut asc = false;
+
+        if let Some(filters) = args.get("filters") {
+            let map = filters.as_object().ok_or_else(|| {
+                ToolError::InvalidArgs("`filters` must be a json object".to_string())
+            })?;
+            if let Some(statuses_raw) = map.get("status") {
+                statuses = parse_status_list(Some(statuses_raw))?;
+            }
+            if let Some(type_raw) = map.get("type").and_then(|v| v.as_str()) {
+                todo_type = Some(TodoType::parse(type_raw)?);
+            }
+            assignee = map
+                .get("assignee")
+                .and_then(|v| v.as_str())
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty());
+            label = map
+                .get("label")
+                .and_then(|v| v.as_str())
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty());
+            query = map
+                .get("query")
+                .and_then(|v| v.as_str())
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty());
+            sort_by = map
+                .get("sort_by")
+                .and_then(|v| v.as_str())
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty());
+            asc = map.get("asc").and_then(|v| v.as_bool()).unwrap_or(false);
         }
 
-        let id = optional_string(args, "id")?.unwrap_or_else(generate_todo_id);
-        let title = require_string(args, "title")?;
-        let description = optional_string(args, "description")?.unwrap_or_default();
-        let status = optional_string(args, "status")?
-            .map(normalize_status)
-            .transpose()?
-            .unwrap_or_else(|| "todo".to_string());
-        let priority = optional_string(args, "priority")?
-            .map(normalize_priority)
-            .transpose()?
-            .unwrap_or_else(|| "normal".to_string());
-        let owner_session_id = optional_string_alias(args, "owner_session_id", "owner-session-id")?;
-        let tags = parse_tags(args.get("tags"))?;
-        let due_at = optional_u64(args, "due_at")?;
-        let task_id = optional_i64(args, "task_id")?;
-        let task_status = optional_string(args, "task_status")?;
+        if statuses.is_empty() {
+            statuses = parse_status_list(args.get("status"))?;
+        }
+        if todo_type.is_none() {
+            todo_type = optional_string(args, "type")?
+                .map(|v| TodoType::parse(&v))
+                .transpose()?;
+        }
+        if assignee.is_none() {
+            assignee = optional_string(args, "assignee")?;
+        }
+        if label.is_none() {
+            label = optional_string(args, "label")?;
+        }
+        if query.is_none() {
+            query = optional_string(args, "query")?;
+        }
+        if sort_by.is_none() {
+            sort_by = optional_string(args, "sort_by")?;
+        }
+        if !asc {
+            asc = optional_bool(args, "asc")?.unwrap_or(false);
+        }
 
-        validate_todo_text_fields(&id, &title, &description)?;
         Ok(Self {
-            id,
-            title,
-            description,
-            status,
-            priority,
-            owner_session_id,
-            tags,
-            due_at,
-            task_id,
-            task_status,
+            statuses,
+            todo_type,
+            assignee,
+            label,
+            query,
+            sort_by,
+            asc,
         })
     }
 }
 
-#[derive(Clone, Debug, Default)]
-struct TodoPatch {
-    title: Option<String>,
-    description: Option<String>,
-    status: Option<String>,
-    priority: Option<String>,
-    tags: Option<Vec<String>>,
-    due_at: Option<Option<u64>>,
-    task_id: Option<Option<i64>>,
-    task_status: Option<Option<String>>,
+#[derive(Clone, Debug)]
+struct ApplyDeltaInput {
+    workspace_id: String,
+    op_id: String,
+    actor: ActorCtx,
+    ops: Vec<DeltaOp>,
 }
 
-impl TodoPatch {
-    fn from_args(args: &Json) -> Result<Self, ToolError> {
-        let title = optional_string(args, "title")?;
-        let description = optional_string(args, "description")?;
-        let status = optional_string(args, "status")?
-            .map(normalize_status)
-            .transpose()?;
-        let priority = optional_string(args, "priority")?
-            .map(normalize_priority)
-            .transpose()?;
-        let tags = if args.get("tags").is_some() {
-            Some(parse_tags(args.get("tags"))?)
-        } else {
-            None
-        };
+impl ApplyDeltaInput {
+    fn from_args(ctx: &TraceCtx, args: &Json) -> Result<Self, ToolError> {
+        let workspace_id = require_workspace_id(args)?;
+        let actor = ActorCtx::from_args(ctx, args)?;
 
-        let clear_due_at = optional_bool(args, "clear_due_at")?.unwrap_or(false);
-        let due_at = if clear_due_at {
-            Some(None)
-        } else if args.get("due_at").is_some() {
-            Some(optional_u64(args, "due_at")?)
-        } else {
-            None
-        };
+        let delta_obj = args
+            .get("delta")
+            .or_else(|| args.get("todo_delta"))
+            .unwrap_or(args);
+        let delta = delta_obj
+            .as_object()
+            .ok_or_else(|| ToolError::InvalidArgs("`delta` must be a json object".to_string()))?;
 
-        let clear_task_id = optional_bool(args, "clear_task_id")?.unwrap_or(false);
-        let task_id = if clear_task_id {
-            Some(None)
-        } else if args.get("task_id").is_some() {
-            Some(optional_i64(args, "task_id")?)
-        } else {
-            None
-        };
+        let op_id = delta
+            .get("op_id")
+            .and_then(|v| v.as_str())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .or_else(|| {
+                args.get("op_id")
+                    .and_then(|v| v.as_str())
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+            })
+            .unwrap_or_else(|| generate_id("op"));
 
-        let task_status = if args.get("task_status").is_some() {
-            Some(optional_string(args, "task_status")?)
-        } else {
-            None
-        };
-
-        if let Some(title) = &title {
-            validate_todo_title(title)?;
-        }
-        if let Some(description) = &description {
-            validate_todo_description(description)?;
-        }
-
-        let has_change = title.is_some()
-            || description.is_some()
-            || status.is_some()
-            || priority.is_some()
-            || tags.is_some()
-            || due_at.is_some()
-            || task_id.is_some()
-            || task_status.is_some();
-        if !has_change {
+        let ops_json = delta
+            .get("ops")
+            .or_else(|| args.get("ops"))
+            .ok_or_else(|| ToolError::InvalidArgs("missing `delta.ops`".to_string()))?;
+        let ops_arr = ops_json
+            .as_array()
+            .ok_or_else(|| ToolError::InvalidArgs("`delta.ops` must be an array".to_string()))?;
+        if ops_arr.is_empty() {
             return Err(ToolError::InvalidArgs(
-                "update requires at least one mutable field".to_string(),
+                "`delta.ops` cannot be empty".to_string(),
             ));
+        }
+
+        let mut ops = Vec::with_capacity(ops_arr.len());
+        for op in ops_arr {
+            ops.push(DeltaOp::parse(op)?);
+        }
+
+        Ok(Self {
+            workspace_id,
+            op_id,
+            actor,
+            ops,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+enum DeltaOp {
+    Init {
+        mode: InitMode,
+        items: Vec<InitTodoItem>,
+        raw: Json,
+    },
+    Update {
+        todo_code: String,
+        to_status: TodoStatus,
+        reason: String,
+        last_error: Option<Json>,
+        raw: Json,
+    },
+    Note {
+        todo_code: String,
+        kind: String,
+        content: String,
+        raw: Json,
+    },
+}
+
+impl DeltaOp {
+    fn parse(value: &Json) -> Result<Self, ToolError> {
+        let map = value.as_object().ok_or_else(|| {
+            ToolError::InvalidArgs("each op in delta.ops must be a json object".to_string())
+        })?;
+        let op = map
+            .get("op")
+            .and_then(|v| v.as_str())
+            .map(|v| v.trim().to_string())
+            .ok_or_else(|| ToolError::InvalidArgs("delta op missing `op`".to_string()))?;
+
+        if op == "init" {
+            let mode = map
+                .get("mode")
+                .and_then(|v| v.as_str())
+                .map(InitMode::parse)
+                .transpose()?
+                .unwrap_or(InitMode::Replace);
+            let items_raw = map
+                .get("items")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| ToolError::InvalidArgs("init op missing `items[]`".to_string()))?;
+            if items_raw.is_empty() {
+                return Err(ToolError::InvalidArgs(
+                    "init op `items` cannot be empty".to_string(),
+                ));
+            }
+            let mut items = Vec::with_capacity(items_raw.len());
+            for item in items_raw {
+                items.push(InitTodoItem::parse(item)?);
+            }
+            return Ok(Self::Init {
+                mode,
+                items,
+                raw: value.clone(),
+            });
+        }
+
+        if let Some(todo_code) = op.strip_prefix("update:") {
+            let code = normalize_todo_code(todo_code)?;
+            let to_status = map
+                .get("to_status")
+                .and_then(|v| v.as_str())
+                .map(TodoStatus::parse)
+                .transpose()?
+                .ok_or_else(|| {
+                    ToolError::InvalidArgs("update op missing `to_status`".to_string())
+                })?;
+            let reason = map
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .ok_or_else(|| ToolError::InvalidArgs("update op missing `reason`".to_string()))?;
+            if reason.chars().count() > MAX_TEXT_1024 {
+                return Err(ToolError::InvalidArgs(format!(
+                    "update reason exceeds max {} chars",
+                    MAX_TEXT_1024
+                )));
+            }
+            let last_error = if let Some(err_obj) = map.get("last_error") {
+                let bytes = serde_json::to_vec(err_obj)
+                    .map_err(|err| {
+                        ToolError::InvalidArgs(format!("serialize last_error failed: {err}"))
+                    })?
+                    .len();
+                if bytes > 16 * 1024 {
+                    return Err(ToolError::InvalidArgs(
+                        "`last_error` too large (max 16KB)".to_string(),
+                    ));
+                }
+                Some(err_obj.clone())
+            } else {
+                None
+            };
+            return Ok(Self::Update {
+                todo_code: code,
+                to_status,
+                reason,
+                last_error,
+                raw: value.clone(),
+            });
+        }
+
+        if let Some(todo_code) = op.strip_prefix("note:") {
+            let code = normalize_todo_code(todo_code)?;
+            let kind = map
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "note".to_string());
+            if kind.chars().count() > 32 {
+                return Err(ToolError::InvalidArgs(
+                    "note kind too long (max 32 chars)".to_string(),
+                ));
+            }
+            let content = map
+                .get("content")
+                .and_then(|v| v.as_str())
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .ok_or_else(|| ToolError::InvalidArgs("note op missing `content`".to_string()))?;
+            if content.chars().count() > MAX_TEXT_4096 {
+                return Err(ToolError::InvalidArgs(format!(
+                    "note content exceeds max {} chars",
+                    MAX_TEXT_4096
+                )));
+            }
+            return Ok(Self::Note {
+                todo_code: code,
+                kind,
+                content,
+                raw: value.clone(),
+            });
+        }
+
+        Err(ToolError::InvalidArgs(format!(
+            "unsupported delta op `{op}`; expected init/update:Txxx/note:Txxx"
+        )))
+    }
+
+    fn raw(&self) -> &Json {
+        match self {
+            Self::Init { raw, .. } => raw,
+            Self::Update { raw, .. } => raw,
+            Self::Note { raw, .. } => raw,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum InitMode {
+    Replace,
+    Merge,
+}
+
+impl InitMode {
+    fn parse(raw: &str) -> Result<Self, ToolError> {
+        let value = normalize_enum(raw);
+        match value.as_str() {
+            "replace" => Ok(Self::Replace),
+            "merge" => Ok(Self::Merge),
+            _ => Err(ToolError::InvalidArgs(format!(
+                "invalid init mode `{raw}`; allowed: replace|merge"
+            ))),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct InitTodoItem {
+    title: String,
+    description: Option<String>,
+    todo_type: TodoType,
+    labels: Vec<String>,
+    skills: Vec<String>,
+    assignee: Option<String>,
+    priority: Option<i64>,
+    deps: Option<Vec<String>>,
+    estimate: Option<Json>,
+}
+
+impl InitTodoItem {
+    fn parse(value: &Json) -> Result<Self, ToolError> {
+        let map = value
+            .as_object()
+            .ok_or_else(|| ToolError::InvalidArgs("init item must be a json object".to_string()))?;
+        let title = map
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| ToolError::InvalidArgs("init item missing `title`".to_string()))?;
+        if title.chars().count() > MAX_TEXT_256 {
+            return Err(ToolError::InvalidArgs(format!(
+                "title exceeds max {} chars",
+                MAX_TEXT_256
+            )));
+        }
+
+        let description = map
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        if let Some(v) = description.as_ref() {
+            if v.chars().count() > MAX_TEXT_4096 {
+                return Err(ToolError::InvalidArgs(format!(
+                    "description exceeds max {} chars",
+                    MAX_TEXT_4096
+                )));
+            }
+        }
+
+        let todo_type = map
+            .get("type")
+            .and_then(|v| v.as_str())
+            .map(TodoType::parse)
+            .transpose()?
+            .unwrap_or(TodoType::Task);
+
+        let labels = parse_string_array(map.get("labels"), "labels", MAX_LABELS, 128)?;
+        let skills = parse_string_array(map.get("skills"), "skills", MAX_SKILLS, 128)?;
+        let assignee = map
+            .get("assignee")
+            .and_then(|v| v.as_str())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        let priority = map.get("priority").and_then(|v| v.as_i64());
+
+        let deps = match map.get("deps") {
+            None => None,
+            Some(v) => {
+                let items = parse_string_array(Some(v), "deps", MAX_DEPS, 64)?;
+                Some(items)
+            }
+        };
+
+        let estimate = map.get("estimate").cloned();
+        if let Some(ref v) = estimate {
+            let size = serde_json::to_vec(v)
+                .map_err(|err| ToolError::InvalidArgs(format!("serialize estimate failed: {err}")))?
+                .len();
+            if size > 16 * 1024 {
+                return Err(ToolError::InvalidArgs(
+                    "estimate payload too large (max 16KB)".to_string(),
+                ));
+            }
         }
 
         Ok(Self {
             title,
             description,
-            status,
+            todo_type,
+            labels,
+            skills,
+            assignee,
             priority,
-            tags,
-            due_at,
-            task_id,
-            task_status,
+            deps,
+            estimate,
         })
     }
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct TodoItem {
+struct TodoListItem {
     id: String,
+    todo_code: String,
+    workspace_id: String,
+    session_id: Option<String>,
     title: String,
-    description: String,
+    description: Option<String>,
+    #[serde(rename = "type")]
+    todo_type: String,
     status: String,
-    priority: String,
-    owner_session_id: Option<String>,
-    tags: Vec<String>,
-    due_at: Option<u64>,
-    task_id: Option<i64>,
-    task_status: Option<String>,
+    labels: Vec<String>,
+    skills: Vec<String>,
+    assignee: Option<String>,
+    priority: Option<i64>,
+    estimate: Option<Json>,
+    attempts: i64,
+    last_error: Option<Json>,
     created_at: u64,
     updated_at: u64,
+    created_by: ActorRefOut,
+    order_pos: Option<i64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct TodoNoteItem {
+    note_id: String,
+    author: String,
+    kind: String,
+    content: String,
+    created_at: u64,
+    session_id: Option<String>,
+    trace_id: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct TodoDetail {
+    item: TodoListItem,
+    notes: Vec<TodoNoteItem>,
+    dep_codes: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct TodoRowForUpdate {
+    id: String,
+    todo_code: String,
+    todo_type: TodoType,
+    status: TodoStatus,
+    assignee: Option<String>,
+    attempts: i64,
+}
+
+#[derive(Clone, Debug)]
+struct OrderedTodoBrief {
+    id: String,
+    todo_code: String,
+    todo_type: TodoType,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ApplyDeltaError {
+    code: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    op: Option<Json>,
+}
+
+#[derive(Clone, Debug)]
+struct ApplyDeltaResponse {
+    ok: bool,
+    workspace_id: String,
+    op_id: String,
+    before_version: i64,
+    new_version: i64,
+    idempotent: bool,
+    errors: Vec<ApplyDeltaError>,
+    applied_count: usize,
+}
+
+#[derive(Clone, Debug)]
+struct DomainError {
+    code: &'static str,
+    message: String,
+    op: Option<Json>,
+}
+
+impl DomainError {
+    fn not_found(message: impl Into<String>, op: Option<&DeltaOp>) -> Self {
+        Self {
+            code: "NOT_FOUND",
+            message: message.into(),
+            op: op.map(|v| v.raw().clone()),
+        }
+    }
+
+    fn invalid_transition(message: impl Into<String>, op: Option<&DeltaOp>) -> Self {
+        Self {
+            code: "INVALID_TRANSITION",
+            message: message.into(),
+            op: op.map(|v| v.raw().clone()),
+        }
+    }
+
+    fn forbidden(message: impl Into<String>, op: Option<&DeltaOp>) -> Self {
+        Self {
+            code: "FORBIDDEN",
+            message: message.into(),
+            op: op.map(|v| v.raw().clone()),
+        }
+    }
+
+    fn invalid_args(message: impl Into<String>, op: Option<&DeltaOp>) -> Self {
+        Self {
+            code: "INVALID_ARGS",
+            message: message.into(),
+            op: op.map(|v| v.raw().clone()),
+        }
+    }
+
+    fn to_output(&self) -> ApplyDeltaError {
+        ApplyDeltaError {
+            code: self.code.to_string(),
+            message: self.message.clone(),
+            op: self.op.clone(),
+        }
+    }
 }
 
 fn ensure_todo_schema(conn: &Connection) -> Result<(), ToolError> {
     conn.execute_batch(
         r#"
-CREATE TABLE IF NOT EXISTS todos (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'todo',
-    priority TEXT NOT NULL DEFAULT 'normal',
-    owner_session_id TEXT,
-    tags_json TEXT NOT NULL DEFAULT '[]',
-    due_at INTEGER,
-    task_id INTEGER,
-    task_status TEXT,
-    created_at INTEGER NOT NULL DEFAULT 0,
-    updated_at INTEGER NOT NULL DEFAULT 0
+CREATE TABLE IF NOT EXISTS todo_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_todos_status_updated ON todos(status, updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_todos_task_id ON todos(task_id);
+
+CREATE TABLE IF NOT EXISTS todo_items (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  session_id TEXT,
+  todo_code TEXT NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT,
+  type TEXT NOT NULL,
+  status TEXT NOT NULL,
+  priority INTEGER,
+  labels_json TEXT,
+  skills_json TEXT,
+  assignee_did TEXT,
+  estimate_json TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error_json TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  created_by_kind TEXT NOT NULL,
+  created_by_did TEXT,
+  UNIQUE(workspace_id, todo_code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_todo_items_ws_status
+  ON todo_items(workspace_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_todo_items_ws_priority
+  ON todo_items(workspace_id, priority, updated_at);
+
+CREATE INDEX IF NOT EXISTS idx_todo_items_ws_assignee
+  ON todo_items(workspace_id, assignee_did);
+
+CREATE INDEX IF NOT EXISTS idx_todo_items_ws_updated
+  ON todo_items(workspace_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS todo_deps (
+  workspace_id TEXT NOT NULL,
+  todo_id TEXT NOT NULL,
+  dep_todo_id TEXT NOT NULL,
+  PRIMARY KEY (workspace_id, todo_id, dep_todo_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_todo_deps_ws_todo
+  ON todo_deps(workspace_id, todo_id);
+
+CREATE TABLE IF NOT EXISTS todo_notes (
+  note_id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  todo_id TEXT NOT NULL,
+  author_did TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'note',
+  content TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  session_id TEXT,
+  trace_id TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_todo_notes_ws_todo_time
+  ON todo_notes(workspace_id, todo_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS todo_order (
+  workspace_id TEXT NOT NULL,
+  pos INTEGER NOT NULL,
+  todo_id TEXT NOT NULL,
+  PRIMARY KEY (workspace_id, pos),
+  UNIQUE (workspace_id, todo_id)
+);
+
+CREATE TABLE IF NOT EXISTS todo_applied_ops (
+  op_id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  session_id TEXT,
+  actor_did TEXT,
+  applied_at INTEGER NOT NULL,
+  ops_json TEXT NOT NULL
+);
 "#,
     )
     .map_err(|err| ToolError::ExecFailed(format!("ensure todo schema failed: {err}")))?;
 
-    ensure_todo_column_exists(conn, "owner_session_id", "TEXT")?;
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_todos_owner_session_updated ON todos(owner_session_id, updated_at DESC);",
-    )
-    .map_err(|err| ToolError::ExecFailed(format!("ensure todo owner_session index failed: {err}")))?;
     Ok(())
 }
 
-fn ensure_todo_column_exists(
-    conn: &Connection,
-    column_name: &str,
-    column_def_sql: &str,
-) -> Result<(), ToolError> {
-    if todo_table_has_column(conn, column_name)? {
-        return Ok(());
+fn apply_todo_delta(
+    conn: &mut Connection,
+    oplog_path: &PathBuf,
+    input: ApplyDeltaInput,
+) -> Result<ApplyDeltaResponse, ToolError> {
+    let before_version = read_workspace_version(conn, &input.workspace_id)?;
+
+    if has_applied_op(conn, &input.op_id)? {
+        let entry = build_oplog_entry(
+            &input,
+            before_version,
+            before_version,
+            "idempotent",
+            Some(json!([])),
+        );
+        append_oplog(oplog_path, &entry)?;
+        return Ok(ApplyDeltaResponse {
+            ok: true,
+            workspace_id: input.workspace_id,
+            op_id: input.op_id,
+            before_version,
+            new_version: before_version,
+            idempotent: true,
+            errors: Vec::new(),
+            applied_count: 0,
+        });
     }
-    let sql = format!("ALTER TABLE todos ADD COLUMN {column_name} {column_def_sql}");
-    conn.execute(&sql, []).map_err(|err| {
-        ToolError::ExecFailed(format!("add todo column `{column_name}` failed: {err}"))
-    })?;
-    Ok(())
-}
 
-fn todo_table_has_column(conn: &Connection, column_name: &str) -> Result<bool, ToolError> {
-    let mut stmt = conn
-        .prepare("PRAGMA table_info(todos)")
-        .map_err(|err| ToolError::ExecFailed(format!("prepare todo table_info failed: {err}")))?;
-    let mut rows = stmt
-        .query([])
-        .map_err(|err| ToolError::ExecFailed(format!("query todo table_info failed: {err}")))?;
-    while let Some(row) = rows
-        .next()
-        .map_err(|err| ToolError::ExecFailed(format!("read todo table_info failed: {err}")))?
-    {
-        let name: String = row.get(1).map_err(|err| {
-            ToolError::ExecFailed(format!("decode todo table_info failed: {err}"))
-        })?;
-        if name == column_name {
-            return Ok(true);
+    let tx = conn
+        .transaction()
+        .map_err(|err| ToolError::ExecFailed(format!("start todo tx failed: {err}")))?;
+
+    let mut applied_count = 0usize;
+    for op in &input.ops {
+        match apply_single_op(&tx, &input.workspace_id, &input.actor, op) {
+            Ok(()) => {
+                applied_count = applied_count.saturating_add(1);
+            }
+            Err(err) => {
+                tx.rollback().map_err(|rollback_err| {
+                    ToolError::ExecFailed(format!(
+                        "rollback todo tx failed after domain error: {rollback_err}"
+                    ))
+                })?;
+                let err_output = err.to_output();
+                let entry = build_oplog_entry(
+                    &input,
+                    before_version,
+                    before_version,
+                    "rejected",
+                    Some(json!([err_output])),
+                );
+                append_oplog(oplog_path, &entry)?;
+                return Ok(ApplyDeltaResponse {
+                    ok: false,
+                    workspace_id: input.workspace_id,
+                    op_id: input.op_id,
+                    before_version,
+                    new_version: before_version,
+                    idempotent: false,
+                    errors: vec![err_output],
+                    applied_count,
+                });
+            }
         }
     }
-    Ok(false)
+
+    let new_version = before_version.saturating_add(1);
+    write_workspace_version(&tx, &input.workspace_id, new_version)?;
+
+    let ops_json = serde_json::to_string(
+        &input
+            .ops
+            .iter()
+            .map(|op| op.raw().clone())
+            .collect::<Vec<Json>>(),
+    )
+    .map_err(|err| ToolError::ExecFailed(format!("serialize applied ops failed: {err}")))?;
+
+    tx.execute(
+        "INSERT INTO todo_applied_ops(op_id, workspace_id, session_id, actor_did, applied_at, ops_json)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            input.op_id,
+            input.workspace_id,
+            input.actor.session_id,
+            input.actor.did,
+            u64_to_i64(now_ms()),
+            ops_json,
+        ],
+    )
+    .map_err(|err| ToolError::ExecFailed(format!("insert todo_applied_ops failed: {err}")))?;
+
+    tx.commit()
+        .map_err(|err| ToolError::ExecFailed(format!("commit todo tx failed: {err}")))?;
+
+    let entry = build_oplog_entry(
+        &input,
+        before_version,
+        new_version,
+        "applied",
+        Some(json!([])),
+    );
+    append_oplog(oplog_path, &entry)?;
+
+    Ok(ApplyDeltaResponse {
+        ok: true,
+        workspace_id: input.workspace_id,
+        op_id: input.op_id,
+        before_version,
+        new_version,
+        idempotent: false,
+        errors: Vec::new(),
+        applied_count,
+    })
 }
 
-fn create_todo(conn: &Connection, input: TodoCreateInput) -> Result<TodoItem, ToolError> {
+fn apply_single_op(
+    tx: &rusqlite::Transaction<'_>,
+    workspace_id: &str,
+    actor: &ActorCtx,
+    op: &DeltaOp,
+) -> Result<(), DomainError> {
+    match op {
+        DeltaOp::Init { mode, items, .. } => {
+            apply_init_op(tx, workspace_id, actor, mode, items, op)
+        }
+        DeltaOp::Update {
+            todo_code,
+            to_status,
+            reason,
+            last_error,
+            ..
+        } => apply_update_op(
+            tx,
+            workspace_id,
+            actor,
+            todo_code,
+            to_status,
+            reason,
+            last_error,
+            op,
+        ),
+        DeltaOp::Note {
+            todo_code,
+            kind,
+            content,
+            ..
+        } => apply_note_op(tx, workspace_id, actor, todo_code, kind, content, op),
+    }
+}
+
+fn apply_init_op(
+    tx: &rusqlite::Transaction<'_>,
+    workspace_id: &str,
+    actor: &ActorCtx,
+    mode: &InitMode,
+    items: &[InitTodoItem],
+    op: &DeltaOp,
+) -> Result<(), DomainError> {
+    if actor.kind == ActorKind::SubAgent {
+        return Err(DomainError::forbidden(
+            "sub_agent cannot run init operation",
+            Some(op),
+        ));
+    }
+
+    if matches!(mode, InitMode::Replace) {
+        tx.execute(
+            "DELETE FROM todo_deps WHERE workspace_id = ?1",
+            params![workspace_id],
+        )
+        .map_err(|err| {
+            DomainError::invalid_args(
+                format!("clear deps for replace mode failed: {err}"),
+                Some(op),
+            )
+        })?;
+        tx.execute(
+            "DELETE FROM todo_notes WHERE workspace_id = ?1",
+            params![workspace_id],
+        )
+        .map_err(|err| {
+            DomainError::invalid_args(
+                format!("clear notes for replace mode failed: {err}"),
+                Some(op),
+            )
+        })?;
+        tx.execute(
+            "DELETE FROM todo_order WHERE workspace_id = ?1",
+            params![workspace_id],
+        )
+        .map_err(|err| {
+            DomainError::invalid_args(
+                format!("clear order for replace mode failed: {err}"),
+                Some(op),
+            )
+        })?;
+        tx.execute(
+            "DELETE FROM todo_items WHERE workspace_id = ?1",
+            params![workspace_id],
+        )
+        .map_err(|err| {
+            DomainError::invalid_args(
+                format!("clear items for replace mode failed: {err}"),
+                Some(op),
+            )
+        })?;
+    }
+
+    let existing = load_ordered_todos(tx, workspace_id).map_err(|err| {
+        DomainError::invalid_args(
+            format!("load existing todo order failed: {}", err.message),
+            Some(op),
+        )
+    })?;
+
+    let mut code_to_id: HashMap<String, String> = existing
+        .iter()
+        .map(|item| (item.todo_code.clone(), item.id.clone()))
+        .collect();
+
+    let mut non_bench_before: Vec<String> = existing
+        .iter()
+        .filter(|item| item.todo_type == TodoType::Task)
+        .map(|item| item.id.clone())
+        .collect();
+
+    let mut next_code = if matches!(mode, InitMode::Replace) {
+        1
+    } else {
+        next_todo_code_seq(tx, workspace_id).map_err(|err| {
+            DomainError::invalid_args(
+                format!("read next todo code failed: {}", err.message),
+                Some(op),
+            )
+        })?
+    };
+
+    let mut next_pos = if matches!(mode, InitMode::Replace) {
+        0
+    } else {
+        next_order_pos(tx, workspace_id).map_err(|err| {
+            DomainError::invalid_args(
+                format!("read next order position failed: {}", err.message),
+                Some(op),
+            )
+        })?
+    };
+
+    let mut previous_todo_id = existing.last().map(|v| v.id.clone());
+
+    for item in items {
+        let todo_id = generate_id("todo");
+        let todo_code = format!("T{:03}", next_code);
+        next_code += 1;
+
+        let assignee = item.assignee.clone().unwrap_or_else(|| actor.did.clone());
+
+        let labels_json = to_json_string(&item.labels).map_err(|err| {
+            DomainError::invalid_args(
+                format!("serialize labels failed: {}", err.message),
+                Some(op),
+            )
+        })?;
+        let skills_json = to_json_string(&item.skills).map_err(|err| {
+            DomainError::invalid_args(
+                format!("serialize skills failed: {}", err.message),
+                Some(op),
+            )
+        })?;
+        let estimate_json = if let Some(ref estimate) = item.estimate {
+            Some(to_json_string(estimate).map_err(|err| {
+                DomainError::invalid_args(
+                    format!("serialize estimate failed: {}", err.message),
+                    Some(op),
+                )
+            })?)
+        } else {
+            None
+        };
+
+        let now = now_ms();
+        tx.execute(
+            "INSERT INTO todo_items (
+                id, workspace_id, session_id, todo_code, title, description, type, status,
+                priority, labels_json, skills_json, assignee_did, estimate_json, attempts,
+                last_error_json, created_at, updated_at, created_by_kind, created_by_did
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                ?9, ?10, ?11, ?12, ?13, 0,
+                NULL, ?14, ?15, ?16, ?17
+            )",
+            params![
+                todo_id,
+                workspace_id,
+                actor.session_id,
+                todo_code,
+                item.title,
+                item.description,
+                item.todo_type.as_str(),
+                TodoStatus::Wait.as_str(),
+                item.priority,
+                labels_json,
+                skills_json,
+                assignee,
+                estimate_json,
+                u64_to_i64(now),
+                u64_to_i64(now),
+                actor.kind.as_str(),
+                actor.did,
+            ],
+        )
+        .map_err(|err| {
+            DomainError::invalid_args(format!("insert init todo failed: {err}"), Some(op))
+        })?;
+
+        tx.execute(
+            "INSERT INTO todo_order(workspace_id, pos, todo_id) VALUES(?1, ?2, ?3)",
+            params![workspace_id, next_pos, todo_id],
+        )
+        .map_err(|err| {
+            DomainError::invalid_args(format!("insert todo order failed: {err}"), Some(op))
+        })?;
+        next_pos += 1;
+
+        let dep_ids =
+            resolve_init_deps(item, &code_to_id, &previous_todo_id, &non_bench_before, op)?;
+        for dep_id in dep_ids {
+            tx.execute(
+                "INSERT OR IGNORE INTO todo_deps(workspace_id, todo_id, dep_todo_id) VALUES(?1, ?2, ?3)",
+                params![workspace_id, todo_id, dep_id],
+            )
+            .map_err(|err| {
+                DomainError::invalid_args(format!("insert todo deps failed: {err}"), Some(op))
+            })?;
+        }
+
+        code_to_id.insert(todo_code, todo_id.clone());
+        if item.todo_type == TodoType::Task {
+            non_bench_before.push(todo_id.clone());
+        }
+        previous_todo_id = Some(todo_id);
+    }
+
+    Ok(())
+}
+
+fn resolve_init_deps(
+    item: &InitTodoItem,
+    code_to_id: &HashMap<String, String>,
+    previous_todo_id: &Option<String>,
+    non_bench_before: &[String],
+    op: &DeltaOp,
+) -> Result<Vec<String>, DomainError> {
+    match item.deps.as_ref() {
+        Some(deps) if deps.is_empty() => {
+            if let Some(prev) = previous_todo_id.as_ref() {
+                Ok(vec![prev.clone()])
+            } else {
+                Ok(Vec::new())
+            }
+        }
+        Some(deps) => {
+            let mut out = Vec::new();
+            for dep in deps {
+                if dep == "@prev" {
+                    let prev = previous_todo_id.as_ref().ok_or_else(|| {
+                        DomainError::invalid_args(
+                            "`@prev` used but no previous todo exists",
+                            Some(op),
+                        )
+                    })?;
+                    push_unique(&mut out, prev.clone());
+                    continue;
+                }
+
+                let dep_code = normalize_todo_code(dep).map_err(|_| {
+                    DomainError::invalid_args(
+                        format!("invalid dep reference `{dep}`, expected Txxx or @prev"),
+                        Some(op),
+                    )
+                })?;
+                let dep_id = code_to_id.get(&dep_code).ok_or_else(|| {
+                    DomainError::not_found(format!("dep todo `{dep_code}` not found"), Some(op))
+                })?;
+                push_unique(&mut out, dep_id.clone());
+            }
+            Ok(out)
+        }
+        None => {
+            if item.todo_type == TodoType::Bench {
+                Ok(non_bench_before.to_vec())
+            } else {
+                Ok(Vec::new())
+            }
+        }
+    }
+}
+
+fn apply_update_op(
+    tx: &rusqlite::Transaction<'_>,
+    workspace_id: &str,
+    actor: &ActorCtx,
+    todo_code: &str,
+    to_status: &TodoStatus,
+    _reason: &str,
+    last_error: &Option<Json>,
+    op: &DeltaOp,
+) -> Result<(), DomainError> {
+    let mut todo = load_todo_for_update(tx, workspace_id, todo_code).map_err(|err| {
+        DomainError::not_found(
+            format!("todo `{todo_code}` not found: {}", err.message),
+            Some(op),
+        )
+    })?;
+
+    assert_subagent_permission(actor, &todo, op)?;
+    validate_transition(
+        todo.todo_type.clone(),
+        todo.status.clone(),
+        to_status.clone(),
+        op,
+    )?;
+
     let now = now_ms();
-    let tags_json = serde_json::to_string(&input.tags)
-        .map_err(|err| ToolError::ExecFailed(format!("serialize tags failed: {err}")))?;
-    conn.execute(
-        "INSERT INTO todos (
-            id, title, description, status, priority, owner_session_id, tags_json, due_at, task_id, task_status, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+    let mut attempts = todo.attempts;
+    if todo.status != TodoStatus::Failed && *to_status == TodoStatus::Failed {
+        attempts = attempts.saturating_add(1);
+    }
+
+    let last_error_json = if let Some(v) = last_error {
+        Some(to_json_string(v).map_err(|err| {
+            DomainError::invalid_args(
+                format!("serialize last_error failed: {}", err.message),
+                Some(op),
+            )
+        })?)
+    } else {
+        None
+    };
+
+    tx.execute(
+        "UPDATE todo_items
+         SET status = ?3,
+             attempts = ?4,
+             last_error_json = COALESCE(?5, last_error_json),
+             updated_at = ?6
+         WHERE workspace_id = ?1 AND id = ?2",
         params![
-            input.id,
-            input.title,
-            input.description,
-            input.status,
-            input.priority,
-            input.owner_session_id,
-            tags_json,
-            input.due_at.map(u64_to_i64),
-            input.task_id,
-            input.task_status,
-            u64_to_i64(now),
+            workspace_id,
+            todo.id,
+            to_status.as_str(),
+            attempts,
+            last_error_json,
             u64_to_i64(now),
         ],
     )
-    .map_err(|err| ToolError::ExecFailed(format!("insert todo failed: {err}")))?;
+    .map_err(|err| {
+        DomainError::invalid_args(format!("update todo status failed: {err}"), Some(op))
+    })?;
 
-    let item = get_todo_by_id(conn, &input.id)?
-        .ok_or_else(|| ToolError::ExecFailed("read created todo failed".to_string()))?;
-    Ok(item)
+    todo.status = to_status.clone();
+    Ok(())
 }
 
-fn list_todos(
+fn apply_note_op(
+    tx: &rusqlite::Transaction<'_>,
+    workspace_id: &str,
+    actor: &ActorCtx,
+    todo_code: &str,
+    kind: &str,
+    content: &str,
+    op: &DeltaOp,
+) -> Result<(), DomainError> {
+    let todo = load_todo_for_update(tx, workspace_id, todo_code).map_err(|err| {
+        DomainError::not_found(
+            format!("todo `{todo_code}` not found: {}", err.message),
+            Some(op),
+        )
+    })?;
+
+    assert_subagent_permission(actor, &todo, op)?;
+
+    let note_id = generate_id("note");
+    let now = now_ms();
+    tx.execute(
+        "INSERT INTO todo_notes(
+            note_id, workspace_id, todo_id, author_did, kind, content, created_at, session_id, trace_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            note_id,
+            workspace_id,
+            todo.id,
+            actor.did,
+            kind,
+            content,
+            u64_to_i64(now),
+            actor.session_id,
+            actor.trace_id,
+        ],
+    )
+    .map_err(|err| DomainError::invalid_args(format!("insert todo note failed: {err}"), Some(op)))?;
+
+    tx.execute(
+        "UPDATE todo_items SET updated_at = ?3 WHERE workspace_id = ?1 AND id = ?2",
+        params![workspace_id, todo.id, u64_to_i64(now)],
+    )
+    .map_err(|err| {
+        DomainError::invalid_args(format!("update todo updated_at failed: {err}"), Some(op))
+    })?;
+
+    Ok(())
+}
+
+fn assert_subagent_permission(
+    actor: &ActorCtx,
+    todo: &TodoRowForUpdate,
+    op: &DeltaOp,
+) -> Result<(), DomainError> {
+    if actor.kind != ActorKind::SubAgent {
+        return Ok(());
+    }
+
+    let Some(assignee) = todo.assignee.as_ref() else {
+        return Err(DomainError::forbidden(
+            format!(
+                "sub_agent `{}` cannot update unassigned todo `{}`",
+                actor.did, todo.todo_code
+            ),
+            Some(op),
+        ));
+    };
+
+    if assignee != &actor.did {
+        return Err(DomainError::forbidden(
+            format!(
+                "sub_agent `{}` cannot update todo `{}` assigned to `{}`",
+                actor.did, todo.todo_code, assignee
+            ),
+            Some(op),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_transition(
+    todo_type: TodoType,
+    from: TodoStatus,
+    to: TodoStatus,
+    op: &DeltaOp,
+) -> Result<(), DomainError> {
+    if from == to {
+        return Ok(());
+    }
+
+    let ok = match from {
+        TodoStatus::Wait => match to {
+            TodoStatus::InProgress | TodoStatus::Complete | TodoStatus::Failed => true,
+            TodoStatus::Done | TodoStatus::CheckFailed => todo_type == TodoType::Bench,
+            TodoStatus::Wait => true,
+        },
+        TodoStatus::InProgress => matches!(to, TodoStatus::Complete | TodoStatus::Failed),
+        TodoStatus::Complete => {
+            matches!(
+                to,
+                TodoStatus::Done | TodoStatus::CheckFailed | TodoStatus::InProgress
+            )
+        }
+        TodoStatus::Failed => matches!(to, TodoStatus::InProgress | TodoStatus::Complete),
+        TodoStatus::Done => false,
+        TodoStatus::CheckFailed => {
+            matches!(
+                to,
+                TodoStatus::InProgress | TodoStatus::Complete | TodoStatus::Failed
+            )
+        }
+    };
+
+    if ok {
+        return Ok(());
+    }
+
+    Err(DomainError::invalid_transition(
+        format!(
+            "invalid transition for {:?}: {} -> {}",
+            todo_type,
+            from.as_str(),
+            to.as_str()
+        ),
+        Some(op),
+    ))
+}
+
+fn load_ordered_todos(
+    tx: &rusqlite::Transaction<'_>,
+    workspace_id: &str,
+) -> Result<Vec<OrderedTodoBrief>, DomainError> {
+    let mut stmt = tx
+        .prepare(
+            "SELECT i.id, i.todo_code, i.type, o.pos
+             FROM todo_order o
+             JOIN todo_items i ON i.workspace_id = o.workspace_id AND i.id = o.todo_id
+             WHERE o.workspace_id = ?1
+             ORDER BY o.pos ASC",
+        )
+        .map_err(|err| {
+            DomainError::invalid_args(format!("prepare load order failed: {err}"), None)
+        })?;
+
+    let rows = stmt
+        .query_map(params![workspace_id], |row| {
+            let todo_type_raw: String = row.get(2)?;
+            Ok(OrderedTodoBrief {
+                id: row.get(0)?,
+                todo_code: row.get(1)?,
+                todo_type: TodoType::from_db(&todo_type_raw).map_err(to_sql_err)?,
+            })
+        })
+        .map_err(|err| {
+            DomainError::invalid_args(format!("query load order failed: {err}"), None)
+        })?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|err| {
+            DomainError::invalid_args(format!("decode ordered todo failed: {err}"), None)
+        })?);
+    }
+    Ok(out)
+}
+
+fn next_todo_code_seq(
+    tx: &rusqlite::Transaction<'_>,
+    workspace_id: &str,
+) -> Result<i64, DomainError> {
+    let mut stmt = tx
+        .prepare("SELECT todo_code FROM todo_items WHERE workspace_id = ?1")
+        .map_err(|err| {
+            DomainError::invalid_args(format!("prepare next code failed: {err}"), None)
+        })?;
+    let rows = stmt
+        .query_map(params![workspace_id], |row| row.get::<_, String>(0))
+        .map_err(|err| DomainError::invalid_args(format!("query next code failed: {err}"), None))?;
+
+    let mut max_seq = 0i64;
+    for row in rows {
+        let code = row.map_err(|err| {
+            DomainError::invalid_args(format!("decode todo_code failed: {err}"), None)
+        })?;
+        if let Some(seq) = parse_todo_seq(&code) {
+            max_seq = max_seq.max(seq);
+        }
+    }
+    Ok(max_seq.saturating_add(1))
+}
+
+fn next_order_pos(tx: &rusqlite::Transaction<'_>, workspace_id: &str) -> Result<i64, DomainError> {
+    tx.query_row(
+        "SELECT COALESCE(MAX(pos), -1) + 1 FROM todo_order WHERE workspace_id = ?1",
+        params![workspace_id],
+        |row| row.get::<_, i64>(0),
+    )
+    .map_err(|err| DomainError::invalid_args(format!("query next order pos failed: {err}"), None))
+}
+
+fn load_todo_for_update(
+    tx: &rusqlite::Transaction<'_>,
+    workspace_id: &str,
+    todo_code: &str,
+) -> Result<TodoRowForUpdate, DomainError> {
+    tx.query_row(
+        "SELECT id, todo_code, type, status, assignee_did, attempts
+         FROM todo_items
+         WHERE workspace_id = ?1 AND todo_code = ?2
+         LIMIT 1",
+        params![workspace_id, todo_code],
+        |row| {
+            let raw_type: String = row.get(2)?;
+            let raw_status: String = row.get(3)?;
+            Ok(TodoRowForUpdate {
+                id: row.get(0)?,
+                todo_code: row.get(1)?,
+                todo_type: TodoType::from_db(&raw_type).map_err(to_sql_err)?,
+                status: TodoStatus::from_db(&raw_status).map_err(to_sql_err)?,
+                assignee: row.get(4)?,
+                attempts: row.get(5)?,
+            })
+        },
+    )
+    .map_err(|err| DomainError::not_found(format!("query todo `{todo_code}` failed: {err}"), None))
+}
+
+fn list_todo_items(
     conn: &Connection,
-    status: Option<&str>,
-    owner_session_id: Option<&str>,
-    include_closed: bool,
-    query: Option<&str>,
+    workspace_id: &str,
+    filters: &TodoListFilters,
     limit: usize,
     offset: usize,
-) -> Result<Vec<TodoItem>, ToolError> {
+) -> Result<Vec<TodoListItem>, ToolError> {
     let mut sql = String::from(
-        "SELECT id, title, description, status, priority, owner_session_id, tags_json, due_at, task_id, task_status, created_at, updated_at
-         FROM todos
-         WHERE 1 = 1",
+        "SELECT
+            i.id,
+            i.todo_code,
+            i.workspace_id,
+            i.session_id,
+            i.title,
+            i.description,
+            i.type,
+            i.status,
+            i.labels_json,
+            i.skills_json,
+            i.assignee_did,
+            i.priority,
+            i.estimate_json,
+            i.attempts,
+            i.last_error_json,
+            i.created_at,
+            i.updated_at,
+            i.created_by_kind,
+            i.created_by_did,
+            o.pos
+         FROM todo_items i
+         LEFT JOIN todo_order o
+           ON o.workspace_id = i.workspace_id AND o.todo_id = i.id
+         WHERE i.workspace_id = ?",
     );
-    let mut params_vec: Vec<SqlValue> = Vec::new();
 
-    if let Some(status) = status {
-        sql.push_str(" AND status = ?");
-        params_vec.push(SqlValue::Text(status.to_string()));
-    }
-    if let Some(owner_session_id) = owner_session_id {
-        sql.push_str(" AND owner_session_id = ?");
-        params_vec.push(SqlValue::Text(owner_session_id.to_string()));
-    }
-    if !include_closed {
-        sql.push_str(" AND status NOT IN ('done', 'cancelled')");
-    }
-    if let Some(keyword) = query {
-        let pattern = format!("%{}%", keyword);
-        sql.push_str(" AND (title LIKE ? OR description LIKE ?)");
-        params_vec.push(SqlValue::Text(pattern.clone()));
-        params_vec.push(SqlValue::Text(pattern));
+    let mut params_vec = vec![SqlValue::Text(workspace_id.to_string())];
+
+    if !filters.statuses.is_empty() {
+        sql.push_str(" AND i.status IN (");
+        for idx in 0..filters.statuses.len() {
+            if idx > 0 {
+                sql.push(',');
+            }
+            sql.push('?');
+            params_vec.push(SqlValue::Text(filters.statuses[idx].as_str().to_string()));
+        }
+        sql.push(')');
     }
 
-    sql.push_str(" ORDER BY updated_at DESC, created_at DESC LIMIT ? OFFSET ?");
+    if let Some(todo_type) = filters.todo_type.as_ref() {
+        sql.push_str(" AND i.type = ?");
+        params_vec.push(SqlValue::Text(todo_type.as_str().to_string()));
+    }
+
+    if let Some(assignee) = filters.assignee.as_ref() {
+        sql.push_str(" AND i.assignee_did = ?");
+        params_vec.push(SqlValue::Text(assignee.to_string()));
+    }
+
+    if let Some(label) = filters.label.as_ref() {
+        sql.push_str(" AND i.labels_json LIKE ?");
+        params_vec.push(SqlValue::Text(format!("%\"{}\"%", escape_like(label))));
+    }
+
+    if let Some(query) = filters.query.as_ref() {
+        let like = format!("%{}%", escape_like(query));
+        sql.push_str(" AND (i.title LIKE ? ESCAPE '\\\\' OR i.description LIKE ? ESCAPE '\\\\')");
+        params_vec.push(SqlValue::Text(like.clone()));
+        params_vec.push(SqlValue::Text(like));
+    }
+
+    let sort_by = filters.sort_by.as_deref().unwrap_or("updated_at");
+    match sort_by {
+        "priority" => {
+            sql.push_str(" ORDER BY i.priority IS NULL ASC, i.priority");
+            if filters.asc {
+                sql.push_str(" ASC");
+            } else {
+                sql.push_str(" ASC");
+            }
+            sql.push_str(", i.updated_at DESC, o.pos ASC");
+        }
+        "order" => {
+            sql.push_str(" ORDER BY o.pos ");
+            if filters.asc {
+                sql.push_str("ASC");
+            } else {
+                sql.push_str("DESC");
+            }
+            sql.push_str(", i.updated_at DESC");
+        }
+        _ => {
+            sql.push_str(" ORDER BY i.updated_at ");
+            if filters.asc {
+                sql.push_str("ASC");
+            } else {
+                sql.push_str("DESC");
+            }
+            sql.push_str(", o.pos ASC");
+        }
+    }
+
+    sql.push_str(" LIMIT ? OFFSET ?");
     params_vec.push(SqlValue::Integer(usize_to_i64(limit, "limit")?));
     params_vec.push(SqlValue::Integer(usize_to_i64(offset, "offset")?));
 
     let mut stmt = conn
         .prepare(&sql)
-        .map_err(|err| ToolError::ExecFailed(format!("prepare list todos failed: {err}")))?;
+        .map_err(|err| ToolError::ExecFailed(format!("prepare todo list failed: {err}")))?;
     let rows = stmt
-        .query_map(params_from_iter(params_vec), map_todo_row)
-        .map_err(|err| ToolError::ExecFailed(format!("query list todos failed: {err}")))?;
+        .query_map(params_from_iter(params_vec), map_todo_list_row)
+        .map_err(|err| ToolError::ExecFailed(format!("query todo list failed: {err}")))?;
 
     let mut out = Vec::new();
     for row in rows {
         out.push(
-            row.map_err(|err| ToolError::ExecFailed(format!("decode todo row failed: {err}")))?,
+            row.map_err(|err| {
+                ToolError::ExecFailed(format!("decode todo list row failed: {err}"))
+            })?,
         );
     }
     Ok(out)
 }
 
-fn get_todo_by_id(conn: &Connection, id: &str) -> Result<Option<TodoItem>, ToolError> {
+fn get_todo_detail(
+    conn: &Connection,
+    workspace_id: &str,
+    todo_ref: &str,
+    max_notes: usize,
+) -> Result<Option<TodoDetail>, ToolError> {
+    let id_or_code = resolve_todo_id(conn, workspace_id, todo_ref)?;
+    let Some(todo_id) = id_or_code else {
+        return Ok(None);
+    };
+
     let mut stmt = conn
         .prepare(
-            "SELECT id, title, description, status, priority, owner_session_id, tags_json, due_at, task_id, task_status, created_at, updated_at
-             FROM todos
-             WHERE id = ?1
+            "SELECT
+                i.id,
+                i.todo_code,
+                i.workspace_id,
+                i.session_id,
+                i.title,
+                i.description,
+                i.type,
+                i.status,
+                i.labels_json,
+                i.skills_json,
+                i.assignee_did,
+                i.priority,
+                i.estimate_json,
+                i.attempts,
+                i.last_error_json,
+                i.created_at,
+                i.updated_at,
+                i.created_by_kind,
+                i.created_by_did,
+                o.pos
+             FROM todo_items i
+             LEFT JOIN todo_order o
+               ON o.workspace_id = i.workspace_id AND o.todo_id = i.id
+             WHERE i.workspace_id = ?1 AND i.id = ?2
              LIMIT 1",
         )
-        .map_err(|err| ToolError::ExecFailed(format!("prepare get todo failed: {err}")))?;
+        .map_err(|err| ToolError::ExecFailed(format!("prepare todo get failed: {err}")))?;
 
-    let mut rows = stmt
-        .query(params![id])
-        .map_err(|err| ToolError::ExecFailed(format!("query get todo failed: {err}")))?;
+    let item = stmt
+        .query_row(params![workspace_id, todo_id], map_todo_list_row)
+        .map_err(|err| ToolError::ExecFailed(format!("query todo get failed: {err}")))?;
 
-    if let Some(row) = rows
-        .next()
-        .map_err(|err| ToolError::ExecFailed(format!("read get todo row failed: {err}")))?
-    {
-        return map_todo_row(row)
-            .map(Some)
-            .map_err(|err| ToolError::ExecFailed(format!("decode todo row failed: {err}")));
-    }
-    Ok(None)
+    let notes = list_todo_notes(conn, workspace_id, &todo_id, max_notes)?;
+    let dep_codes = list_todo_dep_codes(conn, workspace_id, &todo_id)?;
+
+    Ok(Some(TodoDetail {
+        item,
+        notes,
+        dep_codes,
+    }))
 }
 
-fn update_todo(conn: &Connection, id: &str, patch: TodoPatch) -> Result<TodoItem, ToolError> {
-    let mut current = get_todo_by_id(conn, id)?
-        .ok_or_else(|| ToolError::InvalidArgs(format!("todo `{id}` not found")))?;
+fn query_pending_counts(
+    conn: &Connection,
+    workspace_id: &str,
+) -> Result<BTreeMap<String, u64>, ToolError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT status, COUNT(1)
+             FROM todo_items
+             WHERE workspace_id = ?1
+             GROUP BY status",
+        )
+        .map_err(|err| ToolError::ExecFailed(format!("prepare pending query failed: {err}")))?;
 
-    if let Some(title) = patch.title {
-        current.title = title;
-    }
-    if let Some(description) = patch.description {
-        current.description = description;
-    }
-    if let Some(status) = patch.status {
-        current.status = status;
-    }
-    if let Some(priority) = patch.priority {
-        current.priority = priority;
-    }
-    if let Some(tags) = patch.tags {
-        current.tags = tags;
-    }
-    if let Some(due_at) = patch.due_at {
-        current.due_at = due_at;
-    }
-    if let Some(task_id) = patch.task_id {
-        current.task_id = task_id;
-    }
-    if let Some(task_status) = patch.task_status {
-        current.task_status = task_status;
-    }
-    current.updated_at = now_ms();
+    let rows = stmt
+        .query_map(params![workspace_id], |row| {
+            let status: String = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            Ok((status, count.max(0) as u64))
+        })
+        .map_err(|err| ToolError::ExecFailed(format!("query pending counts failed: {err}")))?;
 
-    let tags_json = serde_json::to_string(&current.tags)
-        .map_err(|err| ToolError::ExecFailed(format!("serialize tags failed: {err}")))?;
-    conn.execute(
-        "UPDATE todos SET
-            title = ?2,
-            description = ?3,
-            status = ?4,
-            priority = ?5,
-            tags_json = ?6,
-            due_at = ?7,
-            task_id = ?8,
-            task_status = ?9,
-            updated_at = ?10
-         WHERE id = ?1",
-        params![
-            current.id,
-            current.title,
-            current.description,
-            current.status,
-            current.priority,
-            tags_json,
-            current.due_at.map(u64_to_i64),
-            current.task_id,
-            current.task_status,
-            u64_to_i64(current.updated_at),
-        ],
-    )
-    .map_err(|err| ToolError::ExecFailed(format!("update todo failed: {err}")))?;
+    let mut out = BTreeMap::new();
+    for row in rows {
+        let (status, count) =
+            row.map_err(|err| ToolError::ExecFailed(format!("decode pending row failed: {err}")))?;
+        out.insert(status, count);
+    }
 
-    get_todo_by_id(conn, id)?
-        .ok_or_else(|| ToolError::ExecFailed(format!("read updated todo `{id}` failed")))
+    for status in [
+        TodoStatus::Wait,
+        TodoStatus::InProgress,
+        TodoStatus::Complete,
+        TodoStatus::Failed,
+        TodoStatus::Done,
+        TodoStatus::CheckFailed,
+    ] {
+        out.entry(status.as_str().to_string()).or_insert(0);
+    }
+
+    Ok(out)
 }
 
-fn delete_todo(conn: &Connection, id: &str) -> Result<bool, ToolError> {
-    let changed = conn
-        .execute("DELETE FROM todos WHERE id = ?1", params![id])
-        .map_err(|err| ToolError::ExecFailed(format!("delete todo failed: {err}")))?;
-    Ok(changed > 0)
+fn list_for_prompt(
+    conn: &Connection,
+    workspace_id: &str,
+    limit: usize,
+) -> Result<Vec<TodoListItem>, ToolError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT
+                i.id,
+                i.todo_code,
+                i.workspace_id,
+                i.session_id,
+                i.title,
+                i.description,
+                i.type,
+                i.status,
+                i.labels_json,
+                i.skills_json,
+                i.assignee_did,
+                i.priority,
+                i.estimate_json,
+                i.attempts,
+                i.last_error_json,
+                i.created_at,
+                i.updated_at,
+                i.created_by_kind,
+                i.created_by_did,
+                o.pos
+             FROM todo_items i
+             LEFT JOIN todo_order o ON o.workspace_id = i.workspace_id AND o.todo_id = i.id
+             WHERE i.workspace_id = ?1
+             ORDER BY
+                CASE i.status
+                    WHEN 'IN_PROGRESS' THEN 0
+                    WHEN 'WAIT' THEN 1
+                    WHEN 'COMPLETE' THEN 2
+                    WHEN 'CHECK_FAILED' THEN 3
+                    WHEN 'FAILED' THEN 4
+                    WHEN 'DONE' THEN 5
+                    ELSE 6
+                END,
+                i.priority IS NULL ASC,
+                i.priority ASC,
+                o.pos ASC,
+                i.updated_at DESC
+             LIMIT ?2",
+        )
+        .map_err(|err| ToolError::ExecFailed(format!("prepare prompt list failed: {err}")))?;
+
+    let rows = stmt
+        .query_map(
+            params![workspace_id, usize_to_i64(limit, "limit")?],
+            map_todo_list_row,
+        )
+        .map_err(|err| ToolError::ExecFailed(format!("query prompt list failed: {err}")))?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(
+            row.map_err(|err| ToolError::ExecFailed(format!("decode prompt row failed: {err}")))?,
+        );
+    }
+    Ok(out)
 }
 
-fn map_todo_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TodoItem> {
-    let tags_json: String = row.get(6)?;
-    let tags = serde_json::from_str::<Vec<String>>(&tags_json).unwrap_or_default();
-    Ok(TodoItem {
+fn select_current_todo_details(
+    conn: &Connection,
+    workspace_id: &str,
+    session_id: Option<&str>,
+    todo_ref: Option<&str>,
+) -> Result<Option<TodoDetail>, ToolError> {
+    if let Some(todo_ref) = todo_ref {
+        return get_todo_detail(conn, workspace_id, todo_ref, 12);
+    }
+
+    let selected_todo_id = if let Some(session_id) = session_id {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id
+                 FROM todo_items
+                 WHERE workspace_id = ?1 AND session_id = ?2
+                 ORDER BY
+                    CASE status
+                        WHEN 'IN_PROGRESS' THEN 0
+                        WHEN 'WAIT' THEN 1
+                        WHEN 'COMPLETE' THEN 2
+                        WHEN 'CHECK_FAILED' THEN 3
+                        ELSE 9
+                    END,
+                    priority IS NULL ASC,
+                    priority ASC,
+                    updated_at DESC
+                 LIMIT 1",
+            )
+            .map_err(|err| {
+                ToolError::ExecFailed(format!("prepare select by session failed: {err}"))
+            })?;
+
+        stmt.query_row(params![workspace_id, session_id], |row| {
+            row.get::<_, String>(0)
+        })
+        .ok()
+    } else {
+        None
+    };
+
+    if let Some(todo_id) = selected_todo_id {
+        return get_todo_detail(conn, workspace_id, &todo_id, 12);
+    }
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT id
+             FROM todo_items
+             WHERE workspace_id = ?1
+             ORDER BY
+                CASE status
+                    WHEN 'IN_PROGRESS' THEN 0
+                    WHEN 'WAIT' THEN 1
+                    WHEN 'COMPLETE' THEN 2
+                    WHEN 'CHECK_FAILED' THEN 3
+                    WHEN 'FAILED' THEN 4
+                    ELSE 9
+                END,
+                priority IS NULL ASC,
+                priority ASC,
+                updated_at DESC
+             LIMIT 1",
+        )
+        .map_err(|err| {
+            ToolError::ExecFailed(format!("prepare select fallback todo failed: {err}"))
+        })?;
+
+    let fallback_todo_id = stmt
+        .query_row(params![workspace_id], |row| row.get::<_, String>(0))
+        .ok();
+
+    if let Some(todo_id) = fallback_todo_id {
+        get_todo_detail(conn, workspace_id, &todo_id, 12)
+    } else {
+        Ok(None)
+    }
+}
+
+fn resolve_todo_id(
+    conn: &Connection,
+    workspace_id: &str,
+    todo_ref: &str,
+) -> Result<Option<String>, ToolError> {
+    let trimmed = todo_ref.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    if looks_like_todo_code(trimmed) {
+        let mut stmt = conn
+            .prepare("SELECT id FROM todo_items WHERE workspace_id = ?1 AND todo_code = ?2 LIMIT 1")
+            .map_err(|err| {
+                ToolError::ExecFailed(format!("prepare resolve by code failed: {err}"))
+            })?;
+        let id = stmt
+            .query_row(params![workspace_id, trimmed], |row| {
+                row.get::<_, String>(0)
+            })
+            .ok();
+        return Ok(id);
+    }
+
+    let mut stmt = conn
+        .prepare("SELECT id FROM todo_items WHERE workspace_id = ?1 AND id = ?2 LIMIT 1")
+        .map_err(|err| ToolError::ExecFailed(format!("prepare resolve by id failed: {err}")))?;
+    let id = stmt
+        .query_row(params![workspace_id, trimmed], |row| {
+            row.get::<_, String>(0)
+        })
+        .ok();
+    Ok(id)
+}
+
+fn list_todo_notes(
+    conn: &Connection,
+    workspace_id: &str,
+    todo_id: &str,
+    limit: usize,
+) -> Result<Vec<TodoNoteItem>, ToolError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT note_id, author_did, kind, content, created_at, session_id, trace_id
+             FROM todo_notes
+             WHERE workspace_id = ?1 AND todo_id = ?2
+             ORDER BY created_at DESC
+             LIMIT ?3",
+        )
+        .map_err(|err| ToolError::ExecFailed(format!("prepare note list failed: {err}")))?;
+
+    let rows = stmt
+        .query_map(
+            params![workspace_id, todo_id, usize_to_i64(limit, "limit")?],
+            |row| {
+                let created_at: i64 = row.get(4)?;
+                Ok(TodoNoteItem {
+                    note_id: row.get(0)?,
+                    author: row.get(1)?,
+                    kind: row.get(2)?,
+                    content: row.get(3)?,
+                    created_at: i64_to_u64(created_at).unwrap_or(0),
+                    session_id: row.get(5)?,
+                    trace_id: row.get(6)?,
+                })
+            },
+        )
+        .map_err(|err| ToolError::ExecFailed(format!("query note list failed: {err}")))?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(
+            row.map_err(|err| {
+                ToolError::ExecFailed(format!("decode note list row failed: {err}"))
+            })?,
+        );
+    }
+    Ok(out)
+}
+
+fn list_todo_dep_codes(
+    conn: &Connection,
+    workspace_id: &str,
+    todo_id: &str,
+) -> Result<Vec<String>, ToolError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT i.todo_code
+             FROM todo_deps d
+             JOIN todo_items i
+               ON i.workspace_id = d.workspace_id AND i.id = d.dep_todo_id
+             WHERE d.workspace_id = ?1 AND d.todo_id = ?2
+             ORDER BY i.todo_code ASC",
+        )
+        .map_err(|err| ToolError::ExecFailed(format!("prepare dep list failed: {err}")))?;
+
+    let rows = stmt
+        .query_map(params![workspace_id, todo_id], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|err| ToolError::ExecFailed(format!("query dep list failed: {err}")))?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(
+            row.map_err(|err| ToolError::ExecFailed(format!("decode dep row failed: {err}")))?,
+        );
+    }
+    Ok(out)
+}
+
+fn map_todo_list_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TodoListItem> {
+    let labels_raw: Option<String> = row.get(8)?;
+    let skills_raw: Option<String> = row.get(9)?;
+    let estimate_raw: Option<String> = row.get(12)?;
+    let last_error_raw: Option<String> = row.get(14)?;
+    let created_by_kind: String = row.get(17)?;
+    let created_by_did: Option<String> = row.get(18)?;
+    let created_at: i64 = row.get(15)?;
+    let updated_at: i64 = row.get(16)?;
+
+    Ok(TodoListItem {
         id: row.get(0)?,
-        title: row.get(1)?,
-        description: row.get(2)?,
-        status: row.get(3)?,
-        priority: row.get(4)?,
-        owner_session_id: row.get(5)?,
-        tags,
-        due_at: row.get::<_, Option<i64>>(7)?.and_then(i64_to_u64),
-        task_id: row.get(8)?,
-        task_status: row.get(9)?,
-        created_at: row.get::<_, i64>(10).map_or(0, |v| v.max(0) as u64),
-        updated_at: row.get::<_, i64>(11).map_or(0, |v| v.max(0) as u64),
+        todo_code: row.get(1)?,
+        workspace_id: row.get(2)?,
+        session_id: row.get(3)?,
+        title: row.get(4)?,
+        description: row.get(5)?,
+        todo_type: row.get(6)?,
+        status: row.get(7)?,
+        labels: parse_json_vec(labels_raw.as_deref()),
+        skills: parse_json_vec(skills_raw.as_deref()),
+        assignee: row.get(10)?,
+        priority: row.get(11)?,
+        estimate: parse_json_obj(estimate_raw.as_deref()),
+        attempts: row.get(13)?,
+        last_error: parse_json_obj(last_error_raw.as_deref()),
+        created_at: i64_to_u64(created_at).unwrap_or(0),
+        updated_at: i64_to_u64(updated_at).unwrap_or(0),
+        created_by: ActorRefOut {
+            kind: created_by_kind,
+            did: created_by_did.unwrap_or_default(),
+        },
+        order_pos: row.get(19)?,
     })
 }
 
-fn require_action(args: &Json) -> Result<String, ToolError> {
-    require_string(args, "action")
+fn build_oplog_entry(
+    input: &ApplyDeltaInput,
+    before_version: i64,
+    after_version: i64,
+    result: &str,
+    errors: Option<Json>,
+) -> Json {
+    json!({
+        "ts": now_ms(),
+        "op_id": input.op_id,
+        "workspace_id": input.workspace_id,
+        "session_id": input.actor.session_id,
+        "actor": input.actor.out(),
+        "ops": input.ops.iter().map(|op| op.raw().clone()).collect::<Vec<Json>>(),
+        "before_version": before_version,
+        "after_version": after_version,
+        "result": result,
+        "errors": errors
+    })
+}
+
+fn append_oplog(oplog_path: &PathBuf, entry: &Json) -> Result<(), ToolError> {
+    if let Some(parent) = oplog_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            ToolError::ExecFailed(format!(
+                "create todo oplog dir `{}` failed: {err}",
+                parent.display()
+            ))
+        })?;
+    }
+
+    let line = serde_json::to_string(entry)
+        .map_err(|err| ToolError::ExecFailed(format!("serialize oplog entry failed: {err}")))?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(oplog_path)
+        .map_err(|err| {
+            ToolError::ExecFailed(format!(
+                "open oplog `{}` failed: {err}",
+                oplog_path.display()
+            ))
+        })?;
+
+    file.write_all(line.as_bytes()).map_err(|err| {
+        ToolError::ExecFailed(format!(
+            "write oplog `{}` failed: {err}",
+            oplog_path.display()
+        ))
+    })?;
+    file.write_all(b"\n").map_err(|err| {
+        ToolError::ExecFailed(format!(
+            "write oplog newline `{}` failed: {err}",
+            oplog_path.display()
+        ))
+    })?;
+    Ok(())
+}
+
+fn has_applied_op(conn: &Connection, op_id: &str) -> Result<bool, ToolError> {
+    let count = conn
+        .query_row(
+            "SELECT COUNT(1) FROM todo_applied_ops WHERE op_id = ?1",
+            params![op_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|err| ToolError::ExecFailed(format!("query applied op failed: {err}")))?;
+    Ok(count > 0)
+}
+
+fn read_workspace_version(conn: &Connection, workspace_id: &str) -> Result<i64, ToolError> {
+    let key = version_key(workspace_id);
+    let value = conn
+        .query_row(
+            "SELECT value FROM todo_meta WHERE key = ?1",
+            params![key],
+            |row| row.get::<_, String>(0),
+        )
+        .ok();
+
+    match value {
+        Some(raw) => Ok(raw.parse::<i64>().unwrap_or(0).max(0)),
+        None => Ok(0),
+    }
+}
+
+fn write_workspace_version(
+    tx: &rusqlite::Transaction<'_>,
+    workspace_id: &str,
+    version: i64,
+) -> Result<(), ToolError> {
+    let key = version_key(workspace_id);
+    tx.execute(
+        "INSERT INTO todo_meta(key, value) VALUES(?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, version.to_string()],
+    )
+    .map_err(|err| ToolError::ExecFailed(format!("write workspace version failed: {err}")))?;
+    Ok(())
+}
+
+fn version_key(workspace_id: &str) -> String {
+    format!("version:{workspace_id}")
+}
+
+fn render_workspace_todo_text(
+    workspace_id: &str,
+    version: i64,
+    items: &[TodoListItem],
+    token_budget: usize,
+) -> String {
+    if items.is_empty() {
+        return format!("Workspace Todo ({workspace_id}, v{version})\n- No todo items available.");
+    }
+
+    let mut out = String::new();
+    out.push_str(&format!("Workspace Todo ({workspace_id}, v{version})\n"));
+
+    let char_budget = token_budget.saturating_mul(4).max(256);
+    for item in items {
+        let line = format!(
+            "- {} [{}] assignee={} p={} {}\n",
+            item.todo_code,
+            item.status,
+            item.assignee.clone().unwrap_or_else(|| "-".to_string()),
+            item.priority
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            item.title
+        );
+        if out.len().saturating_add(line.len()) > char_budget {
+            out.push_str("- ...truncated by token budget\n");
+            break;
+        }
+        out.push_str(&line);
+    }
+
+    out
+}
+
+fn render_current_todo_text(detail: &TodoDetail) -> String {
+    let item = &detail.item;
+    let mut lines = Vec::new();
+    lines.push(format!("Current Todo {} [{}]", item.todo_code, item.status));
+    lines.push(format!("Title: {}", item.title));
+    if let Some(desc) = item.description.as_deref() {
+        if !desc.trim().is_empty() {
+            lines.push(format!("Description: {}", desc));
+        }
+    }
+    lines.push(format!(
+        "Type: {} | Assignee: {} | Priority: {}",
+        item.todo_type,
+        item.assignee.clone().unwrap_or_else(|| "-".to_string()),
+        item.priority
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    ));
+
+    if detail.dep_codes.is_empty() {
+        lines.push("Deps: (none)".to_string());
+    } else {
+        lines.push(format!("Deps: {}", detail.dep_codes.join(", ")));
+    }
+
+    if let Some(last_error) = item.last_error.as_ref() {
+        lines.push(format!("LastError: {}", compact_json(last_error, 300)));
+    }
+
+    if detail.notes.is_empty() {
+        lines.push("Recent Notes: (none)".to_string());
+    } else {
+        lines.push("Recent Notes:".to_string());
+        for note in detail.notes.iter().take(5) {
+            lines.push(format!(
+                "- [{}] {}: {}",
+                note.kind,
+                note.author,
+                truncate_chars(&note.content, 120)
+            ));
+        }
+    }
+
+    lines.join("\n")
+}
+
+fn parse_status_set(value: Option<&Json>) -> Result<HashSet<TodoStatus>, ToolError> {
+    let statuses = parse_status_list(value)?;
+    Ok(statuses.into_iter().collect())
+}
+
+fn parse_status_list(value: Option<&Json>) -> Result<Vec<TodoStatus>, ToolError> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+
+    if let Some(single) = value.as_str() {
+        return Ok(vec![TodoStatus::parse(single)?]);
+    }
+
+    let arr = value.as_array().ok_or_else(|| {
+        ToolError::InvalidArgs("status filter must be string or array".to_string())
+    })?;
+
+    let mut out = Vec::new();
+    for item in arr {
+        let raw = item.as_str().ok_or_else(|| {
+            ToolError::InvalidArgs("status filter array must contain strings".to_string())
+        })?;
+        let status = TodoStatus::parse(raw)?;
+        if !out.contains(&status) {
+            out.push(status);
+        }
+    }
+    Ok(out)
+}
+
+fn parse_string_array(
+    value: Option<&Json>,
+    field_name: &str,
+    max_items: usize,
+    max_each: usize,
+) -> Result<Vec<String>, ToolError> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let arr = value.as_array().ok_or_else(|| {
+        ToolError::InvalidArgs(format!("`{field_name}` must be an array of strings"))
+    })?;
+    if arr.len() > max_items {
+        return Err(ToolError::InvalidArgs(format!(
+            "`{field_name}` exceeds max {max_items} items"
+        )));
+    }
+
+    let mut out = Vec::new();
+    for item in arr {
+        let text = item.as_str().ok_or_else(|| {
+            ToolError::InvalidArgs(format!("`{field_name}` must be an array of strings"))
+        })?;
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.chars().count() > max_each {
+            return Err(ToolError::InvalidArgs(format!(
+                "`{field_name}` contains entry that exceeds max {max_each} chars"
+            )));
+        }
+        if !out.iter().any(|v| v == trimmed) {
+            out.push(trimmed.to_string());
+        }
+    }
+
+    Ok(out)
+}
+
+fn require_workspace_id(args: &Json) -> Result<String, ToolError> {
+    let workspace_id = require_string(args, "workspace_id")?;
+    if workspace_id.chars().count() > MAX_TEXT_256 {
+        return Err(ToolError::InvalidArgs(
+            "`workspace_id` too long (max 256 chars)".to_string(),
+        ));
+    }
+    Ok(workspace_id)
 }
 
 fn require_string(args: &Json, key: &str) -> Result<String, ToolError> {
@@ -708,28 +2715,11 @@ fn optional_string(args: &Json, key: &str) -> Result<Option<String>, ToolError> 
     let raw = value
         .as_str()
         .ok_or_else(|| ToolError::InvalidArgs(format!("`{key}` must be a string")))?;
-    Ok(Some(raw.trim().to_string()))
-}
-
-fn optional_string_alias(
-    args: &Json,
-    primary_key: &str,
-    alias_key: &str,
-) -> Result<Option<String>, ToolError> {
-    if args.get(primary_key).is_some() {
-        return optional_string(args, primary_key);
-    }
-    optional_string(args, alias_key)
-}
-
-fn optional_bool(args: &Json, key: &str) -> Result<Option<bool>, ToolError> {
-    let Some(value) = args.get(key) else {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
         return Ok(None);
-    };
-    value
-        .as_bool()
-        .map(Some)
-        .ok_or_else(|| ToolError::InvalidArgs(format!("`{key}` must be a boolean")))
+    }
+    Ok(Some(trimmed.to_string()))
 }
 
 fn optional_u64(args: &Json, key: &str) -> Result<Option<u64>, ToolError> {
@@ -742,71 +2732,35 @@ fn optional_u64(args: &Json, key: &str) -> Result<Option<u64>, ToolError> {
         .ok_or_else(|| ToolError::InvalidArgs(format!("`{key}` must be a positive integer")))
 }
 
-fn optional_i64(args: &Json, key: &str) -> Result<Option<i64>, ToolError> {
+fn optional_bool(args: &Json, key: &str) -> Result<Option<bool>, ToolError> {
     let Some(value) = args.get(key) else {
         return Ok(None);
     };
     value
-        .as_i64()
+        .as_bool()
         .map(Some)
-        .ok_or_else(|| ToolError::InvalidArgs(format!("`{key}` must be an integer")))
+        .ok_or_else(|| ToolError::InvalidArgs(format!("`{key}` must be a boolean")))
 }
 
-fn parse_tags(value: Option<&Json>) -> Result<Vec<String>, ToolError> {
-    let Some(value) = value else {
-        return Ok(Vec::new());
-    };
-    let arr = value
-        .as_array()
-        .ok_or_else(|| ToolError::InvalidArgs("`tags` must be an array of strings".to_string()))?;
-    if arr.len() > MAX_TAGS {
-        return Err(ToolError::InvalidArgs(format!(
-            "`tags` length exceeds max {}",
-            MAX_TAGS
-        )));
-    }
-
-    let mut out = Vec::new();
-    for item in arr {
-        let tag = item
-            .as_str()
-            .ok_or_else(|| {
-                ToolError::InvalidArgs("`tags` must be an array of strings".to_string())
-            })?
-            .trim()
-            .to_string();
-        if tag.is_empty() {
-            continue;
-        }
-        if !out.contains(&tag) {
-            out.push(tag);
-        }
-    }
-    Ok(out)
-}
-
-fn normalize_status(raw: String) -> Result<String, ToolError> {
-    let status = normalize_enum(&raw);
-    let allowed = ["todo", "in_progress", "blocked", "done", "cancelled"];
-    if allowed.contains(&status.as_str()) {
-        return Ok(status);
+fn normalize_todo_code(raw: &str) -> Result<String, ToolError> {
+    let normalized = raw.trim().to_uppercase();
+    if looks_like_todo_code(&normalized) {
+        return Ok(normalized);
     }
     Err(ToolError::InvalidArgs(format!(
-        "invalid todo status `{raw}`; allowed: {}",
-        allowed.join(", ")
+        "invalid todo code `{raw}`, expected format T001"
     )))
 }
 
-fn normalize_priority(raw: String) -> Result<String, ToolError> {
-    let priority = normalize_enum(&raw);
-    let allowed = ["low", "normal", "high", "urgent"];
-    if allowed.contains(&priority.as_str()) {
-        return Ok(priority);
+fn looks_like_todo_code(raw: &str) -> bool {
+    raw.len() >= 2 && raw.starts_with('T') && raw[1..].chars().all(|c| c.is_ascii_digit())
+}
+
+fn parse_todo_seq(todo_code: &str) -> Option<i64> {
+    if !looks_like_todo_code(todo_code) {
+        return None;
     }
-    Err(ToolError::InvalidArgs(format!(
-        "invalid todo priority `{raw}`; allowed: {}",
-        allowed.join(", ")
-    )))
+    todo_code[1..].parse::<i64>().ok()
 }
 
 fn normalize_enum(raw: &str) -> String {
@@ -816,40 +2770,60 @@ fn normalize_enum(raw: &str) -> String {
         .to_string()
 }
 
-fn validate_todo_text_fields(id: &str, title: &str, description: &str) -> Result<(), ToolError> {
-    if id.is_empty() || id.len() > MAX_TITLE_LEN {
-        return Err(ToolError::InvalidArgs(
-            "`id` is empty or too long".to_string(),
-        ));
+fn push_unique<T: PartialEq>(target: &mut Vec<T>, value: T) {
+    if !target.contains(&value) {
+        target.push(value);
     }
-    validate_todo_title(title)?;
-    validate_todo_description(description)?;
-    Ok(())
 }
 
-fn validate_todo_title(title: &str) -> Result<(), ToolError> {
-    if title.trim().is_empty() {
-        return Err(ToolError::InvalidArgs(
-            "`title` cannot be empty".to_string(),
-        ));
-    }
-    if title.chars().count() > MAX_TITLE_LEN {
-        return Err(ToolError::InvalidArgs(format!(
-            "`title` length exceeds max {}",
-            MAX_TITLE_LEN
-        )));
-    }
-    Ok(())
+fn escape_like(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
-fn validate_todo_description(description: &str) -> Result<(), ToolError> {
-    if description.chars().count() > MAX_DESCRIPTION_LEN {
-        return Err(ToolError::InvalidArgs(format!(
-            "`description` length exceeds max {}",
-            MAX_DESCRIPTION_LEN
-        )));
+fn parse_json_vec(raw: Option<&str>) -> Vec<String> {
+    let Some(raw) = raw else {
+        return Vec::new();
+    };
+    serde_json::from_str::<Vec<String>>(raw).unwrap_or_default()
+}
+
+fn parse_json_obj(raw: Option<&str>) -> Option<Json> {
+    let Some(raw) = raw else {
+        return None;
+    };
+    serde_json::from_str::<Json>(raw).ok()
+}
+
+fn to_json_string<T: Serialize>(value: &T) -> Result<String, DomainError> {
+    serde_json::to_string(value)
+        .map_err(|err| DomainError::invalid_args(format!("serialize json failed: {err}"), None))
+}
+
+fn to_sql_err(err: ToolError) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        0,
+        rusqlite::types::Type::Text,
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            err.to_string(),
+        )),
+    )
+}
+
+fn compact_json(value: &Json, max_len: usize) -> String {
+    let raw = serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string());
+    truncate_chars(&raw, max_len)
+}
+
+fn truncate_chars(raw: &str, max_len: usize) -> String {
+    let count = raw.chars().count();
+    if count <= max_len {
+        return raw.to_string();
     }
-    Ok(())
+    raw.chars().take(max_len).collect::<String>() + "..."
 }
 
 fn now_ms() -> u64 {
@@ -859,17 +2833,9 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-fn generate_todo_id() -> String {
-    let counter = TODO_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("todo-{}-{counter}", now_ms())
-}
-
-fn usize_to_i64(v: usize, name: &str) -> Result<i64, ToolError> {
-    i64::try_from(v).map_err(|_| ToolError::InvalidArgs(format!("`{name}` too large")))
-}
-
-fn u64_to_usize(v: u64, name: &str) -> Result<usize, ToolError> {
-    usize::try_from(v).map_err(|_| ToolError::InvalidArgs(format!("`{name}` too large")))
+fn generate_id(prefix: &str) -> String {
+    let seq = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}-{}-{seq}", now_ms())
 }
 
 fn u64_to_i64(v: u64) -> i64 {
@@ -888,257 +2854,365 @@ fn i64_to_u64(v: i64) -> Option<u64> {
     }
 }
 
+fn usize_to_i64(v: usize, field: &str) -> Result<i64, ToolError> {
+    i64::try_from(v).map_err(|_| ToolError::InvalidArgs(format!("`{field}` too large")))
+}
+
+fn u64_to_usize(v: u64, field: &str) -> Result<usize, ToolError> {
+    usize::try_from(v).map_err(|_| ToolError::InvalidArgs(format!("`{field}` too large")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
-    use tempfile::tempdir;
-
-    fn test_ctx() -> TraceCtx {
+    fn test_ctx(agent_did: &str) -> TraceCtx {
         TraceCtx {
             trace_id: "trace-test".to_string(),
-            agent_did: "did:example:agent".to_string(),
+            agent_did: agent_did.to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-test".to_string(),
         }
     }
 
-    async fn call(tool: &TodoTool, args: Json) -> Result<Json, ToolError> {
-        tool.call(&test_ctx(), args).await
+    async fn call(tool: &TodoTool, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
+        tool.call(ctx, args).await
+    }
+
+    fn tool_for_test() -> TodoTool {
+        let root = std::env::temp_dir().join(format!("opendan-todo-{}", generate_id("test")));
+        std::fs::create_dir_all(&root).expect("create test root");
+        let db_path = root.join("todo").join("todo.db");
+        TodoTool::new(TodoToolConfig::with_db_path(db_path)).expect("create todo tool")
     }
 
     #[tokio::test]
-    async fn todo_tool_crud_flow_works() {
-        let tmp = tempdir().expect("create tempdir");
-        let db_path = tmp.path().join("todo").join("todo.db");
-        let tool = TodoTool::new(TodoToolConfig::with_db_path(db_path)).expect("create todo tool");
+    async fn apply_init_replace_assigns_codes_and_order() {
+        let tool = tool_for_test();
+        let ctx = test_ctx("did:od:jarvis");
 
-        let created = call(
+        let result = call(
             &tool,
+            &ctx,
             json!({
-                "action": "create",
-                "id": "todo-crud-1",
-                "title": "Implement todo tool test",
-                "description": "validate create/list/get/update/delete",
-                "owner_session_id": "session-001",
-                "status": "todo",
-                "priority": "high",
-                "tags": [ "runtime", "test"]
+                "action": "apply_delta",
+                "workspace_id": "ws-alpha",
+                "actor_ctx": { "kind": "root_agent", "did": "did:od:jarvis", "session_id": "sess-a" },
+                "delta": {
+                    "ops": [
+                        {
+                            "op": "init",
+                            "mode": "replace",
+                            "items": [
+                                { "title": "setup env", "type": "Task", "priority": 0 },
+                                { "title": "integration bench", "type": "Bench", "priority": 10 }
+                            ]
+                        }
+                    ]
+                }
             }),
         )
         .await
-        .expect("create todo");
-        assert_eq!(created["todo"]["id"], "todo-crud-1");
-        assert_eq!(created["todo"]["owner_session_id"], "session-001");
-        assert_eq!(created["todo"]["tags"], json!(["runtime", "test"]));
+        .expect("apply init");
+        assert_eq!(result["ok"], true);
 
         let listed = call(
             &tool,
+            &ctx,
             json!({
                 "action": "list",
-                "status": "todo",
-                "owner_session_id": "session-001",
-                "include_closed": false
+                "workspace_id": "ws-alpha",
+                "filters": { "sort_by": "order", "asc": true }
             }),
         )
         .await
         .expect("list todos");
-        let todos = listed["todos"].as_array().expect("todos array");
-        assert_eq!(todos.len(), 1);
-        assert_eq!(todos[0]["id"], "todo-crud-1");
 
-        let updated = call(
+        let items = listed["items"].as_array().expect("items array");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["todo_code"], "T001");
+        assert_eq!(items[1]["todo_code"], "T002");
+        assert_eq!(items[0]["status"], "WAIT");
+        assert_eq!(items[1]["status"], "WAIT");
+    }
+
+    #[tokio::test]
+    async fn apply_update_supports_pdca_and_bench_special() {
+        let tool = tool_for_test();
+        let ctx = test_ctx("did:od:jarvis");
+
+        call(
             &tool,
+            &ctx,
             json!({
-                "action": "update",
-                "id": "todo-crud-1",
-                "status": "in_progress",
-                "task_id": 99,
-                "task_status": "running"
+                "action": "apply_delta",
+                "workspace_id": "ws-beta",
+                "delta": {
+                    "ops": [{
+                        "op": "init",
+                        "mode": "replace",
+                        "items": [
+                            { "title": "build", "type": "Task" },
+                            { "title": "bench", "type": "Bench" }
+                        ]
+                    }]
+                }
             }),
         )
         .await
-        .expect("update todo");
-        assert_eq!(updated["todo"]["status"], "in_progress");
-        assert_eq!(updated["todo"]["task_id"], 99);
-        assert_eq!(updated["todo"]["task_status"], "running");
+        .expect("init");
+
+        let invalid = call(
+            &tool,
+            &ctx,
+            json!({
+                "action": "apply_delta",
+                "workspace_id": "ws-beta",
+                "delta": {
+                    "ops": [{
+                        "op": "update:T001",
+                        "to_status": "DONE",
+                        "reason": "try check before complete"
+                    }]
+                }
+            }),
+        )
+        .await
+        .expect("apply should return domain error payload");
+        assert_eq!(invalid["ok"], false);
+        assert_eq!(invalid["errors"][0]["code"], "INVALID_TRANSITION");
+
+        let bench_done = call(
+            &tool,
+            &ctx,
+            json!({
+                "action": "apply_delta",
+                "workspace_id": "ws-beta",
+                "delta": {
+                    "ops": [{
+                        "op": "update:T002",
+                        "to_status": "DONE",
+                        "reason": "bench check passed"
+                    }]
+                }
+            }),
+        )
+        .await
+        .expect("bench update");
+        assert_eq!(bench_done["ok"], true);
 
         let got = call(
             &tool,
+            &ctx,
             json!({
                 "action": "get",
-                "id": "todo-crud-1"
+                "workspace_id": "ws-beta",
+                "todo_ref": "T002"
             }),
         )
         .await
         .expect("get todo");
-        assert_eq!(got["todo"]["status"], "in_progress");
-        assert_eq!(got["todo"]["owner_session_id"], "session-001");
-
-        let deleted = call(
-            &tool,
-            json!({
-                "action": "delete",
-                "id": "todo-crud-1"
-            }),
-        )
-        .await
-        .expect("delete todo");
-        assert_eq!(deleted["deleted"], true);
+        assert_eq!(got["item"]["status"], "DONE");
     }
 
     #[tokio::test]
-    async fn todo_tool_list_can_filter_closed_items() {
-        let tmp = tempdir().expect("create tempdir");
-        let db_path = tmp.path().join("todo").join("todo.db");
-        let tool = TodoTool::new(TodoToolConfig::with_db_path(db_path)).expect("create todo tool");
+    async fn apply_note_appends_without_overwrite() {
+        let tool = tool_for_test();
+        let ctx = test_ctx("did:od:jarvis");
 
         call(
             &tool,
+            &ctx,
             json!({
-                "action": "create",
-                "id": "todo-open",
-                "title": "open item",
-                "owner_session_id": null
+                "action": "apply_delta",
+                "workspace_id": "ws-note",
+                "delta": {
+                    "ops": [{
+                        "op": "init",
+                        "mode": "replace",
+                        "items": [{ "title": "write notes", "type": "Task" }]
+                    }]
+                }
             }),
         )
         .await
-        .expect("create open todo");
+        .expect("init");
+
         call(
             &tool,
+            &ctx,
             json!({
-                "action": "create",
-                "id": "todo-done",
-                "title": "done item",
-                "owner_session_id": null,
-                "status": "done"
+                "action": "apply_delta",
+                "workspace_id": "ws-note",
+                "delta": {
+                    "ops": [
+                        { "op": "note:T001", "kind": "result", "content": "first note" },
+                        { "op": "note:T001", "kind": "note", "content": "second note" }
+                    ]
+                }
             }),
         )
         .await
-        .expect("create done todo");
+        .expect("append notes");
 
-        let active_only = call(
+        let got = call(
             &tool,
+            &ctx,
             json!({
-                "action": "list",
-                "include_closed": false
+                "action": "get",
+                "workspace_id": "ws-note",
+                "todo_ref": "T001"
             }),
         )
         .await
-        .expect("list active todos");
-        let active = active_only["todos"].as_array().expect("todos array");
-        assert_eq!(active.len(), 1);
-        assert_eq!(active[0]["id"], "todo-open");
+        .expect("get todo");
+
+        let notes = got["notes"].as_array().expect("notes array");
+        assert_eq!(notes.len(), 2);
+        assert!(notes.iter().any(|n| n["content"] == "first note"));
+        assert!(notes.iter().any(|n| n["content"] == "second note"));
     }
 
     #[tokio::test]
-    async fn todo_tool_list_can_filter_by_owner_session_id() {
-        let tmp = tempdir().expect("create tempdir");
-        let db_path = tmp.path().join("todo").join("todo.db");
-        let tool = TodoTool::new(TodoToolConfig::with_db_path(db_path)).expect("create todo tool");
+    async fn subagent_can_only_update_owned_todo() {
+        let tool = tool_for_test();
+        let root_ctx = test_ctx("did:od:jarvis");
 
         call(
             &tool,
+            &root_ctx,
             json!({
-                "action": "create",
-                "id": "todo-owner-empty",
-                "title": "owner is empty string",
-                "owner_session_id": ""
+                "action": "apply_delta",
+                "workspace_id": "ws-sub",
+                "actor_ctx": { "kind": "root_agent", "did": "did:od:jarvis" },
+                "delta": {
+                    "ops": [{
+                        "op": "init",
+                        "mode": "replace",
+                        "items": [
+                            { "title": "task a", "type": "Task", "assignee": "did:od:alice" },
+                            { "title": "task b", "type": "Task", "assignee": "did:od:bob" }
+                        ]
+                    }]
+                }
             }),
         )
         .await
-        .expect("create todo with empty owner session id");
-        call(
-            &tool,
-            json!({
-                "action": "create",
-                "id": "todo-owner-a",
-                "title": "owner A",
-                "owner-session-id": "session-A"
-            }),
-        )
-        .await
-        .expect("create todo with owner-session-id alias");
-        call(
-            &tool,
-            json!({
-                "action": "create",
-                "id": "todo-owner-none",
-                "title": "owner is null",
-                "owner_session_id": null
-            }),
-        )
-        .await
-        .expect("create todo with null owner");
+        .expect("init");
 
-        let list_owner_a = call(
+        let sub_ctx = test_ctx("did:od:bob");
+        let forbidden = call(
             &tool,
+            &sub_ctx,
             json!({
-                "action": "list",
-                "owner_session_id": "session-A"
+                "action": "apply_delta",
+                "workspace_id": "ws-sub",
+                "actor_ctx": { "kind": "sub_agent", "did": "did:od:bob" },
+                "delta": {
+                    "ops": [{
+                        "op": "update:T001",
+                        "to_status": "COMPLETE",
+                        "reason": "should fail"
+                    }]
+                }
             }),
         )
         .await
-        .expect("list todos by owner session id");
-        let owner_a = list_owner_a["todos"].as_array().expect("todos array");
-        assert_eq!(owner_a.len(), 1);
-        assert_eq!(owner_a[0]["id"], "todo-owner-a");
+        .expect("apply should return forbidden payload");
 
-        let list_empty_owner = call(
+        assert_eq!(forbidden["ok"], false);
+        assert_eq!(forbidden["errors"][0]["code"], "FORBIDDEN");
+
+        let allowed = call(
             &tool,
+            &sub_ctx,
             json!({
-                "action": "list",
-                "owner-session-id": ""
+                "action": "apply_delta",
+                "workspace_id": "ws-sub",
+                "actor_ctx": { "kind": "sub_agent", "did": "did:od:bob" },
+                "delta": {
+                    "ops": [{
+                        "op": "update:T002",
+                        "to_status": "IN_PROGRESS",
+                        "reason": "owned task"
+                    }]
+                }
             }),
         )
         .await
-        .expect("list todos by empty owner session id");
-        let empty_owner = list_empty_owner["todos"].as_array().expect("todos array");
-        assert_eq!(empty_owner.len(), 1);
-        assert_eq!(empty_owner[0]["id"], "todo-owner-empty");
+        .expect("owned update");
+        assert_eq!(allowed["ok"], true);
     }
 
     #[tokio::test]
-    async fn todo_tool_validates_invalid_args() {
-        let tmp = tempdir().expect("create tempdir");
-        let db_path = tmp.path().join("todo").join("todo.db");
-        let tool = TodoTool::new(TodoToolConfig::with_db_path(db_path)).expect("create todo tool");
-
-        let err = call(
-            &tool,
-            json!({
-                "action": "create",
-                "title": "bad status",
-                "owner_session_id": null,
-                "status": "unknown_status"
-            }),
-        )
-        .await
-        .expect_err("invalid status should fail");
-        assert!(matches!(err, ToolError::InvalidArgs(_)));
+    async fn apply_op_id_is_idempotent() {
+        let tool = tool_for_test();
+        let ctx = test_ctx("did:od:jarvis");
 
         call(
             &tool,
+            &ctx,
             json!({
-                "action": "create",
-                "id": "todo-update-noop",
-                "title": "noop",
-                "owner_session_id": null
+                "action": "apply_delta",
+                "workspace_id": "ws-idem",
+                "delta": {
+                    "ops": [{
+                        "op": "init",
+                        "mode": "replace",
+                        "items": [{ "title": "idempotent task", "type": "Task" }]
+                    }]
+                }
             }),
         )
         .await
-        .expect("create todo");
+        .expect("init");
 
-        let err = call(
+        let op_id = "op-fixed-001";
+        let first = call(
             &tool,
+            &ctx,
             json!({
-                "action": "update",
-                "id": "todo-update-noop"
+                "action": "apply_delta",
+                "workspace_id": "ws-idem",
+                "delta": {
+                    "op_id": op_id,
+                    "ops": [{
+                        "op": "update:T001",
+                        "to_status": "IN_PROGRESS",
+                        "reason": "start"
+                    }]
+                }
             }),
         )
         .await
-        .expect_err("update without patch should fail");
-        assert!(matches!(err, ToolError::InvalidArgs(_)));
+        .expect("first apply");
+        assert_eq!(first["ok"], true);
+        let version_after_first = first["new_version"].as_i64().unwrap_or_default();
+
+        let second = call(
+            &tool,
+            &ctx,
+            json!({
+                "action": "apply_delta",
+                "workspace_id": "ws-idem",
+                "delta": {
+                    "op_id": op_id,
+                    "ops": [{
+                        "op": "update:T001",
+                        "to_status": "IN_PROGRESS",
+                        "reason": "start again"
+                    }]
+                }
+            }),
+        )
+        .await
+        .expect("second apply");
+        assert_eq!(second["ok"], true);
+        assert_eq!(second["idempotent"], true);
+        assert_eq!(
+            second["new_version"].as_i64().unwrap_or_default(),
+            version_after_first
+        );
     }
 }
