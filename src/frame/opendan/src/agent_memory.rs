@@ -314,9 +314,6 @@ impl AgentMemory {
 
             candidates.push(MemoryRankItem {
                 key: record.key.clone(),
-                ts: record.ts.clone(),
-                source: record.source.clone(),
-                content: record.content.clone(),
                 type_name,
                 summary,
                 importance,
@@ -327,9 +324,9 @@ impl AgentMemory {
 
         candidates.sort_by(rank_candidates);
 
-        let mut lines = vec!["[Agent Memory]".to_string()];
-        let mut selected_items = Vec::<Json>::new();
-        let mut used_tokens = estimate_token_count(lines[0].as_str());
+        let mut lines = Vec::<String>::new();
+        let mut selected = 0_usize;
+        let mut used_tokens = 0_usize;
         let mut truncated = false;
 
         for item in &candidates {
@@ -341,40 +338,27 @@ impl AgentMemory {
             }
             used_tokens += line_tokens;
             lines.push(line);
-            selected_items.push(json!({
-                "key": item.key,
-                "type": item.type_name,
-                "summary": item.summary,
-                "ts": item.ts,
-                "source": item.source,
-                "content": item.content,
-                "importance": item.importance,
-                "tag_score": item.tag_score
-            }));
-        }
-
-        if lines.len() == 1 {
-            lines.push("- (empty)".to_string());
+            selected += 1;
         }
 
         debug!(
             "agent_memory.load_memory: token_limit={} selected={} total={} tags={}",
             req.token_limit,
-            selected_items.len(),
+            selected,
             candidates.len(),
             req.tags.join(",")
         );
 
-        Ok(json!({
-            "memory_text": lines.join("\n"),
-            "items": selected_items,
-            "selected": selected_items.len(),
-            "total_candidates": candidates.len(),
-            "token_limit": req.token_limit,
-            "token_estimate": used_tokens,
-            "truncated": truncated,
-            "generated_at": Utc::now().to_rfc3339(),
-        }))
+        if truncated {
+            debug!(
+                "agent_memory.load_memory truncated: selected={} total={} token_estimate={}",
+                selected,
+                candidates.len(),
+                used_tokens
+            );
+        }
+
+        Ok(Json::String(lines.join("\n")))
     }
 
     async fn append_log_line(&self, envelope: &MemoryEnvelope) -> Result<(), ToolError> {
@@ -634,11 +618,7 @@ impl AgentTool for LoadMemoryTool {
                 }
             }),
             output_schema: json!({
-                "type":"object",
-                "properties": {
-                    "memory_text": {"type":"string"},
-                    "items": {"type":"array"}
-                }
+                "type":"string"
             }),
         }
     }
@@ -672,9 +652,6 @@ impl AgentTool for LoadMemoryTool {
 #[derive(Clone, Debug)]
 struct MemoryRankItem {
     key: String,
-    ts: String,
-    source: Json,
-    content: Json,
     type_name: String,
     summary: String,
     importance: i64,
@@ -1061,11 +1038,8 @@ mod tests {
             .load_memory(Some(200), vec!["style".to_string()], None)
             .await
             .expect("load memory");
-        let memory_text = loaded
-            .get("memory_text")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
+        let memory_text = loaded.as_str().unwrap_or_default().to_string();
+        print!("Loaded memory:\n{memory_text}");
         assert!(memory_text.contains("user/preference/style"));
         assert!(memory_text.contains("用户偏好简洁回复"));
     }
@@ -1102,10 +1076,8 @@ mod tests {
             .load_memory(Some(200), vec![], None)
             .await
             .expect("load memory");
-        let memory_text = loaded
-            .get("memory_text")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
+        let memory_text = loaded.as_str().unwrap_or_default();
+
         assert!(!memory_text.contains("user/calendar/meeting"));
     }
 
@@ -1146,5 +1118,119 @@ mod tests {
             .await
             .expect("call set_memory tool");
         assert_eq!(result.get("ok").and_then(|v| v.as_bool()), Some(true));
+    }
+
+    #[tokio::test]
+    async fn load_memory_truncates_when_token_limit_is_small() {
+        let temp = tempdir().expect("create tempdir");
+        let root = temp.path().to_path_buf();
+        let memory = AgentMemory::new(AgentMemoryConfig::new(&root))
+            .await
+            .expect("create memory");
+
+        for i in 0..60_u32 {
+            let source = json!({
+                "kind":"user",
+                "name":"chat",
+                "retrieved_at":"2026-02-22T10:00:00Z",
+                "locator":{"conversation_id":"c1","message_id":format!("m{i}")}
+            });
+            memory
+                .set_memory(
+                    format!("/user/bulk/item_{i:02}").as_str(),
+                    json!({
+                        "type":"note",
+                        "summary": format!("条目{i:02}摘要"),
+                        "importance": (100 - i) as i64,
+                        "tags": ["bulk", "trim"]
+                    }),
+                    source,
+                )
+                .await
+                .expect("set bulk memory");
+        }
+
+        let all = memory
+            .load_memory(Some(20_000), vec!["trim".to_string()], None)
+            .await
+            .expect("load all memory with huge token limit")
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+
+        let all_lines = all
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>();
+        assert!(
+            all_lines.len() >= 40,
+            "need at least 40 lines for this test, got {}",
+            all_lines.len()
+        );
+
+        let token_limit_40 = all_lines
+            .iter()
+            .take(40)
+            .map(|line| estimate_token_count(line))
+            .sum::<usize>() as u32;
+        let token_limit_20 = all_lines
+            .iter()
+            .take(20)
+            .map(|line| estimate_token_count(line))
+            .sum::<usize>() as u32;
+
+        let forty = memory
+            .load_memory(Some(token_limit_40), vec!["trim".to_string()], None)
+            .await
+            .expect("load memory with token limit for 40 lines")
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        print!("Loaded memory after tombstone:\n{forty}");
+        let twenty = memory
+            .load_memory(Some(token_limit_20), vec!["trim".to_string()], None)
+            .await
+            .expect("load memory with token limit for 20 lines")
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+
+        println!(
+            "load_memory(token_limit={} -> target 40 lines):\n{}",
+            token_limit_40, forty
+        );
+        println!(
+            "load_memory(token_limit={} -> target 20 lines):\n{}",
+            token_limit_20, twenty
+        );
+
+        let forty_lines = forty
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>();
+        let twenty_lines = twenty
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>();
+
+        assert!(
+            forty_lines.len() == 40,
+            "expected 40 lines, got {} (token_limit={})",
+            forty_lines.len(),
+            token_limit_40
+        );
+        assert!(
+            twenty_lines.len() == 20,
+            "expected 20 lines, got {} (token_limit={})",
+            twenty_lines.len(),
+            token_limit_20
+        );
+        assert!(
+            twenty_lines.iter().all(|line| forty_lines.contains(line)),
+            "20-line output should be subset of 40-line output"
+        );
     }
 }

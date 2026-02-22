@@ -442,7 +442,7 @@ class AIAgentRuntime:
 
 ## 12. Prompt 组合与输入/输出标准化（新设计为准，旧设计补充）
 
-### 12.1 Prompt 结构（新）
+### 12.1 Prompt 结构
 
 每次 step 的 prompt 由两部分组成：
 
