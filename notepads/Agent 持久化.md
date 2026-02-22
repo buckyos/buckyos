@@ -61,14 +61,14 @@ workshop是Agent和其sub agent共享的
 - OpenDAN提供了Agent Workshop的观察UI
 
 
-## Worksapce
+### Local Worksapce
 
 用来协同工作和交付结果的地方（对代码任务来说，这是类似一个git repo）
 Agent总是有一个私有的Workspace(不会因为协作冲突)
 
 > 独占的workspace又被称作workshop
 
-### Agent如何在Workspace中恢复`工作进度`
+#### Agent如何在Workspace中恢复`工作进度`
 
 - 对Workspace进行观察，得到一些全局的经验并保存
 - 结合worklog和session信息，得到一些session相关(当前task)相关的经验(这些经验通常是动手前的准备，任务完成后就没有了保存的价值)
@@ -76,7 +76,7 @@ Agent总是有一个私有的Workspace(不会因为协作冲突)
 从经验来看，Agent并不太擅长修改一个复杂的系统，而是擅长构造一个新系统（从头开始）.
 如果所有的历史工作都是Agent完成的，那么worklog就足够作为线索了展开了。
 
-## 提示词的构造
+## 提示词的构造中使用session状态
 
 ### Agent Router 提示词(快速响应提示词)
 <TODO>
@@ -98,10 +98,6 @@ Agent总是有一个私有的Workspace(不会因为协作冲突)
 - Input (Message / Event) History
 
 
-### Self-Improve 提示词
-<TODO>
-
-   
 ## 一些结论
 
 - Agent Memory是私有的，穿越Agent全部声明周期的 （用户尽量观察不干预）
@@ -132,8 +128,6 @@ data/$agent_name agent的数据目录
     - summary.json
 - sub-agents
 
-
-### Agent默认可用的工具列表
 
 
 

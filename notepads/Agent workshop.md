@@ -87,7 +87,7 @@ Agent Loop 支持通过创建 **Sub-Agent** 将串行逻辑扩展为并行推进
 
 Agent Workspace 需要统一管理并可视化展现的状态集合为：
 
-* **Task 管理**
+* **TODO 管理**
 * **WorkLog 管理**
 
   * 包含 Message / Message Reply

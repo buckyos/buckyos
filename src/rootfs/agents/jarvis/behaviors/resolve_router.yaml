@@ -58,30 +58,79 @@
 # }
 
 process_rule: |
-  Resolve session context for the current wakeup and decide optional routing.
-  Keep tool usage minimal. If no behavior switch is needed, keep next_behavior null.
+  **背景：** input_new_message 未提供 `session_id`。你必须决定是否应该创建一个新会话（session）。
+
+  ### 决策流程
+
+  1. **琐碎/无实质内容的输入**（问候、确认、表情符号、没有可执行内容的闲聊）：
+    - 立即给出简短、自然的回复。
+    - 将 `next_behavior` 设置为 `END`，并将 `new_session` 设置为 `null` —— 不需要创建会话。
+
+  2. **非琐碎的输入**（包含请求、问题、任务或有意义的内容）：
+    - **创建新会话：** 使用简明的 `[title, description]` 填充 `new_session`。
+      - `title`（标题）：会话的简短标签（2-6 个词）。
+      - `description`（描述）：总结会话目标或范围的一句话。
+    - 从**行为模式列表**中选择最合适的行为。
+
+  3. **记忆查询（Memory queries）：**
+    - 如果所选行为能够受益于检索相关的历史背景，请使用简明的搜索字符串填充 `memory_queries`。
+    - 否则使用 `[]`。
+
+  ### 行为模式列表
+
+  | 模式 | 标识符 | 使用时机 |
+  |---|---|---|
+  | **计划 (Plan)** | `PLAN` | 用户在执行前需要思考、组织、制定策略或分解复杂目标时。 |
+  | **执行任务 (Do)** | `DO` | 用户有可以直接执行的具体、可操作的请求时。 |
+
+  ### 选择指南
+
+  - 当请求清晰且可操作时，默认选择 `DO`。
+  - 当输入模棱两可、包含多个方面，或者用户明确要求进行头脑风暴、列提纲或制定策略时，选择 `PLAN`。
+  - 决胜条件：“用户是需要先有个计划，还是我现在就可以采取行动？” 如果可以采取行动，优先选择 `DO`。
+
+  ### 会话命名指南
+
+  - 标题应抓住**主题或目标**，而不是动作（例如：应为“API 认证设计”，而不是“帮助用户”）。
+  - 描述应当足够具体，以便未来的消息能够准确匹配到该会话。
+  - 保持两者简明扼要 —— 这是元数据，而不是对话内容。
+
+
+policy: |
+  - 仅输出 JSON 对象 —— 不要包含任何其他内容。
+  - 始终包含所有四个字段。
+  - `new_session` 必须是包含两个元素的字符串数组或 `null` —— 不能是其他形式。
+  - `memory_queries` 必须是一个数组；为空时使用 `[]`。
+  - 当 `next_behavior` 为 `PLAN` 或 `DO` 时，`new_session` 几乎总是应该为非空（代表输入具有值得跟踪的实质内容）。
 
 output_protocol:
-  mode: json_v1
-  text: |
-    Return exactly one JSON object and no extra text.
-    The JSON object must match ResolveRouterResult exactly:
-    {
-      "session_id": "string|null (optional)",
-      "new_session": [
-        "title (string)",
-        "description (string)"
-      ],
-      "next_behavior": "string|null (optional)",
-      "memory_queries": ["string", "..."],
-      "reply": "string|null (optional)"
-    }
-    Notes:
-    - If no new session is needed, set "new_session" to null.
-    - If no behavior switch is needed, set "next_behavior" to null.
-    - "memory_queries" should be an array; use [] when not needed.
+  mode: RouteResult
+  
+  notes: |
+    - 如果不需要新会话，请将 "new_session" 设置为 null。
+    - 如果不需要切换行为，请将 "next_behavior" 设置为 END。
+
+# 这也允许使用工具，是因为需要多个step翻阅历史记录来正确判断合适的session
+toolbox:
+  skills: ["opendan.default"] # 这个技能包含了基础的工具调用能力，和一些预设的工具（如搜索、记忆查询等），可以满足大部分的路由决策需求。
+
+memory:
+  global_memory:
+    limit: 0
+  agent_memory:
+    limit: 3000
+  history_messages:
+    limit: 3000
+  recent_sessions:
+    count: 10
+  
+input: |
+
+  {{new_event}}
+  {{new_msg}}
+  
 
 limits:
-  max_tool_rounds: 1
+  max_tool_rounds: 3
   max_tool_calls_per_round: 4
-  deadline_ms: 45000
+  max_steps: 3

@@ -1,0 +1,66 @@
+process_rule: |
+  ### 决策流程
+
+  1. **琐碎 / 无实质内容的输入**（问候、确认、表情符号、无实质内容的闲聊）：
+  * 立即给出一个简短、自然的回复。
+  * 将 `next_behavior` 设置为 `END`。
+
+
+  2. **非琐碎输入**（包含请求、问题、任务或有意义的内容）：
+  * 从**行为模式列表**中选择最合适的行为。
+
+
+  3. **记忆查询：**
+  * 如果所选行为能从检索相关的过去背景中受益，请在 `memory_queries` 中填充简明扼要的搜索字符串。
+  * 否则使用 `[]`。
+
+
+
+  ### 行为模式列表
+
+  | 模式 | 标识符 | 使用场景 |
+  | --- | --- | --- |
+  | **计划** | `PLAN` | 用户在执行前需要思考、组织、制定策略或分解复杂目标。 |
+  | **执行任务** | `DO` | 用户提出了一个具体的、可操作的请求，可以直接执行。 |
+
+  ### 选择指南
+
+  * 当请求清晰且可操作时，默认为 `DO`。
+  * 当输入模糊、多面，或者用户明确要求进行头脑风暴、列大纲或制定策略时，选择 `PLAN`。
+  * 决胜准则：“用户是需要先有个计划，还是我现在就能行动？”如果可以直接行动，优先选择 `DO`。
+
+
+policy: |
+  * 仅输出 JSON 对象——不得包含其他内容。
+  * 必须包含所有三个字段。
+  * `memory_queries` 必须是一个数组；为空时使用 `[]`
+
+output_protocol:
+  mode: RouteResult
+  notes: |
+    * 如果不需要切换行为，请将 "next_behavior" 设置为 END。
+
+# 不允许是用任何工具，限制了该behavior只能快速的完成
+# toolbox: 
+#   skills:
+#     - opendan.default 
+
+memory:
+  global_memory:
+    limit: 0
+  agent_memory:
+    limit: 3000
+  history_messages:
+    limit: 3000
+  session_summaries:
+    limit: 6000
+  
+input: |
+  {{new_event}}
+  {{new_msg}}
+  
+
+limits:
+  max_tool_rounds: 1
+  max_tool_calls_per_round: 4
+  deadline_ms: 45000
