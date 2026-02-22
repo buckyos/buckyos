@@ -1,0 +1,11 @@
+[package]
+name = "kevent"
+version.workspace = true
+edition = "2021"
+authors = ["BuckyOS DAO", "@waterflier", "@alexsunxl"]
+
+[dependencies]
+async-trait = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+buckyos-api = { path = "../buckyos-api" }

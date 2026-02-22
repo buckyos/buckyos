@@ -368,10 +368,3 @@ WORKSPACE=ws_foo  RANGE=recent  MAX_ENTRIES=8  GENERATED_AT=2026-02-22T10:31:13Z
 4. **UI 好用**：用户能在 workspace 下按 todo/behavior/失败状态快速定位问题，并打开 diff/artifact。
 5. **SubAgent 可审计**：subagent 的 worklog 能在 root 的 workspace/session 视图里汇总查看（至少显示完成/失败/产物就绪）。
 
----
-
-如果你希望我再进一步把它变成“可直接交付研发”的形式，我可以在同一套需求基础上补一份：
-
-* `worklog.yaml` 的配置草案（memory budget、max_entries、detail_entries、relevance rules）
-* UI 组件的交互稿说明（列表字段、展开面板字段、过滤器）
-* 以及 `prompt_view` sanitizer 的伪代码/规则表（字段白名单与截断策略）
