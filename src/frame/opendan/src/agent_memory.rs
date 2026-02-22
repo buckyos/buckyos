@@ -1,355 +1,619 @@
-use std::path::{Component, Path, PathBuf};
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use async_trait::async_trait;
-use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
+use chrono::{DateTime, Utc};
+use log::{debug, info, warn};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
-use tokio::fs;
-use tokio::task;
+use sha2::{Digest, Sha256};
+use tokio::fs::{self, OpenOptions};
+use tokio::io::AsyncWriteExt;
+use tokio::sync::Mutex;
 
 use crate::agent_tool::{AgentTool, ToolError, ToolManager, ToolSpec};
 use crate::behavior::TraceCtx;
 
-pub const TOOL_LIST: &str = "list";
 pub const TOOL_LOAD_MEMORY: &str = "load_memory";
+pub const TOOL_SET_MEMORY: &str = "set_memory";
 pub const TOOL_LOAD_THINGS: &str = "load_things";
-pub const TOOL_DELETE_BY_SOURCE_SESSION: &str = "delete_by_source_session";
 
-const DEFAULT_MEMORY_DIR_REL_PATH: &str = "memory";
-const DEFAULT_MEMORY_MD_REL_PATH: &str = "memory/memory.md";
-const DEFAULT_THINGS_DB_REL_PATH: &str = "memory/things.db";
-const DEFAULT_MEMORY_TOKEN_LIMIT: u32 = 2_000;
-const DEFAULT_LIST_MAX_ENTRIES: usize = 128;
-const DEFAULT_TABLE_LIMIT: usize = 32;
-const THING_TYPE_FACT: &str = "fact";
-const THING_TYPE_EVENT: &str = "event";
+const DEFAULT_MEMORY_DIR_NAME: &str = "memory";
+const DEFAULT_LOG_FILE_NAME: &str = "log.jsonl";
+const DEFAULT_STATE_FILE_NAME: &str = "state.jsonl";
+const DEFAULT_INDEX_DIR_NAME: &str = "index";
+const DEFAULT_MAX_JSON_CONTENT_BYTES: usize = 256 * 1024;
+const DEFAULT_TOKEN_LIMIT: u32 = 1200;
+const MAX_INDEX_SEGMENT_BYTES: usize = 72;
 
 #[derive(Clone, Debug)]
 pub struct AgentMemoryConfig {
     pub agent_root: PathBuf,
-    pub memory_dir_rel_path: PathBuf,
-    pub memory_md_rel_path: PathBuf,
-    pub things_db_rel_path: PathBuf,
-    pub default_memory_token_limit: u32,
-    pub max_list_entries: usize,
-    pub default_table_limit: usize,
+    pub memory_dir_name: String,
+    pub log_file_name: String,
+    pub state_file_name: String,
+    pub index_dir_name: String,
+    pub max_json_content_bytes: usize,
+    pub default_token_limit: u32,
 }
 
 impl AgentMemoryConfig {
     pub fn new(agent_root: impl Into<PathBuf>) -> Self {
         Self {
             agent_root: agent_root.into(),
-            memory_dir_rel_path: PathBuf::from(DEFAULT_MEMORY_DIR_REL_PATH),
-            memory_md_rel_path: PathBuf::from(DEFAULT_MEMORY_MD_REL_PATH),
-            things_db_rel_path: PathBuf::from(DEFAULT_THINGS_DB_REL_PATH),
-            default_memory_token_limit: DEFAULT_MEMORY_TOKEN_LIMIT,
-            max_list_entries: DEFAULT_LIST_MAX_ENTRIES,
-            default_table_limit: DEFAULT_TABLE_LIMIT,
+            memory_dir_name: DEFAULT_MEMORY_DIR_NAME.to_string(),
+            log_file_name: DEFAULT_LOG_FILE_NAME.to_string(),
+            state_file_name: DEFAULT_STATE_FILE_NAME.to_string(),
+            index_dir_name: DEFAULT_INDEX_DIR_NAME.to_string(),
+            max_json_content_bytes: DEFAULT_MAX_JSON_CONTENT_BYTES,
+            default_token_limit: DEFAULT_TOKEN_LIMIT,
         }
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct AgentMemory {
+    inner: Arc<AgentMemoryInner>,
+}
+
+#[derive(Debug)]
+struct AgentMemoryInner {
     cfg: AgentMemoryConfig,
     memory_dir: PathBuf,
-    memory_md_path: PathBuf,
-    things_db_path: PathBuf,
+    log_path: PathBuf,
+    state_path: PathBuf,
+    index_root: PathBuf,
+    write_lock: Mutex<()>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct MemoryEnvelope {
+    key: String,
+    ts: String,
+    valid: bool,
+    source: Json,
+    content: Json,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct MemoryIndexDocument {
+    key: String,
+    ts: String,
+    source: Json,
+    content: Json,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct LoadMemoryRequest {
+    token_limit: u32,
+    tags: Vec<String>,
+    current_time: DateTime<Utc>,
 }
 
 impl AgentMemory {
     pub async fn new(mut cfg: AgentMemoryConfig) -> Result<Self, ToolError> {
-        if cfg.default_memory_token_limit == 0 {
-            cfg.default_memory_token_limit = DEFAULT_MEMORY_TOKEN_LIMIT;
+        if cfg.max_json_content_bytes == 0 {
+            cfg.max_json_content_bytes = DEFAULT_MAX_JSON_CONTENT_BYTES;
         }
-        if cfg.max_list_entries == 0 {
-            cfg.max_list_entries = DEFAULT_LIST_MAX_ENTRIES;
-        }
-        if cfg.default_table_limit == 0 {
-            cfg.default_table_limit = DEFAULT_TABLE_LIMIT;
+        if cfg.default_token_limit == 0 {
+            cfg.default_token_limit = DEFAULT_TOKEN_LIMIT;
         }
 
-        let agent_root = normalize_root(&cfg.agent_root).await?;
-        cfg.agent_root = agent_root.clone();
+        let memory_dir = cfg.agent_root.join(&cfg.memory_dir_name);
+        let log_path = memory_dir.join(&cfg.log_file_name);
+        let state_path = memory_dir.join(&cfg.state_file_name);
+        let index_root = memory_dir.join(&cfg.index_dir_name);
 
-        let memory_dir = resolve_relative_path(&agent_root, &cfg.memory_dir_rel_path)?;
-        let memory_md_path = resolve_relative_path(&agent_root, &cfg.memory_md_rel_path)?;
-        let things_db_path = resolve_relative_path(&agent_root, &cfg.things_db_rel_path)?;
-
-        fs::create_dir_all(&memory_dir)
-            .await
-            .map_err(|err| ToolError::ExecFailed(format!("create memory dir failed: {err}")))?;
-        ensure_parent_dir(&memory_md_path).await?;
-        ensure_parent_dir(&things_db_path).await?;
-
-        if fs::try_exists(&memory_md_path).await.unwrap_or(false) == false {
-            fs::write(&memory_md_path, "")
-                .await
-                .map_err(|err| ToolError::ExecFailed(format!("create memory.md failed: {err}")))?;
-        }
-
-        init_things_db(&things_db_path).await?;
-
-        Ok(Self {
-            cfg,
-            memory_dir,
-            memory_md_path,
-            things_db_path,
-        })
-    }
-
-    pub fn register_tools(&self, tool_mgr: &ToolManager) -> Result<(), ToolError> {
-        tool_mgr.register_tool(ListMemoryTool {
-            memory: self.clone(),
+        fs::create_dir_all(&index_root).await.map_err(|err| {
+            ToolError::ExecFailed(format!("create memory index dir failed: {err}"))
         })?;
-        tool_mgr.register_tool(LoadMemoryTool {
-            memory: self.clone(),
-        })?;
-        tool_mgr.register_tool(LoadThingsTool {
-            memory: self.clone(),
-        })?;
-        tool_mgr.register_tool(DeleteBySourceSessionTool {
-            memory: self.clone(),
-        })?;
-        Ok(())
+        touch_file(&log_path).await?;
+        touch_file(&state_path).await?;
+
+        let instance = Self {
+            inner: Arc::new(AgentMemoryInner {
+                cfg,
+                memory_dir,
+                log_path,
+                state_path,
+                index_root,
+                write_lock: Mutex::new(()),
+            }),
+        };
+        instance.bootstrap_if_needed().await?;
+        Ok(instance)
     }
 
     pub fn memory_dir(&self) -> &Path {
-        &self.memory_dir
+        &self.inner.memory_dir
     }
 
-    pub fn memory_md_path(&self) -> &Path {
-        &self.memory_md_path
+    pub fn register_tools(&self, tool_mgr: &ToolManager) -> Result<(), ToolError> {
+        if !tool_mgr.has_tool(TOOL_SET_MEMORY) {
+            tool_mgr.register_tool(SetMemoryTool::new(self.clone()))?;
+        }
+        if !tool_mgr.has_tool(TOOL_LOAD_MEMORY) {
+            tool_mgr.register_tool(LoadMemoryTool::new(self.clone()))?;
+        }
+        Ok(())
     }
 
-    pub fn things_db_path(&self) -> &Path {
-        &self.things_db_path
-    }
-
-    async fn list_entries(
+    pub async fn set_memory(
         &self,
-        recursive: bool,
-        max_entries: usize,
-    ) -> Result<Vec<Json>, ToolError> {
-        let max_entries = max_entries.min(self.cfg.max_list_entries).max(1);
-        let mut entries = Vec::new();
-        let mut pending_dirs = vec![self.memory_dir.clone()];
+        key: &str,
+        json_content: Json,
+        source: Json,
+    ) -> Result<Json, ToolError> {
+        let normalized_key = normalize_key(key)?;
+        validate_source(&normalized_key, &source)?;
 
-        while let Some(dir) = pending_dirs.pop() {
-            let mut read_dir = fs::read_dir(&dir).await.map_err(|err| {
-                ToolError::ExecFailed(format!("read memory dir `{}` failed: {err}", dir.display()))
-            })?;
-
-            while let Some(entry) = read_dir.next_entry().await.map_err(|err| {
-                ToolError::ExecFailed(format!("list memory dir entry failed: {err}"))
-            })? {
-                let path = entry.path();
-                let metadata = entry.metadata().await.map_err(|err| {
-                    ToolError::ExecFailed(format!(
-                        "read metadata failed for `{}`: {err}",
-                        path.display()
-                    ))
-                })?;
-                let kind = if metadata.is_dir() { "dir" } else { "file" };
-                let rel = path
-                    .strip_prefix(&self.memory_dir)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-
-                entries.push(json!({
-                    "path": rel,
-                    "kind": kind,
-                    "bytes": if metadata.is_file() { Some(metadata.len()) } else { None },
-                }));
-
-                if metadata.is_dir() && recursive {
-                    pending_dirs.push(path);
-                }
-
-                if entries.len() >= max_entries {
-                    entries.sort_by_key(|item| {
-                        item.get("path")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string()
-                    });
-                    return Ok(entries);
-                }
+        if !json_content.is_null() {
+            let payload_size = serde_json::to_vec(&json_content)
+                .map_err(|err| {
+                    ToolError::ExecFailed(format!("serialize json_content failed: {err}"))
+                })?
+                .len();
+            if payload_size > self.inner.cfg.max_json_content_bytes {
+                return Err(ToolError::InvalidArgs(format!(
+                    "json_content too large: {} bytes > {} bytes",
+                    payload_size, self.inner.cfg.max_json_content_bytes
+                )));
             }
         }
 
-        entries.sort_by_key(|item| {
-            item.get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string()
-        });
-        Ok(entries)
-    }
+        let now = Utc::now();
+        let envelope = MemoryEnvelope {
+            key: normalized_key.clone(),
+            ts: now.to_rfc3339(),
+            valid: !json_content.is_null(),
+            source,
+            content: json_content,
+        };
 
-    async fn load_agent_memory(&self, token_limit: u32) -> Result<Json, ToolError> {
-        let token_limit = token_limit.max(1);
-        let content = fs::read_to_string(&self.memory_md_path)
-            .await
-            .unwrap_or_else(|_| "".to_string());
-        let full_tokens = approx_tokens(&content);
-        let (loaded, truncated) = truncate_by_token_limit(&content, token_limit);
+        let index_path = self.index_path_for_key(&normalized_key);
+        {
+            let _guard = self.inner.write_lock.lock().await;
+            self.append_log_line(&envelope).await?;
 
-        Ok(json!({
-            "path": self.memory_md_path.to_string_lossy().to_string(),
-            "token_limit": token_limit,
-            "approx_full_tokens": full_tokens,
-            "approx_loaded_tokens": approx_tokens(&loaded),
-            "truncated": truncated,
-            "content": loaded,
-        }))
-    }
+            let mut current = self.read_state_map().await?;
+            if envelope.valid {
+                current.insert(normalized_key.clone(), envelope.clone());
+                self.write_index_doc(&index_path, &envelope).await?;
+            } else {
+                current.remove(&normalized_key);
+                if let Err(err) = fs::remove_file(&index_path).await {
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        return Err(ToolError::ExecFailed(format!(
+                            "remove memory index file failed: path={}, err={err}",
+                            index_path.display()
+                        )));
+                    }
+                }
+            }
 
-    async fn load_things(&self, name: Option<String>, limit: usize) -> Result<Json, ToolError> {
-        let limit = limit.max(1);
-        let db_path = self.things_db_path.clone();
-        let query_name = name.clone();
-
-        let snapshot = task::spawn_blocking(move || -> Result<ThingsSnapshot, ToolError> {
-            let conn = Connection::open(&db_path).map_err(|err| {
-                ToolError::ExecFailed(format!(
-                    "open things db `{}` failed: {err}",
-                    db_path.display()
-                ))
-            })?;
-            ensure_things_db_schema(&conn)?;
-
-            let kv = query_kv(&conn, query_name.as_deref(), limit)?;
-            let facts = query_facts(&conn, query_name.as_deref(), limit)?;
-            let events = query_events(&conn, query_name.as_deref(), limit)?;
-
-            Ok(ThingsSnapshot { kv, facts, events })
-        })
-        .await
-        .map_err(|err| ToolError::ExecFailed(format!("query things db join error: {err}")))??;
-
-        Ok(json!({
-            "path": self.things_db_path.to_string_lossy().to_string(),
-            "query": name,
-            "limit_per_table": limit,
-            "kv": snapshot.kv,
-            "facts": snapshot.facts,
-            "events": snapshot.events,
-        }))
-    }
-
-    async fn delete_by_source_session(&self, source_session: String) -> Result<Json, ToolError> {
-        let source_session = source_session.trim().to_string();
-        if source_session.is_empty() {
-            return Err(ToolError::InvalidArgs(
-                "arg `source_session` cannot be empty".to_string(),
-            ));
+            self.write_state_map_atomic(&current).await?;
         }
-        let db_path = self.things_db_path.clone();
-        let source_session_for_query = source_session.clone();
-
-        let deleted = task::spawn_blocking(move || -> Result<DeletedThingsSummary, ToolError> {
-            let conn = Connection::open(&db_path).map_err(|err| {
-                ToolError::ExecFailed(format!(
-                    "open things db `{}` failed: {err}",
-                    db_path.display()
-                ))
-            })?;
-            ensure_things_db_schema(&conn)?;
-
-            let deleted_facts = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM things WHERE source_session = ?1 AND thing_type = ?2",
-                    params![source_session_for_query, THING_TYPE_FACT],
-                    |row| row.get::<_, i64>(0),
-                )
-                .map_err(|err| ToolError::ExecFailed(format!("count fact things failed: {err}")))?;
-
-            let deleted_events = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM things WHERE source_session = ?1 AND thing_type = ?2",
-                    params![source_session_for_query, THING_TYPE_EVENT],
-                    |row| row.get::<_, i64>(0),
-                )
-                .map_err(|err| {
-                    ToolError::ExecFailed(format!("count event things failed: {err}"))
-                })?;
-
-            let deleted_things = conn
-                .execute(
-                    "DELETE FROM things WHERE source_session = ?1",
-                    params![source_session_for_query],
-                )
-                .map_err(|err| {
-                    ToolError::ExecFailed(format!("delete things by session failed: {err}"))
-                })?;
-
-            Ok(DeletedThingsSummary {
-                deleted_things: i64::try_from(deleted_things)
-                    .map_err(|_| ToolError::ExecFailed("deleted rows overflow i64".to_string()))?,
-                deleted_facts,
-                deleted_events,
-            })
-        })
-        .await
-        .map_err(|err| ToolError::ExecFailed(format!("delete things db join error: {err}")))??;
+        info!(
+            "agent_memory.set_memory: key={} valid={} index={}",
+            normalized_key,
+            envelope.valid,
+            index_path.display()
+        );
 
         Ok(json!({
-            "path": self.things_db_path.to_string_lossy().to_string(),
-            "source_session": source_session,
-            "deleted_things": deleted.deleted_things,
-            "deleted_facts": deleted.deleted_facts,
-            "deleted_events": deleted.deleted_events,
+            "ok": true,
+            "key": normalized_key,
+            "valid": envelope.valid,
+            "ts": envelope.ts,
+            "index_path": index_path.to_string_lossy(),
         }))
+    }
+
+    pub async fn load_memory(
+        &self,
+        token_limit: Option<u32>,
+        tags: Vec<String>,
+        current_time: Option<DateTime<Utc>>,
+    ) -> Result<Json, ToolError> {
+        let request = LoadMemoryRequest {
+            token_limit: token_limit
+                .unwrap_or(self.inner.cfg.default_token_limit)
+                .max(1),
+            tags,
+            current_time: current_time.unwrap_or_else(Utc::now),
+        };
+        self.load_memory_by_request(request).await
+    }
+
+    pub async fn compact(&self) -> Result<Json, ToolError> {
+        let _guard = self.inner.write_lock.lock().await;
+        self.compact_locked().await
+    }
+
+    async fn bootstrap_if_needed(&self) -> Result<(), ToolError> {
+        let state_len = file_len_or_zero(&self.inner.state_path).await;
+        if state_len > 0 {
+            return Ok(());
+        }
+        let log_len = file_len_or_zero(&self.inner.log_path).await;
+        if log_len == 0 {
+            return Ok(());
+        }
+        info!(
+            "agent_memory.bootstrap: rebuilding state from log: path={}",
+            self.inner.log_path.display()
+        );
+        let _guard = self.inner.write_lock.lock().await;
+        self.compact_locked().await?;
+        Ok(())
+    }
+
+    async fn compact_locked(&self) -> Result<Json, ToolError> {
+        let records = self.read_latest_from_log().await?;
+        let now = Utc::now();
+        let mut active = HashMap::<String, MemoryEnvelope>::new();
+        let mut expired = 0_usize;
+        let mut tombstone = 0_usize;
+
+        for record in records.values() {
+            if !record.valid {
+                tombstone += 1;
+                continue;
+            }
+            if is_expired_at(record.content.get("expired_at"), &now) {
+                expired += 1;
+                continue;
+            }
+            active.insert(record.key.clone(), record.clone());
+        }
+
+        self.write_state_map_atomic(&active).await?;
+        self.rebuild_index_from_active(&active).await?;
+
+        Ok(json!({
+            "ok": true,
+            "total_keys": records.len(),
+            "active_keys": active.len(),
+            "expired_keys": expired,
+            "tombstone_keys": tombstone
+        }))
+    }
+
+    async fn load_memory_by_request(&self, req: LoadMemoryRequest) -> Result<Json, ToolError> {
+        let mut records = self.read_state_map().await?;
+        if records.is_empty() {
+            records = self.read_latest_from_log().await?;
+        }
+
+        let requested_tags: HashSet<String> = req
+            .tags
+            .iter()
+            .map(|t| t.trim().to_ascii_lowercase())
+            .filter(|t| !t.is_empty())
+            .collect();
+
+        let mut candidates = Vec::<MemoryRankItem>::new();
+        for record in records.values() {
+            if !record.valid {
+                continue;
+            }
+            if is_expired_at(record.content.get("expired_at"), &req.current_time) {
+                continue;
+            }
+
+            let importance = extract_importance(&record.content);
+            let type_name = extract_type_name(&record.content);
+            let tags = extract_tags(&record.content);
+            let tag_score = tags
+                .iter()
+                .filter(|tag| requested_tags.contains(tag.as_str()))
+                .count() as u32;
+            let summary = extract_summary_text(&record.content);
+
+            candidates.push(MemoryRankItem {
+                key: record.key.clone(),
+                ts: record.ts.clone(),
+                source: record.source.clone(),
+                content: record.content.clone(),
+                type_name,
+                summary,
+                importance,
+                tag_score,
+                ts_unix_ms: parse_rfc3339_to_ms(&record.ts).unwrap_or(0),
+            });
+        }
+
+        candidates.sort_by(rank_candidates);
+
+        let mut lines = vec!["[Agent Memory]".to_string()];
+        let mut selected_items = Vec::<Json>::new();
+        let mut used_tokens = estimate_token_count(lines[0].as_str());
+        let mut truncated = false;
+
+        for item in &candidates {
+            let line = render_memory_line(item);
+            let line_tokens = estimate_token_count(&line);
+            if used_tokens.saturating_add(line_tokens) > req.token_limit as usize {
+                truncated = true;
+                break;
+            }
+            used_tokens += line_tokens;
+            lines.push(line);
+            selected_items.push(json!({
+                "key": item.key,
+                "type": item.type_name,
+                "summary": item.summary,
+                "ts": item.ts,
+                "source": item.source,
+                "content": item.content,
+                "importance": item.importance,
+                "tag_score": item.tag_score
+            }));
+        }
+
+        if lines.len() == 1 {
+            lines.push("- (empty)".to_string());
+        }
+
+        debug!(
+            "agent_memory.load_memory: token_limit={} selected={} total={} tags={}",
+            req.token_limit,
+            selected_items.len(),
+            candidates.len(),
+            req.tags.join(",")
+        );
+
+        Ok(json!({
+            "memory_text": lines.join("\n"),
+            "items": selected_items,
+            "selected": selected_items.len(),
+            "total_candidates": candidates.len(),
+            "token_limit": req.token_limit,
+            "token_estimate": used_tokens,
+            "truncated": truncated,
+            "generated_at": Utc::now().to_rfc3339(),
+        }))
+    }
+
+    async fn append_log_line(&self, envelope: &MemoryEnvelope) -> Result<(), ToolError> {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.inner.log_path)
+            .await
+            .map_err(|err| {
+                ToolError::ExecFailed(format!(
+                    "open memory log for append failed: path={}, err={err}",
+                    self.inner.log_path.display()
+                ))
+            })?;
+
+        let line = serde_json::to_string(envelope).map_err(|err| {
+            ToolError::ExecFailed(format!("serialize memory envelope failed: {err}"))
+        })?;
+        file.write_all(line.as_bytes()).await.map_err(|err| {
+            ToolError::ExecFailed(format!("append memory log line failed: {err}"))
+        })?;
+        file.write_all(b"\n").await.map_err(|err| {
+            ToolError::ExecFailed(format!("append memory log newline failed: {err}"))
+        })?;
+        file.flush()
+            .await
+            .map_err(|err| ToolError::ExecFailed(format!("flush memory log failed: {err}")))?;
+        Ok(())
+    }
+
+    async fn read_state_map(&self) -> Result<HashMap<String, MemoryEnvelope>, ToolError> {
+        self.read_jsonl_map(&self.inner.state_path).await
+    }
+
+    async fn read_latest_from_log(&self) -> Result<HashMap<String, MemoryEnvelope>, ToolError> {
+        self.read_jsonl_map(&self.inner.log_path).await
+    }
+
+    async fn read_jsonl_map(
+        &self,
+        file_path: &Path,
+    ) -> Result<HashMap<String, MemoryEnvelope>, ToolError> {
+        let payload = match fs::read_to_string(file_path).await {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+            Err(err) => {
+                return Err(ToolError::ExecFailed(format!(
+                    "read memory file failed: path={}, err={err}",
+                    file_path.display()
+                )))
+            }
+        };
+
+        let mut result = HashMap::<String, MemoryEnvelope>::new();
+        for (line_idx, raw_line) in payload.lines().enumerate() {
+            let line = raw_line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<MemoryEnvelope>(line) {
+                Ok(record) => {
+                    result.insert(record.key.clone(), record);
+                }
+                Err(err) => {
+                    warn!(
+                        "agent_memory.invalid_jsonl_line: path={} line={} err={}",
+                        file_path.display(),
+                        line_idx + 1,
+                        err
+                    );
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    async fn write_state_map_atomic(
+        &self,
+        state_map: &HashMap<String, MemoryEnvelope>,
+    ) -> Result<(), ToolError> {
+        let mut keys: Vec<&String> = state_map.keys().collect();
+        keys.sort();
+
+        let mut body = String::new();
+        for key in keys {
+            let Some(record) = state_map.get(key) else {
+                continue;
+            };
+            if !record.valid {
+                continue;
+            }
+            let line = serde_json::to_string(record).map_err(|err| {
+                ToolError::ExecFailed(format!("serialize state line failed: {err}"))
+            })?;
+            body.push_str(&line);
+            body.push('\n');
+        }
+
+        write_atomic_text(&self.inner.state_path, &body).await
+    }
+
+    async fn rebuild_index_from_active(
+        &self,
+        active: &HashMap<String, MemoryEnvelope>,
+    ) -> Result<(), ToolError> {
+        if let Err(err) = fs::remove_dir_all(&self.inner.index_root).await {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                return Err(ToolError::ExecFailed(format!(
+                    "cleanup memory index dir failed: path={}, err={err}",
+                    self.inner.index_root.display()
+                )));
+            }
+        }
+        fs::create_dir_all(&self.inner.index_root)
+            .await
+            .map_err(|err| {
+                ToolError::ExecFailed(format!("recreate memory index dir failed: {err}"))
+            })?;
+
+        let mut keys: Vec<&String> = active.keys().collect();
+        keys.sort();
+        for key in keys {
+            let Some(record) = active.get(key) else {
+                continue;
+            };
+            let index_path = self.index_path_for_key(&record.key);
+            self.write_index_doc(&index_path, record).await?;
+        }
+        Ok(())
+    }
+
+    async fn write_index_doc(
+        &self,
+        index_path: &Path,
+        record: &MemoryEnvelope,
+    ) -> Result<(), ToolError> {
+        if let Some(parent) = index_path.parent() {
+            fs::create_dir_all(parent).await.map_err(|err| {
+                ToolError::ExecFailed(format!(
+                    "create index parent dir failed: path={}, err={err}",
+                    parent.display()
+                ))
+            })?;
+        }
+        let doc = MemoryIndexDocument {
+            key: record.key.clone(),
+            ts: record.ts.clone(),
+            source: record.source.clone(),
+            content: record.content.clone(),
+        };
+        let payload = serde_json::to_string_pretty(&doc).map_err(|err| {
+            ToolError::ExecFailed(format!("serialize memory index doc failed: {err}"))
+        })?;
+        write_atomic_text(index_path, &payload).await
+    }
+
+    fn index_path_for_key(&self, key: &str) -> PathBuf {
+        let segments: Vec<&str> = key.trim_start_matches('/').split('/').collect();
+        let mut path = self.inner.index_root.clone();
+        if segments.is_empty() {
+            return path.join("_root@00000000.json");
+        }
+        if segments.len() == 1 {
+            let file_segment = build_index_file_segment(segments[0]);
+            return path.join(file_segment);
+        }
+
+        for segment in &segments[..segments.len() - 1] {
+            path = path.join(build_index_dir_segment(segment));
+        }
+        path.join(build_index_file_segment(segments[segments.len() - 1]))
     }
 }
 
-#[derive(Clone)]
-struct ListMemoryTool {
+struct SetMemoryTool {
     memory: AgentMemory,
 }
 
+impl SetMemoryTool {
+    fn new(memory: AgentMemory) -> Self {
+        Self { memory }
+    }
+}
+
 #[async_trait]
-impl AgentTool for ListMemoryTool {
+impl AgentTool for SetMemoryTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: TOOL_LIST.to_string(),
-            description: "List memory directory entries.".to_string(),
+            name: TOOL_SET_MEMORY.to_string(),
+            description: "Set or invalidate an agent memory entry using key/json_content/source."
+                .to_string(),
             args_schema: json!({
-                "type":"object",
+                "type": "object",
+                "required": ["key", "json_content", "source"],
                 "properties": {
-                    "recursive": {"type":"boolean"},
-                    "max_entries": {"type":"integer", "minimum": 1}
-                },
-                "additionalProperties": true
+                    "key": { "type": "string" },
+                    "json_content": {},
+                    "source": {
+                        "anyOf": [
+                            { "type": "string" },
+                            { "type": "object" }
+                        ]
+                    }
+                }
             }),
             output_schema: json!({
-                "type":"object",
+                "type": "object",
                 "properties": {
-                    "memory_dir": {"type":"string"},
-                    "entries": {"type":"array"}
+                    "ok": {"type":"boolean"},
+                    "key": {"type":"string"},
+                    "valid": {"type":"boolean"},
+                    "ts": {"type":"string"}
                 }
             }),
         }
     }
 
     async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
-        let recursive = optional_bool(&args, "recursive")?.unwrap_or(true);
-        let max_entries =
-            optional_usize(&args, "max_entries")?.unwrap_or(self.memory.cfg.max_list_entries);
-        let entries = self.memory.list_entries(recursive, max_entries).await?;
-
-        Ok(json!({
-            "memory_dir": self.memory.memory_dir.to_string_lossy().to_string(),
-            "entries": entries,
-        }))
+        let key = require_arg_string(&args, "key")?;
+        let json_content = args
+            .get("json_content")
+            .cloned()
+            .ok_or_else(|| ToolError::InvalidArgs("missing `json_content`".to_string()))?;
+        let source = args
+            .get("source")
+            .cloned()
+            .ok_or_else(|| ToolError::InvalidArgs("missing `source`".to_string()))?;
+        self.memory.set_memory(&key, json_content, source).await
     }
 }
 
-#[derive(Clone)]
 struct LoadMemoryTool {
     memory: AgentMemory,
+}
+
+impl LoadMemoryTool {
+    fn new(memory: AgentMemory) -> Self {
+        Self { memory }
+    }
 }
 
 #[async_trait]
@@ -357,788 +621,406 @@ impl AgentTool for LoadMemoryTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_LOAD_MEMORY.to_string(),
-            description:
-                "Load memory.md and keep the most important head section under token limit."
-                    .to_string(),
+            description: "Read memory summary using default retrieval strategy.".to_string(),
             args_schema: json!({
-                "type":"object",
+                "type": "object",
                 "properties": {
-                    "token_limit": {"type":"integer", "minimum": 1}
-                },
-                "additionalProperties": true
+                    "token_limit": {"type":"number"},
+                    "tags": {
+                        "type":"array",
+                        "items": {"type":"string"}
+                    },
+                    "current_time": {"type":"string"}
+                }
             }),
             output_schema: json!({
                 "type":"object",
                 "properties": {
-                    "path": {"type":"string"},
-                    "token_limit": {"type":"integer"},
-                    "approx_full_tokens": {"type":"integer"},
-                    "approx_loaded_tokens": {"type":"integer"},
-                    "truncated": {"type":"boolean"},
-                    "content": {"type":"string"}
+                    "memory_text": {"type":"string"},
+                    "items": {"type":"array"}
                 }
             }),
         }
     }
 
     async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
-        let token_limit = optional_u32(&args, "token_limit")?
-            .unwrap_or(self.memory.cfg.default_memory_token_limit);
-        self.memory.load_agent_memory(token_limit).await
+        let token_limit = args
+            .get("token_limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| n.min(u32::MAX as u64) as u32);
+        let tags = args
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_default();
+        let current_time = args
+            .get("current_time")
+            .and_then(|v| v.as_str())
+            .and_then(|raw| parse_rfc3339_to_utc(raw).ok());
+
+        self.memory
+            .load_memory(token_limit, tags, current_time)
+            .await
     }
 }
 
-#[derive(Clone)]
-struct LoadThingsTool {
-    memory: AgentMemory,
-}
-
-#[async_trait]
-impl AgentTool for LoadThingsTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_LOAD_THINGS.to_string(),
-            description: "Load things from things.db with keyword filter.".to_string(),
-            args_schema: json!({
-                "type":"object",
-                "properties": {
-                    "name": {"type":"string"},
-                    "limit": {"type":"integer", "minimum": 1}
-                },
-                "additionalProperties": true
-            }),
-            output_schema: json!({
-                "type":"object",
-                "properties": {
-                    "path": {"type":"string"},
-                    "query": {"type":["string", "null"]},
-                    "limit_per_table": {"type":"integer"},
-                    "kv": {"type":"array"},
-                    "facts": {"type":"array"},
-                    "events": {"type":"array"}
-                }
-            }),
-        }
-    }
-
-    async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
-        let name = optional_string(&args, "name")?;
-        let limit = optional_usize(&args, "limit")?.unwrap_or(self.memory.cfg.default_table_limit);
-        self.memory.load_things(name, limit).await
-    }
-}
-
-#[derive(Clone)]
-struct DeleteBySourceSessionTool {
-    memory: AgentMemory,
-}
-
-#[async_trait]
-impl AgentTool for DeleteBySourceSessionTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_DELETE_BY_SOURCE_SESSION.to_string(),
-            description: "Delete things rows by source_session.".to_string(),
-            args_schema: json!({
-                "type":"object",
-                "properties": {
-                    "source_session": {"type":"string"}
-                },
-                "required": ["source_session"],
-                "additionalProperties": true
-            }),
-            output_schema: json!({
-                "type":"object",
-                "properties": {
-                    "path": {"type":"string"},
-                    "source_session": {"type":"string"},
-                    "deleted_things": {"type":"integer"},
-                    "deleted_facts": {"type":"integer"},
-                    "deleted_events": {"type":"integer"}
-                }
-            }),
-        }
-    }
-
-    async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
-        let source_session = required_string_arg(&args, "source_session")?;
-        self.memory.delete_by_source_session(source_session).await
-    }
-}
-
-#[derive(Debug, Serialize)]
-struct KvEntry {
+#[derive(Clone, Debug)]
+struct MemoryRankItem {
     key: String,
-    value: String,
-    updated_at: i64,
-    source: Option<String>,
-    confidence: Option<f64>,
+    ts: String,
+    source: Json,
+    content: Json,
+    type_name: String,
+    summary: String,
+    importance: i64,
+    tag_score: u32,
+    ts_unix_ms: i64,
 }
 
-#[derive(Debug, Serialize)]
-struct FactEntry {
-    id: String,
-    subject: String,
-    predicate: String,
-    object: String,
-    updated_at: i64,
-    source: Option<String>,
-    source_session: Option<String>,
+fn rank_candidates(a: &MemoryRankItem, b: &MemoryRankItem) -> Ordering {
+    b.ts_unix_ms
+        .cmp(&a.ts_unix_ms)
+        .then_with(|| b.importance.cmp(&a.importance))
+        .then_with(|| b.tag_score.cmp(&a.tag_score))
+        .then_with(|| a.key.cmp(&b.key))
 }
 
-#[derive(Debug, Serialize)]
-struct EventEntry {
-    id: String,
-    event_type: String,
-    payload: String,
-    ts: i64,
-    source: Option<String>,
-    source_session: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct ThingsSnapshot {
-    kv: Vec<KvEntry>,
-    facts: Vec<FactEntry>,
-    events: Vec<EventEntry>,
-}
-
-#[derive(Debug)]
-struct DeletedThingsSummary {
-    deleted_things: i64,
-    deleted_facts: i64,
-    deleted_events: i64,
-}
-
-fn required_string_arg(args: &Json, key: &str) -> Result<String, ToolError> {
-    let value = args
-        .get(key)
-        .ok_or_else(|| ToolError::InvalidArgs(format!("missing required arg `{key}`")))?;
-    let value = value
-        .as_str()
-        .ok_or_else(|| ToolError::InvalidArgs(format!("arg `{key}` must be a string")))?;
-    Ok(value.to_string())
-}
-
-fn optional_string(args: &Json, key: &str) -> Result<Option<String>, ToolError> {
-    let Some(value) = args.get(key) else {
-        return Ok(None);
+fn render_memory_line(item: &MemoryRankItem) -> String {
+    let key_part = item.key.trim_start_matches('/');
+    let type_part = if item.type_name.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", item.type_name)
     };
-    if value.is_null() {
-        return Ok(None);
-    }
-    let value = value
-        .as_str()
-        .ok_or_else(|| ToolError::InvalidArgs(format!("arg `{key}` must be a string")))?;
-    Ok(Some(value.to_string()))
+    format!(
+        "- {}{} {}",
+        key_part,
+        type_part,
+        truncate_chars(item.summary.as_str(), 120)
+    )
 }
 
-fn optional_bool(args: &Json, key: &str) -> Result<Option<bool>, ToolError> {
-    let Some(value) = args.get(key) else {
-        return Ok(None);
-    };
-    if value.is_null() {
-        return Ok(None);
+fn extract_importance(content: &Json) -> i64 {
+    match content.get("importance") {
+        Some(Json::Number(n)) => n
+            .as_i64()
+            .or_else(|| n.as_f64().map(|f| f as i64))
+            .unwrap_or(0),
+        Some(Json::String(s)) => s.parse::<i64>().unwrap_or(0),
+        _ => 0,
     }
-    let value = value
-        .as_bool()
-        .ok_or_else(|| ToolError::InvalidArgs(format!("arg `{key}` must be a boolean")))?;
-    Ok(Some(value))
 }
 
-fn optional_u32(args: &Json, key: &str) -> Result<Option<u32>, ToolError> {
-    let Some(value) = args.get(key) else {
-        return Ok(None);
-    };
-    if value.is_null() {
-        return Ok(None);
-    }
-    let value = value
-        .as_u64()
-        .ok_or_else(|| ToolError::InvalidArgs(format!("arg `{key}` must be a positive integer")))?;
-    u32::try_from(value)
-        .map(Some)
-        .map_err(|_| ToolError::InvalidArgs(format!("arg `{key}` is too large")))
+fn extract_type_name(content: &Json) -> String {
+    content
+        .get("type")
+        .and_then(|v| v.as_str())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_default()
 }
 
-fn optional_u64(args: &Json, key: &str) -> Result<Option<u64>, ToolError> {
-    let Some(value) = args.get(key) else {
-        return Ok(None);
-    };
-    if value.is_null() {
-        return Ok(None);
-    }
-    let value = value
-        .as_u64()
-        .ok_or_else(|| ToolError::InvalidArgs(format!("arg `{key}` must be a positive integer")))?;
-    Ok(Some(value))
-}
-
-fn optional_usize(args: &Json, key: &str) -> Result<Option<usize>, ToolError> {
-    let value = optional_u64(args, key)?;
-    value
-        .map(|raw| {
-            usize::try_from(raw)
-                .map_err(|_| ToolError::InvalidArgs(format!("arg `{key}` is too large")))
+fn extract_tags(content: &Json) -> Vec<String> {
+    content
+        .get("tags")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(|v| v.trim().to_ascii_lowercase())
+                .filter(|v| !v.is_empty())
+                .collect()
         })
-        .transpose()
+        .unwrap_or_default()
 }
 
-async fn normalize_root(root: &Path) -> Result<PathBuf, ToolError> {
-    if root.as_os_str().is_empty() {
+fn extract_summary_text(content: &Json) -> String {
+    if let Some(summary) = content
+        .get("summary")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        return summary.to_string();
+    }
+    if let Some(text) = content
+        .get("text")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        return text.to_string();
+    }
+    if let Some(text) = content.as_str().map(str::trim).filter(|v| !v.is_empty()) {
+        return text.to_string();
+    }
+    let serialized = serde_json::to_string(content).unwrap_or_else(|_| "{}".to_string());
+    truncate_chars(serialized.as_str(), 140)
+}
+
+fn parse_rfc3339_to_ms(raw: &str) -> Option<i64> {
+    parse_rfc3339_to_utc(raw)
+        .ok()
+        .map(|dt| dt.timestamp_millis())
+}
+
+fn parse_rfc3339_to_utc(raw: &str) -> Result<DateTime<Utc>, chrono::ParseError> {
+    DateTime::parse_from_rfc3339(raw).map(|dt| dt.with_timezone(&Utc))
+}
+
+fn is_expired_at(raw_expired_at: Option<&Json>, now: &DateTime<Utc>) -> bool {
+    let Some(raw) = raw_expired_at else {
+        return false;
+    };
+    let Some(text) = raw.as_str() else {
+        return false;
+    };
+    parse_rfc3339_to_utc(text)
+        .map(|expired| now > &expired)
+        .unwrap_or(false)
+}
+
+fn require_arg_string(args: &Json, field: &str) -> Result<String, ToolError> {
+    args.get(field)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| ToolError::InvalidArgs(format!("missing or invalid `{field}`")))
+}
+
+fn normalize_key(raw_key: &str) -> Result<String, ToolError> {
+    let key = raw_key.trim();
+    if key.is_empty() {
         return Err(ToolError::InvalidArgs(
-            "agent_root cannot be empty".to_string(),
+            "memory key cannot be empty".to_string(),
         ));
     }
-    fs::create_dir_all(root)
-        .await
-        .map_err(|err| ToolError::ExecFailed(format!("create agent_root failed: {err}")))?;
-    fs::canonicalize(root)
-        .await
-        .map_err(|err| ToolError::ExecFailed(format!("canonicalize agent_root failed: {err}")))
-}
-
-fn resolve_relative_path(root: &Path, rel_path: &Path) -> Result<PathBuf, ToolError> {
-    if rel_path.is_absolute() {
-        return Err(ToolError::InvalidArgs(format!(
-            "path `{}` must be relative",
-            rel_path.display()
-        )));
+    if !key.starts_with('/') {
+        return Err(ToolError::InvalidArgs(
+            "memory key must start with `/`".to_string(),
+        ));
+    }
+    if key.contains('\0') || key.contains('\n') || key.contains('\r') {
+        return Err(ToolError::InvalidArgs(
+            "memory key contains forbidden control characters".to_string(),
+        ));
     }
 
-    for component in rel_path.components() {
-        if matches!(component, Component::ParentDir) {
-            return Err(ToolError::InvalidArgs(format!(
-                "path `{}` cannot contain `..`",
-                rel_path.display()
-            )));
+    let mut segments = Vec::<&str>::new();
+    for segment in key.split('/') {
+        let seg = segment.trim();
+        if seg.is_empty() {
+            continue;
+        }
+        if seg == "." || seg == ".." {
+            return Err(ToolError::InvalidArgs(
+                "memory key cannot contain `.` or `..` segments".to_string(),
+            ));
+        }
+        segments.push(seg);
+    }
+
+    if segments.is_empty() {
+        return Err(ToolError::InvalidArgs(
+            "memory key must include at least one segment".to_string(),
+        ));
+    }
+    Ok(format!("/{}", segments.join("/")))
+}
+
+fn validate_source(key: &str, source: &Json) -> Result<(), ToolError> {
+    if source.is_null() {
+        return Err(ToolError::InvalidArgs(
+            "source is required and cannot be null".to_string(),
+        ));
+    }
+
+    if let Some(text) = source.as_str() {
+        if text.trim().is_empty() {
+            return Err(ToolError::InvalidArgs(
+                "source string cannot be empty".to_string(),
+            ));
+        }
+        if key.starts_with("/kb/") || key == "/kb" {
+            return Err(ToolError::InvalidArgs(
+                "kb namespace requires object provenance source".to_string(),
+            ));
+        }
+        return Ok(());
+    }
+
+    let Some(obj) = source.as_object() else {
+        return Err(ToolError::InvalidArgs(
+            "source must be object or string".to_string(),
+        ));
+    };
+
+    let kind = obj.get("kind").and_then(|v| v.as_str()).unwrap_or_default();
+    let should_require_provenance =
+        key.starts_with("/kb/") || key == "/kb" || matches!(kind, "web" | "tool" | "file");
+
+    if should_require_provenance {
+        let name = obj.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+        let retrieved_at = obj
+            .get("retrieved_at")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let locator = obj.get("locator");
+
+        if kind.trim().is_empty()
+            || name.trim().is_empty()
+            || retrieved_at.trim().is_empty()
+            || locator.is_none()
+        {
+            return Err(ToolError::InvalidArgs(
+                "source missing required provenance fields: kind/name/retrieved_at/locator"
+                    .to_string(),
+            ));
+        }
+        parse_rfc3339_to_utc(retrieved_at).map_err(|err| {
+            ToolError::InvalidArgs(format!("source.retrieved_at must be RFC3339: {err}"))
+        })?;
+    }
+
+    Ok(())
+}
+
+fn build_index_dir_segment(raw_segment: &str) -> String {
+    sanitize_index_segment(raw_segment, false)
+}
+
+fn build_index_file_segment(raw_segment: &str) -> String {
+    format!(
+        "{}@{}.json",
+        sanitize_index_segment(raw_segment, true),
+        short_hash_hex(raw_segment.as_bytes())
+    )
+}
+
+fn sanitize_index_segment(raw_segment: &str, is_file_name: bool) -> String {
+    let mut encoded = String::new();
+    for byte in raw_segment.as_bytes() {
+        let c = *byte as char;
+        if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+            encoded.push(c);
+        } else {
+            encoded.push('%');
+            encoded.push_str(format!("{:02X}", byte).as_str());
         }
     }
 
-    Ok(root.join(rel_path))
+    if encoded.is_empty() {
+        encoded.push('_');
+    }
+
+    if encoded.len() > MAX_INDEX_SEGMENT_BYTES {
+        let keep_len = MAX_INDEX_SEGMENT_BYTES.min(encoded.len());
+        let prefix = encoded.chars().take(keep_len).collect::<String>();
+        let digest = short_hash_hex(raw_segment.as_bytes());
+        encoded = format!("{prefix}@{digest}");
+    }
+
+    if is_file_name && encoded.ends_with('.') {
+        encoded.push('_');
+    }
+    encoded
 }
 
-async fn ensure_parent_dir(path: &Path) -> Result<(), ToolError> {
-    let Some(parent) = path.parent() else {
-        return Ok(());
-    };
-    fs::create_dir_all(parent).await.map_err(|err| {
+fn short_hash_hex(data: &[u8]) -> String {
+    let digest = Sha256::digest(data);
+    hex::encode(&digest[..4])
+}
+
+fn truncate_chars(input: &str, max_chars: usize) -> String {
+    if input.chars().count() <= max_chars {
+        return input.to_string();
+    }
+    let mut out = input.chars().take(max_chars).collect::<String>();
+    out.push_str("...");
+    out
+}
+
+fn estimate_token_count(text: &str) -> usize {
+    text.split_whitespace().count().max(1)
+}
+
+async fn touch_file(path: &Path) -> Result<(), ToolError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await.map_err(|err| {
+            ToolError::ExecFailed(format!(
+                "create parent directory failed: path={}, err={err}",
+                parent.display()
+            ))
+        })?;
+    }
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .await
+        .map_err(|err| {
+            ToolError::ExecFailed(format!(
+                "touch file failed: path={}, err={err}",
+                path.display()
+            ))
+        })?;
+    Ok(())
+}
+
+async fn file_len_or_zero(path: &Path) -> u64 {
+    fs::metadata(path).await.map(|meta| meta.len()).unwrap_or(0)
+}
+
+async fn write_atomic_text(path: &Path, body: &str) -> Result<(), ToolError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await.map_err(|err| {
+            ToolError::ExecFailed(format!(
+                "create parent dir failed for atomic write: path={}, err={err}",
+                parent.display()
+            ))
+        })?;
+    }
+
+    let tmp_name = format!(
+        ".{}.tmp.{}",
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("memory"),
+        Utc::now().timestamp_nanos_opt().unwrap_or(0)
+    );
+    let tmp_path = path
+        .parent()
+        .map(|p| p.join(&tmp_name))
+        .unwrap_or_else(|| PathBuf::from(tmp_name));
+
+    fs::write(&tmp_path, body).await.map_err(|err| {
         ToolError::ExecFailed(format!(
-            "create parent dir `{}` failed: {err}",
-            parent.display()
+            "write temporary file failed: path={}, err={err}",
+            tmp_path.display()
+        ))
+    })?;
+    fs::rename(&tmp_path, path).await.map_err(|err| {
+        ToolError::ExecFailed(format!(
+            "atomic rename failed: from={} to={} err={err}",
+            tmp_path.display(),
+            path.display()
         ))
     })?;
     Ok(())
 }
 
-async fn init_things_db(db_path: &Path) -> Result<(), ToolError> {
-    let db_path = db_path.to_path_buf();
-    task::spawn_blocking(move || {
-        let conn = Connection::open(&db_path).map_err(|err| {
-            ToolError::ExecFailed(format!(
-                "open things db `{}` failed: {err}",
-                db_path.display()
-            ))
-        })?;
-        ensure_things_db_schema(&conn)
-    })
-    .await
-    .map_err(|err| ToolError::ExecFailed(format!("init things db join error: {err}")))?
-}
-
-fn ensure_things_db_schema(conn: &Connection) -> Result<(), ToolError> {
-    conn.execute_batch(
-        r#"
-CREATE TABLE IF NOT EXISTS kv (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL,
-    updated_at INTEGER NOT NULL DEFAULT 0,
-    source TEXT,
-    confidence REAL
-);
-CREATE TABLE IF NOT EXISTS things (
-    id TEXT PRIMARY KEY,
-    thing_type TEXT NOT NULL,
-    subject TEXT NOT NULL,
-    predicate TEXT NOT NULL,
-    object TEXT NOT NULL,
-    updated_at INTEGER NOT NULL DEFAULT 0,
-    source TEXT,
-    source_session TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_things_type_updated_at
-    ON things(thing_type, updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_things_source_session
-    ON things(source_session);
-"#,
-    )
-    .map_err(|err| ToolError::ExecFailed(format!("ensure things schema failed: {err}")))?;
-
-    migrate_legacy_things_tables(conn)?;
-    rebuild_legacy_things_aliases(conn)?;
-    Ok(())
-}
-
-fn migrate_legacy_things_tables(conn: &Connection) -> Result<(), ToolError> {
-    if is_table(conn, "facts")? {
-        conn.execute(
-            "INSERT INTO things(
-                 id, thing_type, subject, predicate, object, updated_at, source, source_session
-             )
-             SELECT id, ?1, subject, predicate, object, updated_at, source, NULL
-             FROM facts
-             ON CONFLICT(id) DO UPDATE SET
-                 thing_type = excluded.thing_type,
-                 subject = excluded.subject,
-                 predicate = excluded.predicate,
-                 object = excluded.object,
-                 updated_at = excluded.updated_at,
-                 source = excluded.source,
-                 source_session = excluded.source_session",
-            params![THING_TYPE_FACT],
-        )
-        .map_err(|err| ToolError::ExecFailed(format!("migrate facts into things failed: {err}")))?;
-        conn.execute("DROP TABLE facts", []).map_err(|err| {
-            ToolError::ExecFailed(format!("drop legacy facts table failed: {err}"))
-        })?;
-    }
-
-    if is_table(conn, "events")? {
-        conn.execute(
-            "INSERT INTO things(
-                 id, thing_type, subject, predicate, object, updated_at, source, source_session
-             )
-             SELECT id, ?1, type, type, payload, ts, NULL, NULL
-             FROM events
-             ON CONFLICT(id) DO UPDATE SET
-                 thing_type = excluded.thing_type,
-                 subject = excluded.subject,
-                 predicate = excluded.predicate,
-                 object = excluded.object,
-                 updated_at = excluded.updated_at,
-                 source = excluded.source,
-                 source_session = excluded.source_session",
-            params![THING_TYPE_EVENT],
-        )
-        .map_err(|err| {
-            ToolError::ExecFailed(format!("migrate events into things failed: {err}"))
-        })?;
-        conn.execute("DROP TABLE events", []).map_err(|err| {
-            ToolError::ExecFailed(format!("drop legacy events table failed: {err}"))
-        })?;
-    }
-
-    Ok(())
-}
-
-fn rebuild_legacy_things_aliases(conn: &Connection) -> Result<(), ToolError> {
-    conn.execute_batch(
-        r#"
-CREATE VIEW IF NOT EXISTS facts AS
-SELECT
-    id,
-    subject,
-    predicate,
-    object,
-    updated_at,
-    source,
-    source_session
-FROM things
-WHERE thing_type = 'fact';
-
-CREATE VIEW IF NOT EXISTS events AS
-SELECT
-    id,
-    predicate AS type,
-    object AS payload,
-    updated_at AS ts,
-    source,
-    source_session
-FROM things
-WHERE thing_type = 'event';
-
-CREATE TRIGGER IF NOT EXISTS facts_insert
-INSTEAD OF INSERT ON facts
-BEGIN
-    INSERT INTO things(
-        id, thing_type, subject, predicate, object, updated_at, source, source_session
-    )
-    VALUES (
-        NEW.id,
-        'fact',
-        COALESCE(NEW.subject, ''),
-        COALESCE(NEW.predicate, ''),
-        COALESCE(NEW.object, ''),
-        COALESCE(NEW.updated_at, 0),
-        NEW.source,
-        NEW.source_session
-    )
-    ON CONFLICT(id) DO UPDATE SET
-        thing_type = excluded.thing_type,
-        subject = excluded.subject,
-        predicate = excluded.predicate,
-        object = excluded.object,
-        updated_at = excluded.updated_at,
-        source = excluded.source,
-        source_session = excluded.source_session;
-END;
-
-CREATE TRIGGER IF NOT EXISTS facts_update
-INSTEAD OF UPDATE ON facts
-BEGIN
-    DELETE FROM things WHERE id = OLD.id AND thing_type = 'fact';
-    INSERT INTO things(
-        id, thing_type, subject, predicate, object, updated_at, source, source_session
-    )
-    VALUES (
-        COALESCE(NEW.id, OLD.id),
-        'fact',
-        COALESCE(NEW.subject, ''),
-        COALESCE(NEW.predicate, ''),
-        COALESCE(NEW.object, ''),
-        COALESCE(NEW.updated_at, 0),
-        NEW.source,
-        NEW.source_session
-    )
-    ON CONFLICT(id) DO UPDATE SET
-        thing_type = excluded.thing_type,
-        subject = excluded.subject,
-        predicate = excluded.predicate,
-        object = excluded.object,
-        updated_at = excluded.updated_at,
-        source = excluded.source,
-        source_session = excluded.source_session;
-END;
-
-CREATE TRIGGER IF NOT EXISTS facts_delete
-INSTEAD OF DELETE ON facts
-BEGIN
-    DELETE FROM things WHERE id = OLD.id AND thing_type = 'fact';
-END;
-
-CREATE TRIGGER IF NOT EXISTS events_insert
-INSTEAD OF INSERT ON events
-BEGIN
-    INSERT INTO things(
-        id, thing_type, subject, predicate, object, updated_at, source, source_session
-    )
-    VALUES (
-        NEW.id,
-        'event',
-        COALESCE(NEW.type, ''),
-        COALESCE(NEW.type, ''),
-        COALESCE(NEW.payload, ''),
-        COALESCE(NEW.ts, 0),
-        NEW.source,
-        NEW.source_session
-    )
-    ON CONFLICT(id) DO UPDATE SET
-        thing_type = excluded.thing_type,
-        subject = excluded.subject,
-        predicate = excluded.predicate,
-        object = excluded.object,
-        updated_at = excluded.updated_at,
-        source = excluded.source,
-        source_session = excluded.source_session;
-END;
-
-CREATE TRIGGER IF NOT EXISTS events_update
-INSTEAD OF UPDATE ON events
-BEGIN
-    DELETE FROM things WHERE id = OLD.id AND thing_type = 'event';
-    INSERT INTO things(
-        id, thing_type, subject, predicate, object, updated_at, source, source_session
-    )
-    VALUES (
-        COALESCE(NEW.id, OLD.id),
-        'event',
-        COALESCE(NEW.type, ''),
-        COALESCE(NEW.type, ''),
-        COALESCE(NEW.payload, ''),
-        COALESCE(NEW.ts, 0),
-        NEW.source,
-        NEW.source_session
-    )
-    ON CONFLICT(id) DO UPDATE SET
-        thing_type = excluded.thing_type,
-        subject = excluded.subject,
-        predicate = excluded.predicate,
-        object = excluded.object,
-        updated_at = excluded.updated_at,
-        source = excluded.source,
-        source_session = excluded.source_session;
-END;
-
-CREATE TRIGGER IF NOT EXISTS events_delete
-INSTEAD OF DELETE ON events
-BEGIN
-    DELETE FROM things WHERE id = OLD.id AND thing_type = 'event';
-END;
-"#,
-    )
-    .map_err(|err| ToolError::ExecFailed(format!("ensure things alias schema failed: {err}")))
-}
-
-fn schema_object_type(conn: &Connection, name: &str) -> Result<Option<String>, ToolError> {
-    conn.query_row(
-        "SELECT type FROM sqlite_master WHERE name = ?1 LIMIT 1",
-        params![name],
-        |row| row.get::<_, String>(0),
-    )
-    .optional()
-    .map_err(|err| ToolError::ExecFailed(format!("query sqlite_master failed: {err}")))
-}
-
-fn is_table(conn: &Connection, name: &str) -> Result<bool, ToolError> {
-    Ok(matches!(
-        schema_object_type(conn, name)?.as_deref(),
-        Some("table")
-    ))
-}
-
-fn query_kv(
-    conn: &Connection,
-    keyword: Option<&str>,
-    limit: usize,
-) -> Result<Vec<KvEntry>, ToolError> {
-    let limit = i64::try_from(limit)
-        .map_err(|_| ToolError::InvalidArgs("limit is too large".to_string()))?;
-    let mut out = Vec::new();
-
-    if let Some(keyword) = keyword {
-        let pattern = format!("%{}%", keyword.trim());
-        let mut stmt = conn
-            .prepare(
-                "SELECT key, value, updated_at, source, confidence
-                 FROM kv
-                 WHERE key LIKE ?1 OR value LIKE ?1
-                 ORDER BY updated_at DESC
-                 LIMIT ?2",
-            )
-            .map_err(|err| ToolError::ExecFailed(format!("prepare kv query failed: {err}")))?;
-        let rows = stmt
-            .query_map(params![pattern, limit], |row| {
-                Ok(KvEntry {
-                    key: row.get(0)?,
-                    value: row.get(1)?,
-                    updated_at: row.get(2)?,
-                    source: row.get(3).ok(),
-                    confidence: row.get(4).ok(),
-                })
-            })
-            .map_err(|err| ToolError::ExecFailed(format!("query kv failed: {err}")))?;
-        for row in rows {
-            out.push(
-                row.map_err(|err| ToolError::ExecFailed(format!("read kv row failed: {err}")))?,
-            );
-        }
-    } else {
-        let mut stmt = conn
-            .prepare(
-                "SELECT key, value, updated_at, source, confidence
-                 FROM kv
-                 ORDER BY updated_at DESC
-                 LIMIT ?1",
-            )
-            .map_err(|err| ToolError::ExecFailed(format!("prepare kv query failed: {err}")))?;
-        let rows = stmt
-            .query_map(params![limit], |row| {
-                Ok(KvEntry {
-                    key: row.get(0)?,
-                    value: row.get(1)?,
-                    updated_at: row.get(2)?,
-                    source: row.get(3).ok(),
-                    confidence: row.get(4).ok(),
-                })
-            })
-            .map_err(|err| ToolError::ExecFailed(format!("query kv failed: {err}")))?;
-        for row in rows {
-            out.push(
-                row.map_err(|err| ToolError::ExecFailed(format!("read kv row failed: {err}")))?,
-            );
-        }
-    }
-
-    Ok(out)
-}
-
-fn query_facts(
-    conn: &Connection,
-    keyword: Option<&str>,
-    limit: usize,
-) -> Result<Vec<FactEntry>, ToolError> {
-    let limit = i64::try_from(limit)
-        .map_err(|_| ToolError::InvalidArgs("limit is too large".to_string()))?;
-    let mut out = Vec::new();
-
-    if let Some(keyword) = keyword {
-        let pattern = format!("%{}%", keyword.trim());
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, subject, predicate, object, updated_at, source, source_session
-                 FROM things
-                 WHERE thing_type = ?1
-                   AND (subject LIKE ?2 OR predicate LIKE ?2 OR object LIKE ?2
-                        OR source LIKE ?2 OR source_session LIKE ?2)
-                 ORDER BY updated_at DESC
-                 LIMIT ?3",
-            )
-            .map_err(|err| {
-                ToolError::ExecFailed(format!("prepare things(fact) query failed: {err}"))
-            })?;
-        let rows = stmt
-            .query_map(params![THING_TYPE_FACT, pattern, limit], |row| {
-                Ok(FactEntry {
-                    id: row.get(0)?,
-                    subject: row.get(1)?,
-                    predicate: row.get(2)?,
-                    object: row.get(3)?,
-                    updated_at: row.get(4)?,
-                    source: row.get(5).ok(),
-                    source_session: row.get(6).ok(),
-                })
-            })
-            .map_err(|err| ToolError::ExecFailed(format!("query things(fact) failed: {err}")))?;
-        for row in rows {
-            out.push(
-                row.map_err(|err| ToolError::ExecFailed(format!("read facts row failed: {err}")))?,
-            );
-        }
-    } else {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, subject, predicate, object, updated_at, source, source_session
-                 FROM things
-                 WHERE thing_type = ?1
-                 ORDER BY updated_at DESC
-                 LIMIT ?2",
-            )
-            .map_err(|err| {
-                ToolError::ExecFailed(format!("prepare things(fact) query failed: {err}"))
-            })?;
-        let rows = stmt
-            .query_map(params![THING_TYPE_FACT, limit], |row| {
-                Ok(FactEntry {
-                    id: row.get(0)?,
-                    subject: row.get(1)?,
-                    predicate: row.get(2)?,
-                    object: row.get(3)?,
-                    updated_at: row.get(4)?,
-                    source: row.get(5).ok(),
-                    source_session: row.get(6).ok(),
-                })
-            })
-            .map_err(|err| ToolError::ExecFailed(format!("query things(fact) failed: {err}")))?;
-        for row in rows {
-            out.push(
-                row.map_err(|err| ToolError::ExecFailed(format!("read facts row failed: {err}")))?,
-            );
-        }
-    }
-
-    Ok(out)
-}
-
-fn query_events(
-    conn: &Connection,
-    keyword: Option<&str>,
-    limit: usize,
-) -> Result<Vec<EventEntry>, ToolError> {
-    let limit = i64::try_from(limit)
-        .map_err(|_| ToolError::InvalidArgs("limit is too large".to_string()))?;
-    let mut out = Vec::new();
-
-    if let Some(keyword) = keyword {
-        let pattern = format!("%{}%", keyword.trim());
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, subject, predicate, object, updated_at, source, source_session
-                 FROM things
-                 WHERE thing_type = ?1
-                   AND (subject LIKE ?2 OR predicate LIKE ?2 OR object LIKE ?2
-                        OR source LIKE ?2 OR source_session LIKE ?2)
-                 ORDER BY updated_at DESC
-                 LIMIT ?3",
-            )
-            .map_err(|err| {
-                ToolError::ExecFailed(format!("prepare things(event) query failed: {err}"))
-            })?;
-        let rows = stmt
-            .query_map(params![THING_TYPE_EVENT, pattern, limit], |row| {
-                Ok(EventEntry {
-                    id: row.get(0)?,
-                    event_type: row.get(2)?,
-                    payload: row.get(3)?,
-                    ts: row.get(4)?,
-                    source: row.get(5).ok(),
-                    source_session: row.get(6).ok(),
-                })
-            })
-            .map_err(|err| ToolError::ExecFailed(format!("query things(event) failed: {err}")))?;
-        for row in rows {
-            out.push(
-                row.map_err(|err| ToolError::ExecFailed(format!("read events row failed: {err}")))?,
-            );
-        }
-    } else {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, subject, predicate, object, updated_at, source, source_session
-                 FROM things
-                 WHERE thing_type = ?1
-                 ORDER BY updated_at DESC
-                 LIMIT ?2",
-            )
-            .map_err(|err| {
-                ToolError::ExecFailed(format!("prepare things(event) query failed: {err}"))
-            })?;
-        let rows = stmt
-            .query_map(params![THING_TYPE_EVENT, limit], |row| {
-                Ok(EventEntry {
-                    id: row.get(0)?,
-                    event_type: row.get(2)?,
-                    payload: row.get(3)?,
-                    ts: row.get(4)?,
-                    source: row.get(5).ok(),
-                    source_session: row.get(6).ok(),
-                })
-            })
-            .map_err(|err| ToolError::ExecFailed(format!("query things(event) failed: {err}")))?;
-        for row in rows {
-            out.push(
-                row.map_err(|err| ToolError::ExecFailed(format!("read events row failed: {err}")))?,
-            );
-        }
-    }
-
-    Ok(out)
-}
-
-fn approx_tokens(text: &str) -> u32 {
-    let chars = text.chars().count();
-    ((chars + 3) / 4) as u32
-}
-
-fn truncate_by_token_limit(content: &str, token_limit: u32) -> (String, bool) {
-    let max_chars = token_limit.saturating_mul(4) as usize;
-    let mut out = String::new();
-    for (idx, ch) in content.chars().enumerate() {
-        if idx >= max_chars {
-            return (out, true);
-        }
-        out.push(ch);
-    }
-    (out, false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_tool::ToolCall;
-    use crate::behavior::TraceCtx;
     use tempfile::tempdir;
 
-    fn test_ctx() -> TraceCtx {
+    fn test_trace_ctx() -> TraceCtx {
         TraceCtx {
             trace_id: "trace-memory".to_string(),
             agent_did: "did:example:agent".to_string(),
@@ -1149,386 +1031,120 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_and_load_memory_work() {
-        let tmp = tempdir().expect("create tempdir");
-        let memory = AgentMemory::new(AgentMemoryConfig::new(tmp.path()))
+    async fn set_memory_then_load_memory_returns_recent_item() {
+        let temp = tempdir().expect("create tempdir");
+        let root = temp.path().to_path_buf();
+        let memory = AgentMemory::new(AgentMemoryConfig::new(&root))
             .await
-            .expect("create agent memory");
+            .expect("create memory");
 
-        fs::write(
-            memory.memory_md_path(),
-            "line1: very important facts\nline2: more details\nline3: extra context",
-        )
-        .await
-        .expect("write memory");
-
-        let tools = ToolManager::new();
-        memory.register_tools(&tools).expect("register tools");
-
-        let list = tools
-            .call_tool(
-                &test_ctx(),
-                ToolCall {
-                    name: TOOL_LIST.to_string(),
-                    args: json!({}),
-                    call_id: "list-1".to_string(),
-                },
+        let _ = memory
+            .set_memory(
+                "/user/preference/style",
+                json!({
+                    "type":"preference",
+                    "summary":"用户偏好简洁回复",
+                    "importance": 7,
+                    "tags": ["style"]
+                }),
+                json!({
+                    "kind":"user",
+                    "name":"chat",
+                    "retrieved_at":"2026-02-22T10:00:00Z",
+                    "locator":{"conversation_id":"c1","message_id":"m1"}
+                }),
             )
             .await
-            .expect("call list");
-        let entries = list["entries"].as_array().expect("entries array");
-        assert!(entries.iter().any(|entry| entry["path"] == "memory.md"));
-        assert!(entries.iter().any(|entry| entry["path"] == "things.db"));
+            .expect("set memory");
 
-        let loaded = tools
-            .call_tool(
-                &test_ctx(),
-                ToolCall {
-                    name: TOOL_LOAD_MEMORY.to_string(),
-                    args: json!({ "token_limit": 4 }),
-                    call_id: "load-memory-1".to_string(),
-                },
-            )
+        let loaded = memory
+            .load_memory(Some(200), vec!["style".to_string()], None)
             .await
-            .expect("call load_memory");
-        assert_eq!(loaded["truncated"], true);
-        assert!(loaded["content"]
-            .as_str()
-            .expect("memory content string")
-            .starts_with("line1: very"));
+            .expect("load memory");
+        let memory_text = loaded
+            .get("memory_text")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        assert!(memory_text.contains("user/preference/style"));
+        assert!(memory_text.contains("用户偏好简洁回复"));
     }
 
     #[tokio::test]
-    async fn load_things_queries_keyword() {
-        let tmp = tempdir().expect("create tempdir");
-        let memory = AgentMemory::new(AgentMemoryConfig::new(tmp.path()))
+    async fn tombstone_removes_memory_from_default_read() {
+        let temp = tempdir().expect("create tempdir");
+        let root = temp.path().to_path_buf();
+        let memory = AgentMemory::new(AgentMemoryConfig::new(&root))
             .await
-            .expect("create agent memory");
+            .expect("create memory");
 
-        let db_path = memory.things_db_path().to_path_buf();
-        task::spawn_blocking(move || {
-            let conn = Connection::open(&db_path).expect("open db");
-            ensure_things_db_schema(&conn).expect("ensure schema");
-            conn.execute(
-                "INSERT OR REPLACE INTO kv(key, value, updated_at, source, confidence)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    "user.preference.language",
-                    "zh-CN",
-                    100_i64,
-                    "unit-test",
-                    0.9_f64
-                ],
-            )
-            .expect("insert kv");
-            conn.execute(
-                "INSERT OR REPLACE INTO things(
-                     id, thing_type, subject, predicate, object, updated_at, source, source_session
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    "fact-1",
-                    THING_TYPE_FACT,
-                    "user",
-                    "prefers",
-                    "concise response",
-                    101_i64,
-                    "unit-test",
-                    "session-1"
-                ],
-            )
-            .expect("insert fact");
-            conn.execute(
-                "INSERT OR REPLACE INTO things(
-                     id, thing_type, subject, predicate, object, updated_at, source, source_session
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    "event-1",
-                    THING_TYPE_EVENT,
-                    "conversation",
-                    "chat",
-                    "{\"topic\":\"language\"}",
-                    102_i64,
-                    "unit-test",
-                    "session-1"
-                ],
-            )
-            .expect("insert event");
-        })
-        .await
-        .expect("join insert");
-
-        let tools = ToolManager::new();
-        memory.register_tools(&tools).expect("register tools");
-
-        let loaded = tools
-            .call_tool(
-                &test_ctx(),
-                ToolCall {
-                    name: TOOL_LOAD_THINGS.to_string(),
-                    args: json!({"name":"language", "limit": 8}),
-                    call_id: "load-things-1".to_string(),
-                },
+        memory
+            .set_memory(
+                "/user/calendar/meeting",
+                json!({
+                    "type":"reminder",
+                    "summary":"下午 3 点会议"
+                }),
+                json!({"kind":"user","name":"chat","retrieved_at":"2026-02-22T10:00:00Z","locator":{"message_id":"m2"}}),
             )
             .await
-            .expect("call load_things");
+            .expect("set reminder");
+        memory
+            .set_memory(
+                "/user/calendar/meeting",
+                Json::Null,
+                json!({"kind":"agent","name":"cleanup","retrieved_at":"2026-02-22T11:00:00Z","locator":{"reason":"done"}}),
+            )
+            .await
+            .expect("tombstone reminder");
 
-        assert_eq!(loaded["kv"].as_array().map(|v| v.len()), Some(1));
-        assert_eq!(loaded["facts"].as_array().map(|v| v.len()), Some(0));
-        assert_eq!(loaded["events"].as_array().map(|v| v.len()), Some(1));
+        let loaded = memory
+            .load_memory(Some(200), vec![], None)
+            .await
+            .expect("load memory");
+        let memory_text = loaded
+            .get("memory_text")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(!memory_text.contains("user/calendar/meeting"));
     }
 
     #[tokio::test]
-    async fn load_things_supports_legacy_fact_event_aliases() {
-        let tmp = tempdir().expect("create tempdir");
-        let memory = AgentMemory::new(AgentMemoryConfig::new(tmp.path()))
+    async fn tools_register_and_set_memory_tool_is_callable() {
+        let temp = tempdir().expect("create tempdir");
+        let root = temp.path().to_path_buf();
+        let memory = AgentMemory::new(AgentMemoryConfig::new(&root))
             .await
-            .expect("create agent memory");
+            .expect("create memory");
 
-        let db_path = memory.things_db_path().to_path_buf();
-        let counts = task::spawn_blocking(move || {
-            let conn = Connection::open(&db_path).expect("open db");
-            ensure_things_db_schema(&conn).expect("ensure schema");
-            conn.execute(
-                "INSERT OR REPLACE INTO facts(
-                     id, subject, predicate, object, updated_at, source, source_session
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    "legacy-fact-1",
-                    "project",
-                    "status",
-                    "legacy path still works",
-                    200_i64,
-                    "legacy-test",
-                    "session-legacy"
-                ],
-            )
-            .expect("insert legacy fact");
-            conn.execute(
-                "INSERT OR REPLACE INTO events(id, type, payload, ts)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    "legacy-event-1",
-                    "legacy",
-                    "{\"topic\":\"legacy\"}",
-                    201_i64
-                ],
-            )
-            .expect("insert legacy event");
+        let tool_mgr = ToolManager::new();
+        memory
+            .register_tools(&tool_mgr)
+            .expect("register memory tools");
 
-            let fact_count = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM things WHERE thing_type = ?1",
-                    params![THING_TYPE_FACT],
-                    |row| row.get::<_, i64>(0),
-                )
-                .expect("count fact things");
-            let event_count = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM things WHERE thing_type = ?1",
-                    params![THING_TYPE_EVENT],
-                    |row| row.get::<_, i64>(0),
-                )
-                .expect("count event things");
-            (fact_count, event_count)
-        })
-        .await
-        .expect("join insert");
-
-        assert_eq!(counts.0, 1);
-        assert_eq!(counts.1, 1);
-
-        let tools = ToolManager::new();
-        memory.register_tools(&tools).expect("register tools");
-        let loaded = tools
+        let result = tool_mgr
             .call_tool(
-                &test_ctx(),
-                ToolCall {
-                    name: TOOL_LOAD_THINGS.to_string(),
-                    args: json!({"name":"legacy", "limit": 8}),
-                    call_id: "load-things-legacy-1".to_string(),
+                &test_trace_ctx(),
+                crate::agent_tool::ToolCall {
+                    name: TOOL_SET_MEMORY.to_string(),
+                    args: json!({
+                        "key": "/agent/status/current",
+                        "json_content": {
+                            "type":"status",
+                            "summary":"ready"
+                        },
+                        "source": {
+                            "kind":"agent",
+                            "name":"self",
+                            "retrieved_at":"2026-02-22T12:00:00Z",
+                            "locator":{"step":"boot"}
+                        }
+                    }),
+                    call_id: "call-set-memory-1".to_string(),
                 },
             )
             .await
-            .expect("call load_things");
-
-        assert_eq!(loaded["facts"].as_array().map(|v| v.len()), Some(1));
-        assert_eq!(loaded["events"].as_array().map(|v| v.len()), Some(1));
-    }
-
-    #[tokio::test]
-    async fn delete_by_source_session_removes_target_only() {
-        let tmp = tempdir().expect("create tempdir");
-        let memory = AgentMemory::new(AgentMemoryConfig::new(tmp.path()))
-            .await
-            .expect("create agent memory");
-        let db_path = memory.things_db_path().to_path_buf();
-
-        task::spawn_blocking(move || {
-            let conn = Connection::open(&db_path).expect("open db");
-            ensure_things_db_schema(&conn).expect("ensure schema");
-
-            conn.execute(
-                "INSERT OR REPLACE INTO things(
-                     id, thing_type, subject, predicate, object, updated_at, source, source_session
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    "fact-session-a",
-                    THING_TYPE_FACT,
-                    "agent",
-                    "preference",
-                    "concise",
-                    101_i64,
-                    "unit-test",
-                    "session-a"
-                ],
-            )
-            .expect("insert fact-session-a");
-            conn.execute(
-                "INSERT OR REPLACE INTO things(
-                     id, thing_type, subject, predicate, object, updated_at, source, source_session
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    "event-session-a",
-                    THING_TYPE_EVENT,
-                    "conversation",
-                    "chat",
-                    "{\"topic\":\"cleanup\"}",
-                    102_i64,
-                    "unit-test",
-                    "session-a"
-                ],
-            )
-            .expect("insert event-session-a");
-            conn.execute(
-                "INSERT OR REPLACE INTO things(
-                     id, thing_type, subject, predicate, object, updated_at, source, source_session
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    "fact-session-b",
-                    THING_TYPE_FACT,
-                    "agent",
-                    "status",
-                    "active",
-                    103_i64,
-                    "unit-test",
-                    "session-b"
-                ],
-            )
-            .expect("insert fact-session-b");
-            conn.execute(
-                "INSERT OR REPLACE INTO things(
-                     id, thing_type, subject, predicate, object, updated_at, source, source_session
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    "event-no-session",
-                    THING_TYPE_EVENT,
-                    "conversation",
-                    "chat",
-                    "{\"topic\":\"global\"}",
-                    104_i64,
-                    "unit-test",
-                    Option::<String>::None
-                ],
-            )
-            .expect("insert event-no-session");
-        })
-        .await
-        .expect("join insert");
-
-        let tools = ToolManager::new();
-        memory.register_tools(&tools).expect("register tools");
-        let deleted = tools
-            .call_tool(
-                &test_ctx(),
-                ToolCall {
-                    name: TOOL_DELETE_BY_SOURCE_SESSION.to_string(),
-                    args: json!({"source_session":"session-a"}),
-                    call_id: "delete-by-session-1".to_string(),
-                },
-            )
-            .await
-            .expect("delete by source_session");
-
-        assert_eq!(deleted["deleted_things"].as_i64(), Some(2));
-        assert_eq!(deleted["deleted_facts"].as_i64(), Some(1));
-        assert_eq!(deleted["deleted_events"].as_i64(), Some(1));
-
-        let db_path = memory.things_db_path().to_path_buf();
-        let remained = task::spawn_blocking(move || {
-            let conn = Connection::open(&db_path).expect("open db");
-            let things_total = conn
-                .query_row("SELECT COUNT(*) FROM things", [], |row| {
-                    row.get::<_, i64>(0)
-                })
-                .expect("count things");
-            let facts_session_a = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM facts WHERE source_session = 'session-a'",
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )
-                .expect("count facts session-a");
-            let facts_session_b = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM facts WHERE source_session = 'session-b'",
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )
-                .expect("count facts session-b");
-            let events_session_a = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM events WHERE source_session = 'session-a'",
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )
-                .expect("count events session-a");
-            let events_without_session = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM events WHERE source_session IS NULL",
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )
-                .expect("count events without session");
-
-            (
-                things_total,
-                facts_session_a,
-                facts_session_b,
-                events_session_a,
-                events_without_session,
-            )
-        })
-        .await
-        .expect("join readback");
-
-        assert_eq!(remained.0, 2);
-        assert_eq!(remained.1, 0);
-        assert_eq!(remained.2, 1);
-        assert_eq!(remained.3, 0);
-        assert_eq!(remained.4, 1);
-    }
-
-    #[tokio::test]
-    async fn delete_by_source_session_requires_non_empty_value() {
-        let tmp = tempdir().expect("create tempdir");
-        let memory = AgentMemory::new(AgentMemoryConfig::new(tmp.path()))
-            .await
-            .expect("create agent memory");
-        let tools = ToolManager::new();
-        memory.register_tools(&tools).expect("register tools");
-
-        let err = tools
-            .call_tool(
-                &test_ctx(),
-                ToolCall {
-                    name: TOOL_DELETE_BY_SOURCE_SESSION.to_string(),
-                    args: json!({"source_session":"   "}),
-                    call_id: "delete-by-session-invalid-1".to_string(),
-                },
-            )
-            .await
-            .expect_err("empty source_session should fail");
-
-        assert!(matches!(err, ToolError::InvalidArgs(_)));
+            .expect("call set_memory tool");
+        assert_eq!(result.get("ok").and_then(|v| v.as_bool()), Some(true));
     }
 }

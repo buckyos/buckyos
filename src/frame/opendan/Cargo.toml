@@ -18,6 +18,9 @@ tokio = { workspace = true }
 reqwest = { workspace = true }
 name-lib = { workspace = true }
 rusqlite = { workspace = true }
+chrono = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 log = { workspace = true }
 anyhow = { workspace = true }
 buckyos-kit = { workspace = true }
