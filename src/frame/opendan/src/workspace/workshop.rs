@@ -8,6 +8,11 @@ use tokio::fs;
 use tokio::process::Command;
 use tokio::time::{timeout, Duration, Instant};
 
+use super::local_workspace::{
+    CreateLocalWorkspaceRequest, LocalWorkspaceCleanupResult, LocalWorkspaceLockResult,
+    LocalWorkspaceManager, LocalWorkspaceManagerConfig, LocalWorkspaceSnapshot,
+    SessionWorkspaceBinding, WorkshopIndex, WorkshopWorkspaceRecord,
+};
 use super::todo::{TodoTool, TodoToolConfig, TOOL_TODO_MANAGE};
 use super::worklog::{WorklogTool, WorklogToolConfig, TOOL_WORKLOG_MANAGE};
 use crate::agent_tool::{AgentTool, MCPToolConfig, ToolError, ToolManager, ToolSpec};
@@ -29,10 +34,13 @@ const DEFAULT_TODO_LIST_LIMIT: usize = 32;
 const DEFAULT_TODO_MAX_LIST_LIMIT: usize = 128;
 const DEFAULT_WORKLOG_LIST_LIMIT: usize = 64;
 const DEFAULT_WORKLOG_MAX_LIST_LIMIT: usize = 256;
+const DEFAULT_AGENT_DID: &str = "did:opendan:unknown";
+const DEFAULT_LOCAL_WORKSPACE_LOCK_TTL_MS: u64 = 120_000;
 
 #[derive(Clone, Debug)]
 pub struct AgentWorkshopConfig {
     pub workspace_root: PathBuf,
+    pub agent_did: String,
     pub bash_path: PathBuf,
     pub default_timeout_ms: u64,
     pub max_output_bytes: usize,
@@ -40,12 +48,14 @@ pub struct AgentWorkshopConfig {
     pub default_max_file_write_bytes: usize,
     pub tools_json_rel_path: PathBuf,
     pub tools_markdown_rel_path: PathBuf,
+    pub local_workspace_lock_ttl_ms: u64,
 }
 
 impl AgentWorkshopConfig {
     pub fn new(workspace_root: impl Into<PathBuf>) -> Self {
         Self {
             workspace_root: workspace_root.into(),
+            agent_did: DEFAULT_AGENT_DID.to_string(),
             bash_path: PathBuf::from(DEFAULT_BASH_PATH),
             default_timeout_ms: DEFAULT_TIMEOUT_MS,
             max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
@@ -53,6 +63,7 @@ impl AgentWorkshopConfig {
             default_max_file_write_bytes: DEFAULT_MAX_FILE_WRITE_BYTES,
             tools_json_rel_path: PathBuf::from(DEFAULT_TOOLS_JSON_REL_PATH),
             tools_markdown_rel_path: PathBuf::from(DEFAULT_TOOLS_MD_REL_PATH),
+            local_workspace_lock_ttl_ms: DEFAULT_LOCAL_WORKSPACE_LOCK_TTL_MS,
         }
     }
 }
@@ -116,18 +127,59 @@ fn default_tool_kind() -> String {
 pub struct AgentWorkshop {
     cfg: AgentWorkshopConfig,
     tools_cfg: AgentWorkshopToolsConfig,
+    local_workspace_mgr: LocalWorkspaceManager,
 }
 
 impl AgentWorkshop {
     pub async fn new(mut cfg: AgentWorkshopConfig) -> Result<Self, ToolError> {
+        if cfg.agent_did.trim().is_empty() {
+            cfg.agent_did = DEFAULT_AGENT_DID.to_string();
+        }
+        Self::initialize(cfg, true).await
+    }
+
+    pub async fn create_workshop(
+        agent_did: impl Into<String>,
+        mut cfg: AgentWorkshopConfig,
+    ) -> Result<Self, ToolError> {
+        cfg.agent_did = agent_did.into();
+        Self::initialize(cfg, true).await
+    }
+
+    pub async fn load_workshop(
+        agent_did: impl Into<String>,
+        mut cfg: AgentWorkshopConfig,
+    ) -> Result<Self, ToolError> {
+        cfg.agent_did = agent_did.into();
+        Self::initialize(cfg, false).await
+    }
+
+    async fn initialize(
+        mut cfg: AgentWorkshopConfig,
+        create_if_missing: bool,
+    ) -> Result<Self, ToolError> {
         let workspace_root = normalize_workspace_root(&cfg.workspace_root)?;
         create_minimal_workspace_dirs(&workspace_root).await?;
         cfg.workspace_root = workspace_root.clone();
 
+        let local_cfg = LocalWorkspaceManagerConfig {
+            workshop_root: workspace_root.clone(),
+            lock_ttl_ms: cfg.local_workspace_lock_ttl_ms,
+        };
+        let local_workspace_mgr = if create_if_missing {
+            LocalWorkspaceManager::create_workshop(cfg.agent_did.clone(), local_cfg).await?
+        } else {
+            LocalWorkspaceManager::load_workshop(cfg.agent_did.clone(), local_cfg).await?
+        };
+
         let tools_cfg = load_tools_config(&workspace_root, &cfg).await?;
         validate_tools_config(&tools_cfg)?;
 
-        Ok(Self { cfg, tools_cfg })
+        Ok(Self {
+            cfg,
+            tools_cfg,
+            local_workspace_mgr,
+        })
     }
 
     pub fn workspace_root(&self) -> &Path {
@@ -138,7 +190,89 @@ impl AgentWorkshop {
         &self.tools_cfg
     }
 
+    pub fn local_workspace_manager(&self) -> &LocalWorkspaceManager {
+        &self.local_workspace_mgr
+    }
+
+    pub async fn workshop_index(&self) -> WorkshopIndex {
+        self.local_workspace_mgr.workshop_index().await
+    }
+
+    pub async fn list_workspaces(&self) -> Vec<WorkshopWorkspaceRecord> {
+        self.local_workspace_mgr.list_workspaces().await
+    }
+
+    pub async fn create_local_workspace(
+        &self,
+        req: CreateLocalWorkspaceRequest,
+    ) -> Result<WorkshopWorkspaceRecord, ToolError> {
+        self.local_workspace_mgr.create_local_workspace(req).await
+    }
+
+    pub async fn bind_local_workspace(
+        &self,
+        session_id: &str,
+        local_workspace_id: &str,
+    ) -> Result<SessionWorkspaceBinding, ToolError> {
+        self.local_workspace_mgr
+            .bind_local_workspace(session_id, local_workspace_id)
+            .await
+    }
+
+    pub async fn get_local_workspace_path(
+        &self,
+        local_workspace_id: &str,
+    ) -> Result<PathBuf, ToolError> {
+        self.local_workspace_mgr
+            .get_local_workspace_path(local_workspace_id)
+            .await
+    }
+
+    pub async fn snapshot_metadata(
+        &self,
+        local_workspace_id: &str,
+    ) -> Result<LocalWorkspaceSnapshot, ToolError> {
+        self.local_workspace_mgr
+            .snapshot_metadata(local_workspace_id)
+            .await
+    }
+
+    pub async fn acquire_local_workspace_lock(
+        &self,
+        local_workspace_id: &str,
+        session_id: &str,
+    ) -> Result<LocalWorkspaceLockResult, ToolError> {
+        self.local_workspace_mgr
+            .acquire(local_workspace_id, session_id)
+            .await
+    }
+
+    pub async fn release_local_workspace_lock(
+        &self,
+        local_workspace_id: &str,
+        session_id: &str,
+    ) -> Result<bool, ToolError> {
+        self.local_workspace_mgr
+            .release(local_workspace_id, session_id)
+            .await
+    }
+
+    pub async fn archive_workspace(
+        &self,
+        workspace_id: &str,
+        reason: Option<String>,
+    ) -> Result<WorkshopWorkspaceRecord, ToolError> {
+        self.local_workspace_mgr
+            .archive_workspace(workspace_id, reason)
+            .await
+    }
+
+    pub async fn cleanup(&self) -> Result<LocalWorkspaceCleanupResult, ToolError> {
+        self.local_workspace_mgr.cleanup().await
+    }
+
     pub fn register_tools(&self, tool_mgr: &ToolManager) -> Result<(), ToolError> {
+        let write_audit = WorkshopWriteAudit::new(self.resolve_write_audit_config()?);
         for tool in self
             .tools_cfg
             .enabled_tools
@@ -157,6 +291,7 @@ impl AgentWorkshop {
                         tool_mgr.register_tool(EditFileTool {
                             cfg: self.cfg.clone(),
                             policy: EditFilePolicy::from_tool_config(&self.cfg, tool)?,
+                            write_audit: write_audit.clone(),
                         })?;
                     }
                     TOOL_TODO_MANAGE => {
@@ -193,6 +328,29 @@ impl AgentWorkshop {
             }
         }
         Ok(())
+    }
+
+    fn resolve_write_audit_config(&self) -> Result<WorklogToolConfig, ToolError> {
+        for tool in self
+            .tools_cfg
+            .enabled_tools
+            .iter()
+            .filter(|tool| tool.enabled)
+        {
+            if tool.name == TOOL_WORKLOG_MANAGE {
+                let policy = WorklogToolPolicy::from_tool_config(&self.cfg, tool)?;
+                return Ok(WorklogToolConfig {
+                    db_path: policy.db_path,
+                    default_list_limit: policy.default_list_limit,
+                    max_list_limit: policy.max_list_limit,
+                });
+            }
+        }
+
+        Ok(WorklogToolConfig::with_db_path(resolve_path_in_workspace(
+            &self.cfg.workspace_root,
+            DEFAULT_WORKLOG_DB_REL_PATH,
+        )?))
     }
 }
 
@@ -527,6 +685,7 @@ impl AgentTool for ExecBashTool {
 struct EditFileTool {
     cfg: AgentWorkshopConfig,
     policy: EditFilePolicy,
+    write_audit: WorkshopWriteAudit,
 }
 
 #[async_trait]
@@ -566,7 +725,7 @@ impl AgentTool for EditFileTool {
         }
     }
 
-    async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
         let file_path = require_string(&args, "path")?;
         let abs_path = resolve_path_in_workspace(&self.cfg.workspace_root, &file_path)?;
         if !is_path_under_any(&abs_path, &self.policy.allowed_write_roots) {
@@ -646,6 +805,22 @@ impl AgentTool for EditFileTool {
             &updated_content,
             self.policy.max_diff_lines,
         );
+        self.write_audit
+            .record_file_write(
+                ctx,
+                &args,
+                &FileWriteAuditRecord {
+                    file_path: file_path.clone(),
+                    operation: operation.clone(),
+                    created: !exists,
+                    changed,
+                    bytes_before: original_content.len(),
+                    bytes_after: updated_content.len(),
+                    diff: diff.clone(),
+                    diff_truncated,
+                },
+            )
+            .await?;
 
         Ok(json!({
             "ok": true,
@@ -660,6 +835,82 @@ impl AgentTool for EditFileTool {
             "diff_truncated": diff_truncated
         }))
     }
+}
+
+#[derive(Clone, Debug)]
+struct WorkshopWriteAudit {
+    worklog_cfg: WorklogToolConfig,
+}
+
+impl WorkshopWriteAudit {
+    fn new(worklog_cfg: WorklogToolConfig) -> Self {
+        Self { worklog_cfg }
+    }
+
+    async fn record_file_write(
+        &self,
+        ctx: &TraceCtx,
+        args: &Json,
+        record: &FileWriteAuditRecord,
+    ) -> Result<(), ToolError> {
+        let worklog_tool = WorklogTool::new(self.worklog_cfg.clone())?;
+        let owner_session_id = optional_string(args, "session_id")?;
+        let step_id = optional_string(args, "step_id")?
+            .unwrap_or_else(|| format!("{}#{}", ctx.behavior, ctx.step_idx));
+        let task_id = optional_string(args, "task_id")?;
+        let action_id = optional_string(args, "action_id")?;
+        let run_id = optional_string(args, "run_id")?.unwrap_or_else(|| ctx.trace_id.clone());
+        let mut tags = vec![
+            "workspace".to_string(),
+            "local_workspace".to_string(),
+            "write".to_string(),
+        ];
+        if record.diff_truncated {
+            tags.push("diff_truncated".to_string());
+        }
+
+        let _ = worklog_tool
+            .call(
+                ctx,
+                json!({
+                    "action": "append",
+                    "type": "workspace_file_write",
+                    "status": "success",
+                    "agent_id": ctx.agent_did,
+                    "owner_session_id": owner_session_id,
+                    "run_id": run_id,
+                    "step_id": step_id,
+                    "task_id": task_id,
+                    "summary": format!("edit_file {} {}", record.operation, record.file_path),
+                    "tags": tags,
+                    "payload": {
+                        "path": record.file_path,
+                        "operation": record.operation,
+                        "created": record.created,
+                        "changed": record.changed,
+                        "bytes_before": record.bytes_before,
+                        "bytes_after": record.bytes_after,
+                        "diff": record.diff,
+                        "diff_truncated": record.diff_truncated,
+                        "action_id": action_id
+                    }
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+struct FileWriteAuditRecord {
+    file_path: String,
+    operation: String,
+    created: bool,
+    changed: bool,
+    bytes_before: usize,
+    bytes_after: usize,
+    diff: String,
+    diff_truncated: bool,
 }
 
 fn require_string(args: &Json, key: &str) -> Result<String, ToolError> {
@@ -840,6 +1091,11 @@ fn normalize_workspace_root(root: &Path) -> Result<PathBuf, ToolError> {
 async fn create_minimal_workspace_dirs(workspace_root: &Path) -> Result<(), ToolError> {
     let roots = [
         workspace_root.to_path_buf(),
+        workspace_root.join("skills"),
+        workspace_root.join("sessions"),
+        workspace_root.join("workspaces"),
+        workspace_root.join("workspaces/local"),
+        workspace_root.join("workspaces/remote"),
         workspace_root.join("worklog"),
         workspace_root.join("todo"),
         workspace_root.join("tools"),

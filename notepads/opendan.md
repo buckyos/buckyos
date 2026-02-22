@@ -529,32 +529,7 @@ limits:
 
 ## 13. Memory（记忆系统）
 
-### 13.1 Memory 的来源
-
-系统默认支持至少两类：
-
-* **Chat History**：对话历史（通过 MsgCenter 查询；thread-id 可加速）
-* **Memory 目录**：包含 `memory.md` 与 `things.sqlite`（kv/结构化事实）
-
-### 13.2 memory.md（摘要性记忆）
-
-用于保存：
-
-* 长期任务背景
-* 用户偏好摘要
-* 当前项目状态（对齐 workspace todo）
-
-由 `on_compact_memory` 或 Self-Improve 阶段维护，避免无限增长（定期压缩、保留关键事实与决策依据）。
-
-### 13.3 things.sqlite（结构化记忆）
-
-建议最小表：
-
-* `kv(key TEXT PRIMARY KEY, value TEXT, updated_at INT, source TEXT, confidence REAL)`
-* `facts(id TEXT PRIMARY KEY, subject TEXT, predicate TEXT, object TEXT, updated_at INT, source TEXT)`
-* `events(id TEXT PRIMARY KEY, type TEXT, payload TEXT, ts INT)`
-
-**关键要求**：任何来自网络/外部工具的内容写入 memory/KB 必须带 `source/provenance`，否则会污染长期记忆。
+独立文档
 
 ---
 
@@ -801,7 +776,7 @@ SubAgents
 
 ---
 
-## 21. Agent 文件系统示例（旧设计保留）
+## 21. Agent 文件系统示例
 
 示例：Root Agent 为 Jarvis；其创建了一个叫 web-agent 的 SubAgent。
 

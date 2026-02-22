@@ -25,9 +25,9 @@ use crate::agent_session::{AgentSession, AgentSessionConfig};
 use crate::agent_tool::{AgentPolicy, ToolCall, ToolError, ToolManager, ToolSpec};
 use crate::ai_runtime::{AiRuntime, AiRuntimeConfig};
 use crate::behavior::{
-    BehaviorConfig, BehaviorConfigError, BehaviorExecInput, BehaviorLLMResult, EnvKV, AgentWorkEvent,
-    LLMBehavior, LLMBehaviorDeps, LLMOutput, LLMTrackingInfo, Observation, ObservationSource,
-    PolicyEngine, Sanitizer, TokenUsage, Tokenizer, TraceCtx, WorklogSink,
+    AgentWorkEvent, BehaviorConfig, BehaviorConfigError, BehaviorExecInput, BehaviorLLMResult,
+    EnvKV, LLMBehavior, LLMBehaviorDeps, LLMOutput, LLMTrackingInfo, Observation,
+    ObservationSource, PolicyEngine, Sanitizer, TokenUsage, Tokenizer, TraceCtx, WorklogSink,
 };
 use crate::workspace::{TOOL_EXEC_BASH, TOOL_WORKLOG_MANAGE};
 
@@ -598,12 +598,15 @@ impl AIAgent {
     ) -> Result<bool, AIAgentError> {
         runtime.phase = SessionLoopPhase::ResolveRouter;
 
-        let (resolve_router, resolve_tracking, resolve_actions) = self.resolve_router(state).await?;
+        let (resolve_router, resolve_tracking, resolve_actions) =
+            self.resolve_router(state).await?;
         if let Some(tracking) = resolve_tracking.as_ref() {
-            self.record_stage_cost(state, tracking, resolve_actions).await;
+            self.record_stage_cost(state, tracking, resolve_actions)
+                .await;
         }
         self.apply_resolve_router(state, &resolve_router);
-        self.send_router_reply_via_msg_center(state, &resolve_router).await;
+        self.send_router_reply_via_msg_center(state, &resolve_router)
+            .await;
 
         runtime.session_id = state.loop_ctx.session_id.clone();
         runtime.current_behavior = state.current_behavior.clone();
@@ -630,12 +633,16 @@ impl AIAgent {
         state: &mut AgentLoopState,
         mut runtime: SessionRuntimeState,
     ) -> Result<(), AIAgentError> {
-        match self.try_enter_session_loop(runtime.session_id.as_str()).await {
+        match self
+            .try_enter_session_loop(runtime.session_id.as_str())
+            .await
+        {
             Some(active_session) => {
                 runtime.phase = SessionLoopPhase::Waiting;
                 runtime.waiting =
                     Some(WaitSpec::default_session_loop_busy(active_session.as_str()));
-                self.persist_session_checkpoint_placeholder(state, &runtime).await;
+                self.persist_session_checkpoint_placeholder(state, &runtime)
+                    .await;
                 debug!(
                     "ai_agent.session_loop dispatch_skipped: did={} wakeup_id={} target_session={} active_session={}",
                     self.did,
@@ -667,7 +674,8 @@ impl AIAgent {
         // session-loop pipeline.
         self.hydrate_context(state);
         self.run_session_step_state_machine(state, runtime).await?;
-        self.persist_session_checkpoint_placeholder(state, runtime).await;
+        self.persist_session_checkpoint_placeholder(state, runtime)
+            .await;
         Ok(())
     }
 
@@ -687,7 +695,8 @@ impl AIAgent {
                     if !has_input {
                         runtime.phase = SessionLoopPhase::Waiting;
                         runtime.waiting = Some(WaitSpec::default_no_input());
-                        self.persist_session_checkpoint_placeholder(state, runtime).await;
+                        self.persist_session_checkpoint_placeholder(state, runtime)
+                            .await;
                         break;
                     }
                     runtime.waiting = None;
@@ -703,8 +712,10 @@ impl AIAgent {
                     runtime.phase = SessionLoopPhase::ApplyStepEffects;
                 }
                 SessionLoopPhase::ApplyStepEffects => {
-                    self.apply_step_side_effects_placeholder(state, runtime).await?;
-                    self.persist_session_checkpoint_placeholder(state, runtime).await;
+                    self.apply_step_side_effects_placeholder(state, runtime)
+                        .await?;
+                    self.persist_session_checkpoint_placeholder(state, runtime)
+                        .await;
                     break;
                 }
                 SessionLoopPhase::Waiting => break,

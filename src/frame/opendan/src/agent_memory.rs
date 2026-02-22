@@ -188,7 +188,7 @@ impl AgentMemory {
         Ok(entries)
     }
 
-    async fn load_memory_md(&self, token_limit: u32) -> Result<Json, ToolError> {
+    async fn load_agent_memory(&self, token_limit: u32) -> Result<Json, ToolError> {
         let token_limit = token_limit.max(1);
         let content = fs::read_to_string(&self.memory_md_path)
             .await
@@ -384,7 +384,7 @@ impl AgentTool for LoadMemoryTool {
     async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
         let token_limit = optional_u32(&args, "token_limit")?
             .unwrap_or(self.memory.cfg.default_memory_token_limit);
-        self.memory.load_memory_md(token_limit).await
+        self.memory.load_agent_memory(token_limit).await
     }
 }
 
