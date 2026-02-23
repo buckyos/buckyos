@@ -1684,7 +1684,8 @@ mod tests {
         )
         .await
         .expect("get worklog should succeed");
-        assert_eq!(got["log"]["type"], "function_call");
+        println!("got log: {got}");
+        assert_eq!(got["log"]["log_type"], "opendan.worklog.FunctionRecord.v1");
         assert_eq!(got["log"]["owner_session_id"], "session-alpha");
         assert!(fs::metadata(root.join("worklog/worklog.db")).await.is_ok());
 
