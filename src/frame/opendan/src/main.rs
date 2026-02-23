@@ -7,6 +7,7 @@ pub mod agent_session;
 pub mod agent_tool;
 pub mod ai_runtime;
 pub mod behavior;
+pub mod worklog;
 #[cfg(test)]
 pub mod test_utils;
 pub mod workspace;

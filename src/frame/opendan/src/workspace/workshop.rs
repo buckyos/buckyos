@@ -14,7 +14,7 @@ use super::local_workspace::{
     SessionWorkspaceBinding, WorkshopIndex, WorkshopWorkspaceRecord,
 };
 use super::todo::{TodoTool, TodoToolConfig, TOOL_TODO_MANAGE};
-use super::worklog::{WorklogTool, WorklogToolConfig, TOOL_WORKLOG_MANAGE};
+use crate::worklog::{WorklogTool, WorklogToolConfig, TOOL_WORKLOG_MANAGE};
 use crate::agent_tool::{AgentTool, MCPToolConfig, ToolError, ToolManager, ToolSpec};
 use crate::behavior::TraceCtx;
 

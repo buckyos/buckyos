@@ -29,7 +29,8 @@ use crate::behavior::{
     EnvKV, LLMBehavior, LLMBehaviorDeps, LLMOutput, LLMTrackingInfo, Observation,
     ObservationSource, PolicyEngine, Sanitizer, TokenUsage, Tokenizer, TraceCtx, WorklogSink,
 };
-use crate::workspace::{TOOL_EXEC_BASH, TOOL_WORKLOG_MANAGE};
+use crate::workspace::TOOL_EXEC_BASH;
+use crate::worklog::*;
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
 const DEFAULT_SESSION_LOOP_STATE_FILE: &str = "session/session_loop_state.json";

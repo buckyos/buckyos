@@ -23,7 +23,8 @@ use super::types::*;
 use crate::agent_session::TOOL_GET_SESSION;
 use crate::agent_tool::{ToolCall, ToolError, ToolManager, ToolSpec};
 use crate::ai_runtime::TOOL_CREATE_SUB_AGENT;
-use crate::workspace::{TOOL_TODO_MANAGE, TOOL_WORKLOG_MANAGE};
+use crate::workspace::{TOOL_TODO_MANAGE};
+use crate::worklog::*;
 
 #[derive(Clone)]
 pub struct LLMBehaviorDeps {
