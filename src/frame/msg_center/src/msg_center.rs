@@ -1,11 +1,12 @@
 use crate::contact_mgr::{ContactMgr, ZoneUserContactSeed};
+use crate::msg_box_db::MsgBoxDbMgr;
 use async_trait::async_trait;
 use buckyos_api::{
-    AccessDecision, AccessGroupLevel, AccountBinding, BoxKind, Contact, ContactPatch, ContactQuery,
-    DeliveryInfo, DeliveryReportResult, DispatchResult, GrantTemporaryAccessResult,
-    ImportContactEntry, ImportReport, IngressContext, MsgCenterHandler, MsgReceiptObj,
-    MsgRecord, MsgRecordPage, MsgRecordWithObject, MsgState, PostSendDelivery, PostSendResult,
-    ReadReceiptState, RouteInfo, SendContext, SetGroupSubscribersResult,get_buckyos_api_runtime
+    get_buckyos_api_runtime, AccessDecision, AccessGroupLevel, AccountBinding, BoxKind, Contact,
+    ContactPatch, ContactQuery, DeliveryInfo, DeliveryReportResult, DispatchResult,
+    GrantTemporaryAccessResult, ImportContactEntry, ImportReport, IngressContext, MsgCenterHandler,
+    MsgReceiptObj, MsgRecord, MsgRecordPage, MsgRecordWithObject, MsgState, PostSendDelivery,
+    PostSendResult, ReadReceiptState, RouteInfo, SendContext, SetGroupSubscribersResult,
 };
 use kRPC::{RPCContext, RPCErrors};
 use log::{info, warn};
@@ -13,8 +14,8 @@ use name_lib::DID;
 use ndn_lib::{MsgObject, NamedObject, ObjId};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::{Arc, RwLock};
-
 
 const DEFAULT_PEEK_LIMIT: usize = 20;
 const MAX_PEEK_LIMIT: usize = 200;
@@ -28,8 +29,6 @@ const DEFAULT_FALLBACK_TUNNEL_SUBJECT: &str = "msg-center-default-tunnel";
 #[derive(Debug, Default)]
 struct MessageCenterState {
     messages: HashMap<String, MsgObject>,
-    records: HashMap<String, MsgRecord>,
-    box_index: HashMap<String, HashSet<String>>,
     receipts: HashMap<String, MsgReceiptObj>,
     dispatch_idempotency: HashMap<String, DispatchResult>,
     post_send_idempotency: HashMap<String, PostSendResult>,
@@ -48,18 +47,33 @@ struct DeliveryPlan {
 pub struct MessageCenter {
     state: Arc<RwLock<MessageCenterState>>,
     contact_mgr: ContactMgr,
+    msg_box_db: MsgBoxDbMgr,
 }
 
 impl MessageCenter {
-    pub fn new(contact_mgr: ContactMgr) -> Self {
-        Self {
+    pub fn new(contact_mgr: ContactMgr) -> std::result::Result<Self, RPCErrors> {
+        let msg_box_db = MsgBoxDbMgr::new()?;
+        Ok(Self {
             state: Arc::new(RwLock::new(MessageCenterState::default())),
             contact_mgr,
-        }
+            msg_box_db,
+        })
+    }
+
+    pub fn new_with_msg_box_root<P: AsRef<Path>>(
+        contact_mgr: ContactMgr,
+        msg_box_root: P,
+    ) -> std::result::Result<Self, RPCErrors> {
+        let msg_box_db = MsgBoxDbMgr::new_with_root(msg_box_root)?;
+        Ok(Self {
+            state: Arc::new(RwLock::new(MessageCenterState::default())),
+            contact_mgr,
+            msg_box_db,
+        })
     }
 
     pub fn try_new() -> std::result::Result<Self, RPCErrors> {
-        Ok(Self::new(ContactMgr::new()?))
+        Self::new(ContactMgr::new()?)
     }
 
     pub fn upsert_zone_user_contacts(
@@ -126,18 +140,6 @@ impl MessageCenter {
             BoxKind::GroupInbox => "GROUP_INBOX",
             BoxKind::TunnelOutbox => "TUNNEL_OUTBOX",
             BoxKind::RequestBox => "REQUEST_BOX",
-        }
-    }
-
-    fn box_index_key(owner: &DID, box_kind: &BoxKind) -> String {
-        format!("{}|{}", owner.to_string(), Self::box_kind_name(box_kind))
-    }
-
-    fn state_matches(state_filter: Option<&[MsgState]>, state: &MsgState) -> bool {
-        match state_filter {
-            None => true,
-            Some(filters) if filters.is_empty() => true,
-            Some(filters) => filters.iter().any(|item| item == state),
         }
     }
 
@@ -229,7 +231,10 @@ impl MessageCenter {
         DID::new("bns", DEFAULT_FALLBACK_TUNNEL_SUBJECT)
     }
 
-    async fn store_message(msg_id: &ObjId, msg_json_str: &str) -> std::result::Result<(), RPCErrors> {
+    async fn store_message(
+        msg_id: &ObjId,
+        msg_json_str: &str,
+    ) -> std::result::Result<(), RPCErrors> {
         let msg_id = msg_id.clone();
         let msg_json = msg_json_str.to_string();
         let runtime = match get_buckyos_api_runtime() {
@@ -304,7 +309,7 @@ impl MessageCenter {
     }
 
     fn create_or_get_record(
-        state: &mut MessageCenterState,
+        &self,
         owner: DID,
         box_kind: BoxKind,
         msg: &MsgObject,
@@ -313,11 +318,11 @@ impl MessageCenter {
         delivery: Option<DeliveryInfo>,
         tags: Vec<String>,
         variant: &str,
-    ) -> MsgRecord {
+    ) -> std::result::Result<MsgRecord, RPCErrors> {
         let msg_id = Self::message_obj_id(msg);
         let record_id = Self::build_record_id(&owner, &box_kind, &msg_id, variant);
-        if let Some(existing) = state.records.get(&record_id) {
-            return existing.clone();
+        if let Some(existing) = self.msg_box_db.get_record(&owner, &record_id)? {
+            return Ok(existing);
         }
 
         let now_ms = Self::now_ms();
@@ -340,52 +345,19 @@ impl MessageCenter {
             tags,
         };
 
-        state.records.insert(record_id.clone(), record.clone());
-        state
-            .box_index
-            .entry(Self::box_index_key(&owner, &box_kind))
-            .or_default()
-            .insert(record_id);
-
-        record
+        self.msg_box_db.upsert_record(&record)?;
+        Ok(record)
     }
 
-    fn collect_box_records(
-        state: &MessageCenterState,
+    fn load_box_records(
+        &self,
         owner: &DID,
         box_kind: &BoxKind,
         state_filter: Option<&[MsgState]>,
-    ) -> Vec<MsgRecord> {
-        let mut records = Vec::new();
-        let index_key = Self::box_index_key(owner, box_kind);
-        if let Some(record_ids) = state.box_index.get(&index_key) {
-            records.reserve(record_ids.len());
-            for record_id in record_ids {
-                if let Some(record) = state.records.get(record_id) {
-                    if Self::state_matches(state_filter, &record.state) {
-                        records.push(record.clone());
-                    }
-                }
-            }
-        }
-        records
-    }
-
-    fn sort_records(records: &mut [MsgRecord], descending: bool) {
-        if descending {
-            records.sort_by(|left, right| {
-                right
-                    .sort_key
-                    .cmp(&left.sort_key)
-                    .then_with(|| right.record_id.cmp(&left.record_id))
-            });
-        } else {
-            records.sort_by(|left, right| {
-                left.sort_key
-                    .cmp(&right.sort_key)
-                    .then_with(|| left.record_id.cmp(&right.record_id))
-            });
-        }
+        descending: bool,
+    ) -> std::result::Result<Vec<MsgRecord>, RPCErrors> {
+        self.msg_box_db
+            .list_records(owner, box_kind, state_filter, descending)
     }
 
     fn filter_after_cursor(
@@ -415,14 +387,23 @@ impl MessageCenter {
             .collect()
     }
 
+    fn owner_from_record_id(record_id: &str) -> std::result::Result<DID, RPCErrors> {
+        let owner = record_id.split('|').next().ok_or_else(|| {
+            RPCErrors::ReasonError(format!("invalid record id '{}': missing owner", record_id))
+        })?;
+        DID::from_str(owner).map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "invalid record id '{}': owner DID parse failed: {}",
+                record_id, error
+            ))
+        })
+    }
+
     async fn build_record_view(
         record: MsgRecord,
         with_object: Option<bool>,
     ) -> std::result::Result<MsgRecordWithObject, RPCErrors> {
-        let mut result = MsgRecordWithObject {
-            record,
-            msg: None,
-        };
+        let mut result = MsgRecordWithObject { record, msg: None };
         if with_object.unwrap_or(false) {
             result.msg = Some(Self::load_message(&result.record.msg_id).await?);
         }
@@ -606,7 +587,9 @@ impl MessageCenter {
                     reason: Some("blocked".to_string()),
                 };
                 if let Some(key) = idempotency_key.as_ref() {
-                    state.dispatch_idempotency.insert(key.clone(), result.clone());
+                    state
+                        .dispatch_idempotency
+                        .insert(key.clone(), result.clone());
                 }
                 return Ok(DispatchPrepare::Done(result));
             }
@@ -669,8 +652,7 @@ impl MessageCenter {
                     group_id.to_string(),
                     context_id.as_deref().unwrap_or("-"),
                 );
-                Self::create_or_get_record(
-                    state,
+                self.create_or_get_record(
                     group_id.clone(),
                     BoxKind::GroupInbox,
                     &stored_msg,
@@ -679,7 +661,7 @@ impl MessageCenter {
                     None,
                     Vec::new(),
                     "group-inbox",
-                );
+                )?;
 
                 let readers =
                     self.contact_mgr
@@ -694,8 +676,7 @@ impl MessageCenter {
                         agent_did.to_string(),
                         context_id.as_deref().unwrap_or("-"),
                     );
-                    Self::create_or_get_record(
-                        state,
+                    self.create_or_get_record(
                         agent_did.clone(),
                         BoxKind::Inbox,
                         &stored_msg,
@@ -704,7 +685,7 @@ impl MessageCenter {
                         None,
                         vec![tag],
                         &format!("group-agent-{}", group_id.to_string()),
-                    );
+                    )?;
                 }
 
                 result.delivered_group = Some(group_id);
@@ -753,8 +734,7 @@ impl MessageCenter {
                                     context_id.as_deref().unwrap_or("-"),
                                 );
                             }
-                            Self::create_or_get_record(
-                                state,
+                            self.create_or_get_record(
                                 recipient.clone(),
                                 box_kind,
                                 &stored_msg,
@@ -763,7 +743,7 @@ impl MessageCenter {
                                 None,
                                 Vec::new(),
                                 "inbox",
-                            );
+                            )?;
                             result.delivered_recipients.push(recipient);
                         }
                         None => {
@@ -821,7 +801,9 @@ impl MessageCenter {
                     reason: Some("blocked_author".to_string()),
                 };
                 if let Some(key) = idempotency_key.as_ref() {
-                    state.post_send_idempotency.insert(key.clone(), result.clone());
+                    state
+                        .post_send_idempotency
+                        .insert(key.clone(), result.clone());
                 }
                 return Ok(PostSendPrepare::Done(result));
             }
@@ -853,8 +835,7 @@ impl MessageCenter {
                 }
             }
 
-            Self::create_or_get_record(
-                state,
+            self.create_or_get_record(
                 author,
                 BoxKind::Outbox,
                 &stored_msg,
@@ -863,7 +844,7 @@ impl MessageCenter {
                 None,
                 Vec::new(),
                 "owner-outbox",
-            );
+            )?;
 
             let delivery_targets = Self::list_delivery_targets(&stored_msg);
             let mut deliveries = Vec::with_capacity(delivery_targets.len());
@@ -885,8 +866,7 @@ impl MessageCenter {
                         .clone()
                         .unwrap_or_else(|| "direct".to_string())
                 );
-                let record = Self::create_or_get_record(
-                    state,
+                let record = self.create_or_get_record(
                     plan.tunnel_did.clone(),
                     BoxKind::TunnelOutbox,
                     &stored_msg,
@@ -895,7 +875,7 @@ impl MessageCenter {
                     Some(DeliveryInfo::default()),
                     Vec::new(),
                     &variant,
-                );
+                )?;
 
                 deliveries.push(PostSendDelivery {
                     tunnel_did: plan.tunnel_did,
@@ -913,7 +893,9 @@ impl MessageCenter {
                 reason: None,
             };
             if let Some(key) = idempotency_key.as_ref() {
-                state.post_send_idempotency.insert(key.clone(), result.clone());
+                state
+                    .post_send_idempotency
+                    .insert(key.clone(), result.clone());
             }
             Ok(result)
         })
@@ -927,36 +909,26 @@ impl MessageCenter {
         lock_on_take: Option<bool>,
         with_object: Option<bool>,
     ) -> std::result::Result<Option<MsgRecordWithObject>, RPCErrors> {
-        let selected = self.with_state_write(|state| {
-            let default_filter = match box_kind {
-                BoxKind::Inbox | BoxKind::GroupInbox | BoxKind::RequestBox => {
-                    Some(vec![MsgState::Unread])
-                }
-                BoxKind::TunnelOutbox => Some(vec![MsgState::Wait]),
-                BoxKind::Outbox => None,
-            };
-            let effective_filter = state_filter.or(default_filter);
-            let state_filter_ref = effective_filter.as_deref();
-            let mut records = Self::collect_box_records(state, &owner, &box_kind, state_filter_ref);
-            Self::sort_records(&mut records, false);
-
-            let should_lock = lock_on_take.unwrap_or(true);
-            for mut record in records {
-                if should_lock {
-                    if let Some(next_state) = Self::next_state_on_take(&box_kind, &record.state) {
-                        if let Some(record_entry) = state.records.get_mut(&record.record_id) {
-                            record_entry.state = next_state;
-                            record_entry.updated_at_ms = Self::now_ms();
-                            record = record_entry.clone();
-                        }
-                    }
-                }
-
-                return Ok(Some(record));
+        let default_filter = match box_kind {
+            BoxKind::Inbox | BoxKind::GroupInbox | BoxKind::RequestBox => {
+                Some(vec![MsgState::Unread])
             }
-
-            Ok(None)
-        })?;
+            BoxKind::TunnelOutbox => Some(vec![MsgState::Wait]),
+            BoxKind::Outbox => None,
+        };
+        let effective_filter = state_filter.or(default_filter);
+        let state_filter_ref = effective_filter.as_deref();
+        let records = self.load_box_records(&owner, &box_kind, state_filter_ref, false)?;
+        let mut selected = records.into_iter().next();
+        if let Some(record) = selected.as_mut() {
+            if lock_on_take.unwrap_or(true) {
+                if let Some(next_state) = Self::next_state_on_take(&box_kind, &record.state) {
+                    record.state = next_state;
+                    record.updated_at_ms = Self::now_ms();
+                    self.msg_box_db.upsert_record(record)?;
+                }
+            }
+        }
 
         let Some(record) = selected else {
             return Ok(None);
@@ -973,14 +945,13 @@ impl MessageCenter {
         limit: Option<usize>,
         with_object: Option<bool>,
     ) -> std::result::Result<Vec<MsgRecordWithObject>, RPCErrors> {
-        let records = self.with_state_read(|state| {
-            let limit = Self::clamp_limit(limit, DEFAULT_PEEK_LIMIT, MAX_PEEK_LIMIT);
-            let state_filter_ref = state_filter.as_deref();
-            let mut records = Self::collect_box_records(state, &owner, &box_kind, state_filter_ref);
-            Self::sort_records(&mut records, true);
-
-            Ok(records.into_iter().take(limit).collect::<Vec<_>>())
-        })?;
+        let limit = Self::clamp_limit(limit, DEFAULT_PEEK_LIMIT, MAX_PEEK_LIMIT);
+        let state_filter_ref = state_filter.as_deref();
+        let records = self
+            .load_box_records(&owner, &box_kind, state_filter_ref, true)?
+            .into_iter()
+            .take(limit)
+            .collect::<Vec<_>>();
 
         let mut result = Vec::with_capacity(records.len());
         for record in records {
@@ -1000,24 +971,18 @@ impl MessageCenter {
         descending: Option<bool>,
         with_object: Option<bool>,
     ) -> std::result::Result<MsgRecordPage, RPCErrors> {
-        let (page_records, has_more) = self.with_state_read(|state| {
-            let descending = descending.unwrap_or(true);
-            let limit = Self::clamp_limit(limit, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT);
-            let state_filter_ref = state_filter.as_deref();
-
-            let mut records = Self::collect_box_records(state, &owner, &box_kind, state_filter_ref);
-            Self::sort_records(&mut records, descending);
-            let records = Self::filter_after_cursor(
-                records,
-                cursor_sort_key,
-                cursor_record_id.as_deref(),
-                descending,
-            );
-
-            let has_more = records.len() > limit;
-            let page_records = records.into_iter().take(limit).collect::<Vec<_>>();
-            Ok((page_records, has_more))
-        })?;
+        let descending = descending.unwrap_or(true);
+        let limit = Self::clamp_limit(limit, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT);
+        let state_filter_ref = state_filter.as_deref();
+        let records = self.load_box_records(&owner, &box_kind, state_filter_ref, descending)?;
+        let records = Self::filter_after_cursor(
+            records,
+            cursor_sort_key,
+            cursor_record_id.as_deref(),
+            descending,
+        );
+        let has_more = records.len() > limit;
+        let page_records = records.into_iter().take(limit).collect::<Vec<_>>();
 
         let mut items = Vec::with_capacity(page_records.len());
         for record in page_records {
@@ -1050,31 +1015,31 @@ impl MessageCenter {
         new_state: MsgState,
         reason: Option<String>,
     ) -> std::result::Result<MsgRecord, RPCErrors> {
-        self.with_state_write(|state| {
-            let record = state
-                .records
-                .get_mut(&record_id)
-                .ok_or_else(|| RPCErrors::ReasonError(format!("record {} not found", record_id)))?;
+        let owner = Self::owner_from_record_id(&record_id)?;
+        let mut record = self
+            .msg_box_db
+            .get_record(&owner, &record_id)?
+            .ok_or_else(|| RPCErrors::ReasonError(format!("record {} not found", record_id)))?;
 
-            if !Self::is_valid_transition(&record.box_kind, &record.state, &new_state) {
-                return Err(RPCErrors::ReasonError(format!(
-                    "invalid state transition {:?} -> {:?} for {:?}",
-                    record.state, new_state, record.box_kind
-                )));
-            }
+        if !Self::is_valid_transition(&record.box_kind, &record.state, &new_state) {
+            return Err(RPCErrors::ReasonError(format!(
+                "invalid state transition {:?} -> {:?} for {:?}",
+                record.state, new_state, record.box_kind
+            )));
+        }
 
-            record.state = new_state.clone();
-            record.updated_at_ms = Self::now_ms();
-            if let Some(reason) = reason {
-                let trimmed = reason.trim();
-                if !trimmed.is_empty() {
-                    let mut delivery = record.delivery.clone().unwrap_or_default();
-                    delivery.last_error = Some(trimmed.to_string());
-                    record.delivery = Some(delivery);
-                }
+        record.state = new_state;
+        record.updated_at_ms = Self::now_ms();
+        if let Some(reason) = reason {
+            let trimmed = reason.trim();
+            if !trimmed.is_empty() {
+                let mut delivery = record.delivery.clone().unwrap_or_default();
+                delivery.last_error = Some(trimmed.to_string());
+                record.delivery = Some(delivery);
             }
-            Ok(record.clone())
-        })
+        }
+        self.msg_box_db.upsert_record(&record)?;
+        Ok(record)
     }
 
     fn report_delivery_internal(
@@ -1082,54 +1047,54 @@ impl MessageCenter {
         record_id: String,
         result_payload: DeliveryReportResult,
     ) -> std::result::Result<MsgRecord, RPCErrors> {
-        self.with_state_write(|state| {
-            let record = state
-                .records
-                .get_mut(&record_id)
-                .ok_or_else(|| RPCErrors::ReasonError(format!("record {} not found", record_id)))?;
-            if record.box_kind != BoxKind::TunnelOutbox {
-                return Err(RPCErrors::ReasonError(format!(
-                    "record {} is not tunnel outbox",
-                    record_id
-                )));
-            }
+        let owner = Self::owner_from_record_id(&record_id)?;
+        let mut record = self
+            .msg_box_db
+            .get_record(&owner, &record_id)?
+            .ok_or_else(|| RPCErrors::ReasonError(format!("record {} not found", record_id)))?;
+        if record.box_kind != BoxKind::TunnelOutbox {
+            return Err(RPCErrors::ReasonError(format!(
+                "record {} is not tunnel outbox",
+                record_id
+            )));
+        }
 
-            let now_ms = Self::now_ms();
-            let mut delivery = record.delivery.clone().unwrap_or_default();
-            delivery.attempts = delivery.attempts.saturating_add(1);
-            delivery.external_msg_id = result_payload.external_msg_id.clone();
-            delivery.delivered_at_ms = result_payload.delivered_at_ms;
-            delivery.error_code = result_payload.error_code.clone();
-            delivery.error_message = result_payload.error_message.clone();
-            delivery.retry_after_ms = result_payload.retry_after_ms;
-            if let Some(error_message) = result_payload.error_message.as_ref() {
-                if !error_message.trim().is_empty() {
-                    delivery.last_error = Some(error_message.clone());
-                }
+        let now_ms = Self::now_ms();
+        let mut delivery = record.delivery.clone().unwrap_or_default();
+        delivery.attempts = delivery.attempts.saturating_add(1);
+        delivery.external_msg_id = result_payload.external_msg_id.clone();
+        delivery.delivered_at_ms = result_payload.delivered_at_ms;
+        delivery.error_code = result_payload.error_code.clone();
+        delivery.error_message = result_payload.error_message.clone();
+        delivery.retry_after_ms = result_payload.retry_after_ms;
+        if let Some(error_message) = result_payload.error_message.as_ref() {
+            if !error_message.trim().is_empty() {
+                delivery.last_error = Some(error_message.clone());
             }
-            if let Some(retry_after_ms) = result_payload.retry_after_ms {
-                delivery.next_retry_at_ms = Some(now_ms.saturating_add(retry_after_ms));
-            }
+        }
+        if let Some(retry_after_ms) = result_payload.retry_after_ms {
+            delivery.next_retry_at_ms = Some(now_ms.saturating_add(retry_after_ms));
+        }
 
-            if result_payload.ok {
-                record.state = MsgState::Sent;
-                if delivery.delivered_at_ms.is_none() {
-                    delivery.delivered_at_ms = Some(now_ms);
-                }
+        if result_payload.ok {
+            record.state = MsgState::Sent;
+            if delivery.delivered_at_ms.is_none() {
+                delivery.delivered_at_ms = Some(now_ms);
+            }
+        } else {
+            let retryable = result_payload.retryable.unwrap_or(true);
+            let too_many_attempts = delivery.attempts >= MAX_DELIVERY_RETRY;
+            if retryable && !too_many_attempts {
+                record.state = MsgState::Wait;
             } else {
-                let retryable = result_payload.retryable.unwrap_or(true);
-                let too_many_attempts = delivery.attempts >= MAX_DELIVERY_RETRY;
-                if retryable && !too_many_attempts {
-                    record.state = MsgState::Wait;
-                } else {
-                    record.state = MsgState::Dead;
-                }
+                record.state = MsgState::Dead;
             }
+        }
 
-            record.updated_at_ms = now_ms;
-            record.delivery = Some(delivery);
-            Ok(record.clone())
-        })
+        record.updated_at_ms = now_ms;
+        record.delivery = Some(delivery);
+        self.msg_box_db.upsert_record(&record)?;
+        Ok(record)
     }
 
     fn set_read_state_internal(
@@ -1141,15 +1106,16 @@ impl MessageCenter {
         reason: Option<String>,
         at_ms: Option<u64>,
     ) -> std::result::Result<MsgReceiptObj, RPCErrors> {
-        self.with_state_write(|state| {
-            let msg_key = msg_id.to_string();
-            if !state.messages.contains_key(&msg_key) {
-                return Err(RPCErrors::ReasonError(format!(
-                    "message {} not found",
-                    msg_id.to_string()
-                )));
-            }
+        let msg_key = msg_id.to_string();
+        let in_memory = self.with_state_read(|state| Ok(state.messages.contains_key(&msg_key)))?;
+        if !in_memory && !self.msg_box_db.has_message(&group_id, &msg_id)? {
+            return Err(RPCErrors::ReasonError(format!(
+                "message {} not found",
+                msg_id.to_string()
+            )));
+        }
 
+        self.with_state_write(|state| {
             let receipt = MsgReceiptObj {
                 msg_id: msg_id.clone(),
                 iss: reader_did.clone(),
@@ -1213,12 +1179,8 @@ impl MessageCenter {
         record_id: String,
         with_object: Option<bool>,
     ) -> std::result::Result<Option<MsgRecordWithObject>, RPCErrors> {
-        let record = self.with_state_read(|state| {
-            let Some(record) = state.records.get(&record_id).cloned() else {
-                return Ok(None);
-            };
-            Ok(Some(record))
-        })?;
+        let owner = Self::owner_from_record_id(&record_id)?;
+        let record = self.msg_box_db.get_record(&owner, &record_id)?;
         let Some(record) = record else {
             return Ok(None);
         };
@@ -1230,7 +1192,9 @@ impl MessageCenter {
         &self,
         msg_id: ObjId,
     ) -> std::result::Result<Option<MsgObject>, RPCErrors> {
-        if let Some(msg) = self.with_state_read(|state| Ok(state.messages.get(&msg_id.to_string()).cloned()))? {
+        if let Some(msg) =
+            self.with_state_read(|state| Ok(state.messages.get(&msg_id.to_string()).cloned()))?
+        {
             return Ok(Some(msg));
         }
 
@@ -1272,7 +1236,8 @@ impl MsgCenterHandler for MessageCenter {
         idempotency_key: Option<String>,
         _ctx: RPCContext,
     ) -> std::result::Result<DispatchResult, RPCErrors> {
-        self.dispatch_internal(msg, ingress_ctx, idempotency_key).await
+        self.dispatch_internal(msg, ingress_ctx, idempotency_key)
+            .await
     }
 
     async fn handle_post_send(
@@ -1282,7 +1247,8 @@ impl MsgCenterHandler for MessageCenter {
         idempotency_key: Option<String>,
         _ctx: RPCContext,
     ) -> std::result::Result<PostSendResult, RPCErrors> {
-        self.post_send_internal(msg, send_ctx, idempotency_key).await
+        self.post_send_internal(msg, send_ctx, idempotency_key)
+            .await
     }
 
     async fn handle_get_next(

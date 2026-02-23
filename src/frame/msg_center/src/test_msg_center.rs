@@ -1,8 +1,8 @@
 use crate::contact_mgr::ContactMgr;
 use crate::msg_center::MessageCenter;
 use buckyos_api::{
-    BoxKind, DeliveryReportResult, IngressContext, MsgCenterHandler, MsgState,
-    ReadReceiptState, SendContext,
+    BoxKind, DeliveryReportResult, IngressContext, MsgCenterHandler, MsgState, ReadReceiptState,
+    SendContext,
 };
 use kRPC::RPCContext;
 use name_lib::DID;
@@ -29,9 +29,17 @@ fn test_db_path(tag: &str) -> PathBuf {
     ))
 }
 
+fn test_msg_box_root(tag: &str) -> PathBuf {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    std::env::temp_dir().join(format!("msg_box_{}_{}_{}", tag, std::process::id(), now))
+}
+
 fn new_center(tag: &str) -> MessageCenter {
     let mgr = ContactMgr::new_with_path(test_db_path(tag)).unwrap();
-    MessageCenter::new(mgr)
+    MessageCenter::new_with_msg_box_root(mgr, test_msg_box_root(tag)).unwrap()
 }
 
 fn make_msg(from: DID, source: Option<DID>, to: Vec<DID>) -> MsgObject {
@@ -164,7 +172,14 @@ async fn dispatch_group_message_creates_group_and_agent_views() {
     assert_eq!(dispatch.delivered_agents.len(), 2);
 
     let group_box = center
-        .handle_peek_box(group_id.clone(), BoxKind::GroupInbox, None, None, None, ctx())
+        .handle_peek_box(
+            group_id.clone(),
+            BoxKind::GroupInbox,
+            None,
+            None,
+            None,
+            ctx(),
+        )
         .await
         .unwrap();
     assert_eq!(group_box.len(), 1);
@@ -213,7 +228,14 @@ async fn post_send_creates_owner_and_tunnel_outbox_records() {
 
     let tunnel = post_send.deliveries[0].tunnel_did.clone();
     let tunnel_outbox = center
-        .handle_peek_box(tunnel.clone(), BoxKind::TunnelOutbox, None, None, None, ctx())
+        .handle_peek_box(
+            tunnel.clone(),
+            BoxKind::TunnelOutbox,
+            None,
+            None,
+            None,
+            ctx(),
+        )
         .await
         .unwrap();
     assert_eq!(tunnel_outbox.len(), 1);

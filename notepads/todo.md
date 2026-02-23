@@ -8,7 +8,17 @@
 文档定义 SLEEP 为长期空闲态（opendan.md (line 174)）；实现有状态枚举但缺少主动进入 SLEEP 的调度逻辑（agent_session.rs (line 28), agent.rs (line 888)**Review**
 
 文档要求拉取 msg + event 并做事件已读标记（opendan.md (line 180), opendan.md (line 213)）；实现里 event 拉取是空实现（agent.rs (line 306)），也没有 set_event_readed 对应逻辑。
-
+**使用msg_queue**的接口来实现?
+- agent Loop对收到的msg,event 用llm进行resolve_router
+  - msg_center已经做了保存，所以用MsgObjectId就可以引用Msg -> 
+    - review msg 保存逻辑，发现没有落db
+    - contact mgr 的归属问题
+  - llm_resolve sessionid,reply_msg
+  - 用msg_center发送reply_msg时，会自动保存到outbox
+  - 注意input_msg_record的session-id也要更新（方便UI查看） ， UI基于Msg的source - sessionid 看到聊天记录
+  
+- agent_loop负责将msg_pack,event_pack dispatch 到session 的msg_queue
+- Session_loop负责读取msg_pack,event_pack,注意
 
 文档要求 step 后处理 workspace/todo side effects（opendan.md (line 259)）；实现未处理 todo/todo_delta（BehaviorLLMResult 有 todo 字段：types.rs (line 104)，但 agent.rs 未消费）。
 
@@ -18,3 +28,7 @@
 
 
 文档里的 reply 是对外发送消息（opendan.md (line 245), opendan.md (line 375)）；实现仅日志打印 reply，没有真正发送（agent.rs (line 816)）。 **OK**
+
+
+
+关注input的构造 和 输出的解析

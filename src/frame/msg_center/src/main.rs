@@ -1,4 +1,5 @@
 mod contact_mgr;
+mod msg_box_db;
 mod msg_center;
 mod msg_tunnel;
 #[cfg(test)]
