@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use serde_json::Value as Json;
 
 use crate::agent_tool::ToolSpec;
@@ -38,32 +39,43 @@ impl PromptBuilder {
         tokenizer: &dyn Tokenizer,
     ) -> Result<PromptPack, String> {
         let mut system_sections = vec![
-            format!("<<ROLE>>\n{}\n<</ROLE>>", sanitize_text(&input.role_md)),
-            format!("<<SELF>>\n{}\n<</SELF>>", sanitize_text(&input.self_md)),
+            format!("<<role>>\n{}\n<</role>>", build_role_section(input)),
             format!(
-                "<<BEHAVIOR>>\n{}\n<</BEHAVIOR>>",
+                "<<process_rules>>\n{}\n<</process_rules>>",
                 sanitize_text(&input.behavior_prompt)
             ),
         ];
 
-        if let Some(summary) = build_policy_summary(input) {
+        if let Some(policy_text) = build_policy_text(input) {
+            system_sections.push(format!("<<policy>>\n{}\n<</policy>>", policy_text));
+        }
+        if let Some(input_template) = build_input_template(input) {
             system_sections.push(format!(
-                "<<POLICY_SUMMARY>>\n{}\n<</POLICY_SUMMARY>>",
-                summary
+                "<<input_template>>\n{}\n<</input_template>>",
+                input_template
+            ));
+        }
+        if let Some(memory_policy) = build_memory_policy(input) {
+            system_sections.push(format!(
+                "<<memory_policy>>\n{}\n<</memory_policy>>",
+                memory_policy
             ));
         }
         if let Some(step_hints) = build_step_hints(input) {
-            system_sections.push(format!("<<STEP_HINTS>>\n{}\n<</STEP_HINTS>>", step_hints));
+            system_sections.push(format!("<<step_hints>>\n{}\n<</step_hints>>", step_hints));
+        }
+        if let Some(toolbox) = build_toolbox(tools, input) {
+            system_sections.push(format!("<<toolbox>>\n{}\n<</toolbox>>", toolbox));
         }
 
         system_sections.push(format!(
-            "<<OUTPUT_PROTOCOL>>\n{}\n<</OUTPUT_PROTOCOL>>",
+            "<<output_protocol>>\n{}\n<</output_protocol>>",
             build_output_protocol(cfg)
         ));
         let system = system_sections.join("\n\n");
 
-        let inbox = format!(
-            "<<INBOX>>\n{}\n<</INBOX>>",
+        let input_section = format!(
+            "<<Input>>\n{}\n<</Input>>",
             sanitize_json_compact(&input.inbox)
         );
 
@@ -71,7 +83,7 @@ impl PromptBuilder {
             None
         } else {
             Some(format!(
-                "<<MEMORY>>\n{}\n<</MEMORY>>",
+                "<<Memory>>\n{}\n<</Memory>>",
                 sanitize_json_compact(&input.memory)
             ))
         };
@@ -80,7 +92,7 @@ impl PromptBuilder {
             None
         } else {
             Some(format!(
-                "<<OBSERVATIONS>>\n{}\n<</OBSERVATIONS>>",
+                "<<Observations>>\n{}\n<</Observations>>",
                 Sanitizer::format_observations(
                     &input.last_observations,
                     input.limits.max_observation_bytes
@@ -88,27 +100,11 @@ impl PromptBuilder {
             ))
         };
 
-        let tool_decl = if tools.is_empty() {
-            None
-        } else {
-            Some(format!(
-                "<<TOOLS>>\n{}\n<</TOOLS>>",
-                ToolSpec::render_for_prompt(tools)
-            ))
-        };
-
-        let mut messages = vec![
-            ChatMessage {
-                role: ChatRole::System,
-                name: None,
-                content: system,
-            },
-            ChatMessage {
-                role: ChatRole::User,
-                name: None,
-                content: inbox,
-            },
-        ];
+        let mut messages = vec![ChatMessage {
+            role: ChatRole::System,
+            name: None,
+            content: system,
+        }];
 
         if let Some(memory) = memory {
             messages.push(ChatMessage {
@@ -118,19 +114,17 @@ impl PromptBuilder {
             });
         }
 
+        messages.push(ChatMessage {
+            role: ChatRole::User,
+            name: None,
+            content: input_section,
+        });
+
         if let Some(obs) = observations {
             messages.push(ChatMessage {
                 role: ChatRole::User,
                 name: None,
                 content: obs,
-            });
-        }
-
-        if let Some(tool_decl) = tool_decl {
-            messages.push(ChatMessage {
-                role: ChatRole::User,
-                name: None,
-                content: tool_decl,
             });
         }
 
@@ -157,9 +151,12 @@ impl Truncator {
             return messages;
         }
 
-        let obs_idx = messages
-            .iter()
-            .position(|m| m.content.contains("<<OBSERVATIONS"));
+        let obs_idx = messages.iter().position(|m| {
+            contains_any_marker(
+                m.content.as_str(),
+                &["<<Observations>>", "<<OBSERVATIONS>>", "<<observations>>"],
+            )
+        });
         if let Some(idx) = obs_idx {
             messages.remove(idx);
             total = message_tokens(&messages, tokenizer);
@@ -168,9 +165,12 @@ impl Truncator {
             }
         }
 
-        let memory_idx = messages
-            .iter()
-            .position(|m| m.content.contains("<<MEMORY>>"));
+        let memory_idx = messages.iter().position(|m| {
+            contains_any_marker(
+                m.content.as_str(),
+                &["<<Memory>>", "<<MEMORY>>", "<<memory>>"],
+            )
+        });
         if let Some(idx) = memory_idx {
             messages.remove(idx);
             total = message_tokens(&messages, tokenizer);
@@ -179,7 +179,7 @@ impl Truncator {
             }
         }
 
-        let shrink_order = ["<<INBOX>>", "<<TOOLS>>", "<<ROLE>>"];
+        let shrink_order = ["<<Input>>", "<<toolbox>>", "<<role>>"];
         for marker in shrink_order {
             let Some(idx) = messages.iter().position(|m| m.content.contains(marker)) else {
                 continue;
@@ -243,19 +243,25 @@ fn message_tokens(messages: &[ChatMessage], tokenizer: &dyn Tokenizer) -> u32 {
         .sum()
 }
 
-fn build_policy_summary(input: &BehaviorExecInput) -> Option<String> {
-    if input.env_context.is_empty() {
-        return None;
+fn build_role_section(input: &BehaviorExecInput) -> String {
+    let role = sanitize_text(&input.role_md);
+    let self_desc = sanitize_text(&input.self_md);
+    if self_desc.is_empty() {
+        return role;
     }
+    format!("{}\n\n[Self]\n{}", role, self_desc)
+}
 
-    Some(
-        input
-            .env_context
-            .iter()
-            .map(|kv| format!("{}: {}", kv.key, kv.value))
-            .collect::<Vec<_>>()
-            .join("\n"),
-    )
+fn build_policy_text(input: &BehaviorExecInput) -> Option<String> {
+    lookup_env(input, "behavior.policy")
+}
+
+fn build_input_template(input: &BehaviorExecInput) -> Option<String> {
+    lookup_env(input, "behavior.input_template")
+}
+
+fn build_memory_policy(input: &BehaviorExecInput) -> Option<String> {
+    lookup_env(input, "behavior.memory_config")
 }
 
 fn build_step_hints(input: &BehaviorExecInput) -> Option<String> {
@@ -272,7 +278,62 @@ fn build_step_hints(input: &BehaviorExecInput) -> Option<String> {
 }
 
 fn build_output_protocol(cfg: &LLMBehaviorConfig) -> String {
-    cfg.output_protocol.clone()
+    if !cfg.output_protocol.trim().is_empty() {
+        return cfg.output_protocol.clone();
+    }
+    match cfg.output_mode.trim().to_ascii_lowercase().as_str() {
+        "behavior_llm_result" | "json_v1" | "executor" => {
+            "Output mode: behavior_llm_result".to_string()
+        }
+        "route_result" | "route" => "Output mode: route_result".to_string(),
+        _ => String::new(),
+    }
+}
+
+fn build_toolbox(tools: &[ToolSpec], input: &BehaviorExecInput) -> Option<String> {
+    let skills = extract_toolbox_skills(input);
+    if tools.is_empty() && skills.is_empty() {
+        return None;
+    }
+    let value = json!({
+        "tools": tools,
+        "skills": skills,
+    });
+    Some(sanitize_json_compact(&value))
+}
+
+fn extract_toolbox_skills(input: &BehaviorExecInput) -> Vec<String> {
+    let Some(raw) = lookup_env(input, "behavior.toolbox_skills") else {
+        return vec![];
+    };
+    let parsed = serde_json::from_str::<Json>(&raw).ok();
+    if let Some(Json::Array(values)) = parsed {
+        return values
+            .iter()
+            .filter_map(|v| v.as_str().map(str::trim))
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>();
+    }
+
+    raw.split(',')
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+}
+
+fn lookup_env(input: &BehaviorExecInput, key: &str) -> Option<String> {
+    input
+        .env_context
+        .iter()
+        .find(|kv| kv.key == key)
+        .map(|kv| sanitize_text(&kv.value))
+        .filter(|v| !v.is_empty())
+}
+
+fn contains_any_marker(content: &str, markers: &[&str]) -> bool {
+    markers.iter().any(|marker| content.contains(marker))
 }
 
 fn is_empty_like_json(value: &Json) -> bool {

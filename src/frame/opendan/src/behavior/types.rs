@@ -223,6 +223,7 @@ pub struct LLMBehaviorConfig {
     pub model_policy: ModelPolicy,
     pub response_schema: Option<Json>,
     pub force_json: bool,
+    pub output_mode: String,
     pub output_protocol: String,
 }
 
@@ -233,6 +234,7 @@ impl Default for LLMBehaviorConfig {
             model_policy: ModelPolicy::default(),
             response_schema: None,
             force_json: true,
+            output_mode: "auto".to_string(),
             output_protocol: String::new(),
         }
     }

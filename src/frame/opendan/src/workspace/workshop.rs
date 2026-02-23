@@ -14,9 +14,9 @@ use super::local_workspace::{
     SessionWorkspaceBinding, WorkshopIndex, WorkshopWorkspaceRecord,
 };
 use super::todo::{TodoTool, TodoToolConfig, TOOL_TODO_MANAGE};
-use crate::worklog::{WorklogTool, WorklogToolConfig, TOOL_WORKLOG_MANAGE};
 use crate::agent_tool::{AgentTool, MCPToolConfig, ToolError, ToolManager, ToolSpec};
 use crate::behavior::TraceCtx;
+use crate::worklog::{WorklogTool, WorklogToolConfig, TOOL_WORKLOG_MANAGE};
 
 pub const TOOL_EXEC_BASH: &str = "exec_bash";
 pub const TOOL_EDIT_FILE: &str = "edit_file";

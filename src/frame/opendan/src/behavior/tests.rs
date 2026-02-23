@@ -104,7 +104,7 @@ fn parse_json_in_code_fence() {
     };
 
     let (parsed, output) =
-        BehaviorResultParser::parse_first(&raw, true).expect("parse should succeed");
+        BehaviorResultParser::parse_first(&raw, true, "auto").expect("parse should succeed");
     assert_eq!(parsed.next_behavior.as_deref(), Some("END"));
     assert!(matches!(output, LLMOutput::Json(_)));
 }
@@ -137,8 +137,8 @@ fn parse_executor_result_payload() {
         latency_ms: 1,
     };
 
-    let (parsed, _) =
-        BehaviorResultParser::parse_first(&raw, true).expect("executor parse should succeed");
+    let (parsed, _) = BehaviorResultParser::parse_first(&raw, true, "auto")
+        .expect("executor parse should succeed");
     assert_eq!(parsed.next_behavior.as_deref(), Some("END"));
     assert_eq!(parsed.tool_calls.len(), 1);
 }
@@ -932,7 +932,7 @@ tools:
         .payload
         .messages
         .iter()
-        .any(|m| m.content.contains("<<OBSERVATIONS>>"));
+        .any(|m| m.content.contains("<<Observations>>"));
     assert!(has_obs);
 }
 

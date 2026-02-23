@@ -39,8 +39,13 @@ pub enum BehaviorConfigError {
 pub struct BehaviorConfig {
     pub name: String,
     pub process_rule: String,
+    pub policy: String,
+    pub input: String,
+    pub memory: BehaviorMemoryConfig,
+    pub step_limit: u32,
     pub output_protocol: BehaviorOutputProtocol,
     pub tools: BehaviorToolsConfig,
+    pub toolbox: BehaviorToolboxConfig,
     pub llm: LLMBehaviorConfig,
     pub limits: StepLimits,
 }
@@ -50,8 +55,13 @@ impl Default for BehaviorConfig {
         Self {
             name: String::new(),
             process_rule: String::new(),
+            policy: String::new(),
+            input: String::new(),
+            memory: BehaviorMemoryConfig::default(),
+            step_limit: 0,
             output_protocol: BehaviorOutputProtocol::default(),
             tools: BehaviorToolsConfig::default(),
+            toolbox: BehaviorToolboxConfig::default(),
             llm: LLMBehaviorConfig::default(),
             limits: StepLimits::default(),
         }
@@ -144,15 +154,142 @@ impl BehaviorConfig {
         }
 
         cfg.tools.normalize();
+        cfg.toolbox.normalize();
+        if cfg.toolbox.tools != BehaviorToolsConfig::default() {
+            cfg.tools = cfg.toolbox.tools.clone();
+        } else {
+            cfg.toolbox.tools = cfg.tools.clone();
+        }
+        cfg.policy = cfg.policy.trim().to_string();
+        cfg.input = cfg.input.trim().to_string();
+        cfg.memory.normalize();
         cfg.llm.output_protocol = cfg.output_protocol.to_prompt_text();
+        cfg.llm.output_mode = cfg.output_protocol.mode_name();
 
         Ok(cfg)
     }
 
     pub fn to_llm_behavior_config(&self) -> LLMBehaviorConfig {
         let mut cfg = self.llm.clone();
+        cfg.output_mode = self.output_protocol.mode_name();
         cfg.output_protocol = self.output_protocol.to_prompt_text();
         cfg
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BehaviorMemoryConfig {
+    #[serde(alias = "total_limt")]
+    pub total_limit: u32,
+    pub agent_memory: BehaviorMemoryBucketConfig,
+    #[serde(alias = "session_summary")]
+    pub session_summaries: BehaviorMemoryBucketConfig,
+    pub history_messages: BehaviorMemoryBucketConfig,
+    pub workspace_summary: BehaviorMemoryBucketConfig,
+    pub workspace_worklog: BehaviorMemoryBucketConfig,
+    pub workspace_todo: BehaviorMemoryBucketConfig,
+}
+
+impl Default for BehaviorMemoryConfig {
+    fn default() -> Self {
+        Self {
+            total_limit: 0,
+            agent_memory: BehaviorMemoryBucketConfig::default(),
+            session_summaries: BehaviorMemoryBucketConfig::default(),
+            history_messages: BehaviorMemoryBucketConfig::default(),
+            workspace_summary: BehaviorMemoryBucketConfig::default(),
+            workspace_worklog: BehaviorMemoryBucketConfig::default(),
+            workspace_todo: BehaviorMemoryBucketConfig::default(),
+        }
+    }
+}
+
+impl BehaviorMemoryConfig {
+    fn normalize(&mut self) {
+        self.agent_memory.normalize();
+        self.session_summaries.normalize();
+        self.history_messages.normalize();
+        self.workspace_summary.normalize();
+        self.workspace_worklog.normalize();
+        self.workspace_todo.normalize();
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.total_limit == 0
+            && self.agent_memory.is_empty()
+            && self.session_summaries.is_empty()
+            && self.history_messages.is_empty()
+            && self.workspace_summary.is_empty()
+            && self.workspace_worklog.is_empty()
+            && self.workspace_todo.is_empty()
+    }
+
+    pub fn to_json_value(&self) -> Json {
+        serde_json::to_value(self).unwrap_or_else(|_| serde_json::json!({}))
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BehaviorMemoryBucketConfig {
+    pub limit: u32,
+    pub max_percent: Option<f32>,
+}
+
+impl Default for BehaviorMemoryBucketConfig {
+    fn default() -> Self {
+        Self {
+            limit: 0,
+            max_percent: None,
+        }
+    }
+}
+
+impl BehaviorMemoryBucketConfig {
+    fn normalize(&mut self) {
+        self.max_percent = self.max_percent.filter(|value| {
+            let v = *value;
+            v.is_finite() && v > 0.0 && v <= 1.0
+        });
+    }
+
+    fn is_empty(&self) -> bool {
+        self.limit == 0 && self.max_percent.is_none()
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct BehaviorToolboxConfig {
+    pub tools: BehaviorToolsConfig,
+    pub skills: Vec<String>,
+}
+
+impl Default for BehaviorToolboxConfig {
+    fn default() -> Self {
+        Self {
+            tools: BehaviorToolsConfig::default(),
+            skills: vec![],
+        }
+    }
+}
+
+impl BehaviorToolboxConfig {
+    fn normalize(&mut self) {
+        self.tools.normalize();
+        let mut uniq = HashSet::<String>::new();
+        let mut normalized = Vec::<String>::new();
+        for skill in &self.skills {
+            let trimmed = skill.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if uniq.insert(trimmed.to_string()) {
+                normalized.push(trimmed.to_string());
+            }
+        }
+        self.skills = normalized;
     }
 }
 
@@ -238,6 +375,7 @@ impl Default for BehaviorOutputProtocol {
 
 impl BehaviorOutputProtocol {
     pub fn to_prompt_text(&self) -> String {
+        let mode = self.mode_name();
         match self {
             BehaviorOutputProtocol::Text(text) => text.trim().to_string(),
             BehaviorOutputProtocol::Structured(spec) => {
@@ -249,8 +387,15 @@ impl BehaviorOutputProtocol {
                 spec.schema_hint
                     .as_ref()
                     .map(|schema_hint| schema_hint.to_string())
-                    .unwrap_or_default()
+                    .unwrap_or_else(|| default_output_protocol_text(mode.as_str()))
             }
+        }
+    }
+
+    pub fn mode_name(&self) -> String {
+        match self {
+            BehaviorOutputProtocol::Text(_) => "auto".to_string(),
+            BehaviorOutputProtocol::Structured(spec) => normalize_output_mode(spec.mode.as_str()),
         }
     }
 }
@@ -270,6 +415,26 @@ impl Default for BehaviorOutputProtocolStructured {
             text: None,
             schema_hint: None,
         }
+    }
+}
+
+fn normalize_output_mode(mode: &str) -> String {
+    let normalized = mode.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "" | "auto" => "auto".to_string(),
+        "json_v1" | "behavior_llm_result" | "behavior_result" | "executor" => {
+            "behavior_llm_result".to_string()
+        }
+        "route_result" | "route" | "route_v1" => "route_result".to_string(),
+        _ => "auto".to_string(),
+    }
+}
+
+fn default_output_protocol_text(mode: &str) -> String {
+    match mode {
+        "behavior_llm_result" => "Return ONLY a JSON object that follows BehaviorLLMResult fields (next_behavior, reply, tool_calls, todo, set_memory, actions, session_delta).".to_string(),
+        "route_result" => "Return ONLY a JSON object that follows RouteResult fields (session_id, new_session, next_behavior, memory_queries, reply).".to_string(),
+        _ => String::new(),
     }
 }
 
@@ -322,20 +487,42 @@ tools:
             path,
             r#"
 process_rule: test_rule
+policy: safe_only
+input: |
+  {{new_msg}}
+memory:
+  total_limit: 12000
+  history_messages:
+    limit: 3000
+    max_percent: 0.3
+step_limit: 6
 tools:
   mode: allow_list
   names:
     - exec_bash
+toolbox:
+  skills:
+    - plan
+    - plan
 "#,
         )
         .expect("parse behavior yaml");
         assert_eq!(cfg.name, "on_wakeup");
         assert_eq!(cfg.process_rule, "test_rule");
+        assert_eq!(cfg.policy, "safe_only");
+        assert_eq!(cfg.input, "{{new_msg}}");
+        assert_eq!(cfg.step_limit, 6);
+        assert_eq!(cfg.memory.total_limit, 12_000);
+        assert_eq!(cfg.memory.history_messages.limit, 3_000);
+        assert_eq!(cfg.memory.history_messages.max_percent, Some(0.3));
         assert_eq!(cfg.tools.mode, BehaviorToolMode::AllowList);
         assert_eq!(cfg.tools.names, vec!["exec_bash".to_string()]);
+        assert_eq!(cfg.toolbox.tools.mode, BehaviorToolMode::AllowList);
+        assert_eq!(cfg.toolbox.skills, vec!["plan".to_string()]);
         assert_eq!(cfg.llm.process_name, "opendan-llm-behavior");
         assert_eq!(cfg.limits.max_prompt_tokens, 12_000);
         assert!(cfg.llm.force_json);
+        assert_eq!(cfg.llm.output_mode, "auto");
         assert!(cfg.llm.output_protocol.trim().is_empty());
     }
 
@@ -347,7 +534,7 @@ tools:
             r#"
 process_rule: test_rule
 output_protocol:
-  mode: json_v1
+  mode: route_result
   text: protocol_from_cfg
 llm:
   process_name: custom-process
@@ -359,9 +546,56 @@ llm:
 
         assert_eq!(cfg.name, "on_msg");
         assert_eq!(cfg.llm.output_protocol, "protocol_from_cfg".to_string());
+        assert_eq!(cfg.llm.output_mode, "route_result");
         assert_eq!(cfg.llm.process_name, "custom-process");
         assert_eq!(cfg.llm.model_policy.preferred, "fast-model");
         assert_eq!(cfg.llm.model_policy.temperature, 0.2);
+    }
+
+    #[test]
+    fn behavior_config_toolbox_tools_override_legacy_tools_field() {
+        let path = Path::new("route.yaml");
+        let cfg = BehaviorConfig::parse_from_str(
+            path,
+            r#"
+process_rule: route_rule
+tools:
+  mode: all
+toolbox:
+  tools:
+    mode: allow_list
+    names:
+      - load_memory
+"#,
+        )
+        .expect("parse behavior yaml");
+        assert_eq!(cfg.tools.mode, BehaviorToolMode::AllowList);
+        assert_eq!(cfg.tools.names, vec!["load_memory".to_string()]);
+        assert_eq!(cfg.toolbox.tools.mode, BehaviorToolMode::AllowList);
+    }
+
+    #[test]
+    fn behavior_config_memory_supports_total_limt_alias_and_normalizes_percent() {
+        let path = Path::new("memory.yaml");
+        let cfg = BehaviorConfig::parse_from_str(
+            path,
+            r#"
+process_rule: memory_rule
+memory:
+  total_limt: 1024
+  session_summaries:
+    limit: 256
+    max_percent: 1.5
+  history_messages:
+    max_percent: 0.4
+"#,
+        )
+        .expect("parse behavior yaml");
+
+        assert_eq!(cfg.memory.total_limit, 1024);
+        assert_eq!(cfg.memory.session_summaries.limit, 256);
+        assert_eq!(cfg.memory.session_summaries.max_percent, None);
+        assert_eq!(cfg.memory.history_messages.max_percent, Some(0.4));
     }
 
     #[test]

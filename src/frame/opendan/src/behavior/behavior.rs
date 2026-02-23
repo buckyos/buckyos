@@ -23,8 +23,8 @@ use super::types::*;
 use crate::agent_session::TOOL_GET_SESSION;
 use crate::agent_tool::{ToolCall, ToolError, ToolManager, ToolSpec};
 use crate::ai_runtime::TOOL_CREATE_SUB_AGENT;
-use crate::workspace::{TOOL_TODO_MANAGE};
-use crate::worklog::*;
+use crate::worklog::TOOL_WORKLOG_MANAGE;
+use crate::workspace::TOOL_TODO_MANAGE;
 
 #[derive(Clone)]
 pub struct LLMBehaviorDeps {
@@ -156,6 +156,7 @@ impl LLMBehavior {
         let (mut draft, mut raw_output) = match BehaviorResultParser::parse_first(
             &first_resp,
             self.cfg.force_json,
+            self.cfg.output_mode.as_str(),
         ) {
             Ok(parsed) => parsed,
             Err(err) => {
@@ -378,6 +379,7 @@ impl LLMBehavior {
             let (next_draft, next_raw_output) = match BehaviorResultParser::parse_followup(
                 &followup_resp,
                 self.cfg.force_json,
+                self.cfg.output_mode.as_str(),
             ) {
                 Ok(parsed) => parsed,
                 Err(err) => {
@@ -811,6 +813,10 @@ impl AiccRequestBuilder {
         options.insert(
             "process_name".to_string(),
             Json::String(cfg.process_name.clone()),
+        );
+        options.insert(
+            "output_mode".to_string(),
+            Json::String(cfg.output_mode.clone()),
         );
         options.insert(
             "max_completion_tokens".to_string(),

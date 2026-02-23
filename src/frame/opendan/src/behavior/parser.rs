@@ -10,36 +10,39 @@ impl BehaviorResultParser {
     pub fn parse_first(
         raw: &LLMRawResponse,
         force_json: bool,
+        output_mode: &str,
     ) -> Result<(BehaviorLLMResult, LLMOutput), String> {
         if !raw.tool_calls.is_empty() {
             return Ok(step_output_from_function_calls(&raw.tool_calls));
         }
-        Self::parse_final_content(&raw.content, force_json)
+        Self::parse_final_content(&raw.content, force_json, output_mode)
     }
 
     pub fn parse_followup(
         raw: &LLMRawResponse,
         force_json: bool,
+        output_mode: &str,
     ) -> Result<(BehaviorLLMResult, LLMOutput), String> {
         if !raw.tool_calls.is_empty() {
             return Ok(step_output_from_function_calls(&raw.tool_calls));
         }
-        Self::parse_final_content(&raw.content, force_json)
+        Self::parse_final_content(&raw.content, force_json, output_mode)
     }
 
     fn parse_final_content(
         content: &str,
         force_json: bool,
+        output_mode: &str,
     ) -> Result<(BehaviorLLMResult, LLMOutput), String> {
         if let Ok(value) = serde_json::from_str::<Json>(content) {
-            return Self::from_json(value);
+            return Self::from_json(value, output_mode);
         }
 
         if force_json {
             if let Some(extracted) = try_extract_json_block(content) {
                 let value = serde_json::from_str::<Json>(&extracted)
                     .map_err(|err| format!("json extract ok but parse failed: {err}"))?;
-                return Self::from_json(value);
+                return Self::from_json(value, output_mode);
             }
             return Err("force_json enabled but failed to parse JSON".to_string());
         }
@@ -50,79 +53,147 @@ impl BehaviorResultParser {
         ))
     }
 
-    fn from_json(value: Json) -> Result<(BehaviorLLMResult, LLMOutput), String> {
-        let mut result = match serde_json::from_value::<BehaviorLLMResult>(value.clone()) {
-            Ok(parsed) => parsed,
-            Err(err) => {
-                // Some stage behaviors (for example resolve_router) emit
-                // business-shaped JSON instead of BehaviorLLMResult.
-                if !contains_non_executor_fields(&value) {
-                    return Err(format!("invalid behavior output schema: {err}"));
-                }
-                BehaviorLLMResult::default()
-            }
-        };
-
-        if result.actions.is_empty() {
-            if let Some(actions_value) = value.get("actions") {
-                if let Ok(actions) = serde_json::from_value(actions_value.clone()) {
-                    result.actions = actions;
-                }
-            }
+    fn from_json(value: Json, output_mode: &str) -> Result<(BehaviorLLMResult, LLMOutput), String> {
+        match parse_output_mode(output_mode) {
+            OutputMode::BehaviorLLMResult => parse_behavior_result_json(value),
+            OutputMode::RouteResult => parse_route_result_json(value),
+            OutputMode::Auto => parse_behavior_result_json(value.clone())
+                .or_else(|_| parse_route_result_json(value)),
         }
-
-        if result.next_behavior.is_none() {
-            if let Some(next) = value
-                .get("next_behavior")
-                .and_then(|v| v.as_str())
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-            {
-                result.next_behavior = Some(next);
-            } else if value
-                .get("is_sleep")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-            {
-                result.next_behavior = Some("END".to_string());
-            }
-        }
-
-        let raw_output = if let Some(output_value) = value.get("output") {
-            json_value_to_llm_output(output_value.clone())
-        } else {
-            LLMOutput::Json(value)
-        };
-
-        if result.tool_calls.is_empty() {
-            if let LLMOutput::Json(Json::Object(obj)) = &raw_output {
-                if let Some(tool_calls_value) = obj.get("tool_calls") {
-                    if let Ok(tool_calls) = serde_json::from_value(tool_calls_value.clone()) {
-                        result.tool_calls = tool_calls;
-                    }
-                }
-            }
-        }
-
-        Ok((result, raw_output))
     }
 }
 
-fn json_value_to_llm_output(value: Json) -> LLMOutput {
-    match value {
-        Json::String(text) => LLMOutput::Text(text),
-        Json::Null => LLMOutput::Json(Json::Null),
-        other => LLMOutput::Json(other),
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OutputMode {
+    Auto,
+    BehaviorLLMResult,
+    RouteResult,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(default)]
+struct RouteResultPayload {
+    session_id: Option<String>,
+    new_session: Option<(String, String)>,
+    next_behavior: Option<String>,
+    memory_queries: Vec<String>,
+    reply: Option<String>,
+    tool_calls: Vec<ToolCall>,
+}
+
+impl Default for RouteResultPayload {
+    fn default() -> Self {
+        Self {
+            session_id: None,
+            new_session: None,
+            next_behavior: None,
+            memory_queries: vec![],
+            reply: None,
+            tool_calls: vec![],
+        }
     }
 }
 
-fn contains_non_executor_fields(value: &Json) -> bool {
-    let Some(obj) = value.as_object() else {
-        return false;
+fn parse_output_mode(mode: &str) -> OutputMode {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "behavior_llm_result" | "behavior_result" | "executor" | "json_v1" => {
+            OutputMode::BehaviorLLMResult
+        }
+        "route_result" | "route" | "route_v1" => OutputMode::RouteResult,
+        _ => OutputMode::Auto,
+    }
+}
+
+fn parse_behavior_result_json(value: Json) -> Result<(BehaviorLLMResult, LLMOutput), String> {
+    if let Some(unknown_fields) = unknown_behavior_fields(&value) {
+        if !unknown_fields.is_empty() {
+            return Err(format!(
+                "invalid behavior output schema: unknown fields [{}]",
+                unknown_fields.join(", ")
+            ));
+        }
+    }
+
+    let mut result = serde_json::from_value::<BehaviorLLMResult>(value.clone())
+        .map_err(|err| format!("invalid behavior output schema: {err}"))?;
+
+    if result.actions.is_empty() {
+        if let Some(actions_value) = value.get("actions") {
+            if let Ok(actions) = serde_json::from_value(actions_value.clone()) {
+                result.actions = actions;
+            }
+        }
+    }
+
+    if result.next_behavior.is_none() {
+        if let Some(next) = value
+            .get("next_behavior")
+            .and_then(|v| v.as_str())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+        {
+            result.next_behavior = Some(next);
+        } else if value
+            .get("is_sleep")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            result.next_behavior = Some("END".to_string());
+        }
+    }
+
+    let raw_output = if let Some(output_value) = value.get("output") {
+        json_value_to_llm_output(output_value.clone())
+    } else {
+        LLMOutput::Json(value)
     };
-    obj.keys().any(|k| {
-        !matches!(
-            k.as_str(),
+
+    if result.tool_calls.is_empty() {
+        if let LLMOutput::Json(Json::Object(obj)) = &raw_output {
+            if let Some(tool_calls_value) = obj.get("tool_calls") {
+                if let Ok(tool_calls) = serde_json::from_value(tool_calls_value.clone()) {
+                    result.tool_calls = tool_calls;
+                }
+            }
+        }
+    }
+
+    Ok((result, raw_output))
+}
+
+fn parse_route_result_json(value: Json) -> Result<(BehaviorLLMResult, LLMOutput), String> {
+    let route = serde_json::from_value::<RouteResultPayload>(value.clone())
+        .map_err(|err| format!("invalid route output schema: {err}"))?;
+    if route.session_id.is_none()
+        && route.new_session.is_none()
+        && route.next_behavior.is_none()
+        && route.memory_queries.is_empty()
+        && route.reply.is_none()
+        && route.tool_calls.is_empty()
+    {
+        return Err("invalid route output schema: empty route result".to_string());
+    }
+
+    let result = BehaviorLLMResult {
+        next_behavior: sanitize_optional_non_empty(route.next_behavior),
+        tool_calls: route.tool_calls,
+        ..Default::default()
+    };
+    Ok((result, LLMOutput::Json(value)))
+}
+
+fn sanitize_optional_non_empty(value: Option<String>) -> Option<String> {
+    value
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+}
+
+fn unknown_behavior_fields(value: &Json) -> Option<Vec<String>> {
+    let obj = value.as_object()?;
+    let mut unknown = Vec::<String>::new();
+    for key in obj.keys() {
+        if !matches!(
+            key.as_str(),
             "next_behavior"
                 | "thinking"
                 | "reply"
@@ -133,8 +204,19 @@ fn contains_non_executor_fields(value: &Json) -> bool {
                 | "session_delta"
                 | "is_sleep"
                 | "output"
-        )
-    })
+        ) {
+            unknown.push(key.clone());
+        }
+    }
+    Some(unknown)
+}
+
+fn json_value_to_llm_output(value: Json) -> LLMOutput {
+    match value {
+        Json::String(text) => LLMOutput::Text(text),
+        Json::Null => LLMOutput::Json(Json::Null),
+        other => LLMOutput::Json(other),
+    }
 }
 
 fn try_extract_json_block(content: &str) -> Option<String> {
@@ -204,8 +286,8 @@ mod tests {
         };
         let raw = raw_response("not-json", vec![call.clone()]);
 
-        let (parsed, output) =
-            BehaviorResultParser::parse_first(&raw, true).expect("parse_first should succeed");
+        let (parsed, output) = BehaviorResultParser::parse_first(&raw, true, "auto")
+            .expect("parse_first should succeed");
         assert_eq!(parsed.tool_calls, vec![call]);
         assert!(parsed.actions.is_empty());
         assert!(matches!(output, LLMOutput::Json(_)));
@@ -221,7 +303,7 @@ mod tests {
         };
         let raw = raw_response("still-not-json", vec![call.clone()]);
 
-        let (parsed, output) = BehaviorResultParser::parse_followup(&raw, false)
+        let (parsed, output) = BehaviorResultParser::parse_followup(&raw, false, "auto")
             .expect("parse_followup should succeed");
         assert_eq!(parsed.tool_calls, vec![call]);
         assert!(matches!(output, LLMOutput::Json(_)));
@@ -231,7 +313,7 @@ mod tests {
     fn parse_plain_text_when_force_json_disabled() {
         let raw = raw_response("plain text output", vec![]);
 
-        let (parsed, output) = BehaviorResultParser::parse_first(&raw, false)
+        let (parsed, output) = BehaviorResultParser::parse_first(&raw, false, "auto")
             .expect("plain text parsing should succeed");
         assert!(parsed.tool_calls.is_empty());
         assert!(parsed.actions.is_empty());
@@ -244,8 +326,8 @@ mod tests {
         let content = "prefix\n```json\n{\"output\":\"ok\",\"is_sleep\":true}\n```\nsuffix";
         let raw = raw_response(content, vec![]);
 
-        let (parsed, output) =
-            BehaviorResultParser::parse_first(&raw, true).expect("json fence parse should work");
+        let (parsed, output) = BehaviorResultParser::parse_first(&raw, true, "auto")
+            .expect("json fence parse should work");
         assert_eq!(output, LLMOutput::Text("ok".to_string()));
         assert_eq!(parsed.next_behavior.as_deref(), Some("END"));
     }
@@ -255,8 +337,8 @@ mod tests {
         let content = "result => {\"output\":{\"v\":1},\"next_behavior\":\"NEXT\"} trailing";
         let raw = raw_response(content, vec![]);
 
-        let (parsed, output) =
-            BehaviorResultParser::parse_first(&raw, true).expect("brace-slice parse should work");
+        let (parsed, output) = BehaviorResultParser::parse_first(&raw, true, "auto")
+            .expect("brace-slice parse should work");
         assert_eq!(output, LLMOutput::Json(json!({ "v": 1 })));
         assert_eq!(parsed.next_behavior.as_deref(), Some("NEXT"));
     }
@@ -265,7 +347,7 @@ mod tests {
     fn force_json_returns_error_when_no_json_found() {
         let raw = raw_response("no json here", vec![]);
 
-        let err = BehaviorResultParser::parse_first(&raw, true).expect_err("should fail");
+        let err = BehaviorResultParser::parse_first(&raw, true, "auto").expect_err("should fail");
         assert!(err.contains("force_json enabled"));
     }
 
@@ -287,8 +369,8 @@ mod tests {
         });
         let raw = raw_response(&payload.to_string(), vec![]);
 
-        let (parsed, output) =
-            BehaviorResultParser::parse_first(&raw, true).expect("behavior parse should work");
+        let (parsed, output) = BehaviorResultParser::parse_first(&raw, true, "auto")
+            .expect("behavior parse should work");
         assert_eq!(parsed.next_behavior.as_deref(), Some("END"));
         assert_eq!(output, LLMOutput::Json(payload));
     }
@@ -304,8 +386,8 @@ mod tests {
         });
         let raw = raw_response(&payload.to_string(), vec![]);
 
-        let (parsed, output) =
-            BehaviorResultParser::parse_first(&raw, true).expect("router-style parse should work");
+        let (parsed, output) = BehaviorResultParser::parse_first(&raw, true, "auto")
+            .expect("router-style parse should work");
         assert_eq!(parsed.next_behavior.as_deref(), Some("on_wakeup"));
         assert_eq!(output, LLMOutput::Json(payload));
     }
@@ -325,7 +407,7 @@ mod tests {
         );
 
         let (parsed, _) =
-            BehaviorResultParser::parse_first(&raw, true).expect("parse should succeed");
+            BehaviorResultParser::parse_first(&raw, true, "auto").expect("parse should succeed");
         assert_eq!(parsed.tool_calls.len(), 1);
         assert_eq!(parsed.tool_calls[0].name, "tool.echo");
         assert_eq!(parsed.tool_calls[0].call_id, "executor-call-1");
@@ -353,7 +435,7 @@ mod tests {
         );
 
         let (parsed, _) =
-            BehaviorResultParser::parse_first(&raw, true).expect("parse should succeed");
+            BehaviorResultParser::parse_first(&raw, true, "auto").expect("parse should succeed");
         assert_eq!(parsed.next_behavior, None);
     }
 
@@ -370,8 +452,43 @@ mod tests {
             vec![],
         );
 
-        let err = BehaviorResultParser::parse_first(&raw, true).expect_err("schema should fail");
+        let err =
+            BehaviorResultParser::parse_first(&raw, true, "auto").expect_err("schema should fail");
+        assert!(err.contains("invalid"));
+    }
+
+    #[test]
+    fn strict_behavior_mode_rejects_route_payload() {
+        let raw = raw_response(
+            &json!({
+                "session_id": "session-router-1",
+                "next_behavior": "on_wakeup",
+                "memory_queries": []
+            })
+            .to_string(),
+            vec![],
+        );
+
+        let err = BehaviorResultParser::parse_first(&raw, true, "behavior_llm_result")
+            .expect_err("schema should fail");
         assert!(err.contains("invalid behavior output schema"));
+    }
+
+    #[test]
+    fn strict_route_mode_rejects_executor_payload() {
+        let raw = raw_response(
+            &json!({
+                "thinking": "x",
+                "actions": [],
+                "reply": []
+            })
+            .to_string(),
+            vec![],
+        );
+
+        let err = BehaviorResultParser::parse_first(&raw, true, "route_result")
+            .expect_err("route schema should fail");
+        assert!(err.contains("invalid route output schema"));
     }
 
     #[test]

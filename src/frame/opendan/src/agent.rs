@@ -29,8 +29,8 @@ use crate::behavior::{
     EnvKV, LLMBehavior, LLMBehaviorDeps, LLMOutput, LLMTrackingInfo, Observation,
     ObservationSource, PolicyEngine, Sanitizer, TokenUsage, Tokenizer, TraceCtx, WorklogSink,
 };
-use crate::workspace::TOOL_EXEC_BASH;
 use crate::worklog::*;
+use crate::workspace::TOOL_EXEC_BASH;
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
 const DEFAULT_SESSION_LOOP_STATE_FILE: &str = "session/session_loop_state.json";
@@ -1139,6 +1139,7 @@ impl AIAgent {
                     value: remaining_steps.to_string(),
                 },
             ]);
+            env_context.extend(self.build_behavior_prompt_env_context(&cfg));
             let mut step_payload = state.input_payload.clone();
             step_payload["session"] = json!({
                 "session_id": state.loop_ctx.session_id.clone(),
@@ -1409,6 +1410,7 @@ impl AIAgent {
             wakeup_id: wakeup_id.to_string(),
         };
         let mut env_context = self.build_env_context(now).await;
+        env_context.extend(self.build_behavior_prompt_env_context(&cfg));
         env_context.extend(extra_env);
         let input = BehaviorExecInput {
             trace: trace.clone(),
@@ -1877,6 +1879,43 @@ impl AIAgent {
                 value: now.to_string(),
             },
         ]
+    }
+
+    fn build_behavior_prompt_env_context(&self, cfg: &BehaviorConfig) -> Vec<EnvKV> {
+        let mut env = Vec::<EnvKV>::new();
+        if !cfg.policy.trim().is_empty() {
+            env.push(EnvKV {
+                key: "behavior.policy".to_string(),
+                value: cfg.policy.clone(),
+            });
+        }
+        if !cfg.input.trim().is_empty() {
+            env.push(EnvKV {
+                key: "behavior.input_template".to_string(),
+                value: cfg.input.clone(),
+            });
+        }
+        if !cfg.memory.is_empty() {
+            env.push(EnvKV {
+                key: "behavior.memory_config".to_string(),
+                value: serde_json::to_string(&cfg.memory.to_json_value())
+                    .unwrap_or_else(|_| "{}".to_string()),
+            });
+        }
+        if !cfg.toolbox.skills.is_empty() {
+            env.push(EnvKV {
+                key: "behavior.toolbox_skills".to_string(),
+                value: serde_json::to_string(&cfg.toolbox.skills)
+                    .unwrap_or_else(|_| "[]".to_string()),
+            });
+        }
+        if cfg.step_limit > 0 {
+            env.push(EnvKV {
+                key: "behavior.step_limit".to_string(),
+                value: cfg.step_limit.to_string(),
+            });
+        }
+        env
     }
 
     async fn load_memory_pack(&self, trace: &TraceCtx) -> Json {
