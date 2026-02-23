@@ -29,6 +29,7 @@ cyfs-gateway-lib = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
+upon = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

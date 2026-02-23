@@ -19,7 +19,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinSet;
 
 use crate::agent_config::AIAgentConfig;
-use crate::agent_enviroment::AgentEnvironment;
+use crate::agent_enviroment::{AgentEnvironment, TemplateRenderMode};
 use crate::agent_memory::{AgentMemory, AgentMemoryConfig, TOOL_LOAD_MEMORY};
 use crate::agent_session::{AgentSession, AgentSessionConfig};
 use crate::agent_tool::{AgentPolicy, ToolCall, ToolError, ToolManager, ToolSpec};
@@ -963,7 +963,11 @@ impl AIAgent {
                 now_ms(),
                 json!({
                     "loop_context": state.loop_ctx.clone(),
-                    "input_event": compact_json_for_worklog(state.input_payload.clone(), 8 * 1024)
+                    "input_event": compact_json_for_worklog(state.input_payload.clone(), 8 * 1024),
+                    "inbox": state.input_payload.get("inbox").cloned().unwrap_or_else(|| json!([])),
+                    "events": state.input_payload.get("events").cloned().unwrap_or_else(|| json!([])),
+                    "new_msg": state.input_payload.get("new_msg").cloned().unwrap_or(Json::Null),
+                    "new_event": state.input_payload.get("new_event").cloned().unwrap_or(Json::Null)
                 }),
                 json!({}),
                 state.pending_observations.clone(),
@@ -1120,6 +1124,29 @@ impl AIAgent {
                 LLMBehavior::new(cfg.to_llm_behavior_config(), self.build_behavior_deps());
             let memory_pack = self.load_memory_pack(&trace).await;
             let remaining_steps = self.cfg.max_steps_per_wakeup.saturating_sub(state.steps);
+            let mut step_payload = state.input_payload.clone();
+            step_payload["session"] = json!({
+                "session_id": state.loop_ctx.session_id.clone(),
+                "event_id": state.loop_ctx.event_id.clone()
+            });
+            step_payload["step_meta"] = json!({
+                "step_index": state.steps,
+                "remaining_steps": remaining_steps
+            });
+            let rendered_template = self
+                .render_behavior_template_bundle(&cfg, &step_payload)
+                .await;
+            if !rendered_template.has_input {
+                info!(
+                    "ai_agent.loop no_input_from_template: did={} wakeup_id={} step={} behavior={}",
+                    self.did, state.wakeup_id, state.steps, state.current_behavior
+                );
+                break;
+            }
+            if let Some(exec_input) = rendered_template.exec_input.as_ref() {
+                step_payload["exec_input"] = json!(exec_input);
+            }
+
             let mut env_context = self.build_env_context(now_ms()).await;
             env_context.extend(vec![
                 EnvKV {
@@ -1139,22 +1166,13 @@ impl AIAgent {
                     value: remaining_steps.to_string(),
                 },
             ]);
-            env_context.extend(self.build_behavior_prompt_env_context(&cfg));
-            let mut step_payload = state.input_payload.clone();
-            step_payload["session"] = json!({
-                "session_id": state.loop_ctx.session_id.clone(),
-                "event_id": state.loop_ctx.event_id.clone()
-            });
-            step_payload["step_meta"] = json!({
-                "step_index": state.steps,
-                "remaining_steps": remaining_steps
-            });
+            env_context.extend(self.build_behavior_prompt_env_context(&cfg, &rendered_template));
             let input = BehaviorExecInput {
                 trace: trace.clone(),
                 role_md: self.role_md.clone(),
                 self_md: self.self_md.clone(),
                 session_id: Some(state.loop_ctx.session_id.clone()),
-                behavior_prompt: cfg.process_rule.clone(),
+                behavior_prompt: rendered_template.process_rule.clone(),
                 env_context,
                 inbox: step_payload,
                 memory: memory_pack,
@@ -1409,22 +1427,36 @@ impl AIAgent {
             step_idx,
             wakeup_id: wakeup_id.to_string(),
         };
+        let mut rendered_inbox = inbox;
+        let rendered_template = self
+            .render_behavior_template_bundle(&cfg, &rendered_inbox)
+            .await;
+        if !rendered_template.has_input {
+            info!(
+                "ai_agent.stage skip: did={} wakeup_id={} behavior={} reason=no_input_from_template",
+                self.did, wakeup_id, behavior_name
+            );
+            return Ok(None);
+        }
+        if let Some(exec_input) = rendered_template.exec_input.as_ref() {
+            rendered_inbox["exec_input"] = json!(exec_input);
+        }
         let mut env_context = self.build_env_context(now).await;
-        env_context.extend(self.build_behavior_prompt_env_context(&cfg));
+        env_context.extend(self.build_behavior_prompt_env_context(&cfg, &rendered_template));
         env_context.extend(extra_env);
         let input = BehaviorExecInput {
             trace: trace.clone(),
             role_md: self.role_md.clone(),
             self_md: self.self_md.clone(),
-            session_id: inbox
+            session_id: rendered_inbox
                 .pointer("/loop_context/session_id")
                 .and_then(|value| value.as_str())
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(|value| value.to_string()),
-            behavior_prompt: cfg.process_rule.clone(),
+            behavior_prompt: rendered_template.process_rule.clone(),
             env_context,
-            inbox,
+            inbox: rendered_inbox,
             memory,
             last_observations,
             limits: cfg.limits.clone(),
@@ -1881,18 +1913,102 @@ impl AIAgent {
         ]
     }
 
-    fn build_behavior_prompt_env_context(&self, cfg: &BehaviorConfig) -> Vec<EnvKV> {
+    async fn render_behavior_template_bundle(
+        &self,
+        cfg: &BehaviorConfig,
+        inbox_payload: &Json,
+    ) -> RenderedBehaviorTemplate {
+        let template_ctx = self
+            .environment
+            .build_prompt_template_context(inbox_payload, None);
+
+        let process_rule = match self
+            .environment
+            .render_prompt_template(&cfg.process_rule, TemplateRenderMode::Text, &template_ctx)
+            .await
+        {
+            Ok(Some(text)) => text,
+            Ok(None) => String::new(),
+            Err(err) => {
+                warn!(
+                    "ai_agent.template render_failed: did={} behavior={} field=process_rule err={}",
+                    self.did, cfg.name, err
+                );
+                cfg.process_rule.clone()
+            }
+        };
+
+        let policy = if cfg.policy.trim().is_empty() {
+            None
+        } else {
+            match self
+                .environment
+                .render_prompt_template(&cfg.policy, TemplateRenderMode::Text, &template_ctx)
+                .await
+            {
+                Ok(Some(text)) => clean_prompt_text(Some(text.as_str())),
+                Ok(None) => None,
+                Err(err) => {
+                    warn!(
+                        "ai_agent.template render_failed: did={} behavior={} field=policy err={}",
+                        self.did, cfg.name, err
+                    );
+                    clean_prompt_text(Some(cfg.policy.as_str()))
+                }
+            }
+        };
+
+        let (input_template, exec_input, has_input) = if cfg.input.trim().is_empty() {
+            (None, None, true)
+        } else {
+            match self
+                .environment
+                .render_prompt_template(&cfg.input, TemplateRenderMode::InputBlock, &template_ctx)
+                .await
+            {
+                Ok(rendered) => {
+                    let cleaned =
+                        rendered.and_then(|value| clean_prompt_text(Some(value.as_str())));
+                    let has_input = cleaned.is_some();
+                    (cleaned.clone(), cleaned, has_input)
+                }
+                Err(err) => {
+                    warn!(
+                        "ai_agent.template render_failed: did={} behavior={} field=input err={}",
+                        self.did, cfg.name, err
+                    );
+                    let fallback = clean_prompt_text(Some(cfg.input.as_str()));
+                    let has_input = fallback.is_some();
+                    (fallback.clone(), fallback, has_input)
+                }
+            }
+        };
+
+        RenderedBehaviorTemplate {
+            process_rule,
+            policy,
+            input_template,
+            exec_input,
+            has_input,
+        }
+    }
+
+    fn build_behavior_prompt_env_context(
+        &self,
+        cfg: &BehaviorConfig,
+        rendered: &RenderedBehaviorTemplate,
+    ) -> Vec<EnvKV> {
         let mut env = Vec::<EnvKV>::new();
-        if !cfg.policy.trim().is_empty() {
+        if let Some(policy_text) = rendered.policy.as_ref() {
             env.push(EnvKV {
                 key: "behavior.policy".to_string(),
-                value: cfg.policy.clone(),
+                value: policy_text.clone(),
             });
         }
-        if !cfg.input.trim().is_empty() {
+        if let Some(input_template) = rendered.input_template.as_ref() {
             env.push(EnvKV {
                 key: "behavior.input_template".to_string(),
-                value: cfg.input.clone(),
+                value: input_template.clone(),
             });
         }
         if !cfg.memory.is_empty() {
@@ -2265,6 +2381,15 @@ impl ResolveRouterResult {
 struct ModeSelectionResult {
     behavior: String,
     source: &'static str,
+}
+
+#[derive(Clone, Debug, Default)]
+struct RenderedBehaviorTemplate {
+    process_rule: String,
+    policy: Option<String>,
+    input_template: Option<String>,
+    exec_input: Option<String>,
+    has_input: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -3194,6 +3319,13 @@ fn llm_output_to_json(output: &LLMOutput) -> Option<Json> {
 
 fn parse_resolve_router_result(output: &LLMOutput) -> Option<ResolveRouterResult> {
     llm_output_to_json(output).and_then(|value| serde_json::from_value(value).ok())
+}
+
+fn clean_prompt_text(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(|text| text.to_string())
 }
 
 fn sanitize_non_empty_string(value: Option<String>) -> Option<String> {
