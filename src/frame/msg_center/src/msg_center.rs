@@ -13,7 +13,6 @@ use name_lib::DID;
 use ndn_lib::{MsgObject, NamedObject, ObjId};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::future::Future;
 use std::sync::{Arc, RwLock};
 
 
@@ -76,47 +75,6 @@ impl MessageCenter {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64
-    }
-
-    fn block_on_runtime_future<F, T>(future: F) -> std::result::Result<T, RPCErrors>
-    where
-        F: Future<Output = std::result::Result<T, RPCErrors>> + Send + 'static,
-        T: Send + 'static,
-    {
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
-                return tokio::task::block_in_place(|| handle.block_on(future));
-            }
-
-            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-            std::thread::spawn(move || {
-                let result = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|error| {
-                        RPCErrors::ReasonError(format!(
-                            "failed to create tokio runtime: {}",
-                            error
-                        ))
-                    })
-                    .and_then(|runtime| runtime.block_on(future));
-                let _ = sender.send(result);
-            });
-            return receiver.recv().map_err(|error| {
-                RPCErrors::ReasonError(format!(
-                    "failed to join runtime worker thread: {}",
-                    error
-                ))
-            })?;
-        }
-
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| {
-                RPCErrors::ReasonError(format!("failed to create tokio runtime: {}", error))
-            })?;
-        runtime.block_on(future)
     }
 
     fn with_state_read<T, F>(&self, f: F) -> std::result::Result<T, RPCErrors>
@@ -271,51 +229,46 @@ impl MessageCenter {
         DID::new("bns", DEFAULT_FALLBACK_TUNNEL_SUBJECT)
     }
 
-    fn store_message(msg_id: &ObjId, msg_json_str: &str) -> std::result::Result<(), RPCErrors> {
+    async fn store_message(msg_id: &ObjId, msg_json_str: &str) -> std::result::Result<(), RPCErrors> {
         let msg_id = msg_id.clone();
         let msg_json = msg_json_str.to_string();
-        Self::block_on_runtime_future(async move {
-            let runtime = match get_buckyos_api_runtime() {
-                Ok(runtime) => runtime,
-                Err(RPCErrors::ReasonError(reason))
-                    if reason.contains("BuckyOSRuntime is not initialized") =>
-                {
-                    warn!(
-                        "skip storing message {} to named_store because runtime is not initialized",
-                        msg_id.to_string()
-                    );
-                    return Ok(());
-                }
-                Err(error) => return Err(error),
-            };
-            let named_store = runtime.get_named_store().await?;
-            named_store
-                .put_object(&msg_id, &msg_json)
-                .await
-                .map_err(|error| {
-                    RPCErrors::ReasonError(format!(
-                        "store message {} in named_store failed: {}",
-                        msg_id.to_string(),
-                        error
-                    ))
-                })?;
-            Ok(())
-        })
-    }
-
-    fn load_message(msg_id: &ObjId) -> std::result::Result<MsgObject, RPCErrors> {
-        let msg_id = msg_id.clone();
-        let msg_id_for_load = msg_id.clone();
-        let msg_json = Self::block_on_runtime_future(async move {
-            let runtime = get_buckyos_api_runtime()?;
-            let named_store = runtime.get_named_store().await?;
-            named_store.get_object(&msg_id_for_load).await.map_err(|error| {
+        let runtime = match get_buckyos_api_runtime() {
+            Ok(runtime) => runtime,
+            Err(RPCErrors::ReasonError(reason))
+                if reason.contains("BuckyOSRuntime is not initialized") =>
+            {
+                warn!(
+                    "skip storing message {} to named_store because runtime is not initialized",
+                    msg_id.to_string()
+                );
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+        let named_store = runtime.get_named_store().await?;
+        named_store
+            .put_object(&msg_id, &msg_json)
+            .await
+            .map_err(|error| {
                 RPCErrors::ReasonError(format!(
-                    "load message {} from named_store failed: {}",
-                    msg_id_for_load.to_string(),
+                    "store message {} in named_store failed: {}",
+                    msg_id.to_string(),
                     error
                 ))
-            })
+            })?;
+        Ok(())
+    }
+
+    async fn load_message(msg_id: &ObjId) -> std::result::Result<MsgObject, RPCErrors> {
+        let msg_id = msg_id.clone();
+        let runtime = get_buckyos_api_runtime()?;
+        let named_store = runtime.get_named_store().await?;
+        let msg_json = named_store.get_object(&msg_id).await.map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "load message {} from named_store failed: {}",
+                msg_id.to_string(),
+                error
+            ))
         })?;
 
         serde_json::from_str::<MsgObject>(&msg_json).map_err(|error| {
@@ -462,7 +415,7 @@ impl MessageCenter {
             .collect()
     }
 
-    fn build_record_view(
+    async fn build_record_view(
         record: MsgRecord,
         with_object: Option<bool>,
     ) -> std::result::Result<MsgRecordWithObject, RPCErrors> {
@@ -471,7 +424,7 @@ impl MessageCenter {
             msg: None,
         };
         if with_object.unwrap_or(false) {
-            result.msg = Some(Self::load_message(&result.record.msg_id)?);
+            result.msg = Some(Self::load_message(&result.record.msg_id).await?);
         }
         Ok(result)
     }
@@ -606,16 +559,28 @@ impl MessageCenter {
         targets
     }
 
-    fn dispatch_internal(
+    async fn dispatch_internal(
         &self,
         msg: MsgObject,
         ingress_ctx: Option<IngressContext>,
         idempotency_key: Option<String>,
     ) -> std::result::Result<DispatchResult, RPCErrors> {
-        self.with_state_write(|state| {
+        enum DispatchPrepare {
+            Done(DispatchResult),
+            Ready {
+                stored_msg: MsgObject,
+                stored_msg_id: ObjId,
+                stored_msg_json: String,
+                sender: DID,
+                context_id: Option<String>,
+                ingress_route: Option<RouteInfo>,
+            },
+        }
+
+        let prepared = self.with_state_write(|state| {
             if let Some(key) = idempotency_key.as_ref() {
                 if let Some(cached) = state.dispatch_idempotency.get(key) {
-                    return Ok(cached.clone());
+                    return Ok(DispatchPrepare::Done(cached.clone()));
                 }
             }
 
@@ -640,15 +605,51 @@ impl MessageCenter {
                     delivered_agents: Vec::new(),
                     reason: Some("blocked".to_string()),
                 };
-                if let Some(key) = idempotency_key {
-                    state.dispatch_idempotency.insert(key, result.clone());
+                if let Some(key) = idempotency_key.as_ref() {
+                    state.dispatch_idempotency.insert(key.clone(), result.clone());
                 }
-                return Ok(result);
+                return Ok(DispatchPrepare::Done(result));
             }
 
-            Self::store_message(&stored_msg_id, &stored_msg_json)?;
+            Ok(DispatchPrepare::Ready {
+                stored_msg,
+                stored_msg_id,
+                stored_msg_json,
+                sender,
+                context_id,
+                ingress_route: Self::route_from_ingress(ingress_ctx.as_ref()),
+            })
+        })?;
 
-            let ingress_route = Self::route_from_ingress(ingress_ctx.as_ref());
+        let (stored_msg, stored_msg_id, stored_msg_json, sender, context_id, ingress_route) =
+            match prepared {
+                DispatchPrepare::Done(result) => return Ok(result),
+                DispatchPrepare::Ready {
+                    stored_msg,
+                    stored_msg_id,
+                    stored_msg_json,
+                    sender,
+                    context_id,
+                    ingress_route,
+                } => (
+                    stored_msg,
+                    stored_msg_id,
+                    stored_msg_json,
+                    sender,
+                    context_id,
+                    ingress_route,
+                ),
+            };
+
+        Self::store_message(&stored_msg_id, &stored_msg_json).await?;
+
+        self.with_state_write(|state| {
+            if let Some(key) = idempotency_key.as_ref() {
+                if let Some(cached) = state.dispatch_idempotency.get(key) {
+                    return Ok(cached.clone());
+                }
+            }
+
             let mut result = DispatchResult {
                 ok: true,
                 msg_id: stored_msg_id.clone(),
@@ -779,23 +780,33 @@ impl MessageCenter {
                 }
             }
 
-            if let Some(key) = idempotency_key {
-                state.dispatch_idempotency.insert(key, result.clone());
+            if let Some(key) = idempotency_key.as_ref() {
+                state.dispatch_idempotency.insert(key.clone(), result.clone());
             }
             Ok(result)
         })
     }
 
-    fn post_send_internal(
+    async fn post_send_internal(
         &self,
         msg: MsgObject,
         send_ctx: Option<SendContext>,
         idempotency_key: Option<String>,
     ) -> std::result::Result<PostSendResult, RPCErrors> {
-        self.with_state_write(|state| {
+        enum PostSendPrepare {
+            Done(PostSendResult),
+            Ready {
+                stored_msg: MsgObject,
+                stored_msg_id: ObjId,
+                stored_msg_json: String,
+                author: DID,
+            },
+        }
+
+        let prepared = self.with_state_write(|state| {
             if let Some(key) = idempotency_key.as_ref() {
                 if let Some(cached) = state.post_send_idempotency.get(key) {
-                    return Ok(cached.clone());
+                    return Ok(PostSendPrepare::Done(cached.clone()));
                 }
             }
 
@@ -809,13 +820,38 @@ impl MessageCenter {
                     deliveries: Vec::new(),
                     reason: Some("blocked_author".to_string()),
                 };
-                if let Some(key) = idempotency_key {
-                    state.post_send_idempotency.insert(key, result.clone());
+                if let Some(key) = idempotency_key.as_ref() {
+                    state.post_send_idempotency.insert(key.clone(), result.clone());
                 }
-                return Ok(result);
+                return Ok(PostSendPrepare::Done(result));
             }
 
-            Self::store_message(&stored_msg_id, &stored_msg_json)?;
+            Ok(PostSendPrepare::Ready {
+                stored_msg,
+                stored_msg_id,
+                stored_msg_json,
+                author,
+            })
+        })?;
+
+        let (stored_msg, stored_msg_id, stored_msg_json, author) = match prepared {
+            PostSendPrepare::Done(result) => return Ok(result),
+            PostSendPrepare::Ready {
+                stored_msg,
+                stored_msg_id,
+                stored_msg_json,
+                author,
+            } => (stored_msg, stored_msg_id, stored_msg_json, author),
+        };
+
+        Self::store_message(&stored_msg_id, &stored_msg_json).await?;
+
+        self.with_state_write(|state| {
+            if let Some(key) = idempotency_key.as_ref() {
+                if let Some(cached) = state.post_send_idempotency.get(key) {
+                    return Ok(cached.clone());
+                }
+            }
 
             Self::create_or_get_record(
                 state,
@@ -876,14 +912,14 @@ impl MessageCenter {
                 deliveries,
                 reason: None,
             };
-            if let Some(key) = idempotency_key {
-                state.post_send_idempotency.insert(key, result.clone());
+            if let Some(key) = idempotency_key.as_ref() {
+                state.post_send_idempotency.insert(key.clone(), result.clone());
             }
             Ok(result)
         })
     }
 
-    fn get_next_internal(
+    async fn get_next_internal(
         &self,
         owner: DID,
         box_kind: BoxKind,
@@ -891,7 +927,7 @@ impl MessageCenter {
         lock_on_take: Option<bool>,
         with_object: Option<bool>,
     ) -> std::result::Result<Option<MsgRecordWithObject>, RPCErrors> {
-        self.with_state_write(|state| {
+        let selected = self.with_state_write(|state| {
             let default_filter = match box_kind {
                 BoxKind::Inbox | BoxKind::GroupInbox | BoxKind::RequestBox => {
                     Some(vec![MsgState::Unread])
@@ -916,15 +952,20 @@ impl MessageCenter {
                     }
                 }
 
-                let record = Self::build_record_view(record, with_object)?;
                 return Ok(Some(record));
             }
 
             Ok(None)
-        })
+        })?;
+
+        let Some(record) = selected else {
+            return Ok(None);
+        };
+        let record = Self::build_record_view(record, with_object).await?;
+        Ok(Some(record))
     }
 
-    fn peek_box_internal(
+    async fn peek_box_internal(
         &self,
         owner: DID,
         box_kind: BoxKind,
@@ -932,21 +973,23 @@ impl MessageCenter {
         limit: Option<usize>,
         with_object: Option<bool>,
     ) -> std::result::Result<Vec<MsgRecordWithObject>, RPCErrors> {
-        self.with_state_read(|state| {
+        let records = self.with_state_read(|state| {
             let limit = Self::clamp_limit(limit, DEFAULT_PEEK_LIMIT, MAX_PEEK_LIMIT);
             let state_filter_ref = state_filter.as_deref();
             let mut records = Self::collect_box_records(state, &owner, &box_kind, state_filter_ref);
             Self::sort_records(&mut records, true);
 
-            let mut result = Vec::new();
-            for record in records.into_iter().take(limit) {
-                result.push(Self::build_record_view(record, with_object)?);
-            }
-            Ok(result)
-        })
+            Ok(records.into_iter().take(limit).collect::<Vec<_>>())
+        })?;
+
+        let mut result = Vec::with_capacity(records.len());
+        for record in records {
+            result.push(Self::build_record_view(record, with_object).await?);
+        }
+        Ok(result)
     }
 
-    fn list_box_by_time_internal(
+    async fn list_box_by_time_internal(
         &self,
         owner: DID,
         box_kind: BoxKind,
@@ -957,7 +1000,7 @@ impl MessageCenter {
         descending: Option<bool>,
         with_object: Option<bool>,
     ) -> std::result::Result<MsgRecordPage, RPCErrors> {
-        self.with_state_read(|state| {
+        let (page_records, has_more) = self.with_state_read(|state| {
             let descending = descending.unwrap_or(true);
             let limit = Self::clamp_limit(limit, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT);
             let state_filter_ref = state_filter.as_deref();
@@ -971,31 +1014,33 @@ impl MessageCenter {
                 descending,
             );
 
-            let mut items = Vec::new();
-            let mut iter = records.into_iter();
-            for record in iter.by_ref().take(limit) {
-                items.push(Self::build_record_view(record, with_object)?);
-            }
+            let has_more = records.len() > limit;
+            let page_records = records.into_iter().take(limit).collect::<Vec<_>>();
+            Ok((page_records, has_more))
+        })?;
 
-            let next_item = iter.next();
-            let (next_cursor_sort_key, next_cursor_record_id) = if next_item.is_some() {
-                if let Some(last) = items.last() {
-                    (
-                        Some(last.record.sort_key),
-                        Some(last.record.record_id.clone()),
-                    )
-                } else {
-                    (None, None)
-                }
+        let mut items = Vec::with_capacity(page_records.len());
+        for record in page_records {
+            items.push(Self::build_record_view(record, with_object).await?);
+        }
+
+        let (next_cursor_sort_key, next_cursor_record_id) = if has_more {
+            if let Some(last) = items.last() {
+                (
+                    Some(last.record.sort_key),
+                    Some(last.record.record_id.clone()),
+                )
             } else {
                 (None, None)
-            };
+            }
+        } else {
+            (None, None)
+        };
 
-            Ok(MsgRecordPage {
-                items,
-                next_cursor_sort_key,
-                next_cursor_record_id,
-            })
+        Ok(MsgRecordPage {
+            items,
+            next_cursor_sort_key,
+            next_cursor_record_id,
         })
     }
 
@@ -1163,39 +1208,58 @@ impl MessageCenter {
         })
     }
 
-    fn get_record_internal(
+    async fn get_record_internal(
         &self,
         record_id: String,
         with_object: Option<bool>,
     ) -> std::result::Result<Option<MsgRecordWithObject>, RPCErrors> {
-        self.with_state_read(|state| {
+        let record = self.with_state_read(|state| {
             let Some(record) = state.records.get(&record_id).cloned() else {
                 return Ok(None);
             };
-            Ok(Some(Self::build_record_view(record, with_object)?))
-        })
+            Ok(Some(record))
+        })?;
+        let Some(record) = record else {
+            return Ok(None);
+        };
+        let with_object_record = Self::build_record_view(record, with_object).await?;
+        Ok(Some(with_object_record))
     }
 
-    fn get_message_internal(
+    async fn get_message_internal(
         &self,
         msg_id: ObjId,
     ) -> std::result::Result<Option<MsgObject>, RPCErrors> {
-        self.with_state_read(|state| {
-            if let Some(msg) = state.messages.get(&msg_id.to_string()) {
-                return Ok(Some(msg.clone()));
+        if let Some(msg) = self.with_state_read(|state| Ok(state.messages.get(&msg_id.to_string()).cloned()))? {
+            return Ok(Some(msg));
+        }
+
+        let runtime = get_buckyos_api_runtime()?;
+        let named_store = runtime.get_named_store().await?;
+        match named_store.get_object(&msg_id).await {
+            Ok(msg_json) => {
+                let msg = serde_json::from_str::<MsgObject>(&msg_json).map_err(|error| {
+                    RPCErrors::ReasonError(format!(
+                        "parse message {} from named_store failed: {}",
+                        msg_id.to_string(),
+                        error
+                    ))
+                })?;
+                Ok(Some(msg))
             }
-            match Self::load_message(&msg_id) {
-                Ok(msg) => Ok(Some(msg)),
-                Err(error) => {
-                    let error_text = error.to_string().to_ascii_lowercase();
-                    if error_text.contains("notfound") || error_text.contains("not found") {
-                        Ok(None)
-                    } else {
-                        Err(error)
-                    }
+            Err(error) => {
+                let error_text = error.to_string().to_ascii_lowercase();
+                if error_text.contains("notfound") || error_text.contains("not found") {
+                    Ok(None)
+                } else {
+                    Err(RPCErrors::ReasonError(format!(
+                        "load message {} from named_store failed: {}",
+                        msg_id.to_string(),
+                        error
+                    )))
                 }
             }
-        })
+        }
     }
 }
 
@@ -1208,7 +1272,7 @@ impl MsgCenterHandler for MessageCenter {
         idempotency_key: Option<String>,
         _ctx: RPCContext,
     ) -> std::result::Result<DispatchResult, RPCErrors> {
-        self.dispatch_internal(msg, ingress_ctx, idempotency_key)
+        self.dispatch_internal(msg, ingress_ctx, idempotency_key).await
     }
 
     async fn handle_post_send(
@@ -1218,7 +1282,7 @@ impl MsgCenterHandler for MessageCenter {
         idempotency_key: Option<String>,
         _ctx: RPCContext,
     ) -> std::result::Result<PostSendResult, RPCErrors> {
-        self.post_send_internal(msg, send_ctx, idempotency_key)
+        self.post_send_internal(msg, send_ctx, idempotency_key).await
     }
 
     async fn handle_get_next(
@@ -1231,6 +1295,7 @@ impl MsgCenterHandler for MessageCenter {
         _ctx: RPCContext,
     ) -> std::result::Result<Option<MsgRecordWithObject>, RPCErrors> {
         self.get_next_internal(owner, box_kind, state_filter, lock_on_take, with_object)
+            .await
     }
 
     async fn handle_peek_box(
@@ -1243,6 +1308,7 @@ impl MsgCenterHandler for MessageCenter {
         _ctx: RPCContext,
     ) -> std::result::Result<Vec<MsgRecordWithObject>, RPCErrors> {
         self.peek_box_internal(owner, box_kind, state_filter, limit, with_object)
+            .await
     }
 
     async fn handle_list_box_by_time(
@@ -1267,6 +1333,7 @@ impl MsgCenterHandler for MessageCenter {
             descending,
             with_object,
         )
+        .await
     }
 
     async fn handle_update_record_state(
@@ -1319,7 +1386,7 @@ impl MsgCenterHandler for MessageCenter {
         with_object: Option<bool>,
         _ctx: RPCContext,
     ) -> std::result::Result<Option<MsgRecordWithObject>, RPCErrors> {
-        self.get_record_internal(record_id, with_object)
+        self.get_record_internal(record_id, with_object).await
     }
 
     async fn handle_get_message(
@@ -1327,7 +1394,7 @@ impl MsgCenterHandler for MessageCenter {
         msg_id: ObjId,
         _ctx: RPCContext,
     ) -> std::result::Result<Option<MsgObject>, RPCErrors> {
-        self.get_message_internal(msg_id)
+        self.get_message_internal(msg_id).await
     }
 
     async fn handle_resolve_did(

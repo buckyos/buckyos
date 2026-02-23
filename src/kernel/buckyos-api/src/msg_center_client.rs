@@ -107,45 +107,6 @@ pub enum MsgState {
     Archived,
 }
 
-// #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-// pub struct MsgObject {
-//     pub id: ObjId,
-//     pub from: DID,
-//     #[serde(skip_serializing_if = "Option::is_none")]
-//     pub source: Option<DID>,
-//     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-//     pub to: Vec<DID>,
-//     #[serde(skip_serializing_if = "Option::is_none")]
-//     pub thread_key: Option<String>,
-//     #[serde(default)]
-//     pub payload: Value,
-//     #[serde(skip_serializing_if = "Option::is_none")]
-//     pub meta: Option<Value>,
-//     pub created_at_ms: u64,
-// }
-
-// impl MsgObject {
-//     pub fn new(
-//         id: ObjId,
-//         from: DID,
-//         source: Option<DID>,
-//         to: Vec<DID>,
-//         payload: Value,
-//         created_at_ms: u64,
-//     ) -> Self {
-//         Self {
-//             id,
-//             from,
-//             source,
-//             to,
-//             thread_key: None,
-//             payload,
-//             meta: None,
-//             created_at_ms,
-//         }
-//     }
-// }
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct IngressContext {
     #[serde(skip_serializing_if = "Option::is_none")]

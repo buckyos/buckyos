@@ -902,12 +902,10 @@ pub async fn start_msg_center_service() -> Result<()> {
     Ok(())
 }
 
-fn main() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    if let Err(err) = rt.block_on(async {
-        init_logging("msg_center", true);
-        start_msg_center_service().await
-    }) {
+#[tokio::main]
+async fn main() {
+    init_logging("msg_center", true);
+    if let Err(err) = start_msg_center_service().await {
         error!("msg-center service start failed: {:?}", err);
     }
 }
