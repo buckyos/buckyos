@@ -126,7 +126,7 @@ new_msg + new_event
   |
   `Plan-Do-Check-Adjust (PDCA) Loop`
 
-new_event
+timer_event
   |
   `self-improve`
 ```

@@ -72,7 +72,7 @@ enum OutputMode {
 
 #[derive(serde::Deserialize)]
 #[serde(default)]
-struct RouteResultPayload {
+struct RouteLLMResult {
     session_id: Option<String>,
     new_session: Option<(String, String)>,
     next_behavior: Option<String>,
@@ -81,7 +81,7 @@ struct RouteResultPayload {
     tool_calls: Vec<ToolCall>,
 }
 
-impl Default for RouteResultPayload {
+impl Default for RouteLLMResult {
     fn default() -> Self {
         Self {
             session_id: None,
@@ -162,7 +162,7 @@ fn parse_behavior_result_json(value: Json) -> Result<(BehaviorLLMResult, LLMOutp
 }
 
 fn parse_route_result_json(value: Json) -> Result<(BehaviorLLMResult, LLMOutput), String> {
-    let route = serde_json::from_value::<RouteResultPayload>(value.clone())
+    let route = serde_json::from_value::<RouteLLMResult>(value.clone())
         .map_err(|err| format!("invalid route output schema: {err}"))?;
     if route.session_id.is_none()
         && route.new_session.is_none()

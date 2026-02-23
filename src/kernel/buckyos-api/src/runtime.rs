@@ -11,10 +11,11 @@ use buckyos_kit::*;
 use jsonwebtoken::{decode, DecodingKey, EncodingKey, Validation};
 use log::*;
 use std::env;
-use tokio::sync::RwLock;
+use tokio::sync::{OnceCell, RwLock};
 
 use name_client::*;
 use name_lib::*;
+use named_store::NamedStoreMgr;
 use rand::Rng;
 
 use crate::aicc_client::*;
@@ -67,6 +68,7 @@ pub struct BuckyOSRuntime {
     pub refresh_token: Arc<RwLock<String>>,
     trust_keys: Arc<RwLock<HashMap<String, DecodingKey>>>,
     last_update_service_info_time: RwLock<u64>,
+    named_store_mgr: OnceCell<NamedStoreMgr>,
 
     pub force_https: bool,
     pub buckyos_root_dir: PathBuf,
@@ -106,6 +108,7 @@ impl BuckyOSRuntime {
             node_gateway_port: DEFAULT_NODE_GATEWAY_PORT,
             trust_keys: Arc::new(RwLock::new(HashMap::new())),
             last_update_service_info_time: RwLock::new(0),
+            named_store_mgr: OnceCell::new(),
             web3_bridges: HashMap::new(),
             force_https: true,
         };
@@ -115,6 +118,24 @@ impl BuckyOSRuntime {
     pub async fn set_main_service_port(&self, port: u16) {
         let mut main_service_port = self.main_service_port.write().await;
         *main_service_port = port;
+    }
+
+    pub async fn get_named_store(&self) -> Result<NamedStoreMgr> {
+        let store_mgr: &NamedStoreMgr = self
+            .named_store_mgr
+            .get_or_try_init(|| async {
+                let config_path = self.buckyos_root_dir.join("var").join("named_store.json");
+                NamedStoreMgr::get_store_mgr(config_path.as_path())
+                    .await
+                    .map_err(|e| {
+                        RPCErrors::ReasonError(format!(
+                            "Failed to initialize named store manager: {}",
+                            e
+                        ))
+                    })
+            })
+            .await?;
+        Ok(store_mgr.clone())
     }
 
     pub async fn fill_by_env_var(&mut self) -> Result<()> {

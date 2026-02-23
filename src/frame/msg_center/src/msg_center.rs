@@ -3,17 +3,19 @@ use async_trait::async_trait;
 use buckyos_api::{
     AccessDecision, AccessGroupLevel, AccountBinding, BoxKind, Contact, ContactPatch, ContactQuery,
     DeliveryInfo, DeliveryReportResult, DispatchResult, GrantTemporaryAccessResult,
-    ImportContactEntry, ImportReport, IngressContext, MsgCenterHandler, MsgObject, MsgReceiptObj,
+    ImportContactEntry, ImportReport, IngressContext, MsgCenterHandler, MsgReceiptObj,
     MsgRecord, MsgRecordPage, MsgRecordWithObject, MsgState, PostSendDelivery, PostSendResult,
-    ReadReceiptState, RouteInfo, SendContext, SetGroupSubscribersResult,
+    ReadReceiptState, RouteInfo, SendContext, SetGroupSubscribersResult,get_buckyos_api_runtime
 };
 use kRPC::{RPCContext, RPCErrors};
 use log::{info, warn};
 use name_lib::DID;
-use ndn_lib::ObjId;
+use ndn_lib::{MsgObject, NamedObject, ObjId};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::sync::{Arc, RwLock};
+
 
 const DEFAULT_PEEK_LIMIT: usize = 20;
 const MAX_PEEK_LIMIT: usize = 200;
@@ -74,6 +76,47 @@ impl MessageCenter {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64
+    }
+
+    fn block_on_runtime_future<F, T>(future: F) -> std::result::Result<T, RPCErrors>
+    where
+        F: Future<Output = std::result::Result<T, RPCErrors>> + Send + 'static,
+        T: Send + 'static,
+    {
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
+                return tokio::task::block_in_place(|| handle.block_on(future));
+            }
+
+            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            std::thread::spawn(move || {
+                let result = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|error| {
+                        RPCErrors::ReasonError(format!(
+                            "failed to create tokio runtime: {}",
+                            error
+                        ))
+                    })
+                    .and_then(|runtime| runtime.block_on(future));
+                let _ = sender.send(result);
+            });
+            return receiver.recv().map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to join runtime worker thread: {}",
+                    error
+                ))
+            })?;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!("failed to create tokio runtime: {}", error))
+            })?;
+        runtime.block_on(future)
     }
 
     fn with_state_read<T, F>(&self, f: F) -> std::result::Result<T, RPCErrors>
@@ -228,8 +271,68 @@ impl MessageCenter {
         DID::new("bns", DEFAULT_FALLBACK_TUNNEL_SUBJECT)
     }
 
+    fn store_message(msg_id: &ObjId, msg_json_str: &str) -> std::result::Result<(), RPCErrors> {
+        let msg_id = msg_id.clone();
+        let msg_json = msg_json_str.to_string();
+        Self::block_on_runtime_future(async move {
+            let runtime = match get_buckyos_api_runtime() {
+                Ok(runtime) => runtime,
+                Err(RPCErrors::ReasonError(reason))
+                    if reason.contains("BuckyOSRuntime is not initialized") =>
+                {
+                    warn!(
+                        "skip storing message {} to named_store because runtime is not initialized",
+                        msg_id.to_string()
+                    );
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            };
+            let named_store = runtime.get_named_store().await?;
+            named_store
+                .put_object(&msg_id, &msg_json)
+                .await
+                .map_err(|error| {
+                    RPCErrors::ReasonError(format!(
+                        "store message {} in named_store failed: {}",
+                        msg_id.to_string(),
+                        error
+                    ))
+                })?;
+            Ok(())
+        })
+    }
+
+    fn load_message(msg_id: &ObjId) -> std::result::Result<MsgObject, RPCErrors> {
+        let msg_id = msg_id.clone();
+        let msg_id_for_load = msg_id.clone();
+        let msg_json = Self::block_on_runtime_future(async move {
+            let runtime = get_buckyos_api_runtime()?;
+            let named_store = runtime.get_named_store().await?;
+            named_store.get_object(&msg_id_for_load).await.map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "load message {} from named_store failed: {}",
+                    msg_id_for_load.to_string(),
+                    error
+                ))
+            })
+        })?;
+
+        serde_json::from_str::<MsgObject>(&msg_json).map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "parse message {} from named_store failed: {}",
+                msg_id.to_string(),
+                error
+            ))
+        })
+    }
+
+    fn message_obj_id(msg: &MsgObject) -> ObjId {
+        msg.gen_obj_id().0
+    }
+
     fn ensure_message(state: &mut MessageCenterState, msg: MsgObject) -> MsgObject {
-        let msg_key = msg.id.to_string();
+        let msg_key = Self::message_obj_id(&msg).to_string();
         if let Some(existing) = state.messages.get(&msg_key) {
             return existing.clone();
         }
@@ -258,7 +361,8 @@ impl MessageCenter {
         tags: Vec<String>,
         variant: &str,
     ) -> MsgRecord {
-        let record_id = Self::build_record_id(&owner, &box_kind, &msg.id, variant);
+        let msg_id = Self::message_obj_id(msg);
+        let record_id = Self::build_record_id(&owner, &box_kind, &msg_id, variant);
         if let Some(existing) = state.records.get(&record_id) {
             return existing.clone();
         }
@@ -268,13 +372,13 @@ impl MessageCenter {
             record_id: record_id.clone(),
             owner: owner.clone(),
             box_kind: box_kind.clone(),
-            msg_id: msg.id.clone(),
+            msg_id: msg_id.clone(),
             state: initial_state,
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
             route,
             delivery,
-            thread_key: msg.thread_key.clone(),
+            thread_key: msg.thread.topic.clone(),
             sort_key: if msg.created_at_ms > 0 {
                 msg.created_at_ms
             } else {
@@ -358,21 +462,18 @@ impl MessageCenter {
             .collect()
     }
 
-    fn build_record_with_object(
-        state: &MessageCenterState,
+    fn build_record_view(
         record: MsgRecord,
+        with_object: Option<bool>,
     ) -> std::result::Result<MsgRecordWithObject, RPCErrors> {
-        let msg_key = record.msg_id.to_string();
-        let msg = state.messages.get(&msg_key).ok_or_else(|| {
-            RPCErrors::ReasonError(format!(
-                "message object {} not found for record {}",
-                msg_key, record.record_id
-            ))
-        })?;
-        Ok(MsgRecordWithObject {
+        let mut result = MsgRecordWithObject {
             record,
-            msg: msg.clone(),
-        })
+            msg: None,
+        };
+        if with_object.unwrap_or(false) {
+            result.msg = Some(Self::load_message(&result.record.msg_id)?);
+        }
+        Ok(result)
     }
 
     fn next_state_on_take(box_kind: &BoxKind, state: &MsgState) -> Option<MsgState> {
@@ -519,18 +620,20 @@ impl MessageCenter {
             }
 
             let stored_msg = Self::ensure_message(state, msg);
+            let (stored_msg_id, stored_msg_json) = stored_msg.gen_obj_id();
+            //这里的sender是逻辑上的发送者，优先使用source字段，如果没有则使用from字段
             let sender = Self::logical_sender(&stored_msg);
             let context_id = ingress_ctx.as_ref().and_then(|ctx| ctx.context_id.clone());
             if self.is_contact_blocked(&sender, None)? {
                 warn!(
                     "dispatch blocked by sender access policy: msg_id={}, sender={}, context_id={}",
-                    stored_msg.id.to_string(),
+                    stored_msg_id.to_string(),
                     sender.to_string(),
                     context_id.as_deref().unwrap_or("-"),
                 );
                 let result = DispatchResult {
                     ok: false,
-                    msg_id: stored_msg.id.clone(),
+                    msg_id: stored_msg_id.clone(),
                     delivered_recipients: Vec::new(),
                     dropped_recipients: Vec::new(),
                     delivered_group: None,
@@ -543,10 +646,12 @@ impl MessageCenter {
                 return Ok(result);
             }
 
+            Self::store_message(&stored_msg_id, &stored_msg_json)?;
+
             let ingress_route = Self::route_from_ingress(ingress_ctx.as_ref());
             let mut result = DispatchResult {
                 ok: true,
-                msg_id: stored_msg.id.clone(),
+                msg_id: stored_msg_id.clone(),
                 delivered_recipients: Vec::new(),
                 dropped_recipients: Vec::new(),
                 delivered_group: None,
@@ -558,7 +663,7 @@ impl MessageCenter {
                 let group_id = stored_msg.from.clone();
                 info!(
                     "dispatch about to write inbox record: msg_id={}, sender={}, owner={}, box_kind=GROUP_INBOX, context_id={}",
-                    stored_msg.id.to_string(),
+                    stored_msg_id.to_string(),
                     sender.to_string(),
                     group_id.to_string(),
                     context_id.as_deref().unwrap_or("-"),
@@ -583,7 +688,7 @@ impl MessageCenter {
                     let tag = format!("group:{}", group_id.to_string());
                     info!(
                         "dispatch about to write inbox record: msg_id={}, sender={}, owner={}, box_kind=INBOX, context_id={}",
-                        stored_msg.id.to_string(),
+                        stored_msg_id.to_string(),
                         sender.to_string(),
                         agent_did.to_string(),
                         context_id.as_deref().unwrap_or("-"),
@@ -608,7 +713,7 @@ impl MessageCenter {
                 if recipients.is_empty() {
                     warn!(
                         "dispatch has no recipients, cannot write inbox: msg_id={}, sender={}, context_id={}",
-                        stored_msg.id.to_string(),
+                        stored_msg_id.to_string(),
                         sender.to_string(),
                         context_id.as_deref().unwrap_or("-"),
                     );
@@ -619,7 +724,7 @@ impl MessageCenter {
                         Err(error) => {
                             warn!(
                                 "dispatch failed while deciding inbox: msg_id={}, sender={}, recipient={}, context_id={}, error={}",
-                                stored_msg.id.to_string(),
+                                stored_msg_id.to_string(),
                                 sender.to_string(),
                                 recipient.to_string(),
                                 context_id.as_deref().unwrap_or("-"),
@@ -633,7 +738,7 @@ impl MessageCenter {
                             if box_kind == BoxKind::Inbox {
                                 info!(
                                     "dispatch about to write inbox record: msg_id={}, sender={}, owner={}, box_kind=INBOX, context_id={}",
-                                    stored_msg.id.to_string(),
+                                    stored_msg_id.to_string(),
                                     sender.to_string(),
                                     recipient.to_string(),
                                     context_id.as_deref().unwrap_or("-"),
@@ -641,7 +746,7 @@ impl MessageCenter {
                             } else if box_kind == BoxKind::RequestBox {
                                 warn!(
                                     "dispatch inbox not found, route to REQUEST_BOX: msg_id={}, sender={}, recipient={}, context_id={}",
-                                    stored_msg.id.to_string(),
+                                    stored_msg_id.to_string(),
                                     sender.to_string(),
                                     recipient.to_string(),
                                     context_id.as_deref().unwrap_or("-"),
@@ -663,7 +768,7 @@ impl MessageCenter {
                         None => {
                             warn!(
                                 "dispatch inbox not found, dropping recipient: msg_id={}, sender={}, recipient={}, context_id={}",
-                                stored_msg.id.to_string(),
+                                stored_msg_id.to_string(),
                                 sender.to_string(),
                                 recipient.to_string(),
                                 context_id.as_deref().unwrap_or("-"),
@@ -695,11 +800,12 @@ impl MessageCenter {
             }
 
             let stored_msg = Self::ensure_message(state, msg);
+            let (stored_msg_id, stored_msg_json) = stored_msg.gen_obj_id();
             let author = Self::outbound_author(&stored_msg);
             if self.is_contact_blocked(&author, None)? {
                 let result = PostSendResult {
                     ok: false,
-                    msg_id: stored_msg.id.clone(),
+                    msg_id: stored_msg_id.clone(),
                     deliveries: Vec::new(),
                     reason: Some("blocked_author".to_string()),
                 };
@@ -708,6 +814,8 @@ impl MessageCenter {
                 }
                 return Ok(result);
             }
+
+            Self::store_message(&stored_msg_id, &stored_msg_json)?;
 
             Self::create_or_get_record(
                 state,
@@ -764,7 +872,7 @@ impl MessageCenter {
 
             let result = PostSendResult {
                 ok: true,
-                msg_id: stored_msg.id.clone(),
+                msg_id: stored_msg_id.clone(),
                 deliveries,
                 reason: None,
             };
@@ -781,6 +889,7 @@ impl MessageCenter {
         box_kind: BoxKind,
         state_filter: Option<Vec<MsgState>>,
         lock_on_take: Option<bool>,
+        with_object: Option<bool>,
     ) -> std::result::Result<Option<MsgRecordWithObject>, RPCErrors> {
         self.with_state_write(|state| {
             let default_filter = match box_kind {
@@ -807,8 +916,8 @@ impl MessageCenter {
                     }
                 }
 
-                let with_object = Self::build_record_with_object(state, record)?;
-                return Ok(Some(with_object));
+                let record = Self::build_record_view(record, with_object)?;
+                return Ok(Some(record));
             }
 
             Ok(None)
@@ -821,6 +930,7 @@ impl MessageCenter {
         box_kind: BoxKind,
         state_filter: Option<Vec<MsgState>>,
         limit: Option<usize>,
+        with_object: Option<bool>,
     ) -> std::result::Result<Vec<MsgRecordWithObject>, RPCErrors> {
         self.with_state_read(|state| {
             let limit = Self::clamp_limit(limit, DEFAULT_PEEK_LIMIT, MAX_PEEK_LIMIT);
@@ -830,7 +940,7 @@ impl MessageCenter {
 
             let mut result = Vec::new();
             for record in records.into_iter().take(limit) {
-                result.push(Self::build_record_with_object(state, record)?);
+                result.push(Self::build_record_view(record, with_object)?);
             }
             Ok(result)
         })
@@ -845,6 +955,7 @@ impl MessageCenter {
         cursor_sort_key: Option<u64>,
         cursor_record_id: Option<String>,
         descending: Option<bool>,
+        with_object: Option<bool>,
     ) -> std::result::Result<MsgRecordPage, RPCErrors> {
         self.with_state_read(|state| {
             let descending = descending.unwrap_or(true);
@@ -863,7 +974,7 @@ impl MessageCenter {
             let mut items = Vec::new();
             let mut iter = records.into_iter();
             for record in iter.by_ref().take(limit) {
-                items.push(Self::build_record_with_object(state, record)?);
+                items.push(Self::build_record_view(record, with_object)?);
             }
 
             let next_item = iter.next();
@@ -1055,13 +1166,13 @@ impl MessageCenter {
     fn get_record_internal(
         &self,
         record_id: String,
-        _with_object: Option<bool>,
+        with_object: Option<bool>,
     ) -> std::result::Result<Option<MsgRecordWithObject>, RPCErrors> {
         self.with_state_read(|state| {
             let Some(record) = state.records.get(&record_id).cloned() else {
                 return Ok(None);
             };
-            Ok(Some(Self::build_record_with_object(state, record)?))
+            Ok(Some(Self::build_record_view(record, with_object)?))
         })
     }
 
@@ -1069,7 +1180,22 @@ impl MessageCenter {
         &self,
         msg_id: ObjId,
     ) -> std::result::Result<Option<MsgObject>, RPCErrors> {
-        self.with_state_read(|state| Ok(state.messages.get(&msg_id.to_string()).cloned()))
+        self.with_state_read(|state| {
+            if let Some(msg) = state.messages.get(&msg_id.to_string()) {
+                return Ok(Some(msg.clone()));
+            }
+            match Self::load_message(&msg_id) {
+                Ok(msg) => Ok(Some(msg)),
+                Err(error) => {
+                    let error_text = error.to_string().to_ascii_lowercase();
+                    if error_text.contains("notfound") || error_text.contains("not found") {
+                        Ok(None)
+                    } else {
+                        Err(error)
+                    }
+                }
+            }
+        })
     }
 }
 
@@ -1101,9 +1227,10 @@ impl MsgCenterHandler for MessageCenter {
         box_kind: BoxKind,
         state_filter: Option<Vec<MsgState>>,
         lock_on_take: Option<bool>,
+        with_object: Option<bool>,
         _ctx: RPCContext,
     ) -> std::result::Result<Option<MsgRecordWithObject>, RPCErrors> {
-        self.get_next_internal(owner, box_kind, state_filter, lock_on_take)
+        self.get_next_internal(owner, box_kind, state_filter, lock_on_take, with_object)
     }
 
     async fn handle_peek_box(
@@ -1112,9 +1239,10 @@ impl MsgCenterHandler for MessageCenter {
         box_kind: BoxKind,
         state_filter: Option<Vec<MsgState>>,
         limit: Option<usize>,
+        with_object: Option<bool>,
         _ctx: RPCContext,
     ) -> std::result::Result<Vec<MsgRecordWithObject>, RPCErrors> {
-        self.peek_box_internal(owner, box_kind, state_filter, limit)
+        self.peek_box_internal(owner, box_kind, state_filter, limit, with_object)
     }
 
     async fn handle_list_box_by_time(
@@ -1126,6 +1254,7 @@ impl MsgCenterHandler for MessageCenter {
         cursor_sort_key: Option<u64>,
         cursor_record_id: Option<String>,
         descending: Option<bool>,
+        with_object: Option<bool>,
         _ctx: RPCContext,
     ) -> std::result::Result<MsgRecordPage, RPCErrors> {
         self.list_box_by_time_internal(
@@ -1136,6 +1265,7 @@ impl MsgCenterHandler for MessageCenter {
             cursor_sort_key,
             cursor_record_id,
             descending,
+            with_object,
         )
     }
 

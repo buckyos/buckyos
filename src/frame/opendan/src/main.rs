@@ -155,9 +155,7 @@ fn resolve_session_worker_threads(default_value: usize) -> usize {
         _ => {
             warn!(
                 "invalid {} value `{}`; fallback to {}",
-                OPENDAN_SESSION_WORKER_THREADS_ENV,
-                raw,
-                default_value
+                OPENDAN_SESSION_WORKER_THREADS_ENV, raw, default_value
             );
             default_value
         }
@@ -169,17 +167,13 @@ async fn run_agent(agent_root: PathBuf, deps: AIAgentDeps) -> Result<()> {
     cfg.session_worker_threads = resolve_session_worker_threads(cfg.session_worker_threads);
     let session_worker_threads = cfg.session_worker_threads;
 
-    let agent = Arc::new(
-        AIAgent::load(cfg, deps)
-            .await
-            .map_err(|err| {
-                anyhow!(
-                    "load agent failed: root={}, err={}",
-                    agent_root.display(),
-                    err
-                )
-            })?,
-    );
+    let agent = Arc::new(AIAgent::load(cfg, deps).await.map_err(|err| {
+        anyhow!(
+            "load agent failed: root={}, err={}",
+            agent_root.display(),
+            err
+        )
+    })?);
     info!(
         "opendan agent loaded: did={} root={} session_workers={}",
         agent.did(),

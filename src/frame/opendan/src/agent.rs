@@ -7,17 +7,18 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
-    AiccClient, BoxKind, Event, MsgCenterClient, MsgObject, MsgRecordWithObject, MsgState,
-    TaskManagerClient,
+    AiccClient, BoxKind, Event, MsgCenterClient, MsgRecordWithObject, MsgState, TaskManagerClient,
 };
 use log::{debug, info, warn};
 use name_lib::DID;
-use ndn_lib::ObjId;
+use ndn_lib::{MsgContent, MsgContentFormat, MsgObjKind, MsgObject};
+use serde::Deserialize;
 use serde_json::{json, Value as Json};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::sleep;
 use tokio::{fs, task};
+use uuid::Uuid;
 
 use crate::agent_config::AIAgentConfig;
 use crate::agent_enviroment::AgentEnvironment;
@@ -311,6 +312,7 @@ impl AIAgent {
                     BoxKind::Inbox,
                     Some(vec![MsgState::Unread]),
                     Some(true),
+                    Some(true),
                 )
                 .await
             {
@@ -370,7 +372,8 @@ impl AIAgent {
         if let Some(session_id) = normalize_session_id(hinted_session_id) {
             return Ok(session_id);
         }
-        if let Some(session_id) = extract_session_id_hint(&record.msg.payload) {
+        let msg_payload = serde_json::to_value(&record.msg).unwrap_or_else(|_| json!({}));
+        if let Some(session_id) = extract_session_id_hint(&msg_payload) {
             return Ok(session_id);
         }
 
@@ -464,16 +467,30 @@ impl AIAgent {
         }
 
         let mut resolved_session_id = normalize_routed_session_id(route.session_id.as_deref());
+        let routed_new_session = route.new_session.clone();
+        let mut routed_new_session_title = None::<String>;
+        let mut routed_new_session_summary = None::<String>;
+        let mut created_new_session = false;
         if resolved_session_id.is_none() {
-            if let Some(title) = route.new_session_title.as_deref() {
-                resolved_session_id = Some(build_generated_session_id(title));
+            if let Some((title, summary)) = routed_new_session.as_ref() {
+                routed_new_session_title = normalize_session_id(Some(title.as_str()));
+                routed_new_session_summary = normalize_session_id(Some(summary.as_str()));
+                if routed_new_session_title.is_some() || routed_new_session_summary.is_some() {
+                    resolved_session_id = Some(format!("session-{}", Uuid::new_v4()));
+                    created_new_session = true;
+                }
             }
         }
         let mut session_id = resolved_session_id.unwrap_or_else(|| DEFAULT_SESSION_ID.to_string());
+        let ensured_title = if created_new_session {
+            routed_new_session_title.clone()
+        } else {
+            None
+        };
 
         let session = match self
             .session_mgr
-            .ensure_session(session_id.as_str(), route.new_session_title.clone())
+            .ensure_session(session_id.as_str(), ensured_title)
             .await
         {
             Ok(session) => session,
@@ -483,6 +500,8 @@ impl AIAgent {
                     self.did, source_kind, session_id, err
                 );
                 session_id = DEFAULT_SESSION_ID.to_string();
+                created_new_session = false;
+                routed_new_session_summary = None;
                 self.session_mgr
                     .ensure_session(DEFAULT_SESSION_ID, None)
                     .await
@@ -502,14 +521,15 @@ impl AIAgent {
         {
             let mut guard = session.lock().await;
 
-            if let Some(summary) = route
-                .new_session_summary
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                if guard.summary.trim().is_empty() {
-                    guard.summary = summary.to_string();
+            if created_new_session {
+                if let Some(summary) = routed_new_session_summary
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    if guard.summary.trim().is_empty() {
+                        guard.summary = summary.to_string();
+                    }
                 }
             }
 
@@ -531,7 +551,8 @@ impl AIAgent {
                 "source": source_kind,
                 "session_id": session_id,
                 "next_behavior": next_behavior,
-                "new_session_title": route.new_session_title,
+                "new_session": routed_new_session,
+                "new_session_created": created_new_session,
                 "memory_queries": memory_queries,
                 "reply": route_reply,
                 "ts_ms": now_ms(),
@@ -588,7 +609,8 @@ impl AIAgent {
     }
 
     fn msg_record_to_pulled_msg(record: MsgRecordWithObject) -> PulledMsg {
-        let session_id = extract_session_id_hint(&record.msg.payload);
+        let msg_payload = serde_json::to_value(&record.msg).unwrap_or_else(|_| json!({}));
+        let session_id = extract_session_id_hint(&msg_payload);
         PulledMsg { session_id, record }
     }
 
@@ -1358,24 +1380,6 @@ impl AIAgent {
             return;
         }
 
-        let msg_id = match ObjId::new(
-            format!(
-                "chunk:{}-{}",
-                now_ms(),
-                self.wakeup_seq.fetch_add(1, Ordering::Relaxed)
-            )
-            .as_str(),
-        ) {
-            Ok(id) => id,
-            Err(err) => {
-                warn!(
-                    "agent.reply_build_msg_id_failed: did={} target={:?} err={}",
-                    self.did, target_did, err
-                );
-                return;
-            }
-        };
-
         let mut payload = json!({
             "kind": "text",
             "audience": audience,
@@ -1393,15 +1397,25 @@ impl AIAgent {
             });
         }
 
-        let mut outbound = MsgObject::new(
-            msg_id,
-            sender_did,
-            None,
-            vec![target_did.clone()],
-            payload,
-            now_ms(),
-        );
-        outbound.thread_key = extract_reply_thread_key(source_payload);
+        let mut outbound = MsgObject {
+            from: sender_did,
+            source: None,
+            to: vec![target_did.clone()],
+            kind: MsgObjKind::Info,
+            created_at_ms: now_ms(),
+            content: MsgContent {
+                format: Some(MsgContentFormat::TextPlain),
+                content: payload
+                    .get("content")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        outbound.thread.topic = extract_reply_thread_key(source_payload);
+        outbound.meta.insert("payload".to_string(), payload);
 
         match msg_center.post_send(outbound, None, None).await {
             Ok(result) => {
@@ -1486,11 +1500,20 @@ struct BehaviorLoopReport {
 #[derive(Debug, Default)]
 struct RouterResolution {
     session_id: Option<String>,
-    new_session_title: Option<String>,
-    new_session_summary: Option<String>,
+    new_session: Option<(String, String)>,
     next_behavior: Option<String>,
     reply: Option<String>,
     memory_queries: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct RouteLLMResult {
+    session_id: Option<String>,
+    new_session: Option<(String, String)>,
+    next_behavior: Option<String>,
+    memory_queries: Vec<String>,
+    reply: Option<String>,
 }
 
 fn apply_behavior_transition(
@@ -1748,36 +1771,6 @@ fn normalize_routed_session_id(value: Option<&str>) -> Option<String> {
     Some(session_id)
 }
 
-fn build_generated_session_id(title: &str) -> String {
-    let mut slug = String::new();
-    let mut last_dash = false;
-    for ch in title.chars() {
-        let c = ch.to_ascii_lowercase();
-        if c.is_ascii_alphanumeric() {
-            slug.push(c);
-            last_dash = false;
-        } else if (c.is_ascii_whitespace() || c == '-' || c == '_')
-            && !last_dash
-            && !slug.is_empty()
-        {
-            slug.push('-');
-            last_dash = true;
-        }
-        if slug.len() >= 64 {
-            break;
-        }
-    }
-
-    while slug.ends_with('-') {
-        slug.pop();
-    }
-    if slug.is_empty() {
-        slug.push_str("session");
-    }
-
-    format!("{}-{}", slug, now_ms())
-}
-
 fn parse_router_resolution(
     route_payload: Option<&Json>,
     next_behavior_hint: Option<&str>,
@@ -1790,55 +1783,28 @@ fn parse_router_resolution(
         return out;
     };
 
-    out.session_id = normalize_session_id(
-        route_payload
-            .pointer("/session_id")
-            .and_then(|value| value.as_str()),
-    );
-
-    if let Some(raw_new_session) = route_payload.pointer("/new_session") {
-        if let Some(arr) = raw_new_session.as_array() {
-            out.new_session_title =
-                normalize_session_id(arr.first().and_then(|value| value.as_str()));
-            out.new_session_summary =
-                normalize_session_id(arr.get(1).and_then(|value| value.as_str()));
-        } else if let Some(obj) = raw_new_session.as_object() {
-            out.new_session_title = normalize_session_id(
-                obj.get("title")
-                    .and_then(|value| value.as_str())
-                    .or_else(|| obj.get("name").and_then(|value| value.as_str())),
-            );
-            out.new_session_summary = normalize_session_id(
-                obj.get("description")
-                    .and_then(|value| value.as_str())
-                    .or_else(|| obj.get("summary").and_then(|value| value.as_str())),
-            );
+    let route = serde_json::from_value::<RouteLLMResult>(route_payload.clone()).unwrap_or_default();
+    out.session_id = normalize_session_id(route.session_id.as_deref());
+    out.new_session = route.new_session.and_then(|(title, summary)| {
+        let title = normalize_session_id(Some(title.as_str()));
+        let summary = normalize_session_id(Some(summary.as_str()));
+        if title.is_none() && summary.is_none() {
+            None
+        } else {
+            Some((title.unwrap_or_default(), summary.unwrap_or_default()))
         }
-    }
+    });
 
     if out.next_behavior.is_none() {
-        out.next_behavior = normalize_session_id(
-            route_payload
-                .pointer("/next_behavior")
-                .and_then(|value| value.as_str()),
-        );
+        out.next_behavior = normalize_session_id(route.next_behavior.as_deref());
     }
 
-    out.reply = normalize_session_id(
-        route_payload
-            .pointer("/reply")
-            .and_then(|value| value.as_str()),
-    );
-    out.memory_queries = route_payload
-        .pointer("/memory_queries")
-        .and_then(|value| value.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| normalize_session_id(item.as_str()))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    out.reply = normalize_session_id(route.reply.as_deref());
+    out.memory_queries = route
+        .memory_queries
+        .iter()
+        .filter_map(|item| normalize_session_id(Some(item.as_str())))
+        .collect::<Vec<_>>();
 
     out
 }
@@ -1898,7 +1864,13 @@ fn extract_reply_thread_key(payload: &Json) -> Option<String> {
 }
 
 fn extract_reply_thread_key_from_msg(payload: &Json) -> Option<String> {
-    for pointer in ["/msg/thread_key", "/thread_key", "/record/thread_key"] {
+    for pointer in [
+        "/msg/thread/topic",
+        "/thread/topic",
+        "/msg/thread_key",
+        "/thread_key",
+        "/record/thread_key",
+    ] {
         if let Some(thread_key) = payload
             .pointer(pointer)
             .and_then(|value| value.as_str())
@@ -1915,10 +1887,15 @@ fn extract_session_id_hint(payload: &Json) -> Option<String> {
     for pointer in [
         "/session_id",
         "/payload/session_id",
+        "/payload/payload/session_id",
         "/msg/session_id",
         "/msg/payload/session_id",
-        "/meta/session_id",
         "/msg/meta/session_id",
+        "/content/machine/data/session_id",
+        "/msg/content/machine/data/session_id",
+        "/msg/meta/payload/session_id",
+        "/meta/payload/session_id",
+        "/meta/session_id",
     ] {
         if let Some(session_id) = payload
             .pointer(pointer)

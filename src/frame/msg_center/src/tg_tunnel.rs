@@ -2,7 +2,7 @@ use crate::msg_tunnel::MsgTunnel;
 use anyhow::{bail, Context, Result as AnyResult};
 use async_trait::async_trait;
 use buckyos_api::{
-    DeliveryReportResult, IngressContext, MsgCenterHandler, MsgObject, MsgRecordWithObject,
+    DeliveryReportResult, IngressContext, MsgCenterHandler, MsgRecordWithObject,
     MSG_CENTER_SERVICE_NAME,
 };
 use buckyos_kit::get_buckyos_service_data_dir;
@@ -16,12 +16,12 @@ use grammers_mtsender::{SenderPool, SenderPoolHandle};
 use kRPC::RPCContext;
 use log::{info, warn};
 use name_lib::DID;
-use ndn_lib::ObjId;
+use ndn_lib::{MsgContent, MsgContentFormat, MsgObjKind, MsgObject};
 use reqwest::Client as HttpClient;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -104,43 +104,34 @@ impl TgMessageConverter {
         format!("tg:{}:{}:{}", bot_account_id, chat_id, message_id)
     }
 
-    fn fnv1a64(raw: &[u8]) -> u64 {
-        const OFFSET: u64 = 0xcbf29ce484222325;
-        const PRIME: u64 = 0x100000001b3;
-
-        let mut hash = OFFSET;
-        for byte in raw {
-            hash ^= *byte as u64;
-            hash = hash.wrapping_mul(PRIME);
-        }
-        hash
-    }
-
-    fn build_msg_obj_id(idempotency_key: &str) -> AnyResult<ObjId> {
-        let hash = Self::fnv1a64(idempotency_key.as_bytes());
-        let raw = format!("chunk:{:016x}", hash);
-        ObjId::new(&raw).with_context(|| format!("failed to build msg obj id from {}", raw))
-    }
-
     fn extract_text_from_payload(payload: &Value) -> Option<String> {
         payload
-            .get("msg_payload")
-            .and_then(|msg_payload| msg_payload.get("text"))
+            .get("msg_content")
+            .and_then(|msg_content| msg_content.get("content"))
+            .or_else(|| {
+                payload
+                    .get("msg_payload")
+                    .and_then(|msg_payload| msg_payload.get("text"))
+            })
             .and_then(|value| value.as_str())
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
     }
 
     fn msg_object_to_tg_content(msg: &MsgObject) -> (Option<String>, Value) {
-        let text = msg
-            .payload
-            .get("text")
-            .and_then(|value| value.as_str())
-            .map(|value| value.to_string());
+        let text = if msg.content.content.trim().is_empty() {
+            msg.meta
+                .get("msg_payload")
+                .and_then(|msg_payload| msg_payload.get("text"))
+                .and_then(|value| value.as_str())
+                .map(|value| value.to_string())
+        } else {
+            Some(msg.content.content.to_string())
+        };
         let payload = json!({
-            "msg_payload": msg.payload,
-            "msg_meta": msg.meta,
-            "thread_key": msg.thread_key,
+            "msg_content": &msg.content,
+            "msg_meta": &msg.meta,
+            "thread_key": msg.thread.topic,
         });
         (text, payload)
     }
@@ -158,7 +149,6 @@ impl TgMessageConverter {
         let chat_id = chat.id().bot_api_dialog_id();
         let chat_type = Self::chat_kind(chat);
         let idempotency_key = Self::build_dispatch_key(bot_account_id, chat_id, message.id());
-        let msg_obj_id = Self::build_msg_obj_id(&idempotency_key)?;
         let created_at_ms = message.date().timestamp_millis().max(0) as u64;
         let text = message.text().to_string();
         let payload_kind = if text.trim().is_empty() {
@@ -166,35 +156,42 @@ impl TgMessageConverter {
         } else {
             "text"
         };
+        let mut meta = BTreeMap::new();
+        meta.insert(
+            "telegram".to_string(),
+            json!({
+                "chat_dialog_id": chat_id,
+                "chat_username": chat.username(),
+                "sender_id": sender_chat.id().bot_api_dialog_id(),
+                "sender_username": sender_chat.username(),
+                "sender_name": sender_chat.name(),
+                "bot_account_id": bot_account_id,
+                "payload_kind": payload_kind,
+                "message_id": message.id(),
+                "chat_type": chat_type,
+                "chat_name": chat.name(),
+            }),
+        );
 
-        let msg = MsgObject {
-            id: msg_obj_id,
+        let mut msg = MsgObject {
             from: sender_did,
             source: None,
             to: vec![owner_did.clone()],
-            thread_key: Some(format!("tg:{}:{}", bot_account_id, chat_id)),
-            payload: json!({
-                "kind": payload_kind,
-                "text": text,
-                "telegram": {
-                    "message_id": message.id(),
-                    "chat_id": chat_id,
-                    "chat_type": chat_type,
-                    "chat_name": chat.name(),
-                }
-            }),
-            meta: Some(json!({
-                "telegram": {
-                    "chat_dialog_id": chat_id,
-                    "chat_username": chat.username(),
-                    "sender_id": sender_chat.id().bot_api_dialog_id(),
-                    "sender_username": sender_chat.username(),
-                    "sender_name": sender_chat.name(),
-                    "bot_account_id": bot_account_id,
-                }
-            })),
+            kind: if text.trim().is_empty() {
+                MsgObjKind::Event
+            } else {
+                MsgObjKind::Info
+            },
             created_at_ms,
+            content: MsgContent {
+                format: Some(MsgContentFormat::TextPlain),
+                content: text,
+                ..Default::default()
+            },
+            meta,
+            ..Default::default()
         };
+        msg.thread.topic = Some(format!("tg:{}:{}", bot_account_id, chat_id));
 
         let ingress_ctx = IngressContext {
             tunnel_did,
@@ -1274,7 +1271,6 @@ impl BotApiTgGateway {
         let message_id_i32 = i32::try_from(message.message_id).unwrap_or(i32::MAX);
         let idempotency_key =
             TgMessageConverter::build_dispatch_key(&bot_account_id, chat_id, message_id_i32);
-        let msg_obj_id = TgMessageConverter::build_msg_obj_id(&idempotency_key)?;
         let text = Self::text_from_message(&message);
         let payload_kind = if text.trim().is_empty() {
             "telegram_event"
@@ -1282,34 +1278,41 @@ impl BotApiTgGateway {
             "text"
         };
         let created_at_ms = (message.date.max(0) as u64).saturating_mul(1000);
-        let msg = MsgObject {
-            id: msg_obj_id,
+        let mut meta = BTreeMap::new();
+        meta.insert(
+            "telegram".to_string(),
+            json!({
+                "chat_dialog_id": chat_id,
+                "chat_username": message.chat.username,
+                "sender_id": sender_chat_id,
+                "sender_username": sender_username,
+                "sender_name": sender_name,
+                "bot_account_id": bot_account_id,
+                "payload_kind": payload_kind,
+                "message_id": message.message_id,
+                "chat_type": chat_kind,
+                "chat_name": Self::chat_name(&message.chat),
+            }),
+        );
+        let mut msg = MsgObject {
             from: sender_did,
             source: None,
             to: vec![owner_did.clone()],
-            thread_key: Some(format!("tg:{}:{}", bot_account_id, chat_id)),
-            payload: json!({
-                "kind": payload_kind,
-                "text": text,
-                "telegram": {
-                    "message_id": message.message_id,
-                    "chat_id": chat_id,
-                    "chat_type": chat_kind,
-                    "chat_name": Self::chat_name(&message.chat),
-                }
-            }),
-            meta: Some(json!({
-                "telegram": {
-                    "chat_dialog_id": chat_id,
-                    "chat_username": message.chat.username,
-                    "sender_id": sender_chat_id,
-                    "sender_username": sender_username,
-                    "sender_name": sender_name,
-                    "bot_account_id": bot_account_id,
-                }
-            })),
+            kind: if text.trim().is_empty() {
+                MsgObjKind::Event
+            } else {
+                MsgObjKind::Info
+            },
             created_at_ms,
+            content: MsgContent {
+                format: Some(MsgContentFormat::TextPlain),
+                content: text,
+                ..Default::default()
+            },
+            meta,
+            ..Default::default()
         };
+        msg.thread.topic = Some(format!("tg:{}:{}", bot_account_id, chat_id));
 
         let ingress_ctx = IngressContext {
             tunnel_did,
@@ -1749,12 +1752,8 @@ impl TgTunnel {
         Ok(())
     }
 
-    fn resolve_sender_did(record: &MsgRecordWithObject) -> DID {
-        record
-            .msg
-            .source
-            .clone()
-            .unwrap_or_else(|| record.msg.from.clone())
+    fn resolve_sender_did(msg: &MsgObject) -> DID {
+        msg.source.clone().unwrap_or_else(|| msg.from.clone())
     }
 
     fn parse_chat_id_from_route_extra(extra: &Value) -> Option<String> {
@@ -1840,12 +1839,16 @@ impl TgTunnel {
         }
     }
 
-    fn build_egress_envelope(
+    async fn build_egress_envelope(
         &self,
         record: &MsgRecordWithObject,
         binding: &TgBotBinding,
-    ) -> TgEgressEnvelope {
-        let sender_did = Self::resolve_sender_did(record);
+    ) -> AnyResult<TgEgressEnvelope> {
+        let msg = record
+            .get_msg()
+            .await
+            .map_err(|error| anyhow::anyhow!("load message for egress record failed: {}", error))?;
+        let sender_did = Self::resolve_sender_did(&msg);
         let route = record.record.route.as_ref();
         let chat_id = route
             .and_then(|route| route.chat_id.clone())
@@ -1861,17 +1864,17 @@ impl TgTunnel {
             })
             .or_else(|| binding.default_chat_id.clone());
 
-        let (text, payload) = TgMessageConverter::msg_object_to_tg_content(&record.msg);
+        let (text, payload) = TgMessageConverter::msg_object_to_tg_content(&msg);
 
         // TODO: 用 grammers 的消息模型做完整转换（媒体、回复链、实体、按钮等）
-        TgEgressEnvelope {
+        Ok(TgEgressEnvelope {
             sender_did,
             bot_account_id: binding.bot_account_id.clone(),
             chat_id,
             text,
             payload,
             record_id: record.record.record_id.clone(),
-        }
+        })
     }
 
     fn now_ms() -> u64 {
@@ -1947,12 +1950,20 @@ impl MsgTunnel for TgTunnel {
             );
         }
 
-        let sender_did = Self::resolve_sender_did(&record);
+        let mut record = record;
+        let msg = record
+            .get_msg()
+            .await
+            .map_err(|error| anyhow::anyhow!("load message for egress record failed: {}", error))?;
+        if record.msg.is_none() {
+            record.msg = Some(msg.clone());
+        }
+        let sender_did = Self::resolve_sender_did(&msg);
         let binding = self.get_binding(&sender_did)?.ok_or_else(|| {
             anyhow::anyhow!("missing tg bot binding for {}", sender_did.to_string())
         })?;
 
-        let envelope = self.build_egress_envelope(&record, &binding);
+        let envelope = self.build_egress_envelope(&record, &binding).await?;
         self.gateway.send(envelope).await
     }
 }
@@ -1960,17 +1971,9 @@ impl MsgTunnel for TgTunnel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buckyos_api::{BoxKind, MsgObject, MsgRecord, MsgState, RouteInfo};
-    use ndn_lib::ObjId;
+    use buckyos_api::{BoxKind, MsgRecord, MsgState, RouteInfo};
+    use ndn_lib::{MsgContent, MsgContentFormat, MsgObjKind, MsgObject, NamedObject};
     use serde_json::json;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static TEST_SEQ: AtomicU64 = AtomicU64::new(1);
-
-    fn next_msg_id() -> ObjId {
-        let seq = TEST_SEQ.fetch_add(1, Ordering::SeqCst);
-        ObjId::new(&format!("chunk:{:016x}", seq)).unwrap()
-    }
 
     fn new_tunnel() -> TgTunnel {
         let mut cfg = TgTunnelConfig::new(DID::new("bns", "tg-test"));
@@ -1983,22 +1986,27 @@ mod tests {
         source: Option<DID>,
         route_chat_id: Option<&str>,
     ) -> MsgRecordWithObject {
-        let msg = MsgObject {
-            id: next_msg_id(),
+        let mut msg = MsgObject {
             from,
             source,
             to: vec![DID::new("bns", "receiver")],
-            thread_key: Some("thread-a".to_string()),
-            payload: json!({ "kind": "text", "text": "hello" }),
-            meta: None,
+            kind: MsgObjKind::Info,
+            content: MsgContent {
+                format: Some(MsgContentFormat::TextPlain),
+                content: "hello".to_string(),
+                ..Default::default()
+            },
             created_at_ms: 1,
+            ..Default::default()
         };
+        msg.thread.topic = Some("thread-a".to_string());
+        let msg_id = msg.gen_obj_id().0;
 
         let record = MsgRecord {
-            record_id: format!("record-{}", msg.id.to_string()),
+            record_id: format!("record-{}", msg_id.to_string()),
             owner: DID::new("bns", "tunnel-owner"),
             box_kind: BoxKind::TunnelOutbox,
-            msg_id: msg.id.clone(),
+            msg_id: msg_id.clone(),
             state: MsgState::Wait,
             created_at_ms: 1,
             updated_at_ms: 1,
@@ -2007,12 +2015,15 @@ mod tests {
                 ..Default::default()
             }),
             delivery: None,
-            thread_key: msg.thread_key.clone(),
+            thread_key: msg.thread.topic.clone(),
             sort_key: 1,
             tags: Vec::new(),
         };
 
-        MsgRecordWithObject { record, msg }
+        MsgRecordWithObject {
+            record,
+            msg: Some(msg),
+        }
     }
 
     #[tokio::test]

@@ -1,0 +1,8 @@
+{
+  "epoch": 1,
+  "stores": [
+    {"store_id": "store1", "path": "./named_store1", "weight": 1},
+    {"store_id": "store2", "path": "./named_store2", "weight": 1},
+    {"store_id": "store3", "path": "./named_store3", "weight": 1}
+  ]
+}

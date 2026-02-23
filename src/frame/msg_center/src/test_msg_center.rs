@@ -1,23 +1,16 @@
 use crate::contact_mgr::ContactMgr;
 use crate::msg_center::MessageCenter;
 use buckyos_api::{
-    BoxKind, DeliveryReportResult, IngressContext, MsgCenterHandler, MsgObject, MsgState,
+    BoxKind, DeliveryReportResult, IngressContext, MsgCenterHandler, MsgState,
     ReadReceiptState, SendContext,
 };
 use kRPC::RPCContext;
 use name_lib::DID;
-use ndn_lib::ObjId;
-use serde_json::json;
+use ndn_lib::{MsgContent, MsgContentFormat, MsgObjKind, MsgObject, NamedObject};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-static TEST_MSG_SEQ: AtomicU64 = AtomicU64::new(1000);
 static TEST_TIME_SEQ: AtomicU64 = AtomicU64::new(10_000);
-
-fn next_obj_id() -> ObjId {
-    let seq = TEST_MSG_SEQ.fetch_add(1, Ordering::SeqCst);
-    ObjId::new(&format!("chunk:{}", seq)).unwrap()
-}
 
 fn next_created_at_ms() -> u64 {
     TEST_TIME_SEQ.fetch_add(1, Ordering::SeqCst)
@@ -43,17 +36,17 @@ fn new_center(tag: &str) -> MessageCenter {
 
 fn make_msg(from: DID, source: Option<DID>, to: Vec<DID>) -> MsgObject {
     MsgObject {
-        id: next_obj_id(),
         from,
         source,
         to,
-        thread_key: None,
-        payload: json!({
-            "kind": "text",
-            "text": "hello",
-        }),
-        meta: None,
+        kind: MsgObjKind::Info,
+        content: MsgContent {
+            format: Some(MsgContentFormat::TextPlain),
+            content: "hello".to_string(),
+            ..Default::default()
+        },
         created_at_ms: next_created_at_ms(),
+        ..Default::default()
     }
 }
 
@@ -96,21 +89,21 @@ async fn dispatch_single_chat_goes_to_inbox_and_locking_moves_state() {
     assert_eq!(dispatch.delivered_recipients, vec![recipient.clone()]);
 
     let inbox = center
-        .handle_peek_box(recipient.clone(), BoxKind::Inbox, None, None, ctx())
+        .handle_peek_box(recipient.clone(), BoxKind::Inbox, None, None, None, ctx())
         .await
         .unwrap();
     assert_eq!(inbox.len(), 1);
     assert_eq!(inbox[0].record.state, MsgState::Unread);
 
     let next = center
-        .handle_get_next(recipient.clone(), BoxKind::Inbox, None, None, ctx())
+        .handle_get_next(recipient.clone(), BoxKind::Inbox, None, None, None, ctx())
         .await
         .unwrap()
         .unwrap();
     assert_eq!(next.record.state, MsgState::Reading);
 
     let no_more_unread = center
-        .handle_get_next(recipient, BoxKind::Inbox, None, None, ctx())
+        .handle_get_next(recipient, BoxKind::Inbox, None, None, None, ctx())
         .await
         .unwrap();
     assert!(no_more_unread.is_none());
@@ -131,13 +124,13 @@ async fn dispatch_stranger_goes_to_request_box() {
     assert!(dispatch.delivered_recipients.contains(&recipient));
 
     let inbox = center
-        .handle_peek_box(recipient.clone(), BoxKind::Inbox, None, None, ctx())
+        .handle_peek_box(recipient.clone(), BoxKind::Inbox, None, None, None, ctx())
         .await
         .unwrap();
     assert_eq!(inbox.len(), 0);
 
     let request_box = center
-        .handle_peek_box(recipient, BoxKind::RequestBox, None, None, ctx())
+        .handle_peek_box(recipient, BoxKind::RequestBox, None, None, None, ctx())
         .await
         .unwrap();
     assert_eq!(request_box.len(), 1);
@@ -171,19 +164,19 @@ async fn dispatch_group_message_creates_group_and_agent_views() {
     assert_eq!(dispatch.delivered_agents.len(), 2);
 
     let group_box = center
-        .handle_peek_box(group_id.clone(), BoxKind::GroupInbox, None, None, ctx())
+        .handle_peek_box(group_id.clone(), BoxKind::GroupInbox, None, None, None, ctx())
         .await
         .unwrap();
     assert_eq!(group_box.len(), 1);
 
     let agent1_box = center
-        .handle_peek_box(agent_1, BoxKind::Inbox, None, None, ctx())
+        .handle_peek_box(agent_1, BoxKind::Inbox, None, None, None, ctx())
         .await
         .unwrap();
     assert_eq!(agent1_box.len(), 1);
 
     let agent2_box = center
-        .handle_peek_box(agent_2, BoxKind::Inbox, None, None, ctx())
+        .handle_peek_box(agent_2, BoxKind::Inbox, None, None, None, ctx())
         .await
         .unwrap();
     assert_eq!(agent2_box.len(), 1);
@@ -212,7 +205,7 @@ async fn post_send_creates_owner_and_tunnel_outbox_records() {
     assert_eq!(post_send.deliveries.len(), 1);
 
     let owner_outbox = center
-        .handle_peek_box(author, BoxKind::Outbox, None, None, ctx())
+        .handle_peek_box(author, BoxKind::Outbox, None, None, None, ctx())
         .await
         .unwrap();
     assert_eq!(owner_outbox.len(), 1);
@@ -220,14 +213,14 @@ async fn post_send_creates_owner_and_tunnel_outbox_records() {
 
     let tunnel = post_send.deliveries[0].tunnel_did.clone();
     let tunnel_outbox = center
-        .handle_peek_box(tunnel.clone(), BoxKind::TunnelOutbox, None, None, ctx())
+        .handle_peek_box(tunnel.clone(), BoxKind::TunnelOutbox, None, None, None, ctx())
         .await
         .unwrap();
     assert_eq!(tunnel_outbox.len(), 1);
     assert_eq!(tunnel_outbox[0].record.state, MsgState::Wait);
 
     let next = center
-        .handle_get_next(tunnel, BoxKind::TunnelOutbox, None, None, ctx())
+        .handle_get_next(tunnel, BoxKind::TunnelOutbox, None, None, None, ctx())
         .await
         .unwrap()
         .unwrap();
@@ -321,7 +314,7 @@ async fn update_record_state_checks_transition_rules() {
         .unwrap();
 
     let inbox = center
-        .handle_peek_box(recipient, BoxKind::Inbox, None, None, ctx())
+        .handle_peek_box(recipient, BoxKind::Inbox, None, None, None, ctx())
         .await
         .unwrap();
     let record_id = inbox[0].record.record_id.clone();
@@ -391,6 +384,7 @@ async fn list_box_by_time_supports_pagination() {
             None,
             None,
             Some(true),
+            None,
             ctx(),
         )
         .await
@@ -408,6 +402,7 @@ async fn list_box_by_time_supports_pagination() {
             page_1.next_cursor_sort_key,
             page_1.next_cursor_record_id,
             Some(true),
+            None,
             ctx(),
         )
         .await
@@ -422,7 +417,7 @@ async fn read_receipt_can_be_set_and_queried() {
     let author = DID::new("bns", "author-b");
     let reader = DID::new("bns", "reader-b");
     let msg = make_msg(group.clone(), Some(author), Vec::new());
-    let msg_id = msg.id.clone();
+    let msg_id = msg.gen_obj_id().0;
 
     center
         .handle_dispatch(msg, None, None, ctx())
@@ -497,7 +492,7 @@ async fn idempotency_key_prevents_duplicate_records() {
     assert_eq!(first_dispatch.msg_id, second_dispatch.msg_id);
 
     let inbox = center
-        .handle_peek_box(recipient.clone(), BoxKind::Inbox, None, None, ctx())
+        .handle_peek_box(recipient.clone(), BoxKind::Inbox, None, None, None, ctx())
         .await
         .unwrap();
     assert_eq!(inbox.len(), 1);
@@ -526,7 +521,7 @@ async fn idempotency_key_prevents_duplicate_records() {
 
     let tunnel = first_post.deliveries[0].tunnel_did.clone();
     let tunnel_outbox = center
-        .handle_peek_box(tunnel, BoxKind::TunnelOutbox, None, None, ctx())
+        .handle_peek_box(tunnel, BoxKind::TunnelOutbox, None, None, None, ctx())
         .await
         .unwrap();
     assert_eq!(tunnel_outbox.len(), 1);

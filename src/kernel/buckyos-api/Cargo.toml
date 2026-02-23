@@ -35,5 +35,5 @@ kRPC ={ workspace = true }
 rbac = { workspace = true }
 cyfs-gateway-lib = { workspace = true }
 ndn-lib = { workspace = true }
-
+named_store = { workspace = true }
 

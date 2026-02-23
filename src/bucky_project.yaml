@@ -104,6 +104,7 @@ apps:
     - library/
     - data/
     - agents/jarvis
+    - var/ # 传统的本地用户数据区
 
     # 清理路径，uninstall的时候会删除（所有的modules item都会删除)
     clean_paths: 

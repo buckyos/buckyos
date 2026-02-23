@@ -437,29 +437,25 @@ impl MsgTunnelInstanceMgr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buckyos_api::{BoxKind, MsgObject, MsgRecord, MsgState, RouteInfo};
-    use serde_json::json;
-    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-
-    static TEST_SEQ: AtomicU64 = AtomicU64::new(1);
-
-    fn next_obj_id() -> ndn_lib::ObjId {
-        let seq = TEST_SEQ.fetch_add(1, Ordering::SeqCst);
-        ndn_lib::ObjId::new(&format!("chunk:{:016x}", seq)).unwrap()
-    }
+    use buckyos_api::{BoxKind, MsgRecord, MsgState, RouteInfo};
+    use ndn_lib::{MsgContent, MsgContentFormat, MsgObjKind, MsgObject, NamedObject};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     fn build_tunnel_record(tunnel_did: DID) -> MsgRecordWithObject {
-        let msg_id = next_obj_id();
         let msg = MsgObject {
-            id: msg_id.clone(),
             from: DID::new("bns", "author"),
             source: None,
             to: vec![DID::new("bns", "receiver")],
-            thread_key: None,
-            payload: json!({ "kind": "text", "text": "hello" }),
-            meta: None,
+            kind: MsgObjKind::Info,
+            content: MsgContent {
+                format: Some(MsgContentFormat::TextPlain),
+                content: "hello".to_string(),
+                ..Default::default()
+            },
             created_at_ms: 1,
+            ..Default::default()
         };
+        let msg_id = msg.gen_obj_id().0;
         let record = MsgRecord {
             record_id: format!("record-{}", msg_id.to_string()),
             owner: tunnel_did.clone(),
@@ -474,12 +470,15 @@ mod tests {
                 ..Default::default()
             }),
             delivery: None,
-            thread_key: None,
+            thread_key: msg.thread.topic.clone(),
             sort_key: 1,
             tags: Vec::new(),
         };
 
-        MsgRecordWithObject { record, msg }
+        MsgRecordWithObject {
+            record,
+            msg: Some(msg),
+        }
     }
 
     struct MockTunnel {

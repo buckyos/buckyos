@@ -1,8 +1,8 @@
-use crate::{AppDoc, AppType, SelectorType};
+use crate::{get_buckyos_api_runtime, AppDoc, AppType, SelectorType};
 use ::kRPC::*;
 use async_trait::async_trait;
 use name_lib::DID;
-use ndn_lib::ObjId;
+use ndn_lib::{ObjId,MsgObject};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -107,44 +107,44 @@ pub enum MsgState {
     Archived,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct MsgObject {
-    pub id: ObjId,
-    pub from: DID,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<DID>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub to: Vec<DID>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thread_key: Option<String>,
-    #[serde(default)]
-    pub payload: Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub meta: Option<Value>,
-    pub created_at_ms: u64,
-}
+// #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+// pub struct MsgObject {
+//     pub id: ObjId,
+//     pub from: DID,
+//     #[serde(skip_serializing_if = "Option::is_none")]
+//     pub source: Option<DID>,
+//     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+//     pub to: Vec<DID>,
+//     #[serde(skip_serializing_if = "Option::is_none")]
+//     pub thread_key: Option<String>,
+//     #[serde(default)]
+//     pub payload: Value,
+//     #[serde(skip_serializing_if = "Option::is_none")]
+//     pub meta: Option<Value>,
+//     pub created_at_ms: u64,
+// }
 
-impl MsgObject {
-    pub fn new(
-        id: ObjId,
-        from: DID,
-        source: Option<DID>,
-        to: Vec<DID>,
-        payload: Value,
-        created_at_ms: u64,
-    ) -> Self {
-        Self {
-            id,
-            from,
-            source,
-            to,
-            thread_key: None,
-            payload,
-            meta: None,
-            created_at_ms,
-        }
-    }
-}
+// impl MsgObject {
+//     pub fn new(
+//         id: ObjId,
+//         from: DID,
+//         source: Option<DID>,
+//         to: Vec<DID>,
+//         payload: Value,
+//         created_at_ms: u64,
+//     ) -> Self {
+//         Self {
+//             id,
+//             from,
+//             source,
+//             to,
+//             thread_key: None,
+//             payload,
+//             meta: None,
+//             created_at_ms,
+//         }
+//     }
+// }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct IngressContext {
@@ -243,7 +243,34 @@ pub struct MsgRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MsgRecordWithObject {
     pub record: MsgRecord,
-    pub msg: MsgObject,
+    pub msg: Option<MsgObject>,
+}
+
+impl MsgRecordWithObject {
+    pub async fn get_msg(&self) -> std::result::Result<MsgObject, RPCErrors> {
+        //如果msg已经包含了完整的消息对象，则直接返回，否则从named_store中加载消息对象
+        if let Some(msg) = self.msg.as_ref() {
+            return Ok(msg.clone());
+        }
+
+        let msg_id = self.record.msg_id.clone();
+        let runtime = get_buckyos_api_runtime()?;
+        let named_store = runtime.get_named_store().await?;
+        let msg_json = named_store.get_object(&msg_id).await.map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "Failed to load message {} from named_store: {}",
+                msg_id.to_string(),
+                error
+            ))
+        })?;
+        serde_json::from_str::<MsgObject>(&msg_json).map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "Failed to parse message {} from named_store: {}",
+                msg_id.to_string(),
+                error
+            ))
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -552,6 +579,8 @@ pub struct MsgCenterGetNextReq {
     pub state_filter: Option<Vec<MsgState>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lock_on_take: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub with_object: Option<bool>,
 }
 
 impl MsgCenterGetNextReq {
@@ -560,12 +589,14 @@ impl MsgCenterGetNextReq {
         box_kind: BoxKind,
         state_filter: Option<Vec<MsgState>>,
         lock_on_take: Option<bool>,
+        with_object: Option<bool>,
     ) -> Self {
         Self {
             owner,
             box_kind,
             state_filter,
             lock_on_take,
+            with_object,
         }
     }
 
@@ -582,6 +613,8 @@ pub struct MsgCenterPeekBoxReq {
     pub state_filter: Option<Vec<MsgState>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub with_object: Option<bool>,
 }
 
 impl MsgCenterPeekBoxReq {
@@ -590,12 +623,14 @@ impl MsgCenterPeekBoxReq {
         box_kind: BoxKind,
         state_filter: Option<Vec<MsgState>>,
         limit: Option<usize>,
+        with_object: Option<bool>,
     ) -> Self {
         Self {
             owner,
             box_kind,
             state_filter,
             limit,
+            with_object,
         }
     }
 
@@ -618,6 +653,8 @@ pub struct MsgCenterListBoxByTimeReq {
     pub cursor_record_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub descending: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub with_object: Option<bool>,
 }
 
 impl MsgCenterListBoxByTimeReq {
@@ -629,6 +666,7 @@ impl MsgCenterListBoxByTimeReq {
         cursor_sort_key: Option<u64>,
         cursor_record_id: Option<String>,
         descending: Option<bool>,
+        with_object: Option<bool>,
     ) -> Self {
         Self {
             owner,
@@ -638,6 +676,7 @@ impl MsgCenterListBoxByTimeReq {
             cursor_sort_key,
             cursor_record_id,
             descending,
+            with_object,
         }
     }
 
@@ -1168,16 +1207,18 @@ impl MsgCenterClient {
         box_kind: BoxKind,
         state_filter: Option<Vec<MsgState>>,
         lock_on_take: Option<bool>,
+        with_object: Option<bool>,
     ) -> std::result::Result<Option<MsgRecordWithObject>, RPCErrors> {
         match self {
             Self::InProcess(handler) => {
                 let ctx = RPCContext::default();
                 handler
-                    .handle_get_next(owner, box_kind, state_filter, lock_on_take, ctx)
+                    .handle_get_next(owner, box_kind, state_filter, lock_on_take, with_object, ctx)
                     .await
             }
             Self::KRPC(client) => {
-                let req = MsgCenterGetNextReq::new(owner, box_kind, state_filter, lock_on_take);
+                let req =
+                    MsgCenterGetNextReq::new(owner, box_kind, state_filter, lock_on_take, with_object);
                 let req_json = serialize_to_json(&req, "MsgCenterGetNextReq")?;
                 let result = client.call(METHOD_MSG_GET_NEXT, req_json).await?;
                 parse_optional_rpc_response(result, "MsgRecordWithObject")
@@ -1191,16 +1232,17 @@ impl MsgCenterClient {
         box_kind: BoxKind,
         state_filter: Option<Vec<MsgState>>,
         limit: Option<usize>,
+        with_object: Option<bool>,
     ) -> std::result::Result<Vec<MsgRecordWithObject>, RPCErrors> {
         match self {
             Self::InProcess(handler) => {
                 let ctx = RPCContext::default();
                 handler
-                    .handle_peek_box(owner, box_kind, state_filter, limit, ctx)
+                    .handle_peek_box(owner, box_kind, state_filter, limit, with_object, ctx)
                     .await
             }
             Self::KRPC(client) => {
-                let req = MsgCenterPeekBoxReq::new(owner, box_kind, state_filter, limit);
+                let req = MsgCenterPeekBoxReq::new(owner, box_kind, state_filter, limit, with_object);
                 let req_json = serialize_to_json(&req, "MsgCenterPeekBoxReq")?;
                 let result = client.call(METHOD_MSG_PEEK_BOX, req_json).await?;
                 parse_rpc_response(result, "Vec<MsgRecordWithObject>")
@@ -1217,6 +1259,7 @@ impl MsgCenterClient {
         cursor_sort_key: Option<u64>,
         cursor_record_id: Option<String>,
         descending: Option<bool>,
+        with_object: Option<bool>,
     ) -> std::result::Result<MsgRecordPage, RPCErrors> {
         match self {
             Self::InProcess(handler) => {
@@ -1230,6 +1273,7 @@ impl MsgCenterClient {
                         cursor_sort_key,
                         cursor_record_id,
                         descending,
+                        with_object,
                         ctx,
                     )
                     .await
@@ -1243,6 +1287,7 @@ impl MsgCenterClient {
                     cursor_sort_key,
                     cursor_record_id,
                     descending,
+                    with_object,
                 );
                 let req_json = serialize_to_json(&req, "MsgCenterListBoxByTimeReq")?;
                 let result = client.call(METHOD_MSG_LIST_BOX_BY_TIME, req_json).await?;
@@ -1710,6 +1755,7 @@ pub trait MsgCenterHandler: Send + Sync {
         box_kind: BoxKind,
         state_filter: Option<Vec<MsgState>>,
         lock_on_take: Option<bool>,
+        with_object: Option<bool>,
         ctx: RPCContext,
     ) -> std::result::Result<Option<MsgRecordWithObject>, RPCErrors>;
 
@@ -1719,6 +1765,7 @@ pub trait MsgCenterHandler: Send + Sync {
         box_kind: BoxKind,
         state_filter: Option<Vec<MsgState>>,
         limit: Option<usize>,
+        with_object: Option<bool>,
         ctx: RPCContext,
     ) -> std::result::Result<Vec<MsgRecordWithObject>, RPCErrors>;
 
@@ -1731,6 +1778,7 @@ pub trait MsgCenterHandler: Send + Sync {
         cursor_sort_key: Option<u64>,
         cursor_record_id: Option<String>,
         descending: Option<bool>,
+        with_object: Option<bool>,
         ctx: RPCContext,
     ) -> std::result::Result<MsgRecordPage, RPCErrors>;
 
@@ -1935,6 +1983,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                         next_req.box_kind,
                         next_req.state_filter,
                         next_req.lock_on_take,
+                        next_req.with_object,
                         ctx,
                     )
                     .await?;
@@ -1949,6 +1998,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                         peek_req.box_kind,
                         peek_req.state_filter,
                         peek_req.limit,
+                        peek_req.with_object,
                         ctx,
                     )
                     .await?;
@@ -1966,6 +2016,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                         list_req.cursor_sort_key,
                         list_req.cursor_record_id,
                         list_req.descending,
+                        list_req.with_object,
                         ctx,
                     )
                     .await?;
