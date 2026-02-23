@@ -6,15 +6,18 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
-use buckyos_api::{AiccClient, BoxKind, MsgCenterClient, MsgObject, MsgRecordWithObject, MsgState, TaskManagerClient};
+use buckyos_api::{
+    AiccClient, BoxKind, Event, MsgCenterClient, MsgObject, MsgRecordWithObject, MsgState,
+    TaskManagerClient,
+};
 use log::{debug, info, warn};
 use name_lib::DID;
 use ndn_lib::ObjId;
 use serde_json::{json, Value as Json};
-use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::sleep;
+use tokio::{fs, task};
 
 use crate::agent_config::AIAgentConfig;
 use crate::agent_enviroment::AgentEnvironment;
@@ -23,8 +26,8 @@ use crate::agent_session::{AgentSessionMgr, GetSessionTool, SessionExecInput, Se
 use crate::agent_tool::{AgentPolicy, ToolCall, ToolManager};
 use crate::behavior::{
     ActionExecutionMode, ActionKind, ActionSpec, AgentWorkEvent, BehaviorConfig, BehaviorExecInput,
-    EnvKV, ExecutorReply, LLMBehavior, LLMBehaviorDeps, LLMOutput, LLMTrackingInfo, Tokenizer, TraceCtx,
-    WorklogSink,
+    EnvKV, ExecutorReply, LLMBehavior, LLMBehaviorDeps, LLMOutput, LLMTrackingInfo, Tokenizer,
+    TraceCtx, WorklogSink,
 };
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
@@ -36,14 +39,13 @@ const MSG_ROUTED_REASON: &str = "routed_by_opendan_runtime";
 #[derive(Debug)]
 struct PulledMsg {
     session_id: Option<String>,
-    payload: Json,
-    record_id: Option<String>,
+    record: MsgRecordWithObject,
 }
 
 #[derive(Debug)]
 struct PulledEvent {
     session_id: Option<String>,
-    payload: Json,
+    payload: Event,
 }
 
 #[derive(Clone)]
@@ -181,31 +183,37 @@ impl AIAgent {
         &self.did
     }
 
-    pub async fn inject_msg(
-        &self,
-        session_id: Option<&str>,
-        payload: Json,
-    ) -> Result<String> {
-        let sid = session_id.unwrap_or(DEFAULT_SESSION_ID);
+    pub async fn run_agent_loop(self: Arc<Self>, stop_after_ticks: Option<u32>) -> Result<()> {
         self.session_mgr
-            .append_msg(sid, payload)
+            .refresh_all_statuses_from_disk()
             .await
-            .map_err(|err| anyhow!("append session msg failed: {err}"))
+            .map_err(|err| anyhow!("refresh session status failed: {err}"))?;
+
+        let mut worker_handles = Vec::with_capacity(self.cfg.session_worker_threads);
+        for worker_idx in 0..self.cfg.session_worker_threads {
+            let worker_agent = self.clone();
+            let handle = task::spawn(async move {
+                if let Err(err) = worker_agent.run_session_worker_loop(stop_after_ticks).await {
+                    warn!(
+                        "agent.session_worker_loop exited with error: did={} worker={} err={}",
+                        worker_agent.did, worker_idx, err
+                    );
+                }
+            });
+            worker_handles.push(handle);
+        }
+
+        let result = self.run_agent_dispatch_loop(stop_after_ticks).await;
+        for worker_handle in &worker_handles {
+            worker_handle.abort();
+        }
+        for worker_handle in worker_handles {
+            let _ = worker_handle.await;
+        }
+        result
     }
 
-    pub async fn inject_event(
-        &self,
-        session_id: Option<&str>,
-        payload: Json,
-    ) -> Result<String> {
-        let sid = session_id.unwrap_or(DEFAULT_SESSION_ID);
-        self.session_mgr
-            .append_event(sid, payload)
-            .await
-            .map_err(|err| anyhow!("append session event failed: {err}"))
-    }
-
-    pub async fn run_agent_loop(&self, stop_after_ticks: Option<u32>) -> Result<()> {
+    async fn run_agent_dispatch_loop(&self, stop_after_ticks: Option<u32>) -> Result<()> {
         let mut tick = 0_u32;
         let mut sleep_ms = self.cfg.default_sleep_ms;
 
@@ -223,40 +231,45 @@ impl AIAgent {
                 .map_err(|err| anyhow!("refresh session status failed: {err}"))?;
 
             let (pulled_msgs, pulled_events) = self.pull_msgs_and_events().await?;
-            self.dispatch_pulled_inputs(pulled_msgs, pulled_events).await?;
+            let has_inputs = !pulled_msgs.is_empty() || !pulled_events.is_empty();
+            self.dispatch_pulled_inputs(pulled_msgs, pulled_events)
+                .await?;
 
             self.session_mgr
                 .schedule_wait_timeouts(now_ms())
                 .await
                 .map_err(|err| anyhow!("schedule session wait-timeout failed: {err}"))?;
 
-            let ready = self.session_mgr.list_ready_sessions().await;
-            if ready.is_empty() {
+            if has_inputs {
+                sleep_ms = self.cfg.default_sleep_ms;
+            } else {
                 sleep(Duration::from_millis(sleep_ms)).await;
                 sleep_ms = (sleep_ms.saturating_mul(2)).min(self.cfg.max_sleep_ms);
-                continue;
             }
-
-            sleep_ms = self.cfg.default_sleep_ms;
-            self.run_ready_sessions(ready).await;
         }
 
         Ok(())
     }
 
-    async fn pull_msgs_and_events(&self) -> Result<(Vec<PulledMsg>, Vec<PulledEvent>)> {
-        let pulled_msgs = self.pull_msg_packs().await;
-        let pulled_events = self.pull_event_packs().await;
-        Ok((pulled_msgs, pulled_events))
-    }
+    async fn run_session_worker_loop(&self, stop_after_ticks: Option<u32>) -> Result<()> {
+        let mut tick = 0_u32;
+        let mut sleep_ms = self.cfg.default_sleep_ms;
 
-    async fn run_ready_sessions(
-        &self,
-        ready: Vec<Arc<Mutex<crate::agent_session::AgentSession>>>,
-    ) {
-        // Placeholder: docs expect worker-thread dispatch; current implementation keeps
-        // deterministic serial execution until max_session_parallel is finalized.
-        for session in ready {
+        loop {
+            if let Some(max_tick) = stop_after_ticks {
+                if tick >= max_tick {
+                    break;
+                }
+            }
+            tick = tick.saturating_add(1);
+
+            let Some(session) = self.session_mgr.get_next_ready_session().await else {
+                sleep(Duration::from_millis(sleep_ms)).await;
+                sleep_ms = (sleep_ms.saturating_mul(2)).min(self.cfg.max_sleep_ms);
+                continue;
+            };
+
+            sleep_ms = self.cfg.default_sleep_ms;
             if let Err(err) = self.run_session_loop(session.clone()).await {
                 let session_id = {
                     let mut guard = session.lock().await;
@@ -272,6 +285,14 @@ impl AIAgent {
                 warn!("agent.session_loop failed: did={} err={}", self.did, err);
             }
         }
+
+        Ok(())
+    }
+
+    async fn pull_msgs_and_events(&self) -> Result<(Vec<PulledMsg>, Vec<PulledEvent>)> {
+        let pulled_msgs = self.pull_msg_packs().await;
+        let pulled_events = self.pull_event_packs().await;
+        Ok((pulled_msgs, pulled_events))
     }
 
     async fn pull_msg_packs(&self) -> Vec<PulledMsg> {
@@ -317,37 +338,47 @@ impl AIAgent {
     ) -> Result<()> {
         for pulled in pulled_msgs {
             let session_id = self
-                .resolve_session_for_msg(pulled.session_id.as_deref(), &pulled.payload)
+                .resolve_session_for_msg(pulled.session_id.as_deref(), &pulled.record)
                 .await?;
+            let record_id = pulled.record.record.record_id.clone();
+            let payload = Self::msg_record_to_runtime_payload(&pulled.record);
             self.session_mgr
-                .append_msg(session_id.as_str(), pulled.payload)
+                .append_msg(session_id.as_str(), payload)
                 .await
                 .map_err(|err| anyhow!("dispatch msg to session `{session_id}` failed: {err}"))?;
-            if let Some(record_id) = pulled.record_id {
-                self.set_msg_readed(record_id).await;
-            }
+            self.set_msg_readed(record_id).await;
         }
 
         for pulled in pulled_events {
+            let payload = Self::event_to_runtime_payload(&pulled.payload);
             let session_id = self
-                .resolve_session_for_event(pulled.session_id.as_deref(), &pulled.payload)
+                .resolve_session_for_event(pulled.session_id.as_deref(), &payload)
                 .await?;
             self.session_mgr
-                .append_event(session_id.as_str(), pulled.payload)
+                .append_event(session_id.as_str(), payload)
                 .await
                 .map_err(|err| anyhow!("dispatch event to session `{session_id}` failed: {err}"))?;
         }
         Ok(())
     }
 
-    async fn resolve_session_for_msg(&self, hinted_session_id: Option<&str>, payload: &Json) -> Result<String> {
+    async fn resolve_session_for_msg(
+        &self,
+        hinted_session_id: Option<&str>,
+        record: &MsgRecordWithObject,
+    ) -> Result<String> {
         if let Some(session_id) = normalize_session_id(hinted_session_id) {
             return Ok(session_id);
         }
-        if let Some(session_id) = extract_session_id_hint(payload) {
+        if let Some(session_id) = extract_session_id_hint(&record.msg.payload) {
             return Ok(session_id);
         }
-        self.resolve_router_by_llm("msg", payload).await
+
+        let payload = Self::msg_record_to_runtime_payload(record);
+        if let Some(session_id) = extract_session_id_hint(&payload) {
+            return Ok(session_id);
+        }
+        self.resolve_router_by_llm("msg", &payload).await
     }
 
     async fn resolve_session_for_event(
@@ -365,7 +396,6 @@ impl AIAgent {
     }
 
     async fn resolve_router_by_llm(&self, source_kind: &str, payload: &Json) -> Result<String> {
-
         let preview = compact_text_for_log(payload.to_string().as_str(), 160);
         debug!(
             "agent.resolve_router_by_llm: did={} source={} fallback_session={} payload={}",
@@ -399,117 +429,26 @@ impl AIAgent {
             .min(self.cfg.max_steps_per_wakeup.max(1));
         let mut route_payload = None::<Json>;
         let mut route_next_behavior = None::<String>;
-
-        for step_idx in 0..max_router_steps {
-            let trace = TraceCtx {
-                trace_id: format!("route-trace-{}-{}", now_ms(), step_idx),
-                agent_did: self.did.clone(),
-                behavior: router_behavior_name.clone(),
-                step_idx,
-                wakeup_id: router_id.clone(),
-            };
-
-            let memory_token_limit = if router_cfg.memory.total_limit > 0 {
-                router_cfg.memory.total_limit
-            } else {
-                self.cfg.memory_token_limit
-            };
-
-            let memory = self
-                .memory
-                .load_memory(
-                    Some(memory_token_limit),
-                    vec![trace.behavior.clone()],
-                    None,
-                )
-                .await
-                .unwrap_or_else(|err| {
-                    warn!(
-                        "agent.resolve_router_memory_load_failed: did={} behavior={} err={}",
-                        self.did, trace.behavior, err
-                    );
-                    json!({})
-                });
-
-            let mut env_context = vec![
-                EnvKV {
-                    key: "router.source".to_string(),
-                    value: source_kind.to_string(),
+        if let Err(err) = self
+            .run_behavior_loop(
+                router_behavior_name.as_str(),
+                &router_cfg,
+                router_id.as_str(),
+                max_router_steps,
+                None,
+                BehaviorLoopMode::Router {
+                    source_kind,
+                    payload,
+                    route_payload: &mut route_payload,
+                    route_next_behavior: &mut route_next_behavior,
                 },
-                EnvKV {
-                    key: "step.index".to_string(),
-                    value: step_idx.to_string(),
-                },
-                EnvKV {
-                    key: "step.remaining".to_string(),
-                    value: max_router_steps.saturating_sub(step_idx).to_string(),
-                },
-            ];
-
-            if !router_cfg.policy.trim().is_empty() {
-                env_context.push(EnvKV {
-                    key: "policy.text".to_string(),
-                    value: router_cfg.policy.clone(),
-                });
-            }
-            if !router_cfg.input.trim().is_empty() {
-                env_context.push(EnvKV {
-                    key: "input.template".to_string(),
-                    value: router_cfg.input.clone(),
-                });
-            }
-            if !router_cfg.memory.is_empty() {
-                env_context.push(EnvKV {
-                    key: "memory.policy".to_string(),
-                    value: router_cfg.memory.to_json_value().to_string(),
-                });
-            }
-
-            let inbox = if source_kind.eq_ignore_ascii_case("event") {
-                json!({
-                    "new_msg": Json::Null,
-                    "new_event": payload.clone(),
-                })
-            } else {
-                json!({
-                    "new_msg": payload.clone(),
-                    "new_event": Json::Null,
-                })
-            };
-
-            let input = BehaviorExecInput {
-                trace: trace.clone(),
-                role_md: self.role_md.clone(),
-                self_md: self.self_md.clone(),
-                session_id: None,
-                behavior_prompt: router_cfg.process_rule.clone(),
-                env_context,
-                inbox,
-                memory,
-                last_observations: vec![],
-                limits: router_cfg.limits.clone(),
-            };
-
-            let (llm_result, tracking, _action_results) =
-                match self.run_behavior_step(&trace, &router_cfg, input).await {
-                    Ok(result) => result,
-                    Err(err) => {
-                        warn!(
-                            "agent.resolve_router_step_failed: did={} source={} behavior={} step={} err={}",
-                            self.did, source_kind, router_behavior_name, step_idx, err
-                        );
-                        break;
-                    }
-                };
-
-            if let LLMOutput::Json(value) = tracking.raw_output {
-                route_payload = Some(value);
-            }
-
-            route_next_behavior = normalize_session_id(llm_result.next_behavior.as_deref());
-            if route_next_behavior.is_some() {
-                break;
-            }
+            )
+            .await
+        {
+            warn!(
+                "agent.resolve_router_step_failed: did={} source={} behavior={} err={}",
+                self.did, source_kind, router_behavior_name, err
+            );
         }
 
         let route = parse_router_resolution(route_payload.as_ref(), route_next_behavior.as_deref());
@@ -600,7 +539,9 @@ impl AIAgent {
             self.session_mgr
                 .save_session_locked(&guard)
                 .await
-                .map_err(|err| anyhow!("save routed session `{}` failed: {}", guard.session_id, err))?;
+                .map_err(|err| {
+                    anyhow!("save routed session `{}` failed: {}", guard.session_id, err)
+                })?;
         }
 
         debug!(
@@ -648,19 +589,25 @@ impl AIAgent {
 
     fn msg_record_to_pulled_msg(record: MsgRecordWithObject) -> PulledMsg {
         let session_id = extract_session_id_hint(&record.msg.payload);
-        let record_id = record.record.record_id.clone();
-        PulledMsg {
-            session_id,
-            payload: json!({
-                "source": "msg_center",
-                "record": record.record,
-                "msg": record.msg,
-            }),
-            record_id: Some(record_id),
-        }
+        PulledMsg { session_id, record }
     }
 
-    async fn run_session_loop(&self, session: Arc<Mutex<crate::agent_session::AgentSession>>) -> Result<()> {
+    fn msg_record_to_runtime_payload(record: &MsgRecordWithObject) -> Json {
+        json!({
+            "source": "msg_center",
+            "record": record.record,
+            "msg": record.msg,
+        })
+    }
+
+    fn event_to_runtime_payload(event: &Event) -> Json {
+        serde_json::to_value(event).unwrap_or_else(|_| json!({}))
+    }
+
+    async fn run_session_loop(
+        &self,
+        session: Arc<Mutex<crate::agent_session::AgentSession>>,
+    ) -> Result<()> {
         let wakeup_id = format!(
             "wakeup-{}-{}",
             now_ms(),
@@ -668,6 +615,7 @@ impl AIAgent {
         );
 
         let started_at = now_ms();
+        let deadline_ms = started_at.saturating_add(self.cfg.max_walltime_ms);
         let mut step_count = 0_u32;
         let mut behavior_hops = 0_u32;
 
@@ -676,7 +624,7 @@ impl AIAgent {
                 self.pause_running_session_to_wait(&session).await?;
                 break;
             }
-            if now_ms().saturating_sub(started_at) >= self.cfg.max_walltime_ms {
+            if now_ms() >= deadline_ms {
                 self.pause_running_session_to_wait(&session).await?;
                 break;
             }
@@ -685,10 +633,14 @@ impl AIAgent {
                 break;
             }
 
-            let (session_id, behavior_name, step_index, state) = {
+            let (session_id, behavior_name, state) = {
                 let mut guard = session.lock().await;
                 if guard.state == SessionState::Pause {
-                    (guard.session_id.clone(), String::new(), guard.step_index, guard.state)
+                    (
+                        guard.session_id.clone(),
+                        String::new(),
+                        guard.state,
+                    )
                 } else {
                     if guard.current_behavior.is_none() {
                         guard.current_behavior = Some(self.default_behavior.clone());
@@ -696,14 +648,16 @@ impl AIAgent {
                     }
                     (
                         guard.session_id.clone(),
-                        guard.current_behavior.clone().unwrap_or_else(|| self.default_behavior.clone()),
-                        guard.step_index,
+                        guard
+                            .current_behavior
+                            .clone()
+                            .unwrap_or_else(|| self.default_behavior.clone()),
                         guard.state,
                     )
                 }
             };
 
-            if state == SessionState::Pause || state != SessionState::Running {
+            if state != SessionState::Running {
                 break;
             }
 
@@ -732,96 +686,49 @@ impl AIAgent {
                 }
             };
 
-            let exec_input = {
-                let guard = session.lock().await;
-                if guard.state != SessionState::Running {
-                    None
-                } else {
-                    guard.generate_input(&behavior_cfg)
-                }
-            };
-
-            let Some(exec_input) = exec_input else {
-                let session_id = {
-                    let mut guard = session.lock().await;
-                    guard.update_state(SessionState::Wait);
-                    guard.session_id.clone()
-                };
-                self.session_mgr.save_session(&session_id).await?;
+            let remaining_steps = self.cfg.max_steps_per_wakeup.saturating_sub(step_count);
+            if remaining_steps == 0 {
+                self.pause_running_session_to_wait(&session).await?;
                 break;
-            };
+            }
 
-            let trace = TraceCtx {
-                trace_id: format!("trace-{}-{}", now_ms(), step_count),
-                agent_did: self.did.clone(),
-                behavior: behavior_name.clone(),
-                step_idx: step_index,
-                wakeup_id: wakeup_id.clone(),
-            };
-
-            let behavior_input = self
-                .build_behavior_exec_input(&trace, &behavior_cfg, &exec_input)
-                .await?;
-
-            let step_result = self
-                .run_behavior_step(&trace, &behavior_cfg, behavior_input)
+            let report = self
+                .run_behavior_loop(
+                    behavior_name.as_str(),
+                    &behavior_cfg,
+                    wakeup_id.as_str(),
+                    remaining_steps,
+                    Some(deadline_ms),
+                    BehaviorLoopMode::Session { session: &session },
+                )
                 .await;
 
-            let transition = match step_result {
-                Ok((llm_result, tracking, action_results)) => {
-                    self.handle_replies(trace.clone(), &exec_input.payload, llm_result.reply.as_slice())
-                        .await;
-                    self.apply_memory_updates(&trace, llm_result.set_memory.as_slice())
-                        .await;
+            let report = report?;
+            step_count = step_count.saturating_add(report.executed_steps);
 
-                    let transition = {
-                        let mut guard = session.lock().await;
-                        guard.update_input_used(&exec_input);
-                        guard.apply_session_delta(llm_result.session_delta.as_slice());
-
-                        let step_summary = build_step_summary(
-                            &trace,
-                            &behavior_cfg,
-                            &llm_result.next_behavior,
-                            &tracking,
-                            action_results.as_slice(),
-                        );
-                        guard.set_last_step_summary(step_summary.clone());
-                        guard.append_worklog(step_summary);
-
-                        apply_behavior_transition(
-                            &mut guard,
-                            self.default_behavior.as_str(),
-                            behavior_cfg.step_limit,
-                            llm_result.next_behavior.as_deref(),
-                        )
-                    };
-                    let _ = self.session_mgr.save_session(&transition.session_id).await;
-                    transition
-                }
-                Err(err) => {
-                    let session_id = {
-                        let mut guard = session.lock().await;
-                        guard.append_worklog(json!({
-                            "type": "step_error",
-                            "behavior": behavior_name,
-                            "step_index": step_index,
-                            "error": err.to_string(),
-                            "ts_ms": now_ms(),
-                        }));
-                        guard.update_state(SessionState::Wait);
-                        guard.session_id.clone()
-                    };
-                    let _ = self.session_mgr.save_session(&session_id).await;
-                    return Err(err);
-                }
-            };
-
-            step_count = step_count.saturating_add(1);
-            if transition.behavior_switched {
+            if report.behavior_switched {
                 behavior_hops = behavior_hops.saturating_add(1);
+                debug!(
+                    "agent.session_behavior_switched: did={} session={} from={} hops={} total_steps={}",
+                    self.did, session_id, behavior_name, behavior_hops, step_count
+                );
             }
-            if !transition.keep_running {
+
+            if report.hit_step_limit || report.hit_walltime {
+                self.pause_running_session_to_wait(&session).await?;
+                break;
+            }
+
+            if !report.keep_running {
+                break;
+            }
+
+            if report.behavior_switched {
+                continue;
+            }
+
+            if report.executed_steps == 0 {
+                self.pause_running_session_to_wait(&session).await?;
                 break;
             }
         }
@@ -844,6 +751,337 @@ impl AIAgent {
         Ok(())
     }
 
+    async fn run_behavior_loop(
+        &self,
+        behavior_name: &str,
+        behavior_cfg: &BehaviorConfig,
+        wakeup_id: &str,
+        max_steps: u32,
+        deadline_ms: Option<u64>,
+        mut mode: BehaviorLoopMode<'_>,
+    ) -> Result<BehaviorLoopReport> {
+        enum PreparedBehaviorStep {
+            Session {
+                trace: TraceCtx,
+                input: BehaviorExecInput,
+                exec_input: SessionExecInput,
+            },
+            Router {
+                trace: TraceCtx,
+                input: BehaviorExecInput,
+                source_kind: String,
+            },
+        }
+
+        let is_session_mode = matches!(&mode, BehaviorLoopMode::Session { .. });
+        let mut report = BehaviorLoopReport {
+            keep_running: is_session_mode,
+            ..Default::default()
+        };
+
+        while report.executed_steps < max_steps {
+            if let Some(deadline) = deadline_ms {
+                if now_ms() >= deadline {
+                    report.hit_walltime = true;
+                    report.keep_running = is_session_mode;
+                    break;
+                }
+            }
+
+            let prepared = match &mut mode {
+                BehaviorLoopMode::Session { session } => {
+                    let (state, step_index, exec_input) = {
+                        let mut guard = session.lock().await;
+                        if guard.state != SessionState::Pause && guard.current_behavior.is_none() {
+                            guard.current_behavior = Some(self.default_behavior.clone());
+                            guard.step_index = 0;
+                        }
+                        if guard.state == SessionState::Running
+                            && guard
+                                .current_behavior
+                                .as_deref()
+                                .map(|name| !name.eq_ignore_ascii_case(behavior_name))
+                                .unwrap_or(false)
+                        {
+                            report.behavior_switched = true;
+                            return Ok(report);
+                        }
+                        (
+                            guard.state,
+                            guard.step_index,
+                            if guard.state == SessionState::Running {
+                                guard.generate_input(behavior_cfg)
+                            } else {
+                                None
+                            },
+                        )
+                    };
+
+                    if state != SessionState::Running {
+                        report.keep_running = false;
+                        return Ok(report);
+                    }
+
+                    let Some(exec_input) = exec_input else {
+                        let session_id = {
+                            let mut guard = session.lock().await;
+                            guard.update_state(SessionState::Wait);
+                            guard.session_id.clone()
+                        };
+                        self.session_mgr.save_session(&session_id).await?;
+                        report.keep_running = false;
+                        return Ok(report);
+                    };
+
+                    let trace = TraceCtx {
+                        trace_id: format!("trace-{}-{}", now_ms(), report.executed_steps),
+                        agent_did: self.did.clone(),
+                        behavior: behavior_name.to_string(),
+                        step_idx: step_index,
+                        wakeup_id: wakeup_id.to_string(),
+                    };
+                    let input = self
+                        .build_behavior_exec_input(&trace, behavior_cfg, &exec_input)
+                        .await?;
+
+                    PreparedBehaviorStep::Session {
+                        trace,
+                        input,
+                        exec_input,
+                    }
+                }
+                BehaviorLoopMode::Router {
+                    source_kind,
+                    payload,
+                    ..
+                } => {
+                    let step_idx = report.executed_steps;
+                    let trace = TraceCtx {
+                        trace_id: format!("route-trace-{}-{}", now_ms(), step_idx),
+                        agent_did: self.did.clone(),
+                        behavior: behavior_name.to_string(),
+                        step_idx,
+                        wakeup_id: wakeup_id.to_string(),
+                    };
+                    let input = self
+                        .build_router_exec_input(
+                            &trace,
+                            behavior_cfg,
+                            source_kind,
+                            payload,
+                            max_steps,
+                        )
+                        .await;
+                    PreparedBehaviorStep::Router {
+                        trace,
+                        input,
+                        source_kind: source_kind.to_string(),
+                    }
+                }
+            };
+
+            let (trace, input, session_exec_input, router_source_kind) = match prepared {
+                PreparedBehaviorStep::Session {
+                    trace,
+                    input,
+                    exec_input,
+                } => (trace, input, Some(exec_input), None),
+                PreparedBehaviorStep::Router {
+                    trace,
+                    input,
+                    source_kind,
+                } => (trace, input, None, Some(source_kind)),
+            };
+
+            let step_result = self.run_behavior_step(&trace, behavior_cfg, input).await;
+            let (llm_result, tracking, action_results) = match step_result {
+                Ok(result) => result,
+                Err(err) => {
+                    if let Some(source_kind) = router_source_kind {
+                        return Err(anyhow!(
+                            "behavior loop step failed: source={} behavior={} step={} err={}",
+                            source_kind,
+                            behavior_name,
+                            trace.step_idx,
+                            err
+                        ));
+                    }
+
+                    let session_id = if let BehaviorLoopMode::Session { session } = &mode {
+                        let mut guard = session.lock().await;
+                        guard.append_worklog(json!({
+                            "type": "step_error",
+                            "behavior": behavior_name,
+                            "step_index": trace.step_idx,
+                            "error": err.to_string(),
+                            "ts_ms": now_ms(),
+                        }));
+                        guard.update_state(SessionState::Wait);
+                        guard.session_id.clone()
+                    } else {
+                        String::new()
+                    };
+                    if !session_id.is_empty() {
+                        let _ = self.session_mgr.save_session(&session_id).await;
+                    }
+                    return Err(err);
+                }
+            };
+
+            report.executed_steps = report.executed_steps.saturating_add(1);
+
+            if let Some(exec_input) = session_exec_input {
+                self.handle_replies(trace.clone(), &exec_input.payload, llm_result.reply.as_slice())
+                    .await;
+                self.apply_memory_updates(&trace, llm_result.set_memory.as_slice())
+                    .await;
+
+                let transition = if let BehaviorLoopMode::Session { session } = &mode {
+                    let mut guard = session.lock().await;
+                    guard.update_input_used(&exec_input);
+                    guard.apply_session_delta(llm_result.session_delta.as_slice());
+
+                    let step_summary = build_step_summary(
+                        &trace,
+                        behavior_cfg,
+                        &llm_result.next_behavior,
+                        &tracking,
+                        action_results.as_slice(),
+                    );
+                    guard.set_last_step_summary(step_summary.clone());
+                    guard.append_worklog(step_summary);
+
+                    apply_behavior_transition(
+                        &mut guard,
+                        self.default_behavior.as_str(),
+                        behavior_cfg.step_limit,
+                        llm_result.next_behavior.as_deref(),
+                    )
+                } else {
+                    continue;
+                };
+                let _ = self.session_mgr.save_session(&transition.session_id).await;
+
+                if transition.behavior_switched {
+                    report.behavior_switched = true;
+                    report.keep_running = true;
+                    return Ok(report);
+                }
+                if !transition.keep_running {
+                    report.keep_running = false;
+                    return Ok(report);
+                }
+            } else if let BehaviorLoopMode::Router {
+                route_payload,
+                route_next_behavior,
+                ..
+            } = &mut mode
+            {
+                if let LLMOutput::Json(value) = &tracking.raw_output {
+                    **route_payload = Some(value.clone());
+                }
+                **route_next_behavior = normalize_session_id(llm_result.next_behavior.as_deref());
+                if route_next_behavior.is_some() {
+                    report.keep_running = false;
+                    return Ok(report);
+                }
+            }
+        }
+
+        if report.executed_steps >= max_steps {
+            report.hit_step_limit = true;
+            report.keep_running = is_session_mode;
+        }
+
+        Ok(report)
+    }
+
+    async fn build_router_exec_input(
+        &self,
+        trace: &TraceCtx,
+        behavior_cfg: &BehaviorConfig,
+        source_kind: &str,
+        payload: &Json,
+        max_steps: u32,
+    ) -> BehaviorExecInput {
+        let memory_token_limit = if behavior_cfg.memory.total_limit > 0 {
+            behavior_cfg.memory.total_limit
+        } else {
+            self.cfg.memory_token_limit
+        };
+
+        let memory = self
+            .memory
+            .load_memory(Some(memory_token_limit), vec![trace.behavior.clone()], None)
+            .await
+            .unwrap_or_else(|err| {
+                warn!(
+                    "agent.resolve_router_memory_load_failed: did={} behavior={} err={}",
+                    self.did, trace.behavior, err
+                );
+                json!({})
+            });
+
+        let mut env_context = vec![
+            EnvKV {
+                key: "router.source".to_string(),
+                value: source_kind.to_string(),
+            },
+            EnvKV {
+                key: "step.index".to_string(),
+                value: trace.step_idx.to_string(),
+            },
+            EnvKV {
+                key: "step.remaining".to_string(),
+                value: max_steps.saturating_sub(trace.step_idx).to_string(),
+            },
+        ];
+
+        if !behavior_cfg.policy.trim().is_empty() {
+            env_context.push(EnvKV {
+                key: "policy.text".to_string(),
+                value: behavior_cfg.policy.clone(),
+            });
+        }
+        if !behavior_cfg.input.trim().is_empty() {
+            env_context.push(EnvKV {
+                key: "input.template".to_string(),
+                value: behavior_cfg.input.clone(),
+            });
+        }
+        if !behavior_cfg.memory.is_empty() {
+            env_context.push(EnvKV {
+                key: "memory.policy".to_string(),
+                value: behavior_cfg.memory.to_json_value().to_string(),
+            });
+        }
+
+        let inbox = if source_kind.eq_ignore_ascii_case("event") {
+            json!({
+                "new_msg": Json::Null,
+                "new_event": payload.clone(),
+            })
+        } else {
+            json!({
+                "new_msg": payload.clone(),
+                "new_event": Json::Null,
+            })
+        };
+
+        BehaviorExecInput {
+            trace: trace.clone(),
+            role_md: self.role_md.clone(),
+            self_md: self.self_md.clone(),
+            session_id: None,
+            behavior_prompt: behavior_cfg.process_rule.clone(),
+            env_context,
+            inbox,
+            memory,
+            last_observations: vec![],
+            limits: behavior_cfg.limits.clone(),
+        }
+    }
+
     async fn build_behavior_exec_input(
         &self,
         trace: &TraceCtx,
@@ -858,11 +1096,7 @@ impl AIAgent {
 
         let memory = self
             .memory
-            .load_memory(
-                Some(memory_token_limit),
-                vec![trace.behavior.clone()],
-                None,
-            )
+            .load_memory(Some(memory_token_limit), vec![trace.behavior.clone()], None)
             .await
             .unwrap_or_else(|err| {
                 warn!(
@@ -929,7 +1163,11 @@ impl AIAgent {
         trace: &TraceCtx,
         behavior_cfg: &BehaviorConfig,
         input: BehaviorExecInput,
-    ) -> Result<(crate::behavior::BehaviorLLMResult, LLMTrackingInfo, Vec<Json>)> {
+    ) -> Result<(
+        crate::behavior::BehaviorLLMResult,
+        LLMTrackingInfo,
+        Vec<Json>,
+    )> {
         let llm = LLMBehavior::new(
             behavior_cfg.to_llm_behavior_config(),
             LLMBehaviorDeps {
@@ -1035,17 +1273,14 @@ impl AIAgent {
                 .or_else(|| obj.get("json_content"))
                 .cloned()
                 .unwrap_or(Json::Null);
-            let source = obj
-                .get("source")
-                .cloned()
-                .unwrap_or_else(|| {
-                    json!({
-                        "trace_id": trace.trace_id,
-                        "behavior": trace.behavior,
-                        "step_idx": trace.step_idx,
-                        "agent_did": trace.agent_did,
-                    })
-                });
+            let source = obj.get("source").cloned().unwrap_or_else(|| {
+                json!({
+                    "trace_id": trace.trace_id,
+                    "behavior": trace.behavior,
+                    "step_idx": trace.step_idx,
+                    "agent_did": trace.agent_did,
+                })
+            });
 
             if let Err(err) = self.memory.set_memory(key, content, source).await {
                 warn!(
@@ -1056,7 +1291,12 @@ impl AIAgent {
         }
     }
 
-    async fn handle_replies(&self, trace: TraceCtx, source_payload: &Json, replies: &[ExecutorReply]) {
+    async fn handle_replies(
+        &self,
+        trace: TraceCtx,
+        source_payload: &Json,
+        replies: &[ExecutorReply],
+    ) {
         if replies.is_empty() {
             return;
         }
@@ -1220,6 +1460,27 @@ struct StepTransition {
     session_id: String,
     keep_running: bool,
     behavior_switched: bool,
+}
+
+enum BehaviorLoopMode<'a> {
+    Session {
+        session: &'a Arc<Mutex<crate::agent_session::AgentSession>>,
+    },
+    Router {
+        source_kind: &'a str,
+        payload: &'a Json,
+        route_payload: &'a mut Option<Json>,
+        route_next_behavior: &'a mut Option<String>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct BehaviorLoopReport {
+    executed_steps: u32,
+    keep_running: bool,
+    behavior_switched: bool,
+    hit_step_limit: bool,
+    hit_walltime: bool,
 }
 
 #[derive(Debug, Default)]
@@ -1399,7 +1660,11 @@ async fn resolve_default_behavior_name(behaviors_dir: &Path) -> Option<String> {
 async fn behavior_exists(behaviors_dir: &Path, behavior_name: &str) -> bool {
     for ext in ["yaml", "yml", "json"] {
         let path = behaviors_dir.join(format!("{behavior_name}.{ext}"));
-        if fs::metadata(&path).await.map(|meta| meta.is_file()).unwrap_or(false) {
+        if fs::metadata(&path)
+            .await
+            .map(|meta| meta.is_file())
+            .unwrap_or(false)
+        {
             return true;
         }
     }
@@ -1412,12 +1677,8 @@ async fn load_agent_did(agent_root: &Path) -> Result<String> {
         let Some(raw) = read_text_if_exists(&path).await? else {
             continue;
         };
-        let parsed: Json = serde_json::from_str(&raw).with_context(|| {
-            format!(
-                "parse agent document failed: path={}",
-                path.display()
-            )
-        })?;
+        let parsed: Json = serde_json::from_str(&raw)
+            .with_context(|| format!("parse agent document failed: path={}", path.display()))?;
         if let Some(did) = parsed
             .get("id")
             .or_else(|| parsed.get("did"))
@@ -1460,7 +1721,10 @@ fn to_abs_path(path: &Path) -> Result<PathBuf> {
 }
 
 async fn is_existing_dir(path: &Path) -> bool {
-    fs::metadata(path).await.map(|meta| meta.is_dir()).unwrap_or(false)
+    fs::metadata(path)
+        .await
+        .map(|meta| meta.is_dir())
+        .unwrap_or(false)
 }
 
 fn normalize_session_id(value: Option<&str>) -> Option<String> {
@@ -1492,7 +1756,10 @@ fn build_generated_session_id(title: &str) -> String {
         if c.is_ascii_alphanumeric() {
             slug.push(c);
             last_dash = false;
-        } else if (c.is_ascii_whitespace() || c == '-' || c == '_') && !last_dash && !slug.is_empty() {
+        } else if (c.is_ascii_whitespace() || c == '-' || c == '_')
+            && !last_dash
+            && !slug.is_empty()
+        {
             slug.push('-');
             last_dash = true;
         }
@@ -1511,7 +1778,10 @@ fn build_generated_session_id(title: &str) -> String {
     format!("{}-{}", slug, now_ms())
 }
 
-fn parse_router_resolution(route_payload: Option<&Json>, next_behavior_hint: Option<&str>) -> RouterResolution {
+fn parse_router_resolution(
+    route_payload: Option<&Json>,
+    next_behavior_hint: Option<&str>,
+) -> RouterResolution {
     let mut out = RouterResolution {
         next_behavior: normalize_session_id(next_behavior_hint),
         ..Default::default()
@@ -1528,7 +1798,8 @@ fn parse_router_resolution(route_payload: Option<&Json>, next_behavior_hint: Opt
 
     if let Some(raw_new_session) = route_payload.pointer("/new_session") {
         if let Some(arr) = raw_new_session.as_array() {
-            out.new_session_title = normalize_session_id(arr.first().and_then(|value| value.as_str()));
+            out.new_session_title =
+                normalize_session_id(arr.first().and_then(|value| value.as_str()));
             out.new_session_summary =
                 normalize_session_id(arr.get(1).and_then(|value| value.as_str()));
         } else if let Some(obj) = raw_new_session.as_object() {
@@ -1553,7 +1824,11 @@ fn parse_router_resolution(route_payload: Option<&Json>, next_behavior_hint: Opt
         );
     }
 
-    out.reply = normalize_session_id(route_payload.pointer("/reply").and_then(|value| value.as_str()));
+    out.reply = normalize_session_id(
+        route_payload
+            .pointer("/reply")
+            .and_then(|value| value.as_str()),
+    );
     out.memory_queries = route_payload
         .pointer("/memory_queries")
         .and_then(|value| value.as_array())
@@ -1573,7 +1848,9 @@ fn extract_reply_target_did(payload: &Json) -> Option<DID> {
         return Some(did);
     }
 
-    let items = payload.pointer("/new_msg").and_then(|value| value.as_array())?;
+    let items = payload
+        .pointer("/new_msg")
+        .and_then(|value| value.as_array())?;
     for item in items.iter().rev() {
         let inner = item.get("payload").unwrap_or(item);
         if let Some(did) = extract_reply_target_did_from_msg(inner) {
@@ -1605,7 +1882,10 @@ fn extract_reply_thread_key(payload: &Json) -> Option<String> {
         return Some(thread_key);
     }
 
-    let Some(items) = payload.pointer("/new_msg").and_then(|value| value.as_array()) else {
+    let Some(items) = payload
+        .pointer("/new_msg")
+        .and_then(|value| value.as_array())
+    else {
         return None;
     };
     for item in items.iter().rev() {

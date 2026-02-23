@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use buckyos_api::{OpenDanAgentSessionRecord, OpenDanSessionLink};
@@ -210,7 +210,10 @@ impl AgentSession {
     pub fn from_record(record: OpenDanAgentSessionRecord) -> Self {
         let runtime_meta = parse_runtime_meta(&record.meta);
         let mut state = runtime_meta.state;
-        if matches!(record.status.trim().to_ascii_lowercase().as_str(), SESSION_STATUS_PAUSE) {
+        if matches!(
+            record.status.trim().to_ascii_lowercase().as_str(),
+            SESSION_STATUS_PAUSE
+        ) {
             state = SessionState::Pause;
         }
         let mut meta = record.meta.clone();
@@ -283,11 +286,12 @@ impl AgentSession {
             session_id: self.session_id.clone(),
             owner_agent: self.owner_agent.clone(),
             title: self.title.clone(),
-            summary: self
-                .summary
-                .trim()
-                .to_string()
-                .if_empty_then(|| self.last_step_summary.as_ref().and_then(extract_step_summary_text).unwrap_or_default()),
+            summary: self.summary.trim().to_string().if_empty_then(|| {
+                self.last_step_summary
+                    .as_ref()
+                    .and_then(extract_step_summary_text)
+                    .unwrap_or_default()
+            }),
             status: self.record_status().to_string(),
             created_at_ms: self.created_at_ms,
             updated_at_ms,
@@ -332,7 +336,11 @@ impl AgentSession {
         }
     }
 
-    pub fn set_wait_state(&mut self, state: SessionState, wait_details: Option<SessionWaitDetails>) {
+    pub fn set_wait_state(
+        &mut self,
+        state: SessionState,
+        wait_details: Option<SessionWaitDetails>,
+    ) {
         self.state = state;
         self.wait_details = wait_details;
         self.updated_at_ms = now_ms();
@@ -555,7 +563,8 @@ impl AgentSession {
                 .get("local_workspace_id")
                 .and_then(|value| value.as_str())
             {
-                self.local_workspace_id = normalize_optional_string(Some(local_workspace_id.to_string()));
+                self.local_workspace_id =
+                    normalize_optional_string(Some(local_workspace_id.to_string()));
             }
 
             merge_json_object(&mut self.meta, patch.clone());
@@ -602,6 +611,7 @@ pub struct AgentSessionMgr {
     sessions_root: PathBuf,
     default_behavior: Option<String>,
     sessions: Arc<RwLock<HashMap<String, Arc<Mutex<AgentSession>>>>>,
+    scheduler_lock: Arc<Mutex<()>>,
 }
 
 impl AgentSessionMgr {
@@ -625,6 +635,7 @@ impl AgentSessionMgr {
             sessions_root,
             default_behavior,
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            scheduler_lock: Arc::new(Mutex::new(())),
         };
         store.load_existing().await?;
         Ok(store)
@@ -742,10 +753,16 @@ impl AgentSessionMgr {
         }
 
         let raw = fs::read_to_string(&path).await.map_err(|err| {
-            ToolError::ExecFailed(format!("read session file `{}` failed: {err}", path.display()))
+            ToolError::ExecFailed(format!(
+                "read session file `{}` failed: {err}",
+                path.display()
+            ))
         })?;
         let record = serde_json::from_str::<OpenDanAgentSessionRecord>(&raw).map_err(|err| {
-            ToolError::ExecFailed(format!("parse session file `{}` failed: {err}", path.display()))
+            ToolError::ExecFailed(format!(
+                "parse session file `{}` failed: {err}",
+                path.display()
+            ))
         })?;
 
         let Some(session) = self.get_session(session_id.as_str()).await else {
@@ -773,7 +790,8 @@ impl AgentSessionMgr {
         Ok(())
     }
 
-    pub async fn list_ready_sessions(&self) -> Vec<Arc<Mutex<AgentSession>>> {
+    pub async fn get_next_ready_session(&self) -> Option<Arc<Mutex<AgentSession>>> {
+        let _scheduler_guard = self.scheduler_lock.lock().await;
         let sessions = {
             let guard = self.sessions.read().await;
             guard.values().cloned().collect::<Vec<_>>()
@@ -794,7 +812,6 @@ impl AgentSessionMgr {
             }
         }
 
-        let mut out = Vec::<Arc<Mutex<AgentSession>>>::new();
         for session in sessions {
             let mut guard = session.lock().await;
             if guard.state == SessionState::Ready {
@@ -809,12 +826,11 @@ impl AgentSessionMgr {
                     }
                     occupied_local_workspaces.insert(local_workspace_id.to_string());
                 }
-                guard.state = SessionState::Running;
-                guard.updated_at_ms = now_ms();
-                out.push(session.clone());
+                guard.update_state(SessionState::Running);
+                return Some(session.clone());
             }
         }
-        out
+        None
     }
 
     pub async fn session_view(&self, session_id: &str) -> Result<Json, ToolError> {
@@ -904,7 +920,10 @@ impl AgentSessionMgr {
         Ok(())
     }
 
-    async fn write_session_record(&self, record: &OpenDanAgentSessionRecord) -> Result<(), ToolError> {
+    async fn write_session_record(
+        &self,
+        record: &OpenDanAgentSessionRecord,
+    ) -> Result<(), ToolError> {
         let session_id = sanitize_session_id(record.session_id.as_str())?;
         let session_dir = self.sessions_root.join(session_id.as_str());
         fs::create_dir_all(&session_dir).await.map_err(|err| {
@@ -915,8 +934,9 @@ impl AgentSessionMgr {
         })?;
 
         let session_file = session_dir.join(DEFAULT_SESSION_FILE);
-        let bytes = serde_json::to_vec_pretty(record)
-            .map_err(|err| ToolError::ExecFailed(format!("serialize session record failed: {err}")))?;
+        let bytes = serde_json::to_vec_pretty(record).map_err(|err| {
+            ToolError::ExecFailed(format!("serialize session record failed: {err}"))
+        })?;
         fs::write(&session_file, bytes).await.map_err(|err| {
             ToolError::ExecFailed(format!(
                 "write session file `{}` failed: {err}",
@@ -1219,7 +1239,10 @@ fn merge_json_object(base: &mut Json, patch: Json) {
 }
 
 async fn is_existing_file(path: &Path) -> bool {
-    fs::metadata(path).await.map(|meta| meta.is_file()).unwrap_or(false)
+    fs::metadata(path)
+        .await
+        .map(|meta| meta.is_file())
+        .unwrap_or(false)
 }
 
 fn require_string(args: &Json, key: &str) -> Result<String, ToolError> {

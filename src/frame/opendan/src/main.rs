@@ -91,6 +91,7 @@ impl HttpServer for OpenDanHttpServer {
 }
 
 const OPENDAN_AGENTS_ROOT_ENV: &str = "OPENDAN_AGENTS_ROOT";
+const OPENDAN_SESSION_WORKER_THREADS_ENV: &str = "OPENDAN_SESSION_WORKER_THREADS";
 
 fn resolve_agents_root() -> Result<PathBuf> {
     if let Ok(path) = std::env::var(OPENDAN_AGENTS_ROOT_ENV) {
@@ -144,22 +145,48 @@ async fn discover_agent_roots(agents_root: &Path) -> Result<Vec<PathBuf>> {
     Ok(roots)
 }
 
+fn resolve_session_worker_threads(default_value: usize) -> usize {
+    let Ok(raw) = std::env::var(OPENDAN_SESSION_WORKER_THREADS_ENV) else {
+        return default_value;
+    };
+    let parsed = raw.trim().parse::<usize>();
+    match parsed {
+        Ok(value) if value > 0 => value,
+        _ => {
+            warn!(
+                "invalid {} value `{}`; fallback to {}",
+                OPENDAN_SESSION_WORKER_THREADS_ENV,
+                raw,
+                default_value
+            );
+            default_value
+        }
+    }
+}
+
 async fn run_agent(agent_root: PathBuf, deps: AIAgentDeps) -> Result<()> {
-    let agent = AIAgent::load(AIAgentConfig::new(&agent_root), deps)
-        .await
-        .map_err(|err| {
-            anyhow!(
-                "load agent failed: root={}, err={}",
-                agent_root.display(),
-                err
-            )
-        })?;
-    info!(
-        "opendan agent loaded: did={} root={}",
-        agent.did(),
-        agent_root.display()
+    let mut cfg = AIAgentConfig::new(&agent_root);
+    cfg.session_worker_threads = resolve_session_worker_threads(cfg.session_worker_threads);
+    let session_worker_threads = cfg.session_worker_threads;
+
+    let agent = Arc::new(
+        AIAgent::load(cfg, deps)
+            .await
+            .map_err(|err| {
+                anyhow!(
+                    "load agent failed: root={}, err={}",
+                    agent_root.display(),
+                    err
+                )
+            })?,
     );
-    agent.run_agent_loop(None).await.map_err(|err| {
+    info!(
+        "opendan agent loaded: did={} root={} session_workers={}",
+        agent.did(),
+        agent_root.display(),
+        session_worker_threads
+    );
+    agent.clone().run_agent_loop(None).await.map_err(|err| {
         anyhow!(
             "agent loop failed: did={} root={}, err={}",
             agent.did(),

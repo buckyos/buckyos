@@ -24,6 +24,7 @@ pub struct AIAgentConfig {
     pub hp_per_action: u32,
     pub default_sleep_ms: u64,
     pub max_sleep_ms: u64,
+    pub session_worker_threads: usize,
     pub memory_token_limit: u32,
 }
 
@@ -45,6 +46,7 @@ impl AIAgentConfig {
             hp_per_action: 10,
             default_sleep_ms: 2_000,
             max_sleep_ms: 120_000,
+            session_worker_threads: 1,
             memory_token_limit: DEFAULT_MEMORY_TOKEN_LIMIT,
         }
     }
@@ -63,6 +65,9 @@ impl AIAgentConfig {
             return Err(
                 "sleep config invalid: require 0 < default_sleep_ms <= max_sleep_ms".to_string(),
             );
+        }
+        if self.session_worker_threads == 0 {
+            return Err("session_worker_threads must be > 0".to_string());
         }
         if self.hp_max == 0 {
             return Err("hp_max must be > 0".to_string());
