@@ -11,15 +11,26 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio::sync::{oneshot, Mutex, Notify, RwLock};
-use tokio::time::{timeout, Instant};
+use tokio::time::Instant;
 
 pub const KEVENT_SERVICE_UNIQUE_ID: &str = "kevent";
 pub const KEVENT_SERVICE_NAME: &str = "kevent";
 pub const KEVENT_SERVICE_MAIN_PORT: u16 = 4041;
 pub const DEFAULT_READER_CAPACITY: usize = 1024;
 pub const MAX_EVENT_DATA_SIZE_BYTES: usize = 64 * 1024;
-const SHARED_RING_POLL_INTERVAL_MS: u64 = 5;
 const SHARED_RING_DRAIN_BATCH: usize = 128;
+/// Maximum time the ShmDispatch thread blocks in futex/ulock before
+/// re-checking (acts as a heartbeat / fallback interval).
+///
+/// On Linux, futex wakes are reliable for shared-memory pages and this
+/// timeout only serves as a heartbeat.  On macOS, __ulock may not
+/// reliably wake across separate file-backed mmaps, so this timeout
+/// also acts as a polling fallback — we keep it short (1ms) to
+/// bound the worst-case latency while remaining lightweight.
+#[cfg(target_os = "linux")]
+const SHM_DISPATCH_WAIT_TIMEOUT_MS: u64 = 500;
+#[cfg(not(target_os = "linux"))]
+const SHM_DISPATCH_WAIT_TIMEOUT_MS: u64 = 1;
 
 pub type TimerId = String;
 
@@ -179,6 +190,12 @@ struct KEventClientInner {
     reader_seq: AtomicU64,
     timer_seq: AtomicU64,
     reader_capacity: usize,
+    /// Signaled by ShmDispatch after dispatching shared-ring events to
+    /// reader queues.  `pull_event` waits on this instead of polling.
+    shm_dispatch_notify: Notify,
+    /// Set to true when the client is being dropped, to stop the
+    /// ShmDispatch background thread.
+    shm_dispatch_stop: AtomicBool,
 }
 
 struct ReaderState {
@@ -208,6 +225,17 @@ impl ReaderState {
         self.notify.notify_one();
     }
 
+    /// Synchronous push for use from the ShmDispatch OS thread.
+    fn push_sync(&self, event: Event) {
+        let mut queue = self.queue.blocking_lock();
+        if queue.len() >= self.capacity {
+            queue.pop_front();
+        }
+        queue.push_back(event);
+        drop(queue);
+        self.notify.notify_one();
+    }
+
     async fn pop(&self) -> Option<Event> {
         let mut queue = self.queue.lock().await;
         queue.pop_front()
@@ -224,20 +252,35 @@ impl KEventClientInner {
         }
     }
 
-    async fn import_shared_events(&self, max_events: usize) {
+    /// Synchronous version of dispatch_event for use from the ShmDispatch
+    /// OS thread.  Uses tokio's blocking_read/blocking_lock so we never
+    /// need an async runtime on the calling thread.
+    fn dispatch_event_sync(&self, event: &Event) {
+        let snapshot: Vec<Arc<ReaderState>> =
+            self.readers.blocking_read().values().cloned().collect();
+        for reader in snapshot {
+            if reader_match_event(&reader.patterns, &event.eventid) {
+                reader.push_sync(event.clone());
+            }
+        }
+    }
+
+    /// Drain events from the shared ring buffer and dispatch to matching
+    /// readers (synchronous, for ShmDispatch thread).
+    /// Returns the number of events dispatched.
+    fn import_shared_events_sync(&self, max_events: usize) -> usize {
         let Some(shared_ring) = &self.shared_ring else {
-            return;
+            return 0;
         };
         let events = shared_ring.drain_events::<Event>(max_events);
-        if events.is_empty() {
-            return;
-        }
+        let count = events.len();
         for event in events {
             if !is_global_eventid(&event.eventid) {
                 continue;
             }
-            self.dispatch_event(&event).await;
+            self.dispatch_event_sync(&event);
         }
+        count
     }
 }
 
@@ -308,18 +351,40 @@ impl KEventClient {
             None
         };
 
+        let inner = Arc::new(KEventClientInner {
+            readers: RwLock::new(HashMap::new()),
+            timers: RwLock::new(HashMap::new()),
+            shared_ring,
+            reader_seq: AtomicU64::new(0),
+            timer_seq: AtomicU64::new(0),
+            reader_capacity: reader_capacity.max(1),
+            shm_dispatch_notify: Notify::new(),
+            shm_dispatch_stop: AtomicBool::new(false),
+        });
+
+        // Launch the ShmDispatch background thread when we have a shared ring.
+        // This thread blocks on the futex/ulock in shared memory, wakes up on
+        // new events, drains them, dispatches to reader queues, and notifies
+        // pull_event waiters.  It replaces the old 5ms polling approach.
+        //
+        // We capture the tokio Handle here (on the caller's thread, which
+        // is inside a tokio runtime) so the background OS thread can use
+        // block_on to call async dispatch_event.
+        if inner.shared_ring.is_some() {
+            let weak = Arc::downgrade(&inner);
+            std::thread::Builder::new()
+                .name("kevent-shm-dispatch".into())
+                .spawn(move || {
+                    shm_dispatch_thread(weak);
+                })
+                .ok();
+        }
+
         Self {
             mode,
             source_node: source_node.into(),
             bridge,
-            inner: Arc::new(KEventClientInner {
-                readers: RwLock::new(HashMap::new()),
-                timers: RwLock::new(HashMap::new()),
-                shared_ring,
-                reader_seq: AtomicU64::new(0),
-                timer_seq: AtomicU64::new(0),
-                reader_capacity: reader_capacity.max(1),
-            }),
+            inner,
         }
     }
 
@@ -567,6 +632,54 @@ impl KEventClient {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ShmDispatch background thread  (design doc §6)
+//
+// Runs on a dedicated OS thread (not a tokio task) so it can block on
+// futex/ulock without occupying a tokio worker.  When woken by a producer
+// writing to shared memory, it drains events, dispatches them to matching
+// reader queues, and notifies `pull_event` waiters via `shm_dispatch_notify`.
+// ---------------------------------------------------------------------------
+
+fn shm_dispatch_thread(weak: Weak<KEventClientInner>) {
+    loop {
+        let Some(inner) = weak.upgrade() else {
+            return;
+        };
+
+        if inner.shm_dispatch_stop.load(Ordering::Relaxed) {
+            return;
+        }
+
+        let shared_ring = match &inner.shared_ring {
+            Some(sr) => sr.clone(),
+            None => return,
+        };
+
+        // Snapshot notify_seq before draining, so we don't miss events
+        // published between drain and wait.
+        let seq_before = shared_ring.load_notify_seq();
+
+        // Drain and dispatch synchronously (no tokio runtime needed).
+        let dispatched = inner.import_shared_events_sync(SHARED_RING_DRAIN_BATCH);
+
+        if dispatched > 0 {
+            // Wake all pull_event waiters so they re-check their queues.
+            inner.shm_dispatch_notify.notify_waiters();
+        }
+
+        // Drop the Arc before blocking so it doesn't keep the client alive.
+        drop(inner);
+
+        // Block on futex/ulock until notify_seq changes from seq_before,
+        // or until the timeout expires (fallback heartbeat).
+        shared_ring.wait_for_events(
+            seq_before,
+            Duration::from_millis(SHM_DISPATCH_WAIT_TIMEOUT_MS),
+        );
+    }
+}
+
 impl EventReader {
     pub fn reader_id(&self) -> &str {
         &self.reader_id
@@ -579,10 +692,8 @@ impl EventReader {
             .ok_or_else(|| KEventError::ReaderClosed(self.reader_id.clone()))?;
 
         let deadline = timeout_ms.map(|ms| Instant::now() + Duration::from_millis(ms));
-        let poll_interval = Duration::from_millis(SHARED_RING_POLL_INTERVAL_MS);
-        loop {
-            inner.import_shared_events(SHARED_RING_DRAIN_BATCH).await;
 
+        loop {
             let state = {
                 let readers = inner.readers.read().await;
                 readers.get(&self.reader_id).cloned()
@@ -599,9 +710,18 @@ impl EventReader {
                 }
             }
 
+            // Wait for either:
+            // - state.notify: local pub_event or timer delivered an event
+            // - shm_dispatch_notify: ShmDispatch thread delivered shared-ring events
+            // Both notifies will fire when there is something in our queue.
+            let shm_notified = inner.shm_dispatch_notify.notified();
+            let reader_notified = state.notify.notified();
             match deadline {
                 None => {
-                    let _ = timeout(poll_interval, state.notify.notified()).await;
+                    tokio::select! {
+                        _ = shm_notified => {}
+                        _ = reader_notified => {}
+                    }
                 }
                 Some(deadline_at) => {
                     let now = Instant::now();
@@ -609,11 +729,16 @@ impl EventReader {
                         return Ok(None);
                     }
                     let remain = deadline_at - now;
-                    let wait_for = remain.min(poll_interval);
-                    if timeout(wait_for, state.notify.notified()).await.is_err()
-                        && wait_for == remain
-                    {
-                        return Ok(None);
+                    tokio::select! {
+                        _ = shm_notified => {}
+                        _ = reader_notified => {}
+                        _ = tokio::time::sleep(remain) => {
+                            // Final drain attempt before returning timeout
+                            if let Some(event) = state.pop().await {
+                                return Ok(Some(event));
+                            }
+                            return Ok(None);
+                        }
                     }
                 }
             }

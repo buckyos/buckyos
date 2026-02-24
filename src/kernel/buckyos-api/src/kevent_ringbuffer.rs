@@ -7,6 +7,7 @@ use std::mem::size_of;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -257,11 +258,13 @@ impl SharedKEventRingBuffer {
         // 6) Set dirty bit + bump notify_seq for futex wake
         let word_idx = inner.my_ring_id / 64;
         let bit = 1u64 << (inner.my_ring_id % 64);
-        let old = region.header.dirty_mask[word_idx].fetch_or(bit, Ordering::AcqRel);
+        let _old = region.header.dirty_mask[word_idx].fetch_or(bit, Ordering::AcqRel);
         // Always bump notify_seq so waiters see a change; only the 0→1
         // transition would need a futex_wake in a full implementation.
         region.header.notify_seq.fetch_add(1, Ordering::AcqRel);
-        let _ = old; // futex_wake would go here in production
+        // Wake waiters: only on 0→1 dirty transition to reduce syscalls,
+        // but always wake if bit was already set (new event in same ring).
+        shm_wake(&region.header.notify_seq);
 
         Ok(())
     }
@@ -292,25 +295,20 @@ impl SharedKEventRingBuffer {
         let my_ring_id = inner.my_ring_id;
         let mut out = Vec::with_capacity(max_events.min(64));
 
-        // --- use dirty_bitmap to only scan rings that have new data ---
-        let mut scan_mask = [0u64; DIRTY_WORDS];
-        for w in 0..DIRTY_WORDS {
-            // exchange → 0: we take ownership of the dirty bits
-            scan_mask[w] = region.header.dirty_mask[w].swap(0, Ordering::AcqRel);
-        }
-
+        // Scan all READY rings (not just dirty ones).  The dirty_mask
+        // optimization from the design doc assumes a single ShmDispatch
+        // thread per process that owns the swap(0).  With multiple
+        // SharedKEventRingBuffer instances in the same process (e.g. in
+        // tests or multi-client apps), swap(0) would clobber bits needed
+        // by other consumers.  Scanning all 16 rings is negligible overhead
+        // for the small ring counts BuckyOS targets, and the per-ring
+        // head_seq check (first line of consume_one_payload) is a single
+        // cache-line read that short-circuits immediately when empty.
         for ring_id in 0..MAX_RINGS {
             if out.len() >= max_events {
                 break;
             }
             if ring_id == my_ring_id {
-                continue;
-            }
-
-            // Skip rings not marked dirty
-            let word_idx = ring_id / 64;
-            let bit = 1u64 << (ring_id % 64);
-            if scan_mask[word_idx] & bit == 0 {
                 continue;
             }
 
@@ -348,6 +346,151 @@ impl SharedKEventRingBuffer {
 
         out
     }
+
+    /// Return the current `notify_seq` value (for use as the `old_val`
+    /// argument to a subsequent `wait_for_events` call).
+    pub fn load_notify_seq(&self) -> u64 {
+        let inner = match self.consume.lock() {
+            Ok(g) => g,
+            Err(_) => return 0,
+        };
+        let region = unsafe { &*inner.region_ptr };
+        region.header.notify_seq.load(Ordering::Acquire)
+    }
+
+    /// Block the calling thread until `notify_seq` changes from `old_seq` or
+    /// `timeout` elapses.  Returns `true` if woken by a new event, `false`
+    /// on timeout.
+    ///
+    /// This uses platform-specific primitives (futex on Linux, __ulock on
+    /// macOS) so the wake-up latency is on the order of microseconds rather
+    /// than the millisecond-scale polling it replaces.
+    pub fn wait_for_events(&self, old_seq: u64, timeout: Duration) -> bool {
+        let inner = match self.consume.lock() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+        let region = unsafe { &*inner.region_ptr };
+        let ptr = &region.header.notify_seq as *const AtomicU64;
+        // Release the consume lock before blocking so drain can proceed
+        // from another thread if needed.
+        drop(inner);
+        shm_wait(ptr, old_seq, timeout)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Platform-specific futex-like wait / wake
+// ---------------------------------------------------------------------------
+
+/// Wake all threads waiting on the given `AtomicU64`.
+fn shm_wake(seq: &AtomicU64) {
+    shm_wake_ptr(seq as *const AtomicU64);
+}
+
+#[cfg(target_os = "linux")]
+fn shm_wake_ptr(ptr: *const AtomicU64) {
+    unsafe {
+        // FUTEX_WAKE on the lower 32-bit word of the u64.
+        // We wake INT_MAX waiters (effectively all).
+        libc::syscall(
+            libc::SYS_futex,
+            ptr as *const u32, // futex operates on u32
+            libc::FUTEX_WAKE,
+            i32::MAX,          // wake all
+            std::ptr::null::<libc::timespec>(),
+            std::ptr::null::<u32>(),
+            0u32,
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn shm_wait(ptr: *const AtomicU64, old_seq: u64, timeout: Duration) -> bool {
+    // We wait on the lower 32 bits of notify_seq.  This is sufficient
+    // because we only need to detect *any* change; the upper bits changing
+    // without the lower bits changing requires 2^32 increments, which won't
+    // happen between two consecutive waits.
+    let old_val = old_seq as u32;
+    let ts = libc::timespec {
+        tv_sec: timeout.as_secs() as libc::time_t,
+        tv_nsec: timeout.subsec_nanos() as libc::c_long,
+    };
+    let rc = unsafe {
+        libc::syscall(
+            libc::SYS_futex,
+            ptr as *const u32,
+            libc::FUTEX_WAIT,
+            old_val,
+            &ts as *const libc::timespec,
+            std::ptr::null::<u32>(),
+            0u32,
+        )
+    };
+    // rc == 0: woken; rc == -1 && errno == EAGAIN: value changed; both mean "new events"
+    // rc == -1 && errno == ETIMEDOUT: timeout
+    if rc == -1 {
+        let errno = unsafe { *libc::__errno_location() };
+        return errno != libc::ETIMEDOUT;
+    }
+    true
+}
+
+#[cfg(target_os = "macos")]
+fn shm_wake_ptr(ptr: *const AtomicU64) {
+    // __ulock_wake is not exposed via the libc crate; use the raw syscall.
+    // Use the _SHARED variant (6) so that wake/wait match by physical page,
+    // not virtual address — required for cross-mmap and cross-process usage.
+    const UL_COMPARE_AND_WAIT64_SHARED: u32 = 0x00000006;
+    const ULF_WAKE_ALL: u32 = 0x00000100;
+    // SYS___ulock_wake = 516 on macOS (raw BSD syscall number)
+    const SYS_ULOCK_WAKE: libc::c_int = 516;
+    unsafe {
+        libc::syscall(
+            SYS_ULOCK_WAKE,
+            (UL_COMPARE_AND_WAIT64_SHARED | ULF_WAKE_ALL) as libc::c_int,
+            ptr as *mut libc::c_void,
+            0u64, // wake_value (unused for wake)
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn shm_wait(ptr: *const AtomicU64, old_seq: u64, timeout: Duration) -> bool {
+    const UL_COMPARE_AND_WAIT64_SHARED: u32 = 0x00000006;
+    // SYS___ulock_wait = 515 on macOS (raw BSD syscall number)
+    const SYS_ULOCK_WAIT: libc::c_int = 515;
+    let timeout_us = timeout.as_micros() as u32;
+    let rc = unsafe {
+        libc::syscall(
+            SYS_ULOCK_WAIT,
+            UL_COMPARE_AND_WAIT64_SHARED as libc::c_int,
+            ptr as *mut libc::c_void,
+            old_seq,
+            timeout_us,
+        )
+    };
+    // rc >= 0: woken; rc == -1 && errno == EFAULT/EINTR: spurious, treat as woken
+    // rc == -1 && errno == ETIMEDOUT: timeout
+    if rc == -1 {
+        let errno = std::io::Error::last_os_error()
+            .raw_os_error()
+            .unwrap_or(0);
+        return errno != libc::ETIMEDOUT;
+    }
+    true
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn shm_wake_ptr(_ptr: *const AtomicU64) {
+    // No-op on unsupported platforms; falls back to polling.
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn shm_wait(_ptr: *const AtomicU64, _old_seq: u64, timeout: Duration) -> bool {
+    // Fallback: sleep for the timeout duration.
+    std::thread::sleep(timeout);
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -631,10 +774,20 @@ mod tests {
     /// Verify basic single-process publish → drain round-trip.
     /// In the single-process case drain skips our own ring, so we
     /// simulate by directly writing to the ring and reading back.
+    /// Allocate a zeroed PublishRing on the heap (too large for the stack).
+    fn heap_ring() -> Box<PublishRing> {
+        unsafe {
+            let layout = std::alloc::Layout::new::<PublishRing>();
+            let ptr = std::alloc::alloc_zeroed(layout) as *mut PublishRing;
+            assert!(!ptr.is_null());
+            Box::from_raw(ptr)
+        }
+    }
+
     #[test]
     fn test_slot_seqlock_roundtrip() {
-        // Create a ring in a local buffer (not shared memory)
-        let mut ring = unsafe { std::mem::zeroed::<PublishRing>() };
+        // Create a ring in a heap buffer (not shared memory)
+        let ring = heap_ring();
 
         let payload = b"hello world";
         let seq = 1u64;
@@ -645,7 +798,7 @@ mod tests {
         slot.seq.store(0, Ordering::Relaxed);
         unsafe {
             let slot_ptr = slot as *const RingSlot as *mut RingSlot;
-            (*slot_ptr).payload[..payload.len()].copy_from_slice(payload);
+            (&mut (*slot_ptr).payload)[..payload.len()].copy_from_slice(payload);
         }
         slot.len.store(payload.len() as u32, Ordering::Relaxed);
         slot.seq.store(seq, Ordering::Release);
@@ -665,7 +818,7 @@ mod tests {
     /// Verify that consumer detects overrun and skips forward.
     #[test]
     fn test_consumer_overrun_skip() {
-        let mut ring = unsafe { std::mem::zeroed::<PublishRing>() };
+        let ring = heap_ring();
 
         // Simulate producer having written far ahead
         let head = (RING_CAPACITY as u64) * 3 + 42;
@@ -678,7 +831,7 @@ mod tests {
         let payload = b"latest";
         unsafe {
             let slot_ptr = slot as *const RingSlot as *mut RingSlot;
-            (*slot_ptr).payload[..payload.len()].copy_from_slice(payload);
+            (&mut (*slot_ptr).payload)[..payload.len()].copy_from_slice(payload);
         }
         slot.len.store(payload.len() as u32, Ordering::Relaxed);
         slot.seq.store(oldest_available, Ordering::Release);
@@ -688,7 +841,7 @@ mod tests {
             read_seq: 0, // way behind
         };
 
-        let result = consume_one_payload(&ring, &mut cursor);
+        let _result = consume_one_payload(&ring, &mut cursor);
         // After overrun detection, cursor jumps forward; first call may
         // or may not return data depending on exact slot state, but
         // cursor.read_seq must have advanced past 0.
@@ -697,10 +850,20 @@ mod tests {
         assert!(cursor.read_seq >= head - RING_CAPACITY as u64);
     }
 
+    /// Allocate a zeroed SharedRegion on the heap (too large for the stack).
+    fn heap_region() -> Box<SharedRegion> {
+        unsafe {
+            let layout = std::alloc::Layout::new::<SharedRegion>();
+            let ptr = std::alloc::alloc_zeroed(layout) as *mut SharedRegion;
+            assert!(!ptr.is_null());
+            Box::from_raw(ptr)
+        }
+    }
+
     /// Verify that header_matches rejects mismatched parameters.
     #[test]
     fn test_header_mismatch() {
-        let mut region = unsafe { std::mem::zeroed::<SharedRegion>() };
+        let mut region = heap_region();
         assert!(!header_matches(&region));
 
         region.header.magic = SHM_MAGIC;

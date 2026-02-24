@@ -7,7 +7,9 @@
       "Bash(npx tsc:*)",
       "Bash(npx vite:*)",
       "Bash(npm install:*)",
-      "Bash(npm run build:*)"
+      "Bash(npm run build:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo test:*)"
     ]
   }
 }
