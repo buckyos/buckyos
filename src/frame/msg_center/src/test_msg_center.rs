@@ -42,12 +42,11 @@ fn new_center(tag: &str) -> MessageCenter {
     MessageCenter::new_with_msg_box_root(mgr, test_msg_box_root(tag)).unwrap()
 }
 
-fn make_msg(from: DID, source: Option<DID>, to: Vec<DID>) -> MsgObject {
+fn make_msg(from: DID, to: Vec<DID>, kind: MsgObjKind) -> MsgObject {
     MsgObject {
         from,
-        source,
         to,
-        kind: MsgObjKind::Info,
+        kind,
         content: MsgContent {
             format: Some(MsgContentFormat::TextPlain),
             content: "hello".to_string(),
@@ -79,7 +78,7 @@ async fn dispatch_single_chat_goes_to_inbox_and_locking_moves_state() {
         .await
         .unwrap();
 
-    let msg = make_msg(sender.clone(), None, vec![recipient.clone()]);
+    let msg = make_msg(sender.clone(), vec![recipient.clone()], MsgObjKind::Chat);
     let dispatch = center
         .handle_dispatch(
             msg,
@@ -122,7 +121,7 @@ async fn dispatch_stranger_goes_to_request_box() {
     let center = new_center("dispatch_request");
     let sender = DID::new("bns", "sender-b");
     let recipient = DID::new("bns", "recipient-b");
-    let msg = make_msg(sender, None, vec![recipient.clone()]);
+    let msg = make_msg(sender, vec![recipient.clone()], MsgObjKind::Chat);
 
     let dispatch = center
         .handle_dispatch(msg, None, None, ctx())
@@ -163,7 +162,7 @@ async fn dispatch_group_message_creates_group_and_agent_views() {
         .await
         .unwrap();
 
-    let msg = make_msg(group_id.clone(), Some(author), Vec::new());
+    let msg = make_msg(author, vec![group_id.clone()], MsgObjKind::GroupMsg);
     let dispatch = center
         .handle_dispatch(msg, None, None, ctx())
         .await
@@ -202,7 +201,7 @@ async fn post_send_creates_owner_and_tunnel_outbox_records() {
     let center = new_center("post_send");
     let author = DID::new("bns", "author-b");
     let target = DID::new("bns", "target-b");
-    let msg = make_msg(author.clone(), None, vec![target]);
+    let msg = make_msg(author.clone(), vec![target], MsgObjKind::Chat);
 
     let post_send = center
         .handle_post_send(
@@ -255,7 +254,7 @@ async fn report_delivery_handles_success_and_failure_paths() {
     let sender = DID::new("bns", "sender-c");
     let target = DID::new("bns", "target-c");
 
-    let fail_msg = make_msg(sender.clone(), None, vec![target.clone()]);
+    let fail_msg = make_msg(sender.clone(), vec![target.clone()], MsgObjKind::Chat);
     let fail_post = center
         .handle_post_send(fail_msg, None, None, ctx())
         .await
@@ -278,7 +277,7 @@ async fn report_delivery_handles_success_and_failure_paths() {
     assert_eq!(failed_record.state, MsgState::Dead);
     assert_eq!(failed_record.delivery.unwrap().attempts, 1);
 
-    let success_msg = make_msg(sender, None, vec![target]);
+    let success_msg = make_msg(sender, vec![target], MsgObjKind::Chat);
     let success_post = center
         .handle_post_send(success_msg, None, None, ctx())
         .await
@@ -321,7 +320,7 @@ async fn update_record_state_checks_transition_rules() {
         .await
         .unwrap();
 
-    let msg = make_msg(sender, None, vec![recipient.clone()]);
+    let msg = make_msg(sender, vec![recipient.clone()], MsgObjKind::Chat);
     center
         .handle_dispatch(
             msg,
@@ -370,8 +369,8 @@ async fn list_box_by_time_supports_pagination() {
         .await
         .unwrap();
 
-    let first_msg = make_msg(sender.clone(), None, vec![recipient.clone()]);
-    let second_msg = make_msg(sender, None, vec![recipient.clone()]);
+    let first_msg = make_msg(sender.clone(), vec![recipient.clone()], MsgObjKind::Chat);
+    let second_msg = make_msg(sender, vec![recipient.clone()], MsgObjKind::Chat);
     center
         .handle_dispatch(
             first_msg,
@@ -438,7 +437,7 @@ async fn read_receipt_can_be_set_and_queried() {
     let group = DID::new("bns", "group-b");
     let author = DID::new("bns", "author-b");
     let reader = DID::new("bns", "reader-b");
-    let msg = make_msg(group.clone(), Some(author), Vec::new());
+    let msg = make_msg(author, vec![group.clone()], MsgObjKind::GroupMsg);
     let msg_id = msg.gen_obj_id().0;
 
     center
@@ -486,7 +485,7 @@ async fn idempotency_key_prevents_duplicate_records() {
         .await
         .unwrap();
 
-    let dispatch_msg = make_msg(sender.clone(), None, vec![recipient.clone()]);
+    let dispatch_msg = make_msg(sender.clone(), vec![recipient.clone()], MsgObjKind::Chat);
     let first_dispatch = center
         .handle_dispatch(
             dispatch_msg.clone(),
@@ -519,7 +518,7 @@ async fn idempotency_key_prevents_duplicate_records() {
         .unwrap();
     assert_eq!(inbox.len(), 1);
 
-    let send_msg = make_msg(sender, None, vec![recipient]);
+    let send_msg = make_msg(sender, vec![recipient], MsgObjKind::Chat);
     let first_post = center
         .handle_post_send(
             send_msg.clone(),

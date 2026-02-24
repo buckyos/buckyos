@@ -11,7 +11,7 @@ use buckyos_api::{
 use kRPC::{RPCContext, RPCErrors};
 use log::{info, warn};
 use name_lib::DID;
-use ndn_lib::{MsgObject, NamedObject, ObjId};
+use ndn_lib::{MsgObjKind, MsgObject, NamedObject, ObjId};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -168,16 +168,17 @@ impl MessageCenter {
         result
     }
 
-    fn logical_sender(msg: &MsgObject) -> DID {
-        msg.source.clone().unwrap_or_else(|| msg.from.clone())
-    }
-
-    fn outbound_author(msg: &MsgObject) -> DID {
-        msg.source.clone().unwrap_or_else(|| msg.from.clone())
-    }
-
     fn is_group_message(msg: &MsgObject) -> bool {
-        msg.source.is_some()
+        msg.kind == MsgObjKind::GroupMsg
+    }
+
+    fn group_did_from_message(msg: &MsgObject) -> DID {
+        // New MsgObject semantics: group message uses `to` as group DID.
+        // Keep `from` fallback for backward compatibility with old persisted records.
+        msg.to
+            .first()
+            .cloned()
+            .unwrap_or_else(|| msg.from.clone())
     }
 
     fn route_from_ingress(ingress_ctx: Option<&IngressContext>) -> Option<RouteInfo> {
@@ -535,6 +536,7 @@ impl MessageCenter {
     fn list_delivery_targets(msg: &MsgObject) -> Vec<DID> {
         let mut targets = Self::dedupe_dids(msg.to.clone());
         if targets.is_empty() && Self::is_group_message(msg) {
+            // Backward compatibility fallback for old group messages.
             targets.push(msg.from.clone());
         }
         targets
@@ -567,8 +569,8 @@ impl MessageCenter {
 
             let stored_msg = Self::ensure_message(state, msg);
             let (stored_msg_id, stored_msg_json) = stored_msg.gen_obj_id();
-            //这里的sender是逻辑上的发送者，优先使用source字段，如果没有则使用from字段
-            let sender = Self::logical_sender(&stored_msg);
+            // 发送者直接使用 from 字段
+            let sender = stored_msg.from.clone();
             let context_id = ingress_ctx.as_ref().and_then(|ctx| ctx.context_id.clone());
             if self.is_contact_blocked(&sender, None)? {
                 warn!(
@@ -644,7 +646,7 @@ impl MessageCenter {
             };
 
             if Self::is_group_message(&stored_msg) {
-                let group_id = stored_msg.from.clone();
+                let group_id = Self::group_did_from_message(&stored_msg);
                 info!(
                     "dispatch about to write inbox record: msg_id={}, sender={}, owner={}, box_kind=GROUP_INBOX, context_id={}",
                     stored_msg_id.to_string(),
@@ -792,7 +794,7 @@ impl MessageCenter {
 
             let stored_msg = Self::ensure_message(state, msg);
             let (stored_msg_id, stored_msg_json) = stored_msg.gen_obj_id();
-            let author = Self::outbound_author(&stored_msg);
+            let author = stored_msg.from.clone();
             if self.is_contact_blocked(&author, None)? {
                 let result = PostSendResult {
                     ok: false,

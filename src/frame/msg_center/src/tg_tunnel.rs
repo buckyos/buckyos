@@ -139,6 +139,7 @@ impl TgMessageConverter {
     fn tg_message_to_msg_object(
         owner_did: DID,
         sender_did: DID,
+        chat_did: Option<DID>,
         sender_account_id: String,
         chat: &TgPeer,
         sender_chat: &TgPeer,
@@ -156,6 +157,7 @@ impl TgMessageConverter {
         } else {
             "text"
         };
+        let is_group_chat = matches!(chat, TgPeer::Group(_) | TgPeer::Channel(_));
         let mut meta = BTreeMap::new();
         meta.insert(
             "telegram".to_string(),
@@ -173,15 +175,22 @@ impl TgMessageConverter {
             }),
         );
 
+        let to = if is_group_chat {
+            vec![chat_did.ok_or_else(|| anyhow::anyhow!("missing group chat did for telegram group message"))?]
+        } else {
+            vec![owner_did.clone()]
+        };
+        let kind = if text.trim().is_empty() {
+            MsgObjKind::Event
+        } else if is_group_chat {
+            MsgObjKind::GroupMsg
+        } else {
+            MsgObjKind::Chat
+        };
         let mut msg = MsgObject {
             from: sender_did,
-            source: None,
-            to: vec![owner_did.clone()],
-            kind: if text.trim().is_empty() {
-                MsgObjKind::Event
-            } else {
-                MsgObjKind::Info
-            },
+            to,
+            kind,
             created_at_ms,
             content: MsgContent {
                 format: Some(MsgContentFormat::TextPlain),
@@ -577,9 +586,33 @@ impl GrammersTgGateway {
             );
             error
         })?;
+        let chat_did = if matches!(chat, TgPeer::Group(_) | TgPeer::Channel(_)) {
+            let (did, _) = Self::resolve_chat_did(
+                &dispatcher,
+                owner_scope.clone(),
+                &chat,
+                &bot_account_id,
+                tunnel_did.as_ref(),
+            )
+            .await
+            .map_err(|error| {
+                warn!(
+                    "telegram ingress resolve group did failed (gateway=grammers): owner={}, bot={}, message_id={}, error={}",
+                    owner_did.to_string(),
+                    bot_account_id,
+                    message.id(),
+                    error
+                );
+                error
+            })?;
+            Some(did)
+        } else {
+            None
+        };
         let converted = TgMessageConverter::tg_message_to_msg_object(
-            owner_did,
+            owner_did.clone(),
             sender_did,
+            chat_did,
             sender_account_id,
             &chat,
             &sender_chat,
@@ -600,15 +633,9 @@ impl GrammersTgGateway {
             );
             error
         })?;
-        let owner_for_log = converted
-            .msg
-            .to
-            .first()
-            .map(|did| did.to_string())
-            .unwrap_or_else(|| "unknown".to_string());
         info!(
             "telegram ingress message received (gateway=grammers): owner={}, bot={}, chat_id={}, message_id={}",
-            owner_for_log,
+            owner_did.to_string(),
             bot_account_id,
             converted
                 .ingress_ctx
@@ -629,7 +656,7 @@ impl GrammersTgGateway {
             .map_err(|error| {
                 warn!(
                     "telegram ingress handle_dispatch failed (gateway=grammers): owner={}, bot={}, message_id={}, error={}",
-                    owner_for_log,
+                    owner_did.to_string(),
                     bot_account_id,
                     message.id(),
                     error
@@ -640,7 +667,7 @@ impl GrammersTgGateway {
         if !dispatch_result.ok {
             warn!(
                 "telegram ingress dispatch result not ok (gateway=grammers): owner={}, bot={}, message_id={}, reason={}",
-                owner_for_log,
+                owner_did.to_string(),
                 bot_account_id,
                 message.id(),
                 dispatch_result.reason.as_deref().unwrap_or("-"),
@@ -649,7 +676,7 @@ impl GrammersTgGateway {
         if !dispatch_result.dropped_recipients.is_empty() {
             warn!(
                 "telegram ingress dropped recipients (gateway=grammers): owner={}, bot={}, message_id={}, dropped={}",
-                owner_for_log,
+                owner_did.to_string(),
                 bot_account_id,
                 message.id(),
                 dispatch_result
@@ -666,7 +693,7 @@ impl GrammersTgGateway {
         if delivered_count == 0 {
             warn!(
                 "telegram ingress dispatched but nothing delivered (gateway=grammers): owner={}, bot={}, message_id={}, reason={}",
-                owner_for_log,
+                owner_did.to_string(),
                 bot_account_id,
                 message.id(),
                 dispatch_result.reason.as_deref().unwrap_or("-"),
@@ -1267,6 +1294,38 @@ impl BotApiTgGateway {
                 );
                 error
             })?;
+        let chat_did = if chat_kind == "group" || chat_kind == "channel" {
+            let chat_account_id = Self::chat_account_id(chat_kind, chat_id);
+            let did = dispatcher
+                .handle_resolve_did(
+                    TELEGRAM_PLATFORM.to_string(),
+                    chat_account_id,
+                    Some(Self::profile_hint(
+                        chat_kind,
+                        chat_id,
+                        Self::chat_name(&message.chat).as_deref(),
+                        message.chat.username.as_deref(),
+                        &bot_account_id,
+                        tunnel_did.as_ref(),
+                    )),
+                    Some(owner_did.clone()),
+                    RPCContext::default(),
+                )
+                .await
+                .map_err(|error| {
+                    warn!(
+                        "telegram ingress resolve group did failed (gateway=bot_api): owner={}, bot={}, message_id={}, error={}",
+                        owner_did.to_string(),
+                        bot_account_id,
+                        message.message_id,
+                        error
+                    );
+                    error
+                })?;
+            Some(did)
+        } else {
+            None
+        };
 
         let message_id_i32 = i32::try_from(message.message_id).unwrap_or(i32::MAX);
         let idempotency_key =
@@ -1294,15 +1353,22 @@ impl BotApiTgGateway {
                 "chat_name": Self::chat_name(&message.chat),
             }),
         );
+        let to = if chat_kind == "group" || chat_kind == "channel" {
+            vec![chat_did.ok_or_else(|| anyhow::anyhow!("missing group chat did for telegram bot_api message"))?]
+        } else {
+            vec![owner_did.clone()]
+        };
+        let kind = if text.trim().is_empty() {
+            MsgObjKind::Event
+        } else if chat_kind == "group" || chat_kind == "channel" {
+            MsgObjKind::GroupMsg
+        } else {
+            MsgObjKind::Chat
+        };
         let mut msg = MsgObject {
             from: sender_did,
-            source: None,
-            to: vec![owner_did.clone()],
-            kind: if text.trim().is_empty() {
-                MsgObjKind::Event
-            } else {
-                MsgObjKind::Info
-            },
+            to,
+            kind,
             created_at_ms,
             content: MsgContent {
                 format: Some(MsgContentFormat::TextPlain),
@@ -1753,7 +1819,7 @@ impl TgTunnel {
     }
 
     fn resolve_sender_did(msg: &MsgObject) -> DID {
-        msg.source.clone().unwrap_or_else(|| msg.from.clone())
+        msg.from.clone()
     }
 
     fn parse_chat_id_from_route_extra(extra: &Value) -> Option<String> {
@@ -1983,14 +2049,14 @@ mod tests {
 
     fn build_record(
         from: DID,
-        source: Option<DID>,
+        to: Vec<DID>,
+        kind: MsgObjKind,
         route_chat_id: Option<&str>,
     ) -> MsgRecordWithObject {
         let mut msg = MsgObject {
             from,
-            source,
-            to: vec![DID::new("bns", "receiver")],
-            kind: MsgObjKind::Info,
+            to,
+            kind,
             content: MsgContent {
                 format: Some(MsgContentFormat::TextPlain),
                 content: "hello".to_string(),
@@ -2055,7 +2121,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_uses_source_did_for_group_message() {
+    async fn send_uses_from_did_for_group_message() {
         let tunnel = new_tunnel();
         let agent_did = DID::new("bns", "agent-a");
 
@@ -2071,8 +2137,9 @@ mod tests {
         tunnel.start().await.unwrap();
 
         let record = build_record(
-            DID::new("bns", "group-a"),
-            Some(agent_did),
+            agent_did,
+            vec![DID::new("bns", "group-a")],
+            MsgObjKind::GroupMsg,
             Some("route-chat-1"),
         );
         let report = tunnel.send_record(record).await.unwrap();
@@ -2088,7 +2155,12 @@ mod tests {
     async fn send_fails_when_sender_binding_is_missing() {
         let tunnel = new_tunnel();
         let sender = DID::new("bns", "no-binding");
-        let record = build_record(sender, None, None);
+        let record = build_record(
+            sender,
+            vec![DID::new("bns", "receiver")],
+            MsgObjKind::Chat,
+            None,
+        );
 
         tunnel.start().await.unwrap();
         let err = tunnel.send_record(record).await.unwrap_err();

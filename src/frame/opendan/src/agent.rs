@@ -1399,9 +1399,8 @@ impl AIAgent {
 
         let mut outbound = MsgObject {
             from: sender_did,
-            source: None,
             to: vec![target_did.clone()],
-            kind: MsgObjKind::Info,
+            kind: MsgObjKind::Chat,
             created_at_ms: now_ms(),
             content: MsgContent {
                 format: Some(MsgContentFormat::TextPlain),

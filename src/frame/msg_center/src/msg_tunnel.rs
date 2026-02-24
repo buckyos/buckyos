@@ -444,9 +444,8 @@ mod tests {
     fn build_tunnel_record(tunnel_did: DID) -> MsgRecordWithObject {
         let msg = MsgObject {
             from: DID::new("bns", "author"),
-            source: None,
             to: vec![DID::new("bns", "receiver")],
-            kind: MsgObjKind::Info,
+            kind: MsgObjKind::Chat,
             content: MsgContent {
                 format: Some(MsgContentFormat::TextPlain),
                 content: "hello".to_string(),
