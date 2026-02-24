@@ -175,10 +175,7 @@ impl MessageCenter {
     fn group_did_from_message(msg: &MsgObject) -> DID {
         // New MsgObject semantics: group message uses `to` as group DID.
         // Keep `from` fallback for backward compatibility with old persisted records.
-        msg.to
-            .first()
-            .cloned()
-            .unwrap_or_else(|| msg.from.clone())
+        msg.to.first().cloned().unwrap_or_else(|| msg.from.clone())
     }
 
     fn route_from_ingress(ingress_ctx: Option<&IngressContext>) -> Option<RouteInfo> {
@@ -323,6 +320,8 @@ impl MessageCenter {
         let msg_id = Self::message_obj_id(msg);
         let record_id = Self::build_record_id(&owner, &box_kind, &msg_id, variant);
         if let Some(existing) = self.msg_box_db.get_record(&owner, &record_id)? {
+            self.msg_box_db
+                .upsert_record_with_msg(&existing, Some(msg))?;
             return Ok(existing);
         }
 
@@ -346,7 +345,7 @@ impl MessageCenter {
             tags,
         };
 
-        self.msg_box_db.upsert_record(&record)?;
+        self.msg_box_db.upsert_record_with_msg(&record, Some(msg))?;
         Ok(record)
     }
 
@@ -494,11 +493,16 @@ impl MessageCenter {
         }
     }
 
-    fn build_delivery_plan(&self, target_did: DID, send_ctx: Option<&SendContext>) -> DeliveryPlan {
+    fn build_delivery_plan(
+        &self,
+        target_did: DID,
+        send_ctx: Option<&SendContext>,
+        contact_mgr_owner: Option<DID>,
+    ) -> DeliveryPlan {
         let preferred_tunnel = send_ctx.and_then(|ctx| ctx.preferred_tunnel.clone());
         let preferred_binding: Option<AccountBinding> = self
             .contact_mgr
-            .get_preferred_binding(target_did.clone(), None)
+            .get_preferred_binding(target_did.clone(), contact_mgr_owner)
             .ok();
 
         let mut route = RouteInfo::default();
@@ -548,6 +552,10 @@ impl MessageCenter {
         ingress_ctx: Option<IngressContext>,
         idempotency_key: Option<String>,
     ) -> std::result::Result<DispatchResult, RPCErrors> {
+        let ingress_contact_mgr_owner = ingress_ctx
+            .as_ref()
+            .and_then(|ctx| ctx.contact_mgr_owner.clone());
+
         enum DispatchPrepare {
             Done(DispatchResult),
             Ready {
@@ -569,32 +577,9 @@ impl MessageCenter {
 
             let stored_msg = Self::ensure_message(state, msg);
             let (stored_msg_id, stored_msg_json) = stored_msg.gen_obj_id();
-            // 发送者直接使用 from 字段
+
             let sender = stored_msg.from.clone();
             let context_id = ingress_ctx.as_ref().and_then(|ctx| ctx.context_id.clone());
-            if self.is_contact_blocked(&sender, None)? {
-                warn!(
-                    "dispatch blocked by sender access policy: msg_id={}, sender={}, context_id={}",
-                    stored_msg_id.to_string(),
-                    sender.to_string(),
-                    context_id.as_deref().unwrap_or("-"),
-                );
-                let result = DispatchResult {
-                    ok: false,
-                    msg_id: stored_msg_id.clone(),
-                    delivered_recipients: Vec::new(),
-                    dropped_recipients: Vec::new(),
-                    delivered_group: None,
-                    delivered_agents: Vec::new(),
-                    reason: Some("blocked".to_string()),
-                };
-                if let Some(key) = idempotency_key.as_ref() {
-                    state
-                        .dispatch_idempotency
-                        .insert(key.clone(), result.clone());
-                }
-                return Ok(DispatchPrepare::Done(result));
-            }
 
             Ok(DispatchPrepare::Ready {
                 stored_msg,
@@ -646,6 +631,34 @@ impl MessageCenter {
             };
 
             if Self::is_group_message(&stored_msg) {
+                if self.is_contact_blocked(&sender, ingress_contact_mgr_owner.clone())? {
+                    warn!(
+                        "dispatch blocked by sender access policy: msg_id={}, sender={}, context_id={}, contact_mgr_owner={}",
+                        stored_msg_id.to_string(),
+                        sender.to_string(),
+                        context_id.as_deref().unwrap_or("-"),
+                        ingress_contact_mgr_owner
+                            .as_ref()
+                            .map(|did| did.to_string())
+                            .unwrap_or_else(|| "-".to_string()),
+                    );
+                    let blocked = DispatchResult {
+                        ok: false,
+                        msg_id: stored_msg_id.clone(),
+                        delivered_recipients: Vec::new(),
+                        dropped_recipients: Vec::new(),
+                        delivered_group: None,
+                        delivered_agents: Vec::new(),
+                        reason: Some("blocked".to_string()),
+                    };
+                    if let Some(key) = idempotency_key.as_ref() {
+                        state
+                            .dispatch_idempotency
+                            .insert(key.clone(), blocked.clone());
+                    }
+                    return Ok(blocked);
+                }
+
                 let group_id = Self::group_did_from_message(&stored_msg);
                 info!(
                     "dispatch about to write inbox record: msg_id={}, sender={}, owner={}, box_kind=GROUP_INBOX, context_id={}",
@@ -667,7 +680,12 @@ impl MessageCenter {
 
                 let readers =
                     self.contact_mgr
-                        .get_group_subscribers(group_id.clone(), None, None, None)?;
+                        .get_group_subscribers(
+                            group_id.clone(),
+                            None,
+                            None,
+                            ingress_contact_mgr_owner.clone(),
+                        )?;
                 let readers = Self::dedupe_dids(readers);
                 for agent_did in readers.iter() {
                     let tag = format!("group:{}", group_id.to_string());
@@ -703,6 +721,19 @@ impl MessageCenter {
                     );
                 }
                 for recipient in recipients {
+                    if self.is_contact_blocked(&sender, Some(recipient.clone()))? {
+                        warn!(
+                            "dispatch blocked by sender access policy: msg_id={}, sender={}, recipient={}, context_id={}, contact_mgr_owner={}",
+                            stored_msg_id.to_string(),
+                            sender.to_string(),
+                            recipient.to_string(),
+                            context_id.as_deref().unwrap_or("-"),
+                            recipient.to_string(),
+                        );
+                        result.dropped_recipients.push(recipient);
+                        continue;
+                    }
+
                     let decision = match self.decide_inbox_kind(&sender, &recipient, context_id.clone()) {
                         Ok(value) => value,
                         Err(error) => {
@@ -775,6 +806,10 @@ impl MessageCenter {
         send_ctx: Option<SendContext>,
         idempotency_key: Option<String>,
     ) -> std::result::Result<PostSendResult, RPCErrors> {
+        let send_contact_mgr_owner = send_ctx
+            .as_ref()
+            .and_then(|ctx| ctx.contact_mgr_owner.clone());
+
         enum PostSendPrepare {
             Done(PostSendResult),
             Ready {
@@ -782,6 +817,7 @@ impl MessageCenter {
                 stored_msg_id: ObjId,
                 stored_msg_json: String,
                 author: DID,
+                contact_mgr_owner: Option<DID>,
             },
         }
 
@@ -795,7 +831,10 @@ impl MessageCenter {
             let stored_msg = Self::ensure_message(state, msg);
             let (stored_msg_id, stored_msg_json) = stored_msg.gen_obj_id();
             let author = stored_msg.from.clone();
-            if self.is_contact_blocked(&author, None)? {
+            let contact_mgr_owner = send_contact_mgr_owner
+                .clone()
+                .or_else(|| Some(author.clone()));
+            if self.is_contact_blocked(&author, contact_mgr_owner.clone())? {
                 let result = PostSendResult {
                     ok: false,
                     msg_id: stored_msg_id.clone(),
@@ -815,17 +854,26 @@ impl MessageCenter {
                 stored_msg_id,
                 stored_msg_json,
                 author,
+                contact_mgr_owner,
             })
         })?;
 
-        let (stored_msg, stored_msg_id, stored_msg_json, author) = match prepared {
+        let (stored_msg, stored_msg_id, stored_msg_json, author, contact_mgr_owner) = match prepared
+        {
             PostSendPrepare::Done(result) => return Ok(result),
             PostSendPrepare::Ready {
                 stored_msg,
                 stored_msg_id,
                 stored_msg_json,
                 author,
-            } => (stored_msg, stored_msg_id, stored_msg_json, author),
+                contact_mgr_owner,
+            } => (
+                stored_msg,
+                stored_msg_id,
+                stored_msg_json,
+                author,
+                contact_mgr_owner,
+            ),
         };
 
         Self::store_message(&stored_msg_id, &stored_msg_json).await?;
@@ -851,7 +899,11 @@ impl MessageCenter {
             let delivery_targets = Self::list_delivery_targets(&stored_msg);
             let mut deliveries = Vec::with_capacity(delivery_targets.len());
             for target in delivery_targets {
-                let plan = self.build_delivery_plan(target.clone(), send_ctx.as_ref());
+                let plan = self.build_delivery_plan(
+                    target.clone(),
+                    send_ctx.as_ref(),
+                    contact_mgr_owner.clone(),
+                );
                 let variant = format!(
                     "{}-{}-{}-{}",
                     plan.tunnel_did.to_string(),

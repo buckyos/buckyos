@@ -1,11 +1,11 @@
-use crate::{get_buckyos_api_runtime, AppDoc, AppType, SelectorType};
+use crate::{AppDoc, AppType, SelectorType, get_buckyos_api_runtime};
 use ::kRPC::*;
 use async_trait::async_trait;
 use name_lib::DID;
-use ndn_lib::{ObjId,MsgObject};
+use ndn_lib::{MsgObject, ObjId};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::net::IpAddr;
 
@@ -119,6 +119,9 @@ pub struct IngressContext {
     pub source_account_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
+    // Owner scope used for contact-manager lookups while dispatching this ingress message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contact_mgr_owner: Option<DID>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extra: Option<Value>,
 }
@@ -127,6 +130,9 @@ pub struct IngressContext {
 pub struct SendContext {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
+    // Owner scope used for contact-manager lookups while building delivery plan.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contact_mgr_owner: Option<DID>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preferred_tunnel: Option<DID>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1174,12 +1180,24 @@ impl MsgCenterClient {
             Self::InProcess(handler) => {
                 let ctx = RPCContext::default();
                 handler
-                    .handle_get_next(owner, box_kind, state_filter, lock_on_take, with_object, ctx)
+                    .handle_get_next(
+                        owner,
+                        box_kind,
+                        state_filter,
+                        lock_on_take,
+                        with_object,
+                        ctx,
+                    )
                     .await
             }
             Self::KRPC(client) => {
-                let req =
-                    MsgCenterGetNextReq::new(owner, box_kind, state_filter, lock_on_take, with_object);
+                let req = MsgCenterGetNextReq::new(
+                    owner,
+                    box_kind,
+                    state_filter,
+                    lock_on_take,
+                    with_object,
+                );
                 let req_json = serialize_to_json(&req, "MsgCenterGetNextReq")?;
                 let result = client.call(METHOD_MSG_GET_NEXT, req_json).await?;
                 parse_optional_rpc_response(result, "MsgRecordWithObject")
@@ -1203,7 +1221,8 @@ impl MsgCenterClient {
                     .await
             }
             Self::KRPC(client) => {
-                let req = MsgCenterPeekBoxReq::new(owner, box_kind, state_filter, limit, with_object);
+                let req =
+                    MsgCenterPeekBoxReq::new(owner, box_kind, state_filter, limit, with_object);
                 let req_json = serialize_to_json(&req, "MsgCenterPeekBoxReq")?;
                 let result = client.call(METHOD_MSG_PEEK_BOX, req_json).await?;
                 parse_rpc_response(result, "Vec<MsgRecordWithObject>")

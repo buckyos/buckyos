@@ -311,7 +311,10 @@ impl ZoneDidResolver {
             }
         }
 
-        Err(NSError::NotFound(format!("agent did {} not found", did_str)))
+        Err(NSError::NotFound(format!(
+            "agent did {} not found",
+            did_str
+        )))
     }
 
     async fn load_device_info(&self, name: &str) -> NSResult<DeviceInfo> {

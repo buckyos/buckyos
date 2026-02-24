@@ -176,7 +176,9 @@ impl TgMessageConverter {
         );
 
         let to = if is_group_chat {
-            vec![chat_did.ok_or_else(|| anyhow::anyhow!("missing group chat did for telegram group message"))?]
+            vec![chat_did.ok_or_else(|| {
+                anyhow::anyhow!("missing group chat did for telegram group message")
+            })?]
         } else {
             vec![owner_did.clone()]
         };
@@ -208,6 +210,7 @@ impl TgMessageConverter {
             chat_id: Some(chat_id.to_string()),
             source_account_id: Some(sender_account_id),
             context_id: Some(format!("tg:{}:{}", owner_did.to_string(), chat_id)),
+            contact_mgr_owner: Some(owner_did.clone()),
             extra: Some(json!({
                 "tg_message_id": message.id(),
                 "chat_type": chat_type,
@@ -637,11 +640,7 @@ impl GrammersTgGateway {
             "telegram ingress message received (gateway=grammers): owner={}, bot={}, chat_id={}, message_id={}",
             owner_did.to_string(),
             bot_account_id,
-            converted
-                .ingress_ctx
-                .chat_id
-                .as_deref()
-                .unwrap_or(""),
+            converted.ingress_ctx.chat_id.as_deref().unwrap_or(""),
             message.id()
         );
 
@@ -1354,7 +1353,9 @@ impl BotApiTgGateway {
             }),
         );
         let to = if chat_kind == "group" || chat_kind == "channel" {
-            vec![chat_did.ok_or_else(|| anyhow::anyhow!("missing group chat did for telegram bot_api message"))?]
+            vec![chat_did.ok_or_else(|| {
+                anyhow::anyhow!("missing group chat did for telegram bot_api message")
+            })?]
         } else {
             vec![owner_did.clone()]
         };
@@ -1386,6 +1387,7 @@ impl BotApiTgGateway {
             chat_id: Some(chat_id.to_string()),
             source_account_id: Some(sender_account_id),
             context_id: Some(format!("tg:{}:{}", owner_did.to_string(), chat_id)),
+            contact_mgr_owner: Some(owner_did.clone()),
             extra: Some(json!({
                 "tg_message_id": message.message_id,
                 "chat_type": chat_kind,

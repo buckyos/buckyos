@@ -7,7 +7,8 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
-    AiccClient, BoxKind, Event, MsgCenterClient, MsgRecordWithObject, MsgState, TaskManagerClient,
+    AiccClient, BoxKind, Event, MsgCenterClient, MsgRecordWithObject, MsgState, SendContext,
+    TaskManagerClient,
 };
 use log::{debug, info, warn};
 use name_lib::DID;
@@ -658,11 +659,7 @@ impl AIAgent {
             let (session_id, behavior_name, state) = {
                 let mut guard = session.lock().await;
                 if guard.state == SessionState::Pause {
-                    (
-                        guard.session_id.clone(),
-                        String::new(),
-                        guard.state,
-                    )
+                    (guard.session_id.clone(), String::new(), guard.state)
                 } else {
                     if guard.current_behavior.is_none() {
                         guard.current_behavior = Some(self.default_behavior.clone());
@@ -953,8 +950,12 @@ impl AIAgent {
             report.executed_steps = report.executed_steps.saturating_add(1);
 
             if let Some(exec_input) = session_exec_input {
-                self.handle_replies(trace.clone(), &exec_input.payload, llm_result.reply.as_slice())
-                    .await;
+                self.handle_replies(
+                    trace.clone(),
+                    &exec_input.payload,
+                    llm_result.reply.as_slice(),
+                )
+                .await;
                 self.apply_memory_updates(&trace, llm_result.set_memory.as_slice())
                     .await;
 
@@ -1398,7 +1399,7 @@ impl AIAgent {
         }
 
         let mut outbound = MsgObject {
-            from: sender_did,
+            from: sender_did.clone(),
             to: vec![target_did.clone()],
             kind: MsgObjKind::Chat,
             created_at_ms: now_ms(),
@@ -1416,7 +1417,11 @@ impl AIAgent {
         outbound.thread.topic = extract_reply_thread_key(source_payload);
         outbound.meta.insert("payload".to_string(), payload);
 
-        match msg_center.post_send(outbound, None, None).await {
+        let send_ctx = SendContext {
+            contact_mgr_owner: Some(sender_did),
+            ..Default::default()
+        };
+        match msg_center.post_send(outbound, Some(send_ctx), None).await {
             Ok(result) => {
                 if !result.ok {
                     warn!(

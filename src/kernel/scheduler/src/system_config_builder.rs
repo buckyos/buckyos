@@ -23,8 +23,8 @@ use jsonwebtoken::jwk::Jwk;
 use log::{debug, info, warn};
 use name_client::resolve_did;
 use name_lib::{
-    generate_ed25519_key_pair, AgentDocument, DID, OwnerConfig, VerifyHubInfo, ZoneBootConfig,
-    ZoneConfig,
+    generate_ed25519_key_pair, AgentDocument, OwnerConfig, VerifyHubInfo, ZoneBootConfig,
+    ZoneConfig, DID,
 };
 use package_lib::PackageId;
 use serde::{Deserialize, Serialize};
@@ -140,19 +140,16 @@ impl SystemConfigBuilder {
         );
         let owner_did = DID::new("bns", &config.user_name);
 
-
         let (jarvis_private_key_pem, jarvis_public_key_jwk) = generate_ed25519_key_pair();
         let jarvis_public_key_jwk: Jwk = serde_json::from_value(jarvis_public_key_jwk)
             .map_err(|e| anyhow!("invalid generated jarvis public key: {}", e))?;
 
         let mut jarvis_doc = AgentDocument::new(jarvis_did, owner_did, jarvis_public_key_jwk);
-        jarvis_doc.public_description =
-            Some("Default built-in OpenDAN agent for BuckyOS".into());
+        jarvis_doc.public_description = Some("Default built-in OpenDAN agent for BuckyOS".into());
 
         self.insert_json("agents/jarvis/doc", &jarvis_doc)?;
         self.entries
             .insert("agents/jarvis/key".to_string(), jarvis_private_key_pem);
-    
 
         // agents/jarvis/settings -> agent settings,
         let jarvis_settings = json!({

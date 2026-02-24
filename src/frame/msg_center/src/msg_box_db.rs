@@ -2,7 +2,7 @@ use buckyos_api::{BoxKind, DeliveryInfo, MsgRecord, MsgState, RouteInfo, MSG_CEN
 use buckyos_kit::get_buckyos_service_data_dir;
 use kRPC::RPCErrors;
 use name_lib::DID;
-use ndn_lib::ObjId;
+use ndn_lib::{MsgObject, ObjId};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -57,8 +57,16 @@ impl MsgBoxDbMgr {
     }
 
     pub fn upsert_record(&self, record: &MsgRecord) -> std::result::Result<(), RPCErrors> {
+        self.upsert_record_with_msg(record, None)
+    }
+
+    pub fn upsert_record_with_msg(
+        &self,
+        record: &MsgRecord,
+        msg: Option<&MsgObject>,
+    ) -> std::result::Result<(), RPCErrors> {
         let conn = self.connect_owner(&record.owner)?;
-        upsert_record_with_conn(&conn, record)?;
+        upsert_record_with_conn(&conn, record, msg)?;
         self.touch_message(&record.owner, &record.msg_id, record.created_at_ms)?;
         Ok(())
     }
@@ -270,6 +278,9 @@ CREATE TABLE IF NOT EXISTS msg_records (
     record_id TEXT PRIMARY KEY,
     box_kind TEXT NOT NULL,
     msg_id TEXT NOT NULL,
+    msg_from TEXT,
+    msg_to TEXT,
+    msg_kind TEXT,
     state TEXT NOT NULL,
     created_at_ms INTEGER NOT NULL,
     updated_at_ms INTEGER NOT NULL,
@@ -287,6 +298,10 @@ CREATE INDEX IF NOT EXISTS idx_msg_records_box_state_sort
     ON msg_records(box_kind, state, sort_key DESC, record_id DESC);
 CREATE INDEX IF NOT EXISTS idx_msg_records_tunnel_state_sort
     ON msg_records(route_tunnel_did, state, sort_key DESC, record_id DESC);
+CREATE INDEX IF NOT EXISTS idx_msg_records_box_kind_sort
+    ON msg_records(box_kind, msg_kind, sort_key DESC, record_id DESC);
+CREATE INDEX IF NOT EXISTS idx_msg_records_box_from_sort
+    ON msg_records(box_kind, msg_from, sort_key DESC, record_id DESC);
 
 CREATE TABLE IF NOT EXISTS msg_refs (
     msg_id TEXT PRIMARY KEY,
@@ -316,6 +331,7 @@ CREATE TABLE IF NOT EXISTS msg_refs (
 fn upsert_record_with_conn(
     conn: &Connection,
     record: &MsgRecord,
+    msg: Option<&MsgObject>,
 ) -> std::result::Result<(), RPCErrors> {
     let tags_json = serde_json::to_string(&record.tags).map_err(|error| {
         RPCErrors::ReasonError(format!(
@@ -331,6 +347,34 @@ fn upsert_record_with_conn(
     let route_json = encode_optional_json(record.route.as_ref(), &record.record_id, "route")?;
     let delivery_json =
         encode_optional_json(record.delivery.as_ref(), &record.record_id, "delivery")?;
+    let msg_from = msg.map(|obj| obj.from.to_string());
+    let msg_to = match msg {
+        Some(obj) => Some(serde_json::to_string(&obj.to).map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "failed to encode msg_to for record {}: {}",
+                record.record_id, error
+            ))
+        })?),
+        None => None,
+    };
+    let msg_kind = match msg {
+        Some(obj) => {
+            let kind_value = serde_json::to_value(obj.kind).map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to encode msg_kind for record {}: {}",
+                    record.record_id, error
+                ))
+            })?;
+            let kind_name = kind_value.as_str().ok_or_else(|| {
+                RPCErrors::ReasonError(format!(
+                    "failed to encode msg_kind for record {}: non-string value",
+                    record.record_id
+                ))
+            })?;
+            Some(kind_name.to_string())
+        }
+        None => None,
+    };
 
     conn.execute(
         r#"
@@ -338,6 +382,9 @@ INSERT INTO msg_records (
     record_id,
     box_kind,
     msg_id,
+    msg_from,
+    msg_to,
+    msg_kind,
     state,
     created_at_ms,
     updated_at_ms,
@@ -347,10 +394,13 @@ INSERT INTO msg_records (
     route_tunnel_did,
     route_json,
     delivery_json
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
 ON CONFLICT(record_id) DO UPDATE SET
     box_kind = excluded.box_kind,
     msg_id = excluded.msg_id,
+    msg_from = COALESCE(excluded.msg_from, msg_records.msg_from),
+    msg_to = COALESCE(excluded.msg_to, msg_records.msg_to),
+    msg_kind = COALESCE(excluded.msg_kind, msg_records.msg_kind),
     state = excluded.state,
     created_at_ms = excluded.created_at_ms,
     updated_at_ms = excluded.updated_at_ms,
@@ -365,6 +415,9 @@ ON CONFLICT(record_id) DO UPDATE SET
             record.record_id,
             box_kind_name(&record.box_kind),
             record.msg_id.to_string(),
+            msg_from,
+            msg_to,
+            msg_kind,
             msg_state_name(&record.state),
             to_sql_i64(record.created_at_ms),
             to_sql_i64(record.updated_at_ms),
