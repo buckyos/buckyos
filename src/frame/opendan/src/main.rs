@@ -258,7 +258,7 @@ async fn service_main() -> Result<()> {
         }
     };
 
-    let _msg_queue: Option<MsgQueueClient> = match runtime.get_msg_queue_client().await {
+    let msg_queue: Option<MsgQueueClient> = match runtime.get_msg_queue_client().await {
         Ok(client) => Some(client),
         Err(err) => {
             warn!("init msg-queue client failed, continue without queue polling: {err}");
@@ -286,6 +286,7 @@ async fn service_main() -> Result<()> {
         taskmgr,
         aicc,
         msg_center,
+        msg_queue: msg_queue.map(Arc::new),
     };
 
     let ai_runtime = Arc::new(

@@ -546,15 +546,61 @@ pub trait TaskManagerHandler: Send + Sync {
 }
 
 #[derive(Clone)]
-struct TaskManagerService {}
+struct TaskManagerService {
+    kevent_client: KEventClient,
+}
 
 impl TaskManagerService {
     pub fn new() -> Self {
-        TaskManagerService {}
+        TaskManagerService {
+            kevent_client: KEventClient::new_full(TASK_MANAGER_SERVICE_NAME, None),
+        }
     }
 
     fn is_system_app(app_id: &str) -> bool {
         app_id == "kernel" || app_id == "system"
+    }
+
+    fn task_status_event_id(task_id: i64) -> String {
+        format!("/task_mgr/{}", task_id)
+    }
+
+    async fn publish_task_status_changed_event(
+        &self,
+        before: &Task,
+        after: &Task,
+        source_method: &str,
+    ) {
+        if before.status == after.status {
+            return;
+        }
+
+        let event_id = Self::task_status_event_id(after.id);
+        let payload = json!({
+            "task_id": after.id,
+            "root_id": after.root_id,
+            "parent_id": after.parent_id,
+            "user_id": after.user_id,
+            "app_id": after.app_id,
+            "task_type": after.task_type,
+            "from_status": before.status.to_string(),
+            "to_status": after.status.to_string(),
+            "progress": after.progress,
+            "message": after.message,
+            "updated_at": after.updated_at,
+            "source_method": source_method,
+        });
+
+        if let Err(err) = self
+            .kevent_client
+            .pub_event(event_id.as_str(), payload)
+            .await
+        {
+            warn!(
+                "task_mgr.publish_task_status_changed_event failed: event_id={} task_id={} err={}",
+                event_id, after.id, err
+            );
+        }
     }
 
     fn can_read_task(&self, ctx: &RequestContext, task: &Task) -> bool {
@@ -741,18 +787,39 @@ impl TaskManagerHandler for TaskManagerService {
         _ctx: RPCContext,
     ) -> Result<()> {
         let request_ctx = request_context_from_source(None, None);
-        let task = self.load_task(id).await?;
-        if !self.can_write_task(&request_ctx, &task) {
+        let before_task = self.load_task(id).await?;
+        if !self.can_write_task(&request_ctx, &before_task) {
             return Err(RPCErrors::NoPermission(
                 "No permission to update task".to_string(),
             ));
         }
 
-        let db_manager = DB_MANAGER.lock().await;
-        db_manager
-            .update_task(id, status, progress, message, data)
-            .await
-            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        {
+            let db_manager = DB_MANAGER.lock().await;
+            db_manager
+                .update_task(id, status, progress, message, data)
+                .await
+                .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        }
+
+        if status.is_some() {
+            match self.load_task(id).await {
+                Ok(after_task) => {
+                    self.publish_task_status_changed_event(
+                        &before_task,
+                        &after_task,
+                        "update_task",
+                    )
+                    .await;
+                }
+                Err(err) => {
+                    warn!(
+                        "task_mgr.update_task status changed but failed to reload task {} for event publish: {}",
+                        id, err
+                    );
+                }
+            }
+        }
         Ok(())
     }
 
@@ -765,22 +832,76 @@ impl TaskManagerHandler for TaskManagerService {
             ));
         }
 
-        let db_manager = DB_MANAGER.lock().await;
         if recursive {
             let root_id = if task.root_id.trim().is_empty() {
                 task.id.to_string()
             } else {
                 task.root_id.clone()
             };
-            db_manager
-                .update_task_status_by_root_id(root_id.as_str(), TaskStatus::Canceled)
-                .await
-                .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+
+            let before_tasks = {
+                let db_manager = DB_MANAGER.lock().await;
+                let before_tasks = db_manager
+                    .list_tasks_filtered(None, None, None, None, Some(root_id.as_str()), None)
+                    .await
+                    .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+
+                db_manager
+                    .update_task_status_by_root_id(root_id.as_str(), TaskStatus::Canceled)
+                    .await
+                    .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+                before_tasks
+            };
+
+            for before_task in before_tasks
+                .into_iter()
+                .filter(|existing| existing.status != TaskStatus::Canceled)
+            {
+                match self.load_task(before_task.id).await {
+                    Ok(after_task) => {
+                        self.publish_task_status_changed_event(
+                            &before_task,
+                            &after_task,
+                            "cancel_task_recursive",
+                        )
+                        .await;
+                    }
+                    Err(err) => {
+                        warn!(
+                            "task_mgr.cancel_task recursive failed to reload task {} for event publish: {}",
+                            before_task.id, err
+                        );
+                    }
+                }
+            }
         } else {
-            db_manager
-                .update_task_status(id, TaskStatus::Canceled)
-                .await
-                .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+            let before_task = task.clone();
+            {
+                let db_manager = DB_MANAGER.lock().await;
+                db_manager
+                    .update_task_status(id, TaskStatus::Canceled)
+                    .await
+                    .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+            }
+
+            if before_task.status != TaskStatus::Canceled {
+                match self.load_task(id).await {
+                    Ok(after_task) => {
+                        self.publish_task_status_changed_event(
+                            &before_task,
+                            &after_task,
+                            "cancel_task",
+                        )
+                        .await;
+                    }
+                    Err(err) => {
+                        warn!(
+                            "task_mgr.cancel_task failed to reload task {} for event publish: {}",
+                            id, err
+                        );
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -807,18 +928,39 @@ impl TaskManagerHandler for TaskManagerService {
         _ctx: RPCContext,
     ) -> Result<()> {
         let request_ctx = request_context_from_source(None, None);
-        let task = self.load_task(id).await?;
-        if !self.can_write_task(&request_ctx, &task) {
+        let before_task = self.load_task(id).await?;
+        if !self.can_write_task(&request_ctx, &before_task) {
             return Err(RPCErrors::NoPermission(
                 "No permission to update task".to_string(),
             ));
         }
 
-        let db_manager = DB_MANAGER.lock().await;
-        db_manager
-            .update_task_status(id, status)
-            .await
-            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        {
+            let db_manager = DB_MANAGER.lock().await;
+            db_manager
+                .update_task_status(id, status)
+                .await
+                .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        }
+
+        if before_task.status != status {
+            match self.load_task(id).await {
+                Ok(after_task) => {
+                    self.publish_task_status_changed_event(
+                        &before_task,
+                        &after_task,
+                        "update_task_status",
+                    )
+                    .await;
+                }
+                Err(err) => {
+                    warn!(
+                        "task_mgr.update_task_status failed to reload task {} for event publish: {}",
+                        id, err
+                    );
+                }
+            }
+        }
         Ok(())
     }
 
@@ -868,18 +1010,37 @@ impl TaskManagerHandler for TaskManagerService {
         _ctx: RPCContext,
     ) -> Result<()> {
         let request_ctx = request_context_from_source(None, None);
-        let task = self.load_task(id).await?;
-        if !self.can_write_task(&request_ctx, &task) {
+        let before_task = self.load_task(id).await?;
+        if !self.can_write_task(&request_ctx, &before_task) {
             return Err(RPCErrors::NoPermission(
                 "No permission to update task".to_string(),
             ));
         }
 
-        let db_manager = DB_MANAGER.lock().await;
-        db_manager
-            .update_task_error(id, error_message)
-            .await
-            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        {
+            let db_manager = DB_MANAGER.lock().await;
+            db_manager
+                .update_task_error(id, error_message)
+                .await
+                .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        }
+
+        match self.load_task(id).await {
+            Ok(after_task) => {
+                self.publish_task_status_changed_event(
+                    &before_task,
+                    &after_task,
+                    "update_task_error",
+                )
+                .await;
+            }
+            Err(err) => {
+                warn!(
+                    "task_mgr.update_task_error failed to reload task {} for event publish: {}",
+                    id, err
+                );
+            }
+        }
         Ok(())
     }
 

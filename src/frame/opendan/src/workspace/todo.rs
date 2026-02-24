@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use buckyos_api::KEventClient;
+use log::warn;
 use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection};
 use serde::Serialize;
 use serde_json::{json, Value as Json};
@@ -47,10 +49,11 @@ impl TodoToolConfig {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct TodoTool {
     cfg: TodoToolConfig,
     oplog_path: PathBuf,
+    kevent_client: KEventClient,
 }
 
 impl TodoTool {
@@ -88,7 +91,11 @@ impl TodoTool {
             .map(|v| v.join("oplog.jsonl"))
             .unwrap_or_else(|| PathBuf::from("oplog.jsonl"));
 
-        Ok(Self { cfg, oplog_path })
+        Ok(Self {
+            cfg,
+            oplog_path,
+            kevent_client: KEventClient::new_full("opendan-todo", None),
+        })
     }
 
     async fn run_db<F, T>(&self, op_name: &str, op: F) -> Result<T, ToolError>
@@ -289,6 +296,8 @@ impl TodoTool {
             })
             .await?;
 
+        self.publish_todo_status_events(&rsp.status_events).await;
+
         Ok(json!({
             "ok": rsp.ok,
             "action": "apply_delta",
@@ -300,6 +309,37 @@ impl TodoTool {
             "errors": rsp.errors,
             "applied_count": rsp.applied_count,
         }))
+    }
+
+    async fn publish_todo_status_events(&self, events: &[TodoStatusChangedEvent]) {
+        for event in events {
+            let event_id =
+                build_todo_status_eventid(event.workspace_id.as_str(), event.todo_code.as_str());
+            let payload = json!({
+                "workspace_id": event.workspace_id,
+                "todo_id": event.todo_id,
+                "todo_code": event.todo_code,
+                "from_status": event.from_status,
+                "to_status": event.to_status,
+                "updated_at": event.updated_at,
+                "op_id": event.op_id,
+                "actor_kind": event.actor_kind,
+                "actor_did": event.actor_did,
+                "session_id": event.session_id,
+                "trace_id": event.trace_id,
+            });
+
+            if let Err(err) = self
+                .kevent_client
+                .pub_event(event_id.as_str(), payload)
+                .await
+            {
+                warn!(
+                    "todo.pub_status_event_failed: event_id={} workspace_id={} todo_id={} err={}",
+                    event_id, event.workspace_id, event.todo_id, err
+                );
+            }
+        }
     }
 
     async fn call_query_pending(&self, args: Json) -> Result<Json, ToolError> {
@@ -1077,6 +1117,22 @@ struct ApplyDeltaResponse {
     idempotent: bool,
     errors: Vec<ApplyDeltaError>,
     applied_count: usize,
+    status_events: Vec<TodoStatusChangedEvent>,
+}
+
+#[derive(Clone, Debug)]
+struct TodoStatusChangedEvent {
+    workspace_id: String,
+    todo_id: String,
+    todo_code: String,
+    from_status: String,
+    to_status: String,
+    updated_at: u64,
+    op_id: String,
+    actor_kind: String,
+    actor_did: String,
+    session_id: Option<String>,
+    trace_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -1244,6 +1300,7 @@ fn apply_todo_delta(
             idempotent: true,
             errors: Vec::new(),
             applied_count: 0,
+            status_events: Vec::new(),
         });
     }
 
@@ -1252,9 +1309,19 @@ fn apply_todo_delta(
         .map_err(|err| ToolError::ExecFailed(format!("start todo tx failed: {err}")))?;
 
     let mut applied_count = 0usize;
+    let mut status_events = Vec::new();
     for op in &input.ops {
-        match apply_single_op(&tx, &input.workspace_id, &input.actor, op) {
-            Ok(()) => {
+        match apply_single_op(
+            &tx,
+            &input.workspace_id,
+            &input.actor,
+            input.op_id.as_str(),
+            op,
+        ) {
+            Ok(event) => {
+                if let Some(event) = event {
+                    status_events.push(event);
+                }
                 applied_count = applied_count.saturating_add(1);
             }
             Err(err) => {
@@ -1281,6 +1348,7 @@ fn apply_todo_delta(
                     idempotent: false,
                     errors: vec![err_output],
                     applied_count,
+                    status_events: Vec::new(),
                 });
             }
         }
@@ -1333,6 +1401,7 @@ fn apply_todo_delta(
         idempotent: false,
         errors: Vec::new(),
         applied_count,
+        status_events,
     })
 }
 
@@ -1340,11 +1409,13 @@ fn apply_single_op(
     tx: &rusqlite::Transaction<'_>,
     workspace_id: &str,
     actor: &ActorCtx,
+    op_id: &str,
     op: &DeltaOp,
-) -> Result<(), DomainError> {
+) -> Result<Option<TodoStatusChangedEvent>, DomainError> {
     match op {
         DeltaOp::Init { mode, items, .. } => {
-            apply_init_op(tx, workspace_id, actor, mode, items, op)
+            apply_init_op(tx, workspace_id, actor, mode, items, op)?;
+            Ok(None)
         }
         DeltaOp::Update {
             todo_code,
@@ -1356,6 +1427,7 @@ fn apply_single_op(
             tx,
             workspace_id,
             actor,
+            op_id,
             todo_code,
             to_status,
             reason,
@@ -1367,7 +1439,10 @@ fn apply_single_op(
             kind,
             content,
             ..
-        } => apply_note_op(tx, workspace_id, actor, todo_code, kind, content, op),
+        } => {
+            apply_note_op(tx, workspace_id, actor, todo_code, kind, content, op)?;
+            Ok(None)
+        }
     }
 }
 
@@ -1623,12 +1698,13 @@ fn apply_update_op(
     tx: &rusqlite::Transaction<'_>,
     workspace_id: &str,
     actor: &ActorCtx,
+    op_id: &str,
     todo_code: &str,
     to_status: &TodoStatus,
     _reason: &str,
     last_error: &Option<Json>,
     op: &DeltaOp,
-) -> Result<(), DomainError> {
+) -> Result<Option<TodoStatusChangedEvent>, DomainError> {
     let mut todo = load_todo_for_update(tx, workspace_id, todo_code).map_err(|err| {
         DomainError::not_found(
             format!("todo `{todo_code}` not found: {}", err.message),
@@ -1681,8 +1757,26 @@ fn apply_update_op(
         DomainError::invalid_args(format!("update todo status failed: {err}"), Some(op))
     })?;
 
+    let from_status = todo.status.as_str().to_string();
+    let to_status_text = to_status.as_str().to_string();
     todo.status = to_status.clone();
-    Ok(())
+    if from_status == to_status_text {
+        return Ok(None);
+    }
+
+    Ok(Some(TodoStatusChangedEvent {
+        workspace_id: workspace_id.to_string(),
+        todo_id: todo.id.clone(),
+        todo_code: todo.todo_code.clone(),
+        from_status,
+        to_status: to_status_text,
+        updated_at: now,
+        op_id: op_id.to_string(),
+        actor_kind: actor.kind.as_str().to_string(),
+        actor_did: actor.did.clone(),
+        session_id: actor.session_id.clone(),
+        trace_id: actor.trace_id.clone(),
+    }))
 }
 
 fn apply_note_op(
@@ -2763,6 +2857,34 @@ fn parse_todo_seq(todo_code: &str) -> Option<i64> {
     todo_code[1..].parse::<i64>().ok()
 }
 
+fn sanitize_kevent_token(raw: &str) -> String {
+    let mut output = String::with_capacity(raw.len());
+    let mut prev_dash = false;
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() {
+            output.push(ch.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !prev_dash {
+            output.push('-');
+            prev_dash = true;
+        }
+    }
+    let trimmed = output.trim_matches('-');
+    if trimmed.is_empty() {
+        "default".to_string()
+    } else {
+        trimmed.chars().take(80).collect()
+    }
+}
+
+fn build_todo_status_eventid(workspace_id: &str, todo_code: &str) -> String {
+    format!(
+        "/agent/{}/{}/status_changed",
+        sanitize_kevent_token(workspace_id),
+        sanitize_kevent_token(todo_code)
+    )
+}
+
 fn normalize_enum(raw: &str) -> String {
     raw.trim()
         .to_lowercase()
@@ -2885,6 +3007,14 @@ mod tests {
         std::fs::create_dir_all(&root).expect("create test root");
         let db_path = root.join("todo").join("todo.db");
         TodoTool::new(TodoToolConfig::with_db_path(db_path)).expect("create todo tool")
+    }
+
+    #[test]
+    fn build_todo_status_eventid_sanitizes_segments() {
+        assert_eq!(
+            build_todo_status_eventid("ws:Alpha/1", "T001"),
+            "/agent/ws-alpha-1/t001/status_changed"
+        );
     }
 
     #[tokio::test]

@@ -20,7 +20,11 @@ kevent和kmsgqueue都有id路径系统，因此经常组合使用
 
 ## task mgr events
 
-订阅路径 /task_mgr/$owner_name/taskid
+订阅路径 /task_mgr/$taskid
+
+当任务 `status` 发生变化时，task_mgr 会在该路径发布事件，避免使用者轮询 `get_task`
+
+事件数据包含 `from_status` / `to_status` 以及 task 基础信息
 
 不要订阅所有的
 
@@ -47,7 +51,8 @@ msg_center.get_next("$owner","inbox")
 
 订阅路径
 
-/agent/$todo_list_id/$todo_id/$todo_id 
+/agent/$todo_list_id/$todo_id/status_changed
+
+当 todo 的 `status` 发生变化时，opendan 会在该路径发布事件，避免轮询 todo 列表
 
 可以得到特定todolist变更，todo变更（包含所有sub todo）
-

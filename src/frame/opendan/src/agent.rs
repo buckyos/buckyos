@@ -7,8 +7,9 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
-    AiccClient, BoxKind, Event, MsgCenterClient, MsgRecordWithObject, MsgState, SendContext,
-    TaskManagerClient,
+    msg_queue::{Message, MsgQueueClient, QueueConfig, SubPosition},
+    AiccClient, BoxKind, Event, EventReader, KEventClient, KEventError, MsgCenterClient,
+    MsgRecordWithObject, MsgState, SendContext, TaskManagerClient,
 };
 use log::{debug, info, warn};
 use name_lib::DID;
@@ -24,19 +25,29 @@ use uuid::Uuid;
 use crate::agent_config::AIAgentConfig;
 use crate::agent_enviroment::AgentEnvironment;
 use crate::agent_memory::{AgentMemory, AgentMemoryConfig};
-use crate::agent_session::{AgentSessionMgr, GetSessionTool, SessionExecInput, SessionState};
+use crate::agent_session::{
+    AgentSessionMgr, GetSessionTool, SessionExecInput, SessionInputItem, SessionState,
+};
 use crate::agent_tool::{AgentPolicy, ToolCall, ToolManager};
 use crate::behavior::{
     ActionExecutionMode, ActionKind, ActionSpec, AgentWorkEvent, BehaviorConfig, BehaviorExecInput,
     EnvKV, ExecutorReply, LLMBehavior, LLMBehaviorDeps, LLMOutput, LLMTrackingInfo, Tokenizer,
     TraceCtx, WorklogSink,
 };
+use crate::worklog::TOOL_WORKLOG_MANAGE;
+use crate::workspace::TOOL_TODO_MANAGE;
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
 const LEGACY_ENV_DIR_NAME: &str = "enviroment";
 const DEFAULT_SESSION_ID: &str = "default";
 const MAX_MSG_PULL_PER_TICK: usize = 16;
+const MAX_EVENT_PULL_PER_TICK: usize = 16;
 const MSG_ROUTED_REASON: &str = "routed_by_opendan_runtime";
+const MSG_CENTER_EVENT_BOX_NAMES: [&str; 3] = ["in", "group_in", "request"];
+const SESSION_QUEUE_APP_ID: &str = "opendan";
+const SESSION_QUEUE_RETENTION_SECONDS: u64 = 7 * 24 * 60 * 60;
+const SESSION_QUEUE_MAX_MESSAGES: u64 = 4096;
+const SESSION_QUEUE_FETCH_BATCH: usize = 64;
 
 #[derive(Debug)]
 struct PulledMsg {
@@ -50,11 +61,28 @@ struct PulledEvent {
     payload: Event,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum InputQueueKind {
+    Msg,
+    Event,
+}
+
+#[derive(Clone, Debug)]
+struct SessionQueueBinding {
+    msg_queue_name: String,
+    event_queue_name: String,
+    msg_queue_urn: String,
+    event_queue_urn: String,
+    msg_sub_id: String,
+    event_sub_id: String,
+}
+
 #[derive(Clone)]
 pub struct AIAgentDeps {
     pub taskmgr: Arc<TaskManagerClient>,
     pub aicc: Arc<AiccClient>,
     pub msg_center: Option<Arc<MsgCenterClient>>,
+    pub msg_queue: Option<Arc<MsgQueueClient>>,
 }
 
 pub struct AIAgent {
@@ -73,6 +101,9 @@ pub struct AIAgent {
     worklog: Arc<JsonlWorklogSink>,
     tokenizer: Arc<SimpleTokenizer>,
     deps: AIAgentDeps,
+    kevent_client: KEventClient,
+    msg_center_event_reader: Mutex<Option<Arc<EventReader>>>,
+    session_queue_bindings: Arc<RwLock<HashMap<String, SessionQueueBinding>>>,
     default_behavior: String,
     wakeup_seq: AtomicU64,
 }
@@ -156,6 +187,7 @@ impl AIAgent {
                 .await
                 .map_err(|err| anyhow!("init worklog sink failed: {err}"))?,
         );
+        let kevent_source_node = Self::sanitize_kevent_token(did.as_str());
 
         let agent = Self {
             cfg,
@@ -173,6 +205,9 @@ impl AIAgent {
             worklog,
             tokenizer: Arc::new(SimpleTokenizer),
             deps,
+            kevent_client: KEventClient::new_full(kevent_source_node, None),
+            msg_center_event_reader: Mutex::new(None),
+            session_queue_bindings: Arc::new(RwLock::new(HashMap::new())),
             default_behavior,
             wakeup_seq: AtomicU64::new(0),
         };
@@ -232,7 +267,8 @@ impl AIAgent {
                 .await
                 .map_err(|err| anyhow!("refresh session status failed: {err}"))?;
 
-            let (pulled_msgs, pulled_events) = self.pull_msgs_and_events().await?;
+            let (pulled_msgs, pulled_events, waited_on_events) =
+                self.pull_msgs_and_events(sleep_ms).await?;
             let has_inputs = !pulled_msgs.is_empty() || !pulled_events.is_empty();
             self.dispatch_pulled_inputs(pulled_msgs, pulled_events)
                 .await?;
@@ -245,7 +281,9 @@ impl AIAgent {
             if has_inputs {
                 sleep_ms = self.cfg.default_sleep_ms;
             } else {
-                sleep(Duration::from_millis(sleep_ms)).await;
+                if !waited_on_events {
+                    sleep(Duration::from_millis(sleep_ms)).await;
+                }
                 sleep_ms = (sleep_ms.saturating_mul(2)).min(self.cfg.max_sleep_ms);
             }
         }
@@ -291,13 +329,69 @@ impl AIAgent {
         Ok(())
     }
 
-    async fn pull_msgs_and_events(&self) -> Result<(Vec<PulledMsg>, Vec<PulledEvent>)> {
-        let pulled_msgs = self.pull_msg_packs().await;
-        let pulled_events = self.pull_event_packs().await;
-        Ok((pulled_msgs, pulled_events))
+    async fn pull_msgs_and_events(
+        &self,
+        wait_timeout_ms: u64,
+    ) -> Result<(Vec<PulledMsg>, Vec<PulledEvent>, bool)> {
+        let Some(event_reader) = self.ensure_msg_center_event_reader().await else {
+            let pulled_msgs = self.pull_msg_packs().await;
+            return Ok((pulled_msgs, vec![], false));
+        };
+        let mut pulled_events = Vec::<PulledEvent>::new();
+        let mut msg_pull_boxes = Vec::<BoxKind>::new();
+        match event_reader.pull_event(Some(wait_timeout_ms)).await {
+            Ok(Some(event)) => {
+                Self::collect_event_pull_targets(event, &mut msg_pull_boxes, &mut pulled_events);
+                for _ in 0..MAX_EVENT_PULL_PER_TICK.saturating_sub(1) {
+                    match event_reader.pull_event(Some(0)).await {
+                        Ok(Some(event)) => {
+                            Self::collect_event_pull_targets(
+                                event,
+                                &mut msg_pull_boxes,
+                                &mut pulled_events,
+                            );
+                        }
+                        Ok(None) => break,
+                        Err(err) => {
+                            warn!("agent.event_pull_failed: did={} err={:?}", self.did, err);
+                            if matches!(err, KEventError::ReaderClosed(_)) {
+                                self.reset_msg_center_event_reader().await;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            Ok(None) => {
+                // KEvent is a poll accelerator. Timeout still falls back to queue pull.
+                Self::append_all_msg_center_boxes(&mut msg_pull_boxes);
+            }
+            Err(err) => {
+                warn!("agent.event_pull_failed: did={} err={:?}", self.did, err);
+                if matches!(err, KEventError::ReaderClosed(_)) {
+                    self.reset_msg_center_event_reader().await;
+                }
+                // Keep queue polling as fallback when event pull fails.
+                Self::append_all_msg_center_boxes(&mut msg_pull_boxes);
+            }
+        }
+
+        let pulled_msgs = if msg_pull_boxes.is_empty() {
+            vec![]
+        } else {
+            self.pull_msg_packs_by_boxes(msg_pull_boxes.as_slice())
+                .await
+        };
+        Ok((pulled_msgs, pulled_events, true))
     }
 
     async fn pull_msg_packs(&self) -> Vec<PulledMsg> {
+        let mut box_kinds = Vec::new();
+        Self::append_all_msg_center_boxes(&mut box_kinds);
+        self.pull_msg_packs_by_boxes(box_kinds.as_slice()).await
+    }
+
+    async fn pull_msg_packs_by_boxes(&self, box_kinds: &[BoxKind]) -> Vec<PulledMsg> {
         let Some(msg_center) = self.deps.msg_center.as_ref() else {
             return vec![];
         };
@@ -306,32 +400,31 @@ impl AIAgent {
         };
 
         let mut out = Vec::<PulledMsg>::new();
-        for _ in 0..MAX_MSG_PULL_PER_TICK {
-            match msg_center
-                .get_next(
-                    owner_did.clone(),
-                    BoxKind::Inbox,
-                    Some(vec![MsgState::Unread]),
-                    Some(true),
-                    Some(true),
-                )
-                .await
-            {
-                Ok(Some(record)) => out.push(Self::msg_record_to_pulled_msg(record)),
-                Ok(None) => break,
-                Err(err) => {
-                    warn!("agent.msg_pull_failed: did={} err={}", self.did, err);
-                    break;
+        for box_kind in box_kinds {
+            for _ in 0..MAX_MSG_PULL_PER_TICK {
+                match msg_center
+                    .get_next(
+                        owner_did.clone(),
+                        box_kind.clone(),
+                        Some(vec![MsgState::Unread]),
+                        Some(true),
+                        Some(true),
+                    )
+                    .await
+                {
+                    Ok(Some(record)) => out.push(Self::msg_record_to_pulled_msg(record)),
+                    Ok(None) => break,
+                    Err(err) => {
+                        warn!(
+                            "agent.msg_pull_failed: did={} box_kind={:?} err={}",
+                            self.did, box_kind, err
+                        );
+                        break;
+                    }
                 }
             }
         }
         out
-    }
-
-    async fn pull_event_packs(&self) -> Vec<PulledEvent> {
-        // Placeholder: event source contract (MsgQueue/KEvent) is not finalized in doc.
-        // Keep the hook so Agent Loop semantics still match pull->route->dispatch.
-        vec![]
     }
 
     async fn dispatch_pulled_inputs(
@@ -346,10 +439,23 @@ impl AIAgent {
                 .resolve_session_for_msg(pulled.session_id.as_deref(), &pulled.record)
                 .await?;
             let payload = Self::msg_record_to_runtime_payload(&pulled.record);
-            self.session_mgr
-                .append_msg(session_id.as_str(), payload)
-                .await
-                .map_err(|err| anyhow!("dispatch msg to session `{session_id}` failed: {err}"))?;
+            let item = self.build_session_input_item(payload, "msg");
+            if self
+                .enqueue_session_input(session_id.as_str(), &item, InputQueueKind::Msg)
+                .await?
+            {
+                self.session_mgr
+                    .mark_msg_arrived(session_id.as_str(), &item)
+                    .await
+                    .map_err(|err| {
+                        anyhow!("mark msg arrival for session `{session_id}` failed: {err}")
+                    })?;
+            } else {
+                self.session_mgr
+                    .append_msg(session_id.as_str(), item.payload.clone())
+                    .await
+                    .map_err(|err| anyhow!("dispatch msg to session `{session_id}` failed: {err}"))?;
+            }
             if previous_session_id.as_deref() != Some(session_id.as_str()) {
                 self.update_msg_record_session(record_id.clone(), session_id.clone())
                     .await;
@@ -362,10 +468,23 @@ impl AIAgent {
             let session_id = self
                 .resolve_session_for_event(pulled.session_id.as_deref(), &payload)
                 .await?;
-            self.session_mgr
-                .append_event(session_id.as_str(), payload)
-                .await
-                .map_err(|err| anyhow!("dispatch event to session `{session_id}` failed: {err}"))?;
+            let item = self.build_session_input_item(payload, "event");
+            if self
+                .enqueue_session_input(session_id.as_str(), &item, InputQueueKind::Event)
+                .await?
+            {
+                self.session_mgr
+                    .mark_event_arrived(session_id.as_str(), &item)
+                    .await
+                    .map_err(|err| {
+                        anyhow!("mark event arrival for session `{session_id}` failed: {err}")
+                    })?;
+            } else {
+                self.session_mgr
+                    .append_event(session_id.as_str(), item.payload.clone())
+                    .await
+                    .map_err(|err| anyhow!("dispatch event to session `{session_id}` failed: {err}"))?;
+            }
         }
         Ok(())
     }
@@ -629,6 +748,145 @@ impl AIAgent {
         }
     }
 
+    fn sanitize_kevent_token(raw: &str) -> String {
+        let mut output = String::with_capacity(raw.len());
+        let mut prev_dash = false;
+        for ch in raw.chars() {
+            if ch.is_ascii_alphanumeric() {
+                output.push(ch.to_ascii_lowercase());
+                prev_dash = false;
+            } else if !prev_dash {
+                output.push('-');
+                prev_dash = true;
+            }
+        }
+        let trimmed = output.trim_matches('-');
+        if trimmed.is_empty() {
+            "default".to_string()
+        } else {
+            trimmed.chars().take(80).collect()
+        }
+    }
+
+    fn build_msg_center_event_patterns(owner: &DID) -> Vec<String> {
+        let owner_token = Self::sanitize_kevent_token(owner.to_string().as_str());
+        MSG_CENTER_EVENT_BOX_NAMES
+            .iter()
+            .map(|box_name| format!("/msg_center/{owner_token}/box/{box_name}/*"))
+            .collect()
+    }
+
+    async fn ensure_msg_center_event_reader(&self) -> Option<Arc<EventReader>> {
+        if self.deps.msg_center.is_none() {
+            return None;
+        }
+        let Some(owner_did) = self.parse_owner_did_for_msg_center() else {
+            return None;
+        };
+
+        let mut guard = self.msg_center_event_reader.lock().await;
+        if let Some(reader) = guard.as_ref() {
+            return Some(reader.clone());
+        }
+
+        let patterns = Self::build_msg_center_event_patterns(&owner_did);
+        match self
+            .kevent_client
+            .create_event_reader(patterns.clone())
+            .await
+        {
+            Ok(reader) => {
+                let reader = Arc::new(reader);
+                *guard = Some(reader.clone());
+                debug!(
+                    "agent.event_reader_created: did={} patterns={:?}",
+                    self.did, patterns
+                );
+                Some(reader)
+            }
+            Err(err) => {
+                debug!(
+                    "agent.event_reader_create_failed: did={} patterns={:?} err={:?}",
+                    self.did, patterns, err
+                );
+                None
+            }
+        }
+    }
+
+    async fn reset_msg_center_event_reader(&self) {
+        let mut guard = self.msg_center_event_reader.lock().await;
+        *guard = None;
+    }
+
+    fn msg_center_event_box_kind(event: &Event) -> Option<BoxKind> {
+        let mut parts = event.eventid.split('/').filter(|part| !part.is_empty());
+        let Some(prefix) = parts.next() else {
+            return None;
+        };
+        let Some(_owner) = parts.next() else {
+            return None;
+        };
+        let Some(scope) = parts.next() else {
+            return None;
+        };
+        let Some(box_name) = parts.next() else {
+            return None;
+        };
+        let Some(_event_name) = parts.next() else {
+            return None;
+        };
+
+        if prefix != "msg_center" || scope != "box" {
+            return None;
+        }
+
+        match box_name {
+            "in" => Some(BoxKind::Inbox),
+            "group_in" => Some(BoxKind::GroupInbox),
+            "request" => Some(BoxKind::RequestBox),
+            _ => None,
+        }
+    }
+
+    fn append_all_msg_center_boxes(target: &mut Vec<BoxKind>) {
+        for box_kind in [BoxKind::Inbox, BoxKind::GroupInbox, BoxKind::RequestBox] {
+            if !target.contains(&box_kind) {
+                target.push(box_kind);
+            }
+        }
+    }
+
+    fn collect_event_pull_targets(
+        event: Event,
+        msg_pull_boxes: &mut Vec<BoxKind>,
+        pulled_events: &mut Vec<PulledEvent>,
+    ) {
+        if let Some(box_kind) = Self::msg_center_event_box_kind(&event) {
+            if !msg_pull_boxes.contains(&box_kind) {
+                msg_pull_boxes.push(box_kind);
+            }
+            return;
+        }
+        if let Some(pulled) = Self::kevent_event_to_pulled(event) {
+            pulled_events.push(pulled);
+        }
+    }
+
+    fn kevent_event_to_pulled(event: Event) -> Option<PulledEvent> {
+        if event.eventid.starts_with("/msg_center/") {
+            return None;
+        }
+        let session_id = extract_session_id_hint(&event.data).or_else(|| {
+            let payload = serde_json::to_value(&event).unwrap_or_else(|_| json!({}));
+            extract_session_id_hint(&payload)
+        });
+        Some(PulledEvent {
+            session_id,
+            payload: event,
+        })
+    }
+
     fn msg_record_to_pulled_msg(record: MsgRecordWithObject) -> PulledMsg {
         let session_id = normalize_session_id(record.record.session_id.as_deref()).or_else(|| {
             let msg_payload = serde_json::to_value(&record.msg).unwrap_or_else(|_| json!({}));
@@ -647,6 +905,281 @@ impl AIAgent {
 
     fn event_to_runtime_payload(event: &Event) -> Json {
         serde_json::to_value(event).unwrap_or_else(|_| json!({}))
+    }
+
+    fn build_session_input_item(&self, payload: Json, prefix: &str) -> SessionInputItem {
+        SessionInputItem {
+            id: self.extract_session_input_id(&payload, prefix),
+            ts_ms: now_ms(),
+            payload,
+        }
+    }
+
+    fn extract_session_input_id(&self, payload: &Json, prefix: &str) -> String {
+        for key in ["id", "msg_id", "event_id", "record_id"] {
+            if let Some(id) = payload
+                .get(key)
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                return id.to_string();
+            }
+        }
+        let seq = self.wakeup_seq.fetch_add(1, Ordering::Relaxed);
+        format!("{prefix}-{}-{seq}", now_ms())
+    }
+
+    fn build_session_queue_binding(&self, session_id: &str) -> SessionQueueBinding {
+        let session_token = Self::sanitize_kevent_token(session_id);
+        let owner_token = Self::sanitize_kevent_token(self.did.as_str());
+        let msg_queue_name = format!("agent-session-{session_token}-msg");
+        let event_queue_name = format!("agent-session-{session_token}-event");
+        SessionQueueBinding {
+            msg_queue_urn: format!(
+                "{}::{}::{}",
+                SESSION_QUEUE_APP_ID, self.did, msg_queue_name
+            ),
+            event_queue_urn: format!(
+                "{}::{}::{}",
+                SESSION_QUEUE_APP_ID, self.did, event_queue_name
+            ),
+            msg_sub_id: format!("opendan-{owner_token}-{session_token}-msg"),
+            event_sub_id: format!("opendan-{owner_token}-{session_token}-event"),
+            msg_queue_name,
+            event_queue_name,
+        }
+    }
+
+    fn queue_already_exists(err: &kRPC::RPCErrors) -> bool {
+        err.to_string().to_ascii_lowercase().contains("already exists")
+    }
+
+    async fn ensure_session_queue_binding(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<SessionQueueBinding>> {
+        let Some(msg_queue) = self.deps.msg_queue.as_ref() else {
+            return Ok(None);
+        };
+        if let Some(binding) = self
+            .session_queue_bindings
+            .read()
+            .await
+            .get(session_id)
+            .cloned()
+        {
+            return Ok(Some(binding));
+        }
+
+        let binding = self.build_session_queue_binding(session_id);
+        let queue_cfg = QueueConfig {
+            max_messages: Some(SESSION_QUEUE_MAX_MESSAGES),
+            retention_seconds: Some(SESSION_QUEUE_RETENTION_SECONDS),
+            sync_write: false,
+            other_app_can_read: false,
+            other_app_can_write: false,
+            other_user_can_read: false,
+            other_user_can_write: false,
+        };
+
+        if let Err(err) = msg_queue
+            .create_queue(
+                Some(binding.msg_queue_name.as_str()),
+                SESSION_QUEUE_APP_ID,
+                self.did.as_str(),
+                queue_cfg.clone(),
+            )
+            .await
+        {
+            if !Self::queue_already_exists(&err) {
+                return Err(anyhow!(
+                    "create session msg queue failed: session={} err={}",
+                    session_id,
+                    err
+                ));
+            }
+        }
+        if let Err(err) = msg_queue
+            .create_queue(
+                Some(binding.event_queue_name.as_str()),
+                SESSION_QUEUE_APP_ID,
+                self.did.as_str(),
+                queue_cfg,
+            )
+            .await
+        {
+            if !Self::queue_already_exists(&err) {
+                return Err(anyhow!(
+                    "create session event queue failed: session={} err={}",
+                    session_id,
+                    err
+                ));
+            }
+        }
+
+        if let Err(err) = msg_queue
+            .subscribe(
+                binding.msg_queue_urn.as_str(),
+                self.did.as_str(),
+                SESSION_QUEUE_APP_ID,
+                Some(binding.msg_sub_id.clone()),
+                SubPosition::Earliest,
+            )
+            .await
+        {
+            if !Self::queue_already_exists(&err) {
+                return Err(anyhow!(
+                    "subscribe session msg queue failed: session={} err={}",
+                    session_id,
+                    err
+                ));
+            }
+        }
+        if let Err(err) = msg_queue
+            .subscribe(
+                binding.event_queue_urn.as_str(),
+                self.did.as_str(),
+                SESSION_QUEUE_APP_ID,
+                Some(binding.event_sub_id.clone()),
+                SubPosition::Earliest,
+            )
+            .await
+        {
+            if !Self::queue_already_exists(&err) {
+                return Err(anyhow!(
+                    "subscribe session event queue failed: session={} err={}",
+                    session_id,
+                    err
+                ));
+            }
+        }
+
+        self.session_queue_bindings
+            .write()
+            .await
+            .entry(session_id.to_string())
+            .or_insert_with(|| binding.clone());
+        Ok(Some(binding))
+    }
+
+    async fn enqueue_session_input(
+        &self,
+        session_id: &str,
+        item: &SessionInputItem,
+        kind: InputQueueKind,
+    ) -> Result<bool> {
+        let Some(msg_queue) = self.deps.msg_queue.as_ref() else {
+            return Ok(false);
+        };
+        let Some(binding) = self.ensure_session_queue_binding(session_id).await? else {
+            return Ok(false);
+        };
+        let queue_urn = match kind {
+            InputQueueKind::Msg => binding.msg_queue_urn.as_str(),
+            InputQueueKind::Event => binding.event_queue_urn.as_str(),
+        };
+        let payload = serde_json::to_vec(item).map_err(|err| {
+            anyhow!(
+                "serialize session queue payload failed: session={} kind={:?} err={}",
+                session_id,
+                kind,
+                err
+            )
+        })?;
+        let mut message = Message::new(payload);
+        message.created_at = now_ms();
+        msg_queue
+            .post_message(queue_urn, message)
+            .await
+            .map_err(|err| {
+                anyhow!(
+                    "post session queue message failed: session={} kind={:?} err={}",
+                    session_id,
+                    kind,
+                    err
+                )
+            })?;
+        Ok(true)
+    }
+
+    async fn pull_session_queue_inputs(
+        &self,
+        session_id: &str,
+    ) -> Result<(Vec<SessionInputItem>, Vec<SessionInputItem>)> {
+        let Some(_msg_queue) = self.deps.msg_queue.as_ref() else {
+            return Ok((vec![], vec![]));
+        };
+        let Some(binding) = self.ensure_session_queue_binding(session_id).await? else {
+            return Ok((vec![], vec![]));
+        };
+        let msgs = self
+            .pull_session_queue_inputs_by_kind(
+                session_id,
+                binding.msg_queue_urn.as_str(),
+                binding.msg_sub_id.as_str(),
+                "msg",
+            )
+            .await?;
+        let events = self
+            .pull_session_queue_inputs_by_kind(
+                session_id,
+                binding.event_queue_urn.as_str(),
+                binding.event_sub_id.as_str(),
+                "event",
+            )
+            .await?;
+        Ok((msgs, events))
+    }
+
+    async fn pull_session_queue_inputs_by_kind(
+        &self,
+        session_id: &str,
+        queue_urn: &str,
+        sub_id: &str,
+        prefix: &str,
+    ) -> Result<Vec<SessionInputItem>> {
+        let Some(msg_queue) = self.deps.msg_queue.as_ref() else {
+            return Ok(vec![]);
+        };
+        let messages = msg_queue
+            .fetch_messages(sub_id, SESSION_QUEUE_FETCH_BATCH, true)
+            .await
+            .map_err(|err| {
+                anyhow!(
+                    "fetch session queue messages failed: session={} queue={} err={}",
+                    session_id,
+                    queue_urn,
+                    err
+                )
+            })?;
+        if messages.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut output = Vec::<SessionInputItem>::with_capacity(messages.len());
+        let mut last_index = None::<u64>;
+        for msg in messages {
+            last_index = Some(msg.index);
+            let item = match serde_json::from_slice::<SessionInputItem>(msg.payload.as_slice()) {
+                Ok(item) => item,
+                Err(_) => {
+                    let payload = serde_json::from_slice::<Json>(msg.payload.as_slice())
+                        .unwrap_or(Json::String(String::from_utf8_lossy(&msg.payload).to_string()));
+                    SessionInputItem {
+                        id: self.extract_session_input_id(&payload, prefix),
+                        ts_ms: now_ms(),
+                        payload,
+                    }
+                }
+            };
+            output.push(item);
+        }
+
+        if let Some(last_index) = last_index {
+            let _ = msg_queue.delete_message_before(queue_urn, last_index + 1).await;
+        }
+        Ok(output)
     }
 
     async fn run_session_loop(
@@ -831,8 +1364,20 @@ impl AIAgent {
 
             let prepared = match &mut mode {
                 BehaviorLoopMode::Session { session } => {
+                    let session_id = {
+                        let guard = session.lock().await;
+                        guard.session_id.clone()
+                    };
+                    let (queue_msgs, queue_events) =
+                        self.pull_session_queue_inputs(session_id.as_str()).await?;
                     let (state, step_index, exec_input) = {
                         let mut guard = session.lock().await;
+                        if !queue_msgs.is_empty() {
+                            guard.new_msgs.extend(queue_msgs);
+                        }
+                        if !queue_events.is_empty() {
+                            guard.new_events.extend(queue_events);
+                        }
                         if guard.state != SessionState::Pause && guard.current_behavior.is_none() {
                             guard.current_behavior = Some(self.default_behavior.clone());
                             guard.step_index = 0;
@@ -981,30 +1526,47 @@ impl AIAgent {
                 self.apply_memory_updates(&trace, llm_result.set_memory.as_slice())
                     .await;
 
-                let transition = if let BehaviorLoopMode::Session { session } = &mode {
-                    let mut guard = session.lock().await;
-                    guard.update_input_used(&exec_input);
-                    guard.apply_session_delta(llm_result.session_delta.as_slice());
+                let (transition, side_effect_workspace_id, side_effect_session_id, step_summary) =
+                    if let BehaviorLoopMode::Session { session } = &mode {
+                        let mut guard = session.lock().await;
+                        guard.update_input_used(&exec_input);
+                        guard.apply_session_delta(llm_result.session_delta.as_slice());
 
-                    let step_summary = build_step_summary(
-                        &trace,
-                        behavior_cfg,
-                        &llm_result.next_behavior,
-                        &tracking,
-                        action_results.as_slice(),
-                    );
-                    guard.set_last_step_summary(step_summary.clone());
-                    guard.append_worklog(step_summary);
+                        let step_summary = build_step_summary(
+                            &trace,
+                            behavior_cfg,
+                            &llm_result.next_behavior,
+                            &tracking,
+                            action_results.as_slice(),
+                        );
+                        guard.set_last_step_summary(step_summary.clone());
+                        guard.append_worklog(step_summary.clone());
 
-                    apply_behavior_transition(
-                        &mut guard,
-                        self.default_behavior.as_str(),
-                        behavior_cfg.step_limit,
-                        llm_result.next_behavior.as_deref(),
-                    )
-                } else {
-                    continue;
-                };
+                        let workspace_id = resolve_session_workspace_id(&guard);
+                        let session_id = guard.session_id.clone();
+                        let transition = apply_behavior_transition(
+                            &mut guard,
+                            self.default_behavior.as_str(),
+                            behavior_cfg.step_limit,
+                            llm_result.next_behavior.as_deref(),
+                        );
+                        (
+                            transition,
+                            workspace_id,
+                            session_id,
+                            step_summary,
+                        )
+                    } else {
+                        continue;
+                    };
+                self.apply_workspace_side_effects(
+                    &trace,
+                    side_effect_session_id.as_str(),
+                    side_effect_workspace_id.as_deref(),
+                    &step_summary,
+                    llm_result.todo.as_slice(),
+                )
+                .await;
                 let _ = self.session_mgr.save_session(&transition.session_id).await;
 
                 if transition.behavior_switched {
@@ -1333,6 +1895,102 @@ impl AIAgent {
                     self.did, key, err
                 );
             }
+        }
+    }
+
+    async fn apply_workspace_side_effects(
+        &self,
+        trace: &TraceCtx,
+        session_id: &str,
+        workspace_id: Option<&str>,
+        step_summary: &Json,
+        todo: &[Json],
+    ) {
+        let Some(workspace_id) = normalize_session_id(workspace_id) else {
+            return;
+        };
+
+        if self.tools.has_tool(TOOL_WORKLOG_MANAGE) {
+            let summary_text = step_summary
+                .get("summary")
+                .and_then(|value| value.as_str())
+                .unwrap_or("step summary");
+            let call = ToolCall {
+                name: TOOL_WORKLOG_MANAGE.to_string(),
+                args: json!({
+                    "action": "append_step_summary",
+                    "owner_session_id": session_id,
+                    "workspace_id": workspace_id,
+                    "step_id": format!("{}#{}", trace.behavior, trace.step_idx),
+                    "step_index": trace.step_idx,
+                    "behavior": trace.behavior,
+                    "summary": summary_text,
+                    "payload": step_summary,
+                }),
+                call_id: format!(
+                    "step-worklog-{}-{}",
+                    trace.step_idx,
+                    self.wakeup_seq.fetch_add(1, Ordering::Relaxed)
+                ),
+            };
+            if let Err(err) = self.tools.call_tool(trace, call).await {
+                warn!(
+                    "agent.workspace_worklog_side_effect_failed: did={} session={} workspace={} behavior={} step={} err={}",
+                    self.did, session_id, workspace_id, trace.behavior, trace.step_idx, err
+                );
+            }
+        }
+
+        if todo.is_empty() || !self.tools.has_tool(TOOL_TODO_MANAGE) {
+            return;
+        }
+
+        let Some(mut delta) = build_todo_delta_payload(todo) else {
+            return;
+        };
+        if let Some(delta_obj) = delta.as_object_mut() {
+            let has_op_id = delta_obj
+                .get("op_id")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_some();
+            if !has_op_id {
+                delta_obj.insert(
+                    "op_id".to_string(),
+                    Json::String(format!(
+                        "{}:{}:{}",
+                        trace.wakeup_id, trace.behavior, trace.step_idx
+                    )),
+                );
+            }
+        }
+
+        let call = ToolCall {
+            name: TOOL_TODO_MANAGE.to_string(),
+            args: json!({
+                "action": "apply_delta",
+                "workspace_id": workspace_id,
+                "session_id": session_id,
+                "delta": delta,
+                "actor_ctx": {
+                    "kind": "root_agent",
+                    "did": trace.agent_did,
+                    "session_id": session_id,
+                    "trace_id": trace.trace_id,
+                },
+            }),
+            call_id: format!(
+                "step-todo-{}-{}",
+                trace.step_idx,
+                self.wakeup_seq.fetch_add(1, Ordering::Relaxed)
+            ),
+        };
+        if let Err(err) = self.tools.call_tool(trace, call).await {
+            warn!(
+                "agent.workspace_todo_side_effect_failed: did={} session={} workspace={} behavior={} step={} err={}",
+                self.did, session_id, workspace_id, trace.behavior, trace.step_idx, err
+            );
         }
     }
 
@@ -1770,6 +2428,66 @@ async fn is_existing_dir(path: &Path) -> bool {
         .await
         .map(|meta| meta.is_dir())
         .unwrap_or(false)
+}
+
+fn resolve_session_workspace_id(session: &crate::agent_session::AgentSession) -> Option<String> {
+    normalize_session_id(session.local_workspace_id.as_deref())
+        .or_else(|| extract_workspace_id_from_json(session.workspace_info.as_ref()))
+        .or_else(|| extract_workspace_id_from_json(Some(&session.meta)))
+}
+
+fn extract_workspace_id_from_json(value: Option<&Json>) -> Option<String> {
+    let value = value?;
+    for pointer in [
+        "/workspace_id",
+        "/local_workspace_id",
+        "/id",
+        "/workspace/id",
+        "/workspace/workspace_id",
+        "/workspace/local_workspace_id",
+        "/binding/workspace_id",
+        "/binding/local_workspace_id",
+    ] {
+        let parsed = value
+            .pointer(pointer)
+            .and_then(|item| item.as_str())
+            .map(str::trim)
+            .filter(|item| !item.is_empty());
+        if let Some(workspace_id) = parsed {
+            return Some(workspace_id.to_string());
+        }
+    }
+    None
+}
+
+fn build_todo_delta_payload(todo: &[Json]) -> Option<Json> {
+    let ops = todo
+        .iter()
+        .filter(|item| !item.is_null())
+        .cloned()
+        .collect::<Vec<_>>();
+    if ops.is_empty() {
+        return None;
+    }
+
+    if ops.len() == 1 {
+        if let Some(delta) = ops[0].as_object() {
+            if delta.get("ops").and_then(|value| value.as_array()).is_some() {
+                return Some(Json::Object(delta.clone()));
+            }
+            if let Some(nested_delta) = delta.get("delta").and_then(|value| value.as_object()) {
+                if nested_delta
+                    .get("ops")
+                    .and_then(|value| value.as_array())
+                    .is_some()
+                {
+                    return Some(Json::Object(nested_delta.clone()));
+                }
+            }
+        }
+    }
+
+    Some(json!({ "ops": ops }))
 }
 
 fn normalize_session_id(value: Option<&str>) -> Option<String> {

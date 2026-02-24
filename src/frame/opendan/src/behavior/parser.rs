@@ -116,6 +116,7 @@ fn parse_behavior_result_json(value: Json) -> Result<(BehaviorLLMResult, LLMOutp
 
     let mut result = serde_json::from_value::<BehaviorLLMResult>(value.clone())
         .map_err(|err| format!("invalid behavior output schema: {err}"))?;
+    hydrate_todo_delta_alias(&mut result, &value)?;
 
     if result.actions.is_empty() {
         if let Some(actions_value) = value.get("actions") {
@@ -199,6 +200,7 @@ fn unknown_behavior_fields(value: &Json) -> Option<Vec<String>> {
                 | "reply"
                 | "tool_calls"
                 | "todo"
+                | "todo_delta"
                 | "set_memory"
                 | "actions"
                 | "session_delta"
@@ -209,6 +211,40 @@ fn unknown_behavior_fields(value: &Json) -> Option<Vec<String>> {
         }
     }
     Some(unknown)
+}
+
+fn hydrate_todo_delta_alias(result: &mut BehaviorLLMResult, value: &Json) -> Result<(), String> {
+    if !result.todo.is_empty() {
+        return Ok(());
+    }
+
+    let Some(todo_delta) = value.get("todo_delta") else {
+        return Ok(());
+    };
+
+    match todo_delta {
+        Json::Null => Ok(()),
+        Json::Array(items) => {
+            result.todo = items.clone();
+            Ok(())
+        }
+        Json::Object(map) => {
+            let Some(ops) = map.get("ops").and_then(|v| v.as_array()) else {
+                return Err(
+                    "invalid behavior output schema: `todo_delta` object missing `ops[]`"
+                        .to_string(),
+                );
+            };
+            if ops.is_empty() {
+                return Ok(());
+            }
+            result.todo = vec![Json::Object(map.clone())];
+            Ok(())
+        }
+        _ => Err(
+            "invalid behavior output schema: `todo_delta` must be array or object".to_string(),
+        ),
+    }
 }
 
 fn json_value_to_llm_output(value: Json) -> LLMOutput {
@@ -373,6 +409,33 @@ mod tests {
             .expect("behavior parse should work");
         assert_eq!(parsed.next_behavior.as_deref(), Some("END"));
         assert_eq!(output, LLMOutput::Json(payload));
+    }
+
+    #[test]
+    fn parse_behavior_result_supports_todo_delta_alias() {
+        let raw = raw_response(
+            &json!({
+                "next_behavior": "DO",
+                "todo_delta": {
+                    "ops": [{
+                        "op": "update:T001",
+                        "to_status": "COMPLETE",
+                        "reason": "done"
+                    }]
+                }
+            })
+            .to_string(),
+            vec![],
+        );
+
+        let (parsed, _) = BehaviorResultParser::parse_first(&raw, true, "auto")
+            .expect("behavior parse should work");
+        assert_eq!(parsed.next_behavior.as_deref(), Some("DO"));
+        assert_eq!(parsed.todo.len(), 1);
+        assert_eq!(
+            parsed.todo[0].pointer("/ops/0/op").and_then(|v| v.as_str()),
+            Some("update:T001")
+        );
     }
 
     #[test]

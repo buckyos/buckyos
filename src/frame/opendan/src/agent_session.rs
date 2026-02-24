@@ -114,10 +114,6 @@ struct SessionRuntimeMeta {
     current_behavior: Option<String>,
     step_index: u32,
     last_step_summary: Option<Json>,
-    new_msgs: Vec<SessionInputItem>,
-    new_events: Vec<SessionInputItem>,
-    history_msgs: Vec<SessionInputItem>,
-    history_events: Vec<SessionInputItem>,
     workspace_info: Option<Json>,
     local_workspace_id: Option<String>,
     worklog: Vec<Json>,
@@ -132,10 +128,6 @@ impl Default for SessionRuntimeMeta {
             current_behavior: None,
             step_index: 0,
             last_step_summary: None,
-            new_msgs: vec![],
-            new_events: vec![],
-            history_msgs: vec![],
-            history_events: vec![],
             workspace_info: None,
             local_workspace_id: None,
             worklog: vec![],
@@ -243,10 +235,10 @@ impl AgentSession {
             current_behavior: normalize_optional_string(runtime_meta.current_behavior),
             step_index: runtime_meta.step_index,
             last_step_summary: runtime_meta.last_step_summary,
-            new_msgs: runtime_meta.new_msgs,
-            new_events: runtime_meta.new_events,
-            history_msgs: runtime_meta.history_msgs,
-            history_events: runtime_meta.history_events,
+            new_msgs: vec![],
+            new_events: vec![],
+            history_msgs: vec![],
+            history_events: vec![],
             workspace_info: runtime_meta.workspace_info,
             local_workspace_id: normalize_optional_string(runtime_meta.local_workspace_id),
             worklog: runtime_meta.worklog,
@@ -309,10 +301,6 @@ impl AgentSession {
             current_behavior: self.current_behavior.clone(),
             step_index: self.step_index,
             last_step_summary: self.last_step_summary.clone(),
-            new_msgs: self.new_msgs.clone(),
-            new_events: self.new_events.clone(),
-            history_msgs: self.history_msgs.clone(),
-            history_events: self.history_events.clone(),
             workspace_info: self.workspace_info.clone(),
             local_workspace_id: self.local_workspace_id.clone(),
             worklog: self.worklog.clone(),
@@ -348,50 +336,34 @@ impl AgentSession {
 
     pub fn append_msg(&mut self, payload: Json) -> String {
         let id = extract_input_id(&payload, "msg");
-        self.new_msgs.push(SessionInputItem {
+        let item = SessionInputItem {
             id: id.clone(),
             ts_ms: now_ms(),
             payload,
-        });
-        self.updated_at_ms = now_ms();
-        if self.state == SessionState::Wait || self.state == SessionState::Sleep {
-            self.state = SessionState::Ready;
-        }
-        if self.state == SessionState::WaitForMsg {
-            if self
-                .new_msgs
-                .last()
-                .map(|item| match_wait_filter(item, self.wait_details.as_ref()))
-                .unwrap_or(false)
-            {
-                self.state = SessionState::Ready;
-            }
-        }
+        };
+        self.new_msgs.push(item.clone());
+        self.update_state_on_input_arrived(&item, SessionState::WaitForMsg);
         id
     }
 
     pub fn append_event(&mut self, payload: Json) -> String {
         let id = extract_input_id(&payload, "event");
-        self.new_events.push(SessionInputItem {
+        let item = SessionInputItem {
             id: id.clone(),
             ts_ms: now_ms(),
             payload,
-        });
-        self.updated_at_ms = now_ms();
-        if self.state == SessionState::Wait || self.state == SessionState::Sleep {
-            self.state = SessionState::Ready;
-        }
-        if self.state == SessionState::WaitForEvent {
-            if self
-                .new_events
-                .last()
-                .map(|item| match_wait_filter(item, self.wait_details.as_ref()))
-                .unwrap_or(false)
-            {
-                self.state = SessionState::Ready;
-            }
-        }
+        };
+        self.new_events.push(item.clone());
+        self.update_state_on_input_arrived(&item, SessionState::WaitForEvent);
         id
+    }
+
+    pub fn mark_msg_arrived(&mut self, item: &SessionInputItem) {
+        self.update_state_on_input_arrived(item, SessionState::WaitForMsg);
+    }
+
+    pub fn mark_event_arrived(&mut self, item: &SessionInputItem) {
+        self.update_state_on_input_arrived(item, SessionState::WaitForEvent);
     }
 
     pub fn generate_input(&self, behavior_cfg: &BehaviorConfig) -> Option<SessionExecInput> {
@@ -459,15 +431,8 @@ impl AgentSession {
                 .iter()
                 .cloned()
                 .collect::<HashSet<_>>();
-            let mut remaining = Vec::<SessionInputItem>::with_capacity(self.new_msgs.len());
-            for item in self.new_msgs.drain(..) {
-                if consumed.contains(item.id.as_str()) {
-                    self.history_msgs.push(item);
-                } else {
-                    remaining.push(item);
-                }
-            }
-            self.new_msgs = remaining;
+            self.new_msgs
+                .retain(|item| !consumed.contains(item.id.as_str()));
         }
 
         if !exec_input.consumable_ids.event_ids.is_empty() {
@@ -477,15 +442,8 @@ impl AgentSession {
                 .iter()
                 .cloned()
                 .collect::<HashSet<_>>();
-            let mut remaining = Vec::<SessionInputItem>::with_capacity(self.new_events.len());
-            for item in self.new_events.drain(..) {
-                if consumed.contains(item.id.as_str()) {
-                    self.history_events.push(item);
-                } else {
-                    remaining.push(item);
-                }
-            }
-            self.new_events = remaining;
+            self.new_events
+                .retain(|item| !consumed.contains(item.id.as_str()));
         }
         self.updated_at_ms = now_ms();
     }
@@ -603,6 +561,17 @@ impl AgentSession {
             "meta": self.meta,
         })
     }
+
+    fn update_state_on_input_arrived(&mut self, item: &SessionInputItem, wait_state: SessionState) {
+        self.updated_at_ms = now_ms();
+        if self.state == SessionState::Wait || self.state == SessionState::Sleep {
+            self.state = SessionState::Ready;
+            return;
+        }
+        if self.state == wait_state && match_wait_filter(item, self.wait_details.as_ref()) {
+            self.state = SessionState::Ready;
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -700,6 +669,28 @@ impl AgentSessionMgr {
         let id = guard.append_event(payload);
         self.save_session_locked(&guard).await?;
         Ok(id)
+    }
+
+    pub async fn mark_msg_arrived(
+        &self,
+        session_id: &str,
+        item: &SessionInputItem,
+    ) -> Result<(), ToolError> {
+        let session = self.ensure_session(session_id, None).await?;
+        let mut guard = session.lock().await;
+        guard.mark_msg_arrived(item);
+        self.save_session_locked(&guard).await
+    }
+
+    pub async fn mark_event_arrived(
+        &self,
+        session_id: &str,
+        item: &SessionInputItem,
+    ) -> Result<(), ToolError> {
+        let session = self.ensure_session(session_id, None).await?;
+        let mut guard = session.lock().await;
+        guard.mark_event_arrived(item);
+        self.save_session_locked(&guard).await
     }
 
     pub async fn save_session(&self, session_id: &str) -> Result<(), ToolError> {
@@ -1317,7 +1308,7 @@ mod tests {
     }
 
     #[test]
-    fn update_input_used_moves_items_to_history() {
+    fn update_input_used_drops_consumed_items() {
         let mut session = AgentSession::new("s1", "did:opendan:test", Some("on_wakeup"));
         session.append_msg(json!({"id":"msg-1","text":"hello"}));
         let cfg = behavior_with_input("{{new_msg}}");
@@ -1325,8 +1316,7 @@ mod tests {
 
         session.update_input_used(&exec_input);
         assert!(session.new_msgs.is_empty());
-        assert_eq!(session.history_msgs.len(), 1);
-        assert_eq!(session.history_msgs[0].id, "msg-1");
+        assert!(session.history_msgs.is_empty());
     }
 
     #[test]
