@@ -119,11 +119,6 @@ fn parse_executor_result_payload() {
                 "format": "markdown",
                 "content": "Gather evidence first, then answer."
             }],
-            "tool_calls": [{
-                "name": "tool.echo",
-                "args": {"msg":"hello"},
-                "call_id": "call-1"
-            }],
             "todo": [{"op":"add","item":{"title":"check"}}],
             "set_memory": [{"content":"x"}],
             "actions": [],
@@ -140,7 +135,7 @@ fn parse_executor_result_payload() {
     let (parsed, _) = BehaviorResultParser::parse_first(&raw, true, "auto")
         .expect("executor parse should succeed");
     assert_eq!(parsed.next_behavior.as_deref(), Some("END"));
-    assert_eq!(parsed.tool_calls.len(), 1);
+    assert!(parsed.actions.is_empty());
 }
 
 #[tokio::test]

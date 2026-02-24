@@ -36,7 +36,7 @@ policy: |
   * `memory_queries` 必须是一个数组；为空时使用 `[]`
 
 output_protocol:
-  mode: RouteResult
+  mode: route_result
   notes: |
     * 如果不需要切换行为，请将 "next_behavior" 设置为 END。
 

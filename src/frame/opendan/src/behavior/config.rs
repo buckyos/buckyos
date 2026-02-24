@@ -432,7 +432,7 @@ fn normalize_output_mode(mode: &str) -> String {
 
 fn default_output_protocol_text(mode: &str) -> String {
     match mode {
-        "behavior_llm_result" => "Return ONLY a JSON object that follows BehaviorLLMResult fields (next_behavior, reply, tool_calls, todo, set_memory, actions, session_delta).".to_string(),
+        "behavior_llm_result" => "Return ONLY a JSON object that follows BehaviorLLMResult fields (next_behavior, reply, todo, set_memory, actions, session_delta).".to_string(),
         "route_result" => "Return ONLY a JSON object that follows RouteResult fields (session_id, new_session, next_behavior, memory_queries, reply).".to_string(),
         _ => String::new(),
     }

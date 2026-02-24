@@ -1,4 +1,3 @@
-use crate::agent_tool::ToolCall;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
@@ -98,8 +97,6 @@ pub struct BehaviorLLMResult {
     pub thinking: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reply: Vec<ExecutorReply>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tool_calls: Vec<ToolCall>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub todo: Vec<Json>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

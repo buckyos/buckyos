@@ -454,7 +454,9 @@ impl AIAgent {
                 self.session_mgr
                     .append_msg(session_id.as_str(), item.payload.clone())
                     .await
-                    .map_err(|err| anyhow!("dispatch msg to session `{session_id}` failed: {err}"))?;
+                    .map_err(|err| {
+                        anyhow!("dispatch msg to session `{session_id}` failed: {err}")
+                    })?;
             }
             if previous_session_id.as_deref() != Some(session_id.as_str()) {
                 self.update_msg_record_session(record_id.clone(), session_id.clone())
@@ -483,7 +485,9 @@ impl AIAgent {
                 self.session_mgr
                     .append_event(session_id.as_str(), item.payload.clone())
                     .await
-                    .map_err(|err| anyhow!("dispatch event to session `{session_id}` failed: {err}"))?;
+                    .map_err(|err| {
+                        anyhow!("dispatch event to session `{session_id}` failed: {err}")
+                    })?;
             }
         }
         Ok(())
@@ -936,10 +940,7 @@ impl AIAgent {
         let msg_queue_name = format!("agent-session-{session_token}-msg");
         let event_queue_name = format!("agent-session-{session_token}-event");
         SessionQueueBinding {
-            msg_queue_urn: format!(
-                "{}::{}::{}",
-                SESSION_QUEUE_APP_ID, self.did, msg_queue_name
-            ),
+            msg_queue_urn: format!("{}::{}::{}", SESSION_QUEUE_APP_ID, self.did, msg_queue_name),
             event_queue_urn: format!(
                 "{}::{}::{}",
                 SESSION_QUEUE_APP_ID, self.did, event_queue_name
@@ -952,7 +953,9 @@ impl AIAgent {
     }
 
     fn queue_already_exists(err: &kRPC::RPCErrors) -> bool {
-        err.to_string().to_ascii_lowercase().contains("already exists")
+        err.to_string()
+            .to_ascii_lowercase()
+            .contains("already exists")
     }
 
     async fn ensure_session_queue_binding(
@@ -1164,8 +1167,9 @@ impl AIAgent {
             let item = match serde_json::from_slice::<SessionInputItem>(msg.payload.as_slice()) {
                 Ok(item) => item,
                 Err(_) => {
-                    let payload = serde_json::from_slice::<Json>(msg.payload.as_slice())
-                        .unwrap_or(Json::String(String::from_utf8_lossy(&msg.payload).to_string()));
+                    let payload = serde_json::from_slice::<Json>(msg.payload.as_slice()).unwrap_or(
+                        Json::String(String::from_utf8_lossy(&msg.payload).to_string()),
+                    );
                     SessionInputItem {
                         id: self.extract_session_input_id(&payload, prefix),
                         ts_ms: now_ms(),
@@ -1177,7 +1181,9 @@ impl AIAgent {
         }
 
         if let Some(last_index) = last_index {
-            let _ = msg_queue.delete_message_before(queue_urn, last_index + 1).await;
+            let _ = msg_queue
+                .delete_message_before(queue_urn, last_index + 1)
+                .await;
         }
         Ok(output)
     }
@@ -1550,12 +1556,7 @@ impl AIAgent {
                             behavior_cfg.step_limit,
                             llm_result.next_behavior.as_deref(),
                         );
-                        (
-                            transition,
-                            workspace_id,
-                            session_id,
-                            step_summary,
-                        )
+                        (transition, workspace_id, session_id, step_summary)
                     } else {
                         continue;
                     };
@@ -2472,7 +2473,11 @@ fn build_todo_delta_payload(todo: &[Json]) -> Option<Json> {
 
     if ops.len() == 1 {
         if let Some(delta) = ops[0].as_object() {
-            if delta.get("ops").and_then(|value| value.as_array()).is_some() {
+            if delta
+                .get("ops")
+                .and_then(|value| value.as_array())
+                .is_some()
+            {
                 return Some(Json::Object(delta.clone()));
             }
             if let Some(nested_delta) = delta.get("delta").and_then(|value| value.as_object()) {

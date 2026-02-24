@@ -100,11 +100,10 @@ policy: |
   - 仅输出 JSON 对象 —— 不要包含任何其他内容。
   - 始终包含所有四个字段。
   - `new_session` 必须是包含两个元素的字符串数组或 `null` —— 不能是其他形式。
-  - `memory_queries` 必须是一个数组；为空时使用 `[]`。
   - 当 `next_behavior` 为 `PLAN` 或 `DO` 时，`new_session` 几乎总是应该为非空（代表输入具有值得跟踪的实质内容）。
 
 output_protocol:
-  mode: RouteResult
+  mode: route_result
   
   notes: |
     - 如果不需要新会话，请将 "new_session" 设置为 null。
@@ -125,7 +124,6 @@ memory:
     count: 10
   
 input: |
-
   {{new_event}}
   {{new_msg}}
   

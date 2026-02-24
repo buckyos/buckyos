@@ -49,12 +49,7 @@ impl PromptBuilder {
         if let Some(policy_text) = build_policy_text(input) {
             system_sections.push(format!("<<policy>>\n{}\n<</policy>>", policy_text));
         }
-        if let Some(input_template) = build_input_template(input) {
-            system_sections.push(format!(
-                "<<input_template>>\n{}\n<</input_template>>",
-                input_template
-            ));
-        }
+
         if let Some(memory_policy) = build_memory_policy(input) {
             system_sections.push(format!(
                 "<<memory_policy>>\n{}\n<</memory_policy>>",
@@ -256,9 +251,6 @@ fn build_policy_text(input: &BehaviorExecInput) -> Option<String> {
     lookup_env(input, "behavior.policy")
 }
 
-fn build_input_template(input: &BehaviorExecInput) -> Option<String> {
-    lookup_env(input, "behavior.input_template")
-}
 
 fn build_memory_policy(input: &BehaviorExecInput) -> Option<String> {
     lookup_env(input, "behavior.memory_config")
@@ -281,13 +273,147 @@ fn build_output_protocol(cfg: &LLMBehaviorConfig) -> String {
     if !cfg.output_protocol.trim().is_empty() {
         return cfg.output_protocol.clone();
     }
-    match cfg.output_mode.trim().to_ascii_lowercase().as_str() {
-        "behavior_llm_result" | "json_v1" | "executor" => {
-            "Output mode: behavior_llm_result".to_string()
-        }
-        "route_result" | "route" => "Output mode: route_result".to_string(),
-        _ => String::new(),
+
+    match normalize_output_mode(cfg.output_mode.as_str()).as_str() {
+        "behavior_llm_result" => build_behavior_llm_result_protocol(),
+        "route_result" => build_route_result_protocol(),
+        _ => build_auto_output_protocol(),
     }
+}
+
+fn normalize_output_mode(mode: &str) -> String {
+    let normalized = mode.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "" | "auto" => "auto".to_string(),
+        "json_v1" | "behavior_llm_result" | "behavior_result" | "executor" => {
+            "behavior_llm_result".to_string()
+        }
+        "route_result" | "route" | "route_v1" => "route_result".to_string(),
+        _ => "auto".to_string(),
+    }
+}
+
+fn build_behavior_llm_result_protocol() -> String {
+    let schema = json!({
+        "next_behavior": "END",
+        "thinking": "optional short reasoning for internal planning",
+        "reply": [
+            {
+                "audience": "user",
+                "format": "markdown",
+                "content": "final response for user"
+            }
+        ],
+        "todo": [
+            {
+                "op": "upsert",
+                "id": "T001"
+            }
+        ],
+        "todo_delta": {
+            "ops": [
+                {
+                    "op": "update:T001",
+                    "to_status": "DONE"
+                }
+            ]
+        },
+        "set_memory": [
+            {
+                "scope": "session",
+                "key": "summary",
+                "value": "important context"
+            }
+        ],
+        "actions": [
+            {
+                "kind": "bash",
+                "title": "Run tests",
+                "command": "cargo test -p opendan",
+                "execution_mode": "serial",
+                "cwd": ".",
+                "timeout_ms": 120000,
+                "allow_network": false,
+                "fs_scope": {
+                    "read_roots": [
+                        "."
+                    ],
+                    "write_roots": [
+                        "."
+                    ]
+                },
+                "rationale": "verify the change"
+            }
+        ],
+        "session_delta": [
+            {
+                "key": "status",
+                "value": "updated"
+            }
+        ],
+        "is_sleep": false,
+        "output": {
+            "kind": "final"
+        }
+    });
+    let schema_pretty = serde_json::to_string_pretty(&schema).unwrap_or_else(|_| "{}".to_string());
+
+    format!(
+        "Return ONLY one JSON object. No markdown fences and no extra text.\n\
+Output mode: behavior_llm_result\n\
+Allowed top-level keys only: next_behavior, thinking, reply, todo, todo_delta, set_memory, actions, session_delta, is_sleep, output.\n\
+Type rules:\n\
+- `reply` is array of objects with `audience`, `format`, `content`.\n\
+- `actions` is array of ActionSpec objects; each action requires `title` and `command`.\n\
+- `todo_delta` is legacy alias of `todo`; use `todo` in new outputs.\n\
+JSON example:\n\
+{}",
+        schema_pretty
+    )
+}
+
+fn build_route_result_protocol() -> String {
+    let schema = json!({
+        "session_id": "session-id-or-null",
+        "new_session": [
+            "new-session-id",
+            "new-session-title"
+        ],
+        "next_behavior": "behavior_name",
+        "memory_queries": [
+            "query text"
+        ],
+        "reply": "optional short router reply"
+    });
+    let schema_pretty = serde_json::to_string_pretty(&schema).unwrap_or_else(|_| "{}".to_string());
+
+    format!(
+        "Return ONLY one JSON object. No markdown fences and no extra text.\n\
+Output mode: route_result\n\
+Fields:\n\
+- `session_id`: string (optional)\n\
+- `new_session`: [session_id, session_title] (optional 2-string tuple)\n\
+- `next_behavior`: string (optional)\n\
+- `memory_queries`: string[] (optional)\n\
+- `reply`: string (optional)\n\
+Validation rule: at least one field above must be non-empty/non-null.\n\
+JSON example:\n\
+{}",
+        schema_pretty
+    )
+}
+
+fn build_auto_output_protocol() -> String {
+    format!(
+        "Output mode: auto.\n\
+Return ONLY one JSON object and choose one schema:\n\n\
+[behavior_llm_result]\n\
+{}\n\n\
+[route_result]\n\
+{}",
+        build_behavior_llm_result_protocol(),
+        build_route_result_protocol()
+    )
 }
 
 fn build_toolbox(tools: &[ToolSpec], input: &BehaviorExecInput) -> Option<String> {
@@ -343,5 +469,54 @@ fn is_empty_like_json(value: &Json) -> bool {
         Json::Array(values) => values.is_empty() || values.iter().all(is_empty_like_json),
         Json::Object(map) => map.is_empty() || map.values().all(is_empty_like_json),
         Json::Bool(_) | Json::Number(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_output_protocol_uses_explicit_text_when_provided() {
+        let cfg = LLMBehaviorConfig {
+            output_protocol: "custom protocol".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(build_output_protocol(&cfg), "custom protocol");
+    }
+
+    #[test]
+    fn build_output_protocol_behavior_mode_uses_behavior_schema() {
+        let cfg = LLMBehaviorConfig {
+            output_mode: "behavior_result".to_string(),
+            ..Default::default()
+        };
+        let protocol = build_output_protocol(&cfg);
+        assert!(protocol.contains("Output mode: behavior_llm_result"));
+        assert!(protocol.contains("\"actions\""));
+        assert!(protocol.contains("\"reply\""));
+    }
+
+    #[test]
+    fn build_output_protocol_route_mode_uses_route_schema() {
+        let cfg = LLMBehaviorConfig {
+            output_mode: "route_v1".to_string(),
+            ..Default::default()
+        };
+        let protocol = build_output_protocol(&cfg);
+        assert!(protocol.contains("Output mode: route_result"));
+        assert!(protocol.contains("\"session_id\""));
+        assert!(protocol.contains("\"memory_queries\""));
+    }
+
+    #[test]
+    fn build_output_protocol_auto_mode_lists_both_schemas() {
+        let cfg = LLMBehaviorConfig {
+            output_mode: "auto".to_string(),
+            ..Default::default()
+        };
+        let protocol = build_output_protocol(&cfg);
+        assert!(protocol.contains("[behavior_llm_result]"));
+        assert!(protocol.contains("[route_result]"));
     }
 }

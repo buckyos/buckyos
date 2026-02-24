@@ -46,6 +46,17 @@ const LLM_TASK_NAME_SEQ_BITS: u32 = 20;
 const LLM_TASK_NAME_SEQ_MASK: u64 = (1_u64 << LLM_TASK_NAME_SEQ_BITS) - 1;
 static LLM_TASK_NAME_SEQ: AtomicU64 = AtomicU64::new(0);
 
+struct ParsedLLMRound {
+    draft: BehaviorLLMResult,
+    raw_output: LLMOutput,
+    pending_tool_calls: Vec<ToolCall>,
+}
+
+struct ToolExecutionRound {
+    tool_ctx: ToolContext,
+    tool_trace: Vec<ToolExecRecord>,
+}
+
 impl LLMBehavior {
     pub fn new(cfg: LLMBehaviorConfig, deps: LLMBehaviorDeps) -> Self {
         Self { cfg, deps }
@@ -90,9 +101,31 @@ impl LLMBehavior {
             )
             .await;
 
+        self.deps
+            .worklog
+            .emit(AgentWorkEvent::LLMStarted {
+                trace: input.trace.clone(),
+                model: self.cfg.model_policy.preferred.clone(),
+            })
+            .await;
+
         let result = self
             .run_step_inner(&input, started, track, behavior_task_id)
             .await;
+
+        let finish_usage = result
+            .as_ref()
+            .map(|(_, tracking)| tracking.token_usage.clone())
+            .unwrap_or_default();
+        self.deps
+            .worklog
+            .emit(AgentWorkEvent::LLMFinished {
+                trace: input.trace.clone(),
+                usage: finish_usage,
+                ok: result.is_ok(),
+            })
+            .await;
+
         self.finalize_behavior_task(&input.trace, behavior_task_id, &result)
             .await;
         result
@@ -109,32 +142,19 @@ impl LLMBehavior {
             return Err(LLMComputeError::Timeout);
         }
 
-        let allowed_tools = match self.deps.policy.allowed_tools(input).await {
-            Ok(tools) => tools,
-            Err(err) => {
-                return Err(LLMComputeError::Internal(err));
-            }
-        };
+        let allowed_tools = self
+            .deps
+            .policy
+            .allowed_tools(input)
+            .await
+            .map_err(LLMComputeError::Internal)?;
 
-        let prompt =
-            match PromptBuilder::build(input, &allowed_tools, &self.cfg, &*self.deps.tokenizer) {
-                Ok(p) => p,
-                Err(err) => {
-                    return Err(LLMComputeError::Internal(err));
-                }
-            };
-
-        self.deps
-            .worklog
-            .emit(AgentWorkEvent::LLMStarted {
-                trace: input.trace.clone(),
-                model: self.cfg.model_policy.preferred.clone(),
-            })
-            .await;
+        let prompt = PromptBuilder::build(input, &allowed_tools, &self.cfg, &*self.deps.tokenizer)
+            .map_err(LLMComputeError::Internal)?;
 
         self.ensure_session_normal_before_next_llm(input).await?;
 
-        let (mut usage, first_resp, first_task_id) = match self
+        let (mut usage, first_resp, first_task_id) = self
             .do_inference_once(
                 input,
                 &allowed_tools,
@@ -142,288 +162,296 @@ impl LLMBehavior {
                 None,
                 behavior_task_id,
             )
-            .await
-        {
-            Ok(v) => v,
-            Err(err) => return Err(err),
-        };
-        if !first_task_id.trim().is_empty() {
-            track.llm_task_ids.push(first_task_id);
-        }
-        track.model = first_resp.model.clone();
-        track.provider = first_resp.provider.clone();
+            .await?;
+        Self::update_track_from_llm_response(&mut track, &first_resp, first_task_id);
 
-        let (mut draft, mut raw_output) = match BehaviorResultParser::parse_first(
-            &first_resp,
-            self.cfg.force_json,
-            self.cfg.output_mode.as_str(),
-        ) {
-            Ok(parsed) => parsed,
-            Err(err) => {
-                warn!(
-                        "llm_behavior.output_parse_failed: trace_id={} wakeup_id={} behavior={} step={} force_json={} parser_err={} raw_content={}",
-                        input.trace.trace_id,
-                        input.trace.wakeup_id,
-                        input.trace.behavior,
-                        input.trace.step_idx,
-                        self.cfg.force_json,
-                        err,
-                        compact_text_for_log(&first_resp.content, 8 * 1024)
-                    );
-                return Err(LLMComputeError::Internal(format!(
-                    "output parse failed: {err}"
-                )));
-            }
-        };
+        let mut parsed = self.parse_llm_round(input, &first_resp, false)?;
 
         let mut rounds_left = input.limits.max_tool_rounds;
         let tool_loop_enabled = input.limits.max_tool_rounds > 0;
         let mut tool_trace = Vec::new();
 
-        while !draft.tool_calls.is_empty() && rounds_left > 0 {
+        while !parsed.pending_tool_calls.is_empty() && rounds_left > 0 {
             rounds_left -= 1;
 
             if is_deadline_exceeded(started, input.limits.deadline_ms) {
                 return Err(LLMComputeError::Timeout);
             }
 
-            let gated_calls = match self
-                .deps
-                .policy
-                .gate_tool_calls(input, &draft.tool_calls)
-                .await
-            {
-                Ok(calls) => calls,
-                Err(err) => {
-                    return Err(LLMComputeError::Internal(err));
-                }
-            };
-
-            if gated_calls.len() > input.limits.max_tool_calls_per_round as usize {
-                return Err(LLMComputeError::Internal(format!(
-                    "tool calls {} exceeds max_tool_calls_per_round {}",
-                    gated_calls.len(),
-                    input.limits.max_tool_calls_per_round
-                )));
-            }
-
-            let mut tool_observations = Vec::new();
-            for call in gated_calls.clone() {
-                let call_started = now_ms();
-                self.deps
-                    .worklog
-                    .emit(AgentWorkEvent::ToolCallPlanned {
-                        trace: input.trace.clone(),
-                        tool: call.name.clone(),
-                        call_id: call.call_id.clone(),
-                    })
-                    .await;
-
-                let ctx = tool_loop::trace_to_tool_call_context(&input.trace);
-                let exec = self.deps.tools.call_tool(&ctx, call.clone()).await;
-                let duration_ms = now_ms().saturating_sub(call_started);
-                let call_name = call.name.clone();
-                let call_id = call.call_id.clone();
-                let call_args = call.args.clone();
-
-                match exec {
-                    Ok(raw) => {
-                        let obs = Sanitizer::sanitize_observation(
-                            ObservationSource::Tool,
-                            &call.name,
-                            raw.clone(),
-                            input.limits.max_observation_bytes,
-                        );
-                        tool_observations.push(obs);
-                        tool_trace.push(ToolExecRecord {
-                            tool_name: call.name.clone(),
-                            call_id: call.call_id.clone(),
-                            ok: true,
-                            duration_ms,
-                            error: None,
-                        });
-                        self.deps
-                            .worklog
-                            .emit(AgentWorkEvent::ToolCallFinished {
-                                trace: input.trace.clone(),
-                                tool: call.name,
-                                call_id: call.call_id,
-                                ok: true,
-                                duration_ms,
-                            })
-                            .await;
-                        if call_name != TOOL_WORKLOG_MANAGE {
-                            append_workspace_worklog_via_tool(
-                                self.deps.tools.clone(),
-                                &input.trace,
-                                "function_call",
-                                "success",
-                                format!("tool `{}` call succeeded", call_name),
-                                json!({
-                                    "tool": call_name,
-                                    "call_id": call_id,
-                                    "args": compact_json_for_worklog(call_args.clone(), 8 * 1024),
-                                    "result": compact_json_for_worklog(raw.clone(), 8 * 1024),
-                                    "duration_ms": duration_ms
-                                }),
-                                vec!["tool".to_string(), "function_call".to_string()],
-                                None,
-                                None,
-                                None,
-                            )
-                            .await;
-
-                            append_todo_or_subagent_worklog(
-                                self.deps.tools.clone(),
-                                &input.trace,
-                                &call_name,
-                                &call_args,
-                                &raw,
-                                true,
-                                duration_ms,
-                            )
-                            .await;
-                        }
-                    }
-                    Err(err) => {
-                        let err_msg = err.to_string();
-                        let obs = Sanitizer::tool_error_observation(
-                            &call.name,
-                            err_msg.clone(),
-                            input.limits.max_observation_bytes,
-                        );
-                        tool_observations.push(obs);
-                        tool_trace.push(ToolExecRecord {
-                            tool_name: call.name.clone(),
-                            call_id: call.call_id.clone(),
-                            ok: false,
-                            duration_ms,
-                            error: Some(err_msg.clone()),
-                        });
-                        track
-                            .errors
-                            .push(format!("tool {} failed: {}", call.name, err_msg));
-                        self.deps
-                            .worklog
-                            .emit(AgentWorkEvent::ToolCallFinished {
-                                trace: input.trace.clone(),
-                                tool: call.name,
-                                call_id: call.call_id,
-                                ok: false,
-                                duration_ms,
-                            })
-                            .await;
-                        if call_name != TOOL_WORKLOG_MANAGE {
-                            append_workspace_worklog_via_tool(
-                                self.deps.tools.clone(),
-                                &input.trace,
-                                "function_call",
-                                "failed",
-                                format!("tool `{}` call failed", call_name),
-                                json!({
-                                    "tool": call_name,
-                                    "call_id": call_id,
-                                    "args": compact_json_for_worklog(call_args.clone(), 8 * 1024),
-                                    "error": err_msg,
-                                    "duration_ms": duration_ms
-                                }),
-                                vec!["tool".to_string(), "function_call".to_string()],
-                                None,
-                                None,
-                                None,
-                            )
-                            .await;
-
-                            append_todo_or_subagent_worklog(
-                                self.deps.tools.clone(),
-                                &input.trace,
-                                &call_name,
-                                &call_args,
-                                &json!({}),
-                                false,
-                                duration_ms,
-                            )
-                            .await;
-                        }
-                    }
-                }
-            }
-
-            let tool_ctx = ToolContext {
-                tool_calls: gated_calls,
-                observations: tool_observations,
-            };
+            let executed = self
+                .execute_tool_calls(input, &parsed.pending_tool_calls, &mut track)
+                .await?;
+            tool_trace.extend(executed.tool_trace);
 
             self.ensure_session_normal_before_next_llm(input).await?;
 
-            let (usage2, followup_resp, followup_task_id) = match self
+            let (usage2, followup_resp, followup_task_id) = self
                 .do_inference_once(
                     input,
                     &allowed_tools,
                     prompt.clone(),
-                    Some(tool_ctx),
+                    Some(executed.tool_ctx),
                     behavior_task_id,
                 )
-                .await
-            {
-                Ok(v) => v,
-                Err(err) => return Err(err),
-            };
-            if !followup_task_id.trim().is_empty() {
-                track.llm_task_ids.push(followup_task_id);
-            }
-            track.model = followup_resp.model.clone();
-            track.provider = followup_resp.provider.clone();
+                .await?;
+            Self::update_track_from_llm_response(&mut track, &followup_resp, followup_task_id);
             usage = usage.add(usage2);
 
-            let (next_draft, next_raw_output) = match BehaviorResultParser::parse_followup(
-                &followup_resp,
-                self.cfg.force_json,
-                self.cfg.output_mode.as_str(),
-            ) {
-                Ok(parsed) => parsed,
-                Err(err) => {
-                    warn!(
-                            "llm_behavior.output_parse_failed: trace_id={} wakeup_id={} behavior={} step={} force_json={} parser_err={} raw_content={}",
-                            input.trace.trace_id,
-                            input.trace.wakeup_id,
-                            input.trace.behavior,
-                            input.trace.step_idx,
-                            self.cfg.force_json,
-                            err,
-                            compact_text_for_log(&followup_resp.content, 8 * 1024)
-                        );
-                    return Err(LLMComputeError::Internal(format!(
-                        "output parse failed: {err}"
-                    )));
-                }
-            };
-            draft = next_draft;
-            raw_output = next_raw_output;
+            parsed = self.parse_llm_round(input, &followup_resp, true)?;
         }
-        if tool_loop_enabled && !draft.tool_calls.is_empty() && rounds_left == 0 {
+        if tool_loop_enabled && !parsed.pending_tool_calls.is_empty() && rounds_left == 0 {
             return Err(LLMComputeError::Internal(
                 "tool loop exceeded max_tool_rounds".to_string(),
             ));
         }
 
         track.latency_ms = now_ms().saturating_sub(started);
-        self.deps
-            .worklog
-            .emit(AgentWorkEvent::LLMFinished {
-                trace: input.trace.clone(),
-                usage: usage.clone(),
-                ok: true,
-            })
-            .await;
 
         let tracking = LLMTrackingInfo {
             token_usage: usage,
             track,
             tool_trace,
-            raw_output,
+            raw_output: parsed.raw_output,
         };
-        Ok((draft, tracking))
+        Ok((parsed.draft, tracking))
+    }
+
+    fn update_track_from_llm_response(
+        track: &mut TrackInfo,
+        response: &LLMRawResponse,
+        task_id: String,
+    ) {
+        if !task_id.trim().is_empty() {
+            track.llm_task_ids.push(task_id);
+        }
+        track.model = response.model.clone();
+        track.provider = response.provider.clone();
+    }
+
+    fn parse_llm_round(
+        &self,
+        input: &BehaviorExecInput,
+        response: &LLMRawResponse,
+        is_followup: bool,
+    ) -> Result<ParsedLLMRound, LLMComputeError> {
+        let pending_tool_calls = response.tool_calls.clone();
+        if !pending_tool_calls.is_empty() {
+            return Ok(ParsedLLMRound {
+                draft: BehaviorLLMResult::default(),
+                raw_output: LLMOutput::Json(
+                    serde_json::to_value(&pending_tool_calls).unwrap_or_else(|_| Json::Null),
+                ),
+                pending_tool_calls,
+            });
+        }
+
+        let parsed = if is_followup {
+            BehaviorResultParser::parse_followup(
+                response,
+                self.cfg.force_json,
+                self.cfg.output_mode.as_str(),
+            )
+        } else {
+            BehaviorResultParser::parse_first(
+                response,
+                self.cfg.force_json,
+                self.cfg.output_mode.as_str(),
+            )
+        };
+
+        let (draft, raw_output) = parsed.map_err(|err| {
+            warn!(
+                "llm_behavior.output_parse_failed: trace_id={} wakeup_id={} behavior={} step={} force_json={} parser_err={} raw_content={}",
+                input.trace.trace_id,
+                input.trace.wakeup_id,
+                input.trace.behavior,
+                input.trace.step_idx,
+                self.cfg.force_json,
+                err,
+                compact_text_for_log(&response.content, 8 * 1024)
+            );
+            LLMComputeError::Internal(format!("output parse failed: {err}"))
+        })?;
+
+        Ok(ParsedLLMRound {
+            draft,
+            raw_output,
+            pending_tool_calls,
+        })
+    }
+
+    async fn execute_tool_calls(
+        &self,
+        input: &BehaviorExecInput,
+        pending_tool_calls: &[ToolCall],
+        track: &mut TrackInfo,
+    ) -> Result<ToolExecutionRound, LLMComputeError> {
+        let gated_calls = self
+            .deps
+            .policy
+            .gate_tool_calls(input, pending_tool_calls)
+            .await
+            .map_err(LLMComputeError::Internal)?;
+
+        if gated_calls.len() > input.limits.max_tool_calls_per_round as usize {
+            return Err(LLMComputeError::Internal(format!(
+                "tool calls {} exceeds max_tool_calls_per_round {}",
+                gated_calls.len(),
+                input.limits.max_tool_calls_per_round
+            )));
+        }
+
+        let mut tool_observations = Vec::new();
+        let mut tool_trace = Vec::new();
+
+        for call in gated_calls.clone() {
+            let call_started = now_ms();
+            self.deps
+                .worklog
+                .emit(AgentWorkEvent::ToolCallPlanned {
+                    trace: input.trace.clone(),
+                    tool: call.name.clone(),
+                    call_id: call.call_id.clone(),
+                })
+                .await;
+
+            let ctx = tool_loop::trace_to_tool_call_context(&input.trace);
+            let exec = self.deps.tools.call_tool(&ctx, call.clone()).await;
+            let duration_ms = now_ms().saturating_sub(call_started);
+            let call_name = call.name.clone();
+            let call_id = call.call_id.clone();
+            let call_args = call.args.clone();
+
+            match exec {
+                Ok(raw) => {
+                    let obs = Sanitizer::sanitize_observation(
+                        ObservationSource::Tool,
+                        &call.name,
+                        raw.clone(),
+                        input.limits.max_observation_bytes,
+                    );
+                    tool_observations.push(obs);
+                    tool_trace.push(ToolExecRecord {
+                        tool_name: call.name.clone(),
+                        call_id: call.call_id.clone(),
+                        ok: true,
+                        duration_ms,
+                        error: None,
+                    });
+                    self.deps
+                        .worklog
+                        .emit(AgentWorkEvent::ToolCallFinished {
+                            trace: input.trace.clone(),
+                            tool: call.name,
+                            call_id: call.call_id,
+                            ok: true,
+                            duration_ms,
+                        })
+                        .await;
+                    if call_name != TOOL_WORKLOG_MANAGE {
+                        append_workspace_worklog_via_tool(
+                            self.deps.tools.clone(),
+                            &input.trace,
+                            "function_call",
+                            "success",
+                            format!("tool `{}` call succeeded", call_name),
+                            json!({
+                                "tool": call_name,
+                                "call_id": call_id,
+                                "args": compact_json_for_worklog(call_args.clone(), 8 * 1024),
+                                "result": compact_json_for_worklog(raw.clone(), 8 * 1024),
+                                "duration_ms": duration_ms
+                            }),
+                            vec!["tool".to_string(), "function_call".to_string()],
+                            None,
+                            None,
+                            None,
+                        )
+                        .await;
+
+                        append_todo_or_subagent_worklog(
+                            self.deps.tools.clone(),
+                            &input.trace,
+                            &call_name,
+                            &call_args,
+                            &raw,
+                            true,
+                            duration_ms,
+                        )
+                        .await;
+                    }
+                }
+                Err(err) => {
+                    let err_msg = err.to_string();
+                    let obs = Sanitizer::tool_error_observation(
+                        &call.name,
+                        err_msg.clone(),
+                        input.limits.max_observation_bytes,
+                    );
+                    tool_observations.push(obs);
+                    tool_trace.push(ToolExecRecord {
+                        tool_name: call.name.clone(),
+                        call_id: call.call_id.clone(),
+                        ok: false,
+                        duration_ms,
+                        error: Some(err_msg.clone()),
+                    });
+                    track
+                        .errors
+                        .push(format!("tool {} failed: {}", call.name, err_msg));
+                    self.deps
+                        .worklog
+                        .emit(AgentWorkEvent::ToolCallFinished {
+                            trace: input.trace.clone(),
+                            tool: call.name,
+                            call_id: call.call_id,
+                            ok: false,
+                            duration_ms,
+                        })
+                        .await;
+                    if call_name != TOOL_WORKLOG_MANAGE {
+                        append_workspace_worklog_via_tool(
+                            self.deps.tools.clone(),
+                            &input.trace,
+                            "function_call",
+                            "failed",
+                            format!("tool `{}` call failed", call_name),
+                            json!({
+                                "tool": call_name,
+                                "call_id": call_id,
+                                "args": compact_json_for_worklog(call_args.clone(), 8 * 1024),
+                                "error": err_msg,
+                                "duration_ms": duration_ms
+                            }),
+                            vec!["tool".to_string(), "function_call".to_string()],
+                            None,
+                            None,
+                            None,
+                        )
+                        .await;
+
+                        append_todo_or_subagent_worklog(
+                            self.deps.tools.clone(),
+                            &input.trace,
+                            &call_name,
+                            &call_args,
+                            &json!({}),
+                            false,
+                            duration_ms,
+                        )
+                        .await;
+                    }
+                }
+            }
+        }
+
+        Ok(ToolExecutionRound {
+            tool_ctx: ToolContext {
+                tool_calls: gated_calls,
+                observations: tool_observations,
+            },
+            tool_trace,
+        })
     }
 
     async fn ensure_session_normal_before_next_llm(
