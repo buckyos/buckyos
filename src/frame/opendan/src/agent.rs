@@ -340,15 +340,20 @@ impl AIAgent {
         pulled_events: Vec<PulledEvent>,
     ) -> Result<()> {
         for pulled in pulled_msgs {
+            let record_id = pulled.record.record.record_id.clone();
+            let previous_session_id = pulled.record.record.session_id.clone();
             let session_id = self
                 .resolve_session_for_msg(pulled.session_id.as_deref(), &pulled.record)
                 .await?;
-            let record_id = pulled.record.record.record_id.clone();
             let payload = Self::msg_record_to_runtime_payload(&pulled.record);
             self.session_mgr
                 .append_msg(session_id.as_str(), payload)
                 .await
                 .map_err(|err| anyhow!("dispatch msg to session `{session_id}` failed: {err}"))?;
+            if previous_session_id.as_deref() != Some(session_id.as_str()) {
+                self.update_msg_record_session(record_id.clone(), session_id.clone())
+                    .await;
+            }
             self.set_msg_readed(record_id).await;
         }
 
@@ -596,6 +601,21 @@ impl AIAgent {
         }
     }
 
+    async fn update_msg_record_session(&self, record_id: String, session_id: String) {
+        let Some(msg_center) = self.deps.msg_center.as_ref() else {
+            return;
+        };
+        if let Err(err) = msg_center
+            .update_record_session(record_id.clone(), session_id.clone())
+            .await
+        {
+            warn!(
+                "agent.msg_update_session_failed: did={} record_id={} session_id={} err={}",
+                self.did, record_id, session_id, err
+            );
+        }
+    }
+
     fn parse_owner_did_for_msg_center(&self) -> Option<DID> {
         match DID::from_str(self.did.as_str()) {
             Ok(did) => Some(did),
@@ -610,8 +630,10 @@ impl AIAgent {
     }
 
     fn msg_record_to_pulled_msg(record: MsgRecordWithObject) -> PulledMsg {
-        let msg_payload = serde_json::to_value(&record.msg).unwrap_or_else(|_| json!({}));
-        let session_id = extract_session_id_hint(&msg_payload);
+        let session_id = normalize_session_id(record.record.session_id.as_deref()).or_else(|| {
+            let msg_payload = serde_json::to_value(&record.msg).unwrap_or_else(|_| json!({}));
+            extract_session_id_hint(&msg_payload)
+        });
         PulledMsg { session_id, record }
     }
 
@@ -1405,11 +1427,7 @@ impl AIAgent {
             created_at_ms: now_ms(),
             content: MsgContent {
                 format: Some(MsgContentFormat::TextPlain),
-                content: payload
-                    .get("content")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
+                content: content.to_string(),
                 ..Default::default()
             },
             ..Default::default()
@@ -1890,6 +1908,7 @@ fn extract_reply_thread_key_from_msg(payload: &Json) -> Option<String> {
 fn extract_session_id_hint(payload: &Json) -> Option<String> {
     for pointer in [
         "/session_id",
+        "/record/session_id",
         "/payload/session_id",
         "/payload/payload/session_id",
         "/msg/session_id",

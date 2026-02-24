@@ -26,6 +26,7 @@ struct MsgRecordRow {
     created_at_ms: i64,
     updated_at_ms: i64,
     thread_key: Option<String>,
+    session_id: Option<String>,
     sort_key: i64,
     tags_json: String,
     route_tunnel_did: Option<String>,
@@ -88,6 +89,7 @@ SELECT
     created_at_ms,
     updated_at_ms,
     thread_key,
+    session_id,
     sort_key,
     tags_json,
     route_tunnel_did,
@@ -106,11 +108,12 @@ WHERE record_id = ?1
                         created_at_ms: row.get(4)?,
                         updated_at_ms: row.get(5)?,
                         thread_key: row.get(6)?,
-                        sort_key: row.get(7)?,
-                        tags_json: row.get(8)?,
-                        route_tunnel_did: row.get(9)?,
-                        route_json: row.get(10)?,
-                        delivery_json: row.get(11)?,
+                        session_id: row.get(7)?,
+                        sort_key: row.get(8)?,
+                        tags_json: row.get(9)?,
+                        route_tunnel_did: row.get(10)?,
+                        route_json: row.get(11)?,
+                        delivery_json: row.get(12)?,
                     })
                 },
             )
@@ -151,6 +154,7 @@ SELECT
     created_at_ms,
     updated_at_ms,
     thread_key,
+    session_id,
     sort_key,
     tags_json,
     route_tunnel_did,
@@ -176,11 +180,12 @@ WHERE box_kind = ?1
                     created_at_ms: row.get(4)?,
                     updated_at_ms: row.get(5)?,
                     thread_key: row.get(6)?,
-                    sort_key: row.get(7)?,
-                    tags_json: row.get(8)?,
-                    route_tunnel_did: row.get(9)?,
-                    route_json: row.get(10)?,
-                    delivery_json: row.get(11)?,
+                    session_id: row.get(7)?,
+                    sort_key: row.get(8)?,
+                    tags_json: row.get(9)?,
+                    route_tunnel_did: row.get(10)?,
+                    route_json: row.get(11)?,
+                    delivery_json: row.get(12)?,
                 })
             })
             .map_err(|error| {
@@ -285,6 +290,7 @@ CREATE TABLE IF NOT EXISTS msg_records (
     created_at_ms INTEGER NOT NULL,
     updated_at_ms INTEGER NOT NULL,
     thread_key TEXT,
+    session_id TEXT,
     sort_key INTEGER NOT NULL,
     tags_json TEXT NOT NULL,
     route_tunnel_did TEXT,
@@ -317,6 +323,42 @@ CREATE TABLE IF NOT EXISTS msg_refs (
             ))
         })?;
 
+        self.ensure_msg_records_session_id_column(conn, db_path)?;
+
+        Ok(())
+    }
+
+    fn ensure_msg_records_session_id_column(
+        &self,
+        conn: &Connection,
+        db_path: &Path,
+    ) -> std::result::Result<(), RPCErrors> {
+        let exists: Option<u8> = conn
+            .query_row(
+                "SELECT 1 FROM pragma_table_info('msg_records') WHERE name = ?1 LIMIT 1",
+                params!["session_id"],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to inspect msg_records schema {}: {}",
+                    db_path.display(),
+                    error
+                ))
+            })?;
+        if exists.is_some() {
+            return Ok(());
+        }
+
+        conn.execute("ALTER TABLE msg_records ADD COLUMN session_id TEXT", [])
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to add session_id column for msg_records {}: {}",
+                    db_path.display(),
+                    error
+                ))
+            })?;
         Ok(())
     }
 
@@ -389,12 +431,13 @@ INSERT INTO msg_records (
     created_at_ms,
     updated_at_ms,
     thread_key,
+    session_id,
     sort_key,
     tags_json,
     route_tunnel_did,
     route_json,
     delivery_json
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
 ON CONFLICT(record_id) DO UPDATE SET
     box_kind = excluded.box_kind,
     msg_id = excluded.msg_id,
@@ -405,6 +448,7 @@ ON CONFLICT(record_id) DO UPDATE SET
     created_at_ms = excluded.created_at_ms,
     updated_at_ms = excluded.updated_at_ms,
     thread_key = excluded.thread_key,
+    session_id = COALESCE(excluded.session_id, msg_records.session_id),
     sort_key = excluded.sort_key,
     tags_json = excluded.tags_json,
     route_tunnel_did = excluded.route_tunnel_did,
@@ -422,6 +466,7 @@ ON CONFLICT(record_id) DO UPDATE SET
             to_sql_i64(record.created_at_ms),
             to_sql_i64(record.updated_at_ms),
             record.thread_key,
+            record.session_id,
             to_sql_i64(record.sort_key),
             tags_json,
             route_tunnel_did,
@@ -487,6 +532,7 @@ fn row_to_record(owner: &DID, row: MsgRecordRow) -> std::result::Result<MsgRecor
         route,
         delivery,
         thread_key: row.thread_key,
+        session_id: row.session_id,
         sort_key,
         tags,
     })

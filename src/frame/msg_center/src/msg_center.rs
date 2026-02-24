@@ -213,6 +213,56 @@ impl MessageCenter {
         }
     }
 
+    fn normalize_non_empty(value: Option<&str>) -> Option<String> {
+        value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string())
+    }
+
+    fn extract_session_id_from_value(payload: &Value) -> Option<String> {
+        for pointer in [
+            "/session_id",
+            "/owner_session_id",
+            "/payload/session_id",
+            "/payload/owner_session_id",
+            "/payload/payload/session_id",
+            "/msg_payload/session_id",
+            "/thread/correlation_id",
+            "/content/machine/data/session_id",
+            "/content/machine/data/owner_session_id",
+        ] {
+            if let Some(session_id) = Self::normalize_non_empty(
+                payload.pointer(pointer).and_then(|value| value.as_str()),
+            ) {
+                return Some(session_id);
+            }
+        }
+        None
+    }
+
+    fn extract_record_session_id(msg: &MsgObject) -> Option<String> {
+        if let Some(session_id) = Self::normalize_non_empty(msg.thread.correlation_id.as_deref()) {
+            return Some(session_id);
+        }
+        if let Some(session_id) = Self::normalize_non_empty(
+            msg.meta
+                .get("session_id")
+                .and_then(|value| value.as_str())
+                .or_else(|| {
+                    msg.meta
+                        .get("owner_session_id")
+                        .and_then(|value| value.as_str())
+                }),
+        ) {
+            return Some(session_id);
+        }
+        let Ok(payload) = serde_json::to_value(msg) else {
+            return None;
+        };
+        Self::extract_session_id_from_value(&payload)
+    }
+
     fn parse_or_build_did(raw: &str, fallback_prefix: &str) -> DID {
         if let Ok(did) = DID::from_str(raw) {
             return did;
@@ -319,10 +369,15 @@ impl MessageCenter {
     ) -> std::result::Result<MsgRecord, RPCErrors> {
         let msg_id = Self::message_obj_id(msg);
         let record_id = Self::build_record_id(&owner, &box_kind, &msg_id, variant);
+        let msg_session_id = Self::extract_record_session_id(msg);
         if let Some(existing) = self.msg_box_db.get_record(&owner, &record_id)? {
+            let mut record_for_update = existing.clone();
+            if record_for_update.session_id.is_none() {
+                record_for_update.session_id = msg_session_id;
+            }
             self.msg_box_db
-                .upsert_record_with_msg(&existing, Some(msg))?;
-            return Ok(existing);
+                .upsert_record_with_msg(&record_for_update, Some(msg))?;
+            return Ok(record_for_update);
         }
 
         let now_ms = Self::now_ms();
@@ -337,6 +392,7 @@ impl MessageCenter {
             route,
             delivery,
             thread_key: msg.thread.topic.clone(),
+            session_id: msg_session_id,
             sort_key: if msg.created_at_ms > 0 {
                 msg.created_at_ms
             } else {
@@ -1096,6 +1152,34 @@ impl MessageCenter {
         Ok(record)
     }
 
+    fn update_record_session_internal(
+        &self,
+        record_id: String,
+        session_id: String,
+    ) -> std::result::Result<MsgRecord, RPCErrors> {
+        let session_id = session_id.trim();
+        if session_id.is_empty() {
+            return Err(RPCErrors::ReasonError(
+                "session_id cannot be empty".to_string(),
+            ));
+        }
+
+        let owner = Self::owner_from_record_id(&record_id)?;
+        let mut record = self
+            .msg_box_db
+            .get_record(&owner, &record_id)?
+            .ok_or_else(|| RPCErrors::ReasonError(format!("record {} not found", record_id)))?;
+
+        if record.session_id.as_deref() == Some(session_id) {
+            return Ok(record);
+        }
+
+        record.session_id = Some(session_id.to_string());
+        record.updated_at_ms = Self::now_ms();
+        self.msg_box_db.upsert_record(&record)?;
+        Ok(record)
+    }
+
     fn report_delivery_internal(
         &self,
         record_id: String,
@@ -1364,6 +1448,15 @@ impl MsgCenterHandler for MessageCenter {
         _ctx: RPCContext,
     ) -> std::result::Result<MsgRecord, RPCErrors> {
         self.update_record_state_internal(record_id, new_state, reason)
+    }
+
+    async fn handle_update_record_session(
+        &self,
+        record_id: String,
+        session_id: String,
+        _ctx: RPCContext,
+    ) -> std::result::Result<MsgRecord, RPCErrors> {
+        self.update_record_session_internal(record_id, session_id)
     }
 
     async fn handle_report_delivery(

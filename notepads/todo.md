@@ -10,12 +10,12 @@
 文档要求拉取 msg + event 并做事件已读标记（opendan.md (line 180), opendan.md (line 213)）；实现里 event 拉取是空实现（agent.rs (line 306)），也没有 set_event_readed 对应逻辑。
 **使用msg_queue**的接口来实现?
 - agent Loop对收到的msg,event 用llm进行resolve_router
-  - msg_center已经做了保存，所以用MsgObjectId就可以引用Msg -> 
-    - review msg 保存逻辑，发现没有落db
-    - contact mgr 的归属问题
-  - llm_resolve sessionid,reply_msg
-  - 用msg_center发送reply_msg时，会自动保存到outbox
-  - 注意input_msg_record的session-id也要更新（方便UI查看） ， UI基于Msg的source - sessionid 看到聊天记录
+  - msg_center已经做了保存，所以用MsgObjectId就可以引用Msg 
+    - review msg 保存逻辑，发现没有落db OK 
+    - contact mgr 的归属问题 OK 
+  - llm_resolve 得到 sessionid,reply_msg OK
+  - 用msg_center发送reply_msg时，会自动保存到outbox OK 
+  - 注意input_msg_record的session-id也要更新（方便UI查看） ， UI基于Msg的source - sessionid 看到聊天记录 OK
   
 - agent_loop负责将msg_pack,event_pack dispatch 到session 的msg_queue
 - Session_loop负责读取msg_pack,event_pack,注意

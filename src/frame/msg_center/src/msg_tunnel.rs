@@ -470,6 +470,7 @@ mod tests {
             }),
             delivery: None,
             thread_key: msg.thread.topic.clone(),
+            session_id: None,
             sort_key: 1,
             tags: Vec::new(),
         };

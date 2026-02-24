@@ -18,6 +18,7 @@ const METHOD_MSG_POST_SEND: &str = "msg.post_send";
 const METHOD_MSG_GET_NEXT: &str = "msg.get_next";
 const METHOD_MSG_PEEK_BOX: &str = "msg.peek_box";
 const METHOD_MSG_LIST_BOX_BY_TIME: &str = "msg.list_box_by_time";
+const METHOD_MSG_UPDATE_RECORD_SESSION: &str = "msg.update_record_session";
 const METHOD_MSG_UPDATE_RECORD_STATE: &str = "msg.update_record_state";
 const METHOD_MSG_REPORT_DELIVERY: &str = "msg.report_delivery";
 const METHOD_MSG_SET_READ_STATE: &str = "msg.set_read_state";
@@ -202,6 +203,8 @@ pub struct MsgRecord {
     pub delivery: Option<DeliveryInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub sort_key: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
@@ -649,6 +652,25 @@ impl MsgCenterListBoxByTimeReq {
 
     pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
         parse_from_json(value, "MsgCenterListBoxByTimeReq")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgCenterUpdateRecordSessionReq {
+    pub record_id: String,
+    pub session_id: String,
+}
+
+impl MsgCenterUpdateRecordSessionReq {
+    pub fn new(record_id: String, session_id: String) -> Self {
+        Self {
+            record_id,
+            session_id,
+        }
+    }
+
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        parse_from_json(value, "MsgCenterUpdateRecordSessionReq")
     }
 }
 
@@ -1300,6 +1322,29 @@ impl MsgCenterClient {
         }
     }
 
+    pub async fn update_record_session(
+        &self,
+        record_id: String,
+        session_id: String,
+    ) -> std::result::Result<MsgRecord, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler
+                    .handle_update_record_session(record_id, session_id, ctx)
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req = MsgCenterUpdateRecordSessionReq::new(record_id, session_id);
+                let req_json = serialize_to_json(&req, "MsgCenterUpdateRecordSessionReq")?;
+                let result = client
+                    .call(METHOD_MSG_UPDATE_RECORD_SESSION, req_json)
+                    .await?;
+                parse_rpc_response(result, "MsgRecord")
+            }
+        }
+    }
+
     pub async fn report_delivery(
         &self,
         record_id: String,
@@ -1770,6 +1815,13 @@ pub trait MsgCenterHandler: Send + Sync {
         ctx: RPCContext,
     ) -> std::result::Result<MsgRecord, RPCErrors>;
 
+    async fn handle_update_record_session(
+        &self,
+        record_id: String,
+        session_id: String,
+        ctx: RPCContext,
+    ) -> std::result::Result<MsgRecord, RPCErrors>;
+
     async fn handle_report_delivery(
         &self,
         record_id: String,
@@ -1997,6 +2049,18 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                         list_req.cursor_record_id,
                         list_req.descending,
                         list_req.with_object,
+                        ctx,
+                    )
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_MSG_UPDATE_RECORD_SESSION | "update_record_session" => {
+                let update_req = MsgCenterUpdateRecordSessionReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_update_record_session(
+                        update_req.record_id,
+                        update_req.session_id,
                         ctx,
                     )
                     .await?;
