@@ -4,18 +4,19 @@ use async_trait::async_trait;
 use buckyos_api::{
     get_buckyos_api_runtime, AccessDecision, AccessGroupLevel, AccountBinding, BoxKind, Contact,
     ContactPatch, ContactQuery, DeliveryInfo, DeliveryReportResult, DispatchResult,
-    GrantTemporaryAccessResult, ImportContactEntry, ImportReport, IngressContext, MsgCenterHandler,
-    MsgReceiptObj, MsgRecord, MsgRecordPage, MsgRecordWithObject, MsgState, PostSendDelivery,
-    PostSendResult, ReadReceiptState, RouteInfo, SendContext, SetGroupSubscribersResult,
+    GrantTemporaryAccessResult, ImportContactEntry, ImportReport, IngressContext, KEventClient,
+    MsgCenterHandler, MsgReceiptObj, MsgRecord, MsgRecordPage, MsgRecordWithObject, MsgState,
+    PostSendDelivery, PostSendResult, ReadReceiptState, RouteInfo, SendContext,
+    SetGroupSubscribersResult,
 };
 use kRPC::{RPCContext, RPCErrors};
 use log::{info, warn};
 use name_lib::DID;
 use ndn_lib::{MsgObjKind, MsgObject, NamedObject, ObjId};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 const DEFAULT_PEEK_LIMIT: usize = 20;
 const MAX_PEEK_LIMIT: usize = 200;
@@ -25,6 +26,7 @@ const DEFAULT_READ_RECEIPT_LIMIT: usize = 100;
 const MAX_READ_RECEIPT_LIMIT: usize = 1000;
 const MAX_DELIVERY_RETRY: u32 = 5;
 const DEFAULT_FALLBACK_TUNNEL_SUBJECT: &str = "msg-center-default-tunnel";
+const MSG_CENTER_BOX_CHANGED_EVENT_NAME: &str = "changed";
 
 #[derive(Debug, Default)]
 struct MessageCenterState {
@@ -140,6 +142,71 @@ impl MessageCenter {
             BoxKind::GroupInbox => "GROUP_INBOX",
             BoxKind::TunnelOutbox => "TUNNEL_OUTBOX",
             BoxKind::RequestBox => "REQUEST_BOX",
+        }
+    }
+
+    fn box_event_name(box_kind: &BoxKind) -> &'static str {
+        match box_kind {
+            BoxKind::Inbox => "in",
+            BoxKind::Outbox => "out",
+            BoxKind::GroupInbox => "group_in",
+            BoxKind::TunnelOutbox => "tunnel_out",
+            BoxKind::RequestBox => "request",
+        }
+    }
+
+    fn kevent_source_node() -> String {
+        match get_buckyos_api_runtime() {
+            Ok(runtime) => Self::sanitize_token(&runtime.get_full_appid()),
+            Err(_) => "msg_center".to_string(),
+        }
+    }
+
+    fn get_kevent_client() -> KEventClient {
+        static KEVENT_CLIENT: OnceLock<KEventClient> = OnceLock::new();
+        KEVENT_CLIENT
+            .get_or_init(|| KEventClient::new_full(Self::kevent_source_node(), None))
+            .clone()
+    }
+
+    fn build_box_changed_event_id(owner: &DID, box_kind: &BoxKind) -> String {
+        let owner_token = Self::sanitize_token(&owner.to_string());
+        format!(
+            "/msg_center/{}/box/{}/{}",
+            owner_token,
+            Self::box_event_name(box_kind),
+            MSG_CENTER_BOX_CHANGED_EVENT_NAME
+        )
+    }
+
+    fn publish_box_changed_event(record: &MsgRecord, operation: &str) {
+        let event_id = Self::build_box_changed_event_id(&record.owner, &record.box_kind);
+        let payload = json!({
+            "operation": operation,
+            "owner": record.owner.to_string(),
+            "box_kind": Self::box_kind_name(&record.box_kind),
+            "box_name": Self::box_event_name(&record.box_kind),
+            "record_id": record.record_id.clone(),
+            "msg_id": record.msg_id.to_string(),
+            "state": record.state.clone(),
+            "updated_at_ms": record.updated_at_ms,
+        });
+        let client = Self::get_kevent_client();
+
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                if let Err(err) = client.pub_event(&event_id, payload).await {
+                    warn!(
+                        "publish msg_center box changed event failed: event_id={}, err={:?}",
+                        event_id, err
+                    );
+                }
+            });
+        } else {
+            warn!(
+                "skip msg_center box changed event without tokio runtime: event_id={}",
+                event_id
+            );
         }
     }
 
@@ -377,6 +444,7 @@ impl MessageCenter {
             }
             self.msg_box_db
                 .upsert_record_with_msg(&record_for_update, Some(msg))?;
+            Self::publish_box_changed_event(&record_for_update, "upsert");
             return Ok(record_for_update);
         }
 
@@ -402,6 +470,7 @@ impl MessageCenter {
         };
 
         self.msg_box_db.upsert_record_with_msg(&record, Some(msg))?;
+        Self::publish_box_changed_event(&record, "upsert");
         Ok(record)
     }
 
@@ -1036,6 +1105,7 @@ impl MessageCenter {
                     record.state = next_state;
                     record.updated_at_ms = Self::now_ms();
                     self.msg_box_db.upsert_record(record)?;
+                    Self::publish_box_changed_event(record, "take");
                 }
             }
         }
@@ -1149,6 +1219,7 @@ impl MessageCenter {
             }
         }
         self.msg_box_db.upsert_record(&record)?;
+        Self::publish_box_changed_event(&record, "state");
         Ok(record)
     }
 
@@ -1177,6 +1248,7 @@ impl MessageCenter {
         record.session_id = Some(session_id.to_string());
         record.updated_at_ms = Self::now_ms();
         self.msg_box_db.upsert_record(&record)?;
+        Self::publish_box_changed_event(&record, "session");
         Ok(record)
     }
 
@@ -1232,6 +1304,7 @@ impl MessageCenter {
         record.updated_at_ms = now_ms;
         record.delivery = Some(delivery);
         self.msg_box_db.upsert_record(&record)?;
+        Self::publish_box_changed_event(&record, "delivery");
         Ok(record)
     }
 

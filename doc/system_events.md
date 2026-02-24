@@ -26,9 +26,19 @@ kevent和kmsgqueue都有id路径系统，因此经常组合使用
 
 ## msg center events
 
-订阅路径 /msg_center/$owner/box/$box_name
+订阅路径 /msg_center/$owner/box/$box_name/$event_name
 
 当box里的消息发生变化时，会收到通知
+
+使用例子（伪代码),用下面方法来取代定时轮询 msg_center.get_next()
+
+```python
+
+event_reader = kevent.sub_event("/msg_center/$owner/box/in/*")
+event_reader.pull_event().await # 会超时返回，所以即使漏了消息也没关系
+msg_center.get_next("$owner","inbox")
+
+```
 
 
 ## opendan agent events

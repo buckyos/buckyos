@@ -1,3 +1,4 @@
+use crate::kevent_ringbuffer::SharedKEventRingBuffer;
 use crate::{AppDoc, AppType, SelectorType};
 use async_trait::async_trait;
 use log::warn;
@@ -17,6 +18,8 @@ pub const KEVENT_SERVICE_NAME: &str = "kevent";
 pub const KEVENT_SERVICE_MAIN_PORT: u16 = 4041;
 pub const DEFAULT_READER_CAPACITY: usize = 1024;
 pub const MAX_EVENT_DATA_SIZE_BYTES: usize = 64 * 1024;
+const SHARED_RING_POLL_INTERVAL_MS: u64 = 5;
+const SHARED_RING_DRAIN_BATCH: usize = 128;
 
 pub type TimerId = String;
 
@@ -78,6 +81,8 @@ pub struct Event {
     pub eventid: String,
     pub source_node: String,
     pub source_pid: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingress_node: Option<String>,
     pub timestamp: u64,
     pub data: Value,
 }
@@ -170,6 +175,7 @@ pub struct KEventClient {
 struct KEventClientInner {
     readers: RwLock<HashMap<String, Arc<ReaderState>>>,
     timers: RwLock<HashMap<TimerId, oneshot::Sender<()>>>,
+    shared_ring: Option<Arc<SharedKEventRingBuffer>>,
     reader_seq: AtomicU64,
     timer_seq: AtomicU64,
     reader_capacity: usize,
@@ -205,6 +211,33 @@ impl ReaderState {
     async fn pop(&self) -> Option<Event> {
         let mut queue = self.queue.lock().await;
         queue.pop_front()
+    }
+}
+
+impl KEventClientInner {
+    async fn dispatch_event(&self, event: &Event) {
+        let snapshot: Vec<Arc<ReaderState>> = self.readers.read().await.values().cloned().collect();
+        for reader in snapshot {
+            if reader_match_event(&reader.patterns, &event.eventid) {
+                reader.push(event.clone()).await;
+            }
+        }
+    }
+
+    async fn import_shared_events(&self, max_events: usize) {
+        let Some(shared_ring) = &self.shared_ring else {
+            return;
+        };
+        let events = shared_ring.drain_events::<Event>(max_events);
+        if events.is_empty() {
+            return;
+        }
+        for event in events {
+            if !is_global_eventid(&event.eventid) {
+                continue;
+            }
+            self.dispatch_event(&event).await;
+        }
     }
 }
 
@@ -263,6 +296,18 @@ impl KEventClient {
         bridge: Option<Arc<dyn KEventDaemonBridge>>,
         reader_capacity: usize,
     ) -> Self {
+        let shared_ring = if mode == KEventClientMode::Full {
+            match SharedKEventRingBuffer::open() {
+                Ok(shared_ring) => Some(Arc::new(shared_ring)),
+                Err(err) => {
+                    warn!("kevent shared ringbuffer is unavailable: {}", err);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Self {
             mode,
             source_node: source_node.into(),
@@ -270,6 +315,7 @@ impl KEventClient {
             inner: Arc::new(KEventClientInner {
                 readers: RwLock::new(HashMap::new()),
                 timers: RwLock::new(HashMap::new()),
+                shared_ring,
                 reader_seq: AtomicU64::new(0),
                 timer_seq: AtomicU64::new(0),
                 reader_capacity: reader_capacity.max(1),
@@ -304,9 +350,14 @@ impl KEventClient {
             }
         }
 
-        if self.mode == KEventClientMode::Full && has_global_patterns && self.bridge.is_none() {
+        if self.mode == KEventClientMode::Full
+            && has_global_patterns
+            && self.bridge.is_none()
+            && self.inner.shared_ring.is_none()
+        {
             return Err(KEventError::DaemonUnavailable(
-                "global reader requires daemon bridge in full mode".to_string(),
+                "global reader requires daemon bridge or shared ringbuffer in full mode"
+                    .to_string(),
             ));
         }
 
@@ -351,6 +402,11 @@ impl KEventClient {
             eventid: eventid.to_string(),
             source_node: self.source_node.clone(),
             source_pid: std::process::id(),
+            ingress_node: if is_global_eventid(eventid) {
+                Some(self.source_node.clone())
+            } else {
+                None
+            },
             timestamp: now_millis(),
             data,
         };
@@ -363,12 +419,26 @@ impl KEventClient {
             KEventClientMode::LocalPubOnly => Ok(()),
             KEventClientMode::Full => {
                 if is_global {
-                    let bridge = self.bridge.as_ref().ok_or_else(|| {
-                        KEventError::DaemonUnavailable(
-                            "global event requires daemon bridge in full mode".to_string(),
-                        )
-                    })?;
-                    bridge.publish_global(&event).await?;
+                    let mut delivered_to_local_host = false;
+                    if let Some(shared_ring) = &self.inner.shared_ring {
+                        match shared_ring.publish_event(&event) {
+                            Ok(_) => {
+                                delivered_to_local_host = true;
+                            }
+                            Err(err) => {
+                                warn!("publish global event to shared ringbuffer failed: {}", err);
+                            }
+                        }
+                    }
+
+                    if let Some(bridge) = &self.bridge {
+                        bridge.publish_global(&event).await?;
+                    } else if !delivered_to_local_host {
+                        return Err(KEventError::DaemonUnavailable(
+                            "global event requires daemon bridge or shared ringbuffer in full mode"
+                                .to_string(),
+                        ));
+                    }
                 }
                 Ok(())
             }
@@ -388,13 +458,16 @@ impl KEventClient {
     }
 
     // Called by external daemon bridge receiver when a remote global event arrives.
-    pub async fn ingest_global_event(&self, event: Event) -> KEventResult<()> {
+    pub async fn ingest_global_event(&self, mut event: Event) -> KEventResult<()> {
         if !is_global_eventid(&event.eventid) {
             return Err(KEventError::InvalidEventId(
                 "ingest_global_event only accepts global eventid".to_string(),
             ));
         }
         validate_eventid(&event.eventid)?;
+        if event.ingress_node.is_none() {
+            event.ingress_node = Some(event.source_node.clone());
+        }
         self.dispatch_local(&event).await;
         Ok(())
     }
@@ -490,13 +563,7 @@ impl KEventClient {
     }
 
     async fn dispatch_local(&self, event: &Event) {
-        let snapshot: Vec<Arc<ReaderState>> =
-            self.inner.readers.read().await.values().cloned().collect();
-        for reader in snapshot {
-            if reader_match_event(&reader.patterns, &event.eventid) {
-                reader.push(event.clone()).await;
-            }
-        }
+        self.inner.dispatch_event(event).await;
     }
 }
 
@@ -512,7 +579,10 @@ impl EventReader {
             .ok_or_else(|| KEventError::ReaderClosed(self.reader_id.clone()))?;
 
         let deadline = timeout_ms.map(|ms| Instant::now() + Duration::from_millis(ms));
+        let poll_interval = Duration::from_millis(SHARED_RING_POLL_INTERVAL_MS);
         loop {
+            inner.import_shared_events(SHARED_RING_DRAIN_BATCH).await;
+
             let state = {
                 let readers = inner.readers.read().await;
                 readers.get(&self.reader_id).cloned()
@@ -531,7 +601,7 @@ impl EventReader {
 
             match deadline {
                 None => {
-                    state.notify.notified().await;
+                    let _ = timeout(poll_interval, state.notify.notified()).await;
                 }
                 Some(deadline_at) => {
                     let now = Instant::now();
@@ -539,7 +609,10 @@ impl EventReader {
                         return Ok(None);
                     }
                     let remain = deadline_at - now;
-                    if timeout(remain, state.notify.notified()).await.is_err() {
+                    let wait_for = remain.min(poll_interval);
+                    if timeout(wait_for, state.notify.notified()).await.is_err()
+                        && wait_for == remain
+                    {
                         return Ok(None);
                     }
                 }
@@ -783,10 +856,24 @@ fn match_global_segments(pattern: &[&str], event: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kevent_ringbuffer::DEFAULT_RINGBUFFER_PATH_ENV;
     use std::sync::Arc;
+    use std::sync::Once;
 
     struct MockBridge {
         published: Arc<Mutex<Vec<Event>>>,
+    }
+
+    fn init_test_ringbuffer_path() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let path = std::env::temp_dir().join(format!(
+                "buckyos_kevent_ringbuffer_test_{}.shm",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_file(&path);
+            std::env::set_var(DEFAULT_RINGBUFFER_PATH_ENV, &path);
+        });
     }
 
     #[async_trait]
@@ -903,5 +990,45 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(err.code(), "NOT_SUPPORTED");
+    }
+
+    #[tokio::test]
+    async fn test_full_mode_global_process_short_circuit_without_bridge() {
+        init_test_ringbuffer_path();
+        let client = KEventClient::new_full("node_a", None);
+        let reader = client
+            .create_event_reader(vec!["/system/node/online".to_string()])
+            .await
+            .unwrap();
+
+        client
+            .pub_event("/system/node/online", json!({"ok": true}))
+            .await
+            .unwrap();
+
+        let event = reader.pull_event(Some(300)).await.unwrap().unwrap();
+        assert_eq!(event.eventid, "/system/node/online");
+        assert_eq!(event.ingress_node.as_deref(), Some("node_a"));
+    }
+
+    #[tokio::test]
+    async fn test_full_mode_shared_ring_short_circuit_between_clients() {
+        init_test_ringbuffer_path();
+        let publisher = KEventClient::new_full("node_a", None);
+        let subscriber = KEventClient::new_full("node_a", None);
+        let eventid = format!("/kevent/shared_ring/test_{}", now_millis());
+        let reader = subscriber
+            .create_event_reader(vec![eventid.clone()])
+            .await
+            .unwrap();
+
+        publisher
+            .pub_event(&eventid, json!({"path": "shared_ring"}))
+            .await
+            .unwrap();
+
+        let event = reader.pull_event(Some(600)).await.unwrap().unwrap();
+        assert_eq!(event.eventid, eventid);
+        assert_eq!(event.data.get("path"), Some(&json!("shared_ring")));
     }
 }

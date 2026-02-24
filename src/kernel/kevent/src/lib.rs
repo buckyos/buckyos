@@ -126,15 +126,20 @@ impl KEventService {
             eventid: eventid.to_string(),
             source_node: self.source_node.clone(),
             source_pid: std::process::id(),
+            ingress_node: Some(self.source_node.clone()),
             timestamp: now_millis(),
             data,
         };
         self.distribute(&event).await;
-        self.broadcast_to_peers(&event).await
+        if should_broadcast_to_peers(&event, &self.source_node) {
+            self.broadcast_to_peers(&event).await
+        } else {
+            Ok(())
+        }
     }
 
     // Called by light sdk device or other external publishers.
-    pub async fn publish_external_global(&self, event: Event) -> KEventResult<()> {
+    pub async fn publish_external_global(&self, mut event: Event) -> KEventResult<()> {
         if !is_global_eventid(&event.eventid) {
             return Err(KEventError::InvalidEventId(
                 "daemon only accepts global eventid".to_string(),
@@ -142,12 +147,19 @@ impl KEventService {
         }
         validate_eventid(&event.eventid)?;
         validate_event_data_size(&event.data)?;
+        if event.ingress_node.is_none() {
+            event.ingress_node = Some(self.source_node.clone());
+        }
         self.distribute(&event).await;
-        self.broadcast_to_peers(&event).await
+        if should_broadcast_to_peers(&event, &self.source_node) {
+            self.broadcast_to_peers(&event).await
+        } else {
+            Ok(())
+        }
     }
 
     // Called for events received from peer daemon. Do local dispatch only to avoid loop.
-    pub async fn publish_from_peer(&self, event: Event) -> KEventResult<()> {
+    pub async fn publish_from_peer(&self, mut event: Event) -> KEventResult<()> {
         if !is_global_eventid(&event.eventid) {
             return Err(KEventError::InvalidEventId(
                 "peer event must be global eventid".to_string(),
@@ -155,6 +167,9 @@ impl KEventService {
         }
         validate_eventid(&event.eventid)?;
         validate_event_data_size(&event.data)?;
+        if event.ingress_node.is_none() {
+            event.ingress_node = Some(event.source_node.clone());
+        }
         self.distribute(&event).await;
         Ok(())
     }
@@ -275,6 +290,13 @@ fn err_to_response(err: KEventError) -> KEventDaemonResponse {
     KEventDaemonResponse::Err {
         code: err.code().to_string(),
         message: err.to_string(),
+    }
+}
+
+fn should_broadcast_to_peers(event: &Event, local_node: &str) -> bool {
+    match &event.ingress_node {
+        Some(ingress_node) => ingress_node == local_node,
+        None => true,
     }
 }
 

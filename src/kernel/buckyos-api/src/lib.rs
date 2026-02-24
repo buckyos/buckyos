@@ -15,6 +15,7 @@ mod app_doc;
 mod app_mgr;
 mod gateway_control;
 mod kevent_client;
+mod kevent_ringbuffer;
 mod opendan_client;
 mod permission;
 mod repo_client;
