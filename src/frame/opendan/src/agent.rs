@@ -14,25 +14,24 @@ use buckyos_api::{
 use log::{debug, info, warn};
 use name_lib::DID;
 use ndn_lib::{MsgContent, MsgContentFormat, MsgObjKind, MsgObject};
-use serde::Deserialize;
+
 use serde_json::{json, Value as Json};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::sleep;
 use tokio::{fs, task};
-use uuid::Uuid;
 
 use crate::agent_config::AIAgentConfig;
 use crate::agent_enviroment::AgentEnvironment;
 use crate::agent_memory::{AgentMemory, AgentMemoryConfig};
 use crate::agent_session::{
-    AgentSessionMgr, GetSessionTool, SessionExecInput, SessionInputItem, SessionState,
+    AgentSession, AgentSessionMgr, GetSessionTool, SessionExecInput, SessionInputItem, SessionState
 };
 use crate::agent_tool::{AgentPolicy, ToolCall, ToolManager};
 use crate::behavior::{
     ActionExecutionMode, ActionKind, ActionSpec, AgentWorkEvent, BehaviorConfig, BehaviorExecInput,
-    EnvKV, ExecutorReply, LLMBehavior, LLMBehaviorDeps, LLMOutput, LLMTrackingInfo, Tokenizer,
-    TraceCtx, WorklogSink,
+    BehaviorLLMResult, EnvKV, ExecutorReply, LLMBehavior, LLMBehaviorDeps, LLMTrackingInfo,
+    Tokenizer, TraceCtx, WorklogSink,
 };
 use crate::worklog::TOOL_WORKLOG_MANAGE;
 use crate::workspace::TOOL_TODO_MANAGE;
@@ -48,6 +47,7 @@ const SESSION_QUEUE_APP_ID: &str = "opendan";
 const SESSION_QUEUE_RETENTION_SECONDS: u64 = 7 * 24 * 60 * 60;
 const SESSION_QUEUE_MAX_MESSAGES: u64 = 4096;
 const SESSION_QUEUE_FETCH_BATCH: usize = 64;
+const AGENT_BEHAVIOR_ROUTER_RESOLVE: &str = "resolve_router";
 
 #[derive(Debug)]
 struct PulledMsg {
@@ -77,6 +77,27 @@ struct SessionQueueBinding {
     event_sub_id: String,
 }
 
+
+#[derive(Clone, Debug)]
+struct StepTransition {
+    session_id: String,
+    keep_running: bool,
+    behavior_switched: bool,
+}
+
+
+
+#[derive(Clone, Debug, Default)]
+struct BehaviorLoopReport {
+    executed_steps: u32,
+    keep_running: bool,
+    behavior_switched: bool,
+    hit_step_limit: bool,
+    hit_walltime: bool,
+    last_result: BehaviorLLMResult,
+}
+
+
 #[derive(Clone)]
 pub struct AIAgentDeps {
     pub taskmgr: Arc<TaskManagerClient>,
@@ -85,16 +106,18 @@ pub struct AIAgentDeps {
     pub msg_queue: Option<Arc<MsgQueueClient>>,
 }
 
+
 pub struct AIAgent {
     cfg: AIAgentConfig,
     did: String,
+    owner_did: DID,
     role_md: String,
     self_md: String,
     behaviors_dir: PathBuf,
     workspace_root: PathBuf,
     tools: Arc<ToolManager>,
     memory: AgentMemory,
-    _environment: AgentEnvironment,
+    environment: Arc<AgentEnvironment>,
     session_mgr: Arc<AgentSessionMgr>,
     behavior_cfg_cache: Arc<RwLock<HashMap<String, BehaviorConfig>>>,
     policy: Arc<AgentPolicy>,
@@ -123,6 +146,13 @@ impl AIAgent {
         })?;
 
         let did = load_agent_did(&agent_root).await?;
+        let owner_did = DID::from_str(did.as_str()).map_err(|err| {
+            anyhow!(
+                "invalid owner did in agent doc: did={} err={}",
+                did,
+                err
+            )
+        })?;
         let role_path = agent_root.join(&cfg.role_file_name);
         let self_path = agent_root.join(&cfg.self_file_name);
         let role_md = read_text_if_exists(&role_path)
@@ -146,9 +176,11 @@ impl AIAgent {
 
         let tools = Arc::new(ToolManager::new());
 
-        let environment = AgentEnvironment::new(workspace_root.clone())
-            .await
-            .map_err(|err| anyhow!("init agent environment failed: {err}"))?;
+        let environment = Arc::new(
+            AgentEnvironment::new(workspace_root.clone())
+                .await
+                .map_err(|err| anyhow!("init agent environment failed: {err}"))?,
+        );
         environment
             .register_workshop_tools(&tools)
             .map_err(|err| anyhow!("register workshop tools failed: {err}"))?;
@@ -192,13 +224,14 @@ impl AIAgent {
         let agent = Self {
             cfg,
             did,
+            owner_did,
             role_md,
             self_md,
             behaviors_dir,
             workspace_root,
             tools,
             memory,
-            _environment: environment,
+            environment,
             session_mgr: session_store,
             behavior_cfg_cache,
             policy,
@@ -212,12 +245,8 @@ impl AIAgent {
             wakeup_seq: AtomicU64::new(0),
         };
 
-        let _ = agent.load_behavior_config(&agent.default_behavior).await;
+        let _ = agent.load_behavior_config(&agent.default_behavior).await?;
         Ok(agent)
-    }
-
-    pub fn did(&self) -> &str {
-        &self.did
     }
 
     pub async fn run_agent_loop(self: Arc<Self>, stop_after_ticks: Option<u32>) -> Result<()> {
@@ -270,8 +299,10 @@ impl AIAgent {
             let (pulled_msgs, pulled_events, waited_on_events) =
                 self.pull_msgs_and_events(sleep_ms).await?;
             let has_inputs = !pulled_msgs.is_empty() || !pulled_events.is_empty();
-            self.dispatch_pulled_inputs(pulled_msgs, pulled_events)
-                .await?;
+            if has_inputs {
+                self.dispatch_pulled_inputs(pulled_msgs, pulled_events)
+                    .await?;
+            }
 
             self.session_mgr
                 .schedule_wait_timeouts(now_ms())
@@ -434,30 +465,26 @@ impl AIAgent {
     ) -> Result<()> {
         for pulled in pulled_msgs {
             let record_id = pulled.record.record.record_id.clone();
+            let msg_record = pulled.record.record.clone();
             let previous_session_id = pulled.record.record.session_id.clone();
             let session_id = self
                 .resolve_session_for_msg(pulled.session_id.as_deref(), &pulled.record)
                 .await?;
-            let payload = Self::msg_record_to_runtime_payload(&pulled.record);
-            let item = self.build_session_input_item(payload, "msg");
-            if self
-                .enqueue_session_input(session_id.as_str(), &item, InputQueueKind::Msg)
-                .await?
-            {
-                self.session_mgr
-                    .mark_msg_arrived(session_id.as_str(), &item)
-                    .await
-                    .map_err(|err| {
-                        anyhow!("mark msg arrival for session `{session_id}` failed: {err}")
-                    })?;
-            } else {
-                self.session_mgr
-                    .append_msg(session_id.as_str(), item.payload.clone())
-                    .await
-                    .map_err(|err| {
-                        anyhow!("dispatch msg to session `{session_id}` failed: {err}")
-                    })?;
-            }
+   
+            let payload = serde_json::to_value(&msg_record).map_err(|err| {
+                anyhow!("serialize pulled msg payload failed: record_id={} err={err}", record_id)
+            })?;
+            self.enqueue_session_input(session_id.as_str(), payload, InputQueueKind::Msg)
+                .await?;
+
+            //TODO:这里把Session设置为Ready的操作太不明显了，这是这一步的关键操作
+            self.session_mgr
+                .mark_msg_arrived(session_id.as_str(), &msg_record)
+                .await
+                .map_err(|err| {
+                    anyhow!("mark msg arrival for session `{session_id}` failed: {err}")
+                })?;
+ 
             if previous_session_id.as_deref() != Some(session_id.as_str()) {
                 self.update_msg_record_session(record_id.clone(), session_id.clone())
                     .await;
@@ -466,29 +493,8 @@ impl AIAgent {
         }
 
         for pulled in pulled_events {
-            let payload = Self::event_to_runtime_payload(&pulled.payload);
-            let session_id = self
-                .resolve_session_for_event(pulled.session_id.as_deref(), &payload)
-                .await?;
-            let item = self.build_session_input_item(payload, "event");
-            if self
-                .enqueue_session_input(session_id.as_str(), &item, InputQueueKind::Event)
-                .await?
-            {
-                self.session_mgr
-                    .mark_event_arrived(session_id.as_str(), &item)
-                    .await
-                    .map_err(|err| {
-                        anyhow!("mark event arrival for session `{session_id}` failed: {err}")
-                    })?;
-            } else {
-                self.session_mgr
-                    .append_event(session_id.as_str(), item.payload.clone())
-                    .await
-                    .map_err(|err| {
-                        anyhow!("dispatch event to session `{session_id}` failed: {err}")
-                    })?;
-            }
+            //TODO：Event可能能1次唤醒多个Session，这里需要改造
+            unimplemented!()
         }
         Ok(())
     }
@@ -501,208 +507,309 @@ impl AIAgent {
         if let Some(session_id) = normalize_session_id(hinted_session_id) {
             return Ok(session_id);
         }
-        let msg_payload = serde_json::to_value(&record.msg).unwrap_or_else(|_| json!({}));
-        if let Some(session_id) = extract_session_id_hint(&msg_payload) {
-            return Ok(session_id);
+        if record.record.session_id.is_some() {
+            return Ok(record.record.session_id.clone().unwrap());
         }
 
-        let payload = Self::msg_record_to_runtime_payload(record);
-        if let Some(session_id) = extract_session_id_hint(&payload) {
-            return Ok(session_id);
-        }
-        self.resolve_router_by_llm("msg", &payload).await
+        self.resolve_router_by_llm("msg", record).await
     }
 
-    async fn resolve_session_for_event(
+    async fn resolve_router_by_llm(
         &self,
-        hinted_session_id: Option<&str>,
-        payload: &Json,
+        source_kind: &str,
+        payload: &MsgRecordWithObject,
     ) -> Result<String> {
-        if let Some(session_id) = normalize_session_id(hinted_session_id) {
-            return Ok(session_id);
-        }
-        if let Some(session_id) = extract_session_id_hint(payload) {
-            return Ok(session_id);
-        }
-        self.resolve_router_by_llm("event", payload).await
+        let _ = (source_kind, payload);
+        let session_id = DEFAULT_SESSION_ID.to_string();
+        let session = self
+            .session_mgr
+            .ensure_session(session_id.as_str(), Some("Default Session".to_string()))
+            .await
+            .map_err(|err| anyhow!("ensure default routed session failed: {err}"))?;
+        let mut guard = session.lock().await;
+        guard.append_worklog(json!({
+            "type": "router_stub",
+            "source": source_kind,
+            "ts_ms": now_ms(),
+        }));
+        self.session_mgr
+            .save_session_locked(&guard)
+            .await
+            .map_err(|err| anyhow!("save routed session `{}` failed: {}", guard.session_id, err))?;
+        Ok(session_id)
     }
-
-    async fn resolve_router_by_llm(&self, source_kind: &str, payload: &Json) -> Result<String> {
-        let preview = compact_text_for_log(payload.to_string().as_str(), 160);
-        debug!(
-            "agent.resolve_router_by_llm: did={} source={} fallback_session={} payload={}",
-            self.did, source_kind, DEFAULT_SESSION_ID, preview
+    
+    async fn run_session_loop(
+        &self,
+        session: Arc<Mutex<crate::agent_session::AgentSession>>,
+    ) -> Result<()> {
+        let wakeup_id = format!(
+            "wakeup-{}-{}",
+            now_ms(),
+            self.wakeup_seq.fetch_add(1, Ordering::Relaxed)
         );
 
-        let mut router_cfg: Option<(String, BehaviorConfig)> = None;
-        for candidate in ["resolve_router", "router", "rouer"] {
-            if let Ok(cfg) = self.load_behavior_config(candidate).await {
-                router_cfg = Some((candidate.to_string(), cfg));
+        let started_at = now_ms();
+        let deadline_ms = started_at.saturating_add(self.cfg.max_walltime_ms);
+        let mut step_count = 0_u32;
+        let mut behavior_hops = 0_u32;
+
+        loop {
+            if step_count >= self.cfg.max_steps_per_wakeup {
+                self.set_running_session_to_wait(&session).await?;
+                break;
+            }
+            if now_ms() >= deadline_ms {
+                self.set_running_session_to_wait(&session).await?;
+                break;
+            }
+            if behavior_hops > self.cfg.max_behavior_hops {
+                self.set_running_session_to_wait(&session).await?;
+                break;
+            }
+
+            let (session_id, behavior_name, state) = {
+                let mut guard = session.lock().await;
+                if guard.state == SessionState::Pause {
+                    (guard.session_id.clone(), String::new(), guard.state)
+                } else {
+                    if guard.current_behavior.is_none() {
+                        guard.current_behavior = Some(self.default_behavior.clone());
+                        guard.step_index = 0;
+                    }
+                    (
+                        guard.session_id.clone(),
+                        guard
+                            .current_behavior
+                            .clone()
+                            .unwrap_or_else(|| self.default_behavior.clone()),
+                        guard.state,
+                    )
+                }
+            };
+
+            if state != SessionState::Running {
+                break;
+            }
+
+            let behavior_cfg = match self.load_behavior_config(&behavior_name).await {
+                Ok(cfg) => cfg,
+                Err(err) => {
+                    warn!(
+                        "agent.behavior_missing: did={} session={} behavior={} err={}",
+                        self.did, session_id, behavior_name, err
+                    );
+                    let session_id = {
+                        let mut guard = session.lock().await;
+                        guard.current_behavior = Some(self.default_behavior.clone());
+                        guard.step_index = 0;
+                        guard.update_state(SessionState::Wait);
+                        guard.append_worklog(json!({
+                            "type": "behavior_missing",
+                            "behavior": behavior_name,
+                            "error": err.to_string(),
+                            "ts_ms": now_ms(),
+                        }));
+                        guard.session_id.clone()
+                    };
+                    self.session_mgr.save_session(&session_id).await?;
+                    break;
+                }
+            };
+
+            let remaining_steps = self.cfg.max_steps_per_wakeup.saturating_sub(step_count);
+            if remaining_steps == 0 {
+                self.set_running_session_to_wait(&session).await?;
+                break;
+            }
+
+            let report = self
+                .run_behavior_loop(
+                    behavior_name.as_str(),
+                    &behavior_cfg,
+                    wakeup_id.as_str(),
+                    remaining_steps,
+                    Some(deadline_ms),
+                    None,
+                    session.clone(),
+                )
+                .await;
+
+            let report = report?;
+            step_count = step_count.saturating_add(report.executed_steps);
+
+            if report.behavior_switched {
+                behavior_hops = behavior_hops.saturating_add(1);
+                debug!(
+                    "agent.session_behavior_switched: did={} session={} from={} hops={} total_steps={}",
+                    self.did, session_id, behavior_name, behavior_hops, step_count
+                );
+            }
+
+            if report.hit_step_limit || report.hit_walltime {
+                self.set_running_session_to_wait(&session).await?;
+                break;
+            }
+
+            if !report.keep_running {
+                break;
+            }
+
+            if report.behavior_switched {
+                continue;
+            }
+
+            if report.executed_steps == 0 {
+                self.set_running_session_to_wait(&session).await?;
                 break;
             }
         }
 
-        let Some((router_behavior_name, router_cfg)) = router_cfg else {
-            warn!(
-                "agent.resolve_router_missing: did={} source={} fallback_session={}",
-                self.did, source_kind, DEFAULT_SESSION_ID
-            );
-            return Ok(DEFAULT_SESSION_ID.to_string());
-        };
+        Ok(())
+    }
 
-        let router_id = format!(
-            "router-{}-{}",
-            now_ms(),
-            self.wakeup_seq.fetch_add(1, Ordering::Relaxed)
+
+    //Loop执行到 wait或next_behavior != none
+    async fn run_behavior_loop(
+        &self,
+        behavior_name: &str,
+        behavior_cfg: &BehaviorConfig,
+        wakeup_id: &str,
+        max_steps: u32,
+        deadline_ms: Option<u64>,
+        route_payload: Option<Json>,
+        session: Arc<Mutex<AgentSession>>,
+    ) -> Result<BehaviorLoopReport> {
+        let _ = (
+            behavior_name,
+            behavior_cfg,
+            wakeup_id,
+            max_steps,
+            deadline_ms,
+            route_payload,
         );
-        let max_router_steps = router_cfg
-            .step_limit
-            .max(1)
-            .min(self.cfg.max_steps_per_wakeup.max(1));
-        let mut route_payload = None::<Json>;
-        let mut route_next_behavior = None::<String>;
-        if let Err(err) = self
-            .run_behavior_loop(
-                router_behavior_name.as_str(),
-                &router_cfg,
-                router_id.as_str(),
-                max_router_steps,
-                None,
-                BehaviorLoopMode::Router {
-                    source_kind,
-                    payload,
-                    route_payload: &mut route_payload,
-                    route_next_behavior: &mut route_next_behavior,
-                },
-            )
-            .await
-        {
-            warn!(
-                "agent.resolve_router_step_failed: did={} source={} behavior={} err={}",
-                self.did, source_kind, router_behavior_name, err
-            );
-        }
 
-        let route = parse_router_resolution(route_payload.as_ref(), route_next_behavior.as_deref());
-        if let Some(reply) = route.reply.as_deref() {
-            self.send_reply_via_msg_center(payload, "user", "text", reply, None)
-                .await;
-            info!(
-                "agent.resolve_router_reply: did={} source={} reply={}",
-                self.did,
-                source_kind,
-                compact_text_for_log(reply, 256)
-            );
+        let mut guard = session.lock().await;
+        if guard.state == SessionState::Running {
+            guard.update_state(SessionState::Wait);
         }
+        
+        Ok(BehaviorLoopReport::default())
+    }
 
-        let mut resolved_session_id = normalize_routed_session_id(route.session_id.as_deref());
-        let routed_new_session = route.new_session.clone();
-        let mut routed_new_session_title = None::<String>;
-        let mut routed_new_session_summary = None::<String>;
-        let mut created_new_session = false;
-        if resolved_session_id.is_none() {
-            if let Some((title, summary)) = routed_new_session.as_ref() {
-                routed_new_session_title = normalize_session_id(Some(title.as_str()));
-                routed_new_session_summary = normalize_session_id(Some(summary.as_str()));
-                if routed_new_session_title.is_some() || routed_new_session_summary.is_some() {
-                    resolved_session_id = Some(format!("session-{}", Uuid::new_v4()));
-                    created_new_session = true;
-                }
-            }
-        }
-        let mut session_id = resolved_session_id.unwrap_or_else(|| DEFAULT_SESSION_ID.to_string());
-        let ensured_title = if created_new_session {
-            routed_new_session_title.clone()
+    async fn build_behavior_exec_input(
+        &self,
+        trace: &TraceCtx,
+        behavior_cfg: BehaviorConfig,
+        session_input: &SessionExecInput,
+    ) -> Result<Option<BehaviorExecInput>> {
+        let memory_token_limit = if behavior_cfg.memory.total_limit > 0 {
+            behavior_cfg.memory.total_limit
         } else {
-            None
+            self.cfg.memory_token_limit
         };
 
-        let session = match self
-            .session_mgr
-            .ensure_session(session_id.as_str(), ensured_title)
+        let memory = self
+            .memory
+            .load_memory(Some(memory_token_limit), vec![trace.behavior.clone()], None)
             .await
-        {
-            Ok(session) => session,
-            Err(err) => {
+            .unwrap_or_else(|err| {
                 warn!(
-                    "agent.resolve_router_ensure_session_failed: did={} source={} session={} err={}",
-                    self.did, source_kind, session_id, err
+                    "agent.memory_load_failed: did={} behavior={} err={}",
+                    self.did, trace.behavior, err
                 );
-                session_id = DEFAULT_SESSION_ID.to_string();
-                created_new_session = false;
-                routed_new_session_summary = None;
-                self.session_mgr
-                    .ensure_session(DEFAULT_SESSION_ID, None)
-                    .await
-                    .map_err(|ensure_err| {
-                        anyhow!(
-                            "ensure fallback session `{}` failed after router error: {}",
-                            DEFAULT_SESSION_ID,
-                            ensure_err
-                        )
-                    })?
-            }
-        };
+                json!({})
+            });
 
-        let next_behavior = route.next_behavior.clone();
-        let route_reply = route.reply.clone();
-        let memory_queries = route.memory_queries.clone();
-        {
-            let mut guard = session.lock().await;
+        let mut env_context = vec![
+            EnvKV {
+                key: "loop.session_id".to_string(),
+                value: session_input.session_id.clone(),
+            },
+            EnvKV {
+                key: "step.index".to_string(),
+                value: trace.step_idx.to_string(),
+            },
+            EnvKV {
+                key: "step.remaining".to_string(),
+                value: self
+                    .cfg
+                    .max_steps_per_wakeup
+                    .saturating_sub(trace.step_idx)
+                    .to_string(),
+            },
+        ];
 
-            if created_new_session {
-                if let Some(summary) = routed_new_session_summary
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                {
-                    if guard.summary.trim().is_empty() {
-                        guard.summary = summary.to_string();
-                    }
-                }
-            }
-
-            if let Some(next_behavior) = next_behavior
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                if !next_behavior.eq_ignore_ascii_case("END")
-                    && !next_behavior.eq_ignore_ascii_case("WAIT")
-                {
-                    guard.current_behavior = Some(next_behavior.to_string());
-                    guard.step_index = 0;
-                }
-            }
-
-            guard.append_worklog(json!({
-                "type": "router_resolved",
-                "source": source_kind,
-                "session_id": session_id,
-                "next_behavior": next_behavior,
-                "new_session": routed_new_session,
-                "new_session_created": created_new_session,
-                "memory_queries": memory_queries,
-                "reply": route_reply,
-                "ts_ms": now_ms(),
-            }));
-            self.session_mgr
-                .save_session_locked(&guard)
-                .await
-                .map_err(|err| {
-                    anyhow!("save routed session `{}` failed: {}", guard.session_id, err)
-                })?;
+        if !behavior_cfg.policy.trim().is_empty() {
+            env_context.push(EnvKV {
+                key: "policy.text".to_string(),
+                value: behavior_cfg.policy.clone(),
+            });
+        }
+        if !behavior_cfg.input.trim().is_empty() {
+            env_context.push(EnvKV {
+                key: "input.template".to_string(),
+                value: behavior_cfg.input.clone(),
+            });
+        }
+        if !behavior_cfg.memory.is_empty() {
+            env_context.push(EnvKV {
+                key: "memory.policy".to_string(),
+                value: behavior_cfg.memory.to_json_value().to_string(),
+            });
         }
 
-        debug!(
-            "agent.resolve_router_done: did={} source={} session={} next_behavior={}",
-            self.did,
-            source_kind,
-            session_id,
-            next_behavior.unwrap_or_else(|| "(none)".to_string())
+        Ok(Some(BehaviorExecInput {
+            trace: trace.clone(),
+            role_md: self.role_md.clone(),
+            self_md: self.self_md.clone(),
+            behavior_prompt: behavior_cfg.process_rule.clone(),
+            limits: behavior_cfg.limits.clone(),
+            session_id: Some(session_input.session_id.clone()),
+            behavior_cfg,
+            env_context,
+            inbox: session_input.payload.clone(),
+            memory,
+            last_observations: vec![],
+        }))
+    }
+
+
+    async fn run_behavior_step(
+        &self,
+        trace: &TraceCtx,
+        behavior_cfg: &BehaviorConfig,
+        input: BehaviorExecInput,
+    ) -> Result<(
+        crate::behavior::BehaviorLLMResult,
+        LLMTrackingInfo,
+        Vec<Json>,
+    )> {
+        let llm = LLMBehavior::new(
+            behavior_cfg.to_llm_behavior_config(),
+            LLMBehaviorDeps {
+                taskmgr: self.deps.taskmgr.clone(),
+                aicc: self.deps.aicc.clone(),
+                tools: self.tools.clone(),
+                policy: self.policy.clone(),
+                worklog: self.worklog.clone(),
+                tokenizer: self.tokenizer.clone(),
+                environment: self.environment.clone(),
+            },
         );
 
-        Ok(session_id)
+        let (llm_result, tracking) = llm
+            .run_step(input)
+            .await
+            .map_err(|err| anyhow!("llm behavior step failed: {err}"))?;
+
+        //todo: run actions in parallel if possible based on action.execution_mode
+
+        let action_results = self
+            .execute_actions(trace, llm_result.actions.as_slice())
+            .await;
+
+        Ok((llm_result, tracking, action_results))
     }
 
     async fn set_msg_readed(&self, record_id: String) {
@@ -739,41 +846,9 @@ impl AIAgent {
         }
     }
 
-    fn parse_owner_did_for_msg_center(&self) -> Option<DID> {
-        match DID::from_str(self.did.as_str()) {
-            Ok(did) => Some(did),
-            Err(err) => {
-                warn!(
-                    "agent.msg_center_disabled_by_did: did={} err={}",
-                    self.did, err
-                );
-                None
-            }
-        }
-    }
-
-    fn sanitize_kevent_token(raw: &str) -> String {
-        let mut output = String::with_capacity(raw.len());
-        let mut prev_dash = false;
-        for ch in raw.chars() {
-            if ch.is_ascii_alphanumeric() {
-                output.push(ch.to_ascii_lowercase());
-                prev_dash = false;
-            } else if !prev_dash {
-                output.push('-');
-                prev_dash = true;
-            }
-        }
-        let trimmed = output.trim_matches('-');
-        if trimmed.is_empty() {
-            "default".to_string()
-        } else {
-            trimmed.chars().take(80).collect()
-        }
-    }
 
     fn build_msg_center_event_patterns(owner: &DID) -> Vec<String> {
-        let owner_token = Self::sanitize_kevent_token(owner.to_string().as_str());
+        let owner_token = owner.to_raw_host_name();
         MSG_CENTER_EVENT_BOX_NAMES
             .iter()
             .map(|box_name| format!("/msg_center/{owner_token}/box/{box_name}/*"))
@@ -784,16 +859,14 @@ impl AIAgent {
         if self.deps.msg_center.is_none() {
             return None;
         }
-        let Some(owner_did) = self.parse_owner_did_for_msg_center() else {
-            return None;
-        };
+
 
         let mut guard = self.msg_center_event_reader.lock().await;
         if let Some(reader) = guard.as_ref() {
             return Some(reader.clone());
         }
 
-        let patterns = Self::build_msg_center_event_patterns(&owner_did);
+        let patterns = Self::build_msg_center_event_patterns(&self.owner_did);
         match self
             .kevent_client
             .create_event_reader(patterns.clone())
@@ -899,25 +972,6 @@ impl AIAgent {
         PulledMsg { session_id, record }
     }
 
-    fn msg_record_to_runtime_payload(record: &MsgRecordWithObject) -> Json {
-        json!({
-            "source": "msg_center",
-            "record": record.record,
-            "msg": record.msg,
-        })
-    }
-
-    fn event_to_runtime_payload(event: &Event) -> Json {
-        serde_json::to_value(event).unwrap_or_else(|_| json!({}))
-    }
-
-    fn build_session_input_item(&self, payload: Json, prefix: &str) -> SessionInputItem {
-        SessionInputItem {
-            id: self.extract_session_input_id(&payload, prefix),
-            ts_ms: now_ms(),
-            payload,
-        }
-    }
 
     fn extract_session_input_id(&self, payload: &Json, prefix: &str) -> String {
         for key in ["id", "msg_id", "event_id", "record_id"] {
@@ -1069,20 +1123,20 @@ impl AIAgent {
     async fn enqueue_session_input(
         &self,
         session_id: &str,
-        item: &SessionInputItem,
+        payload: Json,
         kind: InputQueueKind,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         let Some(msg_queue) = self.deps.msg_queue.as_ref() else {
-            return Ok(false);
+            return Err(anyhow!("message queue dependency not available"));
         };
         let Some(binding) = self.ensure_session_queue_binding(session_id).await? else {
-            return Ok(false);
+            return Err(anyhow!("failed to ensure session queue binding"));
         };
         let queue_urn = match kind {
             InputQueueKind::Msg => binding.msg_queue_urn.as_str(),
             InputQueueKind::Event => binding.event_queue_urn.as_str(),
         };
-        let payload = serde_json::to_vec(item).map_err(|err| {
+        let kmsg_payload = serde_json::to_vec(&payload).map_err(|err| {
             anyhow!(
                 "serialize session queue payload failed: session={} kind={:?} err={}",
                 session_id,
@@ -1090,7 +1144,7 @@ impl AIAgent {
                 err
             )
         })?;
-        let mut message = Message::new(payload);
+        let mut message = Message::new(kmsg_payload);
         message.created_at = now_ms();
         msg_queue
             .post_message(queue_urn, message)
@@ -1103,7 +1157,7 @@ impl AIAgent {
                     err
                 )
             })?;
-        Ok(true)
+        Ok(())
     }
 
     async fn pull_session_queue_inputs(
@@ -1188,135 +1242,8 @@ impl AIAgent {
         Ok(output)
     }
 
-    async fn run_session_loop(
-        &self,
-        session: Arc<Mutex<crate::agent_session::AgentSession>>,
-    ) -> Result<()> {
-        let wakeup_id = format!(
-            "wakeup-{}-{}",
-            now_ms(),
-            self.wakeup_seq.fetch_add(1, Ordering::Relaxed)
-        );
-
-        let started_at = now_ms();
-        let deadline_ms = started_at.saturating_add(self.cfg.max_walltime_ms);
-        let mut step_count = 0_u32;
-        let mut behavior_hops = 0_u32;
-
-        loop {
-            if step_count >= self.cfg.max_steps_per_wakeup {
-                self.pause_running_session_to_wait(&session).await?;
-                break;
-            }
-            if now_ms() >= deadline_ms {
-                self.pause_running_session_to_wait(&session).await?;
-                break;
-            }
-            if behavior_hops > self.cfg.max_behavior_hops {
-                self.pause_running_session_to_wait(&session).await?;
-                break;
-            }
-
-            let (session_id, behavior_name, state) = {
-                let mut guard = session.lock().await;
-                if guard.state == SessionState::Pause {
-                    (guard.session_id.clone(), String::new(), guard.state)
-                } else {
-                    if guard.current_behavior.is_none() {
-                        guard.current_behavior = Some(self.default_behavior.clone());
-                        guard.step_index = 0;
-                    }
-                    (
-                        guard.session_id.clone(),
-                        guard
-                            .current_behavior
-                            .clone()
-                            .unwrap_or_else(|| self.default_behavior.clone()),
-                        guard.state,
-                    )
-                }
-            };
-
-            if state != SessionState::Running {
-                break;
-            }
-
-            let behavior_cfg = match self.load_behavior_config(&behavior_name).await {
-                Ok(cfg) => cfg,
-                Err(err) => {
-                    warn!(
-                        "agent.behavior_missing: did={} session={} behavior={} err={}",
-                        self.did, session_id, behavior_name, err
-                    );
-                    let session_id = {
-                        let mut guard = session.lock().await;
-                        guard.current_behavior = Some(self.default_behavior.clone());
-                        guard.step_index = 0;
-                        guard.update_state(SessionState::Wait);
-                        guard.append_worklog(json!({
-                            "type": "behavior_missing",
-                            "behavior": behavior_name,
-                            "error": err.to_string(),
-                            "ts_ms": now_ms(),
-                        }));
-                        guard.session_id.clone()
-                    };
-                    self.session_mgr.save_session(&session_id).await?;
-                    break;
-                }
-            };
-
-            let remaining_steps = self.cfg.max_steps_per_wakeup.saturating_sub(step_count);
-            if remaining_steps == 0 {
-                self.pause_running_session_to_wait(&session).await?;
-                break;
-            }
-
-            let report = self
-                .run_behavior_loop(
-                    behavior_name.as_str(),
-                    &behavior_cfg,
-                    wakeup_id.as_str(),
-                    remaining_steps,
-                    Some(deadline_ms),
-                    BehaviorLoopMode::Session { session: &session },
-                )
-                .await;
-
-            let report = report?;
-            step_count = step_count.saturating_add(report.executed_steps);
-
-            if report.behavior_switched {
-                behavior_hops = behavior_hops.saturating_add(1);
-                debug!(
-                    "agent.session_behavior_switched: did={} session={} from={} hops={} total_steps={}",
-                    self.did, session_id, behavior_name, behavior_hops, step_count
-                );
-            }
-
-            if report.hit_step_limit || report.hit_walltime {
-                self.pause_running_session_to_wait(&session).await?;
-                break;
-            }
-
-            if !report.keep_running {
-                break;
-            }
-
-            if report.behavior_switched {
-                continue;
-            }
-
-            if report.executed_steps == 0 {
-                self.pause_running_session_to_wait(&session).await?;
-                break;
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn pause_running_session_to_wait(
+   
+    async fn set_running_session_to_wait(
         &self,
         session: &Arc<Mutex<crate::agent_session::AgentSession>>,
     ) -> Result<()> {
@@ -1331,474 +1258,7 @@ impl AIAgent {
         Ok(())
     }
 
-    async fn run_behavior_loop(
-        &self,
-        behavior_name: &str,
-        behavior_cfg: &BehaviorConfig,
-        wakeup_id: &str,
-        max_steps: u32,
-        deadline_ms: Option<u64>,
-        mut mode: BehaviorLoopMode<'_>,
-    ) -> Result<BehaviorLoopReport> {
-        enum PreparedBehaviorStep {
-            Session {
-                trace: TraceCtx,
-                input: BehaviorExecInput,
-                exec_input: SessionExecInput,
-            },
-            Router {
-                trace: TraceCtx,
-                input: BehaviorExecInput,
-                source_kind: String,
-            },
-        }
 
-        let is_session_mode = matches!(&mode, BehaviorLoopMode::Session { .. });
-        let mut report = BehaviorLoopReport {
-            keep_running: is_session_mode,
-            ..Default::default()
-        };
-
-        while report.executed_steps < max_steps {
-            if let Some(deadline) = deadline_ms {
-                if now_ms() >= deadline {
-                    report.hit_walltime = true;
-                    report.keep_running = is_session_mode;
-                    break;
-                }
-            }
-
-            let prepared = match &mut mode {
-                BehaviorLoopMode::Session { session } => {
-                    let session_id = {
-                        let guard = session.lock().await;
-                        guard.session_id.clone()
-                    };
-                    let (queue_msgs, queue_events) =
-                        self.pull_session_queue_inputs(session_id.as_str()).await?;
-                    let (state, step_index, exec_input) = {
-                        let mut guard = session.lock().await;
-                        if !queue_msgs.is_empty() {
-                            guard.new_msgs.extend(queue_msgs);
-                        }
-                        if !queue_events.is_empty() {
-                            guard.new_events.extend(queue_events);
-                        }
-                        if guard.state != SessionState::Pause && guard.current_behavior.is_none() {
-                            guard.current_behavior = Some(self.default_behavior.clone());
-                            guard.step_index = 0;
-                        }
-                        if guard.state == SessionState::Running
-                            && guard
-                                .current_behavior
-                                .as_deref()
-                                .map(|name| !name.eq_ignore_ascii_case(behavior_name))
-                                .unwrap_or(false)
-                        {
-                            report.behavior_switched = true;
-                            return Ok(report);
-                        }
-                        (
-                            guard.state,
-                            guard.step_index,
-                            if guard.state == SessionState::Running {
-                                guard.generate_input(behavior_cfg)
-                            } else {
-                                None
-                            },
-                        )
-                    };
-
-                    if state != SessionState::Running {
-                        report.keep_running = false;
-                        return Ok(report);
-                    }
-
-                    let Some(exec_input) = exec_input else {
-                        let session_id = {
-                            let mut guard = session.lock().await;
-                            guard.update_state(SessionState::Wait);
-                            guard.session_id.clone()
-                        };
-                        self.session_mgr.save_session(&session_id).await?;
-                        report.keep_running = false;
-                        return Ok(report);
-                    };
-
-                    let trace = TraceCtx {
-                        trace_id: format!("trace-{}-{}", now_ms(), report.executed_steps),
-                        agent_did: self.did.clone(),
-                        behavior: behavior_name.to_string(),
-                        step_idx: step_index,
-                        wakeup_id: wakeup_id.to_string(),
-                    };
-                    let input = self
-                        .build_behavior_exec_input(&trace, behavior_cfg, &exec_input)
-                        .await?;
-
-                    PreparedBehaviorStep::Session {
-                        trace,
-                        input,
-                        exec_input,
-                    }
-                }
-                BehaviorLoopMode::Router {
-                    source_kind,
-                    payload,
-                    ..
-                } => {
-                    let step_idx = report.executed_steps;
-                    let trace = TraceCtx {
-                        trace_id: format!("route-trace-{}-{}", now_ms(), step_idx),
-                        agent_did: self.did.clone(),
-                        behavior: behavior_name.to_string(),
-                        step_idx,
-                        wakeup_id: wakeup_id.to_string(),
-                    };
-                    let input = self
-                        .build_router_exec_input(
-                            &trace,
-                            behavior_cfg,
-                            source_kind,
-                            payload,
-                            max_steps,
-                        )
-                        .await;
-                    PreparedBehaviorStep::Router {
-                        trace,
-                        input,
-                        source_kind: source_kind.to_string(),
-                    }
-                }
-            };
-
-            let (trace, input, session_exec_input, router_source_kind) = match prepared {
-                PreparedBehaviorStep::Session {
-                    trace,
-                    input,
-                    exec_input,
-                } => (trace, input, Some(exec_input), None),
-                PreparedBehaviorStep::Router {
-                    trace,
-                    input,
-                    source_kind,
-                } => (trace, input, None, Some(source_kind)),
-            };
-
-            let step_result = self.run_behavior_step(&trace, behavior_cfg, input).await;
-            let (llm_result, tracking, action_results) = match step_result {
-                Ok(result) => result,
-                Err(err) => {
-                    if let Some(source_kind) = router_source_kind {
-                        return Err(anyhow!(
-                            "behavior loop step failed: source={} behavior={} step={} err={}",
-                            source_kind,
-                            behavior_name,
-                            trace.step_idx,
-                            err
-                        ));
-                    }
-
-                    let session_id = if let BehaviorLoopMode::Session { session } = &mode {
-                        let mut guard = session.lock().await;
-                        guard.append_worklog(json!({
-                            "type": "step_error",
-                            "behavior": behavior_name,
-                            "step_index": trace.step_idx,
-                            "error": err.to_string(),
-                            "ts_ms": now_ms(),
-                        }));
-                        guard.update_state(SessionState::Wait);
-                        guard.session_id.clone()
-                    } else {
-                        String::new()
-                    };
-                    if !session_id.is_empty() {
-                        let _ = self.session_mgr.save_session(&session_id).await;
-                    }
-                    return Err(err);
-                }
-            };
-
-            report.executed_steps = report.executed_steps.saturating_add(1);
-
-            if let Some(exec_input) = session_exec_input {
-                self.handle_replies(
-                    trace.clone(),
-                    &exec_input.payload,
-                    llm_result.reply.as_slice(),
-                )
-                .await;
-                self.apply_memory_updates(&trace, llm_result.set_memory.as_slice())
-                    .await;
-
-                let (transition, side_effect_workspace_id, side_effect_session_id, step_summary) =
-                    if let BehaviorLoopMode::Session { session } = &mode {
-                        let mut guard = session.lock().await;
-                        guard.update_input_used(&exec_input);
-                        guard.apply_session_delta(llm_result.session_delta.as_slice());
-
-                        let step_summary = build_step_summary(
-                            &trace,
-                            behavior_cfg,
-                            &llm_result.next_behavior,
-                            &tracking,
-                            action_results.as_slice(),
-                        );
-                        guard.set_last_step_summary(step_summary.clone());
-                        guard.append_worklog(step_summary.clone());
-
-                        let workspace_id = resolve_session_workspace_id(&guard);
-                        let session_id = guard.session_id.clone();
-                        let transition = apply_behavior_transition(
-                            &mut guard,
-                            self.default_behavior.as_str(),
-                            behavior_cfg.step_limit,
-                            llm_result.next_behavior.as_deref(),
-                        );
-                        (transition, workspace_id, session_id, step_summary)
-                    } else {
-                        continue;
-                    };
-                self.apply_workspace_side_effects(
-                    &trace,
-                    side_effect_session_id.as_str(),
-                    side_effect_workspace_id.as_deref(),
-                    &step_summary,
-                    llm_result.todo.as_slice(),
-                )
-                .await;
-                let _ = self.session_mgr.save_session(&transition.session_id).await;
-
-                if transition.behavior_switched {
-                    report.behavior_switched = true;
-                    report.keep_running = true;
-                    return Ok(report);
-                }
-                if !transition.keep_running {
-                    report.keep_running = false;
-                    return Ok(report);
-                }
-            } else if let BehaviorLoopMode::Router {
-                route_payload,
-                route_next_behavior,
-                ..
-            } = &mut mode
-            {
-                if let LLMOutput::Json(value) = &tracking.raw_output {
-                    **route_payload = Some(value.clone());
-                }
-                **route_next_behavior = normalize_session_id(llm_result.next_behavior.as_deref());
-                if route_next_behavior.is_some() {
-                    report.keep_running = false;
-                    return Ok(report);
-                }
-            }
-        }
-
-        if report.executed_steps >= max_steps {
-            report.hit_step_limit = true;
-            report.keep_running = is_session_mode;
-        }
-
-        Ok(report)
-    }
-
-    async fn build_router_exec_input(
-        &self,
-        trace: &TraceCtx,
-        behavior_cfg: &BehaviorConfig,
-        source_kind: &str,
-        payload: &Json,
-        max_steps: u32,
-    ) -> BehaviorExecInput {
-        let memory_token_limit = if behavior_cfg.memory.total_limit > 0 {
-            behavior_cfg.memory.total_limit
-        } else {
-            self.cfg.memory_token_limit
-        };
-
-        let memory = self
-            .memory
-            .load_memory(Some(memory_token_limit), vec![trace.behavior.clone()], None)
-            .await
-            .unwrap_or_else(|err| {
-                warn!(
-                    "agent.resolve_router_memory_load_failed: did={} behavior={} err={}",
-                    self.did, trace.behavior, err
-                );
-                json!({})
-            });
-
-        let mut env_context = vec![
-            EnvKV {
-                key: "router.source".to_string(),
-                value: source_kind.to_string(),
-            },
-            EnvKV {
-                key: "step.index".to_string(),
-                value: trace.step_idx.to_string(),
-            },
-            EnvKV {
-                key: "step.remaining".to_string(),
-                value: max_steps.saturating_sub(trace.step_idx).to_string(),
-            },
-        ];
-
-        if !behavior_cfg.policy.trim().is_empty() {
-            env_context.push(EnvKV {
-                key: "policy.text".to_string(),
-                value: behavior_cfg.policy.clone(),
-            });
-        }
-        if !behavior_cfg.input.trim().is_empty() {
-            env_context.push(EnvKV {
-                key: "input.template".to_string(),
-                value: behavior_cfg.input.clone(),
-            });
-        }
-        if !behavior_cfg.memory.is_empty() {
-            env_context.push(EnvKV {
-                key: "memory.policy".to_string(),
-                value: behavior_cfg.memory.to_json_value().to_string(),
-            });
-        }
-
-        let inbox = if source_kind.eq_ignore_ascii_case("event") {
-            json!({
-                "new_msg": Json::Null,
-                "new_event": payload.clone(),
-            })
-        } else {
-            json!({
-                "new_msg": payload.clone(),
-                "new_event": Json::Null,
-            })
-        };
-
-        BehaviorExecInput {
-            trace: trace.clone(),
-            role_md: self.role_md.clone(),
-            self_md: self.self_md.clone(),
-            session_id: None,
-            behavior_prompt: behavior_cfg.process_rule.clone(),
-            env_context,
-            inbox,
-            memory,
-            last_observations: vec![],
-            limits: behavior_cfg.limits.clone(),
-        }
-    }
-
-    async fn build_behavior_exec_input(
-        &self,
-        trace: &TraceCtx,
-        behavior_cfg: &BehaviorConfig,
-        session_input: &SessionExecInput,
-    ) -> Result<BehaviorExecInput> {
-        let memory_token_limit = if behavior_cfg.memory.total_limit > 0 {
-            behavior_cfg.memory.total_limit
-        } else {
-            self.cfg.memory_token_limit
-        };
-
-        let memory = self
-            .memory
-            .load_memory(Some(memory_token_limit), vec![trace.behavior.clone()], None)
-            .await
-            .unwrap_or_else(|err| {
-                warn!(
-                    "agent.memory_load_failed: did={} behavior={} err={}",
-                    self.did, trace.behavior, err
-                );
-                json!({})
-            });
-
-        let mut env_context = vec![
-            EnvKV {
-                key: "loop.session_id".to_string(),
-                value: session_input.session_id.clone(),
-            },
-            EnvKV {
-                key: "step.index".to_string(),
-                value: trace.step_idx.to_string(),
-            },
-            EnvKV {
-                key: "step.remaining".to_string(),
-                value: self
-                    .cfg
-                    .max_steps_per_wakeup
-                    .saturating_sub(trace.step_idx)
-                    .to_string(),
-            },
-        ];
-
-        if !behavior_cfg.policy.trim().is_empty() {
-            env_context.push(EnvKV {
-                key: "policy.text".to_string(),
-                value: behavior_cfg.policy.clone(),
-            });
-        }
-        if !behavior_cfg.input.trim().is_empty() {
-            env_context.push(EnvKV {
-                key: "input.template".to_string(),
-                value: behavior_cfg.input.clone(),
-            });
-        }
-        if !behavior_cfg.memory.is_empty() {
-            env_context.push(EnvKV {
-                key: "memory.policy".to_string(),
-                value: behavior_cfg.memory.to_json_value().to_string(),
-            });
-        }
-
-        Ok(BehaviorExecInput {
-            trace: trace.clone(),
-            role_md: self.role_md.clone(),
-            self_md: self.self_md.clone(),
-            session_id: Some(session_input.session_id.clone()),
-            behavior_prompt: behavior_cfg.process_rule.clone(),
-            env_context,
-            inbox: session_input.payload.clone(),
-            memory,
-            last_observations: vec![],
-            limits: behavior_cfg.limits.clone(),
-        })
-    }
-
-    async fn run_behavior_step(
-        &self,
-        trace: &TraceCtx,
-        behavior_cfg: &BehaviorConfig,
-        input: BehaviorExecInput,
-    ) -> Result<(
-        crate::behavior::BehaviorLLMResult,
-        LLMTrackingInfo,
-        Vec<Json>,
-    )> {
-        let llm = LLMBehavior::new(
-            behavior_cfg.to_llm_behavior_config(),
-            LLMBehaviorDeps {
-                taskmgr: self.deps.taskmgr.clone(),
-                aicc: self.deps.aicc.clone(),
-                tools: self.tools.clone(),
-                policy: self.policy.clone(),
-                worklog: self.worklog.clone(),
-                tokenizer: self.tokenizer.clone(),
-            },
-        );
-
-        let (llm_result, tracking) = llm
-            .run_step(input)
-            .await
-            .map_err(|err| anyhow!("llm behavior step failed: {err}"))?;
-
-        let action_results = self
-            .execute_actions(trace, llm_result.actions.as_slice())
-            .await;
-
-        Ok((llm_result, tracking, action_results))
-    }
 
     async fn execute_actions(&self, trace: &TraceCtx, actions: &[ActionSpec]) -> Vec<Json> {
         if actions.is_empty() {
@@ -1995,10 +1455,10 @@ impl AIAgent {
         }
     }
 
-    async fn handle_replies(
+    async fn send_msg_replies(
         &self,
         trace: TraceCtx,
-        source_payload: &Json,
+        source_tunnel_did: Option<DID>,
         replies: &[ExecutorReply],
     ) {
         if replies.is_empty() {
@@ -2006,7 +1466,7 @@ impl AIAgent {
         }
         for reply in replies {
             self.send_reply_via_msg_center(
-                source_payload,
+                source_tunnel_did.clone(),
                 reply.audience.as_str(),
                 reply.format.as_str(),
                 reply.content.as_str(),
@@ -2026,7 +1486,7 @@ impl AIAgent {
 
     async fn send_reply_via_msg_center(
         &self,
-        source_payload: &Json,
+        source_tunnel_did: Option<DID>,
         audience: &str,
         format: &str,
         content: &str,
@@ -2043,15 +1503,16 @@ impl AIAgent {
         let Some(sender_did) = self.parse_owner_did_for_msg_center() else {
             return;
         };
-        let Some(target_did) = extract_reply_target_did(source_payload) else {
-            debug!(
-                "agent.reply_skip_no_target: did={} audience={} format={} payload={}",
-                self.did,
-                audience,
-                format,
-                compact_text_for_log(source_payload.to_string().as_str(), 256)
-            );
-            return;
+        //TODO:get target_did by owner's contact list 
+        let target_did: DID = match DID::from_str(audience) {
+            Ok(did) => did,
+            Err(_) => {
+                warn!(
+                    "agent.reply_invalid_audience: did={} audience={}",
+                    self.did, audience
+                );
+                return;
+            }
         };
 
         if target_did == sender_did {
@@ -2060,23 +1521,6 @@ impl AIAgent {
                 self.did, target_did, audience
             );
             return;
-        }
-
-        let mut payload = json!({
-            "kind": "text",
-            "audience": audience,
-            "format": format,
-            "content": content,
-            "session_id": extract_session_id_hint(source_payload),
-            "source": "opendan",
-        });
-        if let Some(trace) = trace {
-            payload["trace"] = json!({
-                "trace_id": trace.trace_id,
-                "wakeup_id": trace.wakeup_id,
-                "behavior": trace.behavior,
-                "step_idx": trace.step_idx,
-            });
         }
 
         let mut outbound = MsgObject {
@@ -2091,13 +1535,13 @@ impl AIAgent {
             },
             ..Default::default()
         };
-        outbound.thread.topic = extract_reply_thread_key(source_payload);
-        outbound.meta.insert("payload".to_string(), payload);
 
         let send_ctx = SendContext {
             contact_mgr_owner: Some(sender_did),
+            preferred_tunnel: source_tunnel_did,
             ..Default::default()
         };
+
         match msg_center.post_send(outbound, Some(send_ctx), None).await {
             Ok(result) => {
                 if !result.ok {
@@ -2145,59 +1589,37 @@ impl AIAgent {
         Ok(loaded)
     }
 
+    pub fn did(&self) -> &str {
+        self.did.as_str()
+    }
+
     pub fn workspace_root(&self) -> &Path {
         &self.workspace_root
     }
+
+    fn parse_owner_did_for_msg_center(&self) -> Option<DID> {
+        Some(self.owner_did.clone())
+    }
+
+    fn sanitize_kevent_token(raw: &str) -> String {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return "unknown".to_string();
+        }
+        trimmed
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    }
 }
 
-#[derive(Clone, Debug)]
-struct StepTransition {
-    session_id: String,
-    keep_running: bool,
-    behavior_switched: bool,
-}
-
-enum BehaviorLoopMode<'a> {
-    Session {
-        session: &'a Arc<Mutex<crate::agent_session::AgentSession>>,
-    },
-    Router {
-        source_kind: &'a str,
-        payload: &'a Json,
-        route_payload: &'a mut Option<Json>,
-        route_next_behavior: &'a mut Option<String>,
-    },
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct BehaviorLoopReport {
-    executed_steps: u32,
-    keep_running: bool,
-    behavior_switched: bool,
-    hit_step_limit: bool,
-    hit_walltime: bool,
-}
-
-#[derive(Debug, Default)]
-struct RouterResolution {
-    session_id: Option<String>,
-    new_session: Option<(String, String)>,
-    next_behavior: Option<String>,
-    reply: Option<String>,
-    memory_queries: Vec<String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-struct RouteLLMResult {
-    session_id: Option<String>,
-    new_session: Option<(String, String)>,
-    next_behavior: Option<String>,
-    memory_queries: Vec<String>,
-    reply: Option<String>,
-}
-
-fn apply_behavior_transition(
+fn apply_session_behavior_transition(
     session: &mut crate::agent_session::AgentSession,
     default_behavior: &str,
     step_limit: u32,
@@ -2264,52 +1686,16 @@ fn build_step_summary(
     action_results: &[Json],
 ) -> Json {
     json!({
-        "type": "step_summary",
-        "summary": format!(
-            "behavior={} step={} next={} tokens={}",
-            trace.behavior,
-            trace.step_idx,
-            next_behavior.clone().unwrap_or_else(|| "(none)".to_string()),
-            tracking.token_usage.total,
-        ),
-        "ts_ms": now_ms(),
-        "trace": {
-            "trace_id": trace.trace_id,
-            "wakeup_id": trace.wakeup_id,
-            "behavior": trace.behavior,
-            "step_idx": trace.step_idx,
+        "summary": format!("{}#{}", trace.behavior, trace.step_idx),
+        "behavior": behavior_cfg.name,
+        "next_behavior": next_behavior,
+        "token_usage": {
+            "prompt": tracking.token_usage.prompt,
+            "completion": tracking.token_usage.completion,
+            "total": tracking.token_usage.total,
         },
-        "behavior_cfg": {
-            "name": behavior_cfg.name,
-            "step_limit": behavior_cfg.step_limit,
-        },
-        "llm": {
-            "next_behavior": next_behavior,
-            "token_usage": {
-                "prompt": tracking.token_usage.prompt,
-                "completion": tracking.token_usage.completion,
-                "total": tracking.token_usage.total,
-            },
-            "model": tracking.track.model,
-            "provider": tracking.track.provider,
-            "latency_ms": tracking.track.latency_ms,
-            "llm_task_ids": tracking.track.llm_task_ids,
-            "errors": tracking.track.errors,
-        },
-        "tool_trace": tracking
-            .tool_trace
-            .iter()
-            .map(|item| {
-                json!({
-                    "tool_name": item.tool_name,
-                    "call_id": item.call_id,
-                    "ok": item.ok,
-                    "duration_ms": item.duration_ms,
-                    "error": item.error,
-                })
-            })
-            .collect::<Vec<_>>(),
         "actions": action_results,
+        "ts_ms": now_ms(),
     })
 }
 
@@ -2514,118 +1900,6 @@ fn normalize_routed_session_id(value: Option<&str>) -> Option<String> {
         return None;
     }
     Some(session_id)
-}
-
-fn parse_router_resolution(
-    route_payload: Option<&Json>,
-    next_behavior_hint: Option<&str>,
-) -> RouterResolution {
-    let mut out = RouterResolution {
-        next_behavior: normalize_session_id(next_behavior_hint),
-        ..Default::default()
-    };
-    let Some(route_payload) = route_payload else {
-        return out;
-    };
-
-    let route = serde_json::from_value::<RouteLLMResult>(route_payload.clone()).unwrap_or_default();
-    out.session_id = normalize_session_id(route.session_id.as_deref());
-    out.new_session = route.new_session.and_then(|(title, summary)| {
-        let title = normalize_session_id(Some(title.as_str()));
-        let summary = normalize_session_id(Some(summary.as_str()));
-        if title.is_none() && summary.is_none() {
-            None
-        } else {
-            Some((title.unwrap_or_default(), summary.unwrap_or_default()))
-        }
-    });
-
-    if out.next_behavior.is_none() {
-        out.next_behavior = normalize_session_id(route.next_behavior.as_deref());
-    }
-
-    out.reply = normalize_session_id(route.reply.as_deref());
-    out.memory_queries = route
-        .memory_queries
-        .iter()
-        .filter_map(|item| normalize_session_id(Some(item.as_str())))
-        .collect::<Vec<_>>();
-
-    out
-}
-
-fn extract_reply_target_did(payload: &Json) -> Option<DID> {
-    if let Some(did) = extract_reply_target_did_from_msg(payload) {
-        return Some(did);
-    }
-
-    let items = payload
-        .pointer("/new_msg")
-        .and_then(|value| value.as_array())?;
-    for item in items.iter().rev() {
-        let inner = item.get("payload").unwrap_or(item);
-        if let Some(did) = extract_reply_target_did_from_msg(inner) {
-            return Some(did);
-        }
-    }
-    None
-}
-
-fn extract_reply_target_did_from_msg(payload: &Json) -> Option<DID> {
-    for pointer in ["/msg/from", "/from", "/msg/source", "/source"] {
-        let Some(raw) = payload
-            .pointer(pointer)
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
-            continue;
-        };
-        if let Ok(did) = DID::from_str(raw) {
-            return Some(did);
-        }
-    }
-    None
-}
-
-fn extract_reply_thread_key(payload: &Json) -> Option<String> {
-    if let Some(thread_key) = extract_reply_thread_key_from_msg(payload) {
-        return Some(thread_key);
-    }
-
-    let Some(items) = payload
-        .pointer("/new_msg")
-        .and_then(|value| value.as_array())
-    else {
-        return None;
-    };
-    for item in items.iter().rev() {
-        let inner = item.get("payload").unwrap_or(item);
-        if let Some(thread_key) = extract_reply_thread_key_from_msg(inner) {
-            return Some(thread_key);
-        }
-    }
-    None
-}
-
-fn extract_reply_thread_key_from_msg(payload: &Json) -> Option<String> {
-    for pointer in [
-        "/msg/thread/topic",
-        "/thread/topic",
-        "/msg/thread_key",
-        "/thread_key",
-        "/record/thread_key",
-    ] {
-        if let Some(thread_key) = payload
-            .pointer(pointer)
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            return Some(thread_key.to_string());
-        }
-    }
-    None
 }
 
 fn extract_session_id_hint(payload: &Json) -> Option<String> {

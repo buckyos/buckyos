@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_json::Value as Json;
 
+use crate::agent_enviroment::{AgentEnvironment, PromptTemplateContext, TemplateRenderMode};
 use crate::agent_tool::ToolSpec;
 
 use super::sanitize::{sanitize_json_compact, sanitize_text};
@@ -32,25 +33,35 @@ pub struct ChatMessage {
 pub struct PromptBuilder;
 
 impl PromptBuilder {
-    pub fn build(
+    pub async fn build(
         input: &BehaviorExecInput,
         tools: &[ToolSpec],
         cfg: &LLMBehaviorConfig,
         tokenizer: &dyn Tokenizer,
+        environment: &AgentEnvironment,
     ) -> Result<PromptPack, String> {
+        let render_ctx = build_render_context(input, environment);
+        let process_rules = render_text_template(
+            input.behavior_prompt.as_str(),
+            &render_ctx,
+            environment,
+            TemplateRenderMode::Text,
+        )
+        .await?;
+
         let mut system_sections = vec![
             format!("<<role>>\n{}\n<</role>>", build_role_section(input)),
             format!(
                 "<<process_rules>>\n{}\n<</process_rules>>",
-                sanitize_text(&input.behavior_prompt)
+                sanitize_text(process_rules.as_str())
             ),
         ];
 
-        if let Some(policy_text) = build_policy_text(input) {
+        if let Some(policy_text) = build_policy_text(&render_ctx, environment).await? {
             system_sections.push(format!("<<policy>>\n{}\n<</policy>>", policy_text));
         }
 
-        if let Some(memory_policy) = build_memory_policy(input) {
+        if let Some(memory_policy) = build_memory_policy(&render_ctx, environment).await? {
             system_sections.push(format!(
                 "<<memory_policy>>\n{}\n<</memory_policy>>",
                 memory_policy
@@ -69,10 +80,8 @@ impl PromptBuilder {
         ));
         let system = system_sections.join("\n\n");
 
-        let input_section = format!(
-            "<<Input>>\n{}\n<</Input>>",
-            sanitize_json_compact(&input.inbox)
-        );
+        let input_text = build_input_text(input, &render_ctx, environment).await?;
+        let input_section = format!("<<Input>>\n{}\n<</Input>>", input_text);
 
         let memory = if is_empty_like_json(&input.memory) {
             None
@@ -247,13 +256,112 @@ fn build_role_section(input: &BehaviorExecInput) -> String {
     format!("{}\n\n[Self]\n{}", role, self_desc)
 }
 
-fn build_policy_text(input: &BehaviorExecInput) -> Option<String> {
-    lookup_env(input, "behavior.policy")
+fn build_render_context(
+    input: &BehaviorExecInput,
+    environment: &AgentEnvironment,
+) -> PromptTemplateContext {
+    let cwd_path = lookup_env(input, "cwd.path").map(std::path::PathBuf::from);
+    let mut ctx = environment.build_prompt_template_context(&input.inbox, cwd_path);
+    let session_id = input
+        .session_id
+        .clone()
+        .or_else(|| lookup_env(input, "loop.session_id"));
+    ctx.session_id = session_id.clone();
+
+    for kv in &input.env_context {
+        if kv.key.trim().is_empty() {
+            continue;
+        }
+        ctx.runtime_kv
+            .insert(kv.key.clone(), Json::String(kv.value.clone()));
+    }
+    if let Some(session_id) = session_id {
+        ctx.runtime_kv
+            .entry("session_id".to_string())
+            .or_insert_with(|| Json::String(session_id.clone()));
+        ctx.runtime_kv
+            .entry("loop.session_id".to_string())
+            .or_insert_with(|| Json::String(session_id));
+    }
+
+    ctx
 }
 
+async fn render_text_template(
+    template: &str,
+    ctx: &PromptTemplateContext,
+    environment: &AgentEnvironment,
+    mode: TemplateRenderMode,
+) -> Result<String, String> {
+    let rendered = environment
+        .render_prompt_template(template, mode, ctx)
+        .await
+        .map_err(|err| err.to_string())?
+        .unwrap_or_default();
+    Ok(sanitize_text(rendered.as_str()))
+}
 
-fn build_memory_policy(input: &BehaviorExecInput) -> Option<String> {
-    lookup_env(input, "behavior.memory_config")
+async fn build_policy_text(
+    ctx: &PromptTemplateContext,
+    environment: &AgentEnvironment,
+) -> Result<Option<String>, String> {
+    let Some(template) = lookup_runtime_kv(ctx, "policy.text") else {
+        return Ok(None);
+    };
+    let rendered = render_text_template(
+        template.as_str(),
+        ctx,
+        environment,
+        TemplateRenderMode::Text,
+    )
+    .await?;
+    if rendered.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(rendered))
+}
+
+async fn build_memory_policy(
+    ctx: &PromptTemplateContext,
+    environment: &AgentEnvironment,
+) -> Result<Option<String>, String> {
+    let Some(template) = lookup_runtime_kv(ctx, "memory.policy") else {
+        return Ok(None);
+    };
+    let rendered = render_text_template(
+        template.as_str(),
+        ctx,
+        environment,
+        TemplateRenderMode::Text,
+    )
+    .await?;
+    if rendered.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(rendered))
+}
+
+async fn build_input_text(
+    input: &BehaviorExecInput,
+    ctx: &PromptTemplateContext,
+    environment: &AgentEnvironment,
+) -> Result<String, String> {
+    let Some(template) = lookup_runtime_kv(ctx, "input.template") else {
+        return Ok(sanitize_json_compact(&input.inbox));
+    };
+
+    let rendered = environment
+        .render_prompt_template(template.as_str(), TemplateRenderMode::InputBlock, ctx)
+        .await
+        .map_err(|err| err.to_string())?;
+    if let Some(text) = rendered {
+        let compact = sanitize_text(text.as_str());
+        if !compact.is_empty() {
+            return Ok(compact);
+        }
+    }
+
+    Ok(sanitize_json_compact(&input.inbox))
 }
 
 fn build_step_hints(input: &BehaviorExecInput) -> Option<String> {
@@ -276,7 +384,6 @@ fn build_output_protocol(cfg: &LLMBehaviorConfig) -> String {
 
     match normalize_output_mode(cfg.output_mode.as_str()).as_str() {
         "behavior_llm_result" => build_behavior_llm_result_protocol(),
-        "route_result" => build_route_result_protocol(),
         _ => build_auto_output_protocol(),
     }
 }
@@ -288,7 +395,7 @@ fn normalize_output_mode(mode: &str) -> String {
         "json_v1" | "behavior_llm_result" | "behavior_result" | "executor" => {
             "behavior_llm_result".to_string()
         }
-        "route_result" | "route" | "route_v1" => "route_result".to_string(),
+        "route_result" | "route" | "route_v1" => "behavior_llm_result".to_string(),
         _ => "auto".to_string(),
     }
 }
@@ -372,47 +479,13 @@ JSON example:\n\
     )
 }
 
-fn build_route_result_protocol() -> String {
-    let schema = json!({
-        "session_id": "session-id-or-null",
-        "new_session": [
-            "new-session-id",
-            "new-session-title"
-        ],
-        "next_behavior": "behavior_name",
-        "memory_queries": [
-            "query text"
-        ],
-        "reply": "optional short router reply"
-    });
-    let schema_pretty = serde_json::to_string_pretty(&schema).unwrap_or_else(|_| "{}".to_string());
-
-    format!(
-        "Return ONLY one JSON object. No markdown fences and no extra text.\n\
-Output mode: route_result\n\
-Fields:\n\
-- `session_id`: string (optional)\n\
-- `new_session`: [session_id, session_title] (optional 2-string tuple)\n\
-- `next_behavior`: string (optional)\n\
-- `memory_queries`: string[] (optional)\n\
-- `reply`: string (optional)\n\
-Validation rule: at least one field above must be non-empty/non-null.\n\
-JSON example:\n\
-{}",
-        schema_pretty
-    )
-}
-
 fn build_auto_output_protocol() -> String {
     format!(
         "Output mode: auto.\n\
-Return ONLY one JSON object and choose one schema:\n\n\
+Return ONLY one JSON object and use behavior_llm_result schema:\n\n\
 [behavior_llm_result]\n\
-{}\n\n\
-[route_result]\n\
 {}",
-        build_behavior_llm_result_protocol(),
-        build_route_result_protocol()
+        build_behavior_llm_result_protocol()
     )
 }
 
@@ -429,7 +502,7 @@ fn build_toolbox(tools: &[ToolSpec], input: &BehaviorExecInput) -> Option<String
 }
 
 fn extract_toolbox_skills(input: &BehaviorExecInput) -> Vec<String> {
-    let Some(raw) = lookup_env(input, "behavior.toolbox_skills") else {
+    let Some(raw) = lookup_env(input, "toolbox.skills") else {
         return vec![];
     };
     let parsed = serde_json::from_str::<Json>(&raw).ok();
@@ -458,6 +531,28 @@ fn lookup_env(input: &BehaviorExecInput, key: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
+fn lookup_runtime_kv(ctx: &PromptTemplateContext, key: &str) -> Option<String> {
+    let value = ctx.runtime_kv.get(key)?;
+    match value {
+        Json::String(v) => {
+            let text = sanitize_text(v);
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        }
+        _ => {
+            let text = sanitize_text(serde_json::to_string(value).unwrap_or_default().as_str());
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        }
+    }
+}
+
 fn contains_any_marker(content: &str, markers: &[&str]) -> bool {
     markers.iter().any(|marker| content.contains(marker))
 }
@@ -474,7 +569,18 @@ fn is_empty_like_json(value: &Json) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::tempdir;
+
     use super::*;
+    use crate::behavior::types::{EnvKV, StepLimits, TraceCtx};
+
+    struct MockTokenizer;
+
+    impl Tokenizer for MockTokenizer {
+        fn count_tokens(&self, text: &str) -> u32 {
+            text.split_whitespace().count() as u32
+        }
+    }
 
     #[test]
     fn build_output_protocol_uses_explicit_text_when_provided() {
@@ -498,25 +604,128 @@ mod tests {
     }
 
     #[test]
-    fn build_output_protocol_route_mode_uses_route_schema() {
+    fn build_output_protocol_route_mode_alias_uses_behavior_schema() {
         let cfg = LLMBehaviorConfig {
             output_mode: "route_v1".to_string(),
             ..Default::default()
         };
         let protocol = build_output_protocol(&cfg);
-        assert!(protocol.contains("Output mode: route_result"));
-        assert!(protocol.contains("\"session_id\""));
-        assert!(protocol.contains("\"memory_queries\""));
+        assert!(protocol.contains("Output mode: behavior_llm_result"));
+        assert!(protocol.contains("\"actions\""));
+        assert!(protocol.contains("\"reply\""));
     }
 
     #[test]
-    fn build_output_protocol_auto_mode_lists_both_schemas() {
+    fn build_output_protocol_auto_mode_lists_behavior_schema_only() {
         let cfg = LLMBehaviorConfig {
             output_mode: "auto".to_string(),
             ..Default::default()
         };
         let protocol = build_output_protocol(&cfg);
         assert!(protocol.contains("[behavior_llm_result]"));
-        assert!(protocol.contains("[route_result]"));
+        assert!(!protocol.contains("[route_result]"));
+    }
+
+    #[tokio::test]
+    async fn build_renders_policy_template_with_session_and_env_context() {
+        let root = tempdir().expect("create tempdir");
+        let env = AgentEnvironment::new(root.path())
+            .await
+            .expect("create environment");
+        let input = BehaviorExecInput {
+            session_id: Some("session-1".to_string()),
+            trace: TraceCtx {
+                trace_id: "trace-1".to_string(),
+                agent_did: "did:example:agent".to_string(),
+                behavior: "on_wakeup".to_string(),
+                step_idx: 2,
+                wakeup_id: "wakeup-1".to_string(),
+            },
+            role_md: "role".to_string(),
+            self_md: "self".to_string(),
+            behavior_prompt: "rules".to_string(),
+            env_context: vec![
+                EnvKV {
+                    key: "policy.text".to_string(),
+                    value: "sid={{session_id}}, step={{step.index}}".to_string(),
+                },
+                EnvKV {
+                    key: "step.index".to_string(),
+                    value: "2".to_string(),
+                },
+            ],
+            inbox: json!({"new_msg":"hello"}),
+            memory: json!({}),
+            last_observations: vec![],
+            limits: StepLimits::default(),
+            behavior_cfg: Default::default(),
+        };
+
+        let prompt = PromptBuilder::build(
+            &input,
+            &[],
+            &LLMBehaviorConfig::default(),
+            &MockTokenizer,
+            &env,
+        )
+        .await
+        .expect("build prompt");
+        let system = prompt
+            .messages
+            .first()
+            .map(|msg| msg.content.clone())
+            .unwrap_or_default();
+
+        assert!(system.contains("<<policy>>"));
+        assert!(system.contains("sid=session-1, step=2"));
+    }
+
+    #[tokio::test]
+    async fn build_uses_rendered_input_template_when_configured() {
+        let root = tempdir().expect("create tempdir");
+        let env = AgentEnvironment::new(root.path())
+            .await
+            .expect("create environment");
+        let input = BehaviorExecInput {
+            session_id: Some("session-2".to_string()),
+            trace: TraceCtx {
+                trace_id: "trace-2".to_string(),
+                agent_did: "did:example:agent".to_string(),
+                behavior: "on_wakeup".to_string(),
+                step_idx: 1,
+                wakeup_id: "wakeup-2".to_string(),
+            },
+            role_md: "role".to_string(),
+            self_md: "self".to_string(),
+            behavior_prompt: "rules".to_string(),
+            env_context: vec![EnvKV {
+                key: "input.template".to_string(),
+                value: "{{new_msg}}\n{{step.index}}".to_string(),
+            }],
+            inbox: json!({"new_msg":"hello"}),
+            memory: json!({}),
+            last_observations: vec![],
+            limits: StepLimits::default(),
+            behavior_cfg: Default::default(),
+        };
+
+        let prompt = PromptBuilder::build(
+            &input,
+            &[],
+            &LLMBehaviorConfig::default(),
+            &MockTokenizer,
+            &env,
+        )
+        .await
+        .expect("build prompt");
+        let input_msg = prompt
+            .messages
+            .iter()
+            .find(|msg| msg.content.contains("<<Input>>"))
+            .map(|msg| msg.content.clone())
+            .unwrap_or_default();
+
+        assert!(input_msg.contains("hello"));
+        assert!(!input_msg.contains("{\"new_msg\":\"hello\"}"));
     }
 }

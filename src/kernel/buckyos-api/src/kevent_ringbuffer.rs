@@ -143,9 +143,8 @@ impl SharedKEventRingBuffer {
     pub fn open() -> Result<Self, String> {
         let path = ringbuffer_path();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                format!("create ringbuffer dir {} failed: {}", parent.display(), e)
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("create ringbuffer dir {} failed: {}", parent.display(), e))?;
         }
 
         let file = OpenOptions::new()
@@ -160,8 +159,7 @@ impl SharedKEventRingBuffer {
             .map_err(|e| format!("resize ringbuffer file failed: {}", e))?;
 
         let mmap = unsafe {
-            MmapMut::map_mut(&file)
-                .map_err(|e| format!("mmap ringbuffer file failed: {}", e))?
+            MmapMut::map_mut(&file).map_err(|e| format!("mmap ringbuffer file failed: {}", e))?
         };
 
         let region_ptr = mmap.as_ptr() as *mut SharedRegion;
@@ -201,8 +199,7 @@ impl SharedKEventRingBuffer {
     // -----------------------------------------------------------------------
 
     pub fn publish_event<T: Serialize>(&self, event: &T) -> Result<(), String> {
-        let bytes = serde_json::to_vec(event)
-            .map_err(|e| format!("encode event failed: {}", e))?;
+        let bytes = serde_json::to_vec(event).map_err(|e| format!("encode event failed: {}", e))?;
         self.publish_payload(&bytes)
     }
 
@@ -218,7 +215,9 @@ impl SharedKEventRingBuffer {
             ));
         }
 
-        let inner = self.publish.lock()
+        let inner = self
+            .publish
+            .lock()
             .map_err(|_| "publish lock poisoned".to_string())?;
         let region = unsafe { &*(inner.mmap.as_ptr() as *const SharedRegion) };
         let ring = &region.rings[inner.my_ring_id];
@@ -253,7 +252,9 @@ impl SharedKEventRingBuffer {
 
         // 5) Update heartbeat
         let entry = &region.directory[inner.my_ring_id];
-        entry.last_heartbeat_ms.store(now_millis(), Ordering::Relaxed);
+        entry
+            .last_heartbeat_ms
+            .store(now_millis(), Ordering::Relaxed);
 
         // 6) Set dirty bit + bump notify_seq for futex wake
         let word_idx = inner.my_ring_id / 64;
@@ -342,7 +343,9 @@ impl SharedKEventRingBuffer {
         // Update our own heartbeat on the consume path too, so a process
         // that only subscribes (never publishes) doesn't get reaped.
         let my_entry = &region.directory[my_ring_id];
-        my_entry.last_heartbeat_ms.store(now_millis(), Ordering::Relaxed);
+        my_entry
+            .last_heartbeat_ms
+            .store(now_millis(), Ordering::Relaxed);
 
         out
     }
@@ -397,7 +400,7 @@ fn shm_wake_ptr(ptr: *const AtomicU64) {
             libc::SYS_futex,
             ptr as *const u32, // futex operates on u32
             libc::FUTEX_WAKE,
-            i32::MAX,          // wake all
+            i32::MAX, // wake all
             std::ptr::null::<libc::timespec>(),
             std::ptr::null::<u32>(),
             0u32,
@@ -473,9 +476,7 @@ fn shm_wait(ptr: *const AtomicU64, old_seq: u64, timeout: Duration) -> bool {
     // rc >= 0: woken; rc == -1 && errno == EFAULT/EINTR: spurious, treat as woken
     // rc == -1 && errno == ETIMEDOUT: timeout
     if rc == -1 {
-        let errno = std::io::Error::last_os_error()
-            .raw_os_error()
-            .unwrap_or(0);
+        let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         return errno != libc::ETIMEDOUT;
     }
     true
@@ -611,8 +612,7 @@ fn reset_region(region: &mut SharedRegion) {
     region.header.epoch.store(1, Ordering::Relaxed);
     region.header.notify_seq.store(0, Ordering::Relaxed);
 
-    let ring_base =
-        size_of::<SharedHeader>() + size_of::<[RingDirectoryEntry; MAX_RINGS]>();
+    let ring_base = size_of::<SharedHeader>() + size_of::<[RingDirectoryEntry; MAX_RINGS]>();
     let ring_bytes = size_of::<PublishRing>() as u32;
 
     for idx in 0..MAX_RINGS {
@@ -681,12 +681,7 @@ fn allocate_ring(region: &mut SharedRegion, pid: u32) -> Option<usize> {
             // Transition READY → INIT → activate → READY
             if entry
                 .state
-                .compare_exchange(
-                    ENTRY_READY,
-                    ENTRY_INIT,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
+                .compare_exchange(ENTRY_READY, ENTRY_INIT, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
                 activate_ring(region, ring_id, pid);
@@ -712,7 +707,9 @@ fn activate_ring(region: &mut SharedRegion, ring_id: usize, pid: u32) {
 
     // Fill directory entry fields, then publish with release stores
     entry.owner_pid.store(pid, Ordering::Relaxed);
-    entry.last_heartbeat_ms.store(now_millis(), Ordering::Relaxed);
+    entry
+        .last_heartbeat_ms
+        .store(now_millis(), Ordering::Relaxed);
     entry.generation.store(generation, Ordering::Release);
     // state = READY is the commit point; consumers only look at READY entries
     entry.state.store(ENTRY_READY, Ordering::Release);

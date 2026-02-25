@@ -1,11 +1,11 @@
-use crate::{AppDoc, AppType, SelectorType, get_buckyos_api_runtime};
+use crate::{get_buckyos_api_runtime, AppDoc, AppType, SelectorType};
 use ::kRPC::*;
 use async_trait::async_trait;
 use name_lib::DID;
 use ndn_lib::{MsgObject, ObjId};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::IpAddr;
 
@@ -2058,11 +2058,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                 let update_req = MsgCenterUpdateRecordSessionReq::from_json(req.params)?;
                 let result = self
                     .0
-                    .handle_update_record_session(
-                        update_req.record_id,
-                        update_req.session_id,
-                        ctx,
-                    )
+                    .handle_update_record_session(update_req.record_id, update_req.session_id, ctx)
                     .await?;
                 RPCResult::Success(json!(result))
             }

@@ -24,6 +24,8 @@ pub struct PromptTemplateContext {
     pub new_msg: Option<String>,
     pub new_event: Option<String>,
     pub cwd_path: Option<PathBuf>,
+    pub session_id: Option<String>,
+    pub runtime_kv: Map<String, Json>,
 }
 
 #[derive(Clone, Debug)]
@@ -59,6 +61,8 @@ impl AgentEnvironment {
             new_msg: extract_input_source(payload, "new_msg", "inbox"),
             new_event: extract_input_source(payload, "new_event", "events"),
             cwd_path,
+            session_id: None,
+            runtime_kv: Map::<String, Json>::new(),
         }
     }
 
@@ -226,7 +230,11 @@ fn resolve_variable(name: &str, ctx: &PromptTemplateContext) -> Option<String> {
     match name {
         "new_msg" => clean_optional_text(ctx.new_msg.as_deref()),
         "new_event" => clean_optional_text(ctx.new_event.as_deref()),
-        _ => None,
+        "session_id" => clean_optional_text(ctx.session_id.as_deref()),
+        _ => ctx
+            .runtime_kv
+            .get(name)
+            .and_then(json_value_to_compact_text),
     }
 }
 
@@ -270,7 +278,7 @@ fn is_variable_name(value: &str) -> bool {
     if !first.is_ascii_alphabetic() && first != '_' {
         return false;
     }
-    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' || ch == '-')
 }
 
 fn is_safe_relative_path(path: &str) -> bool {
@@ -377,6 +385,37 @@ mod tests {
             .expect("text mode should return string");
 
         assert_eq!(rendered, "A=hello");
+    }
+
+    #[tokio::test]
+    async fn render_text_supports_runtime_kv_and_session_id() {
+        let root = tempdir().expect("create temp dir");
+        let env = AgentEnvironment::new(root.path())
+            .await
+            .expect("create env");
+        let mut runtime_kv = Map::<String, Json>::new();
+        runtime_kv.insert(
+            "loop.session_id".to_string(),
+            Json::String("S100".to_string()),
+        );
+        runtime_kv.insert("step.index".to_string(), Json::String("3".to_string()));
+        let ctx = PromptTemplateContext {
+            session_id: Some("S100".to_string()),
+            runtime_kv,
+            ..PromptTemplateContext::default()
+        };
+
+        let rendered = env
+            .render_prompt_template(
+                "sid={{session_id}} loop={{loop.session_id}} step={{step.index}}",
+                TemplateRenderMode::Text,
+                &ctx,
+            )
+            .await
+            .expect("render template")
+            .expect("text mode should return string");
+
+        assert_eq!(rendered, "sid=S100 loop=S100 step=3");
     }
 
     #[tokio::test]

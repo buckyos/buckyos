@@ -7,13 +7,12 @@ use buckyos_api::{
     AiResponseSummary, AiUsage, AiccClient, CompleteRequest, CompleteResponse, CompleteStatus,
     Task, TaskManagerClient, TaskPermissions, TaskStatus,
 };
-use rusqlite::Connection;
 use serde_json::{json, Value as Json};
 use tempfile::tempdir;
 use tokio::fs;
 
 use super::*;
-use crate::agent_memory::{AgentMemory, AgentMemoryConfig, TOOL_LOAD_MEMORY, TOOL_LOAD_THINGS};
+use crate::agent_enviroment::AgentEnvironment;
 use crate::agent_tool::{AgentTool, ToolCall, ToolManager, ToolSpec};
 use crate::test_utils::{MockAicc, MockTaskMgrHandler};
 use crate::workspace::{AgentWorkshop, AgentWorkshopConfig, TOOL_EXEC_BASH};
@@ -93,49 +92,12 @@ async fn load_behavior_config_yaml_for_test(behavior_name: &str, yaml: &str) -> 
         .expect("load behavior config from yaml")
 }
 
-#[test]
-fn parse_json_in_code_fence() {
-    let raw = LLMRawResponse {
-        content: "```json\n{\"is_sleep\":true,\"output\":{\"ok\":1}}\n```".to_string(),
-        tool_calls: vec![],
-        model: "m".to_string(),
-        provider: "p".to_string(),
-        latency_ms: 1,
-    };
-
-    let (parsed, output) =
-        BehaviorResultParser::parse_first(&raw, true, "auto").expect("parse should succeed");
-    assert_eq!(parsed.next_behavior.as_deref(), Some("END"));
-    assert!(matches!(output, LLMOutput::Json(_)));
-}
-
-#[test]
-fn parse_executor_result_payload() {
-    let raw = LLMRawResponse {
-        content: json!({
-            "thinking": "collect evidence first",
-            "reply": [{
-                "audience": "user",
-                "format": "markdown",
-                "content": "Gather evidence first, then answer."
-            }],
-            "todo": [{"op":"add","item":{"title":"check"}}],
-            "set_memory": [{"content":"x"}],
-            "actions": [],
-            "session_delta": [{"title":"T"}],
-            "next_behavior": "END"
-        })
-        .to_string(),
-        tool_calls: vec![],
-        model: "m".to_string(),
-        provider: "p".to_string(),
-        latency_ms: 1,
-    };
-
-    let (parsed, _) = BehaviorResultParser::parse_first(&raw, true, "auto")
-        .expect("executor parse should succeed");
-    assert_eq!(parsed.next_behavior.as_deref(), Some("END"));
-    assert!(parsed.actions.is_empty());
+async fn build_test_environment() -> Arc<AgentEnvironment> {
+    Arc::new(
+        AgentEnvironment::new(std::env::temp_dir())
+            .await
+            .expect("create test agent environment"),
+    )
 }
 
 #[tokio::test]
@@ -258,6 +220,7 @@ tools:
         }),
         worklog: Arc::new(MockWorklog),
         tokenizer: Arc::new(MockTokenizer),
+        environment: build_test_environment().await,
     };
 
     let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
@@ -278,6 +241,7 @@ tools:
         memory: json!({"facts":[]}),
         last_observations: vec![],
         limits: behavior_cfg.limits.clone(),
+        behavior_cfg: behavior_cfg.clone(),
     };
 
     let (result, tracking) = behavior
@@ -375,6 +339,7 @@ process_rule: test_rule
         policy: Arc::new(MockPolicy { tools: vec![] }),
         worklog: Arc::new(MockWorklog),
         tokenizer: Arc::new(MockTokenizer),
+        environment: build_test_environment().await,
     };
 
     let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
@@ -395,6 +360,7 @@ process_rule: test_rule
         memory: json!({"facts":[]}),
         last_observations: vec![],
         limits: behavior_cfg.limits.clone(),
+        behavior_cfg: behavior_cfg.clone(),
     };
 
     let (result, tracking) = behavior
@@ -455,6 +421,7 @@ process_rule: test_rule
         policy: Arc::new(MockPolicy { tools: vec![] }),
         worklog: Arc::new(MockWorklog),
         tokenizer: Arc::new(MockTokenizer),
+        environment: build_test_environment().await,
     };
 
     let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
@@ -475,6 +442,7 @@ process_rule: test_rule
         memory: json!({"facts":[]}),
         last_observations: vec![],
         limits: behavior_cfg.limits.clone(),
+        behavior_cfg: behavior_cfg.clone(),
     };
 
     let (result, tracking) = behavior
@@ -533,6 +501,7 @@ process_rule: test_rule
         policy: Arc::new(MockPolicy { tools: vec![] }),
         worklog: Arc::new(MockWorklog),
         tokenizer: Arc::new(MockTokenizer),
+        environment: build_test_environment().await,
     };
     let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
     let input = BehaviorExecInput {
@@ -552,6 +521,7 @@ process_rule: test_rule
         memory: json!({"facts":[]}),
         last_observations: vec![],
         limits: behavior_cfg.limits.clone(),
+        behavior_cfg: behavior_cfg.clone(),
     };
 
     let (_result, _tracking) = behavior
@@ -656,6 +626,7 @@ process_rule: test_rule
         policy: Arc::new(MockPolicy { tools: vec![] }),
         worklog: Arc::new(MockWorklog),
         tokenizer: Arc::new(MockTokenizer),
+        environment: build_test_environment().await,
     };
     let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
     let input = BehaviorExecInput {
@@ -678,6 +649,7 @@ process_rule: test_rule
         memory: json!({"facts":[]}),
         last_observations: vec![],
         limits: behavior_cfg.limits.clone(),
+        behavior_cfg: behavior_cfg.clone(),
     };
 
     let (_result, _tracking) = behavior
@@ -850,6 +822,7 @@ tools:
         policy: Arc::new(MockPolicy { tools: vec![] }),
         worklog: Arc::new(MockWorklog),
         tokenizer: Arc::new(MockTokenizer),
+        environment: build_test_environment().await,
     };
 
     let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
@@ -873,6 +846,7 @@ tools:
         memory: json!({"facts":[]}),
         last_observations: vec![],
         limits: behavior_cfg.limits.clone(),
+        behavior_cfg: behavior_cfg.clone(),
     };
 
     let (first_result, first_tracking) = behavior
@@ -905,6 +879,7 @@ tools:
         memory: json!({"facts":[]}),
         last_observations: action_observations,
         limits: behavior_cfg.limits.clone(),
+        behavior_cfg: behavior_cfg.clone(),
     };
 
     let (second_result, second_tracking) = behavior
@@ -1058,6 +1033,7 @@ tools:
         }),
         worklog: Arc::new(MockWorklog),
         tokenizer: Arc::new(MockTokenizer),
+        environment: build_test_environment().await,
     };
 
     let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
@@ -1078,6 +1054,7 @@ tools:
         memory: json!({"facts":[]}),
         last_observations: vec![],
         limits: behavior_cfg.limits.clone(),
+        behavior_cfg: behavior_cfg.clone(),
     };
 
     let (result, tracking) = behavior

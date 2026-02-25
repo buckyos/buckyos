@@ -1,7 +1,6 @@
 pub mod behavior;
 pub mod config;
 pub mod observability;
-pub mod parser;
 pub mod policy_adapter;
 pub mod prompt;
 pub mod sanitize;
@@ -11,7 +10,6 @@ pub mod types;
 pub use behavior::*;
 pub use config::{BehaviorConfig, BehaviorConfigError};
 pub use observability::{AgentWorkEvent, WorklogSink};
-pub use parser::BehaviorResultParser;
 pub use policy_adapter::PolicyEngine;
 pub use prompt::{ChatMessage, ChatRole, PromptBuilder, PromptPack, Truncator};
 pub use sanitize::Sanitizer;

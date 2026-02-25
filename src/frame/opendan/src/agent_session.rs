@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use buckyos_api::{OpenDanAgentSessionRecord, OpenDanSessionLink};
+use buckyos_api::{MsgRecord, OpenDanAgentSessionRecord, OpenDanSessionLink};
 use log::warn;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value as Json};
@@ -59,6 +59,15 @@ impl Default for SessionWaitDetails {
     }
 }
 
+
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct ConsumableIds {
+    pub msg_ids: Vec<String>,
+    pub event_ids: Vec<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct SessionInputItem {
@@ -71,17 +80,10 @@ impl Default for SessionInputItem {
     fn default() -> Self {
         Self {
             id: String::new(),
-            ts_ms: now_ms(),
+            ts_ms: 0,
             payload: Json::Null,
         }
     }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(default)]
-pub struct ConsumableIds {
-    pub msg_ids: Vec<String>,
-    pub event_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -151,6 +153,7 @@ pub struct AgentSession {
     pub new_events: Vec<SessionInputItem>,
     pub history_msgs: Vec<SessionInputItem>,
     pub history_events: Vec<SessionInputItem>,
+
     pub workspace_info: Option<Json>,
     pub local_workspace_id: Option<String>,
     pub worklog: Vec<Json>,
@@ -341,8 +344,8 @@ impl AgentSession {
             ts_ms: now_ms(),
             payload,
         };
-        self.new_msgs.push(item.clone());
-        self.update_state_on_input_arrived(&item, SessionState::WaitForMsg);
+        self.new_msgs.push(item);
+        self.updated_at_ms = now_ms();
         id
     }
 
@@ -353,8 +356,8 @@ impl AgentSession {
             ts_ms: now_ms(),
             payload,
         };
-        self.new_events.push(item.clone());
-        self.update_state_on_input_arrived(&item, SessionState::WaitForEvent);
+        self.new_events.push(item);
+        self.updated_at_ms = now_ms();
         id
     }
 
@@ -462,72 +465,6 @@ impl AgentSession {
         self.last_step_summary = Some(summary);
         self.updated_at_ms = now_ms();
         self.last_activity_ms = self.updated_at_ms;
-    }
-
-    pub fn apply_session_delta(&mut self, session_delta: &[Json]) {
-        for patch in session_delta {
-            let Some(obj) = patch.as_object() else {
-                continue;
-            };
-
-            if let Some(title) = obj
-                .get("title")
-                .and_then(|value| value.as_str())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                self.title = title.to_string();
-            }
-
-            if let Some(summary) = obj
-                .get("summary")
-                .and_then(|value| value.as_str())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                self.summary = summary.to_string();
-            }
-
-            if let Some(behavior) = obj
-                .get("current_behavior")
-                .or_else(|| obj.get("behavior"))
-                .and_then(|value| value.as_str())
-            {
-                self.current_behavior = normalize_optional_string(Some(behavior.to_string()));
-            }
-
-            if let Some(step_index) = obj.get("step_index").and_then(|value| value.as_u64()) {
-                self.step_index = step_index.min(u32::MAX as u64) as u32;
-            }
-
-            if let Some(state) = obj
-                .get("state")
-                .or_else(|| obj.get("session_state"))
-                .and_then(|value| value.as_str())
-                .and_then(parse_state_name)
-            {
-                self.state = state;
-            }
-
-            if let Some(wait) = obj.get("wait_details") {
-                self.wait_details = serde_json::from_value(wait.clone()).ok();
-            }
-
-            if let Some(workspace_info) = obj.get("workspace_info") {
-                self.workspace_info = Some(workspace_info.clone());
-            }
-
-            if let Some(local_workspace_id) = obj
-                .get("local_workspace_id")
-                .and_then(|value| value.as_str())
-            {
-                self.local_workspace_id =
-                    normalize_optional_string(Some(local_workspace_id.to_string()));
-            }
-
-            merge_json_object(&mut self.meta, patch.clone());
-        }
-        self.updated_at_ms = now_ms();
     }
 
     pub fn should_ready_by_wait_timeout(&self, now_ms: u64) -> bool {
@@ -674,22 +611,19 @@ impl AgentSessionMgr {
     pub async fn mark_msg_arrived(
         &self,
         session_id: &str,
-        item: &SessionInputItem,
+        item: &MsgRecord,
     ) -> Result<(), ToolError> {
         let session = self.ensure_session(session_id, None).await?;
         let mut guard = session.lock().await;
-        guard.mark_msg_arrived(item);
-        self.save_session_locked(&guard).await
-    }
-
-    pub async fn mark_event_arrived(
-        &self,
-        session_id: &str,
-        item: &SessionInputItem,
-    ) -> Result<(), ToolError> {
-        let session = self.ensure_session(session_id, None).await?;
-        let mut guard = session.lock().await;
-        guard.mark_event_arrived(item);
+        let payload = serde_json::to_value(item).map_err(|err| {
+            ToolError::ExecFailed(format!("serialize msg record to session input failed: {err}"))
+        })?;
+        let input = SessionInputItem {
+            id: extract_input_id(&payload, "msg"),
+            ts_ms: now_ms(),
+            payload,
+        };
+        guard.update_state_on_input_arrived(&input, SessionState::WaitForMsg);
         self.save_session_locked(&guard).await
     }
 
@@ -1142,19 +1076,6 @@ fn parse_runtime_meta(meta: &Json) -> SessionRuntimeMeta {
         .unwrap_or_default()
 }
 
-fn parse_state_name(value: &str) -> Option<SessionState> {
-    match value.trim().to_ascii_uppercase().as_str() {
-        "PAUSE" => Some(SessionState::Pause),
-        "WAIT" => Some(SessionState::Wait),
-        "WAIT_FOR_MSG" => Some(SessionState::WaitForMsg),
-        "WAIT_FOR_EVENT" => Some(SessionState::WaitForEvent),
-        "READY" => Some(SessionState::Ready),
-        "RUNNING" => Some(SessionState::Running),
-        "SLEEP" => Some(SessionState::Sleep),
-        _ => None,
-    }
-}
-
 fn sanitize_session_id(input: &str) -> Result<String, ToolError> {
     let session_id = input.trim();
     if session_id.is_empty() {
@@ -1212,21 +1133,6 @@ fn normalize_json_object(value: Json) -> Json {
         return value;
     }
     json!({})
-}
-
-fn merge_json_object(base: &mut Json, patch: Json) {
-    let Some(base_obj) = base.as_object_mut() else {
-        *base = json!({});
-        return merge_json_object(base, patch);
-    };
-
-    let Some(patch_obj) = patch.as_object() else {
-        return;
-    };
-
-    for (key, value) in patch_obj {
-        base_obj.insert(key.clone(), value.clone());
-    }
 }
 
 async fn is_existing_file(path: &Path) -> bool {

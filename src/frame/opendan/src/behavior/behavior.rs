@@ -14,12 +14,12 @@ use serde_json::{json, Map, Value as Json};
 
 use super::config::{BehaviorConfig, BehaviorConfigError};
 use super::observability::{AgentWorkEvent, WorklogSink};
-use super::parser::BehaviorResultParser;
 use super::policy_adapter::PolicyEngine;
 use super::prompt::{ChatMessage, ChatRole, PromptBuilder, PromptPack};
 use super::sanitize::Sanitizer;
 use super::tool_loop::{self, ToolContext};
 use super::types::*;
+use crate::agent_enviroment::AgentEnvironment;
 use crate::agent_session::TOOL_GET_SESSION;
 use crate::agent_tool::{ToolCall, ToolError, ToolManager, ToolSpec};
 use crate::ai_runtime::TOOL_CREATE_SUB_AGENT;
@@ -34,6 +34,7 @@ pub struct LLMBehaviorDeps {
     pub policy: Arc<dyn PolicyEngine>,
     pub worklog: Arc<dyn WorklogSink>,
     pub tokenizer: Arc<dyn Tokenizer>,
+    pub environment: Arc<AgentEnvironment>,
 }
 
 pub struct LLMBehavior {
@@ -45,12 +46,6 @@ const LLM_BEHAVIOR_TASK_TYPE: &str = "llm_behavior";
 const LLM_TASK_NAME_SEQ_BITS: u32 = 20;
 const LLM_TASK_NAME_SEQ_MASK: u64 = (1_u64 << LLM_TASK_NAME_SEQ_BITS) - 1;
 static LLM_TASK_NAME_SEQ: AtomicU64 = AtomicU64::new(0);
-
-struct ParsedLLMRound {
-    draft: BehaviorLLMResult,
-    raw_output: LLMOutput,
-    pending_tool_calls: Vec<ToolCall>,
-}
 
 struct ToolExecutionRound {
     tool_ctx: ToolContext,
@@ -149,12 +144,19 @@ impl LLMBehavior {
             .await
             .map_err(LLMComputeError::Internal)?;
 
-        let prompt = PromptBuilder::build(input, &allowed_tools, &self.cfg, &*self.deps.tokenizer)
-            .map_err(LLMComputeError::Internal)?;
+        let prompt = PromptBuilder::build(
+            input,
+            &allowed_tools,
+            &self.cfg,
+            &*self.deps.tokenizer,
+            self.deps.environment.as_ref(),
+        )
+        .await
+        .map_err(LLMComputeError::Internal)?;
 
         self.ensure_session_normal_before_next_llm(input).await?;
 
-        let (mut usage, first_resp, first_task_id) = self
+        let (mut usage, mut llm_resp, first_task_id) = self
             .do_inference_once(
                 input,
                 &allowed_tools,
@@ -163,15 +165,13 @@ impl LLMBehavior {
                 behavior_task_id,
             )
             .await?;
-        Self::update_track_from_llm_response(&mut track, &first_resp, first_task_id);
-
-        let mut parsed = self.parse_llm_round(input, &first_resp, false)?;
+        Self::update_track_from_llm_response(&mut track, &llm_resp, first_task_id);
 
         let mut rounds_left = input.limits.max_tool_rounds;
         let tool_loop_enabled = input.limits.max_tool_rounds > 0;
         let mut tool_trace = Vec::new();
 
-        while !parsed.pending_tool_calls.is_empty() && rounds_left > 0 {
+        while !llm_resp.tool_calls.is_empty() && rounds_left > 0 {
             rounds_left -= 1;
 
             if is_deadline_exceeded(started, input.limits.deadline_ms) {
@@ -179,7 +179,7 @@ impl LLMBehavior {
             }
 
             let executed = self
-                .execute_tool_calls(input, &parsed.pending_tool_calls, &mut track)
+                .execute_tool_calls(input, &llm_resp.tool_calls, &mut track)
                 .await?;
             tool_trace.extend(executed.tool_trace);
 
@@ -195,11 +195,11 @@ impl LLMBehavior {
                 )
                 .await?;
             Self::update_track_from_llm_response(&mut track, &followup_resp, followup_task_id);
+            llm_resp = followup_resp;
             usage = usage.add(usage2);
-
-            parsed = self.parse_llm_round(input, &followup_resp, true)?;
+           
         }
-        if tool_loop_enabled && !parsed.pending_tool_calls.is_empty() && rounds_left == 0 {
+        if tool_loop_enabled && !llm_resp.tool_calls.is_empty() && rounds_left == 0 {
             return Err(LLMComputeError::Internal(
                 "tool loop exceeded max_tool_rounds".to_string(),
             ));
@@ -207,13 +207,16 @@ impl LLMBehavior {
 
         track.latency_ms = now_ms().saturating_sub(started);
 
+        let behavior_result = BehaviorLLMResult::from_json_str(&llm_resp.content)?;
+
         let tracking = LLMTrackingInfo {
             token_usage: usage,
             track,
             tool_trace,
-            raw_output: parsed.raw_output,
+            raw_output: LLMOutput::Text(llm_resp.content)
         };
-        Ok((parsed.draft, tracking))
+
+        Ok((behavior_result, tracking))
     }
 
     fn update_track_from_llm_response(
@@ -226,58 +229,6 @@ impl LLMBehavior {
         }
         track.model = response.model.clone();
         track.provider = response.provider.clone();
-    }
-
-    fn parse_llm_round(
-        &self,
-        input: &BehaviorExecInput,
-        response: &LLMRawResponse,
-        is_followup: bool,
-    ) -> Result<ParsedLLMRound, LLMComputeError> {
-        let pending_tool_calls = response.tool_calls.clone();
-        if !pending_tool_calls.is_empty() {
-            return Ok(ParsedLLMRound {
-                draft: BehaviorLLMResult::default(),
-                raw_output: LLMOutput::Json(
-                    serde_json::to_value(&pending_tool_calls).unwrap_or_else(|_| Json::Null),
-                ),
-                pending_tool_calls,
-            });
-        }
-
-        let parsed = if is_followup {
-            BehaviorResultParser::parse_followup(
-                response,
-                self.cfg.force_json,
-                self.cfg.output_mode.as_str(),
-            )
-        } else {
-            BehaviorResultParser::parse_first(
-                response,
-                self.cfg.force_json,
-                self.cfg.output_mode.as_str(),
-            )
-        };
-
-        let (draft, raw_output) = parsed.map_err(|err| {
-            warn!(
-                "llm_behavior.output_parse_failed: trace_id={} wakeup_id={} behavior={} step={} force_json={} parser_err={} raw_content={}",
-                input.trace.trace_id,
-                input.trace.wakeup_id,
-                input.trace.behavior,
-                input.trace.step_idx,
-                self.cfg.force_json,
-                err,
-                compact_text_for_log(&response.content, 8 * 1024)
-            );
-            LLMComputeError::Internal(format!("output parse failed: {err}"))
-        })?;
-
-        Ok(ParsedLLMRound {
-            draft,
-            raw_output,
-            pending_tool_calls,
-        })
     }
 
     async fn execute_tool_calls(
@@ -1259,17 +1210,6 @@ fn compact_json_for_worklog(value: Json, max_bytes: usize) -> Json {
         Ok(_) => value,
         Err(_) => json!({"error":"serialize_failed"}),
     }
-}
-
-fn compact_text_for_log(value: &str, max_chars: usize) -> String {
-    let escaped = value.replace('\n', "\\n").replace('\r', "\\r");
-    if escaped.chars().count() <= max_chars {
-        return escaped;
-    }
-    format!(
-        "{}...[TRUNCATED]",
-        escaped.chars().take(max_chars).collect::<String>()
-    )
 }
 
 fn log_worklog_append_warn(trace: &TraceCtx, err: ToolError) {

@@ -425,7 +425,7 @@ fn normalize_output_mode(mode: &str) -> String {
         "json_v1" | "behavior_llm_result" | "behavior_result" | "executor" => {
             "behavior_llm_result".to_string()
         }
-        "route_result" | "route" | "route_v1" => "route_result".to_string(),
+        "route_result" | "route" | "route_v1" => "behavior_llm_result".to_string(),
         _ => "auto".to_string(),
     }
 }
@@ -433,7 +433,6 @@ fn normalize_output_mode(mode: &str) -> String {
 fn default_output_protocol_text(mode: &str) -> String {
     match mode {
         "behavior_llm_result" => "Return ONLY a JSON object that follows BehaviorLLMResult fields (next_behavior, reply, todo, set_memory, actions, session_delta).".to_string(),
-        "route_result" => "Return ONLY a JSON object that follows RouteResult fields (session_id, new_session, next_behavior, memory_queries, reply).".to_string(),
         _ => String::new(),
     }
 }
@@ -546,7 +545,7 @@ llm:
 
         assert_eq!(cfg.name, "on_msg");
         assert_eq!(cfg.llm.output_protocol, "protocol_from_cfg".to_string());
-        assert_eq!(cfg.llm.output_mode, "route_result");
+        assert_eq!(cfg.llm.output_mode, "behavior_llm_result");
         assert_eq!(cfg.llm.process_name, "custom-process");
         assert_eq!(cfg.llm.model_policy.preferred, "fast-model");
         assert_eq!(cfg.llm.model_policy.temperature, 0.2);

@@ -299,9 +299,9 @@ impl MessageCenter {
             "/content/machine/data/session_id",
             "/content/machine/data/owner_session_id",
         ] {
-            if let Some(session_id) = Self::normalize_non_empty(
-                payload.pointer(pointer).and_then(|value| value.as_str()),
-            ) {
+            if let Some(session_id) =
+                Self::normalize_non_empty(payload.pointer(pointer).and_then(|value| value.as_str()))
+            {
                 return Some(session_id);
             }
         }

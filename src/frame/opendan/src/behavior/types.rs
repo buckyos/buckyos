@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
+use crate::behavior::{BehaviorConfig, LLMComputeError};
+
 pub type InboxPack = Json;
 pub type MemoryPack = Json;
 
@@ -45,16 +47,18 @@ impl Default for StepLimits {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BehaviorExecInput {
+    pub session_id: Option<String>,
     pub trace: TraceCtx,
+
     pub role_md: String,
     pub self_md: String,
-    pub session_id: Option<String>,
     pub behavior_prompt: String,
     pub env_context: Vec<EnvKV>,
     pub inbox: InboxPack,
     pub memory: MemoryPack,
     pub last_observations: Vec<Observation>,
     pub limits: StepLimits,
+    pub behavior_cfg: BehaviorConfig,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -102,14 +106,23 @@ pub struct BehaviorLLMResult {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub set_memory: Vec<Json>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub actions: Vec<ActionSpec>,
+    pub toipc_tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub session_delta: Vec<Json>,
+    pub actions: Vec<ActionSpec>,
+    // #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    // pub session_delta: Vec<Json>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_session: Option<(String, String)>,
 }
-
 impl BehaviorLLMResult {
     pub fn is_sleep(&self) -> bool {
         self.next_behavior.as_deref() == Some("END")
+    }
+
+    pub fn from_json_str(_input: &str) -> Result<Self, LLMComputeError> {
+        unimplemented!()
     }
 }
 
