@@ -4,9 +4,11 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use log::warn;
+use rusqlite::Connection;
 use serde_json::{Map, Value as Json};
 use tokio::fs;
 use tokio::sync::Mutex;
+use tokio::task;
 use upon::Engine;
 
 use buckyos_api::msg_queue::Message;
@@ -14,7 +16,9 @@ use buckyos_api::msg_queue::Message;
 use crate::agent::{AIAgent, InputQueueKind};
 use crate::agent_session::AgentSession;
 use crate::agent_tool::{AgentToolError, ToolManager};
-use crate::workspace::{AgentWorkshop, AgentWorkshopConfig};
+use crate::workspace::{
+    get_next_ready_todo_code, get_next_ready_todo_text, AgentWorkshop, AgentWorkshopConfig,
+};
 
 const MAX_INCLUDE_BYTES: usize = 64 * 1024;
 const MAX_TOTAL_RENDER_BYTES: usize = 256 * 1024;
@@ -186,7 +190,15 @@ impl AgentEnvironment {
         key: &str,
     ) -> Result<Option<String>, AgentToolError> {
         let k = key.trim();
-        let (session_id, step_index, last_step_summary, workspace_info, session_cwd) = {
+        let (
+            session_id,
+            step_index,
+            last_step_summary,
+            workspace_info,
+            session_cwd,
+            owner_agent,
+            local_workspace_id,
+        ) = {
             let guard = session.lock().await;
             (
                 guard.session_id.clone(),
@@ -194,6 +206,8 @@ impl AgentEnvironment {
                 guard.last_step_summary.clone(),
                 guard.workspace_info.clone(),
                 guard.cwd.clone(),
+                guard.owner_agent.clone(),
+                guard.local_workspace_id.clone(),
             )
         };
 
@@ -240,7 +254,7 @@ impl AgentEnvironment {
                 // save cursor for ack after process
                 guard.msg_kmsgqueue_curosr = last_msg.index;
             }
-            
+
             return Ok(render_new_msgs_from_kmsgqueue(new_msgs.as_slice()));
         }
 
@@ -248,7 +262,57 @@ impl AgentEnvironment {
         //     unimplemented!()
         // }
 
-        if k == "current_todo" || k.starts_with("workspace.") {
+        if k == "current_todo" || k == "workspace.todolist.next_ready_todo" {
+            let value_kind = if k == "current_todo" {
+                NextReadyTodoValueKind::TodoCode
+            } else {
+                NextReadyTodoValueKind::RenderedDetail
+            };
+
+            let workspace_id =
+                resolve_session_workspace_id(local_workspace_id.as_deref(), workspace_info.as_ref());
+            let agent_id = normalize_optional_text(Some(owner_agent.as_str()));
+            let todo_db_path = resolve_todo_db_path(
+                local_workspace_id.as_deref(),
+                workspace_info.as_ref(),
+                &session_cwd,
+            );
+
+            if let (Some(workspace_id), Some(agent_id), Some(todo_db_path)) =
+                (workspace_id, agent_id, todo_db_path)
+            {
+                if todo_db_path.is_file() {
+                    match load_next_ready_todo_value(
+                        todo_db_path.clone(),
+                        workspace_id.clone(),
+                        session_id.clone(),
+                        agent_id,
+                        value_kind,
+                    )
+                    .await
+                    {
+                        Ok(Some(value)) => return Ok(Some(value)),
+                        Ok(None) => {}
+                        Err(err) => {
+                            warn!(
+                                "agent_env.load_value_from_session next_ready_todo query failed: session={} workspace={} key={} db={} err={}",
+                                session_id,
+                                workspace_id,
+                                k,
+                                todo_db_path.display(),
+                                err
+                            );
+                        }
+                    }
+                }
+            }
+
+            if let Some(workspace_info) = workspace_info.as_ref() {
+                return Ok(resolve_workspace_info_text(workspace_info, k));
+            }
+            return Ok(None);
+        }
+        if k.starts_with("workspace.") {
             return Ok(workspace_info
                 .as_ref()
                 .and_then(|ws| resolve_workspace_info_text(ws, k)));
@@ -649,6 +713,174 @@ fn render_new_msgs_from_kmsgqueue(messages: &[Message]) -> Option<String> {
         return None;
     }
     clean_optional_text(Some(lines.join("\n").as_str()))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NextReadyTodoValueKind {
+    TodoCode,
+    RenderedDetail,
+}
+
+async fn load_next_ready_todo_value(
+    db_path: PathBuf,
+    workspace_id: String,
+    session_id: String,
+    agent_id: String,
+    value_kind: NextReadyTodoValueKind,
+) -> Result<Option<String>, AgentToolError> {
+    task::spawn_blocking(move || {
+        let conn = Connection::open(&db_path).map_err(|err| {
+            AgentToolError::ExecFailed(format!("open todo db `{}` failed: {err}", db_path.display()))
+        })?;
+        match value_kind {
+            NextReadyTodoValueKind::TodoCode => {
+                get_next_ready_todo_code(&conn, &workspace_id, &session_id, &agent_id)
+            }
+            NextReadyTodoValueKind::RenderedDetail => {
+                get_next_ready_todo_text(&conn, &workspace_id, &session_id, &agent_id)
+            }
+        }
+    })
+    .await
+    .map_err(|err| AgentToolError::ExecFailed(format!("query next ready todo join failed: {err}")))?
+}
+
+fn resolve_session_workspace_id(
+    local_workspace_id: Option<&str>,
+    workspace_info: Option<&Json>,
+) -> Option<String> {
+    normalize_optional_text(local_workspace_id).or_else(|| extract_workspace_id_from_json(workspace_info))
+}
+
+fn extract_workspace_id_from_json(value: Option<&Json>) -> Option<String> {
+    let value = value?;
+    for pointer in [
+        "/workspace_id",
+        "/local_workspace_id",
+        "/id",
+        "/workspace/id",
+        "/workspace/workspace_id",
+        "/workspace/local_workspace_id",
+        "/binding/workspace_id",
+        "/binding/local_workspace_id",
+    ] {
+        let parsed = value
+            .pointer(pointer)
+            .and_then(|item| item.as_str())
+            .map(str::trim)
+            .filter(|item| !item.is_empty());
+        if let Some(workspace_id) = parsed {
+            return Some(workspace_id.to_string());
+        }
+    }
+    None
+}
+
+fn resolve_todo_db_path(
+    local_workspace_id: Option<&str>,
+    workspace_info: Option<&Json>,
+    session_cwd: &Path,
+) -> Option<PathBuf> {
+    let candidates = collect_workspace_path_candidates(workspace_info, session_cwd);
+    let candidate_roots = collect_candidate_ancestors(&candidates);
+
+    if let Some(local_workspace_id) = normalize_optional_text(local_workspace_id) {
+        for root in &candidate_roots {
+            let local_workspace_path = root
+                .join("workspaces")
+                .join("local")
+                .join(local_workspace_id.as_str());
+            let todo_db_path = root.join("todo").join("todo.db");
+            if local_workspace_path.is_dir() && todo_db_path.is_file() {
+                return Some(todo_db_path);
+            }
+        }
+    }
+
+    for root in &candidate_roots {
+        let todo_db_path = root.join("todo").join("todo.db");
+        if todo_db_path.is_file() {
+            return Some(todo_db_path);
+        }
+    }
+
+    None
+}
+
+fn collect_workspace_path_candidates(workspace_info: Option<&Json>, session_cwd: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::<PathBuf>::new();
+    if let Some(workspace_info) = workspace_info {
+        for pointer in [
+            "/workspace_root",
+            "/workspace/root",
+            "/workspace/root_path",
+            "/workspace/path",
+            "/workspace/cwd",
+            "/workspace/workspace_path",
+            "/binding/workspace_path",
+            "/binding/workspace_root",
+            "/root",
+            "/root_path",
+            "/path",
+            "/workspace_path",
+        ] {
+            let path = workspace_info
+                .pointer(pointer)
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            if let Some(path) = path {
+                push_unique_pathbuf(&mut out, PathBuf::from(path));
+            }
+        }
+    }
+    if let Some(path) = non_empty_path(session_cwd) {
+        push_unique_pathbuf(&mut out, path);
+    }
+    if out.is_empty() {
+        if let Ok(current) = std::env::current_dir() {
+            push_unique_pathbuf(&mut out, current);
+        }
+    }
+    out
+}
+
+fn collect_candidate_ancestors(paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut out = Vec::<PathBuf>::new();
+    for path in paths {
+        let candidate = if path.is_absolute() {
+            path.clone()
+        } else if let Ok(current_dir) = std::env::current_dir() {
+            current_dir.join(path)
+        } else {
+            path.clone()
+        };
+
+        for ancestor in candidate.ancestors() {
+            if ancestor.as_os_str().is_empty() {
+                continue;
+            }
+            push_unique_pathbuf(&mut out, ancestor.to_path_buf());
+        }
+    }
+    out
+}
+
+fn push_unique_pathbuf(paths: &mut Vec<PathBuf>, value: PathBuf) {
+    if value.as_os_str().is_empty() {
+        return;
+    }
+    if paths.iter().any(|item| item == &value) {
+        return;
+    }
+    paths.push(value);
+}
+
+fn normalize_optional_text(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
 }
 
 fn resolve_workspace_info_text(workspace_info: &Json, key: &str) -> Option<String> {

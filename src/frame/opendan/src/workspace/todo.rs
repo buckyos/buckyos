@@ -2483,6 +2483,27 @@ fn get_next_ready_todo(
     }
 }
 
+pub(crate) fn get_next_ready_todo_code(
+    conn: &Connection,
+    workspace_id: &str,
+    session_id: &str,
+    agent_id: &str,
+) -> Result<Option<String>, AgentToolError> {
+    Ok(get_next_ready_todo(conn, workspace_id, session_id, agent_id)?
+        .map(|detail| detail.item.todo_code))
+}
+
+pub(crate) fn get_next_ready_todo_text(
+    conn: &Connection,
+    workspace_id: &str,
+    session_id: &str,
+    agent_id: &str,
+) -> Result<Option<String>, AgentToolError> {
+    Ok(get_next_ready_todo(conn, workspace_id, session_id, agent_id)?
+        .as_ref()
+        .map(render_current_todo_text))
+}
+
 fn resolve_todo_id(
     conn: &Connection,
     workspace_id: &str,
@@ -3566,6 +3587,18 @@ mod tests {
             .expect("query first")
             .expect("first todo");
         assert_eq!(first.item.todo_code, "T003");
+        assert_eq!(
+            get_next_ready_todo_code(&conn, workspace_id, session_id, assignee)
+                .expect("query first code")
+                .as_deref(),
+            Some("T003")
+        );
+        assert!(
+            get_next_ready_todo_text(&conn, workspace_id, session_id, assignee)
+                .expect("query first text")
+                .unwrap_or_default()
+                .contains("Current Todo T003 [WAIT]")
+        );
 
         conn.execute(
             "UPDATE todo_items SET status = 'IN_PROGRESS' WHERE workspace_id = ?1 AND todo_code = ?2",
