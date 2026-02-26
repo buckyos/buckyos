@@ -916,7 +916,6 @@ impl AIAgent {
             .map_err(|err| anyhow!("llm behavior step failed: {err}"))?;
 
         //todo: run actions in parallel if possible based on action.execution_mode
-
         let action_results = self
             .execute_actions(trace, llm_result.actions.as_slice())
             .await;

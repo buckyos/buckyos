@@ -213,7 +213,7 @@ pub struct AiResponseSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub json: Option<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tool_choices: Vec<AiToolCall>,
+    pub tool_calls: Vec<AiToolCall>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<AiArtifact>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -528,7 +528,7 @@ mod tests {
                 Some(AiResponseSummary {
                     text: Some("mock result".to_string()),
                     json: Some(json!({"ok": true})),
-                    tool_choices: vec![],
+                    tool_calls: vec![],
                     artifacts: vec![],
                     usage: Some(AiUsage {
                         input_tokens: Some(4),
