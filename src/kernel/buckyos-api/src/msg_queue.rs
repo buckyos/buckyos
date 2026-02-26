@@ -291,6 +291,29 @@ impl MsgQueueFetchMessagesReq {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgQueueReadMessageReq {
+    pub queue_urn: QueueUrn,
+    pub cursor: MsgIndex,
+    pub length: usize,
+}
+
+impl MsgQueueReadMessageReq {
+    pub fn new(queue_urn: QueueUrn, cursor: MsgIndex, length: usize) -> Self {
+        Self {
+            queue_urn,
+            cursor,
+            length,
+        }
+    }
+
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        serde_json::from_value(value).map_err(|e| {
+            RPCErrors::ParseRequestError(format!("Failed to parse MsgQueueReadMessageReq: {}", e))
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MsgQueueCommitAckReq {
     pub sub_id: SubscriptionId,
     pub index: MsgIndex,
@@ -598,6 +621,38 @@ impl MsgQueueClient {
         }
     }
 
+    pub async fn read_message(
+        &self,
+        queue_urn: &str,
+        cursor: MsgIndex,
+        length: usize,
+    ) -> std::result::Result<Vec<Message>, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler
+                    .handle_read_message(queue_urn, cursor, length, ctx)
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req = MsgQueueReadMessageReq::new(queue_urn.to_string(), cursor, length);
+                let req_json = serde_json::to_value(&req).map_err(|e| {
+                    RPCErrors::ReasonError(format!(
+                        "Failed to serialize MsgQueueReadMessageReq: {}",
+                        e
+                    ))
+                })?;
+                let result = client.call("read_message", req_json).await?;
+                serde_json::from_value(result).map_err(|e| {
+                    RPCErrors::ParserResponseError(format!(
+                        "Failed to deserialize Vec<Message> response: {}",
+                        e
+                    ))
+                })
+            }
+        }
+    }
+
     pub async fn commit_ack(
         &self,
         sub_id: &str,
@@ -733,6 +788,14 @@ pub trait MsgQueueHandler: Send + Sync {
         ctx: RPCContext,
     ) -> std::result::Result<Vec<Message>, RPCErrors>;
 
+    async fn handle_read_message(
+        &self,
+        queue_urn: &str,
+        cursor: MsgIndex,
+        length: usize,
+        ctx: RPCContext,
+    ) -> std::result::Result<Vec<Message>, RPCErrors>;
+
     async fn handle_commit_ack(
         &self,
         sub_id: &str,
@@ -854,6 +917,14 @@ impl<T: MsgQueueHandler> RPCHandler for MsgQueueServerHandler<T> {
                         fetch_req.auto_commit,
                         ctx,
                     )
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            "read_message" => {
+                let read_req = MsgQueueReadMessageReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_read_message(&read_req.queue_urn, read_req.cursor, read_req.length, ctx)
                     .await?;
                 RPCResult::Success(json!(result))
             }
@@ -1137,7 +1208,7 @@ mod tests {
                 RPCErrors::ReasonError(format!("Queue not found: {}", sub.queue_urn))
             })?;
 
-            let mut messages: Vec<Message> = queue
+            let messages: Vec<Message> = queue
                 .messages
                 .iter()
                 .filter(|msg| msg.index >= sub.cursor)
@@ -1151,6 +1222,27 @@ mod tests {
                 }
             }
 
+            Ok(messages)
+        }
+
+        async fn handle_read_message(
+            &self,
+            queue_urn: &str,
+            cursor: MsgIndex,
+            length: usize,
+            _ctx: RPCContext,
+        ) -> std::result::Result<Vec<Message>, RPCErrors> {
+            let queues = self.queues.lock().await;
+            let queue = queues
+                .get(queue_urn)
+                .ok_or_else(|| RPCErrors::ReasonError(format!("Queue not found: {}", queue_urn)))?;
+            let messages = queue
+                .messages
+                .iter()
+                .filter(|msg| msg.index >= cursor)
+                .take(length)
+                .cloned()
+                .collect();
             Ok(messages)
         }
 
@@ -1280,6 +1372,37 @@ mod tests {
         let messages = client.fetch_messages(&sub_id, 1, false).await.unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].payload, b"one".to_vec());
+    }
+
+    #[tokio::test]
+    async fn test_read_message_without_side_effect() {
+        let client = build_client();
+        let queue_urn = client
+            .create_queue(Some("delta"), "app", "owner", QueueConfig::default())
+            .await
+            .unwrap();
+        let first_index = client
+            .post_message(&queue_urn, Message::new(b"one".to_vec()))
+            .await
+            .unwrap();
+        let second_index = client
+            .post_message(&queue_urn, Message::new(b"two".to_vec()))
+            .await
+            .unwrap();
+
+        let sub_id = client
+            .subscribe(&queue_urn, "user", "app", None, SubPosition::Earliest)
+            .await
+            .unwrap();
+        client.commit_ack(&sub_id, second_index).await.unwrap();
+
+        let messages = client.read_message(&queue_urn, first_index, 2).await.unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].index, first_index);
+        assert_eq!(messages[1].index, second_index);
+
+        let pending = client.fetch_messages(&sub_id, 1, false).await.unwrap();
+        assert!(pending.is_empty());
     }
 
     #[tokio::test]

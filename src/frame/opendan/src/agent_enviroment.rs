@@ -9,6 +9,9 @@ use tokio::fs;
 use tokio::sync::Mutex;
 use upon::Engine;
 
+use buckyos_api::msg_queue::Message;
+
+use crate::agent::{AIAgent, InputQueueKind};
 use crate::agent_session::AgentSession;
 use crate::agent_tool::{AgentToolError, ToolManager};
 use crate::workspace::{AgentWorkshop, AgentWorkshopConfig};
@@ -17,6 +20,7 @@ const MAX_INCLUDE_BYTES: usize = 64 * 1024;
 const MAX_TOTAL_RENDER_BYTES: usize = 256 * 1024;
 const ESCAPED_OPEN_SENTINEL: &str = "\u{001f}ESCAPED_OPEN_BRACE\u{001f}";
 const ESCAPED_CLOSE_SENTINEL: &str = "\u{001f}ESCAPED_CLOSE_BRACE\u{001f}";
+const DEFAULT_NEW_MSG_MAX_PULL: usize = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TemplateRenderMode {
@@ -181,9 +185,94 @@ impl AgentEnvironment {
         session: Arc<Mutex<AgentSession>>,
         key: &str,
     ) -> Result<Option<String>, AgentToolError> {
-        let guard = session.lock().await;
-        let value = session_value_by_key(&guard, key);
-        Ok(value)
+        let k = key.trim();
+        let (session_id, step_index, last_step_summary, workspace_info, session_cwd) = {
+            let guard = session.lock().await;
+            (
+                guard.session_id.clone(),
+                guard.step_index,
+                guard.last_step_summary.clone(),
+                guard.workspace_info.clone(),
+                guard.cwd.clone(),
+            )
+        };
+
+        if k.is_empty() {
+            return Ok(None);
+        }
+        if k == "session_id" {
+            return Ok(Some(session_id));
+        }
+        if k == "step_index" {
+            return Ok(Some(step_index.to_string()));
+        }
+        if k == "last_step_summary" {
+            return Ok(last_step_summary);
+        }
+
+        if k.starts_with("new_msg") {
+            let max_pull = parse_pull_limit_from_key(k, "new_msg", DEFAULT_NEW_MSG_MAX_PULL);
+            let kmsg_queue_id =
+                AIAgent::get_session_kmsgqueue_uid(session_id.as_str(), InputQueueKind::Msg);
+            let max_pull_u32 = (max_pull.min(u32::MAX as usize)) as u32;
+            let new_msgs = AgentSession::pull_new_msg_from_kmsgqueue(
+                kmsg_queue_id.as_str(),
+                max_pull_u32,
+            ).await;
+
+            if new_msgs.is_err() {
+                warn!(
+                    "agent_env.load_value_from_session pull_new_msg failed: session={} queue={} err={}",
+                    session_id,
+                    kmsg_queue_id,
+                    new_msgs.err().unwrap()
+                );
+                return Ok(None);
+            }
+
+            let new_msgs = new_msgs.unwrap();
+            if new_msgs.is_empty() {
+                return Ok(None);
+            }
+
+            if let Some(last_msg) = new_msgs.last() {
+                let mut guard = session.lock().await;
+                // save cursor for ack after process
+                guard.msg_kmsgqueue_curosr = last_msg.index;
+            }
+            
+            return Ok(render_new_msgs_from_kmsgqueue(new_msgs.as_slice()));
+        }
+
+        // if k.starts_with("new_event") {
+        //     unimplemented!()
+        // }
+
+        if k == "current_todo" || k.starts_with("workspace.") {
+            return Ok(workspace_info
+                .as_ref()
+                .and_then(|ws| resolve_workspace_info_text(ws, k)));
+        }
+
+        let workspace_root = extract_workspace_root_from_info(workspace_info.as_ref())
+            .or_else(|| non_empty_path(&session_cwd))
+            .unwrap_or(std::env::current_dir().map_err(|err| {
+                AgentToolError::ExecFailed(format!("read current_dir failed: {err}"))
+            })?);
+        let cwd_root = non_empty_path(&session_cwd).unwrap_or_else(|| workspace_root.clone());
+
+        //$workspace/readme.txt
+        if k.starts_with("$workspace/") {
+            let rel_path = &k["$workspace/".len()..];
+            return load_text_from_root(workspace_root.as_path(), rel_path).await;
+        }
+        //$cwd/readme.txt
+        if k.starts_with("$cwd/") {
+            let rel_path = &k["$cwd/".len()..];
+            return load_text_from_root(cwd_root.as_path(), rel_path).await;
+        }
+
+        Ok(None)
     }
 
     pub async fn render_prompt(
@@ -197,6 +286,7 @@ impl AgentEnvironment {
             |key| {
                 let s = session_clone.clone();
                 let k = key.to_string();
+        
                 async move { Self::load_value_from_session(s, &k).await }
             },
             env_context,
@@ -511,45 +601,198 @@ fn resolve_env_context_value<'a>(
     None
 }
 
-fn session_value_by_key(session: &AgentSession, key: &str) -> Option<String> {
-    let k = key.trim();
-    if k.is_empty() {
+fn parse_pull_limit_from_key(key: &str, prefix: &str, default_pull: usize) -> usize {
+    let Some(raw_tail) = key.strip_prefix(prefix) else {
+        return default_pull;
+    };
+    let tail = raw_tail
+        .trim()
+        .trim_start_matches('.')
+        .trim_start_matches('$');
+    if tail.is_empty() {
+        return default_pull;
+    }
+    tail.parse::<usize>()
+        .ok()
+        .filter(|value| *value > 0)
+        .map(|value| value.min(4096))
+        .unwrap_or(default_pull)
+}
+
+fn truncate_text_lines(text: Option<String>, max_pull: usize) -> Option<String> {
+    if max_pull == 0 {
         return None;
     }
-    if k == "session_id" || k == "loop.session_id" {
-        return clean_optional_text(Some(session.session_id.as_str()));
+    let text = clean_optional_text(text.as_deref())?;
+    let lines = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        return None;
     }
-    if k == "step_index" {
-        return Some(session.step_index.to_string());
+    let start = lines.len().saturating_sub(max_pull);
+    clean_optional_text(Some(lines[start..].join("\n").as_str()))
+}
+
+fn render_new_msgs_from_kmsgqueue(messages: &[Message]) -> Option<String> {
+    if messages.is_empty() {
+        return None;
     }
-    if k == "current_behavior" {
-        return clean_optional_text(session.current_behavior.as_deref());
+    // TODO: convert kmsg::Message -> MsgRecord -> load MsgObject from named_store -> json
+    let lines = messages
+        .iter()
+        .filter_map(|message| serde_json::to_string(message).ok())
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        return None;
     }
-    if k == "current_todo" {
-        return session
-            .workspace_info
-            .as_ref()
-            .and_then(|ws| ws.get("current_todo"))
-            .and_then(json_value_to_compact_text);
-    }
-    if k == "last_step_summary" {
-        return session.last_step_summary.as_ref().and_then(|s| {
-            s.get("summary")
-                .or_else(|| s.get("message"))
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .filter(|t| !t.is_empty())
-                .map(String::from)
-        });
-    }
-    if k.starts_with("workspace_info.") {
-        let path = k.strip_prefix("workspace_info.").unwrap_or(k);
-        return session
-            .workspace_info
-            .as_ref()
-            .and_then(|ws| resolve_json_path(ws, path).and_then(json_value_to_compact_text));
+    clean_optional_text(Some(lines.join("\n").as_str()))
+}
+
+fn resolve_workspace_info_text(workspace_info: &Json, key: &str) -> Option<String> {
+    for candidate in workspace_info_path_candidates(key) {
+        if let Some(value) = resolve_json_path(workspace_info, candidate.as_str()) {
+            if let Some(text) = json_value_to_compact_text(value) {
+                return Some(text);
+            }
+        }
     }
     None
+}
+
+fn workspace_info_path_candidates(key: &str) -> Vec<String> {
+    let mut out = Vec::<String>::new();
+    push_unique_path(&mut out, key);
+
+    if key == "current_todo" {
+        push_unique_path(&mut out, "workspace.current_todo");
+    }
+    if let Some(stripped) = key.strip_prefix("workspace.") {
+        push_unique_path(&mut out, stripped);
+    }
+    if key == "workspace.todolist" {
+        push_unique_path(&mut out, "todolist");
+    }
+    if let Some(stripped) = key.strip_prefix("workspace.todolist.") {
+        let rel_path = format!("todolist.{stripped}");
+        push_unique_path(&mut out, rel_path.as_str());
+    }
+    out
+}
+
+fn push_unique_path(paths: &mut Vec<String>, value: &str) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if paths.iter().any(|item| item == trimmed) {
+        return;
+    }
+    paths.push(trimmed.to_string());
+}
+
+fn extract_workspace_root_from_info(workspace_info: Option<&Json>) -> Option<PathBuf> {
+    let info = workspace_info?;
+    for pointer in [
+        "/workspace_root",
+        "/workspace/root",
+        "/workspace/root_path",
+        "/workspace/path",
+        "/workspace/cwd",
+        "/root",
+        "/root_path",
+        "/path",
+    ] {
+        let root = info
+            .pointer(pointer)
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if let Some(root) = root {
+            return Some(PathBuf::from(root));
+        }
+    }
+    None
+}
+
+fn non_empty_path(path: &Path) -> Option<PathBuf> {
+    if path.as_os_str().is_empty() {
+        None
+    } else {
+        Some(path.to_path_buf())
+    }
+}
+
+async fn load_text_from_root(
+    root: &Path,
+    rel_path: &str,
+) -> Result<Option<String>, AgentToolError> {
+    let rel_path = rel_path.trim();
+    if rel_path.is_empty() || !is_safe_relative_path(rel_path) {
+        warn!("agent_env.render skip unsafe include: rel_path={rel_path}");
+        return Ok(None);
+    }
+
+    let absolute_root = if root.is_absolute() {
+        root.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|err| AgentToolError::ExecFailed(format!("read current_dir failed: {err}")))?
+            .join(root)
+    };
+    let include_path = absolute_root.join(rel_path);
+
+    let canonical_root = fs::canonicalize(&absolute_root)
+        .await
+        .unwrap_or(absolute_root);
+    let canonical_path = match fs::canonicalize(&include_path).await {
+        Ok(path) => path,
+        Err(err) => {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                warn!(
+                    "agent_env.render include resolve failed: path={} err={}",
+                    include_path.display(),
+                    err
+                );
+            }
+            return Ok(None);
+        }
+    };
+    if !canonical_path.starts_with(&canonical_root) {
+        warn!(
+            "agent_env.render include escaped root: include={} root={}",
+            canonical_path.display(),
+            canonical_root.display()
+        );
+        return Ok(None);
+    }
+
+    let bytes = match fs::read(&canonical_path).await {
+        Ok(content) => content,
+        Err(err) => {
+            warn!(
+                "agent_env.render include read failed: path={} err={}",
+                canonical_path.display(),
+                err
+            );
+            return Ok(None);
+        }
+    };
+    let content = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(err) => {
+            warn!(
+                "agent_env.render include utf8 decode failed: path={} err={}",
+                canonical_path.display(),
+                err
+            );
+            return Ok(None);
+        }
+    };
+    let content = truncate_utf8(&content, MAX_INCLUDE_BYTES);
+    Ok(clean_optional_text(Some(content.as_str())))
 }
 
 fn resolve_json_path<'a>(value: &'a Json, path: &str) -> Option<&'a Json> {
@@ -708,11 +951,11 @@ mod tests {
         );
 
         let result = AgentEnvironment::render_text_template(
-            "{{workspace/todolist/__OPENDAN_ENV(params.todo)__}}",
+            "{{workspace.todolist.__OPENDAN_ENV(params.todo)__}}",
             |key| {
                 let owned_key = key.to_string();
                 async move {
-                    if owned_key == "workspace/todolist/T01" {
+                    if owned_key == "workspace.todolist.T01" {
                         Ok(Some("Do home Work".to_string()))
                     } else {
                         Ok(None)
@@ -778,6 +1021,35 @@ mod tests {
         assert_eq!(result.env_not_found, 1);
         assert_eq!(result.successful_count, 0);
         assert_eq!(result.failed_count, 0);
+    }
+
+    #[tokio::test]
+    async fn load_value_from_session_new_msg_respects_numeric_pull_limit() {
+        let session = Arc::new(Mutex::new(AgentSession::new(
+            "s1",
+            "did:test:agent",
+            Some("on_wakeup"),
+        )));
+
+        let result = AgentEnvironment::load_value_from_session(session, "new_msg.2")
+        .await
+        .expect("load value from session");
+        assert_eq!(result, Some("line-2\nline-3".to_string()));
+    }
+
+    #[tokio::test]
+    async fn load_value_from_session_new_msg_supports_dollar_pull_limit() {
+        let session = Arc::new(Mutex::new(AgentSession::new(
+            "s1",
+            "did:test:agent",
+            Some("on_wakeup"),
+        )));
+
+
+        let result = AgentEnvironment::load_value_from_session(session, "new_msg.$3")
+        .await
+        .expect("load value from session");
+        assert_eq!(result, Some("m2\nm3\nm4".to_string()));
     }
 
     #[tokio::test]

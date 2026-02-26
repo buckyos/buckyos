@@ -8,13 +8,13 @@ Medium: SLEEP 状态在 runtime 中基本未落地
 代码里无 input 时回落到 WAIT，未见自动转 SLEEP 路径，见 agent.rs:1411。
 
 
-## 关于WAIT
+## 关于WAIT (OK)
 
 在一个Behavior的开始(step0)无法获得输入，就会自动WAIT
 
 - 没有new_msg
 - 没有new_event
-- 没有next_tod
+- 没有next_todo - 增加支持
 - 没有last_step_summary(肯定没有)
 
 Behavior可以在任何step主动的把自己进入WAIT_FOR_XXX状态，此时要进入下一个step,就必须
@@ -47,3 +47,7 @@ TODO：
 - Review4个元工具（精品工具)的实现，
   - 注意bash的tmux化
 - 正确实现Toolbox
+- 优化todo.rs的底层实现
+ - 代码分层
+ - todo的依赖创建和检查的逻辑比较精细，需要考虑暴露给agent的tool spec足够简洁
+ 

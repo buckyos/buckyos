@@ -26,7 +26,7 @@ use crate::agent_config::AIAgentConfig;
 use crate::agent_enviroment::AgentEnvironment;
 use crate::agent_memory::{AgentMemory, AgentMemoryConfig};
 use crate::agent_session::{
-    AgentSession, AgentSessionMgr, GetSessionTool, SessionExecInput, SessionInputItem, SessionState,
+    AgentSession, AgentSessionMgr, GetSessionTool, SessionInputItem, SessionState,
 };
 use crate::agent_tool::{AgentPolicy, ToolCall, ToolManager};
 use crate::behavior::{
@@ -49,6 +49,10 @@ const SESSION_QUEUE_APP_ID: &str = "opendan";
 const SESSION_QUEUE_RETENTION_SECONDS: u64 = 7 * 24 * 60 * 60;
 const SESSION_QUEUE_MAX_MESSAGES: u64 = 4096;
 const SESSION_QUEUE_FETCH_BATCH: usize = 64;
+const DEFAULT_NEW_MSG_MAX_PULL: usize = 32;
+const DEFAULT_NEW_EVENT_MAX_PULL: usize = 64;
+const DEFAULT_HISTORY_MSG_MAX_PULL: usize = 32;
+const DEFAULT_HISTORY_EVENT_MAX_PULL: usize = 64;
 const AGENT_BEHAVIOR_ROUTER_RESOLVE: &str = "resolve_router";
 
 #[derive(Debug)]
@@ -64,7 +68,7 @@ struct PulledEvent {
 }
 
 #[derive(Clone, Copy, Debug)]
-enum InputQueueKind {
+pub(crate) enum InputQueueKind {
     Msg,
     Event,
 }
@@ -113,6 +117,14 @@ struct SessionQueueBinding {
     event_queue_urn: String,
     msg_sub_id: String,
     event_sub_id: String,
+    msg_history_sub_id: String,
+    event_history_sub_id: String,
+}
+
+#[derive(Clone, Debug)]
+struct IndexedSessionInputItem {
+    index: u64,
+    item: SessionInputItem,
 }
 
 #[derive(Clone, Debug)]
@@ -837,6 +849,262 @@ impl AIAgent {
         }
     }
 
+    fn extract_template_placeholders(template: &str) -> Vec<String> {
+        let mut out = Vec::<String>::new();
+        let mut cursor = 0usize;
+        while let Some(open) = template[cursor..].find("{{").map(|idx| idx + cursor) {
+            let start = open + 2;
+            let Some(close) = template[start..].find("}}").map(|idx| idx + start) else {
+                break;
+            };
+            let placeholder = template[start..close].trim();
+            if !placeholder.is_empty() {
+                out.push(placeholder.to_string());
+            }
+            cursor = close + 2;
+        }
+        out
+    }
+
+    fn parse_pull_limit_from_placeholder(
+        placeholder: &str,
+        prefix: &str,
+        default_pull: usize,
+    ) -> Option<usize> {
+        let raw_tail = placeholder.strip_prefix(prefix)?;
+        let tail = raw_tail
+            .trim()
+            .trim_start_matches('.')
+            .trim_start_matches('$');
+        if tail.is_empty() {
+            return Some(default_pull);
+        }
+        Some(
+            tail.parse::<usize>()
+                .ok()
+                .filter(|value| *value > 0)
+                .map(|value| value.min(4096))
+                .unwrap_or(default_pull),
+        )
+    }
+
+    fn max_pull_for_prefix(
+        placeholders: &[String],
+        prefix: &str,
+        default_pull: usize,
+    ) -> Option<usize> {
+        placeholders
+            .iter()
+            .filter_map(|placeholder| {
+                Self::parse_pull_limit_from_placeholder(placeholder.as_str(), prefix, default_pull)
+            })
+            .max()
+    }
+
+    fn render_session_input_items(items: &[SessionInputItem], max_pull: usize) -> Option<String> {
+        if max_pull == 0 || items.is_empty() {
+            return None;
+        }
+        let start = items.len().saturating_sub(max_pull);
+        let mut lines = Vec::<String>::new();
+        for item in &items[start..] {
+            if let Some(msg) = item.msg.as_ref() {
+                if let Ok(msg_json) = serde_json::to_value(msg) {
+                    if let Ok(text) = serde_json::to_string(&msg_json) {
+                        if !text.trim().is_empty() {
+                            lines.push(text);
+                            continue;
+                        }
+                    }
+                }
+            }
+            if let Some(event_id) = item
+                .event_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                lines.push(event_id.to_string());
+            }
+        }
+        if lines.is_empty() {
+            return None;
+        }
+        let text = lines.join("\n");
+        if text.trim().is_empty() {
+            None
+        } else {
+            Some(text)
+        }
+    }
+
+    async fn build_queue_placeholder_context(
+        &self,
+        session_id: &str,
+        placeholders: &[String],
+    ) -> Result<(HashMap<String, Json>, u32)> {
+        let mut env_ctx = HashMap::<String, Json>::new();
+        if placeholders.is_empty() {
+            return Ok((env_ctx, 0));
+        }
+
+        let need_new_msg = placeholders
+            .iter()
+            .any(|placeholder| placeholder.starts_with("new_msg"));
+        let need_new_event = placeholders
+            .iter()
+            .any(|placeholder| placeholder.starts_with("new_event"));
+        let need_history_msg = placeholders
+            .iter()
+            .any(|placeholder| placeholder.starts_with("history_msg"));
+        let need_history_event = placeholders
+            .iter()
+            .any(|placeholder| placeholder.starts_with("history_event"));
+
+        if !need_new_msg && !need_new_event && !need_history_msg && !need_history_event {
+            return Ok((env_ctx, 0));
+        }
+
+        let Some(binding) = self.ensure_session_queue_binding(session_id).await? else {
+            return Ok((env_ctx, 0));
+        };
+
+        let mut pending_msgs = Vec::<IndexedSessionInputItem>::new();
+        if need_new_msg || need_history_msg {
+            pending_msgs = self
+                .pull_session_queue_inputs_by_kind(
+                    session_id,
+                    binding.msg_queue_urn.as_str(),
+                    binding.msg_sub_id.as_str(),
+                    "msg",
+                )
+                .await?;
+        }
+        let mut pending_events = Vec::<IndexedSessionInputItem>::new();
+        if need_new_event || need_history_event {
+            pending_events = self
+                .pull_session_queue_inputs_by_kind(
+                    session_id,
+                    binding.event_queue_urn.as_str(),
+                    binding.event_sub_id.as_str(),
+                    "event",
+                )
+                .await?;
+        }
+
+        let pending_msg_items = pending_msgs
+            .iter()
+            .map(|item| item.item.clone())
+            .collect::<Vec<_>>();
+        let pending_event_items = pending_events
+            .iter()
+            .map(|item| item.item.clone())
+            .collect::<Vec<_>>();
+
+        let mut history_msg_items = Vec::<SessionInputItem>::new();
+        if let Some(max_pull) =
+            Self::max_pull_for_prefix(placeholders, "history_msg", DEFAULT_HISTORY_MSG_MAX_PULL)
+        {
+            let acked_index = self
+                .resolve_session_queue_acked_index(
+                    session_id,
+                    binding.msg_queue_urn.as_str(),
+                    binding.msg_sub_id.as_str(),
+                )
+                .await?;
+            history_msg_items = self
+                .read_session_queue_history_by_kind(
+                    session_id,
+                    binding.msg_queue_urn.as_str(),
+                    binding.msg_history_sub_id.as_str(),
+                    acked_index,
+                    max_pull,
+                )
+                .await?;
+        }
+
+        let mut history_event_items = Vec::<SessionInputItem>::new();
+        if let Some(max_pull) = Self::max_pull_for_prefix(
+            placeholders,
+            "history_event",
+            DEFAULT_HISTORY_EVENT_MAX_PULL,
+        ) {
+            let acked_index = self
+                .resolve_session_queue_acked_index(
+                    session_id,
+                    binding.event_queue_urn.as_str(),
+                    binding.event_sub_id.as_str(),
+                )
+                .await?;
+            history_event_items = self
+                .read_session_queue_history_by_kind(
+                    session_id,
+                    binding.event_queue_urn.as_str(),
+                    binding.event_history_sub_id.as_str(),
+                    acked_index,
+                    max_pull,
+                )
+                .await?;
+        }
+
+        let mut ack_msg_index = 0u64;
+        if let Some(base_text) =
+            Self::render_session_input_items(&pending_msg_items, pending_msg_items.len())
+        {
+            env_ctx.insert("new_msg".to_string(), Json::String(base_text));
+        }
+        for placeholder in placeholders {
+            if let Some(limit) = Self::parse_pull_limit_from_placeholder(
+                placeholder.as_str(),
+                "new_msg",
+                DEFAULT_NEW_MSG_MAX_PULL,
+            ) {
+                if let Some(text) = Self::render_session_input_items(&pending_msg_items, limit) {
+                    env_ctx.insert(placeholder.to_string(), Json::String(text));
+                    if let Some(last) = pending_msgs.last() {
+                        ack_msg_index = ack_msg_index.max(last.index);
+                    }
+                }
+                continue;
+            }
+
+            if let Some(limit) = Self::parse_pull_limit_from_placeholder(
+                placeholder.as_str(),
+                "new_event",
+                DEFAULT_NEW_EVENT_MAX_PULL,
+            ) {
+                if let Some(text) = Self::render_session_input_items(&pending_event_items, limit) {
+                    env_ctx.insert(placeholder.to_string(), Json::String(text));
+                }
+                continue;
+            }
+
+            if let Some(limit) = Self::parse_pull_limit_from_placeholder(
+                placeholder.as_str(),
+                "history_msg",
+                DEFAULT_HISTORY_MSG_MAX_PULL,
+            ) {
+                if let Some(text) = Self::render_session_input_items(&history_msg_items, limit) {
+                    env_ctx.insert(placeholder.to_string(), Json::String(text));
+                }
+                continue;
+            }
+
+            if let Some(limit) = Self::parse_pull_limit_from_placeholder(
+                placeholder.as_str(),
+                "history_event",
+                DEFAULT_HISTORY_EVENT_MAX_PULL,
+            ) {
+                if let Some(text) = Self::render_session_input_items(&history_event_items, limit) {
+                    env_ctx.insert(placeholder.to_string(), Json::String(text));
+                }
+            }
+        }
+
+        let ack_msg_index_u32 = ack_msg_index.min(u64::from(u32::MAX)) as u32;
+        Ok((env_ctx, ack_msg_index_u32))
+    }
+
     async fn build_behavior_exec_input(
         &self,
         trace: &TraceCtx,
@@ -847,9 +1115,16 @@ impl AIAgent {
         //核心:用agent_environment构造step_summary 和 input，至少要有一个，否则就没有有效的收入
         //如果step>0,则构造step_summary
         let mut env_context = HashMap::<String, Json>::new();
-        let guard = session.lock().await;
-        if guard.step_index > 0 {
-            if let Some(step_summary) = guard.last_step_summary.clone() {
+        let (session_id, step_index, last_step_summary) = {
+            let guard = session.lock().await;
+            (
+                guard.session_id.clone(),
+                guard.step_index,
+                guard.last_step_summary.clone(),
+            )
+        };
+        if step_index > 0 {
+            if let Some(step_summary) = last_step_summary {
                 let value = serde_json::to_value(&step_summary).unwrap_or(Json::Null);
                 env_context.insert("step_summary".to_string(), value);
             }
@@ -858,6 +1133,15 @@ impl AIAgent {
         let params = Self::get_params_from_behavior_name(behavior_name);
         if let Some(params) = params {
             env_context.insert("params".to_string(), params);
+        }
+
+        let placeholders = Self::extract_template_placeholders(behavior_cfg.input.as_str());
+        let (queue_ctx, last_pulled_msg_index) = self
+            .build_queue_placeholder_context(session_id.as_str(), placeholders.as_slice())
+            .await?;
+        {
+            let mut guard = session.lock().await;
+            guard.runtime_values = queue_ctx;
         }
 
         //构造input_prompt
@@ -876,10 +1160,10 @@ impl AIAgent {
                 behavior_prompt: behavior_cfg.process_rule.clone(),
                 limits: behavior_cfg.limits.clone(),
                 behavior_cfg: behavior_cfg.clone(),
-                session_id: Some(guard.session_id.clone()),
+                session_id: Some(session_id),
                 input_prompt: input_prompt_result.rendered,
                 last_step_prompt: String::new(),
-                last_pulled_msg_index: 0,
+                last_pulled_msg_index,
                 session: Some(session.clone()),
             }));
         } else {
@@ -1079,6 +1363,8 @@ impl AIAgent {
             ),
             msg_sub_id: format!("opendan-{owner_token}-{session_token}-msg"),
             event_sub_id: format!("opendan-{owner_token}-{session_token}-event"),
+            msg_history_sub_id: format!("opendan-{owner_token}-{session_token}-msg-history"),
+            event_history_sub_id: format!("opendan-{owner_token}-{session_token}-event-history"),
             msg_queue_name,
             event_queue_name,
         }
@@ -1189,6 +1475,42 @@ impl AIAgent {
                 ));
             }
         }
+        if let Err(err) = msg_queue
+            .subscribe(
+                binding.msg_queue_urn.as_str(),
+                self.did.as_str(),
+                SESSION_QUEUE_APP_ID,
+                Some(binding.msg_history_sub_id.clone()),
+                SubPosition::Earliest,
+            )
+            .await
+        {
+            if !Self::queue_already_exists(&err) {
+                return Err(anyhow!(
+                    "subscribe session msg history queue failed: session={} err={}",
+                    session_id,
+                    err
+                ));
+            }
+        }
+        if let Err(err) = msg_queue
+            .subscribe(
+                binding.event_queue_urn.as_str(),
+                self.did.as_str(),
+                SESSION_QUEUE_APP_ID,
+                Some(binding.event_history_sub_id.clone()),
+                SubPosition::Earliest,
+            )
+            .await
+        {
+            if !Self::queue_already_exists(&err) {
+                return Err(anyhow!(
+                    "subscribe session event history queue failed: session={} err={}",
+                    session_id,
+                    err
+                ));
+            }
+        }
 
         self.session_queue_bindings
             .write()
@@ -1196,6 +1518,15 @@ impl AIAgent {
             .entry(session_id.to_string())
             .or_insert_with(|| binding.clone());
         Ok(Some(binding))
+    }
+
+    pub(crate) fn get_session_kmsgqueue_uid(session_id: &str, kind: InputQueueKind) -> String {
+        let session_token = Self::sanitize_kevent_token(session_id);
+        let kind_token = match kind {
+            InputQueueKind::Msg => "msg",
+            InputQueueKind::Event => "event",
+        };
+        format!("agent-session-{session_token}-{kind_token}")
     }
 
     async fn enqueue_session_input(
@@ -1243,15 +1574,17 @@ impl AIAgent {
         session_id: &str,
         last_pulled_msg_index: u32,
     ) -> Result<()> {
+        if last_pulled_msg_index == 0 {
+            return Ok(());
+        }
         let Some(msg_queue) = self.deps.msg_queue.as_ref() else {
             return Err(anyhow!("message queue dependency not available"));
         };
         let Some(binding) = self.ensure_session_queue_binding(session_id).await? else {
             return Err(anyhow!("failed to ensure session queue binding"));
         };
-        let queue_urn = binding.msg_queue_urn.as_str();
         msg_queue
-            .commit_ack(queue_urn, last_pulled_msg_index as u64)
+            .commit_ack(binding.msg_sub_id.as_str(), last_pulled_msg_index as u64)
             .await?;
         Ok(())
     }
@@ -1259,7 +1592,7 @@ impl AIAgent {
     async fn pull_session_queue_inputs(
         &self,
         session_id: &str,
-    ) -> Result<(Vec<SessionInputItem>, Vec<SessionInputItem>)> {
+    ) -> Result<(Vec<IndexedSessionInputItem>, Vec<IndexedSessionInputItem>)> {
         let Some(_msg_queue) = self.deps.msg_queue.as_ref() else {
             return Ok((vec![], vec![]));
         };
@@ -1285,20 +1618,19 @@ impl AIAgent {
         Ok((msgs, events))
     }
 
-    //TODO:获取输入的方式要修改
     async fn pull_session_queue_inputs_by_kind(
         &self,
         session_id: &str,
         queue_urn: &str,
         sub_id: &str,
         _prefix: &str,
-    ) -> Result<Vec<SessionInputItem>> {
+    ) -> Result<Vec<IndexedSessionInputItem>> {
         let Some(msg_queue) = self.deps.msg_queue.as_ref() else {
             return Ok(vec![]);
         };
 
         let messages = msg_queue
-            .fetch_messages(sub_id, SESSION_QUEUE_FETCH_BATCH, true)
+            .fetch_messages(sub_id, SESSION_QUEUE_FETCH_BATCH, false)
             .await
             .map_err(|err| {
                 anyhow!(
@@ -1313,10 +1645,8 @@ impl AIAgent {
             return Ok(vec![]);
         }
 
-        let mut output = Vec::<SessionInputItem>::with_capacity(messages.len());
-        let mut last_index = None::<u64>;
+        let mut output = Vec::<IndexedSessionInputItem>::with_capacity(messages.len());
         for msg in messages {
-            last_index = Some(msg.index);
             let item = serde_json::from_slice::<SessionInputItem>(msg.payload.as_slice()).map_err(
                 |err| {
                     anyhow!(
@@ -1327,15 +1657,116 @@ impl AIAgent {
                     )
                 },
             )?;
-            output.push(item);
-        }
-
-        if let Some(last_index) = last_index {
-            let _ = msg_queue
-                .delete_message_before(queue_urn, last_index + 1)
-                .await;
+            output.push(IndexedSessionInputItem {
+                index: msg.index,
+                item,
+            });
         }
         Ok(output)
+    }
+
+    async fn resolve_session_queue_acked_index(
+        &self,
+        session_id: &str,
+        queue_urn: &str,
+        sub_id: &str,
+    ) -> Result<u64> {
+        let Some(msg_queue) = self.deps.msg_queue.as_ref() else {
+            return Ok(0);
+        };
+        let pending = msg_queue.fetch_messages(sub_id, 1, false).await.map_err(|err| {
+            anyhow!(
+                "peek session queue messages failed: session={} queue={} err={}",
+                session_id,
+                queue_urn,
+                err
+            )
+        })?;
+        if let Some(first_unacked) = pending.first() {
+            return Ok(first_unacked.index.saturating_sub(1));
+        }
+        let stats = msg_queue.get_queue_stats(queue_urn).await.map_err(|err| {
+            anyhow!(
+                "get session queue stats failed: session={} queue={} err={}",
+                session_id,
+                queue_urn,
+                err
+            )
+        })?;
+        Ok(stats.last_index)
+    }
+
+    async fn read_session_queue_history_by_kind(
+        &self,
+        session_id: &str,
+        queue_urn: &str,
+        history_sub_id: &str,
+        acked_index: u64,
+        max_items: usize,
+    ) -> Result<Vec<SessionInputItem>> {
+        if acked_index == 0 || max_items == 0 {
+            return Ok(vec![]);
+        }
+        let Some(msg_queue) = self.deps.msg_queue.as_ref() else {
+            return Ok(vec![]);
+        };
+
+        msg_queue
+            .seek(history_sub_id, SubPosition::Earliest)
+            .await
+            .map_err(|err| {
+                anyhow!(
+                    "seek session history queue failed: session={} queue={} err={}",
+                    session_id,
+                    queue_urn,
+                    err
+                )
+            })?;
+
+        let mut out = Vec::<SessionInputItem>::new();
+        loop {
+            let messages = msg_queue
+                .fetch_messages(history_sub_id, SESSION_QUEUE_FETCH_BATCH, true)
+                .await
+                .map_err(|err| {
+                    anyhow!(
+                        "fetch session history messages failed: session={} queue={} err={}",
+                        session_id,
+                        queue_urn,
+                        err
+                    )
+                })?;
+            if messages.is_empty() {
+                break;
+            }
+
+            let mut reached_acked_end = false;
+            for message in messages {
+                if message.index > acked_index {
+                    reached_acked_end = true;
+                    break;
+                }
+                let item = serde_json::from_slice::<SessionInputItem>(message.payload.as_slice())
+                    .map_err(|err| {
+                        anyhow!(
+                            "deserialize session history item failed: session={} queue={} err={}",
+                            session_id,
+                            queue_urn,
+                            err
+                        )
+                    })?;
+                out.push(item);
+            }
+
+            if reached_acked_end {
+                break;
+            }
+        }
+        if out.len() <= max_items {
+            return Ok(out);
+        }
+        let start = out.len().saturating_sub(max_items);
+        Ok(out.split_off(start))
     }
 
     async fn set_running_session_to_wait(

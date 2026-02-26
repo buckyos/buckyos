@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use buckyos_api::{
-    AiMessage, AiPayload, AiToolSpec, Capability, CompleteRequest, ModelSpec, Requirements,
-    features,
+    features, AiMessage, AiPayload, AiToolSpec, Capability, CompleteRequest, ModelSpec,
+    Requirements,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value as Json};
@@ -16,8 +16,6 @@ use crate::behavior::BehaviorConfig;
 use super::sanitize::{sanitize_json_compact, sanitize_text};
 use super::types::{BehaviorExecInput, LLMBehaviorConfig};
 use super::Tokenizer;
-
-
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -99,10 +97,13 @@ impl PromptBuilder {
         let memory_prompt_text =
             build_memory_prompt_text(input, &system_role_prompt_text, tokenizer).await;
 
-        let ai_messages:Vec<AiMessage> = vec![
+        let ai_messages: Vec<AiMessage> = vec![
             AiMessage::new("system".to_string(), system_role_prompt_text),
             AiMessage::new("user".to_string(), memory_prompt_text),
-            AiMessage::new("user".to_string(), format!("<<input>>\n{}\n<</input>>", input.input_prompt)),
+            AiMessage::new(
+                "user".to_string(),
+                format!("<<input>>\n{}\n<</input>>", input.input_prompt),
+            ),
         ];
 
         let mut must_features = vec![features::JSON_OUTPUT.to_string()];

@@ -1,17 +1,16 @@
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use buckyos_api::{
-    AICC_SERVICE_SERVICE_NAME, AiMessage, AiPayload, AiToolSpec, AiccClient, Capability,
+    features, value_to_object_map, AiMessage, AiPayload, AiToolSpec, AiccClient, Capability,
     CompleteRequest, CompleteResponse, CompleteStatus, CompleteTaskOptions, CreateTaskOptions,
-    ModelSpec, Requirements, TaskFilter, TaskManagerClient, TaskStatus, features,
-    value_to_object_map,
+    ModelSpec, Requirements, TaskFilter, TaskManagerClient, TaskStatus, AICC_SERVICE_SERVICE_NAME,
 };
 use log::warn;
-use serde_json::{Map, Value as Json, json};
+use serde_json::{json, Map, Value as Json};
 
 use super::config::{BehaviorConfig, BehaviorConfigError};
 use super::observability::{AgentWorkEvent, WorklogSink};
@@ -191,11 +190,7 @@ impl LLMBehavior {
             self.ensure_session_normal_before_next_llm(input).await?;
 
             let (usage2, followup_resp, followup_task_id) = self
-                .do_inference_once(
-                    base_req.clone(),
-                    Some(executed.tool_ctx),
-                    behavior_task_id,
-                )
+                .do_inference_once(base_req.clone(), Some(executed.tool_ctx), behavior_task_id)
                 .await?;
             Self::update_track_from_llm_response(&mut track, &followup_resp, followup_task_id);
             llm_resp = followup_resp;

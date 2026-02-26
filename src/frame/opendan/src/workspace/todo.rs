@@ -138,11 +138,13 @@ impl AgentTool for TodoTool {
                             "apply_delta",
                             "query_pending",
                             "render_for_prompt",
-                            "render_current_details"
+                            "render_current_details",
+                            "get_next_ready_todo"
                         ]
                     },
                     "workspace_id": { "type": "string" },
                     "todo_ref": { "type": "string", "description": "todo_code like T001 or item id" },
+                    "agent_id": { "type": "string" },
                     "filters": { "type": "object" },
                     "limit": { "type": "integer", "minimum": 1 },
                     "offset": { "type": "integer", "minimum": 0 },
@@ -206,8 +208,9 @@ impl AgentTool for TodoTool {
             "query_pending" => self.call_query_pending(args).await,
             "render_for_prompt" => self.call_render_for_prompt(args).await,
             "render_current_details" => self.call_render_current_details(args).await,
+            "get_next_ready_todo" => self.call_get_next_ready_todo(args).await,
             _ => Err(AgentToolError::InvalidArgs(format!(
-                "unsupported action `{action}`, expected list/get/apply_delta/query_pending/render_for_prompt/render_current_details"
+                "unsupported action `{action}`, expected list/get/apply_delta/query_pending/render_for_prompt/render_current_details/get_next_ready_todo"
             ))),
         }
     }
@@ -439,6 +442,59 @@ impl TodoTool {
             "session_id": session_id,
             "todo_ref": todo_ref,
             "text": text
+        }))
+    }
+
+    async fn call_get_next_ready_todo(&self, args: Json) -> Result<Json, AgentToolError> {
+        let workspace_id = require_workspace_id(&args)?;
+        let session_id = require_string(&args, "session_id")?;
+        let agent_id = require_string(&args, "agent_id")?;
+
+        let ws_for_db = workspace_id.clone();
+        let sid_for_db = session_id.clone();
+        let aid_for_db = agent_id.clone();
+        let detail = self
+            .run_db("todo get next ready", move |conn| {
+                get_next_ready_todo(
+                    conn,
+                    ws_for_db.as_str(),
+                    sid_for_db.as_str(),
+                    aid_for_db.as_str(),
+                )
+            })
+            .await?;
+
+        let version_ws = workspace_id.clone();
+        let version = self
+            .run_db("todo read version", move |conn| {
+                read_workspace_version(conn, &version_ws)
+            })
+            .await?;
+
+        if let Some(detail) = detail {
+            return Ok(json!({
+                "ok": true,
+                "action": "get_next_ready_todo",
+                "workspace_id": workspace_id,
+                "session_id": session_id,
+                "agent_id": agent_id,
+                "item": detail.item,
+                "notes": detail.notes,
+                "deps": detail.dep_codes,
+                "version": version
+            }));
+        }
+
+        Ok(json!({
+            "ok": true,
+            "action": "get_next_ready_todo",
+            "workspace_id": workspace_id,
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "item": Json::Null,
+            "notes": [],
+            "deps": [],
+            "version": version
         }))
     }
 }
@@ -1231,6 +1287,9 @@ CREATE INDEX IF NOT EXISTS idx_todo_items_ws_assignee
 
 CREATE INDEX IF NOT EXISTS idx_todo_items_ws_updated
   ON todo_items(workspace_id, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_todo_items_ws_session_assignee_status_created
+  ON todo_items(workspace_id, session_id, assignee_did, status, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS todo_deps (
   workspace_id TEXT NOT NULL,
@@ -2379,6 +2438,51 @@ fn select_current_todo_details(
     }
 }
 
+fn get_next_ready_todo(
+    conn: &Connection,
+    workspace_id: &str,
+    session_id: &str,
+    agent_id: &str,
+) -> Result<Option<TodoDetail>, AgentToolError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT i.id
+             FROM todo_items i
+             LEFT JOIN todo_order o
+               ON o.workspace_id = i.workspace_id AND o.todo_id = i.id
+             WHERE i.workspace_id = ?1
+               AND i.session_id = ?2
+               AND i.assignee_did = ?3
+               AND i.status = 'WAIT'
+               AND NOT EXISTS (
+                    SELECT 1
+                    FROM todo_deps d
+                    JOIN todo_items dep
+                      ON dep.workspace_id = d.workspace_id AND dep.id = d.dep_todo_id
+                    WHERE d.workspace_id = i.workspace_id
+                      AND d.todo_id = i.id
+                      AND dep.status NOT IN ('COMPLETE', 'DONE')
+               )
+             ORDER BY i.created_at DESC, o.pos DESC
+             LIMIT 1",
+        )
+        .map_err(|err| {
+            AgentToolError::ExecFailed(format!("prepare next ready todo query failed: {err}"))
+        })?;
+
+    let todo_id = stmt
+        .query_row(params![workspace_id, session_id, agent_id], |row| {
+            row.get::<_, String>(0)
+        })
+        .ok();
+
+    if let Some(todo_id) = todo_id {
+        get_todo_detail(conn, workspace_id, &todo_id, 12)
+    } else {
+        Ok(None)
+    }
+}
+
 fn resolve_todo_id(
     conn: &Connection,
     workspace_id: &str,
@@ -3353,5 +3457,244 @@ mod tests {
             second["new_version"].as_i64().unwrap_or_default(),
             version_after_first
         );
+    }
+
+    #[test]
+    fn get_next_ready_todo_direct_function_call() {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        ensure_todo_schema(&conn).expect("ensure schema");
+
+        let workspace_id = "ws-ready-func";
+        let session_id = "sess-ready";
+        let assignee = "did:od:alice";
+
+        conn.execute(
+            "INSERT INTO todo_items(
+                id, workspace_id, session_id, todo_code, title, type, status,
+                assignee_did, created_at, updated_at, created_by_kind, created_by_did
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            rusqlite::params![
+                "todo-1",
+                workspace_id,
+                session_id,
+                "T001",
+                "base task",
+                "Task",
+                "WAIT",
+                assignee,
+                1000_i64,
+                1000_i64,
+                "root_agent",
+                "did:od:jarvis"
+            ],
+        )
+        .expect("insert T001");
+
+        conn.execute(
+            "INSERT INTO todo_items(
+                id, workspace_id, session_id, todo_code, title, type, status,
+                assignee_did, created_at, updated_at, created_by_kind, created_by_did
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            rusqlite::params![
+                "todo-2",
+                workspace_id,
+                session_id,
+                "T002",
+                "dep task",
+                "Task",
+                "WAIT",
+                assignee,
+                2000_i64,
+                2000_i64,
+                "root_agent",
+                "did:od:jarvis"
+            ],
+        )
+        .expect("insert T002");
+
+        conn.execute(
+            "INSERT INTO todo_items(
+                id, workspace_id, session_id, todo_code, title, type, status,
+                assignee_did, created_at, updated_at, created_by_kind, created_by_did
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            rusqlite::params![
+                "todo-3",
+                workspace_id,
+                session_id,
+                "T003",
+                "newest task",
+                "Task",
+                "WAIT",
+                assignee,
+                3000_i64,
+                3000_i64,
+                "root_agent",
+                "did:od:jarvis"
+            ],
+        )
+        .expect("insert T003");
+
+        conn.execute(
+            "INSERT INTO todo_items(
+                id, workspace_id, session_id, todo_code, title, type, status,
+                assignee_did, created_at, updated_at, created_by_kind, created_by_did
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            rusqlite::params![
+                "todo-4",
+                workspace_id,
+                "sess-other",
+                "T004",
+                "other session task",
+                "Task",
+                "WAIT",
+                assignee,
+                4000_i64,
+                4000_i64,
+                "root_agent",
+                "did:od:jarvis"
+            ],
+        )
+        .expect("insert T004");
+
+        conn.execute(
+            "INSERT INTO todo_deps(workspace_id, todo_id, dep_todo_id) VALUES(?1, ?2, ?3)",
+            rusqlite::params![workspace_id, "todo-2", "todo-1"],
+        )
+        .expect("insert dep T002->T001");
+
+        let first = get_next_ready_todo(&conn, workspace_id, session_id, assignee)
+            .expect("query first")
+            .expect("first todo");
+        assert_eq!(first.item.todo_code, "T003");
+
+        conn.execute(
+            "UPDATE todo_items SET status = 'IN_PROGRESS' WHERE workspace_id = ?1 AND todo_code = ?2",
+            rusqlite::params![workspace_id, "T003"],
+        )
+        .expect("update T003");
+
+        let second = get_next_ready_todo(&conn, workspace_id, session_id, assignee)
+            .expect("query second")
+            .expect("second todo");
+        assert_eq!(second.item.todo_code, "T001");
+
+        conn.execute(
+            "UPDATE todo_items SET status = 'COMPLETE' WHERE workspace_id = ?1 AND todo_code = ?2",
+            rusqlite::params![workspace_id, "T001"],
+        )
+        .expect("update T001");
+
+        let third = get_next_ready_todo(&conn, workspace_id, session_id, assignee)
+            .expect("query third")
+            .expect("third todo");
+        assert_eq!(third.item.todo_code, "T002");
+        assert_eq!(third.dep_codes, vec!["T001".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn get_next_ready_todo_respects_dep_and_newest_first() {
+        let tool = tool_for_test();
+        let ctx = test_ctx("did:od:jarvis");
+
+        call(
+            &tool,
+            &ctx,
+            json!({
+                "action": "apply_delta",
+                "workspace_id": "ws-ready",
+                "actor_ctx": { "kind": "root_agent", "did": "did:od:jarvis", "session_id": "sess-ready" },
+                "delta": {
+                    "ops": [{
+                        "op": "init",
+                        "mode": "replace",
+                        "items": [
+                            { "title": "base task", "type": "Task", "assignee": "did:od:alice" },
+                            { "title": "dep task", "type": "Task", "assignee": "did:od:alice", "deps": ["T001"] },
+                            { "title": "newest task", "type": "Task", "assignee": "did:od:alice" }
+                        ]
+                    }]
+                }
+            }),
+        )
+        .await
+        .expect("init");
+
+        let first = call(
+            &tool,
+            &ctx,
+            json!({
+                "action": "get_next_ready_todo",
+                "workspace_id": "ws-ready",
+                "session_id": "sess-ready",
+                "agent_id": "did:od:alice"
+            }),
+        )
+        .await
+        .expect("first next ready");
+        assert_eq!(first["item"]["todo_code"], "T003");
+
+        call(
+            &tool,
+            &ctx,
+            json!({
+                "action": "apply_delta",
+                "workspace_id": "ws-ready",
+                "delta": {
+                    "ops": [{
+                        "op": "update:T003",
+                        "to_status": "IN_PROGRESS",
+                        "reason": "start newest"
+                    }]
+                }
+            }),
+        )
+        .await
+        .expect("update t003");
+
+        let second = call(
+            &tool,
+            &ctx,
+            json!({
+                "action": "get_next_ready_todo",
+                "workspace_id": "ws-ready",
+                "session_id": "sess-ready",
+                "agent_id": "did:od:alice"
+            }),
+        )
+        .await
+        .expect("second next ready");
+        assert_eq!(second["item"]["todo_code"], "T001");
+
+        call(
+            &tool,
+            &ctx,
+            json!({
+                "action": "apply_delta",
+                "workspace_id": "ws-ready",
+                "delta": {
+                    "ops": [{
+                        "op": "update:T001",
+                        "to_status": "COMPLETE",
+                        "reason": "dep satisfied"
+                    }]
+                }
+            }),
+        )
+        .await
+        .expect("update t001");
+
+        let third = call(
+            &tool,
+            &ctx,
+            json!({
+                "action": "get_next_ready_todo",
+                "workspace_id": "ws-ready",
+                "session_id": "sess-ready",
+                "agent_id": "did:od:alice"
+            }),
+        )
+        .await
+        .expect("third next ready");
+        assert_eq!(third["item"]["todo_code"], "T002");
     }
 }

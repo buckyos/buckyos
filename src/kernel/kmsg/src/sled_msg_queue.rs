@@ -565,6 +565,29 @@ impl MsgQueueHandler for SledMsgQueue {
         Ok(messages)
     }
 
+    async fn handle_read_message(
+        &self,
+        queue_urn: &str,
+        cursor: MsgIndex,
+        length: usize,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Vec<Message>, RPCErrors> {
+        let _ = self.get_queue_meta(queue_urn)?;
+        let start = Self::message_key(queue_urn, cursor);
+        let end = Self::message_key(queue_urn, u64::MAX);
+        let mut messages = Vec::new();
+        for item in self.messages.range(start..=end) {
+            let (_, value) = item.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+            let msg = Self::decode_message(&value)?;
+            messages.push(msg);
+            if messages.len() >= length {
+                break;
+            }
+        }
+
+        Ok(messages)
+    }
+
     async fn handle_commit_ack(
         &self,
         sub_id: &str,
@@ -817,6 +840,14 @@ mod tests {
         queue
             .handle_commit_ack(&sub_id, 3, RPCContext::default())
             .await?;
+        let msgs = queue
+            .handle_fetch_messages(&sub_id, 1, false, RPCContext::default())
+            .await?;
+        assert!(msgs.is_empty());
+        let history = queue
+            .handle_read_message(&queue_urn, 1, 2, RPCContext::default())
+            .await?;
+        assert_eq!(history.iter().map(|m| m.index).collect::<Vec<_>>(), vec![1, 2]);
         let msgs = queue
             .handle_fetch_messages(&sub_id, 1, false, RPCContext::default())
             .await?;
