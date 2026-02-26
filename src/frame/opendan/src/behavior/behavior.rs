@@ -1,16 +1,17 @@
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use buckyos_api::{
-    features, AiMessage, AiPayload, AiccClient, Capability, CompleteRequest, CompleteResponse,
-    CompleteStatus, CompleteTaskOptions, CreateTaskOptions, ModelSpec, Requirements, TaskFilter,
-    TaskManagerClient, TaskStatus, AICC_SERVICE_SERVICE_NAME,
+    AICC_SERVICE_SERVICE_NAME, AiMessage, AiPayload, AiToolSpec, AiccClient, Capability,
+    CompleteRequest, CompleteResponse, CompleteStatus, CompleteTaskOptions, CreateTaskOptions,
+    ModelSpec, Requirements, TaskFilter, TaskManagerClient, TaskStatus, features,
+    value_to_object_map,
 };
 use log::warn;
-use serde_json::{json, Map, Value as Json};
+use serde_json::{Map, Value as Json, json};
 
 use super::config::{BehaviorConfig, BehaviorConfigError};
 use super::observability::{AgentWorkEvent, WorklogSink};
@@ -21,7 +22,7 @@ use super::tool_loop::{self, ToolContext};
 use super::types::*;
 use crate::agent_enviroment::AgentEnvironment;
 use crate::agent_session::TOOL_GET_SESSION;
-use crate::agent_tool::{ToolCall, AgentToolError, ToolManager, ToolSpec};
+use crate::agent_tool::{AgentToolError, ToolCall, ToolManager, ToolSpec};
 use crate::ai_runtime::TOOL_CREATE_SUB_AGENT;
 use crate::worklog::TOOL_WORKLOG_MANAGE;
 use crate::workspace::TOOL_TODO_MANAGE;
@@ -197,7 +198,6 @@ impl LLMBehavior {
             Self::update_track_from_llm_response(&mut track, &followup_resp, followup_task_id);
             llm_resp = followup_resp;
             usage = usage.add(usage2);
-           
         }
         if tool_loop_enabled && !llm_resp.tool_calls.is_empty() && rounds_left == 0 {
             return Err(LLMComputeError::Internal(
@@ -213,7 +213,7 @@ impl LLMBehavior {
             token_usage: usage,
             track,
             tool_trace,
-            raw_output: LLMOutput::Text(llm_resp.content)
+            raw_output: LLMOutput::Text(llm_resp.content),
         };
 
         Ok((behavior_result, tracking))
@@ -776,6 +776,15 @@ impl AiccRequestBuilder {
             .iter()
             .map(|m| AiMessage::new(chat_role_to_aicc_role(&m.role), m.content.clone()))
             .collect::<Vec<_>>();
+        let tool_calls = allowed_tools
+            .iter()
+            .map(|tool| AiToolSpec {
+                name: tool.name.clone(),
+                description: tool.description.clone(),
+                args_schema: value_to_object_map(tool.args_schema.clone()),
+                output_schema: tool.output_schema.clone(),
+            })
+            .collect::<Vec<_>>();
 
         let mut must_features = vec![features::JSON_OUTPUT.to_string()];
         if !allowed_tools.is_empty() {
@@ -808,12 +817,6 @@ impl AiccRequestBuilder {
         if let Some(schema) = cfg.response_schema.clone() {
             options.insert("response_schema".to_string(), schema);
         }
-        if !allowed_tools.is_empty() {
-            options.insert(
-                "tools".to_string(),
-                serde_json::to_value(allowed_tools).unwrap_or_else(|_| json!([])),
-            );
-        }
         if !tool_messages.is_empty() {
             options.insert(
                 "tool_messages".to_string(),
@@ -830,7 +833,14 @@ impl AiccRequestBuilder {
             Capability::LlmRouter,
             ModelSpec::new(cfg.model_policy.preferred.clone(), None),
             Requirements::new(must_features, None, None, None),
-            AiPayload::new(None, messages, vec![], None, Some(Json::Object(options))),
+            AiPayload::new(
+                None,
+                messages,
+                tool_calls,
+                vec![],
+                None,
+                Some(Json::Object(options)),
+            ),
             Some(format!(
                 "{}:{}:{}:{}",
                 input.trace.trace_id,
@@ -924,18 +934,14 @@ fn parse_aicc_summary(
     let mut model = fallback_model.to_string();
     let mut provider = "aicc".to_string();
     let mut latency_ms = 0_u64;
-    let mut tool_calls = Vec::<ToolCall>::new();
+    let mut tool_calls = parse_tool_choices_from_summary(summary.tool_calls)?;
     let mut content = summary.text.unwrap_or_default();
 
     if let Some(json_value) = summary.json {
-        if let Some(tool_calls_value) = json_value.get("tool_calls") {
-            tool_calls = serde_json::from_value::<Vec<ToolCall>>(tool_calls_value.clone())
-                .map_err(|err| {
-                    LLMComputeError::Provider(format!(
-                        "failed to parse tool_calls from aicc response: {}",
-                        err
-                    ))
-                })?;
+        if tool_calls.is_empty() {
+            if let Some(tool_calls_value) = json_value.get("tool_calls") {
+                tool_calls = parse_tool_calls_from_aicc(tool_calls_value)?;
+            }
         }
 
         if content.is_empty() && tool_calls.is_empty() {
@@ -957,6 +963,11 @@ fn parse_aicc_summary(
         if let Some(value) = extra.get("latency_ms").and_then(|v| v.as_u64()) {
             latency_ms = value;
         }
+        if tool_calls.is_empty() {
+            if let Some(tool_calls_value) = extra.get("tool_calls") {
+                tool_calls = parse_tool_calls_from_aicc(tool_calls_value)?;
+            }
+        }
     }
 
     Ok((
@@ -969,6 +980,122 @@ fn parse_aicc_summary(
             latency_ms,
         },
     ))
+}
+
+fn parse_tool_choices_from_summary(
+    tool_choices: Vec<buckyos_api::AiToolCall>,
+) -> Result<Vec<ToolCall>, LLMComputeError> {
+    let mut parsed = Vec::with_capacity(tool_choices.len());
+    for choice in tool_choices.into_iter() {
+        parsed.push(ToolCall {
+            name: choice.name,
+            args: Json::Object(choice.args.into_iter().collect()),
+            call_id: choice.call_id,
+        });
+    }
+    Ok(parsed)
+}
+
+fn parse_tool_calls_from_aicc(value: &Json) -> Result<Vec<ToolCall>, LLMComputeError> {
+    if let Ok(tool_calls) = serde_json::from_value::<Vec<ToolCall>>(value.clone()) {
+        return Ok(tool_calls);
+    }
+
+    let items = value
+        .as_array()
+        .ok_or_else(|| LLMComputeError::Provider("tool_calls must be an array".to_string()))?;
+    let mut parsed = Vec::with_capacity(items.len());
+
+    for (idx, item) in items.iter().enumerate() {
+        let item_obj = item.as_object().ok_or_else(|| {
+            LLMComputeError::Provider(format!("tool_calls[{idx}] must be an object"))
+        })?;
+
+        let call_id = item_obj
+            .get("call_id")
+            .or_else(|| item_obj.get("id"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| {
+                LLMComputeError::Provider(format!("tool_calls[{idx}].call_id is required"))
+            })?
+            .to_string();
+
+        if let Some(name) = item_obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            let args = item_obj
+                .get("args")
+                .cloned()
+                .unwrap_or_else(|| Json::Object(Map::new()));
+            if !args.is_object() {
+                return Err(LLMComputeError::Provider(format!(
+                    "tool_calls[{idx}].args must be an object"
+                )));
+            }
+            parsed.push(ToolCall {
+                name: name.to_string(),
+                args,
+                call_id,
+            });
+            continue;
+        }
+
+        let function = item_obj
+            .get("function")
+            .and_then(|v| v.as_object())
+            .ok_or_else(|| {
+                LLMComputeError::Provider(format!(
+                    "tool_calls[{idx}] missing name/args and function payload"
+                ))
+            })?;
+        let name = function
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| {
+                LLMComputeError::Provider(format!("tool_calls[{idx}].function.name is required"))
+            })?
+            .to_string();
+
+        let args_raw = function
+            .get("arguments")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let args = match args_raw {
+            Json::String(raw) => {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    Json::Object(Map::new())
+                } else {
+                    serde_json::from_str::<Json>(trimmed).map_err(|err| {
+                        LLMComputeError::Provider(format!(
+                            "tool_calls[{idx}].function.arguments is invalid json: {err}"
+                        ))
+                    })?
+                }
+            }
+            other => other,
+        };
+        if !args.is_object() {
+            return Err(LLMComputeError::Provider(format!(
+                "tool_calls[{idx}].function.arguments must decode to an object"
+            )));
+        }
+
+        parsed.push(ToolCall {
+            name,
+            args,
+            call_id,
+        });
+    }
+
+    Ok(parsed)
 }
 
 fn ai_usage_to_token_usage(usage: Option<&buckyos_api::AiUsage>) -> TokenUsage {

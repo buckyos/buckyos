@@ -136,9 +136,9 @@ impl MCPTool {
             .description
             .unwrap_or_else(|| format!("MCP tool `{}`", mcp_tool_name));
 
-        let client = reqwest::Client::builder()
-            .build()
-            .map_err(|err| AgentToolError::ExecFailed(format!("build mcp http client failed: {err}")))?;
+        let client = reqwest::Client::builder().build().map_err(|err| {
+            AgentToolError::ExecFailed(format!("build mcp http client failed: {err}"))
+        })?;
 
         Ok(Self {
             spec: ToolSpec {
@@ -190,7 +190,9 @@ impl AgentTool for MCPTool {
         let body = timeout(Duration::from_millis(self.timeout_ms), response.text())
             .await
             .map_err(|_| AgentToolError::Timeout)?
-            .map_err(|err| AgentToolError::ExecFailed(format!("read mcp response failed: {err}")))?;
+            .map_err(|err| {
+                AgentToolError::ExecFailed(format!("read mcp response failed: {err}"))
+            })?;
 
         if !status.is_success() {
             return Err(AgentToolError::ExecFailed(format!(
@@ -200,12 +202,15 @@ impl AgentTool for MCPTool {
             )));
         }
 
-        let payload: Json = serde_json::from_str(&body)
-            .map_err(|err| AgentToolError::ExecFailed(format!("invalid mcp response json: {err}")))?;
+        let payload: Json = serde_json::from_str(&body).map_err(|err| {
+            AgentToolError::ExecFailed(format!("invalid mcp response json: {err}"))
+        })?;
 
         if let Some(err_obj) = payload.get("error") {
             let msg = extract_jsonrpc_error_message(err_obj);
-            return Err(AgentToolError::ExecFailed(format!("mcp tool call error: {msg}")));
+            return Err(AgentToolError::ExecFailed(format!(
+                "mcp tool call error: {msg}"
+            )));
         }
 
         let result = payload.get("result").cloned().ok_or_else(|| {

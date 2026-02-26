@@ -4,7 +4,8 @@ use async_trait::async_trait;
 use name_lib::DID;
 use ndn_lib::ObjId;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::net::IpAddr;
 
 pub const AICC_SERVICE_UNIQUE_ID: &str = "aicc";
@@ -113,8 +114,15 @@ impl Requirements {
 pub struct AiToolSpec {
     pub name: String,
     pub description: String,
-    pub args_schema: Json,
-    pub output_schema: Json,
+    pub args_schema: HashMap<String, Value>,
+    pub output_schema: Value,
+}
+
+pub fn value_to_object_map(value: Value) -> HashMap<String, Value> {
+    match value {
+        Value::Object(map) => map.into_iter().collect(),
+        _ => HashMap::new(),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -136,7 +144,7 @@ pub struct AiPayload {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub messages: Vec<AiMessage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tool_calls: Vec<AiToolSpec>,
+    pub tool_specs: Vec<AiToolSpec>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<ResourceRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -149,6 +157,7 @@ impl AiPayload {
     pub fn new(
         text: Option<String>,
         messages: Vec<AiMessage>,
+        tool_calls: Vec<AiToolSpec>,
         resources: Vec<ResourceRef>,
         input_json: Option<Value>,
         options: Option<Value>,
@@ -156,6 +165,7 @@ impl AiPayload {
         Self {
             text,
             messages,
+            tool_specs: tool_calls,
             resources,
             input_json,
             options,
@@ -189,12 +199,21 @@ pub struct AiArtifact {
     pub metadata: Option<Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AiToolCall {
+    pub name: String,
+    pub args: HashMap<String, Value>,
+    pub call_id: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct AiResponseSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub json: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<AiToolCall>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<AiArtifact>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -509,6 +528,7 @@ mod tests {
                 Some(AiResponseSummary {
                     text: Some("mock result".to_string()),
                     json: Some(json!({"ok": true})),
+                    tool_calls: vec![],
                     artifacts: vec![],
                     usage: Some(AiUsage {
                         input_tokens: Some(4),
@@ -549,6 +569,7 @@ mod tests {
                     "user".to_string(),
                     "summarize this commit".to_string(),
                 )],
+                vec![],
                 vec![
                     ResourceRef::url(
                         "cyfs://example/object/1".to_string(),

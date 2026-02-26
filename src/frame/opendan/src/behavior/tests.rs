@@ -4,10 +4,10 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use buckyos_api::{
-    AiResponseSummary, AiUsage, AiccClient, CompleteRequest, CompleteResponse, CompleteStatus,
-    Task, TaskManagerClient, TaskPermissions, TaskStatus,
+    AiResponseSummary, AiToolCall, AiUsage, AiccClient, CompleteRequest, CompleteResponse,
+    CompleteStatus, Task, TaskManagerClient, TaskPermissions, TaskStatus, value_to_object_map,
 };
-use serde_json::{json, Value as Json};
+use serde_json::{Value as Json, json};
 use tempfile::tempdir;
 use tokio::fs;
 
@@ -122,13 +122,12 @@ async fn run_step_with_tool_followup() {
                 CompleteStatus::Succeeded,
                 Some(AiResponseSummary {
                     text: None,
-                    json: Some(json!({
-                        "tool_calls": [{
-                            "name": "tool.echo",
-                            "args": {"msg": "hi"},
-                            "call_id": "call-1"
-                        }]
-                    })),
+                    json: None,
+                    tool_calls: vec![AiToolCall {
+                        name: "tool.echo".to_string(),
+                        args: value_to_object_map(json!({"msg": "hi"})),
+                        call_id: "call-1".to_string(),
+                    }],
                     artifacts: vec![],
                     usage: Some(AiUsage {
                         input_tokens: Some(10),
@@ -164,6 +163,7 @@ async fn run_step_with_tool_followup() {
                 json: Some(
                     json!({"is_sleep":true,"next_behavior":"END","output":{"answer":"done"}}),
                 ),
+                tool_calls: vec![],
                 artifacts: vec![],
                 usage: Some(AiUsage {
                     input_tokens: Some(4),
@@ -380,6 +380,7 @@ async fn run_step_accepts_succeeded_response_with_string_task_id() {
         Some(AiResponseSummary {
             text: None,
             json: Some(json!({"is_sleep":true,"output":{"answer":"ok"}})),
+            tool_calls: vec![],
             artifacts: vec![],
             usage: Some(AiUsage {
                 input_tokens: Some(11),
@@ -462,6 +463,7 @@ async fn run_step_sets_behavior_task_as_parent_for_aicc_requests() {
         Some(AiResponseSummary {
             text: None,
             json: Some(json!({"is_sleep":true,"output":{"answer":"ok"}})),
+            tool_calls: vec![],
             artifacts: vec![],
             usage: Some(AiUsage {
                 input_tokens: Some(6),
@@ -545,12 +547,14 @@ process_rule: test_rule
             .and_then(|value| value.as_str()),
         Some("agent#default")
     );
-    assert!(requests_guard[0]
-        .payload
-        .options
-        .as_ref()
-        .and_then(|value| value.get("session_id"))
-        .is_none());
+    assert!(
+        requests_guard[0]
+            .payload
+            .options
+            .as_ref()
+            .and_then(|value| value.get("session_id"))
+            .is_none()
+    );
     drop(requests_guard);
 
     let tasks_guard = tasks.lock().expect("tasks lock");
@@ -574,9 +578,11 @@ process_rule: test_rule
             .and_then(|value| value.as_str()),
         None
     );
-    assert!(!tasks_guard
-        .values()
-        .any(|task| task.task_type == "llm_infer"));
+    assert!(
+        !tasks_guard
+            .values()
+            .any(|task| task.task_type == "llm_infer")
+    );
 }
 
 #[tokio::test]
@@ -587,6 +593,7 @@ async fn run_step_uses_session_id_as_task_rootid_when_present() {
         Some(AiResponseSummary {
             text: None,
             json: Some(json!({"is_sleep":true,"output":{"answer":"ok"}})),
+            tool_calls: vec![],
             artifacts: vec![],
             usage: Some(AiUsage {
                 input_tokens: Some(7),
@@ -756,6 +763,7 @@ async fn run_step_then_run_actions_followup() {
                     }],
                     "output": {"phase":"action_planned"}
                 })),
+                tool_calls: vec![],
                 artifacts: vec![],
                 usage: Some(AiUsage {
                     input_tokens: Some(12),
@@ -780,6 +788,7 @@ async fn run_step_then_run_actions_followup() {
                     "actions": [],
                     "output": {"final":"after_action"}
                 })),
+                tool_calls: vec![],
                 artifacts: vec![],
                 usage: Some(AiUsage {
                     input_tokens: Some(9),
@@ -927,15 +936,14 @@ async fn run_step_with_workshop_list_dir_then_plan_python_actions() {
             CompleteStatus::Succeeded,
             Some(AiResponseSummary {
                 text: None,
-                json: Some(json!({
-                    "tool_calls": [{
-                        "name": TOOL_EXEC_BASH,
-                        "args": {
-                            "command": "ls -1 todo"
-                        },
-                        "call_id": "call-list-todo"
-                    }]
-                })),
+                json: None,
+                tool_calls: vec![AiToolCall {
+                    name: TOOL_EXEC_BASH.to_string(),
+                    args: value_to_object_map(json!({
+                        "command": "ls -1 todo"
+                    })),
+                    call_id: "call-list-todo".to_string(),
+                }],
                 artifacts: vec![],
                 usage: Some(AiUsage {
                     input_tokens: Some(11),
@@ -986,6 +994,7 @@ async fn run_step_with_workshop_list_dir_then_plan_python_actions() {
                     }],
                     "output": {"phase":"actions_planned"}
                 })),
+                tool_calls: vec![],
                 artifacts: vec![],
                 usage: Some(AiUsage {
                     input_tokens: Some(9),

@@ -402,7 +402,9 @@ impl LocalWorkspaceManager {
                 .iter_mut()
                 .find(|item| item.workspace_id == local_workspace_id)
                 .ok_or_else(|| {
-                    AgentToolError::InvalidArgs(format!("workspace not found: {local_workspace_id}"))
+                    AgentToolError::InvalidArgs(format!(
+                        "workspace not found: {local_workspace_id}"
+                    ))
                 })?;
 
             if item.workspace_type != WorkspaceType::Local {
@@ -508,7 +510,9 @@ impl LocalWorkspaceManager {
                 .iter()
                 .find(|item| item.workspace_id == local_workspace_id)
                 .ok_or_else(|| {
-                    AgentToolError::InvalidArgs(format!("workspace not found: {local_workspace_id}"))
+                    AgentToolError::InvalidArgs(format!(
+                        "workspace not found: {local_workspace_id}"
+                    ))
                 })?;
 
             if item.workspace_type != WorkspaceType::Local {
@@ -532,7 +536,9 @@ impl LocalWorkspaceManager {
         let path_for_scan = path.clone();
         let stats = tokio::task::spawn_blocking(move || scan_directory_metadata(&path_for_scan))
             .await
-            .map_err(|err| AgentToolError::ExecFailed(format!("scan metadata join error: {err}")))??;
+            .map_err(|err| {
+                AgentToolError::ExecFailed(format!("scan metadata join error: {err}"))
+            })??;
 
         Ok(LocalWorkspaceSnapshot {
             workspace_id: local_workspace_id.to_string(),
@@ -754,7 +760,10 @@ impl LocalWorkspaceManager {
         })
     }
 
-    async fn persist_state_locked(&self, state: &LocalWorkspaceState) -> Result<(), AgentToolError> {
+    async fn persist_state_locked(
+        &self,
+        state: &LocalWorkspaceState,
+    ) -> Result<(), AgentToolError> {
         let index_path = self.cfg.workshop_root.join(WORKSHOP_INDEX_FILE_NAME);
         write_json_file(&index_path, &state.index).await?;
 

@@ -2,19 +2,19 @@ use crate::aicc::{
     AIComputeCenter, CostEstimate, Provider, ProviderError, ProviderInstance, ProviderStartResult,
     ResolvedRequest, TaskEventSink,
 };
-use crate::openai_protocol::merge_options;
-use anyhow::{anyhow, Context, Result};
+use crate::openai_protocol::{merge_options, merge_tool_calls};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use base64::engine::general_purpose;
 use base64::Engine as _;
+use base64::engine::general_purpose;
 use buckyos_api::{
-    features, AiArtifact, AiCost, AiResponseSummary, AiUsage, Capability, CompleteRequest, Feature,
-    ResourceRef,
+    AiArtifact, AiCost, AiResponseSummary, AiToolCall, AiUsage, Capability, CompleteRequest,
+    Feature, ResourceRef, features, value_to_object_map,
 };
 use log::{info, warn};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -195,11 +195,7 @@ impl OpenAIProvider {
                         .and_then(|value| value.as_str())
                 })
                 .unwrap_or("standard");
-            if quality == "hd" {
-                0.08
-            } else {
-                0.04
-            }
+            if quality == "hd" { 0.08 } else { 0.04 }
         } else {
             0.04
         };
@@ -309,6 +305,116 @@ impl OpenAIProvider {
         } else {
             Some(joined)
         }
+    }
+
+    fn extract_tool_choices(choice_message: &Value) -> Vec<AiToolCall> {
+        let mut tool_choices = Vec::new();
+        let Some(items) = choice_message
+            .get("tool_calls")
+            .and_then(|value| value.as_array())
+        else {
+            return tool_choices;
+        };
+
+        for (idx, item) in items.iter().enumerate() {
+            let Some(item_obj) = item.as_object() else {
+                warn!("aicc.openai tool_calls[{}] must be an object", idx);
+                continue;
+            };
+
+            let call_id = item_obj
+                .get("id")
+                .or_else(|| item_obj.get("call_id"))
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string());
+            let Some(call_id) = call_id else {
+                warn!("aicc.openai tool_calls[{}] is missing id/call_id", idx);
+                continue;
+            };
+
+            if let Some(name) = item_obj
+                .get("name")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                let args_value = item_obj
+                    .get("args")
+                    .cloned()
+                    .unwrap_or_else(|| Value::Object(Map::new()));
+                if !args_value.is_object() {
+                    warn!("aicc.openai tool_calls[{}].args must be an object", idx);
+                    continue;
+                }
+                tool_choices.push(AiToolCall {
+                    name: name.to_string(),
+                    args: value_to_object_map(args_value),
+                    call_id,
+                });
+                continue;
+            }
+
+            let Some(function_obj) = item_obj.get("function").and_then(|value| value.as_object())
+            else {
+                warn!(
+                    "aicc.openai tool_calls[{}] is missing name/args and function payload",
+                    idx
+                );
+                continue;
+            };
+
+            let Some(name) = function_obj
+                .get("name")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                warn!("aicc.openai tool_calls[{}].function.name is required", idx);
+                continue;
+            };
+
+            let args_raw = function_obj
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            let args = match args_raw {
+                Value::String(raw) => {
+                    let trimmed = raw.trim();
+                    if trimmed.is_empty() {
+                        Value::Object(Map::new())
+                    } else {
+                        match serde_json::from_str::<Value>(trimmed) {
+                            Ok(parsed) => parsed,
+                            Err(err) => {
+                                warn!(
+                                    "aicc.openai tool_calls[{}].function.arguments is invalid json: {}",
+                                    idx, err
+                                );
+                                continue;
+                            }
+                        }
+                    }
+                }
+                other => other,
+            };
+            if !args.is_object() {
+                warn!(
+                    "aicc.openai tool_calls[{}].function.arguments must decode to an object",
+                    idx
+                );
+                continue;
+            }
+
+            tool_choices.push(AiToolCall {
+                name: name.to_string(),
+                args: value_to_object_map(args),
+                call_id,
+            });
+        }
+
+        tool_choices
     }
 
     fn classify_api_error(status: StatusCode, message: String) -> ProviderError {
@@ -507,6 +613,7 @@ impl OpenAIProvider {
         if let Some(options) = req.payload.options.as_ref() {
             ignored_options = merge_options(&mut request_obj, options)?;
         }
+        merge_tool_calls(&mut request_obj, req.payload.tool_specs.as_slice())?;
         if !ignored_options.is_empty() {
             warn!(
                 "aicc.openai ignored unsupported llm options: instance_id={} model={} trace_id={:?} ignored={:?}",
@@ -561,6 +668,7 @@ impl OpenAIProvider {
             .cloned()
             .unwrap_or(Value::Null);
         let content = Self::extract_text_content(&message);
+        let tool_choices = Self::extract_tool_choices(&message);
 
         let usage = body.get("usage").map(|usage| AiUsage {
             input_tokens: usage.get("prompt_tokens").and_then(|value| value.as_u64()),
@@ -595,9 +703,6 @@ impl OpenAIProvider {
             Value::String(provider_model.to_string()),
         );
         extra.insert("latency_ms".to_string(), Value::from(latency_ms));
-        if let Some(tool_calls) = body.pointer("/choices/0/message/tool_calls").cloned() {
-            extra.insert("tool_calls".to_string(), tool_calls);
-        }
         extra.insert(
             "provider_io".to_string(),
             json!({
@@ -609,6 +714,7 @@ impl OpenAIProvider {
         let summary = AiResponseSummary {
             text: content,
             json: parsed_json,
+            tool_calls: tool_choices,
             artifacts: vec![],
             usage,
             cost,
@@ -743,6 +849,7 @@ impl OpenAIProvider {
         let summary = AiResponseSummary {
             text: revised_prompt,
             json: None,
+            tool_calls: vec![],
             artifacts,
             usage: None,
             cost: estimated_cost,
@@ -1178,6 +1285,7 @@ mod tests {
                 Some("hello world".to_string()),
                 vec![],
                 vec![],
+                vec![],
                 None,
                 options,
             ),
@@ -1212,6 +1320,26 @@ mod tests {
 
         let (_input_tokens, output_tokens) = OpenAIProvider::estimate_tokens(&request);
         assert_eq!(output_tokens, 512);
+    }
+
+    #[test]
+    fn extract_tool_choices_parses_openai_function_call() {
+        let message = json!({
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {
+                    "name": "workshop_exec_bash",
+                    "arguments": "{\"command\":\"ls -la\"}"
+                }
+            }]
+        });
+
+        let tool_choices = OpenAIProvider::extract_tool_choices(&message);
+        assert_eq!(tool_choices.len(), 1);
+        assert_eq!(tool_choices[0].name, "workshop_exec_bash");
+        assert_eq!(tool_choices[0].call_id, "call_1");
+        assert_eq!(tool_choices[0].args["command"], json!("ls -la"));
     }
 
     #[test]

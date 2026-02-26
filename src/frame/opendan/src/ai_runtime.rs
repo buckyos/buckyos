@@ -2177,7 +2177,9 @@ fn optional_string(args: &Json, key: &str) -> Result<Option<String>, AgentToolEr
                 Ok(Some(trimmed.to_string()))
             }
         }
-        Some(_) => Err(AgentToolError::InvalidArgs(format!("`{key}` must be a string"))),
+        Some(_) => Err(AgentToolError::InvalidArgs(format!(
+            "`{key}` must be a string"
+        ))),
     }
 }
 

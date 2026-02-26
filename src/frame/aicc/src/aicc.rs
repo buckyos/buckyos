@@ -1,12 +1,12 @@
 use crate::complete_request_queue::QUEUE_STATUS_QUEUED;
 use ::kRPC::*;
 use async_trait::async_trait;
-use base64::engine::general_purpose;
 use base64::Engine as _;
+use base64::engine::general_purpose;
 use buckyos_api::{
-    AiResponseSummary, AiccHandler, CancelResponse, Capability, CompleteRequest, CompleteResponse,
-    CompleteStatus, CreateTaskOptions, Feature, ResourceRef, TaskManagerClient, TaskStatus,
-    AICC_SERVICE_SERVICE_NAME,
+    AICC_SERVICE_SERVICE_NAME, AiResponseSummary, AiccHandler, CancelResponse, Capability,
+    CompleteRequest, CompleteResponse, CompleteStatus, CreateTaskOptions, Feature, ResourceRef,
+    TaskManagerClient, TaskStatus,
 };
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
@@ -563,7 +563,7 @@ pub trait Provider: Send + Sync {
         sink: Arc<dyn TaskEventSink>,
     ) -> std::result::Result<ProviderStartResult, ProviderError>;
     async fn cancel(&self, ctx: InvokeCtx, task_id: &str)
-        -> std::result::Result<(), ProviderError>;
+    -> std::result::Result<(), ProviderError>;
 }
 
 #[derive(Clone, Debug, Default)]
@@ -2232,6 +2232,7 @@ mod tests {
                 Some("hello".to_string()),
                 vec![],
                 vec![],
+                vec![],
                 None,
                 Some(json!({"temperature": 0.1})),
             ),
@@ -2280,6 +2281,7 @@ mod tests {
             vec![Ok(ProviderStartResult::Immediate(AiResponseSummary {
                 text: Some("ok".to_string()),
                 json: None,
+                tool_calls: vec![],
                 artifacts: vec![],
                 usage: None,
                 cost: None,

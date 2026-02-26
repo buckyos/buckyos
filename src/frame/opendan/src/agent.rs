@@ -83,7 +83,7 @@ impl RouteLinkReason {
             RouteLinkReason::SessionHint => "SESSION_HINT",
             RouteLinkReason::MsgRecordSession => "ACTIVE_SESSION",
             RouteLinkReason::DefaultFallback => "DEFAULT_FALLBACK",
-            RouteLinkReason::DefaultSession => "DEFAULT_SESSION"
+            RouteLinkReason::DefaultSession => "DEFAULT_SESSION",
         }
     }
 }
@@ -513,9 +513,7 @@ impl AIAgent {
                 .await?;
             debug!(
                 "agent.route_and_link_msg_pack: did={} record_id={} linked_sessions={:?}",
-                self.did,
-                record_id,
-                route_result.linked_session_ids,
+                self.did, record_id, route_result.linked_session_ids,
             );
 
             let session_input = SessionInputItem {
@@ -566,12 +564,13 @@ impl AIAgent {
                 reason: RouteLinkReason::MsgRecordSession,
             });
         }
-        let default_session_id = self.session_mgr.get_default_session_id(&record.get_target_did(), 
-            record.get_msg_tunnel_did());
+        let default_session_id = self
+            .session_mgr
+            .get_default_session_id(&record.get_target_did(), record.get_msg_tunnel_did());
         //let default_session_id = DEFAULT_SESSION_ID;
         return Ok(RouteDecision {
             linked_session_ids: vec![default_session_id],
-            reason: RouteLinkReason::DefaultSession
+            reason: RouteLinkReason::DefaultSession,
         });
     }
 
@@ -671,7 +670,10 @@ impl AIAgent {
             if llm_report.is_err() {
                 warn!(
                     "agent.behavior_loop_failed: did={} session={} behavior={} err={}",
-                    self.did, session_id, behavior_name, llm_report.err().unwrap()
+                    self.did,
+                    session_id,
+                    behavior_name,
+                    llm_report.err().unwrap()
                 );
                 self.set_running_session_to_wait(&session).await?;
                 break;
@@ -722,7 +724,7 @@ impl AIAgent {
         let mut current_step_count = 0;
         let mut result_report = BehaviorLoopReport::default();
         let mut session_id = String::new();
-        
+
         loop {
             if current_step_count >= remaining_steps {
                 break;
@@ -745,14 +747,16 @@ impl AIAgent {
             };
 
             //build input
-            let input = self.build_behavior_exec_input(&trace, behavior_name,behavior_cfg, session.clone()).await?;
+            let input = self
+                .build_behavior_exec_input(&trace, behavior_name, behavior_cfg, session.clone())
+                .await?;
             if input.is_none() {
                 result_report.keep_running = false;
                 break;
             }
             let input = input.unwrap();
             //run step
-            let (llm_result, tracking, action_results) = 
+            let (llm_result, tracking, action_results) =
                 self.run_behavior_step(&trace, behavior_cfg, &input).await?;
             //execute side effects
             // self.handle_replies(
@@ -763,7 +767,6 @@ impl AIAgent {
 
             self.apply_memory_updates(&trace, llm_result.set_memory.as_slice())
                 .await;
-
 
             let mut guard = session.lock().await;
             let step_summary = build_step_summary(
@@ -777,7 +780,7 @@ impl AIAgent {
             guard.append_worklog(step_summary.clone());
 
             let workspace_id = resolve_session_workspace_id(&guard);
-            
+
             self.apply_workspace_side_effects(
                 &trace,
                 session_id.as_str(),
@@ -787,9 +790,9 @@ impl AIAgent {
             )
             .await;
 
-        
             //update input used
-            self.commit_session_queue_msg_ack(session_id.as_str(), input.last_pulled_msg_index).await?;
+            self.commit_session_queue_msg_ack(session_id.as_str(), input.last_pulled_msg_index)
+                .await?;
             current_step_count += 1;
 
             if llm_result.next_behavior.is_some() {
@@ -803,8 +806,7 @@ impl AIAgent {
                 break;
             } else {
                 guard.step_index += 1;
-            } 
-            
+            }
         }
 
         Ok(result_report)
@@ -941,7 +943,6 @@ impl AIAgent {
         }
     }
 
-
     fn build_msg_center_event_patterns(owner: &DID) -> Vec<String> {
         let owner_token = owner.to_raw_host_name();
         MSG_CENTER_EVENT_BOX_NAMES
@@ -1065,7 +1066,6 @@ impl AIAgent {
         });
         PulledMsg { session_id, record }
     }
-
 
     fn build_session_queue_binding(&self, session_id: &str) -> SessionQueueBinding {
         let session_token = Self::sanitize_kevent_token(session_id);
@@ -1239,7 +1239,11 @@ impl AIAgent {
         Ok(())
     }
 
-    async fn commit_session_queue_msg_ack(&self, session_id: &str, last_pulled_msg_index: u32) -> Result<()> {
+    async fn commit_session_queue_msg_ack(
+        &self,
+        session_id: &str,
+        last_pulled_msg_index: u32,
+    ) -> Result<()> {
         let Some(msg_queue) = self.deps.msg_queue.as_ref() else {
             return Err(anyhow!("message queue dependency not available"));
         };
@@ -1247,7 +1251,9 @@ impl AIAgent {
             return Err(anyhow!("failed to ensure session queue binding"));
         };
         let queue_urn = binding.msg_queue_urn.as_str();
-        msg_queue.commit_ack(queue_urn, last_pulled_msg_index as u64).await?;
+        msg_queue
+            .commit_ack(queue_urn, last_pulled_msg_index as u64)
+            .await?;
         Ok(())
     }
 
@@ -1312,15 +1318,16 @@ impl AIAgent {
         let mut last_index = None::<u64>;
         for msg in messages {
             last_index = Some(msg.index);
-            let item = serde_json::from_slice::<SessionInputItem>(msg.payload.as_slice())
-                .map_err(|err| {
+            let item = serde_json::from_slice::<SessionInputItem>(msg.payload.as_slice()).map_err(
+                |err| {
                     anyhow!(
                         "deserialize session input item failed: session={} queue={} err={}",
                         session_id,
                         queue_urn,
                         err
                     )
-                })?;
+                },
+            )?;
             output.push(item);
         }
 

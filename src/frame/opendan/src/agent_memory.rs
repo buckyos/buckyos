@@ -393,7 +393,9 @@ impl AgentMemory {
         self.read_jsonl_map(&self.inner.state_path).await
     }
 
-    async fn read_latest_from_log(&self) -> Result<HashMap<String, MemoryEnvelope>, AgentToolError> {
+    async fn read_latest_from_log(
+        &self,
+    ) -> Result<HashMap<String, MemoryEnvelope>, AgentToolError> {
         self.read_jsonl_map(&self.inner.log_path).await
     }
 

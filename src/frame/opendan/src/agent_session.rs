@@ -107,8 +107,6 @@ impl Default for SessionExecInput {
     }
 }
 
-
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 struct SessionRuntimeMeta {
@@ -346,10 +344,7 @@ impl AgentSession {
         } else {
             Some(id.clone())
         };
-        let item = SessionInputItem {
-            msg,
-            event_id,
-        };
+        let item = SessionInputItem { msg, event_id };
         self.new_msgs.push(item);
         self.updated_at_ms = now_ms();
         id
@@ -371,8 +366,6 @@ impl AgentSession {
         self.updated_at_ms = now_ms();
         id
     }
-
-  
 
     pub fn mark_msg_arrived(&mut self, item: &SessionInputItem) {
         self.update_state_on_input_arrived(item, SessionState::WaitForMsg);
@@ -543,7 +536,11 @@ impl AgentSession {
         })
     }
 
-    fn update_state_on_input_arrived(&mut self, _item: &SessionInputItem, _wait_state: SessionState) {
+    fn update_state_on_input_arrived(
+        &mut self,
+        _item: &SessionInputItem,
+        _wait_state: SessionState,
+    ) {
         self.updated_at_ms = now_ms();
         if self.state == SessionState::Wait || self.state == SessionState::Sleep {
             self.state = SessionState::Ready;
@@ -593,12 +590,20 @@ impl AgentSessionMgr {
         &self.sessions_root
     }
 
-    pub fn get_default_session_id(&self,target:&DID,tunnel_did:Option<DID>) -> String {
+    pub fn get_default_session_id(&self, target: &DID, tunnel_did: Option<DID>) -> String {
         if let Some(tunnel_did) = tunnel_did {
-            return format!("session-{}-{}-{}",self.owner_agent.as_str(),
-            target.to_raw_host_name(),tunnel_did.to_raw_host_name());
+            return format!(
+                "session-{}-{}-{}",
+                self.owner_agent.as_str(),
+                target.to_raw_host_name(),
+                tunnel_did.to_raw_host_name()
+            );
         }
-        format!("session-{}-{}",self.owner_agent.as_str(),target.to_raw_host_name())
+        format!(
+            "session-{}-{}",
+            self.owner_agent.as_str(),
+            target.to_raw_host_name()
+        )
     }
 
     pub async fn ensure_default_session(&self) -> Result<Arc<Mutex<AgentSession>>, AgentToolError> {
@@ -642,7 +647,11 @@ impl AgentSessionMgr {
         self.sessions.read().await.get(session_id.as_str()).cloned()
     }
 
-    pub async fn append_msg(&self, session_id: &str, payload: Json) -> Result<String, AgentToolError> {
+    pub async fn append_msg(
+        &self,
+        session_id: &str,
+        payload: Json,
+    ) -> Result<String, AgentToolError> {
         let session = self.ensure_session(session_id, None).await?;
         let mut guard = session.lock().await;
         let id = guard.append_msg(payload);
@@ -650,14 +659,17 @@ impl AgentSessionMgr {
         Ok(id)
     }
 
-    pub async fn append_event(&self, session_id: &str, payload: Json) -> Result<String, AgentToolError> {
+    pub async fn append_event(
+        &self,
+        session_id: &str,
+        payload: Json,
+    ) -> Result<String, AgentToolError> {
         let session = self.ensure_session(session_id, None).await?;
         let mut guard = session.lock().await;
         let id = guard.append_event(payload);
         self.save_session_locked(&guard).await?;
         Ok(id)
     }
-
 
     pub async fn try_wakeup_session_by_input_item(
         &self,
@@ -1079,7 +1091,6 @@ fn json_matches_filter(input: &Json, filter: &Json) -> bool {
         _ => input == filter,
     }
 }
-
 
 fn is_null_like(value: &Json) -> bool {
     match value {

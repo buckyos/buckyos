@@ -1,4 +1,5 @@
 use crate::aicc::ProviderError;
+use buckyos_api::AiToolSpec;
 use serde_json::{json, Map, Value};
 
 const OPENAI_OPTION_ALLOWLIST: &[&str] = &[
@@ -183,6 +184,21 @@ fn normalize_tools_option(tools: &Value) -> Result<Value, ProviderError> {
     Ok(Value::Array(normalized))
 }
 
+pub(crate) fn merge_tool_calls(
+    target: &mut Map<String, Value>,
+    tool_calls: &[AiToolSpec],
+) -> Result<(), ProviderError> {
+    if tool_calls.is_empty() {
+        return Ok(());
+    }
+
+    let raw_tools = serde_json::to_value(tool_calls).map_err(|err| {
+        ProviderError::fatal(format!("failed to serialize payload.tool_calls: {err}"))
+    })?;
+    target.insert("tools".to_string(), normalize_tools_option(&raw_tools)?);
+    Ok(())
+}
+
 fn convert_response_schema_option(schema: &Value) -> Result<Value, ProviderError> {
     if !schema.is_object() {
         return Err(ProviderError::fatal("response_schema must be an object"));
@@ -241,6 +257,7 @@ pub(crate) fn merge_options(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use buckyos_api::{AiToolSpec, value_to_object_map};
     use serde_json::json;
 
     #[test]
@@ -431,6 +448,43 @@ mod tests {
                     "ok": { "type": "boolean" }
                 },
                 "required": ["ok"]
+            }))
+        );
+    }
+
+    #[test]
+    fn merge_tool_calls_populates_tools_from_payload() {
+        let mut target = Map::new();
+        merge_tool_calls(
+            &mut target,
+            &[AiToolSpec {
+                name: "workshop_exec_bash".to_string(),
+                description: "Run shell command".to_string(),
+                args_schema: value_to_object_map(json!({
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "string" }
+                    }
+                })),
+                output_schema: json!({"type": "object"}),
+            }],
+        )
+        .expect("merge tool calls should work");
+        let target_value = Value::Object(target);
+
+        assert_eq!(
+            target_value
+                .pointer("/tools/0/function/name")
+                .and_then(|value| value.as_str()),
+            Some("workshop_exec_bash")
+        );
+        assert_eq!(
+            target_value.pointer("/tools/0/function/parameters"),
+            Some(&json!({
+                "type": "object",
+                "properties": {
+                    "command": { "type": "string" }
+                }
             }))
         );
     }

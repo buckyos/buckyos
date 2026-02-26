@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use crate::aicc::ProviderError;
-use buckyos_api::{CompleteRequest, ResourceRef};
+use buckyos_api::{AiToolSpec, CompleteRequest, ResourceRef};
 use serde_json::{json, Map, Value};
 
 const CLAUDE_OPTION_ALLOWLIST: &[&str] = &[
@@ -203,6 +203,21 @@ fn normalize_tools_option(tools: &Value) -> Result<Value, ProviderError> {
     }
 
     Ok(Value::Array(normalized))
+}
+
+pub(crate) fn merge_tool_calls(
+    target: &mut Map<String, Value>,
+    tool_calls: &[AiToolSpec],
+) -> Result<(), ProviderError> {
+    if tool_calls.is_empty() {
+        return Ok(());
+    }
+
+    let raw_tools = serde_json::to_value(tool_calls).map_err(|err| {
+        ProviderError::fatal(format!("failed to serialize payload.tool_calls: {err}"))
+    })?;
+    target.insert("tools".to_string(), normalize_tools_option(&raw_tools)?);
+    Ok(())
 }
 
 fn normalize_stop_sequences_option(stop: &Value) -> Result<Value, ProviderError> {
@@ -708,6 +723,8 @@ pub(crate) fn convert_complete_request(
         }
     }
 
+    merge_tool_calls(&mut request, req.payload.tool_specs.as_slice())?;
+
     if !request.contains_key("max_tokens") {
         request.insert("max_tokens".to_string(), Value::from(DEFAULT_MAX_TOKENS));
     }
@@ -718,7 +735,10 @@ pub(crate) fn convert_complete_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buckyos_api::{AiMessage, AiPayload, Capability, CompleteRequest, ModelSpec, Requirements};
+    use buckyos_api::{
+        AiMessage, AiPayload, AiToolSpec, Capability, CompleteRequest, ModelSpec, Requirements,
+        value_to_object_map,
+    };
 
     fn base_request() -> CompleteRequest {
         CompleteRequest::new(
@@ -728,7 +748,7 @@ mod tests {
                 Some("claude-3-5-sonnet-20241022".to_string()),
             ),
             Requirements::default(),
-            AiPayload::new(None, vec![], vec![], None, None),
+            AiPayload::new(None, vec![], vec![], vec![], None, None),
             None,
         )
     }
@@ -926,5 +946,37 @@ mod tests {
         merge_options(&mut target, &options).expect("merge options should work");
 
         assert_eq!(target.get("stop_sequences"), Some(&json!(["END", "STOP"])));
+    }
+
+    #[test]
+    fn convert_complete_request_prefers_payload_tool_calls_over_option_tools() {
+        let mut req = base_request();
+        req.payload.messages = vec![AiMessage::new("user".to_string(), "hello".to_string())];
+        req.payload.tool_specs = vec![AiToolSpec {
+            name: "payload_tool".to_string(),
+            description: "from payload".to_string(),
+            args_schema: value_to_object_map(json!({"type":"object"})),
+            output_schema: json!({"type":"object"}),
+        }];
+        req.payload.options = Some(json!({
+            "tools": [
+                {
+                    "name": "option_tool",
+                    "description": "from options",
+                    "args_schema": { "type": "object" }
+                }
+            ]
+        }));
+
+        let (request, _ignored) = convert_complete_request(&req, "claude-3-7-sonnet-20250219")
+            .expect("convert should work");
+        let request_value = Value::Object(request);
+
+        assert_eq!(
+            request_value
+                .pointer("/tools/0/name")
+                .and_then(|value| value.as_str()),
+            Some("payload_tool")
+        );
     }
 }

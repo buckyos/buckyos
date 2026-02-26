@@ -14,7 +14,7 @@ use super::local_workspace::{
     SessionWorkspaceBinding, WorkshopIndex, WorkshopWorkspaceRecord,
 };
 use super::todo::{TodoTool, TodoToolConfig, TOOL_TODO_MANAGE};
-use crate::agent_tool::{AgentTool, MCPToolConfig, AgentToolError, ToolManager, ToolSpec};
+use crate::agent_tool::{AgentTool, AgentToolError, MCPToolConfig, ToolManager, ToolSpec};
 use crate::behavior::TraceCtx;
 use crate::worklog::{WorklogTool, WorklogToolConfig, TOOL_WORKLOG_MANAGE};
 
@@ -642,20 +642,21 @@ impl AgentTool for ExecBashTool {
                 AgentToolError::InvalidArgs("env must be an object of string values".to_string())
             })?;
             for (key, value) in env_obj {
-                let value = value
-                    .as_str()
-                    .ok_or_else(|| AgentToolError::InvalidArgs(format!("env.{key} must be a string")))?;
+                let value = value.as_str().ok_or_else(|| {
+                    AgentToolError::InvalidArgs(format!("env.{key} must be a string"))
+                })?;
                 command_builder.env(key, value);
             }
         }
 
         let started = Instant::now();
-        let output =
-            match timeout(Duration::from_millis(timeout_ms), command_builder.output()).await {
-                Ok(result) => result
-                    .map_err(|err| AgentToolError::ExecFailed(format!("wait bash failed: {err}")))?,
-                Err(_) => return Err(AgentToolError::Timeout),
-            };
+        let output = match timeout(Duration::from_millis(timeout_ms), command_builder.output())
+            .await
+        {
+            Ok(result) => result
+                .map_err(|err| AgentToolError::ExecFailed(format!("wait bash failed: {err}")))?,
+            Err(_) => return Err(AgentToolError::Timeout),
+        };
 
         let duration_ms = started.elapsed().as_millis() as u64;
         let (stdout, stdout_truncated) = truncate_bytes(
@@ -790,9 +791,9 @@ impl AgentTool for EditFileTool {
         }
 
         if let Some(parent) = abs_path.parent() {
-            fs::create_dir_all(parent)
-                .await
-                .map_err(|err| AgentToolError::ExecFailed(format!("create parent dir failed: {err}")))?;
+            fs::create_dir_all(parent).await.map_err(|err| {
+                AgentToolError::ExecFailed(format!("create parent dir failed: {err}"))
+            })?;
         }
         fs::write(&abs_path, updated_content.as_bytes())
             .await
@@ -920,7 +921,9 @@ fn require_string(args: &Json, key: &str) -> Result<String, AgentToolError> {
         .map(|v| v.to_string())
         .ok_or_else(|| AgentToolError::InvalidArgs(format!("missing or invalid `{key}`")))?;
     if value.is_empty() {
-        return Err(AgentToolError::InvalidArgs(format!("`{key}` cannot be empty")));
+        return Err(AgentToolError::InvalidArgs(format!(
+            "`{key}` cannot be empty"
+        )));
     }
     Ok(value)
 }
@@ -1221,9 +1224,14 @@ fn try_extract_json_block(content: &str) -> Option<String> {
     None
 }
 
-fn resolve_path_in_workspace(workspace_root: &Path, raw_path: &str) -> Result<PathBuf, AgentToolError> {
+fn resolve_path_in_workspace(
+    workspace_root: &Path,
+    raw_path: &str,
+) -> Result<PathBuf, AgentToolError> {
     if raw_path.trim().is_empty() {
-        return Err(AgentToolError::InvalidArgs("path cannot be empty".to_string()));
+        return Err(AgentToolError::InvalidArgs(
+            "path cannot be empty".to_string(),
+        ));
     }
     let user_path = Path::new(raw_path);
     let candidate = if user_path.is_absolute() {

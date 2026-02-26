@@ -48,12 +48,8 @@ impl PromptBuilder {
     ) -> Result<PromptPack, String> {
         let env_context = build_env_context(input);
 
-        let process_rules = render_section(
-            cfg.process_rule.as_str(),
-            &env_context,
-            session.clone(),
-        )
-        .await?;
+        let process_rules =
+            render_section(cfg.process_rule.as_str(), &env_context, session.clone()).await?;
 
         let role_text = render_section(
             format!("{}\n\n{}", input.role_md, input.self_md).as_str(),
@@ -85,7 +81,10 @@ impl PromptBuilder {
             ),
         ];
         if !policy_text.is_empty() {
-            system_parts.push(format!("<<policy>>\n{}\n<</policy>>", sanitize_text(policy_text.as_str())));
+            system_parts.push(format!(
+                "<<policy>>\n{}\n<</policy>>",
+                sanitize_text(policy_text.as_str())
+            ));
         }
         system_parts.push(format!(
             "<<output_protocol>>\n{}\n<</output_protocol>>",
@@ -98,12 +97,8 @@ impl PromptBuilder {
 
         let system_role_prompt_text = system_parts.join("\n\n");
 
-        let memory_prompt_text = build_memory_prompt_text(
-            input,
-            &system_role_prompt_text,
-            tokenizer,
-        )
-        .await;
+        let memory_prompt_text =
+            build_memory_prompt_text(input, &system_role_prompt_text, tokenizer).await;
 
         let messages = vec![
             ChatMessage {
@@ -134,7 +129,10 @@ fn build_env_context(input: &BehaviorExecInput) -> HashMap<String, Json> {
         ctx.insert("session_id".to_string(), Json::String(sid.clone()));
         ctx.insert("loop.session_id".to_string(), Json::String(sid.clone()));
     }
-    ctx.insert("step.index".to_string(), Json::String(input.trace.step_idx.to_string()));
+    ctx.insert(
+        "step.index".to_string(),
+        Json::String(input.trace.step_idx.to_string()),
+    );
     ctx
 }
 
@@ -485,15 +483,9 @@ mod tests {
             session: None,
         };
 
-        let prompt = PromptBuilder::build(
-            &input,
-            &[],
-            &input.behavior_cfg,
-            &MockTokenizer,
-            None,
-        )
-        .await
-        .expect("build prompt");
+        let prompt = PromptBuilder::build(&input, &[], &input.behavior_cfg, &MockTokenizer, None)
+            .await
+            .expect("build prompt");
 
         let system = prompt
             .messages

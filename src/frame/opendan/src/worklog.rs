@@ -186,7 +186,11 @@ impl AgentTool for WorklogTool {
 }
 
 impl WorklogTool {
-    async fn call_append_worklog(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
+    async fn call_append_worklog(
+        &self,
+        ctx: &TraceCtx,
+        args: Json,
+    ) -> Result<Json, AgentToolError> {
         let input = AppendRecordInput::parse(ctx, &args)?;
         let inserted = self
             .run_db("worklog append", move |conn| insert_record(conn, input))
@@ -279,7 +283,9 @@ impl WorklogTool {
             .run_db("worklog get", move |conn| get_record(conn, &id_for_db))
             .await?;
         let Some(record) = got else {
-            return Err(AgentToolError::InvalidArgs(format!("worklog `{id}` not found")));
+            return Err(AgentToolError::InvalidArgs(format!(
+                "worklog `{id}` not found"
+            )));
         };
         Ok(json!({
             "ok": true,
@@ -450,9 +456,9 @@ struct AppendRecordInput {
 impl AppendRecordInput {
     fn parse(ctx: &TraceCtx, args: &Json) -> Result<Self, AgentToolError> {
         let raw = args.get("record").unwrap_or(args);
-        let map = raw
-            .as_object()
-            .ok_or_else(|| AgentToolError::InvalidArgs("`record` must be a json object".to_string()))?;
+        let map = raw.as_object().ok_or_else(|| {
+            AgentToolError::InvalidArgs("`record` must be a json object".to_string())
+        })?;
 
         let now_ms = now_ms();
         let timestamp = map
@@ -912,16 +918,18 @@ fn insert_record(
         .map_err(|err| AgentToolError::ExecFailed(format!("serialize record failed: {err}")))?;
     let payload_json = serde_json::to_string(&record.payload)
         .map_err(|err| AgentToolError::ExecFailed(format!("serialize payload failed: {err}")))?;
-    let impact_domain_json = serde_json::to_string(&record.impact.domain)
-        .map_err(|err| AgentToolError::ExecFailed(format!("serialize impact domain failed: {err}")))?;
+    let impact_domain_json = serde_json::to_string(&record.impact.domain).map_err(|err| {
+        AgentToolError::ExecFailed(format!("serialize impact domain failed: {err}"))
+    })?;
     let artifacts_json = serde_json::to_string(&record.artifacts)
         .map_err(|err| AgentToolError::ExecFailed(format!("serialize artifacts failed: {err}")))?;
     let tags_json = serde_json::to_string(&record.tags)
         .map_err(|err| AgentToolError::ExecFailed(format!("serialize tags failed: {err}")))?;
     let error_json = serde_json::to_string(&record.error)
         .map_err(|err| AgentToolError::ExecFailed(format!("serialize error failed: {err}")))?;
-    let prompt_view_json = serde_json::to_string(&record.prompt_view)
-        .map_err(|err| AgentToolError::ExecFailed(format!("serialize prompt view failed: {err}")))?;
+    let prompt_view_json = serde_json::to_string(&record.prompt_view).map_err(|err| {
+        AgentToolError::ExecFailed(format!("serialize prompt view failed: {err}"))
+    })?;
 
     tx.execute(
         r#"
@@ -1105,9 +1113,9 @@ fn list_records(conn: &Connection, filters: &ListFilters) -> Result<ListResult, 
     }
 
     let count_sql = format!("SELECT COUNT(1) FROM worklogs{}", where_sql);
-    let mut count_stmt = conn
-        .prepare(&count_sql)
-        .map_err(|err| AgentToolError::ExecFailed(format!("prepare worklog count failed: {err}")))?;
+    let mut count_stmt = conn.prepare(&count_sql).map_err(|err| {
+        AgentToolError::ExecFailed(format!("prepare worklog count failed: {err}"))
+    })?;
     let total = count_stmt
         .query_row(params_from_iter(where_params.clone()), |row| {
             row.get::<_, i64>(0)
@@ -1902,7 +1910,9 @@ fn parse_prompt_view(value: Option<&Json>) -> Result<Option<WorklogPromptView>, 
         .get("digest")
         .and_then(|v| v.as_str())
         .map(|v| sanitize_digest(v, MAX_DIGEST_CHARS))
-        .ok_or_else(|| AgentToolError::InvalidArgs("`prompt_view.digest` must be string".to_string()))?;
+        .ok_or_else(|| {
+            AgentToolError::InvalidArgs("`prompt_view.digest` must be string".to_string())
+        })?;
     let detail = obj.get("detail").cloned().unwrap_or_else(|| json!({}));
     Ok(Some(WorklogPromptView { digest, detail }))
 }
@@ -2023,7 +2033,9 @@ fn require_string(args: &Json, key: &str) -> Result<String, AgentToolError> {
         .map(|v| v.to_string())
         .ok_or_else(|| AgentToolError::InvalidArgs(format!("missing or invalid `{key}`")))?;
     if value.is_empty() {
-        return Err(AgentToolError::InvalidArgs(format!("`{key}` cannot be empty")));
+        return Err(AgentToolError::InvalidArgs(format!(
+            "`{key}` cannot be empty"
+        )));
     }
     Ok(value)
 }
@@ -2046,15 +2058,16 @@ fn optional_u64(args: &Json, key: &str) -> Result<Option<u64>, AgentToolError> {
     let Some(value) = args.get(key) else {
         return Ok(None);
     };
-    let value = value
-        .as_u64()
-        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be an unsigned integer")))?;
+    let value = value.as_u64().ok_or_else(|| {
+        AgentToolError::InvalidArgs(format!("`{key}` must be an unsigned integer"))
+    })?;
     Ok(Some(value))
 }
 
 fn u64_to_usize(value: u64, key: &str) -> Result<usize, AgentToolError> {
-    usize::try_from(value)
-        .map_err(|_| AgentToolError::InvalidArgs(format!("`{key}` is too large for current platform")))
+    usize::try_from(value).map_err(|_| {
+        AgentToolError::InvalidArgs(format!("`{key}` is too large for current platform"))
+    })
 }
 
 fn u64_to_u32(value: u64) -> Option<u32> {

@@ -65,7 +65,10 @@ impl AgentEnvironment {
     }
 
     // Backward compatibility for old call sites.
-    pub fn register_basic_workshop_tools(&self, tool_mgr: &ToolManager) -> Result<(), AgentToolError> {
+    pub fn register_basic_workshop_tools(
+        &self,
+        tool_mgr: &ToolManager,
+    ) -> Result<(), AgentToolError> {
         self.register_workshop_tools(tool_mgr)
     }
 
@@ -92,12 +95,10 @@ impl AgentEnvironment {
         F: Fn(&str) -> Fut,
         Fut: Future<Output = Result<Option<String>, AgentToolError>>,
     {
-
         // 1) Expand __OPENDAN_ENV(path)__ from env_context only.
         // 2) Replace {{key}} with env_context value first.
         // 3) If env_context misses, call load_value(key); None => empty string.
-        let (expanded_input, env_ok, env_fail) =
-            expand_opendan_env_tokens(input, env_context);
+        let (expanded_input, env_ok, env_fail) = expand_opendan_env_tokens(input, env_context);
         let escaped = escape_template_literals(&expanded_input);
 
         let mut rebuilt_template = String::new();
@@ -131,7 +132,9 @@ impl AgentEnvironment {
             } else {
                 resolve_env_context_value(env_context, placeholder_raw)
                     .and_then(json_value_to_compact_text)
-                    .or(clean_optional_text(load_value(placeholder_raw).await?.as_deref()))
+                    .or(clean_optional_text(
+                        load_value(placeholder_raw).await?.as_deref(),
+                    ))
             };
             if !placeholder_raw.is_empty() {
                 if resolved.is_some() {
@@ -541,9 +544,10 @@ fn session_value_by_key(session: &AgentSession, key: &str) -> Option<String> {
     }
     if k.starts_with("workspace_info.") {
         let path = k.strip_prefix("workspace_info.").unwrap_or(k);
-        return session.workspace_info.as_ref().and_then(|ws| {
-            resolve_json_path(ws, path).and_then(json_value_to_compact_text)
-        });
+        return session
+            .workspace_info
+            .as_ref()
+            .and_then(|ws| resolve_json_path(ws, path).and_then(json_value_to_compact_text));
     }
     None
 }
@@ -698,7 +702,10 @@ mod tests {
     #[tokio::test]
     async fn render_text_template_expands_env_and_loads_value() {
         let mut env_context = HashMap::<String, Json>::new();
-        env_context.insert("params".to_string(), json!({ "todo": "T01","priority": "high" }));
+        env_context.insert(
+            "params".to_string(),
+            json!({ "todo": "T01","priority": "high" }),
+        );
 
         let result = AgentEnvironment::render_text_template(
             "{{workspace/todolist/__OPENDAN_ENV(params.todo)__}}",
@@ -858,7 +865,10 @@ mod tests {
         .await
         .expect("render text template");
 
-        assert_eq!(result.rendered, "env_ok=E1 env_fail= brace_ok=OK brace_fail=");
+        assert_eq!(
+            result.rendered,
+            "env_ok=E1 env_fail= brace_ok=OK brace_fail="
+        );
         assert_eq!(result.env_expanded, 1);
         assert_eq!(result.env_not_found, 1);
         assert_eq!(result.successful_count, 1);

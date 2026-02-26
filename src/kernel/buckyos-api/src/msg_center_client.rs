@@ -196,8 +196,8 @@ pub struct MsgRecord {
     #[serde(default)]
     pub msg_kind: MsgObjKind,
     pub state: MsgState,
-    pub from:DID,
-    pub to:DID,
+    pub from: DID,
+    pub to: DID,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -247,7 +247,7 @@ impl MsgRecordWithObject {
 
     pub fn get_target_did(&self) -> DID {
         match self.record.msg_kind {
-            MsgObjKind::GroupMsg => self.record.to.clone(), 
+            MsgObjKind::GroupMsg => self.record.to.clone(),
             _ => self.record.from.clone(),
         }
     }
@@ -255,7 +255,6 @@ impl MsgRecordWithObject {
     pub fn get_msg_tunnel_did(&self) -> Option<DID> {
         unimplemented!();
     }
-
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
