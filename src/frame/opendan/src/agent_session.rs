@@ -118,7 +118,6 @@ pub struct AgentSession {
 
     pub msg_kmsgqueue_curosr:u64,
     pub event_kmsgqueue_curosr:u64,
-    pub runtime_values: HashMap<String, Json>,
 
     pub cwd: PathBuf,
     pub workspace_info: Option<Json>,
@@ -156,7 +155,6 @@ impl AgentSession {
             msg_kmsgqueue_curosr: 0,
             event_kmsgqueue_curosr: 0,
             cwd: PathBuf::new(),
-            runtime_values: HashMap::new(),
             workspace_info: None,
             local_workspace_id: None,
             worklog: vec![],
@@ -210,7 +208,6 @@ impl AgentSession {
             msg_kmsgqueue_curosr: 0,
             event_kmsgqueue_curosr: 0,
             workspace_info: runtime_meta.workspace_info,
-            runtime_values: HashMap::new(),
             local_workspace_id: normalize_optional_string(runtime_meta.local_workspace_id),
             worklog: runtime_meta.worklog,
             cost_trace: normalize_json_object(runtime_meta.cost_trace),

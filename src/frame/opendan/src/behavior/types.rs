@@ -55,7 +55,6 @@ pub struct BehaviorExecInput {
     pub trace: TraceCtx,
     pub input_prompt: String,
     pub last_step_prompt: String,
-    pub last_pulled_msg_index: u32,
 
     pub role_md: String,
     pub self_md: String,
@@ -74,7 +73,6 @@ impl std::fmt::Debug for BehaviorExecInput {
             .field("trace", &self.trace)
             .field("input_prompt", &self.input_prompt)
             .field("last_step_prompt", &self.last_step_prompt)
-            .field("last_pulled_msg_index", &self.last_pulled_msg_index)
             .field("role_md", &self.role_md)
             .field("self_md", &self.self_md)
             .field("behavior_prompt", &self.behavior_prompt)
@@ -91,7 +89,6 @@ impl PartialEq for BehaviorExecInput {
             && self.trace == other.trace
             && self.input_prompt == other.input_prompt
             && self.last_step_prompt == other.last_step_prompt
-            && self.last_pulled_msg_index == other.last_pulled_msg_index
             && self.role_md == other.role_md
             && self.self_md == other.self_md
             && self.behavior_prompt == other.behavior_prompt
