@@ -14,7 +14,7 @@ use super::local_workspace::{
     SessionWorkspaceBinding, WorkshopIndex, WorkshopWorkspaceRecord,
 };
 use super::todo::{TodoTool, TodoToolConfig, TOOL_TODO_MANAGE};
-use crate::agent_tool::{AgentTool, MCPToolConfig, ToolError, ToolManager, ToolSpec};
+use crate::agent_tool::{AgentTool, MCPToolConfig, AgentToolError, ToolManager, ToolSpec};
 use crate::behavior::TraceCtx;
 use crate::worklog::{WorklogTool, WorklogToolConfig, TOOL_WORKLOG_MANAGE};
 
@@ -131,7 +131,7 @@ pub struct AgentWorkshop {
 }
 
 impl AgentWorkshop {
-    pub async fn new(mut cfg: AgentWorkshopConfig) -> Result<Self, ToolError> {
+    pub async fn new(mut cfg: AgentWorkshopConfig) -> Result<Self, AgentToolError> {
         if cfg.agent_did.trim().is_empty() {
             cfg.agent_did = DEFAULT_AGENT_DID.to_string();
         }
@@ -141,7 +141,7 @@ impl AgentWorkshop {
     pub async fn create_workshop(
         agent_did: impl Into<String>,
         mut cfg: AgentWorkshopConfig,
-    ) -> Result<Self, ToolError> {
+    ) -> Result<Self, AgentToolError> {
         cfg.agent_did = agent_did.into();
         Self::initialize(cfg, true).await
     }
@@ -149,7 +149,7 @@ impl AgentWorkshop {
     pub async fn load_workshop(
         agent_did: impl Into<String>,
         mut cfg: AgentWorkshopConfig,
-    ) -> Result<Self, ToolError> {
+    ) -> Result<Self, AgentToolError> {
         cfg.agent_did = agent_did.into();
         Self::initialize(cfg, false).await
     }
@@ -157,7 +157,7 @@ impl AgentWorkshop {
     async fn initialize(
         mut cfg: AgentWorkshopConfig,
         create_if_missing: bool,
-    ) -> Result<Self, ToolError> {
+    ) -> Result<Self, AgentToolError> {
         let workspace_root = normalize_workspace_root(&cfg.workspace_root)?;
         create_minimal_workspace_dirs(&workspace_root).await?;
         cfg.workspace_root = workspace_root.clone();
@@ -205,7 +205,7 @@ impl AgentWorkshop {
     pub async fn create_local_workspace(
         &self,
         req: CreateLocalWorkspaceRequest,
-    ) -> Result<WorkshopWorkspaceRecord, ToolError> {
+    ) -> Result<WorkshopWorkspaceRecord, AgentToolError> {
         self.local_workspace_mgr.create_local_workspace(req).await
     }
 
@@ -213,7 +213,7 @@ impl AgentWorkshop {
         &self,
         session_id: &str,
         local_workspace_id: &str,
-    ) -> Result<SessionWorkspaceBinding, ToolError> {
+    ) -> Result<SessionWorkspaceBinding, AgentToolError> {
         self.local_workspace_mgr
             .bind_local_workspace(session_id, local_workspace_id)
             .await
@@ -222,7 +222,7 @@ impl AgentWorkshop {
     pub async fn get_local_workspace_path(
         &self,
         local_workspace_id: &str,
-    ) -> Result<PathBuf, ToolError> {
+    ) -> Result<PathBuf, AgentToolError> {
         self.local_workspace_mgr
             .get_local_workspace_path(local_workspace_id)
             .await
@@ -231,7 +231,7 @@ impl AgentWorkshop {
     pub async fn snapshot_metadata(
         &self,
         local_workspace_id: &str,
-    ) -> Result<LocalWorkspaceSnapshot, ToolError> {
+    ) -> Result<LocalWorkspaceSnapshot, AgentToolError> {
         self.local_workspace_mgr
             .snapshot_metadata(local_workspace_id)
             .await
@@ -241,7 +241,7 @@ impl AgentWorkshop {
         &self,
         local_workspace_id: &str,
         session_id: &str,
-    ) -> Result<LocalWorkspaceLockResult, ToolError> {
+    ) -> Result<LocalWorkspaceLockResult, AgentToolError> {
         self.local_workspace_mgr
             .acquire(local_workspace_id, session_id)
             .await
@@ -251,7 +251,7 @@ impl AgentWorkshop {
         &self,
         local_workspace_id: &str,
         session_id: &str,
-    ) -> Result<bool, ToolError> {
+    ) -> Result<bool, AgentToolError> {
         self.local_workspace_mgr
             .release(local_workspace_id, session_id)
             .await
@@ -261,17 +261,17 @@ impl AgentWorkshop {
         &self,
         workspace_id: &str,
         reason: Option<String>,
-    ) -> Result<WorkshopWorkspaceRecord, ToolError> {
+    ) -> Result<WorkshopWorkspaceRecord, AgentToolError> {
         self.local_workspace_mgr
             .archive_workspace(workspace_id, reason)
             .await
     }
 
-    pub async fn cleanup(&self) -> Result<LocalWorkspaceCleanupResult, ToolError> {
+    pub async fn cleanup(&self) -> Result<LocalWorkspaceCleanupResult, AgentToolError> {
         self.local_workspace_mgr.cleanup().await
     }
 
-    pub fn register_tools(&self, tool_mgr: &ToolManager) -> Result<(), ToolError> {
+    pub fn register_tools(&self, tool_mgr: &ToolManager) -> Result<(), AgentToolError> {
         let write_audit = WorkshopWriteAudit::new(self.resolve_write_audit_config()?);
         for tool in self
             .tools_cfg
@@ -311,7 +311,7 @@ impl AgentWorkshop {
                         })?)?;
                     }
                     unsupported => {
-                        return Err(ToolError::InvalidArgs(format!(
+                        return Err(AgentToolError::InvalidArgs(format!(
                             "builtin tool `{unsupported}` is not supported by current runtime"
                         )));
                     }
@@ -320,7 +320,7 @@ impl AgentWorkshop {
                     tool_mgr.register_mcp_tool(build_mcp_tool_config(tool)?)?;
                 }
                 unsupported_kind => {
-                    return Err(ToolError::InvalidArgs(format!(
+                    return Err(AgentToolError::InvalidArgs(format!(
                         "tool `{}` has unsupported kind `{unsupported_kind}`",
                         tool.name
                     )));
@@ -330,7 +330,7 @@ impl AgentWorkshop {
         Ok(())
     }
 
-    fn resolve_write_audit_config(&self) -> Result<WorklogToolConfig, ToolError> {
+    fn resolve_write_audit_config(&self) -> Result<WorklogToolConfig, AgentToolError> {
         for tool in self
             .tools_cfg
             .enabled_tools
@@ -366,9 +366,9 @@ impl ExecBashPolicy {
     fn from_tool_config(
         workshop_cfg: &AgentWorkshopConfig,
         tool_cfg: &WorkshopToolConfig,
-    ) -> Result<Self, ToolError> {
+    ) -> Result<Self, AgentToolError> {
         let params = tool_cfg.params.as_object().ok_or_else(|| {
-            ToolError::InvalidArgs(format!(
+            AgentToolError::InvalidArgs(format!(
                 "tool `{}` params must be a json object",
                 tool_cfg.name
             ))
@@ -381,7 +381,7 @@ impl ExecBashPolicy {
         let default_timeout_ms =
             default_timeout_raw.unwrap_or(workshop_cfg.default_timeout_ms.min(max_timeout_ms));
         if default_timeout_ms == 0 || max_timeout_ms == 0 || default_timeout_ms > max_timeout_ms {
-            return Err(ToolError::InvalidArgs(format!(
+            return Err(AgentToolError::InvalidArgs(format!(
                 "tool `{}` has invalid timeout bounds",
                 tool_cfg.name
             )));
@@ -416,9 +416,9 @@ impl EditFilePolicy {
     fn from_tool_config(
         workshop_cfg: &AgentWorkshopConfig,
         tool_cfg: &WorkshopToolConfig,
-    ) -> Result<Self, ToolError> {
+    ) -> Result<Self, AgentToolError> {
         let params = tool_cfg.params.as_object().ok_or_else(|| {
-            ToolError::InvalidArgs(format!(
+            AgentToolError::InvalidArgs(format!(
                 "tool `{}` params must be a json object",
                 tool_cfg.name
             ))
@@ -432,7 +432,7 @@ impl EditFilePolicy {
             .transpose()?
             .unwrap_or(workshop_cfg.default_max_file_write_bytes);
         if max_write_bytes == 0 {
-            return Err(ToolError::InvalidArgs(format!(
+            return Err(AgentToolError::InvalidArgs(format!(
                 "tool `{}` max_write_bytes must be > 0",
                 tool_cfg.name
             )));
@@ -443,7 +443,7 @@ impl EditFilePolicy {
             .transpose()?
             .unwrap_or(workshop_cfg.default_max_diff_lines);
         if max_diff_lines == 0 {
-            return Err(ToolError::InvalidArgs(format!(
+            return Err(AgentToolError::InvalidArgs(format!(
                 "tool `{}` max_diff_lines must be > 0",
                 tool_cfg.name
             )));
@@ -476,9 +476,9 @@ impl TodoToolPolicy {
     fn from_tool_config(
         workshop_cfg: &AgentWorkshopConfig,
         tool_cfg: &WorkshopToolConfig,
-    ) -> Result<Self, ToolError> {
+    ) -> Result<Self, AgentToolError> {
         let params = tool_cfg.params.as_object().ok_or_else(|| {
-            ToolError::InvalidArgs(format!(
+            AgentToolError::InvalidArgs(format!(
                 "tool `{}` params must be a json object",
                 tool_cfg.name
             ))
@@ -500,7 +500,7 @@ impl TodoToolPolicy {
             .unwrap_or(DEFAULT_TODO_MAX_LIST_LIMIT.max(default_list_limit));
 
         if default_list_limit == 0 || max_list_limit == 0 || default_list_limit > max_list_limit {
-            return Err(ToolError::InvalidArgs(format!(
+            return Err(AgentToolError::InvalidArgs(format!(
                 "tool `{}` has invalid list limit bounds",
                 tool_cfg.name
             )));
@@ -525,9 +525,9 @@ impl WorklogToolPolicy {
     fn from_tool_config(
         workshop_cfg: &AgentWorkshopConfig,
         tool_cfg: &WorkshopToolConfig,
-    ) -> Result<Self, ToolError> {
+    ) -> Result<Self, AgentToolError> {
         let params = tool_cfg.params.as_object().ok_or_else(|| {
-            ToolError::InvalidArgs(format!(
+            AgentToolError::InvalidArgs(format!(
                 "tool `{}` params must be a json object",
                 tool_cfg.name
             ))
@@ -549,7 +549,7 @@ impl WorklogToolPolicy {
             .unwrap_or(DEFAULT_WORKLOG_MAX_LIST_LIMIT.max(default_list_limit));
 
         if default_list_limit == 0 || max_list_limit == 0 || default_list_limit > max_list_limit {
-            return Err(ToolError::InvalidArgs(format!(
+            return Err(AgentToolError::InvalidArgs(format!(
                 "tool `{}` has invalid list limit bounds",
                 tool_cfg.name
             )));
@@ -605,7 +605,7 @@ impl AgentTool for ExecBashTool {
         }
     }
 
-    async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
         let command = require_string(&args, "command")?;
         let cwd = if let Some(raw_cwd) = optional_string(&args, "cwd")? {
             resolve_path_in_workspace(&self.cfg.workspace_root, &raw_cwd)?
@@ -613,7 +613,7 @@ impl AgentTool for ExecBashTool {
             self.cfg.workspace_root.clone()
         };
         if !is_path_under_any(&cwd, &self.policy.allowed_cwd_roots) {
-            return Err(ToolError::InvalidArgs(format!(
+            return Err(AgentToolError::InvalidArgs(format!(
                 "cwd `{}` not allowed by workshop tool policy",
                 cwd.display()
             )));
@@ -622,7 +622,7 @@ impl AgentTool for ExecBashTool {
         let timeout_ms =
             optional_u64(&args, "timeout_ms")?.unwrap_or(self.policy.default_timeout_ms);
         if timeout_ms == 0 || timeout_ms > self.policy.max_timeout_ms {
-            return Err(ToolError::InvalidArgs(format!(
+            return Err(AgentToolError::InvalidArgs(format!(
                 "timeout_ms out of range: {} (max: {})",
                 timeout_ms, self.policy.max_timeout_ms
             )));
@@ -634,17 +634,17 @@ impl AgentTool for ExecBashTool {
 
         if let Some(env) = args.get("env") {
             if !self.policy.allow_env {
-                return Err(ToolError::InvalidArgs(
+                return Err(AgentToolError::InvalidArgs(
                     "env injection is disabled by workshop tool policy".to_string(),
                 ));
             }
             let env_obj = env.as_object().ok_or_else(|| {
-                ToolError::InvalidArgs("env must be an object of string values".to_string())
+                AgentToolError::InvalidArgs("env must be an object of string values".to_string())
             })?;
             for (key, value) in env_obj {
                 let value = value
                     .as_str()
-                    .ok_or_else(|| ToolError::InvalidArgs(format!("env.{key} must be a string")))?;
+                    .ok_or_else(|| AgentToolError::InvalidArgs(format!("env.{key} must be a string")))?;
                 command_builder.env(key, value);
             }
         }
@@ -653,8 +653,8 @@ impl AgentTool for ExecBashTool {
         let output =
             match timeout(Duration::from_millis(timeout_ms), command_builder.output()).await {
                 Ok(result) => result
-                    .map_err(|err| ToolError::ExecFailed(format!("wait bash failed: {err}")))?,
-                Err(_) => return Err(ToolError::Timeout),
+                    .map_err(|err| AgentToolError::ExecFailed(format!("wait bash failed: {err}")))?,
+                Err(_) => return Err(AgentToolError::Timeout),
             };
 
         let duration_ms = started.elapsed().as_millis() as u64;
@@ -725,11 +725,11 @@ impl AgentTool for EditFileTool {
         }
     }
 
-    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
         let file_path = require_string(&args, "path")?;
         let abs_path = resolve_path_in_workspace(&self.cfg.workspace_root, &file_path)?;
         if !is_path_under_any(&abs_path, &self.policy.allowed_write_roots) {
-            return Err(ToolError::InvalidArgs(format!(
+            return Err(AgentToolError::InvalidArgs(format!(
                 "path `{file_path}` is not writable by workshop tool policy"
             )));
         }
@@ -737,7 +737,7 @@ impl AgentTool for EditFileTool {
         let create_if_missing = optional_bool(&args, "create_if_missing")?.unwrap_or(true);
         let exists = fs::metadata(&abs_path).await.is_ok();
         if !exists && (!create_if_missing || !self.policy.allow_create) {
-            return Err(ToolError::InvalidArgs(format!(
+            return Err(AgentToolError::InvalidArgs(format!(
                 "file does not exist or create disabled by policy: {file_path}"
             )));
         }
@@ -751,7 +751,7 @@ impl AgentTool for EditFileTool {
         let has_replace_mode = args.get("old_text").is_some();
         let (operation, updated_content) = if has_replace_mode {
             if !self.policy.allow_replace {
-                return Err(ToolError::InvalidArgs(
+                return Err(AgentToolError::InvalidArgs(
                     "replace mode disabled by workshop tool policy".to_string(),
                 ));
             }
@@ -759,7 +759,7 @@ impl AgentTool for EditFileTool {
             let new_text = require_string(&args, "new_text")?;
             let replace_all = optional_bool(&args, "replace_all")?.unwrap_or(false);
             if !original_content.contains(&old_text) {
-                return Err(ToolError::InvalidArgs(format!(
+                return Err(AgentToolError::InvalidArgs(format!(
                     "old_text not found in file: {file_path}"
                 )));
             }
@@ -782,7 +782,7 @@ impl AgentTool for EditFileTool {
         };
 
         if updated_content.len() > self.policy.max_write_bytes {
-            return Err(ToolError::InvalidArgs(format!(
+            return Err(AgentToolError::InvalidArgs(format!(
                 "file content too large: {} > {} bytes",
                 updated_content.len(),
                 self.policy.max_write_bytes
@@ -792,11 +792,11 @@ impl AgentTool for EditFileTool {
         if let Some(parent) = abs_path.parent() {
             fs::create_dir_all(parent)
                 .await
-                .map_err(|err| ToolError::ExecFailed(format!("create parent dir failed: {err}")))?;
+                .map_err(|err| AgentToolError::ExecFailed(format!("create parent dir failed: {err}")))?;
         }
         fs::write(&abs_path, updated_content.as_bytes())
             .await
-            .map_err(|err| ToolError::ExecFailed(format!("write file failed: {err}")))?;
+            .map_err(|err| AgentToolError::ExecFailed(format!("write file failed: {err}")))?;
 
         let changed = original_content != updated_content;
         let (diff, diff_truncated) = build_simple_diff(
@@ -852,7 +852,7 @@ impl WorkshopWriteAudit {
         ctx: &TraceCtx,
         args: &Json,
         record: &FileWriteAuditRecord,
-    ) -> Result<(), ToolError> {
+    ) -> Result<(), AgentToolError> {
         let worklog_tool = WorklogTool::new(self.worklog_cfg.clone())?;
         let owner_session_id = optional_string(args, "session_id")?;
         let step_id = optional_string(args, "step_id")?
@@ -913,117 +913,117 @@ struct FileWriteAuditRecord {
     diff_truncated: bool,
 }
 
-fn require_string(args: &Json, key: &str) -> Result<String, ToolError> {
+fn require_string(args: &Json, key: &str) -> Result<String, AgentToolError> {
     let value = args
         .get(key)
         .and_then(|v| v.as_str())
         .map(|v| v.to_string())
-        .ok_or_else(|| ToolError::InvalidArgs(format!("missing or invalid `{key}`")))?;
+        .ok_or_else(|| AgentToolError::InvalidArgs(format!("missing or invalid `{key}`")))?;
     if value.is_empty() {
-        return Err(ToolError::InvalidArgs(format!("`{key}` cannot be empty")));
+        return Err(AgentToolError::InvalidArgs(format!("`{key}` cannot be empty")));
     }
     Ok(value)
 }
 
-fn optional_string(args: &Json, key: &str) -> Result<Option<String>, ToolError> {
+fn optional_string(args: &Json, key: &str) -> Result<Option<String>, AgentToolError> {
     let Some(value) = args.get(key) else {
         return Ok(None);
     };
     let raw = value
         .as_str()
-        .ok_or_else(|| ToolError::InvalidArgs(format!("`{key}` must be a string")))?;
+        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be a string")))?;
     Ok(Some(raw.to_string()))
 }
 
-fn optional_u64(args: &Json, key: &str) -> Result<Option<u64>, ToolError> {
+fn optional_u64(args: &Json, key: &str) -> Result<Option<u64>, AgentToolError> {
     let Some(value) = args.get(key) else {
         return Ok(None);
     };
     value
         .as_u64()
         .map(Some)
-        .ok_or_else(|| ToolError::InvalidArgs(format!("`{key}` must be a positive integer")))
+        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be a positive integer")))
 }
 
-fn optional_bool(args: &Json, key: &str) -> Result<Option<bool>, ToolError> {
+fn optional_bool(args: &Json, key: &str) -> Result<Option<bool>, AgentToolError> {
     let Some(value) = args.get(key) else {
         return Ok(None);
     };
     value
         .as_bool()
         .map(Some)
-        .ok_or_else(|| ToolError::InvalidArgs(format!("`{key}` must be a boolean")))
+        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be a boolean")))
 }
 
 fn read_u64_from_map(
     map: &serde_json::Map<String, Json>,
     key: &str,
-) -> Result<Option<u64>, ToolError> {
+) -> Result<Option<u64>, AgentToolError> {
     let Some(value) = map.get(key) else {
         return Ok(None);
     };
     value
         .as_u64()
         .map(Some)
-        .ok_or_else(|| ToolError::InvalidArgs(format!("`{key}` must be an integer")))
+        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be an integer")))
 }
 
 fn read_string_from_map(
     map: &serde_json::Map<String, Json>,
     key: &str,
-) -> Result<Option<String>, ToolError> {
+) -> Result<Option<String>, AgentToolError> {
     let Some(value) = map.get(key) else {
         return Ok(None);
     };
     let value = value
         .as_str()
-        .ok_or_else(|| ToolError::InvalidArgs(format!("`{key}` must be a string")))?;
+        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be a string")))?;
     Ok(Some(value.to_string()))
 }
 
 fn read_bool_from_map(
     map: &serde_json::Map<String, Json>,
     key: &str,
-) -> Result<Option<bool>, ToolError> {
+) -> Result<Option<bool>, AgentToolError> {
     let Some(value) = map.get(key) else {
         return Ok(None);
     };
     value
         .as_bool()
         .map(Some)
-        .ok_or_else(|| ToolError::InvalidArgs(format!("`{key}` must be a boolean")))
+        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be a boolean")))
 }
 
 fn parse_workspace_relative_roots(
     value: Option<&Json>,
     workspace_root: &Path,
-) -> Result<Option<Vec<PathBuf>>, ToolError> {
+) -> Result<Option<Vec<PathBuf>>, AgentToolError> {
     let Some(value) = value else {
         return Ok(None);
     };
     let arr = value.as_array().ok_or_else(|| {
-        ToolError::InvalidArgs("tool params path roots must be string array".to_string())
+        AgentToolError::InvalidArgs("tool params path roots must be string array".to_string())
     })?;
     let mut roots = Vec::with_capacity(arr.len());
     for item in arr {
         let raw = item.as_str().ok_or_else(|| {
-            ToolError::InvalidArgs("tool params path roots must be string array".to_string())
+            AgentToolError::InvalidArgs("tool params path roots must be string array".to_string())
         })?;
         roots.push(resolve_path_in_workspace(workspace_root, raw)?);
     }
     Ok(Some(roots))
 }
 
-fn build_mcp_tool_config(tool_cfg: &WorkshopToolConfig) -> Result<MCPToolConfig, ToolError> {
+fn build_mcp_tool_config(tool_cfg: &WorkshopToolConfig) -> Result<MCPToolConfig, AgentToolError> {
     let params = tool_cfg.params.as_object().ok_or_else(|| {
-        ToolError::InvalidArgs(format!(
+        AgentToolError::InvalidArgs(format!(
             "mcp tool `{}` params must be a json object",
             tool_cfg.name
         ))
     })?;
 
     let endpoint = read_string_from_map(params, "endpoint")?.ok_or_else(|| {
-        ToolError::InvalidArgs(format!(
+        AgentToolError::InvalidArgs(format!(
             "mcp tool `{}` requires params.endpoint",
             tool_cfg.name
         ))
@@ -1037,7 +1037,7 @@ fn build_mcp_tool_config(tool_cfg: &WorkshopToolConfig) -> Result<MCPToolConfig,
         None => HashMap::new(),
         Some(value) => {
             let obj = value.as_object().ok_or_else(|| {
-                ToolError::InvalidArgs(format!(
+                AgentToolError::InvalidArgs(format!(
                     "mcp tool `{}` params.headers must be an object",
                     tool_cfg.name
                 ))
@@ -1045,7 +1045,7 @@ fn build_mcp_tool_config(tool_cfg: &WorkshopToolConfig) -> Result<MCPToolConfig,
             let mut headers = HashMap::with_capacity(obj.len());
             for (key, value) in obj {
                 let val = value.as_str().ok_or_else(|| {
-                    ToolError::InvalidArgs(format!(
+                    AgentToolError::InvalidArgs(format!(
                         "mcp tool `{}` params.headers.{key} must be string",
                         tool_cfg.name
                     ))
@@ -1077,18 +1077,18 @@ fn build_mcp_tool_config(tool_cfg: &WorkshopToolConfig) -> Result<MCPToolConfig,
     })
 }
 
-fn normalize_workspace_root(root: &Path) -> Result<PathBuf, ToolError> {
+fn normalize_workspace_root(root: &Path) -> Result<PathBuf, AgentToolError> {
     let root_abs = if root.is_absolute() {
         root.to_path_buf()
     } else {
         std::env::current_dir()
-            .map_err(|err| ToolError::ExecFailed(format!("read current_dir failed: {err}")))?
+            .map_err(|err| AgentToolError::ExecFailed(format!("read current_dir failed: {err}")))?
             .join(root)
     };
     Ok(normalize_abs_path(&root_abs))
 }
 
-async fn create_minimal_workspace_dirs(workspace_root: &Path) -> Result<(), ToolError> {
+async fn create_minimal_workspace_dirs(workspace_root: &Path) -> Result<(), AgentToolError> {
     let roots = [
         workspace_root.to_path_buf(),
         workspace_root.join("skills"),
@@ -1103,7 +1103,7 @@ async fn create_minimal_workspace_dirs(workspace_root: &Path) -> Result<(), Tool
     ];
     for dir in roots {
         fs::create_dir_all(&dir).await.map_err(|err| {
-            ToolError::ExecFailed(format!("create dir `{}` failed: {err}", dir.display()))
+            AgentToolError::ExecFailed(format!("create dir `{}` failed: {err}", dir.display()))
         })?;
     }
     Ok(())
@@ -1112,13 +1112,13 @@ async fn create_minimal_workspace_dirs(workspace_root: &Path) -> Result<(), Tool
 async fn load_tools_config(
     workspace_root: &Path,
     workshop_cfg: &AgentWorkshopConfig,
-) -> Result<AgentWorkshopToolsConfig, ToolError> {
+) -> Result<AgentWorkshopToolsConfig, AgentToolError> {
     let tools_json_path = workspace_root.join(&workshop_cfg.tools_json_rel_path);
     match fs::read_to_string(&tools_json_path).await {
         Ok(content) => {
             let cfg =
                 serde_json::from_str::<AgentWorkshopToolsConfig>(&content).map_err(|err| {
-                    ToolError::InvalidArgs(format!(
+                    AgentToolError::InvalidArgs(format!(
                         "invalid tools config json `{}`: {err}",
                         tools_json_path.display()
                     ))
@@ -1127,7 +1127,7 @@ async fn load_tools_config(
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => {
-            return Err(ToolError::ExecFailed(format!(
+            return Err(AgentToolError::ExecFailed(format!(
                 "read tools config json `{}` failed: {err}",
                 tools_json_path.display()
             )));
@@ -1140,7 +1140,7 @@ async fn load_tools_config(
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             Ok(AgentWorkshopToolsConfig::default())
         }
-        Err(err) => Err(ToolError::ExecFailed(format!(
+        Err(err) => Err(AgentToolError::ExecFailed(format!(
             "read tools config markdown `{}` failed: {err}",
             tools_md_path.display()
         ))),
@@ -1150,7 +1150,7 @@ async fn load_tools_config(
 fn parse_tools_markdown_config(
     source_path: &Path,
     content: &str,
-) -> Result<AgentWorkshopToolsConfig, ToolError> {
+) -> Result<AgentWorkshopToolsConfig, AgentToolError> {
     let trimmed = content.trim();
     if trimmed.is_empty() {
         return Ok(AgentWorkshopToolsConfig::default());
@@ -1161,30 +1161,30 @@ fn parse_tools_markdown_config(
     }
 
     let Some(json_block) = try_extract_json_block(trimmed) else {
-        return Err(ToolError::InvalidArgs(format!(
+        return Err(AgentToolError::InvalidArgs(format!(
             "tools markdown `{}` does not contain valid json config block",
             source_path.display()
         )));
     };
 
     serde_json::from_str::<AgentWorkshopToolsConfig>(&json_block).map_err(|err| {
-        ToolError::InvalidArgs(format!(
+        AgentToolError::InvalidArgs(format!(
             "invalid tools markdown config `{}`: {err}",
             source_path.display()
         ))
     })
 }
 
-fn validate_tools_config(cfg: &AgentWorkshopToolsConfig) -> Result<(), ToolError> {
+fn validate_tools_config(cfg: &AgentWorkshopToolsConfig) -> Result<(), AgentToolError> {
     let mut seen = HashSet::new();
     for tool in &cfg.enabled_tools {
         if tool.name.trim().is_empty() {
-            return Err(ToolError::InvalidArgs(
+            return Err(AgentToolError::InvalidArgs(
                 "tool config contains empty tool name".to_string(),
             ));
         }
         if !seen.insert(tool.name.clone()) {
-            return Err(ToolError::InvalidArgs(format!(
+            return Err(AgentToolError::InvalidArgs(format!(
                 "duplicate tool config entry: {}",
                 tool.name
             )));
@@ -1221,9 +1221,9 @@ fn try_extract_json_block(content: &str) -> Option<String> {
     None
 }
 
-fn resolve_path_in_workspace(workspace_root: &Path, raw_path: &str) -> Result<PathBuf, ToolError> {
+fn resolve_path_in_workspace(workspace_root: &Path, raw_path: &str) -> Result<PathBuf, AgentToolError> {
     if raw_path.trim().is_empty() {
-        return Err(ToolError::InvalidArgs("path cannot be empty".to_string()));
+        return Err(AgentToolError::InvalidArgs("path cannot be empty".to_string()));
     }
     let user_path = Path::new(raw_path);
     let candidate = if user_path.is_absolute() {
@@ -1233,7 +1233,7 @@ fn resolve_path_in_workspace(workspace_root: &Path, raw_path: &str) -> Result<Pa
     };
     let normalized = normalize_abs_path(&candidate);
     if !normalized.starts_with(workspace_root) {
-        return Err(ToolError::InvalidArgs(format!(
+        return Err(AgentToolError::InvalidArgs(format!(
             "path out of workspace scope: {raw_path}"
         )));
     }
@@ -1260,10 +1260,10 @@ fn is_path_under_any(path: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|root| path.starts_with(root))
 }
 
-async fn read_text_file_lossy(path: &Path) -> Result<String, ToolError> {
+async fn read_text_file_lossy(path: &Path) -> Result<String, AgentToolError> {
     let bytes = fs::read(path)
         .await
-        .map_err(|err| ToolError::ExecFailed(format!("read file failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("read file failed: {err}")))?;
     Ok(String::from_utf8_lossy(&bytes).to_string())
 }
 
@@ -1328,8 +1328,8 @@ fn build_simple_diff(
     (diff.join("\n"), truncated)
 }
 
-fn u64_to_usize(v: u64) -> Result<usize, ToolError> {
-    usize::try_from(v).map_err(|_| ToolError::InvalidArgs(format!("value too large: {v}")))
+fn u64_to_usize(v: u64) -> Result<usize, AgentToolError> {
+    usize::try_from(v).map_err(|_| AgentToolError::InvalidArgs(format!("value too large: {v}")))
 }
 
 #[cfg(test)]
@@ -1347,7 +1347,7 @@ mod tests {
         std::env::temp_dir().join(format!("opendan-{test_name}-{ts}"))
     }
 
-    async fn call(tool_mgr: &ToolManager, name: &str, args: Json) -> Result<Json, ToolError> {
+    async fn call(tool_mgr: &ToolManager, name: &str, args: Json) -> Result<Json, AgentToolError> {
         tool_mgr
             .call_tool(
                 &TraceCtx {
@@ -1485,7 +1485,7 @@ mod tests {
         )
         .await
         .expect_err("tool should not be registered");
-        assert!(matches!(err, ToolError::NotFound(_)));
+        assert!(matches!(err, AgentToolError::NotFound(_)));
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -1541,7 +1541,7 @@ mod tests {
         )
         .await
         .expect_err("path outside policy root should be denied");
-        assert!(matches!(err, ToolError::InvalidArgs(_)));
+        assert!(matches!(err, AgentToolError::InvalidArgs(_)));
 
         let _ = fs::remove_dir_all(root).await;
     }

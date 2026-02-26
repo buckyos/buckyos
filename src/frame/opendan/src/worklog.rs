@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::task;
 
-use crate::agent_tool::{AgentTool, ToolError, ToolSpec};
+use crate::agent_tool::{AgentTool, AgentToolError, ToolSpec};
 use crate::behavior::TraceCtx;
 
 pub const TOOL_WORKLOG_MANAGE: &str = "worklog_manage";
@@ -56,7 +56,7 @@ pub struct WorklogTool {
 }
 
 impl WorklogTool {
-    pub fn new(mut cfg: WorklogToolConfig) -> Result<Self, ToolError> {
+    pub fn new(mut cfg: WorklogToolConfig) -> Result<Self, AgentToolError> {
         if cfg.default_list_limit == 0 {
             cfg.default_list_limit = DEFAULT_LIST_LIMIT;
         }
@@ -69,7 +69,7 @@ impl WorklogTool {
 
         if let Some(parent) = cfg.db_path.parent() {
             std::fs::create_dir_all(parent).map_err(|err| {
-                ToolError::ExecFailed(format!(
+                AgentToolError::ExecFailed(format!(
                     "create worklog db parent dir `{}` failed: {err}",
                     parent.display()
                 ))
@@ -77,7 +77,7 @@ impl WorklogTool {
         }
 
         let conn = Connection::open(&cfg.db_path).map_err(|err| {
-            ToolError::ExecFailed(format!(
+            AgentToolError::ExecFailed(format!(
                 "open worklog db `{}` failed: {err}",
                 cfg.db_path.display()
             ))
@@ -87,15 +87,15 @@ impl WorklogTool {
         Ok(Self { cfg })
     }
 
-    async fn run_db<F, T>(&self, op_name: &str, op: F) -> Result<T, ToolError>
+    async fn run_db<F, T>(&self, op_name: &str, op: F) -> Result<T, AgentToolError>
     where
-        F: FnOnce(&mut Connection) -> Result<T, ToolError> + Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<T, AgentToolError> + Send + 'static,
         T: Send + 'static,
     {
         let db_path = self.cfg.db_path.clone();
         task::spawn_blocking(move || {
             let mut conn = Connection::open(&db_path).map_err(|err| {
-                ToolError::ExecFailed(format!(
+                AgentToolError::ExecFailed(format!(
                     "open worklog db `{}` failed: {err}",
                     db_path.display()
                 ))
@@ -104,7 +104,7 @@ impl WorklogTool {
             op(&mut conn)
         })
         .await
-        .map_err(|err| ToolError::ExecFailed(format!("{op_name} join error: {err}")))?
+        .map_err(|err| AgentToolError::ExecFailed(format!("{op_name} join error: {err}")))?
     }
 }
 
@@ -168,7 +168,7 @@ impl AgentTool for WorklogTool {
         }
     }
 
-    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
         let action = require_string(&args, "action")?;
         match action.as_str() {
             "append_worklog" | "append" => self.call_append_worklog(ctx, args).await,
@@ -178,7 +178,7 @@ impl AgentTool for WorklogTool {
             "get_worklog" | "get" => self.call_get_worklog(args).await,
             "list_step" => self.call_list_step(args).await,
             "build_prompt_worklog" | "render_for_prompt" => self.call_build_prompt_worklog(args).await,
-            _ => Err(ToolError::InvalidArgs(format!(
+            _ => Err(AgentToolError::InvalidArgs(format!(
                 "unsupported action `{action}`, expected append_worklog/append_step_summary/mark_step_committed/list_worklog/get_worklog/list_step/build_prompt_worklog"
             ))),
         }
@@ -186,7 +186,7 @@ impl AgentTool for WorklogTool {
 }
 
 impl WorklogTool {
-    async fn call_append_worklog(&self, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
+    async fn call_append_worklog(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
         let input = AppendRecordInput::parse(ctx, &args)?;
         let inserted = self
             .run_db("worklog append", move |conn| insert_record(conn, input))
@@ -204,7 +204,7 @@ impl WorklogTool {
         &self,
         ctx: &TraceCtx,
         args: Json,
-    ) -> Result<Json, ToolError> {
+    ) -> Result<Json, AgentToolError> {
         let summary_input = StepSummaryInput::parse(ctx, &args)?;
         let inserted = self
             .run_db("worklog append step summary", move |conn| {
@@ -219,7 +219,7 @@ impl WorklogTool {
         }))
     }
 
-    async fn call_mark_step_committed(&self, args: Json) -> Result<Json, ToolError> {
+    async fn call_mark_step_committed(&self, args: Json) -> Result<Json, AgentToolError> {
         let step_id = require_string(&args, "step_id")?;
         let step_id_for_db = step_id.clone();
         let session_id = optional_string(&args, "owner_session_id")?
@@ -243,7 +243,7 @@ impl WorklogTool {
         }))
     }
 
-    async fn call_list_worklog(&self, args: Json) -> Result<Json, ToolError> {
+    async fn call_list_worklog(&self, args: Json) -> Result<Json, AgentToolError> {
         let filters =
             ListFilters::parse(&args, self.cfg.default_list_limit, self.cfg.max_list_limit)?;
         let limit = filters.limit;
@@ -270,16 +270,16 @@ impl WorklogTool {
         }))
     }
 
-    async fn call_get_worklog(&self, args: Json) -> Result<Json, ToolError> {
+    async fn call_get_worklog(&self, args: Json) -> Result<Json, AgentToolError> {
         let id = optional_string(&args, "id")?
             .or_else(|| optional_string(&args, "log_id").ok().flatten())
-            .ok_or_else(|| ToolError::InvalidArgs("missing `id` or `log_id`".to_string()))?;
+            .ok_or_else(|| AgentToolError::InvalidArgs("missing `id` or `log_id`".to_string()))?;
         let id_for_db = id.clone();
         let got = self
             .run_db("worklog get", move |conn| get_record(conn, &id_for_db))
             .await?;
         let Some(record) = got else {
-            return Err(ToolError::InvalidArgs(format!("worklog `{id}` not found")));
+            return Err(AgentToolError::InvalidArgs(format!("worklog `{id}` not found")));
         };
         Ok(json!({
             "ok": true,
@@ -289,7 +289,7 @@ impl WorklogTool {
         }))
     }
 
-    async fn call_list_step(&self, args: Json) -> Result<Json, ToolError> {
+    async fn call_list_step(&self, args: Json) -> Result<Json, AgentToolError> {
         let step_id = require_string(&args, "step_id")?;
         let step_id_for_db = step_id.clone();
         let session_id = optional_string(&args, "owner_session_id")?
@@ -316,7 +316,7 @@ impl WorklogTool {
         }))
     }
 
-    async fn call_build_prompt_worklog(&self, args: Json) -> Result<Json, ToolError> {
+    async fn call_build_prompt_worklog(&self, args: Json) -> Result<Json, AgentToolError> {
         let cfg = PromptBuildInput::parse(&args)?;
         let cfg_for_query = cfg.clone();
         let records = self
@@ -448,11 +448,11 @@ struct AppendRecordInput {
 }
 
 impl AppendRecordInput {
-    fn parse(ctx: &TraceCtx, args: &Json) -> Result<Self, ToolError> {
+    fn parse(ctx: &TraceCtx, args: &Json) -> Result<Self, AgentToolError> {
         let raw = args.get("record").unwrap_or(args);
         let map = raw
             .as_object()
-            .ok_or_else(|| ToolError::InvalidArgs("`record` must be a json object".to_string()))?;
+            .ok_or_else(|| AgentToolError::InvalidArgs("`record` must be a json object".to_string()))?;
 
         let now_ms = now_ms();
         let timestamp = map
@@ -477,7 +477,7 @@ impl AppendRecordInput {
             .or_else(|| map.get("log_type").and_then(|v| v.as_str()))
             .or_else(|| args.get("type").and_then(|v| v.as_str()))
             .or_else(|| args.get("log_type").and_then(|v| v.as_str()))
-            .ok_or_else(|| ToolError::InvalidArgs("missing `type`".to_string()))?;
+            .ok_or_else(|| AgentToolError::InvalidArgs("missing `type`".to_string()))?;
         let record_type = normalize_record_type(record_type_raw);
 
         let session_id = map
@@ -712,7 +712,7 @@ struct StepSummaryInput {
 }
 
 impl StepSummaryInput {
-    fn parse(ctx: &TraceCtx, args: &Json) -> Result<Self, ToolError> {
+    fn parse(ctx: &TraceCtx, args: &Json) -> Result<Self, AgentToolError> {
         let mut input = AppendRecordInput::parse(ctx, args)?;
         input.record_type = TYPE_STEP_SUMMARY.to_string();
         input.impact = WorklogImpact {
@@ -741,7 +741,7 @@ struct ListFilters {
 }
 
 impl ListFilters {
-    fn parse(args: &Json, default_limit: usize, max_limit: usize) -> Result<Self, ToolError> {
+    fn parse(args: &Json, default_limit: usize, max_limit: usize) -> Result<Self, AgentToolError> {
         let owner_session_id = optional_string(args, "owner_session_id")?
             .or_else(|| optional_string(args, "session_id").ok().flatten());
         let workspace_id = optional_string(args, "workspace_id")?;
@@ -796,7 +796,7 @@ struct PromptBuildInput {
 }
 
 impl PromptBuildInput {
-    fn parse(args: &Json) -> Result<Self, ToolError> {
+    fn parse(args: &Json) -> Result<Self, AgentToolError> {
         let owner_session_id = optional_string(args, "owner_session_id")?
             .or_else(|| optional_string(args, "session_id").ok().flatten());
         let workspace_id = optional_string(args, "workspace_id")?;
@@ -821,7 +821,7 @@ impl PromptBuildInput {
     }
 }
 
-fn ensure_worklog_schema(conn: &Connection) -> Result<(), ToolError> {
+fn ensure_worklog_schema(conn: &Connection) -> Result<(), AgentToolError> {
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS worklogs (
@@ -865,17 +865,17 @@ fn ensure_worklog_schema(conn: &Connection) -> Result<(), ToolError> {
         CREATE INDEX IF NOT EXISTS idx_worklogs_status ON worklogs(status, timestamp DESC);
         "#,
     )
-    .map_err(|err| ToolError::ExecFailed(format!("init worklog schema failed: {err}")))?;
+    .map_err(|err| AgentToolError::ExecFailed(format!("init worklog schema failed: {err}")))?;
     Ok(())
 }
 
 fn insert_record(
     conn: &mut Connection,
     input: AppendRecordInput,
-) -> Result<WorklogRecord, ToolError> {
+) -> Result<WorklogRecord, AgentToolError> {
     let tx = conn
         .transaction()
-        .map_err(|err| ToolError::ExecFailed(format!("start worklog tx failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("start worklog tx failed: {err}")))?;
     let seq = next_session_seq(&tx, input.session_id.as_deref())?;
     let id = generate_worklog_id(input.timestamp);
 
@@ -909,19 +909,19 @@ fn insert_record(
     };
 
     let record_json = serde_json::to_string(&record)
-        .map_err(|err| ToolError::ExecFailed(format!("serialize record failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("serialize record failed: {err}")))?;
     let payload_json = serde_json::to_string(&record.payload)
-        .map_err(|err| ToolError::ExecFailed(format!("serialize payload failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("serialize payload failed: {err}")))?;
     let impact_domain_json = serde_json::to_string(&record.impact.domain)
-        .map_err(|err| ToolError::ExecFailed(format!("serialize impact domain failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("serialize impact domain failed: {err}")))?;
     let artifacts_json = serde_json::to_string(&record.artifacts)
-        .map_err(|err| ToolError::ExecFailed(format!("serialize artifacts failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("serialize artifacts failed: {err}")))?;
     let tags_json = serde_json::to_string(&record.tags)
-        .map_err(|err| ToolError::ExecFailed(format!("serialize tags failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("serialize tags failed: {err}")))?;
     let error_json = serde_json::to_string(&record.error)
-        .map_err(|err| ToolError::ExecFailed(format!("serialize error failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("serialize error failed: {err}")))?;
     let prompt_view_json = serde_json::to_string(&record.prompt_view)
-        .map_err(|err| ToolError::ExecFailed(format!("serialize prompt view failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("serialize prompt view failed: {err}")))?;
 
     tx.execute(
         r#"
@@ -975,10 +975,10 @@ fn insert_record(
             input.now_ms as i64
         ],
     )
-    .map_err(|err| ToolError::ExecFailed(format!("insert worklog failed: {err}")))?;
+    .map_err(|err| AgentToolError::ExecFailed(format!("insert worklog failed: {err}")))?;
 
     tx.commit()
-        .map_err(|err| ToolError::ExecFailed(format!("commit worklog tx failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("commit worklog tx failed: {err}")))?;
 
     Ok(record)
 }
@@ -986,7 +986,7 @@ fn insert_record(
 fn insert_step_summary(
     conn: &mut Connection,
     mut input: StepSummaryInput,
-) -> Result<WorklogRecord, ToolError> {
+) -> Result<WorklogRecord, AgentToolError> {
     let refs = collect_step_event_refs(
         conn,
         input.base.step_id.as_deref(),
@@ -1046,7 +1046,7 @@ fn mark_step_committed(
     step_id: &str,
     session_id: Option<&str>,
     workspace_id: Option<&str>,
-) -> Result<usize, ToolError> {
+) -> Result<usize, AgentToolError> {
     let mut where_sql = String::from(" WHERE step_id = ?");
     let mut params = vec![SqlValue::Text(step_id.to_string())];
     if let Some(sid) = session_id.filter(|v| !v.trim().is_empty()) {
@@ -1064,11 +1064,11 @@ fn mark_step_committed(
     );
     let updated = conn
         .execute(sql.as_str(), params_from_iter(params))
-        .map_err(|err| ToolError::ExecFailed(format!("mark step committed failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("mark step committed failed: {err}")))?;
     Ok(updated)
 }
 
-fn list_records(conn: &Connection, filters: &ListFilters) -> Result<ListResult, ToolError> {
+fn list_records(conn: &Connection, filters: &ListFilters) -> Result<ListResult, AgentToolError> {
     let mut where_sql = String::from(" WHERE 1=1");
     let mut where_params = Vec::<SqlValue>::new();
 
@@ -1107,12 +1107,12 @@ fn list_records(conn: &Connection, filters: &ListFilters) -> Result<ListResult, 
     let count_sql = format!("SELECT COUNT(1) FROM worklogs{}", where_sql);
     let mut count_stmt = conn
         .prepare(&count_sql)
-        .map_err(|err| ToolError::ExecFailed(format!("prepare worklog count failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("prepare worklog count failed: {err}")))?;
     let total = count_stmt
         .query_row(params_from_iter(where_params.clone()), |row| {
             row.get::<_, i64>(0)
         })
-        .map_err(|err| ToolError::ExecFailed(format!("query worklog count failed: {err}")))?
+        .map_err(|err| AgentToolError::ExecFailed(format!("query worklog count failed: {err}")))?
         .max(0) as u64;
 
     let mut list_sql = format!("SELECT record_json, tags_json FROM worklogs{}", where_sql);
@@ -1123,15 +1123,15 @@ fn list_records(conn: &Connection, filters: &ListFilters) -> Result<ListResult, 
 
     let mut stmt = conn
         .prepare(&list_sql)
-        .map_err(|err| ToolError::ExecFailed(format!("prepare worklog list failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("prepare worklog list failed: {err}")))?;
     let mut rows = stmt
         .query(params_from_iter(list_params))
-        .map_err(|err| ToolError::ExecFailed(format!("query worklog list failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("query worklog list failed: {err}")))?;
 
     let mut records = Vec::new();
     while let Some(row) = rows
         .next()
-        .map_err(|err| ToolError::ExecFailed(format!("read worklog row failed: {err}")))?
+        .map_err(|err| AgentToolError::ExecFailed(format!("read worklog row failed: {err}")))?
     {
         let record_json: String = row.get(0).unwrap_or_else(|_| "{}".to_string());
         let tags_json: String = row.get(1).unwrap_or_else(|_| "[]".to_string());
@@ -1149,20 +1149,20 @@ fn list_records(conn: &Connection, filters: &ListFilters) -> Result<ListResult, 
     Ok(ListResult { records, total })
 }
 
-fn get_record(conn: &Connection, id: &str) -> Result<Option<WorklogRecord>, ToolError> {
+fn get_record(conn: &Connection, id: &str) -> Result<Option<WorklogRecord>, AgentToolError> {
     let mut stmt = conn
         .prepare("SELECT record_json FROM worklogs WHERE log_id = ? LIMIT 1")
-        .map_err(|err| ToolError::ExecFailed(format!("prepare worklog get failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("prepare worklog get failed: {err}")))?;
     let value: Result<String, rusqlite::Error> = stmt.query_row(params![id], |row| row.get(0));
     match value {
         Ok(raw) => {
             let parsed = serde_json::from_str::<WorklogRecord>(&raw).map_err(|err| {
-                ToolError::ExecFailed(format!("decode worklog `{id}` failed: {err}"))
+                AgentToolError::ExecFailed(format!("decode worklog `{id}` failed: {err}"))
             })?;
             Ok(Some(parsed))
         }
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(err) => Err(ToolError::ExecFailed(format!(
+        Err(err) => Err(AgentToolError::ExecFailed(format!(
             "query worklog `{id}` failed: {err}"
         ))),
     }
@@ -1173,7 +1173,7 @@ fn list_step_records(
     step_id: &str,
     session_id: Option<&str>,
     workspace_id: Option<&str>,
-) -> Result<Vec<WorklogRecord>, ToolError> {
+) -> Result<Vec<WorklogRecord>, AgentToolError> {
     let mut sql = String::from("SELECT record_json FROM worklogs WHERE step_id = ?");
     let mut params = vec![SqlValue::Text(step_id.to_string())];
     if let Some(v) = session_id.filter(|v| !v.trim().is_empty()) {
@@ -1188,15 +1188,15 @@ fn list_step_records(
 
     let mut stmt = conn
         .prepare(sql.as_str())
-        .map_err(|err| ToolError::ExecFailed(format!("prepare list_step failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("prepare list_step failed: {err}")))?;
     let mut rows = stmt
         .query(params_from_iter(params))
-        .map_err(|err| ToolError::ExecFailed(format!("query list_step failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("query list_step failed: {err}")))?;
 
     let mut out = Vec::<WorklogRecord>::new();
     while let Some(row) = rows
         .next()
-        .map_err(|err| ToolError::ExecFailed(format!("read list_step row failed: {err}")))?
+        .map_err(|err| AgentToolError::ExecFailed(format!("read list_step row failed: {err}")))?
     {
         let raw: String = row.get(0).unwrap_or_else(|_| "{}".to_string());
         if let Ok(record) = serde_json::from_str::<WorklogRecord>(&raw) {
@@ -1211,7 +1211,7 @@ fn collect_step_event_refs(
     step_id: Option<&str>,
     session_id: Option<&str>,
     workspace_id: Option<&str>,
-) -> Result<Vec<String>, ToolError> {
+) -> Result<Vec<String>, AgentToolError> {
     let Some(step_id) = step_id else {
         return Ok(vec![]);
     };
@@ -1229,7 +1229,7 @@ fn collect_step_omitted_types(
     step_id: Option<&str>,
     session_id: Option<&str>,
     workspace_id: Option<&str>,
-) -> Result<Vec<String>, ToolError> {
+) -> Result<Vec<String>, AgentToolError> {
     let Some(step_id) = step_id else {
         return Ok(vec![]);
     };
@@ -1253,7 +1253,7 @@ fn query_prompt_candidates(
     session_id: Option<&str>,
     workspace_id: Option<&str>,
     limit: usize,
-) -> Result<Vec<WorklogRecord>, ToolError> {
+) -> Result<Vec<WorklogRecord>, AgentToolError> {
     let mut where_sql = String::from(" WHERE commit_state != 'PENDING'");
     let mut params = Vec::<SqlValue>::new();
     if let Some(v) = session_id.filter(|v| !v.trim().is_empty()) {
@@ -1271,14 +1271,14 @@ fn query_prompt_candidates(
 
     let mut stmt = conn
         .prepare(sql.as_str())
-        .map_err(|err| ToolError::ExecFailed(format!("prepare prompt query failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("prepare prompt query failed: {err}")))?;
     let mut rows = stmt
         .query(params_from_iter(params))
-        .map_err(|err| ToolError::ExecFailed(format!("query prompt records failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("query prompt records failed: {err}")))?;
     let mut records = Vec::<WorklogRecord>::new();
     while let Some(row) = rows
         .next()
-        .map_err(|err| ToolError::ExecFailed(format!("read prompt row failed: {err}")))?
+        .map_err(|err| AgentToolError::ExecFailed(format!("read prompt row failed: {err}")))?
     {
         let raw: String = row.get(0).unwrap_or_else(|_| "{}".to_string());
         if let Ok(record) = serde_json::from_str::<WorklogRecord>(&raw) {
@@ -1533,7 +1533,7 @@ fn legacy_log_view(record: &WorklogRecord) -> Json {
 fn parse_impact(
     map: &serde_json::Map<String, Json>,
     record_type: &str,
-) -> Result<WorklogImpact, ToolError> {
+) -> Result<WorklogImpact, AgentToolError> {
     if let Some(impact) = map.get("impact") {
         let level = impact
             .get("level")
@@ -1865,13 +1865,13 @@ fn normalize_importance(raw: &str) -> String {
     }
 }
 
-fn parse_worklog_error(value: Option<&Json>) -> Result<Option<WorklogError>, ToolError> {
+fn parse_worklog_error(value: Option<&Json>) -> Result<Option<WorklogError>, AgentToolError> {
     let Some(value) = value else {
         return Ok(None);
     };
     let obj = value
         .as_object()
-        .ok_or_else(|| ToolError::InvalidArgs("`error` must be object".to_string()))?;
+        .ok_or_else(|| AgentToolError::InvalidArgs("`error` must be object".to_string()))?;
     let reason_digest = obj
         .get("reason_digest")
         .or_else(|| obj.get("reason"))
@@ -1891,37 +1891,37 @@ fn parse_worklog_error(value: Option<&Json>) -> Result<Option<WorklogError>, Too
     }))
 }
 
-fn parse_prompt_view(value: Option<&Json>) -> Result<Option<WorklogPromptView>, ToolError> {
+fn parse_prompt_view(value: Option<&Json>) -> Result<Option<WorklogPromptView>, AgentToolError> {
     let Some(value) = value else {
         return Ok(None);
     };
     let obj = value
         .as_object()
-        .ok_or_else(|| ToolError::InvalidArgs("`prompt_view` must be object".to_string()))?;
+        .ok_or_else(|| AgentToolError::InvalidArgs("`prompt_view` must be object".to_string()))?;
     let digest = obj
         .get("digest")
         .and_then(|v| v.as_str())
         .map(|v| sanitize_digest(v, MAX_DIGEST_CHARS))
-        .ok_or_else(|| ToolError::InvalidArgs("`prompt_view.digest` must be string".to_string()))?;
+        .ok_or_else(|| AgentToolError::InvalidArgs("`prompt_view.digest` must be string".to_string()))?;
     let detail = obj.get("detail").cloned().unwrap_or_else(|| json!({}));
     Ok(Some(WorklogPromptView { digest, detail }))
 }
 
-fn next_session_seq(conn: &Connection, session_id: Option<&str>) -> Result<u64, ToolError> {
+fn next_session_seq(conn: &Connection, session_id: Option<&str>) -> Result<u64, AgentToolError> {
     let seq = if let Some(session_id) = session_id.filter(|v| !v.trim().is_empty()) {
         conn.query_row(
             "SELECT COALESCE(MAX(seq), 0) + 1 FROM worklogs WHERE owner_session_id = ?1",
             params![session_id],
             |row| row.get::<_, i64>(0),
         )
-        .map_err(|err| ToolError::ExecFailed(format!("query session seq failed: {err}")))?
+        .map_err(|err| AgentToolError::ExecFailed(format!("query session seq failed: {err}")))?
     } else {
         conn.query_row(
             "SELECT COALESCE(MAX(seq), 0) + 1 FROM worklogs",
             [],
             |row| row.get::<_, i64>(0),
         )
-        .map_err(|err| ToolError::ExecFailed(format!("query global seq failed: {err}")))?
+        .map_err(|err| AgentToolError::ExecFailed(format!("query global seq failed: {err}")))?
     };
     Ok(seq.max(1) as u64)
 }
@@ -2016,25 +2016,25 @@ fn parse_step_index_from_id(step_id: &str) -> Option<u32> {
     digits.parse::<u32>().ok()
 }
 
-fn require_string(args: &Json, key: &str) -> Result<String, ToolError> {
+fn require_string(args: &Json, key: &str) -> Result<String, AgentToolError> {
     let value = args
         .get(key)
         .and_then(|v| v.as_str())
         .map(|v| v.to_string())
-        .ok_or_else(|| ToolError::InvalidArgs(format!("missing or invalid `{key}`")))?;
+        .ok_or_else(|| AgentToolError::InvalidArgs(format!("missing or invalid `{key}`")))?;
     if value.is_empty() {
-        return Err(ToolError::InvalidArgs(format!("`{key}` cannot be empty")));
+        return Err(AgentToolError::InvalidArgs(format!("`{key}` cannot be empty")));
     }
     Ok(value)
 }
 
-fn optional_string(args: &Json, key: &str) -> Result<Option<String>, ToolError> {
+fn optional_string(args: &Json, key: &str) -> Result<Option<String>, AgentToolError> {
     let Some(value) = args.get(key) else {
         return Ok(None);
     };
     let raw = value
         .as_str()
-        .ok_or_else(|| ToolError::InvalidArgs(format!("`{key}` must be a string")))?;
+        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be a string")))?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Ok(None);
@@ -2042,19 +2042,19 @@ fn optional_string(args: &Json, key: &str) -> Result<Option<String>, ToolError> 
     Ok(Some(trimmed.to_string()))
 }
 
-fn optional_u64(args: &Json, key: &str) -> Result<Option<u64>, ToolError> {
+fn optional_u64(args: &Json, key: &str) -> Result<Option<u64>, AgentToolError> {
     let Some(value) = args.get(key) else {
         return Ok(None);
     };
     let value = value
         .as_u64()
-        .ok_or_else(|| ToolError::InvalidArgs(format!("`{key}` must be an unsigned integer")))?;
+        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be an unsigned integer")))?;
     Ok(Some(value))
 }
 
-fn u64_to_usize(value: u64, key: &str) -> Result<usize, ToolError> {
+fn u64_to_usize(value: u64, key: &str) -> Result<usize, AgentToolError> {
     usize::try_from(value)
-        .map_err(|_| ToolError::InvalidArgs(format!("`{key}` is too large for current platform")))
+        .map_err(|_| AgentToolError::InvalidArgs(format!("`{key}` is too large for current platform")))
 }
 
 fn u64_to_u32(value: u64) -> Option<u32> {

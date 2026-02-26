@@ -22,6 +22,7 @@ struct MsgRecordRow {
     record_id: String,
     box_kind: String,
     msg_id: String,
+    msg_kind: Option<String>,
     msg_from: Option<String>,
     msg_to: Option<String>,
     state: String,
@@ -88,6 +89,7 @@ SELECT
     record_id,
     box_kind,
     msg_id,
+    msg_kind,
     msg_from,
     msg_to,
     state,
@@ -109,18 +111,19 @@ WHERE record_id = ?1
                         record_id: row.get(0)?,
                         box_kind: row.get(1)?,
                         msg_id: row.get(2)?,
-                        msg_from: row.get(3)?,
-                        msg_to: row.get(4)?,
-                        state: row.get(5)?,
-                        created_at_ms: row.get(6)?,
-                        updated_at_ms: row.get(7)?,
-                        thread_key: row.get(8)?,
-                        session_id: row.get(9)?,
-                        sort_key: row.get(10)?,
-                        tags_json: row.get(11)?,
-                        route_tunnel_did: row.get(12)?,
-                        route_json: row.get(13)?,
-                        delivery_json: row.get(14)?,
+                        msg_kind: row.get(3)?,
+                        msg_from: row.get(4)?,
+                        msg_to: row.get(5)?,
+                        state: row.get(6)?,
+                        created_at_ms: row.get(7)?,
+                        updated_at_ms: row.get(8)?,
+                        thread_key: row.get(9)?,
+                        session_id: row.get(10)?,
+                        sort_key: row.get(11)?,
+                        tags_json: row.get(12)?,
+                        route_tunnel_did: row.get(13)?,
+                        route_json: row.get(14)?,
+                        delivery_json: row.get(15)?,
                     })
                 },
             )
@@ -157,6 +160,7 @@ SELECT
     record_id,
     box_kind,
     msg_id,
+    msg_kind,
     msg_from,
     msg_to,
     state,
@@ -185,18 +189,19 @@ WHERE box_kind = ?1
                     record_id: row.get(0)?,
                     box_kind: row.get(1)?,
                     msg_id: row.get(2)?,
-                    msg_from: row.get(3)?,
-                    msg_to: row.get(4)?,
-                    state: row.get(5)?,
-                    created_at_ms: row.get(6)?,
-                    updated_at_ms: row.get(7)?,
-                    thread_key: row.get(8)?,
-                    session_id: row.get(9)?,
-                    sort_key: row.get(10)?,
-                    tags_json: row.get(11)?,
-                    route_tunnel_did: row.get(12)?,
-                    route_json: row.get(13)?,
-                    delivery_json: row.get(14)?,
+                    msg_kind: row.get(3)?,
+                    msg_from: row.get(4)?,
+                    msg_to: row.get(5)?,
+                    state: row.get(6)?,
+                    created_at_ms: row.get(7)?,
+                    updated_at_ms: row.get(8)?,
+                    thread_key: row.get(9)?,
+                    session_id: row.get(10)?,
+                    sort_key: row.get(11)?,
+                    tags_json: row.get(12)?,
+                    route_tunnel_did: row.get(13)?,
+                    route_json: row.get(14)?,
+                    delivery_json: row.get(15)?,
                 })
             })
             .map_err(|error| {
@@ -410,24 +415,7 @@ fn upsert_record_with_conn(
             .unwrap_or_else(|| record.to.clone())
             .to_string(),
     );
-    let msg_kind = match msg {
-        Some(obj) => {
-            let kind_value = serde_json::to_value(obj.kind).map_err(|error| {
-                RPCErrors::ReasonError(format!(
-                    "failed to encode msg_kind for record {}: {}",
-                    record.record_id, error
-                ))
-            })?;
-            let kind_name = kind_value.as_str().ok_or_else(|| {
-                RPCErrors::ReasonError(format!(
-                    "failed to encode msg_kind for record {}: non-string value",
-                    record.record_id
-                ))
-            })?;
-            Some(kind_name.to_string())
-        }
-        None => None,
-    };
+    let msg_kind = msg.map(|obj| obj.kind).unwrap_or(record.msg_kind);
 
     conn.execute(
         r#"
@@ -472,7 +460,7 @@ ON CONFLICT(record_id) DO UPDATE SET
             record.msg_id.to_string(),
             msg_from,
             msg_to,
-            msg_kind,
+            Some(msg_obj_kind_name(&msg_kind)),
             msg_state_name(&record.state),
             to_sql_i64(record.created_at_ms),
             to_sql_i64(record.updated_at_ms),
@@ -498,6 +486,7 @@ ON CONFLICT(record_id) DO UPDATE SET
 fn row_to_record(owner: &DID, row: MsgRecordRow) -> std::result::Result<MsgRecord, RPCErrors> {
     let box_kind = box_kind_from_name(&row.box_kind)?;
     let state = msg_state_from_name(&row.state)?;
+    let msg_kind = parse_msg_obj_kind(row.msg_kind.as_deref(), &box_kind);
     let msg_id = parse_obj_id(&row.msg_id, &row.record_id)?;
     let created_at_ms = from_sql_i64(row.created_at_ms, "created_at_ms", &row.record_id)?;
     let updated_at_ms = from_sql_i64(row.updated_at_ms, "updated_at_ms", &row.record_id)?;
@@ -542,6 +531,7 @@ fn row_to_record(owner: &DID, row: MsgRecordRow) -> std::result::Result<MsgRecor
         record_id: row.record_id,
         box_kind,
         msg_id,
+        msg_kind,
         state,
         from: msg_from,
         to: msg_to,
@@ -598,6 +588,41 @@ fn parse_obj_id(raw: &str, record_id: &str) -> std::result::Result<ObjId, RPCErr
             record_id, error
         ))
     })
+}
+
+fn msg_obj_kind_name(kind: &ndn_lib::MsgObjKind) -> &'static str {
+    match kind {
+        ndn_lib::MsgObjKind::Chat => "chat",
+        ndn_lib::MsgObjKind::GroupMsg => "group_msg",
+        ndn_lib::MsgObjKind::Deliver => "deliver",
+        ndn_lib::MsgObjKind::Notify => "notify",
+        ndn_lib::MsgObjKind::Event => "event",
+        ndn_lib::MsgObjKind::Operation => "operation",
+    }
+}
+
+fn parse_msg_obj_kind(raw: Option<&str>, box_kind: &BoxKind) -> ndn_lib::MsgObjKind {
+    let normalized = raw
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase());
+
+    match normalized.as_deref() {
+        Some("chat") => ndn_lib::MsgObjKind::Chat,
+        Some("group_msg") => ndn_lib::MsgObjKind::GroupMsg,
+        Some("deliver") => ndn_lib::MsgObjKind::Deliver,
+        Some("notify") => ndn_lib::MsgObjKind::Notify,
+        Some("event") => ndn_lib::MsgObjKind::Event,
+        Some("operation") => ndn_lib::MsgObjKind::Operation,
+        _ => infer_msg_obj_kind_from_box(box_kind),
+    }
+}
+
+fn infer_msg_obj_kind_from_box(box_kind: &BoxKind) -> ndn_lib::MsgObjKind {
+    match box_kind {
+        BoxKind::GroupInbox => ndn_lib::MsgObjKind::GroupMsg,
+        _ => ndn_lib::MsgObjKind::Chat,
+    }
 }
 
 fn parse_json<T: DeserializeOwned>(

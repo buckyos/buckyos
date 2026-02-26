@@ -2074,6 +2074,7 @@ mod tests {
             record_id: format!("record-{}", msg_id.to_string()),
             box_kind: BoxKind::TunnelOutbox,
             msg_id: msg_id.clone(),
+            msg_kind: msg.kind,
             state: MsgState::Wait,
             from: msg.from.clone(),
             to: msg

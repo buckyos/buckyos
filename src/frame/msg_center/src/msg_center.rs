@@ -457,6 +457,9 @@ impl MessageCenter {
             .or_else(|| Self::extract_record_session_id(msg));
         if let Some(existing) = self.msg_box_db.get_record(&owner, &record_id)? {
             let mut record_for_update = existing.clone();
+            if record_for_update.msg_kind != msg.kind {
+                record_for_update.msg_kind = msg.kind;
+            }
             if record_for_update.thread_key.is_none() {
                 record_for_update.thread_key = msg_thread_key;
             }
@@ -477,6 +480,7 @@ impl MessageCenter {
             record_id: record_id.clone(),
             box_kind: box_kind.clone(),
             msg_id: msg_id.clone(),
+            msg_kind: msg.kind,
             state: initial_state,
             from: msg.from.clone(),
             to: record_to,

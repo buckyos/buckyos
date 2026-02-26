@@ -49,6 +49,9 @@ impl Default for StepLimits {
 pub struct BehaviorExecInput {
     pub session_id: Option<String>,
     pub trace: TraceCtx,
+    pub input_prompt: String,
+    pub last_step_prompt: String,
+    pub last_pulled_msg_index: u32,
 
     pub role_md: String,
     pub self_md: String,

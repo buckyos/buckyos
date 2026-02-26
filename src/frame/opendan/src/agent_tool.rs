@@ -32,7 +32,7 @@ pub struct ToolCall {
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum ToolError {
+pub enum AgentToolError {
     #[error("tool not found: {0}")]
     NotFound(String),
     #[error("tool already exists: {0}")]
@@ -87,7 +87,7 @@ pub(crate) fn normalize_tool_name(name: &str) -> String {
 #[async_trait]
 pub trait AgentTool: Send + Sync {
     fn spec(&self) -> ToolSpec;
-    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError>;
+    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError>;
 }
 
 pub struct MCPTool {
@@ -100,23 +100,23 @@ pub struct MCPTool {
 }
 
 impl MCPTool {
-    pub fn new(cfg: MCPToolConfig) -> Result<Self, ToolError> {
+    pub fn new(cfg: MCPToolConfig) -> Result<Self, AgentToolError> {
         let tool_name = cfg.name.trim();
         if tool_name.is_empty() {
-            return Err(ToolError::InvalidArgs(
+            return Err(AgentToolError::InvalidArgs(
                 "mcp tool `name` cannot be empty".to_string(),
             ));
         }
 
         let endpoint = cfg.endpoint.trim();
         if endpoint.is_empty() {
-            return Err(ToolError::InvalidArgs(
+            return Err(AgentToolError::InvalidArgs(
                 "mcp tool `endpoint` cannot be empty".to_string(),
             ));
         }
 
         if cfg.timeout_ms == 0 {
-            return Err(ToolError::InvalidArgs(
+            return Err(AgentToolError::InvalidArgs(
                 "mcp tool `timeout_ms` must be > 0".to_string(),
             ));
         }
@@ -127,7 +127,7 @@ impl MCPTool {
             .trim()
             .to_string();
         if mcp_tool_name.is_empty() {
-            return Err(ToolError::InvalidArgs(
+            return Err(AgentToolError::InvalidArgs(
                 "mcp tool `mcp_tool_name` cannot be empty".to_string(),
             ));
         }
@@ -138,7 +138,7 @@ impl MCPTool {
 
         let client = reqwest::Client::builder()
             .build()
-            .map_err(|err| ToolError::ExecFailed(format!("build mcp http client failed: {err}")))?;
+            .map_err(|err| AgentToolError::ExecFailed(format!("build mcp http client failed: {err}")))?;
 
         Ok(Self {
             spec: ToolSpec {
@@ -162,7 +162,7 @@ impl AgentTool for MCPTool {
         self.spec.clone()
     }
 
-    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
         let request_body = json!({
             "jsonrpc": "2.0",
             "id": format!(
@@ -183,17 +183,17 @@ impl AgentTool for MCPTool {
 
         let response = timeout(Duration::from_millis(self.timeout_ms), req.send())
             .await
-            .map_err(|_| ToolError::Timeout)?
-            .map_err(|err| ToolError::ExecFailed(format!("mcp request failed: {err}")))?;
+            .map_err(|_| AgentToolError::Timeout)?
+            .map_err(|err| AgentToolError::ExecFailed(format!("mcp request failed: {err}")))?;
 
         let status = response.status();
         let body = timeout(Duration::from_millis(self.timeout_ms), response.text())
             .await
-            .map_err(|_| ToolError::Timeout)?
-            .map_err(|err| ToolError::ExecFailed(format!("read mcp response failed: {err}")))?;
+            .map_err(|_| AgentToolError::Timeout)?
+            .map_err(|err| AgentToolError::ExecFailed(format!("read mcp response failed: {err}")))?;
 
         if !status.is_success() {
-            return Err(ToolError::ExecFailed(format!(
+            return Err(AgentToolError::ExecFailed(format!(
                 "mcp server returned http {}: {}",
                 status.as_u16(),
                 truncate_text(&body, 512)
@@ -201,19 +201,19 @@ impl AgentTool for MCPTool {
         }
 
         let payload: Json = serde_json::from_str(&body)
-            .map_err(|err| ToolError::ExecFailed(format!("invalid mcp response json: {err}")))?;
+            .map_err(|err| AgentToolError::ExecFailed(format!("invalid mcp response json: {err}")))?;
 
         if let Some(err_obj) = payload.get("error") {
             let msg = extract_jsonrpc_error_message(err_obj);
-            return Err(ToolError::ExecFailed(format!("mcp tool call error: {msg}")));
+            return Err(AgentToolError::ExecFailed(format!("mcp tool call error: {msg}")));
         }
 
         let result = payload.get("result").cloned().ok_or_else(|| {
-            ToolError::ExecFailed("mcp response missing `result` field".to_string())
+            AgentToolError::ExecFailed("mcp response missing `result` field".to_string())
         })?;
 
         if let Some(message) = extract_mcp_result_error(&result) {
-            return Err(ToolError::ExecFailed(format!(
+            return Err(AgentToolError::ExecFailed(format!(
                 "mcp tool returned error: {message}"
             )));
         }
@@ -269,7 +269,7 @@ impl AgentTool for RegisteredTool {
         self.spec.clone()
     }
 
-    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
         self.inner.call(ctx, args).await
     }
 }
@@ -291,24 +291,24 @@ impl ToolManager {
         }
     }
 
-    pub fn register_tool<T>(&self, tool: T) -> Result<(), ToolError>
+    pub fn register_tool<T>(&self, tool: T) -> Result<(), AgentToolError>
     where
         T: AgentTool + 'static,
     {
         self.register_tool_arc(Arc::new(tool))
     }
 
-    pub fn register_tool_arc(&self, tool: Arc<dyn AgentTool>) -> Result<(), ToolError> {
+    pub fn register_tool_arc(&self, tool: Arc<dyn AgentTool>) -> Result<(), AgentToolError> {
         let mut spec = tool.spec();
         let original_name = spec.name.trim().to_string();
         if original_name.is_empty() {
-            return Err(ToolError::InvalidArgs(
+            return Err(AgentToolError::InvalidArgs(
                 "tool name cannot be empty".to_string(),
             ));
         }
         let normalized_name = normalize_tool_name(original_name.as_str());
         if normalized_name.is_empty() {
-            return Err(ToolError::InvalidArgs(format!(
+            return Err(AgentToolError::InvalidArgs(format!(
                 "tool name `{}` is invalid after normalization",
                 original_name
             )));
@@ -319,9 +319,9 @@ impl ToolManager {
         let mut guard = self
             .tools
             .write()
-            .map_err(|_| ToolError::ExecFailed("tool registry lock poisoned".to_string()))?;
+            .map_err(|_| AgentToolError::ExecFailed("tool registry lock poisoned".to_string()))?;
         if guard.contains_key(&normalized_name) {
-            return Err(ToolError::AlreadyExists(normalized_name));
+            return Err(AgentToolError::AlreadyExists(normalized_name));
         }
         guard.insert(normalized_name.clone(), registered);
         if normalized_name != original_name {
@@ -333,7 +333,7 @@ impl ToolManager {
         Ok(())
     }
 
-    pub fn register_mcp_tool(&self, cfg: MCPToolConfig) -> Result<(), ToolError> {
+    pub fn register_mcp_tool(&self, cfg: MCPToolConfig) -> Result<(), AgentToolError> {
         self.register_tool(MCPTool::new(cfg)?)
     }
 
@@ -371,9 +371,9 @@ impl ToolManager {
         specs
     }
 
-    pub async fn call_tool(&self, ctx: &TraceCtx, call: ToolCall) -> Result<Json, ToolError> {
+    pub async fn call_tool(&self, ctx: &TraceCtx, call: ToolCall) -> Result<Json, AgentToolError> {
         let Some(tool) = self.get_tool(&call.name) else {
-            return Err(ToolError::NotFound(call.name));
+            return Err(AgentToolError::NotFound(call.name));
         };
         tool.call(ctx, call.args).await
     }
@@ -551,7 +551,7 @@ mod tests {
             }
         }
 
-        async fn call(&self, _ctx: &TraceCtx, _args: Json) -> Result<Json, ToolError> {
+        async fn call(&self, _ctx: &TraceCtx, _args: Json) -> Result<Json, AgentToolError> {
             Ok(json!({"ok": true}))
         }
     }
@@ -582,7 +582,7 @@ mod tests {
             )
             .await
             .expect_err("legacy alias should not call");
-        assert!(matches!(err, ToolError::NotFound(_)));
+        assert!(matches!(err, AgentToolError::NotFound(_)));
 
         mgr.call_tool(
             &test_call_ctx(),
@@ -675,7 +675,7 @@ mod tests {
             .await
             .expect_err("mcp jsonrpc error should fail");
 
-        assert!(matches!(err, ToolError::ExecFailed(_)));
+        assert!(matches!(err, AgentToolError::ExecFailed(_)));
         assert!(err.to_string().contains("boom"));
     }
 }

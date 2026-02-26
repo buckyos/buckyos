@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::{fs, task};
 
-use crate::agent_tool::{AgentTool, ToolError, ToolManager, ToolSpec};
+use crate::agent_tool::{AgentTool, AgentToolError, ToolManager, ToolSpec};
 use crate::behavior::TraceCtx;
 
 pub const TOOL_CREATE_SUB_AGENT: &str = "create_sub_agent";
@@ -68,19 +68,19 @@ pub enum AiRuntimeError {
     },
 }
 
-impl From<AiRuntimeError> for ToolError {
+impl From<AiRuntimeError> for AgentToolError {
     fn from(value: AiRuntimeError) -> Self {
         match value {
-            AiRuntimeError::InvalidArgs(msg) => ToolError::InvalidArgs(msg),
+            AiRuntimeError::InvalidArgs(msg) => AgentToolError::InvalidArgs(msg),
             AiRuntimeError::AgentNotFound(msg) => {
-                ToolError::InvalidArgs(format!("agent not registered in runtime: {msg}"))
+                AgentToolError::InvalidArgs(format!("agent not registered in runtime: {msg}"))
             }
-            AiRuntimeError::AlreadyExists(msg) => ToolError::InvalidArgs(msg),
+            AiRuntimeError::AlreadyExists(msg) => AgentToolError::InvalidArgs(msg),
             AiRuntimeError::Io { path, source } => {
-                ToolError::ExecFailed(format!("io error on `{path}`: {source}"))
+                AgentToolError::ExecFailed(format!("io error on `{path}`: {source}"))
             }
             AiRuntimeError::Json { path, source } => {
-                ToolError::ExecFailed(format!("json error on `{path}`: {source}"))
+                AgentToolError::ExecFailed(format!("json error on `{path}`: {source}"))
             }
         }
     }
@@ -179,7 +179,7 @@ impl AiRuntime {
         &self.cfg
     }
 
-    pub async fn register_tools(&self, tool_mgr: &ToolManager) -> Result<(), ToolError> {
+    pub async fn register_tools(&self, tool_mgr: &ToolManager) -> Result<(), AgentToolError> {
         tool_mgr.register_tool(RuntimeCreateSubAgentTool {
             runtime: Arc::new(self.clone()),
         })?;
@@ -1794,7 +1794,7 @@ impl AgentTool for RuntimeCreateSubAgentTool {
         }
     }
 
-    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
         let parent_did = optional_string(&args, "parent_did")?.unwrap_or(ctx.agent_did.clone());
         let req = CreateSubAgentRequest {
             name: require_string(&args, "name")?,
@@ -1844,7 +1844,7 @@ impl AgentTool for RuntimeBindExternalWorkspaceTool {
         }
     }
 
-    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
         let agent_did = optional_string(&args, "agent_did")?.unwrap_or(ctx.agent_did.clone());
         let req = BindExternalWorkspaceRequest {
             name: require_string(&args, "name")?,
@@ -1890,7 +1890,7 @@ impl AgentTool for RuntimeListExternalWorkspacesTool {
         }
     }
 
-    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
         let agent_did = optional_string(&args, "agent_did")?.unwrap_or(ctx.agent_did.clone());
         let workspaces = self.runtime.list_external_workspaces(&agent_did).await?;
         Ok(json!({
@@ -2156,17 +2156,17 @@ fn upsert_binding(bindings: &mut Vec<ExternalWorkspaceBinding>, binding: Externa
     bindings.push(binding);
 }
 
-fn require_string(args: &Json, key: &str) -> Result<String, ToolError> {
+fn require_string(args: &Json, key: &str) -> Result<String, AgentToolError> {
     let value = args
         .get(key)
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|v| !v.is_empty())
-        .ok_or_else(|| ToolError::InvalidArgs(format!("`{key}` is required")))?;
+        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` is required")))?;
     Ok(value.to_string())
 }
 
-fn optional_string(args: &Json, key: &str) -> Result<Option<String>, ToolError> {
+fn optional_string(args: &Json, key: &str) -> Result<Option<String>, AgentToolError> {
     match args.get(key) {
         None | Some(Json::Null) => Ok(None),
         Some(Json::String(value)) => {
@@ -2177,7 +2177,7 @@ fn optional_string(args: &Json, key: &str) -> Result<Option<String>, ToolError> 
                 Ok(Some(trimmed.to_string()))
             }
         }
-        Some(_) => Err(ToolError::InvalidArgs(format!("`{key}` must be a string"))),
+        Some(_) => Err(AgentToolError::InvalidArgs(format!("`{key}` must be a string"))),
     }
 }
 

@@ -68,7 +68,7 @@ impl AgentTool for EchoTool {
         &self,
         _ctx: &TraceCtx,
         args: Json,
-    ) -> Result<Json, crate::agent_tool::ToolError> {
+    ) -> Result<Json, crate::agent_tool::AgentToolError> {
         println!("[TEST][TOOL] tool.echo called with args: {}", args);
         Ok(json!({"tool": "tool.echo", "ok": true, "args": args}))
     }
@@ -232,6 +232,9 @@ tools:
             step_idx: 0,
             wakeup_id: "wakeup-1".to_string(),
         },
+        input_prompt: String::new(),
+        last_step_prompt: String::new(),
+        last_pulled_msg_index: 0,
         role_md: "role".to_string(),
         self_md: "self".to_string(),
         session_id: None,
@@ -245,7 +248,7 @@ tools:
     };
 
     let (result, tracking) = behavior
-        .run_step(input)
+        .run_step(&input)
         .await
         .expect("run_step should succeed");
     println!(
@@ -351,6 +354,9 @@ process_rule: test_rule
             step_idx: 0,
             wakeup_id: "wakeup-3".to_string(),
         },
+        input_prompt: String::new(),
+        last_step_prompt: String::new(),
+        last_pulled_msg_index: 0,
         role_md: "role".to_string(),
         self_md: "self".to_string(),
         session_id: None,
@@ -364,7 +370,7 @@ process_rule: test_rule
     };
 
     let (result, tracking) = behavior
-        .run_step(input)
+        .run_step(&input)
         .await
         .expect("run_step should succeed");
     assert!(result.is_sleep());
@@ -433,6 +439,9 @@ process_rule: test_rule
             step_idx: 0,
             wakeup_id: "wakeup-2".to_string(),
         },
+        input_prompt: String::new(),
+        last_step_prompt: String::new(),
+        last_pulled_msg_index: 0,
         role_md: "role".to_string(),
         self_md: "self".to_string(),
         session_id: None,
@@ -446,7 +455,7 @@ process_rule: test_rule
     };
 
     let (result, tracking) = behavior
-        .run_step(input)
+        .run_step(&input)
         .await
         .expect("run_step should succeed");
     assert!(result.is_sleep());
@@ -512,6 +521,9 @@ process_rule: test_rule
             step_idx: 0,
             wakeup_id: "wakeup-parent-1".to_string(),
         },
+        input_prompt: String::new(),
+        last_step_prompt: String::new(),
+        last_pulled_msg_index: 0,
         role_md: "role".to_string(),
         self_md: "self".to_string(),
         session_id: None,
@@ -525,7 +537,7 @@ process_rule: test_rule
     };
 
     let (_result, _tracking) = behavior
-        .run_step(input)
+        .run_step(&input)
         .await
         .expect("run_step should succeed");
 
@@ -637,6 +649,9 @@ process_rule: test_rule
             step_idx: 0,
             wakeup_id: "wakeup-parent-2".to_string(),
         },
+        input_prompt: String::new(),
+        last_step_prompt: String::new(),
+        last_pulled_msg_index: 0,
         role_md: "role".to_string(),
         self_md: "self".to_string(),
         session_id: None,
@@ -653,7 +668,7 @@ process_rule: test_rule
     };
 
     let (_result, _tracking) = behavior
-        .run_step(input)
+        .run_step(&input)
         .await
         .expect("run_step should succeed");
 
@@ -837,6 +852,9 @@ tools:
 
     let first_input = BehaviorExecInput {
         trace: base_trace.clone(),
+        input_prompt: String::new(),
+        last_step_prompt: String::new(),
+        last_pulled_msg_index: 0,
         role_md: "role".to_string(),
         self_md: "self".to_string(),
         session_id: None,
@@ -850,7 +868,7 @@ tools:
     };
 
     let (first_result, first_tracking) = behavior
-        .run_step(first_input)
+        .run_step(&first_input)
         .await
         .expect("first run_step should succeed");
     println!(
@@ -870,6 +888,9 @@ tools:
             step_idx: 1,
             ..base_trace
         },
+        input_prompt: String::new(),
+        last_step_prompt: String::new(),
+        last_pulled_msg_index: 0,
         role_md: "role".to_string(),
         self_md: "self".to_string(),
         session_id: None,
@@ -883,7 +904,7 @@ tools:
     };
 
     let (second_result, second_tracking) = behavior
-        .run_step(second_input)
+        .run_step(&second_input)
         .await
         .expect("second run_step should succeed");
     println!(
@@ -1045,6 +1066,9 @@ tools:
             step_idx: 0,
             wakeup_id: "wakeup-workshop-actions".to_string(),
         },
+        input_prompt: String::new(),
+        last_step_prompt: String::new(),
+        last_pulled_msg_index: 0,
         role_md: "role".to_string(),
         self_md: "self".to_string(),
         session_id: None,
@@ -1058,7 +1082,7 @@ tools:
     };
 
     let (result, tracking) = behavior
-        .run_step(input)
+        .run_step(&input)
         .await
         .expect("run_step should succeed");
     assert_eq!(tracking.tool_trace.len(), 1);

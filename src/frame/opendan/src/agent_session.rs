@@ -12,7 +12,7 @@ use serde_json::{json, Map, Value as Json};
 use tokio::fs;
 use tokio::sync::{Mutex, RwLock};
 
-use crate::agent_tool::{AgentTool, ToolError, ToolSpec};
+use crate::agent_tool::{AgentTool, AgentToolError, ToolSpec};
 use crate::behavior::{BehaviorConfig, TraceCtx};
 
 pub const TOOL_GET_SESSION: &str = "get_session";
@@ -23,7 +23,6 @@ const SESSION_STATUS_PAUSE: &str = "pause";
 const SESSION_STATUS_NORMAL: &str = "normal";
 
 static SESSION_ITEM_SEQ: AtomicU64 = AtomicU64::new(0);
-static SESSION_LINK_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -71,17 +70,15 @@ pub struct ConsumableIds {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct SessionInputItem {
-    pub id: String,
-    pub ts_ms: u64,
-    pub payload: Json,
+    pub msg: Option<MsgRecord>,
+    pub event_id: Option<String>,
 }
 
 impl Default for SessionInputItem {
     fn default() -> Self {
         Self {
-            id: String::new(),
-            ts_ms: 0,
-            payload: Json::Null,
+            msg: None,
+            event_id: None,
         }
     }
 }
@@ -110,31 +107,7 @@ impl Default for SessionExecInput {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum SessionMessageLinkState {
-    New,
-    Used,
-    Acked,
-}
 
-impl Default for SessionMessageLinkState {
-    fn default() -> Self {
-        Self::New
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
-#[serde(default)]
-pub struct SessionMessageLink {
-    pub link_id: String,
-    pub session_id: String,
-    pub msg_tunnle_message_id: String,
-    pub msg_record_id: String,
-    pub state: SessionMessageLinkState,
-    pub reason: String,
-    pub created_at_ms: u64,
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -148,7 +121,6 @@ struct SessionRuntimeMeta {
     local_workspace_id: Option<String>,
     worklog: Vec<Json>,
     cost_trace: Json,
-    message_links: Vec<SessionMessageLink>,
 }
 
 impl Default for SessionRuntimeMeta {
@@ -163,7 +135,6 @@ impl Default for SessionRuntimeMeta {
             local_workspace_id: None,
             worklog: vec![],
             cost_trace: json!({}),
-            message_links: vec![],
         }
     }
 }
@@ -188,7 +159,6 @@ pub struct AgentSession {
     pub local_workspace_id: Option<String>,
     pub worklog: Vec<Json>,
     pub cost_trace: Json,
-    pub message_links: Vec<SessionMessageLink>,
     pub links: Vec<OpenDanSessionLink>,
     pub tags: Vec<String>,
     pub meta: Json,
@@ -224,7 +194,6 @@ impl AgentSession {
             local_workspace_id: None,
             worklog: vec![],
             cost_trace: json!({}),
-            message_links: vec![],
             links: vec![],
             tags: vec![],
             meta: json!({}),
@@ -278,7 +247,6 @@ impl AgentSession {
             local_workspace_id: normalize_optional_string(runtime_meta.local_workspace_id),
             worklog: runtime_meta.worklog,
             cost_trace: normalize_json_object(runtime_meta.cost_trace),
-            message_links: runtime_meta.message_links,
             links: record.links,
             tags: record.tags,
             meta: normalize_json_object(meta),
@@ -341,7 +309,6 @@ impl AgentSession {
             local_workspace_id: self.local_workspace_id.clone(),
             worklog: self.worklog.clone(),
             cost_trace: normalize_json_object(self.cost_trace.clone()),
-            message_links: self.message_links.clone(),
         }
     }
 
@@ -373,10 +340,15 @@ impl AgentSession {
 
     pub fn append_msg(&mut self, payload: Json) -> String {
         let id = extract_input_id(&payload, "msg");
+        let msg = serde_json::from_value::<MsgRecord>(payload).ok();
+        let event_id = if msg.is_some() {
+            None
+        } else {
+            Some(id.clone())
+        };
         let item = SessionInputItem {
-            id: id.clone(),
-            ts_ms: now_ms(),
-            payload,
+            msg,
+            event_id,
         };
         self.new_msgs.push(item);
         self.updated_at_ms = now_ms();
@@ -386,49 +358,21 @@ impl AgentSession {
     pub fn append_event(&mut self, payload: Json) -> String {
         let id = extract_input_id(&payload, "event");
         let item = SessionInputItem {
-            id: id.clone(),
-            ts_ms: now_ms(),
-            payload,
+            msg: None,
+            event_id: payload
+                .get("event_id")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .or_else(|| Some(id.clone())),
         };
         self.new_events.push(item);
         self.updated_at_ms = now_ms();
         id
     }
 
-    pub fn append_msg_link(
-        &mut self,
-        msg_tunnle_message_id: impl Into<String>,
-        msg_record_id: impl Into<String>,
-        reason: impl Into<String>,
-    ) -> String {
-        let now = now_ms();
-        let reason = reason.into();
-        let link_id = new_link_id();
-        self.message_links.push(SessionMessageLink {
-            link_id: link_id.clone(),
-            session_id: self.session_id.clone(),
-            msg_tunnle_message_id: msg_tunnle_message_id.into(),
-            msg_record_id: msg_record_id.into(),
-            state: SessionMessageLinkState::New,
-            reason: normalize_nonempty_reason(reason),
-            created_at_ms: now,
-        });
-        self.updated_at_ms = now;
-        self.last_activity_ms = now;
-        link_id
-    }
-
-    pub fn append_msg_link_from_record(
-        &mut self,
-        record: &MsgRecordWithObject,
-        reason: impl Into<String>,
-    ) -> String {
-        self.append_msg_link(
-            record.record.msg_id.to_string(),
-            record.record.record_id.clone(),
-            reason.into(),
-        )
-    }
+  
 
     pub fn mark_msg_arrived(&mut self, item: &SessionInputItem) {
         self.update_state_on_input_arrived(item, SessionState::WaitForMsg);
@@ -442,27 +386,21 @@ impl AgentSession {
         let slots = required_input_slots(behavior_cfg);
         let mut payload = Map::<String, Json>::new();
         let mut consumable = ConsumableIds::default();
-        let mut link_ids = Vec::<String>::new();
+        let link_ids = Vec::<String>::new();
 
         if slots.contains("new_msg") {
-            let selected_links =
-                select_new_links(&self.message_links, self.state, SessionState::WaitForMsg);
-            if !selected_links.is_empty() {
-                link_ids = selected_links
-                    .iter()
-                    .map(|item| item.link_id.clone())
-                    .collect();
-                payload.insert("new_msg".to_string(), select_link_payload(selected_links));
-            } else {
-                let selected = select_new_items(
-                    &self.new_msgs,
-                    self.state,
-                    self.wait_details.as_ref(),
-                    SessionState::WaitForMsg,
-                );
-                consumable.msg_ids = selected.iter().map(|item| item.id.clone()).collect();
-                payload.insert("new_msg".to_string(), select_item_payload(selected));
-            }
+            let selected = select_new_items(
+                &self.new_msgs,
+                self.state,
+                self.wait_details.as_ref(),
+                SessionState::WaitForMsg,
+            );
+            consumable.msg_ids = selected
+                .iter()
+                .filter_map(session_input_item_id)
+                .map(str::to_string)
+                .collect();
+            payload.insert("new_msg".to_string(), select_item_payload(selected));
         }
 
         if slots.contains("new_event") {
@@ -472,7 +410,11 @@ impl AgentSession {
                 self.wait_details.as_ref(),
                 SessionState::WaitForEvent,
             );
-            consumable.event_ids = selected.iter().map(|item| item.id.clone()).collect();
+            consumable.event_ids = selected
+                .iter()
+                .filter_map(session_input_item_id)
+                .map(str::to_string)
+                .collect();
             payload.insert("new_event".to_string(), select_item_payload(selected));
         }
 
@@ -508,50 +450,46 @@ impl AgentSession {
     }
 
     pub fn mark_input_links_used(&mut self, link_ids: &[String]) {
-        if link_ids.is_empty() {
-            return;
-        }
-        let consumed = link_ids
-            .iter()
-            .map(|item| item.as_str())
-            .collect::<HashSet<_>>();
-        let mut touched = false;
-        for link in &mut self.message_links {
-            if consumed.contains(link.link_id.as_str())
-                && link.state == SessionMessageLinkState::New
-            {
-                link.state = SessionMessageLinkState::Used;
-                touched = true;
-            }
-        }
-        if touched {
-            self.updated_at_ms = now_ms();
-        }
+        let _ = link_ids;
     }
 
     pub fn update_input_used(&mut self, exec_input: &SessionExecInput) {
-        self.mark_input_links_used(exec_input.link_ids.as_slice());
-
-        if !exec_input.consumable_ids.msg_ids.is_empty() {
-            let consumed = exec_input
-                .consumable_ids
-                .msg_ids
-                .iter()
-                .cloned()
-                .collect::<HashSet<_>>();
-            self.new_msgs
-                .retain(|item| !consumed.contains(item.id.as_str()));
+        let consumed_msg_ids = exec_input
+            .consumable_ids
+            .msg_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        if !consumed_msg_ids.is_empty() {
+            self.new_msgs.retain(|item| {
+                session_input_item_id(item)
+                    .map(|id| !consumed_msg_ids.contains(id))
+                    .unwrap_or(true)
+            });
+            self.history_msgs.retain(|item| {
+                session_input_item_id(item)
+                    .map(|id| !consumed_msg_ids.contains(id))
+                    .unwrap_or(true)
+            });
         }
 
-        if !exec_input.consumable_ids.event_ids.is_empty() {
-            let consumed = exec_input
-                .consumable_ids
-                .event_ids
-                .iter()
-                .cloned()
-                .collect::<HashSet<_>>();
-            self.new_events
-                .retain(|item| !consumed.contains(item.id.as_str()));
+        let consumed_event_ids = exec_input
+            .consumable_ids
+            .event_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        if !consumed_event_ids.is_empty() {
+            self.new_events.retain(|item| {
+                session_input_item_id(item)
+                    .map(|id| !consumed_event_ids.contains(id))
+                    .unwrap_or(true)
+            });
+            self.history_events.retain(|item| {
+                session_input_item_id(item)
+                    .map(|id| !consumed_event_ids.contains(id))
+                    .unwrap_or(true)
+            });
         }
         self.updated_at_ms = now_ms();
     }
@@ -598,26 +536,20 @@ impl AgentSession {
             "new_event_count": self.new_events.len(),
             "history_msg_count": self.history_msgs.len(),
             "history_event_count": self.history_events.len(),
-            "new_link_count": self
-                .message_links
-                .iter()
-                .filter(|item| item.state == SessionMessageLinkState::New)
-                .count(),
+            "new_link_count": 0,
             "workspace_info": self.workspace_info,
             "local_workspace_id": self.local_workspace_id,
             "meta": self.meta,
         })
     }
 
-    fn update_state_on_input_arrived(&mut self, item: &SessionInputItem, wait_state: SessionState) {
+    fn update_state_on_input_arrived(&mut self, _item: &SessionInputItem, _wait_state: SessionState) {
         self.updated_at_ms = now_ms();
         if self.state == SessionState::Wait || self.state == SessionState::Sleep {
             self.state = SessionState::Ready;
             return;
         }
-        if self.state == wait_state && match_wait_filter(item, self.wait_details.as_ref()) {
-            self.state = SessionState::Ready;
-        }
+        self.state = SessionState::Ready;
     }
 }
 
@@ -635,12 +567,12 @@ impl AgentSessionMgr {
         owner_agent: impl Into<String>,
         sessions_root: impl Into<PathBuf>,
         default_behavior: Option<String>,
-    ) -> Result<Self, ToolError> {
+    ) -> Result<Self, AgentToolError> {
         let owner_agent = owner_agent.into();
         let sessions_root = sessions_root.into();
 
         fs::create_dir_all(&sessions_root).await.map_err(|err| {
-            ToolError::ExecFailed(format!(
+            AgentToolError::ExecFailed(format!(
                 "create sessions dir `{}` failed: {err}",
                 sessions_root.display()
             ))
@@ -661,11 +593,15 @@ impl AgentSessionMgr {
         &self.sessions_root
     }
 
-    pub fn get_default_session_id(target:&DID,tunnel_did:&DID) -> String {
-        format!("session-{}-{}",target.to_raw_host_name(),tunnel_did.to_raw_host_name())
+    pub fn get_default_session_id(&self,target:&DID,tunnel_did:Option<DID>) -> String {
+        if let Some(tunnel_did) = tunnel_did {
+            return format!("session-{}-{}-{}",self.owner_agent.as_str(),
+            target.to_raw_host_name(),tunnel_did.to_raw_host_name());
+        }
+        format!("session-{}-{}",self.owner_agent.as_str(),target.to_raw_host_name())
     }
 
-    pub async fn ensure_default_session(&self) -> Result<Arc<Mutex<AgentSession>>, ToolError> {
+    pub async fn ensure_default_session(&self) -> Result<Arc<Mutex<AgentSession>>, AgentToolError> {
         self.ensure_session("default", Some("Default Session".to_string()))
             .await
     }
@@ -674,7 +610,7 @@ impl AgentSessionMgr {
         &self,
         session_id: &str,
         title: Option<String>,
-    ) -> Result<Arc<Mutex<AgentSession>>, ToolError> {
+    ) -> Result<Arc<Mutex<AgentSession>>, AgentToolError> {
         let session_id = sanitize_session_id(session_id)?;
         if let Some(existing) = self.get_session(session_id.as_str()).await {
             return Ok(existing);
@@ -706,7 +642,7 @@ impl AgentSessionMgr {
         self.sessions.read().await.get(session_id.as_str()).cloned()
     }
 
-    pub async fn append_msg(&self, session_id: &str, payload: Json) -> Result<String, ToolError> {
+    pub async fn append_msg(&self, session_id: &str, payload: Json) -> Result<String, AgentToolError> {
         let session = self.ensure_session(session_id, None).await?;
         let mut guard = session.lock().await;
         let id = guard.append_msg(payload);
@@ -714,7 +650,7 @@ impl AgentSessionMgr {
         Ok(id)
     }
 
-    pub async fn append_event(&self, session_id: &str, payload: Json) -> Result<String, ToolError> {
+    pub async fn append_event(&self, session_id: &str, payload: Json) -> Result<String, AgentToolError> {
         let session = self.ensure_session(session_id, None).await?;
         let mut guard = session.lock().await;
         let id = guard.append_event(payload);
@@ -722,43 +658,22 @@ impl AgentSessionMgr {
         Ok(id)
     }
 
-    pub async fn link_msg_record(
-        &self,
-        session_id: &str,
-        record: &MsgRecordWithObject,
-        reason: &str,
-    ) -> Result<String, ToolError> {
-        let session = self.ensure_session(session_id, None).await?;
-        let mut guard = session.lock().await;
-        let link_id = guard.append_msg_link_from_record(record, reason.to_string());
-        self.save_session_locked(&guard).await?;
-        Ok(link_id)
-    }
 
-    pub async fn mark_msg_arrived(
+    pub async fn try_wakeup_session_by_input_item(
         &self,
         session_id: &str,
-        item: &MsgRecord,
-    ) -> Result<(), ToolError> {
+        input_item: &SessionInputItem,
+    ) -> Result<(), AgentToolError> {
         let session = self.ensure_session(session_id, None).await?;
         let mut guard = session.lock().await;
-        let payload = serde_json::to_value(item).map_err(|err| {
-            ToolError::ExecFailed(format!(
-                "serialize msg record to session input failed: {err}"
-            ))
-        })?;
-        let input = SessionInputItem {
-            id: extract_input_id(&payload, "msg"),
-            ts_ms: now_ms(),
-            payload,
-        };
-        guard.update_state_on_input_arrived(&input, SessionState::WaitForMsg);
+
+        guard.update_state_on_input_arrived(&input_item, SessionState::WaitForMsg);
         self.save_session_locked(&guard).await
     }
 
-    pub async fn save_session(&self, session_id: &str) -> Result<(), ToolError> {
+    pub async fn save_session(&self, session_id: &str) -> Result<(), AgentToolError> {
         let Some(session) = self.get_session(session_id).await else {
-            return Err(ToolError::InvalidArgs(format!(
+            return Err(AgentToolError::InvalidArgs(format!(
                 "session not found: {session_id}"
             )));
         };
@@ -766,12 +681,12 @@ impl AgentSessionMgr {
         self.save_session_locked(&guard).await
     }
 
-    pub async fn save_session_locked(&self, session: &AgentSession) -> Result<(), ToolError> {
+    pub async fn save_session_locked(&self, session: &AgentSession) -> Result<(), AgentToolError> {
         let record = session.to_record(true);
         self.write_session_record(&record).await
     }
 
-    pub async fn schedule_wait_timeouts(&self, now_ms: u64) -> Result<(), ToolError> {
+    pub async fn schedule_wait_timeouts(&self, now_ms: u64) -> Result<(), AgentToolError> {
         let sessions = {
             let guard = self.sessions.read().await;
             guard.values().cloned().collect::<Vec<_>>()
@@ -788,7 +703,7 @@ impl AgentSessionMgr {
         Ok(())
     }
 
-    pub async fn refresh_all_statuses_from_disk(&self) -> Result<(), ToolError> {
+    pub async fn refresh_all_statuses_from_disk(&self) -> Result<(), AgentToolError> {
         let session_ids = {
             let guard = self.sessions.read().await;
             guard.keys().cloned().collect::<Vec<_>>()
@@ -799,7 +714,7 @@ impl AgentSessionMgr {
         Ok(())
     }
 
-    pub async fn refresh_status_from_disk(&self, session_id: &str) -> Result<(), ToolError> {
+    pub async fn refresh_status_from_disk(&self, session_id: &str) -> Result<(), AgentToolError> {
         let session_id = sanitize_session_id(session_id)?;
         let path = self.session_file_path(session_id.as_str());
         if !is_existing_file(&path).await {
@@ -807,13 +722,13 @@ impl AgentSessionMgr {
         }
 
         let raw = fs::read_to_string(&path).await.map_err(|err| {
-            ToolError::ExecFailed(format!(
+            AgentToolError::ExecFailed(format!(
                 "read session file `{}` failed: {err}",
                 path.display()
             ))
         })?;
         let record = serde_json::from_str::<OpenDanAgentSessionRecord>(&raw).map_err(|err| {
-            ToolError::ExecFailed(format!(
+            AgentToolError::ExecFailed(format!(
                 "parse session file `{}` failed: {err}",
                 path.display()
             ))
@@ -887,11 +802,11 @@ impl AgentSessionMgr {
         None
     }
 
-    pub async fn session_view(&self, session_id: &str) -> Result<Json, ToolError> {
+    pub async fn session_view(&self, session_id: &str) -> Result<Json, AgentToolError> {
         let session_id = sanitize_session_id(session_id)?;
         self.refresh_status_from_disk(session_id.as_str()).await?;
         let Some(session) = self.get_session(session_id.as_str()).await else {
-            return Err(ToolError::InvalidArgs(format!(
+            return Err(AgentToolError::InvalidArgs(format!(
                 "session not found: {session_id}"
             )));
         };
@@ -899,16 +814,16 @@ impl AgentSessionMgr {
         Ok(guard.summary_view_json())
     }
 
-    async fn load_existing(&self) -> Result<(), ToolError> {
+    async fn load_existing(&self) -> Result<(), AgentToolError> {
         let mut read_dir = fs::read_dir(&self.sessions_root).await.map_err(|err| {
-            ToolError::ExecFailed(format!(
+            AgentToolError::ExecFailed(format!(
                 "read sessions dir `{}` failed: {err}",
                 self.sessions_root.display()
             ))
         })?;
 
         while let Some(entry) = read_dir.next_entry().await.map_err(|err| {
-            ToolError::ExecFailed(format!(
+            AgentToolError::ExecFailed(format!(
                 "iterate sessions dir `{}` failed: {err}",
                 self.sessions_root.display()
             ))
@@ -977,11 +892,11 @@ impl AgentSessionMgr {
     async fn write_session_record(
         &self,
         record: &OpenDanAgentSessionRecord,
-    ) -> Result<(), ToolError> {
+    ) -> Result<(), AgentToolError> {
         let session_id = sanitize_session_id(record.session_id.as_str())?;
         let session_dir = self.sessions_root.join(session_id.as_str());
         fs::create_dir_all(&session_dir).await.map_err(|err| {
-            ToolError::ExecFailed(format!(
+            AgentToolError::ExecFailed(format!(
                 "create session dir `{}` failed: {err}",
                 session_dir.display()
             ))
@@ -989,10 +904,10 @@ impl AgentSessionMgr {
 
         let session_file = session_dir.join(DEFAULT_SESSION_FILE);
         let bytes = serde_json::to_vec_pretty(record).map_err(|err| {
-            ToolError::ExecFailed(format!("serialize session record failed: {err}"))
+            AgentToolError::ExecFailed(format!("serialize session record failed: {err}"))
         })?;
         fs::write(&session_file, bytes).await.map_err(|err| {
-            ToolError::ExecFailed(format!(
+            AgentToolError::ExecFailed(format!(
                 "write session file `{}` failed: {err}",
                 session_file.display()
             ))
@@ -1043,7 +958,7 @@ impl AgentTool for GetSessionTool {
         }
     }
 
-    async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
         let session_id = require_string(&args, "session_id")?;
         let session = self.store.session_view(&session_id).await?;
         Ok(json!({
@@ -1113,26 +1028,6 @@ fn select_new_items(
         .collect()
 }
 
-fn select_new_links(
-    input: &[SessionMessageLink],
-    current_state: SessionState,
-    wait_state: SessionState,
-) -> Vec<SessionMessageLink> {
-    if current_state != wait_state {
-        return input
-            .iter()
-            .filter(|item| item.state == SessionMessageLinkState::New)
-            .cloned()
-            .collect();
-    }
-
-    input
-        .iter()
-        .filter(|item| item.state == SessionMessageLinkState::New)
-        .cloned()
-        .collect()
-}
-
 fn select_item_payload(items: Vec<SessionInputItem>) -> Json {
     if items.is_empty() {
         return Json::Null;
@@ -1140,35 +1035,7 @@ fn select_item_payload(items: Vec<SessionInputItem>) -> Json {
     Json::Array(
         items
             .into_iter()
-            .map(|item| {
-                json!({
-                    "id": item.id,
-                    "ts_ms": item.ts_ms,
-                    "payload": item.payload,
-                })
-            })
-            .collect::<Vec<_>>(),
-    )
-}
-
-fn select_link_payload(items: Vec<SessionMessageLink>) -> Json {
-    if items.is_empty() {
-        return Json::Null;
-    }
-    Json::Array(
-        items
-            .into_iter()
-            .map(|item| {
-                json!({
-                    "link_id": item.link_id,
-                    "session_id": item.session_id,
-                    "msg_tunnle_message_id": item.msg_tunnle_message_id,
-                    "msg_record_id": item.msg_record_id,
-                    "state": format!("{:?}", item.state).to_uppercase(),
-                    "reason": item.reason,
-                    "created_at_ms": item.created_at_ms,
-                })
-            })
+            .map(|item| serde_json::to_value(item).unwrap_or(Json::Null))
             .collect::<Vec<_>>(),
     )
 }
@@ -1177,33 +1044,42 @@ fn match_wait_filter(item: &SessionInputItem, wait_details: Option<&SessionWaitD
     let Some(wait_details) = wait_details else {
         return true;
     };
-    let Some(filter_obj) = wait_details.filter.as_object() else {
+    if wait_details.filter.is_null() {
         return true;
-    };
-
-    for (key, expected) in filter_obj {
-        if key == "id" {
-            if Json::String(item.id.clone()) != *expected {
-                return false;
-            }
-            continue;
-        }
-
-        if key.starts_with('/') {
-            let actual = item.payload.pointer(key).cloned().unwrap_or(Json::Null);
-            if actual != *expected {
-                return false;
-            }
-            continue;
-        }
-
-        let actual = item.payload.get(key).cloned().unwrap_or(Json::Null);
-        if actual != *expected {
-            return false;
-        }
     }
-    true
+    let input = session_input_item_json(item);
+    json_matches_filter(&input, &wait_details.filter)
 }
+
+fn session_input_item_id(item: &SessionInputItem) -> Option<&str> {
+    item.msg
+        .as_ref()
+        .map(|msg| msg.record_id.as_str())
+        .or_else(|| item.event_id.as_deref())
+}
+
+fn session_input_item_json(item: &SessionInputItem) -> Json {
+    serde_json::to_value(item).unwrap_or(Json::Null)
+}
+
+fn json_matches_filter(input: &Json, filter: &Json) -> bool {
+    match filter {
+        Json::Null => true,
+        Json::Object(map) => {
+            let Some(input_map) = input.as_object() else {
+                return false;
+            };
+            map.iter().all(|(key, expected)| {
+                input_map
+                    .get(key)
+                    .map(|actual| json_matches_filter(actual, expected))
+                    .unwrap_or(false)
+            })
+        }
+        _ => input == filter,
+    }
+}
+
 
 fn is_null_like(value: &Json) -> bool {
     match value {
@@ -1247,30 +1123,30 @@ fn parse_runtime_meta(meta: &Json) -> SessionRuntimeMeta {
         .unwrap_or_default()
 }
 
-fn sanitize_session_id(input: &str) -> Result<String, ToolError> {
+fn sanitize_session_id(input: &str) -> Result<String, AgentToolError> {
     let session_id = input.trim();
     if session_id.is_empty() {
-        return Err(ToolError::InvalidArgs(
+        return Err(AgentToolError::InvalidArgs(
             "session_id cannot be empty".to_string(),
         ));
     }
     if session_id.len() > MAX_SESSION_ID_LEN {
-        return Err(ToolError::InvalidArgs(format!(
+        return Err(AgentToolError::InvalidArgs(format!(
             "session_id too long (>{MAX_SESSION_ID_LEN})"
         )));
     }
     if session_id == "." || session_id == ".." {
-        return Err(ToolError::InvalidArgs(
+        return Err(AgentToolError::InvalidArgs(
             "session_id cannot be `.` or `..`".to_string(),
         ));
     }
     if session_id.contains('/') || session_id.contains('\\') {
-        return Err(ToolError::InvalidArgs(
+        return Err(AgentToolError::InvalidArgs(
             "session_id cannot contain path separators".to_string(),
         ));
     }
     if session_id.chars().any(|ch| ch.is_control()) {
-        return Err(ToolError::InvalidArgs(
+        return Err(AgentToolError::InvalidArgs(
             "session_id cannot contain control characters".to_string(),
         ));
     }
@@ -1293,20 +1169,6 @@ fn extract_input_id(payload: &Json, prefix: &str) -> String {
     format!("{prefix}-{}-{seq}", now_ms())
 }
 
-fn new_link_id() -> String {
-    let seq = SESSION_LINK_SEQ.fetch_add(1, Ordering::Relaxed);
-    format!("link-{}-{seq}", now_ms())
-}
-
-fn normalize_nonempty_reason(reason: String) -> String {
-    let trimmed = reason.trim();
-    if trimmed.is_empty() {
-        "INBOX_FALLBACK".to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
 fn normalize_optional_string(value: Option<String>) -> Option<String> {
     value
         .map(|item| item.trim().to_string())
@@ -1327,13 +1189,13 @@ async fn is_existing_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn require_string(args: &Json, key: &str) -> Result<String, ToolError> {
+fn require_string(args: &Json, key: &str) -> Result<String, AgentToolError> {
     args.get(key)
         .and_then(|value| value.as_str())
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .ok_or_else(|| ToolError::InvalidArgs(format!("missing `{key}`")))
+        .ok_or_else(|| AgentToolError::InvalidArgs(format!("missing `{key}`")))
 }
 
 fn now_ms() -> u64 {
@@ -1399,14 +1261,14 @@ mod tests {
     }
 
     #[test]
-    fn generate_input_prefers_new_link_and_sets_link_ids() {
+    fn generate_input_keeps_link_ids_empty() {
         let mut session = AgentSession::new("s1", "did:opendan:test", Some("on_wakeup"));
-        let link_id = session.append_msg_link("msg-obj-1", "record-1", "INBOX_FALLBACK");
+        session.append_msg(json!({"id":"msg-1","text":"hello"}));
         let cfg = behavior_with_input("{{new_msg}}");
 
         let got = session.generate_input(&cfg).expect("input exists");
-        assert_eq!(got.link_ids, vec![link_id]);
-        assert!(got.consumable_ids.msg_ids.is_empty());
+        assert!(got.link_ids.is_empty());
+        assert_eq!(got.consumable_ids.msg_ids, vec!["msg-1".to_string()]);
         assert!(got.payload.get("new_msg").is_some());
     }
 
@@ -1423,28 +1285,15 @@ mod tests {
     }
 
     #[test]
-    fn mark_input_links_used_updates_state_to_used() {
-        let mut session = AgentSession::new("s1", "did:opendan:test", Some("on_wakeup"));
-        let link_id = session.append_msg_link("msg-obj-1", "record-1", "INBOX_FALLBACK");
-
-        session.mark_input_links_used(&[link_id]);
-        assert_eq!(session.message_links.len(), 1);
-        assert_eq!(
-            session.message_links[0].state,
-            SessionMessageLinkState::Used
-        );
-    }
-
-    #[test]
     fn wait_for_msg_filters_non_matching_inputs() {
         let mut session = AgentSession::new("s1", "did:opendan:test", Some("on_wakeup"));
         session.state = SessionState::WaitForMsg;
         session.wait_details = Some(SessionWaitDetails {
-            filter: json!({"source":"owner"}),
+            filter: json!({"event_id":"msg-2"}),
             deadline_ms: None,
             note: None,
         });
-        session.append_msg(json!({"id":"msg-1","source":"user"}));
+        session.append_msg(json!({"id":"msg-1","text":"user"}));
         let cfg = behavior_with_input("{{new_msg}}");
 
         assert!(session.generate_input(&cfg).is_none());

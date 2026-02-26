@@ -2,7 +2,7 @@ use crate::{get_buckyos_api_runtime, AppDoc, AppType, SelectorType};
 use ::kRPC::*;
 use async_trait::async_trait;
 use name_lib::DID;
-use ndn_lib::{MsgObject, ObjId};
+use ndn_lib::{MsgObjKind, MsgObject, ObjId};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -193,6 +193,8 @@ pub struct MsgRecord {
     pub record_id: String,
     pub box_kind: BoxKind,
     pub msg_id: ObjId,
+    #[serde(default)]
+    pub msg_kind: MsgObjKind,
     pub state: MsgState,
     pub from:DID,
     pub to:DID,
@@ -242,6 +244,18 @@ impl MsgRecordWithObject {
             ))
         })
     }
+
+    pub fn get_target_did(&self) -> DID {
+        match self.record.msg_kind {
+            MsgObjKind::GroupMsg => self.record.to.clone(), 
+            _ => self.record.from.clone(),
+        }
+    }
+
+    pub fn get_msg_tunnel_did(&self) -> Option<DID> {
+        unimplemented!();
+    }
+
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]

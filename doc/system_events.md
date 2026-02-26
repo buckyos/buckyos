@@ -12,7 +12,7 @@ kevent-client内置，100%的进程内事件
 
 ## kmsgqueue events
 
-kevent和kmsgqueue都有id路径系统，因此经常组合使用
+kevent和kmsgqueue都有id路径系统，因此经常组合使用 （IoT都会用）
 
 先订阅 msg_queue_id 
 /kmsg/$msg_queue_id 

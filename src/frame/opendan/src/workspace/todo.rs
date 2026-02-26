@@ -13,7 +13,7 @@ use serde::Serialize;
 use serde_json::{json, Value as Json};
 use tokio::task;
 
-use crate::agent_tool::{AgentTool, ToolError, ToolSpec};
+use crate::agent_tool::{AgentTool, AgentToolError, ToolSpec};
 use crate::behavior::TraceCtx;
 
 pub const TOOL_TODO_MANAGE: &str = "todo_manage";
@@ -57,7 +57,7 @@ pub struct TodoTool {
 }
 
 impl TodoTool {
-    pub fn new(mut cfg: TodoToolConfig) -> Result<Self, ToolError> {
+    pub fn new(mut cfg: TodoToolConfig) -> Result<Self, AgentToolError> {
         if cfg.default_list_limit == 0 {
             cfg.default_list_limit = DEFAULT_LIST_LIMIT;
         }
@@ -70,7 +70,7 @@ impl TodoTool {
 
         if let Some(parent) = cfg.db_path.parent() {
             std::fs::create_dir_all(parent).map_err(|err| {
-                ToolError::ExecFailed(format!(
+                AgentToolError::ExecFailed(format!(
                     "create todo db parent dir `{}` failed: {err}",
                     parent.display()
                 ))
@@ -78,7 +78,7 @@ impl TodoTool {
         }
 
         let conn = Connection::open(&cfg.db_path).map_err(|err| {
-            ToolError::ExecFailed(format!(
+            AgentToolError::ExecFailed(format!(
                 "open todo db `{}` failed: {err}",
                 cfg.db_path.display()
             ))
@@ -98,15 +98,15 @@ impl TodoTool {
         })
     }
 
-    async fn run_db<F, T>(&self, op_name: &str, op: F) -> Result<T, ToolError>
+    async fn run_db<F, T>(&self, op_name: &str, op: F) -> Result<T, AgentToolError>
     where
-        F: FnOnce(&mut Connection) -> Result<T, ToolError> + Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<T, AgentToolError> + Send + 'static,
         T: Send + 'static,
     {
         let db_path = self.cfg.db_path.clone();
         task::spawn_blocking(move || {
             let mut conn = Connection::open(&db_path).map_err(|err| {
-                ToolError::ExecFailed(format!(
+                AgentToolError::ExecFailed(format!(
                     "open todo db `{}` failed: {err}",
                     db_path.display()
                 ))
@@ -115,7 +115,7 @@ impl TodoTool {
             op(&mut conn)
         })
         .await
-        .map_err(|err| ToolError::ExecFailed(format!("{op_name} join error: {err}")))?
+        .map_err(|err| AgentToolError::ExecFailed(format!("{op_name} join error: {err}")))?
     }
 }
 
@@ -197,7 +197,7 @@ impl AgentTool for TodoTool {
         }
     }
 
-    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
+    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
         let action = require_string(&args, "action")?;
         match action.as_str() {
             "list" => self.call_list(args).await,
@@ -206,7 +206,7 @@ impl AgentTool for TodoTool {
             "query_pending" => self.call_query_pending(args).await,
             "render_for_prompt" => self.call_render_for_prompt(args).await,
             "render_current_details" => self.call_render_current_details(args).await,
-            _ => Err(ToolError::InvalidArgs(format!(
+            _ => Err(AgentToolError::InvalidArgs(format!(
                 "unsupported action `{action}`, expected list/get/apply_delta/query_pending/render_for_prompt/render_current_details"
             ))),
         }
@@ -214,7 +214,7 @@ impl AgentTool for TodoTool {
 }
 
 impl TodoTool {
-    async fn call_list(&self, args: Json) -> Result<Json, ToolError> {
+    async fn call_list(&self, args: Json) -> Result<Json, AgentToolError> {
         let workspace_id = require_workspace_id(&args)?;
         let filters = TodoListFilters::from_args(&args)?;
         let limit = optional_u64(&args, "limit")?
@@ -251,7 +251,7 @@ impl TodoTool {
         }))
     }
 
-    async fn call_get(&self, args: Json) -> Result<Json, ToolError> {
+    async fn call_get(&self, args: Json) -> Result<Json, AgentToolError> {
         let workspace_id = require_workspace_id(&args)?;
         let todo_ref = require_string(&args, "todo_ref")?;
 
@@ -264,7 +264,7 @@ impl TodoTool {
             .await?;
 
         let Some(detail) = detail else {
-            return Err(ToolError::InvalidArgs(format!(
+            return Err(AgentToolError::InvalidArgs(format!(
                 "todo `{todo_ref}` not found in workspace `{workspace_id}`"
             )));
         };
@@ -287,7 +287,7 @@ impl TodoTool {
         }))
     }
 
-    async fn call_apply_delta(&self, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
+    async fn call_apply_delta(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
         let input = ApplyDeltaInput::from_args(ctx, &args)?;
         let oplog_path = self.oplog_path.clone();
         let rsp = self
@@ -342,7 +342,7 @@ impl TodoTool {
         }
     }
 
-    async fn call_query_pending(&self, args: Json) -> Result<Json, ToolError> {
+    async fn call_query_pending(&self, args: Json) -> Result<Json, AgentToolError> {
         let workspace_id = require_workspace_id(&args)?;
         let states = parse_status_set(args.get("states"))?;
         let ws_for_db = workspace_id.clone();
@@ -376,7 +376,7 @@ impl TodoTool {
         }))
     }
 
-    async fn call_render_for_prompt(&self, args: Json) -> Result<Json, ToolError> {
+    async fn call_render_for_prompt(&self, args: Json) -> Result<Json, AgentToolError> {
         let workspace_id = require_workspace_id(&args)?;
         let token_budget = optional_u64(&args, "token_budget")?
             .map(|v| u64_to_usize(v, "token_budget"))
@@ -407,7 +407,7 @@ impl TodoTool {
         }))
     }
 
-    async fn call_render_current_details(&self, args: Json) -> Result<Json, ToolError> {
+    async fn call_render_current_details(&self, args: Json) -> Result<Json, AgentToolError> {
         let workspace_id = require_workspace_id(&args)?;
         let session_id = optional_string(&args, "session_id")?;
         let todo_ref = optional_string(&args, "todo_ref")?;
@@ -450,12 +450,12 @@ enum TodoType {
 }
 
 impl TodoType {
-    fn parse(raw: &str) -> Result<Self, ToolError> {
+    fn parse(raw: &str) -> Result<Self, AgentToolError> {
         let value = normalize_enum(raw);
         match value.as_str() {
             "task" => Ok(Self::Task),
             "bench" => Ok(Self::Bench),
-            _ => Err(ToolError::InvalidArgs(format!(
+            _ => Err(AgentToolError::InvalidArgs(format!(
                 "invalid todo type `{raw}`; allowed: Task|Bench"
             ))),
         }
@@ -468,7 +468,7 @@ impl TodoType {
         }
     }
 
-    fn from_db(raw: &str) -> Result<Self, ToolError> {
+    fn from_db(raw: &str) -> Result<Self, AgentToolError> {
         Self::parse(raw)
     }
 }
@@ -484,7 +484,7 @@ enum TodoStatus {
 }
 
 impl TodoStatus {
-    fn parse(raw: &str) -> Result<Self, ToolError> {
+    fn parse(raw: &str) -> Result<Self, AgentToolError> {
         let value = normalize_enum(raw);
         match value.as_str() {
             "wait" => Ok(Self::Wait),
@@ -493,7 +493,7 @@ impl TodoStatus {
             "failed" => Ok(Self::Failed),
             "done" => Ok(Self::Done),
             "check_failed" => Ok(Self::CheckFailed),
-            _ => Err(ToolError::InvalidArgs(format!(
+            _ => Err(AgentToolError::InvalidArgs(format!(
                 "invalid todo status `{raw}`; allowed: WAIT|IN_PROGRESS|COMPLETE|FAILED|DONE|CHECK_FAILED"
             ))),
         }
@@ -510,7 +510,7 @@ impl TodoStatus {
         }
     }
 
-    fn from_db(raw: &str) -> Result<Self, ToolError> {
+    fn from_db(raw: &str) -> Result<Self, AgentToolError> {
         Self::parse(raw)
     }
 }
@@ -524,14 +524,14 @@ enum ActorKind {
 }
 
 impl ActorKind {
-    fn parse(raw: &str) -> Result<Self, ToolError> {
+    fn parse(raw: &str) -> Result<Self, AgentToolError> {
         let value = normalize_enum(raw);
         match value.as_str() {
             "root_agent" => Ok(Self::RootAgent),
             "sub_agent" => Ok(Self::SubAgent),
             "user" => Ok(Self::User),
             "system" => Ok(Self::System),
-            _ => Err(ToolError::InvalidArgs(format!(
+            _ => Err(AgentToolError::InvalidArgs(format!(
                 "invalid actor kind `{raw}`; allowed: root_agent|sub_agent|user|system"
             ))),
         }
@@ -562,7 +562,7 @@ struct ActorCtx {
 }
 
 impl ActorCtx {
-    fn from_args(ctx: &TraceCtx, args: &Json) -> Result<Self, ToolError> {
+    fn from_args(ctx: &TraceCtx, args: &Json) -> Result<Self, AgentToolError> {
         let actor_raw = args.get("actor_ctx").and_then(|v| v.as_object());
         let kind = actor_raw
             .and_then(|m| m.get("kind"))
@@ -634,7 +634,7 @@ struct TodoListFilters {
 }
 
 impl TodoListFilters {
-    fn from_args(args: &Json) -> Result<Self, ToolError> {
+    fn from_args(args: &Json) -> Result<Self, AgentToolError> {
         let mut statuses = Vec::new();
         let mut todo_type = None;
         let mut assignee = None;
@@ -645,7 +645,7 @@ impl TodoListFilters {
 
         if let Some(filters) = args.get("filters") {
             let map = filters.as_object().ok_or_else(|| {
-                ToolError::InvalidArgs("`filters` must be a json object".to_string())
+                AgentToolError::InvalidArgs("`filters` must be a json object".to_string())
             })?;
             if let Some(statuses_raw) = map.get("status") {
                 statuses = parse_status_list(Some(statuses_raw))?;
@@ -721,7 +721,7 @@ struct ApplyDeltaInput {
 }
 
 impl ApplyDeltaInput {
-    fn from_args(ctx: &TraceCtx, args: &Json) -> Result<Self, ToolError> {
+    fn from_args(ctx: &TraceCtx, args: &Json) -> Result<Self, AgentToolError> {
         let workspace_id = require_workspace_id(args)?;
         let actor = ActorCtx::from_args(ctx, args)?;
 
@@ -731,7 +731,7 @@ impl ApplyDeltaInput {
             .unwrap_or(args);
         let delta = delta_obj
             .as_object()
-            .ok_or_else(|| ToolError::InvalidArgs("`delta` must be a json object".to_string()))?;
+            .ok_or_else(|| AgentToolError::InvalidArgs("`delta` must be a json object".to_string()))?;
 
         let op_id = delta
             .get("op_id")
@@ -749,12 +749,12 @@ impl ApplyDeltaInput {
         let ops_json = delta
             .get("ops")
             .or_else(|| args.get("ops"))
-            .ok_or_else(|| ToolError::InvalidArgs("missing `delta.ops`".to_string()))?;
+            .ok_or_else(|| AgentToolError::InvalidArgs("missing `delta.ops`".to_string()))?;
         let ops_arr = ops_json
             .as_array()
-            .ok_or_else(|| ToolError::InvalidArgs("`delta.ops` must be an array".to_string()))?;
+            .ok_or_else(|| AgentToolError::InvalidArgs("`delta.ops` must be an array".to_string()))?;
         if ops_arr.is_empty() {
-            return Err(ToolError::InvalidArgs(
+            return Err(AgentToolError::InvalidArgs(
                 "`delta.ops` cannot be empty".to_string(),
             ));
         }
@@ -796,15 +796,15 @@ enum DeltaOp {
 }
 
 impl DeltaOp {
-    fn parse(value: &Json) -> Result<Self, ToolError> {
+    fn parse(value: &Json) -> Result<Self, AgentToolError> {
         let map = value.as_object().ok_or_else(|| {
-            ToolError::InvalidArgs("each op in delta.ops must be a json object".to_string())
+            AgentToolError::InvalidArgs("each op in delta.ops must be a json object".to_string())
         })?;
         let op = map
             .get("op")
             .and_then(|v| v.as_str())
             .map(|v| v.trim().to_string())
-            .ok_or_else(|| ToolError::InvalidArgs("delta op missing `op`".to_string()))?;
+            .ok_or_else(|| AgentToolError::InvalidArgs("delta op missing `op`".to_string()))?;
 
         if op == "init" {
             let mode = map
@@ -816,9 +816,9 @@ impl DeltaOp {
             let items_raw = map
                 .get("items")
                 .and_then(|v| v.as_array())
-                .ok_or_else(|| ToolError::InvalidArgs("init op missing `items[]`".to_string()))?;
+                .ok_or_else(|| AgentToolError::InvalidArgs("init op missing `items[]`".to_string()))?;
             if items_raw.is_empty() {
-                return Err(ToolError::InvalidArgs(
+                return Err(AgentToolError::InvalidArgs(
                     "init op `items` cannot be empty".to_string(),
                 ));
             }
@@ -841,16 +841,16 @@ impl DeltaOp {
                 .map(TodoStatus::parse)
                 .transpose()?
                 .ok_or_else(|| {
-                    ToolError::InvalidArgs("update op missing `to_status`".to_string())
+                    AgentToolError::InvalidArgs("update op missing `to_status`".to_string())
                 })?;
             let reason = map
                 .get("reason")
                 .and_then(|v| v.as_str())
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty())
-                .ok_or_else(|| ToolError::InvalidArgs("update op missing `reason`".to_string()))?;
+                .ok_or_else(|| AgentToolError::InvalidArgs("update op missing `reason`".to_string()))?;
             if reason.chars().count() > MAX_TEXT_1024 {
-                return Err(ToolError::InvalidArgs(format!(
+                return Err(AgentToolError::InvalidArgs(format!(
                     "update reason exceeds max {} chars",
                     MAX_TEXT_1024
                 )));
@@ -858,11 +858,11 @@ impl DeltaOp {
             let last_error = if let Some(err_obj) = map.get("last_error") {
                 let bytes = serde_json::to_vec(err_obj)
                     .map_err(|err| {
-                        ToolError::InvalidArgs(format!("serialize last_error failed: {err}"))
+                        AgentToolError::InvalidArgs(format!("serialize last_error failed: {err}"))
                     })?
                     .len();
                 if bytes > 16 * 1024 {
-                    return Err(ToolError::InvalidArgs(
+                    return Err(AgentToolError::InvalidArgs(
                         "`last_error` too large (max 16KB)".to_string(),
                     ));
                 }
@@ -888,7 +888,7 @@ impl DeltaOp {
                 .filter(|v| !v.is_empty())
                 .unwrap_or_else(|| "note".to_string());
             if kind.chars().count() > 32 {
-                return Err(ToolError::InvalidArgs(
+                return Err(AgentToolError::InvalidArgs(
                     "note kind too long (max 32 chars)".to_string(),
                 ));
             }
@@ -897,9 +897,9 @@ impl DeltaOp {
                 .and_then(|v| v.as_str())
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty())
-                .ok_or_else(|| ToolError::InvalidArgs("note op missing `content`".to_string()))?;
+                .ok_or_else(|| AgentToolError::InvalidArgs("note op missing `content`".to_string()))?;
             if content.chars().count() > MAX_TEXT_4096 {
-                return Err(ToolError::InvalidArgs(format!(
+                return Err(AgentToolError::InvalidArgs(format!(
                     "note content exceeds max {} chars",
                     MAX_TEXT_4096
                 )));
@@ -912,7 +912,7 @@ impl DeltaOp {
             });
         }
 
-        Err(ToolError::InvalidArgs(format!(
+        Err(AgentToolError::InvalidArgs(format!(
             "unsupported delta op `{op}`; expected init/update:Txxx/note:Txxx"
         )))
     }
@@ -933,12 +933,12 @@ enum InitMode {
 }
 
 impl InitMode {
-    fn parse(raw: &str) -> Result<Self, ToolError> {
+    fn parse(raw: &str) -> Result<Self, AgentToolError> {
         let value = normalize_enum(raw);
         match value.as_str() {
             "replace" => Ok(Self::Replace),
             "merge" => Ok(Self::Merge),
-            _ => Err(ToolError::InvalidArgs(format!(
+            _ => Err(AgentToolError::InvalidArgs(format!(
                 "invalid init mode `{raw}`; allowed: replace|merge"
             ))),
         }
@@ -959,18 +959,18 @@ struct InitTodoItem {
 }
 
 impl InitTodoItem {
-    fn parse(value: &Json) -> Result<Self, ToolError> {
+    fn parse(value: &Json) -> Result<Self, AgentToolError> {
         let map = value
             .as_object()
-            .ok_or_else(|| ToolError::InvalidArgs("init item must be a json object".to_string()))?;
+            .ok_or_else(|| AgentToolError::InvalidArgs("init item must be a json object".to_string()))?;
         let title = map
             .get("title")
             .and_then(|v| v.as_str())
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
-            .ok_or_else(|| ToolError::InvalidArgs("init item missing `title`".to_string()))?;
+            .ok_or_else(|| AgentToolError::InvalidArgs("init item missing `title`".to_string()))?;
         if title.chars().count() > MAX_TEXT_256 {
-            return Err(ToolError::InvalidArgs(format!(
+            return Err(AgentToolError::InvalidArgs(format!(
                 "title exceeds max {} chars",
                 MAX_TEXT_256
             )));
@@ -983,7 +983,7 @@ impl InitTodoItem {
             .filter(|v| !v.is_empty());
         if let Some(v) = description.as_ref() {
             if v.chars().count() > MAX_TEXT_4096 {
-                return Err(ToolError::InvalidArgs(format!(
+                return Err(AgentToolError::InvalidArgs(format!(
                     "description exceeds max {} chars",
                     MAX_TEXT_4096
                 )));
@@ -1017,10 +1017,10 @@ impl InitTodoItem {
         let estimate = map.get("estimate").cloned();
         if let Some(ref v) = estimate {
             let size = serde_json::to_vec(v)
-                .map_err(|err| ToolError::InvalidArgs(format!("serialize estimate failed: {err}")))?
+                .map_err(|err| AgentToolError::InvalidArgs(format!("serialize estimate failed: {err}")))?
                 .len();
             if size > 16 * 1024 {
-                return Err(ToolError::InvalidArgs(
+                return Err(AgentToolError::InvalidArgs(
                     "estimate payload too large (max 16KB)".to_string(),
                 ));
             }
@@ -1184,7 +1184,7 @@ impl DomainError {
     }
 }
 
-fn ensure_todo_schema(conn: &Connection) -> Result<(), ToolError> {
+fn ensure_todo_schema(conn: &Connection) -> Result<(), AgentToolError> {
     conn.execute_batch(
         r#"
 CREATE TABLE IF NOT EXISTS todo_meta (
@@ -1270,7 +1270,7 @@ CREATE TABLE IF NOT EXISTS todo_applied_ops (
 );
 "#,
     )
-    .map_err(|err| ToolError::ExecFailed(format!("ensure todo schema failed: {err}")))?;
+    .map_err(|err| AgentToolError::ExecFailed(format!("ensure todo schema failed: {err}")))?;
 
     Ok(())
 }
@@ -1279,7 +1279,7 @@ fn apply_todo_delta(
     conn: &mut Connection,
     oplog_path: &PathBuf,
     input: ApplyDeltaInput,
-) -> Result<ApplyDeltaResponse, ToolError> {
+) -> Result<ApplyDeltaResponse, AgentToolError> {
     let before_version = read_workspace_version(conn, &input.workspace_id)?;
 
     if has_applied_op(conn, &input.op_id)? {
@@ -1306,7 +1306,7 @@ fn apply_todo_delta(
 
     let tx = conn
         .transaction()
-        .map_err(|err| ToolError::ExecFailed(format!("start todo tx failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("start todo tx failed: {err}")))?;
 
     let mut applied_count = 0usize;
     let mut status_events = Vec::new();
@@ -1326,7 +1326,7 @@ fn apply_todo_delta(
             }
             Err(err) => {
                 tx.rollback().map_err(|rollback_err| {
-                    ToolError::ExecFailed(format!(
+                    AgentToolError::ExecFailed(format!(
                         "rollback todo tx failed after domain error: {rollback_err}"
                     ))
                 })?;
@@ -1364,7 +1364,7 @@ fn apply_todo_delta(
             .map(|op| op.raw().clone())
             .collect::<Vec<Json>>(),
     )
-    .map_err(|err| ToolError::ExecFailed(format!("serialize applied ops failed: {err}")))?;
+    .map_err(|err| AgentToolError::ExecFailed(format!("serialize applied ops failed: {err}")))?;
 
     tx.execute(
         "INSERT INTO todo_applied_ops(op_id, workspace_id, session_id, actor_did, applied_at, ops_json)
@@ -1378,10 +1378,10 @@ fn apply_todo_delta(
             ops_json,
         ],
     )
-    .map_err(|err| ToolError::ExecFailed(format!("insert todo_applied_ops failed: {err}")))?;
+    .map_err(|err| AgentToolError::ExecFailed(format!("insert todo_applied_ops failed: {err}")))?;
 
     tx.commit()
-        .map_err(|err| ToolError::ExecFailed(format!("commit todo tx failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("commit todo tx failed: {err}")))?;
 
     let entry = build_oplog_entry(
         &input,
@@ -2013,7 +2013,7 @@ fn list_todo_items(
     filters: &TodoListFilters,
     limit: usize,
     offset: usize,
-) -> Result<Vec<TodoListItem>, ToolError> {
+) -> Result<Vec<TodoListItem>, AgentToolError> {
     let mut sql = String::from(
         "SELECT
             i.id,
@@ -2115,16 +2115,16 @@ fn list_todo_items(
 
     let mut stmt = conn
         .prepare(&sql)
-        .map_err(|err| ToolError::ExecFailed(format!("prepare todo list failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("prepare todo list failed: {err}")))?;
     let rows = stmt
         .query_map(params_from_iter(params_vec), map_todo_list_row)
-        .map_err(|err| ToolError::ExecFailed(format!("query todo list failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("query todo list failed: {err}")))?;
 
     let mut out = Vec::new();
     for row in rows {
         out.push(
             row.map_err(|err| {
-                ToolError::ExecFailed(format!("decode todo list row failed: {err}"))
+                AgentToolError::ExecFailed(format!("decode todo list row failed: {err}"))
             })?,
         );
     }
@@ -2136,7 +2136,7 @@ fn get_todo_detail(
     workspace_id: &str,
     todo_ref: &str,
     max_notes: usize,
-) -> Result<Option<TodoDetail>, ToolError> {
+) -> Result<Option<TodoDetail>, AgentToolError> {
     let id_or_code = resolve_todo_id(conn, workspace_id, todo_ref)?;
     let Some(todo_id) = id_or_code else {
         return Ok(None);
@@ -2171,11 +2171,11 @@ fn get_todo_detail(
              WHERE i.workspace_id = ?1 AND i.id = ?2
              LIMIT 1",
         )
-        .map_err(|err| ToolError::ExecFailed(format!("prepare todo get failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("prepare todo get failed: {err}")))?;
 
     let item = stmt
         .query_row(params![workspace_id, todo_id], map_todo_list_row)
-        .map_err(|err| ToolError::ExecFailed(format!("query todo get failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("query todo get failed: {err}")))?;
 
     let notes = list_todo_notes(conn, workspace_id, &todo_id, max_notes)?;
     let dep_codes = list_todo_dep_codes(conn, workspace_id, &todo_id)?;
@@ -2190,7 +2190,7 @@ fn get_todo_detail(
 fn query_pending_counts(
     conn: &Connection,
     workspace_id: &str,
-) -> Result<BTreeMap<String, u64>, ToolError> {
+) -> Result<BTreeMap<String, u64>, AgentToolError> {
     let mut stmt = conn
         .prepare(
             "SELECT status, COUNT(1)
@@ -2198,7 +2198,7 @@ fn query_pending_counts(
              WHERE workspace_id = ?1
              GROUP BY status",
         )
-        .map_err(|err| ToolError::ExecFailed(format!("prepare pending query failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("prepare pending query failed: {err}")))?;
 
     let rows = stmt
         .query_map(params![workspace_id], |row| {
@@ -2206,12 +2206,12 @@ fn query_pending_counts(
             let count: i64 = row.get(1)?;
             Ok((status, count.max(0) as u64))
         })
-        .map_err(|err| ToolError::ExecFailed(format!("query pending counts failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("query pending counts failed: {err}")))?;
 
     let mut out = BTreeMap::new();
     for row in rows {
         let (status, count) =
-            row.map_err(|err| ToolError::ExecFailed(format!("decode pending row failed: {err}")))?;
+            row.map_err(|err| AgentToolError::ExecFailed(format!("decode pending row failed: {err}")))?;
         out.insert(status, count);
     }
 
@@ -2233,7 +2233,7 @@ fn list_for_prompt(
     conn: &Connection,
     workspace_id: &str,
     limit: usize,
-) -> Result<Vec<TodoListItem>, ToolError> {
+) -> Result<Vec<TodoListItem>, AgentToolError> {
     let mut stmt = conn
         .prepare(
             "SELECT
@@ -2276,19 +2276,19 @@ fn list_for_prompt(
                 i.updated_at DESC
              LIMIT ?2",
         )
-        .map_err(|err| ToolError::ExecFailed(format!("prepare prompt list failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("prepare prompt list failed: {err}")))?;
 
     let rows = stmt
         .query_map(
             params![workspace_id, usize_to_i64(limit, "limit")?],
             map_todo_list_row,
         )
-        .map_err(|err| ToolError::ExecFailed(format!("query prompt list failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("query prompt list failed: {err}")))?;
 
     let mut out = Vec::new();
     for row in rows {
         out.push(
-            row.map_err(|err| ToolError::ExecFailed(format!("decode prompt row failed: {err}")))?,
+            row.map_err(|err| AgentToolError::ExecFailed(format!("decode prompt row failed: {err}")))?,
         );
     }
     Ok(out)
@@ -2299,7 +2299,7 @@ fn select_current_todo_details(
     workspace_id: &str,
     session_id: Option<&str>,
     todo_ref: Option<&str>,
-) -> Result<Option<TodoDetail>, ToolError> {
+) -> Result<Option<TodoDetail>, AgentToolError> {
     if let Some(todo_ref) = todo_ref {
         return get_todo_detail(conn, workspace_id, todo_ref, 12);
     }
@@ -2324,7 +2324,7 @@ fn select_current_todo_details(
                  LIMIT 1",
             )
             .map_err(|err| {
-                ToolError::ExecFailed(format!("prepare select by session failed: {err}"))
+                AgentToolError::ExecFailed(format!("prepare select by session failed: {err}"))
             })?;
 
         stmt.query_row(params![workspace_id, session_id], |row| {
@@ -2359,7 +2359,7 @@ fn select_current_todo_details(
              LIMIT 1",
         )
         .map_err(|err| {
-            ToolError::ExecFailed(format!("prepare select fallback todo failed: {err}"))
+            AgentToolError::ExecFailed(format!("prepare select fallback todo failed: {err}"))
         })?;
 
     let fallback_todo_id = stmt
@@ -2377,7 +2377,7 @@ fn resolve_todo_id(
     conn: &Connection,
     workspace_id: &str,
     todo_ref: &str,
-) -> Result<Option<String>, ToolError> {
+) -> Result<Option<String>, AgentToolError> {
     let trimmed = todo_ref.trim();
     if trimmed.is_empty() {
         return Ok(None);
@@ -2387,7 +2387,7 @@ fn resolve_todo_id(
         let mut stmt = conn
             .prepare("SELECT id FROM todo_items WHERE workspace_id = ?1 AND todo_code = ?2 LIMIT 1")
             .map_err(|err| {
-                ToolError::ExecFailed(format!("prepare resolve by code failed: {err}"))
+                AgentToolError::ExecFailed(format!("prepare resolve by code failed: {err}"))
             })?;
         let id = stmt
             .query_row(params![workspace_id, trimmed], |row| {
@@ -2399,7 +2399,7 @@ fn resolve_todo_id(
 
     let mut stmt = conn
         .prepare("SELECT id FROM todo_items WHERE workspace_id = ?1 AND id = ?2 LIMIT 1")
-        .map_err(|err| ToolError::ExecFailed(format!("prepare resolve by id failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("prepare resolve by id failed: {err}")))?;
     let id = stmt
         .query_row(params![workspace_id, trimmed], |row| {
             row.get::<_, String>(0)
@@ -2413,7 +2413,7 @@ fn list_todo_notes(
     workspace_id: &str,
     todo_id: &str,
     limit: usize,
-) -> Result<Vec<TodoNoteItem>, ToolError> {
+) -> Result<Vec<TodoNoteItem>, AgentToolError> {
     let mut stmt = conn
         .prepare(
             "SELECT note_id, author_did, kind, content, created_at, session_id, trace_id
@@ -2422,7 +2422,7 @@ fn list_todo_notes(
              ORDER BY created_at DESC
              LIMIT ?3",
         )
-        .map_err(|err| ToolError::ExecFailed(format!("prepare note list failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("prepare note list failed: {err}")))?;
 
     let rows = stmt
         .query_map(
@@ -2440,13 +2440,13 @@ fn list_todo_notes(
                 })
             },
         )
-        .map_err(|err| ToolError::ExecFailed(format!("query note list failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("query note list failed: {err}")))?;
 
     let mut out = Vec::new();
     for row in rows {
         out.push(
             row.map_err(|err| {
-                ToolError::ExecFailed(format!("decode note list row failed: {err}"))
+                AgentToolError::ExecFailed(format!("decode note list row failed: {err}"))
             })?,
         );
     }
@@ -2457,7 +2457,7 @@ fn list_todo_dep_codes(
     conn: &Connection,
     workspace_id: &str,
     todo_id: &str,
-) -> Result<Vec<String>, ToolError> {
+) -> Result<Vec<String>, AgentToolError> {
     let mut stmt = conn
         .prepare(
             "SELECT i.todo_code
@@ -2467,18 +2467,18 @@ fn list_todo_dep_codes(
              WHERE d.workspace_id = ?1 AND d.todo_id = ?2
              ORDER BY i.todo_code ASC",
         )
-        .map_err(|err| ToolError::ExecFailed(format!("prepare dep list failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("prepare dep list failed: {err}")))?;
 
     let rows = stmt
         .query_map(params![workspace_id, todo_id], |row| {
             row.get::<_, String>(0)
         })
-        .map_err(|err| ToolError::ExecFailed(format!("query dep list failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("query dep list failed: {err}")))?;
 
     let mut out = Vec::new();
     for row in rows {
         out.push(
-            row.map_err(|err| ToolError::ExecFailed(format!("decode dep row failed: {err}")))?,
+            row.map_err(|err| AgentToolError::ExecFailed(format!("decode dep row failed: {err}")))?,
         );
     }
     Ok(out)
@@ -2541,10 +2541,10 @@ fn build_oplog_entry(
     })
 }
 
-fn append_oplog(oplog_path: &PathBuf, entry: &Json) -> Result<(), ToolError> {
+fn append_oplog(oplog_path: &PathBuf, entry: &Json) -> Result<(), AgentToolError> {
     if let Some(parent) = oplog_path.parent() {
         std::fs::create_dir_all(parent).map_err(|err| {
-            ToolError::ExecFailed(format!(
+            AgentToolError::ExecFailed(format!(
                 "create todo oplog dir `{}` failed: {err}",
                 parent.display()
             ))
@@ -2552,26 +2552,26 @@ fn append_oplog(oplog_path: &PathBuf, entry: &Json) -> Result<(), ToolError> {
     }
 
     let line = serde_json::to_string(entry)
-        .map_err(|err| ToolError::ExecFailed(format!("serialize oplog entry failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("serialize oplog entry failed: {err}")))?;
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(oplog_path)
         .map_err(|err| {
-            ToolError::ExecFailed(format!(
+            AgentToolError::ExecFailed(format!(
                 "open oplog `{}` failed: {err}",
                 oplog_path.display()
             ))
         })?;
 
     file.write_all(line.as_bytes()).map_err(|err| {
-        ToolError::ExecFailed(format!(
+        AgentToolError::ExecFailed(format!(
             "write oplog `{}` failed: {err}",
             oplog_path.display()
         ))
     })?;
     file.write_all(b"\n").map_err(|err| {
-        ToolError::ExecFailed(format!(
+        AgentToolError::ExecFailed(format!(
             "write oplog newline `{}` failed: {err}",
             oplog_path.display()
         ))
@@ -2579,18 +2579,18 @@ fn append_oplog(oplog_path: &PathBuf, entry: &Json) -> Result<(), ToolError> {
     Ok(())
 }
 
-fn has_applied_op(conn: &Connection, op_id: &str) -> Result<bool, ToolError> {
+fn has_applied_op(conn: &Connection, op_id: &str) -> Result<bool, AgentToolError> {
     let count = conn
         .query_row(
             "SELECT COUNT(1) FROM todo_applied_ops WHERE op_id = ?1",
             params![op_id],
             |row| row.get::<_, i64>(0),
         )
-        .map_err(|err| ToolError::ExecFailed(format!("query applied op failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("query applied op failed: {err}")))?;
     Ok(count > 0)
 }
 
-fn read_workspace_version(conn: &Connection, workspace_id: &str) -> Result<i64, ToolError> {
+fn read_workspace_version(conn: &Connection, workspace_id: &str) -> Result<i64, AgentToolError> {
     let key = version_key(workspace_id);
     let value = conn
         .query_row(
@@ -2610,14 +2610,14 @@ fn write_workspace_version(
     tx: &rusqlite::Transaction<'_>,
     workspace_id: &str,
     version: i64,
-) -> Result<(), ToolError> {
+) -> Result<(), AgentToolError> {
     let key = version_key(workspace_id);
     tx.execute(
         "INSERT INTO todo_meta(key, value) VALUES(?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         params![key, version.to_string()],
     )
-    .map_err(|err| ToolError::ExecFailed(format!("write workspace version failed: {err}")))?;
+    .map_err(|err| AgentToolError::ExecFailed(format!("write workspace version failed: {err}")))?;
     Ok(())
 }
 
@@ -2706,12 +2706,12 @@ fn render_current_todo_text(detail: &TodoDetail) -> String {
     lines.join("\n")
 }
 
-fn parse_status_set(value: Option<&Json>) -> Result<HashSet<TodoStatus>, ToolError> {
+fn parse_status_set(value: Option<&Json>) -> Result<HashSet<TodoStatus>, AgentToolError> {
     let statuses = parse_status_list(value)?;
     Ok(statuses.into_iter().collect())
 }
 
-fn parse_status_list(value: Option<&Json>) -> Result<Vec<TodoStatus>, ToolError> {
+fn parse_status_list(value: Option<&Json>) -> Result<Vec<TodoStatus>, AgentToolError> {
     let Some(value) = value else {
         return Ok(Vec::new());
     };
@@ -2721,13 +2721,13 @@ fn parse_status_list(value: Option<&Json>) -> Result<Vec<TodoStatus>, ToolError>
     }
 
     let arr = value.as_array().ok_or_else(|| {
-        ToolError::InvalidArgs("status filter must be string or array".to_string())
+        AgentToolError::InvalidArgs("status filter must be string or array".to_string())
     })?;
 
     let mut out = Vec::new();
     for item in arr {
         let raw = item.as_str().ok_or_else(|| {
-            ToolError::InvalidArgs("status filter array must contain strings".to_string())
+            AgentToolError::InvalidArgs("status filter array must contain strings".to_string())
         })?;
         let status = TodoStatus::parse(raw)?;
         if !out.contains(&status) {
@@ -2742,15 +2742,15 @@ fn parse_string_array(
     field_name: &str,
     max_items: usize,
     max_each: usize,
-) -> Result<Vec<String>, ToolError> {
+) -> Result<Vec<String>, AgentToolError> {
     let Some(value) = value else {
         return Ok(Vec::new());
     };
     let arr = value.as_array().ok_or_else(|| {
-        ToolError::InvalidArgs(format!("`{field_name}` must be an array of strings"))
+        AgentToolError::InvalidArgs(format!("`{field_name}` must be an array of strings"))
     })?;
     if arr.len() > max_items {
-        return Err(ToolError::InvalidArgs(format!(
+        return Err(AgentToolError::InvalidArgs(format!(
             "`{field_name}` exceeds max {max_items} items"
         )));
     }
@@ -2758,14 +2758,14 @@ fn parse_string_array(
     let mut out = Vec::new();
     for item in arr {
         let text = item.as_str().ok_or_else(|| {
-            ToolError::InvalidArgs(format!("`{field_name}` must be an array of strings"))
+            AgentToolError::InvalidArgs(format!("`{field_name}` must be an array of strings"))
         })?;
         let trimmed = text.trim();
         if trimmed.is_empty() {
             continue;
         }
         if trimmed.chars().count() > max_each {
-            return Err(ToolError::InvalidArgs(format!(
+            return Err(AgentToolError::InvalidArgs(format!(
                 "`{field_name}` contains entry that exceeds max {max_each} chars"
             )));
         }
@@ -2777,29 +2777,29 @@ fn parse_string_array(
     Ok(out)
 }
 
-fn require_workspace_id(args: &Json) -> Result<String, ToolError> {
+fn require_workspace_id(args: &Json) -> Result<String, AgentToolError> {
     let workspace_id = require_string(args, "workspace_id")?;
     if workspace_id.chars().count() > MAX_TEXT_256 {
-        return Err(ToolError::InvalidArgs(
+        return Err(AgentToolError::InvalidArgs(
             "`workspace_id` too long (max 256 chars)".to_string(),
         ));
     }
     Ok(workspace_id)
 }
 
-fn require_string(args: &Json, key: &str) -> Result<String, ToolError> {
+fn require_string(args: &Json, key: &str) -> Result<String, AgentToolError> {
     let value = args
         .get(key)
         .and_then(|v| v.as_str())
         .map(|v| v.trim().to_string())
-        .ok_or_else(|| ToolError::InvalidArgs(format!("missing or invalid `{key}`")))?;
+        .ok_or_else(|| AgentToolError::InvalidArgs(format!("missing or invalid `{key}`")))?;
     if value.is_empty() {
-        return Err(ToolError::InvalidArgs(format!("`{key}` cannot be empty")));
+        return Err(AgentToolError::InvalidArgs(format!("`{key}` cannot be empty")));
     }
     Ok(value)
 }
 
-fn optional_string(args: &Json, key: &str) -> Result<Option<String>, ToolError> {
+fn optional_string(args: &Json, key: &str) -> Result<Option<String>, AgentToolError> {
     let Some(value) = args.get(key) else {
         return Ok(None);
     };
@@ -2808,7 +2808,7 @@ fn optional_string(args: &Json, key: &str) -> Result<Option<String>, ToolError> 
     }
     let raw = value
         .as_str()
-        .ok_or_else(|| ToolError::InvalidArgs(format!("`{key}` must be a string")))?;
+        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be a string")))?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Ok(None);
@@ -2816,32 +2816,32 @@ fn optional_string(args: &Json, key: &str) -> Result<Option<String>, ToolError> 
     Ok(Some(trimmed.to_string()))
 }
 
-fn optional_u64(args: &Json, key: &str) -> Result<Option<u64>, ToolError> {
+fn optional_u64(args: &Json, key: &str) -> Result<Option<u64>, AgentToolError> {
     let Some(value) = args.get(key) else {
         return Ok(None);
     };
     value
         .as_u64()
         .map(Some)
-        .ok_or_else(|| ToolError::InvalidArgs(format!("`{key}` must be a positive integer")))
+        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be a positive integer")))
 }
 
-fn optional_bool(args: &Json, key: &str) -> Result<Option<bool>, ToolError> {
+fn optional_bool(args: &Json, key: &str) -> Result<Option<bool>, AgentToolError> {
     let Some(value) = args.get(key) else {
         return Ok(None);
     };
     value
         .as_bool()
         .map(Some)
-        .ok_or_else(|| ToolError::InvalidArgs(format!("`{key}` must be a boolean")))
+        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be a boolean")))
 }
 
-fn normalize_todo_code(raw: &str) -> Result<String, ToolError> {
+fn normalize_todo_code(raw: &str) -> Result<String, AgentToolError> {
     let normalized = raw.trim().to_uppercase();
     if looks_like_todo_code(&normalized) {
         return Ok(normalized);
     }
-    Err(ToolError::InvalidArgs(format!(
+    Err(AgentToolError::InvalidArgs(format!(
         "invalid todo code `{raw}`, expected format T001"
     )))
 }
@@ -2924,7 +2924,7 @@ fn to_json_string<T: Serialize>(value: &T) -> Result<String, DomainError> {
         .map_err(|err| DomainError::invalid_args(format!("serialize json failed: {err}"), None))
 }
 
-fn to_sql_err(err: ToolError) -> rusqlite::Error {
+fn to_sql_err(err: AgentToolError) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(
         0,
         rusqlite::types::Type::Text,
@@ -2976,12 +2976,12 @@ fn i64_to_u64(v: i64) -> Option<u64> {
     }
 }
 
-fn usize_to_i64(v: usize, field: &str) -> Result<i64, ToolError> {
-    i64::try_from(v).map_err(|_| ToolError::InvalidArgs(format!("`{field}` too large")))
+fn usize_to_i64(v: usize, field: &str) -> Result<i64, AgentToolError> {
+    i64::try_from(v).map_err(|_| AgentToolError::InvalidArgs(format!("`{field}` too large")))
 }
 
-fn u64_to_usize(v: u64, field: &str) -> Result<usize, ToolError> {
-    usize::try_from(v).map_err(|_| ToolError::InvalidArgs(format!("`{field}` too large")))
+fn u64_to_usize(v: u64, field: &str) -> Result<usize, AgentToolError> {
+    usize::try_from(v).map_err(|_| AgentToolError::InvalidArgs(format!("`{field}` too large")))
 }
 
 #[cfg(test)]
@@ -2998,7 +2998,7 @@ mod tests {
         }
     }
 
-    async fn call(tool: &TodoTool, ctx: &TraceCtx, args: Json) -> Result<Json, ToolError> {
+    async fn call(tool: &TodoTool, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
         tool.call(ctx, args).await
     }
 

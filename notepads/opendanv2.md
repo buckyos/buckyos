@@ -517,12 +517,14 @@ class AIAgentRuntime:
                 session.current_behavior = self.default_behavior
                 session.step_index = 0
 
+            # behavior_loop
             while session.state == "RUNNING":
                 behavior_cfg = self.load_behavior_cfg(session.current_behavior)
                 self.run_behavior_step(behavior_cfg, session)
                 session.save()  # 每 step 保存，支持崩溃恢复
 
     def run_behavior_step(self, behavior_cfg, session):
+        # 会从session的kmsgqueue中pull_input_item
         exec_input = session.generate_input(behavior_cfg, msgtunnle=self.msgtunnle)
 
         # 零 LLM 空转：无 input 则不触发推理
@@ -555,8 +557,8 @@ class AIAgentRuntime:
         # 3) 记录 worklog
         session.append_worklog(self.create_step_worklog(action_result, llm_result))
 
-        # 4) 消费 input：mark link used（不再迁移/归档 MsgTunnle）
-        session.mark_input_links_used(exec_input.link_ids)
+        # 4) 消费 input：mark used（不再迁移/归档 MsgTunnle）
+        session.mark_input_used(exec_input)
 
         # 5) Workspace side effects（worklog/todo）
         if session.workspace_info:
@@ -581,10 +583,10 @@ class AIAgentRuntime:
 * Agent Loop 收到 msg/event 后：在 MsgTunnle 层标记 `readed`（已被 runtime 收到并路由），**不删除、不迁移**。
 * 通过 Link 机制将消息关联到 session：
   * Link 状态 `NEW`：session 尚未处理
-  * Link 状态 `USED`：session 已在某次 LLM step 中消费
-  * Link 状态 `ACKED`：session 已确认处理完毕
+  * Link 状态 `USED`：session 已确认处理完毕
 * Session 通过 link 从 MsgTunnle 按 message_id 拉取消息正文，而非在 session 内存储消息副本。
 * 已消费的消息仍可通过 history/memory 段落被编入 prompt（受预算约束）。
+* 系统实际使用MsgCenter的MsgRecord作为Link实现，Msg的原始内容是MsgObject保存在MsgTunnel的inbox中
 
 ### 7.7 读/推理放大控制策略
 
@@ -899,12 +901,13 @@ memory:
   session_summaries: { limit: 6000 }
 
 input: |
+  {{step_summary}}
   {{new_event}}
   {{new_msg}}
   {{workspace/todolist/next_ready_todo}}
   {{workspace/todolist/__OPENDAN_ENV(params.todo)__ }}
 
-# step = 0 的时候可以不构造这个
+# step = 0 的时候不构造这个
 step_summary: |
   {{last_llm_result.thinking}}
   {{last_action.result}}

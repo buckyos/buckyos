@@ -21,7 +21,7 @@ use super::tool_loop::{self, ToolContext};
 use super::types::*;
 use crate::agent_enviroment::AgentEnvironment;
 use crate::agent_session::TOOL_GET_SESSION;
-use crate::agent_tool::{ToolCall, ToolError, ToolManager, ToolSpec};
+use crate::agent_tool::{ToolCall, AgentToolError, ToolManager, ToolSpec};
 use crate::ai_runtime::TOOL_CREATE_SUB_AGENT;
 use crate::worklog::TOOL_WORKLOG_MANAGE;
 use crate::workspace::TOOL_TODO_MANAGE;
@@ -69,7 +69,7 @@ impl LLMBehavior {
 
     pub async fn run_step(
         &self,
-        input: BehaviorExecInput,
+        input: &BehaviorExecInput,
     ) -> Result<(BehaviorLLMResult, LLMTrackingInfo), LLMComputeError> {
         let started = now_ms();
         let track = TrackInfo {
@@ -430,7 +430,7 @@ impl LLMBehavior {
         let result = self.deps.tools.call_tool(&ctx, call).await;
         let raw = match result {
             Ok(raw) => raw,
-            Err(ToolError::InvalidArgs(msg))
+            Err(AgentToolError::InvalidArgs(msg))
                 if msg.to_ascii_lowercase().contains("session not found") =>
             {
                 return Ok(());
@@ -1212,7 +1212,7 @@ fn compact_json_for_worklog(value: Json, max_bytes: usize) -> Json {
     }
 }
 
-fn log_worklog_append_warn(trace: &TraceCtx, err: ToolError) {
+fn log_worklog_append_warn(trace: &TraceCtx, err: AgentToolError) {
     warn!(
         "llm_behavior.worklog_append_failed: trace_id={} wakeup_id={} step={} behavior={} err={}",
         trace.trace_id, trace.wakeup_id, trace.step_idx, trace.behavior, err

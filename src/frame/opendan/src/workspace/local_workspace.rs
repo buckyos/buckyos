@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tokio::sync::Mutex;
 
-use crate::agent_tool::ToolError;
+use crate::agent_tool::AgentToolError;
 
 const DEFAULT_LOCK_TTL_MS: u64 = 120_000;
 const MAX_WORKSPACE_NAME_LEN: usize = 96;
@@ -221,7 +221,7 @@ impl LocalWorkspaceManager {
     pub async fn create_workshop(
         agent_did: impl Into<String>,
         mut cfg: LocalWorkspaceManagerConfig,
-    ) -> Result<Self, ToolError> {
+    ) -> Result<Self, AgentToolError> {
         let agent_did = validate_agent_did(agent_did.into())?;
         cfg.workshop_root = normalize_workshop_root(&cfg.workshop_root)?;
         if cfg.lock_ttl_ms == 0 {
@@ -262,7 +262,7 @@ impl LocalWorkspaceManager {
     pub async fn load_workshop(
         agent_did: impl Into<String>,
         mut cfg: LocalWorkspaceManagerConfig,
-    ) -> Result<Self, ToolError> {
+    ) -> Result<Self, AgentToolError> {
         let agent_did = validate_agent_did(agent_did.into())?;
         cfg.workshop_root = normalize_workshop_root(&cfg.workshop_root)?;
         if cfg.lock_ttl_ms == 0 {
@@ -275,7 +275,7 @@ impl LocalWorkspaceManager {
             .await
             .map_err(|err| io_error("check workshop index", &index_path, err))?
         {
-            return Err(ToolError::InvalidArgs(format!(
+            return Err(AgentToolError::InvalidArgs(format!(
                 "workshop index not found: {}",
                 index_path.display()
             )));
@@ -319,11 +319,11 @@ impl LocalWorkspaceManager {
     pub async fn create_local_workspace(
         &self,
         req: CreateLocalWorkspaceRequest,
-    ) -> Result<WorkshopWorkspaceRecord, ToolError> {
+    ) -> Result<WorkshopWorkspaceRecord, AgentToolError> {
         let name = validate_workspace_name(&req.name)?;
         if let Some(policy_profile_id) = req.policy_profile_id.as_ref() {
             if policy_profile_id.len() > MAX_POLICY_PROFILE_ID_LEN {
-                return Err(ToolError::InvalidArgs(format!(
+                return Err(AgentToolError::InvalidArgs(format!(
                     "policy_profile_id too long: {}",
                     policy_profile_id.len()
                 )));
@@ -358,7 +358,7 @@ impl LocalWorkspaceManager {
             .iter()
             .any(|item| item.workspace_id == workspace_id)
         {
-            return Err(ToolError::ExecFailed(format!(
+            return Err(AgentToolError::ExecFailed(format!(
                 "workspace id collision: {workspace_id}"
             )));
         }
@@ -390,7 +390,7 @@ impl LocalWorkspaceManager {
         &self,
         session_id: &str,
         local_workspace_id: &str,
-    ) -> Result<SessionWorkspaceBinding, ToolError> {
+    ) -> Result<SessionWorkspaceBinding, AgentToolError> {
         let session_id = validate_session_id(session_id)?;
         let now = now_ms();
 
@@ -402,17 +402,17 @@ impl LocalWorkspaceManager {
                 .iter_mut()
                 .find(|item| item.workspace_id == local_workspace_id)
                 .ok_or_else(|| {
-                    ToolError::InvalidArgs(format!("workspace not found: {local_workspace_id}"))
+                    AgentToolError::InvalidArgs(format!("workspace not found: {local_workspace_id}"))
                 })?;
 
             if item.workspace_type != WorkspaceType::Local {
-                return Err(ToolError::InvalidArgs(format!(
+                return Err(AgentToolError::InvalidArgs(format!(
                     "workspace `{local_workspace_id}` is not a local workspace"
                 )));
             }
 
             if item.status == WorkspaceStatus::Archived {
-                return Err(ToolError::InvalidArgs(format!(
+                return Err(AgentToolError::InvalidArgs(format!(
                     "workspace `{local_workspace_id}` is archived"
                 )));
             }
@@ -426,7 +426,7 @@ impl LocalWorkspaceManager {
             item.updated_at_ms = now;
 
             item.relative_path.clone().ok_or_else(|| {
-                ToolError::ExecFailed(format!(
+                AgentToolError::ExecFailed(format!(
                     "local workspace `{local_workspace_id}` missing relative_path"
                 ))
             })?
@@ -464,7 +464,7 @@ impl LocalWorkspaceManager {
     pub async fn get_bound_local_workspace(
         &self,
         session_id: &str,
-    ) -> Result<Option<SessionWorkspaceBinding>, ToolError> {
+    ) -> Result<Option<SessionWorkspaceBinding>, AgentToolError> {
         let session_id = validate_session_id(session_id)?;
         let guard = self.state.lock().await;
         Ok(guard.session_bindings.get(session_id).cloned())
@@ -473,7 +473,7 @@ impl LocalWorkspaceManager {
     pub async fn get_local_workspace_path(
         &self,
         local_workspace_id: &str,
-    ) -> Result<PathBuf, ToolError> {
+    ) -> Result<PathBuf, AgentToolError> {
         let guard = self.state.lock().await;
         let item = guard
             .index
@@ -481,15 +481,15 @@ impl LocalWorkspaceManager {
             .iter()
             .find(|item| item.workspace_id == local_workspace_id)
             .ok_or_else(|| {
-                ToolError::InvalidArgs(format!("workspace not found: {local_workspace_id}"))
+                AgentToolError::InvalidArgs(format!("workspace not found: {local_workspace_id}"))
             })?;
         if item.workspace_type != WorkspaceType::Local {
-            return Err(ToolError::InvalidArgs(format!(
+            return Err(AgentToolError::InvalidArgs(format!(
                 "workspace `{local_workspace_id}` is not a local workspace"
             )));
         }
         let rel_path = item.relative_path.clone().ok_or_else(|| {
-            ToolError::ExecFailed(format!(
+            AgentToolError::ExecFailed(format!(
                 "local workspace `{local_workspace_id}` missing relative_path"
             ))
         })?;
@@ -499,7 +499,7 @@ impl LocalWorkspaceManager {
     pub async fn snapshot_metadata(
         &self,
         local_workspace_id: &str,
-    ) -> Result<LocalWorkspaceSnapshot, ToolError> {
+    ) -> Result<LocalWorkspaceSnapshot, AgentToolError> {
         let (path, status, lock) = {
             let guard = self.state.lock().await;
             let item = guard
@@ -508,17 +508,17 @@ impl LocalWorkspaceManager {
                 .iter()
                 .find(|item| item.workspace_id == local_workspace_id)
                 .ok_or_else(|| {
-                    ToolError::InvalidArgs(format!("workspace not found: {local_workspace_id}"))
+                    AgentToolError::InvalidArgs(format!("workspace not found: {local_workspace_id}"))
                 })?;
 
             if item.workspace_type != WorkspaceType::Local {
-                return Err(ToolError::InvalidArgs(format!(
+                return Err(AgentToolError::InvalidArgs(format!(
                     "workspace `{local_workspace_id}` is not a local workspace"
                 )));
             }
 
             let rel_path = item.relative_path.clone().ok_or_else(|| {
-                ToolError::ExecFailed(format!(
+                AgentToolError::ExecFailed(format!(
                     "local workspace `{local_workspace_id}` missing relative_path"
                 ))
             })?;
@@ -532,7 +532,7 @@ impl LocalWorkspaceManager {
         let path_for_scan = path.clone();
         let stats = tokio::task::spawn_blocking(move || scan_directory_metadata(&path_for_scan))
             .await
-            .map_err(|err| ToolError::ExecFailed(format!("scan metadata join error: {err}")))??;
+            .map_err(|err| AgentToolError::ExecFailed(format!("scan metadata join error: {err}")))??;
 
         Ok(LocalWorkspaceSnapshot {
             workspace_id: local_workspace_id.to_string(),
@@ -550,7 +550,7 @@ impl LocalWorkspaceManager {
         &self,
         local_workspace_id: &str,
         session_id: &str,
-    ) -> Result<LocalWorkspaceLockResult, ToolError> {
+    ) -> Result<LocalWorkspaceLockResult, AgentToolError> {
         let session_id = validate_session_id(session_id)?;
         let now = now_ms();
 
@@ -561,17 +561,17 @@ impl LocalWorkspaceManager {
             .iter_mut()
             .find(|item| item.workspace_id == local_workspace_id)
             .ok_or_else(|| {
-                ToolError::InvalidArgs(format!("workspace not found: {local_workspace_id}"))
+                AgentToolError::InvalidArgs(format!("workspace not found: {local_workspace_id}"))
             })?;
 
         if item.workspace_type != WorkspaceType::Local {
-            return Err(ToolError::InvalidArgs(format!(
+            return Err(AgentToolError::InvalidArgs(format!(
                 "workspace `{local_workspace_id}` is not a local workspace"
             )));
         }
 
         if item.status == WorkspaceStatus::Archived {
-            return Err(ToolError::InvalidArgs(format!(
+            return Err(AgentToolError::InvalidArgs(format!(
                 "workspace `{local_workspace_id}` is archived"
             )));
         }
@@ -580,7 +580,7 @@ impl LocalWorkspaceManager {
         if let Some(lock) = item.lock.as_ref() {
             let expired = lock.lease_expires_at_ms <= now;
             if !expired && lock.session_id != session_id {
-                return Err(ToolError::InvalidArgs(format!(
+                return Err(AgentToolError::InvalidArgs(format!(
                     "workspace `{local_workspace_id}` is locked by session `{}`",
                     lock.session_id
                 )));
@@ -614,7 +614,7 @@ impl LocalWorkspaceManager {
         &self,
         local_workspace_id: &str,
         session_id: &str,
-    ) -> Result<bool, ToolError> {
+    ) -> Result<bool, AgentToolError> {
         let session_id = validate_session_id(session_id)?;
         let now = now_ms();
 
@@ -625,7 +625,7 @@ impl LocalWorkspaceManager {
             .iter_mut()
             .find(|item| item.workspace_id == local_workspace_id)
             .ok_or_else(|| {
-                ToolError::InvalidArgs(format!("workspace not found: {local_workspace_id}"))
+                AgentToolError::InvalidArgs(format!("workspace not found: {local_workspace_id}"))
             })?;
 
         let Some(lock) = item.lock.as_ref() else {
@@ -635,7 +635,7 @@ impl LocalWorkspaceManager {
         if lock.session_id != session_id {
             let expired = lock.lease_expires_at_ms <= now;
             if !expired {
-                return Err(ToolError::InvalidArgs(format!(
+                return Err(AgentToolError::InvalidArgs(format!(
                     "workspace `{local_workspace_id}` lock owned by `{}`",
                     lock.session_id
                 )));
@@ -654,7 +654,7 @@ impl LocalWorkspaceManager {
         &self,
         workspace_id: &str,
         reason: Option<String>,
-    ) -> Result<WorkshopWorkspaceRecord, ToolError> {
+    ) -> Result<WorkshopWorkspaceRecord, AgentToolError> {
         let now = now_ms();
         let mut guard = self.state.lock().await;
 
@@ -664,7 +664,7 @@ impl LocalWorkspaceManager {
             .iter()
             .position(|item| item.workspace_id == workspace_id)
             .ok_or_else(|| {
-                ToolError::InvalidArgs(format!("workspace not found: {workspace_id}"))
+                AgentToolError::InvalidArgs(format!("workspace not found: {workspace_id}"))
             })?;
 
         let removed_sessions = {
@@ -703,13 +703,13 @@ impl LocalWorkspaceManager {
             .iter()
             .find(|item| item.workspace_id == workspace_id)
             .cloned()
-            .ok_or_else(|| ToolError::ExecFailed("archived workspace lost".to_string()))?;
+            .ok_or_else(|| AgentToolError::ExecFailed("archived workspace lost".to_string()))?;
 
         self.persist_state_locked(&guard).await?;
         Ok(archived)
     }
 
-    pub async fn cleanup(&self) -> Result<LocalWorkspaceCleanupResult, ToolError> {
+    pub async fn cleanup(&self) -> Result<LocalWorkspaceCleanupResult, AgentToolError> {
         let now = now_ms();
         let mut guard = self.state.lock().await;
 
@@ -754,7 +754,7 @@ impl LocalWorkspaceManager {
         })
     }
 
-    async fn persist_state_locked(&self, state: &LocalWorkspaceState) -> Result<(), ToolError> {
+    async fn persist_state_locked(&self, state: &LocalWorkspaceState) -> Result<(), AgentToolError> {
         let index_path = self.cfg.workshop_root.join(WORKSHOP_INDEX_FILE_NAME);
         write_json_file(&index_path, &state.index).await?;
 
@@ -773,25 +773,25 @@ impl LocalWorkspaceManager {
     }
 }
 
-fn validate_agent_did(input: String) -> Result<String, ToolError> {
+fn validate_agent_did(input: String) -> Result<String, AgentToolError> {
     let did = input.trim();
     if did.is_empty() {
-        return Err(ToolError::InvalidArgs(
+        return Err(AgentToolError::InvalidArgs(
             "agent_did cannot be empty".to_string(),
         ));
     }
     Ok(did.to_string())
 }
 
-fn validate_workspace_name(input: &str) -> Result<String, ToolError> {
+fn validate_workspace_name(input: &str) -> Result<String, AgentToolError> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
-        return Err(ToolError::InvalidArgs(
+        return Err(AgentToolError::InvalidArgs(
             "workspace name cannot be empty".to_string(),
         ));
     }
     if trimmed.len() > MAX_WORKSPACE_NAME_LEN {
-        return Err(ToolError::InvalidArgs(format!(
+        return Err(AgentToolError::InvalidArgs(format!(
             "workspace name too long: {}",
             trimmed.len()
         )));
@@ -799,10 +799,10 @@ fn validate_workspace_name(input: &str) -> Result<String, ToolError> {
     Ok(trimmed.to_string())
 }
 
-fn validate_session_id(input: &str) -> Result<&str, ToolError> {
+fn validate_session_id(input: &str) -> Result<&str, AgentToolError> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
-        return Err(ToolError::InvalidArgs(
+        return Err(AgentToolError::InvalidArgs(
             "session_id cannot be empty".to_string(),
         ));
     }
@@ -826,7 +826,7 @@ fn generate_workspace_id(name: &str, timestamp_ms: u64) -> String {
     format!("local-{slug}-{timestamp_ms}-{counter}")
 }
 
-async fn ensure_workshop_layout(workshop_root: &Path) -> Result<(), ToolError> {
+async fn ensure_workshop_layout(workshop_root: &Path) -> Result<(), AgentToolError> {
     let dirs = [
         workshop_root.to_path_buf(),
         workshop_root.join("tools"),
@@ -850,7 +850,7 @@ async fn ensure_workshop_layout(workshop_root: &Path) -> Result<(), ToolError> {
 
 async fn load_session_bindings(
     workshop_root: &Path,
-) -> Result<HashMap<String, SessionWorkspaceBinding>, ToolError> {
+) -> Result<HashMap<String, SessionWorkspaceBinding>, AgentToolError> {
     let path = workshop_root.join(SESSION_BINDINGS_REL_PATH);
     if !fs::try_exists(&path)
         .await
@@ -870,16 +870,16 @@ async fn load_session_bindings(
     Ok(out)
 }
 
-async fn read_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, ToolError> {
+async fn read_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, AgentToolError> {
     let content = fs::read_to_string(path)
         .await
         .map_err(|err| io_error("read json file", path, err))?;
     serde_json::from_str::<T>(&content).map_err(|err| {
-        ToolError::ExecFailed(format!("parse json `{}` failed: {err}", path.display()))
+        AgentToolError::ExecFailed(format!("parse json `{}` failed: {err}", path.display()))
     })
 }
 
-async fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), ToolError> {
+async fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), AgentToolError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .await
@@ -887,7 +887,7 @@ async fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), Too
     }
 
     let payload = serde_json::to_vec_pretty(value)
-        .map_err(|err| ToolError::ExecFailed(format!("serialize json failed: {err}")))?;
+        .map_err(|err| AgentToolError::ExecFailed(format!("serialize json failed: {err}")))?;
 
     let tmp_path = path.with_extension("tmp");
     fs::write(&tmp_path, payload)
@@ -899,8 +899,8 @@ async fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), Too
     Ok(())
 }
 
-fn io_error(action: &str, path: &Path, source: std::io::Error) -> ToolError {
-    ToolError::ExecFailed(format!("{action} `{}` failed: {source}", path.display()))
+fn io_error(action: &str, path: &Path, source: std::io::Error) -> AgentToolError {
+    AgentToolError::ExecFailed(format!("{action} `{}` failed: {source}", path.display()))
 }
 
 fn now_ms() -> u64 {
@@ -910,12 +910,12 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-fn normalize_workshop_root(root: &Path) -> Result<PathBuf, ToolError> {
+fn normalize_workshop_root(root: &Path) -> Result<PathBuf, AgentToolError> {
     let abs = if root.is_absolute() {
         root.to_path_buf()
     } else {
         std::env::current_dir()
-            .map_err(|err| ToolError::ExecFailed(format!("read current_dir failed: {err}")))?
+            .map_err(|err| AgentToolError::ExecFailed(format!("read current_dir failed: {err}")))?
             .join(root)
     };
     Ok(normalize_abs_path(&abs))
@@ -945,7 +945,7 @@ struct DirStats {
     last_modified_at_ms: Option<u64>,
 }
 
-fn scan_directory_metadata(path: &Path) -> Result<DirStats, ToolError> {
+fn scan_directory_metadata(path: &Path) -> Result<DirStats, AgentToolError> {
     if !path.exists() {
         return Ok(DirStats::default());
     }
@@ -1090,7 +1090,7 @@ mod tests {
         assert!(reentrant.reentrant);
 
         let denied = manager.acquire(&created.workspace_id, "session-b").await;
-        assert!(matches!(denied, Err(ToolError::InvalidArgs(_))));
+        assert!(matches!(denied, Err(AgentToolError::InvalidArgs(_))));
 
         let _ = fs::remove_dir_all(&root).await;
     }
