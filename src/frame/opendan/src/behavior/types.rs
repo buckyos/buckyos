@@ -1,6 +1,10 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
+use tokio::sync::Mutex;
 
+use crate::agent_session::AgentSession;
 use crate::behavior::{BehaviorConfig, LLMComputeError};
 
 pub type InboxPack = Json;
@@ -45,7 +49,7 @@ impl Default for StepLimits {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct BehaviorExecInput {
     pub session_id: Option<String>,
     pub trace: TraceCtx,
@@ -56,12 +60,44 @@ pub struct BehaviorExecInput {
     pub role_md: String,
     pub self_md: String,
     pub behavior_prompt: String,
-    pub env_context: Vec<EnvKV>,
-    pub inbox: InboxPack,
-    pub memory: MemoryPack,
-    pub last_observations: Vec<Observation>,
     pub limits: StepLimits,
     pub behavior_cfg: BehaviorConfig,
+    /// Session for template rendering ({{key}} from session values).
+    #[serde(skip)]
+    pub session: Option<Arc<Mutex<AgentSession>>>,
+}
+
+impl std::fmt::Debug for BehaviorExecInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BehaviorExecInput")
+            .field("session_id", &self.session_id)
+            .field("trace", &self.trace)
+            .field("input_prompt", &self.input_prompt)
+            .field("last_step_prompt", &self.last_step_prompt)
+            .field("last_pulled_msg_index", &self.last_pulled_msg_index)
+            .field("role_md", &self.role_md)
+            .field("self_md", &self.self_md)
+            .field("behavior_prompt", &self.behavior_prompt)
+            .field("limits", &self.limits)
+            .field("behavior_cfg", &self.behavior_cfg)
+            .field("session", &self.session.as_ref().map(|_| "Some(_)"))
+            .finish()
+    }
+}
+
+impl PartialEq for BehaviorExecInput {
+    fn eq(&self, other: &Self) -> bool {
+        self.session_id == other.session_id
+            && self.trace == other.trace
+            && self.input_prompt == other.input_prompt
+            && self.last_step_prompt == other.last_step_prompt
+            && self.last_pulled_msg_index == other.last_pulled_msg_index
+            && self.role_md == other.role_md
+            && self.self_md == other.self_md
+            && self.behavior_prompt == other.behavior_prompt
+            && self.limits == other.limits
+            && self.behavior_cfg == other.behavior_cfg
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -124,8 +160,17 @@ impl BehaviorLLMResult {
         self.next_behavior.as_deref() == Some("END")
     }
 
-    pub fn from_json_str(_input: &str) -> Result<Self, LLMComputeError> {
-        unimplemented!()
+    pub fn from_json_str(input: &str) -> Result<Self, LLMComputeError> {
+        let mut result: Self =
+            serde_json::from_str(input).map_err(|e| LLMComputeError::Internal(e.to_string()))?;
+        if result.next_behavior.is_none() {
+            if let Ok(v) = serde_json::from_str::<Json>(input) {
+                if v.get("is_sleep").and_then(|x| x.as_bool()) == Some(true) {
+                    result.next_behavior = Some("END".to_string());
+                }
+            }
+        }
+        Ok(result)
     }
 }
 

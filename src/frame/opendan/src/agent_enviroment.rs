@@ -1,12 +1,15 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use log::warn;
 use serde_json::{Map, Value as Json};
 use tokio::fs;
+use tokio::sync::Mutex;
 use upon::Engine;
 
+use crate::agent_session::AgentSession;
 use crate::agent_tool::{AgentToolError, ToolManager};
 use crate::workspace::{AgentWorkshop, AgentWorkshopConfig};
 
@@ -169,6 +172,33 @@ impl AgentEnvironment {
             successful_count: brace_ok,
             failed_count: brace_fail,
         })
+    }
+
+    pub async fn load_value_from_session(
+        session: Arc<Mutex<AgentSession>>,
+        key: &str,
+    ) -> Result<Option<String>, AgentToolError> {
+        let guard = session.lock().await;
+        let value = session_value_by_key(&guard, key);
+        Ok(value)
+    }
+
+    pub async fn render_prompt(
+        input: &str,
+        env_context: &HashMap<String, Json>,
+        session: Arc<Mutex<AgentSession>>,
+    ) -> Result<AgentTemplateRenderResult, AgentToolError> {
+        let session_clone = session.clone();
+        Self::render_text_template(
+            input,
+            |key| {
+                let s = session_clone.clone();
+                let k = key.to_string();
+                async move { Self::load_value_from_session(s, &k).await }
+            },
+            env_context,
+        )
+        .await
     }
 
     pub async fn render_prompt_template(
@@ -478,6 +508,69 @@ fn resolve_env_context_value<'a>(
     None
 }
 
+fn session_value_by_key(session: &AgentSession, key: &str) -> Option<String> {
+    let k = key.trim();
+    if k.is_empty() {
+        return None;
+    }
+    if k == "session_id" || k == "loop.session_id" {
+        return clean_optional_text(Some(session.session_id.as_str()));
+    }
+    if k == "step_index" {
+        return Some(session.step_index.to_string());
+    }
+    if k == "current_behavior" {
+        return clean_optional_text(session.current_behavior.as_deref());
+    }
+    if k == "current_todo" {
+        return session
+            .workspace_info
+            .as_ref()
+            .and_then(|ws| ws.get("current_todo"))
+            .and_then(json_value_to_compact_text);
+    }
+    if k == "last_step_summary" {
+        return session.last_step_summary.as_ref().and_then(|s| {
+            s.get("summary")
+                .or_else(|| s.get("message"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(String::from)
+        });
+    }
+    if k.starts_with("workspace_info.") {
+        let path = k.strip_prefix("workspace_info.").unwrap_or(k);
+        return session.workspace_info.as_ref().and_then(|ws| {
+            resolve_json_path(ws, path).and_then(json_value_to_compact_text)
+        });
+    }
+    None
+}
+
+fn resolve_json_path<'a>(value: &'a Json, path: &str) -> Option<&'a Json> {
+    let segments: Vec<&str> = path
+        .split('.')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if segments.is_empty() {
+        return None;
+    }
+    let mut current = value;
+    for segment in segments {
+        current = match current {
+            Json::Object(map) => map.get(segment)?,
+            Json::Array(arr) => {
+                let idx: usize = segment.parse().ok()?;
+                arr.get(idx)?
+            }
+            _ => return None,
+        };
+    }
+    Some(current)
+}
+
 fn is_variable_name(value: &str) -> bool {
     let mut chars = value.chars();
     let Some(first) = chars.next() else {
@@ -575,6 +668,32 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn render_prompt_uses_session_and_env_context() {
+        let session = Arc::new(Mutex::new(AgentSession::new(
+            "s1",
+            "did:test:agent",
+            Some("on_wakeup"),
+        )));
+        session.lock().await.step_index = 3;
+        session.lock().await.workspace_info = Some(json!({ "current_todo": "T01" }));
+
+        let mut env_context = HashMap::<String, Json>::new();
+        env_context.insert("params.x".to_string(), Json::String("env_val".to_string()));
+
+        let result = AgentEnvironment::render_prompt(
+            "sid={{session_id}} step={{step_index}} todo={{current_todo}} x=__OPENDAN_ENV(params.x)__",
+            &env_context,
+            session,
+        )
+        .await
+        .expect("render prompt");
+
+        assert_eq!(result.rendered, "sid=s1 step=3 todo=T01 x=env_val");
+        assert_eq!(result.env_expanded, 1);
+        assert_eq!(result.successful_count, 3);
+    }
 
     #[tokio::test]
     async fn render_text_template_expands_env_and_loads_value() {

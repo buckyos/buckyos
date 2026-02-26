@@ -147,9 +147,9 @@ impl LLMBehavior {
         let prompt = PromptBuilder::build(
             input,
             &allowed_tools,
-            &self.cfg,
+            &input.behavior_cfg,
             &*self.deps.tokenizer,
-            self.deps.environment.as_ref(),
+            input.session.clone(),
         )
         .await
         .map_err(LLMComputeError::Internal)?;
@@ -1137,43 +1137,10 @@ async fn append_todo_or_subagent_worklog(
 }
 
 fn extract_session_id_for_task(input: &BehaviorExecInput) -> Option<String> {
-    if let Some(value) = input
+    input
         .session_id
         .as_deref()
         .and_then(normalize_non_empty_str)
-    {
-        return Some(value);
-    }
-
-    for key in ["loop.session_id", "session_id", "owner_session_id"] {
-        let value = input
-            .env_context
-            .iter()
-            .find(|item| item.key == key)
-            .map(|item| item.value.as_str())
-            .and_then(normalize_non_empty_str);
-        if value.is_some() {
-            return value;
-        }
-    }
-
-    for pointer in [
-        "/session_id",
-        "/owner_session_id",
-        "/session/session_id",
-        "/record/session_id",
-        "/msg/session_id",
-    ] {
-        let value = input
-            .inbox
-            .pointer(pointer)
-            .and_then(|item| item.as_str())
-            .and_then(normalize_non_empty_str);
-        if value.is_some() {
-            return value;
-        }
-    }
-    None
 }
 
 fn normalize_non_empty_str(value: &str) -> Option<String> {

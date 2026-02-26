@@ -109,6 +109,14 @@ impl Requirements {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AiToolSpec {
+    pub name: String,
+    pub description: String,
+    pub args_schema: Json,
+    pub output_schema: Json,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AiMessage {
     pub role: String,
@@ -127,6 +135,8 @@ pub struct AiPayload {
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub messages: Vec<AiMessage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<AiToolSpec>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<ResourceRef>,
     #[serde(skip_serializing_if = "Option::is_none")]

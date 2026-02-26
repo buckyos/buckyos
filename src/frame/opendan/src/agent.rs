@@ -722,6 +722,7 @@ impl AIAgent {
         let mut current_step_count = 0;
         let mut result_report = BehaviorLoopReport::default();
         let mut session_id = String::new();
+        
         loop {
             if current_step_count >= remaining_steps {
                 break;
@@ -809,6 +810,31 @@ impl AIAgent {
         Ok(result_report)
     }
 
+    fn get_params_from_behavior_name(behavior_name: &str) -> Option<Json> {
+        // behavior_name = "DO:todo=T001" or "DO:todo=T001,step=2"
+        // return Some(json!({ "todo": "T001" }));
+        let params_str = behavior_name.split(':').nth(1)?.trim();
+        if params_str.is_empty() {
+            return None;
+        }
+        let mut map = serde_json::Map::new();
+        for pair in params_str.split(',') {
+            let pair = pair.trim();
+            if let Some((k, v)) = pair.split_once('=') {
+                let key = k.trim();
+                let value = v.trim();
+                if !key.is_empty() {
+                    map.insert(key.to_string(), Json::String(value.to_string()));
+                }
+            }
+        }
+        if map.is_empty() {
+            None
+        } else {
+            Some(Json::Object(map))
+        }
+    }
+
     async fn build_behavior_exec_input(
         &self,
         trace: &TraceCtx,
@@ -816,27 +842,47 @@ impl AIAgent {
         behavior_cfg: &BehaviorConfig,
         session: Arc<Mutex<AgentSession>>,
     ) -> Result<Option<BehaviorExecInput>> {
-        
-       //核心:用agent_environment构造step_summary 和 input，至少要有一个，否则就没有有效的收入
+        //核心:用agent_environment构造step_summary 和 input，至少要有一个，否则就没有有效的收入
+        //如果step>0,则构造step_summary
+        let mut env_context = HashMap::<String, Json>::new();
+        let guard = session.lock().await;
+        if guard.step_index > 0 {
+            if let Some(step_summary) = guard.last_step_summary.clone() {
+                let value = serde_json::to_value(&step_summary).unwrap_or(Json::Null);
+                env_context.insert("step_summary".to_string(), value);
+            }
+        }
 
-       //如果step>0,则构造step_summary
+        let params = Self::get_params_from_behavior_name(behavior_name);
+        if let Some(params) = params {
+            env_context.insert("params".to_string(), params);
+        }
 
-       //构造input_prompt
+        //构造input_prompt
+        let input_prompt_result = AgentEnvironment::render_prompt(
+            behavior_cfg.input.as_str(),
+            &env_context,
+            session.clone(),
+        )
+        .await?;
 
-        // Ok(Some(BehaviorExecInput {
-        //     trace: trace.clone(),
-        //     role_md: self.role_md.clone(),
-        //     self_md: self.self_md.clone(),
-        //     behavior_prompt: behavior_cfg.process_rule.clone(),
-        //     limits: behavior_cfg.limits.clone(),
-        //     session_id: Some(session_input.session_id.clone()),
-        //     behavior_cfg,
-        //     env_context,
-        //     inbox: session_input.payload.clone(),
-        //     memory,
-        //     last_observations: vec![],
-        // }))
-        unimplemented!()
+        if input_prompt_result.successful_count > 0 {
+            return Ok(Some(BehaviorExecInput {
+                trace: trace.clone(),
+                role_md: self.role_md.clone(),
+                self_md: self.self_md.clone(),
+                behavior_prompt: behavior_cfg.process_rule.clone(),
+                limits: behavior_cfg.limits.clone(),
+                behavior_cfg: behavior_cfg.clone(),
+                session_id: Some(guard.session_id.clone()),
+                input_prompt: input_prompt_result.rendered,
+                last_step_prompt: String::new(),
+                last_pulled_msg_index: 0,
+                session: Some(session.clone()),
+            }));
+        } else {
+            return Ok(None);
+        }
     }
 
     async fn run_behavior_step(
