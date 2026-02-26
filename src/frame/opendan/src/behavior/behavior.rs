@@ -16,7 +16,7 @@ use serde_json::{Map, Value as Json, json};
 use super::config::{BehaviorConfig, BehaviorConfigError};
 use super::observability::{AgentWorkEvent, WorklogSink};
 use super::policy_adapter::PolicyEngine;
-use super::prompt::{ChatMessage, ChatRole, PromptBuilder, PromptPack};
+use super::prompt::{ChatMessage, ChatRole, PromptBuilder};
 use super::sanitize::Sanitizer;
 use super::tool_loop::{self, ToolContext};
 use super::types::*;
@@ -145,9 +145,19 @@ impl LLMBehavior {
             .await
             .map_err(LLMComputeError::Internal)?;
 
-        let prompt = PromptBuilder::build(
+        let ai_tool_specs: Vec<AiToolSpec> = allowed_tools
+            .iter()
+            .map(|tool| AiToolSpec {
+                name: tool.name.clone(),
+                description: tool.description.clone(),
+                args_schema: value_to_object_map(tool.args_schema.clone()),
+                output_schema: tool.output_schema.clone(),
+            })
+            .collect();
+
+        let base_req = PromptBuilder::build(
             input,
-            &allowed_tools,
+            &ai_tool_specs,
             &input.behavior_cfg,
             &*self.deps.tokenizer,
             input.session.clone(),
@@ -158,13 +168,7 @@ impl LLMBehavior {
         self.ensure_session_normal_before_next_llm(input).await?;
 
         let (mut usage, mut llm_resp, first_task_id) = self
-            .do_inference_once(
-                input,
-                &allowed_tools,
-                prompt.clone(),
-                None,
-                behavior_task_id,
-            )
+            .do_inference_once(base_req.clone(), None, behavior_task_id)
             .await?;
         Self::update_track_from_llm_response(&mut track, &llm_resp, first_task_id);
 
@@ -188,9 +192,7 @@ impl LLMBehavior {
 
             let (usage2, followup_resp, followup_task_id) = self
                 .do_inference_once(
-                    input,
-                    &allowed_tools,
-                    prompt.clone(),
+                    base_req.clone(),
                     Some(executed.tool_ctx),
                     behavior_task_id,
                 )
@@ -590,20 +592,11 @@ impl LLMBehavior {
 
     async fn do_inference_once(
         &self,
-        input: &BehaviorExecInput,
-        allowed_tools: &[ToolSpec],
-        prompt: PromptPack,
+        base_req: CompleteRequest,
         tool_ctx: Option<ToolContext>,
         behavior_task_id: i64,
     ) -> Result<(TokenUsage, LLMRawResponse, String), LLMComputeError> {
-        let req = AiccRequestBuilder::build(
-            &self.cfg,
-            input,
-            allowed_tools,
-            prompt,
-            tool_ctx,
-            Some(behavior_task_id),
-        );
+        let req = AiccRequestBuilder::build(base_req, tool_ctx, Some(behavior_task_id));
         let resp = self.deps.aicc.complete(req).await.map_err(map_aicc_error)?;
         let llm_task_id = resp.task_id.clone();
         let (usage, raw) = self
@@ -740,16 +733,12 @@ pub struct AiccRequestBuilder;
 
 impl AiccRequestBuilder {
     pub fn build(
-        cfg: &LLMBehaviorConfig,
-        input: &BehaviorExecInput,
-        allowed_tools: &[ToolSpec],
-        prompt: PromptPack,
+        mut base_req: CompleteRequest,
         tool_ctx: Option<ToolContext>,
         parent_task_id: Option<i64>,
     ) -> CompleteRequest {
-        let mut tool_messages = Vec::new();
-
         if let Some(ctx) = tool_ctx {
+            let mut tool_messages = Vec::new();
             let assistant_msg = json!({ "tool_calls": ctx.tool_calls });
             let assistant_content =
                 serde_json::to_string(&assistant_msg).unwrap_or_else(|_| "{}".to_string());
@@ -769,87 +758,18 @@ impl AiccRequestBuilder {
                     content,
                 });
             }
+
+            if let Some(opts) = base_req.payload.options.as_mut() {
+                if let Some(obj) = opts.as_object_mut() {
+                    obj.insert(
+                        "tool_messages".to_string(),
+                        serde_json::to_value(tool_messages).unwrap_or_else(|_| json!([])),
+                    );
+                }
+            }
         }
 
-        let messages = prompt
-            .messages
-            .iter()
-            .map(|m| AiMessage::new(chat_role_to_aicc_role(&m.role), m.content.clone()))
-            .collect::<Vec<_>>();
-        let tool_calls = allowed_tools
-            .iter()
-            .map(|tool| AiToolSpec {
-                name: tool.name.clone(),
-                description: tool.description.clone(),
-                args_schema: value_to_object_map(tool.args_schema.clone()),
-                output_schema: tool.output_schema.clone(),
-            })
-            .collect::<Vec<_>>();
-
-        let mut must_features = vec![features::JSON_OUTPUT.to_string()];
-        if !allowed_tools.is_empty() {
-            must_features.push(features::TOOL_CALLING.to_string());
-        }
-
-        let mut options = Map::new();
-        let session_id = extract_session_id_for_task(input);
-        let rootid = resolve_rootid_for_task(input.trace.agent_did.as_str(), session_id.as_deref());
-        options.insert(
-            "protocol".to_string(),
-            Json::String("opendan_llm_behavior_v1".to_string()),
-        );
-        options.insert(
-            "process_name".to_string(),
-            Json::String(cfg.process_name.clone()),
-        );
-        options.insert(
-            "output_mode".to_string(),
-            Json::String(cfg.output_mode.clone()),
-        );
-        options.insert(
-            "max_completion_tokens".to_string(),
-            json!(input.limits.max_completion_tokens),
-        );
-        options.insert(
-            "temperature".to_string(),
-            json!(cfg.model_policy.temperature),
-        );
-        if let Some(schema) = cfg.response_schema.clone() {
-            options.insert("response_schema".to_string(), schema);
-        }
-        if !tool_messages.is_empty() {
-            options.insert(
-                "tool_messages".to_string(),
-                serde_json::to_value(tool_messages).unwrap_or_else(|_| json!([])),
-            );
-        }
-        options.insert("rootid".to_string(), Json::String(rootid));
-        if let Some(session_id) = session_id {
-            options.insert("session_id".to_string(), Json::String(session_id.clone()));
-            options.insert("owner_session_id".to_string(), Json::String(session_id));
-        }
-
-        CompleteRequest::new(
-            Capability::LlmRouter,
-            ModelSpec::new(cfg.model_policy.preferred.clone(), None),
-            Requirements::new(must_features, None, None, None),
-            AiPayload::new(
-                None,
-                messages,
-                tool_calls,
-                vec![],
-                None,
-                Some(Json::Object(options)),
-            ),
-            Some(format!(
-                "{}:{}:{}:{}",
-                input.trace.trace_id,
-                input.trace.wakeup_id,
-                input.trace.behavior,
-                input.trace.step_idx
-            )),
-        )
-        .with_task_options(parent_task_id.map(|parent_id| CompleteTaskOptions {
+        base_req.with_task_options(parent_task_id.map(|parent_id| CompleteTaskOptions {
             parent_id: Some(parent_id),
         }))
     }

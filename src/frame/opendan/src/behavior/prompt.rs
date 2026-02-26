@@ -1,24 +1,23 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use buckyos_api::{
+    AiMessage, AiPayload, AiToolSpec, Capability, CompleteRequest, ModelSpec, Requirements,
+    features,
+};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
-use serde_json::Value as Json;
+use serde_json::{json, Map, Value as Json};
 use tokio::sync::Mutex;
 
 use crate::agent_enviroment::AgentEnvironment;
 use crate::agent_session::AgentSession;
-use crate::agent_tool::ToolSpec;
 use crate::behavior::BehaviorConfig;
 
 use super::sanitize::{sanitize_json_compact, sanitize_text};
 use super::types::{BehaviorExecInput, LLMBehaviorConfig};
 use super::Tokenizer;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct PromptPack {
-    pub messages: Vec<ChatMessage>,
-}
+
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -41,11 +40,11 @@ pub struct PromptBuilder;
 impl PromptBuilder {
     pub async fn build(
         input: &BehaviorExecInput,
-        tools: &[ToolSpec],
+        tools: &[AiToolSpec],
         cfg: &BehaviorConfig,
         tokenizer: &dyn Tokenizer,
         session: Option<Arc<Mutex<AgentSession>>>,
-    ) -> Result<PromptPack, String> {
+    ) -> Result<CompleteRequest, String> {
         let env_context = build_env_context(input);
 
         let process_rules =
@@ -100,24 +99,48 @@ impl PromptBuilder {
         let memory_prompt_text =
             build_memory_prompt_text(input, &system_role_prompt_text, tokenizer).await;
 
-        let messages = vec![
-            ChatMessage {
-                role: ChatRole::System,
-                content: system_role_prompt_text,
-                name: None,
-            },
-            ChatMessage {
-                role: ChatRole::User,
-                content: memory_prompt_text,
-                name: None,
-            },
-            ChatMessage {
-                role: ChatRole::User,
-                content: format!("<<input>>\n{}\n<</input>>", input.input_prompt),
-                name: None,
-            },
+        let ai_messages:Vec<AiMessage> = vec![
+            AiMessage::new("system".to_string(), system_role_prompt_text),
+            AiMessage::new("user".to_string(), memory_prompt_text),
+            AiMessage::new("user".to_string(), format!("<<input>>\n{}\n<</input>>", input.input_prompt)),
         ];
-        Ok(PromptPack { messages })
+
+        let mut must_features = vec![features::JSON_OUTPUT.to_string()];
+        if !tools.is_empty() {
+            must_features.push(features::TOOL_CALLING.to_string());
+        }
+
+        let mut options = Map::new();
+        options.insert(
+            "max_completion_tokens".to_string(),
+            json!(input.limits.max_completion_tokens),
+        );
+        options.insert(
+            "temperature".to_string(),
+            json!(cfg.llm.model_policy.temperature),
+        );
+
+        let req = CompleteRequest::new(
+            Capability::LlmRouter,
+            ModelSpec::new(cfg.llm.model_policy.preferred.clone(), None),
+            Requirements::new(must_features, None, None, None),
+            AiPayload::new(
+                None,
+                ai_messages,
+                tools.to_vec(),
+                vec![],
+                None,
+                Some(Json::Object(options)),
+            ),
+            Some(format!(
+                "{}:{}:{}:{}",
+                input.trace.trace_id,
+                input.trace.wakeup_id,
+                input.trace.behavior,
+                input.trace.step_idx
+            )),
+        );
+        Ok(req)
     }
 }
 
@@ -274,8 +297,8 @@ Return ONLY one JSON object and use behavior_llm_result schema:\n\n\
     )
 }
 
-fn build_toolbox(tools: &[ToolSpec], cfg: &BehaviorConfig) -> Option<String> {
-    let filtered = cfg.toolbox.tools.filter_tool_specs(tools);
+fn build_toolbox(tools: &[AiToolSpec], cfg: &BehaviorConfig) -> Option<String> {
+    let filtered = cfg.toolbox.tools.filter_ai_tool_specs(tools);
     let skills = cfg.toolbox.skills.clone();
     if filtered.is_empty() && skills.is_empty() {
         return None;
@@ -483,11 +506,12 @@ mod tests {
             session: None,
         };
 
-        let prompt = PromptBuilder::build(&input, &[], &input.behavior_cfg, &MockTokenizer, None)
+        let req = PromptBuilder::build(&input, &[], &input.behavior_cfg, &MockTokenizer, None)
             .await
             .expect("build prompt");
 
-        let system = prompt
+        let system = req
+            .payload
             .messages
             .first()
             .map(|msg| msg.content.clone())

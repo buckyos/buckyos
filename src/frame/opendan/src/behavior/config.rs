@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use buckyos_api::AiToolSpec;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use tokio::fs;
@@ -325,6 +326,26 @@ impl Default for BehaviorToolsConfig {
 
 impl BehaviorToolsConfig {
     pub fn filter_tool_specs(&self, specs: &[ToolSpec]) -> Vec<ToolSpec> {
+        match self.mode {
+            BehaviorToolMode::All => specs.to_vec(),
+            BehaviorToolMode::None => vec![],
+            BehaviorToolMode::AllowList => {
+                let allow = self
+                    .names
+                    .iter()
+                    .map(|name| name.trim())
+                    .filter(|name| !name.is_empty())
+                    .collect::<HashSet<_>>();
+                specs
+                    .iter()
+                    .filter(|spec| allow.contains(spec.name.as_str()))
+                    .cloned()
+                    .collect()
+            }
+        }
+    }
+
+    pub fn filter_ai_tool_specs(&self, specs: &[AiToolSpec]) -> Vec<AiToolSpec> {
         match self.mode {
             BehaviorToolMode::All => specs.to_vec(),
             BehaviorToolMode::None => vec![],
