@@ -22,6 +22,8 @@ struct MsgRecordRow {
     record_id: String,
     box_kind: String,
     msg_id: String,
+    msg_from: Option<String>,
+    msg_to: Option<String>,
     state: String,
     created_at_ms: i64,
     updated_at_ms: i64,
@@ -66,9 +68,10 @@ impl MsgBoxDbMgr {
         record: &MsgRecord,
         msg: Option<&MsgObject>,
     ) -> std::result::Result<(), RPCErrors> {
-        let conn = self.connect_owner(&record.owner)?;
+        let owner = owner_from_record_id(&record.record_id)?;
+        let conn = self.connect_owner(&owner)?;
         upsert_record_with_conn(&conn, record, msg)?;
-        self.touch_message(&record.owner, &record.msg_id, record.created_at_ms)?;
+        self.touch_message(&owner, &record.msg_id, record.created_at_ms)?;
         Ok(())
     }
 
@@ -85,6 +88,8 @@ SELECT
     record_id,
     box_kind,
     msg_id,
+    msg_from,
+    msg_to,
     state,
     created_at_ms,
     updated_at_ms,
@@ -104,16 +109,18 @@ WHERE record_id = ?1
                         record_id: row.get(0)?,
                         box_kind: row.get(1)?,
                         msg_id: row.get(2)?,
-                        state: row.get(3)?,
-                        created_at_ms: row.get(4)?,
-                        updated_at_ms: row.get(5)?,
-                        thread_key: row.get(6)?,
-                        session_id: row.get(7)?,
-                        sort_key: row.get(8)?,
-                        tags_json: row.get(9)?,
-                        route_tunnel_did: row.get(10)?,
-                        route_json: row.get(11)?,
-                        delivery_json: row.get(12)?,
+                        msg_from: row.get(3)?,
+                        msg_to: row.get(4)?,
+                        state: row.get(5)?,
+                        created_at_ms: row.get(6)?,
+                        updated_at_ms: row.get(7)?,
+                        thread_key: row.get(8)?,
+                        session_id: row.get(9)?,
+                        sort_key: row.get(10)?,
+                        tags_json: row.get(11)?,
+                        route_tunnel_did: row.get(12)?,
+                        route_json: row.get(13)?,
+                        delivery_json: row.get(14)?,
                     })
                 },
             )
@@ -150,6 +157,8 @@ SELECT
     record_id,
     box_kind,
     msg_id,
+    msg_from,
+    msg_to,
     state,
     created_at_ms,
     updated_at_ms,
@@ -176,16 +185,18 @@ WHERE box_kind = ?1
                     record_id: row.get(0)?,
                     box_kind: row.get(1)?,
                     msg_id: row.get(2)?,
-                    state: row.get(3)?,
-                    created_at_ms: row.get(4)?,
-                    updated_at_ms: row.get(5)?,
-                    thread_key: row.get(6)?,
-                    session_id: row.get(7)?,
-                    sort_key: row.get(8)?,
-                    tags_json: row.get(9)?,
-                    route_tunnel_did: row.get(10)?,
-                    route_json: row.get(11)?,
-                    delivery_json: row.get(12)?,
+                    msg_from: row.get(3)?,
+                    msg_to: row.get(4)?,
+                    state: row.get(5)?,
+                    created_at_ms: row.get(6)?,
+                    updated_at_ms: row.get(7)?,
+                    thread_key: row.get(8)?,
+                    session_id: row.get(9)?,
+                    sort_key: row.get(10)?,
+                    tags_json: row.get(11)?,
+                    route_tunnel_did: row.get(12)?,
+                    route_json: row.get(13)?,
+                    delivery_json: row.get(14)?,
                 })
             })
             .map_err(|error| {
@@ -389,16 +400,16 @@ fn upsert_record_with_conn(
     let route_json = encode_optional_json(record.route.as_ref(), &record.record_id, "route")?;
     let delivery_json =
         encode_optional_json(record.delivery.as_ref(), &record.record_id, "delivery")?;
-    let msg_from = msg.map(|obj| obj.from.to_string());
-    let msg_to = match msg {
-        Some(obj) => Some(serde_json::to_string(&obj.to).map_err(|error| {
-            RPCErrors::ReasonError(format!(
-                "failed to encode msg_to for record {}: {}",
-                record.record_id, error
-            ))
-        })?),
-        None => None,
-    };
+    let msg_from = Some(
+        msg.map(|obj| obj.from.clone())
+            .unwrap_or_else(|| record.from.clone())
+            .to_string(),
+    );
+    let msg_to = Some(
+        msg.and_then(|obj| obj.to.first().cloned())
+            .unwrap_or_else(|| record.to.clone())
+            .to_string(),
+    );
     let msg_kind = match msg {
         Some(obj) => {
             let kind_value = serde_json::to_value(obj.kind).map_err(|error| {
@@ -465,8 +476,8 @@ ON CONFLICT(record_id) DO UPDATE SET
             msg_state_name(&record.state),
             to_sql_i64(record.created_at_ms),
             to_sql_i64(record.updated_at_ms),
-            record.thread_key,
-            record.session_id,
+            record.thread_key.clone(),
+            record.thread_key.clone(),
             to_sql_i64(record.sort_key),
             tags_json,
             route_tunnel_did,
@@ -492,6 +503,12 @@ fn row_to_record(owner: &DID, row: MsgRecordRow) -> std::result::Result<MsgRecor
     let updated_at_ms = from_sql_i64(row.updated_at_ms, "updated_at_ms", &row.record_id)?;
     let sort_key = from_sql_i64(row.sort_key, "sort_key", &row.record_id)?;
     let tags: Vec<String> = parse_json(&row.tags_json, &row.record_id, "tags_json")?;
+    let msg_from = parse_record_did(row.msg_from.as_deref(), owner);
+    let to_fallback = match box_kind {
+        BoxKind::Inbox | BoxKind::GroupInbox | BoxKind::RequestBox => owner.clone(),
+        BoxKind::Outbox | BoxKind::TunnelOutbox => msg_from.clone(),
+    };
+    let msg_to = parse_record_did(row.msg_to.as_deref(), &to_fallback);
 
     let mut route: Option<RouteInfo> =
         parse_optional_json(row.route_json.as_deref(), &row.record_id, "route_json")?;
@@ -523,19 +540,55 @@ fn row_to_record(owner: &DID, row: MsgRecordRow) -> std::result::Result<MsgRecor
 
     Ok(MsgRecord {
         record_id: row.record_id,
-        owner: owner.clone(),
         box_kind,
         msg_id,
         state,
+        from: msg_from,
+        to: msg_to,
         created_at_ms,
         updated_at_ms,
         route,
         delivery,
-        thread_key: row.thread_key,
-        session_id: row.session_id,
+        thread_key: row.thread_key.or(row.session_id),
         sort_key,
         tags,
     })
+}
+
+fn owner_from_record_id(record_id: &str) -> std::result::Result<DID, RPCErrors> {
+    let owner = record_id.split('|').next().ok_or_else(|| {
+        RPCErrors::ReasonError(format!("invalid record id '{}': missing owner", record_id))
+    })?;
+    DID::from_str(owner).map_err(|error| {
+        RPCErrors::ReasonError(format!(
+            "invalid record id '{}': owner DID parse failed: {}",
+            record_id, error
+        ))
+    })
+}
+
+fn parse_record_did(raw: Option<&str>, fallback: &DID) -> DID {
+    let parsed = raw
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| {
+            DID::from_str(value).ok().or_else(|| {
+                serde_json::from_str::<Vec<String>>(value)
+                    .ok()
+                    .and_then(|values| {
+                        values.into_iter().find_map(|entry| {
+                            let normalized = entry.trim();
+                            if normalized.is_empty() {
+                                None
+                            } else {
+                                DID::from_str(normalized).ok()
+                            }
+                        })
+                    })
+            })
+        });
+
+    parsed.unwrap_or_else(|| fallback.clone())
 }
 
 fn parse_obj_id(raw: &str, record_id: &str) -> std::result::Result<ObjId, RPCErrors> {

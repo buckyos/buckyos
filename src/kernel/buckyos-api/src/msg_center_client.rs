@@ -191,10 +191,11 @@ pub struct DeliveryInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MsgRecord {
     pub record_id: String,
-    pub owner: DID,
     pub box_kind: BoxKind,
     pub msg_id: ObjId,
     pub state: MsgState,
+    pub from:DID,
+    pub to:DID,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -203,8 +204,8 @@ pub struct MsgRecord {
     pub delivery: Option<DeliveryInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
+    // #[serde(skip_serializing_if = "Option::is_none")]
+    // pub session_id: Option<String>,
     pub sort_key: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,

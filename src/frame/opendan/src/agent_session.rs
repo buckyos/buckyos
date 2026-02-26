@@ -4,8 +4,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use buckyos_api::{MsgRecord, OpenDanAgentSessionRecord, OpenDanSessionLink};
+use buckyos_api::{MsgRecord, MsgRecordWithObject, OpenDanAgentSessionRecord, OpenDanSessionLink};
 use log::warn;
+use name_lib::DID;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value as Json};
 use tokio::fs;
@@ -22,6 +23,7 @@ const SESSION_STATUS_PAUSE: &str = "pause";
 const SESSION_STATUS_NORMAL: &str = "normal";
 
 static SESSION_ITEM_SEQ: AtomicU64 = AtomicU64::new(0);
+static SESSION_LINK_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -59,8 +61,6 @@ impl Default for SessionWaitDetails {
     }
 }
 
-
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(default)]
 pub struct ConsumableIds {
@@ -93,6 +93,7 @@ pub struct SessionExecInput {
     pub behavior: String,
     pub step_index: u32,
     pub payload: Json,
+    pub link_ids: Vec<String>,
     pub consumable_ids: ConsumableIds,
 }
 
@@ -103,9 +104,36 @@ impl Default for SessionExecInput {
             behavior: String::new(),
             step_index: 0,
             payload: Json::Null,
+            link_ids: vec![],
             consumable_ids: ConsumableIds::default(),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SessionMessageLinkState {
+    New,
+    Used,
+    Acked,
+}
+
+impl Default for SessionMessageLinkState {
+    fn default() -> Self {
+        Self::New
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct SessionMessageLink {
+    pub link_id: String,
+    pub session_id: String,
+    pub msg_tunnle_message_id: String,
+    pub msg_record_id: String,
+    pub state: SessionMessageLinkState,
+    pub reason: String,
+    pub created_at_ms: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -120,6 +148,7 @@ struct SessionRuntimeMeta {
     local_workspace_id: Option<String>,
     worklog: Vec<Json>,
     cost_trace: Json,
+    message_links: Vec<SessionMessageLink>,
 }
 
 impl Default for SessionRuntimeMeta {
@@ -134,6 +163,7 @@ impl Default for SessionRuntimeMeta {
             local_workspace_id: None,
             worklog: vec![],
             cost_trace: json!({}),
+            message_links: vec![],
         }
     }
 }
@@ -158,6 +188,7 @@ pub struct AgentSession {
     pub local_workspace_id: Option<String>,
     pub worklog: Vec<Json>,
     pub cost_trace: Json,
+    pub message_links: Vec<SessionMessageLink>,
     pub links: Vec<OpenDanSessionLink>,
     pub tags: Vec<String>,
     pub meta: Json,
@@ -193,6 +224,7 @@ impl AgentSession {
             local_workspace_id: None,
             worklog: vec![],
             cost_trace: json!({}),
+            message_links: vec![],
             links: vec![],
             tags: vec![],
             meta: json!({}),
@@ -246,6 +278,7 @@ impl AgentSession {
             local_workspace_id: normalize_optional_string(runtime_meta.local_workspace_id),
             worklog: runtime_meta.worklog,
             cost_trace: normalize_json_object(runtime_meta.cost_trace),
+            message_links: runtime_meta.message_links,
             links: record.links,
             tags: record.tags,
             meta: normalize_json_object(meta),
@@ -308,6 +341,7 @@ impl AgentSession {
             local_workspace_id: self.local_workspace_id.clone(),
             worklog: self.worklog.clone(),
             cost_trace: normalize_json_object(self.cost_trace.clone()),
+            message_links: self.message_links.clone(),
         }
     }
 
@@ -361,6 +395,41 @@ impl AgentSession {
         id
     }
 
+    pub fn append_msg_link(
+        &mut self,
+        msg_tunnle_message_id: impl Into<String>,
+        msg_record_id: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> String {
+        let now = now_ms();
+        let reason = reason.into();
+        let link_id = new_link_id();
+        self.message_links.push(SessionMessageLink {
+            link_id: link_id.clone(),
+            session_id: self.session_id.clone(),
+            msg_tunnle_message_id: msg_tunnle_message_id.into(),
+            msg_record_id: msg_record_id.into(),
+            state: SessionMessageLinkState::New,
+            reason: normalize_nonempty_reason(reason),
+            created_at_ms: now,
+        });
+        self.updated_at_ms = now;
+        self.last_activity_ms = now;
+        link_id
+    }
+
+    pub fn append_msg_link_from_record(
+        &mut self,
+        record: &MsgRecordWithObject,
+        reason: impl Into<String>,
+    ) -> String {
+        self.append_msg_link(
+            record.record.msg_id.to_string(),
+            record.record.record_id.clone(),
+            reason.into(),
+        )
+    }
+
     pub fn mark_msg_arrived(&mut self, item: &SessionInputItem) {
         self.update_state_on_input_arrived(item, SessionState::WaitForMsg);
     }
@@ -373,16 +442,27 @@ impl AgentSession {
         let slots = required_input_slots(behavior_cfg);
         let mut payload = Map::<String, Json>::new();
         let mut consumable = ConsumableIds::default();
+        let mut link_ids = Vec::<String>::new();
 
         if slots.contains("new_msg") {
-            let selected = select_new_items(
-                &self.new_msgs,
-                self.state,
-                self.wait_details.as_ref(),
-                SessionState::WaitForMsg,
-            );
-            consumable.msg_ids = selected.iter().map(|item| item.id.clone()).collect();
-            payload.insert("new_msg".to_string(), select_item_payload(selected));
+            let selected_links =
+                select_new_links(&self.message_links, self.state, SessionState::WaitForMsg);
+            if !selected_links.is_empty() {
+                link_ids = selected_links
+                    .iter()
+                    .map(|item| item.link_id.clone())
+                    .collect();
+                payload.insert("new_msg".to_string(), select_link_payload(selected_links));
+            } else {
+                let selected = select_new_items(
+                    &self.new_msgs,
+                    self.state,
+                    self.wait_details.as_ref(),
+                    SessionState::WaitForMsg,
+                );
+                consumable.msg_ids = selected.iter().map(|item| item.id.clone()).collect();
+                payload.insert("new_msg".to_string(), select_item_payload(selected));
+            }
         }
 
         if slots.contains("new_event") {
@@ -422,11 +502,36 @@ impl AgentSession {
             behavior: self.current_behavior.clone().unwrap_or_default(),
             step_index: self.step_index,
             payload: Json::Object(payload),
+            link_ids,
             consumable_ids: consumable,
         })
     }
 
+    pub fn mark_input_links_used(&mut self, link_ids: &[String]) {
+        if link_ids.is_empty() {
+            return;
+        }
+        let consumed = link_ids
+            .iter()
+            .map(|item| item.as_str())
+            .collect::<HashSet<_>>();
+        let mut touched = false;
+        for link in &mut self.message_links {
+            if consumed.contains(link.link_id.as_str())
+                && link.state == SessionMessageLinkState::New
+            {
+                link.state = SessionMessageLinkState::Used;
+                touched = true;
+            }
+        }
+        if touched {
+            self.updated_at_ms = now_ms();
+        }
+    }
+
     pub fn update_input_used(&mut self, exec_input: &SessionExecInput) {
+        self.mark_input_links_used(exec_input.link_ids.as_slice());
+
         if !exec_input.consumable_ids.msg_ids.is_empty() {
             let consumed = exec_input
                 .consumable_ids
@@ -493,6 +598,11 @@ impl AgentSession {
             "new_event_count": self.new_events.len(),
             "history_msg_count": self.history_msgs.len(),
             "history_event_count": self.history_events.len(),
+            "new_link_count": self
+                .message_links
+                .iter()
+                .filter(|item| item.state == SessionMessageLinkState::New)
+                .count(),
             "workspace_info": self.workspace_info,
             "local_workspace_id": self.local_workspace_id,
             "meta": self.meta,
@@ -549,6 +659,10 @@ impl AgentSessionMgr {
 
     pub fn sessions_root(&self) -> &Path {
         &self.sessions_root
+    }
+
+    pub fn get_default_session_id(target:&DID,tunnel_did:&DID) -> String {
+        format!("session-{}-{}",target.to_raw_host_name(),tunnel_did.to_raw_host_name())
     }
 
     pub async fn ensure_default_session(&self) -> Result<Arc<Mutex<AgentSession>>, ToolError> {
@@ -608,6 +722,19 @@ impl AgentSessionMgr {
         Ok(id)
     }
 
+    pub async fn link_msg_record(
+        &self,
+        session_id: &str,
+        record: &MsgRecordWithObject,
+        reason: &str,
+    ) -> Result<String, ToolError> {
+        let session = self.ensure_session(session_id, None).await?;
+        let mut guard = session.lock().await;
+        let link_id = guard.append_msg_link_from_record(record, reason.to_string());
+        self.save_session_locked(&guard).await?;
+        Ok(link_id)
+    }
+
     pub async fn mark_msg_arrived(
         &self,
         session_id: &str,
@@ -616,7 +743,9 @@ impl AgentSessionMgr {
         let session = self.ensure_session(session_id, None).await?;
         let mut guard = session.lock().await;
         let payload = serde_json::to_value(item).map_err(|err| {
-            ToolError::ExecFailed(format!("serialize msg record to session input failed: {err}"))
+            ToolError::ExecFailed(format!(
+                "serialize msg record to session input failed: {err}"
+            ))
         })?;
         let input = SessionInputItem {
             id: extract_input_id(&payload, "msg"),
@@ -984,6 +1113,26 @@ fn select_new_items(
         .collect()
 }
 
+fn select_new_links(
+    input: &[SessionMessageLink],
+    current_state: SessionState,
+    wait_state: SessionState,
+) -> Vec<SessionMessageLink> {
+    if current_state != wait_state {
+        return input
+            .iter()
+            .filter(|item| item.state == SessionMessageLinkState::New)
+            .cloned()
+            .collect();
+    }
+
+    input
+        .iter()
+        .filter(|item| item.state == SessionMessageLinkState::New)
+        .cloned()
+        .collect()
+}
+
 fn select_item_payload(items: Vec<SessionInputItem>) -> Json {
     if items.is_empty() {
         return Json::Null;
@@ -996,6 +1145,28 @@ fn select_item_payload(items: Vec<SessionInputItem>) -> Json {
                     "id": item.id,
                     "ts_ms": item.ts_ms,
                     "payload": item.payload,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn select_link_payload(items: Vec<SessionMessageLink>) -> Json {
+    if items.is_empty() {
+        return Json::Null;
+    }
+    Json::Array(
+        items
+            .into_iter()
+            .map(|item| {
+                json!({
+                    "link_id": item.link_id,
+                    "session_id": item.session_id,
+                    "msg_tunnle_message_id": item.msg_tunnle_message_id,
+                    "msg_record_id": item.msg_record_id,
+                    "state": format!("{:?}", item.state).to_uppercase(),
+                    "reason": item.reason,
+                    "created_at_ms": item.created_at_ms,
                 })
             })
             .collect::<Vec<_>>(),
@@ -1122,6 +1293,20 @@ fn extract_input_id(payload: &Json, prefix: &str) -> String {
     format!("{prefix}-{}-{seq}", now_ms())
 }
 
+fn new_link_id() -> String {
+    let seq = SESSION_LINK_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("link-{}-{seq}", now_ms())
+}
+
+fn normalize_nonempty_reason(reason: String) -> String {
+    let trimmed = reason.trim();
+    if trimmed.is_empty() {
+        "INBOX_FALLBACK".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn normalize_optional_string(value: Option<String>) -> Option<String> {
     value
         .map(|item| item.trim().to_string())
@@ -1214,6 +1399,18 @@ mod tests {
     }
 
     #[test]
+    fn generate_input_prefers_new_link_and_sets_link_ids() {
+        let mut session = AgentSession::new("s1", "did:opendan:test", Some("on_wakeup"));
+        let link_id = session.append_msg_link("msg-obj-1", "record-1", "INBOX_FALLBACK");
+        let cfg = behavior_with_input("{{new_msg}}");
+
+        let got = session.generate_input(&cfg).expect("input exists");
+        assert_eq!(got.link_ids, vec![link_id]);
+        assert!(got.consumable_ids.msg_ids.is_empty());
+        assert!(got.payload.get("new_msg").is_some());
+    }
+
+    #[test]
     fn update_input_used_drops_consumed_items() {
         let mut session = AgentSession::new("s1", "did:opendan:test", Some("on_wakeup"));
         session.append_msg(json!({"id":"msg-1","text":"hello"}));
@@ -1223,6 +1420,19 @@ mod tests {
         session.update_input_used(&exec_input);
         assert!(session.new_msgs.is_empty());
         assert!(session.history_msgs.is_empty());
+    }
+
+    #[test]
+    fn mark_input_links_used_updates_state_to_used() {
+        let mut session = AgentSession::new("s1", "did:opendan:test", Some("on_wakeup"));
+        let link_id = session.append_msg_link("msg-obj-1", "record-1", "INBOX_FALLBACK");
+
+        session.mark_input_links_used(&[link_id]);
+        assert_eq!(session.message_links.len(), 1);
+        assert_eq!(
+            session.message_links[0].state,
+            SessionMessageLinkState::Used
+        );
     }
 
     #[test]

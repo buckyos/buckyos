@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use std::vec;
 
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -25,7 +26,7 @@ use crate::agent_config::AIAgentConfig;
 use crate::agent_enviroment::AgentEnvironment;
 use crate::agent_memory::{AgentMemory, AgentMemoryConfig};
 use crate::agent_session::{
-    AgentSession, AgentSessionMgr, GetSessionTool, SessionExecInput, SessionInputItem, SessionState
+    AgentSession, AgentSessionMgr, GetSessionTool, SessionExecInput, SessionInputItem, SessionState,
 };
 use crate::agent_tool::{AgentPolicy, ToolCall, ToolManager};
 use crate::behavior::{
@@ -39,6 +40,7 @@ use crate::workspace::TOOL_TODO_MANAGE;
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
 const LEGACY_ENV_DIR_NAME: &str = "enviroment";
 const DEFAULT_SESSION_ID: &str = "default";
+const INBOX_SESSION_ID: &str = DEFAULT_SESSION_ID;
 const MAX_MSG_PULL_PER_TICK: usize = 16;
 const MAX_EVENT_PULL_PER_TICK: usize = 16;
 const MSG_ROUTED_REASON: &str = "routed_by_opendan_runtime";
@@ -67,6 +69,43 @@ enum InputQueueKind {
     Event,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum RouteLinkReason {
+    SessionHint,
+    MsgRecordSession,
+    DefaultSession,
+    DefaultFallback,
+}
+
+impl RouteLinkReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            RouteLinkReason::SessionHint => "SESSION_HINT",
+            RouteLinkReason::MsgRecordSession => "ACTIVE_SESSION",
+            RouteLinkReason::DefaultFallback => "DEFAULT_FALLBACK",
+            RouteLinkReason::DefaultSession => "DEFAULT_SESSION"
+        }
+    }
+}
+
+impl Default for RouteLinkReason {
+    fn default() -> Self {
+        Self::DefaultFallback
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct RouteDecision {
+    linked_session_ids: Vec<String>,
+    reason: RouteLinkReason,
+}
+
+#[derive(Clone, Debug, Default)]
+struct RouteAndLinkResult {
+    linked_session_ids: Vec<String>,
+    link_ids: Vec<String>,
+}
+
 #[derive(Clone, Debug)]
 struct SessionQueueBinding {
     msg_queue_name: String,
@@ -77,15 +116,12 @@ struct SessionQueueBinding {
     event_sub_id: String,
 }
 
-
 #[derive(Clone, Debug)]
 struct StepTransition {
     session_id: String,
     keep_running: bool,
     behavior_switched: bool,
 }
-
-
 
 #[derive(Clone, Debug, Default)]
 struct BehaviorLoopReport {
@@ -97,7 +133,6 @@ struct BehaviorLoopReport {
     last_result: BehaviorLLMResult,
 }
 
-
 #[derive(Clone)]
 pub struct AIAgentDeps {
     pub taskmgr: Arc<TaskManagerClient>,
@@ -105,7 +140,6 @@ pub struct AIAgentDeps {
     pub msg_center: Option<Arc<MsgCenterClient>>,
     pub msg_queue: Option<Arc<MsgQueueClient>>,
 }
-
 
 pub struct AIAgent {
     cfg: AIAgentConfig,
@@ -146,13 +180,8 @@ impl AIAgent {
         })?;
 
         let did = load_agent_did(&agent_root).await?;
-        let owner_did = DID::from_str(did.as_str()).map_err(|err| {
-            anyhow!(
-                "invalid owner did in agent doc: did={} err={}",
-                did,
-                err
-            )
-        })?;
+        let owner_did = DID::from_str(did.as_str())
+            .map_err(|err| anyhow!("invalid owner did in agent doc: did={} err={}", did, err))?;
         let role_path = agent_root.join(&cfg.role_file_name);
         let self_path = agent_root.join(&cfg.self_file_name);
         let role_md = read_text_if_exists(&role_path)
@@ -466,27 +495,47 @@ impl AIAgent {
         for pulled in pulled_msgs {
             let record_id = pulled.record.record.record_id.clone();
             let msg_record = pulled.record.record.clone();
-            let previous_session_id = pulled.record.record.session_id.clone();
-            let session_id = self
-                .resolve_session_for_msg(pulled.session_id.as_deref(), &pulled.record)
+            let previous_session_id =
+                normalize_session_id(pulled.record.record.thread_key.as_deref());
+            let route_result = self
+                .route_and_link_msg_pack(pulled.session_id.as_deref(), &pulled.record)
                 .await?;
-   
-            let payload = serde_json::to_value(&msg_record).map_err(|err| {
-                anyhow!("serialize pulled msg payload failed: record_id={} err={err}", record_id)
-            })?;
-            self.enqueue_session_input(session_id.as_str(), payload, InputQueueKind::Msg)
-                .await?;
+            debug!(
+                "agent.route_and_link_msg_pack: did={} record_id={} linked_sessions={:?} link_ids={:?}",
+                self.did,
+                record_id,
+                route_result.linked_session_ids,
+                route_result.link_ids
+            );
+            let Some(primary_session_id) = route_result.linked_session_ids.first().cloned() else {
+                self.set_msg_readed(record_id).await;
+                continue;
+            };
 
-            //TODO:这里把Session设置为Ready的操作太不明显了，这是这一步的关键操作
-            self.session_mgr
-                .mark_msg_arrived(session_id.as_str(), &msg_record)
-                .await
-                .map_err(|err| {
-                    anyhow!("mark msg arrival for session `{session_id}` failed: {err}")
-                })?;
- 
-            if previous_session_id.as_deref() != Some(session_id.as_str()) {
-                self.update_msg_record_session(record_id.clone(), session_id.clone())
+            let payload = serde_json::to_value(&msg_record).map_err(|err| {
+                anyhow!(
+                    "serialize pulled msg payload failed: record_id={} err={err}",
+                    record_id
+                )
+            })?;
+            for session_id in &route_result.linked_session_ids {
+                self.enqueue_session_input(
+                    session_id.as_str(),
+                    payload.clone(),
+                    InputQueueKind::Msg,
+                )
+                .await?;
+                //TODO:这里把Session设置为Ready的操作太不明显了，这是这一步的关键操作
+                self.session_mgr
+                    .mark_msg_arrived(session_id.as_str(), &msg_record)
+                    .await
+                    .map_err(|err| {
+                        anyhow!("mark msg arrival for session `{session_id}` failed: {err}")
+                    })?;
+            }
+
+            if previous_session_id.as_deref() != Some(primary_session_id.as_str()) {
+                self.update_msg_record_session(record_id.clone(), primary_session_id)
                     .await;
             }
             self.set_msg_readed(record_id).await;
@@ -499,46 +548,59 @@ impl AIAgent {
         Ok(())
     }
 
-    async fn resolve_session_for_msg(
+    async fn route_and_link_msg_pack(
         &self,
         hinted_session_id: Option<&str>,
         record: &MsgRecordWithObject,
-    ) -> Result<String> {
-        if let Some(session_id) = normalize_session_id(hinted_session_id) {
-            return Ok(session_id);
+    ) -> Result<RouteAndLinkResult> {
+        let route = self.route_msg_pack(hinted_session_id, record).await?;
+        let mut link_ids = Vec::<String>::new();
+        for session_id in &route.linked_session_ids {
+            let link_id = self
+                .session_mgr
+                .link_msg_record(session_id.as_str(), record, route.reason.as_str())
+                .await
+                .map_err(|err| {
+                    anyhow!(
+                        "link msg record failed: session={} record_id={} err={}",
+                        session_id,
+                        record.record.record_id,
+                        err
+                    )
+                })?;
+            link_ids.push(link_id);
         }
-        if record.record.session_id.is_some() {
-            return Ok(record.record.session_id.clone().unwrap());
-        }
-
-        self.resolve_router_by_llm("msg", record).await
+        Ok(RouteAndLinkResult {
+            linked_session_ids: route.linked_session_ids,
+            link_ids,
+        })
     }
 
-    async fn resolve_router_by_llm(
+    async fn route_msg_pack(
         &self,
-        source_kind: &str,
-        payload: &MsgRecordWithObject,
-    ) -> Result<String> {
-        let _ = (source_kind, payload);
-        let session_id = DEFAULT_SESSION_ID.to_string();
-        let session = self
-            .session_mgr
-            .ensure_session(session_id.as_str(), Some("Default Session".to_string()))
-            .await
-            .map_err(|err| anyhow!("ensure default routed session failed: {err}"))?;
-        let mut guard = session.lock().await;
-        guard.append_worklog(json!({
-            "type": "router_stub",
-            "source": source_kind,
-            "ts_ms": now_ms(),
-        }));
-        self.session_mgr
-            .save_session_locked(&guard)
-            .await
-            .map_err(|err| anyhow!("save routed session `{}` failed: {}", guard.session_id, err))?;
-        Ok(session_id)
+        hinted_session_id: Option<&str>,
+        record: &MsgRecordWithObject,
+    ) -> Result<RouteDecision> {
+        if let Some(session_id) = normalize_session_id(hinted_session_id) {
+            return Ok(RouteDecision {
+                linked_session_ids: vec![session_id],
+                reason: RouteLinkReason::SessionHint,
+            });
+        }
+        if let Some(session_id) = normalize_session_id(record.record.thread_key.as_deref()) {
+            return Ok(RouteDecision {
+                linked_session_ids: vec![session_id],
+                reason: RouteLinkReason::MsgRecordSession,
+            });
+        }
+        //let default_session_id = AgentSessionMgr::get_default_session_id(record.record., tunnel_did)
+        let default_session_id = DEFAULT_SESSION_ID;
+        return Ok(RouteDecision {
+            linked_session_ids: vec![default_session_id.to_string()],
+            reason: RouteLinkReason::DefaultSession
+        });
     }
-    
+
     async fn run_session_loop(
         &self,
         session: Arc<Mutex<crate::agent_session::AgentSession>>,
@@ -668,7 +730,6 @@ impl AIAgent {
         Ok(())
     }
 
-
     //Loop执行到 wait或next_behavior != none
     async fn run_behavior_loop(
         &self,
@@ -693,7 +754,7 @@ impl AIAgent {
         if guard.state == SessionState::Running {
             guard.update_state(SessionState::Wait);
         }
-        
+
         Ok(BehaviorLoopReport::default())
     }
 
@@ -774,7 +835,6 @@ impl AIAgent {
         }))
     }
 
-
     async fn run_behavior_step(
         &self,
         trace: &TraceCtx,
@@ -846,7 +906,6 @@ impl AIAgent {
         }
     }
 
-
     fn build_msg_center_event_patterns(owner: &DID) -> Vec<String> {
         let owner_token = owner.to_raw_host_name();
         MSG_CENTER_EVENT_BOX_NAMES
@@ -859,7 +918,6 @@ impl AIAgent {
         if self.deps.msg_center.is_none() {
             return None;
         }
-
 
         let mut guard = self.msg_center_event_reader.lock().await;
         if let Some(reader) = guard.as_ref() {
@@ -965,13 +1023,12 @@ impl AIAgent {
     }
 
     fn msg_record_to_pulled_msg(record: MsgRecordWithObject) -> PulledMsg {
-        let session_id = normalize_session_id(record.record.session_id.as_deref()).or_else(|| {
+        let session_id = normalize_session_id(record.record.thread_key.as_deref()).or_else(|| {
             let msg_payload = serde_json::to_value(&record.msg).unwrap_or_else(|_| json!({}));
             extract_session_id_hint(&msg_payload)
         });
         PulledMsg { session_id, record }
     }
-
 
     fn extract_session_input_id(&self, payload: &Json, prefix: &str) -> String {
         for key in ["id", "msg_id", "event_id", "record_id"] {
@@ -1242,7 +1299,6 @@ impl AIAgent {
         Ok(output)
     }
 
-   
     async fn set_running_session_to_wait(
         &self,
         session: &Arc<Mutex<crate::agent_session::AgentSession>>,
@@ -1257,8 +1313,6 @@ impl AIAgent {
         self.session_mgr.save_session(&session_id).await?;
         Ok(())
     }
-
-
 
     async fn execute_actions(&self, trace: &TraceCtx, actions: &[ActionSpec]) -> Vec<Json> {
         if actions.is_empty() {
@@ -1503,7 +1557,7 @@ impl AIAgent {
         let Some(sender_did) = self.parse_owner_did_for_msg_center() else {
             return;
         };
-        //TODO:get target_did by owner's contact list 
+        //TODO:get target_did by owner's contact list
         let target_did: DID = match DID::from_str(audience) {
             Ok(did) => did,
             Err(_) => {
@@ -1905,17 +1959,27 @@ fn normalize_routed_session_id(value: Option<&str>) -> Option<String> {
 fn extract_session_id_hint(payload: &Json) -> Option<String> {
     for pointer in [
         "/session_id",
+        "/thread_key",
         "/record/session_id",
+        "/record/thread_key",
         "/payload/session_id",
+        "/payload/thread_key",
         "/payload/payload/session_id",
+        "/payload/payload/thread_key",
         "/msg/session_id",
+        "/msg/thread_key",
         "/msg/payload/session_id",
+        "/msg/payload/thread_key",
         "/msg/meta/session_id",
+        "/msg/meta/thread_key",
         "/content/machine/data/session_id",
         "/msg/content/machine/data/session_id",
         "/msg/meta/payload/session_id",
+        "/msg/meta/payload/thread_key",
         "/meta/payload/session_id",
+        "/meta/payload/thread_key",
         "/meta/session_id",
+        "/meta/thread_key",
     ] {
         if let Some(session_id) = payload
             .pointer(pointer)

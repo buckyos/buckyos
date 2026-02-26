@@ -180,10 +180,20 @@ impl MessageCenter {
     }
 
     fn publish_box_changed_event(record: &MsgRecord, operation: &str) {
-        let event_id = Self::build_box_changed_event_id(&record.owner, &record.box_kind);
+        let owner = match Self::owner_from_record_id(&record.record_id) {
+            Ok(owner) => owner,
+            Err(error) => {
+                warn!(
+                    "skip msg_center box changed event with invalid record_id: record_id={}, err={}",
+                    record.record_id, error
+                );
+                return;
+            }
+        };
+        let event_id = Self::build_box_changed_event_id(&owner, &record.box_kind);
         let payload = json!({
             "operation": operation,
-            "owner": record.owner.to_string(),
+            "owner": owner.to_string(),
             "box_kind": Self::box_kind_name(&record.box_kind),
             "box_name": Self::box_event_name(&record.box_kind),
             "record_id": record.record_id.clone(),
@@ -290,12 +300,19 @@ impl MessageCenter {
     fn extract_session_id_from_value(payload: &Value) -> Option<String> {
         for pointer in [
             "/session_id",
+            "/thread_key",
             "/owner_session_id",
             "/payload/session_id",
+            "/payload/thread_key",
             "/payload/owner_session_id",
             "/payload/payload/session_id",
+            "/payload/payload/thread_key",
             "/msg_payload/session_id",
+            "/msg_payload/thread_key",
+            "/msg/thread_key",
+            "/meta/thread_key",
             "/thread/correlation_id",
+            "/thread/topic",
             "/content/machine/data/session_id",
             "/content/machine/data/owner_session_id",
         ] {
@@ -436,11 +453,12 @@ impl MessageCenter {
     ) -> std::result::Result<MsgRecord, RPCErrors> {
         let msg_id = Self::message_obj_id(msg);
         let record_id = Self::build_record_id(&owner, &box_kind, &msg_id, variant);
-        let msg_session_id = Self::extract_record_session_id(msg);
+        let msg_thread_key = Self::normalize_non_empty(msg.thread.topic.as_deref())
+            .or_else(|| Self::extract_record_session_id(msg));
         if let Some(existing) = self.msg_box_db.get_record(&owner, &record_id)? {
             let mut record_for_update = existing.clone();
-            if record_for_update.session_id.is_none() {
-                record_for_update.session_id = msg_session_id;
+            if record_for_update.thread_key.is_none() {
+                record_for_update.thread_key = msg_thread_key;
             }
             self.msg_box_db
                 .upsert_record_with_msg(&record_for_update, Some(msg))?;
@@ -449,18 +467,24 @@ impl MessageCenter {
         }
 
         let now_ms = Self::now_ms();
+        let record_to = match box_kind {
+            BoxKind::Inbox | BoxKind::GroupInbox | BoxKind::RequestBox => owner.clone(),
+            BoxKind::Outbox | BoxKind::TunnelOutbox => {
+                msg.to.first().cloned().unwrap_or_else(|| owner.clone())
+            }
+        };
         let record = MsgRecord {
             record_id: record_id.clone(),
-            owner: owner.clone(),
             box_kind: box_kind.clone(),
             msg_id: msg_id.clone(),
             state: initial_state,
+            from: msg.from.clone(),
+            to: record_to,
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
             route,
             delivery,
-            thread_key: msg.thread.topic.clone(),
-            session_id: msg_session_id,
+            thread_key: msg_thread_key,
             sort_key: if msg.created_at_ms > 0 {
                 msg.created_at_ms
             } else {
@@ -1241,11 +1265,11 @@ impl MessageCenter {
             .get_record(&owner, &record_id)?
             .ok_or_else(|| RPCErrors::ReasonError(format!("record {} not found", record_id)))?;
 
-        if record.session_id.as_deref() == Some(session_id) {
+        if record.thread_key.as_deref() == Some(session_id) {
             return Ok(record);
         }
 
-        record.session_id = Some(session_id.to_string());
+        record.thread_key = Some(session_id.to_string());
         record.updated_at_ms = Self::now_ms();
         self.msg_box_db.upsert_record(&record)?;
         Self::publish_box_changed_event(&record, "session");

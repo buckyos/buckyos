@@ -457,10 +457,15 @@ mod tests {
         let msg_id = msg.gen_obj_id().0;
         let record = MsgRecord {
             record_id: format!("record-{}", msg_id.to_string()),
-            owner: tunnel_did.clone(),
             box_kind: BoxKind::TunnelOutbox,
             msg_id,
             state: MsgState::Wait,
+            from: msg.from.clone(),
+            to: msg
+                .to
+                .first()
+                .cloned()
+                .unwrap_or_else(|| tunnel_did.clone()),
             created_at_ms: 1,
             updated_at_ms: 1,
             route: Some(RouteInfo {
@@ -470,7 +475,6 @@ mod tests {
             }),
             delivery: None,
             thread_key: msg.thread.topic.clone(),
-            session_id: None,
             sort_key: 1,
             tags: Vec::new(),
         };
