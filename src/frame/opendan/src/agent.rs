@@ -1975,6 +1975,8 @@ fn resolve_session_workspace_id(session: &crate::agent_session::AgentSession) ->
 }
 
 fn extract_workspace_id_from_json(value: Option<&Json>) -> Option<String> {
+    // FIXME(opendan-strong-typing): Weakly-typed compatibility lookup from Json is forbidden.
+    // Replace with strongly-typed structs + serde deserialization.
     let value = value?;
     for pointer in [
         "/workspace_id",
@@ -2054,6 +2056,8 @@ fn normalize_routed_session_id(value: Option<&str>) -> Option<String> {
 }
 
 fn extract_session_id_hint(payload: &Json) -> Option<String> {
+    // FIXME(opendan-strong-typing): Weakly-typed compatibility lookup from Json is forbidden.
+    // Replace with strongly-typed structs + serde deserialization.
     for pointer in [
         "/session_id",
         "/thread_key",

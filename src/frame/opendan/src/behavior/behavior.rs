@@ -439,6 +439,8 @@ impl LLMBehavior {
             }
         };
 
+        // FIXME(opendan-strong-typing): Weakly-typed compatibility lookup from Json is forbidden.
+        // Replace with strongly-typed structs + serde deserialization.
         let status = raw
             .pointer("/session/status")
             .and_then(|value| value.as_str())
@@ -682,6 +684,8 @@ impl LLMBehavior {
             .map_err(|err| LLMComputeError::Provider(err.to_string()))?;
 
         for task in tasks {
+            // FIXME(opendan-strong-typing): Weakly-typed compatibility lookup from Json is forbidden.
+            // Replace with strongly-typed structs + serde deserialization.
             let matched = task
                 .data
                 .pointer("/aicc/external_task_id")
@@ -824,6 +828,8 @@ fn parse_aicc_result_from_task_data(
         }
     }
 
+    // FIXME(opendan-strong-typing): Weakly-typed compatibility lookup from Json is forbidden.
+    // Replace with strongly-typed structs + serde deserialization.
     if let Some(summary_value) = data.pointer("/aicc/output") {
         if let Ok(summary) =
             serde_json::from_value::<buckyos_api::AiResponseSummary>(summary_value.clone())
@@ -1108,6 +1114,8 @@ async fn append_todo_or_subagent_worklog(
             .get("parent_todo_id")
             .or_else(|| call_args.get("parent_id"))
             .cloned();
+        // FIXME(opendan-strong-typing): Weakly-typed compatibility lookup from Json is forbidden.
+        // Replace with strongly-typed structs + serde deserialization.
         let todo_id = tool_result
             .pointer("/todo/id")
             .and_then(|v| v.as_str())
@@ -1146,6 +1154,8 @@ async fn append_todo_or_subagent_worklog(
     }
 
     if tool_name == TOOL_CREATE_SUB_AGENT {
+        // FIXME(opendan-strong-typing): Weakly-typed compatibility lookup from Json is forbidden.
+        // Replace with strongly-typed structs + serde deserialization.
         let sub_agent_did = tool_result
             .pointer("/sub_agent/did")
             .and_then(|v| v.as_str())

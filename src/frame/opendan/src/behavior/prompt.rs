@@ -506,6 +506,8 @@ fn fit_text_with_token_limit(
 
 
 fn extract_workspace_id_from_json(value: Option<&Json>) -> Option<String> {
+    // FIXME(opendan-strong-typing): Weakly-typed compatibility lookup from Json is forbidden.
+    // Replace with strongly-typed structs + serde deserialization.
     let value = value?;
     for pointer in [
         "/workspace_id",
@@ -565,6 +567,8 @@ fn collect_workspace_path_candidates(
 ) -> Vec<PathBuf> {
     let mut out = Vec::<PathBuf>::new();
     if let Some(workspace_info) = workspace_info {
+        // FIXME(opendan-strong-typing): Weakly-typed compatibility lookup from Json is forbidden.
+        // Replace with strongly-typed structs + serde deserialization.
         for pointer in [
             "/workspace_root",
             "/workspace/root",

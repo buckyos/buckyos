@@ -760,6 +760,8 @@ fn resolve_session_workspace_id(
 }
 
 fn extract_workspace_id_from_json(value: Option<&Json>) -> Option<String> {
+    // FIXME(opendan-strong-typing): Weakly-typed compatibility lookup from Json is forbidden.
+    // Replace with strongly-typed structs + serde deserialization.
     let value = value?;
     for pointer in [
         "/workspace_id",
@@ -820,6 +822,8 @@ fn collect_workspace_path_candidates(
 ) -> Vec<PathBuf> {
     let mut out = Vec::<PathBuf>::new();
     if let Some(workspace_info) = workspace_info {
+        // FIXME(opendan-strong-typing): Weakly-typed compatibility lookup from Json is forbidden.
+        // Replace with strongly-typed structs + serde deserialization.
         for pointer in [
             "/workspace_root",
             "/workspace/root",
@@ -936,6 +940,8 @@ fn push_unique_path(paths: &mut Vec<String>, value: &str) {
 }
 
 fn extract_workspace_root_from_info(workspace_info: Option<&Json>) -> Option<PathBuf> {
+    // FIXME(opendan-strong-typing): Weakly-typed compatibility lookup from Json is forbidden.
+    // Replace with strongly-typed structs + serde deserialization.
     let info = workspace_info?;
     for pointer in [
         "/workspace_root",
