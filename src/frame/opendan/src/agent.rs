@@ -879,7 +879,6 @@ impl AIAgent {
             env_context.insert("params".to_string(), params);
         }
 
-
         //构造input_prompt
         let input_prompt_result = AgentEnvironment::render_prompt(
             behavior_cfg.input.as_str(),
@@ -1324,7 +1323,6 @@ impl AIAgent {
         Ok(())
     }
 
-
     async fn read_session_queue_history_by_kind(
         &self,
         session_id: &str,
@@ -1377,13 +1375,13 @@ impl AIAgent {
                 }
                 let item = serde_json::from_slice::<SessionInputItem>(message.payload.as_slice())
                     .map_err(|err| {
-                        anyhow!(
-                            "deserialize session history item failed: session={} queue={} err={}",
-                            session_id,
-                            queue_urn,
-                            err
-                        )
-                    })?;
+                    anyhow!(
+                        "deserialize session history item failed: session={} queue={} err={}",
+                        session_id,
+                        queue_urn,
+                        err
+                    )
+                })?;
                 out.push(item);
             }
 

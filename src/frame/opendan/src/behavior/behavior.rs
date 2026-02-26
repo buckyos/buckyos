@@ -154,7 +154,7 @@ impl LLMBehavior {
             })
             .collect();
 
-        let base_req = PromptBuilder::build(
+        let llm_req = PromptBuilder::build(
             input,
             &ai_tool_specs,
             &input.behavior_cfg,
@@ -167,7 +167,7 @@ impl LLMBehavior {
         self.ensure_session_normal_before_next_llm(input).await?;
 
         let (mut usage, mut llm_resp, first_task_id) = self
-            .do_inference_once(base_req.clone(), None, behavior_task_id)
+            .do_inference_once(llm_req.clone(), None, behavior_task_id)
             .await?;
         Self::update_track_from_llm_response(&mut track, &llm_resp, first_task_id);
 
@@ -190,7 +190,7 @@ impl LLMBehavior {
             self.ensure_session_normal_before_next_llm(input).await?;
 
             let (usage2, followup_resp, followup_task_id) = self
-                .do_inference_once(base_req.clone(), Some(executed.tool_ctx), behavior_task_id)
+                .do_inference_once(llm_req.clone(), Some(executed.tool_ctx), behavior_task_id)
                 .await?;
             Self::update_track_from_llm_response(&mut track, &followup_resp, followup_task_id);
             llm_resp = followup_resp;

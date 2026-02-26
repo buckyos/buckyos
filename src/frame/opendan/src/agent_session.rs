@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use buckyos_api::msg_queue::Message;
-use buckyos_api::{MsgRecord, OpenDanAgentSessionRecord, OpenDanSessionLink, get_buckyos_api_runtime};
+use buckyos_api::{
+    get_buckyos_api_runtime, MsgRecord, OpenDanAgentSessionRecord, OpenDanSessionLink,
+};
 use log::warn;
 use name_lib::DID;
 use serde::{Deserialize, Serialize};
@@ -116,8 +118,8 @@ pub struct AgentSession {
     pub step_index: u32,
     pub last_step_summary: Option<String>,
 
-    pub msg_kmsgqueue_curosr:u64,
-    pub event_kmsgqueue_curosr:u64,
+    pub msg_kmsgqueue_curosr: u64,
+    pub event_kmsgqueue_curosr: u64,
 
     pub cwd: PathBuf,
     pub workspace_info: Option<Json>,
@@ -394,7 +396,6 @@ impl AgentSession {
         let length = (max_length as usize).min(4096);
         kmsg_client.fetch_messages(sub_id, length, false).await
     }
-
 }
 
 #[derive(Clone, Debug)]

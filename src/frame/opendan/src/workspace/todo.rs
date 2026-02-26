@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2489,8 +2489,10 @@ pub(crate) fn get_next_ready_todo_code(
     session_id: &str,
     agent_id: &str,
 ) -> Result<Option<String>, AgentToolError> {
-    Ok(get_next_ready_todo(conn, workspace_id, session_id, agent_id)?
-        .map(|detail| detail.item.todo_code))
+    Ok(
+        get_next_ready_todo(conn, workspace_id, session_id, agent_id)?
+            .map(|detail| detail.item.todo_code),
+    )
 }
 
 pub(crate) fn get_next_ready_todo_text(
@@ -2499,9 +2501,11 @@ pub(crate) fn get_next_ready_todo_text(
     session_id: &str,
     agent_id: &str,
 ) -> Result<Option<String>, AgentToolError> {
-    Ok(get_next_ready_todo(conn, workspace_id, session_id, agent_id)?
-        .as_ref()
-        .map(render_current_todo_text))
+    Ok(
+        get_next_ready_todo(conn, workspace_id, session_id, agent_id)?
+            .as_ref()
+            .map(render_current_todo_text),
+    )
 }
 
 fn resolve_todo_id(
@@ -2790,6 +2794,25 @@ fn render_workspace_todo_text(
     }
 
     out
+}
+
+pub(crate) fn render_workspace_todo_prompt_from_db(
+    db_path: &Path,
+    workspace_id: &str,
+    token_budget: usize,
+) -> Result<String, AgentToolError> {
+    let conn = Connection::open(db_path).map_err(|err| {
+        AgentToolError::ExecFailed(format!("open todo db `{}` failed: {err}", db_path.display()))
+    })?;
+    ensure_todo_schema(&conn)?;
+    let items = list_for_prompt(&conn, workspace_id, RENDER_ITEM_LIMIT)?;
+    let version = read_workspace_version(&conn, workspace_id)?;
+    Ok(render_workspace_todo_text(
+        workspace_id,
+        version,
+        &items,
+        token_budget,
+    ))
 }
 
 fn render_current_todo_text(detail: &TodoDetail) -> String {
@@ -3151,6 +3174,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn render_workspace_todo_text_formats_and_truncates_by_budget() {
+        let long_title = "A".repeat(120);
+        let make_item = |todo_code: &str, title: &str| TodoListItem {
+            id: format!("id-{todo_code}"),
+            todo_code: todo_code.to_string(),
+            workspace_id: "ws-demo".to_string(),
+            session_id: Some("sess-demo".to_string()),
+            title: title.to_string(),
+            description: None,
+            todo_type: "Task".to_string(),
+            status: "WAIT".to_string(),
+            labels: vec![],
+            skills: vec![],
+            assignee: Some("did:od:alice".to_string()),
+            priority: Some(1),
+            estimate: None,
+            attempts: 0,
+            last_error: None,
+            created_at: 1,
+            updated_at: 1,
+            created_by: ActorRefOut {
+                kind: "root_agent".to_string(),
+                did: "did:od:jarvis".to_string(),
+            },
+            order_pos: Some(1),
+        };
+
+        let items = vec![
+            make_item("T001", &long_title),
+            make_item("T002", "second task should be truncated"),
+        ];
+        let rendered = render_workspace_todo_text("ws-demo", 7, &items, 1);
+        assert!(rendered.starts_with("Workspace Todo (ws-demo, v7)\n"));
+        assert!(rendered.contains("- T001 [WAIT] assignee=did:od:alice p=1 "));
+        assert!(rendered.contains("- ...truncated by token budget"));
+        assert!(!rendered.contains("T002"));
+    }
+
     #[tokio::test]
     async fn apply_init_replace_assigns_codes_and_order() {
         let tool = tool_for_test();
@@ -3478,6 +3540,116 @@ mod tests {
             second["new_version"].as_i64().unwrap_or_default(),
             version_after_first
         );
+    }
+
+    #[tokio::test]
+    async fn render_for_prompt_complex_todos_with_deps_assignees_and_statuses() {
+        let tool = tool_for_test();
+        let ctx = test_ctx("did:od:jarvis");
+
+        let init = call(
+            &tool,
+            &ctx,
+            json!({
+                "action": "apply_delta",
+                "workspace_id": "ws-render-complex",
+                "actor_ctx": { "kind": "root_agent", "did": "did:od:jarvis", "session_id": "sess-render" },
+                "delta": {
+                    "ops": [{
+                        "op": "init",
+                        "mode": "replace",
+                        "items": [
+                            { "title": "analysis design", "type": "Task", "assignee": "did:od:alice", "priority": 20 },
+                            { "title": "implement feature", "type": "Task", "assignee": "did:od:bob", "priority": 30, "deps": ["T001"] },
+                            { "title": "write docs", "type": "Task", "assignee": "did:od:alice", "priority": 5 },
+                            { "title": "integration tests", "type": "Task", "assignee": "did:od:carol", "priority": 1, "deps": ["T001"] },
+                            { "title": "fix flaky ci", "type": "Task", "assignee": "did:od:bob", "priority": 40 },
+                            { "title": "benchmark happy path", "type": "Bench", "assignee": "did:od:alice", "priority": 10, "deps": ["T002"] },
+                            { "title": "benchmark regression", "type": "Bench", "assignee": "did:od:dave", "priority": 15 },
+                            { "title": "cleanup backlog", "type": "Task" }
+                        ]
+                    }]
+                }
+            }),
+        )
+        .await
+        .expect("init complex todos");
+        assert_eq!(init["ok"], true);
+
+        let updates = call(
+            &tool,
+            &ctx,
+            json!({
+                "action": "apply_delta",
+                "workspace_id": "ws-render-complex",
+                "delta": {
+                    "ops": [
+                        { "op": "update:T001", "to_status": "IN_PROGRESS", "reason": "started analysis" },
+                        { "op": "update:T002", "to_status": "COMPLETE", "reason": "implementation completed" },
+                        { "op": "update:T005", "to_status": "FAILED", "reason": "ci check broken" },
+                        { "op": "update:T006", "to_status": "DONE", "reason": "bench pass" },
+                        { "op": "update:T007", "to_status": "CHECK_FAILED", "reason": "bench mismatch" }
+                    ]
+                }
+            }),
+        )
+        .await
+        .expect("update complex statuses");
+        assert_eq!(updates["ok"], true);
+
+        let t006 = call(
+            &tool,
+            &ctx,
+            json!({
+                "action": "get",
+                "workspace_id": "ws-render-complex",
+                "todo_ref": "T006"
+            }),
+        )
+        .await
+        .expect("get T006");
+        assert_eq!(t006["deps"], json!(["T002"]));
+
+        let rendered = call(
+            &tool,
+            &ctx,
+            json!({
+                "action": "render_for_prompt",
+                "workspace_id": "ws-render-complex",
+                "token_budget": 4096
+            }),
+        )
+        .await
+        .expect("render for prompt");
+        assert_eq!(rendered["ok"], true);
+
+        let text = rendered["text"].as_str().unwrap_or_default();
+        assert!(text.starts_with("Workspace Todo (ws-render-complex, v"));
+        assert!(text.contains("- T001 [IN_PROGRESS] assignee=did:od:alice p=20 analysis design"));
+        assert!(text.contains("- T004 [WAIT] assignee=did:od:carol p=1 integration tests"));
+        assert!(text.contains("- T003 [WAIT] assignee=did:od:alice p=5 write docs"));
+        assert!(text.contains("- T008 [WAIT] assignee=did:od:jarvis p=- cleanup backlog"));
+        assert!(text.contains("- T002 [COMPLETE] assignee=did:od:bob p=30 implement feature"));
+        assert!(text.contains("- T007 [CHECK_FAILED] assignee=did:od:dave p=15 benchmark regression"));
+        assert!(text.contains("- T005 [FAILED] assignee=did:od:bob p=40 fix flaky ci"));
+        assert!(text.contains("- T006 [DONE] assignee=did:od:alice p=10 benchmark happy path"));
+
+        let pos_t001 = text.find("- T001 [IN_PROGRESS]").expect("T001 position");
+        let pos_t004 = text.find("- T004 [WAIT]").expect("T004 position");
+        let pos_t003 = text.find("- T003 [WAIT]").expect("T003 position");
+        let pos_t008 = text.find("- T008 [WAIT]").expect("T008 position");
+        let pos_t002 = text.find("- T002 [COMPLETE]").expect("T002 position");
+        let pos_t007 = text.find("- T007 [CHECK_FAILED]").expect("T007 position");
+        let pos_t005 = text.find("- T005 [FAILED]").expect("T005 position");
+        let pos_t006 = text.find("- T006 [DONE]").expect("T006 position");
+
+        assert!(pos_t001 < pos_t004);
+        assert!(pos_t004 < pos_t003);
+        assert!(pos_t003 < pos_t008);
+        assert!(pos_t008 < pos_t002);
+        assert!(pos_t002 < pos_t007);
+        assert!(pos_t007 < pos_t005);
+        assert!(pos_t005 < pos_t006);
     }
 
     #[test]

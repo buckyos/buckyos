@@ -229,10 +229,9 @@ impl AgentEnvironment {
             let kmsg_queue_id =
                 AIAgent::get_session_kmsgqueue_uid(session_id.as_str(), InputQueueKind::Msg);
             let max_pull_u32 = (max_pull.min(u32::MAX as usize)) as u32;
-            let new_msgs = AgentSession::pull_new_msg_from_kmsgqueue(
-                kmsg_queue_id.as_str(),
-                max_pull_u32,
-            ).await;
+            let new_msgs =
+                AgentSession::pull_new_msg_from_kmsgqueue(kmsg_queue_id.as_str(), max_pull_u32)
+                    .await;
 
             if new_msgs.is_err() {
                 warn!(
@@ -269,8 +268,10 @@ impl AgentEnvironment {
                 NextReadyTodoValueKind::RenderedDetail
             };
 
-            let workspace_id =
-                resolve_session_workspace_id(local_workspace_id.as_deref(), workspace_info.as_ref());
+            let workspace_id = resolve_session_workspace_id(
+                local_workspace_id.as_deref(),
+                workspace_info.as_ref(),
+            );
             let agent_id = normalize_optional_text(Some(owner_agent.as_str()));
             let todo_db_path = resolve_todo_db_path(
                 local_workspace_id.as_deref(),
@@ -350,7 +351,7 @@ impl AgentEnvironment {
             |key| {
                 let s = session_clone.clone();
                 let k = key.to_string();
-        
+
                 async move { Self::load_value_from_session(s, &k).await }
             },
             env_context,
@@ -730,7 +731,10 @@ async fn load_next_ready_todo_value(
 ) -> Result<Option<String>, AgentToolError> {
     task::spawn_blocking(move || {
         let conn = Connection::open(&db_path).map_err(|err| {
-            AgentToolError::ExecFailed(format!("open todo db `{}` failed: {err}", db_path.display()))
+            AgentToolError::ExecFailed(format!(
+                "open todo db `{}` failed: {err}",
+                db_path.display()
+            ))
         })?;
         match value_kind {
             NextReadyTodoValueKind::TodoCode => {
@@ -742,14 +746,17 @@ async fn load_next_ready_todo_value(
         }
     })
     .await
-    .map_err(|err| AgentToolError::ExecFailed(format!("query next ready todo join failed: {err}")))?
+    .map_err(|err| {
+        AgentToolError::ExecFailed(format!("query next ready todo join failed: {err}"))
+    })?
 }
 
 fn resolve_session_workspace_id(
     local_workspace_id: Option<&str>,
     workspace_info: Option<&Json>,
 ) -> Option<String> {
-    normalize_optional_text(local_workspace_id).or_else(|| extract_workspace_id_from_json(workspace_info))
+    normalize_optional_text(local_workspace_id)
+        .or_else(|| extract_workspace_id_from_json(workspace_info))
 }
 
 fn extract_workspace_id_from_json(value: Option<&Json>) -> Option<String> {
@@ -807,7 +814,10 @@ fn resolve_todo_db_path(
     None
 }
 
-fn collect_workspace_path_candidates(workspace_info: Option<&Json>, session_cwd: &Path) -> Vec<PathBuf> {
+fn collect_workspace_path_candidates(
+    workspace_info: Option<&Json>,
+    session_cwd: &Path,
+) -> Vec<PathBuf> {
     let mut out = Vec::<PathBuf>::new();
     if let Some(workspace_info) = workspace_info {
         for pointer in [
@@ -1264,8 +1274,8 @@ mod tests {
         )));
 
         let result = AgentEnvironment::load_value_from_session(session, "new_msg.2")
-        .await
-        .expect("load value from session");
+            .await
+            .expect("load value from session");
         assert_eq!(result, Some("line-2\nline-3".to_string()));
     }
 
@@ -1277,10 +1287,9 @@ mod tests {
             Some("on_wakeup"),
         )));
 
-
         let result = AgentEnvironment::load_value_from_session(session, "new_msg.$3")
-        .await
-        .expect("load value from session");
+            .await
+            .expect("load value from session");
         assert_eq!(result, Some("m2\nm3\nm4".to_string()));
     }
 

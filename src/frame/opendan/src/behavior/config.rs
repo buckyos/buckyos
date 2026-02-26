@@ -185,10 +185,12 @@ pub struct BehaviorMemoryConfig {
     pub total_limit: u32,
     pub agent_memory: BehaviorMemoryBucketConfig,
     #[serde(alias = "session_summary")]
-    pub session_summaries: BehaviorMemoryBucketConfig,
-    pub history_messages: BehaviorMemoryBucketConfig,
     pub workspace_summary: BehaviorMemoryBucketConfig,
+
+    pub history_messages: BehaviorMemoryBucketConfig,
     pub workspace_worklog: BehaviorMemoryBucketConfig,
+
+    pub session_summaries: BehaviorMemoryBucketConfig,
     pub workspace_todo: BehaviorMemoryBucketConfig,
 }
 
@@ -236,6 +238,7 @@ impl BehaviorMemoryConfig {
 pub struct BehaviorMemoryBucketConfig {
     pub limit: u32,
     pub max_percent: Option<f32>,
+    pub is_enable: bool,
 }
 
 impl Default for BehaviorMemoryBucketConfig {
@@ -243,6 +246,7 @@ impl Default for BehaviorMemoryBucketConfig {
         Self {
             limit: 0,
             max_percent: None,
+            is_enable: false,
         }
     }
 }
