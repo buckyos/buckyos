@@ -825,6 +825,12 @@ impl AIAgent {
 
             let transition = {
                 let mut guard = session.lock().await;
+                if llm_result.load_skills.len() > 0 {
+                    guard.loaded_skills = llm_result.load_skills;
+                }
+                if llm_result.enable_tools.len() > 0 {
+                    guard.loaded_tools.extend(llm_result.enable_tools.iter().cloned());
+                }
                 apply_session_behavior_transition(
                     &mut guard,
                     self.default_behavior.as_str(),
