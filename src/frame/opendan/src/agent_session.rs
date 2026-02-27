@@ -5,13 +5,15 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use buckyos_api::msg_queue::Message;
 use buckyos_api::{
-    get_buckyos_api_runtime, MsgRecord, OpenDanAgentSessionRecord, OpenDanSessionLink,
+    MsgRecord, MsgRecordWithObject, OpenDanAgentSessionRecord, OpenDanSessionLink, get_buckyos_api_runtime
 };
 use log::warn;
 use name_lib::DID;
+use ndn_lib::MsgObject;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value as Json};
-use tokio::fs;
+use tokio::fs::{self, OpenOptions};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::agent_tool::{AgentTool, AgentToolError, ToolSpec};
@@ -20,6 +22,7 @@ use crate::behavior::TraceCtx;
 pub const TOOL_GET_SESSION: &str = "get_session";
 
 const DEFAULT_SESSION_FILE: &str = "session.json";
+const DEFAULT_MSG_RECORD_FILE: &str = "msg_record.jsonl";
 const MAX_SESSION_ID_LEN: usize = 180;
 const SESSION_STATUS_PAUSE: &str = "pause";
 const SESSION_STATUS_NORMAL: &str = "normal";
@@ -396,6 +399,75 @@ impl AgentSession {
         let length = (max_length as usize).min(4096);
         kmsg_client.fetch_messages(sub_id, length, false).await
     }
+
+    pub async fn append_msg_record(
+        session_id: &str,
+        msg_record: MsgRecord,
+        msg_obj: MsgObject,
+    ) -> Result<(), AgentToolError> {
+        let raw_session = session_id.trim();
+        if raw_session.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "session_id cannot be empty".to_string(),
+            ));
+        }
+
+        let session_dir = if raw_session.contains('/') || raw_session.contains('\\') {
+            PathBuf::from(raw_session)
+        } else {
+            let session_id = sanitize_session_id(raw_session)?;
+            let default_root = PathBuf::from("session");
+            if fs::metadata(&default_root)
+                .await
+                .map(|meta| meta.is_dir())
+                .unwrap_or(false)
+            {
+                default_root.join(session_id)
+            } else {
+                PathBuf::from(session_id)
+            }
+        };
+
+        fs::create_dir_all(&session_dir).await.map_err(|err| {
+            AgentToolError::ExecFailed(format!(
+                "create session dir `{}` failed: {err}",
+                session_dir.display()
+            ))
+        })?;
+
+        let msg_record_with_obj = MsgRecordWithObject {
+            record: msg_record,
+            msg: Some(msg_obj),
+        };
+        let json_str = serde_json::to_string(&msg_record_with_obj).map_err(|err| {
+            AgentToolError::ExecFailed(format!("serialize msg record failed: {err}"))
+        })?;
+
+        let msg_record_path = session_dir.join(DEFAULT_MSG_RECORD_FILE);
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&msg_record_path)
+            .await
+            .map_err(|err| {
+                AgentToolError::ExecFailed(format!(
+                    "open msg record file `{}` for append failed: {err}",
+                    msg_record_path.display()
+                ))
+            })?;
+
+        file.write_all(json_str.as_bytes()).await.map_err(|err| {
+            AgentToolError::ExecFailed(format!("append msg record line failed: {err}"))
+        })?;
+        file.write_all(b"\n").await.map_err(|err| {
+            AgentToolError::ExecFailed(format!("append msg record newline failed: {err}"))
+        })?;
+        file.flush().await.map_err(|err| {
+            AgentToolError::ExecFailed(format!("flush msg record file failed: {err}"))
+        })?;
+        Ok(())
+    }
+
 }
 
 #[derive(Clone, Debug)]

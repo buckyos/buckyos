@@ -20,6 +20,7 @@ use super::sanitize::Sanitizer;
 use super::tool_loop::{self, ToolContext};
 use super::types::*;
 use crate::agent_enviroment::AgentEnvironment;
+use crate::agent_memory::AgentMemory;
 use crate::agent_session::TOOL_GET_SESSION;
 use crate::agent_tool::{AgentToolError, ToolCall, ToolManager, ToolSpec};
 use crate::ai_runtime::TOOL_CREATE_SUB_AGENT;
@@ -31,6 +32,7 @@ pub struct LLMBehaviorDeps {
     pub taskmgr: Arc<TaskManagerClient>,
     pub aicc: Arc<AiccClient>,
     pub tools: Arc<ToolManager>,
+    pub memory: Option<AgentMemory>,
     pub policy: Arc<dyn PolicyEngine>,
     pub worklog: Arc<dyn WorklogSink>,
     pub tokenizer: Arc<dyn Tokenizer>,
@@ -160,6 +162,7 @@ impl LLMBehavior {
             &input.behavior_cfg,
             &*self.deps.tokenizer,
             input.session.clone(),
+            self.deps.memory.clone(),
         )
         .await
         .map_err(LLMComputeError::Internal)?;

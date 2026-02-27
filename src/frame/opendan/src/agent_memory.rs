@@ -216,7 +216,7 @@ impl AgentMemory {
         token_limit: Option<u32>,
         tags: Vec<String>,
         current_time: Option<DateTime<Utc>>,
-    ) -> Result<Json, AgentToolError> {
+    ) -> Result<Vec<MemoryRankItem>, AgentToolError> {
         let request = LoadMemoryRequest {
             token_limit: token_limit
                 .unwrap_or(self.inner.cfg.default_token_limit)
@@ -225,6 +225,14 @@ impl AgentMemory {
             current_time: current_time.unwrap_or_else(Utc::now),
         };
         self.load_memory_by_request(request).await
+    }
+
+    pub fn render_memory_items(items: &[MemoryRankItem]) -> String {
+        items
+            .iter()
+            .map(render_memory_line)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     pub async fn compact(&self) -> Result<Json, AgentToolError> {
@@ -281,7 +289,10 @@ impl AgentMemory {
         }))
     }
 
-    async fn load_memory_by_request(&self, req: LoadMemoryRequest) -> Result<Json, AgentToolError> {
+    async fn load_memory_by_request(
+        &self,
+        req: LoadMemoryRequest,
+    ) -> Result<Vec<MemoryRankItem>, AgentToolError> {
         let mut records = self.read_state_map().await?;
         if records.is_empty() {
             records = self.read_latest_from_log().await?;
@@ -324,8 +335,7 @@ impl AgentMemory {
 
         candidates.sort_by(rank_candidates);
 
-        let mut lines = Vec::<String>::new();
-        let mut selected = 0_usize;
+        let mut selected = Vec::<MemoryRankItem>::new();
         let mut used_tokens = 0_usize;
         let mut truncated = false;
 
@@ -337,14 +347,13 @@ impl AgentMemory {
                 break;
             }
             used_tokens += line_tokens;
-            lines.push(line);
-            selected += 1;
+            selected.push(item.clone());
         }
 
         debug!(
             "agent_memory.load_memory: token_limit={} selected={} total={} tags={}",
             req.token_limit,
-            selected,
+            selected.len(),
             candidates.len(),
             req.tags.join(",")
         );
@@ -352,13 +361,13 @@ impl AgentMemory {
         if truncated {
             debug!(
                 "agent_memory.load_memory truncated: selected={} total={} token_estimate={}",
-                selected,
+                selected.len(),
                 candidates.len(),
                 used_tokens
             );
         }
 
-        Ok(Json::String(lines.join("\n")))
+        Ok(selected)
     }
 
     async fn append_log_line(&self, envelope: &MemoryEnvelope) -> Result<(), AgentToolError> {
@@ -645,20 +654,19 @@ impl AgentTool for LoadMemoryTool {
             .and_then(|v| v.as_str())
             .and_then(|raw| parse_rfc3339_to_utc(raw).ok());
 
-        self.memory
-            .load_memory(token_limit, tags, current_time)
-            .await
+        let items = self.memory.load_memory(token_limit, tags, current_time).await?;
+        Ok(Json::String(AgentMemory::render_memory_items(&items)))
     }
 }
 
-#[derive(Clone, Debug)]
-struct MemoryRankItem {
-    key: String,
-    type_name: String,
-    summary: String,
-    importance: i64,
-    tag_score: u32,
-    ts_unix_ms: i64,
+#[derive(Clone, Debug, Serialize)]
+pub struct MemoryRankItem {
+    pub key: String,
+    pub type_name: String,
+    pub summary: String,
+    pub importance: i64,
+    pub tag_score: u32,
+    pub ts_unix_ms: i64,
 }
 
 fn rank_candidates(a: &MemoryRankItem, b: &MemoryRankItem) -> Ordering {
@@ -1040,7 +1048,7 @@ mod tests {
             .load_memory(Some(200), vec!["style".to_string()], None)
             .await
             .expect("load memory");
-        let memory_text = loaded.as_str().unwrap_or_default().to_string();
+        let memory_text = AgentMemory::render_memory_items(&loaded);
         print!("Loaded memory:\n{memory_text}");
         assert!(memory_text.contains("user/preference/style"));
         assert!(memory_text.contains("用户偏好简洁回复"));
@@ -1078,7 +1086,7 @@ mod tests {
             .load_memory(Some(200), vec![], None)
             .await
             .expect("load memory");
-        let memory_text = loaded.as_str().unwrap_or_default();
+        let memory_text = AgentMemory::render_memory_items(&loaded);
 
         assert!(!memory_text.contains("user/calendar/meeting"));
     }
@@ -1155,10 +1163,8 @@ mod tests {
         let all = memory
             .load_memory(Some(20_000), vec!["trim".to_string()], None)
             .await
-            .expect("load all memory with huge token limit")
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
+            .expect("load all memory with huge token limit");
+        let all = AgentMemory::render_memory_items(&all);
 
         let all_lines = all
             .lines()
@@ -1185,18 +1191,14 @@ mod tests {
         let forty = memory
             .load_memory(Some(token_limit_40), vec!["trim".to_string()], None)
             .await
-            .expect("load memory with token limit for 40 lines")
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
+            .expect("load memory with token limit for 40 lines");
+        let forty = AgentMemory::render_memory_items(&forty);
         print!("Loaded memory after tombstone:\n{forty}");
         let twenty = memory
             .load_memory(Some(token_limit_20), vec!["trim".to_string()], None)
             .await
-            .expect("load memory with token limit for 20 lines")
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
+            .expect("load memory with token limit for 20 lines");
+        let twenty = AgentMemory::render_memory_items(&twenty);
 
         println!(
             "load_memory(token_limit={} -> target 40 lines):\n{}",

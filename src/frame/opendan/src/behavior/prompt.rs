@@ -1,27 +1,32 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use buckyos_api::{
-    features, AiMessage, AiPayload, AiToolSpec, Capability, CompleteRequest, ModelSpec,
-    Requirements,
+    BoxKind, MsgRecordWithObject, features, AiMessage, AiPayload, AiToolSpec, Capability,
+    CompleteRequest, ModelSpec, Requirements,
 };
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use log::warn;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value as Json};
+use tokio::fs;
 use tokio::sync::Mutex;
 use tokio::task;
 
 use crate::agent_enviroment::AgentEnvironment;
+use crate::agent_memory::AgentMemory;
 use crate::agent_session::AgentSession;
 use crate::behavior::config::BehaviorMemoryBucketConfig;
 use crate::behavior::BehaviorConfig;
 use crate::workspace::todo::render_workspace_todo_prompt_from_db;
+use crate::worklog::{WorklogListOptions, WorklogRecord, WorklogTool, WorklogToolConfig};
 
 use super::sanitize::{sanitize_json_compact, sanitize_text};
 use super::types::{BehaviorExecInput, LLMBehaviorConfig};
 use super::Tokenizer;
+
+const SESSION_MSG_RECORD_FILES: [&str; 2] = ["msg_record.jsonl", "message_record.jsonl"];
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -48,6 +53,7 @@ impl PromptBuilder {
         cfg: &BehaviorConfig,
         tokenizer: &dyn Tokenizer,
         session: Option<Arc<Mutex<AgentSession>>>,
+        memory: Option<AgentMemory>,
     ) -> Result<CompleteRequest, String> {
         let env_context = build_env_context(input);
 
@@ -109,8 +115,15 @@ impl PromptBuilder {
             .saturating_sub(input_used_token)
             .saturating_sub(tool_define_used);
 
-        let memory_prompt_text =
-            build_memory_prompt_text(input, cfg, vec![], memory_token_limit, tokenizer).await;
+        let memory_prompt_text = build_memory_prompt_text(
+            input,
+            cfg,
+            vec![],
+            memory_token_limit,
+            tokenizer,
+            memory,
+        )
+        .await;
 
         let ai_messages: Vec<AiMessage> = vec![
             AiMessage::new("system".to_string(), system_role_prompt_text),
@@ -199,6 +212,7 @@ async fn build_memory_prompt_text(
     topic_tags: Vec<String>,
     memory_limit: u32,
     tokenizer: &dyn Tokenizer,
+    memory: Option<AgentMemory>,
 ) -> String {
     let total_budget = memory_limit.min(cfg.memory.total_limit);
     if total_budget == 0 {
@@ -237,6 +251,7 @@ async fn build_memory_prompt_text(
                 topic_tags.as_slice(),
                 agent_memory_budget,
                 tokenizer,
+                memory.clone(),
             )
             .await,
         );
@@ -376,12 +391,53 @@ async fn load_workspace_summary_with_limit(
 }
 
 async fn load_agent_memory_with_limit(
-    input: &BehaviorExecInput,
+    _input: &BehaviorExecInput,
     topic_tags: &[String],
     token_limit: u32,
     tokenizer: &dyn Tokenizer,
+    memory: Option<AgentMemory>,
 ) -> Vec<MemoryTimelineRecord> {
-   unimplemented!();
+    if token_limit == 0 {
+        return vec![];
+    }
+    let Some(memory) = memory else {
+        return vec![];
+    };
+
+    let tags = topic_tags
+        .iter()
+        .map(|tag| tag.trim().to_string())
+        .filter(|tag| !tag.is_empty())
+        .collect::<Vec<_>>();
+    let current_time = Utc::now();
+    let items = match memory
+        .load_memory(Some(token_limit), tags, Some(current_time))
+        .await
+    {
+        Ok(value) => value,
+        Err(err) => {
+            warn!("prompt.load_agent_memory load_memory failed: {}", err);
+            return vec![];
+        }
+    };
+    let raw_text = AgentMemory::render_memory_items(&items);
+    let fitted = fit_text_with_token_limit(raw_text, token_limit, tokenizer);
+    if fitted.trim().is_empty() {
+        return vec![];
+    }
+
+    let update_time = current_time.timestamp_millis().max(0) as u64;
+    fitted
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| MemoryTimelineRecord {
+            update_time,
+            text: line.to_string(),
+            source_label: "memory",
+            source_order: 10,
+        })
+        .collect()
 }
 
 async fn load_session_summaries_with_limit(
@@ -561,6 +617,36 @@ fn resolve_todo_db_path(
     None
 }
 
+fn resolve_worklog_db_path(
+    local_workspace_id: Option<&str>,
+    workspace_info: Option<&Json>,
+    session_cwd: &Path,
+) -> Option<PathBuf> {
+    let candidates = collect_workspace_path_candidates(workspace_info, session_cwd);
+    let roots = collect_candidate_ancestors(&candidates);
+
+    if let Some(local_workspace_id) = normalize_optional_text(local_workspace_id) {
+        for root in &roots {
+            let local_workspace_path = root
+                .join("workspaces")
+                .join("local")
+                .join(local_workspace_id.as_str());
+            let worklog_db_path = root.join("worklog").join("worklog.db");
+            if local_workspace_path.is_dir() && worklog_db_path.is_file() {
+                return Some(worklog_db_path);
+            }
+        }
+    }
+
+    for root in &roots {
+        let worklog_db_path = root.join("worklog").join("worklog.db");
+        if worklog_db_path.is_file() {
+            return Some(worklog_db_path);
+        }
+    }
+    None
+}
+
 fn collect_workspace_path_candidates(
     workspace_info: Option<&Json>,
     session_cwd: &Path,
@@ -651,19 +737,380 @@ fn non_empty_path(path: &Path) -> Option<PathBuf> {
 }
 
 async fn load_history_messages_with_limit(
-    _input: &BehaviorExecInput,
-    _token_limit: u32,
-    _tokenizer: &dyn Tokenizer,
+    input: &BehaviorExecInput,
+    token_limit: u32,
+    tokenizer: &dyn Tokenizer,
 ) -> Vec<MemoryTimelineRecord> {
-    vec![]
+    if token_limit == 0 {
+        return vec![];
+    }
+
+    let (session_id, workspace_info, session_cwd) = if let Some(session) = input.session.as_ref() {
+        let guard = session.lock().await;
+        (
+            normalize_optional_text(Some(guard.session_id.as_str()))
+                .or_else(|| normalize_optional_text(input.session_id.as_deref())),
+            guard.workspace_info.clone(),
+            guard.cwd.clone(),
+        )
+    } else {
+        (
+            normalize_optional_text(input.session_id.as_deref()),
+            None,
+            PathBuf::new(),
+        )
+    };
+    let Some(session_id) = session_id else {
+        return vec![];
+    };
+
+    let Some(record_file) =
+        resolve_session_msg_record_path(session_id.as_str(), workspace_info.as_ref(), &session_cwd)
+            .await
+    else {
+        return vec![];
+    };
+
+    let payload = match fs::read_to_string(&record_file).await {
+        Ok(text) => text,
+        Err(err) => {
+            warn!(
+                "prompt.load_history_messages read failed: path={} err={}",
+                record_file.display(),
+                err
+            );
+            return vec![];
+        }
+    };
+
+    let lines = payload.lines().collect::<Vec<_>>();
+    if lines.is_empty() {
+        return vec![];
+    }
+
+    let mut records = Vec::<MemoryTimelineRecord>::new();
+    let mut used_tokens = 0_u32;
+    for line_idx in (0..lines.len()).rev() {
+        let line = lines[line_idx].trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let msg_record = match serde_json::from_str::<MsgRecordWithObject>(line) {
+            Ok(value) => value,
+            Err(err) => {
+                warn!(
+                    "prompt.load_history_messages skip invalid json line: path={} line={} err={}",
+                    record_file.display(),
+                    line_idx + 1,
+                    err
+                );
+                continue;
+            }
+        };
+
+        let mut text = render_history_msg_line(&msg_record);
+        if text.is_empty() {
+            continue;
+        }
+        text = fit_text_with_token_limit(text, token_limit.min(96).max(16), tokenizer);
+        if text.is_empty() {
+            continue;
+        }
+
+        let mut item = MemoryTimelineRecord {
+            update_time: resolve_history_msg_update_time(&msg_record),
+            text,
+            source_label: "msg",
+            source_order: 20,
+        };
+        let mut line_tokens = tokenizer.count_tokens(format_memory_timeline_record(&item).as_str());
+
+        if records.is_empty() && line_tokens > token_limit {
+            item.text = truncate_to_token_budget(item.text.as_str(), token_limit.saturating_div(2).max(1));
+            line_tokens = tokenizer.count_tokens(format_memory_timeline_record(&item).as_str());
+        }
+        if line_tokens == 0 {
+            continue;
+        }
+        if !records.is_empty() && used_tokens.saturating_add(line_tokens) > token_limit {
+            break;
+        }
+        if records.is_empty() && line_tokens > token_limit {
+            continue;
+        }
+
+        used_tokens = used_tokens.saturating_add(line_tokens);
+        records.push(item);
+        if used_tokens >= token_limit {
+            break;
+        }
+    }
+
+    records
+}
+
+async fn resolve_session_msg_record_path(
+    session_id: &str,
+    workspace_info: Option<&Json>,
+    session_cwd: &Path,
+) -> Option<PathBuf> {
+    let mut candidates = Vec::<PathBuf>::new();
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return None;
+    }
+
+    if session_id.contains('/') || session_id.contains('\\') {
+        let session_path = PathBuf::from(session_id);
+        if session_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("jsonl"))
+            .unwrap_or(false)
+        {
+            push_unique_pathbuf(&mut candidates, session_path);
+        } else {
+            for file_name in SESSION_MSG_RECORD_FILES {
+                push_unique_pathbuf(&mut candidates, session_path.join(file_name));
+            }
+        }
+    }
+
+    let roots = collect_candidate_ancestors(&collect_workspace_path_candidates(
+        workspace_info,
+        session_cwd,
+    ));
+    for root in roots {
+        for file_name in SESSION_MSG_RECORD_FILES {
+            push_unique_pathbuf(
+                &mut candidates,
+                root.join("session").join(session_id).join(file_name),
+            );
+            push_unique_pathbuf(&mut candidates, root.join(session_id).join(file_name));
+        }
+    }
+    for file_name in SESSION_MSG_RECORD_FILES {
+        push_unique_pathbuf(
+            &mut candidates,
+            PathBuf::from("session").join(session_id).join(file_name),
+        );
+        push_unique_pathbuf(&mut candidates, PathBuf::from(session_id).join(file_name));
+    }
+
+    for candidate in candidates {
+        if fs::metadata(&candidate)
+            .await
+            .map(|meta| meta.is_file())
+            .unwrap_or(false)
+        {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn resolve_history_msg_update_time(record: &MsgRecordWithObject) -> u64 {
+    let obj_ts = record.msg.as_ref().map(|msg| msg.created_at_ms).unwrap_or(0);
+    record
+        .record
+        .updated_at_ms
+        .max(record.record.created_at_ms)
+        .max(obj_ts)
+}
+
+fn render_history_msg_line(record: &MsgRecordWithObject) -> String {
+    let direction = match record.record.box_kind {
+        BoxKind::Outbox | BoxKind::TunnelOutbox => "out",
+        _ => "in",
+    };
+
+    let mut content = record
+        .msg
+        .as_ref()
+        .map(|msg| msg.content.content.as_str())
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(compact_one_line_text)
+        .unwrap_or_default();
+    if content.is_empty() {
+        content = format!(
+            "msg_id={} state={:?}",
+            record.record.msg_id, record.record.state
+        );
+    }
+
+    format!(
+        "{} {:?} {:?} -> {:?} {}",
+        direction, record.record.msg_kind, record.record.from, record.record.to, content
+    )
+}
+
+fn compact_one_line_text(input: &str) -> String {
+    input.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn normalize_worklog_record_type(record_type: &str) -> String {
+    let trimmed = record_type.trim();
+    let without_prefix = trimmed.strip_prefix("opendan.worklog.").unwrap_or(trimmed);
+    let without_version = without_prefix
+        .strip_suffix(".v1")
+        .unwrap_or(without_prefix);
+    without_version.to_string()
+}
+
+fn render_workspace_worklog_line(record: &WorklogRecord) -> String {
+    let record_type = normalize_worklog_record_type(record.record_type.as_str());
+    let digest = record
+        .prompt_view
+        .as_ref()
+        .map(|view| view.digest.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            record
+                .summary
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+        .map(compact_one_line_text)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| compact_one_line_text(sanitize_json_compact(&record.payload).as_str()));
+    if digest.is_empty() {
+        return format!("{} status={}", record_type, record.status);
+    }
+    format!("{} status={} {}", record_type, record.status, digest)
 }
 
 async fn load_workspace_worklog_with_limit(
-    _input: &BehaviorExecInput,
-    _token_limit: u32,
-    _tokenizer: &dyn Tokenizer,
+    input: &BehaviorExecInput,
+    token_limit: u32,
+    tokenizer: &dyn Tokenizer,
 ) -> Vec<MemoryTimelineRecord> {
-    vec![]
+    if token_limit == 0 {
+        return vec![];
+    }
+
+    let (session_id, local_workspace_id, workspace_info, session_cwd) =
+        if let Some(session) = input.session.as_ref() {
+            let guard = session.lock().await;
+            (
+                normalize_optional_text(Some(guard.session_id.as_str()))
+                    .or_else(|| normalize_optional_text(input.session_id.as_deref())),
+                guard.local_workspace_id.clone(),
+                guard.workspace_info.clone(),
+                guard.cwd.clone(),
+            )
+        } else {
+            (
+                normalize_optional_text(input.session_id.as_deref()),
+                None,
+                None,
+                PathBuf::new(),
+            )
+        };
+    let workspace_id = normalize_optional_text(local_workspace_id.as_deref())
+        .or_else(|| extract_workspace_id_from_json(workspace_info.as_ref()));
+    if session_id.is_none() && workspace_id.is_none() {
+        return vec![];
+    }
+
+    let Some(worklog_db_path) = resolve_worklog_db_path(
+        local_workspace_id.as_deref(),
+        workspace_info.as_ref(),
+        &session_cwd,
+    ) else {
+        return vec![];
+    };
+
+    let query_limit = usize::try_from(token_limit.saturating_mul(2))
+        .unwrap_or(usize::MAX)
+        .clamp(16, 256);
+    let worklog_tool = match WorklogTool::new(WorklogToolConfig::with_db_path(
+        worklog_db_path.clone(),
+    )) {
+        Ok(tool) => tool,
+        Err(err) => {
+            warn!(
+                "prompt.load_workspace_worklog create tool failed: path={} err={}",
+                worklog_db_path.display(),
+                err
+            );
+            return vec![];
+        }
+    };
+
+    let worklog_records = match worklog_tool
+        .list_worklog_records(WorklogListOptions {
+            owner_session_id: session_id,
+            workspace_id,
+            limit: Some(query_limit),
+            ..Default::default()
+        })
+        .await
+    {
+        Ok(records) => records,
+        Err(err) => {
+            warn!(
+                "prompt.load_workspace_worklog list failed: path={} err={}",
+                worklog_db_path.display(),
+                err
+            );
+            return vec![];
+        }
+    };
+    if worklog_records.is_empty() {
+        return vec![];
+    }
+
+    let mut records = Vec::<MemoryTimelineRecord>::new();
+    let mut used_tokens = 0_u32;
+    for worklog_record in worklog_records {
+        if worklog_record.commit_state.eq_ignore_ascii_case("PENDING") {
+            continue;
+        }
+
+        let mut text = render_workspace_worklog_line(&worklog_record);
+        if text.is_empty() {
+            continue;
+        }
+        text = fit_text_with_token_limit(text, token_limit.min(128).max(24), tokenizer);
+        if text.is_empty() {
+            continue;
+        }
+
+        let mut item = MemoryTimelineRecord {
+            update_time: worklog_record.timestamp,
+            text,
+            source_label: "worklog",
+            source_order: 30,
+        };
+        let mut line_tokens = tokenizer.count_tokens(format_memory_timeline_record(&item).as_str());
+
+        if records.is_empty() && line_tokens > token_limit {
+            item.text =
+                truncate_to_token_budget(item.text.as_str(), token_limit.saturating_div(2).max(1));
+            line_tokens = tokenizer.count_tokens(format_memory_timeline_record(&item).as_str());
+        }
+        if line_tokens == 0 {
+            continue;
+        }
+        if !records.is_empty() && used_tokens.saturating_add(line_tokens) > token_limit {
+            break;
+        }
+        if records.is_empty() && line_tokens > token_limit {
+            continue;
+        }
+
+        used_tokens = used_tokens.saturating_add(line_tokens);
+        records.push(item);
+        if used_tokens >= token_limit {
+            break;
+        }
+    }
+
+    records
 }
 
 fn build_output_protocol(cfg: &LLMBehaviorConfig) -> String {
@@ -905,8 +1352,17 @@ fn message_tokens(messages: &[ChatMessage], tokenizer: &dyn Tokenizer) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use buckyos_api::MsgRecordWithObject;
     use super::*;
+    use crate::agent_tool::AgentTool;
+    use crate::agent_memory::{AgentMemory, AgentMemoryConfig};
+    use crate::agent_session::AgentSession;
     use crate::behavior::types::{StepLimits, TraceCtx};
+    use crate::worklog::{WorklogTool, WorklogToolConfig};
+    use tempfile::tempdir;
+    use tokio::sync::Mutex;
 
     struct MockTokenizer;
 
@@ -985,7 +1441,14 @@ mod tests {
             session: None,
         };
 
-        let req = PromptBuilder::build(&input, &[], &input.behavior_cfg, &MockTokenizer, None)
+        let req = PromptBuilder::build(
+            &input,
+            &[],
+            &input.behavior_cfg,
+            &MockTokenizer,
+            None,
+            None,
+        )
             .await
             .expect("build prompt");
 
@@ -1002,5 +1465,268 @@ mod tests {
         assert!(system.contains("<<output_protocol>>"));
         assert!(system.contains("You are a helpful assistant."));
         assert!(system.contains("Process rules."));
+    }
+
+    #[tokio::test]
+    async fn load_agent_memory_with_limit_reads_from_memory_module() {
+        let temp = tempdir().expect("create tempdir");
+        let memory = AgentMemory::new(AgentMemoryConfig::new(temp.path()))
+            .await
+            .expect("create agent memory");
+        memory
+            .set_memory(
+                "/user/preference/style",
+                json!({
+                    "type":"preference",
+                    "summary":"用户偏好简洁回复",
+                    "importance": 7,
+                    "tags": ["style"]
+                }),
+                json!({
+                    "kind":"user",
+                    "name":"chat",
+                    "retrieved_at":"2026-02-22T10:00:00Z",
+                    "locator":{"conversation_id":"c1","message_id":"m1"}
+                }),
+            )
+            .await
+            .expect("set memory");
+
+        let input = BehaviorExecInput {
+            session_id: Some("session-1".to_string()),
+            trace: TraceCtx {
+                trace_id: "trace-1".to_string(),
+                agent_did: "did:example:agent".to_string(),
+                behavior: "on_wakeup".to_string(),
+                step_idx: 1,
+                wakeup_id: "wakeup-1".to_string(),
+            },
+            input_prompt: "user input".to_string(),
+            last_step_prompt: String::new(),
+            role_md: "You are a helpful assistant.".to_string(),
+            self_md: "Self description.".to_string(),
+            behavior_prompt: "rules".to_string(),
+            limits: StepLimits::default(),
+            behavior_cfg: BehaviorConfig::default(),
+            session: None,
+        };
+
+        let records = load_agent_memory_with_limit(
+            &input,
+            &["style".to_string()],
+            200,
+            &MockTokenizer,
+            Some(memory),
+        )
+        .await;
+
+        assert!(!records.is_empty(), "expected memory timeline records");
+        let merged = records
+            .iter()
+            .map(|item| item.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(merged.contains("user/preference/style"));
+        assert!(merged.contains("用户偏好简洁回复"));
+    }
+
+    #[tokio::test]
+    async fn load_history_messages_with_limit_reads_session_jsonl_reverse() {
+        let temp = tempdir().expect("create tempdir");
+        let workspace_root = temp.path().join("workspace");
+        let session_id = "session-1";
+        let session_dir = workspace_root.join("session").join(session_id);
+        tokio::fs::create_dir_all(&session_dir)
+            .await
+            .expect("create session dir");
+
+        let line1 = json!({
+            "record": {
+                "record_id": "r1",
+                "box_kind": "INBOX",
+                "msg_id": "sha256:11111111111111111111111111111111",
+                "msg_kind": "chat",
+                "state": "UNREAD",
+                "from": "did:web:alice.example.com",
+                "to": "did:web:bob.example.com",
+                "created_at_ms": 1000,
+                "updated_at_ms": 1000,
+                "sort_key": 1000,
+                "tags": []
+            },
+            "msg": {
+                "from": "did:web:alice.example.com",
+                "to": ["did:web:bob.example.com"],
+                "kind": "chat",
+                "created_at_ms": 1000,
+                "content": {
+                    "content": "hello from line1"
+                }
+            }
+        });
+        let line2 = json!({
+            "record": {
+                "record_id": "r2",
+                "box_kind": "INBOX",
+                "msg_id": "sha256:22222222222222222222222222222222",
+                "msg_kind": "chat",
+                "state": "UNREAD",
+                "from": "did:web:alice.example.com",
+                "to": "did:web:bob.example.com",
+                "created_at_ms": 2000,
+                "updated_at_ms": 2000,
+                "sort_key": 2000,
+                "tags": []
+            },
+            "msg": {
+                "from": "did:web:alice.example.com",
+                "to": ["did:web:bob.example.com"],
+                "kind": "chat",
+                "created_at_ms": 2000,
+                "content": {
+                    "content": "hello from line2"
+                }
+            }
+        });
+
+        tokio::fs::write(
+            session_dir.join("msg_record.jsonl"),
+            format!("{line1}\n{line2}\n"),
+        )
+        .await
+        .expect("write msg record file");
+
+        let mut session = AgentSession::new(session_id, "did:web:agent.example.com", None);
+        session.cwd = workspace_root.clone();
+        let input = BehaviorExecInput {
+            session_id: Some(session_id.to_string()),
+            trace: TraceCtx {
+                trace_id: "trace-1".to_string(),
+                agent_did: "did:web:agent.example.com".to_string(),
+                behavior: "on_wakeup".to_string(),
+                step_idx: 1,
+                wakeup_id: "wakeup-1".to_string(),
+            },
+            input_prompt: "user input".to_string(),
+            last_step_prompt: String::new(),
+            role_md: "You are a helpful assistant.".to_string(),
+            self_md: "Self description.".to_string(),
+            behavior_prompt: "rules".to_string(),
+            limits: StepLimits::default(),
+            behavior_cfg: BehaviorConfig::default(),
+            session: Some(Arc::new(Mutex::new(session))),
+        };
+
+        let records = load_history_messages_with_limit(&input, 200, &MockTokenizer).await;
+        assert!(!records.is_empty(), "expected history message records");
+        let first = records.first().expect("first record");
+        assert_eq!(first.source_label, "msg");
+        assert!(
+            first.text.contains("line2"),
+            "expected reverse-read newest line first, got: {}",
+            first.text
+        );
+
+        for line in [
+            line1.to_string(),
+            line2.to_string(),
+        ] {
+            serde_json::from_str::<MsgRecordWithObject>(&line).expect("line should parse");
+        }
+    }
+
+    #[tokio::test]
+    async fn load_workspace_worklog_with_limit_reads_from_worklog_db() {
+        let temp = tempdir().expect("create tempdir");
+        let workspace_root = temp.path().join("workspace");
+        let worklog_db = workspace_root.join("worklog").join("worklog.db");
+
+        let worklog_tool =
+            WorklogTool::new(WorklogToolConfig::with_db_path(worklog_db)).expect("create tool");
+        let trace_ctx = TraceCtx {
+            trace_id: "trace-worklog".to_string(),
+            agent_did: "did:web:agent.example.com".to_string(),
+            behavior: "on_wakeup".to_string(),
+            step_idx: 1,
+            wakeup_id: "wakeup-worklog".to_string(),
+        };
+        let _ = worklog_tool
+            .call(
+                &trace_ctx,
+                json!({
+                    "action": "append_worklog",
+                    "record": {
+                        "type": "opendan.worklog.FunctionRecord.v1",
+                        "owner_session_id": "session-1",
+                        "status": "OK",
+                        "prompt_view": {
+                            "digest": "digest_session_1",
+                            "detail": { "kind": "test" }
+                        },
+                        "payload": {
+                            "tool_name": "read_file"
+                        }
+                    }
+                }),
+            )
+            .await
+            .expect("append worklog for session-1");
+        let _ = worklog_tool
+            .call(
+                &trace_ctx,
+                json!({
+                    "action": "append_worklog",
+                    "record": {
+                        "type": "opendan.worklog.FunctionRecord.v1",
+                        "owner_session_id": "session-2",
+                        "status": "OK",
+                        "prompt_view": {
+                            "digest": "digest_session_2",
+                            "detail": { "kind": "test" }
+                        },
+                        "payload": {
+                            "tool_name": "write_file"
+                        }
+                    }
+                }),
+            )
+            .await
+            .expect("append worklog for session-2");
+
+        let mut session = AgentSession::new("session-1", "did:web:agent.example.com", None);
+        session.cwd = workspace_root;
+        let input = BehaviorExecInput {
+            session_id: Some("session-1".to_string()),
+            trace: TraceCtx {
+                trace_id: "trace-1".to_string(),
+                agent_did: "did:web:agent.example.com".to_string(),
+                behavior: "on_wakeup".to_string(),
+                step_idx: 1,
+                wakeup_id: "wakeup-1".to_string(),
+            },
+            input_prompt: "user input".to_string(),
+            last_step_prompt: String::new(),
+            role_md: "You are a helpful assistant.".to_string(),
+            self_md: "Self description.".to_string(),
+            behavior_prompt: "rules".to_string(),
+            limits: StepLimits::default(),
+            behavior_cfg: BehaviorConfig::default(),
+            session: Some(Arc::new(Mutex::new(session))),
+        };
+
+        let records = load_workspace_worklog_with_limit(&input, 200, &MockTokenizer).await;
+        assert!(
+            !records.is_empty(),
+            "expected workspace worklog timeline records"
+        );
+        assert_eq!(records[0].source_label, "worklog");
+
+        let merged = records
+            .iter()
+            .map(|item| item.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(merged.contains("digest_session_1"));
+        assert!(!merged.contains("digest_session_2"));
     }
 }

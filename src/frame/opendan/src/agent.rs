@@ -921,6 +921,7 @@ impl AIAgent {
                 taskmgr: self.deps.taskmgr.clone(),
                 aicc: self.deps.aicc.clone(),
                 tools: self.tools.clone(),
+                memory: Some(self.memory.clone()),
                 policy: self.policy.clone(),
                 worklog: self.worklog.clone(),
                 tokenizer: self.tokenizer.clone(),

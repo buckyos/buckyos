@@ -210,6 +210,7 @@ tools:
         ))),
         aicc,
         tools: tool_mgr,
+        memory: None,
         policy: Arc::new(MockPolicy {
             tools: behavior_cfg.tools.filter_tool_specs(&[ToolSpec {
                 name: "tool.echo".to_string(),
@@ -335,6 +336,7 @@ process_rule: test_rule
         ))),
         aicc,
         tools: Arc::new(ToolManager::new()),
+        memory: None,
         policy: Arc::new(MockPolicy { tools: vec![] }),
         worklog: Arc::new(MockWorklog),
         tokenizer: Arc::new(MockTokenizer),
@@ -417,6 +419,7 @@ process_rule: test_rule
         ))),
         aicc,
         tools: tool_mgr,
+        memory: None,
         policy: Arc::new(MockPolicy { tools: vec![] }),
         worklog: Arc::new(MockWorklog),
         tokenizer: Arc::new(MockTokenizer),
@@ -497,6 +500,7 @@ process_rule: test_rule
         ))),
         aicc,
         tools: Arc::new(ToolManager::new()),
+        memory: None,
         policy: Arc::new(MockPolicy { tools: vec![] }),
         worklog: Arc::new(MockWorklog),
         tokenizer: Arc::new(MockTokenizer),
@@ -622,6 +626,7 @@ process_rule: test_rule
         ))),
         aicc,
         tools: Arc::new(ToolManager::new()),
+        memory: None,
         policy: Arc::new(MockPolicy { tools: vec![] }),
         worklog: Arc::new(MockWorklog),
         tokenizer: Arc::new(MockTokenizer),
@@ -817,6 +822,7 @@ tools:
             requests: requests.clone(),
         }))),
         tools: Arc::new(ToolManager::new()),
+        memory: None,
         policy: Arc::new(MockPolicy { tools: vec![] }),
         worklog: Arc::new(MockWorklog),
         tokenizer: Arc::new(MockTokenizer),
@@ -1023,6 +1029,7 @@ tools:
             requests: requests.clone(),
         }))),
         tools: tool_mgr.clone(),
+        memory: None,
         policy: Arc::new(MockPolicy {
             tools: behavior_cfg
                 .tools

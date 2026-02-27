@@ -106,6 +106,19 @@ impl WorklogTool {
         .await
         .map_err(|err| AgentToolError::ExecFailed(format!("{op_name} join error: {err}")))?
     }
+
+    pub async fn list_worklog_records(
+        &self,
+        options: WorklogListOptions,
+    ) -> Result<Vec<WorklogRecord>, AgentToolError> {
+        let filters = options.into_filters(self.cfg.default_list_limit, self.cfg.max_list_limit);
+        let listed = self
+            .run_db("worklog list records", move |conn| {
+                list_records(conn, &filters)
+            })
+            .await?;
+        Ok(listed.records)
+    }
 }
 
 #[async_trait]
@@ -783,6 +796,52 @@ impl ListFilters {
             limit,
             offset,
         })
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct WorklogListOptions {
+    pub owner_session_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub step_id: Option<String>,
+    pub record_type: Option<String>,
+    pub status: Option<String>,
+    pub impact_level: Option<String>,
+    pub tag: Option<String>,
+    pub keyword: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: usize,
+}
+
+impl WorklogListOptions {
+    fn into_filters(self, default_limit: usize, max_limit: usize) -> ListFilters {
+        let limit = self
+            .limit
+            .unwrap_or(default_limit)
+            .clamp(1, max_limit);
+        ListFilters {
+            owner_session_id: self
+                .owner_session_id
+                .and_then(|v| optional_non_empty(v.as_str())),
+            workspace_id: self.workspace_id.and_then(|v| optional_non_empty(v.as_str())),
+            step_id: self.step_id.and_then(|v| optional_non_empty(v.as_str())),
+            record_type: self
+                .record_type
+                .and_then(|v| optional_non_empty(v.as_str()))
+                .map(|v| normalize_record_type(v.as_str())),
+            status: self
+                .status
+                .and_then(|v| optional_non_empty(v.as_str()))
+                .map(|v| normalize_status(v.as_str())),
+            impact_level: self
+                .impact_level
+                .and_then(|v| optional_non_empty(v.as_str()))
+                .map(|v| normalize_impact_level(v.as_str())),
+            tag: self.tag.and_then(|v| optional_non_empty(v.as_str())),
+            keyword: self.keyword.and_then(|v| optional_non_empty(v.as_str())),
+            limit,
+            offset: self.offset,
+        }
     }
 }
 
@@ -2054,6 +2113,14 @@ fn optional_string(args: &Json, key: &str) -> Result<Option<String>, AgentToolEr
     Ok(Some(trimmed.to_string()))
 }
 
+fn optional_non_empty(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
 fn optional_u64(args: &Json, key: &str) -> Result<Option<u64>, AgentToolError> {
     let Some(value) = args.get(key) else {
         return Ok(None);
@@ -2125,6 +2192,16 @@ mod tests {
             .expect("list");
         assert_eq!(list["total"].as_u64().unwrap_or(0), 1);
 
+        let rust_records = tool
+            .list_worklog_records(WorklogListOptions {
+                owner_session_id: Some("sess-1".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("list records by rust api");
+        assert_eq!(rust_records.len(), 1);
+        assert_eq!(rust_records[0].record_type, TYPE_FUNCTION_RECORD);
+
         let prompt = tool
             .call(
                 &ctx,
@@ -2137,5 +2214,108 @@ mod tests {
             .expect("prompt");
         let text = prompt["text"].as_str().unwrap_or("");
         assert!(text.contains("WorkspaceWorklog:OBSERVATION"));
+    }
+
+    #[tokio::test]
+    async fn worklog_render_prompt_view_and_print_result() {
+        let direct_prompt_view = build_prompt_view_by_type(
+            TYPE_ACTION_RECORD,
+            &json!({
+                "action_type": "bash",
+                "cmd_digest": "cargo test -p opendan",
+                "exit_code": 0,
+                "stderr_digest": ""
+            }),
+            "OK",
+        )
+        .expect("action record should be promptable");
+        // println!(
+        //     "single worklog prompt view:\n{}",
+        //     serde_json::to_string_pretty(&direct_prompt_view).expect("serialize prompt view")
+        // );
+
+        let dir = tempdir().expect("temp dir");
+        let db = dir.path().join("worklog.db");
+        let tool = WorklogTool::new(WorklogToolConfig::with_db_path(db)).expect("create tool");
+        let ctx = TraceCtx {
+            trace_id: "trace-render".to_string(),
+            agent_did: "did:opendan:test".to_string(),
+            behavior: "DO".to_string(),
+            step_idx: 7,
+            wakeup_id: "wakeup-render".to_string(),
+        };
+
+        let _ = tool
+            .call(
+                &ctx,
+                json!({
+                    "action": "append_worklog",
+                    "record": {
+                        "type": "opendan.worklog.FunctionRecord.v1",
+                        "owner_session_id": "sess-render",
+                        "step_id": "step-7",
+                        "status": "OK",
+                        "payload": {
+                            "tool_name": "todo_manage",
+                            "result_digest": "updated T001"
+                        }
+                    }
+                }),
+            )
+            .await
+            .expect("append function record");
+
+        let _ = tool
+            .call(
+                &ctx,
+                json!({
+                    "action": "append_worklog",
+                    "record": {
+                        "type": "opendan.worklog.ReplyMessage.v1",
+                        "owner_session_id": "sess-render",
+                        "step_id": "step-7",
+                        "status": "OK",
+                        "payload": {
+                            "to": "user",
+                            "reply_to": "msg_1",
+                            "content_digest": "done",
+                            "out_msg_id": "out_1"
+                        }
+                    }
+                }),
+            )
+            .await
+            .expect("append reply record");
+
+        let records = tool
+            .list_worklog_records(WorklogListOptions {
+                owner_session_id: Some("sess-render".to_string()),
+                limit: Some(10),
+                ..Default::default()
+            })
+            .await
+            .expect("list records");
+        assert_eq!(records.len(), 2);
+        for record in &records {
+            if let Some(prompt_view) = record.prompt_view.as_ref() {
+                println!("{}",  prompt_view.digest);
+            }
+        }
+
+        let prompt = tool
+            .call(
+                &ctx,
+                json!({
+                    "action": "build_prompt_worklog",
+                    "owner_session_id": "sess-render",
+                    "token_budget": 2000
+                }),
+            )
+            .await
+            .expect("build prompt");
+        let text = prompt["text"].as_str().unwrap_or("");
+        //println!("rendered worklog prompt:\n{text}");
+        assert!(text.contains("WorkspaceWorklog:OBSERVATION"));
+        assert!(text.contains("ReplyMessage"));
     }
 }
