@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use log::warn;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::fs;
@@ -42,6 +43,10 @@ const DEFAULT_LOCAL_WORKSPACE_LOCK_TTL_MS: u64 = 120_000;
 const EXEC_BASH_SUCCESS_DETAIL_LINES: usize = 16;
 const EXEC_BASH_TMUX_POLL_MS: u64 = 120;
 const EXEC_BASH_CAPTURE_SCROLLBACK_LINES: &str = "-6000";
+const EXEC_BASH_TMUX_SESSION_PREFIX: &str = "od_";
+const EXEC_BASH_TMUX_GC_TRIGGER_COUNT: usize = 16;
+const EXEC_BASH_TMUX_GC_IDLE_SECS: u64 = 24 * 60 * 60;
+const EXEC_BASH_TMUX_LIST_FORMAT: &str = "#{session_name}\t#{session_activity}";
 
 #[derive(Clone, Debug)]
 pub struct AgentWorkshopConfig {
@@ -1527,7 +1532,11 @@ fn sanitize_token_for_id(raw: &str) -> String {
 }
 
 fn build_tmux_session_name(session_id: &str) -> String {
-    format!("od_{}", sanitize_token_for_id(session_id))
+    format!(
+        "{}{}",
+        EXEC_BASH_TMUX_SESSION_PREFIX,
+        sanitize_token_for_id(session_id)
+    )
 }
 
 fn shell_single_quote(raw: &str) -> String {
@@ -1612,6 +1621,7 @@ async fn ensure_tmux_session(session_name: &str, cwd: &Path) -> Result<(), Agent
     if has_session.status.success() {
         return Ok(());
     }
+    maybe_gc_stale_tmux_sessions().await;
     let output = Command::new("tmux")
         .args(["new-session", "-d", "-s", session_name, "-c"])
         .arg(cwd)
@@ -1624,6 +1634,118 @@ async fn ensure_tmux_session(session_name: &str, cwd: &Path) -> Result<(), Agent
     Err(AgentToolError::ExecFailed(format!(
         "create tmux session `{session_name}` failed: {}",
         String::from_utf8_lossy(&output.stderr)
+    )))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TmuxSessionInfo {
+    name: String,
+    last_activity_secs: Option<u64>,
+}
+
+async fn maybe_gc_stale_tmux_sessions() {
+    let sessions = match list_tmux_sessions().await {
+        Ok(list) => list,
+        Err(err) => {
+            warn!("tmux list-sessions failed before create; skip GC: {err}");
+            return;
+        }
+    };
+    if sessions.len() < EXEC_BASH_TMUX_GC_TRIGGER_COUNT {
+        return;
+    }
+    let now_secs = now_unix_secs();
+    let mut collected = 0usize;
+    for session in sessions.iter().filter(|item| should_gc_tmux_session(item, now_secs)) {
+        match kill_tmux_session(session.name.as_str()).await {
+            Ok(()) => {
+                collected = collected.saturating_add(1);
+            }
+            Err(err) => {
+                warn!(
+                    "tmux gc kill-session failed: session={} err={}",
+                    session.name, err
+                );
+            }
+        }
+    }
+    if collected > 0 {
+        warn!("tmux gc reclaimed {} stale sessions", collected);
+    }
+}
+
+async fn list_tmux_sessions() -> Result<Vec<TmuxSessionInfo>, AgentToolError> {
+    let output = Command::new("tmux")
+        .args(["list-sessions", "-F", EXEC_BASH_TMUX_LIST_FORMAT])
+        .output()
+        .await
+        .map_err(|err| AgentToolError::ExecFailed(format!("tmux list-sessions failed: {err}")))?;
+    if output.status.success() {
+        return Ok(parse_tmux_session_list_output(
+            String::from_utf8_lossy(&output.stdout).as_ref(),
+        ));
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.to_ascii_lowercase().contains("no server running") {
+        return Ok(Vec::new());
+    }
+    Err(AgentToolError::ExecFailed(format!(
+        "tmux list-sessions failed: {}",
+        stderr
+    )))
+}
+
+fn parse_tmux_session_list_output(raw: &str) -> Vec<TmuxSessionInfo> {
+    let mut out = Vec::new();
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.splitn(2, '\t');
+        let name = parts.next().unwrap_or_default().trim();
+        if name.is_empty() {
+            continue;
+        }
+        let activity = parts
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .and_then(|value| value.parse::<u64>().ok());
+        out.push(TmuxSessionInfo {
+            name: name.to_string(),
+            last_activity_secs: activity,
+        });
+    }
+    out
+}
+
+fn should_gc_tmux_session(session: &TmuxSessionInfo, now_secs: u64) -> bool {
+    if !session.name.starts_with(EXEC_BASH_TMUX_SESSION_PREFIX) {
+        return false;
+    }
+    let Some(last_activity) = session.last_activity_secs else {
+        return false;
+    };
+    now_secs.saturating_sub(last_activity) >= EXEC_BASH_TMUX_GC_IDLE_SECS
+}
+
+async fn kill_tmux_session(session_name: &str) -> Result<(), AgentToolError> {
+    let output = Command::new("tmux")
+        .args(["kill-session", "-t", session_name])
+        .output()
+        .await
+        .map_err(|err| AgentToolError::ExecFailed(format!("tmux kill-session failed: {err}")))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.to_ascii_lowercase().contains("can't find session") {
+        return Ok(());
+    }
+    Err(AgentToolError::ExecFailed(format!(
+        "tmux kill-session `{session_name}` failed: {}",
+        stderr
     )))
 }
 
@@ -1773,6 +1895,13 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn now_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn build_simple_diff(
@@ -2238,5 +2367,58 @@ mod tests {
         assert!(fs::metadata(root.join("worklog/worklog.db")).await.is_ok());
 
         let _ = fs::remove_dir_all(root).await;
+    }
+
+    #[test]
+    fn parse_tmux_session_list_output_extracts_name_and_activity() {
+        let parsed = parse_tmux_session_list_output("od_a\t1700000000\nod_b\t\nmisc\t1690000000\n");
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(
+            parsed[0],
+            TmuxSessionInfo {
+                name: "od_a".to_string(),
+                last_activity_secs: Some(1_700_000_000),
+            }
+        );
+        assert_eq!(
+            parsed[1],
+            TmuxSessionInfo {
+                name: "od_b".to_string(),
+                last_activity_secs: None,
+            }
+        );
+        assert_eq!(
+            parsed[2],
+            TmuxSessionInfo {
+                name: "misc".to_string(),
+                last_activity_secs: Some(1_690_000_000),
+            }
+        );
+    }
+
+    #[test]
+    fn should_gc_tmux_session_only_for_stale_opendan_sessions() {
+        let now_secs = 2_000_000u64;
+        let stale = TmuxSessionInfo {
+            name: "od_stale".to_string(),
+            last_activity_secs: Some(now_secs - EXEC_BASH_TMUX_GC_IDLE_SECS),
+        };
+        let active = TmuxSessionInfo {
+            name: "od_active".to_string(),
+            last_activity_secs: Some(now_secs - 60),
+        };
+        let no_activity = TmuxSessionInfo {
+            name: "od_unknown".to_string(),
+            last_activity_secs: None,
+        };
+        let foreign = TmuxSessionInfo {
+            name: "work".to_string(),
+            last_activity_secs: Some(now_secs - EXEC_BASH_TMUX_GC_IDLE_SECS - 1),
+        };
+
+        assert!(should_gc_tmux_session(&stale, now_secs));
+        assert!(!should_gc_tmux_session(&active, now_secs));
+        assert!(!should_gc_tmux_session(&no_activity, now_secs));
+        assert!(!should_gc_tmux_session(&foreign, now_secs));
     }
 }

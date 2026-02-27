@@ -57,3 +57,4 @@ src/rootfs/bin/task-manager/task_manager
 src/rootfs/bin/aicc/aicc
 src/rootfs/bin/msg-center/msg_center
 src/rootfs/bin/opendan/opendan*
+src/rootfs/bin/bucky-file/bucky_file
