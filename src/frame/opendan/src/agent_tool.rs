@@ -8,7 +8,21 @@ use serde_json::{json, Value as Json};
 use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
 
-use crate::behavior::{BehaviorConfig, BehaviorExecInput, PolicyEngine, TraceCtx};
+use crate::behavior::{ActionSpec, BehaviorConfig, BehaviorExecInput, PolicyEngine, TraceCtx};
+
+pub struct AgentSkillRecord {
+    pub name: String,
+    pub introduce: String,
+}
+
+pub struct AgentSkillSpec {
+    pub introduce: String,
+    pub rules: String,
+    //先不支持自定义action,只能引用runtime里已经定义好的Action
+    pub actions: Vec<String>,
+    //先不支持自定义tool,只能引用runtime里已经定义好的tool
+    pub loaded_tools: Vec<String>,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ToolSpec {

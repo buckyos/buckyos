@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use buckyos_api::{
-    BoxKind, MsgRecordWithObject, features, AiMessage, AiPayload, AiToolSpec, Capability,
-    CompleteRequest, ModelSpec, Requirements,
+    features, AiMessage, AiPayload, AiToolSpec, BoxKind, Capability, CompleteRequest, ModelSpec,
+    MsgRecordWithObject, Requirements,
 };
 use chrono::Utc;
 use log::warn;
@@ -19,14 +19,15 @@ use crate::agent_memory::AgentMemory;
 use crate::agent_session::AgentSession;
 use crate::behavior::config::BehaviorMemoryBucketConfig;
 use crate::behavior::BehaviorConfig;
-use crate::workspace::todo::render_workspace_todo_prompt_from_db;
 use crate::worklog::{WorklogListOptions, WorklogRecord, WorklogTool, WorklogToolConfig};
+use crate::workspace::todo::render_workspace_todo_prompt_from_db;
 
 use super::sanitize::{sanitize_json_compact, sanitize_text};
 use super::types::{BehaviorExecInput, LLMBehaviorConfig};
 use super::Tokenizer;
 
 const SESSION_MSG_RECORD_FILES: [&str; 2] = ["msg_record.jsonl", "message_record.jsonl"];
+const SKILL_SPEC_EXTENSIONS: [&str; 3] = ["yaml", "yml", "json"];
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -47,6 +48,7 @@ pub struct ChatMessage {
 pub struct PromptBuilder;
 
 impl PromptBuilder {
+    //通过理解下面实现，可以理解OpenDAN Agent的整体设计
     pub async fn build(
         input: &BehaviorExecInput,
         tools: &[AiToolSpec],
@@ -56,6 +58,7 @@ impl PromptBuilder {
         memory: Option<AgentMemory>,
     ) -> Result<CompleteRequest, String> {
         let env_context = build_env_context(input);
+        let mut loaded_tools = Vec::new();
 
         let process_rules =
             render_section(cfg.process_rule.as_str(), &env_context, session.clone()).await?;
@@ -100,8 +103,9 @@ impl PromptBuilder {
             sanitize_text(output_protocol_text.as_str())
         ));
 
-        if let Some(toolbox) = build_toolbox(tools, cfg) {
+        if let Some((toolbox, tools)) = build_toolbox(tools, cfg, session.clone()).await {
             system_parts.push(format!("<<toolbox>>\n{}\n<</toolbox>>", toolbox));
+            loaded_tools = tools;
         }
 
         let system_role_prompt_text = system_parts.join("\n\n");
@@ -115,15 +119,9 @@ impl PromptBuilder {
             .saturating_sub(input_used_token)
             .saturating_sub(tool_define_used);
 
-        let memory_prompt_text = build_memory_prompt_text(
-            input,
-            cfg,
-            vec![],
-            memory_token_limit,
-            tokenizer,
-            memory,
-        )
-        .await;
+        let memory_prompt_text =
+            build_memory_prompt_text(input, cfg, vec![], memory_token_limit, tokenizer, memory)
+                .await;
 
         let ai_messages: Vec<AiMessage> = vec![
             AiMessage::new("system".to_string(), system_role_prompt_text),
@@ -135,7 +133,7 @@ impl PromptBuilder {
         ];
 
         let mut must_features = vec![features::JSON_OUTPUT.to_string()];
-        if !tools.is_empty() {
+        if !loaded_tools.is_empty() {
             must_features.push(features::TOOL_CALLING.to_string());
         }
 
@@ -156,7 +154,7 @@ impl PromptBuilder {
             AiPayload::new(
                 None,
                 ai_messages,
-                tools.to_vec(),
+                loaded_tools,
                 vec![],
                 None,
                 Some(Json::Object(options)),
@@ -378,12 +376,9 @@ async fn load_workspace_summary_with_limit(
     };
 
     let mut lines = Vec::<String>::new();
-    if let Some(workspace_info) = workspace_info.as_ref() {   
+    if let Some(workspace_info) = workspace_info.as_ref() {
         if lines.is_empty() {
-            lines.push(format!(
-                "{}",
-                sanitize_json_compact(workspace_info)
-            ));
+            lines.push(format!("{}", sanitize_json_compact(workspace_info)));
         }
     }
 
@@ -559,7 +554,6 @@ fn fit_text_with_token_limit(
     }
     truncate_to_token_budget(trimmed, token_limit)
 }
-
 
 fn extract_workspace_id_from_json(value: Option<&Json>) -> Option<String> {
     // FIXME(opendan-strong-typing): Weakly-typed compatibility lookup from Json is forbidden.
@@ -827,7 +821,8 @@ async fn load_history_messages_with_limit(
         let mut line_tokens = tokenizer.count_tokens(format_memory_timeline_record(&item).as_str());
 
         if records.is_empty() && line_tokens > token_limit {
-            item.text = truncate_to_token_budget(item.text.as_str(), token_limit.saturating_div(2).max(1));
+            item.text =
+                truncate_to_token_budget(item.text.as_str(), token_limit.saturating_div(2).max(1));
             line_tokens = tokenizer.count_tokens(format_memory_timeline_record(&item).as_str());
         }
         if line_tokens == 0 {
@@ -911,7 +906,11 @@ async fn resolve_session_msg_record_path(
 }
 
 fn resolve_history_msg_update_time(record: &MsgRecordWithObject) -> u64 {
-    let obj_ts = record.msg.as_ref().map(|msg| msg.created_at_ms).unwrap_or(0);
+    let obj_ts = record
+        .msg
+        .as_ref()
+        .map(|msg| msg.created_at_ms)
+        .unwrap_or(0);
     record
         .record
         .updated_at_ms
@@ -953,9 +952,7 @@ fn compact_one_line_text(input: &str) -> String {
 fn normalize_worklog_record_type(record_type: &str) -> String {
     let trimmed = record_type.trim();
     let without_prefix = trimmed.strip_prefix("opendan.worklog.").unwrap_or(trimmed);
-    let without_version = without_prefix
-        .strip_suffix(".v1")
-        .unwrap_or(without_prefix);
+    let without_version = without_prefix.strip_suffix(".v1").unwrap_or(without_prefix);
     without_version.to_string()
 }
 
@@ -1027,19 +1024,18 @@ async fn load_workspace_worklog_with_limit(
     let query_limit = usize::try_from(token_limit.saturating_mul(2))
         .unwrap_or(usize::MAX)
         .clamp(16, 256);
-    let worklog_tool = match WorklogTool::new(WorklogToolConfig::with_db_path(
-        worklog_db_path.clone(),
-    )) {
-        Ok(tool) => tool,
-        Err(err) => {
-            warn!(
-                "prompt.load_workspace_worklog create tool failed: path={} err={}",
-                worklog_db_path.display(),
-                err
-            );
-            return vec![];
-        }
-    };
+    let worklog_tool =
+        match WorklogTool::new(WorklogToolConfig::with_db_path(worklog_db_path.clone())) {
+            Ok(tool) => tool,
+            Err(err) => {
+                warn!(
+                    "prompt.load_workspace_worklog create tool failed: path={} err={}",
+                    worklog_db_path.display(),
+                    err
+                );
+                return vec![];
+            }
+        };
 
     let worklog_records = match worklog_tool
         .list_worklog_records(WorklogListOptions {
@@ -1223,18 +1219,383 @@ Return ONLY one JSON object and use behavior_llm_result schema:\n\n\
         build_behavior_llm_result_protocol()
     )
 }
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+struct ToolboxSkillRecord {
+    name: String,
+    introduce: String,
+}
 
-fn build_toolbox(tools: &[AiToolSpec], cfg: &BehaviorConfig) -> Option<String> {
-    let filtered = cfg.toolbox.tools.filter_ai_tool_specs(tools);
-    let skills = cfg.toolbox.skills.clone();
-    if filtered.is_empty() && skills.is_empty() {
+#[derive(Clone, Debug, Default)]
+struct ToolboxSkillSpec {
+    introduce: String,
+    actions: Vec<String>,
+    loaded_tools: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Default)]
+#[serde(default)]
+struct RawToolboxSkillSpec {
+    name: String,
+    introduce: String,
+    actions: Vec<String>,
+    loaded_tools: Vec<String>,
+}
+
+impl RawToolboxSkillSpec {
+    fn normalize(&mut self) {
+        self.name = self.name.trim().to_string();
+        self.introduce = self.introduce.trim().to_string();
+        self.actions = normalize_unique_string_list(std::mem::take(&mut self.actions));
+        self.loaded_tools = normalize_unique_string_list(std::mem::take(&mut self.loaded_tools));
+    }
+
+    fn to_toolbox_skill_spec(self) -> ToolboxSkillSpec {
+        ToolboxSkillSpec {
+            introduce: self.introduce,
+            actions: self.actions,
+            loaded_tools: self.loaded_tools,
+        }
+    }
+}
+
+//构成的提示词为
+// 列出的workspace的skill Record列表
+// session里得到当前加载的skills（提示词注入)
+// 所有可用的action定义（通过加载的所有skills的actions查找）
+//生成的Vec<AiToolSpec>:
+// 当前加载的tools的定义 （合并所有已经加载的skills的tool定义)
+async fn build_toolbox(
+    tools: &[AiToolSpec],
+    cfg: &BehaviorConfig,
+    session: Option<Arc<Mutex<AgentSession>>>,
+) -> Option<(String, Vec<AiToolSpec>)> {
+    if cfg.toolbox.is_none_mode() {
         return None;
     }
+
+    let mut session_loaded_skills = Vec::<String>::new();
+    let mut local_workspace_id: Option<String> = None;
+    let mut workspace_info: Option<Json> = None;
+    let mut session_cwd = PathBuf::new();
+    if let Some(session) = session.as_ref() {
+        let guard = session.lock().await;
+        session_loaded_skills = normalize_unique_string_list(guard.loaded_skills.clone());
+        local_workspace_id = normalize_optional_text(guard.local_workspace_id.as_deref());
+        workspace_info = guard.workspace_info.clone();
+        session_cwd = guard.cwd.clone();
+    }
+
+    let (workspace_skill_records, workspace_skill_specs) = load_workspace_skill_catalog(
+        local_workspace_id.as_deref(),
+        workspace_info.as_ref(),
+        &session_cwd,
+    )
+    .await;
+
+    let behavior_skills = cfg.toolbox.effective_skills();
+    let loaded_skills = merge_unique_string_slices(&behavior_skills, &session_loaded_skills);
+
+    let mut actions = normalize_unique_string_list(cfg.toolbox.default_load_actions.clone());
+    let mut loaded_tool_names = Vec::<String>::new();
+    for skill_name in &loaded_skills {
+        let Some(spec) = workspace_skill_specs.get(skill_name.as_str()) else {
+            continue;
+        };
+        actions = merge_unique_string_slices(&actions, &spec.actions);
+        loaded_tool_names = merge_unique_string_slices(&loaded_tool_names, &spec.loaded_tools);
+    }
+
+    let filtered_tools = cfg.toolbox.tools.filter_ai_tool_specs(tools);
+    let merged_tools = merge_tool_specs_with_skill_tools(filtered_tools, &loaded_tool_names, tools);
+
+    if merged_tools.is_empty()
+        && loaded_skills.is_empty()
+        && workspace_skill_records.is_empty()
+        && actions.is_empty()
+    {
+        return None;
+    }
+
     let value = json!({
-        "tools": filtered,
-        "skills": skills,
+        "workspace_skill_records": workspace_skill_records,
+        "loaded_skills": loaded_skills,
+        "allow_actions": actions,
     });
-    Some(sanitize_json_compact(&value))
+    Some((sanitize_json_compact(&value), merged_tools))
+}
+
+fn merge_tool_specs_with_skill_tools(
+    mut base: Vec<AiToolSpec>,
+    loaded_tool_names: &[String],
+    all_tools: &[AiToolSpec],
+) -> Vec<AiToolSpec> {
+    let mut seen = base
+        .iter()
+        .map(|item| item.name.clone())
+        .collect::<HashSet<_>>();
+
+    for tool_name in loaded_tool_names {
+        let normalized = tool_name.trim();
+        if normalized.is_empty() || !seen.insert(normalized.to_string()) {
+            continue;
+        }
+        if let Some(spec) = all_tools.iter().find(|item| item.name == normalized) {
+            base.push(spec.clone());
+        }
+    }
+    base
+}
+
+fn merge_unique_string_slices(primary: &[String], secondary: &[String]) -> Vec<String> {
+    let mut out = Vec::<String>::new();
+    let mut uniq = HashSet::<String>::new();
+    for value in primary.iter().chain(secondary.iter()) {
+        let normalized = value.trim();
+        if normalized.is_empty() {
+            continue;
+        }
+        if uniq.insert(normalized.to_string()) {
+            out.push(normalized.to_string());
+        }
+    }
+    out
+}
+
+fn normalize_unique_string_list(values: Vec<String>) -> Vec<String> {
+    merge_unique_string_slices(&values, &[])
+}
+
+async fn load_workspace_skill_catalog(
+    local_workspace_id: Option<&str>,
+    workspace_info: Option<&Json>,
+    session_cwd: &Path,
+) -> (Vec<ToolboxSkillRecord>, HashMap<String, ToolboxSkillSpec>) {
+    let skill_roots =
+        collect_workspace_skill_roots(local_workspace_id, workspace_info, session_cwd).await;
+    if skill_roots.is_empty() {
+        return (vec![], HashMap::new());
+    }
+
+    let mut records = HashMap::<String, ToolboxSkillRecord>::new();
+    let mut specs = HashMap::<String, ToolboxSkillSpec>::new();
+    for skills_root in skill_roots {
+        merge_skill_catalog_from_root(skills_root.as_path(), &mut records, &mut specs).await;
+    }
+
+    let mut workspace_records = records.into_values().collect::<Vec<_>>();
+    workspace_records.sort_by(|left, right| left.name.cmp(&right.name));
+    (workspace_records, specs)
+}
+
+async fn collect_workspace_skill_roots(
+    local_workspace_id: Option<&str>,
+    workspace_info: Option<&Json>,
+    session_cwd: &Path,
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::<PathBuf>::new();
+    if let Some(workspace_info) = workspace_info {
+        for pointer in [
+            "/workspace_root",
+            "/workspace/root",
+            "/workspace/root_path",
+            "/workspace/path",
+            "/workspace/cwd",
+            "/workspace/workspace_path",
+            "/binding/workspace_path",
+            "/binding/workspace_root",
+            "/root",
+            "/root_path",
+            "/path",
+            "/workspace_path",
+        ] {
+            if let Some(path) = workspace_info
+                .pointer(pointer)
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                push_unique_pathbuf(&mut candidates, PathBuf::from(path));
+            }
+        }
+    }
+    if let Some(path) = non_empty_path(session_cwd) {
+        push_unique_pathbuf(&mut candidates, path);
+    }
+    if candidates.is_empty() {
+        return vec![];
+    }
+
+    let roots = collect_candidate_ancestors(&candidates);
+    let mut skill_roots = Vec::<PathBuf>::new();
+    for root in roots {
+        push_unique_pathbuf(&mut skill_roots, root.join("skills"));
+        if let Some(local_workspace_id) = normalize_optional_text(local_workspace_id) {
+            push_unique_pathbuf(
+                &mut skill_roots,
+                root.join("workspaces")
+                    .join("local")
+                    .join(local_workspace_id)
+                    .join("skills"),
+            );
+        }
+    }
+
+    let mut existing = Vec::<PathBuf>::new();
+    for skill_root in skill_roots {
+        if fs::metadata(&skill_root)
+            .await
+            .map(|meta| meta.is_dir())
+            .unwrap_or(false)
+        {
+            existing.push(skill_root);
+        }
+    }
+    existing
+}
+
+async fn merge_skill_catalog_from_root(
+    skills_root: &Path,
+    records: &mut HashMap<String, ToolboxSkillRecord>,
+    specs: &mut HashMap<String, ToolboxSkillSpec>,
+) {
+    let mut entries = match fs::read_dir(skills_root).await {
+        Ok(value) => value,
+        Err(err) => {
+            warn!(
+                "prompt.load_workspace_skills read_dir failed: path={} err={}",
+                skills_root.display(),
+                err
+            );
+            return;
+        }
+    };
+
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let is_dir = entry
+            .file_type()
+            .await
+            .map(|file_type| file_type.is_dir())
+            .unwrap_or(false);
+        if !is_dir {
+            continue;
+        }
+
+        let Some(skill_key) = entry
+            .file_name()
+            .to_str()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(|name| name.to_string())
+        else {
+            continue;
+        };
+
+        let Some(skill_file_path) = find_skill_spec_file(skills_root, skill_key.as_str()).await
+        else {
+            continue;
+        };
+
+        let Some((raw_name, spec)) = read_skill_spec(skill_file_path.as_path()).await else {
+            continue;
+        };
+        let display_name = normalize_optional_text(Some(raw_name.as_str())).unwrap_or(skill_key);
+        records
+            .entry(display_name.clone())
+            .or_insert(ToolboxSkillRecord {
+                name: display_name.clone(),
+                introduce: spec.introduce.clone(),
+            });
+
+        specs
+            .entry(display_name.clone())
+            .or_insert_with(|| spec.clone());
+        specs.entry(raw_name).or_insert(spec);
+    }
+}
+
+async fn find_skill_spec_file(skills_root: &Path, skill_name: &str) -> Option<PathBuf> {
+    let skill_name = skill_name.trim();
+    if skill_name.is_empty() {
+        return None;
+    }
+    let skill_dir = skills_root.join(skill_name);
+    if !fs::metadata(&skill_dir)
+        .await
+        .map(|meta| meta.is_dir())
+        .unwrap_or(false)
+    {
+        return None;
+    }
+
+    for ext in SKILL_SPEC_EXTENSIONS {
+        let file_path = skill_dir.join(format!("{skill_name}.{ext}"));
+        if fs::metadata(&file_path)
+            .await
+            .map(|meta| meta.is_file())
+            .unwrap_or(false)
+        {
+            return Some(file_path);
+        }
+    }
+    None
+}
+
+async fn read_skill_spec(path: &Path) -> Option<(String, ToolboxSkillSpec)> {
+    let raw_content = match fs::read_to_string(path).await {
+        Ok(content) => content,
+        Err(err) => {
+            warn!(
+                "prompt.load_workspace_skills read failed: path={} err={}",
+                path.display(),
+                err
+            );
+            return None;
+        }
+    };
+
+    let ext = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase());
+    let mut spec =
+        match ext.as_deref() {
+            Some("json") => serde_json::from_str::<RawToolboxSkillSpec>(&raw_content)
+                .map_err(|err| err.to_string()),
+            Some("yaml") | Some("yml") => serde_yaml::from_str::<RawToolboxSkillSpec>(&raw_content)
+                .map_err(|err| err.to_string()),
+            _ => {
+                let json_try = serde_json::from_str::<RawToolboxSkillSpec>(&raw_content)
+                    .map_err(|err| err.to_string());
+                match json_try {
+                    Ok(spec) => Ok(spec),
+                    Err(json_err) => serde_yaml::from_str::<RawToolboxSkillSpec>(&raw_content)
+                        .map_err(|yaml_err| format!("json={json_err}; yaml={yaml_err}")),
+                }
+            }
+        }
+        .map_err(|err| {
+            warn!(
+                "prompt.load_workspace_skills parse failed: path={} err={}",
+                path.display(),
+                err
+            );
+            err
+        })
+        .ok()?;
+
+    spec.normalize();
+    let display_name = if spec.name.is_empty() {
+        path.parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|name| name.to_str())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(|name| name.to_string())
+            .unwrap_or_default()
+    } else {
+        spec.name.clone()
+    };
+    Some((display_name, spec.to_toolbox_skill_spec()))
 }
 
 fn contains_any_marker(content: &str, markers: &[&str]) -> bool {
@@ -1352,15 +1713,16 @@ fn message_tokens(messages: &[ChatMessage], tokenizer: &dyn Tokenizer) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
 
-    use buckyos_api::MsgRecordWithObject;
     use super::*;
-    use crate::agent_tool::AgentTool;
     use crate::agent_memory::{AgentMemory, AgentMemoryConfig};
     use crate::agent_session::AgentSession;
+    use crate::agent_tool::AgentTool;
     use crate::behavior::types::{StepLimits, TraceCtx};
     use crate::worklog::{WorklogTool, WorklogToolConfig};
+    use buckyos_api::MsgRecordWithObject;
     use tempfile::tempdir;
     use tokio::sync::Mutex;
 
@@ -1417,6 +1779,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn build_toolbox_loads_workspace_skills_and_merges_action_tool_defs() {
+        let temp = tempdir().expect("create tempdir");
+        let workspace_root = temp.path().join("workspace");
+        let skills_root = workspace_root.join("skills").join("coding");
+        tokio::fs::create_dir_all(&skills_root)
+            .await
+            .expect("create skills dir");
+        tokio::fs::write(
+            skills_root.join("coding.yaml"),
+            r#"
+name: coding
+introduce: coding skill
+actions: [build, test]
+loaded_tools: [exec_bash]
+"#,
+        )
+        .await
+        .expect("write skill spec");
+
+        let mut session = AgentSession::new("session-1", "did:web:agent.example.com", None);
+        session.cwd = workspace_root;
+        session.loaded_skills = vec!["coding".to_string()];
+        let session = Arc::new(Mutex::new(session));
+
+        let mut cfg = BehaviorConfig::default();
+        cfg.toolbox.tools.mode = crate::behavior::config::BehaviorToolMode::AllowList;
+        cfg.toolbox.tools.names = vec!["read_file".to_string()];
+        cfg.toolbox.default_load_actions = vec!["lint".to_string()];
+
+        let tools = vec![
+            AiToolSpec {
+                name: "read_file".to_string(),
+                description: "read file".to_string(),
+                args_schema: HashMap::new(),
+                output_schema: json!({"type":"object"}),
+            },
+            AiToolSpec {
+                name: "exec_bash".to_string(),
+                description: "exec bash".to_string(),
+                args_schema: HashMap::new(),
+                output_schema: json!({"type":"object"}),
+            },
+        ];
+
+        let (toolbox_text, loaded_tools) = build_toolbox(&tools, &cfg, Some(session))
+            .await
+            .expect("toolbox should be available");
+        let toolbox_json: Json =
+            serde_json::from_str(&toolbox_text).expect("toolbox should be valid json");
+
+        let record_names = toolbox_json["workspace_skill_records"]
+            .as_array()
+            .expect("workspace_skill_records should be array")
+            .iter()
+            .filter_map(|item| item.get("name"))
+            .filter_map(|item| item.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(record_names, vec!["coding"]);
+
+        let loaded_skills = toolbox_json["loaded_skills"]
+            .as_array()
+            .expect("loaded_skills should be array")
+            .iter()
+            .filter_map(|item| item.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(loaded_skills, vec!["coding"]);
+
+        let actions = toolbox_json["actions"]
+            .as_array()
+            .expect("actions should be array")
+            .iter()
+            .filter_map(|item| item.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(actions, vec!["lint", "build", "test"]);
+
+        let tool_names = loaded_tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(tool_names, vec!["read_file", "exec_bash"]);
+    }
+
+    #[tokio::test]
     async fn build_produces_valid_prompt() {
         let input = BehaviorExecInput {
             session_id: Some("session-1".to_string()),
@@ -1441,16 +1886,10 @@ mod tests {
             session: None,
         };
 
-        let req = PromptBuilder::build(
-            &input,
-            &[],
-            &input.behavior_cfg,
-            &MockTokenizer,
-            None,
-            None,
-        )
-            .await
-            .expect("build prompt");
+        let req =
+            PromptBuilder::build(&input, &[], &input.behavior_cfg, &MockTokenizer, None, None)
+                .await
+                .expect("build prompt");
 
         let system = req
             .payload
@@ -1627,10 +2066,7 @@ mod tests {
             first.text
         );
 
-        for line in [
-            line1.to_string(),
-            line2.to_string(),
-        ] {
+        for line in [line1.to_string(), line2.to_string()] {
             serde_json::from_str::<MsgRecordWithObject>(&line).expect("line should parse");
         }
     }

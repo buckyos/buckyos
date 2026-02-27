@@ -5,7 +5,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use buckyos_api::msg_queue::Message;
 use buckyos_api::{
-    MsgRecord, MsgRecordWithObject, OpenDanAgentSessionRecord, OpenDanSessionLink, get_buckyos_api_runtime
+    get_buckyos_api_runtime, MsgRecord, MsgRecordWithObject, OpenDanAgentSessionRecord,
+    OpenDanSessionLink,
 };
 use log::warn;
 use name_lib::DID;
@@ -90,6 +91,8 @@ struct SessionRuntimeMeta {
     workspace_info: Option<Json>,
     local_workspace_id: Option<String>,
     worklog: Vec<Json>,
+    loaded_skills: Vec<String>,
+    allow_tools: Vec<String>,
     cost_trace: Json,
 }
 
@@ -104,6 +107,8 @@ impl Default for SessionRuntimeMeta {
             workspace_info: None,
             local_workspace_id: None,
             worklog: vec![],
+            loaded_skills: vec![],
+            allow_tools: vec![],
             cost_trace: json!({}),
         }
     }
@@ -115,11 +120,15 @@ pub struct AgentSession {
     pub owner_agent: String,
     pub title: String,
     pub summary: String,
+    pub links: Vec<OpenDanSessionLink>,
+    pub tags: Vec<String>,
+    pub meta: Json,
+
+    pub last_step_summary: Option<String>,
     pub state: SessionState,
     pub wait_details: Option<SessionWaitDetails>,
     pub current_behavior: Option<String>,
     pub step_index: u32,
-    pub last_step_summary: Option<String>,
 
     pub msg_kmsgqueue_curosr: u64,
     pub event_kmsgqueue_curosr: u64,
@@ -127,12 +136,12 @@ pub struct AgentSession {
     pub cwd: PathBuf,
     pub workspace_info: Option<Json>,
     pub local_workspace_id: Option<String>,
-
     pub worklog: Vec<Json>,
+
+    pub loaded_skills: Vec<String>,
+    pub loaded_tools: Vec<String>,
+
     pub cost_trace: Json,
-    pub links: Vec<OpenDanSessionLink>,
-    pub tags: Vec<String>,
-    pub meta: Json,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
     pub last_activity_ms: u64,
@@ -163,6 +172,8 @@ impl AgentSession {
             workspace_info: None,
             local_workspace_id: None,
             worklog: vec![],
+            loaded_skills: vec![],
+            loaded_tools: vec![],
             cost_trace: json!({}),
             links: vec![],
             tags: vec![],
@@ -215,6 +226,8 @@ impl AgentSession {
             workspace_info: runtime_meta.workspace_info,
             local_workspace_id: normalize_optional_string(runtime_meta.local_workspace_id),
             worklog: runtime_meta.worklog,
+            loaded_skills: runtime_meta.loaded_skills,
+            loaded_tools: runtime_meta.allow_tools,
             cost_trace: normalize_json_object(runtime_meta.cost_trace),
             links: record.links,
             tags: record.tags,
@@ -276,6 +289,8 @@ impl AgentSession {
             workspace_info: self.workspace_info.clone(),
             local_workspace_id: self.local_workspace_id.clone(),
             worklog: self.worklog.clone(),
+            loaded_skills: self.loaded_skills.clone(),
+            allow_tools: self.loaded_tools.clone(),
             cost_trace: normalize_json_object(self.cost_trace.clone()),
         }
     }
@@ -467,7 +482,6 @@ impl AgentSession {
         })?;
         Ok(())
     }
-
 }
 
 #[derive(Clone, Debug)]

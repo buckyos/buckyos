@@ -654,7 +654,10 @@ impl AgentTool for LoadMemoryTool {
             .and_then(|v| v.as_str())
             .and_then(|raw| parse_rfc3339_to_utc(raw).ok());
 
-        let items = self.memory.load_memory(token_limit, tags, current_time).await?;
+        let items = self
+            .memory
+            .load_memory(token_limit, tags, current_time)
+            .await?;
         Ok(Json::String(AgentMemory::render_memory_items(&items)))
     }
 }

@@ -2802,7 +2802,10 @@ pub(crate) fn render_workspace_todo_prompt_from_db(
     token_budget: usize,
 ) -> Result<String, AgentToolError> {
     let conn = Connection::open(db_path).map_err(|err| {
-        AgentToolError::ExecFailed(format!("open todo db `{}` failed: {err}", db_path.display()))
+        AgentToolError::ExecFailed(format!(
+            "open todo db `{}` failed: {err}",
+            db_path.display()
+        ))
     })?;
     ensure_todo_schema(&conn)?;
     let items = list_for_prompt(&conn, workspace_id, RENDER_ITEM_LIMIT)?;
@@ -3630,7 +3633,9 @@ mod tests {
         assert!(text.contains("- T003 [WAIT] assignee=did:od:alice p=5 write docs"));
         assert!(text.contains("- T008 [WAIT] assignee=did:od:jarvis p=- cleanup backlog"));
         assert!(text.contains("- T002 [COMPLETE] assignee=did:od:bob p=30 implement feature"));
-        assert!(text.contains("- T007 [CHECK_FAILED] assignee=did:od:dave p=15 benchmark regression"));
+        assert!(
+            text.contains("- T007 [CHECK_FAILED] assignee=did:od:dave p=15 benchmark regression")
+        );
         assert!(text.contains("- T005 [FAILED] assignee=did:od:bob p=40 fix flaky ci"));
         assert!(text.contains("- T006 [DONE] assignee=did:od:alice p=10 benchmark happy path"));
 

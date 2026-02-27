@@ -815,15 +815,14 @@ pub struct WorklogListOptions {
 
 impl WorklogListOptions {
     fn into_filters(self, default_limit: usize, max_limit: usize) -> ListFilters {
-        let limit = self
-            .limit
-            .unwrap_or(default_limit)
-            .clamp(1, max_limit);
+        let limit = self.limit.unwrap_or(default_limit).clamp(1, max_limit);
         ListFilters {
             owner_session_id: self
                 .owner_session_id
                 .and_then(|v| optional_non_empty(v.as_str())),
-            workspace_id: self.workspace_id.and_then(|v| optional_non_empty(v.as_str())),
+            workspace_id: self
+                .workspace_id
+                .and_then(|v| optional_non_empty(v.as_str())),
             step_id: self.step_id.and_then(|v| optional_non_empty(v.as_str())),
             record_type: self
                 .record_type
@@ -2298,7 +2297,7 @@ mod tests {
         assert_eq!(records.len(), 2);
         for record in &records {
             if let Some(prompt_view) = record.prompt_view.as_ref() {
-                println!("{}",  prompt_view.digest);
+                println!("{}", prompt_view.digest);
             }
         }
 

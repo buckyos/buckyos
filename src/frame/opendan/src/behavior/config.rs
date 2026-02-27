@@ -43,7 +43,7 @@ pub struct BehaviorConfig {
     pub policy: String,
     pub input: String,
     pub memory: BehaviorMemoryConfig,
-    pub step_summary:String,
+    pub step_summary: String,
     pub output_protocol: BehaviorOutputProtocol,
     pub tools: BehaviorToolsConfig,
     pub toolbox: BehaviorToolboxConfig,
@@ -159,11 +159,9 @@ impl BehaviorConfig {
 
         cfg.tools.normalize();
         cfg.toolbox.normalize();
-        if cfg.toolbox.tools != BehaviorToolsConfig::default() {
-            cfg.tools = cfg.toolbox.tools.clone();
-        } else {
-            cfg.toolbox.tools = cfg.tools.clone();
-        }
+        let resolved_tools = cfg.toolbox.resolve_tools(&cfg.tools);
+        cfg.tools = resolved_tools.clone();
+        cfg.toolbox.tools = resolved_tools;
         cfg.policy = cfg.policy.trim().to_string();
         cfg.input = cfg.input.trim().to_string();
         cfg.memory.normalize();
@@ -270,15 +268,24 @@ impl BehaviorMemoryBucketConfig {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct BehaviorToolboxConfig {
+    pub mode: BehaviorToolboxMode,
     pub tools: BehaviorToolsConfig,
     pub skills: Vec<String>,
+    pub load_skills: Vec<String>,
+    #[serde(alias = "allow_tools")]
+    pub loaded_tools: Vec<String>,
+    pub default_load_actions: Vec<String>,
 }
 
 impl Default for BehaviorToolboxConfig {
     fn default() -> Self {
         Self {
+            mode: BehaviorToolboxMode::default(),
             tools: BehaviorToolsConfig::default(),
             skills: vec![],
+            load_skills: vec![],
+            loaded_tools: vec![],
+            default_load_actions: vec![],
         }
     }
 }
@@ -286,10 +293,65 @@ impl Default for BehaviorToolboxConfig {
 impl BehaviorToolboxConfig {
     fn normalize(&mut self) {
         self.tools.normalize();
+        Self::normalize_string_list(&mut self.skills);
+        Self::normalize_string_list(&mut self.load_skills);
+        Self::normalize_string_list(&mut self.loaded_tools);
+        Self::normalize_string_list(&mut self.default_load_actions);
+        if self.mode == BehaviorToolboxMode::None {
+            self.tools.mode = BehaviorToolMode::None;
+            self.tools.names.clear();
+        }
+    }
+
+    pub fn is_none_mode(&self) -> bool {
+        self.mode == BehaviorToolboxMode::None
+    }
+
+    pub fn effective_skills(&self) -> Vec<String> {
+        match self.mode {
+            BehaviorToolboxMode::None => vec![],
+            BehaviorToolboxMode::Alone => self.skills.clone(),
+            BehaviorToolboxMode::Inherit => Self::merge_unique(&self.load_skills, &self.skills),
+        }
+    }
+
+    pub fn resolve_tools(&self, legacy_tools: &BehaviorToolsConfig) -> BehaviorToolsConfig {
+        if self.mode == BehaviorToolboxMode::None {
+            return BehaviorToolsConfig {
+                mode: BehaviorToolMode::None,
+                names: vec![],
+            };
+        }
+        if self.tools != BehaviorToolsConfig::default() {
+            return self.tools.clone();
+        }
+
+        match self.mode {
+            BehaviorToolboxMode::None => BehaviorToolsConfig {
+                mode: BehaviorToolMode::None,
+                names: vec![],
+            },
+            BehaviorToolboxMode::Inherit => legacy_tools.clone(),
+            BehaviorToolboxMode::Alone => {
+                if self.loaded_tools.is_empty() {
+                    return BehaviorToolsConfig {
+                        mode: BehaviorToolMode::None,
+                        names: vec![],
+                    };
+                }
+                BehaviorToolsConfig {
+                    mode: BehaviorToolMode::AllowList,
+                    names: self.loaded_tools.clone(),
+                }
+            }
+        }
+    }
+
+    fn normalize_string_list(values: &mut Vec<String>) {
         let mut uniq = HashSet::<String>::new();
         let mut normalized = Vec::<String>::new();
-        for skill in &self.skills {
-            let trimmed = skill.trim();
+        for value in values.iter() {
+            let trimmed = value.trim();
             if trimmed.is_empty() {
                 continue;
             }
@@ -297,7 +359,37 @@ impl BehaviorToolboxConfig {
                 normalized.push(trimmed.to_string());
             }
         }
-        self.skills = normalized;
+        *values = normalized;
+    }
+
+    fn merge_unique(primary: &[String], secondary: &[String]) -> Vec<String> {
+        let mut out = Vec::<String>::new();
+        let mut uniq = HashSet::<String>::new();
+
+        for value in primary.iter().chain(secondary.iter()) {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if uniq.insert(trimmed.to_string()) {
+                out.push(trimmed.to_string());
+            }
+        }
+        out
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BehaviorToolboxMode {
+    Inherit,
+    Alone,
+    None,
+}
+
+impl Default for BehaviorToolboxMode {
+    fn default() -> Self {
+        Self::Inherit
     }
 }
 
@@ -648,5 +740,98 @@ memory:
 
         let filtered = tools.filter_tool_specs(&specs);
         assert_eq!(filtered.len(), 1);
+    }
+
+    #[test]
+    fn behavior_config_toolbox_none_mode_disables_tools_and_skills() {
+        let path = Path::new("route.yaml");
+        let cfg = BehaviorConfig::parse_from_str(
+            path,
+            r#"
+process_rule: route_rule
+tools:
+  mode: allow_list
+  names:
+    - exec_bash
+toolbox:
+  mode: none
+  skills:
+    - coding/rust
+  default_load_skills:
+    - buildin
+"#,
+        )
+        .expect("parse behavior yaml");
+
+        assert_eq!(cfg.tools.mode, BehaviorToolMode::None);
+        assert!(cfg.tools.names.is_empty());
+        assert_eq!(cfg.toolbox.tools.mode, BehaviorToolMode::None);
+        assert!(cfg.toolbox.effective_skills().is_empty());
+    }
+
+    #[test]
+    fn behavior_config_toolbox_alone_mode_uses_default_allow_functions_alias() {
+        let path = Path::new("do.yaml");
+        let cfg = BehaviorConfig::parse_from_str(
+            path,
+            r#"
+process_rule: do_rule
+tools:
+  mode: all
+toolbox:
+  mode: alone
+  skills:
+    - coding/rust
+    - coding/rust
+  default_allow_functions:
+    - read_file
+    - read_file
+    - bash
+  default_load_skills:
+    - buildin
+"#,
+        )
+        .expect("parse behavior yaml");
+
+        assert_eq!(cfg.tools.mode, BehaviorToolMode::AllowList);
+        assert_eq!(
+            cfg.tools.names,
+            vec!["read_file".to_string(), "bash".to_string()]
+        );
+        assert_eq!(cfg.toolbox.loaded_tools, cfg.tools.names);
+        assert_eq!(
+            cfg.toolbox.effective_skills(),
+            vec!["coding/rust".to_string()]
+        );
+    }
+
+    #[test]
+    fn behavior_config_toolbox_inherit_mode_merges_default_and_behavior_skills() {
+        let path = Path::new("plan.yaml");
+        let cfg = BehaviorConfig::parse_from_str(
+            path,
+            r#"
+process_rule: plan_rule
+tools:
+  mode: allow_list
+  names:
+    - exec_bash
+toolbox:
+  default_load_skills:
+    - buildin
+    - buildin
+  skills:
+    - coding/rust
+    - buildin
+"#,
+        )
+        .expect("parse behavior yaml");
+
+        assert_eq!(cfg.tools.mode, BehaviorToolMode::AllowList);
+        assert_eq!(cfg.tools.names, vec!["exec_bash".to_string()]);
+        assert_eq!(
+            cfg.toolbox.effective_skills(),
+            vec!["buildin".to_string(), "coding/rust".to_string()]
+        );
     }
 }

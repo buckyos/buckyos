@@ -28,7 +28,7 @@ use crate::agent_memory::{AgentMemory, AgentMemoryConfig};
 use crate::agent_session::{
     AgentSession, AgentSessionMgr, GetSessionTool, SessionInputItem, SessionState,
 };
-use crate::agent_tool::{AgentPolicy, ToolCall, ToolManager};
+use crate::agent_tool::{AgentPolicy, AgentSkillRecord, ToolCall, ToolManager};
 use crate::behavior::{
     ActionExecutionMode, ActionKind, ActionSpec, AgentWorkEvent, BehaviorConfig, BehaviorExecInput,
     BehaviorLLMResult, EnvKV, ExecutorReply, LLMBehavior, LLMBehaviorDeps, LLMTrackingInfo,
@@ -187,6 +187,7 @@ pub struct AIAgent {
     session_queue_bindings: Arc<RwLock<HashMap<String, SessionQueueBinding>>>,
     default_behavior: String,
     wakeup_seq: AtomicU64,
+
 }
 
 impl AIAgent {
@@ -301,6 +302,14 @@ impl AIAgent {
         let _ = agent.load_behavior_config(&agent.default_behavior).await?;
         Ok(agent)
     }
+
+    // pub async fn list_skills(&self) -> Result<Vec<AgentSkillRecord>> {
+    //     unimplemented!()
+    // }
+
+    // pub async fn load_skill(&self,skill_name) -> Result<AgentSkillSpec> {
+    //     unimplemented!()
+    // }
 
     pub async fn run_agent_loop(self: Arc<Self>, stop_after_ticks: Option<u32>) -> Result<()> {
         self.session_mgr
@@ -1531,7 +1540,6 @@ impl AIAgent {
         let Some(workspace_id) = normalize_session_id(workspace_id) else {
             return;
         };
-
 
         if todo.is_empty() || !self.tools.has_tool(TOOL_TODO_MANAGE) {
             return;

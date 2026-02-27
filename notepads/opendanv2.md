@@ -973,8 +973,8 @@ toolbox:
 toolbox:
     mode: alone
     skills: ["coding/rust"] # 这个例子没有default_load_skills，纯拼
-    default_load_functions: ["read_file","bash"] # 在function里使用read tool
-    default_load_actions: ["write_file","edit_file","bash"] #在action里使用write tool
+    default_allow_functions: ["read_file","bash"] # 在function里使用read tool
+   
 ```
 
 要点：
@@ -999,7 +999,7 @@ toolbox:
 #### 12.4.3 工程约束（提示词工程师必看）
 
 * 优先使用 `skills`，和 `default_load_skills`,
-* 使用`default_load_functions`， `default_load_actions` 时必须清楚的知道自己在干啥，不要和当前加载的skills冲突了
+* 使用`allow_tools`， `default_load_actions` 时必须清楚的知道自己在干啥，不要和当前加载的skills冲突了
 * 一个 Behavior 只给完成目标所需的最小工具集，不要“为了保险”扩大集合。
 * 在 process_rule 中明确工具使用策略：  
   先用已有工具完成；确认不足时再触发加载/切换。

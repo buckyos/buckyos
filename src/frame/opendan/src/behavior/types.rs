@@ -145,8 +145,10 @@ pub struct BehaviorLLMResult {
     pub toipc_tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<ActionSpec>,
-    // #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    // pub session_delta: Vec<Json>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub load_skills: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enable_tools: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

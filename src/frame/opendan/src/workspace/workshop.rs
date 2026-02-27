@@ -14,7 +14,10 @@ use super::local_workspace::{
     SessionWorkspaceBinding, WorkshopIndex, WorkshopWorkspaceRecord,
 };
 use super::todo::{TodoTool, TodoToolConfig, TOOL_TODO_MANAGE};
-use crate::agent_tool::{AgentTool, AgentToolError, MCPToolConfig, ToolManager, ToolSpec};
+use crate::agent_tool::{
+    AgentSkillRecord, AgentSkillSpec, AgentTool, AgentToolError, MCPToolConfig, ToolManager,
+    ToolSpec,
+};
 use crate::behavior::TraceCtx;
 use crate::worklog::{WorklogTool, WorklogToolConfig, TOOL_WORKLOG_MANAGE};
 
@@ -269,6 +272,19 @@ impl AgentWorkshop {
 
     pub async fn cleanup(&self) -> Result<LocalWorkspaceCleanupResult, AgentToolError> {
         self.local_workspace_mgr.cleanup().await
+    }
+
+    pub async fn list_skills(
+        &self,
+        local_workspace_id: &str,
+    ) -> Result<Vec<AgentSkillRecord>, AgentToolError> {
+        self.local_workspace_mgr
+            .list_skills(local_workspace_id)
+            .await
+    }
+
+    pub async fn load_skill(&self, skill_name: &str) -> Result<AgentSkillSpec, AgentToolError> {
+        self.local_workspace_mgr.load_skill(skill_name).await
     }
 
     pub fn register_tools(&self, tool_mgr: &ToolManager) -> Result<(), AgentToolError> {
