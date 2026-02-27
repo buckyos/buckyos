@@ -780,44 +780,54 @@ impl AIAgent {
             self.apply_memory_updates(&trace, llm_result.set_memory.as_slice())
                 .await;
 
-            let mut guard = session.lock().await;
             let step_summary = build_step_summary(
                 &trace,
                 behavior_cfg,
-                &llm_result.next_behavior,
+                &llm_result,
                 &tracking,
                 action_results.as_slice(),
-            );
-            guard.set_last_step_summary(step_summary.clone());
-            guard.append_worklog(step_summary.clone());
+                session.clone(),
+            )
+            .await;
 
-            let workspace_id = resolve_session_workspace_id(&guard);
+            let (workspace_id, msg_cursor) = {
+                let mut guard = session.lock().await;
+                guard.last_step_summary = step_summary.clone();
+                (
+                    resolve_session_workspace_id(&guard),
+                    guard.msg_kmsgqueue_curosr,
+                )
+            };
 
             self.apply_workspace_side_effects(
                 &trace,
                 session_id.as_str(),
                 workspace_id.as_deref(),
-                &step_summary,
                 &llm_result.todo,
             )
             .await;
 
             //update input used
-            self.commit_session_queue_msg_ack(session_id.as_str(), guard.msg_kmsgqueue_curosr)
+            self.commit_session_queue_msg_ack(session_id.as_str(), msg_cursor)
                 .await?;
             current_step_count += 1;
+            result_report.executed_steps = current_step_count;
+            result_report.last_result = Some(llm_result.clone());
 
-            if llm_result.next_behavior.is_some() {
-                let next_behavior = llm_result.next_behavior.unwrap();
-                if next_behavior != behavior_name {
-                    //is WAIT or END?
-                    guard.current_behavior = Some(next_behavior.clone());
-                    guard.step_index = 0;
-                    result_report.behavior_switched = true;
-                }
+            let transition = {
+                let mut guard = session.lock().await;
+                apply_session_behavior_transition(
+                    &mut guard,
+                    self.default_behavior.as_str(),
+                    behavior_cfg.step_limit,
+                    llm_result.next_behavior.as_deref(),
+                )
+            };
+            result_report.keep_running = transition.keep_running;
+            result_report.behavior_switched = transition.behavior_switched;
+
+            if !transition.keep_running || llm_result.next_behavior.is_some() {
                 break;
-            } else {
-                guard.step_index += 1;
             }
         }
 
@@ -1516,43 +1526,12 @@ impl AIAgent {
         trace: &TraceCtx,
         session_id: &str,
         workspace_id: Option<&str>,
-        step_summary: &Json,
         todo: &[Json],
     ) {
         let Some(workspace_id) = normalize_session_id(workspace_id) else {
             return;
         };
 
-        if self.tools.has_tool(TOOL_WORKLOG_MANAGE) {
-            let summary_text = step_summary
-                .get("summary")
-                .and_then(|value| value.as_str())
-                .unwrap_or("step summary");
-            let call = ToolCall {
-                name: TOOL_WORKLOG_MANAGE.to_string(),
-                args: json!({
-                    "action": "append_step_summary",
-                    "owner_session_id": session_id,
-                    "workspace_id": workspace_id,
-                    "step_id": format!("{}#{}", trace.behavior, trace.step_idx),
-                    "step_index": trace.step_idx,
-                    "behavior": trace.behavior,
-                    "summary": summary_text,
-                    "payload": step_summary,
-                }),
-                call_id: format!(
-                    "step-worklog-{}-{}",
-                    trace.step_idx,
-                    self.wakeup_seq.fetch_add(1, Ordering::Relaxed)
-                ),
-            };
-            if let Err(err) = self.tools.call_tool(trace, call).await {
-                warn!(
-                    "agent.workspace_worklog_side_effect_failed: did={} session={} workspace={} behavior={} step={} err={}",
-                    self.did, session_id, workspace_id, trace.behavior, trace.step_idx, err
-                );
-            }
-        }
 
         if todo.is_empty() || !self.tools.has_tool(TOOL_TODO_MANAGE) {
             return;
@@ -1830,25 +1809,29 @@ fn apply_session_behavior_transition(
     }
 }
 
-fn build_step_summary(
+async fn build_step_summary(
     trace: &TraceCtx,
     behavior_cfg: &BehaviorConfig,
-    next_behavior: &Option<String>,
-    tracking: &LLMTrackingInfo,
+    llm_result: &BehaviorLLMResult,
+    _tracking: &LLMTrackingInfo,
     action_results: &[Json],
-) -> Json {
-    json!({
-        "summary": format!("{}#{}", trace.behavior, trace.step_idx),
-        "behavior": behavior_cfg.name,
-        "next_behavior": next_behavior,
-        "token_usage": {
-            "prompt": tracking.token_usage.prompt,
-            "completion": tracking.token_usage.completion,
-            "total": tracking.token_usage.total,
-        },
-        "actions": action_results,
-        "ts_ms": now_ms(),
-    })
+    session: Arc<Mutex<AgentSession>>,
+) -> Option<String> {
+    let mut env_context = HashMap::<String, Json>::new();
+
+    if let Ok(mut llm_result_json) = serde_json::to_value(llm_result) {
+        llm_result_json["action_results"] = Json::Array(action_results.to_vec());
+        env_context.insert("llm_result".to_string(), llm_result_json);
+    }
+
+    if let Ok(trace_json) = serde_json::to_value(trace) {
+        env_context.insert("trace".to_string(), trace_json);
+    }
+
+    AgentEnvironment::render_prompt(&behavior_cfg.step_summary, &env_context, session)
+        .await
+        .ok()
+        .map(|render_result| render_result.rendered)
 }
 
 async fn resolve_workspace_root(agent_root: &Path, env_name: &str) -> Result<PathBuf> {

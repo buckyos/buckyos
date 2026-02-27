@@ -43,10 +43,12 @@ pub struct BehaviorConfig {
     pub policy: String,
     pub input: String,
     pub memory: BehaviorMemoryConfig,
-    pub step_limit: u32,
+    pub step_summary:String,
     pub output_protocol: BehaviorOutputProtocol,
     pub tools: BehaviorToolsConfig,
     pub toolbox: BehaviorToolboxConfig,
+
+    pub step_limit: u32,
     pub llm: LLMBehaviorConfig,
     pub limits: StepLimits,
 }
@@ -59,6 +61,7 @@ impl Default for BehaviorConfig {
             policy: String::new(),
             input: String::new(),
             memory: BehaviorMemoryConfig::default(),
+            step_summary: String::new(),
             step_limit: 0,
             output_protocol: BehaviorOutputProtocol::default(),
             tools: BehaviorToolsConfig::default(),

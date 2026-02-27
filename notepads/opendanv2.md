@@ -916,7 +916,7 @@ input: |
 # step = 0 的时候不构造这个
 step_summary: |
   {{llm_result.thinking}}
-  {{llm_result.action_result}}
+  {{llm_result.action_results}}
 
 limits:
   max_tool_rounds: 1
