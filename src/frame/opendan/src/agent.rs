@@ -28,11 +28,13 @@ use crate::agent_memory::{AgentMemory, AgentMemoryConfig};
 use crate::agent_session::{
     AgentSession, AgentSessionMgr, GetSessionTool, SessionInputItem, SessionState,
 };
-use crate::agent_tool::{AgentPolicy, AgentSkillRecord, ToolManager, TOOL_TODO_MANAGE};
+use crate::agent_tool::{
+    normalize_tool_name, AgentPolicy, DoAction, DoActionResults, DoActions, AgentToolManager,
+    TOOL_EXEC_BASH, TOOL_TODO_MANAGE,
+};
 use crate::behavior::{
-    ActionExecutionMode, ActionKind, ActionSpec, AgentWorkEvent, BehaviorConfig, BehaviorExecInput,
-    BehaviorLLMResult, EnvKV, ExecutorReply, LLMBehavior, LLMBehaviorDeps, LLMTrackingInfo,
-    Tokenizer, TraceCtx, WorklogSink,
+    AgentWorkEvent, BehaviorConfig, BehaviorExecInput, BehaviorLLMResult, ExecutorReply,
+    LLMBehavior, LLMBehaviorDeps, LLMTrackingInfo, Tokenizer, TraceCtx, WorklogSink,
 };
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
@@ -171,7 +173,7 @@ pub struct AIAgent {
     self_md: String,
     behaviors_dir: PathBuf,
     workspace_root: PathBuf,
-    tools: Arc<ToolManager>,
+    tools: Arc<AgentToolManager>,
     memory: AgentMemory,
     environment: Arc<AgentEnvironment>,
     session_mgr: Arc<AgentSessionMgr>,
@@ -226,7 +228,7 @@ impl AIAgent {
         let workspace_root = resolve_workspace_root(&agent_root, &cfg.environment_dir_name).await?;
         let session_root = workspace_root.join("session");
 
-        let tools = Arc::new(ToolManager::new());
+        let tools = Arc::new(AgentToolManager::new());
 
         let environment = Arc::new(
             AgentEnvironment::new(workspace_root.clone())
@@ -792,7 +794,7 @@ impl AIAgent {
                 behavior_cfg,
                 &llm_result,
                 &tracking,
-                action_results.as_slice(),
+                &action_results,
                 session.clone(),
             )
             .await;
@@ -936,7 +938,7 @@ impl AIAgent {
     ) -> Result<(
         crate::behavior::BehaviorLLMResult,
         LLMTrackingInfo,
-        Vec<Json>,
+        DoActionResults,
     )> {
         let llm = LLMBehavior::new(
             behavior_cfg.to_llm_behavior_config(),
@@ -959,7 +961,7 @@ impl AIAgent {
 
         //todo: run actions in parallel if possible based on action.execution_mode
         let action_results = self
-            .execute_actions(trace, llm_result.actions.as_slice())
+            .execute_actions(trace, &llm_result.actions)
             .await;
 
         Ok((llm_result, tracking, action_results))
@@ -1435,64 +1437,166 @@ impl AIAgent {
         Ok(())
     }
 
-    async fn execute_actions(&self, trace: &TraceCtx, actions: &[ActionSpec]) -> Vec<Json> {
-        if actions.is_empty() {
-            return vec![];
+    async fn execute_actions(&self, trace: &TraceCtx, actions: &DoActions) -> DoActionResults {
+        let mut out = DoActionResults::default();
+        if actions.cmds.is_empty() {
+            out.summary = "SUCCESS (0), FAILED (0)".to_string();
+            return out;
         }
 
-        let mut out = Vec::<Json>::with_capacity(actions.len());
-        for action in actions {
-            if action.kind != ActionKind::Bash {
-                out.push(json!({
-                    "ok": false,
-                    "kind": format!("{:?}", action.kind),
-                    "title": action.title,
-                    "error": "unsupported action kind"
-                }));
-                continue;
-            }
+        let run_all = actions.mode.trim().eq_ignore_ascii_case("all");
+        let mut success = 0usize;
+        let mut failed = 0usize;
+        let mut skipped = 0usize;
 
-            let args = json!({
-                "command": action.command,
-                "cwd": action.cwd,
-                "timeout_ms": action.timeout_ms,
-                "allow_network": action.allow_network,
-            });
-            let call = AiToolCall {
-                name: "exec_bash".to_string(),
-                args: value_to_object_map(args),
-                call_id: format!(
-                    "action-{}-{}-{}",
-                    trace.step_idx,
-                    now_ms(),
-                    self.wakeup_seq.fetch_add(1, Ordering::Relaxed)
-                ),
+        for (idx, action) in actions.cmds.iter().enumerate() {
+            let (tool_name, tool_args, detail_key, detail_action) = match action {
+                DoAction::Exec(command) => {
+                    let command = command.trim();
+                    if command.is_empty() {
+                        failed = failed.saturating_add(1);
+                        out.details.insert(
+                            format!("#{idx}:exec"),
+                            json!({
+                                "ok": false,
+                                "action": "exec",
+                                "error": "empty command is not allowed",
+                            }),
+                        );
+                        if !run_all {
+                            skipped = actions.cmds.len().saturating_sub(idx + 1);
+                            break;
+                        }
+                        continue;
+                    }
+                    (
+                        TOOL_EXEC_BASH.to_string(),
+                        json!({ "command": command }),
+                        format!("#{idx}:exec `{command}`"),
+                        json!({
+                            "kind": "exec",
+                            "command": command,
+                        }),
+                    )
+                }
+                DoAction::Call(call) => {
+                    let normalized_name = normalize_tool_name(&call.call_action_name);
+                    if normalized_name.is_empty() {
+                        failed = failed.saturating_add(1);
+                        out.details.insert(
+                            format!("#{idx}:call"),
+                            json!({
+                                "ok": false,
+                                "action": "call_tool",
+                                "error": "action name cannot be empty",
+                                "raw_action_name": call.call_action_name,
+                            }),
+                        );
+                        if !run_all {
+                            skipped = actions.cmds.len().saturating_sub(idx + 1);
+                            break;
+                        }
+                        continue;
+                    }
+
+                    if !call.call_params.is_object() {
+                        failed = failed.saturating_add(1);
+                        out.details.insert(
+                            format!("#{idx}:call `{normalized_name}`"),
+                            json!({
+                                "ok": false,
+                                "action": "call_tool",
+                                "action_name": normalized_name,
+                                "error": "action params must be json object",
+                                "raw_params": call.call_params,
+                            }),
+                        );
+                        if !run_all {
+                            skipped = actions.cmds.len().saturating_sub(idx + 1);
+                            break;
+                        }
+                        continue;
+                    }
+
+                    let params = call.call_params.clone();
+                    (
+                        normalized_name.clone(),
+                        params.clone(),
+                        format!("#{idx}:call `{normalized_name}`"),
+                        json!({
+                            "kind": "call_tool",
+                            "action_name": normalized_name,
+                            "params": params,
+                        }),
+                    )
+                }
             };
 
-            let run_result = self.tools.call_tool(trace, call).await;
-            let record = match run_result {
-                Ok(result) => json!({
-                    "ok": true,
-                    "title": action.title,
-                    "execution_mode": format!("{:?}", action.execution_mode),
-                    "result": result
-                }),
-                Err(err) => json!({
-                    "ok": false,
-                    "title": action.title,
-                    "execution_mode": format!("{:?}", action.execution_mode),
-                    "error": err.to_string()
-                }),
-            };
-            out.push(record);
+            let run_result = self
+                .tools
+                .call_tool(
+                    trace,
+                    AiToolCall {
+                        name: tool_name.clone(),
+                        args: value_to_object_map(tool_args.clone()),
+                        call_id: format!(
+                            "action-{}-{}-{}",
+                            trace.step_idx,
+                            now_ms(),
+                            self.wakeup_seq.fetch_add(1, Ordering::Relaxed)
+                        ),
+                    },
+                )
+                .await;
 
-            if action.execution_mode == ActionExecutionMode::Parallel {
-                debug!(
-                    "agent.action_parallel_hint ignored for now: did={} behavior={} title={}",
-                    self.did, trace.behavior, action.title
-                );
+            match run_result {
+                Ok(result) => {
+                    success = success.saturating_add(1);
+                    out.details.insert(
+                        detail_key,
+                        json!({
+                            "ok": true,
+                            "tool": tool_name,
+                            "action": detail_action,
+                            "result": result,
+                        }),
+                    );
+                }
+                Err(err) => {
+                    failed = failed.saturating_add(1);
+                    out.details.insert(
+                        detail_key,
+                        json!({
+                            "ok": false,
+                            "tool": tool_name,
+                            "action": detail_action,
+                            "error": err.to_string(),
+                        }),
+                    );
+
+                    if !run_all {
+                        skipped = actions.cmds.len().saturating_sub(idx + 1);
+                        break;
+                    }
+                }
             }
         }
+
+        if skipped > 0 {
+            out.details.insert(
+                "__skipped__".to_string(),
+                json!({
+                    "count": skipped,
+                    "reason": "mode=failed_end and previous action failed",
+                }),
+            );
+        }
+
+        out.summary = if skipped > 0 {
+            format!("SUCCESS ({success}), FAILED ({failed}), SKIPPED ({skipped})")
+        } else {
+            format!("SUCCESS ({success}), FAILED ({failed})")
+        };
         out
     }
 
@@ -1826,13 +1930,17 @@ async fn build_step_summary(
     behavior_cfg: &BehaviorConfig,
     llm_result: &BehaviorLLMResult,
     _tracking: &LLMTrackingInfo,
-    action_results: &[Json],
+    action_results: &DoActionResults,
     session: Arc<Mutex<AgentSession>>,
 ) -> Option<String> {
     let mut env_context = HashMap::<String, Json>::new();
 
     if let Ok(mut llm_result_json) = serde_json::to_value(llm_result) {
-        llm_result_json["action_results"] = Json::Array(action_results.to_vec());
+        let json_action_result = serde_json::to_value(action_results);
+        if json_action_result.is_ok() {
+            let json_action_result = json_action_result.unwrap();
+            llm_result_json["action_results"] = json_action_result;
+        }
         env_context.insert("llm_result".to_string(), llm_result_json);
     }
 

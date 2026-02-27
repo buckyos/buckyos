@@ -13,7 +13,7 @@ use tokio::fs;
 
 use super::*;
 use crate::agent_enviroment::AgentEnvironment;
-use crate::agent_tool::{AgentTool, ToolManager, ToolSpec, TOOL_EXEC_BASH};
+use crate::agent_tool::{AgentTool, DoAction, DoActions, AgentToolManager, ToolSpec, TOOL_EXEC_BASH};
 use crate::test_utils::{MockAicc, MockTaskMgrHandler};
 use crate::workspace::{AgentWorkshop, AgentWorkshopConfig};
 
@@ -185,7 +185,7 @@ async fn run_step_with_tool_followup() {
         requests: requests.clone(),
     })));
 
-    let tool_mgr = Arc::new(ToolManager::new());
+    let tool_mgr = Arc::new(AgentToolManager::new());
     tool_mgr
         .register_tool(EchoTool)
         .expect("register tool.echo should succeed");
@@ -252,7 +252,7 @@ tools:
         "[TEST][RUN_STEP] tool_followup result: next_behavior={:?} is_sleep={} actions={} usage_total={}",
         result.next_behavior,
         result.is_sleep(),
-        result.actions.len(),
+        result.actions.cmds.len(),
         tracking.token_usage.total
     );
     assert!(result.is_sleep());
@@ -335,7 +335,7 @@ process_rule: test_rule
             },
         ))),
         aicc,
-        tools: Arc::new(ToolManager::new()),
+        tools: Arc::new(AgentToolManager::new()),
         memory: None,
         policy: Arc::new(MockPolicy { tools: vec![] }),
         worklog: Arc::new(MockWorklog),
@@ -409,7 +409,7 @@ process_rule: test_rule
     )
     .await;
 
-    let tool_mgr = Arc::new(ToolManager::new());
+    let tool_mgr = Arc::new(AgentToolManager::new());
     let deps = LLMBehaviorDeps {
         taskmgr: Arc::new(TaskManagerClient::new_in_process(Box::new(
             MockTaskMgrHandler {
@@ -499,7 +499,7 @@ process_rule: test_rule
             },
         ))),
         aicc,
-        tools: Arc::new(ToolManager::new()),
+        tools: Arc::new(AgentToolManager::new()),
         memory: None,
         policy: Arc::new(MockPolicy { tools: vec![] }),
         worklog: Arc::new(MockWorklog),
@@ -625,7 +625,7 @@ process_rule: test_rule
             },
         ))),
         aicc,
-        tools: Arc::new(ToolManager::new()),
+        tools: Arc::new(AgentToolManager::new()),
         memory: None,
         policy: Arc::new(MockPolicy { tools: vec![] }),
         worklog: Arc::new(MockWorklog),
@@ -705,16 +705,27 @@ process_rule: test_rule
     );
 }
 
-fn run_actions_for_test(actions: &[ActionSpec]) -> Vec<Observation> {
+fn run_actions_for_test(actions: &DoActions) -> Vec<Observation> {
     actions
+        .cmds
         .iter()
-        .map(|action| {
+        .enumerate()
+        .map(|(idx, action)| {
+            let (name, command) = match action {
+                DoAction::Exec(command) => (format!("exec-{idx}"), command.clone()),
+                DoAction::Call(call) => {
+                    let name = call.call_action_name.clone();
+                    let command = serde_json::to_string(&call.call_params)
+                        .unwrap_or_else(|_| "{}".to_string());
+                    (name, command)
+                }
+            };
             println!(
-                "[TEST][ACTION] running action title='{}' command='{}'",
-                action.title, action.command
+                "[TEST][ACTION] running action name='{}' command='{}'",
+                name, command
             );
             let content = json!({
-                "command": action.command,
+                "command": command,
                 "exit_code": 0,
                 "stdout": "ok",
                 "stderr": ""
@@ -722,7 +733,7 @@ fn run_actions_for_test(actions: &[ActionSpec]) -> Vec<Observation> {
             println!("[TEST][ACTION] action observation: {}", content);
             Observation {
                 source: ObservationSource::Action,
-                name: action.title.clone(),
+                name,
                 bytes: serde_json::to_string(&content).unwrap_or_default().len(),
                 content,
                 ok: true,
@@ -744,19 +755,12 @@ async fn run_step_then_run_actions_followup() {
                 json: Some(json!({
                     "is_sleep": false,
                     "next_behavior": null,
-                    "actions": [{
-                        "kind": "bash",
-                        "title": "echo action",
-                        "command": "echo hello",
-                        "cwd": null,
-                        "timeout_ms": 1000,
-                        "allow_network": false,
-                        "fs_scope": {
-                            "read_roots": [],
-                            "write_roots": []
-                        },
-                        "rationale": "example action"
-                    }],
+                    "actions": {
+                        "mode": "failed_end",
+                        "cmds": [
+                            "echo hello"
+                        ]
+                    },
                     "output": {"phase":"action_planned"}
                 })),
                 tool_calls: vec![],
@@ -781,7 +785,10 @@ async fn run_step_then_run_actions_followup() {
                 json: Some(json!({
                     "is_sleep": true,
                     "next_behavior": "END",
-                    "actions": [],
+                    "actions": {
+                        "mode": "failed_end",
+                        "cmds": []
+                    },
                     "output": {"final":"after_action"}
                 })),
                 tool_calls: vec![],
@@ -821,7 +828,7 @@ tools:
             responses: responses.clone(),
             requests: requests.clone(),
         }))),
-        tools: Arc::new(ToolManager::new()),
+        tools: Arc::new(AgentToolManager::new()),
         memory: None,
         policy: Arc::new(MockPolicy { tools: vec![] }),
         worklog: Arc::new(MockWorklog),
@@ -860,10 +867,10 @@ tools:
         "[TEST][RUN_STEP] first result: next_behavior={:?} is_sleep={} actions={} usage_total={}",
         first_result.next_behavior,
         first_result.is_sleep(),
-        first_result.actions.len(),
+        first_result.actions.cmds.len(),
         first_tracking.token_usage.total
     );
-    assert_eq!(first_result.actions.len(), 1);
+    assert_eq!(first_result.actions.cmds.len(), 1);
     assert!(!first_result.is_sleep());
 
     let _action_observations = run_actions_for_test(&first_result.actions);
@@ -892,7 +899,7 @@ tools:
         "[TEST][RUN_STEP] second result: next_behavior={:?} is_sleep={} actions={} usage_total={}",
         second_result.next_behavior,
         second_result.is_sleep(),
-        second_result.actions.len(),
+        second_result.actions.cmds.len(),
         second_tracking.token_usage.total
     );
     assert!(second_result.is_sleep());
@@ -920,7 +927,7 @@ async fn run_step_with_workshop_list_dir_then_plan_python_actions() {
         .await
         .expect("write seed file");
 
-    let tool_mgr = Arc::new(ToolManager::new());
+    let tool_mgr = Arc::new(AgentToolManager::new());
     workshop
         .register_tools(tool_mgr.as_ref())
         .expect("register workshop tools");
@@ -960,33 +967,13 @@ async fn run_step_with_workshop_list_dir_then_plan_python_actions() {
                 json: Some(json!({
                     "is_sleep": false,
                     "next_behavior": "on_action",
-                    "actions": [{
-                        "kind": "bash",
-                        "title": "write test.py",
-                        "command": "cat > artifacts/test.py <<'PY'\nprint('hello workshop')\nPY",
-                        "execution_mode": "serial",
-                        "cwd": null,
-                        "timeout_ms": 1000,
-                        "allow_network": false,
-                        "fs_scope": {
-                            "read_roots": [],
-                            "write_roots": ["artifacts"]
-                        },
-                        "rationale": "create python test script"
-                    }, {
-                        "kind": "bash",
-                        "title": "chmod test.py executable",
-                        "command": "chmod +x artifacts/test.py",
-                        "execution_mode": "serial",
-                        "cwd": null,
-                        "timeout_ms": 1000,
-                        "allow_network": false,
-                        "fs_scope": {
-                            "read_roots": [],
-                            "write_roots": ["artifacts"]
-                        },
-                        "rationale": "make script executable"
-                    }],
+                    "actions": {
+                        "mode": "failed_end",
+                        "cmds": [
+                            "cat > artifacts/test.py <<'PY'\nprint('hello workshop')\nPY",
+                            "chmod +x artifacts/test.py"
+                        ]
+                    },
                     "output": {"phase":"actions_planned"}
                 })),
                 tool_calls: vec![],
@@ -1066,17 +1053,23 @@ tools:
         .expect("run_step should succeed");
     assert_eq!(tracking.tool_trace.len(), 1);
     assert_eq!(tracking.tool_trace[0].tool_name, TOOL_EXEC_BASH);
-    assert_eq!(result.actions.len(), 2);
-    assert_eq!(
-        result.actions[0].execution_mode,
-        ActionExecutionMode::Serial
-    );
-    assert_eq!(
-        result.actions[1].execution_mode,
-        ActionExecutionMode::Serial
-    );
-    assert!(result.actions[0].command.contains("artifacts/test.py"));
-    assert_eq!(result.actions[1].command, "chmod +x artifacts/test.py");
+    assert_eq!(result.actions.cmds.len(), 2);
+    let first_action_cmd = match &result.actions.cmds[0] {
+        DoAction::Exec(command) => command.as_str(),
+        DoAction::Call(call) => panic!(
+            "expected first action to be exec command, got call: {} {:?}",
+            call.call_action_name, call.call_params
+        ),
+    };
+    let second_action_cmd = match &result.actions.cmds[1] {
+        DoAction::Exec(command) => command.as_str(),
+        DoAction::Call(call) => panic!(
+            "expected second action to be exec command, got call: {} {:?}",
+            call.call_action_name, call.call_params
+        ),
+    };
+    assert!(first_action_cmd.contains("artifacts/test.py"));
+    assert_eq!(second_action_cmd, "chmod +x artifacts/test.py");
 
     let requests_guard = requests.lock().expect("requests lock");
     assert_eq!(requests_guard.len(), 2);
@@ -1099,20 +1092,18 @@ tools:
         step_idx: 1,
         wakeup_id: "wakeup-workshop-actions".to_string(),
     };
-    for (idx, action) in result.actions.iter().enumerate() {
-        assert_eq!(
-            action.execution_mode,
-            ActionExecutionMode::Serial,
-            "test fixture expects serial actions before executing sequentially"
-        );
-
-        let mut args = json!({
-            "command": action.command,
-            "timeout_ms": action.timeout_ms,
+    for (idx, action) in result.actions.cmds.iter().enumerate() {
+        let command = match action {
+            DoAction::Exec(command) => command,
+            DoAction::Call(call) => panic!(
+                "expected executable command action for workshop test, got call: {} {:?}",
+                call.call_action_name, call.call_params
+            ),
+        };
+        let args = json!({
+            "command": command,
+            "timeout_ms": 1_000,
         });
-        if let Some(cwd) = &action.cwd {
-            args["cwd"] = json!(cwd);
-        }
 
         let raw = tool_mgr
             .call_tool(

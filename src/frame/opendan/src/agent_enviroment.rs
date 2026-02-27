@@ -15,7 +15,7 @@ use buckyos_api::msg_queue::Message;
 
 use crate::agent::{AIAgent, InputQueueKind};
 use crate::agent_session::AgentSession;
-use crate::agent_tool::{AgentToolError, ToolManager};
+use crate::agent_tool::{AgentToolError, AgentToolManager};
 use crate::workspace::{
     get_next_ready_todo_code, get_next_ready_todo_text, AgentWorkshop, AgentWorkshopConfig,
 };
@@ -68,14 +68,14 @@ impl AgentEnvironment {
         self.workshop.workspace_root()
     }
 
-    pub fn register_workshop_tools(&self, tool_mgr: &ToolManager) -> Result<(), AgentToolError> {
+    pub fn register_workshop_tools(&self, tool_mgr: &AgentToolManager) -> Result<(), AgentToolError> {
         self.workshop.register_tools(tool_mgr)
     }
 
     // Backward compatibility for old call sites.
     pub fn register_basic_workshop_tools(
         &self,
-        tool_mgr: &ToolManager,
+        tool_mgr: &AgentToolManager,
     ) -> Result<(), AgentToolError> {
         self.register_workshop_tools(tool_mgr)
     }

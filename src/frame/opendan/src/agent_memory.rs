@@ -14,7 +14,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 use crate::agent_tool::{
-    AgentTool, AgentToolError, ToolManager, ToolSpec, TOOL_LOAD_MEMORY, TOOL_SET_MEMORY,
+    AgentTool, AgentToolError, AgentToolManager, ToolSpec, TOOL_LOAD_MEMORY,
 };
 use crate::behavior::TraceCtx;
 
@@ -129,10 +129,7 @@ impl AgentMemory {
         &self.inner.memory_dir
     }
 
-    pub fn register_tools(&self, tool_mgr: &ToolManager) -> Result<(), AgentToolError> {
-        if !tool_mgr.has_tool(TOOL_SET_MEMORY) {
-            tool_mgr.register_tool(SetMemoryTool::new(self.clone()))?;
-        }
+    pub fn register_tools(&self, tool_mgr: &AgentToolManager) -> Result<(), AgentToolError> {
         if !tool_mgr.has_tool(TOOL_LOAD_MEMORY) {
             tool_mgr.register_tool(LoadMemoryTool::new(self.clone()))?;
         }
@@ -543,63 +540,6 @@ impl AgentMemory {
     }
 }
 
-struct SetMemoryTool {
-    memory: AgentMemory,
-}
-
-impl SetMemoryTool {
-    fn new(memory: AgentMemory) -> Self {
-        Self { memory }
-    }
-}
-
-#[async_trait]
-impl AgentTool for SetMemoryTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_SET_MEMORY.to_string(),
-            description: "Set or invalidate an agent memory entry using key/json_content/source."
-                .to_string(),
-            args_schema: json!({
-                "type": "object",
-                "required": ["key", "json_content", "source"],
-                "properties": {
-                    "key": { "type": "string" },
-                    "json_content": {},
-                    "source": {
-                        "anyOf": [
-                            { "type": "string" },
-                            { "type": "object" }
-                        ]
-                    }
-                }
-            }),
-            output_schema: json!({
-                "type": "object",
-                "properties": {
-                    "ok": {"type":"boolean"},
-                    "key": {"type":"string"},
-                    "valid": {"type":"boolean"},
-                    "ts": {"type":"string"}
-                }
-            }),
-        }
-    }
-
-    async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
-        let key = require_arg_string(&args, "key")?;
-        let json_content = args
-            .get("json_content")
-            .cloned()
-            .ok_or_else(|| AgentToolError::InvalidArgs("missing `json_content`".to_string()))?;
-        let source = args
-            .get("source")
-            .cloned()
-            .ok_or_else(|| AgentToolError::InvalidArgs("missing `source`".to_string()))?;
-        self.memory.set_memory(&key, json_content, source).await
-    }
-}
-
 struct LoadMemoryTool {
     memory: AgentMemory,
 }
@@ -772,15 +712,6 @@ fn is_expired_at(raw_expired_at: Option<&Json>, now: &DateTime<Utc>) -> bool {
     parse_rfc3339_to_utc(text)
         .map(|expired| now > &expired)
         .unwrap_or(false)
-}
-
-fn require_arg_string(args: &Json, field: &str) -> Result<String, AgentToolError> {
-    args.get(field)
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| AgentToolError::InvalidArgs(format!("missing or invalid `{field}`")))
 }
 
 fn normalize_key(raw_key: &str) -> Result<String, AgentToolError> {
@@ -1095,14 +1026,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_register_and_set_memory_tool_is_callable() {
+    async fn tools_register_and_load_memory_tool_is_callable() {
         let temp = tempdir().expect("create tempdir");
         let root = temp.path().to_path_buf();
         let memory = AgentMemory::new(AgentMemoryConfig::new(&root))
             .await
             .expect("create memory");
+        memory
+            .set_memory(
+                "/agent/status/current",
+                json!({
+                    "type":"status",
+                    "summary":"ready"
+                }),
+                json!({
+                    "kind":"agent",
+                    "name":"self",
+                    "retrieved_at":"2026-02-22T12:00:00Z",
+                    "locator":{"step":"boot"}
+                }),
+            )
+            .await
+            .expect("set memory");
 
-        let tool_mgr = ToolManager::new();
+        let tool_mgr = AgentToolManager::new();
         memory
             .register_tools(&tool_mgr)
             .expect("register memory tools");
@@ -1111,26 +1058,17 @@ mod tests {
             .call_tool(
                 &test_trace_ctx(),
                 AiToolCall {
-                    name: TOOL_SET_MEMORY.to_string(),
+                    name: TOOL_LOAD_MEMORY.to_string(),
                     args: value_to_object_map(json!({
-                        "key": "/agent/status/current",
-                        "json_content": {
-                            "type":"status",
-                            "summary":"ready"
-                        },
-                        "source": {
-                            "kind":"agent",
-                            "name":"self",
-                            "retrieved_at":"2026-02-22T12:00:00Z",
-                            "locator":{"step":"boot"}
-                        }
+                        "token_limit": 200
                     })),
-                    call_id: "call-set-memory-1".to_string(),
+                    call_id: "call-load-memory-1".to_string(),
                 },
             )
             .await
-            .expect("call set_memory tool");
-        assert_eq!(result.get("ok").and_then(|v| v.as_bool()), Some(true));
+            .expect("call load_memory tool");
+        let memory_text = result.as_str().expect("load_memory returns string");
+        assert!(memory_text.contains("agent/status/current"));
     }
 
     #[tokio::test]

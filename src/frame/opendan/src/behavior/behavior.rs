@@ -23,7 +23,7 @@ use super::types::*;
 use crate::agent_enviroment::AgentEnvironment;
 use crate::agent_memory::AgentMemory;
 use crate::agent_tool::{
-    AgentToolError, ToolManager, ToolSpec, TOOL_CREATE_SUB_AGENT, TOOL_GET_SESSION,
+    ActionSpec, AgentToolError, AgentToolManager, ToolSpec, TOOL_CREATE_SUB_AGENT, TOOL_GET_SESSION,
     TOOL_TODO_MANAGE, TOOL_WORKLOG_MANAGE,
 };
 
@@ -31,7 +31,7 @@ use crate::agent_tool::{
 pub struct LLMBehaviorDeps {
     pub taskmgr: Arc<TaskManagerClient>,
     pub aicc: Arc<AiccClient>,
-    pub tools: Arc<ToolManager>,
+    pub tools: Arc<AgentToolManager>,
     pub memory: Option<AgentMemory>,
     pub policy: Arc<dyn PolicyEngine>,
     pub worklog: Arc<dyn WorklogSink>,
@@ -155,10 +155,15 @@ impl LLMBehavior {
                 output_schema: tool.output_schema.clone(),
             })
             .collect();
+        let allowed_action_specs: Vec<ActionSpec> = allowed_tools
+            .iter()
+            .filter_map(|tool| self.deps.tools.get_action_spec(tool.name.as_str()))
+            .collect();
 
         let llm_req = PromptBuilder::build(
             input,
             &ai_tool_specs,
+            &allowed_action_specs,
             &input.behavior_cfg,
             &*self.deps.tokenizer,
             input.session.clone(),
@@ -1031,7 +1036,7 @@ fn ai_usage_to_token_usage(usage: Option<&buckyos_api::AiUsage>) -> TokenUsage {
 }
 
 async fn append_workspace_worklog_via_tool(
-    tool_mgr: Arc<ToolManager>,
+    tool_mgr: Arc<AgentToolManager>,
     trace: &TraceCtx,
     log_type: &str,
     status: &str,
@@ -1085,7 +1090,7 @@ async fn append_workspace_worklog_via_tool(
 }
 
 async fn append_todo_or_subagent_worklog(
-    tool_mgr: Arc<ToolManager>,
+    tool_mgr: Arc<AgentToolManager>,
     trace: &TraceCtx,
     tool_name: &str,
     call_args: &Json,

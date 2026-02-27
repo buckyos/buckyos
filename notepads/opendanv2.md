@@ -793,21 +793,31 @@ claim 失败不等于 session 失败——session 放弃"写"的权利但保留"
 * 文件编辑工具（适合做结构化 diff、patch）
   - read_file 读取文件 read_file(path:String,range),read_file(path:string,first_chunk:string)
   - write_file 覆盖/创建/在尾部追加 文件。write_file(path:String,content:String,new|append|write)
-  - edit_file 基于字符串匹配的精确修改（Surgical edits）.edit_file(path:String,old_chunk:string,new_content:string)
+  - edit_file 基于字符串匹配的精确修改（Surgical edits）.edit_file(path:String,pos_chunk:string,new_content:string，replace|after|before)
 * exec_bash（session 有 cwd 概念与环境变量，便于定位 workspace 目录）
-  - 底层使用 tmux + sssion_id作为执行引擎，当session崩溃后，也可以
+  - 底层使用 tmux + sssion_id作为执行引擎，当session崩溃后恢复后，也可以恢复回话（第一次创建的时候要用session cwd来初始化目录）
+  - 每次执行命令要有超时的概念(bash默认 + behaviocfg配置 + Agent配置，组层读取)
+  - 调试的时候，用户能利用tumx的机制，通过session_id查询到bash的实时输出，注意这个输出不会落盘（和TaskMgr的最终状态保存不同）
+  - 执行失败的时候，会把std_err写入details, stdout的输出会截断
+  - 执行成功的时候，最多把stdout的最后16行写入details
 
 4个底层工具都可以是Action，但只有bash / read_file 可以做call_tool
 
 添加一个buildin_tool.rs,实现这4个最重要的tool 
 
 
-
-> 下面能力已经被移除
+> 下面能力已经从元能力被移除
 
 * git 工具 (已经包含在bash里了)
-* OpenDAN 基础工具（消息、事件、todo、memory 等）
-  - OpenDAN & BuckyOS Runtime的tools是高级接口，不属于元能力
+
+> 下面是Runtime自带的能力
+
+整个runtime的能力被设计成文件系统友好，Agent也可以只使用元能力来管理Runtime
+
+* Agent的Memory管理 + Session管理
+* SubAgent管理
+* Workspace管理 
+
 
 系统内也可以提供若干内置 SubAgent：
 
@@ -1026,12 +1036,58 @@ Tool 加载会改变行为边界，属于状态变更，不是无副作用操作
 * 后续 step 能基于新边界稳定推理；
 * 行为变更可追踪、可回放、可审计。
 
+#### 12.4.5 Action的定义和调用
+
+先看执行：
+actions是llm_result中的标准结构，不用受到各家协议的约束，可以设计的尽量节约token
+- 如果是字符串，则是一行bash命令
+- 如果是json object,则使用{"action_name":{$parm}} 的模式进行调用
+- 按顺序从上到下执行，如果出错根据mode的定义决定是否要继续执行后续的命令
+
+```json
+{
+  "actions" :{
+    "mode":"failed_end" | "all",
+    "cmds":[
+      "ls ./abc/",
+      ["write",{"path":"abc.json","content":{"aaa":"bbb"}}],
+
+    ]
+  }
+}
+
+```
+
+执行后的结果，如何编码？
+
+- 失败才看到输出（捕获std_err）
+- 不管失败成功都看到输出
+- 有的命令可以通过参数控制输出格式
+
+然后就是action的调用(DoAction)，类型上
+- bash类,用字符串调用
+- tool类,用json调用
+
+```json
+{
+  "action_results" : {
+    "summary" : "SUCCESS (5),failed (1)",
+    "failed_details: " {
+      "write(abc.json,{"aaa":"bbb"}) " : {
+
+      }  
+    }   
+   } 
+  }
+}
+```
+
+
 ## 13. Memory（记忆系统）
 
 - 构造提示词的时候，总是会根据behavior的配置自动拼接Agent Memory,不依赖任何的action
-  - 该行为，受到session里的上一次ll_result.memory_queries的影响
+  - 该行为，受到session里的上一次ll_result.topic_tags的影响
 - 通过function的read_file / bash ，也可以实现搜索本地文件系统并加载memory
-- BehaviorLLMResult中没有memory_queries? 是因为我们鼓励提示词把有价值的memory写入session summary,而不是文档的持有memory item
 
 > 在 UI Session的 Virtual Topic tag机制将会更好的使用memeory
 

@@ -15,7 +15,7 @@ use super::local_workspace::{
 };
 use super::todo::{TodoTool, TodoToolConfig};
 use crate::agent_tool::{
-    AgentSkillRecord, AgentSkillSpec, AgentTool, AgentToolError, MCPToolConfig, ToolManager, ToolSpec,
+    AgentSkillRecord, AgentSkillSpec, AgentTool, AgentToolError, MCPToolConfig, AgentToolManager, ToolSpec,
     TOOL_EDIT_FILE, TOOL_EXEC_BASH, TOOL_TODO_MANAGE, TOOL_WORKLOG_MANAGE,
 };
 use crate::behavior::TraceCtx;
@@ -284,7 +284,7 @@ impl AgentWorkshop {
         self.local_workspace_mgr.load_skill(skill_name).await
     }
 
-    pub fn register_tools(&self, tool_mgr: &ToolManager) -> Result<(), AgentToolError> {
+    pub fn register_tools(&self, tool_mgr: &AgentToolManager) -> Result<(), AgentToolError> {
         let write_audit = WorkshopWriteAudit::new(self.resolve_write_audit_config()?);
         for tool in self
             .tools_cfg
@@ -1368,7 +1368,7 @@ mod tests {
         std::env::temp_dir().join(format!("opendan-{test_name}-{ts}"))
     }
 
-    async fn call(tool_mgr: &ToolManager, name: &str, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(tool_mgr: &AgentToolManager, name: &str, args: Json) -> Result<Json, AgentToolError> {
         tool_mgr
             .call_tool(
                 &TraceCtx {
@@ -1406,7 +1406,7 @@ mod tests {
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
-        let tool_mgr = ToolManager::new();
+        let tool_mgr = AgentToolManager::new();
         workshop
             .register_tools(&tool_mgr)
             .expect("register workshop tools");
@@ -1434,7 +1434,7 @@ mod tests {
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
-        let tool_mgr = ToolManager::new();
+        let tool_mgr = AgentToolManager::new();
         workshop
             .register_tools(&tool_mgr)
             .expect("register workshop tools");
@@ -1489,7 +1489,7 @@ mod tests {
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
-        let tool_mgr = ToolManager::new();
+        let tool_mgr = AgentToolManager::new();
         workshop
             .register_tools(&tool_mgr)
             .expect("register workshop tools");
@@ -1536,7 +1536,7 @@ mod tests {
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
-        let tool_mgr = ToolManager::new();
+        let tool_mgr = AgentToolManager::new();
         workshop
             .register_tools(&tool_mgr)
             .expect("register workshop tools");
@@ -1592,7 +1592,7 @@ mod tests {
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
-        let tool_mgr = ToolManager::new();
+        let tool_mgr = AgentToolManager::new();
         workshop
             .register_tools(&tool_mgr)
             .expect("register workshop tools");
@@ -1633,7 +1633,7 @@ mod tests {
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
-        let tool_mgr = ToolManager::new();
+        let tool_mgr = AgentToolManager::new();
         workshop
             .register_tools(&tool_mgr)
             .expect("register workshop tools");
@@ -1652,7 +1652,7 @@ mod tests {
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
-        let tool_mgr = ToolManager::new();
+        let tool_mgr = AgentToolManager::new();
         workshop
             .register_tools(&tool_mgr)
             .expect("register workshop tools");

@@ -17,6 +17,7 @@ use tokio::task;
 use crate::agent_enviroment::AgentEnvironment;
 use crate::agent_memory::AgentMemory;
 use crate::agent_session::AgentSession;
+use crate::agent_tool::{normalize_tool_name, ActionSpec};
 use crate::behavior::config::BehaviorMemoryBucketConfig;
 use crate::behavior::BehaviorConfig;
 use crate::worklog::{WorklogListOptions, WorklogRecord, WorklogTool, WorklogToolConfig};
@@ -52,6 +53,7 @@ impl PromptBuilder {
     pub async fn build(
         input: &BehaviorExecInput,
         tools: &[AiToolSpec],
+        action_specs: &[ActionSpec],
         cfg: &BehaviorConfig,
         tokenizer: &dyn Tokenizer,
         session: Option<Arc<Mutex<AgentSession>>>,
@@ -103,7 +105,7 @@ impl PromptBuilder {
             sanitize_text(output_protocol_text.as_str())
         ));
 
-        if let Some((toolbox, tools)) = build_toolbox(tools, cfg, session.clone()).await {
+        if let Some((toolbox, tools)) = build_toolbox(tools, action_specs, cfg, session.clone()).await {
             system_parts.push(format!("<<toolbox>>\n{}\n<</toolbox>>", toolbox));
             loaded_tools = tools;
         }
@@ -1163,26 +1165,19 @@ fn build_behavior_llm_result_protocol() -> String {
                 "value": "important context"
             }
         ],
-        "actions": [
-            {
-                "kind": "bash",
-                "title": "Run tests",
-                "command": "cargo test -p opendan",
-                "execution_mode": "serial",
-                "cwd": ".",
-                "timeout_ms": 120000,
-                "allow_network": false,
-                "fs_scope": {
-                    "read_roots": [
-                        "."
-                    ],
-                    "write_roots": [
-                        "."
-                    ]
-                },
-                "rationale": "verify the change"
-            }
-        ],
+        "actions": {
+            "mode": "failed_end",
+            "cmds": [
+                "ls ./",
+                [
+                    "write",
+                    {
+                        "path": "artifacts/summary.txt",
+                        "content": "task completed"
+                    }
+                ]
+            ]
+        },
         "session_delta": [
             {
                 "key": "status",
@@ -1202,7 +1197,10 @@ Output mode: behavior_llm_result\n\
 Allowed top-level keys only: next_behavior, thinking, reply, todo, todo_delta, set_memory, actions, session_delta, is_sleep, output.\n\
 Type rules:\n\
 - `reply` is array of objects with `audience`, `format`, `content`.\n\
-- `actions` is array of ActionSpec objects; each action requires `title` and `command`.\n\
+- `actions` is object with fields `mode` and `cmds`.\n\
+- `actions.cmds` supports two command forms:\n\
+  1) string command (maps to exec action)\n\
+  2) compact call tuple: `[\"action_name\", {{\"param\":\"value\"}}]`\n\
 - `todo_delta` is legacy alias of `todo`; use `todo` in new outputs.\n\
 JSON example:\n\
 {}",
@@ -1266,6 +1264,7 @@ impl RawToolboxSkillSpec {
 // 当前加载的tools的定义 （合并所有已经加载的skills的tool定义)
 async fn build_toolbox(
     tools: &[AiToolSpec],
+    action_specs: &[ActionSpec],
     cfg: &BehaviorConfig,
     session: Option<Arc<Mutex<AgentSession>>>,
 ) -> Option<(String, Vec<AiToolSpec>)> {
@@ -1316,12 +1315,46 @@ async fn build_toolbox(
         return None;
     }
 
+    let selected_action_specs = select_action_specs(action_specs, &actions);
+    let selected_action_prompts = selected_action_specs
+        .iter()
+        .map(|spec| spec.render_prompt())
+        .collect::<Vec<_>>();
     let value = json!({
         "workspace_skill_records": workspace_skill_records,
         "loaded_skills": loaded_skills,
         "allow_actions": actions,
+        "actions": actions,
+        "action_specs": selected_action_specs,
+        "action_prompts": selected_action_prompts,
     });
     Some((sanitize_json_compact(&value), merged_tools))
+}
+
+fn select_action_specs(action_specs: &[ActionSpec], action_names: &[String]) -> Vec<ActionSpec> {
+    if action_specs.is_empty() || action_names.is_empty() {
+        return vec![];
+    }
+    let mut by_name = HashMap::<String, ActionSpec>::new();
+    for spec in action_specs {
+        let normalized = normalize_tool_name(spec.name.as_str());
+        if normalized.is_empty() {
+            continue;
+        }
+        by_name.insert(normalized, spec.clone());
+    }
+
+    let mut selected = Vec::<ActionSpec>::new();
+    for action_name in action_names {
+        let normalized = normalize_tool_name(action_name.as_str());
+        if normalized.is_empty() {
+            continue;
+        }
+        if let Some(spec) = by_name.get(normalized.as_str()) {
+            selected.push(spec.clone());
+        }
+    }
+    selected
 }
 
 fn merge_tool_specs_with_skill_tools(
@@ -1822,8 +1855,23 @@ loaded_tools: [exec_bash]
                 output_schema: json!({"type":"object"}),
             },
         ];
+        let action_specs = vec![
+            ActionSpec {
+                kind: crate::agent_tool::ActionKind::CallTool,
+                name: "build".to_string(),
+                introduce: "build project".to_string(),
+                description: Some("run build workflow".to_string()),
+            },
+            ActionSpec {
+                kind: crate::agent_tool::ActionKind::CallTool,
+                name: "test".to_string(),
+                introduce: "run tests".to_string(),
+                description: Some("run test workflow".to_string()),
+            },
+        ];
 
-        let (toolbox_text, loaded_tools) = build_toolbox(&tools, &cfg, Some(session))
+        let (toolbox_text, loaded_tools) =
+            build_toolbox(&tools, &action_specs, &cfg, Some(session))
             .await
             .expect("toolbox should be available");
         let toolbox_json: Json =
@@ -1853,6 +1901,13 @@ loaded_tools: [exec_bash]
             .filter_map(|item| item.as_str())
             .collect::<Vec<_>>();
         assert_eq!(actions, vec!["lint", "build", "test"]);
+        let action_prompts = toolbox_json["action_prompts"]
+            .as_array()
+            .expect("action_prompts should be array")
+            .iter()
+            .filter_map(|item| item.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(action_prompts.len(), 2);
 
         let tool_names = loaded_tools
             .iter()
@@ -1886,10 +1941,17 @@ loaded_tools: [exec_bash]
             session: None,
         };
 
-        let req =
-            PromptBuilder::build(&input, &[], &input.behavior_cfg, &MockTokenizer, None, None)
-                .await
-                .expect("build prompt");
+        let req = PromptBuilder::build(
+            &input,
+            &[],
+            &[],
+            &input.behavior_cfg,
+            &MockTokenizer,
+            None,
+            None,
+        )
+        .await
+        .expect("build prompt");
 
         let system = req
             .payload

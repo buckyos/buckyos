@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use tokio::sync::Mutex;
 
+use crate::agent_tool::DoActions;
 use crate::agent_session::AgentSession;
 use crate::behavior::{BehaviorConfig, LLMComputeError};
 
@@ -143,8 +144,8 @@ pub struct BehaviorLLMResult {
     pub set_memory: Vec<Json>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub toipc_tags: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub actions: Vec<ActionSpec>,
+    #[serde(default, skip_serializing_if = "DoActions::is_empty")]
+    pub actions: DoActions,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub load_skills: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -171,61 +172,6 @@ impl BehaviorLLMResult {
         }
         Ok(result)
     }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ActionKind {
-    Bash,
-}
-
-impl Default for ActionKind {
-    fn default() -> Self {
-        Self::Bash
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ActionExecutionMode {
-    Serial,
-    Parallel,
-}
-
-impl Default for ActionExecutionMode {
-    fn default() -> Self {
-        Self::Serial
-    }
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct FsScope {
-    pub read_roots: Vec<String>,
-    pub write_roots: Vec<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ActionSpec {
-    #[serde(default)]
-    pub kind: ActionKind,
-    pub title: String,
-    pub command: String,
-    #[serde(default)]
-    pub execution_mode: ActionExecutionMode,
-    #[serde(default)]
-    pub cwd: Option<String>,
-    #[serde(default = "default_action_timeout_ms")]
-    pub timeout_ms: u64,
-    #[serde(default)]
-    pub allow_network: bool,
-    #[serde(default)]
-    pub fs_scope: FsScope,
-    #[serde(default)]
-    pub rationale: String,
-}
-
-fn default_action_timeout_ms() -> u64 {
-    120_000
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

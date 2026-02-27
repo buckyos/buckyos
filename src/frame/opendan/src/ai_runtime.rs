@@ -19,7 +19,7 @@ use serde_json::{json, Value as Json};
 use tokio::{fs, task};
 
 use crate::agent_tool::{
-    AgentTool, AgentToolError, ToolManager, ToolSpec, TOOL_BIND_EXTERNAL_WORKSPACE,
+    AgentTool, AgentToolError, AgentToolManager, ToolSpec, TOOL_BIND_EXTERNAL_WORKSPACE,
     TOOL_CREATE_SUB_AGENT, TOOL_LIST_EXTERNAL_WORKSPACES,
 };
 use crate::behavior::TraceCtx;
@@ -178,7 +178,7 @@ impl AiRuntime {
         &self.cfg
     }
 
-    pub async fn register_tools(&self, tool_mgr: &ToolManager) -> Result<(), AgentToolError> {
+    pub async fn register_tools(&self, tool_mgr: &AgentToolManager) -> Result<(), AgentToolError> {
         tool_mgr.register_tool(RuntimeCreateSubAgentTool {
             runtime: Arc::new(self.clone()),
         })?;
@@ -2366,7 +2366,7 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
             .await
             .expect("register root agent");
 
-        let tool_mgr = ToolManager::new();
+        let tool_mgr = AgentToolManager::new();
         runtime
             .register_tools(&tool_mgr)
             .await
