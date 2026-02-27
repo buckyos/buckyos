@@ -52,6 +52,9 @@ pub const SMB_SERVICE_SERVICE_NAME: &str = "smb-service";
 pub const OPENDAN_SERVICE_UNIQUE_ID: &str = "opendan";
 pub const OPENDAN_SERVICE_NAME: &str = "opendan";
 pub const OPENDAN_SERVICE_PORT: u16 = 4060;
+pub const BUCKY_FILE_SERVICE_UNIQUE_ID: &str = "bucky-file";
+pub const BUCKY_FILE_SERVICE_NAME: &str = "bucky-file";
+pub const BUCKY_FILE_SERVICE_PORT: u16 = 4070;
 
 pub const BASE_APP_PORT: u16 = 10000;
 pub const MAX_APP_INDEX: u16 = 2048;
@@ -151,6 +154,22 @@ pub fn generate_opendan_service_doc() -> AppDoc {
         &owner_did,
     )
     .show_name("OpenDAN Runtime")
+    .selector_type(SelectorType::Single)
+    .build()
+    .unwrap()
+}
+
+pub fn generate_bucky_file_service_doc() -> AppDoc {
+    const VERSION: &str = env!("CARGO_PKG_VERSION");
+    let owner_did = DID::from_str("did:bns:buckyos").unwrap();
+    AppDoc::builder(
+        AppType::Service,
+        BUCKY_FILE_SERVICE_UNIQUE_ID,
+        VERSION,
+        "did:bns:buckyos",
+        &owner_did,
+    )
+    .show_name("Bucky File Service")
     .selector_type(SelectorType::Single)
     .build()
     .unwrap()

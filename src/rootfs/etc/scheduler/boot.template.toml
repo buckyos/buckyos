@@ -49,14 +49,14 @@
 {
     "shortcuts": {
         "www": {
-            "type":"app",
-            "user_id":"{{user_name}}",
-            "app_id":"buckyos_filebrowser"
+            "type":"service",
+            "user_id":null,
+            "app_id":"bucky-file"
         },
         "_":{
-            "type":"app",
-            "user_id":"{{user_name}}",
-            "app_id":"buckyos_filebrowser"
+            "type":"service",
+            "user_id":null,
+            "app_id":"bucky-file"
         }
     }
 }
@@ -117,6 +117,7 @@ g, kmsg, kernel
 g, aicc, kernel
 g, msg-center, kernel
 g, control-panel, kernel
+g, bucky-file, kernel
 g, opendan, kernel
 g, buckycli, kernel
 g, cyfs-gateway, kernel

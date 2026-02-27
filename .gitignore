@@ -8,6 +8,9 @@ context.md
 package-lock.json
 pyvenv.cfg
 __pycache__
+venv/
+**/.venv/
+**/.venv-*/
 doc/local
 src/kernel/node_active/dist/
 src/kernel/buckyos_sdk/dist/
@@ -54,4 +57,3 @@ src/rootfs/bin/task-manager/task_manager
 src/rootfs/bin/aicc/aicc
 src/rootfs/bin/msg-center/msg_center
 src/rootfs/bin/opendan/opendan*
-

@@ -36,6 +36,9 @@ modules:
   control_panel:
     type: rust
     name: control_panel
+  bucky_file:
+    type: rust
+    name: bucky_file
   aicc:
     type: rust
     name: aicc
@@ -49,6 +52,10 @@ modules:
     type: web
     name: control_panel
     src_dir: frame/control_panel/web/
+  bucky_file_web:
+    type: web
+    name: bucky_file
+    src_dir: frame/bucky_file/web/
   buckyos_systest:
     type: web
     name: sys_test
@@ -73,6 +80,8 @@ apps:
       kmsg: bin/kmsg/
       control_panel: bin/control-panel/
       control_panel_web: bin/control-panel/web/
+      bucky_file: bin/bucky-file/
+      bucky_file_web: bin/bucky-file/web/
       smb_service: bin/smb-service/
       repo_service: bin/repo-service/
       buckycli: bin/buckycli/
