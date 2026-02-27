@@ -1,6 +1,7 @@
 use async_trait::async_trait;
+use buckyos_api::AiToolCall;
 
-use crate::agent_tool::{ToolCall, ToolSpec};
+use crate::agent_tool::ToolSpec;
 
 use super::types::BehaviorExecInput;
 
@@ -11,6 +12,6 @@ pub trait PolicyEngine: Send + Sync {
     async fn gate_tool_calls(
         &self,
         input: &BehaviorExecInput,
-        calls: &[ToolCall],
-    ) -> Result<Vec<ToolCall>, String>;
+        calls: &[AiToolCall],
+    ) -> Result<Vec<AiToolCall>, String>;
 }

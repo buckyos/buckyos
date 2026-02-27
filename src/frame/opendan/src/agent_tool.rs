@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
+use buckyos_api::AiToolCall;
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
@@ -9,6 +10,18 @@ use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
 
 use crate::behavior::{ActionSpec, BehaviorConfig, BehaviorExecInput, PolicyEngine, TraceCtx};
+
+pub const TOOL_BIND_EXTERNAL_WORKSPACE: &str = "bind_external_workspace";
+pub const TOOL_CREATE_SUB_AGENT: &str = "create_sub_agent";
+pub const TOOL_EDIT_FILE: &str = "edit_file";
+pub const TOOL_EXEC_BASH: &str = "exec_bash";
+pub const TOOL_GET_SESSION: &str = "get_session";
+pub const TOOL_LIST_EXTERNAL_WORKSPACES: &str = "list_external_workspaces";
+pub const TOOL_LOAD_MEMORY: &str = "load_memory";
+pub const TOOL_LOAD_THINGS: &str = "load_things";
+pub const TOOL_SET_MEMORY: &str = "set_memory";
+pub const TOOL_TODO_MANAGE: &str = "todo_manage";
+pub const TOOL_WORKLOG_MANAGE: &str = "worklog_manage";
 
 pub struct AgentSkillRecord {
     pub name: String,
@@ -36,13 +49,6 @@ impl ToolSpec {
     pub fn render_for_prompt(tools: &[ToolSpec]) -> String {
         serde_json::to_string(tools).unwrap_or_else(|_| "[]".to_string())
     }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct ToolCall {
-    pub name: String,
-    pub args: Json,
-    pub call_id: String,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -390,11 +396,16 @@ impl ToolManager {
         specs
     }
 
-    pub async fn call_tool(&self, ctx: &TraceCtx, call: ToolCall) -> Result<Json, AgentToolError> {
+    pub async fn call_tool(
+        &self,
+        ctx: &TraceCtx,
+        call: AiToolCall,
+    ) -> Result<Json, AgentToolError> {
         let Some(tool) = self.get_tool(&call.name) else {
             return Err(AgentToolError::NotFound(call.name));
         };
-        tool.call(ctx, call.args).await
+        tool.call(ctx, Json::Object(call.args.into_iter().collect()))
+            .await
     }
 }
 
@@ -445,8 +456,8 @@ impl PolicyEngine for AgentPolicy {
     async fn gate_tool_calls(
         &self,
         input: &BehaviorExecInput,
-        calls: &[ToolCall],
-    ) -> Result<Vec<ToolCall>, String> {
+        calls: &[AiToolCall],
+    ) -> Result<Vec<AiToolCall>, String> {
         let allowed = self.allowed_tools(input).await?;
         let allowed_set = allowed
             .into_iter()
@@ -476,6 +487,7 @@ impl PolicyEngine for AgentPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use buckyos_api::value_to_object_map;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
@@ -593,9 +605,9 @@ mod tests {
         let err = mgr
             .call_tool(
                 &test_call_ctx(),
-                ToolCall {
+                AiToolCall {
                     name: "workshop.exec_bash".to_string(),
-                    args: json!({}),
+                    args: value_to_object_map(json!({})),
                     call_id: "call-1".to_string(),
                 },
             )
@@ -605,9 +617,9 @@ mod tests {
 
         mgr.call_tool(
             &test_call_ctx(),
-            ToolCall {
+            AiToolCall {
                 name: "exec_bash".to_string(),
-                args: json!({}),
+                args: value_to_object_map(json!({})),
                 call_id: "call-2".to_string(),
             },
         )

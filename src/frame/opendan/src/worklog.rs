@@ -10,10 +10,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::task;
 
-use crate::agent_tool::{AgentTool, AgentToolError, ToolSpec};
+use crate::agent_tool::{AgentTool, AgentToolError, ToolSpec, TOOL_WORKLOG_MANAGE};
 use crate::behavior::TraceCtx;
-
-pub const TOOL_WORKLOG_MANAGE: &str = "worklog_manage";
 
 const DEFAULT_LIST_LIMIT: usize = 64;
 const DEFAULT_MAX_LIST_LIMIT: usize = 256;

@@ -18,12 +18,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::{fs, task};
 
-use crate::agent_tool::{AgentTool, AgentToolError, ToolManager, ToolSpec};
+use crate::agent_tool::{
+    AgentTool, AgentToolError, ToolManager, ToolSpec, TOOL_BIND_EXTERNAL_WORKSPACE,
+    TOOL_CREATE_SUB_AGENT, TOOL_LIST_EXTERNAL_WORKSPACES,
+};
 use crate::behavior::TraceCtx;
-
-pub const TOOL_CREATE_SUB_AGENT: &str = "create_sub_agent";
-pub const TOOL_BIND_EXTERNAL_WORKSPACE: &str = "bind_external_workspace";
-pub const TOOL_LIST_EXTERNAL_WORKSPACES: &str = "list_external_workspaces";
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
 const DEFAULT_SUB_AGENTS_DIR: &str = "sub-agents";
@@ -2187,6 +2186,7 @@ fn optional_string(args: &Json, key: &str) -> Result<Option<String>, AgentToolEr
 mod tests {
     use std::sync::Arc;
 
+    use buckyos_api::{value_to_object_map, AiToolCall};
     use tempfile::tempdir;
 
     use super::*;
@@ -2375,13 +2375,13 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
         let create_result = tool_mgr
             .call_tool(
                 &call_ctx("did:test:jarvis"),
-                crate::agent_tool::ToolCall {
+                AiToolCall {
                     name: TOOL_CREATE_SUB_AGENT.to_string(),
-                    args: json!({
+                    args: value_to_object_map(json!({
                         "name": "web-agent",
                         "role_md": "# Role\nWeb specialist\n",
                         "self_md": "# Self\n- browser only\n"
-                    }),
+                    })),
                     call_id: "call-create-sub-agent".to_string(),
                 },
             )
@@ -2401,12 +2401,12 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
         let bind_result = tool_mgr
             .call_tool(
                 &call_ctx("did:test:jarvis"),
-                crate::agent_tool::ToolCall {
+                AiToolCall {
                     name: TOOL_BIND_EXTERNAL_WORKSPACE.to_string(),
-                    args: json!({
+                    args: value_to_object_map(json!({
                         "name": "shared-repo",
                         "workspace_path": external_workspace.to_string_lossy().to_string()
-                    }),
+                    })),
                     call_id: "call-bind-workspace".to_string(),
                 },
             )
@@ -2423,9 +2423,9 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
         let list_result = tool_mgr
             .call_tool(
                 &call_ctx("did:test:jarvis"),
-                crate::agent_tool::ToolCall {
+                AiToolCall {
                     name: TOOL_LIST_EXTERNAL_WORKSPACES.to_string(),
-                    args: json!({}),
+                    args: value_to_object_map(json!({})),
                     call_id: "call-list-workspaces".to_string(),
                 },
             )

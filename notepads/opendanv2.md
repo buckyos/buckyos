@@ -791,11 +791,17 @@ claim 失败不等于 session 失败——session 放弃"写"的权利但保留"
 
 在不考虑权限问题的前提下，OpenDAN Agent Runtime 有一些 tool 总是可用，因此可在 process_rule 中稳定依赖它们：
 * 文件编辑工具（适合做结构化 diff、patch）
-  - read_file 读取文件
-  - write_file 覆盖/创建/在尾部追加 文件。
-  - edit_file 基于字符串匹配的精确修改（Surgical edits）
-* bash（session 有 cwd 概念与环境变量，便于定位 workspace 目录）
-  - 必定有git工具
+  - read_file 读取文件 read_file(path:String,range),read_file(path:string,first_chunk:string)
+  - write_file 覆盖/创建/在尾部追加 文件。write_file(path:String,content:String,new|append|write)
+  - edit_file 基于字符串匹配的精确修改（Surgical edits）.edit_file(path:String,old_chunk:string,new_content:string)
+* exec_bash（session 有 cwd 概念与环境变量，便于定位 workspace 目录）
+  - 底层使用 tmux + sssion_id作为执行引擎，当session崩溃后，也可以
+
+4个底层工具都可以是Action，但只有bash / read_file 可以做call_tool
+
+添加一个buildin_tool.rs,实现这4个最重要的tool 
+
+
 
 > 下面能力已经被移除
 

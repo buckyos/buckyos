@@ -13,9 +13,9 @@ use tokio::fs;
 
 use super::*;
 use crate::agent_enviroment::AgentEnvironment;
-use crate::agent_tool::{AgentTool, ToolCall, ToolManager, ToolSpec};
+use crate::agent_tool::{AgentTool, ToolManager, ToolSpec, TOOL_EXEC_BASH};
 use crate::test_utils::{MockAicc, MockTaskMgrHandler};
-use crate::workspace::{AgentWorkshop, AgentWorkshopConfig, TOOL_EXEC_BASH};
+use crate::workspace::{AgentWorkshop, AgentWorkshopConfig};
 
 struct MockTokenizer;
 
@@ -45,8 +45,8 @@ impl PolicyEngine for MockPolicy {
     async fn gate_tool_calls(
         &self,
         _input: &BehaviorExecInput,
-        calls: &[ToolCall],
-    ) -> Result<Vec<ToolCall>, String> {
+        calls: &[AiToolCall],
+    ) -> Result<Vec<AiToolCall>, String> {
         Ok(calls.to_vec())
     }
 }
@@ -1117,9 +1117,9 @@ tools:
         let raw = tool_mgr
             .call_tool(
                 &action_ctx,
-                ToolCall {
+                AiToolCall {
                     name: TOOL_EXEC_BASH.to_string(),
-                    args,
+                    args: value_to_object_map(args),
                     call_id: format!("action-exec-{idx}"),
                 },
             )

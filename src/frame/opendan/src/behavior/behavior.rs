@@ -5,9 +5,10 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use buckyos_api::{
-    features, value_to_object_map, AiMessage, AiPayload, AiToolSpec, AiccClient, Capability,
-    CompleteRequest, CompleteResponse, CompleteStatus, CompleteTaskOptions, CreateTaskOptions,
-    ModelSpec, Requirements, TaskFilter, TaskManagerClient, TaskStatus, AICC_SERVICE_SERVICE_NAME,
+    features, value_to_object_map, AiMessage, AiPayload, AiToolCall, AiToolSpec, AiccClient,
+    Capability, CompleteRequest, CompleteResponse, CompleteStatus, CompleteTaskOptions,
+    CreateTaskOptions, ModelSpec, Requirements, TaskFilter, TaskManagerClient, TaskStatus,
+    AICC_SERVICE_SERVICE_NAME,
 };
 use log::warn;
 use serde_json::{json, Map, Value as Json};
@@ -21,11 +22,10 @@ use super::tool_loop::{self, ToolContext};
 use super::types::*;
 use crate::agent_enviroment::AgentEnvironment;
 use crate::agent_memory::AgentMemory;
-use crate::agent_session::TOOL_GET_SESSION;
-use crate::agent_tool::{AgentToolError, ToolCall, ToolManager, ToolSpec};
-use crate::ai_runtime::TOOL_CREATE_SUB_AGENT;
-use crate::worklog::TOOL_WORKLOG_MANAGE;
-use crate::workspace::TOOL_TODO_MANAGE;
+use crate::agent_tool::{
+    AgentToolError, ToolManager, ToolSpec, TOOL_CREATE_SUB_AGENT, TOOL_GET_SESSION,
+    TOOL_TODO_MANAGE, TOOL_WORKLOG_MANAGE,
+};
 
 #[derive(Clone)]
 pub struct LLMBehaviorDeps {
@@ -234,7 +234,7 @@ impl LLMBehavior {
     async fn execute_tool_calls(
         &self,
         input: &BehaviorExecInput,
-        pending_tool_calls: &[ToolCall],
+        pending_tool_calls: &[AiToolCall],
         track: &mut TrackInfo,
     ) -> Result<ToolExecutionRound, LLMComputeError> {
         let gated_calls = self
@@ -271,7 +271,7 @@ impl LLMBehavior {
             let duration_ms = now_ms().saturating_sub(call_started);
             let call_name = call.name.clone();
             let call_id = call.call_id.clone();
-            let call_args = call.args.clone();
+            let call_args = Json::Object(call.args.clone().into_iter().collect());
 
             match exec {
                 Ok(raw) => {
@@ -419,12 +419,12 @@ impl LLMBehavior {
             return Ok(());
         }
 
-        let call = ToolCall {
+        let call = AiToolCall {
             name: TOOL_GET_SESSION.to_string(),
             call_id: format!("session-status-check-{}-{}", input.trace.step_idx, now_ms()),
-            args: json!({
+            args: value_to_object_map(json!({
                 "session_id": session_id
-            }),
+            })),
         };
         let ctx = tool_loop::trace_to_tool_call_context(&input.trace);
         let result = self.deps.tools.call_tool(&ctx, call).await;
@@ -709,7 +709,7 @@ impl LLMBehavior {
 #[derive(Clone, Debug, PartialEq)]
 pub struct LLMRawResponse {
     pub content: String,
-    pub tool_calls: Vec<ToolCall>,
+    pub tool_calls: Vec<AiToolCall>,
     pub model: String,
     pub provider: String,
     pub latency_ms: u64,
@@ -908,20 +908,12 @@ fn parse_aicc_summary(
 
 fn parse_tool_choices_from_summary(
     tool_choices: Vec<buckyos_api::AiToolCall>,
-) -> Result<Vec<ToolCall>, LLMComputeError> {
-    let mut parsed = Vec::with_capacity(tool_choices.len());
-    for choice in tool_choices.into_iter() {
-        parsed.push(ToolCall {
-            name: choice.name,
-            args: Json::Object(choice.args.into_iter().collect()),
-            call_id: choice.call_id,
-        });
-    }
-    Ok(parsed)
+) -> Result<Vec<AiToolCall>, LLMComputeError> {
+    Ok(tool_choices)
 }
 
-fn parse_tool_calls_from_aicc(value: &Json) -> Result<Vec<ToolCall>, LLMComputeError> {
-    if let Ok(tool_calls) = serde_json::from_value::<Vec<ToolCall>>(value.clone()) {
+fn parse_tool_calls_from_aicc(value: &Json) -> Result<Vec<AiToolCall>, LLMComputeError> {
+    if let Ok(tool_calls) = serde_json::from_value::<Vec<AiToolCall>>(value.clone()) {
         return Ok(tool_calls);
     }
 
@@ -961,9 +953,9 @@ fn parse_tool_calls_from_aicc(value: &Json) -> Result<Vec<ToolCall>, LLMComputeE
                     "tool_calls[{idx}].args must be an object"
                 )));
             }
-            parsed.push(ToolCall {
+            parsed.push(AiToolCall {
                 name: name.to_string(),
-                args,
+                args: value_to_object_map(args),
                 call_id,
             });
             continue;
@@ -1012,9 +1004,9 @@ fn parse_tool_calls_from_aicc(value: &Json) -> Result<Vec<ToolCall>, LLMComputeE
             )));
         }
 
-        parsed.push(ToolCall {
+        parsed.push(AiToolCall {
             name,
-            args,
+            args: value_to_object_map(args),
             call_id,
         });
     }
@@ -1077,9 +1069,9 @@ async fn append_workspace_worklog_via_tool(
     }
 
     let ctx = tool_loop::trace_to_tool_call_context(trace);
-    let call = ToolCall {
+    let call = AiToolCall {
         name: TOOL_WORKLOG_MANAGE.to_string(),
-        args,
+        args: value_to_object_map(args),
         call_id: format!(
             "{}-{}-wl-{}",
             trace.wakeup_id,

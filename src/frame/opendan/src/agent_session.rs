@@ -17,10 +17,8 @@ use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, RwLock};
 
-use crate::agent_tool::{AgentTool, AgentToolError, ToolSpec};
+use crate::agent_tool::{AgentTool, AgentToolError, ToolSpec, TOOL_GET_SESSION};
 use crate::behavior::TraceCtx;
-
-pub const TOOL_GET_SESSION: &str = "get_session";
 
 const DEFAULT_SESSION_FILE: &str = "session.json";
 const DEFAULT_MSG_RECORD_FILE: &str = "msg_record.jsonl";

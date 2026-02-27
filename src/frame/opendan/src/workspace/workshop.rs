@@ -13,16 +13,13 @@ use super::local_workspace::{
     LocalWorkspaceManager, LocalWorkspaceManagerConfig, LocalWorkspaceSnapshot,
     SessionWorkspaceBinding, WorkshopIndex, WorkshopWorkspaceRecord,
 };
-use super::todo::{TodoTool, TodoToolConfig, TOOL_TODO_MANAGE};
+use super::todo::{TodoTool, TodoToolConfig};
 use crate::agent_tool::{
-    AgentSkillRecord, AgentSkillSpec, AgentTool, AgentToolError, MCPToolConfig, ToolManager,
-    ToolSpec,
+    AgentSkillRecord, AgentSkillSpec, AgentTool, AgentToolError, MCPToolConfig, ToolManager, ToolSpec,
+    TOOL_EDIT_FILE, TOOL_EXEC_BASH, TOOL_TODO_MANAGE, TOOL_WORKLOG_MANAGE,
 };
 use crate::behavior::TraceCtx;
-use crate::worklog::{WorklogTool, WorklogToolConfig, TOOL_WORKLOG_MANAGE};
-
-pub const TOOL_EXEC_BASH: &str = "exec_bash";
-pub const TOOL_EDIT_FILE: &str = "edit_file";
+use crate::worklog::{WorklogTool, WorklogToolConfig};
 
 const DEFAULT_BASH_PATH: &str = "/bin/bash";
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
@@ -1359,7 +1356,7 @@ fn u64_to_usize(v: u64) -> Result<usize, AgentToolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_tool::ToolCall;
+    use buckyos_api::{value_to_object_map, AiToolCall};
     use crate::behavior::TraceCtx;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1381,9 +1378,9 @@ mod tests {
                     step_idx: 0,
                     wakeup_id: "wakeup-test".to_string(),
                 },
-                ToolCall {
+                AiToolCall {
                     name: name.to_string(),
-                    args,
+                    args: value_to_object_map(args),
                     call_id: "call-test".to_string(),
                 },
             )

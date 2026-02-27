@@ -1,10 +1,10 @@
-use crate::agent_tool::ToolCall;
+use buckyos_api::AiToolCall;
 
 use super::types::{Observation, TraceCtx};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolContext {
-    pub tool_calls: Vec<ToolCall>,
+    pub tool_calls: Vec<AiToolCall>,
     pub observations: Vec<Observation>,
 }
 

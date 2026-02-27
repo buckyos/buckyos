@@ -13,10 +13,8 @@ use serde::Serialize;
 use serde_json::{json, Value as Json};
 use tokio::task;
 
-use crate::agent_tool::{AgentTool, AgentToolError, ToolSpec};
+use crate::agent_tool::{AgentTool, AgentToolError, ToolSpec, TOOL_TODO_MANAGE};
 use crate::behavior::TraceCtx;
-
-pub const TOOL_TODO_MANAGE: &str = "todo_manage";
 
 const DEFAULT_LIST_LIMIT: usize = 32;
 const DEFAULT_MAX_LIST_LIMIT: usize = 128;

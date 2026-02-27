@@ -13,12 +13,11 @@ use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
-use crate::agent_tool::{AgentTool, AgentToolError, ToolManager, ToolSpec};
+use crate::agent_tool::{
+    AgentTool, AgentToolError, ToolManager, ToolSpec, TOOL_LOAD_MEMORY, TOOL_SET_MEMORY,
+};
 use crate::behavior::TraceCtx;
 
-pub const TOOL_LOAD_MEMORY: &str = "load_memory";
-pub const TOOL_SET_MEMORY: &str = "set_memory";
-pub const TOOL_LOAD_THINGS: &str = "load_things";
 
 const DEFAULT_MEMORY_DIR_NAME: &str = "memory";
 const DEFAULT_LOG_FILE_NAME: &str = "log.jsonl";
@@ -1008,6 +1007,7 @@ async fn write_atomic_text(path: &Path, body: &str) -> Result<(), AgentToolError
 #[cfg(test)]
 mod tests {
     use super::*;
+    use buckyos_api::{value_to_object_map, AiToolCall};
     use tempfile::tempdir;
 
     fn test_trace_ctx() -> TraceCtx {
@@ -1110,9 +1110,9 @@ mod tests {
         let result = tool_mgr
             .call_tool(
                 &test_trace_ctx(),
-                crate::agent_tool::ToolCall {
+                AiToolCall {
                     name: TOOL_SET_MEMORY.to_string(),
-                    args: json!({
+                    args: value_to_object_map(json!({
                         "key": "/agent/status/current",
                         "json_content": {
                             "type":"status",
@@ -1124,7 +1124,7 @@ mod tests {
                             "retrieved_at":"2026-02-22T12:00:00Z",
                             "locator":{"step":"boot"}
                         }
-                    }),
+                    })),
                     call_id: "call-set-memory-1".to_string(),
                 },
             )

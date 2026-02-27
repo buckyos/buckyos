@@ -9,8 +9,8 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
     msg_queue::{Message, MsgQueueClient, QueueConfig, SubPosition},
-    AiccClient, BoxKind, Event, EventReader, KEventClient, KEventError, MsgCenterClient,
-    MsgRecordWithObject, MsgState, SendContext, TaskManagerClient,
+    value_to_object_map, AiToolCall, AiccClient, BoxKind, Event, EventReader, KEventClient,
+    KEventError, MsgCenterClient, MsgRecordWithObject, MsgState, SendContext, TaskManagerClient,
 };
 use log::{debug, info, warn};
 use name_lib::DID;
@@ -28,14 +28,12 @@ use crate::agent_memory::{AgentMemory, AgentMemoryConfig};
 use crate::agent_session::{
     AgentSession, AgentSessionMgr, GetSessionTool, SessionInputItem, SessionState,
 };
-use crate::agent_tool::{AgentPolicy, AgentSkillRecord, ToolCall, ToolManager};
+use crate::agent_tool::{AgentPolicy, AgentSkillRecord, ToolManager, TOOL_TODO_MANAGE};
 use crate::behavior::{
     ActionExecutionMode, ActionKind, ActionSpec, AgentWorkEvent, BehaviorConfig, BehaviorExecInput,
     BehaviorLLMResult, EnvKV, ExecutorReply, LLMBehavior, LLMBehaviorDeps, LLMTrackingInfo,
     Tokenizer, TraceCtx, WorklogSink,
 };
-use crate::worklog::TOOL_WORKLOG_MANAGE;
-use crate::workspace::TOOL_TODO_MANAGE;
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
 const LEGACY_ENV_DIR_NAME: &str = "enviroment";
@@ -1460,9 +1458,9 @@ impl AIAgent {
                 "timeout_ms": action.timeout_ms,
                 "allow_network": action.allow_network,
             });
-            let call = ToolCall {
+            let call = AiToolCall {
                 name: "exec_bash".to_string(),
-                args,
+                args: value_to_object_map(args),
                 call_id: format!(
                     "action-{}-{}-{}",
                     trace.step_idx,
@@ -1572,9 +1570,9 @@ impl AIAgent {
             }
         }
 
-        let call = ToolCall {
+        let call = AiToolCall {
             name: TOOL_TODO_MANAGE.to_string(),
-            args: json!({
+            args: value_to_object_map(json!({
                 "action": "apply_delta",
                 "workspace_id": workspace_id,
                 "session_id": session_id,
@@ -1585,7 +1583,7 @@ impl AIAgent {
                     "session_id": session_id,
                     "trace_id": trace.trace_id,
                 },
-            }),
+            })),
             call_id: format!(
                 "step-todo-{}-{}",
                 trace.step_idx,
