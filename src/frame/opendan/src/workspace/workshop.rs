@@ -1,12 +1,14 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::fs;
 use tokio::process::Command;
-use tokio::time::{timeout, Duration, Instant};
+use tokio::time::{sleep, Duration, Instant};
 
 use super::local_workspace::{
     CreateLocalWorkspaceRequest, LocalWorkspaceCleanupResult, LocalWorkspaceLockResult,
@@ -14,9 +16,10 @@ use super::local_workspace::{
     SessionWorkspaceBinding, WorkshopIndex, WorkshopWorkspaceRecord,
 };
 use super::todo::{TodoTool, TodoToolConfig};
+use crate::agent_session::AgentSessionMgr;
 use crate::agent_tool::{
-    AgentSkillRecord, AgentSkillSpec, AgentTool, AgentToolError, MCPToolConfig, AgentToolManager, ToolSpec,
-    TOOL_EDIT_FILE, TOOL_EXEC_BASH, TOOL_TODO_MANAGE, TOOL_WORKLOG_MANAGE,
+    AgentSkillRecord, AgentSkillSpec, AgentTool, AgentToolError, AgentToolManager, MCPToolConfig,
+    ToolSpec, TOOL_EDIT_FILE, TOOL_EXEC_BASH, TOOL_TODO_MANAGE, TOOL_WORKLOG_MANAGE,
 };
 use crate::behavior::TraceCtx;
 use crate::worklog::{WorklogTool, WorklogToolConfig};
@@ -36,6 +39,9 @@ const DEFAULT_WORKLOG_LIST_LIMIT: usize = 64;
 const DEFAULT_WORKLOG_MAX_LIST_LIMIT: usize = 256;
 const DEFAULT_AGENT_DID: &str = "did:opendan:unknown";
 const DEFAULT_LOCAL_WORKSPACE_LOCK_TTL_MS: u64 = 120_000;
+const EXEC_BASH_SUCCESS_DETAIL_LINES: usize = 16;
+const EXEC_BASH_TMUX_POLL_MS: u64 = 120;
+const EXEC_BASH_CAPTURE_SCROLLBACK_LINES: &str = "-6000";
 
 #[derive(Clone, Debug)]
 pub struct AgentWorkshopConfig {
@@ -284,7 +290,11 @@ impl AgentWorkshop {
         self.local_workspace_mgr.load_skill(skill_name).await
     }
 
-    pub fn register_tools(&self, tool_mgr: &AgentToolManager) -> Result<(), AgentToolError> {
+    pub fn register_tools(
+        &self,
+        tool_mgr: &AgentToolManager,
+        session_store: Arc<AgentSessionMgr>,
+    ) -> Result<(), AgentToolError> {
         let write_audit = WorkshopWriteAudit::new(self.resolve_write_audit_config()?);
         for tool in self
             .tools_cfg
@@ -298,6 +308,7 @@ impl AgentWorkshop {
                         tool_mgr.register_tool(ExecBashTool {
                             cfg: self.cfg.clone(),
                             policy: ExecBashPolicy::from_tool_config(&self.cfg, tool)?,
+                            session_store: session_store.clone(),
                         })?;
                     }
                     TOOL_EDIT_FILE => {
@@ -580,6 +591,7 @@ impl WorklogToolPolicy {
 struct ExecBashTool {
     cfg: AgentWorkshopConfig,
     policy: ExecBashPolicy,
+    session_store: Arc<AgentSessionMgr>,
 }
 
 #[async_trait]
@@ -587,12 +599,11 @@ impl AgentTool for ExecBashTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_EXEC_BASH.to_string(),
-            description: "Run a Linux bash command inside workshop scope.".to_string(),
+            description: "Run a Linux bash command in a tmux-backed workshop session.".to_string(),
             args_schema: json!({
                 "type": "object",
                 "properties": {
                     "command": { "type": "string" },
-                    "cwd": { "type": "string", "description": "Optional cwd under workspace root." },
                     "timeout_ms": { "type": "integer", "minimum": 1 },
                     "env": {
                         "type": "object",
@@ -609,28 +620,33 @@ impl AgentTool for ExecBashTool {
                     "exit_code": { "type": ["integer", "null"] },
                     "stdout": { "type": "string" },
                     "stderr": { "type": "string" },
+                    "details": { "type": "string" },
                     "stdout_truncated": { "type": "boolean" },
                     "stderr_truncated": { "type": "boolean" },
                     "duration_ms": { "type": "integer" },
-                    "cwd": { "type": "string" }
+                    "cwd": { "type": "string" },
+                    "session_id": { "type": "string" },
+                    "tmux_session": { "type": "string" },
+                    "engine": { "type": "string" }
                 }
             }),
         }
     }
 
-    async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
         let command = require_string(&args, "command")?;
-        let cwd = if let Some(raw_cwd) = optional_string(&args, "cwd")? {
-            resolve_path_in_workspace(&self.cfg.workspace_root, &raw_cwd)?
-        } else {
-            self.cfg.workspace_root.clone()
-        };
-        if !is_path_under_any(&cwd, &self.policy.allowed_cwd_roots) {
-            return Err(AgentToolError::InvalidArgs(format!(
-                "cwd `{}` not allowed by workshop tool policy",
-                cwd.display()
-            )));
-        }
+        let session_id = ctx
+            .session_id
+            .as_deref()
+            .ok_or_else(|| {
+                AgentToolError::InvalidArgs(
+                    "missing session context for exec_bash; runtime should bind TraceCtx.session_id"
+                        .to_string(),
+                )
+            })?
+            .to_string();
+        let session_id = sanitize_exec_session_id(&session_id)?;
+        let cwd = self.resolve_session_cwd(&session_id).await?;
 
         let timeout_ms =
             optional_u64(&args, "timeout_ms")?.unwrap_or(self.policy.default_timeout_ms);
@@ -641,57 +657,182 @@ impl AgentTool for ExecBashTool {
             )));
         }
 
-        let mut command_builder = Command::new(&self.cfg.bash_path);
-        command_builder.arg("-lc").arg(&command).current_dir(&cwd);
-        command_builder.kill_on_drop(true);
-
-        if let Some(env) = args.get("env") {
-            if !self.policy.allow_env {
-                return Err(AgentToolError::InvalidArgs(
-                    "env injection is disabled by workshop tool policy".to_string(),
-                ));
-            }
-            let env_obj = env.as_object().ok_or_else(|| {
-                AgentToolError::InvalidArgs("env must be an object of string values".to_string())
-            })?;
-            for (key, value) in env_obj {
-                let value = value.as_str().ok_or_else(|| {
-                    AgentToolError::InvalidArgs(format!("env.{key} must be a string"))
-                })?;
-                command_builder.env(key, value);
-            }
-        }
-
-        let started = Instant::now();
-        let output = match timeout(Duration::from_millis(timeout_ms), command_builder.output())
-            .await
-        {
-            Ok(result) => result
-                .map_err(|err| AgentToolError::ExecFailed(format!("wait bash failed: {err}")))?,
-            Err(_) => return Err(AgentToolError::Timeout),
+        let env_vars = parse_exec_env_args(&args, self.policy.allow_env)?;
+        let run_result = self
+            .run_tmux_bash(ctx, &session_id, &command, &cwd, timeout_ms, &env_vars)
+            .await?;
+        let (stdout, stdout_truncated) =
+            truncate_bytes(&run_result.stdout, self.cfg.max_output_bytes);
+        let (stderr, stderr_truncated) =
+            truncate_bytes(&run_result.stderr, self.cfg.max_output_bytes);
+        let ok = run_result.exit_code == 0;
+        let details = if ok {
+            tail_lines_limited(&stdout, EXEC_BASH_SUCCESS_DETAIL_LINES)
+        } else {
+            stderr.clone()
         };
 
-        let duration_ms = started.elapsed().as_millis() as u64;
-        let (stdout, stdout_truncated) = truncate_bytes(
-            String::from_utf8_lossy(&output.stdout).as_bytes(),
-            self.cfg.max_output_bytes,
-        );
-        let (stderr, stderr_truncated) = truncate_bytes(
-            String::from_utf8_lossy(&output.stderr).as_bytes(),
-            self.cfg.max_output_bytes,
-        );
-
         Ok(json!({
-            "ok": output.status.success(),
-            "exit_code": output.status.code(),
+            "ok": ok,
+            "exit_code": run_result.exit_code,
             "stdout": stdout,
             "stderr": stderr,
+            "details": details,
             "stdout_truncated": stdout_truncated,
             "stderr_truncated": stderr_truncated,
-            "duration_ms": duration_ms,
+            "duration_ms": run_result.duration_ms,
             "command": command,
-            "cwd": cwd.to_string_lossy().to_string()
+            "cwd": cwd.to_string_lossy().to_string(),
+            "session_id": session_id,
+            "tmux_session": run_result.tmux_session,
+            "engine": "tmux"
         }))
+    }
+}
+
+struct ExecBashTmuxRunResult {
+    exit_code: i32,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    duration_ms: u64,
+    tmux_session: String,
+}
+
+impl ExecBashTool {
+    async fn resolve_session_cwd(&self, session_id: &str) -> Result<PathBuf, AgentToolError> {
+        let Some(session) = self.session_store.get_session(session_id).await else {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "session not found for exec_bash: {session_id}"
+            )));
+        };
+        let raw_cwd = {
+            let guard = session.lock().await;
+            guard.cwd.clone()
+        };
+        let cwd = if raw_cwd.as_os_str().is_empty() {
+            self.cfg.workspace_root.clone()
+        } else if raw_cwd.is_absolute() {
+            normalize_abs_path(&raw_cwd)
+        } else {
+            normalize_abs_path(&self.cfg.workspace_root.join(raw_cwd))
+        };
+
+        if !cwd.starts_with(&self.cfg.workspace_root) {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "session cwd out of workspace scope: {}",
+                cwd.display()
+            )));
+        }
+        if !is_path_under_any(&cwd, &self.policy.allowed_cwd_roots) {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "session cwd `{}` not allowed by workshop tool policy",
+                cwd.display()
+            )));
+        }
+
+        Ok(cwd)
+    }
+
+    async fn run_tmux_bash(
+        &self,
+        ctx: &TraceCtx,
+        session_id: &str,
+        command: &str,
+        cwd: &Path,
+        timeout_ms: u64,
+        env_vars: &[(String, String)],
+    ) -> Result<ExecBashTmuxRunResult, AgentToolError> {
+        let tmux_session = build_tmux_session_name(session_id);
+        let tmux_target = format!("{tmux_session}:0.0");
+        ensure_tmux_session(&tmux_session, cwd).await?;
+
+        let runtime_dir = self
+            .cfg
+            .workspace_root
+            .join(".runtime")
+            .join("exec_bash")
+            .join(sanitize_token_for_id(session_id));
+        fs::create_dir_all(&runtime_dir).await.map_err(|err| {
+            AgentToolError::ExecFailed(format!(
+                "create exec runtime dir `{}` failed: {err}",
+                runtime_dir.display()
+            ))
+        })?;
+
+        let run_id = format!(
+            "{}-{}-{}-{}",
+            now_ms(),
+            sanitize_token_for_id(&ctx.trace_id),
+            sanitize_token_for_id(&ctx.behavior),
+            ctx.step_idx
+        );
+        let stdout_path = runtime_dir.join(format!("{run_id}.stdout.log"));
+        let stderr_path = runtime_dir.join(format!("{run_id}.stderr.log"));
+        let script_path = runtime_dir.join(format!("{run_id}.exec.sh"));
+        let script = build_tmux_exec_script(
+            &run_id,
+            &stdout_path,
+            &stderr_path,
+            cwd,
+            command,
+            env_vars,
+            &self.cfg.bash_path,
+        );
+        fs::write(&script_path, script).await.map_err(|err| {
+            AgentToolError::ExecFailed(format!(
+                "write exec script `{}` failed: {err}",
+                script_path.display()
+            ))
+        })?;
+
+        clear_tmux_history(&tmux_target).await?;
+
+        let invoke = format!(
+            "{} {}",
+            shell_single_quote(self.cfg.bash_path.to_string_lossy().as_ref()),
+            shell_single_quote(script_path.to_string_lossy().as_ref())
+        );
+        send_tmux_command(&tmux_target, &invoke).await?;
+
+        let started = Instant::now();
+        let exit_code = match wait_tmux_exit_code(&tmux_target, &run_id, timeout_ms).await {
+            Ok(code) => code,
+            Err(err) => {
+                let _ = interrupt_tmux_target(&tmux_target).await;
+                let _ = fs::remove_file(&script_path).await;
+                let _ = fs::remove_file(&stdout_path).await;
+                let _ = fs::remove_file(&stderr_path).await;
+                return Err(err);
+            }
+        };
+
+        // flush potential trailing buffered bytes produced by tee.
+        sleep(Duration::from_millis(30)).await;
+
+        let stdout = fs::read(&stdout_path).await.map_err(|err| {
+            AgentToolError::ExecFailed(format!(
+                "read stdout log `{}` failed: {err}",
+                stdout_path.display()
+            ))
+        })?;
+        let stderr = fs::read(&stderr_path).await.map_err(|err| {
+            AgentToolError::ExecFailed(format!(
+                "read stderr log `{}` failed: {err}",
+                stderr_path.display()
+            ))
+        })?;
+
+        let _ = fs::remove_file(&script_path).await;
+        let _ = fs::remove_file(&stdout_path).await;
+        let _ = fs::remove_file(&stderr_path).await;
+
+        Ok(ExecBashTmuxRunResult {
+            exit_code,
+            stdout,
+            stderr,
+            duration_ms: started.elapsed().as_millis() as u64,
+            tmux_session,
+        })
     }
 }
 
@@ -1298,6 +1439,342 @@ fn truncate_bytes(input: &[u8], max_bytes: usize) -> (String, bool) {
     )
 }
 
+fn parse_exec_env_args(
+    args: &Json,
+    allow_env: bool,
+) -> Result<Vec<(String, String)>, AgentToolError> {
+    let Some(env) = args.get("env") else {
+        return Ok(Vec::new());
+    };
+    if !allow_env {
+        return Err(AgentToolError::InvalidArgs(
+            "env injection is disabled by workshop tool policy".to_string(),
+        ));
+    }
+    let env_obj = env.as_object().ok_or_else(|| {
+        AgentToolError::InvalidArgs("env must be an object of string values".to_string())
+    })?;
+    let mut vars = Vec::with_capacity(env_obj.len());
+    for (key, value) in env_obj {
+        if key.trim().is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "env key cannot be empty".to_string(),
+            ));
+        }
+        if !is_valid_shell_env_key(key) {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "env key `{key}` is invalid, expected [A-Za-z_][A-Za-z0-9_]*"
+            )));
+        }
+        let value = value
+            .as_str()
+            .ok_or_else(|| AgentToolError::InvalidArgs(format!("env.{key} must be a string")))?;
+        vars.push((key.clone(), value.to_string()));
+    }
+    Ok(vars)
+}
+
+fn sanitize_exec_session_id(raw: &str) -> Result<String, AgentToolError> {
+    let session_id = raw.trim();
+    if session_id.is_empty() {
+        return Err(AgentToolError::InvalidArgs(
+            "session_id cannot be empty".to_string(),
+        ));
+    }
+    if session_id.len() > 180 {
+        return Err(AgentToolError::InvalidArgs(
+            "session_id too long (>180)".to_string(),
+        ));
+    }
+    if session_id == "." || session_id == ".." {
+        return Err(AgentToolError::InvalidArgs(
+            "session_id cannot be `.` or `..`".to_string(),
+        ));
+    }
+    if session_id.contains('/') || session_id.contains('\\') {
+        return Err(AgentToolError::InvalidArgs(
+            "session_id cannot contain path separators".to_string(),
+        ));
+    }
+    if session_id.chars().any(|ch| ch.is_control()) {
+        return Err(AgentToolError::InvalidArgs(
+            "session_id cannot contain control characters".to_string(),
+        ));
+    }
+    Ok(session_id.to_string())
+}
+
+fn sanitize_token_for_id(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len().min(64));
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if ch == '-' || ch == '_' {
+            out.push(ch);
+        } else if !out.ends_with('_') {
+            out.push('_');
+        }
+        if out.len() >= 64 {
+            break;
+        }
+    }
+    let trimmed = out.trim_matches('_');
+    if trimmed.is_empty() {
+        "default".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn build_tmux_session_name(session_id: &str) -> String {
+    format!("od_{}", sanitize_token_for_id(session_id))
+}
+
+fn shell_single_quote(raw: &str) -> String {
+    if raw.is_empty() {
+        return "''".to_string();
+    }
+    format!("'{}'", raw.replace('\'', "'\"'\"'"))
+}
+
+fn build_tmux_exec_script(
+    run_id: &str,
+    stdout_path: &Path,
+    stderr_path: &Path,
+    cwd: &Path,
+    command: &str,
+    env_vars: &[(String, String)],
+    bash_path: &Path,
+) -> String {
+    let mut lines = Vec::new();
+    lines.push("#!/usr/bin/env bash".to_string());
+    lines.push(format!("__od_run_id={}", shell_single_quote(run_id)));
+    lines.push(format!(
+        "__od_stdout={}",
+        shell_single_quote(stdout_path.to_string_lossy().as_ref())
+    ));
+    lines.push(format!(
+        "__od_stderr={}",
+        shell_single_quote(stderr_path.to_string_lossy().as_ref())
+    ));
+    lines.push(format!(
+        "__od_cwd={}",
+        shell_single_quote(cwd.to_string_lossy().as_ref())
+    ));
+    lines.push(format!(
+        "__od_bash={}",
+        shell_single_quote(bash_path.to_string_lossy().as_ref())
+    ));
+    lines.push("printf \"__OD_BEGIN__%s\\n\" \"$__od_run_id\"".to_string());
+    lines.push("mkdir -p \"$(dirname \"$__od_stdout\")\"".to_string());
+    lines.push(": > \"$__od_stdout\"".to_string());
+    lines.push(": > \"$__od_stderr\"".to_string());
+    lines.push("{".to_string());
+    lines.push("  cd \"$__od_cwd\" || exit 97".to_string());
+    for (key, value) in env_vars {
+        lines.push(format!(
+            "  export {}={}",
+            key,
+            shell_single_quote(value.as_str())
+        ));
+    }
+    lines.push("  \"$__od_bash\" <<'__OD_COMMAND__'".to_string());
+    lines.push(command.to_string());
+    lines.push("__OD_COMMAND__".to_string());
+    lines.push("} > >(tee \"$__od_stdout\") 2> >(tee \"$__od_stderr\" >&2)".to_string());
+    lines.push("__od_ec=$?".to_string());
+    lines.push("printf \"__OD_EXIT__%s:%s\\n\" \"$__od_run_id\" \"$__od_ec\"".to_string());
+    lines.push("exit 0".to_string());
+    lines.join("\n")
+}
+
+async fn tmux_version_check() -> Result<(), AgentToolError> {
+    let output = Command::new("tmux")
+        .arg("-V")
+        .output()
+        .await
+        .map_err(|err| AgentToolError::ExecFailed(format!("tmux unavailable: {err}")))?;
+    if !output.status.success() {
+        return Err(AgentToolError::ExecFailed(
+            "tmux command exists but version probe failed".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+async fn ensure_tmux_session(session_name: &str, cwd: &Path) -> Result<(), AgentToolError> {
+    tmux_version_check().await?;
+    let has_session = Command::new("tmux")
+        .args(["has-session", "-t", session_name])
+        .output()
+        .await
+        .map_err(|err| AgentToolError::ExecFailed(format!("tmux has-session failed: {err}")))?;
+    if has_session.status.success() {
+        return Ok(());
+    }
+    let output = Command::new("tmux")
+        .args(["new-session", "-d", "-s", session_name, "-c"])
+        .arg(cwd)
+        .output()
+        .await
+        .map_err(|err| AgentToolError::ExecFailed(format!("tmux new-session failed: {err}")))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(AgentToolError::ExecFailed(format!(
+        "create tmux session `{session_name}` failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    )))
+}
+
+async fn clear_tmux_history(target: &str) -> Result<(), AgentToolError> {
+    let output = Command::new("tmux")
+        .args(["clear-history", "-t", target])
+        .output()
+        .await
+        .map_err(|err| AgentToolError::ExecFailed(format!("tmux clear-history failed: {err}")))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(AgentToolError::ExecFailed(format!(
+        "tmux clear-history `{target}` failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    )))
+}
+
+async fn send_tmux_command(target: &str, command: &str) -> Result<(), AgentToolError> {
+    let output = Command::new("tmux")
+        .args(["send-keys", "-t", target, "--", command, "C-m"])
+        .output()
+        .await
+        .map_err(|err| AgentToolError::ExecFailed(format!("tmux send-keys failed: {err}")))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(AgentToolError::ExecFailed(format!(
+        "tmux send-keys `{target}` failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    )))
+}
+
+async fn wait_tmux_exit_code(
+    target: &str,
+    run_id: &str,
+    timeout_ms: u64,
+) -> Result<i32, AgentToolError> {
+    let started = Instant::now();
+    let timeout_dur = Duration::from_millis(timeout_ms);
+    let marker = format!("__OD_EXIT__{run_id}:");
+    loop {
+        if started.elapsed() >= timeout_dur {
+            return Err(AgentToolError::Timeout);
+        }
+        let output = Command::new("tmux")
+            .args([
+                "capture-pane",
+                "-p",
+                "-J",
+                "-S",
+                EXEC_BASH_CAPTURE_SCROLLBACK_LINES,
+                "-t",
+                target,
+            ])
+            .output()
+            .await
+            .map_err(|err| {
+                AgentToolError::ExecFailed(format!("tmux capture-pane failed: {err}"))
+            })?;
+        if !output.status.success() {
+            return Err(AgentToolError::ExecFailed(format!(
+                "tmux capture-pane `{target}` failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        let pane = String::from_utf8_lossy(&output.stdout);
+        if let Some(code) = parse_tmux_exit_code(pane.as_ref(), marker.as_str())? {
+            return Ok(code);
+        }
+        sleep(Duration::from_millis(EXEC_BASH_TMUX_POLL_MS)).await;
+    }
+}
+
+fn parse_tmux_exit_code(pane: &str, marker: &str) -> Result<Option<i32>, AgentToolError> {
+    for line in pane.lines().rev() {
+        let Some(pos) = line.find(marker) else {
+            continue;
+        };
+        let raw = &line[pos + marker.len()..];
+        let mut code_buf = String::new();
+        for ch in raw.chars() {
+            if ch == '-' && code_buf.is_empty() {
+                code_buf.push(ch);
+                continue;
+            }
+            if ch.is_ascii_digit() {
+                code_buf.push(ch);
+                continue;
+            }
+            if !code_buf.is_empty() {
+                break;
+            }
+        }
+        if code_buf.is_empty() || code_buf == "-" {
+            return Err(AgentToolError::ExecFailed(format!(
+                "invalid tmux exit code marker payload `{raw}`"
+            )));
+        }
+        let code = code_buf.parse::<i32>().map_err(|err| {
+            AgentToolError::ExecFailed(format!("invalid tmux exit code marker `{raw}`: {err}"))
+        })?;
+        return Ok(Some(code));
+    }
+    Ok(None)
+}
+
+async fn interrupt_tmux_target(target: &str) -> Result<(), AgentToolError> {
+    let output = Command::new("tmux")
+        .args(["send-keys", "-t", target, "C-c"])
+        .output()
+        .await
+        .map_err(|err| AgentToolError::ExecFailed(format!("tmux interrupt failed: {err}")))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(AgentToolError::ExecFailed(format!(
+        "tmux interrupt `{target}` failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    )))
+}
+
+fn tail_lines_limited(text: &str, max_lines: usize) -> String {
+    if max_lines == 0 {
+        return String::new();
+    }
+    let lines = text.lines().collect::<Vec<_>>();
+    if lines.len() <= max_lines {
+        return text.to_string();
+    }
+    lines[lines.len() - max_lines..].join("\n")
+}
+
+fn is_valid_shell_env_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 fn build_simple_diff(
     display_path: &str,
     before: &str,
@@ -1356,8 +1833,9 @@ fn u64_to_usize(v: u64) -> Result<usize, AgentToolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buckyos_api::{value_to_object_map, AiToolCall};
+    use crate::agent_session::AgentSessionMgr;
     use crate::behavior::TraceCtx;
+    use buckyos_api::{value_to_object_map, AiToolCall};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_workspace_root(test_name: &str) -> PathBuf {
@@ -1368,7 +1846,36 @@ mod tests {
         std::env::temp_dir().join(format!("opendan-{test_name}-{ts}"))
     }
 
-    async fn call(tool_mgr: &AgentToolManager, name: &str, args: Json) -> Result<Json, AgentToolError> {
+    async fn create_session_store(root: &Path) -> Arc<AgentSessionMgr> {
+        let store = Arc::new(
+            AgentSessionMgr::new(
+                "did:example:agent".to_string(),
+                root.join("session"),
+                Some("on_wakeup".to_string()),
+            )
+            .await
+            .expect("create session store"),
+        );
+        let session = store
+            .ensure_session("session-test", Some("Session Test".to_string()))
+            .await
+            .expect("ensure session");
+        {
+            let mut guard = session.lock().await;
+            guard.cwd = root.to_path_buf();
+        }
+        store
+            .save_session("session-test")
+            .await
+            .expect("save session");
+        store
+    }
+
+    async fn call(
+        tool_mgr: &AgentToolManager,
+        name: &str,
+        args: Json,
+    ) -> Result<Json, AgentToolError> {
         tool_mgr
             .call_tool(
                 &TraceCtx {
@@ -1377,6 +1884,7 @@ mod tests {
                     behavior: "on_wakeup".to_string(),
                     step_idx: 0,
                     wakeup_id: "wakeup-test".to_string(),
+                    session_id: Some("session-test".to_string()),
                 },
                 AiToolCall {
                     name: name.to_string(),
@@ -1400,15 +1908,26 @@ mod tests {
         .expect("write tools config");
     }
 
+    async fn tmux_ready() -> bool {
+        match Command::new("tmux").arg("-V").output().await {
+            Ok(output) => output.status.success(),
+            Err(_) => false,
+        }
+    }
+
     #[tokio::test]
     async fn exec_bash_tool_runs_linux_command() {
+        if !tmux_ready().await {
+            return;
+        }
         let root = unique_workspace_root("exec-bash");
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
+        let session_store = create_session_store(&root).await;
         let tool_mgr = AgentToolManager::new();
         workshop
-            .register_tools(&tool_mgr)
+            .register_tools(&tool_mgr, session_store)
             .expect("register workshop tools");
 
         let result = call(
@@ -1424,6 +1943,8 @@ mod tests {
         assert_eq!(result["ok"], true);
         assert_eq!(result["exit_code"], 0);
         assert_eq!(result["stdout"], "hello-linux");
+        assert_eq!(result["details"], "hello-linux");
+        assert_eq!(result["engine"], "tmux");
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -1434,9 +1955,10 @@ mod tests {
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
+        let session_store = create_session_store(&root).await;
         let tool_mgr = AgentToolManager::new();
         workshop
-            .register_tools(&tool_mgr)
+            .register_tools(&tool_mgr, session_store)
             .expect("register workshop tools");
 
         call(
@@ -1489,9 +2011,10 @@ mod tests {
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
+        let session_store = create_session_store(&root).await;
         let tool_mgr = AgentToolManager::new();
         workshop
-            .register_tools(&tool_mgr)
+            .register_tools(&tool_mgr, session_store)
             .expect("register workshop tools");
 
         assert!(tool_mgr.has_tool(TOOL_EDIT_FILE));
@@ -1536,9 +2059,10 @@ mod tests {
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
+        let session_store = create_session_store(&root).await;
         let tool_mgr = AgentToolManager::new();
         workshop
-            .register_tools(&tool_mgr)
+            .register_tools(&tool_mgr, session_store)
             .expect("register workshop tools");
 
         call(
@@ -1592,9 +2116,10 @@ mod tests {
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
+        let session_store = create_session_store(&root).await;
         let tool_mgr = AgentToolManager::new();
         workshop
-            .register_tools(&tool_mgr)
+            .register_tools(&tool_mgr, session_store)
             .expect("register workshop tools");
 
         assert!(tool_mgr.has_tool("weather"));
@@ -1633,9 +2158,10 @@ mod tests {
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
+        let session_store = create_session_store(&root).await;
         let tool_mgr = AgentToolManager::new();
         workshop
-            .register_tools(&tool_mgr)
+            .register_tools(&tool_mgr, session_store)
             .expect("register workshop tools");
 
         assert!(tool_mgr.has_tool(TOOL_EXEC_BASH));
@@ -1652,9 +2178,10 @@ mod tests {
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
+        let session_store = create_session_store(&root).await;
         let tool_mgr = AgentToolManager::new();
         workshop
-            .register_tools(&tool_mgr)
+            .register_tools(&tool_mgr, session_store)
             .expect("register workshop tools");
 
         assert!(tool_mgr.has_tool(TOOL_WORKLOG_MANAGE));

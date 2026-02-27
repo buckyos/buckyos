@@ -3153,6 +3153,7 @@ mod tests {
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-test".to_string(),
+            session_id: None,
         }
     }
 

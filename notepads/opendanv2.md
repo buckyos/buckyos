@@ -793,7 +793,7 @@ claim 失败不等于 session 失败——session 放弃"写"的权利但保留"
 * 文件编辑工具（适合做结构化 diff、patch）
   - read_file 读取文件 read_file(path:String,range),read_file(path:string,first_chunk:string)
   - write_file 覆盖/创建/在尾部追加 文件。write_file(path:String,content:String,new|append|write)
-  - edit_file 基于字符串匹配的精确修改（Surgical edits）.edit_file(path:String,pos_chunk:string,new_content:string，replace|after|before)
+  - edit_file 基于字符串匹配位置后的精确修改.如果匹配失败则不会修改目标文件。edit_file(path:String,pos_chunk:string,new_content:string，replace|after|before)
 * exec_bash（session 有 cwd 概念与环境变量，便于定位 workspace 目录）
   - 底层使用 tmux + sssion_id作为执行引擎，当session崩溃后恢复后，也可以恢复回话（第一次创建的时候要用session cwd来初始化目录）
   - 每次执行命令要有超时的概念(bash默认 + behaviocfg配置 + Agent配置，组层读取)

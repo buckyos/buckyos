@@ -13,7 +13,10 @@ use tokio::fs;
 
 use super::*;
 use crate::agent_enviroment::AgentEnvironment;
-use crate::agent_tool::{AgentTool, DoAction, DoActions, AgentToolManager, ToolSpec, TOOL_EXEC_BASH};
+use crate::agent_session::AgentSessionMgr;
+use crate::agent_tool::{
+    AgentTool, AgentToolManager, DoAction, DoActions, ToolSpec, TOOL_EXEC_BASH,
+};
 use crate::test_utils::{MockAicc, MockTaskMgrHandler};
 use crate::workspace::{AgentWorkshop, AgentWorkshopConfig};
 
@@ -232,6 +235,7 @@ tools:
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-1".to_string(),
+            session_id: None,
         },
         input_prompt: String::new(),
         last_step_prompt: String::new(),
@@ -351,6 +355,7 @@ process_rule: test_rule
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-3".to_string(),
+            session_id: None,
         },
         input_prompt: String::new(),
         last_step_prompt: String::new(),
@@ -434,6 +439,7 @@ process_rule: test_rule
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-2".to_string(),
+            session_id: None,
         },
         input_prompt: String::new(),
         last_step_prompt: String::new(),
@@ -514,6 +520,7 @@ process_rule: test_rule
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-parent-1".to_string(),
+            session_id: None,
         },
         input_prompt: String::new(),
         last_step_prompt: String::new(),
@@ -640,6 +647,7 @@ process_rule: test_rule
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-parent-2".to_string(),
+            session_id: None,
         },
         input_prompt: String::new(),
         last_step_prompt: String::new(),
@@ -844,6 +852,7 @@ tools:
         behavior: "on_wakeup".to_string(),
         step_idx: 0,
         wakeup_id: "wakeup-actions".to_string(),
+        session_id: None,
     };
 
     let first_input = BehaviorExecInput {
@@ -928,8 +937,29 @@ async fn run_step_with_workshop_list_dir_then_plan_python_actions() {
         .expect("write seed file");
 
     let tool_mgr = Arc::new(AgentToolManager::new());
+    let session_store = Arc::new(
+        AgentSessionMgr::new(
+            "did:example:agent".to_string(),
+            root.join("session"),
+            Some("on_wakeup".to_string()),
+        )
+        .await
+        .expect("create session store"),
+    );
+    let session = session_store
+        .ensure_session("session-workshop", Some("Session Workshop".to_string()))
+        .await
+        .expect("ensure session");
+    {
+        let mut guard = session.lock().await;
+        guard.cwd = root.clone();
+    }
+    session_store
+        .save_session("session-workshop")
+        .await
+        .expect("save session");
     workshop
-        .register_tools(tool_mgr.as_ref())
+        .register_tools(tool_mgr.as_ref(), session_store.clone())
         .expect("register workshop tools");
 
     let responses = Arc::new(Mutex::new(VecDeque::from(vec![
@@ -1035,6 +1065,7 @@ tools:
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-workshop-actions".to_string(),
+            session_id: Some("session-workshop".to_string()),
         },
         input_prompt: String::new(),
         last_step_prompt: String::new(),
@@ -1091,6 +1122,7 @@ tools:
         behavior: "on_action".to_string(),
         step_idx: 1,
         wakeup_id: "wakeup-workshop-actions".to_string(),
+        session_id: Some("session-workshop".to_string()),
     };
     for (idx, action) in result.actions.cmds.iter().enumerate() {
         let command = match action {

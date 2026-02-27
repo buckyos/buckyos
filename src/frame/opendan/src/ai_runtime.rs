@@ -2298,6 +2298,7 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-1".to_string(),
+            session_id: None,
         }
     }
 

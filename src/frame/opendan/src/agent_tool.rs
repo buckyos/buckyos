@@ -4,8 +4,8 @@ use std::sync::{Arc, RwLock as StdRwLock};
 use async_trait::async_trait;
 use buckyos_api::AiToolCall;
 use log::{debug, warn};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde::ser::SerializeSeq;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Value as Json};
 use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
@@ -29,8 +29,8 @@ pub const TOOL_WORKLOG_MANAGE: &str = "worklog_manage";
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionKind {
-    CallTool,//指向一个内置的tool
-    //ExecScript,//运行一个特定的脚本
+    CallTool, //指向一个内置的tool
+              //ExecScript,//运行一个特定的脚本
 }
 
 impl Default for ActionKind {
@@ -63,13 +63,13 @@ pub struct ActionSpec {
     #[serde(default)]
     pub kind: ActionKind,
     pub name: String,
-    pub introduce : String,
-    pub description : Option<String>,
+    pub introduce: String,
+    pub description: Option<String>,
 }
 
 impl ActionSpec {
     pub fn render_introduce_prompt(&self) -> String {
-        return format!("- {} : {}",self.name,self.introduce);
+        return format!("- {} : {}", self.name, self.introduce);
     }
 
     pub fn render_prompt(&self) -> String {
@@ -130,8 +130,11 @@ fn builtin_action_args_schema(action_name: &str) -> Json {
             "type": "object",
             "properties": {
                 "command": { "type": "string" },
-                "cwd": { "type": "string" },
-                "timeout_ms": { "type": "integer", "minimum": 1 }
+                "timeout_ms": { "type": "integer", "minimum": 1 },
+                "env": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" }
+                }
             },
             "required": ["command"]
         }),
@@ -322,7 +325,6 @@ pub enum DoAction {
     Call(ActionCall),
 }
 
-
 fn default_do_actions_mode() -> String {
     "failed_end".to_string()
 }
@@ -358,7 +360,6 @@ pub struct DoActionResults {
     // "cat abc.json" -> "{"aaa":"bbb"}"
     pub details: HashMap<String, Json>,
 }
-
 
 fn default_action_timeout_ms() -> u64 {
     120_000
@@ -676,9 +677,10 @@ impl AgentActionManager {
             .filter(|value| !value.is_empty())
             .map(|value| value.to_string());
 
-        let mut guard = self.actions.write().map_err(|_| {
-            AgentToolError::ExecFailed("action registry lock poisoned".to_string())
-        })?;
+        let mut guard = self
+            .actions
+            .write()
+            .map_err(|_| AgentToolError::ExecFailed("action registry lock poisoned".to_string()))?;
         if guard.contains_key(&normalized_name) {
             return Err(AgentToolError::AlreadyExists(normalized_name));
         }
@@ -839,7 +841,9 @@ impl AgentToolManager {
         };
         let removed = guard.remove(normalized_name.as_str()).is_some();
         if removed {
-            let _ = self.actions.unregister_action_spec(normalized_name.as_str());
+            let _ = self
+                .actions
+                .unregister_action_spec(normalized_name.as_str());
         }
         removed
     }
@@ -1047,6 +1051,7 @@ mod tests {
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-1".to_string(),
+            session_id: None,
         }
     }
 

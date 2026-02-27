@@ -2154,6 +2154,7 @@ mod tests {
             behavior: "DO".to_string(),
             step_idx: 1,
             wakeup_id: "wakeup-1".to_string(),
+            session_id: None,
         };
 
         let rsp = tool
@@ -2240,6 +2241,7 @@ mod tests {
             behavior: "DO".to_string(),
             step_idx: 7,
             wakeup_id: "wakeup-render".to_string(),
+            session_id: None,
         };
 
         let _ = tool

@@ -14,7 +14,7 @@ use upon::Engine;
 use buckyos_api::msg_queue::Message;
 
 use crate::agent::{AIAgent, InputQueueKind};
-use crate::agent_session::AgentSession;
+use crate::agent_session::{AgentSession, AgentSessionMgr};
 use crate::agent_tool::{AgentToolError, AgentToolManager};
 use crate::workspace::{
     get_next_ready_todo_code, get_next_ready_todo_text, AgentWorkshop, AgentWorkshopConfig,
@@ -68,16 +68,21 @@ impl AgentEnvironment {
         self.workshop.workspace_root()
     }
 
-    pub fn register_workshop_tools(&self, tool_mgr: &AgentToolManager) -> Result<(), AgentToolError> {
-        self.workshop.register_tools(tool_mgr)
+    pub fn register_workshop_tools(
+        &self,
+        tool_mgr: &AgentToolManager,
+        session_store: Arc<AgentSessionMgr>,
+    ) -> Result<(), AgentToolError> {
+        self.workshop.register_tools(tool_mgr, session_store)
     }
 
     // Backward compatibility for old call sites.
     pub fn register_basic_workshop_tools(
         &self,
         tool_mgr: &AgentToolManager,
+        session_store: Arc<AgentSessionMgr>,
     ) -> Result<(), AgentToolError> {
-        self.register_workshop_tools(tool_mgr)
+        self.register_workshop_tools(tool_mgr, session_store)
     }
 
     pub fn build_prompt_template_context(

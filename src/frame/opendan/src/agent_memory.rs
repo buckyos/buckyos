@@ -13,11 +13,8 @@ use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
-use crate::agent_tool::{
-    AgentTool, AgentToolError, AgentToolManager, ToolSpec, TOOL_LOAD_MEMORY,
-};
+use crate::agent_tool::{AgentTool, AgentToolError, AgentToolManager, ToolSpec, TOOL_LOAD_MEMORY};
 use crate::behavior::TraceCtx;
-
 
 const DEFAULT_MEMORY_DIR_NAME: &str = "memory";
 const DEFAULT_LOG_FILE_NAME: &str = "log.jsonl";
@@ -948,6 +945,7 @@ mod tests {
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-memory".to_string(),
+            session_id: None,
         }
     }
 

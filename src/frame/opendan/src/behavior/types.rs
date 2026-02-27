@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use tokio::sync::Mutex;
 
-use crate::agent_tool::DoActions;
 use crate::agent_session::AgentSession;
+use crate::agent_tool::DoActions;
 use crate::behavior::{BehaviorConfig, LLMComputeError};
 
 pub type InboxPack = Json;
@@ -18,6 +18,7 @@ pub struct TraceCtx {
     pub behavior: String,
     pub step_idx: u32,
     pub wakeup_id: String,
+    pub session_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

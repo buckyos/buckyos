@@ -105,7 +105,9 @@ impl PromptBuilder {
             sanitize_text(output_protocol_text.as_str())
         ));
 
-        if let Some((toolbox, tools)) = build_toolbox(tools, action_specs, cfg, session.clone()).await {
+        if let Some((toolbox, tools)) =
+            build_toolbox(tools, action_specs, cfg, session.clone()).await
+        {
             system_parts.push(format!("<<toolbox>>\n{}\n<</toolbox>>", toolbox));
             loaded_tools = tools;
         }
@@ -1872,8 +1874,8 @@ loaded_tools: [exec_bash]
 
         let (toolbox_text, loaded_tools) =
             build_toolbox(&tools, &action_specs, &cfg, Some(session))
-            .await
-            .expect("toolbox should be available");
+                .await
+                .expect("toolbox should be available");
         let toolbox_json: Json =
             serde_json::from_str(&toolbox_text).expect("toolbox should be valid json");
 
@@ -1926,6 +1928,7 @@ loaded_tools: [exec_bash]
                 behavior: "on_wakeup".to_string(),
                 step_idx: 2,
                 wakeup_id: "wakeup-1".to_string(),
+                session_id: None,
             },
             input_prompt: "user input".to_string(),
             last_step_prompt: String::new(),
@@ -2001,6 +2004,7 @@ loaded_tools: [exec_bash]
                 behavior: "on_wakeup".to_string(),
                 step_idx: 1,
                 wakeup_id: "wakeup-1".to_string(),
+                session_id: None,
             },
             input_prompt: "user input".to_string(),
             last_step_prompt: String::new(),
@@ -2107,6 +2111,7 @@ loaded_tools: [exec_bash]
                 behavior: "on_wakeup".to_string(),
                 step_idx: 1,
                 wakeup_id: "wakeup-1".to_string(),
+                session_id: None,
             },
             input_prompt: "user input".to_string(),
             last_step_prompt: String::new(),
@@ -2147,6 +2152,7 @@ loaded_tools: [exec_bash]
             behavior: "on_wakeup".to_string(),
             step_idx: 1,
             wakeup_id: "wakeup-worklog".to_string(),
+            session_id: None,
         };
         let _ = worklog_tool
             .call(
@@ -2201,6 +2207,7 @@ loaded_tools: [exec_bash]
                 behavior: "on_wakeup".to_string(),
                 step_idx: 1,
                 wakeup_id: "wakeup-1".to_string(),
+                session_id: None,
             },
             input_prompt: "user input".to_string(),
             last_step_prompt: String::new(),

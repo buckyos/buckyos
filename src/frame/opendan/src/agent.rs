@@ -29,7 +29,7 @@ use crate::agent_session::{
     AgentSession, AgentSessionMgr, GetSessionTool, SessionInputItem, SessionState,
 };
 use crate::agent_tool::{
-    normalize_tool_name, AgentPolicy, DoAction, DoActionResults, DoActions, AgentToolManager,
+    normalize_tool_name, AgentPolicy, AgentToolManager, DoAction, DoActionResults, DoActions,
     TOOL_EXEC_BASH, TOOL_TODO_MANAGE,
 };
 use crate::behavior::{
@@ -187,7 +187,6 @@ pub struct AIAgent {
     session_queue_bindings: Arc<RwLock<HashMap<String, SessionQueueBinding>>>,
     default_behavior: String,
     wakeup_seq: AtomicU64,
-
 }
 
 impl AIAgent {
@@ -235,16 +234,6 @@ impl AIAgent {
                 .await
                 .map_err(|err| anyhow!("init agent environment failed: {err}"))?,
         );
-        environment
-            .register_workshop_tools(&tools)
-            .map_err(|err| anyhow!("register workshop tools failed: {err}"))?;
-
-        let memory = AgentMemory::new(AgentMemoryConfig::new(agent_root.clone()))
-            .await
-            .map_err(|err| anyhow!("init agent memory failed: {err}"))?;
-        memory
-            .register_tools(&tools)
-            .map_err(|err| anyhow!("register memory tools failed: {err}"))?;
 
         let default_behavior = resolve_default_behavior_name(&behaviors_dir)
             .await
@@ -259,6 +248,17 @@ impl AIAgent {
             .ensure_default_session()
             .await
             .map_err(|err| anyhow!("ensure default session failed: {err}"))?;
+
+        environment
+            .register_workshop_tools(&tools, session_store.clone())
+            .map_err(|err| anyhow!("register workshop tools failed: {err}"))?;
+
+        let memory = AgentMemory::new(AgentMemoryConfig::new(agent_root.clone()))
+            .await
+            .map_err(|err| anyhow!("init agent memory failed: {err}"))?;
+        memory
+            .register_tools(&tools)
+            .map_err(|err| anyhow!("register memory tools failed: {err}"))?;
 
         tools
             .register_tool(GetSessionTool::new(session_store.clone()))
@@ -765,6 +765,7 @@ impl AIAgent {
                 behavior: behavior_name.to_string(),
                 step_idx: current_step_count,
                 wakeup_id: wakeup_id.to_string(),
+                session_id: Some(session_id.clone()),
             };
 
             //build input
@@ -829,7 +830,9 @@ impl AIAgent {
                     guard.loaded_skills = llm_result.load_skills;
                 }
                 if llm_result.enable_tools.len() > 0 {
-                    guard.loaded_tools.extend(llm_result.enable_tools.iter().cloned());
+                    guard
+                        .loaded_tools
+                        .extend(llm_result.enable_tools.iter().cloned());
                 }
                 apply_session_behavior_transition(
                     &mut guard,
@@ -960,9 +963,7 @@ impl AIAgent {
             .map_err(|err| anyhow!("llm behavior step failed: {err}"))?;
 
         //todo: run actions in parallel if possible based on action.execution_mode
-        let action_results = self
-            .execute_actions(trace, &llm_result.actions)
-            .await;
+        let action_results = self.execute_actions(trace, &llm_result.actions).await;
 
         Ok((llm_result, tracking, action_results))
     }
@@ -1518,7 +1519,13 @@ impl AIAgent {
                         continue;
                     }
 
-                    let params = call.call_params.clone();
+                    let mut params = call.call_params.clone();
+                    if normalized_name == TOOL_EXEC_BASH {
+                        if let Some(obj) = params.as_object_mut() {
+                            obj.remove("session_id");
+                            obj.remove("cwd");
+                        }
+                    }
                     (
                         normalized_name.clone(),
                         params.clone(),
