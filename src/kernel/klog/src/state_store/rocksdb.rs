@@ -2,7 +2,9 @@ use super::store::{KLogStateSnapshot, KLogStateStore};
 use crate::{KLogEntry, KLogError, KResult};
 use rocksdb::backup::{BackupEngine, BackupEngineOptions, RestoreOptions};
 use rocksdb::checkpoint::Checkpoint;
-use rocksdb::{DB, Env, IteratorMode, Options, WriteBatch};
+use rocksdb::{
+    ColumnFamilyDescriptor, DB, DEFAULT_COLUMN_FAMILY_NAME, Env, IteratorMode, Options, WriteBatch,
+};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -12,6 +14,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const KEY_PREFIX_ENTRY: u8 = b'e';
 const KEY_NEXT_LOG_ID_META: &[u8] = b"m:next_log_id";
+const CF_LOGS: &str = "logs";
+const CF_META: &str = "meta";
 const CHECKPOINT_SNAPSHOT_MAGIC: &str = "klog-rdb-checkpoint-v1";
 const CHECKPOINT_SNAPSHOT_PREFIX: &[u8] = b"KLOG_RDB_CP1";
 const BACKUP_ENGINE_SNAPSHOT_MAGIC: &str = "klog-rdb-backup-v1";
@@ -83,28 +87,108 @@ fn unique_temp_dir(prefix: &str) -> PathBuf {
     ))
 }
 
-fn create_rocksdb(path: &Path) -> Result<DB, String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| {
-            let msg = format!(
-                "Failed to create rocksdb parent dir {}: {}",
-                parent.display(),
-                e
-            );
-            error!("{}", msg);
-            msg
-        })?;
+fn open_rocksdb_with_cfs(path: &Path, create_if_missing: bool) -> Result<DB, String> {
+    if create_if_missing {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                let msg = format!(
+                    "Failed to create rocksdb parent dir {}: {}",
+                    parent.display(),
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        }
     }
 
     let mut opts = Options::default();
-    opts.create_if_missing(true);
+    opts.create_if_missing(create_if_missing);
+    opts.create_missing_column_families(true);
     opts.set_atomic_flush(true);
 
-    DB::open(&opts, path).map_err(|e| {
-        let msg = format!("Failed to open rocksdb at {}: {}", path.display(), e);
+    let mut logs_cf_opts = Options::default();
+    logs_cf_opts.set_write_buffer_size(64 * 1024 * 1024);
+    let mut meta_cf_opts = Options::default();
+    meta_cf_opts.set_write_buffer_size(4 * 1024 * 1024);
+
+    let cfs = vec![
+        ColumnFamilyDescriptor::new(CF_LOGS, logs_cf_opts),
+        ColumnFamilyDescriptor::new(CF_META, meta_cf_opts),
+    ];
+
+    DB::open_cf_descriptors(&opts, path, cfs).map_err(|e| {
+        let msg = format!(
+            "Failed to open rocksdb at {} with cfs: {}",
+            path.display(),
+            e
+        );
         error!("{}", msg);
         msg
     })
+}
+
+fn migrate_legacy_default_cf_data(db: &DB) -> Result<(), String> {
+    let default_cf = db.cf_handle(DEFAULT_COLUMN_FAMILY_NAME).ok_or_else(|| {
+        let msg = "Missing default column family".to_string();
+        error!("{}", msg);
+        msg
+    })?;
+    let logs_cf = db.cf_handle(CF_LOGS).ok_or_else(|| {
+        let msg = format!("Missing column family '{}'", CF_LOGS);
+        error!("{}", msg);
+        msg
+    })?;
+    let meta_cf = db.cf_handle(CF_META).ok_or_else(|| {
+        let msg = format!("Missing column family '{}'", CF_META);
+        error!("{}", msg);
+        msg
+    })?;
+
+    let mut batch = WriteBatch::default();
+    let mut migrated_logs = 0usize;
+    let mut migrated_meta = 0usize;
+
+    for item in db.iterator_cf(&default_cf, IteratorMode::Start) {
+        let (k, v) = item.map_err(|e| {
+            let msg = format!("Failed to iterate default CF for migration: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        if decode_entry_key(&k).is_some() {
+            batch.put_cf(&logs_cf, k.as_ref(), v.as_ref());
+            batch.delete_cf(&default_cf, k.as_ref());
+            migrated_logs += 1;
+            continue;
+        }
+
+        if k.as_ref() == KEY_NEXT_LOG_ID_META {
+            batch.put_cf(&meta_cf, k.as_ref(), v.as_ref());
+            batch.delete_cf(&default_cf, k.as_ref());
+            migrated_meta += 1;
+        }
+    }
+
+    if migrated_logs > 0 || migrated_meta > 0 {
+        db.write(batch).map_err(|e| {
+            let msg = format!("Failed to write legacy default-CF migration batch: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+        info!(
+            "RocksDbStateStore migrated legacy default CF data: logs={}, meta={}",
+            migrated_logs, migrated_meta
+        );
+    }
+
+    Ok(())
+}
+
+fn create_rocksdb(path: &Path) -> Result<DB, String> {
+    let db = open_rocksdb_with_cfs(path, true)?;
+    migrate_legacy_default_cf_data(&db)?;
+    Ok(db)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,9 +293,14 @@ impl RocksDbStateStore {
     }
 
     fn read_persisted_next_log_id(&self) -> KResult<Option<u64>> {
+        let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_META);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
         let value = self
             .db
-            .get(KEY_NEXT_LOG_ID_META)
+            .get_cf(&meta_cf, KEY_NEXT_LOG_ID_META)
             .map_err(|e| klog_err_with_context("Failed to read rocksdb next_log_id metadata", e))?;
         let Some(raw) = value else {
             return Ok(None);
@@ -221,8 +310,13 @@ impl RocksDbStateStore {
     }
 
     fn scan_next_log_id_from_entries(&self) -> KResult<u64> {
+        let logs_cf = self.db.cf_handle(CF_LOGS).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_LOGS);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
         let mut max_id = 0u64;
-        for item in self.db.iterator(IteratorMode::Start) {
+        for item in self.db.iterator_cf(&logs_cf, IteratorMode::Start) {
             let (k, _) = item.map_err(|e| {
                 klog_err_with_context("Failed to iterate rocksdb while scanning next_log_id", e)
             })?;
@@ -237,8 +331,13 @@ impl RocksDbStateStore {
     }
 
     fn persist_next_log_id(&self, next_log_id: u64) -> KResult<()> {
+        let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_META);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
         self.db
-            .put(KEY_NEXT_LOG_ID_META, next_log_id.to_be_bytes())
+            .put_cf(&meta_cf, KEY_NEXT_LOG_ID_META, next_log_id.to_be_bytes())
             .map_err(|e| klog_err_with_context("Failed to persist rocksdb next_log_id metadata", e))
     }
 
@@ -268,8 +367,13 @@ impl RocksDbStateStore {
             "RocksDbStateStore read_all_entries start: snapshot_mode={:?}",
             self.snapshot_mode
         );
+        let logs_cf = self.db.cf_handle(CF_LOGS).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_LOGS);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
         let mut entries = Vec::new();
-        for item in self.db.iterator(IteratorMode::Start) {
+        for item in self.db.iterator_cf(&logs_cf, IteratorMode::Start) {
             let (k, v) =
                 item.map_err(|e| klog_err_with_context("Failed to iterate rocksdb entry", e))?;
 
@@ -297,13 +401,18 @@ impl RocksDbStateStore {
             "RocksDbStateStore clear_entries_in_batch start: snapshot_mode={:?}",
             self.snapshot_mode
         );
+        let logs_cf = self.db.cf_handle(CF_LOGS).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_LOGS);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
         let mut deleted = 0usize;
-        for item in self.db.iterator(IteratorMode::Start) {
+        for item in self.db.iterator_cf(&logs_cf, IteratorMode::Start) {
             let (k, _) = item.map_err(|e| {
                 klog_err_with_context("Failed to iterate rocksdb while clearing entries", e)
             })?;
             if decode_entry_key(&k).is_some() {
-                batch.delete(k);
+                batch.delete_cf(&logs_cf, k);
                 deleted += 1;
             }
         }
@@ -322,6 +431,16 @@ impl RocksDbStateStore {
         );
         let mut batch = WriteBatch::default();
         self.clear_entries_in_batch(&mut batch)?;
+        let logs_cf = self.db.cf_handle(CF_LOGS).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_LOGS);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+        let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_META);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
 
         let mut max_id = 0u64;
         for entry in entries {
@@ -333,10 +452,10 @@ impl RocksDbStateStore {
                 bincode::serde::encode_to_vec(&entry, bincode::config::legacy()).map_err(|e| {
                     klog_err_with_context("Failed to serialize state entry for rocksdb install", e)
                 })?;
-            batch.put(key, value);
+            batch.put_cf(&logs_cf, key, value);
         }
         let next_log_id = max_id.saturating_add(1).max(1);
-        batch.put(KEY_NEXT_LOG_ID_META, next_log_id.to_be_bytes());
+        batch.put_cf(&meta_cf, KEY_NEXT_LOG_ID_META, next_log_id.to_be_bytes());
 
         self.db.write(batch).map_err(|e| {
             klog_err_with_context("Failed to write entries during rocksdb snapshot install", e)
@@ -356,23 +475,38 @@ impl RocksDbStateStore {
         );
         let mut batch = WriteBatch::default();
         self.clear_entries_in_batch(&mut batch)?;
+        let logs_cf = self.db.cf_handle(CF_LOGS).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_LOGS);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+        let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_META);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+        let source_logs_cf = source_db.cf_handle(CF_LOGS).ok_or_else(|| {
+            let msg = format!("Missing source column family '{}'", CF_LOGS);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
 
         let mut copied = 0usize;
         let mut max_id = 0u64;
-        for item in source_db.iterator(IteratorMode::Start) {
+        for item in source_db.iterator_cf(&source_logs_cf, IteratorMode::Start) {
             let (k, v) = item
                 .map_err(|e| klog_err_with_context("Failed to iterate source checkpoint db", e))?;
             let Some(id) = decode_entry_key(&k) else {
                 continue;
             };
-            batch.put(k, v);
+            batch.put_cf(&logs_cf, k, v);
             copied += 1;
             if id > max_id {
                 max_id = id;
             }
         }
         let next_log_id = max_id.saturating_add(1).max(1);
-        batch.put(KEY_NEXT_LOG_ID_META, next_log_id.to_be_bytes());
+        batch.put_cf(&meta_cf, KEY_NEXT_LOG_ID_META, next_log_id.to_be_bytes());
 
         self.db.write(batch).map_err(|e| {
             klog_err_with_context("Failed to apply checkpoint snapshot into rocksdb", e)
@@ -443,16 +577,10 @@ impl RocksDbStateStore {
 
             materialize_snapshot_files(&checkpoint_dir, &archive.files)?;
 
-            let mut opts = Options::default();
-            opts.create_if_missing(false);
-            let checkpoint_db = DB::open(&opts, &checkpoint_dir).map_err(|e| {
-                klog_err_with_context(
-                    format!(
-                        "Failed to open restored checkpoint db {}",
-                        checkpoint_dir.display()
-                    ),
-                    e,
-                )
+            let checkpoint_db = open_rocksdb_with_cfs(&checkpoint_dir, false)
+                .map_err(|e| klog_err_with_context("Failed to open restored checkpoint db", e))?;
+            migrate_legacy_default_cf_data(&checkpoint_db).map_err(|e| {
+                klog_err_with_context("Failed to migrate legacy data in checkpoint db", e)
             })?;
 
             self.replace_with_db(&checkpoint_db)?;
@@ -591,16 +719,10 @@ impl RocksDbStateStore {
                     )
                 })?;
 
-            let mut opts = Options::default();
-            opts.create_if_missing(false);
-            let restored_db = DB::open(&opts, &restored_db_dir).map_err(|e| {
-                klog_err_with_context(
-                    format!(
-                        "Failed to open restored backup db {}",
-                        restored_db_dir.display()
-                    ),
-                    e,
-                )
+            let restored_db = open_rocksdb_with_cfs(&restored_db_dir, false)
+                .map_err(|e| klog_err_with_context("Failed to open restored backup db", e))?;
+            migrate_legacy_default_cf_data(&restored_db).map_err(|e| {
+                klog_err_with_context("Failed to migrate legacy data in restored backup db", e)
             })?;
             self.replace_with_db(&restored_db)?;
             info!(
@@ -1014,6 +1136,11 @@ impl KLogStateStore for RocksDbStateStore {
             self.snapshot_mode,
             summarize_entry_ids(&entries)
         );
+        let logs_cf = self.db.cf_handle(CF_LOGS).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_LOGS);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
         let mut batch = WriteBatch::default();
         for entry in entries {
             let key = entry_key(entry.id);
@@ -1021,7 +1148,7 @@ impl KLogStateStore for RocksDbStateStore {
                 bincode::serde::encode_to_vec(&entry, bincode::config::legacy()).map_err(|e| {
                     klog_err_with_context("Failed to serialize state entry for rocksdb", e)
                 })?;
-            batch.put(key, value);
+            batch.put_cf(&logs_cf, key, value);
         }
 
         self.db
