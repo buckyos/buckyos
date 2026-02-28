@@ -13,7 +13,10 @@ Action/Tools 需要执行的时候，会出发WAIT
 鼓励Agent做出简单的输出，并进行适当的休息
 
 
-## 完成6个提示词
+## 只用Worklog而不是MsgRecord来处理timeline?
+
+
+## 完成6个行为提示词的开发
 
 - 默认行为:router_reslove,是否要把消息投递到新的session
 - SelfImprove:
@@ -32,12 +35,22 @@ Action/Tools 需要执行的时候，会出发WAIT
 SubAgent验证，SubAgent可以在自己的独立容器里并行工作，并且能正确的激活/SLEEP
 
 
-## 多协作主题
+## 实体协作
 
-一个平行的DO任务，分配给了其它的实体（通过SendMsg沟通）
+TODO中的一个item，分配给了其它的实体（通过SendMsg沟通）
+PLAN的时候要能知道哪些实体可以给予哪些帮助，并在此基础上考虑任务分配
 主Agent在WAIT状态时，能定期的通过SendMsg进行沟通，拿到并验证交付物后，将TODO标记为完成
+
+- Agent需要能访问contact_mgr
+
 
 ## 多模态的支持
 
-- 为文生图，文件传输等打通Message系列协议
-- 
+为文生图，文件传输等打通Message系列协议
+
+- 先从单条非文本信息开始 
+- 内部的MsgObject怎么定义，怎么把图片传给aicc
+- Tg msg tunnel怎么实现，如何把图片放到msg object里,如何发送带有图片的msg object
+- aicc如何使用text-to-img得到图片，并嵌入到msg object中 
+
+## 最终于UI良好对接

@@ -2,29 +2,35 @@ use crate::msg_tunnel::MsgTunnel;
 use anyhow::{bail, Context, Result as AnyResult};
 use async_trait::async_trait;
 use buckyos_api::{
-    DeliveryReportResult, IngressContext, MsgCenterHandler, MsgRecordWithObject,
-    MSG_CENTER_SERVICE_NAME,
+    get_buckyos_api_runtime, DeliveryReportResult, IngressContext, MsgCenterHandler,
+    MsgRecordWithObject, MSG_CENTER_SERVICE_NAME,
 };
 use buckyos_kit::get_buckyos_service_data_dir;
 use grammers_client::session::defs::{PeerAuth, PeerId, PeerRef};
 use grammers_client::session::storages::SqliteSession;
 use grammers_client::session::updates::UpdatesLike;
 use grammers_client::types::update::Message as TgMessage;
-use grammers_client::types::{Peer as TgPeer, Update};
-use grammers_client::{Client, UpdatesConfiguration};
+use grammers_client::types::{Media as TgMedia, Peer as TgPeer, Update};
+use grammers_client::{Client, InputMessage, UpdatesConfiguration};
 use grammers_mtsender::{SenderPool, SenderPoolHandle};
 use kRPC::RPCContext;
 use log::{info, warn};
 use name_lib::DID;
-use ndn_lib::{MsgContent, MsgContentFormat, MsgObjKind, MsgObject};
+use ndn_lib::{
+    ChunkHasher, FileObject, MsgContent, MsgContentFormat, MsgObjKind, MsgObject, NamedObject,
+    ObjId, RefItem, RefRole, RefTarget,
+};
+use reqwest::multipart::{Form as HttpForm, Part as HttpPart};
 use reqwest::Client as HttpClient;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+use tokio::io::AsyncReadExt;
 use tokio::sync::{mpsc::UnboundedReceiver, Mutex};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
@@ -79,8 +85,28 @@ pub struct TgEgressEnvelope {
     pub bot_account_id: String,
     pub chat_id: Option<String>,
     pub text: Option<String>,
+    pub attachments: Vec<TgAttachmentRef>,
     pub payload: Value,
     pub record_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct TgAttachmentRef {
+    pub obj_id: ObjId,
+    pub uri_hint: Option<String>,
+    pub file_name: Option<String>,
+    pub mime_type: Option<String>,
+    pub size: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct TgMediaAttachment {
+    pub telegram_file_id: String,
+    pub media_kind: String,
+    pub file_name: String,
+    pub mime_type: Option<String>,
+    pub size: u64,
+    pub data: Vec<u8>,
 }
 
 struct TgIngressDispatch {
@@ -118,7 +144,139 @@ impl TgMessageConverter {
             .filter(|value| !value.is_empty())
     }
 
-    fn msg_object_to_tg_content(msg: &MsgObject) -> (Option<String>, Value) {
+    fn mime_to_msg_content_format(mime: Option<&str>) -> MsgContentFormat {
+        match mime
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "image/png" => MsgContentFormat::ImagePng,
+            "image/jpeg" | "image/jpg" => MsgContentFormat::ImageJpeg,
+            "image/gif" => MsgContentFormat::ImageGif,
+            "image/webp" => MsgContentFormat::ImageWebp,
+            "image/svg+xml" | "image/svg" => MsgContentFormat::ImageSvg,
+            "image/bmp" => MsgContentFormat::ImageBmp,
+            "video/mp4" => MsgContentFormat::VideoMp4,
+            "video/webm" => MsgContentFormat::VideoWebm,
+            "video/ogg" => MsgContentFormat::VideoOgg,
+            "video/quicktime" => MsgContentFormat::VideoQuicktime,
+            "video/x-msvideo" | "video/avi" => MsgContentFormat::VideoAvi,
+            "audio/mpeg" | "audio/mp3" => MsgContentFormat::AudioMpeg,
+            "audio/wav" | "audio/x-wav" => MsgContentFormat::AudioWav,
+            "audio/ogg" => MsgContentFormat::AudioOgg,
+            "audio/webm" => MsgContentFormat::AudioWebm,
+            "audio/aac" => MsgContentFormat::AudioAac,
+            "audio/flac" => MsgContentFormat::AudioFlac,
+            "application/json" => MsgContentFormat::ApplicationJson,
+            "application/xml" => MsgContentFormat::ApplicationXml,
+            "application/pdf" => MsgContentFormat::ApplicationPdf,
+            "application/zip" => MsgContentFormat::ApplicationZip,
+            "text/plain" if mime.is_some() => MsgContentFormat::TextPlain,
+            _ => {
+                if let Some(mime) = mime {
+                    MsgContentFormat::Unknown(mime.to_string())
+                } else {
+                    MsgContentFormat::ApplicationOctetStream
+                }
+            }
+        }
+    }
+
+    fn parse_meta_attachment(value: &Value) -> Option<TgAttachmentRef> {
+        let obj_id = value
+            .get("obj_id")
+            .and_then(|value| value.as_str())
+            .and_then(|value| ObjId::new(value).ok())?;
+        let uri_hint = value
+            .get("uri_hint")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string());
+        let file_name = value
+            .get("file_name")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string());
+        let mime_type = value
+            .get("mime_type")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string());
+        let size = value.get("size").and_then(|value| value.as_u64());
+        Some(TgAttachmentRef {
+            obj_id,
+            uri_hint,
+            file_name,
+            mime_type,
+            size,
+        })
+    }
+
+    fn extract_meta_attachments(msg: &MsgObject) -> Vec<TgAttachmentRef> {
+        msg.meta
+            .get("telegram")
+            .and_then(|value| value.get("attachments"))
+            .and_then(|value| value.as_array())
+            .map(|attachments| {
+                attachments
+                    .iter()
+                    .filter_map(Self::parse_meta_attachment)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    }
+
+    fn extract_ref_attachments(msg: &MsgObject) -> Vec<TgAttachmentRef> {
+        msg.content
+            .refs
+            .iter()
+            .filter_map(|item| match &item.target {
+                RefTarget::DataObj { obj_id, uri_hint } => Some(TgAttachmentRef {
+                    obj_id: obj_id.clone(),
+                    uri_hint: uri_hint.clone(),
+                    file_name: None,
+                    mime_type: item.label.clone(),
+                    size: None,
+                }),
+                RefTarget::ServiceDid { .. } => None,
+            })
+            .collect()
+    }
+
+    fn merge_unique_attachments(
+        primary: Vec<TgAttachmentRef>,
+        secondary: Vec<TgAttachmentRef>,
+    ) -> Vec<TgAttachmentRef> {
+        let mut merged = Vec::new();
+        let mut seen = HashSet::new();
+        for attachment in primary.into_iter().chain(secondary.into_iter()) {
+            let key = attachment.obj_id.to_string();
+            if seen.insert(key) {
+                merged.push(attachment);
+            }
+        }
+        merged
+    }
+
+    fn attachment_to_payload_json(attachment: &TgAttachmentRef) -> Value {
+        json!({
+            "obj_id": attachment.obj_id.to_string(),
+            "uri_hint": attachment.uri_hint,
+            "file_name": attachment.file_name,
+            "mime_type": attachment.mime_type,
+            "size": attachment.size,
+        })
+    }
+
+    fn extract_caption_from_envelope(envelope: &TgEgressEnvelope) -> String {
+        envelope
+            .text
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .or_else(|| Self::extract_text_from_payload(&envelope.payload))
+            .unwrap_or_default()
+    }
+
+    fn msg_object_to_tg_content(msg: &MsgObject) -> (Option<String>, Value, Vec<TgAttachmentRef>) {
         let text = if msg.content.content.trim().is_empty() {
             msg.meta
                 .get("msg_payload")
@@ -128,15 +286,202 @@ impl TgMessageConverter {
         } else {
             Some(msg.content.content.to_string())
         };
+        let attachments = Self::merge_unique_attachments(
+            Self::extract_meta_attachments(msg),
+            Self::extract_ref_attachments(msg),
+        );
         let payload = json!({
             "msg_content": &msg.content,
             "msg_meta": &msg.meta,
             "thread_key": msg.thread.topic,
+            "attachments": attachments
+                .iter()
+                .map(Self::attachment_to_payload_json)
+                .collect::<Vec<_>>(),
         });
-        (text, payload)
+        (text, payload, attachments)
     }
 
-    fn tg_message_to_msg_object(
+    async fn load_attachment_bytes(attachment: &TgAttachmentRef) -> AnyResult<Vec<u8>> {
+        let runtime = get_buckyos_api_runtime().map_err(|error| {
+            anyhow::anyhow!(
+                "get runtime for telegram attachment egress failed: {}",
+                error
+            )
+        })?;
+        let named_store = runtime.get_named_store().await.map_err(|error| {
+            anyhow::anyhow!(
+                "get named_store for telegram attachment egress failed: {}",
+                error
+            )
+        })?;
+        let (mut reader, _total_size) = named_store
+            .open_reader(&attachment.obj_id, None)
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "open telegram attachment {} from named_store failed: {}",
+                    attachment.obj_id.to_string(),
+                    error
+                )
+            })?;
+        let mut data = Vec::new();
+        reader.read_to_end(&mut data).await.map_err(|error| {
+            anyhow::anyhow!("read telegram attachment stream failed: {}", error)
+        })?;
+        Ok(data)
+    }
+
+    async fn extract_media_attachment(
+        client: &Client,
+        message: &TgMessage,
+    ) -> AnyResult<Option<TgMediaAttachment>> {
+        let Some(media) = message.media() else {
+            return Ok(None);
+        };
+
+        let (telegram_file_id, media_kind, file_name, mime_type, size_hint) = match &media {
+            TgMedia::Photo(photo) => (
+                photo.id().to_string(),
+                "photo".to_string(),
+                format!("tg-photo-{}.jpg", message.id()),
+                Some("image/jpeg".to_string()),
+                photo.size().max(0) as u64,
+            ),
+            TgMedia::Document(document) => (
+                document.id().to_string(),
+                "document".to_string(),
+                if document.name().trim().is_empty() {
+                    format!("tg-document-{}", message.id())
+                } else {
+                    document.name().to_string()
+                },
+                document.mime_type().map(|value| value.to_string()),
+                document.size().max(0) as u64,
+            ),
+            TgMedia::Sticker(sticker) => (
+                sticker.document.id().to_string(),
+                "sticker".to_string(),
+                if sticker.document.name().trim().is_empty() {
+                    format!("tg-sticker-{}.webp", message.id())
+                } else {
+                    sticker.document.name().to_string()
+                },
+                sticker.document.mime_type().map(|value| value.to_string()),
+                sticker.document.size().max(0) as u64,
+            ),
+            _ => return Ok(None),
+        };
+
+        let mut download = client.iter_download(&media);
+        let mut data = Vec::new();
+        while let Some(chunk) = download.next().await.map_err(|error| {
+            anyhow::anyhow!(
+                "download telegram media failed, message_id={}, error={}",
+                message.id(),
+                error
+            )
+        })? {
+            data.extend_from_slice(&chunk);
+        }
+
+        if data.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(TgMediaAttachment {
+            telegram_file_id,
+            media_kind,
+            file_name,
+            mime_type,
+            size: size_hint.max(data.len() as u64),
+            data,
+        }))
+    }
+
+    async fn store_media_attachment(
+        attachment: &TgMediaAttachment,
+    ) -> AnyResult<Option<TgAttachmentRef>> {
+        let runtime = match get_buckyos_api_runtime() {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                warn!(
+                    "skip telegram attachment persistence because runtime is unavailable: {}",
+                    error
+                );
+                return Ok(None);
+            }
+        };
+        let named_store = match runtime.get_named_store().await {
+            Ok(store) => store,
+            Err(error) => {
+                warn!(
+                    "skip telegram attachment persistence because named_store is unavailable: {}",
+                    error
+                );
+                return Ok(None);
+            }
+        };
+
+        let chunk_id = ChunkHasher::new(None)
+            .map_err(|error| anyhow::anyhow!("create chunk hasher failed: {}", error))?
+            .calc_mix_chunk_id_from_bytes(&attachment.data)
+            .map_err(|error| {
+                anyhow::anyhow!("calculate telegram attachment chunk id failed: {}", error)
+            })?;
+        named_store
+            .put_chunk(&chunk_id, &attachment.data, true)
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "store telegram attachment chunk {} failed: {}",
+                    chunk_id.to_string(),
+                    error
+                )
+            })?;
+
+        let mut file_obj = FileObject::new(
+            attachment.file_name.clone(),
+            attachment.size,
+            chunk_id.to_string(),
+        );
+        file_obj.meta.insert(
+            "telegram_file_id".to_string(),
+            json!(attachment.telegram_file_id),
+        );
+        file_obj.meta.insert(
+            "telegram_media_kind".to_string(),
+            json!(attachment.media_kind),
+        );
+        if let Some(mime_type) = attachment.mime_type.as_ref() {
+            file_obj
+                .meta
+                .insert("mime_type".to_string(), json!(mime_type));
+        }
+
+        let (file_obj_id, file_obj_json) = file_obj.gen_obj_id();
+        named_store
+            .put_object(&file_obj_id, file_obj_json.as_str())
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "store telegram attachment file object {} failed: {}",
+                    file_obj_id.to_string(),
+                    error
+                )
+            })?;
+
+        Ok(Some(TgAttachmentRef {
+            obj_id: file_obj_id.clone(),
+            uri_hint: Some(format!("cyfs://{}", file_obj_id.to_string())),
+            file_name: Some(attachment.file_name.clone()),
+            mime_type: attachment.mime_type.clone(),
+            size: Some(attachment.size),
+        }))
+    }
+
+    async fn tg_message_to_msg_object(
+        client: &Client,
         owner_did: DID,
         sender_did: DID,
         chat_did: Option<DID>,
@@ -152,28 +497,54 @@ impl TgMessageConverter {
         let idempotency_key = Self::build_dispatch_key(bot_account_id, chat_id, message.id());
         let created_at_ms = message.date().timestamp_millis().max(0) as u64;
         let text = message.text().to_string();
-        let payload_kind = if text.trim().is_empty() {
+        let media_attachment = Self::extract_media_attachment(client, message).await?;
+        let stored_attachment = if let Some(attachment) = media_attachment.as_ref() {
+            match Self::store_media_attachment(attachment).await {
+                Ok(attachment_ref) => attachment_ref,
+                Err(error) => {
+                    warn!(
+                        "telegram ingress attachment store failed, bot={}, message_id={}, error={}",
+                        bot_account_id,
+                        message.id(),
+                        error
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let has_media = media_attachment.is_some();
+        let payload_kind = if has_media {
+            "media"
+        } else if text.trim().is_empty() {
             "telegram_event"
         } else {
             "text"
         };
         let is_group_chat = matches!(chat, TgPeer::Group(_) | TgPeer::Channel(_));
+        let mut telegram_meta = json!({
+            "chat_dialog_id": chat_id,
+            "chat_username": chat.username(),
+            "sender_id": sender_chat.id().bot_api_dialog_id(),
+            "sender_username": sender_chat.username(),
+            "sender_name": sender_chat.name(),
+            "bot_account_id": bot_account_id,
+            "payload_kind": payload_kind,
+            "message_id": message.id(),
+            "chat_type": chat_type,
+            "chat_name": chat.name(),
+        });
+        if let Some(attachment_ref) = stored_attachment.as_ref() {
+            if let Some(telegram_meta_obj) = telegram_meta.as_object_mut() {
+                telegram_meta_obj.insert(
+                    "attachments".to_string(),
+                    json!([Self::attachment_to_payload_json(attachment_ref)]),
+                );
+            }
+        }
         let mut meta = BTreeMap::new();
-        meta.insert(
-            "telegram".to_string(),
-            json!({
-                "chat_dialog_id": chat_id,
-                "chat_username": chat.username(),
-                "sender_id": sender_chat.id().bot_api_dialog_id(),
-                "sender_username": sender_chat.username(),
-                "sender_name": sender_chat.name(),
-                "bot_account_id": bot_account_id,
-                "payload_kind": payload_kind,
-                "message_id": message.id(),
-                "chat_type": chat_type,
-                "chat_name": chat.name(),
-            }),
-        );
+        meta.insert("telegram".to_string(), telegram_meta);
 
         let to = if is_group_chat {
             vec![chat_did.ok_or_else(|| {
@@ -182,12 +553,32 @@ impl TgMessageConverter {
         } else {
             vec![owner_did.clone()]
         };
-        let kind = if text.trim().is_empty() {
+        let kind = if has_media {
+            if is_group_chat {
+                MsgObjKind::GroupMsg
+            } else {
+                MsgObjKind::Chat
+            }
+        } else if text.trim().is_empty() {
             MsgObjKind::Event
         } else if is_group_chat {
             MsgObjKind::GroupMsg
         } else {
             MsgObjKind::Chat
+        };
+        let content_text = if text.trim().is_empty() && has_media {
+            "[attachment]".to_string()
+        } else {
+            text
+        };
+        let content_format = if has_media {
+            Some(Self::mime_to_msg_content_format(
+                media_attachment
+                    .as_ref()
+                    .and_then(|attachment| attachment.mime_type.as_deref()),
+            ))
+        } else {
+            Some(MsgContentFormat::TextPlain)
         };
         let mut msg = MsgObject {
             from: sender_did,
@@ -195,13 +586,26 @@ impl TgMessageConverter {
             kind,
             created_at_ms,
             content: MsgContent {
-                format: Some(MsgContentFormat::TextPlain),
-                content: text,
+                format: content_format,
+                content: content_text,
                 ..Default::default()
             },
             meta,
             ..Default::default()
         };
+        if let Some(attachment_ref) = stored_attachment.as_ref() {
+            msg.content.refs.push(RefItem {
+                role: RefRole::Output,
+                target: RefTarget::DataObj {
+                    obj_id: attachment_ref.obj_id.clone(),
+                    uri_hint: attachment_ref.uri_hint.clone(),
+                },
+                label: attachment_ref
+                    .mime_type
+                    .clone()
+                    .or_else(|| attachment_ref.file_name.clone()),
+            });
+        }
         msg.thread.topic = Some(format!("tg:{}:{}", bot_account_id, chat_id));
 
         let ingress_ctx = IngressContext {
@@ -546,6 +950,7 @@ impl GrammersTgGateway {
     }
 
     async fn dispatch_incoming_message(
+        client: Client,
         dispatcher: Arc<dyn MsgCenterHandler>,
         owner_did: DID,
         bot_account_id: String,
@@ -613,6 +1018,7 @@ impl GrammersTgGateway {
             None
         };
         let converted = TgMessageConverter::tg_message_to_msg_object(
+            &client,
             owner_did.clone(),
             sender_did,
             chat_did,
@@ -623,6 +1029,7 @@ impl GrammersTgGateway {
             tunnel_did,
             &message,
         )
+        .await
         .map_err(|error| {
             warn!(
                 "telegram ingress convert message failed (gateway=grammers): owner={}, bot={}, message_id={}, error={}",
@@ -737,6 +1144,7 @@ impl GrammersTgGateway {
                             continue;
                         };
                         if let Err(error) = Self::dispatch_incoming_message(
+                            client.clone(),
                             dispatcher,
                             owner_did.clone(),
                             bot_account_id.clone(),
@@ -1006,17 +1414,46 @@ impl TgGateway for GrammersTgGateway {
             )
         })?;
         let chat = Self::resolve_chat_peer(&client, chat_id).await?;
-        let text = Self::resolve_text(&envelope);
+        let has_attachment = !envelope.attachments.is_empty();
+        let text = if has_attachment {
+            TgMessageConverter::extract_caption_from_envelope(&envelope)
+        } else {
+            Self::resolve_text(&envelope)
+        };
         info!(
-            "telegram egress about to send (gateway=grammers): sender={}, bot={}, chat_id={}, record_id={}, text_len={}",
+            "telegram egress about to send (gateway=grammers): sender={}, bot={}, chat_id={}, record_id={}, text_len={}, attachment_count={}",
             envelope.sender_did.to_string(),
             envelope.bot_account_id,
             chat_id,
             envelope.record_id,
-            text.len()
+            text.len(),
+            envelope.attachments.len()
         );
 
-        let sent = client.send_message(chat, text).await?;
+        let sent = if let Some(attachment) = envelope.attachments.first() {
+            let attachment_bytes = TgMessageConverter::load_attachment_bytes(attachment).await?;
+            let file_name = attachment.file_name.clone().unwrap_or_else(|| {
+                format!(
+                    "attachment-{}.bin",
+                    attachment.obj_id.to_string().replace(':', "_")
+                )
+            });
+            let mut reader = Cursor::new(attachment_bytes);
+            let attachment_size = reader.get_ref().len();
+            let uploaded = client
+                .upload_stream(&mut reader, attachment_size, file_name)
+                .await
+                .with_context(|| {
+                    format!(
+                        "upload telegram attachment {} failed",
+                        attachment.obj_id.to_string()
+                    )
+                })?;
+            let input = InputMessage::new().text(text).document(uploaded);
+            client.send_message(chat, input).await?
+        } else {
+            client.send_message(chat, text).await?
+        };
         Ok(DeliveryReportResult {
             ok: true,
             external_msg_id: Some(sent.id().to_string()),
@@ -1066,6 +1503,108 @@ struct TgBotApiMessage {
     text: Option<String>,
     #[serde(default)]
     caption: Option<String>,
+    #[serde(default)]
+    document: Option<TgBotApiDocument>,
+    #[serde(default)]
+    photo: Vec<TgBotApiPhotoSize>,
+    #[serde(default)]
+    video: Option<TgBotApiVideo>,
+    #[serde(default)]
+    audio: Option<TgBotApiAudio>,
+    #[serde(default)]
+    voice: Option<TgBotApiVoice>,
+    #[serde(default)]
+    animation: Option<TgBotApiAnimation>,
+    #[serde(default)]
+    sticker: Option<TgBotApiSticker>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TgBotApiDocument {
+    file_id: String,
+    #[serde(default)]
+    file_name: Option<String>,
+    #[serde(default)]
+    mime_type: Option<String>,
+    #[serde(default)]
+    file_size: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TgBotApiPhotoSize {
+    file_id: String,
+    width: i32,
+    height: i32,
+    #[serde(default)]
+    file_size: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TgBotApiVideo {
+    file_id: String,
+    #[serde(default)]
+    mime_type: Option<String>,
+    #[serde(default)]
+    file_size: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TgBotApiAudio {
+    file_id: String,
+    #[serde(default)]
+    file_name: Option<String>,
+    #[serde(default)]
+    mime_type: Option<String>,
+    #[serde(default)]
+    file_size: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TgBotApiVoice {
+    file_id: String,
+    #[serde(default)]
+    mime_type: Option<String>,
+    #[serde(default)]
+    file_size: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TgBotApiAnimation {
+    file_id: String,
+    #[serde(default)]
+    file_name: Option<String>,
+    #[serde(default)]
+    mime_type: Option<String>,
+    #[serde(default)]
+    file_size: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TgBotApiSticker {
+    file_id: String,
+    #[serde(default)]
+    is_animated: bool,
+    #[serde(default)]
+    is_video: bool,
+    #[serde(default)]
+    file_size: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TgBotApiFile {
+    #[serde(default)]
+    file_path: Option<String>,
+    #[serde(default)]
+    file_size: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct TgBotApiAttachmentMeta {
+    file_id: String,
+    media_kind: String,
+    file_name: Option<String>,
+    mime_type: Option<String>,
+    size: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1242,7 +1781,245 @@ impl BotApiTgGateway {
             .unwrap_or_default()
     }
 
+    fn sanitize_file_name(raw: &str) -> String {
+        let mut output = String::with_capacity(raw.len());
+        for ch in raw.chars() {
+            if ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-' {
+                output.push(ch);
+            } else if ch.is_whitespace() {
+                output.push('_');
+            }
+        }
+
+        if output.is_empty() {
+            "attachment.bin".to_string()
+        } else {
+            output
+        }
+    }
+
+    fn default_file_extension(media_kind: &str, mime_type: Option<&str>) -> &'static str {
+        match mime_type.unwrap_or_default().to_ascii_lowercase().as_str() {
+            "image/png" => "png",
+            "image/jpeg" | "image/jpg" => "jpg",
+            "image/gif" => "gif",
+            "image/webp" => "webp",
+            "video/mp4" => "mp4",
+            "audio/mpeg" => "mp3",
+            "audio/ogg" => "ogg",
+            "application/pdf" => "pdf",
+            "application/zip" => "zip",
+            _ => match media_kind {
+                "photo" => "jpg",
+                "sticker" => "webp",
+                "voice" => "ogg",
+                "video" => "mp4",
+                "animation" => "gif",
+                _ => "bin",
+            },
+        }
+    }
+
+    fn build_default_file_name(
+        message_id: i64,
+        media_kind: &str,
+        mime_type: Option<&str>,
+    ) -> String {
+        format!(
+            "tg-{}-{}.{}",
+            media_kind,
+            message_id,
+            Self::default_file_extension(media_kind, mime_type)
+        )
+    }
+
+    fn extract_message_attachment_meta(
+        message: &TgBotApiMessage,
+    ) -> Option<TgBotApiAttachmentMeta> {
+        if let Some(document) = message.document.as_ref() {
+            return Some(TgBotApiAttachmentMeta {
+                file_id: document.file_id.clone(),
+                media_kind: "document".to_string(),
+                file_name: document.file_name.clone(),
+                mime_type: document.mime_type.clone(),
+                size: document.file_size,
+            });
+        }
+        if let Some(animation) = message.animation.as_ref() {
+            return Some(TgBotApiAttachmentMeta {
+                file_id: animation.file_id.clone(),
+                media_kind: "animation".to_string(),
+                file_name: animation.file_name.clone(),
+                mime_type: animation.mime_type.clone(),
+                size: animation.file_size,
+            });
+        }
+        if let Some(video) = message.video.as_ref() {
+            return Some(TgBotApiAttachmentMeta {
+                file_id: video.file_id.clone(),
+                media_kind: "video".to_string(),
+                file_name: None,
+                mime_type: video.mime_type.clone(),
+                size: video.file_size,
+            });
+        }
+        if let Some(audio) = message.audio.as_ref() {
+            return Some(TgBotApiAttachmentMeta {
+                file_id: audio.file_id.clone(),
+                media_kind: "audio".to_string(),
+                file_name: audio.file_name.clone(),
+                mime_type: audio.mime_type.clone(),
+                size: audio.file_size,
+            });
+        }
+        if let Some(voice) = message.voice.as_ref() {
+            return Some(TgBotApiAttachmentMeta {
+                file_id: voice.file_id.clone(),
+                media_kind: "voice".to_string(),
+                file_name: None,
+                mime_type: voice.mime_type.clone(),
+                size: voice.file_size,
+            });
+        }
+        if let Some(sticker) = message.sticker.as_ref() {
+            let mime_type = if sticker.is_video {
+                Some("video/webm".to_string())
+            } else if sticker.is_animated {
+                Some("application/x-tgsticker".to_string())
+            } else {
+                Some("image/webp".to_string())
+            };
+            return Some(TgBotApiAttachmentMeta {
+                file_id: sticker.file_id.clone(),
+                media_kind: "sticker".to_string(),
+                file_name: None,
+                mime_type,
+                size: sticker.file_size,
+            });
+        }
+        if let Some(photo) = message.photo.iter().max_by_key(|item| {
+            item.file_size
+                .unwrap_or((item.width.max(0) as u64) * (item.height.max(0) as u64))
+        }) {
+            return Some(TgBotApiAttachmentMeta {
+                file_id: photo.file_id.clone(),
+                media_kind: "photo".to_string(),
+                file_name: None,
+                mime_type: Some("image/jpeg".to_string()),
+                size: photo.file_size,
+            });
+        }
+
+        None
+    }
+
+    async fn call_api_with_multipart<T: DeserializeOwned>(
+        http: &HttpClient,
+        token: &str,
+        method: &str,
+        form: HttpForm,
+    ) -> AnyResult<T> {
+        let response = http
+            .post(Self::api_url(token, method))
+            .multipart(form)
+            .send()
+            .await
+            .with_context(|| format!("telegram bot api {} multipart request failed", method))?;
+        let status = response.status();
+        let body: TgBotApiResponse<T> = response
+            .json()
+            .await
+            .with_context(|| format!("telegram bot api {} parse response failed", method))?;
+
+        if !status.is_success() || !body.ok {
+            let desc = body
+                .description
+                .unwrap_or_else(|| "unknown telegram bot api error".to_string());
+            bail!("telegram bot api {} failed: {}", method, desc);
+        }
+
+        body.result
+            .ok_or_else(|| anyhow::anyhow!("telegram bot api {} missing result", method))
+    }
+
+    async fn download_message_attachment(
+        http: &HttpClient,
+        token: &str,
+        message: &TgBotApiMessage,
+    ) -> AnyResult<Option<TgMediaAttachment>> {
+        let Some(meta) = Self::extract_message_attachment_meta(message) else {
+            return Ok(None);
+        };
+        let file = Self::call_api_with_client::<TgBotApiFile>(
+            http,
+            token,
+            "getFile",
+            Some(json!({ "file_id": meta.file_id })),
+        )
+        .await?;
+        let file_path = file.file_path.ok_or_else(|| {
+            anyhow::anyhow!(
+                "telegram bot api getFile missing file_path for message {}",
+                message.message_id
+            )
+        })?;
+        let url = format!(
+            "{}/file/bot{}/{}",
+            TG_BOT_API_ENDPOINT,
+            token.trim(),
+            file_path.trim_start_matches('/')
+        );
+        let response = http.get(url).send().await.with_context(|| {
+            format!(
+                "telegram bot api download file failed: message_id={}",
+                message.message_id
+            )
+        })?;
+        let status = response.status();
+        if !status.is_success() {
+            bail!(
+                "telegram bot api download file failed: message_id={}, status={}",
+                message.message_id,
+                status
+            );
+        }
+        let body = response.bytes().await.with_context(|| {
+            format!(
+                "telegram bot api read file bytes failed: message_id={}",
+                message.message_id
+            )
+        })?;
+        let data = body.to_vec();
+        let file_name = meta
+            .file_name
+            .as_ref()
+            .map(|value| Self::sanitize_file_name(value))
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| {
+                Self::build_default_file_name(
+                    message.message_id,
+                    meta.media_kind.as_str(),
+                    meta.mime_type.as_deref(),
+                )
+            });
+
+        Ok(Some(TgMediaAttachment {
+            telegram_file_id: meta.file_id,
+            media_kind: meta.media_kind,
+            file_name,
+            mime_type: meta.mime_type,
+            size: meta
+                .size
+                .or(file.file_size)
+                .unwrap_or(data.len() as u64)
+                .max(data.len() as u64),
+            data,
+        }))
+    }
+
     async fn dispatch_incoming_message(
+        http: &HttpClient,
+        bot_token: &str,
         dispatcher: Arc<dyn MsgCenterHandler>,
         owner_did: DID,
         bot_account_id: String,
@@ -1330,28 +2107,68 @@ impl BotApiTgGateway {
         let idempotency_key =
             TgMessageConverter::build_dispatch_key(&bot_account_id, chat_id, message_id_i32);
         let text = Self::text_from_message(&message);
-        let payload_kind = if text.trim().is_empty() {
+        let media_attachment = Self::download_message_attachment(http, bot_token, &message)
+            .await
+            .map_err(|error| {
+                warn!(
+                    "telegram ingress download attachment failed (gateway=bot_api): owner={}, bot={}, message_id={}, error={}",
+                    owner_did.to_string(),
+                    bot_account_id,
+                    message.message_id,
+                    error
+                );
+                error
+            })?;
+        let stored_attachment = if let Some(attachment) = media_attachment.as_ref() {
+            match TgMessageConverter::store_media_attachment(attachment).await {
+                Ok(attachment_ref) => attachment_ref,
+                Err(error) => {
+                    warn!(
+                        "telegram ingress attachment store failed (gateway=bot_api): owner={}, bot={}, message_id={}, error={}",
+                        owner_did.to_string(),
+                        bot_account_id,
+                        message.message_id,
+                        error
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let has_media = media_attachment.is_some();
+        let payload_kind = if has_media {
+            "media"
+        } else if text.trim().is_empty() {
             "telegram_event"
         } else {
             "text"
         };
         let created_at_ms = (message.date.max(0) as u64).saturating_mul(1000);
+        let mut telegram_meta = json!({
+            "chat_dialog_id": chat_id,
+            "chat_username": message.chat.username,
+            "sender_id": sender_chat_id,
+            "sender_username": sender_username,
+            "sender_name": sender_name,
+            "bot_account_id": bot_account_id,
+            "payload_kind": payload_kind,
+            "message_id": message.message_id,
+            "chat_type": chat_kind,
+            "chat_name": Self::chat_name(&message.chat),
+        });
+        if let Some(attachment_ref) = stored_attachment.as_ref() {
+            if let Some(telegram_meta_obj) = telegram_meta.as_object_mut() {
+                telegram_meta_obj.insert(
+                    "attachments".to_string(),
+                    json!([TgMessageConverter::attachment_to_payload_json(
+                        attachment_ref
+                    )]),
+                );
+            }
+        }
         let mut meta = BTreeMap::new();
-        meta.insert(
-            "telegram".to_string(),
-            json!({
-                "chat_dialog_id": chat_id,
-                "chat_username": message.chat.username,
-                "sender_id": sender_chat_id,
-                "sender_username": sender_username,
-                "sender_name": sender_name,
-                "bot_account_id": bot_account_id,
-                "payload_kind": payload_kind,
-                "message_id": message.message_id,
-                "chat_type": chat_kind,
-                "chat_name": Self::chat_name(&message.chat),
-            }),
-        );
+        meta.insert("telegram".to_string(), telegram_meta);
         let to = if chat_kind == "group" || chat_kind == "channel" {
             vec![chat_did.ok_or_else(|| {
                 anyhow::anyhow!("missing group chat did for telegram bot_api message")
@@ -1359,12 +2176,32 @@ impl BotApiTgGateway {
         } else {
             vec![owner_did.clone()]
         };
-        let kind = if text.trim().is_empty() {
+        let kind = if has_media {
+            if chat_kind == "group" || chat_kind == "channel" {
+                MsgObjKind::GroupMsg
+            } else {
+                MsgObjKind::Chat
+            }
+        } else if text.trim().is_empty() {
             MsgObjKind::Event
         } else if chat_kind == "group" || chat_kind == "channel" {
             MsgObjKind::GroupMsg
         } else {
             MsgObjKind::Chat
+        };
+        let content_text = if text.trim().is_empty() && has_media {
+            "[attachment]".to_string()
+        } else {
+            text
+        };
+        let content_format = if has_media {
+            Some(TgMessageConverter::mime_to_msg_content_format(
+                media_attachment
+                    .as_ref()
+                    .and_then(|attachment| attachment.mime_type.as_deref()),
+            ))
+        } else {
+            Some(MsgContentFormat::TextPlain)
         };
         let mut msg = MsgObject {
             from: sender_did,
@@ -1372,13 +2209,26 @@ impl BotApiTgGateway {
             kind,
             created_at_ms,
             content: MsgContent {
-                format: Some(MsgContentFormat::TextPlain),
-                content: text,
+                format: content_format,
+                content: content_text,
                 ..Default::default()
             },
             meta,
             ..Default::default()
         };
+        if let Some(attachment_ref) = stored_attachment.as_ref() {
+            msg.content.refs.push(RefItem {
+                role: RefRole::Output,
+                target: RefTarget::DataObj {
+                    obj_id: attachment_ref.obj_id.clone(),
+                    uri_hint: attachment_ref.uri_hint.clone(),
+                },
+                label: attachment_ref
+                    .mime_type
+                    .clone()
+                    .or_else(|| attachment_ref.file_name.clone()),
+            });
+        }
         msg.thread.topic = Some(format!("tg:{}:{}", bot_account_id, chat_id));
 
         let ingress_ctx = IngressContext {
@@ -1472,6 +2322,20 @@ impl BotApiTgGateway {
         json!(trimmed)
     }
 
+    fn normalize_chat_id_for_send_text(chat_id: &str) -> String {
+        let trimmed = chat_id.trim();
+        if let Ok(value) = trimmed.parse::<i64>() {
+            return value.to_string();
+        }
+        if trimmed.starts_with('@') {
+            return trimmed.to_string();
+        }
+        if let Some(username) = GrammersTgGateway::username_from_chat_id(trimmed) {
+            return format!("@{}", username);
+        }
+        trimmed.to_string()
+    }
+
     fn spawn_ingress_task(&self, runtime: BotApiTgRuntime) -> JoinHandle<()> {
         let http = self.http.clone();
         let dispatcher = self.dispatcher.clone();
@@ -1525,6 +2389,8 @@ impl BotApiTgGateway {
                         continue;
                     };
                     if let Err(error) = Self::dispatch_incoming_message(
+                        &http,
+                        runtime.token.as_str(),
                         dispatcher,
                         runtime.owner_did.clone(),
                         runtime.bot_account_id.clone(),
@@ -1646,25 +2512,56 @@ impl TgGateway for BotApiTgGateway {
                 envelope.record_id
             )
         })?;
-        let text = GrammersTgGateway::resolve_text(&envelope);
+        let text = if envelope.attachments.is_empty() {
+            GrammersTgGateway::resolve_text(&envelope)
+        } else {
+            TgMessageConverter::extract_caption_from_envelope(&envelope)
+        };
         info!(
-            "telegram egress about to send (gateway=bot_api): sender={}, bot={}, chat_id={}, record_id={}, text_len={}",
+            "telegram egress about to send (gateway=bot_api): sender={}, bot={}, chat_id={}, record_id={}, text_len={}, attachment_count={}",
             sender_key,
             envelope.bot_account_id,
             chat_id,
             envelope.record_id,
-            text.len()
+            text.len(),
+            envelope.attachments.len()
         );
-        let sent = Self::call_api_with_client::<TgBotApiSentMessage>(
-            &self.http,
-            runtime.token.as_str(),
-            "sendMessage",
-            Some(json!({
-                "chat_id": Self::normalize_chat_id_for_send(chat_id),
-                "text": text,
-            })),
-        )
-        .await?;
+
+        let sent = if let Some(attachment) = envelope.attachments.first() {
+            let attachment_bytes = TgMessageConverter::load_attachment_bytes(attachment).await?;
+            let file_name = attachment.file_name.clone().unwrap_or_else(|| {
+                format!(
+                    "attachment-{}.bin",
+                    attachment.obj_id.to_string().replace(':', "_")
+                )
+            });
+            let chat_id_text = Self::normalize_chat_id_for_send_text(chat_id);
+            let document_part = HttpPart::bytes(attachment_bytes).file_name(file_name);
+            let mut form = HttpForm::new()
+                .text("chat_id", chat_id_text)
+                .part("document", document_part);
+            if !text.trim().is_empty() {
+                form = form.text("caption", text);
+            }
+            Self::call_api_with_multipart::<TgBotApiSentMessage>(
+                &self.http,
+                runtime.token.as_str(),
+                "sendDocument",
+                form,
+            )
+            .await?
+        } else {
+            Self::call_api_with_client::<TgBotApiSentMessage>(
+                &self.http,
+                runtime.token.as_str(),
+                "sendMessage",
+                Some(json!({
+                    "chat_id": Self::normalize_chat_id_for_send(chat_id),
+                    "text": text,
+                })),
+            )
+            .await?
+        };
 
         Ok(DeliveryReportResult {
             ok: true,
@@ -1932,7 +2829,7 @@ impl TgTunnel {
             })
             .or_else(|| binding.default_chat_id.clone());
 
-        let (text, payload) = TgMessageConverter::msg_object_to_tg_content(&msg);
+        let (text, payload, attachments) = TgMessageConverter::msg_object_to_tg_content(&msg);
 
         // TODO: 用 grammers 的消息模型做完整转换（媒体、回复链、实体、按钮等）
         Ok(TgEgressEnvelope {
@@ -1940,6 +2837,7 @@ impl TgTunnel {
             bot_account_id: binding.bot_account_id.clone(),
             chat_id,
             text,
+            attachments,
             payload,
             record_id: record.record.record_id.clone(),
         })
@@ -2209,6 +3107,7 @@ mod tests {
                 bot_account_id: binding.bot_account_id.clone(),
                 chat_id: None,
                 text: Some("health-check".to_string()),
+                attachments: Vec::new(),
                 payload: json!({}),
                 record_id: "rt-live-check".to_string(),
             })
