@@ -1,87 +1,19 @@
+mod config;
+
+use config::KLogRuntimeConfig;
+use klog::KNode;
 use klog::logs::SqliteLogStorage;
 use klog::network::{KNetworkFactory, KNetworkServer};
 use klog::state_machine::{KLogMemoryStateMachine, SnapshotManager};
 use klog::state_store::{
     KLogStateStore, KLogStateStoreManager, RocksDbSnapshotMode, RocksDbStateStore,
 };
-use klog::{KNode, KNodeId};
 use log::{error, info, warn};
 use openraft::Config;
 use simplelog::{ColorChoice, Config as SimpleLogConfig, LevelFilter, TermLogger, TerminalMode};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tracing_subscriber::{EnvFilter, fmt};
-
-#[derive(Debug, Clone)]
-struct KLogRuntimeConfig {
-    node_id: KNodeId,
-    listen_addr: String,
-    advertise_addr: String,
-    advertise_port: u16,
-    data_dir: PathBuf,
-    cluster_name: String,
-    auto_bootstrap: bool,
-}
-
-impl KLogRuntimeConfig {
-    fn from_env() -> Result<Self, String> {
-        let node_id = parse_env_u64("KLOG_NODE_ID", 1)?;
-        let listen_addr =
-            std::env::var("KLOG_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:21001".to_string());
-        let advertise_addr =
-            std::env::var("KLOG_ADVERTISE_ADDR").unwrap_or_else(|_| "127.0.0.1".to_string());
-        let advertise_port = parse_env_u16("KLOG_ADVERTISE_PORT", 21001)?;
-        let cluster_name =
-            std::env::var("KLOG_CLUSTER_NAME").unwrap_or_else(|_| "klog".to_string());
-        let auto_bootstrap = parse_env_bool("KLOG_AUTO_BOOTSTRAP", true)?;
-        let data_dir = std::env::var("KLOG_DATA_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(format!("/tmp/buckyos_klog_node_{}", node_id)));
-
-        Ok(Self {
-            node_id,
-            listen_addr,
-            advertise_addr,
-            advertise_port,
-            data_dir,
-            cluster_name,
-            auto_bootstrap,
-        })
-    }
-}
-
-fn parse_env_u64(key: &str, default: u64) -> Result<u64, String> {
-    match std::env::var(key) {
-        Ok(v) => v
-            .parse::<u64>()
-            .map_err(|e| format!("Invalid {}='{}': {}", key, v, e)),
-        Err(_) => Ok(default),
-    }
-}
-
-fn parse_env_u16(key: &str, default: u16) -> Result<u16, String> {
-    match std::env::var(key) {
-        Ok(v) => v
-            .parse::<u16>()
-            .map_err(|e| format!("Invalid {}='{}': {}", key, v, e)),
-        Err(_) => Ok(default),
-    }
-}
-
-fn parse_env_bool(key: &str, default: bool) -> Result<bool, String> {
-    match std::env::var(key) {
-        Ok(v) => {
-            let s = v.trim().to_ascii_lowercase();
-            match s.as_str() {
-                "1" | "true" | "yes" | "y" | "on" => Ok(true),
-                "0" | "false" | "no" | "n" | "off" => Ok(false),
-                _ => Err(format!("Invalid {}='{}': expected true/false", key, v)),
-            }
-        }
-        Err(_) => Ok(default),
-    }
-}
 
 fn init_logging() {
     let _ = TermLogger::init(
@@ -101,13 +33,14 @@ fn init_logging() {
 async fn main() {
     init_logging();
 
-    let cfg = match KLogRuntimeConfig::from_env() {
-        Ok(cfg) => cfg,
+    let (cfg, source) = match KLogRuntimeConfig::load() {
+        Ok(result) => result,
         Err(e) => {
             error!("Failed to load runtime config: {}", e);
             std::process::exit(1);
         }
     };
+    info!("klog runtime config source: {}", source);
 
     if let Err(e) = run(cfg).await {
         error!("klog startup failed: {}", e);
