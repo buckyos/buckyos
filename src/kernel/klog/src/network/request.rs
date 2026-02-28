@@ -1,5 +1,6 @@
 use crate::{KLogError, KNodeId, KResult, KTypeConfig};
 use openraft::error::PayloadTooLarge;
+use openraft::error::{InstallSnapshotError, RaftError};
 use openraft::network::RPCTypes;
 use openraft::raft::{
     AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
@@ -92,8 +93,11 @@ impl RaftRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum RaftResponse {
     AppendEntries(AppendEntriesResponse<KNodeId>),
+    AppendEntriesError(RaftError<KNodeId>),
     InstallSnapshot(InstallSnapshotResponse<KNodeId>),
+    InstallSnapshotError(RaftError<KNodeId, InstallSnapshotError>),
     Vote(VoteResponse<KNodeId>),
+    VoteError(RaftError<KNodeId>),
 }
 
 impl RaftResponse {

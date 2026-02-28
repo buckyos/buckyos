@@ -1,9 +1,9 @@
 use super::common::{decode_entry_ids, sample_membership, sample_state_entries, unique_test_path};
+use crate::KLogEntry;
 use crate::state_store::{
     KLogStateMachineMeta, KLogStateSnapshot, KLogStateStore, KLogStateStoreManager,
     MemoryStateStore, RocksDbSnapshotMode, RocksDbStateStore,
 };
-use crate::KLogEntry;
 use openraft::{CommittedLeaderId, LogId};
 use std::sync::Arc;
 

@@ -1,7 +1,7 @@
 use super::request::{RaftRequest, RaftResponse};
 use crate::{KNode, KNodeId, KTypeConfig};
 use openraft::error::{
-    InstallSnapshotError, NetworkError, RPCError, RaftError, Timeout, Unreachable,
+    InstallSnapshotError, NetworkError, RPCError, RaftError, RemoteError, Timeout, Unreachable,
 };
 use openraft::network::{RPCOption, RaftNetwork, RaftNetworkFactory};
 use openraft::raft::{
@@ -63,6 +63,7 @@ impl KNetworkClient {
         let resp = self
             .client
             .post(&url)
+            .timeout(option.soft_ttl())
             .header("Content-Type", "application/octet-stream")
             .body(body)
             .send()
@@ -87,7 +88,12 @@ impl KNetworkClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let msg = format!("Request to {} failed with status: {}", url, status);
+            let msg = format!(
+                "Request to {} failed with status: {} (rpc={:?})",
+                url,
+                status,
+                req.rpc_type()
+            );
             error!("{}", msg);
             if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
                 return Err(RPCError::PayloadTooLarge(req.payload_too_large()));
@@ -123,6 +129,23 @@ impl KNetworkClient {
         Ok(raft_response)
     }
 
+    fn unexpected_response_type<Err>(
+        &self,
+        rpc: &'static str,
+        response: &RaftResponse,
+    ) -> RPCError<KNodeId, KNode, Err>
+    where
+        Err: std::error::Error + 'static + Clone,
+    {
+        let msg = format!(
+            "Unexpected response type for {} from node {}: {:?}",
+            rpc, self.target, response
+        );
+        error!("{}", msg);
+        let io_err = std::io::Error::other(msg);
+        RPCError::Network(NetworkError::new(&io_err))
+    }
+
     fn get_request_url(&self, req: &RaftRequest) -> String {
         format!(
             "http://{}:{}/klog/{}",
@@ -147,9 +170,10 @@ impl RaftNetwork<KTypeConfig> for KNetworkClient {
             .await
         {
             Ok(RaftResponse::AppendEntries(resp)) => Ok(resp),
-            Ok(other) => {
-                unreachable!("Unexpected response type: {:?}", other);
-            }
+            Ok(RaftResponse::AppendEntriesError(err)) => Err(RPCError::RemoteError(
+                RemoteError::new_with_node(self.target, self.node.clone(), err),
+            )),
+            Ok(other) => Err(self.unexpected_response_type("append_entries", &other)),
             Err(e) => Err(e),
         }
     }
@@ -170,9 +194,10 @@ impl RaftNetwork<KTypeConfig> for KNetworkClient {
             .await
         {
             Ok(RaftResponse::InstallSnapshot(resp)) => Ok(resp),
-            Ok(other) => {
-                unreachable!("Unexpected response type: {:?}", other);
-            }
+            Ok(RaftResponse::InstallSnapshotError(err)) => Err(RPCError::RemoteError(
+                RemoteError::new_with_node(self.target, self.node.clone(), err),
+            )),
+            Ok(other) => Err(self.unexpected_response_type("install_snapshot", &other)),
             Err(e) => Err(e),
         }
     }
@@ -188,9 +213,10 @@ impl RaftNetwork<KTypeConfig> for KNetworkClient {
             .await
         {
             Ok(RaftResponse::Vote(resp)) => Ok(resp),
-            Ok(other) => {
-                unreachable!("Unexpected response type: {:?}", other);
-            }
+            Ok(RaftResponse::VoteError(err)) => Err(RPCError::RemoteError(
+                RemoteError::new_with_node(self.target, self.node.clone(), err),
+            )),
+            Ok(other) => Err(self.unexpected_response_type("vote", &other)),
             Err(e) => Err(e),
         }
     }

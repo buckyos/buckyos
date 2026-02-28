@@ -88,9 +88,11 @@ impl KNetworkServer {
                 RaftResponse::AppendEntries(resp),
             ),
             Err(e) => {
-                let msg = format!("KNetworkServer append-entries raft call failed: {}", e);
-                error!("{}", msg);
-                Self::error_response(StatusCode::INTERNAL_SERVER_ERROR, msg)
+                error!("KNetworkServer append-entries raft call failed: {}", e);
+                Self::encode_response(
+                    RaftRequestType::AppendEntries,
+                    RaftResponse::AppendEntriesError(e),
+                )
             }
         }
     }
@@ -130,9 +132,11 @@ impl KNetworkServer {
                 RaftResponse::InstallSnapshot(resp),
             ),
             Err(e) => {
-                let msg = format!("KNetworkServer install-snapshot raft call failed: {}", e);
-                error!("{}", msg);
-                Self::error_response(StatusCode::INTERNAL_SERVER_ERROR, msg)
+                error!("KNetworkServer install-snapshot raft call failed: {}", e);
+                Self::encode_response(
+                    RaftRequestType::InstallSnapshot,
+                    RaftResponse::InstallSnapshotError(e),
+                )
             }
         }
     }
@@ -167,9 +171,8 @@ impl KNetworkServer {
         match state.raft.vote(req).await {
             Ok(resp) => Self::encode_response(RaftRequestType::Vote, RaftResponse::Vote(resp)),
             Err(e) => {
-                let msg = format!("KNetworkServer vote raft call failed: {}", e);
-                error!("{}", msg);
-                Self::error_response(StatusCode::INTERNAL_SERVER_ERROR, msg)
+                error!("KNetworkServer vote raft call failed: {}", e);
+                Self::encode_response(RaftRequestType::Vote, RaftResponse::VoteError(e))
             }
         }
     }
