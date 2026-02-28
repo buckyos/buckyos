@@ -252,8 +252,14 @@ impl MsgRecordWithObject {
         }
     }
 
-    pub fn get_msg_tunnel_did(&self) -> Option<DID> {
-        unimplemented!();
+    pub fn get_msg_tunnel_ui_id(&self) -> String {
+        if let Some(route) = &self.record.route {
+            if let Some(tunnel_did) = &route.tunnel_did {
+                return tunnel_did.id.clone();
+            }
+        }
+
+        return "default".to_string()        
     }
 }
 

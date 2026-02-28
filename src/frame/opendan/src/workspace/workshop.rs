@@ -328,8 +328,7 @@ impl AgentWorkshop {
                     }
                     TOOL_READ_FILE => {
                         tool_mgr.register_tool(BuiltinReadFileTool::from_tool_config(
-                            &self.cfg,
-                            tool,
+                            &self.cfg, tool,
                         )?)?;
                     }
                     TOOL_TODO_MANAGE => {
@@ -1363,5 +1362,4 @@ mod tests {
 
         let _ = fs::remove_dir_all(root).await;
     }
-
 }

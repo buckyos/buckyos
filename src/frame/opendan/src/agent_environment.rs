@@ -3,11 +3,11 @@ use std::future::Future;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use buckyos_api::{get_buckyos_api_runtime, MsgRecord};
+use buckyos_api::{get_buckyos_api_runtime, MsgRecord, OpenDanAgentSessionRecord};
 use log::warn;
 use ndn_lib::MsgObject;
 use rusqlite::Connection;
-use serde_json::{Map, Value as Json};
+use serde_json::{json, Map, Value as Json};
 use tokio::fs;
 use tokio::sync::Mutex;
 use tokio::task;
@@ -27,6 +27,8 @@ const MAX_TOTAL_RENDER_BYTES: usize = 256 * 1024;
 const ESCAPED_OPEN_SENTINEL: &str = "\u{001f}ESCAPED_OPEN_BRACE\u{001f}";
 const ESCAPED_CLOSE_SENTINEL: &str = "\u{001f}ESCAPED_CLOSE_BRACE\u{001f}";
 const DEFAULT_NEW_MSG_MAX_PULL: usize = 32;
+const DEFAULT_SESSION_LIST_MAX_PULL: usize = 16;
+const SESSION_RECORD_FILE_NAME: &str = "session.json";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TemplateRenderMode {
@@ -240,8 +242,7 @@ impl AgentEnvironment {
             );
             let max_pull_u32 = (max_pull.min(u32::MAX as usize)) as u32;
             let new_msgs =
-                AgentSession::pull_new_msg_from_kmsgqueue(kmsg_sub_id.as_str(), max_pull_u32)
-                    .await;
+                AgentSession::pull_new_msg_from_kmsgqueue(kmsg_sub_id.as_str(), max_pull_u32).await;
 
             if new_msgs.is_err() {
                 warn!(
@@ -261,12 +262,23 @@ impl AgentEnvironment {
             if let Some(last_msg) = new_msgs.last() {
                 let mut guard = session.lock().await;
                 // save cursor for ack after process
-                guard.just_readed_input_msg =
-                    new_msgs.iter().map(|r| r.payload.clone()).collect();
+                guard.just_readed_input_msg = new_msgs.iter().map(|r| r.payload.clone()).collect();
                 guard.msg_kmsgqueue_curosr = last_msg.index;
             }
 
             return Ok(render_new_msgs_from_kmsgqueue(new_msgs.as_slice()).await);
+        }
+
+        if k.starts_with("session_list") {
+            // k format: session_list / session_list.$num
+            let max_pull =
+                parse_pull_limit_from_key(k, "session_list", DEFAULT_SESSION_LIST_MAX_PULL);
+            return Ok(render_recent_sessions_from_disk(
+                &session_cwd,
+                session_id.as_str(),
+                max_pull,
+            )
+            .await);
         }
 
         // if k.starts_with("new_event") {
@@ -711,6 +723,149 @@ fn truncate_text_lines(text: Option<String>, max_pull: usize) -> Option<String> 
     }
     let start = lines.len().saturating_sub(max_pull);
     clean_optional_text(Some(lines[start..].join("\n").as_str()))
+}
+
+async fn render_recent_sessions_from_disk(
+    session_cwd: &Path,
+    current_session_id: &str,
+    max_pull: usize,
+) -> Option<String> {
+    if max_pull == 0 {
+        return None;
+    }
+
+    let session_root = resolve_session_root_from_cwd(session_cwd, current_session_id).await?;
+    let mut entries = fs::read_dir(&session_root).await.ok()?;
+    let mut records = Vec::<OpenDanAgentSessionRecord>::new();
+
+    loop {
+        let Ok(Some(entry)) = entries.next_entry().await else {
+            break;
+        };
+        let Ok(file_type) = entry.file_type().await else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+
+        let Some(dir_session_id) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let session_file = entry.path().join(SESSION_RECORD_FILE_NAME);
+        if !fs::metadata(&session_file)
+            .await
+            .map(|meta| meta.is_file())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let Ok(raw) = fs::read_to_string(&session_file).await else {
+            continue;
+        };
+        let Ok(mut record) = serde_json::from_str::<OpenDanAgentSessionRecord>(&raw) else {
+            continue;
+        };
+        if record.session_id.trim().is_empty() {
+            record.session_id = dir_session_id;
+        }
+        if AgentSessionMgr::is_ui_session(record.session_id.as_str()) {
+            continue;
+        }
+        records.push(record);
+    }
+
+    if records.is_empty() {
+        return None;
+    }
+
+    records.sort_by(|a, b| {
+        b.last_activity_ms
+            .cmp(&a.last_activity_ms)
+            .then_with(|| b.updated_at_ms.cmp(&a.updated_at_ms))
+            .then_with(|| b.created_at_ms.cmp(&a.created_at_ms))
+            .then_with(|| a.session_id.cmp(&b.session_id))
+    });
+
+    let items = records
+        .into_iter()
+        .take(max_pull)
+        .map(|record| {
+            let title = clean_optional_text(Some(record.title.as_str()))
+                .unwrap_or_else(|| format!("Session {}", record.session_id));
+            let status = clean_optional_text(Some(record.status.as_str()))
+                .unwrap_or_else(|| "normal".to_string());
+            let summary = clean_optional_text(Some(record.summary.as_str()))
+                .map(|value| collapse_whitespace(value.as_str()))
+                .map(|value| truncate_chars(value.as_str(), 200))
+                .unwrap_or_default();
+
+            json!({
+                "session_id": record.session_id,
+                "title": title,
+                "summary": summary,
+                "status": status,
+                "last_activity_ms": record.last_activity_ms,
+                "updated_at_ms": record.updated_at_ms,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    serde_json::to_string_pretty(&items)
+        .ok()
+        .and_then(|value| clean_optional_text(Some(value.as_str())))
+}
+
+async fn resolve_session_root_from_cwd(
+    session_cwd: &Path,
+    current_session_id: &str,
+) -> Option<PathBuf> {
+    let session_id = clean_optional_text(Some(current_session_id))?;
+    let mut roots = Vec::<PathBuf>::new();
+
+    if let Some(cwd) = non_empty_path(session_cwd) {
+        roots.push(cwd);
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        roots.push(cwd);
+    }
+
+    for root in roots {
+        for ancestor in root.ancestors() {
+            let session_root = ancestor.join("session");
+            let marker = session_root
+                .join(session_id.as_str())
+                .join(SESSION_RECORD_FILE_NAME);
+            if fs::metadata(&marker)
+                .await
+                .map(|meta| meta.is_file())
+                .unwrap_or(false)
+            {
+                return Some(session_root);
+            }
+        }
+    }
+    None
+}
+
+fn collapse_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let mut output = String::new();
+    let mut count = 0usize;
+    for ch in text.chars() {
+        if count >= max_chars {
+            break;
+        }
+        output.push(ch);
+        count += 1;
+    }
+    output
 }
 
 fn parse_msg_record_from_kmsg_payload(payload: &[u8]) -> Option<MsgRecord> {
@@ -1659,5 +1814,75 @@ mod tests {
             .expect("text mode should return string");
 
         assert_eq!(rendered, "");
+    }
+
+    #[tokio::test]
+    async fn load_value_from_session_session_list_defaults_to_16_and_sorts_recent_first() {
+        let root = tempdir().expect("create temp dir");
+        let session_root = root.path().join("session");
+        fs::create_dir_all(&session_root)
+            .await
+            .expect("create session root");
+
+        async fn write_session_record(
+            session_root: &Path,
+            session_id: &str,
+            title: &str,
+            summary: &str,
+            last_activity_ms: u64,
+        ) {
+            let dir = session_root.join(session_id);
+            fs::create_dir_all(&dir).await.expect("create session dir");
+            let record = OpenDanAgentSessionRecord {
+                session_id: session_id.to_string(),
+                owner_agent: "did:test:agent".to_string(),
+                title: title.to_string(),
+                summary: summary.to_string(),
+                status: "normal".to_string(),
+                created_at_ms: last_activity_ms.saturating_sub(10),
+                updated_at_ms: last_activity_ms.saturating_sub(1),
+                last_activity_ms,
+                links: vec![],
+                tags: vec![],
+                meta: Json::Object(Map::new()),
+            };
+            let bytes = serde_json::to_vec_pretty(&record).expect("serialize session record");
+            fs::write(dir.join(SESSION_RECORD_FILE_NAME), bytes)
+                .await
+                .expect("write session file");
+        }
+
+        write_session_record(&session_root, "s1", "Session 1", "Summary 1", 100).await;
+        write_session_record(&session_root, "s2", "Session 2", "Summary 2", 300).await;
+        write_session_record(&session_root, "s3", "Session 3", "Summary 3", 200).await;
+        write_session_record(&session_root, "ui-chat-1", "UI Session", "UI Summary", 500).await;
+
+        let session = Arc::new(Mutex::new(AgentSession::new(
+            "s1",
+            "did:test:agent",
+            Some("on_wakeup"),
+        )));
+        session.lock().await.cwd = root.path().to_path_buf();
+
+        let rendered = AgentEnvironment::load_value_from_session(session.clone(), "session_list")
+            .await
+            .expect("load session_list")
+            .expect("session_list should be rendered");
+
+        let items: Vec<Json> = serde_json::from_str(&rendered).expect("parse rendered list");
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["session_id"], "s2");
+        assert_eq!(items[1]["session_id"], "s3");
+        assert_eq!(items[2]["session_id"], "s1");
+        assert!(items.iter().all(|item| item["session_id"] != "ui-chat-1"));
+
+        let rendered_2 = AgentEnvironment::load_value_from_session(session, "session_list.$2")
+            .await
+            .expect("load session_list.$2")
+            .expect("session_list.$2 should be rendered");
+        let items_2: Vec<Json> = serde_json::from_str(&rendered_2).expect("parse rendered list");
+        assert_eq!(items_2.len(), 2);
+        assert_eq!(items_2[0]["session_id"], "s2");
+        assert_eq!(items_2[1]["session_id"], "s3");
     }
 }

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use buckyos_api::AiToolSpec;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value as Json, json};
+use serde_json::{json, Value as Json};
 use tokio::fs;
 
 use crate::agent_tool::ToolSpec;
@@ -550,7 +550,6 @@ fn normalize_output_mode(mode: &str) -> String {
     }
 }
 
-
 fn build_behavior_llm_result_protocol() -> String {
     let schema = json!({
         "next_behavior": "END",
@@ -601,7 +600,7 @@ fn build_behavior_llm_result_protocol() -> String {
         "load_skills": ["plan"],
         "enable_tools": ["load_memory", "todo_manage"],
         "session_id": "session-user-1",
-        "new_session": ["session-qa-1", "Q&A Session"]
+        "new_session": ["Q&A Session", "Collect requirements and draft a plan"]
     });
     let schema_pretty = serde_json::to_string_pretty(&schema).unwrap_or_else(|_| "{}".to_string());
 
@@ -624,7 +623,7 @@ Type rules:\n\
 - `toipc_tags`: array of strings (note: key name is exactly `toipc_tags`).\n\
 - `load_skills` / `enable_tools`: array of strings.\n\
 - `session_id`: optional string.\n\
-- `new_session`: optional 2-item string tuple `[session_id, title]`.\n\
+- `new_session`: optional 2-item string tuple `[title, summary]`; runtime generates the session_id.\n\
 JSON example:\n\
 {}",
         schema_pretty

@@ -947,7 +947,11 @@ async fn run_step_with_workshop_list_dir_then_plan_python_actions() {
         .expect("create session store"),
     );
     let session = session_store
-        .ensure_session("session-workshop", Some("Session Workshop".to_string()), None)
+        .ensure_session(
+            "session-workshop",
+            Some("Session Workshop".to_string()),
+            None,
+        )
         .await
         .expect("ensure session");
     {

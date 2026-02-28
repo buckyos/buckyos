@@ -131,7 +131,7 @@ pub struct AgentSession {
     pub msg_kmsgqueue_curosr: u64,
     pub event_kmsgqueue_curosr: u64,
     //这个不会被序列化
-    pub just_readed_input_msg:Vec<Vec<u8>>,
+    pub just_readed_input_msg: Vec<Vec<u8>>,
 
     pub cwd: PathBuf,
     pub workspace_info: Option<Json>,
@@ -155,8 +155,8 @@ impl AgentSession {
     ) -> Self {
         let ts = now_ms();
         let session_id = session_id.into();
-        let current_behavior = normalize_optional_string(default_behavior.map(str::to_string))
-            .unwrap_or_default();
+        let current_behavior =
+            normalize_optional_string(default_behavior.map(str::to_string)).unwrap_or_default();
 
         Self {
             title: format!("Session {}", session_id),
@@ -550,22 +550,21 @@ impl AgentSessionMgr {
         &self.sessions_root
     }
 
-    pub fn get_default_session_id(&self, target: &DID, tunnel_did: Option<DID>) -> String {
-        if let Some(tunnel_did) = tunnel_did {
-            return format!(
-                "session-{}-{}-{}",
-                self.owner_agent.as_str(),
-                target.to_raw_host_name(),
-                tunnel_did.to_raw_host_name()
-            );
+    pub fn is_ui_session(session_id: &str) -> bool {
+        if session_id.starts_with("ui") {
+            return true;
         }
-        format!(
-            "session-{}-{}",
-            self.owner_agent.as_str(),
-            target.to_raw_host_name()
-        )
+        return false;
     }
 
+    pub fn get_ui_session_id(&self, target: &DID, ui_msg_tunnel_id: &str) -> String {
+        format!(
+            "ui-{}-{}-{}",
+            self.owner_agent.as_str(),
+            target.to_raw_host_name(),
+            ui_msg_tunnel_id
+        )
+    }
 
     pub async fn ensure_session(
         &self,
@@ -579,17 +578,12 @@ impl AgentSessionMgr {
         }
         info!(
             "agent.persist_entity_prepare: kind=session_entity owner_agent={} session_id={}",
-            self.owner_agent,
-            session_id
+            self.owner_agent, session_id
         );
 
         let behavior = behavior.map(str::trim).filter(|value| !value.is_empty());
 
-        let mut session = AgentSession::new(
-            session_id.clone(),
-            self.owner_agent.clone(),
-            behavior,
-        );
+        let mut session = AgentSession::new(session_id.clone(), self.owner_agent.clone(), behavior);
         if let Some(title) = normalize_optional_string(title) {
             session.title = title;
         }
@@ -830,7 +824,6 @@ impl AgentSessionMgr {
                 Arc::new(Mutex::new(AgentSession::from_record(record))),
             );
         }
-
 
         Ok(())
     }

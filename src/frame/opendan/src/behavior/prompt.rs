@@ -1106,7 +1106,6 @@ async fn load_workspace_worklog_with_limit(
     records
 }
 
-
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 struct ToolboxSkillRecord {
     name: String,
@@ -1656,7 +1655,6 @@ mod tests {
             text.split_whitespace().count() as u32
         }
     }
-
 
     #[tokio::test]
     async fn build_toolbox_loads_workspace_skills_and_merges_action_tool_defs() {

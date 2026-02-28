@@ -12,6 +12,7 @@ use buckyos_api::{
     value_to_object_map, AiToolCall, AiccClient, BoxKind, Event, EventReader, KEventClient,
     KEventError, MsgCenterClient, MsgRecordWithObject, MsgState, SendContext, TaskManagerClient,
 };
+use chrono::Utc;
 use log::{debug, info, warn};
 use name_lib::DID;
 use ndn_lib::{MsgContent, MsgContentFormat, MsgObjKind, MsgObject};
@@ -21,6 +22,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::sleep;
 use tokio::{fs, task};
+use uuid::Uuid;
 
 use crate::agent_config::AIAgentConfig;
 use crate::agent_environment::AgentEnvironment;
@@ -33,7 +35,8 @@ use crate::agent_tool::{
     TOOL_EXEC_BASH, TOOL_TODO_MANAGE,
 };
 use crate::behavior::{
-    self, AgentWorkEvent, BehaviorConfig, BehaviorExecInput, BehaviorLLMResult, ExecutorReply, LLMBehavior, LLMBehaviorDeps, LLMTrackingInfo, Tokenizer, TraceCtx, WorklogSink
+    self, AgentWorkEvent, BehaviorConfig, BehaviorExecInput, BehaviorLLMResult, ExecutorReply,
+    LLMBehavior, LLMBehaviorDeps, LLMTrackingInfo, Tokenizer, TraceCtx, WorklogSink,
 };
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
@@ -106,6 +109,13 @@ struct RouteDecision {
 #[derive(Clone, Debug, Default)]
 struct RouteAndLinkResult {
     linked_session_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct StepRouteTarget {
+    title: Option<String>,
+    summary: Option<String>,
+    behavior: Option<&'static str>,
 }
 
 #[derive(Clone, Debug)]
@@ -615,11 +625,11 @@ impl AIAgent {
                 reason: RouteLinkReason::MsgRecordSession,
             });
         }
-        let default_session_id = self
+        let default_ui_session_id = self
             .session_mgr
-            .get_default_session_id(&record.get_target_did(), record.get_msg_tunnel_did());
+            .get_ui_session_id(&record.get_target_did(), &record.get_msg_tunnel_ui_id());
         return Ok(RouteDecision {
-            linked_session_ids: vec![default_session_id],
+            linked_session_ids: vec![default_ui_session_id],
             reason: RouteLinkReason::DefaultSession,
         });
     }
@@ -796,7 +806,8 @@ impl AIAgent {
 
             // Ensure per-session queues/subscriptions exist before template placeholders
             // pull `new_msg`/`new_event` from kmsg.
-            self.ensure_session_queue_binding(session_id.as_str()).await?;
+            self.ensure_session_queue_binding(session_id.as_str())
+                .await?;
 
             //build input
             let input = self
@@ -814,7 +825,8 @@ impl AIAgent {
             self.dispatch_step_msg_records(session.clone(), &llm_result)
                 .await?;
 
-            self.handle_replies(&trace, llm_result.reply.as_slice()).await;
+            self.handle_replies(&trace, llm_result.reply.as_slice())
+                .await;
 
             self.apply_memory_updates(&trace, llm_result.set_memory.as_slice())
                 .await;
@@ -890,11 +902,13 @@ impl AIAgent {
         session: Arc<Mutex<AgentSession>>,
         llm_result: &BehaviorLLMResult,
     ) -> Result<()> {
-        let mut route_targets = HashMap::<String, Option<String>>::new();
+        let mut route_targets = HashMap::<String, StepRouteTarget>::new();
 
         if let Some(session_id) = llm_result.session_id.as_deref() {
             if let Some(valid_session_id) = normalize_routed_session_id(Some(session_id)) {
-                route_targets.entry(valid_session_id).or_insert(None);
+                route_targets
+                    .entry(valid_session_id)
+                    .or_insert_with(StepRouteTarget::default);
             } else {
                 warn!(
                     "agent.dispatch_step_msg_records invalid llm_result.session_id ignored: did={} session_id={}",
@@ -903,22 +917,22 @@ impl AIAgent {
             }
         }
 
-        if let Some((new_session_id, new_session_title)) = llm_result.new_session.as_ref() {
+        if let Some((new_session_title, new_session_summary)) = llm_result.new_session.as_ref() {
+            let new_session_id = self.gen_new_work_session_id();
             if let Some(valid_session_id) =
                 normalize_routed_session_id(Some(new_session_id.as_str()))
             {
-                let title = {
-                    let value = new_session_title.trim();
-                    if value.is_empty() {
-                        "Untitled Session".to_string()
-                    } else {
-                        value.to_string()
-                    }
-                };
-                route_targets.insert(valid_session_id, Some(title));
+                route_targets.insert(
+                    valid_session_id,
+                    StepRouteTarget {
+                        title: normalize_session_id(Some(new_session_title.as_str())),
+                        summary: normalize_session_id(Some(new_session_summary.as_str())),
+                        behavior: Some("plan"),
+                    },
+                );
             } else {
                 warn!(
-                    "agent.dispatch_step_msg_records invalid llm_result.new_session ignored: did={} session_id={}",
+                    "agent.dispatch_step_msg_records generated invalid new_session_id ignored: did={} session_id={}",
                     self.did, new_session_id
                 );
             }
@@ -941,15 +955,14 @@ impl AIAgent {
 
         let mut step_msg_inputs = Vec::<SessionInputItem>::with_capacity(step_inputs_raw.len());
         for payload in step_inputs_raw {
-            let item = serde_json::from_slice::<SessionInputItem>(payload.as_slice()).map_err(
-                |err| {
+            let item =
+                serde_json::from_slice::<SessionInputItem>(payload.as_slice()).map_err(|err| {
                     anyhow!(
                         "deserialize step input payload failed: source_session={} err={}",
                         source_session_id,
                         err
                     )
-                },
-            )?;
+                })?;
             if item.msg.is_some() {
                 step_msg_inputs.push(item);
             }
@@ -959,14 +972,17 @@ impl AIAgent {
             return Ok(());
         }
 
-        for (target_session_id, target_title) in route_targets {
-            let mut behavior = None ;
-            if target_title.is_some() {
-                behavior = Some("plan");
-            }
-            self.session_mgr
-                .ensure_session(target_session_id.as_str(), target_title, behavior)
+        for (target_session_id, target) in route_targets {
+            let target_session = self
+                .session_mgr
+                .ensure_session(target_session_id.as_str(), target.title, target.behavior)
                 .await?;
+            if let Some(summary) = target.summary {
+                let mut guard = target_session.lock().await;
+                if guard.summary.trim().is_empty() {
+                    guard.summary = summary;
+                }
+            }
 
             for input_item in &step_msg_inputs {
                 self.enqueue_session_input(
@@ -989,6 +1005,12 @@ impl AIAgent {
         }
 
         Ok(())
+    }
+
+    fn gen_new_work_session_id(&self) -> String {
+        let new_uuid = Uuid::new_v4().simple().to_string();
+        let now = Utc::now().format("%y%m%d").to_string();
+        format!("{}-{}",now, new_uuid )
     }
 
     fn get_params_from_behavior_name(behavior_name: &str) -> Option<Json> {
@@ -1303,7 +1325,9 @@ impl AIAgent {
     }
 
     fn queue_resource_already_exists(err: &kRPC::RPCErrors) -> bool {
-        err.to_string().to_ascii_lowercase().contains("already exists")
+        err.to_string()
+            .to_ascii_lowercase()
+            .contains("already exists")
     }
 
     async fn ensure_session_queue_exists(
@@ -1320,9 +1344,7 @@ impl AIAgent {
                 if !Self::queue_resource_not_found(&check_err) {
                     warn!(
                         "check session queue failed, fallback create: session={} queue={} err={}",
-                        session_id,
-                        queue_urn,
-                        check_err
+                        session_id, queue_urn, check_err
                     );
                 }
                 info!(
@@ -2035,10 +2057,9 @@ impl AIAgent {
                 outbound.thread.topic = Some(session_id.clone());
             }
             outbound.thread.correlation_id = Some(session_id.clone());
-            outbound.meta.insert(
-                "session_id".to_string(),
-                Json::String(session_id.clone()),
-            );
+            outbound
+                .meta
+                .insert("session_id".to_string(), Json::String(session_id.clone()));
             outbound
                 .meta
                 .insert("owner_session_id".to_string(), Json::String(session_id));
@@ -2135,7 +2156,6 @@ impl AIAgent {
             .map(|did| did.to_raw_host_name())
             .unwrap_or_else(|_| Self::sanitize_kevent_token(raw))
     }
-
 }
 
 fn apply_session_behavior_transition(

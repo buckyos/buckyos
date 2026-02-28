@@ -280,7 +280,11 @@ impl ReadFilePolicy {
         let max_read_bytes = read_u64_from_map(params, "max_read_bytes")?
             .map(u64_to_usize)
             .transpose()?
-            .unwrap_or(workshop_cfg.max_output_bytes.max(DEFAULT_MAX_FILE_READ_BYTES));
+            .unwrap_or(
+                workshop_cfg
+                    .max_output_bytes
+                    .max(DEFAULT_MAX_FILE_READ_BYTES),
+            );
         if max_read_bytes == 0 {
             return Err(AgentToolError::InvalidArgs(format!(
                 "tool `{}` max_read_bytes must be > 0",
@@ -373,10 +377,14 @@ impl AgentTool for ExecBashTool {
         let run_result = self
             .run_tmux_bash(ctx, &session_id, &command, &cwd, timeout_ms, &env_vars)
             .await?;
-        let (stdout, stdout_truncated) =
-            truncate_bytes(&run_result.stdout, self.cfg.max_output_bytes.max(DEFAULT_MAX_OUTPUT_BYTES));
-        let (stderr, stderr_truncated) =
-            truncate_bytes(&run_result.stderr, self.cfg.max_output_bytes.max(DEFAULT_MAX_OUTPUT_BYTES));
+        let (stdout, stdout_truncated) = truncate_bytes(
+            &run_result.stdout,
+            self.cfg.max_output_bytes.max(DEFAULT_MAX_OUTPUT_BYTES),
+        );
+        let (stderr, stderr_truncated) = truncate_bytes(
+            &run_result.stderr,
+            self.cfg.max_output_bytes.max(DEFAULT_MAX_OUTPUT_BYTES),
+        );
         let ok = run_result.exit_code == 0;
         let details = if ok {
             tail_lines_limited(&stdout, EXEC_BASH_SUCCESS_DETAIL_LINES)
@@ -619,31 +627,32 @@ impl AgentTool for EditFileTool {
                 "replace mode disabled by workshop tool policy".to_string(),
             ));
         }
-        let (operation, updated_content, matched) = if let Some(anchor_pos) = original_content.find(&pos_chunk) {
-            let updated = match mode {
-                "replace" => {
-                    let mut out = original_content.clone();
-                    let end = anchor_pos + pos_chunk.len();
-                    out.replace_range(anchor_pos..end, &new_content);
-                    out
-                }
-                "after" => {
-                    let mut out = original_content.clone();
-                    let insert_at = anchor_pos + pos_chunk.len();
-                    out.insert_str(insert_at, &new_content);
-                    out
-                }
-                "before" => {
-                    let mut out = original_content.clone();
-                    out.insert_str(anchor_pos, &new_content);
-                    out
-                }
-                _ => unreachable!("validated by parse_edit_mode"),
+        let (operation, updated_content, matched) =
+            if let Some(anchor_pos) = original_content.find(&pos_chunk) {
+                let updated = match mode {
+                    "replace" => {
+                        let mut out = original_content.clone();
+                        let end = anchor_pos + pos_chunk.len();
+                        out.replace_range(anchor_pos..end, &new_content);
+                        out
+                    }
+                    "after" => {
+                        let mut out = original_content.clone();
+                        let insert_at = anchor_pos + pos_chunk.len();
+                        out.insert_str(insert_at, &new_content);
+                        out
+                    }
+                    "before" => {
+                        let mut out = original_content.clone();
+                        out.insert_str(anchor_pos, &new_content);
+                        out
+                    }
+                    _ => unreachable!("validated by parse_edit_mode"),
+                };
+                (mode.to_string(), updated, true)
+            } else {
+                (mode.to_string(), original_content.clone(), false)
             };
-            (mode.to_string(), updated, true)
-        } else {
-            (mode.to_string(), original_content.clone(), false)
-        };
 
         if updated_content.len() > self.policy.max_write_bytes {
             return Err(AgentToolError::InvalidArgs(format!(
@@ -898,31 +907,34 @@ impl AgentTool for ReadFileTool {
         }
 
         let full_content = read_text_file_lossy(&abs_path).await?;
-        let (selected_content, matched) = if let Some(first_chunk) = optional_string(&args, "first_chunk")? {
-            if let Some(pos) = full_content.find(&first_chunk) {
-                (full_content[pos..].to_string(), true)
+        let (selected_content, matched) =
+            if let Some(first_chunk) = optional_string(&args, "first_chunk")? {
+                if let Some(pos) = full_content.find(&first_chunk) {
+                    (full_content[pos..].to_string(), true)
+                } else {
+                    (String::new(), false)
+                }
             } else {
-                (String::new(), false)
-            }
-        } else {
-            (full_content.clone(), true)
-        };
-
-        let (selected_content, line_range_label) = if let Some((start, end)) = parse_line_range(&args)? {
-            let lines = selected_content.lines().collect::<Vec<_>>();
-            let start_idx = start.saturating_sub(1).min(lines.len());
-            let end_idx = end.min(lines.len());
-            let slice = if start_idx < end_idx {
-                lines[start_idx..end_idx].join("\n")
-            } else {
-                String::new()
+                (full_content.clone(), true)
             };
-            (slice, format!("{start}-{end}"))
-        } else {
-            (selected_content, String::new())
-        };
 
-        let (content, truncated) = truncate_bytes(selected_content.as_bytes(), self.policy.max_read_bytes);
+        let (selected_content, line_range_label) =
+            if let Some((start, end)) = parse_line_range(&args)? {
+                let lines = selected_content.lines().collect::<Vec<_>>();
+                let start_idx = start.saturating_sub(1).min(lines.len());
+                let end_idx = end.min(lines.len());
+                let slice = if start_idx < end_idx {
+                    lines[start_idx..end_idx].join("\n")
+                } else {
+                    String::new()
+                };
+                (slice, format!("{start}-{end}"))
+            } else {
+                (selected_content, String::new())
+            };
+
+        let (content, truncated) =
+            truncate_bytes(selected_content.as_bytes(), self.policy.max_read_bytes);
 
         Ok(json!({
             "ok": true,
@@ -1141,13 +1153,13 @@ fn parse_line_range_text(raw: &str) -> Result<(u64, u64), AgentToolError> {
             "invalid range text `{raw}`"
         )));
     }
-    let start = parts[0].parse::<u64>().map_err(|_| {
-        AgentToolError::InvalidArgs(format!("invalid range start in `{raw}`"))
-    })?;
+    let start = parts[0]
+        .parse::<u64>()
+        .map_err(|_| AgentToolError::InvalidArgs(format!("invalid range start in `{raw}`")))?;
     let end = if parts.len() == 2 {
-        parts[1].parse::<u64>().map_err(|_| {
-            AgentToolError::InvalidArgs(format!("invalid range end in `{raw}`"))
-        })?
+        parts[1]
+            .parse::<u64>()
+            .map_err(|_| AgentToolError::InvalidArgs(format!("invalid range end in `{raw}`")))?
     } else {
         start
     };
@@ -1473,7 +1485,10 @@ async fn maybe_gc_stale_tmux_sessions() {
     }
     let now_secs = now_unix_secs();
     let mut collected = 0usize;
-    for session in sessions.iter().filter(|item| should_gc_tmux_session(item, now_secs)) {
+    for session in sessions
+        .iter()
+        .filter(|item| should_gc_tmux_session(item, now_secs))
+    {
         match kill_tmux_session(session.name.as_str()).await {
             Ok(()) => {
                 collected = collected.saturating_add(1);

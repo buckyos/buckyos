@@ -1101,7 +1101,10 @@ mod tests {
             println!("{}", spec.render_prompt());
         }
 
-        assert!(!tool_specs.is_empty(), "documented tool specs should not be empty");
+        assert!(
+            !tool_specs.is_empty(),
+            "documented tool specs should not be empty"
+        );
         assert!(
             !action_specs.is_empty(),
             "documented action specs should not be empty"
