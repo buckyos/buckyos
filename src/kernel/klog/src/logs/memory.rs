@@ -47,6 +47,19 @@ impl MemoryLogStorage {
 
         Self { logs, state }
     }
+
+    #[cfg(test)]
+    pub async fn append_entries_for_test<I>(&self, entries: I) -> StorageResult<()>
+    where
+        I: IntoIterator<Item = LogEntry>,
+    {
+        let mut logs = self.logs.lock().await;
+        for entry in entries {
+            logs.insert(entry.log_id.index, entry);
+        }
+
+        Ok(())
+    }
 }
 
 impl RaftLogReader<KTypeConfig> for MemoryLogStorage {

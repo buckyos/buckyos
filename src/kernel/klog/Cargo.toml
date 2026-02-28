@@ -19,3 +19,4 @@ tracing-subscriber = { workspace = true }
 reqwest = { workspace = true }
 thiserror = { workspace = true }
 bytes = { workspace = true }
+rusqlite = { workspace = true }
