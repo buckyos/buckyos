@@ -55,6 +55,26 @@ fn choose_free_port() -> std::io::Result<u16> {
     Ok(listener.local_addr()?.port())
 }
 
+fn choose_unique_ports(count: usize) -> Result<Vec<u16>, String> {
+    let mut ports = Vec::with_capacity(count);
+    let mut guard = HashSet::new();
+    let mut attempts = 0usize;
+    while ports.len() < count && attempts < 200 {
+        attempts += 1;
+        let p = choose_free_port().map_err(|e| format!("choose free port failed: {}", e))?;
+        if guard.insert(p) {
+            ports.push(p);
+        }
+    }
+    if ports.len() != count {
+        return Err(format!(
+            "failed to choose {} unique ports after {} attempts; chosen={:?}",
+            count, attempts, ports
+        ));
+    }
+    Ok(ports)
+}
+
 fn can_bind_localhost() -> bool {
     std::net::TcpListener::bind("127.0.0.1:0").is_ok()
 }
@@ -218,7 +238,7 @@ async fn spawn_node(
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
 
-    let child = cmd.spawn().map_err(|e| {
+    let mut child = cmd.spawn().map_err(|e| {
         let candidate_strings = candidates
             .iter()
             .map(|p| p.display().to_string())
@@ -237,6 +257,8 @@ async fn spawn_node(
         )
     })?;
 
+    wait_node_http_ready_after_spawn(&mut child, node_id, port, Duration::from_secs(12)).await?;
+
     Ok(TestNode {
         node_id,
         port,
@@ -244,6 +266,48 @@ async fn spawn_node(
         config_path,
         child,
     })
+}
+
+async fn wait_node_http_ready_after_spawn(
+    child: &mut Child,
+    node_id: u64,
+    port: u16,
+    timeout: Duration,
+) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(500))
+        .build()
+        .map_err(|e| format!("failed to build readiness http client: {}", e))?;
+    let deadline = Instant::now() + timeout;
+    let mut last_err = String::new();
+
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| format!("failed to poll node process status: {}", e))?
+        {
+            return Err(format!(
+                "node process exited before HTTP ready: node_id={}, port={}, status={}, last_err={}",
+                node_id, port, status, last_err
+            ));
+        }
+
+        match fetch_cluster_state(&client, port).await {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                last_err = e;
+            }
+        }
+
+        if Instant::now() > deadline {
+            return Err(format!(
+                "timeout waiting node HTTP ready: node_id={}, port={}, last_err={}",
+                node_id, port, last_err
+            ));
+        }
+
+        sleep(Duration::from_millis(120)).await;
+    }
 }
 
 async fn fetch_cluster_state(client: &reqwest::Client, port: u16) -> Result<ClusterState, String> {
@@ -427,9 +491,10 @@ async fn test_three_node_cluster_and_failover() -> Result<(), String> {
         return Ok(());
     }
 
-    let port1 = choose_free_port().map_err(|e| format!("choose free port1 failed: {}", e))?;
-    let port2 = choose_free_port().map_err(|e| format!("choose free port2 failed: {}", e))?;
-    let port3 = choose_free_port().map_err(|e| format!("choose free port3 failed: {}", e))?;
+    let ports = choose_unique_ports(3)?;
+    let port1 = ports[0];
+    let port2 = ports[1];
+    let port3 = ports[2];
     let cluster_name = format!("klog_cluster_{}_{}_{}", port1, port2, port3);
     let join_seed = vec![format!("127.0.0.1:{}", port1)];
 
