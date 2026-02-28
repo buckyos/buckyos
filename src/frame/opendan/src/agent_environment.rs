@@ -16,7 +16,7 @@ use upon::Engine;
 use buckyos_api::msg_queue::Message;
 
 use crate::agent::{AIAgent, InputQueueKind};
-use crate::agent_session::{AgentSession, AgentSessionMgr};
+use crate::agent_session::{AgentSession, AgentSessionMgr, SessionInputItem};
 use crate::agent_tool::{AgentToolError, AgentToolManager};
 use crate::workspace::{
     get_next_ready_todo_code, get_next_ready_todo_text, AgentWorkshop, AgentWorkshopConfig,
@@ -233,18 +233,21 @@ impl AgentEnvironment {
 
         if k.starts_with("new_msg") {
             let max_pull = parse_pull_limit_from_key(k, "new_msg", DEFAULT_NEW_MSG_MAX_PULL);
-            let kmsg_queue_id =
-                AIAgent::get_session_kmsgqueue_uid(session_id.as_str(), InputQueueKind::Msg);
+            let kmsg_sub_id = AIAgent::get_session_kmsgqueue_sub_id(
+                owner_agent.as_str(),
+                session_id.as_str(),
+                InputQueueKind::Msg,
+            );
             let max_pull_u32 = (max_pull.min(u32::MAX as usize)) as u32;
             let new_msgs =
-                AgentSession::pull_new_msg_from_kmsgqueue(kmsg_queue_id.as_str(), max_pull_u32)
+                AgentSession::pull_new_msg_from_kmsgqueue(kmsg_sub_id.as_str(), max_pull_u32)
                     .await;
 
             if new_msgs.is_err() {
                 warn!(
-                    "agent_env.load_value_from_session pull_new_msg failed: session={} queue={} err={}",
+                    "agent_env.load_value_from_session pull_new_msg failed: session={} sub={} err={}",
                     session_id,
-                    kmsg_queue_id,
+                    kmsg_sub_id,
                     new_msgs.err().unwrap()
                 );
                 return Ok(None);
@@ -258,6 +261,8 @@ impl AgentEnvironment {
             if let Some(last_msg) = new_msgs.last() {
                 let mut guard = session.lock().await;
                 // save cursor for ack after process
+                guard.just_readed_input_msg =
+                    new_msgs.iter().map(|r| r.payload.clone()).collect();
                 guard.msg_kmsgqueue_curosr = last_msg.index;
             }
 
@@ -709,6 +714,11 @@ fn truncate_text_lines(text: Option<String>, max_pull: usize) -> Option<String> 
 }
 
 fn parse_msg_record_from_kmsg_payload(payload: &[u8]) -> Option<MsgRecord> {
+    if let Ok(input_item) = serde_json::from_slice::<SessionInputItem>(payload) {
+        if let Some(msg_record) = input_item.msg {
+            return Some(msg_record);
+        }
+    }
     serde_json::from_slice::<MsgRecord>(payload).ok()
 }
 
@@ -740,7 +750,9 @@ async fn render_new_msgs_from_kmsgqueue(messages: &[Message]) -> Option<String> 
     let mut lines = Vec::<String>::new();
     for message in messages {
         let Some(msg_record) = parse_msg_record_from_kmsg_payload(&message.payload) else {
-            warn!("agent_env.render_new_msgs invalid payload: expected MsgRecord");
+            warn!(
+                "agent_env.render_new_msgs invalid payload: expected SessionInputItem.msg or MsgRecord"
+            );
             continue;
         };
 

@@ -20,7 +20,7 @@ use super::prompt::{ChatMessage, ChatRole, PromptBuilder};
 use super::sanitize::Sanitizer;
 use super::tool_loop::{self, ToolContext};
 use super::types::*;
-use crate::agent_enviroment::AgentEnvironment;
+use crate::agent_environment::AgentEnvironment;
 use crate::agent_memory::AgentMemory;
 use crate::agent_tool::{
     ActionSpec, AgentToolError, AgentToolManager, ToolSpec, TOOL_CREATE_SUB_AGENT, TOOL_GET_SESSION,

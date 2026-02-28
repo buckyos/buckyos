@@ -18,7 +18,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::agent_tool::{AgentTool, AgentToolError, ToolSpec, TOOL_GET_SESSION};
-use crate::behavior::TraceCtx;
+use crate::behavior::{self, TraceCtx};
 
 const DEFAULT_SESSION_FILE: &str = "session.json";
 const DEFAULT_MSG_RECORD_FILE: &str = "msg_record.jsonl";
@@ -125,11 +125,13 @@ pub struct AgentSession {
     pub last_step_summary: Option<String>,
     pub state: SessionState,
     pub wait_details: Option<SessionWaitDetails>,
-    pub current_behavior: Option<String>,
+    pub current_behavior: String,
     pub step_index: u32,
 
     pub msg_kmsgqueue_curosr: u64,
     pub event_kmsgqueue_curosr: u64,
+    //这个不会被序列化
+    pub just_readed_input_msg:Vec<Vec<u8>>,
 
     pub cwd: PathBuf,
     pub workspace_info: Option<Json>,
@@ -153,7 +155,9 @@ impl AgentSession {
     ) -> Self {
         let ts = now_ms();
         let session_id = session_id.into();
-        let current_behavior = normalize_optional_string(default_behavior.map(|v| v.to_string()));
+        let current_behavior = normalize_optional_string(default_behavior.map(str::to_string))
+            .unwrap_or_default();
+
         Self {
             title: format!("Session {}", session_id),
             summary: String::new(),
@@ -166,6 +170,7 @@ impl AgentSession {
             last_step_summary: None,
             msg_kmsgqueue_curosr: 0,
             event_kmsgqueue_curosr: 0,
+            just_readed_input_msg: vec![],
             cwd: PathBuf::new(),
             workspace_info: None,
             local_workspace_id: None,
@@ -216,11 +221,13 @@ impl AgentSession {
             summary,
             state,
             wait_details: runtime_meta.wait_details,
-            current_behavior: normalize_optional_string(runtime_meta.current_behavior),
+            current_behavior: normalize_optional_string(runtime_meta.current_behavior)
+                .unwrap_or_default(),
             step_index: runtime_meta.step_index,
             last_step_summary: runtime_last_step_summary,
             msg_kmsgqueue_curosr: 0,
             event_kmsgqueue_curosr: 0,
+            just_readed_input_msg: vec![],
             workspace_info: runtime_meta.workspace_info,
             local_workspace_id: normalize_optional_string(runtime_meta.local_workspace_id),
             worklog: runtime_meta.worklog,
@@ -281,7 +288,7 @@ impl AgentSession {
         SessionRuntimeMeta {
             state: self.state,
             wait_details: self.wait_details.clone(),
-            current_behavior: self.current_behavior.clone(),
+            current_behavior: normalize_optional_string(Some(self.current_behavior.clone())),
             step_index: self.step_index,
             last_step_summary: self.last_step_summary.clone().map(Json::String),
             workspace_info: self.workspace_info.clone(),
@@ -486,7 +493,7 @@ impl AgentSession {
 pub struct AgentSessionMgr {
     owner_agent: String,
     sessions_root: PathBuf,
-    default_behavior: Option<String>,
+    default_behavior: String,
     sessions: Arc<RwLock<HashMap<String, Arc<Mutex<AgentSession>>>>>,
     scheduler_lock: Arc<Mutex<()>>,
 }
@@ -495,7 +502,7 @@ impl AgentSessionMgr {
     pub async fn new(
         owner_agent: impl Into<String>,
         sessions_root: impl Into<PathBuf>,
-        default_behavior: Option<String>,
+        default_behavior: String,
     ) -> Result<Self, AgentToolError> {
         let owner_agent = owner_agent.into();
         let sessions_root = sessions_root.into();
@@ -538,25 +545,24 @@ impl AgentSessionMgr {
         )
     }
 
-    pub async fn ensure_default_session(&self) -> Result<Arc<Mutex<AgentSession>>, AgentToolError> {
-        self.ensure_session("default", Some("Default Session".to_string()))
-            .await
-    }
 
     pub async fn ensure_session(
         &self,
         session_id: &str,
         title: Option<String>,
+        behavior: Option<&str>,
     ) -> Result<Arc<Mutex<AgentSession>>, AgentToolError> {
         let session_id = sanitize_session_id(session_id)?;
         if let Some(existing) = self.get_session(session_id.as_str()).await {
             return Ok(existing);
         }
 
+        let behavior = behavior.map(str::trim).filter(|value| !value.is_empty());
+
         let mut session = AgentSession::new(
             session_id.clone(),
             self.owner_agent.clone(),
-            self.default_behavior.as_deref(),
+            behavior,
         );
         if let Some(title) = normalize_optional_string(title) {
             session.title = title;
@@ -584,7 +590,7 @@ impl AgentSessionMgr {
         session_id: &str,
         input_item: &SessionInputItem,
     ) -> Result<(), AgentToolError> {
-        let session = self.ensure_session(session_id, None).await?;
+        let session = self.ensure_session(session_id, None, None).await?;
         let mut guard = session.lock().await;
 
         guard.update_state_on_input_arrived(&input_item, SessionState::WaitForMsg);
@@ -799,9 +805,7 @@ impl AgentSessionMgr {
             );
         }
 
-        if self.sessions.read().await.is_empty() {
-            let _ = self.ensure_default_session().await?;
-        }
+
         Ok(())
     }
 
@@ -1015,7 +1019,7 @@ mod tests {
     #[test]
     fn summary_view_has_zero_queue_counters() {
         let mut session = AgentSession::new("s1", "did:opendan:test", Some("on_wakeup"));
-        session.current_behavior = Some("on_wakeup".to_string());
+        session.current_behavior = "on_wakeup".to_string();
 
         let view = session.summary_view_json();
         assert_eq!(view["new_msg_count"], Json::from(0));

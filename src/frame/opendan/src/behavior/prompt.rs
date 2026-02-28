@@ -14,7 +14,7 @@ use tokio::fs;
 use tokio::sync::Mutex;
 use tokio::task;
 
-use crate::agent_enviroment::AgentEnvironment;
+use crate::agent_environment::AgentEnvironment;
 use crate::agent_memory::AgentMemory;
 use crate::agent_session::AgentSession;
 use crate::agent_tool::{normalize_tool_name, ActionSpec};
@@ -78,14 +78,7 @@ impl PromptBuilder {
             render_section(cfg.policy.as_str(), &env_context, session.clone()).await?
         };
 
-        let output_protocol_text = {
-            let raw = cfg.llm.output_protocol.as_str();
-            if raw.trim().is_empty() {
-                build_output_protocol(&cfg.llm)
-            } else {
-                render_section(raw, &env_context, session.clone()).await?
-            }
-        };
+        let output_protocol_text = cfg.output_protocol.to_prompt_text();
 
         let mut system_parts = vec![
             format!("<<role>>\n{}\n<</role>>", sanitize_text(role_text.as_str())),
@@ -1113,112 +1106,7 @@ async fn load_workspace_worklog_with_limit(
     records
 }
 
-fn build_output_protocol(cfg: &LLMBehaviorConfig) -> String {
-    if !cfg.output_protocol.trim().is_empty() {
-        return cfg.output_protocol.clone();
-    }
-    match normalize_output_mode(cfg.output_mode.as_str()).as_str() {
-        "behavior_llm_result" => build_behavior_llm_result_protocol(),
-        _ => build_auto_output_protocol(),
-    }
-}
 
-fn normalize_output_mode(mode: &str) -> String {
-    let normalized = mode.trim().to_ascii_lowercase();
-    match normalized.as_str() {
-        "" | "auto" => "auto".to_string(),
-        "json_v1" | "behavior_llm_result" | "behavior_result" | "executor" => {
-            "behavior_llm_result".to_string()
-        }
-        "route_result" | "route" | "route_v1" => "behavior_llm_result".to_string(),
-        _ => "auto".to_string(),
-    }
-}
-
-fn build_behavior_llm_result_protocol() -> String {
-    let schema = json!({
-        "next_behavior": "END",
-        "thinking": "optional short reasoning for internal planning",
-        "reply": [
-            {
-                "audience": "user",
-                "format": "markdown",
-                "content": "final response for user"
-            }
-        ],
-        "todo": [
-            {
-                "op": "upsert",
-                "id": "T001"
-            }
-        ],
-        "todo_delta": {
-            "ops": [
-                {
-                    "op": "update:T001",
-                    "to_status": "DONE"
-                }
-            ]
-        },
-        "set_memory": [
-            {
-                "scope": "session",
-                "key": "summary",
-                "value": "important context"
-            }
-        ],
-        "actions": {
-            "mode": "failed_end",
-            "cmds": [
-                "ls ./",
-                [
-                    "write",
-                    {
-                        "path": "artifacts/summary.txt",
-                        "content": "task completed"
-                    }
-                ]
-            ]
-        },
-        "session_delta": [
-            {
-                "key": "status",
-                "value": "updated"
-            }
-        ],
-        "is_sleep": false,
-        "output": {
-            "kind": "final"
-        }
-    });
-    let schema_pretty = serde_json::to_string_pretty(&schema).unwrap_or_else(|_| "{}".to_string());
-
-    format!(
-        "Return ONLY one JSON object. No markdown fences and no extra text.\n\
-Output mode: behavior_llm_result\n\
-Allowed top-level keys only: next_behavior, thinking, reply, todo, todo_delta, set_memory, actions, session_delta, is_sleep, output.\n\
-Type rules:\n\
-- `reply` is array of objects with `audience`, `format`, `content`.\n\
-- `actions` is object with fields `mode` and `cmds`.\n\
-- `actions.cmds` supports two command forms:\n\
-  1) string command (maps to exec action)\n\
-  2) compact call tuple: `[\"action_name\", {{\"param\":\"value\"}}]`\n\
-- `todo_delta` is legacy alias of `todo`; use `todo` in new outputs.\n\
-JSON example:\n\
-{}",
-        schema_pretty
-    )
-}
-
-fn build_auto_output_protocol() -> String {
-    format!(
-        "Output mode: auto.\n\
-Return ONLY one JSON object and use behavior_llm_result schema:\n\n\
-[behavior_llm_result]\n\
-{}",
-        build_behavior_llm_result_protocol()
-    )
-}
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 struct ToolboxSkillRecord {
     name: String,
@@ -1769,49 +1657,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn build_output_protocol_uses_explicit_text_when_provided() {
-        let cfg = LLMBehaviorConfig {
-            output_protocol: "custom protocol".to_string(),
-            ..Default::default()
-        };
-        assert_eq!(build_output_protocol(&cfg), "custom protocol");
-    }
-
-    #[test]
-    fn build_output_protocol_behavior_mode_uses_behavior_schema() {
-        let cfg = LLMBehaviorConfig {
-            output_mode: "behavior_result".to_string(),
-            ..Default::default()
-        };
-        let protocol = build_output_protocol(&cfg);
-        assert!(protocol.contains("Output mode: behavior_llm_result"));
-        assert!(protocol.contains("\"actions\""));
-        assert!(protocol.contains("\"reply\""));
-    }
-
-    #[test]
-    fn build_output_protocol_route_mode_alias_uses_behavior_schema() {
-        let cfg = LLMBehaviorConfig {
-            output_mode: "route_v1".to_string(),
-            ..Default::default()
-        };
-        let protocol = build_output_protocol(&cfg);
-        assert!(protocol.contains("Output mode: behavior_llm_result"));
-        assert!(protocol.contains("\"actions\""));
-        assert!(protocol.contains("\"reply\""));
-    }
-
-    #[test]
-    fn build_output_protocol_auto_mode_lists_behavior_schema_only() {
-        let cfg = LLMBehaviorConfig {
-            output_mode: "auto".to_string(),
-            ..Default::default()
-        };
-        let protocol = build_output_protocol(&cfg);
-        assert!(protocol.contains("[behavior_llm_result]"));
-        assert!(!protocol.contains("[route_result]"));
-    }
 
     #[tokio::test]
     async fn build_toolbox_loads_workspace_skills_and_merges_action_tool_defs() {

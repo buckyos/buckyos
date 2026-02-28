@@ -1,7 +1,7 @@
 #[allow(non_snake_case)]
 pub mod agent;
 pub mod agent_config;
-pub mod agent_enviroment;
+pub mod agent_environment;
 pub mod agent_memory;
 pub mod agent_session;
 pub mod agent_tool;

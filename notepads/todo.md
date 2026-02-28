@@ -4,6 +4,9 @@
 - 系统启动后，通过python给msg_cener的agent 消息端口发消息实现测试启动
 - 
 
+## 回复信息
+
+
 ## 关于WAIT 
 
 在一个Behavior的开始(step0)无法获得输入，就会自动WAIT

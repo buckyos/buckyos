@@ -12,7 +12,7 @@ use tempfile::tempdir;
 use tokio::fs;
 
 use super::*;
-use crate::agent_enviroment::AgentEnvironment;
+use crate::agent_environment::AgentEnvironment;
 use crate::agent_session::AgentSessionMgr;
 use crate::agent_tool::{
     AgentTool, AgentToolManager, DoAction, DoActions, ToolSpec, TOOL_EXEC_BASH,
@@ -941,13 +941,13 @@ async fn run_step_with_workshop_list_dir_then_plan_python_actions() {
         AgentSessionMgr::new(
             "did:example:agent".to_string(),
             root.join("session"),
-            Some("on_wakeup".to_string()),
+            "on_wakeup".to_string(),
         )
         .await
         .expect("create session store"),
     );
     let session = session_store
-        .ensure_session("session-workshop", Some("Session Workshop".to_string()))
+        .ensure_session("session-workshop", Some("Session Workshop".to_string()), None)
         .await
         .expect("ensure session");
     {

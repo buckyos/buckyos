@@ -1,134 +1,53 @@
-# Compiled prompt example (from PromptBuilder, simplified):
-# [system]
-# <<ROLE>>
-# # 别人眼中的我
-# ...content from role.md...
-# # 我自己心中的我
-# ...content from self.md...
-# <</ROLE>>
-
-# <<process_rule>>
-# 当前行为模式：快速判断输入的信息，并决定后续的处理逻辑
-
-# - 简单,没有特定内容的输入，立刻replay，否则在behavior模式列表中选择一个合适的behavior来处理后续的信息
-# - 根据输入选择正确的session_id，或创建一个新的session
-
-# ## 我的behavior模式列表：
-
-# - PLAN :
-# - DO_TASK
-
-# <</process_rule>>
-# <<OUTPUT_PROTOCOL>>
-# Return exactly one JSON object and no extra text.
-# The JSON object must match ResolveRouterResult exactly:
-# {
-#   "session_id": "string",
-#   "new_session": [
-#     "title (string)",
-#     "description (string)"
-#   ],
-#   "next_behavior": "string",
-#   "reply": "string"
-# }
-# Notes:
-# - If no new session is needed, set "new_session" to null.
-# - If no behavior switch is needed, set "next_behavior" to END.
-# - "memory_queries" should be an array; use [] when not needed.
-# <</OUTPUT_PROTOCOL>>
-# [system]
-
-# [user]
-# <<MEMORY>>
-# Agent全局记忆:知道用户居住在湾区
-# 当输入的信息没有session-id则下面该段
-# {{recent_sessions}}
-# <</MEMORY>>
-# <<INPUT>>
-# {"from":"Zhicong Liu","content":"NFL 2026赛季有哪些强队？","session_id":null}
-# <</INPUT>>
-# [user]
-
-# Typical LLM return example (JSON only):
-# {
-#   "new_session": ["discuss NFL 2026", "讨论NFL 2026的相关话题"],
-#   "next_behavior": "END",
-#   "memory_queries": ["NFL 2026"],
-#   "reply": "我没有NFL2026的实时信息，你在的湾区拥有NFL的传统强队:SF 49er"
-# }
-
 process_rule: |
-  **背景：** input_new_message 未提供 `session_id`。你必须决定是否应该创建一个新会话（session）。
 
-  ### 决策流程
+  目标:识别输入消息的内容,并决定将消息分配到哪些session
 
-  1. **琐碎/无实质内容的输入**（问候、确认、表情符号、没有可执行内容的闲聊）：
-    - 立即给出简短、自然的回复。
-    - 将 `next_behavior` 设置为 `END`，并将 `new_session` 设置为 `null` —— 不需要创建会话。
+  1. **琐碎 / 无实质内容的输入 / 可以直接回答的问题**（问候、确认、表情符号、无实质内容的闲聊）：
+  * 立即给出一个简短、自然的回复。
 
-  2. **非琐碎的输入**（包含请求、问题、任务或有意义的内容）：
-    - **创建新会话：** 使用简明的 `[title, description]` 填充 `new_session`。
-      - `title`（标题）：会话的简短标签（2-6 个词）。
-      - `description`（描述）：总结会话目标或范围的一句话。
-    - 从**行为模式列表**中选择最合适的行为。
+  2. **非琐碎输入**（包含复杂的查询，工程任务或有复杂意义的内容）：
+  * 根据SessionList,决定当前输入的消息应该属于哪个session
+  * 如果SessionList中或没有合适的Session,则决定创建一个新Session
+  * 做出选择后,给出回复，告知处理的结果
 
-  3. **记忆查询（Memory queries）：**
-    - 如果所选行为能够受益于检索相关的历史背景，请使用简明的搜索字符串填充 `memory_queries`。
-    - 否则使用 `[]`。
+  3. **记忆查询：**
+  * 如果能从检索过去的事实背景中受益，请在 `topic_tags` 中填充简明扼要的搜索字符串。
 
-  ### 行为模式列表
-
-  | 模式 | 标识符 | 使用时机 |
-  |---|---|---|
-  | **计划 (Plan)** | `PLAN` | 用户在执行前需要思考、组织、制定策略或分解复杂目标时。 |
-  | **执行任务 (Do)** | `DO` | 用户有可以直接执行的具体、可操作的请求时。 |
-
-  ### 选择指南
-
-  - 当请求清晰且可操作时，默认选择 `DO`。
-  - 当输入模棱两可、包含多个方面，或者用户明确要求进行头脑风暴、列提纲或制定策略时，选择 `PLAN`。
-  - 决胜条件：“用户是需要先有个计划，还是我现在就可以采取行动？” 如果可以采取行动，优先选择 `DO`。
-
-  ### 会话命名指南
-
-  - 标题应抓住**主题或目标**，而不是动作（例如：应为“API 认证设计”，而不是“帮助用户”）。
-  - 描述应当足够具体，以便未来的消息能够准确匹配到该会话。
-  - 保持两者简明扼要 —— 这是元数据，而不是对话内容。
-
+  ## SessionList
+  {{session_list}}
 
 policy: |
-  - 仅输出 JSON 对象 —— 不要包含任何其他内容。
-  - 始终包含所有四个字段。
-  - `new_session` 必须是包含两个元素的字符串数组或 `null` —— 不能是其他形式。
-  - 当 `next_behavior` 为 `PLAN` 或 `DO` 时，`new_session` 几乎总是应该为非空（代表输入具有值得跟踪的实质内容）。
+  * 必须谨慎认真的选择Session
+
 
 output_protocol:
-  mode: route_result
-  
-  notes: |
-    - 如果不需要新会话，请将 "new_session" 设置为 null。
-    - 如果不需要切换行为，请将 "next_behavior" 设置为 END。
+  mode: RouteResult
 
-# 这也允许使用工具，是因为需要多个step翻阅历史记录来正确判断合适的session
-toolbox:
-  skills: ["opendan.default"] # 这个技能包含了基础的工具调用能力，和一些预设的工具（如搜索、记忆查询等），可以满足大部分的路由决策需求。
+# 不允许是用任何工具，限制了该behavior只能快速的完成
+# toolbox: 
+#   skills: ["buildin"]
 
+#TODO：memory应该加一个不会被裁剪的，用环境变量拼接的段落
 memory:
-  global_memory:
-    limit: 0
-  agent_memory:
-    limit: 3000
-  history_messages:
-    limit: 3000
-  recent_sessions:
-    count: 10
+  total_limt: 12000
+  agent_memory: { limit: 3000 }
+  history_messages: { limit: 6000, max_percent: 0.3 }
+  session_summaries: { limit: 3000 }
   
 input: |
-  {{new_event}}
+  {{last_step_summary}}
   {{new_msg}}
-  
+
+step_summary: |
+  {{llm_result.thinking}}
+  {{llm_result.action_results}}
+
 
 limits:
-  max_tool_rounds: 3
+  max_tool_rounds: 1
   max_tool_calls_per_round: 4
-  max_steps: 3
+  deadline_ms: 45000
+
+llm_model:
+  name : llm.chat # 让router机制决定llm.code目前具体是哪个
+  thinking_level : medium

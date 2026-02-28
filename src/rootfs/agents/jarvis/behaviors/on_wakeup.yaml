@@ -97,8 +97,8 @@ tools:
     - load_things
     - list
     - todo_manage
-    - exec_bash
-    - edit_file
+    - exec
+    - edit
 
 limits:
   max_tool_rounds: 3

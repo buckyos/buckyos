@@ -912,7 +912,7 @@ toolbox:
   default_load_skills: ["buildin"]
 
 output_protocol:
-  mode: RouteResult
+  mode: behavior_llm_result
 
 # 注意,history是严格按时间混编的。worklog和chat message log会裁剪后混在一起
 memory:

@@ -7,7 +7,7 @@ This workshop only enables a subset and defines per-tool boundaries.
 {
   "enabled_tools": [
     {
-      "name": "exec_bash",
+      "name": "exec",
       "kind": "builtin",
       "enabled": true,
       "params": {
@@ -18,7 +18,7 @@ This workshop only enables a subset and defines per-tool boundaries.
       }
     },
     {
-      "name": "edit_file",
+      "name": "edit",
       "kind": "builtin",
       "enabled": true,
       "params": {

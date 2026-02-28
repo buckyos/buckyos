@@ -788,13 +788,13 @@ mod tests {
             AgentSessionMgr::new(
                 "did:example:agent".to_string(),
                 root.join("session"),
-                Some("on_wakeup".to_string()),
+                "on_wakeup".to_string(),
             )
             .await
             .expect("create session store"),
         );
         let session = store
-            .ensure_session("session-test", Some("Session Test".to_string()))
+            .ensure_session("session-test", Some("Session Test".to_string()), None)
             .await
             .expect("ensure session");
         {

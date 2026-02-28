@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use buckyos_api::AiToolSpec;
 use serde::{Deserialize, Serialize};
-use serde_json::Value as Json;
+use serde_json::{Value as Json, json};
 use tokio::fs;
 
 use crate::agent_tool::ToolSpec;
@@ -417,7 +417,7 @@ pub struct BehaviorToolsConfig {
 impl Default for BehaviorToolsConfig {
     fn default() -> Self {
         Self {
-            mode: BehaviorToolMode::All,
+            mode: BehaviorToolMode::None,
             names: vec![],
         }
     }
@@ -550,9 +550,90 @@ fn normalize_output_mode(mode: &str) -> String {
     }
 }
 
+
+fn build_behavior_llm_result_protocol() -> String {
+    let schema = json!({
+        "next_behavior": "END",
+        "thinking": "optional short reasoning for internal planning",
+        "reply": [
+            {
+                "audience": "did:web:user.example.com",
+                "format": "markdown",
+                "content": "final response for user"
+            }
+        ],
+        "todo": [
+            {
+                "op": "upsert_todo",
+                "id": "T001",
+                "title": "write summary",
+                "status": "doing"
+            }
+        ],
+        "set_memory": [
+            {
+                "key": "summary",
+                "content": {
+                    "text": "important context"
+                }
+            }
+        ],
+        "toipc_tags": ["planning"],
+        "actions": {
+            "mode": "failed_end",
+            "cmds": [
+                "ls ./",
+                [
+                    "write",
+                    {
+                        "path": "artifacts/summary.txt",
+                        "content": "task completed"
+                    }
+                ],
+                {
+                    "todo_manage": {
+                        "action": "query",
+                        "limit": 5
+                    }
+                }
+            ]
+        },
+        "load_skills": ["plan"],
+        "enable_tools": ["load_memory", "todo_manage"],
+        "session_id": "session-user-1",
+        "new_session": ["session-qa-1", "Q&A Session"]
+    });
+    let schema_pretty = serde_json::to_string_pretty(&schema).unwrap_or_else(|_| "{}".to_string());
+
+    format!(
+        "Return ONLY one JSON object. No markdown fences and no extra text.\n\
+
+Allowed top-level keys only: next_behavior, thinking, reply, todo, set_memory, toipc_tags, actions, load_skills, enable_tools, session_id, new_session.\n\
+Type rules:\n\
+- All keys are optional. Omit keys you do not use.\n\
+- `next_behavior`: string or null. Use `END` to finish, `WAIT` to pause, or another behavior name to switch.\n\
+- `thinking`: optional string.\n\
+- `reply`: array of objects with required string fields `audience`, `format`, `content`.\n\
+- `actions` is object with fields `mode` and `cmds`.\n\
+- `actions.mode`: `failed_end` (default) or `all`.\n\
+- `actions.cmds` supports two command forms:\n\
+  1) string command (maps to exec action)\n\
+  2) tool call: `[\"action_name\", {{\"param\":\"value\"}}]` or `{{\"action_name\": {{\"param\":\"value\"}}}}`\n\
+- `todo`: array of JSON objects; each item is one todo op payload.\n\
+- `set_memory`: array of JSON objects; prefer `{{\"key\":\"...\",\"content\":...}}`.\n\
+- `toipc_tags`: array of strings (note: key name is exactly `toipc_tags`).\n\
+- `load_skills` / `enable_tools`: array of strings.\n\
+- `session_id`: optional string.\n\
+- `new_session`: optional 2-item string tuple `[session_id, title]`.\n\
+JSON example:\n\
+{}",
+        schema_pretty
+    )
+}
+
 fn default_output_protocol_text(mode: &str) -> String {
     match mode {
-        "behavior_llm_result" => "Return ONLY a JSON object that follows BehaviorLLMResult fields (next_behavior, reply, todo, set_memory, actions, session_delta).".to_string(),
+        "behavior_llm_result" => build_behavior_llm_result_protocol(),
         _ => String::new(),
     }
 }
