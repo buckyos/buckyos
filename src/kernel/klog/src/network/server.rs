@@ -7,6 +7,7 @@ use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
+use std::future::Future;
 use std::time::Duration;
 use tower::BoxError;
 use tower::ServiceBuilder;
@@ -39,6 +40,13 @@ impl KNetworkServer {
     }
 
     pub async fn run(&self) -> Result<(), String> {
+        self.run_with_shutdown(std::future::pending::<()>()).await
+    }
+
+    pub async fn run_with_shutdown<F>(&self, shutdown: F) -> Result<(), String>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
         let state = KNetworkServerState {
             raft: self.raft.clone(),
         };
@@ -55,7 +63,10 @@ impl KNetworkServer {
         let append_entries_path = RaftRequestType::AppendEntries.klog_path();
         let vote_path = RaftRequestType::Vote.klog_path();
         let control_rpc_routes = Router::new()
-            .route(&append_entries_path, post(Self::handle_append_entries_request))
+            .route(
+                &append_entries_path,
+                post(Self::handle_append_entries_request),
+            )
             .route(&vote_path, post(Self::handle_vote_request))
             .route_layer(control_rpc_middleware);
 
@@ -70,7 +81,10 @@ impl KNetworkServer {
 
         let install_snapshot_path = RaftRequestType::InstallSnapshot.klog_path();
         let snapshot_routes = Router::new()
-            .route(&install_snapshot_path, post(Self::handle_install_snapshot_request))
+            .route(
+                &install_snapshot_path,
+                post(Self::handle_install_snapshot_request),
+            )
             .route_layer(snapshot_rpc_middleware);
 
         let app = Router::new()
@@ -98,11 +112,21 @@ impl KNetworkServer {
                 msg
             })?;
 
-        axum::serve(listener, app).await.map_err(|e| {
-            let msg = format!("KNetworkServer serve failed at {}: {}", self.addr, e);
-            error!("{}", msg);
-            msg
-        })
+        let addr = self.addr.clone();
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                shutdown.await;
+                info!(
+                    "KNetworkServer shutdown signal received at {}, stop accepting new connections and draining in-flight requests",
+                    addr
+                );
+            })
+            .await
+            .map_err(|e| {
+                let msg = format!("KNetworkServer serve failed at {}: {}", self.addr, e);
+                error!("{}", msg);
+                msg
+            })
     }
 
     async fn handle_middleware_error(err: BoxError) -> Response {
