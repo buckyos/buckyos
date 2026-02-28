@@ -8,6 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex as AsyncMutex;
 
+use crate::util::persist_format::{PersistPayloadType, decode_with_header, encode_with_header};
 use crate::{KNodeId, KTypeConfig, StorageResult};
 
 type LogEntry = Entry<KTypeConfig>;
@@ -65,8 +66,8 @@ impl SqliteLogStorage {
         })
     }
 
-    fn ser<T: serde::Serialize>(v: &T) -> StorageResult<Vec<u8>> {
-        bincode::serde::encode_to_vec(v, bincode::config::legacy()).map_err(|e| {
+    fn ser<T: serde::Serialize>(payload_type: PersistPayloadType, v: &T) -> StorageResult<Vec<u8>> {
+        encode_with_header(payload_type, v).map_err(|e| {
             let io_err = std::io::Error::other(format!("Failed to serialize value: {}", e));
             openraft::StorageError::IO {
                 source: openraft::StorageIOError::write(&io_err),
@@ -74,19 +75,20 @@ impl SqliteLogStorage {
         })
     }
 
-    fn de<T: serde::de::DeserializeOwned>(bytes: &[u8], what: &str) -> StorageResult<T> {
-        let (decoded, _): (T, usize) =
-            bincode::serde::decode_from_slice(bytes, bincode::config::legacy()).map_err(|e| {
-                let io_err = std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("Failed to deserialize {}: {}", what, e),
-                );
-                openraft::StorageError::IO {
-                    source: openraft::StorageIOError::read(&io_err),
-                }
-            })?;
-
-        Ok(decoded)
+    fn de<T: serde::de::DeserializeOwned>(
+        expected_type: PersistPayloadType,
+        bytes: &[u8],
+        what: &str,
+    ) -> StorageResult<T> {
+        decode_with_header(expected_type, bytes).map_err(|e| {
+            let io_err = std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to deserialize {}: {}", what, e),
+            );
+            openraft::StorageError::IO {
+                source: openraft::StorageIOError::read(&io_err),
+            }
+        })
     }
 
     fn sql_read_err(err: rusqlite::Error) -> openraft::StorageError<KNodeId> {
@@ -174,7 +176,7 @@ impl SqliteLogStorage {
 
         for entry in entries {
             let idx = Self::u64_to_i64(entry.log_id.index)?;
-            let encoded = Self::ser(&entry)?;
+            let encoded = Self::ser(PersistPayloadType::SqliteLogEntry, &entry)?;
             tx.execute(
                 "INSERT INTO raft_logs(log_index, entry) VALUES(?1, ?2)
                  ON CONFLICT(log_index) DO UPDATE SET entry = excluded.entry",
@@ -204,7 +206,8 @@ impl RaftLogReader<KTypeConfig> for SqliteLogStorage {
         let mut entries = Vec::new();
         while let Some(row) = rows.next().map_err(Self::sql_read_err)? {
             let bytes: Vec<u8> = row.get(0).map_err(Self::sql_read_err)?;
-            let entry: LogEntry = Self::de(&bytes, "raft log entry")?;
+            let entry: LogEntry =
+                Self::de(PersistPayloadType::SqliteLogEntry, &bytes, "raft log entry")?;
             if Self::in_range(&range, entry.log_id.index) {
                 if entry.get_membership().is_some() {
                     debug!(
@@ -232,14 +235,25 @@ impl RaftLogStorage<KTypeConfig> for SqliteLogStorage {
 
             let row = stmt.query_row([], |row| row.get::<_, Vec<u8>>(0));
             match row {
-                Ok(bytes) => Some(Self::de::<LogEntry>(&bytes, "last raft log entry")?.log_id),
+                Ok(bytes) => Some(
+                    Self::de::<LogEntry>(
+                        PersistPayloadType::SqliteLogEntry,
+                        &bytes,
+                        "last raft log entry",
+                    )?
+                    .log_id,
+                ),
                 Err(rusqlite::Error::QueryReturnedNoRows) => None,
                 Err(e) => return Err(Self::sql_read_err(e)),
             }
         };
 
         let last_purged_log_id = match self.read_meta_value(META_LAST_PURGED).await? {
-            Some(v) => Some(Self::de::<LogId<KNodeId>>(&v, "last purged log id")?),
+            Some(v) => Some(Self::de::<LogId<KNodeId>>(
+                PersistPayloadType::SqliteLastPurgedLogId,
+                &v,
+                "last purged log id",
+            )?),
             None => None,
         };
 
@@ -260,14 +274,18 @@ impl RaftLogStorage<KTypeConfig> for SqliteLogStorage {
 
     async fn save_vote(&mut self, vote: &Vote<KNodeId>) -> StorageResult<()> {
         debug!("sqlite::save_vote: {:?}", vote);
-        let encoded = Self::ser(vote)?;
+        let encoded = Self::ser(PersistPayloadType::SqliteVote, vote)?;
         self.write_meta_value(META_VOTE, &encoded).await
     }
 
     async fn read_vote(&mut self) -> StorageResult<Option<Vote<KNodeId>>> {
         let v = self.read_meta_value(META_VOTE).await?;
         match v {
-            Some(bytes) => Ok(Some(Self::de::<Vote<KNodeId>>(&bytes, "vote")?)),
+            Some(bytes) => Ok(Some(Self::de::<Vote<KNodeId>>(
+                PersistPayloadType::SqliteVote,
+                &bytes,
+                "vote",
+            )?)),
             None => Ok(None),
         }
     }
@@ -291,7 +309,7 @@ impl RaftLogStorage<KTypeConfig> for SqliteLogStorage {
         match committed {
             Some(log_id) => {
                 debug!("sqlite::save_committed: {}", log_id);
-                let encoded = Self::ser(&log_id)?;
+                let encoded = Self::ser(PersistPayloadType::SqliteCommittedLogId, &log_id)?;
                 self.write_meta_value(META_COMMITTED, &encoded).await
             }
             None => {
@@ -305,6 +323,7 @@ impl RaftLogStorage<KTypeConfig> for SqliteLogStorage {
         let v = self.read_meta_value(META_COMMITTED).await?;
         match v {
             Some(bytes) => Ok(Some(Self::de::<LogId<KNodeId>>(
+                PersistPayloadType::SqliteCommittedLogId,
                 &bytes,
                 "committed log id",
             )?)),
@@ -327,7 +346,7 @@ impl RaftLogStorage<KTypeConfig> for SqliteLogStorage {
         for entry in entries {
             debug!("sqlite::append raft log entry: {:?}", entry);
             let idx = Self::u64_to_i64(entry.log_id.index)?;
-            let encoded = Self::ser(&entry)?;
+            let encoded = Self::ser(PersistPayloadType::SqliteLogEntry, &entry)?;
             tx.execute(
                 "INSERT INTO raft_logs(log_index, entry) VALUES(?1, ?2)
                  ON CONFLICT(log_index) DO UPDATE SET entry = excluded.entry",
@@ -362,7 +381,7 @@ impl RaftLogStorage<KTypeConfig> for SqliteLogStorage {
             .map_err(Self::sql_write_err)?;
         drop(conn);
 
-        let encoded = Self::ser(&log_id)?;
+        let encoded = Self::ser(PersistPayloadType::SqliteLastPurgedLogId, &log_id)?;
         self.write_meta_value(META_LAST_PURGED, &encoded).await?;
 
         Ok(())

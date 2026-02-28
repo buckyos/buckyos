@@ -14,6 +14,7 @@ pub mod state_machine;
 pub mod state_store;
 #[cfg(test)]
 mod test;
+pub(crate) mod util;
 
 #[derive(Serialize, Deserialize, Debug, Clone, thiserror::Error)]
 pub enum KLogError {

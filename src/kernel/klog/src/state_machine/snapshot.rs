@@ -1,3 +1,4 @@
+use crate::util::persist_format::{PersistPayloadType, decode_with_header, encode_with_header};
 use crate::{KLogId, StorageResult};
 use crate::{KNode, KNodeId};
 use openraft::{StorageError, StorageIOError};
@@ -22,8 +23,8 @@ impl KSnapshotData {
     }
 
     pub fn serialize(&self) -> Result<Vec<u8>, String> {
-        let buf = bincode::serde::encode_to_vec(&self, bincode::config::legacy()).map_err(|e| {
-            let msg = format!("Failed to serialize KSnapshotData: {}", e);
+        let buf = encode_with_header(PersistPayloadType::SnapshotData, self).map_err(|e| {
+            let msg = format!("Failed to serialize KSnapshotData with header: {}", e);
             error!("{}", msg);
             msg
         })?;
@@ -32,12 +33,11 @@ impl KSnapshotData {
     }
 
     pub fn deserialize(data: &[u8]) -> Result<Self, String> {
-        let (snapshot, _): (KSnapshotData, _) =
-            bincode::serde::decode_from_slice(data, bincode::config::legacy()).map_err(|e| {
-                let msg = format!("Failed to deserialize KSnapshotData: {}", e);
-                error!("{}", msg);
-                msg
-            })?;
+        let snapshot = decode_with_header(PersistPayloadType::SnapshotData, data).map_err(|e| {
+            let msg = format!("Failed to deserialize KSnapshotData with header: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
 
         Ok(snapshot)
     }
