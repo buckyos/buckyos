@@ -1020,6 +1020,94 @@ mod tests {
         }
     }
 
+    fn documented_action_names() -> Vec<&'static str> {
+        vec![
+            TOOL_EXEC_BASH,
+            TOOL_EDIT_FILE,
+            TOOL_WRITE_FILE,
+            TOOL_READ_FILE,
+            TOOL_CREATE_SUB_AGENT,
+            TOOL_GET_SESSION,
+            TOOL_LIST_SESSION,
+            TOOL_LIST_EXTERNAL_WORKSPACES,
+            TOOL_BIND_EXTERNAL_WORKSPACE,
+            TOOL_LOAD_MEMORY,
+            TOOL_TODO_MANAGE,
+            TOOL_WORKLOG_MANAGE,
+        ]
+    }
+
+    fn documented_tool_specs() -> Vec<ToolSpec> {
+        let mut specs = documented_action_names()
+            .iter()
+            .map(|name| ToolSpec {
+                name: (*name).to_string(),
+                description: builtin_action_summary(name).to_string(),
+                args_schema: builtin_action_args_schema(name),
+                output_schema: json!({ "type": "object" }),
+            })
+            .collect::<Vec<_>>();
+        specs.sort_by(|a, b| a.name.cmp(&b.name));
+        specs
+    }
+
+    fn documented_action_specs() -> Vec<ActionSpec> {
+        let mut specs = documented_action_names()
+            .iter()
+            .map(|name| ActionSpec {
+                kind: ActionKind::CallTool,
+                name: (*name).to_string(),
+                introduce: builtin_action_summary(name).to_string(),
+                description: None,
+            })
+            .collect::<Vec<_>>();
+        specs.sort_by(|a, b| a.name.cmp(&b.name));
+        specs
+    }
+
+    #[test]
+    fn print_tool_and_action_prompt_catalog_for_review() {
+        let tool_specs = documented_tool_specs();
+        let action_specs = documented_action_specs();
+
+        println!("\n================ TOOL PROMPTS ================");
+        println!("[List Mode] name + summary");
+        for spec in &tool_specs {
+            println!("- {} : {}", spec.name, spec.description);
+        }
+
+        println!("\n[Detail Mode] one tool spec per block");
+        for spec in &tool_specs {
+            println!("\n### TOOL {}", spec.name);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(spec)
+                    .unwrap_or_else(|_| "{\"error\":\"serialize failed\"}".to_string())
+            );
+        }
+
+        println!("\n[Prompt Payload] ToolSpec::render_for_prompt output");
+        println!("{}", ToolSpec::render_for_prompt(&tool_specs));
+
+        println!("\n================ ACTION PROMPTS ================");
+        println!("[List Mode] name + introduce");
+        for spec in &action_specs {
+            println!("{}", spec.render_introduce_prompt());
+        }
+
+        println!("\n[Detail Mode] one action prompt per block");
+        for spec in &action_specs {
+            println!("\n### ACTION {}", spec.name);
+            println!("{}", spec.render_prompt());
+        }
+
+        assert!(!tool_specs.is_empty(), "documented tool specs should not be empty");
+        assert!(
+            !action_specs.is_empty(),
+            "documented action specs should not be empty"
+        );
+    }
+
     #[test]
     fn action_call_accepts_compact_object_form() {
         let call: ActionCall = serde_json::from_value(json!({

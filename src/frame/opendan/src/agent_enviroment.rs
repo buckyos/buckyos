@@ -3,7 +3,9 @@ use std::future::Future;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+use buckyos_api::{get_buckyos_api_runtime, MsgRecord};
 use log::warn;
+use ndn_lib::MsgObject;
 use rusqlite::Connection;
 use serde_json::{Map, Value as Json};
 use tokio::fs;
@@ -259,7 +261,7 @@ impl AgentEnvironment {
                 guard.msg_kmsgqueue_curosr = last_msg.index;
             }
 
-            return Ok(render_new_msgs_from_kmsgqueue(new_msgs.as_slice()));
+            return Ok(render_new_msgs_from_kmsgqueue(new_msgs.as_slice()).await);
         }
 
         // if k.starts_with("new_event") {
@@ -706,15 +708,80 @@ fn truncate_text_lines(text: Option<String>, max_pull: usize) -> Option<String> 
     clean_optional_text(Some(lines[start..].join("\n").as_str()))
 }
 
-fn render_new_msgs_from_kmsgqueue(messages: &[Message]) -> Option<String> {
+fn parse_msg_record_from_kmsg_payload(payload: &[u8]) -> Option<MsgRecord> {
+    serde_json::from_slice::<MsgRecord>(payload).ok()
+}
+
+async fn render_new_msgs_from_kmsgqueue(messages: &[Message]) -> Option<String> {
     if messages.is_empty() {
         return None;
     }
-    // TODO: convert kmsg::Message -> MsgRecord -> load MsgObject from named_store -> json
-    let lines = messages
-        .iter()
-        .filter_map(|message| serde_json::to_string(message).ok())
-        .collect::<Vec<_>>();
+
+    let named_store = match get_buckyos_api_runtime() {
+        Ok(runtime) => match runtime.get_named_store().await {
+            Ok(store) => Some(store),
+            Err(error) => {
+                warn!(
+                    "agent_env.render_new_msgs init named_store failed: err={}",
+                    error
+                );
+                None
+            }
+        },
+        Err(error) => {
+            warn!(
+                "agent_env.render_new_msgs runtime is unavailable, fallback without msg object: err={}",
+                error
+            );
+            None
+        }
+    };
+
+    let mut lines = Vec::<String>::new();
+    for message in messages {
+        let Some(msg_record) = parse_msg_record_from_kmsg_payload(&message.payload) else {
+            warn!("agent_env.render_new_msgs invalid payload: expected MsgRecord");
+            continue;
+        };
+
+        let mut rendered_line = None::<String>;
+        if let Some(store) = named_store.as_ref() {
+            let msg_id = msg_record.msg_id.clone();
+            match store.get_object(&msg_id).await {
+                Ok(msg_json) => match serde_json::from_str::<MsgObject>(&msg_json) {
+                    Ok(msg_obj) => match serde_json::to_string(&msg_obj) {
+                        Ok(line) => rendered_line = Some(line),
+                        Err(error) => warn!(
+                            "agent_env.render_new_msgs serialize msg object failed: msg_id={} err={}",
+                            msg_id, error
+                        ),
+                    },
+                    Err(error) => warn!(
+                        "agent_env.render_new_msgs parse msg object failed: msg_id={} err={}",
+                        msg_id, error
+                    ),
+                },
+                Err(error) => warn!(
+                    "agent_env.render_new_msgs load msg object failed: msg_id={} err={}",
+                    msg_id, error
+                ),
+            }
+        }
+
+        if rendered_line.is_none() {
+            match serde_json::to_string(&msg_record) {
+                Ok(line) => rendered_line = Some(line),
+                Err(error) => warn!(
+                    "agent_env.render_new_msgs serialize msg record failed: record_id={} err={}",
+                    msg_record.record_id, error
+                ),
+            }
+        }
+
+        if let Some(line) = rendered_line {
+            lines.push(line);
+        }
+    }
     if lines.is_empty() {
         return None;
     }

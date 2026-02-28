@@ -770,7 +770,7 @@ impl AIAgent {
 
             //build input
             let input = self
-                .build_behavior_exec_input(&trace, behavior_name, behavior_cfg, session.clone())
+                .generate_input(&trace, behavior_name, behavior_cfg, session.clone())
                 .await?;
             if input.is_none() {
                 result_report.keep_running = false;
@@ -877,7 +877,7 @@ impl AIAgent {
         }
     }
 
-    async fn build_behavior_exec_input(
+    async fn generate_input(
         &self,
         trace: &TraceCtx,
         behavior_name: &str,
