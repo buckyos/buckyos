@@ -1,15 +1,16 @@
 use crate::logs::{MemoryLogStorage, SqliteLogStorage};
-use crate::state_machine::{KLogMemoryStateMachine, SnapshotManager};
+use crate::state_machine::{KLogStateMachine, SnapshotManager};
 use crate::state_store::{
-    KLogStateSnapshot, KLogStateStore, KLogStateStoreManager, MemoryStateStore,
-    RocksDbSnapshotMode, RocksDbStateStore,
+    KLogStateMachineMeta, KLogStateSnapshot, KLogStateStore, KLogStateStoreManager,
+    MemoryStateStore, RocksDbSnapshotMode, RocksDbStateStore,
 };
-use crate::{KLogEntry, KLogRequest, KLogResponse, KNodeId, KTypeConfig, StorageResult};
+use crate::{KLogEntry, KLogRequest, KLogResponse, KNode, KNodeId, KTypeConfig, StorageResult};
 use openraft::entry::EntryPayload;
 use openraft::storage::{RaftLogStorage, RaftStateMachine};
 use openraft::testing::StoreBuilder;
-use openraft::{CommittedLeaderId, Entry, LogId, RaftLogReader, Vote};
+use openraft::{CommittedLeaderId, Entry, LogId, Membership, RaftLogReader, Vote};
 use simplelog::{ColorChoice, Config, LevelFilter, SimpleLogger, TermLogger, TerminalMode};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::Once;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,7 +18,7 @@ use tracing_subscriber::{EnvFilter, fmt};
 
 struct TestMemoryContext {
     log_storage: MemoryLogStorage,
-    state_machine: KLogMemoryStateMachine,
+    state_machine: KLogStateMachine,
 }
 
 impl TestMemoryContext {
@@ -40,8 +41,9 @@ impl TestMemoryContext {
         let snapshot_manager = Arc::new(snapshot_manager);
         snapshot_manager.clean_all_snapshots().await.unwrap();
 
-        let state_machine =
-            KLogMemoryStateMachine::new(state_store_manager.clone(), snapshot_manager.clone());
+        let state_machine = KLogStateMachine::new(state_store_manager, snapshot_manager)
+            .await
+            .unwrap();
 
         Self {
             log_storage,
@@ -58,10 +60,8 @@ impl TestMemoryStoreBuilder {
     }
 }
 
-impl StoreBuilder<KTypeConfig, MemoryLogStorage, KLogMemoryStateMachine, ()>
-    for TestMemoryStoreBuilder
-{
-    async fn build(&self) -> StorageResult<((), MemoryLogStorage, KLogMemoryStateMachine)> {
+impl StoreBuilder<KTypeConfig, MemoryLogStorage, KLogStateMachine, ()> for TestMemoryStoreBuilder {
+    async fn build(&self) -> StorageResult<((), MemoryLogStorage, KLogStateMachine)> {
         let context = TestMemoryContext::new().await;
         Ok(((), context.log_storage, context.state_machine))
     }
@@ -69,7 +69,7 @@ impl StoreBuilder<KTypeConfig, MemoryLogStorage, KLogMemoryStateMachine, ()>
 
 struct TestSqliteContext {
     log_storage: SqliteLogStorage,
-    state_machine: KLogMemoryStateMachine,
+    state_machine: KLogStateMachine,
 }
 
 impl TestSqliteContext {
@@ -93,8 +93,7 @@ impl TestSqliteContext {
         let snapshot_manager = Arc::new(snapshot_manager);
         snapshot_manager.clean_all_snapshots().await?;
 
-        let state_machine =
-            KLogMemoryStateMachine::new(state_store_manager.clone(), snapshot_manager.clone());
+        let state_machine = KLogStateMachine::new(state_store_manager, snapshot_manager).await?;
 
         Ok(Self {
             log_storage,
@@ -111,10 +110,8 @@ impl TestSqliteStoreBuilder {
     }
 }
 
-impl StoreBuilder<KTypeConfig, SqliteLogStorage, KLogMemoryStateMachine, ()>
-    for TestSqliteStoreBuilder
-{
-    async fn build(&self) -> StorageResult<((), SqliteLogStorage, KLogMemoryStateMachine)> {
+impl StoreBuilder<KTypeConfig, SqliteLogStorage, KLogStateMachine, ()> for TestSqliteStoreBuilder {
+    async fn build(&self) -> StorageResult<((), SqliteLogStorage, KLogStateMachine)> {
         let context = TestSqliteContext::new().await?;
         Ok(((), context.log_storage, context.state_machine))
     }
@@ -186,6 +183,23 @@ fn sample_state_entries() -> Vec<KLogEntry> {
             message: "driver-online".to_string(),
         },
     ]
+}
+
+fn sample_membership(node_id: KNodeId) -> Membership<KNodeId, KNode> {
+    let mut voters = BTreeSet::new();
+    voters.insert(node_id);
+
+    let mut nodes = BTreeMap::new();
+    nodes.insert(
+        node_id,
+        KNode {
+            id: node_id,
+            addr: "127.0.0.1".to_string(),
+            port: 3000,
+        },
+    );
+
+    Membership::new(vec![voters], nodes)
 }
 
 fn decode_entry_ids(snapshot: &KLogStateSnapshot) -> anyhow::Result<Vec<u64>> {
@@ -405,6 +419,85 @@ async fn test_manager_recovers_next_log_id_from_entries_without_meta() -> anyhow
     let state_store = Arc::new(Box::new(rocks) as Box<dyn KLogStateStore>);
     let manager = KLogStateStoreManager::new(state_store).await?;
     assert_eq!(manager.peek_next_log_id(), 13);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_rocksdb_state_store_state_machine_meta_persistence_after_reopen() -> anyhow::Result<()>
+{
+    let path = unique_test_path("state_store_sm_meta_reopen.rocks");
+    let store = RocksDbStateStore::open_with_mode(&path, RocksDbSnapshotMode::Enumerate)
+        .map_err(anyhow::Error::msg)?;
+
+    let log_id = LogId::new(CommittedLeaderId::new(9, 2), 88);
+    let membership = openraft::StoredMembership::new(Some(log_id), sample_membership(1));
+    let meta = KLogStateMachineMeta {
+        last_applied_log_id: Some(log_id),
+        last_membership: membership.clone(),
+    };
+
+    store.save_state_machine_meta(meta.clone()).await?;
+    drop(store);
+
+    let reopened = RocksDbStateStore::open_with_mode(&path, RocksDbSnapshotMode::Enumerate)
+        .map_err(anyhow::Error::msg)?;
+    let loaded = reopened.load_state_machine_meta().await?;
+
+    assert_eq!(loaded, Some(meta));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_state_machine_recovers_persisted_meta_after_restart() -> anyhow::Result<()> {
+    let state_store_path = unique_test_path("state_machine_meta_restart.rocks");
+    let snapshot_dir = unique_test_path("state_machine_meta_restart_snapshots");
+    std::fs::create_dir_all(&snapshot_dir)?;
+
+    let expected_log_id = LogId::new(CommittedLeaderId::new(3, 1), 2);
+    let expected_membership =
+        openraft::StoredMembership::new(Some(expected_log_id), sample_membership(1));
+
+    {
+        let store =
+            RocksDbStateStore::open_with_mode(&state_store_path, RocksDbSnapshotMode::Enumerate)
+                .map_err(anyhow::Error::msg)?;
+        let store = Arc::new(Box::new(store) as Box<dyn KLogStateStore>);
+        let manager = Arc::new(KLogStateStoreManager::new(store).await?);
+        let snapshot_manager = Arc::new(SnapshotManager::new(snapshot_dir.clone()));
+        let mut sm = KLogStateMachine::new(manager, snapshot_manager).await?;
+
+        let membership = sample_membership(1);
+        let entries = vec![
+            Entry {
+                log_id: LogId::new(CommittedLeaderId::new(3, 1), 1),
+                payload: EntryPayload::Blank,
+            },
+            Entry {
+                log_id: expected_log_id,
+                payload: EntryPayload::Membership(membership.clone()),
+            },
+        ];
+        sm.apply(entries).await?;
+
+        let (last_applied, last_membership) = sm.applied_state().await?;
+        assert_eq!(last_applied, Some(expected_log_id));
+        assert_eq!(last_membership, expected_membership);
+    }
+
+    let reopened_store =
+        RocksDbStateStore::open_with_mode(&state_store_path, RocksDbSnapshotMode::Enumerate)
+            .map_err(anyhow::Error::msg)?;
+    let reopened_store = Arc::new(Box::new(reopened_store) as Box<dyn KLogStateStore>);
+    let reopened_manager = Arc::new(KLogStateStoreManager::new(reopened_store).await?);
+    let reopened_snapshot_manager = Arc::new(SnapshotManager::new(snapshot_dir));
+    let mut reopened_sm =
+        KLogStateMachine::new(reopened_manager, reopened_snapshot_manager).await?;
+
+    let (last_applied, last_membership) = reopened_sm.applied_state().await?;
+    assert_eq!(last_applied, Some(expected_log_id));
+    assert_eq!(last_membership, expected_membership);
 
     Ok(())
 }

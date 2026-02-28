@@ -1,4 +1,4 @@
-use super::store::{KLogStateSnapshot, KLogStateStore};
+use super::store::{KLogStateMachineMeta, KLogStateSnapshot, KLogStateStore};
 use crate::{KLogEntry, KLogError, KResult};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -8,6 +8,7 @@ use tokio::sync::Mutex as AsyncMutex;
 pub struct MemoryStateStore {
     logs: Arc<AsyncMutex<Vec<KLogEntry>>>,
     next_log_id: AtomicU64,
+    state_machine_meta: Arc<AsyncMutex<Option<KLogStateMachineMeta>>>,
 }
 
 impl MemoryStateStore {
@@ -15,6 +16,7 @@ impl MemoryStateStore {
         Self {
             logs: Arc::new(AsyncMutex::new(Vec::new())),
             next_log_id: AtomicU64::new(1),
+            state_machine_meta: Arc::new(AsyncMutex::new(None)),
         }
     }
 }
@@ -92,6 +94,17 @@ impl KLogStateStore for MemoryStateStore {
 
     async fn save_next_log_id(&self, next_log_id: u64) -> KResult<()> {
         self.next_log_id.store(next_log_id, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn load_state_machine_meta(&self) -> KResult<Option<KLogStateMachineMeta>> {
+        let meta = self.state_machine_meta.lock().await;
+        Ok(meta.clone())
+    }
+
+    async fn save_state_machine_meta(&self, meta: KLogStateMachineMeta) -> KResult<()> {
+        let mut guard = self.state_machine_meta.lock().await;
+        *guard = Some(meta);
         Ok(())
     }
 }

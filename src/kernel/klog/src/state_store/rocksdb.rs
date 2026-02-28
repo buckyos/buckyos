@@ -1,4 +1,4 @@
-use super::store::{KLogStateSnapshot, KLogStateStore};
+use super::store::{KLogStateMachineMeta, KLogStateSnapshot, KLogStateStore};
 use crate::{KLogEntry, KLogError, KResult};
 use rocksdb::backup::{BackupEngine, BackupEngineOptions, RestoreOptions};
 use rocksdb::checkpoint::Checkpoint;
@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const KEY_PREFIX_ENTRY: u8 = b'e';
 const KEY_NEXT_LOG_ID_META: &[u8] = b"m:next_log_id";
+const KEY_STATE_MACHINE_META: &[u8] = b"m:state_machine_meta";
 const CF_LOGS: &str = "logs";
 const CF_META: &str = "meta";
 const CHECKPOINT_SNAPSHOT_MAGIC: &str = "klog-rdb-checkpoint-v1";
@@ -163,7 +164,7 @@ fn migrate_legacy_default_cf_data(db: &DB) -> Result<(), String> {
             continue;
         }
 
-        if k.as_ref() == KEY_NEXT_LOG_ID_META {
+        if k.as_ref() == KEY_NEXT_LOG_ID_META || k.as_ref() == KEY_STATE_MACHINE_META {
             batch.put_cf(&meta_cf, k.as_ref(), v.as_ref());
             batch.delete_cf(&default_cf, k.as_ref());
             migrated_meta += 1;
@@ -339,6 +340,48 @@ impl RocksDbStateStore {
         self.db
             .put_cf(&meta_cf, KEY_NEXT_LOG_ID_META, next_log_id.to_be_bytes())
             .map_err(|e| klog_err_with_context("Failed to persist rocksdb next_log_id metadata", e))
+    }
+
+    fn read_persisted_state_machine_meta(&self) -> KResult<Option<KLogStateMachineMeta>> {
+        let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_META);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+
+        let value = self
+            .db
+            .get_cf(&meta_cf, KEY_STATE_MACHINE_META)
+            .map_err(|e| {
+                klog_err_with_context("Failed to read rocksdb state-machine metadata", e)
+            })?;
+        let Some(raw) = value else {
+            return Ok(None);
+        };
+
+        let (meta, _): (KLogStateMachineMeta, usize) =
+            bincode::serde::decode_from_slice(raw.as_ref(), bincode::config::legacy()).map_err(
+                |e| klog_err_with_context("Failed to decode rocksdb state-machine metadata", e),
+            )?;
+        Ok(Some(meta))
+    }
+
+    fn persist_state_machine_meta(&self, meta: &KLogStateMachineMeta) -> KResult<()> {
+        let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_META);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+
+        let bytes =
+            bincode::serde::encode_to_vec(meta, bincode::config::legacy()).map_err(|e| {
+                klog_err_with_context("Failed to encode rocksdb state-machine metadata", e)
+            })?;
+        self.db
+            .put_cf(&meta_cf, KEY_STATE_MACHINE_META, bytes)
+            .map_err(|e| {
+                klog_err_with_context("Failed to persist rocksdb state-machine metadata", e)
+            })
     }
 
     fn resolve_next_log_id(&self) -> KResult<u64> {
@@ -1211,5 +1254,13 @@ impl KLogStateStore for RocksDbStateStore {
             );
         }
         Ok(())
+    }
+
+    async fn load_state_machine_meta(&self) -> KResult<Option<KLogStateMachineMeta>> {
+        self.read_persisted_state_machine_meta()
+    }
+
+    async fn save_state_machine_meta(&self, meta: KLogStateMachineMeta) -> KResult<()> {
+        self.persist_state_machine_meta(&meta)
     }
 }

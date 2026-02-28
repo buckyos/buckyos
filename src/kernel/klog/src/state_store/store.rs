@@ -1,9 +1,17 @@
-use crate::{KLogEntry, KResult};
+use crate::{KLogEntry, KLogId, KNode, KNodeId, KResult};
+use openraft::StoredMembership;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub struct KLogStateSnapshot {
     pub data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KLogStateMachineMeta {
+    pub last_applied_log_id: Option<KLogId>,
+    pub last_membership: StoredMembership<KNodeId, KNode>,
 }
 
 #[async_trait::async_trait]
@@ -20,6 +28,12 @@ pub trait KLogStateStore: Send + Sync {
 
     /// Persist next-log-id cursor.
     async fn save_next_log_id(&self, next_log_id: u64) -> KResult<()>;
+
+    /// Load persisted state-machine metadata.
+    async fn load_state_machine_meta(&self) -> KResult<Option<KLogStateMachineMeta>>;
+
+    /// Persist state-machine metadata.
+    async fn save_state_machine_meta(&self, meta: KLogStateMachineMeta) -> KResult<()>;
 }
 
 pub type KLogStateStoreRef = Arc<Box<dyn KLogStateStore>>;
@@ -103,6 +117,14 @@ impl KLogStateStoreManager {
             recovered_next
         );
         Ok(())
+    }
+
+    pub async fn load_state_machine_meta(&self) -> KResult<Option<KLogStateMachineMeta>> {
+        self.state_store.load_state_machine_meta().await
+    }
+
+    pub async fn save_state_machine_meta(&self, meta: KLogStateMachineMeta) -> KResult<()> {
+        self.state_store.save_state_machine_meta(meta).await
     }
 
     async fn advance_next_log_id(&self, candidate_next: u64) -> KResult<()> {

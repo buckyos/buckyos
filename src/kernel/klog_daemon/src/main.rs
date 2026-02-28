@@ -4,7 +4,7 @@ use config::KLogRuntimeConfig;
 use klog::KNode;
 use klog::logs::SqliteLogStorage;
 use klog::network::{KNetworkFactory, KNetworkServer};
-use klog::state_machine::{KLogMemoryStateMachine, SnapshotManager};
+use klog::state_machine::{KLogStateMachine, SnapshotManager};
 use klog::state_store::{
     KLogStateStore, KLogStateStoreManager, RocksDbSnapshotMode, RocksDbStateStore,
 };
@@ -101,7 +101,9 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
     );
 
     let snapshot_manager = Arc::new(SnapshotManager::new(cfg.data_dir.clone()));
-    let state_machine = KLogMemoryStateMachine::new(state_store_manager, snapshot_manager);
+    let state_machine = KLogStateMachine::new(state_store_manager, snapshot_manager)
+        .await
+        .map_err(|e| format!("Failed to initialize state machine: {}", e))?;
 
     let raft_config = Config {
         cluster_name: cfg.cluster_name.clone(),

@@ -1,7 +1,7 @@
 use super::snapshot::{KSnapshotMeta, SnapshotManager, SnapshotManagerRef};
 use crate::state_machine::snapshot::KSnapshotData;
-use crate::state_store::KLogStateSnapshot;
 use crate::state_store::KLogStateStoreManagerRef;
+use crate::state_store::{KLogStateMachineMeta, KLogStateSnapshot};
 use crate::{KLogId, KLogRequest, KLogResponse, KNode, KNodeId, KTypeConfig, StorageResult};
 use openraft::{
     Entry, EntryPayload, OptionalSend, RaftSnapshotBuilder, SnapshotMeta, StoredMembership,
@@ -22,7 +22,7 @@ pub struct StateMachineData {
 }
 
 #[derive(Debug, Clone)]
-pub struct KLogMemoryStateMachine {
+pub struct KLogStateMachine {
     data: Arc<AsyncRwLock<StateMachineData>>,
 
     state_store: KLogStateStoreManagerRef,
@@ -30,16 +30,58 @@ pub struct KLogMemoryStateMachine {
     snapshot_manager: SnapshotManagerRef,
 }
 
-impl KLogMemoryStateMachine {
-    pub fn new(
+impl KLogStateMachine {
+    pub async fn new(
         state_store: KLogStateStoreManagerRef,
         snapshot_manager: SnapshotManagerRef,
-    ) -> Self {
-        Self {
-            data: Arc::new(AsyncRwLock::new(StateMachineData::default())),
+    ) -> StorageResult<Self> {
+        let recovered = state_store.load_state_machine_meta().await.map_err(|e| {
+            let msg = format!("Failed to load state machine metadata: {}", e);
+            error!("{}", msg);
+            StorageError::IO {
+                source: StorageIOError::read(&std::io::Error::other(msg)),
+            }
+        })?;
+
+        let data = if let Some(meta) = recovered {
+            info!(
+                "StateMachine metadata loaded from store: last_applied={:?}, membership={:?}",
+                meta.last_applied_log_id, meta.last_membership
+            );
+            StateMachineData {
+                last_applied_log_id: meta.last_applied_log_id,
+                last_membership: meta.last_membership,
+            }
+        } else {
+            info!("StateMachine metadata not found in store, using defaults");
+            StateMachineData::default()
+        };
+
+        Ok(Self {
+            data: Arc::new(AsyncRwLock::new(data)),
             state_store,
             snapshot_manager,
-        }
+        })
+    }
+
+    async fn persist_state_machine_meta(
+        &self,
+        last_applied_log_id: Option<KLogId>,
+        last_membership: KStoredMembership,
+    ) -> StorageResult<()> {
+        self.state_store
+            .save_state_machine_meta(KLogStateMachineMeta {
+                last_applied_log_id,
+                last_membership,
+            })
+            .await
+            .map_err(|e| {
+                let msg = format!("Failed to persist state machine metadata: {}", e);
+                error!("{}", msg);
+                StorageError::IO {
+                    source: StorageIOError::write(&std::io::Error::other(msg)),
+                }
+            })
     }
 
     async fn process_request(&self, req: KLogRequest) -> KLogResponse {
@@ -69,7 +111,7 @@ impl KLogMemoryStateMachine {
     }
 }
 
-impl RaftStateMachine<KTypeConfig> for KLogMemoryStateMachine {
+impl RaftStateMachine<KTypeConfig> for KLogStateMachine {
     type SnapshotBuilder = Self;
 
     async fn applied_state(&mut self) -> StorageResult<(Option<KLogId>, KStoredMembership)> {
@@ -110,6 +152,12 @@ impl RaftStateMachine<KTypeConfig> for KLogMemoryStateMachine {
             replies.push(resp_value);
         }
 
+        let persisted_last_applied = data.last_applied_log_id;
+        let persisted_membership = data.last_membership.clone();
+        drop(data);
+        self.persist_state_machine_meta(persisted_last_applied, persisted_membership)
+            .await?;
+
         Ok(replies)
     }
 
@@ -140,17 +188,7 @@ impl RaftStateMachine<KTypeConfig> for KLogMemoryStateMachine {
             data.klog_data.len()
         );
 
-        // First, update the state machine data
-        let mut state = self.data.write().await;
-        state.last_applied_log_id = data.meta.last_log_id.clone();
-        state.last_membership = data.meta.last_membership.clone();
-        drop(state); // Release the lock before potentially long operations
-        debug!(
-            "StateMachine install_snapshot state updated: last_applied={:?}, membership={:?}",
-            data.meta.last_log_id, data.meta.last_membership
-        );
-
-        // Then, restore state store from snapshot payload.
+        // First, restore state store from snapshot payload.
         self.state_store
             .install_snapshot(KLogStateSnapshot {
                 data: data.klog_data,
@@ -163,6 +201,20 @@ impl RaftStateMachine<KTypeConfig> for KLogMemoryStateMachine {
                     source: StorageIOError::write_snapshot(None, &std::io::Error::other(msg)),
                 }
             })?;
+        self.persist_state_machine_meta(
+            data.meta.last_log_id.clone(),
+            data.meta.last_membership.clone(),
+        )
+        .await?;
+
+        // Then, update the in-memory state machine metadata.
+        let mut state = self.data.write().await;
+        state.last_applied_log_id = data.meta.last_log_id;
+        state.last_membership = data.meta.last_membership;
+        debug!(
+            "StateMachine install_snapshot state updated: last_applied={:?}, membership={:?}",
+            state.last_applied_log_id, state.last_membership
+        );
         info!(
             "StateMachine install_snapshot completed: snapshot_id={}",
             meta.snapshot_id
@@ -196,7 +248,7 @@ impl RaftStateMachine<KTypeConfig> for KLogMemoryStateMachine {
     }
 }
 
-impl RaftSnapshotBuilder<KTypeConfig> for KLogMemoryStateMachine {
+impl RaftSnapshotBuilder<KTypeConfig> for KLogStateMachine {
     async fn build_snapshot(&mut self) -> StorageResult<KSnapshot> {
         info!("StateMachine build_snapshot start");
         let meta = {
