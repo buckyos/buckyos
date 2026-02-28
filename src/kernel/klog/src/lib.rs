@@ -1,24 +1,19 @@
 #![allow(dead_code)]
 
+#[macro_use]
+extern crate log;
+
 use openraft::Raft;
 use openraft::{LogId, declare_raft_types};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-#[cfg(test)]
-mod logs;
-#[cfg(test)]
-mod network;
-#[cfg(test)]
-mod state_machine;
-#[cfg(test)]
-mod state_store;
+pub mod logs;
+pub mod network;
+pub mod state_machine;
+pub mod state_store;
 #[cfg(test)]
 mod test;
-
-#[cfg(test)]
-#[macro_use]
-extern crate log;
 
 #[derive(Serialize, Deserialize, Debug, Clone, thiserror::Error)]
 pub enum KLogError {

@@ -1,71 +1,239 @@
-// NOTE: warp dependency has been removed, this code is commented out
-// use wrap::Filter;
-// use crate::{KRaft, network::request::RaftResponse};
-// use openraft::Raft;
-// use super::request::{RaftRequest, RaftRequestType};
-// use crate::{KNode, KNodeId, KTypeConfig, KRaftRef};
+use super::request::{RaftRequest, RaftRequestType, RaftResponse};
+use crate::KRaftRef;
+use axum::Router;
+use axum::body::Bytes;
+use axum::extract::State;
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use axum::routing::post;
 
-// pub struct KNetworkServer {
-//     addr: String,
-//     raft: KRaftRef,
-// }
+#[derive(Clone)]
+struct KNetworkServerState {
+    raft: KRaftRef,
+}
 
-// impl KNetworkServer {
-//     pub fn new(addr: String, raft: KRaftRef) -> Self {
-//         Self { addr, raft }
-//     }
+pub struct KNetworkServer {
+    addr: String,
+    raft: KRaftRef,
+}
 
-//     async fn on_append_entries(req: RaftRequest) -> RaftResponse {
-//         // Handle the AppendEntries request
-//         println!("Received AppendEntries request: {:?}", req);
-//         warp::reply::json(&"AppendEntries response")
-//     }
+impl KNetworkServer {
+    pub fn new(addr: String, raft: KRaftRef) -> Self {
+        Self { addr, raft }
+    }
 
-//     pub fn run(&self) {
-//         let append_entries = warp::path(RaftRequestType::AppendEntries.as_str())
-//             .and(warp::post())
-//             .and(warp::body::bytes())
-//             .map(|body: bytes::Bytes| {
-//                 // Deserialize the request
-//                 match RaftRequest::deserialize(&body) {
-//                     Ok(req) => {
-//                         let ret = match self.
-//                     }
-//                     Err(e) => {
-//                         eprintln!("Failed to deserialize AppendEntries request: {}", e);
-//                         warp::reply::json(&"Error")
-//                     }
-//                 }
-//                 // Handle the request (this is just a placeholder)
-//                 println!("Received AppendEntries request: {:?}", req);
-//                 // Respond with a placeholder response
-//                 warp::reply::json(&"AppendEntries response")
-//             });
+    pub async fn run(&self) -> Result<(), String> {
+        let state = KNetworkServerState {
+            raft: self.raft.clone(),
+        };
 
-//         let install_snapshot = warp::path("klog")
-//             .and(warp::path("install-snapshot"))
-//             .and(warp::post())
-//             .and(warp::body::bytes())
-//             .map(|body: bytes::Bytes| {
-//                 let req = RaftRequest::deserialize(&body).unwrap();
-//                 println!("Received InstallSnapshot request: {:?}", req);
-//                 warp::reply::json(&"InstallSnapshot response")
-//             });
+        let app = Router::new()
+            .route(
+                "/klog/append-entries",
+                post(Self::handle_append_entries_request),
+            )
+            .route(
+                "/klog/install-snapshot",
+                post(Self::handle_install_snapshot_request),
+            )
+            .route("/klog/vote", post(Self::handle_vote_request))
+            .with_state(state);
 
-//         let vote = warp::path("klog")
-//             .and(warp::path("vote"))
-//             .and(warp::post())
-//             .and(warp::body::bytes())
-//             .map(|body: bytes::Bytes| {
-//                 let req = RaftRequest::deserialize(&body).unwrap();
-//                 println!("Received Vote request: {:?}", req);
-//                 warp::reply::json(&"Vote response")
-//             });
+        info!("KNetworkServer start listening at {}", self.addr);
 
-//         let routes = append_entries.or(install_snapshot).or(vote);
+        let listener = tokio::net::TcpListener::bind(&self.addr)
+            .await
+            .map_err(|e| {
+                let msg = format!("KNetworkServer bind failed at {}: {}", self.addr, e);
+                error!("{}", msg);
+                msg
+            })?;
 
-//         let addr = self.addr.parse().unwrap();
-//         println!("Starting server at {}", self.addr);
-//         warp::serve(routes).run(addr);
-//     }
-// }
+        axum::serve(listener, app).await.map_err(|e| {
+            let msg = format!("KNetworkServer serve failed at {}: {}", self.addr, e);
+            error!("{}", msg);
+            msg
+        })
+    }
+
+    async fn handle_append_entries_request(
+        State(state): State<KNetworkServerState>,
+        body: Bytes,
+    ) -> Response {
+        let req = match Self::decode_request(RaftRequestType::AppendEntries, &body) {
+            Ok(req) => req,
+            Err(resp) => return resp,
+        };
+        let req = match req {
+            RaftRequest::AppendEntries(req) => req,
+            other => {
+                let msg = format!(
+                    "KNetworkServer append-entries type check failed: got={}",
+                    other.request_type().as_str()
+                );
+                error!("{}", msg);
+                return Self::error_response(StatusCode::BAD_REQUEST, msg);
+            }
+        };
+
+        debug!(
+            "KNetworkServer append-entries request: entries={}, body_bytes={}",
+            req.entries.len(),
+            body.len()
+        );
+
+        match state.raft.append_entries(req).await {
+            Ok(resp) => Self::encode_response(
+                RaftRequestType::AppendEntries,
+                RaftResponse::AppendEntries(resp),
+            ),
+            Err(e) => {
+                let msg = format!("KNetworkServer append-entries raft call failed: {}", e);
+                error!("{}", msg);
+                Self::error_response(StatusCode::INTERNAL_SERVER_ERROR, msg)
+            }
+        }
+    }
+
+    async fn handle_install_snapshot_request(
+        State(state): State<KNetworkServerState>,
+        body: Bytes,
+    ) -> Response {
+        let req = match Self::decode_request(RaftRequestType::InstallSnapshot, &body) {
+            Ok(req) => req,
+            Err(resp) => return resp,
+        };
+        let req = match req {
+            RaftRequest::InstallSnapshot(req) => req,
+            other => {
+                let msg = format!(
+                    "KNetworkServer install-snapshot type check failed: got={}",
+                    other.request_type().as_str()
+                );
+                error!("{}", msg);
+                return Self::error_response(StatusCode::BAD_REQUEST, msg);
+            }
+        };
+
+        debug!(
+            "KNetworkServer install-snapshot request: snapshot_id={}, offset={}, chunk_bytes={}, done={}, body_bytes={}",
+            req.meta.snapshot_id,
+            req.offset,
+            req.data.len(),
+            req.done,
+            body.len()
+        );
+
+        match state.raft.install_snapshot(req).await {
+            Ok(resp) => Self::encode_response(
+                RaftRequestType::InstallSnapshot,
+                RaftResponse::InstallSnapshot(resp),
+            ),
+            Err(e) => {
+                let msg = format!("KNetworkServer install-snapshot raft call failed: {}", e);
+                error!("{}", msg);
+                Self::error_response(StatusCode::INTERNAL_SERVER_ERROR, msg)
+            }
+        }
+    }
+
+    async fn handle_vote_request(
+        State(state): State<KNetworkServerState>,
+        body: Bytes,
+    ) -> Response {
+        let req = match Self::decode_request(RaftRequestType::Vote, &body) {
+            Ok(req) => req,
+            Err(resp) => return resp,
+        };
+        let req = match req {
+            RaftRequest::Vote(req) => req,
+            other => {
+                let msg = format!(
+                    "KNetworkServer vote type check failed: got={}",
+                    other.request_type().as_str()
+                );
+                error!("{}", msg);
+                return Self::error_response(StatusCode::BAD_REQUEST, msg);
+            }
+        };
+
+        debug!(
+            "KNetworkServer vote request: vote={}, last_log_id={:?}, body_bytes={}",
+            req.vote,
+            req.last_log_id,
+            body.len()
+        );
+
+        match state.raft.vote(req).await {
+            Ok(resp) => Self::encode_response(RaftRequestType::Vote, RaftResponse::Vote(resp)),
+            Err(e) => {
+                let msg = format!("KNetworkServer vote raft call failed: {}", e);
+                error!("{}", msg);
+                Self::error_response(StatusCode::INTERNAL_SERVER_ERROR, msg)
+            }
+        }
+    }
+
+    fn decode_request(expected: RaftRequestType, body: &[u8]) -> Result<RaftRequest, Response> {
+        info!(
+            "KNetworkServer decode request: rpc={}, body_bytes={}",
+            expected.as_str(),
+            body.len()
+        );
+
+        let req = RaftRequest::deserialize(body).map_err(|e| {
+            let msg = format!(
+                "KNetworkServer deserialize request failed: rpc={}, body_bytes={}, err={}",
+                expected.as_str(),
+                body.len(),
+                e
+            );
+            error!("{}", msg);
+            Self::error_response(StatusCode::BAD_REQUEST, msg)
+        })?;
+
+        if req.request_type().as_str() != expected.as_str() {
+            let msg = format!(
+                "KNetworkServer request type mismatch: expected={}, got={}",
+                expected.as_str(),
+                req.request_type().as_str()
+            );
+            error!("{}", msg);
+            return Err(Self::error_response(StatusCode::BAD_REQUEST, msg));
+        }
+
+        Ok(req)
+    }
+
+    fn encode_response(rpc: RaftRequestType, resp: RaftResponse) -> Response {
+        let bytes = match resp.serialize() {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                let msg = format!(
+                    "KNetworkServer serialize response failed: rpc={}, err={}",
+                    rpc.as_str(),
+                    e
+                );
+                error!("{}", msg);
+                return Self::error_response(StatusCode::INTERNAL_SERVER_ERROR, msg);
+            }
+        };
+
+        info!(
+            "KNetworkServer response ready: rpc={}, payload_bytes={}",
+            rpc.as_str(),
+            bytes.len()
+        );
+
+        (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/octet-stream")],
+            bytes,
+        )
+            .into_response()
+    }
+
+    fn error_response(status: StatusCode, msg: String) -> Response {
+        (status, msg).into_response()
+    }
+}

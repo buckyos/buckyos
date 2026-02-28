@@ -13,6 +13,12 @@ pub struct KNetworkFactory {
     local: KNodeId,
 }
 
+impl KNetworkFactory {
+    pub fn new(local: KNodeId) -> Self {
+        Self { local }
+    }
+}
+
 impl RaftNetworkFactory<KTypeConfig> for KNetworkFactory {
     type Network = KNetworkClient;
 

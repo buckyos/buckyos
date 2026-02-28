@@ -17,6 +17,7 @@ simplelog = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 reqwest = { workspace = true }
+axum = { workspace = true }
 thiserror = { workspace = true }
 bytes = { workspace = true }
 rusqlite = { workspace = true }
