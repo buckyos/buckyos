@@ -1,12 +1,15 @@
-use super::request::{RaftRequest, RaftRequestType, RaftResponse};
-use crate::KRaftRef;
+use super::request::{KLogAdminRequestType, RaftRequest, RaftRequestType, RaftResponse};
+use crate::{KNode, KNodeId, KRaftRef};
 use axum::Router;
 use axum::body::Bytes;
 use axum::error_handling::HandleErrorLayer;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
+use openraft::error::{ClientWriteError, RaftError};
+use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::time::Duration;
 use tower::BoxError;
@@ -23,6 +26,20 @@ const CONTROL_RPC_CONCURRENCY_LIMIT: usize = 128;
 const SNAPSHOT_RPC_CONCURRENCY_LIMIT: usize = 8;
 const CONTROL_RPC_TIMEOUT_MS: u64 = 3_000;
 const SNAPSHOT_RPC_TIMEOUT_MS: u64 = 30_000;
+
+#[derive(Debug, Deserialize)]
+struct AddLearnerQuery {
+    node_id: KNodeId,
+    addr: String,
+    port: u16,
+    blocking: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChangeMembershipQuery {
+    voters: String,
+    retain: Option<bool>,
+}
 
 #[derive(Clone)]
 struct KNetworkServerState {
@@ -62,12 +79,22 @@ impl KNetworkServer {
 
         let append_entries_path = RaftRequestType::AppendEntries.klog_path();
         let vote_path = RaftRequestType::Vote.klog_path();
+        let admin_add_learner_path = KLogAdminRequestType::AddLearner.klog_path();
+        let admin_change_membership_path = KLogAdminRequestType::ChangeMembership.klog_path();
         let control_rpc_routes = Router::new()
             .route(
                 &append_entries_path,
                 post(Self::handle_append_entries_request),
             )
             .route(&vote_path, post(Self::handle_vote_request))
+            .route(
+                &admin_add_learner_path,
+                post(Self::handle_add_learner_request),
+            )
+            .route(
+                &admin_change_membership_path,
+                post(Self::handle_change_membership_request),
+            )
             .route_layer(control_rpc_middleware);
 
         let snapshot_rpc_middleware = ServiceBuilder::new()
@@ -94,14 +121,16 @@ impl KNetworkServer {
             .with_state(state);
 
         info!(
-            "KNetworkServer start listening at {}, control_limit_bytes={}, snapshot_limit_bytes={}, control_concurrency={}, snapshot_concurrency={}, control_timeout_ms={}, snapshot_timeout_ms={}",
+            "KNetworkServer start listening at {}, control_limit_bytes={}, snapshot_limit_bytes={}, control_concurrency={}, snapshot_concurrency={}, control_timeout_ms={}, snapshot_timeout_ms={}, admin_add_learner_path={}, admin_change_membership_path={}",
             self.addr,
             CONTROL_RPC_BODY_LIMIT_BYTES,
             SNAPSHOT_RPC_BODY_LIMIT_BYTES,
             CONTROL_RPC_CONCURRENCY_LIMIT,
             SNAPSHOT_RPC_CONCURRENCY_LIMIT,
             CONTROL_RPC_TIMEOUT_MS,
-            SNAPSHOT_RPC_TIMEOUT_MS
+            SNAPSHOT_RPC_TIMEOUT_MS,
+            admin_add_learner_path,
+            admin_change_membership_path
         );
 
         let listener = tokio::net::TcpListener::bind(&self.addr)
@@ -265,6 +294,73 @@ impl KNetworkServer {
         }
     }
 
+    async fn handle_add_learner_request(
+        State(state): State<KNetworkServerState>,
+        Query(query): Query<AddLearnerQuery>,
+    ) -> Response {
+        let blocking = query.blocking.unwrap_or(true);
+        let node = KNode {
+            id: query.node_id,
+            addr: query.addr.clone(),
+            port: query.port,
+        };
+        info!(
+            "KNetworkServer admin add-learner request: node_id={}, addr={}, port={}, blocking={}",
+            query.node_id, query.addr, query.port, blocking
+        );
+
+        match state.raft.add_learner(query.node_id, node, blocking).await {
+            Ok(resp) => {
+                let msg = format!(
+                    "add-learner committed: node_id={}, log_id={}, membership={:?}",
+                    query.node_id, resp.log_id, resp.membership
+                );
+                info!("KNetworkServer admin add-learner succeeded: {}", msg);
+                (StatusCode::OK, msg).into_response()
+            }
+            Err(err) => Self::raft_client_write_error_response("add-learner", err),
+        }
+    }
+
+    async fn handle_change_membership_request(
+        State(state): State<KNetworkServerState>,
+        Query(query): Query<ChangeMembershipQuery>,
+    ) -> Response {
+        let retain = query.retain.unwrap_or(true);
+        let voter_ids = match parse_voter_ids_csv(&query.voters) {
+            Ok(ids) => ids,
+            Err(err) => {
+                let msg = format!(
+                    "KNetworkServer admin change-membership invalid voters '{}': {}",
+                    query.voters, err
+                );
+                error!("{}", msg);
+                return Self::error_response(StatusCode::BAD_REQUEST, msg);
+            }
+        };
+
+        info!(
+            "KNetworkServer admin change-membership request: voters={:?}, retain={}",
+            voter_ids, retain
+        );
+
+        match state
+            .raft
+            .change_membership(voter_ids.clone(), retain)
+            .await
+        {
+            Ok(resp) => {
+                let msg = format!(
+                    "change-membership committed: voters={:?}, log_id={}, membership={:?}",
+                    voter_ids, resp.log_id, resp.membership
+                );
+                info!("KNetworkServer admin change-membership succeeded: {}", msg);
+                (StatusCode::OK, msg).into_response()
+            }
+            Err(err) => Self::raft_client_write_error_response("change-membership", err),
+        }
+    }
+
     fn decode_request(expected: RaftRequestType, body: &[u8]) -> Result<RaftRequest, Response> {
         info!(
             "KNetworkServer decode request: rpc={}, body_bytes={}",
@@ -324,7 +420,68 @@ impl KNetworkServer {
             .into_response()
     }
 
+    fn raft_client_write_error_response(
+        action: &str,
+        err: RaftError<KNodeId, ClientWriteError<KNodeId, KNode>>,
+    ) -> Response {
+        if let Some(forward) = err.forward_to_leader::<KNode>() {
+            let msg = format!(
+                "KNetworkServer admin {} rejected on non-leader: leader_id={:?}, leader_node={:?}",
+                action, forward.leader_id, forward.leader_node
+            );
+            warn!("{}", msg);
+            return Self::error_response(StatusCode::CONFLICT, msg);
+        }
+
+        let msg = format!("KNetworkServer admin {} failed: {}", action, err);
+        error!("{}", msg);
+        Self::error_response(StatusCode::INTERNAL_SERVER_ERROR, msg)
+    }
+
     fn error_response(status: StatusCode, msg: String) -> Response {
         (status, msg).into_response()
+    }
+}
+
+fn parse_voter_ids_csv(raw: &str) -> Result<Vec<KNodeId>, String> {
+    let mut ids = BTreeSet::new();
+    for token in raw.split(',') {
+        let trimmed = token.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let id = trimmed
+            .parse::<KNodeId>()
+            .map_err(|e| format!("invalid node id '{}': {}", trimmed, e))?;
+        ids.insert(id);
+    }
+
+    if ids.is_empty() {
+        return Err("empty voter set".to_string());
+    }
+
+    Ok(ids.into_iter().collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_voter_ids_csv;
+
+    #[test]
+    fn test_parse_voter_ids_csv_ok() {
+        let ids = parse_voter_ids_csv("1, 2,3,2").expect("parse voter ids");
+        assert_eq!(ids, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_parse_voter_ids_csv_empty_rejected() {
+        let err = parse_voter_ids_csv(" ,  ").expect_err("empty voters should fail");
+        assert!(err.contains("empty voter set"));
+    }
+
+    #[test]
+    fn test_parse_voter_ids_csv_invalid_rejected() {
+        let err = parse_voter_ids_csv("1,a").expect_err("invalid voter should fail");
+        assert!(err.contains("invalid node id"));
     }
 }

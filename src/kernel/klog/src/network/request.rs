@@ -52,6 +52,25 @@ impl RaftRequestType {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KLogAdminRequestType {
+    AddLearner,
+    ChangeMembership,
+}
+
+impl KLogAdminRequestType {
+    pub fn as_str(&self) -> &str {
+        match self {
+            KLogAdminRequestType::AddLearner => "add-learner",
+            KLogAdminRequestType::ChangeMembership => "change-membership",
+        }
+    }
+
+    pub fn klog_path(&self) -> String {
+        format!("/klog/admin/{}", self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 enum NetworkFrameKind {
