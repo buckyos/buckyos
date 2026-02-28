@@ -1,7 +1,8 @@
 use crate::logs::{MemoryLogStorage, SqliteLogStorage};
 use crate::state_machine::{KLogMemoryStateMachine, SnapshotManager};
 use crate::state_store::{
-    KLogStateSnapshot, KLogStateStore, KLogStateStoreManager, MemoryStateStore, RocksDbStateStore,
+    KLogStateSnapshot, KLogStateStore, KLogStateStoreManager, MemoryStateStore,
+    RocksDbSnapshotMode, RocksDbStateStore,
 };
 use crate::{KLogEntry, KLogRequest, KLogResponse, KNodeId, KTypeConfig, StorageResult};
 use openraft::entry::EntryPayload;
@@ -183,6 +184,12 @@ fn sample_state_entries() -> Vec<KLogEntry> {
     ]
 }
 
+fn decode_entry_ids(snapshot: &KLogStateSnapshot) -> anyhow::Result<Vec<u64>> {
+    let (decoded, _): (Vec<KLogEntry>, usize) =
+        bincode::serde::decode_from_slice(&snapshot.data, bincode::config::legacy())?;
+    Ok(decoded.into_iter().map(|e| e.id).collect())
+}
+
 #[test]
 pub fn test_mem_store() -> anyhow::Result<()> {
     init_test_logging();
@@ -323,19 +330,18 @@ async fn test_state_machine_apply_keeps_prepared_id() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_rocksdb_state_store_snapshot_roundtrip() -> anyhow::Result<()> {
-    let rocks = RocksDbStateStore::open(unique_test_path("state_store_roundtrip.rocks"))
-        .map_err(anyhow::Error::msg)?;
+    let rocks = RocksDbStateStore::open_with_mode(
+        unique_test_path("state_store_roundtrip.rocks"),
+        RocksDbSnapshotMode::Enumerate,
+    )
+    .map_err(anyhow::Error::msg)?;
     let state_store = Arc::new(Box::new(rocks) as Box<dyn KLogStateStore>);
     let manager = KLogStateStoreManager::new(state_store);
 
     manager.append(sample_state_entries()).await?;
     let snapshot = manager.build_snapshot().await?;
-
-    let (decoded, _): (Vec<KLogEntry>, usize) =
-        bincode::serde::decode_from_slice(&snapshot.data, bincode::config::legacy())?;
-    assert_eq!(decoded.len(), 2);
-    assert_eq!(decoded[0].id, 11);
-    assert_eq!(decoded[1].id, 12);
+    let ids = decode_entry_ids(&snapshot)?;
+    assert_eq!(ids, vec![11, 12]);
 
     Ok(())
 }
@@ -348,8 +354,11 @@ async fn test_rocksdb_state_store_install_snapshot() -> anyhow::Result<()> {
     src_mgr.append(sample_state_entries()).await?;
     let src_snapshot = src_mgr.build_snapshot().await?;
 
-    let rocks = RocksDbStateStore::open(unique_test_path("state_store_install.rocks"))
-        .map_err(anyhow::Error::msg)?;
+    let rocks = RocksDbStateStore::open_with_mode(
+        unique_test_path("state_store_install.rocks"),
+        RocksDbSnapshotMode::Enumerate,
+    )
+    .map_err(anyhow::Error::msg)?;
     let dst = Arc::new(Box::new(rocks) as Box<dyn KLogStateStore>);
     let dst_mgr = KLogStateStoreManager::new(dst);
 
@@ -369,11 +378,153 @@ async fn test_rocksdb_state_store_install_snapshot() -> anyhow::Result<()> {
         .await?;
 
     let restored = dst_mgr.build_snapshot().await?;
-    let (decoded, _): (Vec<KLogEntry>, usize) =
-        bincode::serde::decode_from_slice(&restored.data, bincode::config::legacy())?;
-    assert_eq!(decoded.len(), 2);
-    assert_eq!(decoded[0].id, 11);
-    assert_eq!(decoded[1].id, 12);
+    let ids = decode_entry_ids(&restored)?;
+    assert_eq!(ids, vec![11, 12]);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_rocksdb_checkpoint_mode_snapshot_roundtrip() -> anyhow::Result<()> {
+    let src_path = unique_test_path("state_store_checkpoint_roundtrip_src.rocks");
+    let src = RocksDbStateStore::open_with_mode(&src_path, RocksDbSnapshotMode::Checkpoint)
+        .map_err(anyhow::Error::msg)?;
+    let src = Arc::new(Box::new(src) as Box<dyn KLogStateStore>);
+    let src_mgr = KLogStateStoreManager::new(src);
+    src_mgr.append(sample_state_entries()).await?;
+    let snapshot = src_mgr.build_snapshot().await?;
+
+    let dst_path = unique_test_path("state_store_checkpoint_roundtrip_dst.rocks");
+    let dst = RocksDbStateStore::open_with_mode(&dst_path, RocksDbSnapshotMode::Checkpoint)
+        .map_err(anyhow::Error::msg)?;
+    let dst = Arc::new(Box::new(dst) as Box<dyn KLogStateStore>);
+    let dst_mgr = KLogStateStoreManager::new(dst);
+    dst_mgr
+        .append(vec![KLogEntry {
+            id: 999,
+            timestamp: 1,
+            node_id: 7,
+            message: "old-data".to_string(),
+        }])
+        .await?;
+    dst_mgr.install_snapshot(snapshot).await?;
+    drop(dst_mgr);
+
+    // Reopen in enumerate mode to decode and assert entry ids.
+    let verify = RocksDbStateStore::open_with_mode(&dst_path, RocksDbSnapshotMode::Enumerate)
+        .map_err(anyhow::Error::msg)?;
+    let verify = Arc::new(Box::new(verify) as Box<dyn KLogStateStore>);
+    let verify_mgr = KLogStateStoreManager::new(verify);
+    let restored = verify_mgr.build_snapshot().await?;
+    let ids = decode_entry_ids(&restored)?;
+    assert_eq!(ids, vec![11, 12]);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_rocksdb_checkpoint_mode_install_enumerate_snapshot() -> anyhow::Result<()> {
+    let src = MemoryStateStore::new();
+    let src = Arc::new(Box::new(src) as Box<dyn KLogStateStore>);
+    let src_mgr = KLogStateStoreManager::new(src);
+    src_mgr.append(sample_state_entries()).await?;
+    let src_snapshot = src_mgr.build_snapshot().await?;
+
+    let dst_path = unique_test_path("state_store_checkpoint_install_enumerate.rocks");
+    let dst = RocksDbStateStore::open_with_mode(&dst_path, RocksDbSnapshotMode::Checkpoint)
+        .map_err(anyhow::Error::msg)?;
+    let dst = Arc::new(Box::new(dst) as Box<dyn KLogStateStore>);
+    let dst_mgr = KLogStateStoreManager::new(dst);
+    dst_mgr
+        .append(vec![KLogEntry {
+            id: 500,
+            timestamp: 2,
+            node_id: 9,
+            message: "stale-data".to_string(),
+        }])
+        .await?;
+    dst_mgr.install_snapshot(src_snapshot).await?;
+    drop(dst_mgr);
+
+    let verify = RocksDbStateStore::open_with_mode(&dst_path, RocksDbSnapshotMode::Enumerate)
+        .map_err(anyhow::Error::msg)?;
+    let verify = Arc::new(Box::new(verify) as Box<dyn KLogStateStore>);
+    let verify_mgr = KLogStateStoreManager::new(verify);
+    let restored = verify_mgr.build_snapshot().await?;
+    let ids = decode_entry_ids(&restored)?;
+    assert_eq!(ids, vec![11, 12]);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_rocksdb_backup_engine_mode_snapshot_roundtrip() -> anyhow::Result<()> {
+    let src_path = unique_test_path("state_store_backup_roundtrip_src.rocks");
+    let src = RocksDbStateStore::open_with_mode(&src_path, RocksDbSnapshotMode::BackupEngine)
+        .map_err(anyhow::Error::msg)?;
+    let src = Arc::new(Box::new(src) as Box<dyn KLogStateStore>);
+    let src_mgr = KLogStateStoreManager::new(src);
+    src_mgr.append(sample_state_entries()).await?;
+    let snapshot = src_mgr.build_snapshot().await?;
+
+    let dst_path = unique_test_path("state_store_backup_roundtrip_dst.rocks");
+    let dst = RocksDbStateStore::open_with_mode(&dst_path, RocksDbSnapshotMode::BackupEngine)
+        .map_err(anyhow::Error::msg)?;
+    let dst = Arc::new(Box::new(dst) as Box<dyn KLogStateStore>);
+    let dst_mgr = KLogStateStoreManager::new(dst);
+    dst_mgr
+        .append(vec![KLogEntry {
+            id: 999,
+            timestamp: 1,
+            node_id: 7,
+            message: "old-data".to_string(),
+        }])
+        .await?;
+    dst_mgr.install_snapshot(snapshot).await?;
+    drop(dst_mgr);
+
+    let verify = RocksDbStateStore::open_with_mode(&dst_path, RocksDbSnapshotMode::Enumerate)
+        .map_err(anyhow::Error::msg)?;
+    let verify = Arc::new(Box::new(verify) as Box<dyn KLogStateStore>);
+    let verify_mgr = KLogStateStoreManager::new(verify);
+    let restored = verify_mgr.build_snapshot().await?;
+    let ids = decode_entry_ids(&restored)?;
+    assert_eq!(ids, vec![11, 12]);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_rocksdb_backup_engine_mode_install_enumerate_snapshot() -> anyhow::Result<()> {
+    let src = MemoryStateStore::new();
+    let src = Arc::new(Box::new(src) as Box<dyn KLogStateStore>);
+    let src_mgr = KLogStateStoreManager::new(src);
+    src_mgr.append(sample_state_entries()).await?;
+    let src_snapshot = src_mgr.build_snapshot().await?;
+
+    let dst_path = unique_test_path("state_store_backup_install_enumerate.rocks");
+    let dst = RocksDbStateStore::open_with_mode(&dst_path, RocksDbSnapshotMode::BackupEngine)
+        .map_err(anyhow::Error::msg)?;
+    let dst = Arc::new(Box::new(dst) as Box<dyn KLogStateStore>);
+    let dst_mgr = KLogStateStoreManager::new(dst);
+    dst_mgr
+        .append(vec![KLogEntry {
+            id: 501,
+            timestamp: 2,
+            node_id: 9,
+            message: "stale-data".to_string(),
+        }])
+        .await?;
+    dst_mgr.install_snapshot(src_snapshot).await?;
+    drop(dst_mgr);
+
+    let verify = RocksDbStateStore::open_with_mode(&dst_path, RocksDbSnapshotMode::Enumerate)
+        .map_err(anyhow::Error::msg)?;
+    let verify = Arc::new(Box::new(verify) as Box<dyn KLogStateStore>);
+    let verify_mgr = KLogStateStoreManager::new(verify);
+    let restored = verify_mgr.build_snapshot().await?;
+    let ids = decode_entry_ids(&restored)?;
+    assert_eq!(ids, vec![11, 12]);
 
     Ok(())
 }
