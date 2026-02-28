@@ -1,0 +1,98 @@
+use super::common::{blank_entry, init_test_logging, unique_test_path};
+use crate::logs::{MemoryLogStorage, SqliteLogStorage};
+use openraft::storage::{RaftLogReader, RaftLogStorage};
+use openraft::{CommittedLeaderId, LogId, Vote};
+
+#[tokio::test]
+async fn test_sqlite_and_memory_storage_equivalence() -> anyhow::Result<()> {
+    init_test_logging();
+
+    let memory = MemoryLogStorage::new();
+    let sqlite =
+        SqliteLogStorage::open(unique_test_path("equivalence.db")).map_err(anyhow::Error::msg)?;
+
+    let entries = vec![
+        blank_entry(1, 1),
+        blank_entry(1, 2),
+        blank_entry(1, 3),
+        blank_entry(2, 4),
+    ];
+
+    memory.append_entries_for_test(entries.clone()).await?;
+    sqlite.append_entries_for_test(entries).await?;
+
+    let vote = Vote::<u64>::new(3, 9);
+
+    let mut mem_store = memory.clone();
+    mem_store.save_vote(&vote).await?;
+    mem_store
+        .truncate(LogId::new(CommittedLeaderId::new(2, 0), 4))
+        .await?;
+    mem_store
+        .purge(LogId::new(CommittedLeaderId::new(1, 0), 1))
+        .await?;
+
+    let mut sqlite_store = sqlite.clone();
+    sqlite_store.save_vote(&vote).await?;
+    sqlite_store
+        .truncate(LogId::new(CommittedLeaderId::new(2, 0), 4))
+        .await?;
+    sqlite_store
+        .purge(LogId::new(CommittedLeaderId::new(1, 0), 1))
+        .await?;
+
+    let mut mem_reader = memory.clone();
+    let mut sqlite_reader = sqlite.clone();
+
+    let mem_entries = mem_reader.try_get_log_entries(0..100).await?;
+    let sqlite_entries = sqlite_reader.try_get_log_entries(0..100).await?;
+    let mem_log_ids: Vec<_> = mem_entries.iter().map(|e| e.log_id).collect();
+    let sqlite_log_ids: Vec<_> = sqlite_entries.iter().map(|e| e.log_id).collect();
+    assert_eq!(mem_log_ids, sqlite_log_ids);
+
+    let mem_vote = mem_store.read_vote().await?;
+    let sqlite_vote = sqlite_store.read_vote().await?;
+    assert_eq!(mem_vote, sqlite_vote);
+
+    let mem_state = mem_store.get_log_state().await?;
+    let sqlite_state = sqlite_store.get_log_state().await?;
+    assert_eq!(mem_state, sqlite_state);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_sqlite_committed_log_id_persistence_after_reopen() -> anyhow::Result<()> {
+    let path = unique_test_path("sqlite_committed_persistence.db");
+    let mut sqlite = SqliteLogStorage::open(&path).map_err(anyhow::Error::msg)?;
+
+    let committed = LogId::new(CommittedLeaderId::new(7, 1), 42);
+    sqlite.save_committed(Some(committed)).await?;
+    assert_eq!(sqlite.read_committed().await?, Some(committed));
+    drop(sqlite);
+
+    let mut reopened = SqliteLogStorage::open(&path).map_err(anyhow::Error::msg)?;
+    assert_eq!(reopened.read_committed().await?, Some(committed));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_log_storage_committed_log_id_is_monotonic() -> anyhow::Result<()> {
+    let mut memory = MemoryLogStorage::new();
+    let mut sqlite = SqliteLogStorage::open(unique_test_path("sqlite_committed_monotonic.db"))
+        .map_err(anyhow::Error::msg)?;
+
+    let high = LogId::new(CommittedLeaderId::new(3, 2), 18);
+    let low = LogId::new(CommittedLeaderId::new(2, 2), 15);
+
+    memory.save_committed(Some(high)).await?;
+    memory.save_committed(Some(low)).await?;
+    assert_eq!(memory.read_committed().await?, Some(high));
+
+    sqlite.save_committed(Some(high)).await?;
+    sqlite.save_committed(Some(low)).await?;
+    assert_eq!(sqlite.read_committed().await?, Some(high));
+
+    Ok(())
+}
