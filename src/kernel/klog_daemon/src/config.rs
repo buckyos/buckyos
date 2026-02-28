@@ -1,5 +1,6 @@
 use buckyos_kit::get_buckyos_service_data_dir;
 use klog::KNodeId;
+use log::error;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -19,12 +20,11 @@ pub const ENV_JOIN_BLOCKING: &str = "KLOG_JOIN_BLOCKING";
 pub const ENV_JOIN_TARGET_ROLE: &str = "KLOG_JOIN_TARGET_ROLE";
 pub const ENV_ADMIN_LOCAL_ONLY: &str = "KLOG_ADMIN_LOCAL_ONLY";
 
-const DEFAULT_NODE_ID: KNodeId = 1;
 const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:21001";
 const DEFAULT_ADVERTISE_ADDR: &str = "127.0.0.1";
 const DEFAULT_ADVERTISE_PORT: u16 = 21001;
 const DEFAULT_CLUSTER_NAME: &str = "klog";
-const DEFAULT_AUTO_BOOTSTRAP: bool = true;
+const DEFAULT_AUTO_BOOTSTRAP: bool = false;
 const DEFAULT_STATE_STORE_SYNC_WRITE: bool = true;
 const DEFAULT_JOIN_RETRY_INTERVAL_MS: u64 = 3_000;
 const DEFAULT_JOIN_MAX_ATTEMPTS: u32 = 0; // 0 means retry forever.
@@ -202,7 +202,7 @@ impl KLogRuntimeConfig {
             ..Default::default()
         };
 
-        Ok(Self::from_patch(patch))
+        Self::from_patch(patch)
     }
 
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, String> {
@@ -223,11 +223,11 @@ impl KLogRuntimeConfig {
             )
         })?;
 
-        Ok(Self::from_patch(patch))
+        Self::from_patch(patch)
     }
 
     pub fn from_buckyos_config(cfg: &BuckyosKlogConfig) -> Result<Self, String> {
-        Ok(Self::from_patch(cfg.clone()))
+        Self::from_patch(cfg.clone())
     }
 
     pub fn load_from_buckyos(
@@ -237,7 +237,7 @@ impl KLogRuntimeConfig {
         Ok((config, KLogRuntimeConfigSource::Buckyos))
     }
 
-    fn from_patch(patch: KLogRuntimeConfigPatch) -> Self {
+    fn from_patch(patch: KLogRuntimeConfigPatch) -> Result<Self, String> {
         let KLogRuntimeConfigPatch {
             network,
             storage,
@@ -253,10 +253,31 @@ impl KLogRuntimeConfig {
         let join = join.unwrap_or_default();
         let admin = admin.unwrap_or_default();
 
-        let node_id = node_id.unwrap_or(DEFAULT_NODE_ID);
+        let node_id = match node_id {
+            Some(v) => v,
+            None => {
+                let msg = "Missing required field: node_id (or KLOG_NODE_ID)".to_string();
+                error!("{}", msg);
+                return Err(msg);
+            }
+        };
+        if node_id == 0 {
+            let msg = "Invalid node_id=0: node_id must be greater than 0".to_string();
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        let join_targets = join.targets.unwrap_or_default();
+        let auto_bootstrap = cluster.auto_bootstrap.unwrap_or(DEFAULT_AUTO_BOOTSTRAP);
+        if auto_bootstrap && !join_targets.is_empty() {
+            let msg = "Invalid config: auto_bootstrap=true must not be combined with non-empty join.targets".to_string();
+            error!("{}", msg);
+            return Err(msg);
+        }
+
         let default_data_dir = default_data_dir();
 
-        Self {
+        Ok(Self {
             node_id,
             listen_addr: network
                 .listen_addr
@@ -269,11 +290,11 @@ impl KLogRuntimeConfig {
             cluster_name: cluster
                 .name
                 .unwrap_or_else(|| DEFAULT_CLUSTER_NAME.to_string()),
-            auto_bootstrap: cluster.auto_bootstrap.unwrap_or(DEFAULT_AUTO_BOOTSTRAP),
+            auto_bootstrap,
             state_store_sync_write: storage
                 .state_store_sync_write
                 .unwrap_or(DEFAULT_STATE_STORE_SYNC_WRITE),
-            join_targets: join.targets.unwrap_or_default(),
+            join_targets,
             join_retry_interval_ms: join
                 .retry_interval_ms
                 .unwrap_or(DEFAULT_JOIN_RETRY_INTERVAL_MS),
@@ -281,7 +302,7 @@ impl KLogRuntimeConfig {
             join_blocking: join.blocking.unwrap_or(DEFAULT_JOIN_BLOCKING),
             join_target_role: join.target_role.unwrap_or(DEFAULT_JOIN_TARGET_ROLE),
             admin_local_only: admin.local_only.unwrap_or(DEFAULT_ADMIN_LOCAL_ONLY),
-        }
+        })
     }
 }
 
@@ -513,6 +534,42 @@ advertise_addr = "192.168.2.7"
     }
 
     #[test]
+    fn test_from_file_missing_node_id_rejected() {
+        let file = unique_test_file("missing_node_id");
+        let content = r#"
+[network]
+listen_addr = "0.0.0.0:22001"
+"#;
+        std::fs::write(&file, content).expect("write file");
+
+        let err = KLogRuntimeConfig::from_file(&file).expect_err("missing node_id must fail");
+        assert!(err.contains("Missing required field: node_id"));
+
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn test_from_file_auto_bootstrap_conflicts_with_join_targets() {
+        let file = unique_test_file("bootstrap_join_conflict");
+        let content = r#"
+node_id = 9
+
+[cluster]
+auto_bootstrap = true
+
+[join]
+targets = ["127.0.0.1:21001"]
+"#;
+        std::fs::write(&file, content).expect("write file");
+
+        let err =
+            KLogRuntimeConfig::from_file(&file).expect_err("bootstrap+join.targets must fail");
+        assert!(err.contains("auto_bootstrap=true"));
+
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
     fn test_from_buckyos_patch() {
         let patch = BuckyosKlogConfig {
             network: Some(KLogNetworkConfigPatch {
@@ -526,7 +583,7 @@ advertise_addr = "192.168.2.7"
             }),
             cluster: Some(KLogClusterConfigPatch {
                 name: Some("bk".to_string()),
-                auto_bootstrap: Some(true),
+                auto_bootstrap: Some(false),
             }),
             join: Some(KLogJoinConfigPatch {
                 targets: Some(vec!["10.0.0.1:21001".to_string()]),
@@ -551,7 +608,7 @@ advertise_addr = "192.168.2.7"
         assert_eq!(cfg.advertise_port, 23001);
         assert_eq!(cfg.data_dir, default_data_dir());
         assert_eq!(cfg.cluster_name, "bk");
-        assert!(cfg.auto_bootstrap);
+        assert!(!cfg.auto_bootstrap);
         assert!(!cfg.state_store_sync_write);
         assert_eq!(cfg.join_targets, vec!["10.0.0.1:21001".to_string()]);
         assert_eq!(cfg.join_retry_interval_ms, 6000);
