@@ -12,7 +12,7 @@ mod network;
 #[cfg(test)]
 mod state_machine;
 #[cfg(test)]
-mod storage;
+mod state_store;
 #[cfg(test)]
 mod test;
 

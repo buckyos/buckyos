@@ -1,6 +1,6 @@
 use crate::logs::{MemoryLogStorage, SqliteLogStorage};
 use crate::state_machine::{KLogMemoryStateMachine, SnapshotManager};
-use crate::storage::{KLogStorage, KLogStorageManager, SimpleLogStorage};
+use crate::state_store::{KLogStateStore, KLogStateStoreManager, MemoryStateStore};
 use crate::{KLogEntry, KLogRequest, KLogResponse, KNodeId, KTypeConfig, StorageResult};
 use openraft::entry::EntryPayload;
 use openraft::storage::{RaftLogStorage, RaftStateMachine};
@@ -21,11 +21,11 @@ impl TestMemoryContext {
     pub async fn new() -> Self {
         let log_storage = MemoryLogStorage::new();
 
-        let klog_storage = SimpleLogStorage::new();
-        let klog_storage = Arc::new(Box::new(klog_storage) as Box<dyn KLogStorage>);
+        let state_store = MemoryStateStore::new();
+        let state_store = Arc::new(Box::new(state_store) as Box<dyn KLogStateStore>);
 
-        let klog_storage_manager = KLogStorageManager::new(klog_storage.clone());
-        let klog_storage_manager = Arc::new(klog_storage_manager);
+        let state_store_manager = KLogStateStoreManager::new(state_store.clone());
+        let state_store_manager = Arc::new(state_store_manager);
 
         let data_dir = std::env::temp_dir().join("buckyos_klog_test");
         std::fs::create_dir_all(&data_dir).unwrap();
@@ -36,7 +36,7 @@ impl TestMemoryContext {
         snapshot_manager.clean_all_snapshots().await.unwrap();
 
         let state_machine =
-            KLogMemoryStateMachine::new(klog_storage_manager.clone(), snapshot_manager.clone());
+            KLogMemoryStateMachine::new(state_store_manager.clone(), snapshot_manager.clone());
 
         Self {
             log_storage,
@@ -72,11 +72,11 @@ impl TestSqliteContext {
         let log_storage = SqliteLogStorage::open(unique_test_path("sqlite_store.db"))
             .map_err(to_storage_error)?;
 
-        let klog_storage = SimpleLogStorage::new();
-        let klog_storage = Arc::new(Box::new(klog_storage) as Box<dyn KLogStorage>);
+        let state_store = MemoryStateStore::new();
+        let state_store = Arc::new(Box::new(state_store) as Box<dyn KLogStateStore>);
 
-        let klog_storage_manager = KLogStorageManager::new(klog_storage.clone());
-        let klog_storage_manager = Arc::new(klog_storage_manager);
+        let state_store_manager = KLogStateStoreManager::new(state_store.clone());
+        let state_store_manager = Arc::new(state_store_manager);
 
         let data_dir = unique_test_path("sqlite_snapshot");
         std::fs::create_dir_all(&data_dir).map_err(to_storage_error)?;
@@ -87,7 +87,7 @@ impl TestSqliteContext {
         snapshot_manager.clean_all_snapshots().await?;
 
         let state_machine =
-            KLogMemoryStateMachine::new(klog_storage_manager.clone(), snapshot_manager.clone());
+            KLogMemoryStateMachine::new(state_store_manager.clone(), snapshot_manager.clone());
 
         Ok(Self {
             log_storage,
@@ -238,9 +238,9 @@ async fn test_sqlite_and_memory_storage_equivalence() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_prepare_append_entry_assigns_id_on_leader_only() -> anyhow::Result<()> {
-    let storage = SimpleLogStorage::new();
-    let storage = Arc::new(Box::new(storage) as Box<dyn KLogStorage>);
-    let manager = KLogStorageManager::new(storage);
+    let state_store = MemoryStateStore::new();
+    let state_store = Arc::new(Box::new(state_store) as Box<dyn KLogStateStore>);
+    let manager = KLogStateStoreManager::new(state_store);
 
     let no_id_entry = KLogEntry {
         id: 0,

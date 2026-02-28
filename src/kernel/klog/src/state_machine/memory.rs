@@ -1,6 +1,6 @@
 use super::snapshot::{KSnapshotMeta, SnapshotManager, SnapshotManagerRef};
 use crate::state_machine::snapshot::KSnapshotData;
-use crate::storage::KLogStorageManagerRef;
+use crate::state_store::KLogStateStoreManagerRef;
 use crate::{KLogId, KLogRequest, KLogResponse, KNode, KNodeId, KTypeConfig, StorageResult};
 use openraft::{
     Entry, EntryPayload, OptionalSend, RaftSnapshotBuilder, SnapshotMeta, StoredMembership,
@@ -24,16 +24,19 @@ pub struct StateMachineData {
 pub struct KLogMemoryStateMachine {
     data: Arc<AsyncRwLock<StateMachineData>>,
 
-    log_storage: KLogStorageManagerRef,
+    state_store: KLogStateStoreManagerRef,
 
     snapshot_manager: SnapshotManagerRef,
 }
 
 impl KLogMemoryStateMachine {
-    pub fn new(log_storage: KLogStorageManagerRef, snapshot_manager: SnapshotManagerRef) -> Self {
+    pub fn new(
+        state_store: KLogStateStoreManagerRef,
+        snapshot_manager: SnapshotManagerRef,
+    ) -> Self {
         Self {
             data: Arc::new(AsyncRwLock::new(StateMachineData::default())),
-            log_storage,
+            state_store,
             snapshot_manager,
         }
     }
@@ -43,7 +46,7 @@ impl KLogMemoryStateMachine {
             KLogRequest::AppendLog { item } => {
                 // Id is expected to be assigned on leader before log replication.
                 // State machine apply must be deterministic and should not mutate ids.
-                match self.log_storage.append_prepared_entry(item).await {
+                match self.state_store.append_prepared_entry(item).await {
                     Ok(id) => KLogResponse::AppendOk { id },
                     Err(err) => KLogResponse::Err(err.to_string()),
                 }
@@ -168,8 +171,8 @@ impl RaftSnapshotBuilder<KTypeConfig> for KLogMemoryStateMachine {
             meta
         };
 
-        let klog_data = self.log_storage.build_snapshot().await.map_err(|e| {
-            let msg = format!("Failed to build log storage snapshot: {}", e);
+        let klog_data = self.state_store.build_snapshot().await.map_err(|e| {
+            let msg = format!("Failed to build state store snapshot: {}", e);
             error!("{}", msg);
             StorageError::IO {
                 source: StorageIOError::write_snapshot(None, &e),

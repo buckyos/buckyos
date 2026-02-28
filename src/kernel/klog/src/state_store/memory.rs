@@ -1,14 +1,14 @@
-use super::storage::{KLogStorage, KLogStorageSnapshot};
+use super::store::{KLogStateSnapshot, KLogStateStore};
 use crate::{KLogEntry, KLogError, KResult};
 use std::sync::Arc;
 use tokio::sync::Mutex as AsyncMutex;
 
-/// A simple in-memory log storage implementation
-pub struct SimpleLogStorage {
+/// A simple in-memory state store implementation.
+pub struct MemoryStateStore {
     logs: Arc<AsyncMutex<Vec<KLogEntry>>>,
 }
 
-impl SimpleLogStorage {
+impl MemoryStateStore {
     pub fn new() -> Self {
         Self {
             logs: Arc::new(AsyncMutex::new(Vec::new())),
@@ -17,7 +17,7 @@ impl SimpleLogStorage {
 }
 
 #[async_trait::async_trait]
-impl KLogStorage for SimpleLogStorage {
+impl KLogStateStore for MemoryStateStore {
     async fn append(&self, entries: Vec<KLogEntry>) -> KResult<()> {
         let mut logs = self.logs.lock().await;
         logs.extend(entries);
@@ -25,7 +25,7 @@ impl KLogStorage for SimpleLogStorage {
         Ok(())
     }
 
-    async fn build_snapshot(&self) -> KResult<KLogStorageSnapshot> {
+    async fn build_snapshot(&self) -> KResult<KLogStateSnapshot> {
         let logs = self.logs.lock().await;
         let data =
             bincode::serde::encode_to_vec(&*logs, bincode::config::legacy()).map_err(|e| {
@@ -34,6 +34,6 @@ impl KLogStorage for SimpleLogStorage {
                 KLogError::InvalidFormat(msg)
             })?;
 
-        Ok(KLogStorageSnapshot { data })
+        Ok(KLogStateSnapshot { data })
     }
 }
