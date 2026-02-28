@@ -1,12 +1,15 @@
-use super::request::{KLogAdminRequestType, RaftRequest, RaftRequestType, RaftResponse};
+use super::request::{
+    KLogAdminRequestType, KLogClusterStateResponse, RaftRequest, RaftRequestType, RaftResponse,
+};
 use crate::{KNode, KNodeId, KRaftRef};
+use axum::Json;
 use axum::Router;
 use axum::body::Bytes;
 use axum::error_handling::HandleErrorLayer;
 use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use openraft::error::{ClientWriteError, RaftError};
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -81,6 +84,7 @@ impl KNetworkServer {
         let vote_path = RaftRequestType::Vote.klog_path();
         let admin_add_learner_path = KLogAdminRequestType::AddLearner.klog_path();
         let admin_change_membership_path = KLogAdminRequestType::ChangeMembership.klog_path();
+        let admin_cluster_state_path = KLogAdminRequestType::ClusterState.klog_path();
         let control_rpc_routes = Router::new()
             .route(
                 &append_entries_path,
@@ -94,6 +98,10 @@ impl KNetworkServer {
             .route(
                 &admin_change_membership_path,
                 post(Self::handle_change_membership_request),
+            )
+            .route(
+                &admin_cluster_state_path,
+                get(Self::handle_cluster_state_request),
             )
             .route_layer(control_rpc_middleware);
 
@@ -121,7 +129,7 @@ impl KNetworkServer {
             .with_state(state);
 
         info!(
-            "KNetworkServer start listening at {}, control_limit_bytes={}, snapshot_limit_bytes={}, control_concurrency={}, snapshot_concurrency={}, control_timeout_ms={}, snapshot_timeout_ms={}, admin_add_learner_path={}, admin_change_membership_path={}",
+            "KNetworkServer start listening at {}, control_limit_bytes={}, snapshot_limit_bytes={}, control_concurrency={}, snapshot_concurrency={}, control_timeout_ms={}, snapshot_timeout_ms={}, admin_add_learner_path={}, admin_change_membership_path={}, admin_cluster_state_path={}",
             self.addr,
             CONTROL_RPC_BODY_LIMIT_BYTES,
             SNAPSHOT_RPC_BODY_LIMIT_BYTES,
@@ -130,7 +138,8 @@ impl KNetworkServer {
             CONTROL_RPC_TIMEOUT_MS,
             SNAPSHOT_RPC_TIMEOUT_MS,
             admin_add_learner_path,
-            admin_change_membership_path
+            admin_change_membership_path,
+            admin_cluster_state_path
         );
 
         let listener = tokio::net::TcpListener::bind(&self.addr)
@@ -359,6 +368,36 @@ impl KNetworkServer {
             }
             Err(err) => Self::raft_client_write_error_response("change-membership", err),
         }
+    }
+
+    async fn handle_cluster_state_request(State(state): State<KNetworkServerState>) -> Response {
+        let metrics = state.raft.metrics();
+        let metrics = metrics.borrow().clone();
+
+        let membership = metrics.membership_config.membership();
+        let voters = membership.voter_ids().collect::<Vec<_>>();
+        let learners = membership.learner_ids().collect::<Vec<_>>();
+        let nodes = metrics
+            .membership_config
+            .nodes()
+            .map(|(id, node)| (*id, node.clone()))
+            .collect();
+
+        let body = KLogClusterStateResponse {
+            node_id: metrics.id,
+            server_state: format!("{:?}", metrics.state),
+            current_leader: metrics.current_leader,
+            voters,
+            learners,
+            nodes,
+        };
+
+        info!(
+            "KNetworkServer admin cluster-state request: node_id={}, server_state={}, current_leader={:?}, voters={:?}, learners={:?}",
+            body.node_id, body.server_state, body.current_leader, body.voters, body.learners
+        );
+
+        (StatusCode::OK, Json(body)).into_response()
     }
 
     fn decode_request(expected: RaftRequestType, body: &[u8]) -> Result<RaftRequest, Response> {

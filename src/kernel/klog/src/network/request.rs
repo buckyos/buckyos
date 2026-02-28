@@ -1,4 +1,4 @@
-use crate::{KLogError, KNodeId, KResult, KTypeConfig};
+use crate::{KLogError, KNode, KNodeId, KResult, KTypeConfig};
 use openraft::error::PayloadTooLarge;
 use openraft::error::{InstallSnapshotError, RaftError};
 use openraft::network::RPCTypes;
@@ -8,6 +8,7 @@ use openraft::raft::{
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 const NETWORK_MAGIC: &[u8; 8] = b"KLOGRPC1";
 const NETWORK_VERSION_V1: u16 = 1;
@@ -56,6 +57,7 @@ impl RaftRequestType {
 pub enum KLogAdminRequestType {
     AddLearner,
     ChangeMembership,
+    ClusterState,
 }
 
 impl KLogAdminRequestType {
@@ -63,12 +65,23 @@ impl KLogAdminRequestType {
         match self {
             KLogAdminRequestType::AddLearner => "add-learner",
             KLogAdminRequestType::ChangeMembership => "change-membership",
+            KLogAdminRequestType::ClusterState => "cluster-state",
         }
     }
 
     pub fn klog_path(&self) -> String {
         format!("/klog/admin/{}", self.as_str())
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KLogClusterStateResponse {
+    pub node_id: KNodeId,
+    pub server_state: String,
+    pub current_leader: Option<KNodeId>,
+    pub voters: Vec<KNodeId>,
+    pub learners: Vec<KNodeId>,
+    pub nodes: BTreeMap<KNodeId, KNode>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -407,5 +420,21 @@ mod tests {
         assert!(matches!(err, KLogError::InvalidFormat(_)));
         let msg = err.to_string();
         assert!(msg.contains("rpc type mismatch"));
+    }
+
+    #[test]
+    fn test_admin_request_paths() {
+        assert_eq!(
+            KLogAdminRequestType::AddLearner.klog_path(),
+            "/klog/admin/add-learner"
+        );
+        assert_eq!(
+            KLogAdminRequestType::ChangeMembership.klog_path(),
+            "/klog/admin/change-membership"
+        );
+        assert_eq!(
+            KLogAdminRequestType::ClusterState.klog_path(),
+            "/klog/admin/cluster-state"
+        );
     }
 }
