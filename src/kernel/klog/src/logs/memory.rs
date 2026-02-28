@@ -18,6 +18,7 @@ type LogEntry = Entry<KTypeConfig>;
 struct MemoryLogState {
     last_purged: Option<LogId<KNodeId>>,
     last_applied: Option<LogId<KNodeId>>,
+    last_committed: Option<LogId<KNodeId>>,
     vote: Option<Vote<KNodeId>>,
 }
 
@@ -26,6 +27,7 @@ impl MemoryLogState {
         Self {
             last_purged: None,
             last_applied: None,
+            last_committed: None,
             vote: None,
         }
     }
@@ -121,6 +123,27 @@ impl RaftLogStorage<KTypeConfig> for MemoryLogStorage {
     async fn read_vote(&mut self) -> StorageResult<Option<Vote<KNodeId>>> {
         let state = self.state.lock().await;
         Ok(state.vote.clone())
+    }
+
+    async fn save_committed(&mut self, committed: Option<LogId<KNodeId>>) -> StorageResult<()> {
+        let mut state = self.state.lock().await;
+        if let (Some(cur), Some(new)) = (&state.last_committed, &committed) {
+            if new < cur {
+                warn!(
+                    "save_committed ignore rollback: current={}, incoming={}",
+                    cur, new
+                );
+                return Ok(());
+            }
+        }
+
+        state.last_committed = committed;
+        Ok(())
+    }
+
+    async fn read_committed(&mut self) -> StorageResult<Option<LogId<KNodeId>>> {
+        let state = self.state.lock().await;
+        Ok(state.last_committed.clone())
     }
 
     async fn append<I>(

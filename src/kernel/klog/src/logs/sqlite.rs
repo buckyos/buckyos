@@ -14,6 +14,7 @@ type LogEntry = Entry<KTypeConfig>;
 
 const META_VOTE: &str = "vote";
 const META_LAST_PURGED: &str = "last_purged";
+const META_COMMITTED: &str = "committed";
 
 #[derive(Debug, Clone)]
 pub struct SqliteLogStorage {
@@ -156,6 +157,13 @@ impl SqliteLogStorage {
         Ok(())
     }
 
+    async fn delete_meta_value(&self, key: &str) -> StorageResult<()> {
+        let conn = self.conn.lock().await;
+        conn.execute("DELETE FROM raft_meta WHERE key = ?1", params![key])
+            .map_err(Self::sql_write_err)?;
+        Ok(())
+    }
+
     #[cfg(test)]
     pub async fn append_entries_for_test<I>(&self, entries: I) -> StorageResult<()>
     where
@@ -260,6 +268,46 @@ impl RaftLogStorage<KTypeConfig> for SqliteLogStorage {
         let v = self.read_meta_value(META_VOTE).await?;
         match v {
             Some(bytes) => Ok(Some(Self::de::<Vote<KNodeId>>(&bytes, "vote")?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn save_committed(&mut self, committed: Option<LogId<KNodeId>>) -> StorageResult<()> {
+        let current = self.read_committed().await?;
+        if current == committed {
+            return Ok(());
+        }
+
+        if let (Some(cur), Some(new)) = (current, committed.clone()) {
+            if new < cur {
+                warn!(
+                    "sqlite::save_committed ignore rollback: current={}, incoming={}",
+                    cur, new
+                );
+                return Ok(());
+            }
+        }
+
+        match committed {
+            Some(log_id) => {
+                debug!("sqlite::save_committed: {}", log_id);
+                let encoded = Self::ser(&log_id)?;
+                self.write_meta_value(META_COMMITTED, &encoded).await
+            }
+            None => {
+                debug!("sqlite::save_committed clear committed");
+                self.delete_meta_value(META_COMMITTED).await
+            }
+        }
+    }
+
+    async fn read_committed(&mut self) -> StorageResult<Option<LogId<KNodeId>>> {
+        let v = self.read_meta_value(META_COMMITTED).await?;
+        match v {
+            Some(bytes) => Ok(Some(Self::de::<LogId<KNodeId>>(
+                &bytes,
+                "committed log id",
+            )?)),
             None => Ok(None),
         }
     }

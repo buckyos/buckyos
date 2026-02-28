@@ -267,6 +267,42 @@ async fn test_sqlite_and_memory_storage_equivalence() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+async fn test_sqlite_committed_log_id_persistence_after_reopen() -> anyhow::Result<()> {
+    let path = unique_test_path("sqlite_committed_persistence.db");
+    let mut sqlite = SqliteLogStorage::open(&path).map_err(anyhow::Error::msg)?;
+
+    let committed = LogId::new(CommittedLeaderId::new(7, 1), 42);
+    sqlite.save_committed(Some(committed)).await?;
+    assert_eq!(sqlite.read_committed().await?, Some(committed));
+    drop(sqlite);
+
+    let mut reopened = SqliteLogStorage::open(&path).map_err(anyhow::Error::msg)?;
+    assert_eq!(reopened.read_committed().await?, Some(committed));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_log_storage_committed_log_id_is_monotonic() -> anyhow::Result<()> {
+    let mut memory = MemoryLogStorage::new();
+    let mut sqlite = SqliteLogStorage::open(unique_test_path("sqlite_committed_monotonic.db"))
+        .map_err(anyhow::Error::msg)?;
+
+    let high = LogId::new(CommittedLeaderId::new(3, 2), 18);
+    let low = LogId::new(CommittedLeaderId::new(2, 2), 15);
+
+    memory.save_committed(Some(high)).await?;
+    memory.save_committed(Some(low)).await?;
+    assert_eq!(memory.read_committed().await?, Some(high));
+
+    sqlite.save_committed(Some(high)).await?;
+    sqlite.save_committed(Some(low)).await?;
+    assert_eq!(sqlite.read_committed().await?, Some(high));
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_prepare_append_entry_assigns_id_on_leader_only() -> anyhow::Result<()> {
     let state_store = MemoryStateStore::new();
     let state_store = Arc::new(Box::new(state_store) as Box<dyn KLogStateStore>);
