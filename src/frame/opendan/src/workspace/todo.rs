@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use buckyos_api::KEventClient;
-use log::warn;
+use log::{info, warn};
 use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection};
 use serde::Serialize;
 use serde_json::{json, Value as Json};
@@ -67,12 +67,24 @@ impl TodoTool {
         }
 
         if let Some(parent) = cfg.db_path.parent() {
+            if !parent.exists() {
+                info!(
+                    "opendan.persist_entity_prepare: kind=todo_db_parent_dir path={}",
+                    parent.display()
+                );
+            }
             std::fs::create_dir_all(parent).map_err(|err| {
                 AgentToolError::ExecFailed(format!(
                     "create todo db parent dir `{}` failed: {err}",
                     parent.display()
                 ))
             })?;
+        }
+        if !cfg.db_path.exists() {
+            info!(
+                "opendan.persist_entity_prepare: kind=todo_db_file path={}",
+                cfg.db_path.display()
+            );
         }
 
         let conn = Connection::open(&cfg.db_path).map_err(|err| {

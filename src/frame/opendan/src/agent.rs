@@ -194,6 +194,10 @@ impl AIAgent {
             .map_err(|err| anyhow!("invalid agent config: {err}"))?;
 
         let agent_root = to_abs_path(&cfg.agent_root)?;
+        info!(
+            "agent.persist_entity_prepare: kind=agent_root path={}",
+            agent_root.display()
+        );
         fs::create_dir_all(&agent_root).await.map_err(|err| {
             anyhow!(
                 "create agent root failed: path={} err={}",
@@ -215,6 +219,10 @@ impl AIAgent {
             .unwrap_or_else(|| "# Self\n- Keep tasks traceable\n".to_string());
 
         let behaviors_dir = agent_root.join(&cfg.behaviors_dir_name);
+        info!(
+            "agent.persist_entity_prepare: kind=behaviors_dir path={}",
+            behaviors_dir.display()
+        );
         fs::create_dir_all(&behaviors_dir).await.map_err(|err| {
             anyhow!(
                 "create behaviors dir failed: path={} err={}",
@@ -268,7 +276,7 @@ impl AIAgent {
                 .await
                 .map_err(|err| anyhow!("init worklog sink failed: {err}"))?,
         );
-        let kevent_source_node = Self::sanitize_kevent_token(did.as_str());
+        let kevent_source_node = owner_did.to_raw_host_name();
 
         let agent = Self {
             cfg,
@@ -422,17 +430,28 @@ impl AIAgent {
         wait_timeout_ms: u64,
     ) -> Result<(Vec<PulledMsg>, Vec<PulledEvent>, bool)> {
         let Some(event_reader) = self.ensure_msg_center_event_reader().await else {
+            debug!(
+                "agent.event_reader_unavailable: did={} fallback=poll_all_boxes",
+                self.did
+            );
             let pulled_msgs = self.pull_msg_packs().await;
             return Ok((pulled_msgs, vec![], false));
         };
         let mut pulled_events = Vec::<PulledEvent>::new();
         let mut msg_pull_boxes = Vec::<BoxKind>::new();
+        let reader_id = event_reader.reader_id().to_string();
         match event_reader.pull_event(Some(wait_timeout_ms)).await {
             Ok(Some(event)) => {
+                info!(
+                    "agent.event_pull_hit: did={} reader_id={} timeout_ms={} event_id={}",
+                    self.did, reader_id, wait_timeout_ms, event.eventid
+                );
                 Self::collect_event_pull_targets(event, &mut msg_pull_boxes, &mut pulled_events);
+                let mut drained_events = 0usize;
                 for _ in 0..MAX_EVENT_PULL_PER_TICK.saturating_sub(1) {
                     match event_reader.pull_event(Some(0)).await {
                         Ok(Some(event)) => {
+                            drained_events = drained_events.saturating_add(1);
                             Self::collect_event_pull_targets(
                                 event,
                                 &mut msg_pull_boxes,
@@ -441,7 +460,10 @@ impl AIAgent {
                         }
                         Ok(None) => break,
                         Err(err) => {
-                            warn!("agent.event_pull_failed: did={} err={:?}", self.did, err);
+                            warn!(
+                                "agent.event_pull_failed: did={} reader_id={} phase=drain err={:?}",
+                                self.did, reader_id, err
+                            );
                             if matches!(err, KEventError::ReaderClosed(_)) {
                                 self.reset_msg_center_event_reader().await;
                             }
@@ -449,13 +471,26 @@ impl AIAgent {
                         }
                     }
                 }
+                if drained_events > 0 {
+                    debug!(
+                        "agent.event_pull_drain: did={} reader_id={} drained={}",
+                        self.did, reader_id, drained_events
+                    );
+                }
             }
             Ok(None) => {
                 // KEvent is a poll accelerator. Timeout still falls back to queue pull.
+                info!(
+                    "agent.event_pull_timeout: did={} reader_id={} timeout_ms={}",
+                    self.did, reader_id, wait_timeout_ms
+                );
                 Self::append_all_msg_center_boxes(&mut msg_pull_boxes);
             }
             Err(err) => {
-                warn!("agent.event_pull_failed: did={} err={:?}", self.did, err);
+                warn!(
+                    "agent.event_pull_failed: did={} reader_id={} phase=wait timeout_ms={} err={:?}",
+                    self.did, reader_id, wait_timeout_ms, err
+                );
                 if matches!(err, KEventError::ReaderClosed(_)) {
                     self.reset_msg_center_event_reader().await;
                 }
@@ -1119,16 +1154,32 @@ impl AIAgent {
                 let reader = Arc::new(reader);
                 *guard = Some(reader.clone());
                 debug!(
-                    "agent.event_reader_created: did={} patterns={:?}",
-                    self.did, patterns
+                    "agent.event_reader_created: did={} owner_did={} patterns={:?} reader_id={}",
+                    self.did,
+                    self.owner_did.to_string(),
+                    patterns,
+                    reader.reader_id()
                 );
                 Some(reader)
             }
             Err(err) => {
-                debug!(
-                    "agent.event_reader_create_failed: did={} patterns={:?} err={:?}",
-                    self.did, patterns, err
-                );
+                if matches!(err, KEventError::InvalidPattern(_)) {
+                    warn!(
+                        "agent.event_reader_create_failed: did={} owner_did={} reason=invalid_pattern patterns={:?} err={:?}",
+                        self.did,
+                        self.owner_did.to_string(),
+                        patterns,
+                        err
+                    );
+                } else {
+                    debug!(
+                        "agent.event_reader_create_failed: did={} owner_did={} patterns={:?} err={:?}",
+                        self.did,
+                        self.owner_did.to_string(),
+                        patterns,
+                        err
+                    );
+                }
                 None
             }
         }
@@ -1195,6 +1246,10 @@ impl AIAgent {
 
     fn kevent_event_to_pulled(event: Event) -> Option<PulledEvent> {
         if event.eventid.starts_with("/msg_center/") {
+            debug!(
+                "agent.kevent_event_ignored: scope=msg_center event_id={}",
+                event.eventid
+            );
             return None;
         }
         let session_id = extract_session_id_hint(&event.data).or_else(|| {
@@ -1217,7 +1272,7 @@ impl AIAgent {
 
     fn build_session_queue_binding(&self, session_id: &str) -> SessionQueueBinding {
         let session_token = Self::sanitize_kevent_token(session_id);
-        let owner_token = Self::sanitize_kevent_token(self.did.as_str());
+        let owner_token = self.owner_did.to_raw_host_name();
         let msg_queue_name = Self::get_session_kmsgqueue_uid(session_id, InputQueueKind::Msg);
         let event_queue_name = Self::get_session_kmsgqueue_uid(session_id, InputQueueKind::Event);
         SessionQueueBinding {
@@ -1243,10 +1298,122 @@ impl AIAgent {
         }
     }
 
-    fn queue_already_exists(err: &kRPC::RPCErrors) -> bool {
-        err.to_string()
-            .to_ascii_lowercase()
-            .contains("already exists")
+    fn queue_resource_not_found(err: &kRPC::RPCErrors) -> bool {
+        err.to_string().to_ascii_lowercase().contains("not found")
+    }
+
+    fn queue_resource_already_exists(err: &kRPC::RPCErrors) -> bool {
+        err.to_string().to_ascii_lowercase().contains("already exists")
+    }
+
+    async fn ensure_session_queue_exists(
+        &self,
+        msg_queue: &MsgQueueClient,
+        session_id: &str,
+        queue_name: &str,
+        queue_urn: &str,
+        queue_cfg: QueueConfig,
+    ) -> Result<()> {
+        match msg_queue.get_queue_stats(queue_urn).await {
+            Ok(_) => Ok(()),
+            Err(check_err) => {
+                if !Self::queue_resource_not_found(&check_err) {
+                    warn!(
+                        "check session queue failed, fallback create: session={} queue={} err={}",
+                        session_id,
+                        queue_urn,
+                        check_err
+                    );
+                }
+                info!(
+                    "agent.persist_entity_prepare: kind=kmsgqueue session={} queue_name={} queue_urn={}",
+                    session_id, queue_name, queue_urn
+                );
+                match msg_queue
+                    .create_queue(
+                        Some(queue_name),
+                        SESSION_QUEUE_APP_ID,
+                        self.did.as_str(),
+                        queue_cfg,
+                    )
+                    .await
+                {
+                    Ok(_) => Ok(()),
+                    Err(create_err) => {
+                        if Self::queue_resource_already_exists(&create_err) {
+                            return Ok(());
+                        }
+                        match msg_queue.get_queue_stats(queue_urn).await {
+                            Ok(_) => Ok(()),
+                            Err(recheck_err) => Err(anyhow!(
+                                "ensure session queue failed: session={} queue={} check_err={} create_err={} recheck_err={}",
+                                session_id,
+                                queue_urn,
+                                check_err,
+                                create_err,
+                                recheck_err
+                            )),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    async fn ensure_session_queue_subscription_exists(
+        &self,
+        msg_queue: &MsgQueueClient,
+        session_id: &str,
+        queue_urn: &str,
+        sub_id: &str,
+    ) -> Result<()> {
+        match msg_queue.fetch_messages(sub_id, 1, false).await {
+            Ok(_) => Ok(()),
+            Err(check_err) => {
+                if !Self::queue_resource_not_found(&check_err) {
+                    warn!(
+                        "check session queue subscription failed, fallback subscribe: session={} queue={} sub_id={} err={}",
+                        session_id,
+                        queue_urn,
+                        sub_id,
+                        check_err
+                    );
+                }
+                info!(
+                    "agent.persist_entity_prepare: kind=kmsgqueue_subscription session={} queue_urn={} sub_id={}",
+                    session_id, queue_urn, sub_id
+                );
+                match msg_queue
+                    .subscribe(
+                        queue_urn,
+                        self.did.as_str(),
+                        SESSION_QUEUE_APP_ID,
+                        Some(sub_id.to_string()),
+                        SubPosition::Earliest,
+                    )
+                    .await
+                {
+                    Ok(_) => Ok(()),
+                    Err(subscribe_err) => {
+                        if Self::queue_resource_already_exists(&subscribe_err) {
+                            return Ok(());
+                        }
+                        match msg_queue.fetch_messages(sub_id, 1, false).await {
+                            Ok(_) => Ok(()),
+                            Err(recheck_err) => Err(anyhow!(
+                                "ensure session queue subscription failed: session={} queue={} sub_id={} check_err={} subscribe_err={} recheck_err={}",
+                                session_id,
+                                queue_urn,
+                                sub_id,
+                                check_err,
+                                subscribe_err,
+                                recheck_err
+                            )),
+                        }
+                    }
+                }
+            }
+        }
     }
 
     async fn ensure_session_queue_binding(
@@ -1277,113 +1444,51 @@ impl AIAgent {
             other_user_can_write: false,
         };
 
-        if let Err(err) = msg_queue
-            .create_queue(
-                Some(binding.msg_queue_name.as_str()),
-                SESSION_QUEUE_APP_ID,
-                self.did.as_str(),
-                queue_cfg.clone(),
-            )
-            .await
-        {
-            if !Self::queue_already_exists(&err) {
-                return Err(anyhow!(
-                    "create session msg queue failed: session={} err={}",
-                    session_id,
-                    err
-                ));
-            }
-        }
-        if let Err(err) = msg_queue
-            .create_queue(
-                Some(binding.event_queue_name.as_str()),
-                SESSION_QUEUE_APP_ID,
-                self.did.as_str(),
-                queue_cfg,
-            )
-            .await
-        {
-            if !Self::queue_already_exists(&err) {
-                return Err(anyhow!(
-                    "create session event queue failed: session={} err={}",
-                    session_id,
-                    err
-                ));
-            }
-        }
+        self.ensure_session_queue_exists(
+            msg_queue.as_ref(),
+            session_id,
+            binding.msg_queue_name.as_str(),
+            binding.msg_queue_urn.as_str(),
+            queue_cfg.clone(),
+        )
+        .await?;
+        self.ensure_session_queue_exists(
+            msg_queue.as_ref(),
+            session_id,
+            binding.event_queue_name.as_str(),
+            binding.event_queue_urn.as_str(),
+            queue_cfg,
+        )
+        .await?;
 
-        if let Err(err) = msg_queue
-            .subscribe(
-                binding.msg_queue_urn.as_str(),
-                self.did.as_str(),
-                SESSION_QUEUE_APP_ID,
-                Some(binding.msg_sub_id.clone()),
-                SubPosition::Earliest,
-            )
-            .await
-        {
-            if !Self::queue_already_exists(&err) {
-                return Err(anyhow!(
-                    "subscribe session msg queue failed: session={} err={}",
-                    session_id,
-                    err
-                ));
-            }
-        }
-        if let Err(err) = msg_queue
-            .subscribe(
-                binding.event_queue_urn.as_str(),
-                self.did.as_str(),
-                SESSION_QUEUE_APP_ID,
-                Some(binding.event_sub_id.clone()),
-                SubPosition::Earliest,
-            )
-            .await
-        {
-            if !Self::queue_already_exists(&err) {
-                return Err(anyhow!(
-                    "subscribe session event queue failed: session={} err={}",
-                    session_id,
-                    err
-                ));
-            }
-        }
-        if let Err(err) = msg_queue
-            .subscribe(
-                binding.msg_queue_urn.as_str(),
-                self.did.as_str(),
-                SESSION_QUEUE_APP_ID,
-                Some(binding.msg_history_sub_id.clone()),
-                SubPosition::Earliest,
-            )
-            .await
-        {
-            if !Self::queue_already_exists(&err) {
-                return Err(anyhow!(
-                    "subscribe session msg history queue failed: session={} err={}",
-                    session_id,
-                    err
-                ));
-            }
-        }
-        if let Err(err) = msg_queue
-            .subscribe(
-                binding.event_queue_urn.as_str(),
-                self.did.as_str(),
-                SESSION_QUEUE_APP_ID,
-                Some(binding.event_history_sub_id.clone()),
-                SubPosition::Earliest,
-            )
-            .await
-        {
-            if !Self::queue_already_exists(&err) {
-                return Err(anyhow!(
-                    "subscribe session event history queue failed: session={} err={}",
-                    session_id,
-                    err
-                ));
-            }
-        }
+        self.ensure_session_queue_subscription_exists(
+            msg_queue.as_ref(),
+            session_id,
+            binding.msg_queue_urn.as_str(),
+            binding.msg_sub_id.as_str(),
+        )
+        .await?;
+        self.ensure_session_queue_subscription_exists(
+            msg_queue.as_ref(),
+            session_id,
+            binding.event_queue_urn.as_str(),
+            binding.event_sub_id.as_str(),
+        )
+        .await?;
+        self.ensure_session_queue_subscription_exists(
+            msg_queue.as_ref(),
+            session_id,
+            binding.msg_queue_urn.as_str(),
+            binding.msg_history_sub_id.as_str(),
+        )
+        .await?;
+        self.ensure_session_queue_subscription_exists(
+            msg_queue.as_ref(),
+            session_id,
+            binding.event_queue_urn.as_str(),
+            binding.event_history_sub_id.as_str(),
+        )
+        .await?;
 
         self.session_queue_bindings
             .write()
@@ -1407,7 +1512,7 @@ impl AIAgent {
         session_id: &str,
         kind: InputQueueKind,
     ) -> String {
-        let owner_token = Self::sanitize_kevent_token(owner_id);
+        let owner_token = Self::did_token_or_sanitized(owner_id);
         let session_token = Self::sanitize_kevent_token(session_id);
         let kind_token = match kind {
             InputQueueKind::Msg => "msg",
@@ -2024,6 +2129,13 @@ impl AIAgent {
             })
             .collect()
     }
+
+    fn did_token_or_sanitized(raw: &str) -> String {
+        DID::from_str(raw)
+            .map(|did| did.to_raw_host_name())
+            .unwrap_or_else(|_| Self::sanitize_kevent_token(raw))
+    }
+
 }
 
 fn apply_session_behavior_transition(
@@ -2126,6 +2238,10 @@ async fn resolve_workspace_root(agent_root: &Path, env_name: &str) -> Result<Pat
         normal
     };
 
+    info!(
+        "agent.persist_entity_prepare: kind=workspace_root path={}",
+        root.display()
+    );
     fs::create_dir_all(&root).await.map_err(|err| {
         anyhow!(
             "create workspace root failed: path={} err={}",
@@ -2394,6 +2510,10 @@ struct JsonlWorklogSink {
 impl JsonlWorklogSink {
     async fn new(path: PathBuf) -> Result<Self> {
         if let Some(parent) = path.parent() {
+            info!(
+                "agent.persist_entity_prepare: kind=worklog_dir path={}",
+                parent.display()
+            );
             fs::create_dir_all(parent).await.map_err(|err| {
                 anyhow!(
                     "create worklog dir failed: path={} err={}",

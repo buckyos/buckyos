@@ -8,7 +8,7 @@ use buckyos_api::{
     get_buckyos_api_runtime, MsgRecord, MsgRecordWithObject, OpenDanAgentSessionRecord,
     OpenDanSessionLink,
 };
-use log::warn;
+use log::{info, warn};
 use name_lib::DID;
 use ndn_lib::MsgObject;
 use serde::{Deserialize, Serialize};
@@ -448,6 +448,13 @@ impl AgentSession {
             }
         };
 
+        if !is_existing_dir(&session_dir).await {
+            info!(
+                "agent.persist_entity_prepare: kind=session_msg_record_dir session_id={} path={}",
+                raw_session,
+                session_dir.display()
+            );
+        }
         fs::create_dir_all(&session_dir).await.map_err(|err| {
             AgentToolError::ExecFailed(format!(
                 "create session dir `{}` failed: {err}",
@@ -464,6 +471,13 @@ impl AgentSession {
         })?;
 
         let msg_record_path = session_dir.join(DEFAULT_MSG_RECORD_FILE);
+        if !is_existing_file(&msg_record_path).await {
+            info!(
+                "agent.persist_entity_prepare: kind=session_msg_record_file session_id={} path={}",
+                raw_session,
+                msg_record_path.display()
+            );
+        }
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -507,6 +521,13 @@ impl AgentSessionMgr {
         let owner_agent = owner_agent.into();
         let sessions_root = sessions_root.into();
 
+        if !is_existing_dir(&sessions_root).await {
+            info!(
+                "agent.persist_entity_prepare: kind=sessions_root owner_agent={} path={}",
+                owner_agent,
+                sessions_root.display()
+            );
+        }
         fs::create_dir_all(&sessions_root).await.map_err(|err| {
             AgentToolError::ExecFailed(format!(
                 "create sessions dir `{}` failed: {err}",
@@ -556,6 +577,11 @@ impl AgentSessionMgr {
         if let Some(existing) = self.get_session(session_id.as_str()).await {
             return Ok(existing);
         }
+        info!(
+            "agent.persist_entity_prepare: kind=session_entity owner_agent={} session_id={}",
+            self.owner_agent,
+            session_id
+        );
 
         let behavior = behavior.map(str::trim).filter(|value| !value.is_empty());
 
@@ -815,6 +841,13 @@ impl AgentSessionMgr {
     ) -> Result<(), AgentToolError> {
         let session_id = sanitize_session_id(record.session_id.as_str())?;
         let session_dir = self.sessions_root.join(session_id.as_str());
+        if !is_existing_dir(&session_dir).await {
+            info!(
+                "agent.persist_entity_prepare: kind=session_dir session_id={} path={}",
+                session_id,
+                session_dir.display()
+            );
+        }
         fs::create_dir_all(&session_dir).await.map_err(|err| {
             AgentToolError::ExecFailed(format!(
                 "create session dir `{}` failed: {err}",
@@ -823,6 +856,13 @@ impl AgentSessionMgr {
         })?;
 
         let session_file = session_dir.join(DEFAULT_SESSION_FILE);
+        if !is_existing_file(&session_file).await {
+            info!(
+                "agent.persist_entity_prepare: kind=session_file session_id={} path={}",
+                session_id,
+                session_file.display()
+            );
+        }
         let bytes = serde_json::to_vec_pretty(record).map_err(|err| {
             AgentToolError::ExecFailed(format!("serialize session record failed: {err}"))
         })?;
@@ -974,6 +1014,13 @@ async fn is_existing_file(path: &Path) -> bool {
     fs::metadata(path)
         .await
         .map(|meta| meta.is_file())
+        .unwrap_or(false)
+}
+
+async fn is_existing_dir(path: &Path) -> bool {
+    fs::metadata(path)
+        .await
+        .map(|meta| meta.is_dir())
         .unwrap_or(false)
 }
 

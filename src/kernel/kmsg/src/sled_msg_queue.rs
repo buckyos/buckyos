@@ -36,7 +36,16 @@ impl RPCHandler for SledMsgQueueServer {
         req: RPCRequest,
         ip_from: std::net::IpAddr,
     ) -> std::result::Result<RPCResponse, RPCErrors> {
-        self.handler.handle_rpc_call(req, ip_from).await
+        let req_seq = req.seq;
+        let req_trace_id = req.trace_id.clone();
+        match self.handler.handle_rpc_call(req, ip_from).await {
+            Ok(resp) => Ok(resp),
+            Err(err) => Ok(RPCResponse {
+                result: RPCResult::Failed(err.to_string()),
+                seq: req_seq,
+                trace_id: req_trace_id,
+            }),
+        }
     }
 }
 

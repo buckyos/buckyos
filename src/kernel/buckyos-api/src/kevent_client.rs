@@ -932,7 +932,7 @@ fn validate_local_name(name: &str, _allow_wildcard: bool) -> std::result::Result
 }
 
 fn is_valid_name_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'
+    ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.'
 }
 
 pub fn match_global_pattern(pattern: &str, eventid: &str) -> bool {

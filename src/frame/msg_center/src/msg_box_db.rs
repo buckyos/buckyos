@@ -381,7 +381,7 @@ CREATE TABLE IF NOT EXISTS msg_refs (
     fn owner_db_path(&self, owner: &DID) -> PathBuf {
         self.root_dir.join(format!(
             "{}.sqlite3",
-            sanitize_for_filename(&owner.to_string())
+            sanitize_for_filename(&owner.to_raw_host_name())
         ))
     }
 }

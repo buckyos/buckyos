@@ -102,10 +102,28 @@ impl AgentMemory {
         let state_path = memory_dir.join(&cfg.state_file_name);
         let index_root = memory_dir.join(&cfg.index_dir_name);
 
+        if fs::metadata(&index_root).await.is_err() {
+            info!(
+                "opendan.persist_entity_prepare: kind=memory_index_dir path={}",
+                index_root.display()
+            );
+        }
         fs::create_dir_all(&index_root).await.map_err(|err| {
             AgentToolError::ExecFailed(format!("create memory index dir failed: {err}"))
         })?;
+        if fs::metadata(&log_path).await.is_err() {
+            info!(
+                "opendan.persist_entity_prepare: kind=memory_log_file path={}",
+                log_path.display()
+            );
+        }
         touch_file(&log_path).await?;
+        if fs::metadata(&state_path).await.is_err() {
+            info!(
+                "opendan.persist_entity_prepare: kind=memory_state_file path={}",
+                state_path.display()
+            );
+        }
         touch_file(&state_path).await?;
 
         let instance = Self {

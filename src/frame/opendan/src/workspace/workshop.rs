@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+use log::info;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::fs;
@@ -603,6 +604,14 @@ async fn create_minimal_workspace_dirs(workspace_root: &Path) -> Result<(), Agen
         workspace_root.join("artifacts"),
     ];
     for dir in roots {
+        if !fs::try_exists(&dir).await.map_err(|err| {
+            AgentToolError::ExecFailed(format!("check dir `{}` failed: {err}", dir.display()))
+        })? {
+            info!(
+                "opendan.persist_entity_prepare: kind=workshop_root_dir path={}",
+                dir.display()
+            );
+        }
         fs::create_dir_all(&dir).await.map_err(|err| {
             AgentToolError::ExecFailed(format!("create dir `{}` failed: {err}", dir.display()))
         })?;

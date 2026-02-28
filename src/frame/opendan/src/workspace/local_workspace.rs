@@ -3,6 +3,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use log::info;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tokio::sync::Mutex;
@@ -369,12 +370,32 @@ impl LocalWorkspaceManager {
             .to_string();
         let abs_path = self.cfg.workshop_root.join(&relative_path);
 
+        if !fs::try_exists(&abs_path)
+            .await
+            .map_err(|err| io_error("check local workspace", &abs_path, err))?
+        {
+            info!(
+                "opendan.persist_entity_prepare: kind=local_workspace workspace_id={} path={}",
+                workspace_id,
+                abs_path.display()
+            );
+        }
         fs::create_dir_all(&abs_path)
             .await
             .map_err(|err| io_error("create local workspace", &abs_path, err))?;
 
         if let Some(template) = req.template.as_ref() {
             let template_marker = abs_path.join(".template");
+            if !fs::try_exists(&template_marker)
+                .await
+                .map_err(|err| io_error("check workspace template marker", &template_marker, err))?
+            {
+                info!(
+                    "opendan.persist_entity_prepare: kind=workspace_template_marker workspace_id={} path={}",
+                    workspace_id,
+                    template_marker.display()
+                );
+            }
             fs::write(&template_marker, template.as_bytes())
                 .await
                 .map_err(|err| {
@@ -803,6 +824,15 @@ impl LocalWorkspaceManager {
         };
         let binding_path = self.cfg.workshop_root.join(SESSION_BINDINGS_REL_PATH);
         if let Some(parent) = binding_path.parent() {
+            if !fs::try_exists(parent)
+                .await
+                .map_err(|err| io_error("check bindings dir", parent, err))?
+            {
+                info!(
+                    "opendan.persist_entity_prepare: kind=session_bindings_dir path={}",
+                    parent.display()
+                );
+            }
             fs::create_dir_all(parent)
                 .await
                 .map_err(|err| io_error("create bindings dir", parent, err))?;
@@ -936,6 +966,15 @@ async fn ensure_workshop_layout(workshop_root: &Path) -> Result<(), AgentToolErr
     ];
 
     for dir in dirs {
+        if !fs::try_exists(&dir)
+            .await
+            .map_err(|err| io_error("check workshop layout", &dir, err))?
+        {
+            info!(
+                "opendan.persist_entity_prepare: kind=workshop_layout_dir path={}",
+                dir.display()
+            );
+        }
         fs::create_dir_all(&dir)
             .await
             .map_err(|err| io_error("create workshop layout", &dir, err))?;
@@ -1118,11 +1157,29 @@ async fn read_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, 
 
 async fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), AgentToolError> {
     if let Some(parent) = path.parent() {
+        if !fs::try_exists(parent)
+            .await
+            .map_err(|err| io_error("check json parent dir", parent, err))?
+        {
+            info!(
+                "opendan.persist_entity_prepare: kind=json_parent_dir path={}",
+                parent.display()
+            );
+        }
         fs::create_dir_all(parent)
             .await
             .map_err(|err| io_error("create json parent dir", parent, err))?;
     }
 
+    if !fs::try_exists(path)
+        .await
+        .map_err(|err| io_error("check json target file", path, err))?
+    {
+        info!(
+            "opendan.persist_entity_prepare: kind=json_file path={}",
+            path.display()
+        );
+    }
     let payload = serde_json::to_vec_pretty(value)
         .map_err(|err| AgentToolError::ExecFailed(format!("serialize json failed: {err}")))?;
 

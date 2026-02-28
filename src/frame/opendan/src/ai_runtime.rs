@@ -13,6 +13,7 @@ use buckyos_api::{
     OpenDanWorkspaceInfo, OpenDanWorkspaceSubAgentsResult, OpenDanWorkspaceTodosResult,
     OpenDanWorkspaceWorklogsResult,
 };
+use log::info;
 use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
@@ -158,6 +159,10 @@ impl AiRuntime {
     pub async fn new(mut cfg: AiRuntimeConfig) -> Result<Self, AiRuntimeError> {
         validate_runtime_config(&cfg)?;
         let agents_root = normalize_abs_path(&to_abs_path(&cfg.agents_root)?);
+        info!(
+            "opendan.persist_entity_prepare: kind=agents_root path={}",
+            agents_root.display()
+        );
         fs::create_dir_all(&agents_root)
             .await
             .map_err(|source| AiRuntimeError::Io {
@@ -204,6 +209,11 @@ impl AiRuntime {
         }
 
         let root = normalize_abs_path(&to_abs_path(&agent_root.into())?);
+        info!(
+            "opendan.persist_entity_prepare: kind=agent_root did={} path={}",
+            did,
+            root.display()
+        );
         fs::create_dir_all(&root)
             .await
             .map_err(|source| AiRuntimeError::Io {
@@ -432,6 +442,11 @@ impl AiRuntime {
         let mount_base = agent_root
             .join(&self.cfg.environment_dir_name)
             .join(&self.cfg.external_workspaces_dir_name);
+        info!(
+            "opendan.persist_entity_prepare: kind=external_workspace_mount_base agent_did={} path={}",
+            did,
+            mount_base.display()
+        );
         fs::create_dir_all(&mount_base)
             .await
             .map_err(|source| AiRuntimeError::Io {
@@ -1991,6 +2006,18 @@ async fn create_minimal_agent_layout(
     ];
 
     for dir in dirs {
+        if !fs::try_exists(&dir)
+            .await
+            .map_err(|source| AiRuntimeError::Io {
+                path: dir.display().to_string(),
+                source,
+            })?
+        {
+            info!(
+                "opendan.persist_entity_prepare: kind=agent_layout_dir path={}",
+                dir.display()
+            );
+        }
         fs::create_dir_all(&dir)
             .await
             .map_err(|source| AiRuntimeError::Io {
@@ -2004,12 +2031,36 @@ async fn create_minimal_agent_layout(
 
 async fn write_json_file(path: PathBuf, value: &Json) -> Result<(), AiRuntimeError> {
     if let Some(parent) = path.parent() {
+        if !fs::try_exists(parent)
+            .await
+            .map_err(|source| AiRuntimeError::Io {
+                path: parent.display().to_string(),
+                source,
+            })?
+        {
+            info!(
+                "opendan.persist_entity_prepare: kind=json_parent_dir path={}",
+                parent.display()
+            );
+        }
         fs::create_dir_all(parent)
             .await
             .map_err(|source| AiRuntimeError::Io {
                 path: parent.display().to_string(),
                 source,
             })?;
+    }
+    if !fs::try_exists(&path)
+        .await
+        .map_err(|source| AiRuntimeError::Io {
+            path: path.display().to_string(),
+            source,
+        })?
+    {
+        info!(
+            "opendan.persist_entity_prepare: kind=json_file path={}",
+            path.display()
+        );
     }
     let payload = serde_json::to_string_pretty(value).map_err(|source| AiRuntimeError::Json {
         path: path.display().to_string(),
@@ -2113,6 +2164,18 @@ async fn ensure_mount_link(mount_path: &Path, source_path: &Path) -> Result<(), 
     }
 
     if let Some(parent) = mount_path.parent() {
+        if !fs::try_exists(parent)
+            .await
+            .map_err(|source| AiRuntimeError::Io {
+                path: parent.display().to_string(),
+                source,
+            })?
+        {
+            info!(
+                "opendan.persist_entity_prepare: kind=mount_parent_dir path={}",
+                parent.display()
+            );
+        }
         fs::create_dir_all(parent)
             .await
             .map_err(|source| AiRuntimeError::Io {
@@ -2121,6 +2184,11 @@ async fn ensure_mount_link(mount_path: &Path, source_path: &Path) -> Result<(), 
             })?;
     }
 
+    info!(
+        "opendan.persist_entity_prepare: kind=workspace_mount_symlink source={} target={}",
+        source_path.display(),
+        mount_path.display()
+    );
     create_symlink(source_path, mount_path)
         .await
         .map_err(|source| AiRuntimeError::Io {

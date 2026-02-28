@@ -21,7 +21,7 @@ policy: |
 
 
 output_protocol:
-  mode: RouteResult
+  mode: behavior_llm_result
 
 # 不允许是用任何工具，限制了该behavior只能快速的完成
 # toolbox: 

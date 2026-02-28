@@ -804,7 +804,7 @@ impl GrammersTgGateway {
     fn session_file_name(binding: &TgBotBinding) -> String {
         format!(
             "{}__{}.session",
-            Self::sanitize(&binding.owner_did.to_string()),
+            Self::sanitize(&binding.owner_did.to_raw_host_name()),
             Self::sanitize(&binding.bot_account_id)
         )
     }

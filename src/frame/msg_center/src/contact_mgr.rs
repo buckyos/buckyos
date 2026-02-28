@@ -1159,7 +1159,7 @@ CREATE INDEX IF NOT EXISTS idx_group_subscribers_owner ON group_subscribers(owne
     ) -> std::result::Result<DID, RPCErrors> {
         let seq = self.next_did_seq()?;
         let owner_seed = owner
-            .map(|did| did.to_string())
+            .map(|did| did.to_raw_host_name())
             .unwrap_or_else(|| SYSTEM_OWNER_SCOPE.to_string());
 
         let subject = format!(

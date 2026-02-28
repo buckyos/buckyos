@@ -10,7 +10,7 @@ use buckyos_api::{
     SetGroupSubscribersResult,
 };
 use kRPC::{RPCContext, RPCErrors};
-use log::{info, warn};
+use log::{debug, info, warn};
 use name_lib::DID;
 use ndn_lib::{MsgObjKind, MsgObject, NamedObject, ObjId};
 use serde_json::{json, Value};
@@ -170,7 +170,7 @@ impl MessageCenter {
     }
 
     fn build_box_changed_event_id(owner: &DID, box_kind: &BoxKind) -> String {
-        let owner_token = Self::sanitize_token(&owner.to_string());
+        let owner_token = owner.to_raw_host_name();
         format!(
             "/msg_center/{}/box/{}/{}",
             owner_token,
@@ -204,12 +204,18 @@ impl MessageCenter {
         let client = Self::get_kevent_client();
 
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            debug!(
+                "msg_center.publish_box_changed_event: operation={} event_id={} record_id={}",
+                operation, event_id, record.record_id
+            );
             handle.spawn(async move {
                 if let Err(err) = client.pub_event(&event_id, payload).await {
                     warn!(
                         "publish msg_center box changed event failed: event_id={}, err={:?}",
                         event_id, err
                     );
+                } else {
+                    debug!("msg_center.box_changed_event_published: event_id={}", event_id);
                 }
             });
         } else {
