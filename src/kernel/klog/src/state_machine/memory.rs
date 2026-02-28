@@ -1,5 +1,6 @@
 use super::snapshot::{KSnapshotMeta, SnapshotManager, SnapshotManagerRef};
 use crate::state_machine::snapshot::KSnapshotData;
+use crate::state_store::KLogStateSnapshot;
 use crate::state_store::KLogStateStoreManagerRef;
 use crate::{KLogId, KLogRequest, KLogResponse, KNode, KNodeId, KTypeConfig, StorageResult};
 use openraft::{
@@ -123,8 +124,19 @@ impl RaftStateMachine<KTypeConfig> for KLogMemoryStateMachine {
         state.last_membership = data.meta.last_membership.clone();
         drop(state); // Release the lock before potentially long operations
 
-        // Then, update the state machine's internal data structures
-        // todo!();
+        // Then, restore state store from snapshot payload.
+        self.state_store
+            .install_snapshot(KLogStateSnapshot {
+                data: data.klog_data,
+            })
+            .await
+            .map_err(|e| {
+                let msg = format!("Failed to install state store snapshot: {}", e);
+                error!("{}", msg);
+                StorageError::IO {
+                    source: StorageIOError::write_snapshot(None, &std::io::Error::other(msg)),
+                }
+            })?;
 
         Ok(())
     }

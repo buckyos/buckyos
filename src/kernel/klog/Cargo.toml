@@ -20,3 +20,4 @@ reqwest = { workspace = true }
 thiserror = { workspace = true }
 bytes = { workspace = true }
 rusqlite = { workspace = true }
+rocksdb = { version = "0.22", default-features = false }

@@ -1,6 +1,8 @@
 use crate::logs::{MemoryLogStorage, SqliteLogStorage};
 use crate::state_machine::{KLogMemoryStateMachine, SnapshotManager};
-use crate::state_store::{KLogStateStore, KLogStateStoreManager, MemoryStateStore};
+use crate::state_store::{
+    KLogStateSnapshot, KLogStateStore, KLogStateStoreManager, MemoryStateStore, RocksDbStateStore,
+};
 use crate::{KLogEntry, KLogRequest, KLogResponse, KNodeId, KTypeConfig, StorageResult};
 use openraft::entry::EntryPayload;
 use openraft::storage::{RaftLogStorage, RaftStateMachine};
@@ -164,6 +166,23 @@ fn blank_entry(term: u64, index: u64) -> Entry<KTypeConfig> {
     }
 }
 
+fn sample_state_entries() -> Vec<KLogEntry> {
+    vec![
+        KLogEntry {
+            id: 11,
+            timestamp: 100,
+            node_id: 1,
+            message: "kernel-boot".to_string(),
+        },
+        KLogEntry {
+            id: 12,
+            timestamp: 101,
+            node_id: 1,
+            message: "driver-online".to_string(),
+        },
+    ]
+}
+
 #[test]
 pub fn test_mem_store() -> anyhow::Result<()> {
     init_test_logging();
@@ -298,6 +317,63 @@ async fn test_state_machine_apply_keeps_prepared_id() -> anyhow::Result<()> {
         KLogResponse::AppendOk { id } => assert_eq!(*id, prepared_id),
         other => panic!("unexpected response: {:?}", other),
     }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_rocksdb_state_store_snapshot_roundtrip() -> anyhow::Result<()> {
+    let rocks = RocksDbStateStore::open(unique_test_path("state_store_roundtrip.rocks"))
+        .map_err(anyhow::Error::msg)?;
+    let state_store = Arc::new(Box::new(rocks) as Box<dyn KLogStateStore>);
+    let manager = KLogStateStoreManager::new(state_store);
+
+    manager.append(sample_state_entries()).await?;
+    let snapshot = manager.build_snapshot().await?;
+
+    let (decoded, _): (Vec<KLogEntry>, usize) =
+        bincode::serde::decode_from_slice(&snapshot.data, bincode::config::legacy())?;
+    assert_eq!(decoded.len(), 2);
+    assert_eq!(decoded[0].id, 11);
+    assert_eq!(decoded[1].id, 12);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_rocksdb_state_store_install_snapshot() -> anyhow::Result<()> {
+    let src = MemoryStateStore::new();
+    let src = Arc::new(Box::new(src) as Box<dyn KLogStateStore>);
+    let src_mgr = KLogStateStoreManager::new(src);
+    src_mgr.append(sample_state_entries()).await?;
+    let src_snapshot = src_mgr.build_snapshot().await?;
+
+    let rocks = RocksDbStateStore::open(unique_test_path("state_store_install.rocks"))
+        .map_err(anyhow::Error::msg)?;
+    let dst = Arc::new(Box::new(rocks) as Box<dyn KLogStateStore>);
+    let dst_mgr = KLogStateStoreManager::new(dst);
+
+    dst_mgr
+        .append(vec![KLogEntry {
+            id: 999,
+            timestamp: 1,
+            node_id: 7,
+            message: "old-data".to_string(),
+        }])
+        .await?;
+
+    dst_mgr
+        .install_snapshot(KLogStateSnapshot {
+            data: src_snapshot.data.clone(),
+        })
+        .await?;
+
+    let restored = dst_mgr.build_snapshot().await?;
+    let (decoded, _): (Vec<KLogEntry>, usize) =
+        bincode::serde::decode_from_slice(&restored.data, bincode::config::legacy())?;
+    assert_eq!(decoded.len(), 2);
+    assert_eq!(decoded[0].id, 11);
+    assert_eq!(decoded[1].id, 12);
 
     Ok(())
 }

@@ -36,4 +36,19 @@ impl KLogStateStore for MemoryStateStore {
 
         Ok(KLogStateSnapshot { data })
     }
+
+    async fn install_snapshot(&self, snapshot: KLogStateSnapshot) -> KResult<()> {
+        let (entries, _): (Vec<KLogEntry>, usize) =
+            bincode::serde::decode_from_slice(&snapshot.data, bincode::config::legacy()).map_err(
+                |e| {
+                    let msg = format!("Failed to decode state snapshot: {}", e);
+                    error!("{}", msg);
+                    KLogError::InvalidFormat(msg)
+                },
+            )?;
+
+        let mut logs = self.logs.lock().await;
+        *logs = entries;
+        Ok(())
+    }
 }

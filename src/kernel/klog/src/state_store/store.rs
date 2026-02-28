@@ -11,6 +11,8 @@ pub trait KLogStateStore: Send + Sync {
     async fn append(&self, entries: Vec<KLogEntry>) -> KResult<()>;
 
     async fn build_snapshot(&self) -> KResult<KLogStateSnapshot>;
+
+    async fn install_snapshot(&self, snapshot: KLogStateSnapshot) -> KResult<()>;
 }
 
 pub type KLogStateStoreRef = Arc<Box<dyn KLogStateStore>>;
@@ -66,6 +68,10 @@ impl KLogStateStoreManager {
 
     pub async fn build_snapshot(&self) -> KResult<KLogStateSnapshot> {
         self.state_store.build_snapshot().await
+    }
+
+    pub async fn install_snapshot(&self, snapshot: KLogStateSnapshot) -> KResult<()> {
+        self.state_store.install_snapshot(snapshot).await
     }
 }
 
