@@ -4,6 +4,8 @@ use openraft::{StorageError, StorageIOError};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::io::AsyncSeekExt;
 use tokio::io::AsyncWriteExt;
 
 pub type KSnapshotMeta = openraft::SnapshotMeta<KNodeId, KNode>;
@@ -108,6 +110,54 @@ impl SnapshotManager {
         self.data_dir.join("snapshot.temp")
     }
 
+    fn make_atomic_temp_path(&self, snapshot_id: &str, reason: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        self.data_dir.join(format!(
+            ".snapshot_{}_{}_{}_{}",
+            snapshot_id,
+            reason,
+            std::process::id(),
+            nanos
+        ))
+    }
+
+    async fn sync_snapshot_dir(&self) -> std::io::Result<()> {
+        let dir = self.data_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            let dir_handle = std::fs::File::open(&dir)?;
+            dir_handle.sync_all()
+        })
+        .await
+        .map_err(|e| std::io::Error::other(format!("Failed to join dir fsync task: {}", e)))?
+    }
+
+    async fn write_stream_to_temp<R>(&self, tmp: &Path, src: &mut R) -> std::io::Result<u64>
+    where
+        R: tokio::io::AsyncRead + Unpin,
+    {
+        let mut tmp_file = tokio::fs::File::create_new(tmp).await?;
+        let copied = tokio::io::copy(src, &mut tmp_file).await?;
+        tmp_file.flush().await?;
+        tmp_file.sync_all().await?;
+        Ok(copied)
+    }
+
+    async fn write_bytes_to_temp(&self, tmp: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let mut tmp_file = tokio::fs::File::create_new(tmp).await?;
+        tmp_file.write_all(bytes).await?;
+        tmp_file.flush().await?;
+        tmp_file.sync_all().await?;
+        Ok(())
+    }
+
+    async fn commit_temp_as_snapshot(&self, tmp: &Path, dest: &Path) -> std::io::Result<()> {
+        tokio::fs::rename(tmp, dest).await?;
+        self.sync_snapshot_dir().await
+    }
+
     pub async fn begin_receiving_snapshot(&self) -> StorageResult<Box<tokio::fs::File>> {
         let path = self.get_temp_snapshot_path();
         info!("Saving incoming snapshot to {:?}", path);
@@ -141,47 +191,59 @@ impl SnapshotManager {
         // let src = self.get_temp_snapshot_path();
 
         let dest = self.data_dir.join(format!("snapshot_{}", meta.snapshot_id));
+        let tmp = self.make_atomic_temp_path(&meta.snapshot_id, "install");
         info!("Installing snapshot {} to {:?}", meta.snapshot_id, dest);
-
-        // Save snapshot data to dest path
         if dest.exists() {
-            warn!("Snapshot file already exists: {:?}, overwriting", dest);
-            if let Err(e) = tokio::fs::remove_file(&dest).await {
-                error!("Failed to remove existing snapshot file: {}", e);
-                return Err(StorageError::IO {
-                    source: StorageIOError::write(&e),
-                });
-            } else {
-                info!("Removed existing snapshot file: {:?}", dest);
-            }
+            warn!(
+                "Snapshot file already exists: {:?}, replacing with atomic rename",
+                dest
+            );
         }
 
-        let mut dest_file = tokio::fs::File::create_new(&dest).await.map_err(|err| {
-            let msg = format!("Failed to create snapshot file: {}", err);
-            error!("{}", msg);
-            StorageError::IO {
-                source: StorageIOError::write(&err),
-            }
-        })?;
-
-        // Copy the temp file to the final destination
-        tokio::io::copy(&mut snapshot, &mut dest_file)
+        snapshot
+            .seek(std::io::SeekFrom::Start(0))
             .await
             .map_err(|err| {
-                let msg = format!("Failed to write snapshot file: {}", err);
+                let msg = format!(
+                    "Failed to rewind incoming snapshot stream for {}: {}",
+                    meta.snapshot_id, err
+                );
                 error!("{}", msg);
+                let io_err = std::io::Error::other(msg);
                 StorageError::IO {
-                    source: StorageIOError::write(&err),
+                    source: StorageIOError::write_snapshot(Some(meta.signature()), &io_err),
                 }
             })?;
 
-        dest_file.flush().await.map_err(|err| {
-            let msg = format!("Failed to flush snapshot file: {}", err);
-            error!("{}", msg);
-            StorageError::IO {
-                source: StorageIOError::write(&err),
-            }
-        })?;
+        self.write_stream_to_temp(&tmp, &mut snapshot)
+            .await
+            .map_err(|err| {
+                let _ = std::fs::remove_file(&tmp);
+                let msg = format!(
+                    "Failed to persist temp snapshot file {:?} before atomic rename: {}",
+                    tmp, err
+                );
+                error!("{}", msg);
+                let io_err = std::io::Error::other(msg);
+                StorageError::IO {
+                    source: StorageIOError::write_snapshot(Some(meta.signature()), &io_err),
+                }
+            })?;
+
+        self.commit_temp_as_snapshot(&tmp, &dest)
+            .await
+            .map_err(|err| {
+                let _ = std::fs::remove_file(&tmp);
+                let msg = format!(
+                    "Failed to atomically replace snapshot file {:?} with {:?}: {}",
+                    dest, tmp, err
+                );
+                error!("{}", msg);
+                let io_err = std::io::Error::other(msg);
+                StorageError::IO {
+                    source: StorageIOError::write_snapshot(Some(meta.signature()), &io_err),
+                }
+            })?;
 
         /*
         info!("Installing snapshot from {:?} to {:?}", src, dest);
@@ -244,6 +306,7 @@ impl SnapshotManager {
         let path = self
             .data_dir
             .join(format!("snapshot_{}", snapshot.meta.snapshot_id));
+        let tmp = self.make_atomic_temp_path(&snapshot.meta.snapshot_id, "save");
         info!("Saving snapshot to file {:?}", path);
 
         let bytes = snapshot.serialize().map_err(|e| {
@@ -257,31 +320,46 @@ impl SnapshotManager {
             }
         })?;
 
-        // Use create_new to avoid overwriting existing snapshots
-        // TODO if file exists, we may want to overwrite it if the snapshot_id is the same?
-        let mut file = tokio::fs::File::create_new(&path).await.map_err(|e| {
-            let msg = format!("Failed to create snapshot file {:?}: {}", path, e);
+        // Keep previous behavior: snapshot_id collision is treated as error.
+        if path.exists() {
+            let msg = format!(
+                "Snapshot file already exists, refusing overwrite: {:?}",
+                path
+            );
             error!("{}", msg);
+            let io_err = std::io::Error::other(msg);
+            return Err(StorageError::IO {
+                source: StorageIOError::write_state_machine(&io_err),
+            });
+        }
+
+        self.write_bytes_to_temp(&tmp, &bytes).await.map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            let msg = format!(
+                "Failed to persist temp snapshot file {:?} before atomic rename: {}",
+                tmp, e
+            );
+            error!("{}", msg);
+            let io_err = std::io::Error::other(msg);
             StorageError::IO {
-                source: StorageIOError::write_state_machine(&e),
+                source: StorageIOError::write_state_machine(&io_err),
             }
         })?;
 
-        file.write_all(&bytes).await.map_err(|e| {
-            let msg = format!("Failed to write snapshot file {:?}: {}", path, e);
-            error!("{}", msg);
-            StorageError::IO {
-                source: StorageIOError::write_state_machine(&e),
-            }
-        })?;
-
-        file.flush().await.map_err(|e| {
-            let msg = format!("Failed to flush snapshot file {:?}: {}", path, e);
-            error!("{}", msg);
-            StorageError::IO {
-                source: StorageIOError::write_state_machine(&e),
-            }
-        })?;
+        self.commit_temp_as_snapshot(&tmp, &path)
+            .await
+            .map_err(|e| {
+                let _ = std::fs::remove_file(&tmp);
+                let msg = format!(
+                    "Failed to atomically publish snapshot file {:?} from {:?}: {}",
+                    path, tmp, e
+                );
+                error!("{}", msg);
+                let io_err = std::io::Error::other(msg);
+                StorageError::IO {
+                    source: StorageIOError::write_state_machine(&io_err),
+                }
+            })?;
 
         Ok(path)
     }
