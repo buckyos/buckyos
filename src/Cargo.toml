@@ -12,6 +12,7 @@ members = [
     "./kernel/task_manager",
     "./kernel/workflow",
     "./kernel/klog", 
+    "./kernel/klog_daemon",
     "./kernel/slog", 
     "./kernel/slog_daemon",
 
