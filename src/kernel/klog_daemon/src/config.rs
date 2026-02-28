@@ -12,6 +12,10 @@ pub const ENV_DATA_DIR: &str = "KLOG_DATA_DIR";
 pub const ENV_CLUSTER_NAME: &str = "KLOG_CLUSTER_NAME";
 pub const ENV_AUTO_BOOTSTRAP: &str = "KLOG_AUTO_BOOTSTRAP";
 pub const ENV_STATE_STORE_SYNC_WRITE: &str = "KLOG_STATE_STORE_SYNC_WRITE";
+pub const ENV_JOIN_TARGETS: &str = "KLOG_JOIN_TARGETS";
+pub const ENV_JOIN_RETRY_INTERVAL_MS: &str = "KLOG_JOIN_RETRY_INTERVAL_MS";
+pub const ENV_JOIN_MAX_ATTEMPTS: &str = "KLOG_JOIN_MAX_ATTEMPTS";
+pub const ENV_JOIN_BLOCKING: &str = "KLOG_JOIN_BLOCKING";
 
 const DEFAULT_NODE_ID: KNodeId = 1;
 const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:21001";
@@ -20,6 +24,9 @@ const DEFAULT_ADVERTISE_PORT: u16 = 21001;
 const DEFAULT_CLUSTER_NAME: &str = "klog";
 const DEFAULT_AUTO_BOOTSTRAP: bool = true;
 const DEFAULT_STATE_STORE_SYNC_WRITE: bool = true;
+const DEFAULT_JOIN_RETRY_INTERVAL_MS: u64 = 3_000;
+const DEFAULT_JOIN_MAX_ATTEMPTS: u32 = 0; // 0 means retry forever.
+const DEFAULT_JOIN_BLOCKING: bool = false;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KLogRuntimeConfigSource {
@@ -48,6 +55,10 @@ pub struct KLogRuntimeConfig {
     pub cluster_name: String,
     pub auto_bootstrap: bool,
     pub state_store_sync_write: bool,
+    pub join_targets: Vec<String>,
+    pub join_retry_interval_ms: u64,
+    pub join_max_attempts: u32,
+    pub join_blocking: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -60,6 +71,10 @@ pub struct KLogRuntimeConfigPatch {
     pub cluster_name: Option<String>,
     pub auto_bootstrap: Option<bool>,
     pub state_store_sync_write: Option<bool>,
+    pub join_targets: Option<Vec<String>>,
+    pub join_retry_interval_ms: Option<u64>,
+    pub join_max_attempts: Option<u32>,
+    pub join_blocking: Option<bool>,
 }
 
 // Placeholder type for future buckyos config integration.
@@ -99,6 +114,10 @@ impl KLogRuntimeConfig {
             cluster_name: parse_env_string(ENV_CLUSTER_NAME)?,
             auto_bootstrap: parse_env_bool(ENV_AUTO_BOOTSTRAP)?,
             state_store_sync_write: parse_env_bool(ENV_STATE_STORE_SYNC_WRITE)?,
+            join_targets: parse_env_string_list(ENV_JOIN_TARGETS)?,
+            join_retry_interval_ms: parse_env_u64(ENV_JOIN_RETRY_INTERVAL_MS)?,
+            join_max_attempts: parse_env_u32(ENV_JOIN_MAX_ATTEMPTS)?,
+            join_blocking: parse_env_bool(ENV_JOIN_BLOCKING)?,
         };
 
         Ok(Self::from_patch(patch))
@@ -157,6 +176,12 @@ impl KLogRuntimeConfig {
             state_store_sync_write: patch
                 .state_store_sync_write
                 .unwrap_or(DEFAULT_STATE_STORE_SYNC_WRITE),
+            join_targets: patch.join_targets.unwrap_or_default(),
+            join_retry_interval_ms: patch
+                .join_retry_interval_ms
+                .unwrap_or(DEFAULT_JOIN_RETRY_INTERVAL_MS),
+            join_max_attempts: patch.join_max_attempts.unwrap_or(DEFAULT_JOIN_MAX_ATTEMPTS),
+            join_blocking: patch.join_blocking.unwrap_or(DEFAULT_JOIN_BLOCKING),
         }
     }
 }
@@ -185,6 +210,26 @@ fn parse_env_pathbuf(key: &str) -> Result<Option<PathBuf>, String> {
     Ok(value.map(PathBuf::from))
 }
 
+fn parse_env_string_list(key: &str) -> Result<Option<Vec<String>>, String> {
+    match std::env::var(key) {
+        Ok(v) => {
+            let items = v
+                .split(',')
+                .map(|x| x.trim())
+                .filter(|x| !x.is_empty())
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>();
+            if items.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(items))
+            }
+        }
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(format!("{} contains invalid unicode", key)),
+    }
+}
+
 fn parse_env_u64(key: &str) -> Result<Option<u64>, String> {
     match parse_env_string(key)? {
         Some(v) => v
@@ -199,6 +244,16 @@ fn parse_env_u16(key: &str) -> Result<Option<u16>, String> {
     match parse_env_string(key)? {
         Some(v) => v
             .parse::<u16>()
+            .map(Some)
+            .map_err(|e| format!("Invalid {}='{}': {}", key, v, e)),
+        None => Ok(None),
+    }
+}
+
+fn parse_env_u32(key: &str) -> Result<Option<u32>, String> {
+    match parse_env_string(key)? {
+        Some(v) => v
+            .parse::<u32>()
             .map(Some)
             .map_err(|e| format!("Invalid {}='{}': {}", key, v, e)),
         None => Ok(None),
@@ -252,6 +307,10 @@ data_dir = "/tmp/klog_cfg_test_full"
 cluster_name = "cluster_a"
 auto_bootstrap = false
 state_store_sync_write = false
+join_targets = ["127.0.0.1:21001", "127.0.0.1:21002"]
+join_retry_interval_ms = 1500
+join_max_attempts = 9
+join_blocking = true
 "#;
         std::fs::write(&file, content).expect("write file");
 
@@ -264,6 +323,13 @@ state_store_sync_write = false
         assert_eq!(cfg.cluster_name, "cluster_a");
         assert!(!cfg.auto_bootstrap);
         assert!(!cfg.state_store_sync_write);
+        assert_eq!(
+            cfg.join_targets,
+            vec!["127.0.0.1:21001".to_string(), "127.0.0.1:21002".to_string()]
+        );
+        assert_eq!(cfg.join_retry_interval_ms, 1500);
+        assert_eq!(cfg.join_max_attempts, 9);
+        assert!(cfg.join_blocking);
 
         let _ = std::fs::remove_file(&file);
     }
@@ -286,6 +352,10 @@ advertise_addr = "192.168.2.7"
         assert_eq!(cfg.cluster_name, DEFAULT_CLUSTER_NAME);
         assert_eq!(cfg.auto_bootstrap, DEFAULT_AUTO_BOOTSTRAP);
         assert_eq!(cfg.state_store_sync_write, DEFAULT_STATE_STORE_SYNC_WRITE);
+        assert!(cfg.join_targets.is_empty());
+        assert_eq!(cfg.join_retry_interval_ms, DEFAULT_JOIN_RETRY_INTERVAL_MS);
+        assert_eq!(cfg.join_max_attempts, DEFAULT_JOIN_MAX_ATTEMPTS);
+        assert_eq!(cfg.join_blocking, DEFAULT_JOIN_BLOCKING);
 
         let _ = std::fs::remove_file(&file);
     }
@@ -301,6 +371,10 @@ advertise_addr = "192.168.2.7"
             cluster_name: Some("bk".to_string()),
             auto_bootstrap: Some(true),
             state_store_sync_write: Some(false),
+            join_targets: Some(vec!["10.0.0.1:21001".to_string()]),
+            join_retry_interval_ms: Some(6000),
+            join_max_attempts: Some(3),
+            join_blocking: Some(true),
         };
 
         let (cfg, source) =
@@ -314,5 +388,9 @@ advertise_addr = "192.168.2.7"
         assert_eq!(cfg.cluster_name, "bk");
         assert!(cfg.auto_bootstrap);
         assert!(!cfg.state_store_sync_write);
+        assert_eq!(cfg.join_targets, vec!["10.0.0.1:21001".to_string()]);
+        assert_eq!(cfg.join_retry_interval_ms, 6000);
+        assert_eq!(cfg.join_max_attempts, 3);
+        assert!(cfg.join_blocking);
     }
 }

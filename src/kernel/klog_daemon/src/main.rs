@@ -1,17 +1,17 @@
+mod cluster;
 mod config;
 
+use cluster::{initialize_cluster_if_needed, spawn_auto_join_task, stop_auto_join_task};
 use config::KLogRuntimeConfig;
-use klog::KNode;
 use klog::logs::SqliteLogStorage;
 use klog::network::{KNetworkFactory, KNetworkServer};
 use klog::state_machine::{KLogStateMachine, SnapshotManager};
 use klog::state_store::{
     KLogStateStore, KLogStateStoreManager, RocksDbSnapshotMode, RocksDbStateStore,
 };
-use log::{error, info, warn};
+use log::{error, info};
 use openraft::Config;
 use simplelog::{ColorChoice, Config as SimpleLogConfig, LevelFilter, TermLogger, TerminalMode};
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use tracing_subscriber::{EnvFilter, fmt};
 
@@ -58,7 +58,7 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
     })?;
 
     info!(
-        "klog startup config: node_id={}, listen_addr={}, advertise_addr={}:{}, data_dir={}, cluster_name={}, auto_bootstrap={}, state_store_sync_write={}",
+        "klog startup config: node_id={}, listen_addr={}, advertise_addr={}:{}, data_dir={}, cluster_name={}, auto_bootstrap={}, state_store_sync_write={}, join_targets={:?}, join_retry_interval_ms={}, join_max_attempts={}, join_blocking={}",
         cfg.node_id,
         cfg.listen_addr,
         cfg.advertise_addr,
@@ -66,7 +66,11 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
         cfg.data_dir.display(),
         cfg.cluster_name,
         cfg.auto_bootstrap,
-        cfg.state_store_sync_write
+        cfg.state_store_sync_write,
+        cfg.join_targets,
+        cfg.join_retry_interval_ms,
+        cfg.join_max_attempts,
+        cfg.join_blocking
     );
 
     let raft_log_path = cfg.data_dir.join("raft_log.sqlite");
@@ -136,37 +140,16 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
     let raft = Arc::new(raft);
     info!("Raft node created: node_id={}", cfg.node_id);
 
-    if cfg.auto_bootstrap {
-        let mut members = BTreeMap::new();
-        members.insert(
-            cfg.node_id,
-            KNode {
-                id: cfg.node_id,
-                addr: cfg.advertise_addr.clone(),
-                port: cfg.advertise_port,
-            },
-        );
-        match raft.initialize(members).await {
-            Ok(()) => {
-                info!(
-                    "Raft cluster initialized: node_id={}, cluster_name={}",
-                    cfg.node_id, cfg.cluster_name
-                );
-            }
-            Err(e) => {
-                warn!(
-                    "Raft initialize skipped/failed (possibly already initialized): {}",
-                    e
-                );
-            }
-        }
-    } else {
-        info!("Skip raft initialize because KLOG_AUTO_BOOTSTRAP=false");
-    }
+    initialize_cluster_if_needed(&cfg, &raft).await;
+    let join_task = spawn_auto_join_task(&cfg);
 
     let network_server = KNetworkServer::new(cfg.listen_addr.clone(), raft);
     info!("Starting raft RPC server: listen_addr={}", cfg.listen_addr);
-    network_server.run_with_shutdown(shutdown_signal()).await
+    let server_result = network_server.run_with_shutdown(shutdown_signal()).await;
+
+    stop_auto_join_task(join_task).await;
+
+    server_result
 }
 
 async fn shutdown_signal() {
