@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 
 import { fetchSystemMetrics, fetchSystemStatus } from '@/api'
 import StorageDiskStatusPanel from '../components/StorageDiskStatusPanel'
@@ -203,14 +204,26 @@ const StoragePage = () => {
               <span className="inline-flex size-9 items-center justify-center rounded-2xl bg-[var(--cp-primary-soft)] text-[var(--cp-primary-strong)]">
                 <Icon name="apps" className="size-4" />
               </span>
-              <h2>File Manager Handoff</h2>
+              <h2>File Manager</h2>
             </div>
             <p className="text-sm text-[var(--cp-muted)]">
-              File browsing and operations are owned by a dedicated app. This block is reserved for
-              quick handoff or compact app data integration.
+              文件浏览与共享由独立 File 模块负责，Storage 专注容量、磁盘与备份。
             </p>
-            <div className="mt-4 rounded-xl border border-dashed border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-3 text-xs text-[var(--cp-muted)]">
-              Planned: deep-link to file manager app and optional quick preview via app API.
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <Link
+                to="/"
+                className="inline-flex items-center gap-2 rounded-xl bg-[var(--cp-primary)] px-3 py-2 text-xs font-semibold text-white transition hover:bg-[var(--cp-primary-strong)]"
+              >
+                <Icon name="drive" className="size-4" />
+                Open desktop files
+              </Link>
+              <Link
+                to="/"
+                className="inline-flex items-center gap-2 rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface)] px-3 py-2 text-xs font-semibold text-[var(--cp-ink)] transition hover:border-[var(--cp-primary)] hover:text-[var(--cp-primary-strong)]"
+              >
+                <Icon name="link" className="size-4" />
+                Open from desktop
+              </Link>
             </div>
           </div>
         </div>

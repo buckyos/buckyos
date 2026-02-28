@@ -51,12 +51,12 @@
         "www": {
             "type":"service",
             "user_id":null,
-            "app_id":"bucky-file"
+            "app_id":"control-panel"
         },
         "_":{
             "type":"service",
             "user_id":null,
-            "app_id":"bucky-file"
+            "app_id":"control-panel"
         }
     }
 }
@@ -117,7 +117,6 @@ g, kmsg, kernel
 g, aicc, kernel
 g, msg-center, kernel
 g, control-panel, kernel
-g, bucky-file, kernel
 g, opendan, kernel
 g, buckycli, kernel
 g, cyfs-gateway, kernel

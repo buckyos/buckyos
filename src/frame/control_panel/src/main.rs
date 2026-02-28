@@ -1,4 +1,5 @@
 mod share_content_mgr;
+mod file_manager;
 
 use ::kRPC::*;
 use anyhow::Result;
@@ -185,16 +186,34 @@ struct SystemMetricsSnapshot {
 struct ControlPanelServer {
     log_downloads: Arc<Mutex<HashMap<String, LogDownloadEntry>>>,
     metrics_snapshot: Arc<RwLock<SystemMetricsSnapshot>>,
+    file_manager: Arc<file_manager::BuckyFileServer>,
 }
 
 impl ControlPanelServer {
     pub fn new() -> Self {
         let metrics_snapshot = Arc::new(RwLock::new(SystemMetricsSnapshot::default()));
         Self::start_metrics_sampler(metrics_snapshot.clone());
+        let file_manager_data_dir = get_buckyos_root_dir()
+            .join("data")
+            .join("control-panel")
+            .join("file-manager");
+        if let Err(err) = std::fs::create_dir_all(&file_manager_data_dir) {
+            log::warn!(
+                "failed to create file-manager data dir {}: {}",
+                file_manager_data_dir.display(),
+                err
+            );
+        }
+        let file_manager = Arc::new(file_manager::BuckyFileServer::new(file_manager_data_dir, false));
         ControlPanelServer {
             log_downloads: Arc::new(Mutex::new(HashMap::new())),
             metrics_snapshot,
+            file_manager,
         }
+    }
+
+    async fn init_file_manager(&self) -> Result<(), RPCErrors> {
+        self.file_manager.init_share_db().await
     }
 
     fn start_metrics_sampler(metrics_snapshot: Arc<RwLock<SystemMetricsSnapshot>>) {
@@ -3681,11 +3700,17 @@ impl HttpServer for ControlPanelServer {
         req: http::Request<BoxBody<Bytes, ServerError>>,
         info: StreamInfo,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        if *req.method() == Method::POST {
+        let method = req.method().clone();
+        let path = req.uri().path().to_string();
+
+        if path == "/api" || path.starts_with("/api/") {
+            return self.file_manager.serve_request(req, info).await;
+        }
+
+        if method == Method::POST && path.starts_with("/kapi/control-panel") {
             return serve_http_by_rpc_handler(req, info, self).await;
         }
-        if *req.method() == Method::GET {
-            let path = req.uri().path();
+        if method == Method::GET {
             if let Some(token) = path.strip_prefix("/kapi/control-panel/logs/download/") {
                 if !token.is_empty() {
                     return self.handle_logs_download_http(token).await;
@@ -3735,14 +3760,18 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
     set_buckyos_api_runtime(runtime);
 
     let control_panel_server = ControlPanelServer::new();
+    control_panel_server
+        .init_file_manager()
+        .await
+        .map_err(|err| anyhow::anyhow!("init control-panel file manager failed: {}", err))?;
+    let control_panel_server = Arc::new(control_panel_server);
     // Bind to the default control-panel service port.
 
     let runner = Runner::new(CONTROL_PANEL_SERVICE_PORT);
     // 添加 RPC 服务
-    let _ = runner.add_http_server(
-        "/kapi/control-panel".to_string(),
-        Arc::new(control_panel_server),
-    );
+    let _ = runner.add_http_server("/kapi/control-panel".to_string(), control_panel_server.clone());
+    // File manager API (embedded from former bucky-file service)
+    let _ = runner.add_http_server("/api".to_string(), control_panel_server.clone());
 
     // 添加 web (best-effort, skip if path cannot be resolved)
     let web_dir = std::env::current_exe()

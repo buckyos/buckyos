@@ -26,12 +26,13 @@ import StorageDiskStatusPanel from '../components/StorageDiskStatusPanel'
 import StorageHealthSignalsPanel from '../components/StorageHealthSignalsPanel'
 import SystemConfigTreeViewer from '../components/SystemConfigTreeViewer'
 import UserPatternAvatar from '../components/UserPatternAvatar'
+import FileManagerPage from './FileManagerPage'
 import usePrefersReducedMotion from '../charts/usePrefersReducedMotion'
 import Icon from '../icons'
 
 type DesktopMode = 'desktop' | 'jarvis'
 
-type WindowId = 'monitor' | 'network' | 'containers' | 'storage' | 'logs' | 'apps' | 'settings' | 'users'
+type WindowId = 'monitor' | 'network' | 'containers' | 'files' | 'storage' | 'logs' | 'apps' | 'settings' | 'users'
 
 type DesktopWindow = {
   id: WindowId
@@ -201,7 +202,8 @@ const DesktopHomePage = () => {
         monitor: { title: 'System Monitor', icon: 'dashboard' as const, width: 896, height: 616 },
         network: { title: 'Network Monitor', icon: 'network' as const, width: 980, height: 700 },
         containers: { title: 'Container Manager', icon: 'container' as const, width: 980, height: 700 },
-        storage: { title: 'Storage Manager', icon: 'storage' as const, width: 896, height: 648 },
+        files: { title: 'Files', icon: 'drive' as const, width: 920, height: 680 },
+        storage: { title: 'Storage Center', icon: 'storage' as const, width: 896, height: 648 },
         logs: { title: 'System Logs', icon: 'chart' as const, width: 1008, height: 728 },
         apps: { title: 'Applications', icon: 'apps' as const, width: 896, height: 648 },
         settings: { title: 'Settings', icon: 'settings' as const, width: 1008, height: 728 },
@@ -942,6 +944,12 @@ const DesktopHomePage = () => {
           tile: 'bg-cyan-600',
         },
         {
+          id: 'files' as const,
+          label: 'Files',
+          icon: 'drive' as const,
+          tile: 'bg-emerald-500',
+        },
+        {
           id: 'storage' as const,
           label: 'Storage',
           icon: 'storage' as const,
@@ -1048,8 +1056,21 @@ const DesktopHomePage = () => {
   const onNotificationsClick = useCallback(() => navigateTo('/notifications'), [navigateTo])
   const onOpenNetworkWindow = useCallback(() => openWindow('network'), [openWindow])
   const onNavigateSettings = useCallback(() => navigateTo('/settings'), [navigateTo])
-  const goDesktop = useCallback(() => setMode('desktop'), [])
-  const goJarvis = useCallback(() => setMode('jarvis'), [])
+  const goDesktop = useCallback(() => {
+    if (mode === 'desktop') {
+      return
+    }
+    setWindows([])
+    setMode('desktop')
+  }, [mode])
+
+  const goJarvis = useCallback(() => {
+    if (mode === 'jarvis') {
+      return
+    }
+    setWindows([])
+    setMode('jarvis')
+  }, [mode])
   const profileFirstName = useMemo(() => {
     const raw = layout.profile.name
     const first = raw.split(' ')[0]
@@ -1332,10 +1353,10 @@ const JarvisView = memo((props: JarvisViewProps) => {
           </button>
           <button
             type="button"
-            onClick={() => openWindow('storage')}
+            onClick={() => openWindow('files')}
             className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-xs font-semibold text-white/90 transition hover:bg-white/15"
           >
-            Optimize storage
+            Open file manager
           </button>
           <button
             type="button"
@@ -1765,7 +1786,7 @@ const WindowFrame = memo((props: WindowFrameProps) => {
               <p className="text-sm font-semibold tracking-tight text-[var(--cp-ink)]">{win.title}</p>
             </div>
           </div>
-          {win.id === 'logs' ? (
+          {win.id === 'logs' || win.id === 'storage' ? (
             <div className="flex items-center gap-2">
               <Link
                 data-window-control="true"
@@ -1779,7 +1800,11 @@ const WindowFrame = memo((props: WindowFrameProps) => {
           ) : null}
         </div>
 
-        <div className="min-h-0 flex-1 overflow-auto bg-[var(--cp-surface-muted)] p-4">
+        <div
+          className={`min-h-0 flex-1 bg-[var(--cp-surface-muted)] ${
+            win.id === 'files' ? 'overflow-hidden p-0' : 'overflow-auto p-4'
+          }`}
+        >
           <WindowBody id={win.id} data={windowData} />
         </div>
       </div>
@@ -1833,6 +1858,7 @@ const WindowBody = memo((props: WindowBodyProps) => {
     diskPercent,
     rxRate,
     txRate,
+    navigateTo,
   } = data
   const [settingsMenu, setSettingsMenu] = useState<SettingsMenuKey>('general')
   const [expandedGatewayFile, setExpandedGatewayFile] = useState<string | null>(null)
@@ -2124,6 +2150,14 @@ const WindowBody = memo((props: WindowBodyProps) => {
     )
   }
 
+  if (id === 'files') {
+    return (
+      <div className="h-full min-h-0">
+        <FileManagerPage embedded />
+      </div>
+    )
+  }
+
   if (id === 'storage') {
     const totalGb = metrics.disk?.totalGb ?? 0
     const usedGb = metrics.disk?.usedGb ?? 0
@@ -2132,10 +2166,28 @@ const WindowBody = memo((props: WindowBodyProps) => {
     return (
       <div className="space-y-4">
         <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-          <div>
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <p className="text-sm font-semibold text-[var(--cp-ink)]">Storage center preview</p>
-              <p className="text-xs text-[var(--cp-muted)]">Unified disk status with system telemetry.</p>
+              <p className="text-xs text-[var(--cp-muted)]">磁盘容量、健康状态与空间趋势。</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => navigateTo('/storage')}
+                className="inline-flex h-10 items-center gap-2 rounded-xl bg-[var(--cp-primary)] px-4 text-sm font-semibold text-white transition hover:bg-[var(--cp-primary-strong)]"
+              >
+                <Icon name="storage" className="size-4" />
+                Open storage
+              </button>
+              <button
+                type="button"
+                onClick={() => navigateTo('/')}
+                className="inline-flex h-10 items-center gap-2 rounded-xl border border-[var(--cp-border)] bg-white px-4 text-sm font-semibold text-[var(--cp-ink)] transition hover:border-[var(--cp-primary)] hover:text-[var(--cp-primary-strong)]"
+              >
+                <Icon name="drive" className="size-4" />
+                Back to desktop files
+              </button>
             </div>
           </div>
           <div className="mt-3 grid gap-2 sm:grid-cols-3">
@@ -2152,31 +2204,22 @@ const WindowBody = memo((props: WindowBodyProps) => {
               <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{freeGb.toFixed(freeGb >= 100 ? 0 : 1)} GB</p>
             </div>
           </div>
+          <p className="mt-3 text-xs text-[var(--cp-muted)]">后续会在 Storage 增加备份策略、快照与恢复入口。</p>
         </div>
 
-        <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-          <StorageDiskStatusPanel disk={metrics.disk} compact maxItems={5} />
-        </div>
-
-        <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">Health signals</p>
-          <div className="mt-3">
-            <StorageHealthSignalsPanel
-              warnings={status.warnings}
-              disks={metrics.disk?.disks}
-              compact
-            />
+        <div className="grid gap-4 xl:grid-cols-2">
+          <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+            <StorageDiskStatusPanel disk={metrics.disk} compact maxItems={5} />
           </div>
-        </div>
-
-        <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">File manager handoff</p>
-          <p className="mt-2 text-sm text-[var(--cp-muted)]">
-            File browsing and operations are handled by a dedicated app. Use full storage view for
-            integration entry.
-          </p>
-          <div className="mt-3 rounded-xl border border-dashed border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2 text-xs text-[var(--cp-muted)]">
-            Planned: app deep-link and compact file manager quick preview.
+          <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">Health signals</p>
+            <div className="mt-3">
+              <StorageHealthSignalsPanel
+                warnings={status.warnings}
+                disks={metrics.disk?.disks}
+                compact
+              />
+            </div>
           </div>
         </div>
       </div>

@@ -3,7 +3,7 @@ import RootLayout from '../ui/RootLayout'
 import DashboardPage from '../ui/pages/DashboardPage'
 import DesktopHomePage from '../ui/pages/DesktopHomePage'
 import LoginPage from '../ui/pages/LoginPage'
-import StoragePage from '../ui/pages/StoragePage'
+import FileManagerPage from '../ui/pages/FileManagerPage'
 import ContainerPage from '../ui/pages/ContainerPage'
 import NetworkPage from '../ui/pages/NetworkPage'
 import PlaceholderPage from '../ui/pages/PlaceholderPage'
@@ -12,6 +12,7 @@ import DappStorePage from '../ui/pages/DappStorePage'
 import SettingsPage from '../ui/pages/SettingsPage'
 import RecentEventsPage from '../ui/pages/RecentEventsPage'
 import SystemLogsPage from '../ui/pages/SystemLogsPage'
+import StoragePage from '../ui/pages/StoragePage'
 import WorkspaceLayout from '../ui/workspace/WorkspaceLayout'
 
 const router = createBrowserRouter([
@@ -31,6 +32,7 @@ const router = createBrowserRouter([
     path: '/',
     children: [
       { index: true, element: <DesktopHomePage /> },
+      { path: 'share/:shareId', element: <FileManagerPage /> },
       { path: 'index', element: <Navigate to="/monitor" replace /> },
       { path: 'index.html', element: <Navigate to="/monitor" replace /> },
       {

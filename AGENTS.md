@@ -36,6 +36,13 @@
 - Start local rootfs: `cd src && python3 start.py`
 - Cargo tests (CI when enabled): `cd src && cargo test -- --test-threads=1`
 
+### Preferred deploy flow (local machine)
+- Activate env: `source /root/app/myenv/bin/activate`
+- Build control panel only: `cd src && buckyos-build -s control_panel control_panel_web`
+- Install to `/opt/buckyos`: `cd src && buckyos-install`
+- Restart services: `systemctl restart buckyos`
+- Note: `buckyos-build -s control-panel control-panel-web` may skip Rust modules in this repo; prefer underscore module ids above.
+
 ### Control panel service (Rust)
 - Run: `cd src && cargo run -p control_panel`
 - Build: `cd src && cargo build -p control_panel`

@@ -122,8 +122,6 @@ async fn create_init_list_by_template(
         .await?
         .add_control_panel()
         .await?
-        .add_bucky_file()
-        .await?
         .add_opendan()
         .await?;
 
