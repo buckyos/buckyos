@@ -56,6 +56,7 @@ impl RaftRequestType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KLogAdminRequestType {
     AddLearner,
+    RemoveLearner,
     ChangeMembership,
     ClusterState,
 }
@@ -64,6 +65,7 @@ impl KLogAdminRequestType {
     pub fn as_str(&self) -> &str {
         match self {
             KLogAdminRequestType::AddLearner => "add-learner",
+            KLogAdminRequestType::RemoveLearner => "remove-learner",
             KLogAdminRequestType::ChangeMembership => "change-membership",
             KLogAdminRequestType::ClusterState => "cluster-state",
         }
@@ -431,6 +433,10 @@ mod tests {
         assert_eq!(
             KLogAdminRequestType::ChangeMembership.klog_path(),
             "/klog/admin/change-membership"
+        );
+        assert_eq!(
+            KLogAdminRequestType::RemoveLearner.klog_path(),
+            "/klog/admin/remove-learner"
         );
         assert_eq!(
             KLogAdminRequestType::ClusterState.klog_path(),

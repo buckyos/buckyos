@@ -410,21 +410,14 @@ async fn wait_cluster_membership(
     }
 }
 
-async fn send_change_membership(port: u16, voters: &[u64], retain: bool) -> Result<String, String> {
+async fn send_remove_learner(port: u16, node_id: u64) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(1200))
         .build()
         .map_err(|e| format!("failed to build http client: {}", e))?;
-    let voters_csv = voters
-        .iter()
-        .map(|v| v.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
     let url = format!(
-        "http://127.0.0.1:{}/klog/admin/change-membership?voters={}&retain={}",
-        port,
-        voters_csv,
-        if retain { "true" } else { "false" }
+        "http://127.0.0.1:{}/klog/admin/remove-learner?node_id={}",
+        port, node_id
     );
     let resp = client
         .post(&url)
@@ -443,10 +436,18 @@ async fn send_change_membership(port: u16, voters: &[u64], retain: bool) -> Resu
 async fn remove_learners_with_retry(
     voter_ports: &[u16],
     final_voters: &[u64],
+    learner_ids: &[u64],
     timeout: Duration,
 ) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(800))
+        .build()
+        .map_err(|e| format!("failed to build http client: {}", e))?;
+    let final_voters_set = final_voters.iter().copied().collect::<BTreeSet<_>>();
+    let expected_learners_set = learner_ids.iter().copied().collect::<BTreeSet<_>>();
     let deadline = Instant::now() + timeout;
     let mut last_err = String::new();
+
     loop {
         if Instant::now() > deadline {
             return Err(format!(
@@ -455,12 +456,100 @@ async fn remove_learners_with_retry(
             ));
         }
 
+        let mut states = Vec::with_capacity(voter_ports.len());
+        let mut all_state_ok = true;
         for port in voter_ports {
-            match send_change_membership(*port, final_voters, false).await {
-                Ok(_) => return Ok(()),
+            match fetch_cluster_state(&client, *port).await {
+                Ok(state) => states.push(state),
                 Err(e) => {
-                    last_err = e;
+                    all_state_ok = false;
+                    last_err = format!("fetch cluster state failed on port {}: {}", port, e);
+                    break;
                 }
+            }
+        }
+
+        if all_state_ok && states.len() == voter_ports.len() {
+            let mut all_voters_match = true;
+            let mut all_learners_empty = true;
+            for state in &states {
+                let voters = state.voters.iter().copied().collect::<BTreeSet<_>>();
+                if voters != final_voters_set {
+                    all_voters_match = false;
+                }
+                if !state.learners.is_empty() {
+                    all_learners_empty = false;
+                }
+            }
+            if all_voters_match && all_learners_empty {
+                return Ok(());
+            }
+
+            let mut pending_learners = BTreeSet::new();
+            for state in &states {
+                for learner in &state.learners {
+                    pending_learners.insert(*learner);
+                }
+            }
+            if !expected_learners_set.is_empty() {
+                pending_learners = pending_learners
+                    .intersection(&expected_learners_set)
+                    .copied()
+                    .collect();
+            }
+
+            let mut leader_port = None;
+            for state in &states {
+                if state.current_leader == Some(state.node_id)
+                    && let Some(idx) = states.iter().position(|s| s.node_id == state.node_id)
+                {
+                    leader_port = voter_ports.get(idx).copied();
+                    break;
+                }
+            }
+            if leader_port.is_none()
+                && let Some(leader_id) = states.iter().find_map(|s| s.current_leader)
+            {
+                if let Some(idx) = states.iter().position(|s| s.node_id == leader_id) {
+                    leader_port = voter_ports.get(idx).copied();
+                }
+            }
+
+            if pending_learners.is_empty() {
+                last_err = format!(
+                    "learners are not empty yet but no pending learner id extracted from voter states; states={:?}",
+                    states
+                        .iter()
+                        .map(|s| format!("node_id={}, learners={:?}", s.node_id, s.learners))
+                        .collect::<Vec<_>>()
+                );
+            } else if let Some(port) = leader_port {
+                let mut remove_errors = Vec::new();
+                for learner_id in pending_learners {
+                    if let Err(e) = send_remove_learner(port, learner_id).await {
+                        remove_errors.push(format!("node_id={}, err={}", learner_id, e));
+                    }
+                }
+                if remove_errors.is_empty() {
+                    last_err = format!(
+                        "remove-learner accepted on leader port {}; waiting learners to drain",
+                        port
+                    );
+                } else {
+                    last_err = format!(
+                        "remove-learner failed on leader port {}: {}",
+                        port,
+                        remove_errors.join(" | ")
+                    );
+                }
+            } else {
+                last_err = format!(
+                    "leader not discovered from states: {:?}",
+                    states
+                        .iter()
+                        .map(|s| format!("node_id={}, leader={:?}", s.node_id, s.current_leader))
+                        .collect::<Vec<_>>()
+                );
             }
         }
 
@@ -733,8 +822,13 @@ async fn test_three_node_concurrent_startup_converges() -> Result<(), String> {
             return Err(format!("unexpected leader id: {}", leader));
         }
 
-        remove_learners_with_retry(&[port1, port2, port3], &[1, 2, 3], Duration::from_secs(30))
-            .await?;
+        remove_learners_with_retry(
+            &[port1, port2, port3],
+            &[1, 2, 3],
+            &[4, 5],
+            Duration::from_secs(45),
+        )
+        .await?;
         let _ = wait_cluster_membership(
             &[port1, port2, port3],
             &[1, 2, 3],

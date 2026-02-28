@@ -100,9 +100,12 @@ impl KNetworkClient {
                     return Err(RPCError::PayloadTooLarge(payload_too_large));
                 }
 
-                return Err(RPCError::Network(NetworkError::new(&std::io::Error::other(
-                    format!("Payload too large for unsupported rpc type: {}", req.rpc_type()),
-                ))));
+                return Err(RPCError::Network(NetworkError::new(
+                    &std::io::Error::other(format!(
+                        "Payload too large for unsupported rpc type: {}",
+                        req.rpc_type()
+                    )),
+                )));
             } else if status.is_client_error() {
                 return Err(RPCError::Unreachable(Unreachable::new(
                     &std::io::Error::new(std::io::ErrorKind::Other, msg),

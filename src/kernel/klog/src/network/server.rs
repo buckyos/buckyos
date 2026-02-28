@@ -10,6 +10,7 @@ use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use openraft::ChangeMembers;
 use openraft::error::{ClientWriteError, RaftError};
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -42,6 +43,11 @@ struct AddLearnerQuery {
 struct ChangeMembershipQuery {
     voters: String,
     retain: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RemoveLearnerQuery {
+    node_id: KNodeId,
 }
 
 #[derive(Clone)]
@@ -83,6 +89,7 @@ impl KNetworkServer {
         let append_entries_path = RaftRequestType::AppendEntries.klog_path();
         let vote_path = RaftRequestType::Vote.klog_path();
         let admin_add_learner_path = KLogAdminRequestType::AddLearner.klog_path();
+        let admin_remove_learner_path = KLogAdminRequestType::RemoveLearner.klog_path();
         let admin_change_membership_path = KLogAdminRequestType::ChangeMembership.klog_path();
         let admin_cluster_state_path = KLogAdminRequestType::ClusterState.klog_path();
         let control_rpc_routes = Router::new()
@@ -98,6 +105,10 @@ impl KNetworkServer {
             .route(
                 &admin_change_membership_path,
                 post(Self::handle_change_membership_request),
+            )
+            .route(
+                &admin_remove_learner_path,
+                post(Self::handle_remove_learner_request),
             )
             .route(
                 &admin_cluster_state_path,
@@ -129,7 +140,7 @@ impl KNetworkServer {
             .with_state(state);
 
         info!(
-            "KNetworkServer start listening at {}, control_limit_bytes={}, snapshot_limit_bytes={}, control_concurrency={}, snapshot_concurrency={}, control_timeout_ms={}, snapshot_timeout_ms={}, admin_add_learner_path={}, admin_change_membership_path={}, admin_cluster_state_path={}",
+            "KNetworkServer start listening at {}, control_limit_bytes={}, snapshot_limit_bytes={}, control_concurrency={}, snapshot_concurrency={}, control_timeout_ms={}, snapshot_timeout_ms={}, admin_add_learner_path={}, admin_remove_learner_path={}, admin_change_membership_path={}, admin_cluster_state_path={}",
             self.addr,
             CONTROL_RPC_BODY_LIMIT_BYTES,
             SNAPSHOT_RPC_BODY_LIMIT_BYTES,
@@ -138,6 +149,7 @@ impl KNetworkServer {
             CONTROL_RPC_TIMEOUT_MS,
             SNAPSHOT_RPC_TIMEOUT_MS,
             admin_add_learner_path,
+            admin_remove_learner_path,
             admin_change_membership_path,
             admin_cluster_state_path
         );
@@ -367,6 +379,34 @@ impl KNetworkServer {
                 (StatusCode::OK, msg).into_response()
             }
             Err(err) => Self::raft_client_write_error_response("change-membership", err),
+        }
+    }
+
+    async fn handle_remove_learner_request(
+        State(state): State<KNetworkServerState>,
+        Query(query): Query<RemoveLearnerQuery>,
+    ) -> Response {
+        info!(
+            "KNetworkServer admin remove-learner request: node_id={}",
+            query.node_id
+        );
+        let mut remove_nodes = BTreeSet::new();
+        remove_nodes.insert(query.node_id);
+
+        match state
+            .raft
+            .change_membership(ChangeMembers::RemoveNodes(remove_nodes), true)
+            .await
+        {
+            Ok(resp) => {
+                let msg = format!(
+                    "remove-learner committed: node_id={}, log_id={}, membership={:?}",
+                    query.node_id, resp.log_id, resp.membership
+                );
+                info!("KNetworkServer admin remove-learner succeeded: {}", msg);
+                (StatusCode::OK, msg).into_response()
+            }
+            Err(err) => Self::raft_client_write_error_response("remove-learner", err),
         }
     }
 
