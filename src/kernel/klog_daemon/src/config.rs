@@ -16,6 +16,7 @@ pub const ENV_JOIN_TARGETS: &str = "KLOG_JOIN_TARGETS";
 pub const ENV_JOIN_RETRY_INTERVAL_MS: &str = "KLOG_JOIN_RETRY_INTERVAL_MS";
 pub const ENV_JOIN_MAX_ATTEMPTS: &str = "KLOG_JOIN_MAX_ATTEMPTS";
 pub const ENV_JOIN_BLOCKING: &str = "KLOG_JOIN_BLOCKING";
+pub const ENV_JOIN_TARGET_ROLE: &str = "KLOG_JOIN_TARGET_ROLE";
 
 const DEFAULT_NODE_ID: KNodeId = 1;
 const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:21001";
@@ -27,6 +28,37 @@ const DEFAULT_STATE_STORE_SYNC_WRITE: bool = true;
 const DEFAULT_JOIN_RETRY_INTERVAL_MS: u64 = 3_000;
 const DEFAULT_JOIN_MAX_ATTEMPTS: u32 = 0; // 0 means retry forever.
 const DEFAULT_JOIN_BLOCKING: bool = false;
+const DEFAULT_JOIN_TARGET_ROLE: KLogJoinTargetRole = KLogJoinTargetRole::Voter;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum KLogJoinTargetRole {
+    Learner,
+    Voter,
+}
+
+impl KLogJoinTargetRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            KLogJoinTargetRole::Learner => "learner",
+            KLogJoinTargetRole::Voter => "voter",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "learner" => Ok(KLogJoinTargetRole::Learner),
+            "voter" => Ok(KLogJoinTargetRole::Voter),
+            _ => Err("expected learner or voter".to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for KLogJoinTargetRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KLogRuntimeConfigSource {
@@ -59,6 +91,7 @@ pub struct KLogRuntimeConfig {
     pub join_retry_interval_ms: u64,
     pub join_max_attempts: u32,
     pub join_blocking: bool,
+    pub join_target_role: KLogJoinTargetRole,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -75,6 +108,7 @@ pub struct KLogRuntimeConfigPatch {
     pub join_retry_interval_ms: Option<u64>,
     pub join_max_attempts: Option<u32>,
     pub join_blocking: Option<bool>,
+    pub join_target_role: Option<KLogJoinTargetRole>,
 }
 
 // Placeholder type for future buckyos config integration.
@@ -118,6 +152,7 @@ impl KLogRuntimeConfig {
             join_retry_interval_ms: parse_env_u64(ENV_JOIN_RETRY_INTERVAL_MS)?,
             join_max_attempts: parse_env_u32(ENV_JOIN_MAX_ATTEMPTS)?,
             join_blocking: parse_env_bool(ENV_JOIN_BLOCKING)?,
+            join_target_role: parse_env_join_target_role(ENV_JOIN_TARGET_ROLE)?,
         };
 
         Ok(Self::from_patch(patch))
@@ -182,6 +217,7 @@ impl KLogRuntimeConfig {
                 .unwrap_or(DEFAULT_JOIN_RETRY_INTERVAL_MS),
             join_max_attempts: patch.join_max_attempts.unwrap_or(DEFAULT_JOIN_MAX_ATTEMPTS),
             join_blocking: patch.join_blocking.unwrap_or(DEFAULT_JOIN_BLOCKING),
+            join_target_role: patch.join_target_role.unwrap_or(DEFAULT_JOIN_TARGET_ROLE),
         }
     }
 }
@@ -277,6 +313,15 @@ fn parse_env_bool(key: &str) -> Result<Option<bool>, String> {
     }
 }
 
+fn parse_env_join_target_role(key: &str) -> Result<Option<KLogJoinTargetRole>, String> {
+    match parse_env_string(key)? {
+        Some(v) => KLogJoinTargetRole::parse(&v)
+            .map(Some)
+            .map_err(|e| format!("Invalid {}='{}': {}", key, v, e)),
+        None => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,6 +356,7 @@ join_targets = ["127.0.0.1:21001", "127.0.0.1:21002"]
 join_retry_interval_ms = 1500
 join_max_attempts = 9
 join_blocking = true
+join_target_role = "learner"
 "#;
         std::fs::write(&file, content).expect("write file");
 
@@ -330,6 +376,7 @@ join_blocking = true
         assert_eq!(cfg.join_retry_interval_ms, 1500);
         assert_eq!(cfg.join_max_attempts, 9);
         assert!(cfg.join_blocking);
+        assert_eq!(cfg.join_target_role, KLogJoinTargetRole::Learner);
 
         let _ = std::fs::remove_file(&file);
     }
@@ -356,6 +403,7 @@ advertise_addr = "192.168.2.7"
         assert_eq!(cfg.join_retry_interval_ms, DEFAULT_JOIN_RETRY_INTERVAL_MS);
         assert_eq!(cfg.join_max_attempts, DEFAULT_JOIN_MAX_ATTEMPTS);
         assert_eq!(cfg.join_blocking, DEFAULT_JOIN_BLOCKING);
+        assert_eq!(cfg.join_target_role, DEFAULT_JOIN_TARGET_ROLE);
 
         let _ = std::fs::remove_file(&file);
     }
@@ -375,6 +423,7 @@ advertise_addr = "192.168.2.7"
             join_retry_interval_ms: Some(6000),
             join_max_attempts: Some(3),
             join_blocking: Some(true),
+            join_target_role: Some(KLogJoinTargetRole::Learner),
         };
 
         let (cfg, source) =
@@ -392,5 +441,6 @@ advertise_addr = "192.168.2.7"
         assert_eq!(cfg.join_retry_interval_ms, 6000);
         assert_eq!(cfg.join_max_attempts, 3);
         assert!(cfg.join_blocking);
+        assert_eq!(cfg.join_target_role, KLogJoinTargetRole::Learner);
     }
 }

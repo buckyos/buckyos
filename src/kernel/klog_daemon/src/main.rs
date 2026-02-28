@@ -60,7 +60,7 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
     })?;
 
     info!(
-        "klog startup config: node_id={}, listen_addr={}, advertise_addr={}:{}, data_dir={}, cluster_name={}, auto_bootstrap={}, state_store_sync_write={}, join_targets={:?}, join_retry_interval_ms={}, join_max_attempts={}, join_blocking={}",
+        "klog startup config: node_id={}, listen_addr={}, advertise_addr={}:{}, data_dir={}, cluster_name={}, auto_bootstrap={}, state_store_sync_write={}, join_targets={:?}, join_retry_interval_ms={}, join_max_attempts={}, join_blocking={}, join_target_role={}",
         cfg.node_id,
         cfg.listen_addr,
         cfg.advertise_addr,
@@ -72,7 +72,8 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
         cfg.join_targets,
         cfg.join_retry_interval_ms,
         cfg.join_max_attempts,
-        cfg.join_blocking
+        cfg.join_blocking,
+        cfg.join_target_role
     );
 
     let raft_log_path = cfg.data_dir.join("raft_log.sqlite");

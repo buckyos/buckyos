@@ -1,4 +1,4 @@
-use crate::config::KLogRuntimeConfig;
+use crate::config::{KLogJoinTargetRole, KLogRuntimeConfig};
 use klog::network::{KLogAdminRequestType, KLogClusterStateResponse};
 use klog::{KNode, KRaftRef};
 use log::{error, info, warn};
@@ -68,8 +68,8 @@ async fn run_auto_join_loop(cfg: KLogRuntimeConfig) {
     loop {
         if cfg.join_max_attempts > 0 && attempts >= cfg.join_max_attempts {
             warn!(
-                "Auto-join reached max attempts without success: attempts={}, node_id={}, targets={:?}",
-                cfg.join_max_attempts, cfg.node_id, cfg.join_targets
+                "Auto-join reached max attempts without success: attempts={}, node_id={}, targets={:?}, join_target_role={}",
+                cfg.join_max_attempts, cfg.node_id, cfg.join_targets, cfg.join_target_role
             );
             return;
         }
@@ -78,15 +78,15 @@ async fn run_auto_join_loop(cfg: KLogRuntimeConfig) {
         match try_join_once(&client, &cfg).await {
             Ok(msg) => {
                 info!(
-                    "Auto-join succeeded: node_id={}, attempt={}, {}",
-                    cfg.node_id, attempts, msg
+                    "Auto-join succeeded: node_id={}, attempt={}, join_target_role={}, {}",
+                    cfg.node_id, attempts, cfg.join_target_role, msg
                 );
                 return;
             }
             Err(e) => {
                 warn!(
-                    "Auto-join attempt failed: node_id={}, attempt={}, err={}",
-                    cfg.node_id, attempts, e
+                    "Auto-join attempt failed: node_id={}, attempt={}, join_target_role={}, err={}",
+                    cfg.node_id, attempts, cfg.join_target_role, e
                 );
             }
         }
@@ -162,6 +162,12 @@ async fn join_and_promote_once(
     );
 
     if state_before.voters.contains(&cfg.node_id) {
+        if cfg.join_target_role == KLogJoinTargetRole::Learner {
+            return Ok(format!(
+                "node is already voter, target_role=learner does not downgrade existing voter: node_id={}, voters={:?}",
+                cfg.node_id, state_before.voters
+            ));
+        }
         return Ok(format!(
             "node already voter: node_id={}, voters={:?}",
             cfg.node_id, state_before.voters
@@ -195,6 +201,13 @@ async fn join_and_promote_once(
     }
 
     let state_after_add = fetch_cluster_state(client, admin_target, &cluster_state_path).await?;
+    if cfg.join_target_role == KLogJoinTargetRole::Learner {
+        return Ok(format!(
+            "node joined as learner: node_id={}, voters={:?}, learners={:?}",
+            cfg.node_id, state_after_add.voters, state_after_add.learners
+        ));
+    }
+
     if state_after_add.voters.contains(&cfg.node_id) {
         return Ok(format!(
             "node became voter without explicit promote: node_id={}, voters={:?}",
