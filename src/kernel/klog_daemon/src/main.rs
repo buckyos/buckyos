@@ -1,6 +1,7 @@
 mod cluster;
 mod config;
 mod lifecycle;
+mod logging;
 
 use cluster::{initialize_cluster_if_needed, spawn_auto_join_task};
 use config::KLogRuntimeConfig;
@@ -12,24 +13,9 @@ use klog::state_store::{
 };
 use lifecycle::run_server_lifecycle;
 use log::{error, info};
+use logging::init_logging;
 use openraft::Config;
-use simplelog::{ColorChoice, Config as SimpleLogConfig, LevelFilter, TermLogger, TerminalMode};
 use std::sync::Arc;
-use tracing_subscriber::{EnvFilter, fmt};
-
-fn init_logging() {
-    let _ = TermLogger::init(
-        LevelFilter::Info,
-        SimpleLogConfig::default(),
-        TerminalMode::Mixed,
-        ColorChoice::Auto,
-    );
-
-    let subscriber = fmt::Subscriber::builder()
-        .with_env_filter(EnvFilter::from_default_env())
-        .finish();
-    let _ = tracing::subscriber::set_global_default(subscriber);
-}
 
 #[tokio::main]
 async fn main() {

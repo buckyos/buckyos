@@ -12,6 +12,7 @@ struct ClusterState {
     server_state: String,
     current_leader: Option<u64>,
     voters: Vec<u64>,
+    learners: Vec<u64>,
 }
 
 struct TestNode {
@@ -357,18 +358,28 @@ async fn wait_cluster_voters(
     expect_voters: &[u64],
     timeout: Duration,
 ) -> Result<Vec<ClusterState>, String> {
+    wait_cluster_membership(ports, expect_voters, &[], timeout).await
+}
+
+async fn wait_cluster_membership(
+    ports: &[u16],
+    expect_voters: &[u64],
+    expect_learners: &[u64],
+    timeout: Duration,
+) -> Result<Vec<ClusterState>, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(800))
         .build()
         .map_err(|e| format!("failed to build http client: {}", e))?;
-    let expected = expect_voters.iter().copied().collect::<BTreeSet<_>>();
+    let expected_voters = expect_voters.iter().copied().collect::<BTreeSet<_>>();
+    let expected_learners = expect_learners.iter().copied().collect::<BTreeSet<_>>();
     let deadline = Instant::now() + timeout;
 
     loop {
         if Instant::now() > deadline {
             return Err(format!(
-                "timeout waiting cluster voters={:?} on ports={:?}",
-                expect_voters, ports
+                "timeout waiting cluster membership voters={:?}, learners={:?} on ports={:?}",
+                expect_voters, expect_learners, ports
             ));
         }
 
@@ -377,8 +388,9 @@ async fn wait_cluster_voters(
         for port in ports {
             match fetch_cluster_state(&client, *port).await {
                 Ok(state) => {
-                    let got = state.voters.iter().copied().collect::<BTreeSet<_>>();
-                    if got != expected {
+                    let got_voters = state.voters.iter().copied().collect::<BTreeSet<_>>();
+                    let got_learners = state.learners.iter().copied().collect::<BTreeSet<_>>();
+                    if got_voters != expected_voters || got_learners != expected_learners {
                         all_ok = false;
                     }
                     states.push(state);
@@ -392,6 +404,64 @@ async fn wait_cluster_voters(
 
         if all_ok && states.len() == ports.len() {
             return Ok(states);
+        }
+
+        sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn send_change_membership(port: u16, voters: &[u64], retain: bool) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(1200))
+        .build()
+        .map_err(|e| format!("failed to build http client: {}", e))?;
+    let voters_csv = voters
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let url = format!(
+        "http://127.0.0.1:{}/klog/admin/change-membership?voters={}&retain={}",
+        port,
+        voters_csv,
+        if retain { "true" } else { "false" }
+    );
+    let resp = client
+        .post(&url)
+        .send()
+        .await
+        .map_err(|e| format!("request {} failed: {}", url, e))?;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_else(|_| String::new());
+    if status.is_success() {
+        Ok(body)
+    } else {
+        Err(format!("request {} returned {}: {}", url, status, body))
+    }
+}
+
+async fn remove_learners_with_retry(
+    voter_ports: &[u16],
+    final_voters: &[u64],
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    let mut last_err = String::new();
+    loop {
+        if Instant::now() > deadline {
+            return Err(format!(
+                "timeout removing learners with voters={:?}, ports={:?}, last_err={}",
+                final_voters, voter_ports, last_err
+            ));
+        }
+
+        for port in voter_ports {
+            match send_change_membership(*port, final_voters, false).await {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    last_err = e;
+                }
+            }
         }
 
         sleep(Duration::from_millis(250)).await;
@@ -615,29 +685,63 @@ async fn test_three_node_concurrent_startup_converges() -> Result<(), String> {
         return Ok(());
     }
 
-    let ports = choose_unique_ports(3)?;
+    let ports = choose_unique_ports(5)?;
     let port1 = ports[0];
     let port2 = ports[1];
     let port3 = ports[2];
-    let cluster_name = format!("klog_cluster_concurrent_{}_{}_{}", port1, port2, port3);
+    let port4 = ports[3];
+    let port5 = ports[4];
+    let cluster_name = format!(
+        "klog_cluster_concurrent_{}_{}_{}_{}_{}",
+        port1, port2, port3, port4, port5
+    );
     let join_seed = vec![format!("127.0.0.1:{}", port1)];
 
-    let (node1, node2, node3) = tokio::try_join!(
+    let (node1, node2, node3, node4, node5) = tokio::try_join!(
         spawn_node(1, port1, &cluster_name, true, &[], "voter"),
         spawn_node(2, port2, &cluster_name, false, &join_seed, "voter"),
         spawn_node(3, port3, &cluster_name, false, &join_seed, "voter"),
+        spawn_node(4, port4, &cluster_name, false, &join_seed, "learner"),
+        spawn_node(5, port5, &cluster_name, false, &join_seed, "learner"),
     )?;
 
-    let mut nodes = vec![node1, node2, node3];
+    let mut nodes = vec![node1, node2, node3, node4, node5];
     let result = async {
-        let _ = wait_cluster_voters(&[port1, port2, port3], &[1, 2, 3], Duration::from_secs(60))
-            .await?;
+        let states = wait_cluster_membership(
+            &[port1, port2, port3, port4, port5],
+            &[1, 2, 3],
+            &[4, 5],
+            Duration::from_secs(80),
+        )
+        .await?;
+        for state in states
+            .iter()
+            .filter(|s| s.node_id == 4 || s.node_id == 5)
+        {
+            if state.voters.contains(&state.node_id) || !state.learners.contains(&state.node_id) {
+                return Err(format!(
+                    "learner node state mismatch: node_id={}, voters={:?}, learners={:?}, server_state={}",
+                    state.node_id, state.voters, state.learners, state.server_state
+                ));
+            }
+        }
+
         let leader =
             wait_consistent_leader_on_ports(&[port1, port2, port3], Duration::from_secs(40))
                 .await?;
         if ![1_u64, 2_u64, 3_u64].contains(&leader) {
             return Err(format!("unexpected leader id: {}", leader));
         }
+
+        remove_learners_with_retry(&[port1, port2, port3], &[1, 2, 3], Duration::from_secs(30))
+            .await?;
+        let _ = wait_cluster_membership(
+            &[port1, port2, port3],
+            &[1, 2, 3],
+            &[],
+            Duration::from_secs(60),
+        )
+        .await?;
         Ok(())
     }
     .await;
