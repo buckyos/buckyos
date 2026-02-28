@@ -46,6 +46,10 @@ impl RaftRequestType {
             RaftRequestType::Vote => "vote",
         }
     }
+
+    pub fn klog_path(&self) -> String {
+        format!("/klog/{}", self.as_str())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -237,18 +241,20 @@ impl RaftRequest {
         }
     }
 
-    pub fn payload_too_large(&self) -> PayloadTooLarge {
+    pub fn payload_too_large(&self) -> Option<PayloadTooLarge> {
         match self {
             RaftRequest::AppendEntries(req) => {
-                PayloadTooLarge::new_entries_hint(req.entries.len() as u64 / 2)
+                // openraft requires entries_hint > 0.
+                let hint = std::cmp::max(1, req.entries.len() as u64 / 2);
+                Some(PayloadTooLarge::new_entries_hint(hint))
             }
             RaftRequest::InstallSnapshot(_) => {
                 error!("InstallSnapshotRequest is too large to send");
-                PayloadTooLarge::new_entries_hint(0)
+                None
             }
             RaftRequest::Vote(_) => {
                 error!("VoteRequest is too large to send");
-                PayloadTooLarge::new_entries_hint(0)
+                None
             }
         }
     }
@@ -259,8 +265,7 @@ impl RaftRequest {
     }
 
     pub fn deserialize(data: &[u8]) -> KResult<Self> {
-        let (header_rpc, this) =
-            decode_network_frame::<Self>(NetworkFrameKind::Request, data)?;
+        let (header_rpc, this) = decode_network_frame::<Self>(NetworkFrameKind::Request, data)?;
         if this.request_type() != header_rpc {
             let msg = format!(
                 "RaftRequest rpc type mismatch between header and payload: header={}, payload={}",
@@ -304,8 +309,7 @@ impl RaftResponse {
     }
 
     pub fn deserialize(data: &[u8]) -> KResult<Self> {
-        let (header_rpc, this) =
-            decode_network_frame::<Self>(NetworkFrameKind::Response, data)?;
+        let (header_rpc, this) = decode_network_frame::<Self>(NetworkFrameKind::Response, data)?;
         if this.request_type() != header_rpc {
             let msg = format!(
                 "RaftResponse rpc type mismatch between header and payload: header={}, payload={}",

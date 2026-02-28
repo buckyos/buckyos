@@ -52,12 +52,11 @@ impl KNetworkServer {
             )))
             .layer(RequestBodyLimitLayer::new(CONTROL_RPC_BODY_LIMIT_BYTES));
 
+        let append_entries_path = RaftRequestType::AppendEntries.klog_path();
+        let vote_path = RaftRequestType::Vote.klog_path();
         let control_rpc_routes = Router::new()
-            .route(
-                "/klog/append-entries",
-                post(Self::handle_append_entries_request),
-            )
-            .route("/klog/vote", post(Self::handle_vote_request))
+            .route(&append_entries_path, post(Self::handle_append_entries_request))
+            .route(&vote_path, post(Self::handle_vote_request))
             .route_layer(control_rpc_middleware);
 
         let snapshot_rpc_middleware = ServiceBuilder::new()
@@ -69,11 +68,9 @@ impl KNetworkServer {
             )))
             .layer(RequestBodyLimitLayer::new(SNAPSHOT_RPC_BODY_LIMIT_BYTES));
 
+        let install_snapshot_path = RaftRequestType::InstallSnapshot.klog_path();
         let snapshot_routes = Router::new()
-            .route(
-                "/klog/install-snapshot",
-                post(Self::handle_install_snapshot_request),
-            )
+            .route(&install_snapshot_path, post(Self::handle_install_snapshot_request))
             .route_layer(snapshot_rpc_middleware);
 
         let app = Router::new()

@@ -31,7 +31,7 @@ impl TestMemoryContext {
             .unwrap();
         let state_store_manager = Arc::new(state_store_manager);
 
-        let data_dir = std::env::temp_dir().join("buckyos_klog_test");
+        let data_dir = unique_test_path("memory_snapshot");
         std::fs::create_dir_all(&data_dir).unwrap();
         info!("Using data dir for snapshot manager: {:?}", data_dir);
 
