@@ -2,10 +2,26 @@ use super::request::{RaftRequest, RaftRequestType, RaftResponse};
 use crate::KRaftRef;
 use axum::Router;
 use axum::body::Bytes;
+use axum::error_handling::HandleErrorLayer;
 use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
+use std::time::Duration;
+use tower::BoxError;
+use tower::ServiceBuilder;
+use tower::limit::ConcurrencyLimitLayer;
+use tower::load_shed::LoadShedLayer;
+use tower::timeout::TimeoutLayer;
+use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::trace::TraceLayer;
+
+const CONTROL_RPC_BODY_LIMIT_BYTES: usize = 1 * 1024 * 1024;
+const SNAPSHOT_RPC_BODY_LIMIT_BYTES: usize = 8 * 1024 * 1024;
+const CONTROL_RPC_CONCURRENCY_LIMIT: usize = 128;
+const SNAPSHOT_RPC_CONCURRENCY_LIMIT: usize = 8;
+const CONTROL_RPC_TIMEOUT_MS: u64 = 3_000;
+const SNAPSHOT_RPC_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Clone)]
 struct KNetworkServerState {
@@ -27,19 +43,55 @@ impl KNetworkServer {
             raft: self.raft.clone(),
         };
 
-        let app = Router::new()
+        let control_rpc_middleware = ServiceBuilder::new()
+            .layer(HandleErrorLayer::new(Self::handle_middleware_error))
+            .layer(LoadShedLayer::new())
+            .layer(ConcurrencyLimitLayer::new(CONTROL_RPC_CONCURRENCY_LIMIT))
+            .layer(TimeoutLayer::new(Duration::from_millis(
+                CONTROL_RPC_TIMEOUT_MS,
+            )))
+            .layer(RequestBodyLimitLayer::new(CONTROL_RPC_BODY_LIMIT_BYTES));
+
+        let control_rpc_routes = Router::new()
             .route(
                 "/klog/append-entries",
                 post(Self::handle_append_entries_request),
             )
+            .route("/klog/vote", post(Self::handle_vote_request))
+            .route_layer(control_rpc_middleware);
+
+        let snapshot_rpc_middleware = ServiceBuilder::new()
+            .layer(HandleErrorLayer::new(Self::handle_middleware_error))
+            .layer(LoadShedLayer::new())
+            .layer(ConcurrencyLimitLayer::new(SNAPSHOT_RPC_CONCURRENCY_LIMIT))
+            .layer(TimeoutLayer::new(Duration::from_millis(
+                SNAPSHOT_RPC_TIMEOUT_MS,
+            )))
+            .layer(RequestBodyLimitLayer::new(SNAPSHOT_RPC_BODY_LIMIT_BYTES));
+
+        let snapshot_routes = Router::new()
             .route(
                 "/klog/install-snapshot",
                 post(Self::handle_install_snapshot_request),
             )
-            .route("/klog/vote", post(Self::handle_vote_request))
+            .route_layer(snapshot_rpc_middleware);
+
+        let app = Router::new()
+            .merge(control_rpc_routes)
+            .merge(snapshot_routes)
+            .layer(TraceLayer::new_for_http())
             .with_state(state);
 
-        info!("KNetworkServer start listening at {}", self.addr);
+        info!(
+            "KNetworkServer start listening at {}, control_limit_bytes={}, snapshot_limit_bytes={}, control_concurrency={}, snapshot_concurrency={}, control_timeout_ms={}, snapshot_timeout_ms={}",
+            self.addr,
+            CONTROL_RPC_BODY_LIMIT_BYTES,
+            SNAPSHOT_RPC_BODY_LIMIT_BYTES,
+            CONTROL_RPC_CONCURRENCY_LIMIT,
+            SNAPSHOT_RPC_CONCURRENCY_LIMIT,
+            CONTROL_RPC_TIMEOUT_MS,
+            SNAPSHOT_RPC_TIMEOUT_MS
+        );
 
         let listener = tokio::net::TcpListener::bind(&self.addr)
             .await
@@ -54,6 +106,21 @@ impl KNetworkServer {
             error!("{}", msg);
             msg
         })
+    }
+
+    async fn handle_middleware_error(err: BoxError) -> Response {
+        let msg = format!("KNetworkServer middleware rejected request: {}", err);
+        error!("{}", msg);
+
+        if err.is::<tower::timeout::error::Elapsed>() {
+            return Self::error_response(StatusCode::REQUEST_TIMEOUT, msg);
+        }
+
+        if err.is::<tower::load_shed::error::Overloaded>() {
+            return Self::error_response(StatusCode::SERVICE_UNAVAILABLE, msg);
+        }
+
+        Self::error_response(StatusCode::INTERNAL_SERVER_ERROR, msg)
     }
 
     async fn handle_append_entries_request(
