@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 klog = { path = "../klog" }
+buckyos-kit = { workspace = true }
 openraft = { version = "0.9", features = ["serde", "storage-v2", "anyhow"] }
 tokio = { workspace = true }
 log = { workspace = true }

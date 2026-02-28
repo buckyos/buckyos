@@ -1,3 +1,4 @@
+use buckyos_kit::get_buckyos_service_data_dir;
 use klog::KNodeId;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -132,7 +133,7 @@ impl KLogRuntimeConfig {
 
     fn from_patch(patch: KLogRuntimeConfigPatch) -> Self {
         let node_id = patch.node_id.unwrap_or(DEFAULT_NODE_ID);
-        let default_data_dir = default_data_dir(node_id);
+        let default_data_dir = default_data_dir();
 
         Self {
             node_id,
@@ -152,8 +153,8 @@ impl KLogRuntimeConfig {
     }
 }
 
-fn default_data_dir(node_id: KNodeId) -> PathBuf {
-    PathBuf::from(format!("/tmp/buckyos_klog_node_{}", node_id))
+fn default_data_dir() -> PathBuf {
+    get_buckyos_service_data_dir("klog")
 }
 
 fn parse_env_string(key: &str) -> Result<Option<String>, String> {
@@ -271,7 +272,7 @@ advertise_addr = "192.168.2.7"
         assert_eq!(cfg.listen_addr, DEFAULT_LISTEN_ADDR);
         assert_eq!(cfg.advertise_addr, "192.168.2.7");
         assert_eq!(cfg.advertise_port, DEFAULT_ADVERTISE_PORT);
-        assert_eq!(cfg.data_dir, default_data_dir(7));
+        assert_eq!(cfg.data_dir, default_data_dir());
         assert_eq!(cfg.cluster_name, DEFAULT_CLUSTER_NAME);
         assert_eq!(cfg.auto_bootstrap, DEFAULT_AUTO_BOOTSTRAP);
 
@@ -297,7 +298,7 @@ advertise_addr = "192.168.2.7"
         assert_eq!(cfg.listen_addr, "0.0.0.0:23001");
         assert_eq!(cfg.advertise_addr, "172.20.0.3");
         assert_eq!(cfg.advertise_port, 23001);
-        assert_eq!(cfg.data_dir, default_data_dir(3));
+        assert_eq!(cfg.data_dir, default_data_dir());
         assert_eq!(cfg.cluster_name, "bk");
         assert!(cfg.auto_bootstrap);
     }
