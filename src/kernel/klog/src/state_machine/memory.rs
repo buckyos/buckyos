@@ -47,9 +47,22 @@ impl KLogMemoryStateMachine {
             KLogRequest::AppendLog { item } => {
                 // Id is expected to be assigned on leader before log replication.
                 // State machine apply must be deterministic and should not mutate ids.
+                debug!(
+                    "StateMachine process append request: id={}, ts={}, node_id={}, msg_len={}",
+                    item.id,
+                    item.timestamp,
+                    item.node_id,
+                    item.message.len()
+                );
                 match self.state_store.append_prepared_entry(item).await {
-                    Ok(id) => KLogResponse::AppendOk { id },
-                    Err(err) => KLogResponse::Err(err.to_string()),
+                    Ok(id) => {
+                        debug!("StateMachine append request committed: id={}", id);
+                        KLogResponse::AppendOk { id }
+                    }
+                    Err(err) => {
+                        error!("StateMachine append request failed: {}", err);
+                        KLogResponse::Err(err.to_string())
+                    }
                 }
             }
         }
@@ -113,16 +126,29 @@ impl RaftStateMachine<KTypeConfig> for KLogMemoryStateMachine {
         meta: &KSnapshotMeta,
         snapshot: Box<tokio::fs::File>,
     ) -> StorageResult<()> {
+        info!(
+            "StateMachine install_snapshot start: snapshot_id={}, last_log_id={:?}, last_membership={:?}",
+            meta.snapshot_id, meta.last_log_id, meta.last_membership
+        );
         let data = self
             .snapshot_manager
             .install_snapshot(meta, snapshot)
             .await?;
+        info!(
+            "StateMachine install_snapshot persisted file: snapshot_id={}, klog_data_bytes={}",
+            data.meta.snapshot_id,
+            data.klog_data.len()
+        );
 
         // First, update the state machine data
         let mut state = self.data.write().await;
         state.last_applied_log_id = data.meta.last_log_id.clone();
         state.last_membership = data.meta.last_membership.clone();
         drop(state); // Release the lock before potentially long operations
+        debug!(
+            "StateMachine install_snapshot state updated: last_applied={:?}, membership={:?}",
+            data.meta.last_log_id, data.meta.last_membership
+        );
 
         // Then, restore state store from snapshot payload.
         self.state_store
@@ -137,6 +163,10 @@ impl RaftStateMachine<KTypeConfig> for KLogMemoryStateMachine {
                     source: StorageIOError::write_snapshot(None, &std::io::Error::other(msg)),
                 }
             })?;
+        info!(
+            "StateMachine install_snapshot completed: snapshot_id={}",
+            meta.snapshot_id
+        );
 
         Ok(())
     }
@@ -168,6 +198,7 @@ impl RaftStateMachine<KTypeConfig> for KLogMemoryStateMachine {
 
 impl RaftSnapshotBuilder<KTypeConfig> for KLogMemoryStateMachine {
     async fn build_snapshot(&mut self) -> StorageResult<KSnapshot> {
+        info!("StateMachine build_snapshot start");
         let meta = {
             let data = self.data.read().await;
 
@@ -182,6 +213,10 @@ impl RaftSnapshotBuilder<KTypeConfig> for KLogMemoryStateMachine {
 
             meta
         };
+        info!(
+            "StateMachine build_snapshot meta prepared: snapshot_id={}, last_log_id={:?}, last_membership={:?}",
+            meta.snapshot_id, meta.last_log_id, meta.last_membership
+        );
 
         let klog_data = self.state_store.build_snapshot().await.map_err(|e| {
             let msg = format!("Failed to build state store snapshot: {}", e);
@@ -190,6 +225,11 @@ impl RaftSnapshotBuilder<KTypeConfig> for KLogMemoryStateMachine {
                 source: StorageIOError::write_snapshot(None, &e),
             }
         })?;
+        info!(
+            "StateMachine build_snapshot state_store ready: snapshot_id={}, klog_data_bytes={}",
+            meta.snapshot_id,
+            klog_data.data.len()
+        );
 
         let snapshot = KSnapshotData::new(meta, klog_data.data);
 
@@ -198,6 +238,11 @@ impl RaftSnapshotBuilder<KTypeConfig> for KLogMemoryStateMachine {
             .snapshot_manager
             .save_snapshot_to_file(&snapshot)
             .await?;
+        info!(
+            "StateMachine build_snapshot file saved: snapshot_id={}, path={}",
+            snapshot.meta.snapshot_id,
+            file.display()
+        );
 
         // Then start a task to clean up old snapshots
         let snapshot_id = snapshot.meta.snapshot_id.clone();
@@ -220,6 +265,10 @@ impl RaftSnapshotBuilder<KTypeConfig> for KLogMemoryStateMachine {
             meta: snapshot.meta,
             snapshot: Box::new(file),
         };
+        info!(
+            "StateMachine build_snapshot completed: snapshot_id={}",
+            snapshot.meta.snapshot_id
+        );
 
         Ok(snapshot)
     }
