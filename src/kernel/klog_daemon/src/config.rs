@@ -11,6 +11,7 @@ pub const ENV_ADVERTISE_PORT: &str = "KLOG_ADVERTISE_PORT";
 pub const ENV_DATA_DIR: &str = "KLOG_DATA_DIR";
 pub const ENV_CLUSTER_NAME: &str = "KLOG_CLUSTER_NAME";
 pub const ENV_AUTO_BOOTSTRAP: &str = "KLOG_AUTO_BOOTSTRAP";
+pub const ENV_STATE_STORE_SYNC_WRITE: &str = "KLOG_STATE_STORE_SYNC_WRITE";
 
 const DEFAULT_NODE_ID: KNodeId = 1;
 const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:21001";
@@ -18,6 +19,7 @@ const DEFAULT_ADVERTISE_ADDR: &str = "127.0.0.1";
 const DEFAULT_ADVERTISE_PORT: u16 = 21001;
 const DEFAULT_CLUSTER_NAME: &str = "klog";
 const DEFAULT_AUTO_BOOTSTRAP: bool = true;
+const DEFAULT_STATE_STORE_SYNC_WRITE: bool = true;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KLogRuntimeConfigSource {
@@ -45,6 +47,7 @@ pub struct KLogRuntimeConfig {
     pub data_dir: PathBuf,
     pub cluster_name: String,
     pub auto_bootstrap: bool,
+    pub state_store_sync_write: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -56,6 +59,7 @@ pub struct KLogRuntimeConfigPatch {
     pub data_dir: Option<PathBuf>,
     pub cluster_name: Option<String>,
     pub auto_bootstrap: Option<bool>,
+    pub state_store_sync_write: Option<bool>,
 }
 
 // Placeholder type for future buckyos config integration.
@@ -94,6 +98,7 @@ impl KLogRuntimeConfig {
             data_dir: parse_env_pathbuf(ENV_DATA_DIR)?,
             cluster_name: parse_env_string(ENV_CLUSTER_NAME)?,
             auto_bootstrap: parse_env_bool(ENV_AUTO_BOOTSTRAP)?,
+            state_store_sync_write: parse_env_bool(ENV_STATE_STORE_SYNC_WRITE)?,
         };
 
         Ok(Self::from_patch(patch))
@@ -149,6 +154,9 @@ impl KLogRuntimeConfig {
                 .cluster_name
                 .unwrap_or_else(|| DEFAULT_CLUSTER_NAME.to_string()),
             auto_bootstrap: patch.auto_bootstrap.unwrap_or(DEFAULT_AUTO_BOOTSTRAP),
+            state_store_sync_write: patch
+                .state_store_sync_write
+                .unwrap_or(DEFAULT_STATE_STORE_SYNC_WRITE),
         }
     }
 }
@@ -243,6 +251,7 @@ advertise_port = 22001
 data_dir = "/tmp/klog_cfg_test_full"
 cluster_name = "cluster_a"
 auto_bootstrap = false
+state_store_sync_write = false
 "#;
         std::fs::write(&file, content).expect("write file");
 
@@ -254,6 +263,7 @@ auto_bootstrap = false
         assert_eq!(cfg.data_dir, PathBuf::from("/tmp/klog_cfg_test_full"));
         assert_eq!(cfg.cluster_name, "cluster_a");
         assert!(!cfg.auto_bootstrap);
+        assert!(!cfg.state_store_sync_write);
 
         let _ = std::fs::remove_file(&file);
     }
@@ -275,6 +285,7 @@ advertise_addr = "192.168.2.7"
         assert_eq!(cfg.data_dir, default_data_dir());
         assert_eq!(cfg.cluster_name, DEFAULT_CLUSTER_NAME);
         assert_eq!(cfg.auto_bootstrap, DEFAULT_AUTO_BOOTSTRAP);
+        assert_eq!(cfg.state_store_sync_write, DEFAULT_STATE_STORE_SYNC_WRITE);
 
         let _ = std::fs::remove_file(&file);
     }
@@ -289,6 +300,7 @@ advertise_addr = "192.168.2.7"
             data_dir: None,
             cluster_name: Some("bk".to_string()),
             auto_bootstrap: Some(true),
+            state_store_sync_write: Some(false),
         };
 
         let (cfg, source) =
@@ -301,5 +313,6 @@ advertise_addr = "192.168.2.7"
         assert_eq!(cfg.data_dir, default_data_dir());
         assert_eq!(cfg.cluster_name, "bk");
         assert!(cfg.auto_bootstrap);
+        assert!(!cfg.state_store_sync_write);
     }
 }

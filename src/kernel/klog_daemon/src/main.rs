@@ -58,14 +58,15 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
     })?;
 
     info!(
-        "klog startup config: node_id={}, listen_addr={}, advertise_addr={}:{}, data_dir={}, cluster_name={}, auto_bootstrap={}",
+        "klog startup config: node_id={}, listen_addr={}, advertise_addr={}:{}, data_dir={}, cluster_name={}, auto_bootstrap={}, state_store_sync_write={}",
         cfg.node_id,
         cfg.listen_addr,
         cfg.advertise_addr,
         cfg.advertise_port,
         cfg.data_dir.display(),
         cfg.cluster_name,
-        cfg.auto_bootstrap
+        cfg.auto_bootstrap,
+        cfg.state_store_sync_write
     );
 
     let raft_log_path = cfg.data_dir.join("raft_log.sqlite");
@@ -79,19 +80,23 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
     info!("Raft log storage ready: {}", raft_log_path.display());
 
     let state_store_path = cfg.data_dir.join("state_store.rocks");
-    let state_store =
-        RocksDbStateStore::open_with_mode(&state_store_path, RocksDbSnapshotMode::BackupEngine)
-            .map_err(|e| {
-                format!(
-                    "Failed to open state store at {}: {}",
-                    state_store_path.display(),
-                    e
-                )
-            })?;
+    let state_store = RocksDbStateStore::open_with_mode_and_sync(
+        &state_store_path,
+        RocksDbSnapshotMode::BackupEngine,
+        cfg.state_store_sync_write,
+    )
+    .map_err(|e| {
+        format!(
+            "Failed to open state store at {}: {}",
+            state_store_path.display(),
+            e
+        )
+    })?;
     info!(
-        "State store ready: path={}, snapshot_mode={:?}",
+        "State store ready: path={}, snapshot_mode={:?}, sync_write={}",
         state_store_path.display(),
-        RocksDbSnapshotMode::BackupEngine
+        RocksDbSnapshotMode::BackupEngine,
+        cfg.state_store_sync_write
     );
     let state_store = Arc::new(Box::new(state_store) as Box<dyn KLogStateStore>);
     let state_store_manager = Arc::new(

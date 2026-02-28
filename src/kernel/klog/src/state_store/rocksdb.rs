@@ -4,6 +4,7 @@ use rocksdb::backup::{BackupEngine, BackupEngineOptions, RestoreOptions};
 use rocksdb::checkpoint::Checkpoint;
 use rocksdb::{
     ColumnFamilyDescriptor, DB, DEFAULT_COLUMN_FAMILY_NAME, Env, IteratorMode, Options, WriteBatch,
+    WriteOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -129,6 +130,12 @@ fn open_rocksdb_with_cfs(path: &Path, create_if_missing: bool) -> Result<DB, Str
     })
 }
 
+fn build_write_options(sync_write: bool) -> WriteOptions {
+    let mut opts = WriteOptions::default();
+    opts.set_sync(sync_write);
+    opts
+}
+
 fn migrate_legacy_default_cf_data(db: &DB) -> Result<(), String> {
     let default_cf = db.cf_handle(DEFAULT_COLUMN_FAMILY_NAME).ok_or_else(|| {
         let msg = "Missing default column family".to_string();
@@ -172,7 +179,8 @@ fn migrate_legacy_default_cf_data(db: &DB) -> Result<(), String> {
     }
 
     if migrated_logs > 0 || migrated_meta > 0 {
-        db.write(batch).map_err(|e| {
+        let write_opts = build_write_options(true);
+        db.write_opt(batch, &write_opts).map_err(|e| {
             let msg = format!("Failed to write legacy default-CF migration batch: {}", e);
             error!("{}", msg);
             msg
@@ -243,6 +251,7 @@ struct BackupEngineSnapshotArchive {
 pub struct RocksDbStateStore {
     db: Arc<DB>,
     snapshot_mode: RocksDbSnapshotMode,
+    sync_write: bool,
     snapshot_builder: Arc<dyn RocksDbSnapshotStrategy>,
     snapshot_installers: Vec<Arc<dyn RocksDbSnapshotStrategy>>,
 }
@@ -251,23 +260,33 @@ impl std::fmt::Debug for RocksDbStateStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RocksDbStateStore")
             .field("snapshot_mode", &self.snapshot_mode)
+            .field("sync_write", &self.sync_write)
             .finish()
     }
 }
 
 impl RocksDbStateStore {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, String> {
-        Self::open_with_mode(path, RocksDbSnapshotMode::Checkpoint)
+        Self::open_with_mode_and_sync(path, RocksDbSnapshotMode::Checkpoint, true)
     }
 
     pub fn open_with_mode<P: AsRef<Path>>(
         path: P,
         snapshot_mode: RocksDbSnapshotMode,
     ) -> Result<Self, String> {
+        Self::open_with_mode_and_sync(path, snapshot_mode, true)
+    }
+
+    pub fn open_with_mode_and_sync<P: AsRef<Path>>(
+        path: P,
+        snapshot_mode: RocksDbSnapshotMode,
+        sync_write: bool,
+    ) -> Result<Self, String> {
         info!(
-            "RocksDbStateStore open_with_mode: path={}, snapshot_mode={:?}",
+            "RocksDbStateStore open_with_mode: path={}, snapshot_mode={:?}, sync_write={}",
             path.as_ref().display(),
-            snapshot_mode
+            snapshot_mode,
+            sync_write
         );
         let db = create_rocksdb(path.as_ref())?;
 
@@ -288,9 +307,14 @@ impl RocksDbStateStore {
         Ok(Self {
             db: Arc::new(db),
             snapshot_mode,
+            sync_write,
             snapshot_builder,
             snapshot_installers,
         })
+    }
+
+    fn write_options(&self) -> WriteOptions {
+        build_write_options(self.sync_write)
     }
 
     fn read_persisted_next_log_id(&self) -> KResult<Option<u64>> {
@@ -337,8 +361,14 @@ impl RocksDbStateStore {
             error!("{}", msg);
             klog_err(msg)
         })?;
+        let write_opts = self.write_options();
         self.db
-            .put_cf(&meta_cf, KEY_NEXT_LOG_ID_META, next_log_id.to_be_bytes())
+            .put_cf_opt(
+                &meta_cf,
+                KEY_NEXT_LOG_ID_META,
+                next_log_id.to_be_bytes(),
+                &write_opts,
+            )
             .map_err(|e| klog_err_with_context("Failed to persist rocksdb next_log_id metadata", e))
     }
 
@@ -377,8 +407,9 @@ impl RocksDbStateStore {
             bincode::serde::encode_to_vec(meta, bincode::config::legacy()).map_err(|e| {
                 klog_err_with_context("Failed to encode rocksdb state-machine metadata", e)
             })?;
+        let write_opts = self.write_options();
         self.db
-            .put_cf(&meta_cf, KEY_STATE_MACHINE_META, bytes)
+            .put_cf_opt(&meta_cf, KEY_STATE_MACHINE_META, bytes, &write_opts)
             .map_err(|e| {
                 klog_err_with_context("Failed to persist rocksdb state-machine metadata", e)
             })
@@ -500,7 +531,8 @@ impl RocksDbStateStore {
         let next_log_id = max_id.saturating_add(1).max(1);
         batch.put_cf(&meta_cf, KEY_NEXT_LOG_ID_META, next_log_id.to_be_bytes());
 
-        self.db.write(batch).map_err(|e| {
+        let write_opts = self.write_options();
+        self.db.write_opt(batch, &write_opts).map_err(|e| {
             klog_err_with_context("Failed to write entries during rocksdb snapshot install", e)
         })?;
         info!(
@@ -551,7 +583,8 @@ impl RocksDbStateStore {
         let next_log_id = max_id.saturating_add(1).max(1);
         batch.put_cf(&meta_cf, KEY_NEXT_LOG_ID_META, next_log_id.to_be_bytes());
 
-        self.db.write(batch).map_err(|e| {
+        let write_opts = self.write_options();
+        self.db.write_opt(batch, &write_opts).map_err(|e| {
             klog_err_with_context("Failed to apply checkpoint snapshot into rocksdb", e)
         })?;
         info!(
@@ -1194,8 +1227,9 @@ impl KLogStateStore for RocksDbStateStore {
             batch.put_cf(&logs_cf, key, value);
         }
 
+        let write_opts = self.write_options();
         self.db
-            .write(batch)
+            .write_opt(batch, &write_opts)
             .map_err(|e| klog_err_with_context("Failed to write state entries to rocksdb", e))?;
         debug!(
             "RocksDbStateStore append done: mode={:?}",
