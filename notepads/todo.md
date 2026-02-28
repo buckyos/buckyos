@@ -1,4 +1,8 @@
-
+## 构建OpenDAN的自动化集成测试框架
+- 实现mock aicc （现有aicc通过判断配置文件是否存在即进入mock模式）
+- 实现强类型的剧本生成器，里面有大量的类型的序列化反序列化代码
+- 系统启动后，通过python给msg_cener的agent 消息端口发消息实现测试启动
+- 
 
 ## 关于WAIT 
 
@@ -11,6 +15,7 @@ Action/Tools 需要执行的时候，会出发WAIT
 
 在StepSummary里引入Agent的 HP / TokenUsage信息
 鼓励Agent做出简单的输出，并进行适当的休息
+这个特性对SubAgent很重要
 
 
 ## 只用Worklog而不是MsgRecord来处理timeline?
