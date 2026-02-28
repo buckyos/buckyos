@@ -11,12 +11,10 @@ use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
 
 use crate::behavior::{BehaviorConfig, BehaviorExecInput, PolicyEngine, TraceCtx};
+use crate::buildin_tool::{builtin_tool_args_schema, builtin_tool_summary};
 
 pub const TOOL_CREATE_SUB_AGENT: &str = "create_sub_agent";
-pub const TOOL_EDIT_FILE: &str = "edit";
-pub const TOOL_EXEC_BASH: &str = "exec";
-pub const TOOL_WRITE_FILE: &str = "write";
-pub const TOOL_READ_FILE: &str = "read";
+pub use crate::buildin_tool::{TOOL_EDIT_FILE, TOOL_EXEC_BASH, TOOL_READ_FILE, TOOL_WRITE_FILE};
 
 pub const TOOL_GET_SESSION: &str = "get_session";
 pub const TOOL_LIST_SESSION: &str = "list_session";
@@ -107,11 +105,11 @@ fn render_action_description(action_name: &str) -> String {
 }
 
 fn builtin_action_summary(action_name: &str) -> &'static str {
+    if let Some(summary) = builtin_tool_summary(action_name) {
+        return summary;
+    }
+
     match action_name {
-        TOOL_EXEC_BASH => "Execute a shell command inside workshop constraints.",
-        TOOL_EDIT_FILE => "Apply an edit patch to a file.",
-        TOOL_WRITE_FILE => "Write file content to workspace path.",
-        TOOL_READ_FILE => "Read file content from workspace path.",
         TOOL_CREATE_SUB_AGENT => "Create a sub-agent execution session.",
         TOOL_GET_SESSION => "Get current session detail.",
         TOOL_LIST_SESSION => "List available sessions.",
@@ -125,44 +123,11 @@ fn builtin_action_summary(action_name: &str) -> &'static str {
 }
 
 fn builtin_action_args_schema(action_name: &str) -> Json {
+    if let Some(schema) = builtin_tool_args_schema(action_name) {
+        return schema;
+    }
+
     match action_name {
-        TOOL_EXEC_BASH => json!({
-            "type": "object",
-            "properties": {
-                "command": { "type": "string" },
-                "timeout_ms": { "type": "integer", "minimum": 1 },
-                "env": {
-                    "type": "object",
-                    "additionalProperties": { "type": "string" }
-                }
-            },
-            "required": ["command"]
-        }),
-        TOOL_EDIT_FILE => json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string" },
-                "old_str": { "type": "string" },
-                "new_str": { "type": "string" },
-                "replace_all": { "type": "boolean" }
-            },
-            "required": ["path", "old_str", "new_str"]
-        }),
-        TOOL_WRITE_FILE => json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string" },
-                "content": {}
-            },
-            "required": ["path", "content"]
-        }),
-        TOOL_READ_FILE => json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string" }
-            },
-            "required": ["path"]
-        }),
         TOOL_CREATE_SUB_AGENT => json!({
             "type": "object",
             "properties": {
