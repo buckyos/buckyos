@@ -42,13 +42,32 @@ impl KLogStorageManager {
         self.storage.append(entries).await
     }
 
-    pub async fn process_append_request(&self, item: KLogEntry) -> KResult<u64> {
-        let mut entry = item;
-        let id = self.next_log_id.fetch_add(1, Ordering::SeqCst); // Assign and increment
-        entry.id = id;
+    /// Allocate a deterministic id on leader before writing to raft log.
+    pub fn alloc_log_id(&self) -> u64 {
+        self.next_log_id.fetch_add(1, Ordering::SeqCst)
+    }
 
-        self.append(vec![entry]).await?;
+    /// Prepare an append entry on leader side.
+    /// If client did not provide id(0), assign one here.
+    pub fn prepare_append_entry(&self, mut item: KLogEntry) -> KLogEntry {
+        if item.id == 0 {
+            item.id = self.alloc_log_id();
+        }
+        item
+    }
+
+    /// Append an already prepared entry.
+    /// This is used by state machine apply path to avoid re-assigning ids on followers.
+    pub async fn append_prepared_entry(&self, item: KLogEntry) -> KResult<u64> {
+        let id = item.id;
+        self.append(vec![item]).await?;
         Ok(id)
+    }
+
+    /// Deprecated: kept for compatibility with old callsites.
+    pub async fn process_append_request(&self, item: KLogEntry) -> KResult<u64> {
+        let entry = self.prepare_append_entry(item);
+        self.append_prepared_entry(entry).await
     }
 
     pub async fn build_snapshot(&self) -> KResult<KLogStorageSnapshot> {

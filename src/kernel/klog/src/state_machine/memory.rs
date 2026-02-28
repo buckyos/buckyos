@@ -41,7 +41,9 @@ impl KLogMemoryStateMachine {
     async fn process_request(&self, req: KLogRequest) -> KLogResponse {
         match req {
             KLogRequest::AppendLog { item } => {
-                match self.log_storage.process_append_request(item).await {
+                // Id is expected to be assigned on leader before log replication.
+                // State machine apply must be deterministic and should not mutate ids.
+                match self.log_storage.append_prepared_entry(item).await {
                     Ok(id) => KLogResponse::AppendOk { id },
                     Err(err) => KLogResponse::Err(err.to_string()),
                 }

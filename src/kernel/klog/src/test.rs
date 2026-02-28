@@ -1,9 +1,9 @@
 use crate::logs::{MemoryLogStorage, SqliteLogStorage};
 use crate::state_machine::{KLogMemoryStateMachine, SnapshotManager};
 use crate::storage::{KLogStorage, KLogStorageManager, SimpleLogStorage};
-use crate::{KNodeId, KTypeConfig, StorageResult};
+use crate::{KLogEntry, KLogRequest, KLogResponse, KNodeId, KTypeConfig, StorageResult};
 use openraft::entry::EntryPayload;
-use openraft::storage::RaftLogStorage;
+use openraft::storage::{RaftLogStorage, RaftStateMachine};
 use openraft::testing::StoreBuilder;
 use openraft::{CommittedLeaderId, Entry, LogId, RaftLogReader, Vote};
 use simplelog::{ColorChoice, Config, LevelFilter, SimpleLogger, TermLogger, TerminalMode};
@@ -232,6 +232,72 @@ async fn test_sqlite_and_memory_storage_equivalence() -> anyhow::Result<()> {
     let mem_state = mem_store.get_log_state().await?;
     let sqlite_state = sqlite_store.get_log_state().await?;
     assert_eq!(mem_state, sqlite_state);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_prepare_append_entry_assigns_id_on_leader_only() -> anyhow::Result<()> {
+    let storage = SimpleLogStorage::new();
+    let storage = Arc::new(Box::new(storage) as Box<dyn KLogStorage>);
+    let manager = KLogStorageManager::new(storage);
+
+    let no_id_entry = KLogEntry {
+        id: 0,
+        timestamp: 100,
+        node_id: 1,
+        message: "leader-alloc-id".to_string(),
+    };
+
+    let prepared = manager.prepare_append_entry(no_id_entry);
+    assert_ne!(prepared.id, 0);
+    let allocated_id = prepared.id;
+
+    let persisted_id = manager.append_prepared_entry(prepared.clone()).await?;
+    assert_eq!(persisted_id, allocated_id);
+
+    let fixed_id_entry = KLogEntry {
+        id: 42,
+        timestamp: 101,
+        node_id: 1,
+        message: "already-has-id".to_string(),
+    };
+    let prepared_fixed = manager.prepare_append_entry(fixed_id_entry.clone());
+    assert_eq!(prepared_fixed.id, 42);
+
+    let snapshot = manager.build_snapshot().await?;
+    let (decoded, _): (Vec<KLogEntry>, usize) =
+        bincode::serde::decode_from_slice(&snapshot.data, bincode::config::legacy())?;
+    assert_eq!(decoded.len(), 1);
+    assert_eq!(decoded[0].id, allocated_id);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_state_machine_apply_keeps_prepared_id() -> anyhow::Result<()> {
+    let context = TestMemoryContext::new().await;
+    let mut sm = context.state_machine;
+
+    let prepared_id = 777;
+    let entry = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(2, 0), 1),
+        payload: EntryPayload::Normal(KLogRequest::AppendLog {
+            item: KLogEntry {
+                id: prepared_id,
+                timestamp: 200,
+                node_id: 1,
+                message: "already-prepared".to_string(),
+            },
+        }),
+    };
+
+    let resps = sm.apply(vec![entry]).await?;
+    assert_eq!(resps.len(), 1);
+    match &resps[0] {
+        KLogResponse::AppendOk { id } => assert_eq!(*id, prepared_id),
+        other => panic!("unexpected response: {:?}", other),
+    }
 
     Ok(())
 }
