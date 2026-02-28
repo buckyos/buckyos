@@ -6,7 +6,7 @@ use axum::Json;
 use axum::Router;
 use axum::body::Bytes;
 use axum::error_handling::HandleErrorLayer;
-use axum::extract::{Query, State};
+use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -15,6 +15,7 @@ use openraft::error::{ClientWriteError, RaftError};
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::future::Future;
+use std::net::SocketAddr;
 use std::time::Duration;
 use tower::BoxError;
 use tower::ServiceBuilder;
@@ -53,16 +54,27 @@ struct RemoveLearnerQuery {
 #[derive(Clone)]
 struct KNetworkServerState {
     raft: KRaftRef,
+    admin_local_only: bool,
 }
 
 pub struct KNetworkServer {
     addr: String,
     raft: KRaftRef,
+    admin_local_only: bool,
 }
 
 impl KNetworkServer {
     pub fn new(addr: String, raft: KRaftRef) -> Self {
-        Self { addr, raft }
+        Self {
+            addr,
+            raft,
+            admin_local_only: false,
+        }
+    }
+
+    pub fn with_admin_local_only(mut self, admin_local_only: bool) -> Self {
+        self.admin_local_only = admin_local_only;
+        self
     }
 
     pub async fn run(&self) -> Result<(), String> {
@@ -75,6 +87,7 @@ impl KNetworkServer {
     {
         let state = KNetworkServerState {
             raft: self.raft.clone(),
+            admin_local_only: self.admin_local_only,
         };
 
         let control_rpc_middleware = ServiceBuilder::new()
@@ -140,7 +153,7 @@ impl KNetworkServer {
             .with_state(state);
 
         info!(
-            "KNetworkServer start listening at {}, control_limit_bytes={}, snapshot_limit_bytes={}, control_concurrency={}, snapshot_concurrency={}, control_timeout_ms={}, snapshot_timeout_ms={}, admin_add_learner_path={}, admin_remove_learner_path={}, admin_change_membership_path={}, admin_cluster_state_path={}",
+            "KNetworkServer start listening at {}, control_limit_bytes={}, snapshot_limit_bytes={}, control_concurrency={}, snapshot_concurrency={}, control_timeout_ms={}, snapshot_timeout_ms={}, admin_local_only={}, admin_add_learner_path={}, admin_remove_learner_path={}, admin_change_membership_path={}, admin_cluster_state_path={}",
             self.addr,
             CONTROL_RPC_BODY_LIMIT_BYTES,
             SNAPSHOT_RPC_BODY_LIMIT_BYTES,
@@ -148,6 +161,7 @@ impl KNetworkServer {
             SNAPSHOT_RPC_CONCURRENCY_LIMIT,
             CONTROL_RPC_TIMEOUT_MS,
             SNAPSHOT_RPC_TIMEOUT_MS,
+            self.admin_local_only,
             admin_add_learner_path,
             admin_remove_learner_path,
             admin_change_membership_path,
@@ -163,7 +177,7 @@ impl KNetworkServer {
             })?;
 
         let addr = self.addr.clone();
-        axum::serve(listener, app)
+        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
             .with_graceful_shutdown(async move {
                 shutdown.await;
                 info!(
@@ -317,8 +331,15 @@ impl KNetworkServer {
 
     async fn handle_add_learner_request(
         State(state): State<KNetworkServerState>,
+        ConnectInfo(peer): ConnectInfo<SocketAddr>,
         Query(query): Query<AddLearnerQuery>,
     ) -> Response {
+        if let Some(resp) =
+            Self::reject_non_loopback_admin_access(state.admin_local_only, peer, "add-learner")
+        {
+            return resp;
+        }
+
         let blocking = query.blocking.unwrap_or(true);
         let node = KNode {
             id: query.node_id,
@@ -345,8 +366,17 @@ impl KNetworkServer {
 
     async fn handle_change_membership_request(
         State(state): State<KNetworkServerState>,
+        ConnectInfo(peer): ConnectInfo<SocketAddr>,
         Query(query): Query<ChangeMembershipQuery>,
     ) -> Response {
+        if let Some(resp) = Self::reject_non_loopback_admin_access(
+            state.admin_local_only,
+            peer,
+            "change-membership",
+        ) {
+            return resp;
+        }
+
         let retain = query.retain.unwrap_or(true);
         let voter_ids = match parse_voter_ids_csv(&query.voters) {
             Ok(ids) => ids,
@@ -384,8 +414,15 @@ impl KNetworkServer {
 
     async fn handle_remove_learner_request(
         State(state): State<KNetworkServerState>,
+        ConnectInfo(peer): ConnectInfo<SocketAddr>,
         Query(query): Query<RemoveLearnerQuery>,
     ) -> Response {
+        if let Some(resp) =
+            Self::reject_non_loopback_admin_access(state.admin_local_only, peer, "remove-learner")
+        {
+            return resp;
+        }
+
         info!(
             "KNetworkServer admin remove-learner request: node_id={}",
             query.node_id
@@ -410,7 +447,16 @@ impl KNetworkServer {
         }
     }
 
-    async fn handle_cluster_state_request(State(state): State<KNetworkServerState>) -> Response {
+    async fn handle_cluster_state_request(
+        State(state): State<KNetworkServerState>,
+        ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    ) -> Response {
+        if let Some(resp) =
+            Self::reject_non_loopback_admin_access(state.admin_local_only, peer, "cluster-state")
+        {
+            return resp;
+        }
+
         let metrics = state.raft.metrics();
         let metrics = metrics.borrow().clone();
 
@@ -515,6 +561,23 @@ impl KNetworkServer {
         let msg = format!("KNetworkServer admin {} failed: {}", action, err);
         error!("{}", msg);
         Self::error_response(StatusCode::INTERNAL_SERVER_ERROR, msg)
+    }
+
+    fn reject_non_loopback_admin_access(
+        admin_local_only: bool,
+        peer: SocketAddr,
+        action: &str,
+    ) -> Option<Response> {
+        if !admin_local_only || peer.ip().is_loopback() {
+            return None;
+        }
+
+        let msg = format!(
+            "KNetworkServer admin {} forbidden for non-loopback peer: {}",
+            action, peer
+        );
+        warn!("{}", msg);
+        Some(Self::error_response(StatusCode::FORBIDDEN, msg))
     }
 
     fn error_response(status: StatusCode, msg: String) -> Response {

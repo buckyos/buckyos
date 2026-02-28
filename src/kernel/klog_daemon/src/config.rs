@@ -17,6 +17,7 @@ pub const ENV_JOIN_RETRY_INTERVAL_MS: &str = "KLOG_JOIN_RETRY_INTERVAL_MS";
 pub const ENV_JOIN_MAX_ATTEMPTS: &str = "KLOG_JOIN_MAX_ATTEMPTS";
 pub const ENV_JOIN_BLOCKING: &str = "KLOG_JOIN_BLOCKING";
 pub const ENV_JOIN_TARGET_ROLE: &str = "KLOG_JOIN_TARGET_ROLE";
+pub const ENV_ADMIN_LOCAL_ONLY: &str = "KLOG_ADMIN_LOCAL_ONLY";
 
 const DEFAULT_NODE_ID: KNodeId = 1;
 const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:21001";
@@ -29,6 +30,7 @@ const DEFAULT_JOIN_RETRY_INTERVAL_MS: u64 = 3_000;
 const DEFAULT_JOIN_MAX_ATTEMPTS: u32 = 0; // 0 means retry forever.
 const DEFAULT_JOIN_BLOCKING: bool = false;
 const DEFAULT_JOIN_TARGET_ROLE: KLogJoinTargetRole = KLogJoinTargetRole::Voter;
+const DEFAULT_ADMIN_LOCAL_ONLY: bool = true;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -92,6 +94,7 @@ pub struct KLogRuntimeConfig {
     pub join_max_attempts: u32,
     pub join_blocking: bool,
     pub join_target_role: KLogJoinTargetRole,
+    pub admin_local_only: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -128,11 +131,18 @@ pub struct KLogJoinConfigPatch {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct KLogAdminConfigPatch {
+    pub local_only: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KLogRuntimeConfigPatch {
     pub network: Option<KLogNetworkConfigPatch>,
     pub storage: Option<KLogStorageConfigPatch>,
     pub cluster: Option<KLogClusterConfigPatch>,
     pub join: Option<KLogJoinConfigPatch>,
+    pub admin: Option<KLogAdminConfigPatch>,
     pub node_id: Option<KNodeId>,
 }
 
@@ -186,6 +196,9 @@ impl KLogRuntimeConfig {
                 blocking: parse_env_bool(ENV_JOIN_BLOCKING)?,
                 target_role: parse_env_join_target_role(ENV_JOIN_TARGET_ROLE)?,
             }),
+            admin: Some(KLogAdminConfigPatch {
+                local_only: parse_env_bool(ENV_ADMIN_LOCAL_ONLY)?,
+            }),
             ..Default::default()
         };
 
@@ -230,6 +243,7 @@ impl KLogRuntimeConfig {
             storage,
             cluster,
             join,
+            admin,
             node_id,
         } = patch;
 
@@ -237,6 +251,7 @@ impl KLogRuntimeConfig {
         let storage = storage.unwrap_or_default();
         let cluster = cluster.unwrap_or_default();
         let join = join.unwrap_or_default();
+        let admin = admin.unwrap_or_default();
 
         let node_id = node_id.unwrap_or(DEFAULT_NODE_ID);
         let default_data_dir = default_data_dir();
@@ -265,6 +280,7 @@ impl KLogRuntimeConfig {
             join_max_attempts: join.max_attempts.unwrap_or(DEFAULT_JOIN_MAX_ATTEMPTS),
             join_blocking: join.blocking.unwrap_or(DEFAULT_JOIN_BLOCKING),
             join_target_role: join.target_role.unwrap_or(DEFAULT_JOIN_TARGET_ROLE),
+            admin_local_only: admin.local_only.unwrap_or(DEFAULT_ADMIN_LOCAL_ONLY),
         }
     }
 }
@@ -412,6 +428,9 @@ retry_interval_ms = 1500
 max_attempts = 9
 blocking = true
 target_role = "learner"
+
+[admin]
+local_only = false
 "#;
         std::fs::write(&file, content).expect("write file");
 
@@ -432,6 +451,7 @@ target_role = "learner"
         assert_eq!(cfg.join_max_attempts, 9);
         assert!(cfg.join_blocking);
         assert_eq!(cfg.join_target_role, KLogJoinTargetRole::Learner);
+        assert!(!cfg.admin_local_only);
 
         let _ = std::fs::remove_file(&file);
     }
@@ -487,6 +507,7 @@ advertise_addr = "192.168.2.7"
         assert_eq!(cfg.join_max_attempts, DEFAULT_JOIN_MAX_ATTEMPTS);
         assert_eq!(cfg.join_blocking, DEFAULT_JOIN_BLOCKING);
         assert_eq!(cfg.join_target_role, DEFAULT_JOIN_TARGET_ROLE);
+        assert_eq!(cfg.admin_local_only, DEFAULT_ADMIN_LOCAL_ONLY);
 
         let _ = std::fs::remove_file(&file);
     }
@@ -514,6 +535,9 @@ advertise_addr = "192.168.2.7"
                 blocking: Some(true),
                 target_role: Some(KLogJoinTargetRole::Learner),
             }),
+            admin: Some(KLogAdminConfigPatch {
+                local_only: Some(false),
+            }),
             node_id: Some(3),
             ..Default::default()
         };
@@ -534,5 +558,6 @@ advertise_addr = "192.168.2.7"
         assert_eq!(cfg.join_max_attempts, 3);
         assert!(cfg.join_blocking);
         assert_eq!(cfg.join_target_role, KLogJoinTargetRole::Learner);
+        assert!(!cfg.admin_local_only);
     }
 }

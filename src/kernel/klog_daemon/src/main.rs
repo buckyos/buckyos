@@ -12,7 +12,7 @@ use klog::state_store::{
     KLogStateStore, KLogStateStoreManager, RocksDbSnapshotMode, RocksDbStateStore,
 };
 use lifecycle::run_server_lifecycle;
-use log::{error, info};
+use log::{error, info, warn};
 use logging::init_logging;
 use openraft::Config;
 use std::sync::Arc;
@@ -46,7 +46,7 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
     })?;
 
     info!(
-        "klog startup config: node_id={}, listen_addr={}, advertise_addr={}:{}, data_dir={}, cluster_name={}, auto_bootstrap={}, state_store_sync_write={}, join_targets={:?}, join_retry_interval_ms={}, join_max_attempts={}, join_blocking={}, join_target_role={}",
+        "klog startup config: node_id={}, listen_addr={}, advertise_addr={}:{}, data_dir={}, cluster_name={}, auto_bootstrap={}, state_store_sync_write={}, join_targets={:?}, join_retry_interval_ms={}, join_max_attempts={}, join_blocking={}, join_target_role={}, admin_local_only={}",
         cfg.node_id,
         cfg.listen_addr,
         cfg.advertise_addr,
@@ -59,8 +59,14 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
         cfg.join_retry_interval_ms,
         cfg.join_max_attempts,
         cfg.join_blocking,
-        cfg.join_target_role
+        cfg.join_target_role,
+        cfg.admin_local_only
     );
+    if cfg.admin_local_only {
+        warn!(
+            "Admin APIs are restricted to loopback clients; remote cluster join/management requests will be rejected"
+        );
+    }
 
     let raft_log_path = cfg.data_dir.join("raft_log.sqlite");
     let log_storage = SqliteLogStorage::open(&raft_log_path).map_err(|e| {
@@ -132,7 +138,8 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
     initialize_cluster_if_needed(&cfg, &raft).await;
     let join_task = spawn_auto_join_task(&cfg);
 
-    let network_server = KNetworkServer::new(cfg.listen_addr.clone(), raft);
+    let network_server = KNetworkServer::new(cfg.listen_addr.clone(), raft)
+        .with_admin_local_only(cfg.admin_local_only);
     info!("Starting raft RPC server: listen_addr={}", cfg.listen_addr);
     run_server_lifecycle(network_server, join_task).await
 }
