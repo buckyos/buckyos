@@ -95,20 +95,45 @@ pub struct KLogRuntimeConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct KLogRuntimeConfigPatch {
-    pub node_id: Option<KNodeId>,
+#[serde(deny_unknown_fields)]
+pub struct KLogNetworkConfigPatch {
     pub listen_addr: Option<String>,
     pub advertise_addr: Option<String>,
     pub advertise_port: Option<u16>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KLogStorageConfigPatch {
     pub data_dir: Option<PathBuf>,
-    pub cluster_name: Option<String>,
-    pub auto_bootstrap: Option<bool>,
     pub state_store_sync_write: Option<bool>,
-    pub join_targets: Option<Vec<String>>,
-    pub join_retry_interval_ms: Option<u64>,
-    pub join_max_attempts: Option<u32>,
-    pub join_blocking: Option<bool>,
-    pub join_target_role: Option<KLogJoinTargetRole>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KLogClusterConfigPatch {
+    pub name: Option<String>,
+    pub auto_bootstrap: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KLogJoinConfigPatch {
+    pub targets: Option<Vec<String>>,
+    pub retry_interval_ms: Option<u64>,
+    pub max_attempts: Option<u32>,
+    pub blocking: Option<bool>,
+    pub target_role: Option<KLogJoinTargetRole>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KLogRuntimeConfigPatch {
+    pub network: Option<KLogNetworkConfigPatch>,
+    pub storage: Option<KLogStorageConfigPatch>,
+    pub cluster: Option<KLogClusterConfigPatch>,
+    pub join: Option<KLogJoinConfigPatch>,
+    pub node_id: Option<KNodeId>,
 }
 
 // Placeholder type for future buckyos config integration.
@@ -141,18 +166,27 @@ impl KLogRuntimeConfig {
     pub fn from_env() -> Result<Self, String> {
         let patch = KLogRuntimeConfigPatch {
             node_id: parse_env_u64(ENV_NODE_ID)?,
-            listen_addr: parse_env_string(ENV_LISTEN_ADDR)?,
-            advertise_addr: parse_env_string(ENV_ADVERTISE_ADDR)?,
-            advertise_port: parse_env_u16(ENV_ADVERTISE_PORT)?,
-            data_dir: parse_env_pathbuf(ENV_DATA_DIR)?,
-            cluster_name: parse_env_string(ENV_CLUSTER_NAME)?,
-            auto_bootstrap: parse_env_bool(ENV_AUTO_BOOTSTRAP)?,
-            state_store_sync_write: parse_env_bool(ENV_STATE_STORE_SYNC_WRITE)?,
-            join_targets: parse_env_string_list(ENV_JOIN_TARGETS)?,
-            join_retry_interval_ms: parse_env_u64(ENV_JOIN_RETRY_INTERVAL_MS)?,
-            join_max_attempts: parse_env_u32(ENV_JOIN_MAX_ATTEMPTS)?,
-            join_blocking: parse_env_bool(ENV_JOIN_BLOCKING)?,
-            join_target_role: parse_env_join_target_role(ENV_JOIN_TARGET_ROLE)?,
+            network: Some(KLogNetworkConfigPatch {
+                listen_addr: parse_env_string(ENV_LISTEN_ADDR)?,
+                advertise_addr: parse_env_string(ENV_ADVERTISE_ADDR)?,
+                advertise_port: parse_env_u16(ENV_ADVERTISE_PORT)?,
+            }),
+            storage: Some(KLogStorageConfigPatch {
+                data_dir: parse_env_pathbuf(ENV_DATA_DIR)?,
+                state_store_sync_write: parse_env_bool(ENV_STATE_STORE_SYNC_WRITE)?,
+            }),
+            cluster: Some(KLogClusterConfigPatch {
+                name: parse_env_string(ENV_CLUSTER_NAME)?,
+                auto_bootstrap: parse_env_bool(ENV_AUTO_BOOTSTRAP)?,
+            }),
+            join: Some(KLogJoinConfigPatch {
+                targets: parse_env_string_list(ENV_JOIN_TARGETS)?,
+                retry_interval_ms: parse_env_u64(ENV_JOIN_RETRY_INTERVAL_MS)?,
+                max_attempts: parse_env_u32(ENV_JOIN_MAX_ATTEMPTS)?,
+                blocking: parse_env_bool(ENV_JOIN_BLOCKING)?,
+                target_role: parse_env_join_target_role(ENV_JOIN_TARGET_ROLE)?,
+            }),
+            ..Default::default()
         };
 
         Ok(Self::from_patch(patch))
@@ -191,33 +225,46 @@ impl KLogRuntimeConfig {
     }
 
     fn from_patch(patch: KLogRuntimeConfigPatch) -> Self {
-        let node_id = patch.node_id.unwrap_or(DEFAULT_NODE_ID);
+        let KLogRuntimeConfigPatch {
+            network,
+            storage,
+            cluster,
+            join,
+            node_id,
+        } = patch;
+
+        let network = network.unwrap_or_default();
+        let storage = storage.unwrap_or_default();
+        let cluster = cluster.unwrap_or_default();
+        let join = join.unwrap_or_default();
+
+        let node_id = node_id.unwrap_or(DEFAULT_NODE_ID);
         let default_data_dir = default_data_dir();
 
         Self {
             node_id,
-            listen_addr: patch
+            listen_addr: network
                 .listen_addr
                 .unwrap_or_else(|| DEFAULT_LISTEN_ADDR.to_string()),
-            advertise_addr: patch
+            advertise_addr: network
                 .advertise_addr
                 .unwrap_or_else(|| DEFAULT_ADVERTISE_ADDR.to_string()),
-            advertise_port: patch.advertise_port.unwrap_or(DEFAULT_ADVERTISE_PORT),
-            data_dir: patch.data_dir.unwrap_or(default_data_dir),
-            cluster_name: patch
-                .cluster_name
+            advertise_port: network.advertise_port.unwrap_or(DEFAULT_ADVERTISE_PORT),
+            data_dir: storage.data_dir.unwrap_or(default_data_dir),
+            cluster_name: cluster
+                .name
                 .unwrap_or_else(|| DEFAULT_CLUSTER_NAME.to_string()),
-            auto_bootstrap: patch.auto_bootstrap.unwrap_or(DEFAULT_AUTO_BOOTSTRAP),
-            state_store_sync_write: patch
+            auto_bootstrap: cluster.auto_bootstrap.unwrap_or(DEFAULT_AUTO_BOOTSTRAP),
+            state_store_sync_write: storage
                 .state_store_sync_write
                 .unwrap_or(DEFAULT_STATE_STORE_SYNC_WRITE),
-            join_targets: patch.join_targets.unwrap_or_default(),
-            join_retry_interval_ms: patch
-                .join_retry_interval_ms
+            join_targets: join.targets.unwrap_or_default(),
+            join_retry_interval_ms: join
+                .retry_interval_ms
                 .unwrap_or(DEFAULT_JOIN_RETRY_INTERVAL_MS),
-            join_max_attempts: patch.join_max_attempts.unwrap_or(DEFAULT_JOIN_MAX_ATTEMPTS),
-            join_blocking: patch.join_blocking.unwrap_or(DEFAULT_JOIN_BLOCKING),
-            join_target_role: patch.join_target_role.unwrap_or(DEFAULT_JOIN_TARGET_ROLE),
+            join_max_attempts: join.max_attempts.unwrap_or(DEFAULT_JOIN_MAX_ATTEMPTS),
+            join_blocking: join.blocking.unwrap_or(DEFAULT_JOIN_BLOCKING),
+            join_target_role: join.target_role.unwrap_or(DEFAULT_JOIN_TARGET_ROLE),
         }
     }
 }
@@ -345,18 +392,26 @@ mod tests {
         let file = unique_test_file("full");
         let content = r#"
 node_id = 9
+
+[network]
 listen_addr = "0.0.0.0:22001"
 advertise_addr = "10.2.3.4"
 advertise_port = 22001
+
+[storage]
 data_dir = "/tmp/klog_cfg_test_full"
-cluster_name = "cluster_a"
-auto_bootstrap = false
 state_store_sync_write = false
-join_targets = ["127.0.0.1:21001", "127.0.0.1:21002"]
-join_retry_interval_ms = 1500
-join_max_attempts = 9
-join_blocking = true
-join_target_role = "learner"
+
+[cluster]
+name = "cluster_a"
+auto_bootstrap = false
+
+[join]
+targets = ["127.0.0.1:21001", "127.0.0.1:21002"]
+retry_interval_ms = 1500
+max_attempts = 9
+blocking = true
+target_role = "learner"
 "#;
         std::fs::write(&file, content).expect("write file");
 
@@ -382,10 +437,38 @@ join_target_role = "learner"
     }
 
     #[test]
+    fn test_from_file_legacy_flat_values_rejected() {
+        let file = unique_test_file("legacy_flat_rejected");
+        let content = r#"
+node_id = 6
+listen_addr = "0.0.0.0:26001"
+advertise_addr = "10.0.0.6"
+advertise_port = 26001
+data_dir = "/tmp/klog_cfg_test_legacy"
+cluster_name = "legacy_cluster"
+auto_bootstrap = false
+state_store_sync_write = false
+join_targets = ["127.0.0.1:21001"]
+join_retry_interval_ms = 2500
+join_max_attempts = 5
+join_blocking = true
+join_target_role = "learner"
+"#;
+        std::fs::write(&file, content).expect("write file");
+
+        let err = KLogRuntimeConfig::from_file(&file).expect_err("legacy flat fields must fail");
+        assert!(err.contains("unknown field"));
+
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
     fn test_from_file_partial_values() {
         let file = unique_test_file("partial");
         let content = r#"
 node_id = 7
+
+[network]
 advertise_addr = "192.168.2.7"
 "#;
         std::fs::write(&file, content).expect("write file");
@@ -411,19 +494,28 @@ advertise_addr = "192.168.2.7"
     #[test]
     fn test_from_buckyos_patch() {
         let patch = BuckyosKlogConfig {
+            network: Some(KLogNetworkConfigPatch {
+                listen_addr: Some("0.0.0.0:23001".to_string()),
+                advertise_addr: Some("172.20.0.3".to_string()),
+                advertise_port: Some(23001),
+            }),
+            storage: Some(KLogStorageConfigPatch {
+                data_dir: None,
+                state_store_sync_write: Some(false),
+            }),
+            cluster: Some(KLogClusterConfigPatch {
+                name: Some("bk".to_string()),
+                auto_bootstrap: Some(true),
+            }),
+            join: Some(KLogJoinConfigPatch {
+                targets: Some(vec!["10.0.0.1:21001".to_string()]),
+                retry_interval_ms: Some(6000),
+                max_attempts: Some(3),
+                blocking: Some(true),
+                target_role: Some(KLogJoinTargetRole::Learner),
+            }),
             node_id: Some(3),
-            listen_addr: Some("0.0.0.0:23001".to_string()),
-            advertise_addr: Some("172.20.0.3".to_string()),
-            advertise_port: Some(23001),
-            data_dir: None,
-            cluster_name: Some("bk".to_string()),
-            auto_bootstrap: Some(true),
-            state_store_sync_write: Some(false),
-            join_targets: Some(vec!["10.0.0.1:21001".to_string()]),
-            join_retry_interval_ms: Some(6000),
-            join_max_attempts: Some(3),
-            join_blocking: Some(true),
-            join_target_role: Some(KLogJoinTargetRole::Learner),
+            ..Default::default()
         };
 
         let (cfg, source) =
