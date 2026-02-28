@@ -11,6 +11,7 @@ pub const ENV_ADVERTISE_ADDR: &str = "KLOG_ADVERTISE_ADDR";
 pub const ENV_ADVERTISE_PORT: &str = "KLOG_ADVERTISE_PORT";
 pub const ENV_DATA_DIR: &str = "KLOG_DATA_DIR";
 pub const ENV_CLUSTER_NAME: &str = "KLOG_CLUSTER_NAME";
+pub const ENV_CLUSTER_ID: &str = "KLOG_CLUSTER_ID";
 pub const ENV_AUTO_BOOTSTRAP: &str = "KLOG_AUTO_BOOTSTRAP";
 pub const ENV_STATE_STORE_SYNC_WRITE: &str = "KLOG_STATE_STORE_SYNC_WRITE";
 pub const ENV_JOIN_TARGETS: &str = "KLOG_JOIN_TARGETS";
@@ -23,7 +24,6 @@ pub const ENV_ADMIN_LOCAL_ONLY: &str = "KLOG_ADMIN_LOCAL_ONLY";
 const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:21001";
 const DEFAULT_ADVERTISE_ADDR: &str = "127.0.0.1";
 const DEFAULT_ADVERTISE_PORT: u16 = 21001;
-const DEFAULT_CLUSTER_NAME: &str = "klog";
 const DEFAULT_AUTO_BOOTSTRAP: bool = false;
 const DEFAULT_STATE_STORE_SYNC_WRITE: bool = true;
 const DEFAULT_JOIN_RETRY_INTERVAL_MS: u64 = 3_000;
@@ -87,6 +87,7 @@ pub struct KLogRuntimeConfig {
     pub advertise_port: u16,
     pub data_dir: PathBuf,
     pub cluster_name: String,
+    pub cluster_id: String,
     pub auto_bootstrap: bool,
     pub state_store_sync_write: bool,
     pub join_targets: Vec<String>,
@@ -116,6 +117,7 @@ pub struct KLogStorageConfigPatch {
 #[serde(deny_unknown_fields)]
 pub struct KLogClusterConfigPatch {
     pub name: Option<String>,
+    pub id: Option<String>,
     pub auto_bootstrap: Option<bool>,
 }
 
@@ -187,6 +189,7 @@ impl KLogRuntimeConfig {
             }),
             cluster: Some(KLogClusterConfigPatch {
                 name: parse_env_string(ENV_CLUSTER_NAME)?,
+                id: parse_env_string(ENV_CLUSTER_ID)?,
                 auto_bootstrap: parse_env_bool(ENV_AUTO_BOOTSTRAP)?,
             }),
             join: Some(KLogJoinConfigPatch {
@@ -269,6 +272,29 @@ impl KLogRuntimeConfig {
 
         let join_targets = join.targets.unwrap_or_default();
         let auto_bootstrap = cluster.auto_bootstrap.unwrap_or(DEFAULT_AUTO_BOOTSTRAP);
+
+        let cluster_name = match cluster.name {
+            Some(v) if !v.trim().is_empty() => v,
+            _ => {
+                let msg = "Missing required field: cluster.name (or KLOG_CLUSTER_NAME)".to_string();
+                error!("{}", msg);
+                return Err(msg);
+            }
+        };
+        let cluster_id = match cluster.id {
+            Some(v) if !v.trim().is_empty() => v,
+            _ => {
+                let msg = "Missing required field: cluster.id (or KLOG_CLUSTER_ID)".to_string();
+                error!("{}", msg);
+                return Err(msg);
+            }
+        };
+        if cluster_id.trim().is_empty() {
+            let msg = "Invalid cluster_id: cluster id must not be empty".to_string();
+            error!("{}", msg);
+            return Err(msg);
+        }
+
         if auto_bootstrap && !join_targets.is_empty() {
             let msg = "Invalid config: auto_bootstrap=true must not be combined with non-empty join.targets".to_string();
             error!("{}", msg);
@@ -287,9 +313,8 @@ impl KLogRuntimeConfig {
                 .unwrap_or_else(|| DEFAULT_ADVERTISE_ADDR.to_string()),
             advertise_port: network.advertise_port.unwrap_or(DEFAULT_ADVERTISE_PORT),
             data_dir: storage.data_dir.unwrap_or(default_data_dir),
-            cluster_name: cluster
-                .name
-                .unwrap_or_else(|| DEFAULT_CLUSTER_NAME.to_string()),
+            cluster_name,
+            cluster_id,
             auto_bootstrap,
             state_store_sync_write: storage
                 .state_store_sync_write
@@ -441,6 +466,7 @@ state_store_sync_write = false
 
 [cluster]
 name = "cluster_a"
+id = "cluster_a_id"
 auto_bootstrap = false
 
 [join]
@@ -462,6 +488,7 @@ local_only = false
         assert_eq!(cfg.advertise_port, 22001);
         assert_eq!(cfg.data_dir, PathBuf::from("/tmp/klog_cfg_test_full"));
         assert_eq!(cfg.cluster_name, "cluster_a");
+        assert_eq!(cfg.cluster_id, "cluster_a_id");
         assert!(!cfg.auto_bootstrap);
         assert!(!cfg.state_store_sync_write);
         assert_eq!(
@@ -511,6 +538,10 @@ node_id = 7
 
 [network]
 advertise_addr = "192.168.2.7"
+
+[cluster]
+name = "cluster_partial"
+id = "cluster_partial_id"
 "#;
         std::fs::write(&file, content).expect("write file");
 
@@ -520,7 +551,8 @@ advertise_addr = "192.168.2.7"
         assert_eq!(cfg.advertise_addr, "192.168.2.7");
         assert_eq!(cfg.advertise_port, DEFAULT_ADVERTISE_PORT);
         assert_eq!(cfg.data_dir, default_data_dir());
-        assert_eq!(cfg.cluster_name, DEFAULT_CLUSTER_NAME);
+        assert_eq!(cfg.cluster_name, "cluster_partial");
+        assert_eq!(cfg.cluster_id, "cluster_partial_id");
         assert_eq!(cfg.auto_bootstrap, DEFAULT_AUTO_BOOTSTRAP);
         assert_eq!(cfg.state_store_sync_write, DEFAULT_STATE_STORE_SYNC_WRITE);
         assert!(cfg.join_targets.is_empty());
@@ -529,6 +561,40 @@ advertise_addr = "192.168.2.7"
         assert_eq!(cfg.join_blocking, DEFAULT_JOIN_BLOCKING);
         assert_eq!(cfg.join_target_role, DEFAULT_JOIN_TARGET_ROLE);
         assert_eq!(cfg.admin_local_only, DEFAULT_ADMIN_LOCAL_ONLY);
+
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn test_from_file_missing_cluster_name_rejected() {
+        let file = unique_test_file("missing_cluster_name");
+        let content = r#"
+node_id = 7
+
+[cluster]
+id = "cluster_id_only"
+"#;
+        std::fs::write(&file, content).expect("write file");
+
+        let err = KLogRuntimeConfig::from_file(&file).expect_err("missing cluster.name must fail");
+        assert!(err.contains("Missing required field: cluster.name"));
+
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn test_from_file_missing_cluster_id_rejected() {
+        let file = unique_test_file("missing_cluster_id");
+        let content = r#"
+node_id = 7
+
+[cluster]
+name = "cluster_name_only"
+"#;
+        std::fs::write(&file, content).expect("write file");
+
+        let err = KLogRuntimeConfig::from_file(&file).expect_err("missing cluster.id must fail");
+        assert!(err.contains("Missing required field: cluster.id"));
 
         let _ = std::fs::remove_file(&file);
     }
@@ -555,6 +621,8 @@ listen_addr = "0.0.0.0:22001"
 node_id = 9
 
 [cluster]
+name = "cluster_x"
+id = "cluster_x_id"
 auto_bootstrap = true
 
 [join]
@@ -583,6 +651,7 @@ targets = ["127.0.0.1:21001"]
             }),
             cluster: Some(KLogClusterConfigPatch {
                 name: Some("bk".to_string()),
+                id: Some("bk-id".to_string()),
                 auto_bootstrap: Some(false),
             }),
             join: Some(KLogJoinConfigPatch {
@@ -608,6 +677,7 @@ targets = ["127.0.0.1:21001"]
         assert_eq!(cfg.advertise_port, 23001);
         assert_eq!(cfg.data_dir, default_data_dir());
         assert_eq!(cfg.cluster_name, "bk");
+        assert_eq!(cfg.cluster_id, "bk-id");
         assert!(!cfg.auto_bootstrap);
         assert!(!cfg.state_store_sync_write);
         assert_eq!(cfg.join_targets, vec!["10.0.0.1:21001".to_string()]);

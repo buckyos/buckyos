@@ -114,6 +114,7 @@ state_store_sync_write = true
 
 [cluster]
 name = "{cluster_name}"
+id = "{cluster_name}"
 auto_bootstrap = {auto_bootstrap}
 
 [join]

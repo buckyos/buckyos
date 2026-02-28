@@ -55,12 +55,16 @@ struct RemoveLearnerQuery {
 struct KNetworkServerState {
     raft: KRaftRef,
     admin_local_only: bool,
+    cluster_name: String,
+    cluster_id: String,
 }
 
 pub struct KNetworkServer {
     addr: String,
     raft: KRaftRef,
     admin_local_only: bool,
+    cluster_name: String,
+    cluster_id: String,
 }
 
 impl KNetworkServer {
@@ -69,11 +73,19 @@ impl KNetworkServer {
             addr,
             raft,
             admin_local_only: false,
+            cluster_name: "klog".to_string(),
+            cluster_id: "klog".to_string(),
         }
     }
 
     pub fn with_admin_local_only(mut self, admin_local_only: bool) -> Self {
         self.admin_local_only = admin_local_only;
+        self
+    }
+
+    pub fn with_cluster_identity(mut self, cluster_name: String, cluster_id: String) -> Self {
+        self.cluster_name = cluster_name;
+        self.cluster_id = cluster_id;
         self
     }
 
@@ -88,6 +100,8 @@ impl KNetworkServer {
         let state = KNetworkServerState {
             raft: self.raft.clone(),
             admin_local_only: self.admin_local_only,
+            cluster_name: self.cluster_name.clone(),
+            cluster_id: self.cluster_id.clone(),
         };
 
         let control_rpc_middleware = ServiceBuilder::new()
@@ -153,8 +167,10 @@ impl KNetworkServer {
             .with_state(state);
 
         info!(
-            "KNetworkServer start listening at {}, control_limit_bytes={}, snapshot_limit_bytes={}, control_concurrency={}, snapshot_concurrency={}, control_timeout_ms={}, snapshot_timeout_ms={}, admin_local_only={}, admin_add_learner_path={}, admin_remove_learner_path={}, admin_change_membership_path={}, admin_cluster_state_path={}",
+            "KNetworkServer start listening at {}, cluster_name={}, cluster_id={}, control_limit_bytes={}, snapshot_limit_bytes={}, control_concurrency={}, snapshot_concurrency={}, control_timeout_ms={}, snapshot_timeout_ms={}, admin_local_only={}, admin_add_learner_path={}, admin_remove_learner_path={}, admin_change_membership_path={}, admin_cluster_state_path={}",
             self.addr,
+            self.cluster_name.as_str(),
+            self.cluster_id.as_str(),
             CONTROL_RPC_BODY_LIMIT_BYTES,
             SNAPSHOT_RPC_BODY_LIMIT_BYTES,
             CONTROL_RPC_CONCURRENCY_LIMIT,
@@ -471,6 +487,8 @@ impl KNetworkServer {
 
         let body = KLogClusterStateResponse {
             node_id: metrics.id,
+            cluster_name: state.cluster_name.clone(),
+            cluster_id: state.cluster_id.clone(),
             server_state: format!("{:?}", metrics.state),
             current_leader: metrics.current_leader,
             voters,
@@ -479,8 +497,14 @@ impl KNetworkServer {
         };
 
         info!(
-            "KNetworkServer admin cluster-state request: node_id={}, server_state={}, current_leader={:?}, voters={:?}, learners={:?}",
-            body.node_id, body.server_state, body.current_leader, body.voters, body.learners
+            "KNetworkServer admin cluster-state request: node_id={}, cluster_name={}, cluster_id={}, server_state={}, current_leader={:?}, voters={:?}, learners={:?}",
+            body.node_id,
+            body.cluster_name,
+            body.cluster_id,
+            body.server_state,
+            body.current_leader,
+            body.voters,
+            body.learners
         );
 
         (StatusCode::OK, Json(body)).into_response()

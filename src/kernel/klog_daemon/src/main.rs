@@ -46,13 +46,14 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
     })?;
 
     info!(
-        "klog startup config: node_id={}, listen_addr={}, advertise_addr={}:{}, data_dir={}, cluster_name={}, auto_bootstrap={}, state_store_sync_write={}, join_targets={:?}, join_retry_interval_ms={}, join_max_attempts={}, join_blocking={}, join_target_role={}, admin_local_only={}",
+        "klog startup config: node_id={}, listen_addr={}, advertise_addr={}:{}, data_dir={}, cluster_name={}, cluster_id={}, auto_bootstrap={}, state_store_sync_write={}, join_targets={:?}, join_retry_interval_ms={}, join_max_attempts={}, join_blocking={}, join_target_role={}, admin_local_only={}",
         cfg.node_id,
         cfg.listen_addr,
         cfg.advertise_addr,
         cfg.advertise_port,
         cfg.data_dir.display(),
         cfg.cluster_name,
+        cfg.cluster_id,
         cfg.auto_bootstrap,
         cfg.state_store_sync_write,
         cfg.join_targets,
@@ -139,7 +140,8 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
     let join_task = spawn_auto_join_task(&cfg);
 
     let network_server = KNetworkServer::new(cfg.listen_addr.clone(), raft)
-        .with_admin_local_only(cfg.admin_local_only);
+        .with_admin_local_only(cfg.admin_local_only)
+        .with_cluster_identity(cfg.cluster_name.clone(), cfg.cluster_id.clone());
     info!("Starting raft RPC server: listen_addr={}", cfg.listen_addr);
     run_server_lifecycle(network_server, join_task).await
 }

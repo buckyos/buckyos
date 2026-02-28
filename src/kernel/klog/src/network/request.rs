@@ -79,6 +79,8 @@ impl KLogAdminRequestType {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KLogClusterStateResponse {
     pub node_id: KNodeId,
+    pub cluster_name: String,
+    pub cluster_id: String,
     pub server_state: String,
     pub current_leader: Option<KNodeId>,
     pub voters: Vec<KNodeId>,

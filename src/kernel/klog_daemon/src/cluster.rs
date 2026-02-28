@@ -110,6 +110,12 @@ async fn try_join_once(
                 continue;
             }
         };
+        if let Err(err) =
+            ensure_cluster_identity_matches(cfg, &seed_state, target, "seed-cluster-state")
+        {
+            errors.push(format!("target='{}': {}", target, err));
+            continue;
+        }
 
         // Prefer leader endpoint for admin write APIs if follower can report it.
         let mut admin_targets = Vec::new();
@@ -152,9 +158,12 @@ async fn join_and_promote_once(
     let change_membership_path = KLogAdminRequestType::ChangeMembership.klog_path();
 
     let state_before = fetch_cluster_state(client, admin_target, &cluster_state_path).await?;
+    ensure_cluster_identity_matches(cfg, &state_before, admin_target, "before-change")?;
     info!(
-        "Auto-join state before change: admin_target={}, node_id={}, leader={:?}, voters={:?}, learners={:?}",
+        "Auto-join state before change: admin_target={}, cluster_name={}, cluster_id={}, node_id={}, leader={:?}, voters={:?}, learners={:?}",
         admin_target,
+        state_before.cluster_name,
+        state_before.cluster_id,
         cfg.node_id,
         state_before.current_leader,
         state_before.voters,
@@ -201,6 +210,7 @@ async fn join_and_promote_once(
     }
 
     let state_after_add = fetch_cluster_state(client, admin_target, &cluster_state_path).await?;
+    ensure_cluster_identity_matches(cfg, &state_after_add, admin_target, "after-add-learner")?;
     if cfg.join_target_role == KLogJoinTargetRole::Learner {
         return Ok(format!(
             "node joined as learner: node_id={}, voters={:?}, learners={:?}",
@@ -234,6 +244,12 @@ async fn join_and_promote_once(
     );
 
     let state_after_change = fetch_cluster_state(client, admin_target, &cluster_state_path).await?;
+    ensure_cluster_identity_matches(
+        cfg,
+        &state_after_change,
+        admin_target,
+        "after-change-membership",
+    )?;
     if state_after_change.voters.contains(&cfg.node_id) {
         return Ok(format!(
             "node promoted to voter: node_id={}, voters={:?}, learners={:?}",
@@ -324,6 +340,31 @@ fn build_promote_voters_csv(existing_voters: &[u64], node_id: u64) -> String {
         .join(",")
 }
 
+fn ensure_cluster_identity_matches(
+    cfg: &KLogRuntimeConfig,
+    state: &KLogClusterStateResponse,
+    target: &str,
+    stage: &str,
+) -> Result<(), String> {
+    if state.cluster_id != cfg.cluster_id {
+        let msg = format!(
+            "cluster identity mismatch at stage={}: target='{}', expected_cluster_id='{}', got_cluster_id='{}'",
+            stage, target, cfg.cluster_id, state.cluster_id
+        );
+        error!("{}", msg);
+        return Err(msg);
+    }
+
+    if state.cluster_name != cfg.cluster_name {
+        warn!(
+            "cluster name mismatch but cluster_id matched at stage={}: target='{}', expected_cluster_name='{}', got_cluster_name='{}'",
+            stage, target, cfg.cluster_name, state.cluster_name
+        );
+    }
+
+    Ok(())
+}
+
 fn admin_target_from_node(node: &KNode) -> String {
     format!("{}:{}", node.addr, node.port)
 }
@@ -364,8 +405,15 @@ fn build_admin_url(target: &str, path: &str) -> Result<reqwest::Url, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{admin_target_from_node, build_admin_url, build_promote_voters_csv, dedup_targets};
+    use super::{
+        admin_target_from_node, build_admin_url, build_promote_voters_csv, dedup_targets,
+        ensure_cluster_identity_matches,
+    };
+    use crate::config::{KLogJoinTargetRole, KLogRuntimeConfig};
+    use klog::network::KLogClusterStateResponse;
     use klog::{KNode, KNodeId};
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
 
     #[test]
     fn test_build_admin_url_adds_scheme_and_path() {
@@ -414,5 +462,64 @@ mod tests {
             targets,
             vec!["127.0.0.1:21001".to_string(), "127.0.0.1:21002".to_string()]
         );
+    }
+
+    fn sample_cfg(cluster_name: &str, cluster_id: &str) -> KLogRuntimeConfig {
+        KLogRuntimeConfig {
+            node_id: 1,
+            listen_addr: "0.0.0.0:21001".to_string(),
+            advertise_addr: "127.0.0.1".to_string(),
+            advertise_port: 21001,
+            data_dir: PathBuf::from("/tmp/klog_cluster_test"),
+            cluster_name: cluster_name.to_string(),
+            cluster_id: cluster_id.to_string(),
+            auto_bootstrap: false,
+            state_store_sync_write: true,
+            join_targets: vec![],
+            join_retry_interval_ms: 3000,
+            join_max_attempts: 0,
+            join_blocking: false,
+            join_target_role: KLogJoinTargetRole::Voter,
+            admin_local_only: true,
+        }
+    }
+
+    fn sample_state(cluster_name: &str, cluster_id: &str) -> KLogClusterStateResponse {
+        KLogClusterStateResponse {
+            node_id: 2,
+            cluster_name: cluster_name.to_string(),
+            cluster_id: cluster_id.to_string(),
+            server_state: "Follower".to_string(),
+            current_leader: Some(1),
+            voters: vec![1, 2, 3],
+            learners: vec![],
+            nodes: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn test_cluster_identity_match_ok() {
+        let cfg = sample_cfg("cluster_a", "cluster_a_id");
+        let state = sample_state("cluster_a", "cluster_a_id");
+        ensure_cluster_identity_matches(&cfg, &state, "127.0.0.1:21001", "test")
+            .expect("identity should match");
+    }
+
+    #[test]
+    fn test_cluster_id_mismatch_rejected() {
+        let cfg = sample_cfg("cluster_a", "cluster_a_id");
+        let state = sample_state("cluster_b", "cluster_b_id");
+        let err = ensure_cluster_identity_matches(&cfg, &state, "127.0.0.1:21001", "test")
+            .expect_err("identity mismatch should fail");
+        assert!(err.contains("cluster identity mismatch"));
+        assert!(err.contains("expected_cluster_id='cluster_a_id'"));
+    }
+
+    #[test]
+    fn test_cluster_name_mismatch_allowed_when_id_matches() {
+        let cfg = sample_cfg("cluster_a", "cluster_a_id");
+        let state = sample_state("renamed_cluster", "cluster_a_id");
+        ensure_cluster_identity_matches(&cfg, &state, "127.0.0.1:21001", "test")
+            .expect("name mismatch should be allowed when cluster_id matches");
     }
 }
