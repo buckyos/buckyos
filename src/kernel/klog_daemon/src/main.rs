@@ -94,7 +94,11 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
         RocksDbSnapshotMode::BackupEngine
     );
     let state_store = Arc::new(Box::new(state_store) as Box<dyn KLogStateStore>);
-    let state_store_manager = Arc::new(KLogStateStoreManager::new(state_store));
+    let state_store_manager = Arc::new(
+        KLogStateStoreManager::new(state_store)
+            .await
+            .map_err(|e| format!("Failed to initialize state store manager: {}", e))?,
+    );
 
     let snapshot_manager = Arc::new(SnapshotManager::new(cfg.data_dir.clone()));
     let state_machine = KLogMemoryStateMachine::new(state_store_manager, snapshot_manager);

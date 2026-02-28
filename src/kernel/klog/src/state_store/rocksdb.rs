@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const KEY_PREFIX_ENTRY: u8 = b'e';
+const KEY_NEXT_LOG_ID_META: &[u8] = b"m:next_log_id";
 const CHECKPOINT_SNAPSHOT_MAGIC: &str = "klog-rdb-checkpoint-v1";
 const CHECKPOINT_SNAPSHOT_PREFIX: &[u8] = b"KLOG_RDB_CP1";
 const BACKUP_ENGINE_SNAPSHOT_MAGIC: &str = "klog-rdb-backup-v1";
@@ -42,6 +43,17 @@ fn klog_err_with_context<E: std::fmt::Display>(context: impl Into<String>, err: 
     let msg = format!("{}: {}", context.into(), err);
     error!("{}", msg);
     klog_err(msg)
+}
+
+fn decode_u64_be(bytes: &[u8]) -> KResult<u64> {
+    if bytes.len() != 8 {
+        let msg = format!("Invalid u64 bytes length: {}", bytes.len());
+        error!("{}", msg);
+        return Err(klog_err(msg));
+    }
+    let mut v = [0u8; 8];
+    v.copy_from_slice(bytes);
+    Ok(u64::from_be_bytes(v))
 }
 
 fn summarize_entry_ids(entries: &[KLogEntry]) -> String {
@@ -196,6 +208,61 @@ impl RocksDbStateStore {
         })
     }
 
+    fn read_persisted_next_log_id(&self) -> KResult<Option<u64>> {
+        let value = self
+            .db
+            .get(KEY_NEXT_LOG_ID_META)
+            .map_err(|e| klog_err_with_context("Failed to read rocksdb next_log_id metadata", e))?;
+        let Some(raw) = value else {
+            return Ok(None);
+        };
+        let next_log_id = decode_u64_be(raw.as_ref())?;
+        Ok(Some(next_log_id))
+    }
+
+    fn scan_next_log_id_from_entries(&self) -> KResult<u64> {
+        let mut max_id = 0u64;
+        for item in self.db.iterator(IteratorMode::Start) {
+            let (k, _) = item.map_err(|e| {
+                klog_err_with_context("Failed to iterate rocksdb while scanning next_log_id", e)
+            })?;
+            if let Some(id) = decode_entry_key(&k) {
+                if id > max_id {
+                    max_id = id;
+                }
+            }
+        }
+
+        Ok(max_id.saturating_add(1).max(1))
+    }
+
+    fn persist_next_log_id(&self, next_log_id: u64) -> KResult<()> {
+        self.db
+            .put(KEY_NEXT_LOG_ID_META, next_log_id.to_be_bytes())
+            .map_err(|e| klog_err_with_context("Failed to persist rocksdb next_log_id metadata", e))
+    }
+
+    fn resolve_next_log_id(&self) -> KResult<u64> {
+        let from_entries = self.scan_next_log_id_from_entries()?;
+        let from_meta = self.read_persisted_next_log_id()?.unwrap_or(1);
+        let resolved = from_entries.max(from_meta).max(1);
+
+        if resolved != from_meta {
+            self.persist_next_log_id(resolved)?;
+            info!(
+                "RocksDbStateStore next_log_id metadata reconciled: meta={}, entries={}, resolved={}",
+                from_meta, from_entries, resolved
+            );
+        } else {
+            debug!(
+                "RocksDbStateStore next_log_id metadata loaded: {}",
+                resolved
+            );
+        }
+
+        Ok(resolved)
+    }
+
     fn read_all_entries(&self) -> KResult<Vec<KLogEntry>> {
         debug!(
             "RocksDbStateStore read_all_entries start: snapshot_mode={:?}",
@@ -256,7 +323,11 @@ impl RocksDbStateStore {
         let mut batch = WriteBatch::default();
         self.clear_entries_in_batch(&mut batch)?;
 
+        let mut max_id = 0u64;
         for entry in entries {
+            if entry.id > max_id {
+                max_id = entry.id;
+            }
             let key = entry_key(entry.id);
             let value =
                 bincode::serde::encode_to_vec(&entry, bincode::config::legacy()).map_err(|e| {
@@ -264,13 +335,15 @@ impl RocksDbStateStore {
                 })?;
             batch.put(key, value);
         }
+        let next_log_id = max_id.saturating_add(1).max(1);
+        batch.put(KEY_NEXT_LOG_ID_META, next_log_id.to_be_bytes());
 
         self.db.write(batch).map_err(|e| {
             klog_err_with_context("Failed to write entries during rocksdb snapshot install", e)
         })?;
         info!(
-            "RocksDbStateStore replace_with_entries completed: snapshot_mode={:?}",
-            self.snapshot_mode
+            "RocksDbStateStore replace_with_entries completed: snapshot_mode={:?}, next_log_id={}",
+            self.snapshot_mode, next_log_id
         );
 
         Ok(())
@@ -285,22 +358,28 @@ impl RocksDbStateStore {
         self.clear_entries_in_batch(&mut batch)?;
 
         let mut copied = 0usize;
+        let mut max_id = 0u64;
         for item in source_db.iterator(IteratorMode::Start) {
             let (k, v) = item
                 .map_err(|e| klog_err_with_context("Failed to iterate source checkpoint db", e))?;
-            if decode_entry_key(&k).is_none() {
+            let Some(id) = decode_entry_key(&k) else {
                 continue;
-            }
+            };
             batch.put(k, v);
             copied += 1;
+            if id > max_id {
+                max_id = id;
+            }
         }
+        let next_log_id = max_id.saturating_add(1).max(1);
+        batch.put(KEY_NEXT_LOG_ID_META, next_log_id.to_be_bytes());
 
         self.db.write(batch).map_err(|e| {
             klog_err_with_context("Failed to apply checkpoint snapshot into rocksdb", e)
         })?;
         info!(
-            "RocksDbStateStore replace_with_db completed: copied_entries={}",
-            copied
+            "RocksDbStateStore replace_with_db completed: copied_entries={}, next_log_id={}",
+            copied, next_log_id
         );
 
         Ok(())
@@ -987,5 +1066,23 @@ impl KLogStateStore for RocksDbStateStore {
         );
         error!("{}", msg);
         Err(klog_err(msg))
+    }
+
+    async fn load_next_log_id(&self) -> KResult<Option<u64>> {
+        let next_log_id = self.resolve_next_log_id()?;
+        Ok(Some(next_log_id))
+    }
+
+    async fn save_next_log_id(&self, next_log_id: u64) -> KResult<()> {
+        let current = self.read_persisted_next_log_id()?.unwrap_or(1);
+        let target = next_log_id.max(current).max(1);
+        if target != current {
+            self.persist_next_log_id(target)?;
+            debug!(
+                "RocksDbStateStore save_next_log_id updated: {} -> {}",
+                current, target
+            );
+        }
+        Ok(())
     }
 }

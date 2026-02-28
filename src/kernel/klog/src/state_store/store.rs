@@ -13,6 +13,13 @@ pub trait KLogStateStore: Send + Sync {
     async fn build_snapshot(&self) -> KResult<KLogStateSnapshot>;
 
     async fn install_snapshot(&self, snapshot: KLogStateSnapshot) -> KResult<()>;
+
+    /// Load persisted next-log-id cursor.
+    /// Return `Ok(None)` only when the store has not initialized this metadata yet.
+    async fn load_next_log_id(&self) -> KResult<Option<u64>>;
+
+    /// Persist next-log-id cursor.
+    async fn save_next_log_id(&self, next_log_id: u64) -> KResult<()>;
 }
 
 pub type KLogStateStoreRef = Arc<Box<dyn KLogStateStore>>;
@@ -33,20 +40,37 @@ impl std::fmt::Debug for KLogStateStoreManager {
 }
 
 impl KLogStateStoreManager {
-    pub fn new(state_store: KLogStateStoreRef) -> Self {
-        Self {
+    pub async fn new(state_store: KLogStateStoreRef) -> KResult<Self> {
+        let recovered_next = state_store.load_next_log_id().await?.unwrap_or(1);
+        info!(
+            "KLogStateStoreManager init next_log_id from store: {}",
+            recovered_next
+        );
+
+        Ok(Self {
             state_store,
-            next_log_id: AtomicU64::new(1),
-        }
+            next_log_id: AtomicU64::new(recovered_next),
+        })
     }
 
     pub async fn append(&self, entries: Vec<KLogEntry>) -> KResult<()> {
-        self.state_store.append(entries).await
+        let committed_next = entries
+            .iter()
+            .map(|e| e.id.saturating_add(1))
+            .max()
+            .unwrap_or(0);
+
+        self.state_store.append(entries).await?;
+        self.advance_next_log_id(committed_next).await
     }
 
     /// Allocate a deterministic id on leader before writing to raft log.
     pub fn alloc_log_id(&self) -> u64 {
         self.next_log_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    pub fn peek_next_log_id(&self) -> u64 {
+        self.next_log_id.load(Ordering::SeqCst)
     }
 
     /// Prepare an append entry on leader side.
@@ -71,7 +95,42 @@ impl KLogStateStoreManager {
     }
 
     pub async fn install_snapshot(&self, snapshot: KLogStateSnapshot) -> KResult<()> {
-        self.state_store.install_snapshot(snapshot).await
+        self.state_store.install_snapshot(snapshot).await?;
+        let recovered_next = self.state_store.load_next_log_id().await?.unwrap_or(1);
+        self.next_log_id.store(recovered_next, Ordering::SeqCst);
+        info!(
+            "KLogStateStoreManager install_snapshot reload next_log_id from store: {}",
+            recovered_next
+        );
+        Ok(())
+    }
+
+    async fn advance_next_log_id(&self, candidate_next: u64) -> KResult<()> {
+        if candidate_next == 0 {
+            return Ok(());
+        }
+
+        let mut current = self.next_log_id.load(Ordering::SeqCst);
+        while candidate_next > current {
+            match self.next_log_id.compare_exchange(
+                current,
+                candidate_next,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => {
+                    self.state_store.save_next_log_id(candidate_next).await?;
+                    debug!(
+                        "KLogStateStoreManager advanced next_log_id: {} -> {}",
+                        current, candidate_next
+                    );
+                    return Ok(());
+                }
+                Err(actual) => current = actual,
+            }
+        }
+
+        Ok(())
     }
 }
 
