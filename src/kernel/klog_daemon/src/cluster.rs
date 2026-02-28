@@ -52,14 +52,6 @@ pub fn spawn_auto_join_task(cfg: &KLogRuntimeConfig) -> Option<JoinHandle<()>> {
     }
 }
 
-pub async fn stop_auto_join_task(join_task: Option<JoinHandle<()>>) {
-    if let Some(handle) = join_task {
-        handle.abort();
-        let _ = handle.await;
-        info!("Auto-join task stopped because network server exited");
-    }
-}
-
 async fn run_auto_join_loop(cfg: KLogRuntimeConfig) {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
