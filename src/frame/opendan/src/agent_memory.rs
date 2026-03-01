@@ -154,11 +154,12 @@ impl AgentMemory {
     pub async fn set_memory(
         &self,
         key: &str,
-        json_content: Json,
+        content: &str,
         source: Json,
     ) -> Result<Json, AgentToolError> {
         let normalized_key = normalize_key(key)?;
         validate_source(&normalized_key, &source)?;
+        let json_content = parse_content_value(content);
 
         if !json_content.is_null() {
             let payload_size = serde_json::to_vec(&json_content)
@@ -337,7 +338,7 @@ impl AgentMemory {
             candidates.push(MemoryRankItem {
                 key: record.key.clone(),
                 type_name,
-                summary,
+                content: summary,
                 importance,
                 tag_score,
                 ts_unix_ms: parse_rfc3339_to_ms(&record.ts).unwrap_or(0),
@@ -620,7 +621,7 @@ impl AgentTool for LoadMemoryTool {
 pub struct MemoryRankItem {
     pub key: String,
     pub type_name: String,
-    pub summary: String,
+    pub content: String,
     pub importance: i64,
     pub tag_score: u32,
     pub ts_unix_ms: i64,
@@ -645,7 +646,7 @@ fn render_memory_line(item: &MemoryRankItem) -> String {
         "- {}{} {}",
         key_part,
         type_part,
-        truncate_chars(item.summary.as_str(), 120)
+        truncate_chars(item.content.as_str(), 120)
     )
 }
 
@@ -826,6 +827,15 @@ fn validate_source(key: &str, source: &Json) -> Result<(), AgentToolError> {
     Ok(())
 }
 
+fn parse_content_value(raw_content: &str) -> Json {
+    if raw_content.trim().is_empty() {
+        return Json::String(String::new());
+    }
+
+    serde_json::from_str::<Json>(raw_content)
+        .unwrap_or_else(|_| Json::String(raw_content.to_string()))
+}
+
 fn build_index_dir_segment(raw_segment: &str) -> String {
     sanitize_index_segment(raw_segment, false)
 }
@@ -978,12 +988,7 @@ mod tests {
         let _ = memory
             .set_memory(
                 "/user/preference/style",
-                json!({
-                    "type":"preference",
-                    "summary":"用户偏好简洁回复",
-                    "importance": 7,
-                    "tags": ["style"]
-                }),
+                r#"{"type":"preference","summary":"用户偏好简洁回复","importance":7,"tags":["style"]}"#,
                 json!({
                     "kind":"user",
                     "name":"chat",
@@ -1015,10 +1020,7 @@ mod tests {
         memory
             .set_memory(
                 "/user/calendar/meeting",
-                json!({
-                    "type":"reminder",
-                    "summary":"下午 3 点会议"
-                }),
+                r#"{"type":"reminder","summary":"下午 3 点会议"}"#,
                 json!({"kind":"user","name":"chat","retrieved_at":"2026-02-22T10:00:00Z","locator":{"message_id":"m2"}}),
             )
             .await
@@ -1026,7 +1028,7 @@ mod tests {
         memory
             .set_memory(
                 "/user/calendar/meeting",
-                Json::Null,
+                "null",
                 json!({"kind":"agent","name":"cleanup","retrieved_at":"2026-02-22T11:00:00Z","locator":{"reason":"done"}}),
             )
             .await
@@ -1051,10 +1053,7 @@ mod tests {
         memory
             .set_memory(
                 "/agent/status/current",
-                json!({
-                    "type":"status",
-                    "summary":"ready"
-                }),
+                r#"{"type":"status","summary":"ready"}"#,
                 json!({
                     "kind":"agent",
                     "name":"self",
@@ -1102,15 +1101,17 @@ mod tests {
                 "retrieved_at":"2026-02-22T10:00:00Z",
                 "locator":{"conversation_id":"c1","message_id":format!("m{i}")}
             });
+            let content = json!({
+                "type":"note",
+                "summary": format!("条目{i:02}摘要"),
+                "importance": (100 - i) as i64,
+                "tags": ["bulk", "trim"]
+            })
+            .to_string();
             memory
                 .set_memory(
                     format!("/user/bulk/item_{i:02}").as_str(),
-                    json!({
-                        "type":"note",
-                        "summary": format!("条目{i:02}摘要"),
-                        "importance": (100 - i) as i64,
-                        "tags": ["bulk", "trim"]
-                    }),
+                    content.as_str(),
                     source,
                 )
                 .await

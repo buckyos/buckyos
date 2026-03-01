@@ -24,7 +24,7 @@
 - 时间困难：MsgRecord的时间没有编码进去么？
 
 - set_memory没有效果
-
+- 两种llm result模式
 
 
 

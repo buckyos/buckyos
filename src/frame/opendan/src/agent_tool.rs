@@ -115,7 +115,7 @@ fn builtin_action_summary(action_name: &str) -> &'static str {
         TOOL_LIST_SESSION => "List available sessions.",
         TOOL_LIST_EXTERNAL_WORKSPACES => "List bindable external workspaces.",
         TOOL_BIND_EXTERNAL_WORKSPACE => "Bind an external workspace to current session.",
-        TOOL_LOAD_MEMORY => "Load memory entries by query and scope.",
+        TOOL_LOAD_MEMORY => "Load memory entries by token budget, tags, and reference time.",
         TOOL_TODO_MANAGE => "Manage workspace todos.",
         TOOL_WORKLOG_MANAGE => "Write or query worklog records.",
         _ => "Call runtime tool action.",
@@ -163,9 +163,12 @@ fn builtin_action_args_schema(action_name: &str) -> Json {
         TOOL_LOAD_MEMORY => json!({
             "type": "object",
             "properties": {
-                "query": { "type": "string" },
-                "scope": { "type": "string" },
-                "limit": { "type": "integer", "minimum": 1 }
+                "token_limit": { "type":"number" },
+                "tags": {
+                    "type":"array",
+                    "items": { "type":"string" }
+                },
+                "current_time": { "type":"string" }
             }
         }),
         TOOL_TODO_MANAGE => json!({
@@ -939,7 +942,9 @@ impl PolicyEngine for AgentPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_memory::{AgentMemory, AgentMemoryConfig};
     use buckyos_api::value_to_object_map;
+    use tempfile::tempdir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
@@ -1137,6 +1142,25 @@ mod tests {
         assert!(rendered.contains("Kind: call_tool"));
         assert!(rendered.contains("[\"exec\","));
         assert!(rendered.contains("Args schema"));
+    }
+
+    #[tokio::test]
+    async fn load_memory_action_schema_matches_runtime_tool_spec() {
+        let temp = tempdir().expect("create tempdir");
+        let memory = AgentMemory::new(AgentMemoryConfig::new(temp.path()))
+            .await
+            .expect("create agent memory");
+        let mgr = AgentToolManager::new();
+        memory.register_tools(&mgr).expect("register memory tools");
+
+        let runtime_spec = mgr
+            .get_tool_spec(TOOL_LOAD_MEMORY)
+            .expect("load_memory tool should be registered");
+        let action_schema = builtin_action_args_schema(TOOL_LOAD_MEMORY);
+        assert_eq!(
+            runtime_spec.args_schema, action_schema,
+            "load_memory action schema must match runtime tool args schema"
+        );
     }
 
     struct DummyTool {

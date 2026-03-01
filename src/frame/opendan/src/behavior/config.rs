@@ -600,14 +600,10 @@ fn build_behavior_llm_result_protocol() -> String {
                 "status": "doing"
             }
         ],
-        "set_memory": [
-            {
-                "key": "summary",
-                "content": {
-                    "text": "important context"
-                }
-            }
-        ],
+        "set_memory": {
+            "/user/profile/preference": "Prefer concise response in Chinese",
+            "/project/context": "{\"type\":\"fact\",\"summary\":\"Migrate API to kRPC\",\"importance\":8,\"tags\":[\"project\"]}"
+        },
         "toipc_tags": ["planning"],
         "actions": {
             "mode": "failed_end",
@@ -637,7 +633,6 @@ fn build_behavior_llm_result_protocol() -> String {
 
     format!(
         "Return ONLY one JSON object. No markdown fences and no extra text.\n\
-
 Allowed top-level keys only: next_behavior, thinking, reply, todo, set_memory, toipc_tags, actions, load_skills, enable_tools, session_id, new_session.\n\
 Type rules:\n\
 - All keys are optional. Omit keys you do not use.\n\
@@ -650,7 +645,8 @@ Type rules:\n\
   1) string command (maps to exec action)\n\
   2) tool call: `[\"action_name\", {{\"param\":\"value\"}}]` or `{{\"action_name\": {{\"param\":\"value\"}}}}`\n\
 - `todo`: array of JSON objects; each item is one todo op payload.\n\
-- `set_memory`: array of JSON objects; prefer `{{\"key\":\"...\",\"content\":...}}`.\n\
+- `set_memory`: object map where key is memory path and value is string content.\n\
+- Do NOT include `source` in `set_memory`; runtime derives source from current trace context.\n\
 - `toipc_tags`: array of strings (note: key name is exactly `toipc_tags`).\n\
 - `load_skills` / `enable_tools`: array of strings.\n\
 - `session_id`: optional string.\n\

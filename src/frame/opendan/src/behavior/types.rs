@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -141,8 +142,8 @@ pub struct BehaviorLLMResult {
     pub reply: Vec<ExecutorReply>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub todo: Vec<Json>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub set_memory: Vec<Json>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub set_memory: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub toipc_tags: Vec<String>,
     #[serde(default, skip_serializing_if = "DoActions::is_empty")]

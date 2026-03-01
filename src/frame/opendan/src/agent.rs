@@ -839,7 +839,7 @@ impl AIAgent {
             self.handle_replies(&trace, llm_result.reply.as_slice())
                 .await;
 
-            self.apply_memory_updates(&trace, llm_result.set_memory.as_slice())
+            self.apply_memory_updates(&trace, &llm_result.set_memory)
                 .await;
 
             let step_summary = build_step_summary(
@@ -1878,36 +1878,29 @@ impl AIAgent {
         out
     }
 
-    async fn apply_memory_updates(&self, trace: &TraceCtx, set_memory: &[Json]) {
-        for item in set_memory {
-            let Some(obj) = item.as_object() else {
-                continue;
-            };
-            let Some(key) = obj
-                .get("key")
-                .or_else(|| obj.get("name"))
-                .and_then(|value| value.as_str())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            else {
-                continue;
-            };
+    async fn apply_memory_updates(
+        &self,
+        trace: &TraceCtx,
+        set_memory: &HashMap<String, String>,
+    ) {
+        let source = json!({
+            "trace_id": trace.trace_id,
+            "behavior": trace.behavior,
+            "step_idx": trace.step_idx,
+            "agent_did": trace.agent_did,
+        });
 
-            let content = obj
-                .get("content")
-                .or_else(|| obj.get("json_content"))
-                .cloned()
-                .unwrap_or(Json::Null);
-            let source = obj.get("source").cloned().unwrap_or_else(|| {
-                json!({
-                    "trace_id": trace.trace_id,
-                    "behavior": trace.behavior,
-                    "step_idx": trace.step_idx,
-                    "agent_did": trace.agent_did,
-                })
-            });
+        for (raw_key, content) in set_memory {
+            let key = raw_key.trim();
+            if key.is_empty() {
+                continue;
+            }
 
-            if let Err(err) = self.memory.set_memory(key, content, source).await {
+            if let Err(err) = self
+                .memory
+                .set_memory(key, content.as_str(), source.clone())
+                .await
+            {
                 warn!(
                     "agent.set_memory failed: did={} key={} err={}",
                     self.did, key, err

@@ -1912,12 +1912,7 @@ loaded_tools: [exec_bash]
         memory
             .set_memory(
                 "/project/context",
-                json!({
-                    "type":"fact",
-                    "summary":"DYNAMIC_MEMORY_SHOULD_NOT_APPEAR",
-                    "importance": 8,
-                    "tags": ["project"]
-                }),
+                r#"{"type":"fact","summary":"DYNAMIC_MEMORY_SHOULD_NOT_APPEAR","importance":8,"tags":["project"]}"#,
                 json!({
                     "kind":"user",
                     "name":"chat",
@@ -1984,12 +1979,7 @@ loaded_tools: [exec_bash]
         memory
             .set_memory(
                 "/user/preference/style",
-                json!({
-                    "type":"preference",
-                    "summary":"用户偏好简洁回复",
-                    "importance": 7,
-                    "tags": ["style"]
-                }),
+                r#"{"type":"preference","summary":"用户偏好简洁回复","importance":7,"tags":["style"]}"#,
                 json!({
                     "kind":"user",
                     "name":"chat",
