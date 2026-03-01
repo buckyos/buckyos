@@ -20,6 +20,8 @@ pub const TOOL_GET_SESSION: &str = "get_session";
 pub const TOOL_LIST_SESSION: &str = "list_session";
 pub const TOOL_LIST_EXTERNAL_WORKSPACES: &str = "list_external_workspaces";
 pub const TOOL_BIND_EXTERNAL_WORKSPACE: &str = "bind_external_workspace";
+pub const TOOL_CREATE_LOCAL_WORKSPACE: &str = "create_local_workspace";
+pub const TOOL_BIND_LOCAL_WORKSPACE: &str = "bind_local_workspace";
 pub const TOOL_LOAD_MEMORY: &str = "load_memory";
 pub const TOOL_TODO_MANAGE: &str = "todo_manage";
 pub const TOOL_WORKLOG_MANAGE: &str = "worklog_manage";
@@ -115,6 +117,10 @@ fn builtin_action_summary(action_name: &str) -> &'static str {
         TOOL_LIST_SESSION => "List available sessions.",
         TOOL_LIST_EXTERNAL_WORKSPACES => "List bindable external workspaces.",
         TOOL_BIND_EXTERNAL_WORKSPACE => "Bind an external workspace to current session.",
+        TOOL_CREATE_LOCAL_WORKSPACE => "Create and optionally bind a local workspace.",
+        TOOL_BIND_LOCAL_WORKSPACE => {
+            "Bind an existing local workspace to current session (without rebind)."
+        }
         TOOL_LOAD_MEMORY => "Load memory entries by token budget, tags, and reference time.",
         TOOL_TODO_MANAGE => "Manage workspace todos.",
         TOOL_WORKLOG_MANAGE => "Write or query worklog records.",
@@ -159,6 +165,30 @@ fn builtin_action_args_schema(action_name: &str) -> Json {
                 "workspace_id": { "type": "string" }
             },
             "required": ["workspace_id"]
+        }),
+        TOOL_CREATE_LOCAL_WORKSPACE => json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "template": { "type": "string" },
+                "owner": {
+                    "type": "string",
+                    "enum": ["agent_created", "user_provided"]
+                },
+                "policy_profile_id": { "type": "string" },
+                "created_by_session": { "type": "string" },
+                "session_id": { "type": "string" },
+                "bind_session": { "type": "boolean" }
+            },
+            "required": ["name"]
+        }),
+        TOOL_BIND_LOCAL_WORKSPACE => json!({
+            "type": "object",
+            "properties": {
+                "local_workspace_id": { "type": "string" },
+                "session_id": { "type": "string" }
+            },
+            "required": ["local_workspace_id"]
         }),
         TOOL_LOAD_MEMORY => json!({
             "type": "object",
@@ -1036,6 +1066,8 @@ mod tests {
             TOOL_LIST_SESSION,
             TOOL_LIST_EXTERNAL_WORKSPACES,
             TOOL_BIND_EXTERNAL_WORKSPACE,
+            TOOL_CREATE_LOCAL_WORKSPACE,
+            TOOL_BIND_LOCAL_WORKSPACE,
             TOOL_LOAD_MEMORY,
             TOOL_TODO_MANAGE,
             TOOL_WORKLOG_MANAGE,

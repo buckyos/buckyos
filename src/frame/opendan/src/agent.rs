@@ -1110,7 +1110,10 @@ impl AIAgent {
 
         let (source_session_id, step_inputs_raw) = {
             let guard = session.lock().await;
-            (guard.session_id.clone(), guard.just_readed_input_msg.clone())
+            (
+                guard.session_id.clone(),
+                guard.just_readed_input_msg.clone(),
+            )
         };
         if step_inputs_raw.is_empty() {
             return Ok(());
@@ -2253,9 +2256,10 @@ impl AIAgent {
             outbound
                 .meta
                 .insert("session_id".to_string(), Json::String(session_id.clone()));
-            outbound
-                .meta
-                .insert("owner_session_id".to_string(), Json::String(session_id.clone()));
+            outbound.meta.insert(
+                "owner_session_id".to_string(),
+                Json::String(session_id.clone()),
+            );
         }
         let outbound_for_history = outbound.clone();
 
@@ -2355,12 +2359,8 @@ impl AIAgent {
         }
 
         for reply in reply_history {
-            self.persist_post_send_history(
-                session_id.as_str(),
-                &reply.outbound,
-                &reply.result,
-            )
-            .await;
+            self.persist_post_send_history(session_id.as_str(), &reply.outbound, &reply.result)
+                .await;
         }
     }
 

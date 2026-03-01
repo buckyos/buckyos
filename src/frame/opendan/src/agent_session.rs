@@ -734,10 +734,10 @@ impl AgentSessionMgr {
         let Some(session) = self.get_session(session_id.as_str()).await else {
             let mut runtime = AgentSession::from_record(record);
             self.hydrate_session_runtime_context(&mut runtime);
-            self.sessions.write().await.insert(
-                session_id.clone(),
-                Arc::new(Mutex::new(runtime)),
-            );
+            self.sessions
+                .write()
+                .await
+                .insert(session_id.clone(), Arc::new(Mutex::new(runtime)));
             return Ok(());
         };
 
@@ -884,14 +884,11 @@ impl AgentSessionMgr {
                 record.owner_agent = self.owner_agent.clone();
             }
 
-            self.sessions.write().await.insert(
-                session_id,
-                {
-                    let mut runtime = AgentSession::from_record(record);
-                    self.hydrate_session_runtime_context(&mut runtime);
-                    Arc::new(Mutex::new(runtime))
-                },
-            );
+            self.sessions.write().await.insert(session_id, {
+                let mut runtime = AgentSession::from_record(record);
+                self.hydrate_session_runtime_context(&mut runtime);
+                Arc::new(Mutex::new(runtime))
+            });
         }
 
         Ok(())

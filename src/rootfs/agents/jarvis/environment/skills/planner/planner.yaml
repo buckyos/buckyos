@@ -1,0 +1,84 @@
+name: planner
+introduce: Plan-first orchestration skill for OpenDAN actions (context loading, TODO planning, execution routing, and traceability).
+actions:
+  - exec
+  - edit
+  - write
+  - read
+  - create_local_workspace
+  - bind_local_workspace
+  # - create_sub_agent
+  # - list_external_workspaces
+  # - bind_external_workspace
+  # - load_memory
+  - todo_manage
+  #- worklog_manage
+  
+loaded_tools:
+  - exec
+  - read
+
+rules: |
+  目标
+  - 用当前已引入 action 串联规划与执行：先收敛事实，再根据用户目标产出完整的 TODO List
+
+  当前 action 角色分工
+  - todo_manage: 维护任务主状态机（list/get/apply_delta/query_pending/render_for_prompt/render_current_details/get_next_ready_todo）。
+  - create_local_workspace: 创建并可自动绑定本地 workspace，用于后续任务执行与产物落盘。
+  - bind_local_workspace: 绑定已有 local workspace 到当前会话，若会话已有绑定则应失败并保留原绑定。
+  - read: 读取文件/片段，构建事实基础。
+  - write: 新建或覆写文件（mode: new/append/write）。
+  - edit: 基于锚点做局部修改（replace/after/before）。
+  - exec: 执行命令进行构建、测试、验证和信息采集。
+
+  组合编排主流程（Planner 标准循环）
+  1) 任务读取（必做）
+  - 先调用 todo_manage(action=query_pending 或 render_for_prompt)获得未完成任务概况。
+  - 必要时调用 todo_manage(action=get_next_ready_todo)锁定当前优先任务。
+  - 对目标文件调用 read；信息不足时再用 exec(只读命令)补充事实。
+
+  2) 计划构建（默认只读）
+  - 若 workspace 决策为“新建 workspace”，优先调用 create_local_workspace 完成创建与绑定，再继续 TODO 规划。
+  - workspace 名称建议使用项目/主题名，避免动词前缀（例如不要用 `bugfix-xxx`、`feature-xxx`）。
+  - 将目标拆解为可验证 TODO，优先用 todo_manage(action=apply_delta)写入计划。
+  - 每个 TODO 需包含：目标、依赖、完成判定、建议 action 组合。
+  - 若信息不足，先补 read 或 exec(只读命令)采样，不直接做高风险写操作。
+
+  3) 执行路由（按风险递进）
+  - 读优先: read -> (必要时 exec 只读) -> 再决定 edit/write。
+  - 改动优先局部: 优先 edit，无法锚定再 write。
+  - 每次写后验证: edit/write -> read 回读 -> exec 构建/测试。
+  - 验证失败时: 直接用 todo_manage 标记阻塞/重试策略并附失败原因。
+
+  4) 收尾（必做）
+  - todo_manage(action=apply_delta)推进任务状态（todo/doing/blocked/done）。
+  - 如需暂停，保证 query_pending 结果可让下一轮直接续跑。
+
+  action 组合模板
+  - 模板 A（纯规划）:
+    todo_manage(query_pending) -> read(按需) -> todo_manage(apply_delta)
+  - 模板 A2（新建工作区后规划）:
+    create_local_workspace(name, bind_session=true) -> todo_manage(apply_delta)
+  - 模板 A3（复用工作区后规划）:
+    bind_local_workspace(local_workspace_id) -> todo_manage(apply_delta)
+  - 模板 B（代码修复）:
+    todo_manage(get_next_ready_todo) -> read -> edit/write -> read -> exec -> todo_manage(apply_delta)
+  - 模板 C（验证回归）:
+    read -> exec -> todo_manage(apply_delta)
+
+  参数与兼容性约束
+  - todo_manage 必须提供 action；具体字段按 action 子类型补齐。
+  - create_local_workspace 至少提供 name；默认 bind_session=true，会优先使用当前会话进行绑定。
+  - create_local_workspace 可选参数：template / owner / policy_profile_id / session_id / created_by_session。
+  - bind_local_workspace 需提供 local_workspace_id；若当前会话已有绑定，调用必须失败，不应隐式切换。
+  - exec 命令默认按最小权限与最小作用域执行，先无副作用命令。
+
+  失败处理与降级
+  - 任一 action 失败时，先 read/exec 复核现场，再决定重试/替代路径。
+  - 文件修改失败优先回退到 read + edit（更小变更面），避免盲目 write 覆盖。
+  - 当验证无法通过时，不继续扩大改动面；先将 TODO 标记为 blocked 并记录可重现条件。
+
+  Planner 输出要求
+  - 明确区分事实/假设/待确认项。
+  - 每轮至少给出一个可执行 next step。
+  - 确保 TODO 状态与当前执行结果一致，避免状态漂移。

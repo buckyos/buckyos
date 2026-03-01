@@ -21,6 +21,7 @@ use crate::agent_session::{AgentSession, AgentSessionMgr, SessionInputItem};
 use crate::agent_tool::{AgentToolError, AgentToolManager};
 use crate::workspace::{
     get_next_ready_todo_code, get_next_ready_todo_text, AgentWorkshop, AgentWorkshopConfig,
+    WorkshopIndex, WorkshopWorkspaceRecord, WorkspaceType,
 };
 
 const MAX_INCLUDE_BYTES: usize = 64 * 1024;
@@ -29,7 +30,9 @@ const ESCAPED_OPEN_SENTINEL: &str = "\u{001f}ESCAPED_OPEN_BRACE\u{001f}";
 const ESCAPED_CLOSE_SENTINEL: &str = "\u{001f}ESCAPED_CLOSE_BRACE\u{001f}";
 const DEFAULT_NEW_MSG_MAX_PULL: usize = 32;
 const DEFAULT_SESSION_LIST_MAX_PULL: usize = 16;
+const DEFAULT_LOCAL_WORKSPACE_LIST_MAX_PULL: usize = 16;
 const SESSION_RECORD_FILE_NAME: &str = "session.json";
+const WORKSHOP_INDEX_FILE_NAME: &str = "index.json";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TemplateRenderMode {
@@ -283,6 +286,21 @@ impl AgentEnvironment {
             return Ok(render_recent_sessions_from_disk(
                 &session_cwd,
                 session_id.as_str(),
+                max_pull,
+            )
+            .await);
+        }
+
+        if k.starts_with("local_workspace_list") {
+            // k format: local_workspace_list / local_workspace_list.$num
+            let max_pull = parse_pull_limit_from_key(
+                k,
+                "local_workspace_list",
+                DEFAULT_LOCAL_WORKSPACE_LIST_MAX_PULL,
+            );
+            return Ok(render_recent_local_workspaces_from_disk(
+                workspace_info.as_ref(),
+                &session_cwd,
                 max_pull,
             )
             .await);
@@ -806,6 +824,87 @@ async fn render_recent_sessions_from_disk(
         .and_then(|value| clean_optional_text(Some(value.as_str())))
 }
 
+async fn render_recent_local_workspaces_from_disk(
+    workspace_info: Option<&Json>,
+    session_cwd: &Path,
+    max_pull: usize,
+) -> Option<String> {
+    if max_pull == 0 {
+        return None;
+    }
+
+    let candidates = collect_workspace_path_candidates(workspace_info, session_cwd);
+    let candidate_roots = collect_candidate_ancestors(&candidates);
+    let mut records = Vec::<WorkshopWorkspaceRecord>::new();
+
+    for root in candidate_roots {
+        let index_path = root.join(WORKSHOP_INDEX_FILE_NAME);
+        if !fs::metadata(&index_path)
+            .await
+            .map(|meta| meta.is_file())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+
+        let local_root = root.join("workspaces").join("local");
+        if !fs::metadata(&local_root)
+            .await
+            .map(|meta| meta.is_dir())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+
+        let Ok(raw) = fs::read_to_string(&index_path).await else {
+            continue;
+        };
+        let Ok(index) = serde_json::from_str::<WorkshopIndex>(&raw) else {
+            continue;
+        };
+        records = index.workspaces;
+        break;
+    }
+
+    if records.is_empty() {
+        return None;
+    }
+
+    let mut local_records = records
+        .into_iter()
+        .filter(|record| record.workspace_type == WorkspaceType::Local)
+        .collect::<Vec<_>>();
+
+    if local_records.is_empty() {
+        return None;
+    }
+
+    local_records.sort_by(|a, b| {
+        b.updated_at_ms
+            .cmp(&a.updated_at_ms)
+            .then_with(|| b.created_at_ms.cmp(&a.created_at_ms))
+            .then_with(|| a.workspace_id.cmp(&b.workspace_id))
+    });
+
+    let lines = local_records
+        .into_iter()
+        .take(max_pull)
+        .filter_map(|record| {
+            let workspace_id = clean_optional_text(Some(record.workspace_id.as_str()))?;
+            let summary = clean_optional_text(Some(record.name.as_str()))
+                .map(|value| collapse_whitespace(value.as_str()))
+                .map(|value| truncate_chars(value.as_str(), 200))
+                .unwrap_or_else(|| "local workspace".to_string());
+            Some(format!("\n- ${workspace_id} \n  {summary}\n"))
+        })
+        .collect::<Vec<_>>();
+
+    if lines.is_empty() {
+        return None;
+    }
+    clean_optional_text(Some(lines.join("\n").as_str()))
+}
+
 async fn resolve_session_root_from_cwd(
     session_cwd: &Path,
     current_session_id: &str,
@@ -928,7 +1027,10 @@ async fn render_new_msgs_from_kmsgqueue(messages: &[Message]) -> Option<String> 
             }
         }
 
-        lines.push(render_human_readable_msg_line(&msg_record, msg_obj.as_ref()));
+        lines.push(render_human_readable_msg_line(
+            &msg_record,
+            msg_obj.as_ref(),
+        ));
     }
     if lines.is_empty() {
         return None;
@@ -1920,5 +2022,83 @@ mod tests {
         assert_eq!(items_2.len(), 2);
         assert_eq!(items_2[0]["session_id"], "s2");
         assert_eq!(items_2[1]["session_id"], "s3");
+    }
+
+    #[tokio::test]
+    async fn load_value_from_session_local_workspace_list_sorts_recent_first() {
+        let root = tempdir().expect("create temp dir");
+        fs::create_dir_all(root.path().join("workspaces").join("local"))
+            .await
+            .expect("create local workspace dir");
+
+        let mut ws1 = WorkshopWorkspaceRecord::default();
+        ws1.workspace_id = "local-alpha-1".to_string();
+        ws1.workspace_type = WorkspaceType::Local;
+        ws1.name = "Alpha workspace".to_string();
+        ws1.created_at_ms = 10;
+        ws1.updated_at_ms = 100;
+
+        let mut ws2 = WorkshopWorkspaceRecord::default();
+        ws2.workspace_id = "local-beta-1".to_string();
+        ws2.workspace_type = WorkspaceType::Local;
+        ws2.name = "Beta workspace".to_string();
+        ws2.created_at_ms = 20;
+        ws2.updated_at_ms = 300;
+
+        let mut ws3 = WorkshopWorkspaceRecord::default();
+        ws3.workspace_id = "local-gamma-1".to_string();
+        ws3.workspace_type = WorkspaceType::Local;
+        ws3.name = "Gamma workspace".to_string();
+        ws3.created_at_ms = 30;
+        ws3.updated_at_ms = 200;
+
+        let mut remote = WorkshopWorkspaceRecord::default();
+        remote.workspace_id = "remote-1".to_string();
+        remote.workspace_type = WorkspaceType::Remote;
+        remote.name = "Remote workspace".to_string();
+        remote.created_at_ms = 40;
+        remote.updated_at_ms = 999;
+
+        let index = WorkshopIndex {
+            agent_did: "did:test:agent".to_string(),
+            workspaces: vec![ws1, ws2, ws3, remote],
+            updated_at_ms: 999,
+        };
+        let index_bytes = serde_json::to_vec_pretty(&index).expect("serialize workshop index");
+        fs::write(root.path().join(WORKSHOP_INDEX_FILE_NAME), index_bytes)
+            .await
+            .expect("write workshop index");
+
+        let session = Arc::new(Mutex::new(AgentSession::new(
+            "s1",
+            "did:test:agent",
+            Some("on_wakeup"),
+        )));
+        session.lock().await.cwd = root.path().to_path_buf();
+
+        let rendered =
+            AgentEnvironment::load_value_from_session(session.clone(), "local_workspace_list")
+                .await
+                .expect("load local_workspace_list")
+                .expect("local_workspace_list should be rendered");
+        let lines = rendered.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "$local-beta-1 + Beta workspace");
+        assert_eq!(lines[1], "$local-gamma-1 + Gamma workspace");
+        assert_eq!(lines[2], "$local-alpha-1 + Alpha workspace");
+
+        let rendered_2 =
+            AgentEnvironment::load_value_from_session(session, "local_workspace_list.$2")
+                .await
+                .expect("load local_workspace_list.$2")
+                .expect("local_workspace_list.$2 should be rendered");
+        let lines_2 = rendered_2.lines().collect::<Vec<_>>();
+        assert_eq!(
+            lines_2,
+            vec![
+                "$local-beta-1 + Beta workspace",
+                "$local-gamma-1 + Gamma workspace",
+            ]
+        );
     }
 }

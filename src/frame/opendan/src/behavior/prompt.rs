@@ -1011,8 +1011,8 @@ fn render_history_msg_line(record: &MsgRecordWithObject) -> String {
         .filter(|text| !text.is_empty())
         .unwrap_or_else(|| {
             format!(
-            "msg_id={} state={:?}",
-            record.record.msg_id, record.record.state
+                "msg_id={} state={:?}",
+                record.record.msg_id, record.record.state
             )
         });
 

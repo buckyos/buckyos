@@ -20,7 +20,8 @@
 - 和MsgChannel对应的Session通常称作UI Session，其session-id是固定构造的。其它的Session是Working Session,session-id时系统分配的，通过session-id就可以区分。 OK
 - new_msg的bug OK
 - 能正确加载msg history  OK
-- new_msg在提示词中能正确显示
+- new_msg在提示词中能正确显示 OK 
+- 简单消息route的问题：如何查看历史记录？
 
 - todo没有效果？
   - 确认todo是否可以无workspace构建 不能

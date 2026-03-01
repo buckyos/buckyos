@@ -4,7 +4,7 @@ process_rule: |
 
   0. **Step连续性规则**
   * 若存在 `last_step_summary`,先读取上一步已确认结论,只补足未完成的计划信息
-  * 本步必须留下可延续线索:在 `thinking` 中写明“已完成/未完成/下一步”
+  * 本步必须留下可延续线索:在 `thinking` 中写明“我在这一步里做出的结论和动作”
   * 若计划尚未闭合,不要过早 `END`;为下一step保留推进空间
 
   1. **识别输入与目标**
@@ -14,10 +14,12 @@ process_rule: |
   2. **Workspace决策(新增必做)**
   * 在制定TODO前,必须先判断后续执行是否需要独立的local workspace
   * 若需要workspace,必须在以下三者中做出明确选择:
-    - 新建workspace:给出命名(建议包含任务类型+目标,如 `bugfix-xxx`/`feature-xxx`)
+    - 新建workspace:给出命名(建议是项目名,不要包含动词。下面这两个就不是好的名字`bugfix-xxx`/`feature-xxx`)
     - 复用已有workspace:给出被选workspace及复用理由(目标一致/上下文连续/已有中间产物)
     - 暂不使用workspace:给出理由(任务过小/一次性答复/无需落盘)
-  * 若信息不足以决策workspace,优先通过 `reply` 提出最小必要澄清问题
+  * 若已确定“新建workspace”且信息充分,优先发起 `create_local_workspace` action 执行创建与绑定,并在thinking/todo中记录 workspace_id
+  * 若已确定“复用已有workspace”且信息充分,优先发起 `bind_local_workspace` action 绑定到当前session,并在thinking/todo中记录 workspace_id
+  * 若信息不足以决策workspace,优先通过 `reply` 给出选项或最小必要澄清问题,让用户参与决策
 
   3. **构建计划**
   * PLAN阶段聚焦分析与拆解:给出可执行、可验证、可交付的TODO列表
@@ -31,18 +33,22 @@ process_rule: |
   * 当能力不足时,先给出替代方案或请求用户授权,不要直接执行高风险动作
 
   5. **行为切换**
-  * 已形成可执行计划且可继续推进时,`next_behavior` 设为 `do`
+  * 已形成可执行计划且可继续推进时,`next_behavior` 设为 `DO:$item_id`
   * 本轮已可直接答复且无需继续推进时,`next_behavior` 设为 `END`
-  * 需要等待用户补充信息或授权时,`next_behavior` 设为 `WAIT_FOR_MSG`
+  * 需要等待用户补充信息或授权时,在设置reply的同时,也要将`next_behavior` 设为 `WAIT_FOR_MSG`
 
   6. **阶段约束**
   * PLAN阶段默认只读,不做破坏性变更
   * 非必要不发起actions;优先通过todo/reply推进
 
+
+
 policy: |
   * 必须优先保证计划的可执行性与可验证性,避免空泛建议
   * 必须先完成workspace决策,再输出执行TODO;禁止跳过workspace判断
   * 必须明确写出workspace结论(新建/复用/不使用)及理由;若新建需给出名称
+  * 若选择新建workspace且无需额外确认,应优先执行 `create_local_workspace`;若不执行需说明原因
+  * 若选择复用已有workspace且无需额外确认,应优先执行 `bind_local_workspace`;若不执行需说明原因
   * 必须为每个TODO给出skill选择结论(具体skill或 `none`)及依据,禁止省略
   * 必须显式区分事实与假设,对不确定内容给出说明
   * 必须在回复中清晰说明当前结论与下一步
@@ -53,7 +59,8 @@ output_protocol:
   mode: behavior_llm_result
 
 toolbox:
-  mode: none
+  mode: alone
+  load_skills: ["planner"]
 
 # TODO: memory应该加一个不会被裁剪的,用环境变量拼接的段落
 memory:
@@ -64,18 +71,22 @@ memory:
   workspace_worklog: { limit: 3000, max_percent: 0.2 }
   session_summaries: { limit: 3000, max_percent: 0.25 }
   workspace_todo: { limit: 4500, max_percent: 0.35 }
+  first_prompt: |
+  ## 下面是已有的local workspace
+    {{local_workspace_list}}
 
 input: |
   {{last_step_summary}}
   {{new_msg}}
-  {{workspace.todolist.next_ready_todo}}
 
 step_summary: |
+  ## LastStep {{step_index}} / {{step_limit}}
+  ### 动机
   {{llm_result.thinking}}
-  {{llm_result.todo}}
+  ### Action的执行结果
   {{llm_result.action_results}}
 
-step_limit: 8
+step_limit: 16
 
 limits:
   max_prompt_tokens: 16000
@@ -85,5 +96,5 @@ limits:
   deadline_ms: 60000
 
 llm_model:
-  name : llm.chat # 让router机制决定llm.code目前具体是哪个
+  name : llm.plan 
   thinking_level : medium
