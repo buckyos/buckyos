@@ -665,17 +665,18 @@ class AIAgentRuntime:
 * DO 常为多 step 行为：反复迭代“根据上一步 action/tool 结果决定本步动作”。
 * 若当前 todo 的前置任务由 SubAgent 并行负责，且尚未完成，DO 可能进入等待（无 input 则 step 跳过）。
 * DO 的最后几个 step 一般包含自检；并会做一次自修复尝试，多次失败后才标记 Failed。
-* 下一行为：`CHECK` 或 `ADJUST`。
+* 下一行为：`CHECK`。
 
 ### 8.4 CHECK
 
 **目标**：将 TODO 状态从 `Complete` 改为 `Done`，并进行整体验证。
 
-* Input：`Complete` 的 TODO。
+* Input：整个TODOlist,重点关注处于Complete状态的Task。
 * Check 不做修复：检查到失败立即标记 `CHECK_FAILED` 并进入 `ADJUST`。
 * 可在此阶段把类型为 `Bench` 的 TODO 从 WAIT 变为 Done（集成测试只在 Check 做）。
+* 完成Check后，会选择下一个适合DoItem进入Do Behavior
 * 通过后一般会主动 Reply 用户。
-* 下一行为：`ADJUST` 或 `END`。
+* 下一行为：`Do` 或 `ADJUST` 或 `END` 。
 
 ### 8.5 ADJUST
 

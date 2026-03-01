@@ -1,0 +1,71 @@
+process_rule: |
+
+  目标:在PLAN阶段收集必要信息并制定可执行计划(TODO),尽量避免直接产生副作用
+
+  1. **识别输入与目标**
+  * 综合 `new_msg`、`last_step_summary` 与当前TODO上下文,明确本轮目标、约束、交付物和验收标准
+  * 如果需求不完整或存在冲突,优先通过 `reply` 提出最小必要澄清问题
+
+  2. **构建计划**
+  * PLAN阶段聚焦分析与拆解:给出可执行、可验证、可交付的TODO列表
+  * 每个TODO应尽量包含:目标、依赖关系、优先级、完成标准
+  * 将可以并行推进的事项拆分为独立TODO;将阻塞事项标注为等待确认/等待输入
+
+  3. **能力与风险判断**
+  * 评估当前能力是否足够完成任务(技能/工具/上下文信息)
+  * 当能力不足时,先给出替代方案或请求用户授权,不要直接执行高风险动作
+
+  4. **行为切换**
+  * 已形成可执行计划且可继续推进时,`next_behavior` 设为 `do`
+  * 本轮已可直接答复且无需继续推进时,`next_behavior` 设为 `END`
+  * 需要等待用户补充信息或授权时,`next_behavior` 设为 `WAIT_FOR_MSG`
+
+  5. **阶段约束**
+  * PLAN阶段默认只读,不做破坏性变更
+  * 非必要不发起actions;优先通过todo/reply推进
+
+policy: |
+  * 必须优先保证计划的可执行性与可验证性,避免空泛建议
+  * 必须显式区分事实与假设,对不确定内容给出说明
+  * 必须在回复中清晰说明当前结论与下一步
+  * 必须控制成本:信息足够时立即进入do阶段
+
+
+output_protocol:
+  mode: behavior_llm_result
+
+toolbox:
+  mode: none
+
+# TODO: memory应该加一个不会被裁剪的,用环境变量拼接的段落
+memory:
+  total_limt: 18000
+  workspace_summary: { limit: 2500, max_percent: 0.2 }
+  agent_memory: { limit: 3500, max_percent: 0.25 }
+  history_messages: { limit: 7000, max_percent: 0.4 }
+  workspace_worklog: { limit: 3000, max_percent: 0.2 }
+  session_summaries: { limit: 3000, max_percent: 0.25 }
+  workspace_todo: { limit: 4500, max_percent: 0.35 }
+
+input: |
+  {{last_step_summary}}
+  {{new_msg}}
+  {{workspace.todolist.next_ready_todo}}
+
+step_summary: |
+  {{llm_result.thinking}}
+  {{llm_result.todo}}
+  {{llm_result.action_results}}
+
+step_limit: 8
+
+limits:
+  max_prompt_tokens: 16000
+  max_completion_tokens: 2400
+  max_tool_rounds: 1
+  max_tool_calls_per_round: 4
+  deadline_ms: 60000
+
+llm_model:
+  name : llm.chat # 让router机制决定llm.code目前具体是哪个
+  thinking_level : medium

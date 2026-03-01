@@ -48,6 +48,9 @@ pub struct BehaviorConfig {
     pub tools: BehaviorToolsConfig,
     pub toolbox: BehaviorToolboxConfig,
 
+    // 如果因为系统原因失败了（比如 step_limit),切换到哪个 behavior，不设置时切回 session 默认 behavior
+    #[serde(alias = "fallto", alias = "failed_back", alias = "fallback_behavior")]
+    pub faild_back: Option<String>,
     pub step_limit: u32,
     pub llm: LLMBehaviorConfig,
     pub limits: StepLimits,
@@ -62,6 +65,7 @@ impl Default for BehaviorConfig {
             input: String::new(),
             memory: BehaviorMemoryConfig::default(),
             step_summary: String::new(),
+            faild_back: None,
             step_limit: 0,
             output_protocol: BehaviorOutputProtocol::default(),
             tools: BehaviorToolsConfig::default(),
@@ -164,6 +168,10 @@ impl BehaviorConfig {
         cfg.toolbox.tools = resolved_tools;
         cfg.policy = cfg.policy.trim().to_string();
         cfg.input = cfg.input.trim().to_string();
+        cfg.faild_back = cfg
+            .faild_back
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
         cfg.memory.normalize();
         cfg.llm.output_protocol = cfg.output_protocol.to_prompt_text();
         cfg.llm.output_mode = cfg.output_protocol.mode_name();
@@ -723,6 +731,30 @@ toolbox:
         assert!(cfg.llm.force_json);
         assert_eq!(cfg.llm.output_mode, "auto");
         assert!(cfg.llm.output_protocol.trim().is_empty());
+    }
+
+    #[test]
+    fn behavior_config_parses_faild_back_and_legacy_fallto() {
+        let path = Path::new("route.yaml");
+        let cfg = BehaviorConfig::parse_from_str(
+            path,
+            r#"
+process_rule: test_rule
+faild_back: plan
+"#,
+        )
+        .expect("parse behavior yaml");
+        assert_eq!(cfg.faild_back.as_deref(), Some("plan"));
+
+        let legacy_cfg = BehaviorConfig::parse_from_str(
+            path,
+            r#"
+process_rule: test_rule
+fallto: do
+"#,
+        )
+        .expect("parse behavior yaml");
+        assert_eq!(legacy_cfg.faild_back.as_deref(), Some("do"));
     }
 
     #[test]

@@ -115,7 +115,7 @@ struct RouteAndLinkResult {
 struct StepRouteTarget {
     title: Option<String>,
     summary: Option<String>,
-    behavior: Option<&'static str>,
+    behavior: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -195,6 +195,7 @@ pub struct AIAgent {
     msg_center_event_reader: Mutex<Option<Arc<EventReader>>>,
     session_queue_bindings: Arc<RwLock<HashMap<String, SessionQueueBinding>>>,
     default_behavior: String,
+    default_worker_behavior: String,
     wakeup_seq: AtomicU64,
 }
 
@@ -254,7 +255,9 @@ impl AIAgent {
 
         let default_behavior = resolve_default_behavior_name(&behaviors_dir)
             .await
-            .unwrap_or_else(|| "resolve_router".to_string());
+            .unwrap_or_else(|| AGENT_BEHAVIOR_ROUTER_RESOLVE.to_string());
+        let default_worker_behavior =
+            resolve_default_worker_behavior_name(&behaviors_dir, default_behavior.as_str()).await;
 
         let session_store = Arc::new(
             AgentSessionMgr::new(did.clone(), session_root, default_behavior.clone())
@@ -309,10 +312,14 @@ impl AIAgent {
             msg_center_event_reader: Mutex::new(None),
             session_queue_bindings: Arc::new(RwLock::new(HashMap::new())),
             default_behavior,
+            default_worker_behavior,
             wakeup_seq: AtomicU64::new(0),
         };
 
         let _ = agent.load_behavior_config(&agent.default_behavior).await?;
+        let _ = agent
+            .load_behavior_config(&agent.default_worker_behavior)
+            .await?;
         Ok(agent)
     }
 
@@ -710,7 +717,8 @@ impl AIAgent {
             };
 
             let remaining_steps = self.cfg.max_steps_per_wakeup.saturating_sub(step_count);
-            if remaining_steps == 0 {
+            if remaining_steps == 0 {   
+                //对么?
                 self.set_running_session_to_wait(&session).await?;
                 break;
             }
@@ -815,12 +823,15 @@ impl AIAgent {
                 .await?;
             if input.is_none() {
                 result_report.keep_running = false;
+                //DO NOTHING, no side effects
                 break;
             }
             let input = input.unwrap();
+            
             //run step
             let (llm_result, tracking, action_results) =
                 self.run_behavior_step(&trace, behavior_cfg, &input).await?;
+            
             //execute side effects
             self.dispatch_step_msg_records(session.clone(), &llm_result)
                 .await?;
@@ -858,7 +869,7 @@ impl AIAgent {
             )
             .await;
 
-            //update input used
+            //update input is all used
             self.commit_session_queue_msg_ack(session_id.as_str(), msg_cursor)
                 .await?;
             {
@@ -869,6 +880,7 @@ impl AIAgent {
             result_report.executed_steps = current_step_count;
             result_report.last_result = Some(llm_result.clone());
 
+            //process next_behavior
             let transition = {
                 let mut guard = session.lock().await;
                 if llm_result.load_skills.len() > 0 {
@@ -883,6 +895,7 @@ impl AIAgent {
                     &mut guard,
                     self.default_behavior.as_str(),
                     behavior_cfg.step_limit,
+                    behavior_cfg.faild_back.as_deref(),
                     llm_result.next_behavior.as_deref(),
                 )
             };
@@ -927,7 +940,7 @@ impl AIAgent {
                     StepRouteTarget {
                         title: normalize_session_id(Some(new_session_title.as_str())),
                         summary: normalize_session_id(Some(new_session_summary.as_str())),
-                        behavior: Some("plan"),
+                        behavior: Some(self.default_worker_behavior.clone()),
                     },
                 );
             } else {
@@ -975,7 +988,11 @@ impl AIAgent {
         for (target_session_id, target) in route_targets {
             let target_session = self
                 .session_mgr
-                .ensure_session(target_session_id.as_str(), target.title, target.behavior)
+                .ensure_session(
+                    target_session_id.as_str(),
+                    target.title,
+                    target.behavior.as_deref(),
+                )
                 .await?;
             if let Some(summary) = target.summary {
                 let mut guard = target_session.lock().await;
@@ -1123,7 +1140,8 @@ impl AIAgent {
             .await
             .map_err(|err| anyhow!("llm behavior step failed: {err}"))?;
 
-        //todo: run actions in parallel if possible based on action.execution_mode
+        //如果这里执行action时，触发了请求用户授权，如何从这里重启恢复? 不恢复，此时没有side event,相当于把这个step重新做一次 
+        //所有action都通过授权才会执行
         let action_results = self.execute_actions(trace, &llm_result.actions).await;
 
         Ok((llm_result, tracking, action_results))
@@ -2162,6 +2180,7 @@ fn apply_session_behavior_transition(
     session: &mut crate::agent_session::AgentSession,
     default_behavior: &str,
     step_limit: u32,
+    faild_back_behavior: Option<&str>,
     next_behavior: Option<&str>,
 ) -> StepTransition {
     let mut behavior_switched = false;
@@ -2183,13 +2202,18 @@ fn apply_session_behavior_transition(
                 session.update_state(session.state);
             }
             keep_running = false;
-        } else if next_behavior.eq_ignore_ascii_case("END") {
-            session.update_state(SessionState::Wait);
+        } else if next_behavior.starts_with("WAIT_FOR_MSG") {
+            session.update_state(SessionState::WaitForMsg);
             keep_running = false;
-        } else {
+        } else if next_behavior.eq_ignore_ascii_case("END") {
+            session.update_state(SessionState::Sleep);
+            keep_running = false;
+        } else  {
             behavior_switched = session.current_behavior != next_behavior;
             session.current_behavior = next_behavior.to_string();
             session.step_index = 0;
+            //这个实现需要仔细考虑
+            session.last_step_summary = None;
             session.update_state(SessionState::Running);
             keep_running = true;
         }
@@ -2199,7 +2223,12 @@ fn apply_session_behavior_transition(
         } else {
             session.step_index = session.step_index.saturating_add(1);
             if step_limit > 0 && session.step_index > step_limit {
-                session.current_behavior = default_behavior.to_string();
+                let fallback_behavior = faild_back_behavior
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or(default_behavior);
+                behavior_switched = session.current_behavior != fallback_behavior;
+                session.current_behavior = fallback_behavior.to_string();
                 session.step_index = 0;
                 session.update_state(SessionState::Wait);
                 keep_running = false;
@@ -2273,7 +2302,7 @@ async fn resolve_workspace_root(agent_root: &Path, env_name: &str) -> Result<Pat
 }
 
 async fn resolve_default_behavior_name(behaviors_dir: &Path) -> Option<String> {
-    for candidate in ["resolve_router"] {
+    for candidate in [AGENT_BEHAVIOR_ROUTER_RESOLVE] {
         if behavior_exists(behaviors_dir, candidate).await {
             return Some(candidate.to_string());
         }
@@ -2296,6 +2325,19 @@ async fn resolve_default_behavior_name(behaviors_dir: &Path) -> Option<String> {
         }
     }
     None
+}
+
+async fn resolve_default_worker_behavior_name(
+    behaviors_dir: &Path,
+    default_behavior: &str,
+) -> String {
+    for candidate in ["plan", "do", AGENT_BEHAVIOR_ROUTER_RESOLVE] {
+        if behavior_exists(behaviors_dir, candidate).await {
+            return candidate.to_string();
+        }
+    }
+
+    default_behavior.to_string()
 }
 
 async fn behavior_exists(behaviors_dir: &Path, behavior_name: &str) -> bool {

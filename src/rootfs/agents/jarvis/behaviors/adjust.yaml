@@ -1,0 +1,91 @@
+process_rule: |
+
+  目标:分析TODO失败原因并给出可执行调整方案,在可重试时切回 DO,不可行时结束
+
+  1. **定位失败对象**
+  * 优先分析最近失败或检查失败的todo(FAILED/CHECK_FAILED)
+  * 若存在 `params.todo`,优先针对该todo输出结论与调整方案
+  * 结合 `last_step_summary`、worklog和todo记录提取失败证据
+
+  2. **失败归因框架**
+  * 路径问题:实现路径是否偏离目标或验收标准
+  * 信息问题:是否缺少关键输入/约束/上下文
+  * 能力问题:当前skills/tools是否不足
+  * 复杂度问题:todo颗粒度是否过大、依赖是否不合理
+
+  3. **调整策略**
+  * 若可重试:给出最小变更的修正路径,并把目标todo回退到可执行状态(通常 IN_PROGRESS)
+  * 若需要外部信息/授权:明确需要什么,并通过 `reply` 向用户提出
+  * 若判断不可行或成本过高:给出终止理由和风险说明
+
+  4. **行为切换**
+  * 形成可执行修正方案时,`next_behavior` 设为 `do`
+  * 无法形成可行路径或应终止时,`next_behavior` 设为 `END`
+  * 仅在必须等待用户补充/授权时,可使用 `WAIT_FOR_MSG`
+
+  5. **阶段约束**
+  * ADJUST阶段以分析为主,默认readonly
+  * 不在本阶段执行修复性变更;修复动作应交回DO阶段
+
+policy: |
+  * 必须先给失败证据,再给归因结论
+  * 必须把“可重试”和“不可重试”的判定条件写清楚
+  * 必须优先提出低风险、最小改动的调整方案
+  * 必须避免在ADJUST阶段做实现性修复
+
+
+output_protocol:
+  mode: behavior_llm_result
+
+toolbox:
+  mode: inherit
+  tools:
+    mode: allow_list
+    names:
+      - read
+      - exec
+      - todo_manage
+      - worklog_manage
+      - load_memory
+      - get_session
+      - list_session
+  default_load_actions:
+    - read
+    - todo_manage
+    - worklog_manage
+
+memory:
+  total_limt: 22000
+  workspace_summary: { limit: 3000, max_percent: 0.2 }
+  agent_memory: { limit: 3500, max_percent: 0.25 }
+  history_messages: { limit: 7000, max_percent: 0.35 }
+  workspace_worklog: { limit: 9000, max_percent: 0.45 }
+  session_summaries: { limit: 3000, max_percent: 0.2 }
+  workspace_todo: { limit: 10000, max_percent: 0.5 }
+
+input: |
+  {{last_step_summary}}
+  {{new_msg}}
+  {{workspace.todolist.__OPENDAN_ENV(params.todo)__}}
+  {{workspace.todolist.next_ready_todo}}
+  {{current_todo}}
+
+step_summary: |
+  {{llm_result.thinking}}
+  {{llm_result.todo}}
+  {{llm_result.actions}}
+  {{llm_result.action_results}}
+
+faild_back: plan
+step_limit: 12
+
+limits:
+  max_prompt_tokens: 18000
+  max_completion_tokens: 3200
+  max_tool_rounds: 1
+  max_tool_calls_per_round: 6
+  deadline_ms: 90000
+
+llm_model:
+  name : llm.chat # 让router机制决定llm.code目前具体是哪个
+  thinking_level : high

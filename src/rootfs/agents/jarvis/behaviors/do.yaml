@@ -1,0 +1,96 @@
+process_rule: |
+
+  目标:推进当前TODO执行,将任务状态稳定推进到 Complete 或 Failed,并在完成后切换到 CHECK
+
+  1. **识别执行目标**
+  * 优先锁定 `params.todo` 指定的todo;若未指定则使用当前可执行todo
+  * 先明确本步要完成的最小动作,不要在一轮里并行做太多变化
+
+  2. **多Step推进**
+  * 这是一个可多step循环的行为:每一步都必须基于上一步 action/tool 结果决策下一步
+  * 优先执行“最小可验证变更”,每次变更后都要记录结果并更新todo状态
+  * 若依赖未满足(例如等待SubAgent/外部消息/用户补充),不要硬做,进入等待
+
+  3. **执行与验证**
+  * 允许使用工具与actions推进任务
+  * 当前todo接近完成时,必须做自检(结果、约束、边界)
+  * 自检失败时允许一次自修复;再次失败则将todo标记为Failed
+
+  4. **行为切换**
+  * 当前todo达到Complete或Failed后,`next_behavior` 设为 `check`
+  * 需要用户补充信息或授权确认时,`next_behavior` 设为 `WAIT_FOR_MSG`
+  * 若仍可继续推进当前todo,则不设置 `next_behavior` 并继续下一step
+
+  5. **输出要求**
+  * `thinking` 说明本步判断依据
+  * `actions` 只包含本步必要动作
+  * `todo` 必须反映执行后的真实状态(包含进度、阻塞、完成/失败)
+
+policy: |
+  * 必须保持执行目标稳定,避免在step之间频繁切换todo
+  * 必须先读后改,禁止无依据写入
+  * 必须在失败时明确原因与证据,不要直接跳过失败
+  * 必须控制单步风险,高风险动作需要先给出理由并最小化影响面
+
+
+output_protocol:
+  mode: behavior_llm_result
+
+toolbox:
+  mode: inherit
+  tools:
+    mode: allow_list
+    names:
+      - exec
+      - read
+      - write
+      - edit
+      - todo_manage
+      - worklog_manage
+      - load_memory
+      - get_session
+      - create_sub_agent
+      - list_external_workspaces
+      - bind_external_workspace
+  default_load_actions:
+    - exec
+    - read
+    - write
+    - edit
+    - todo_manage
+    - worklog_manage
+
+memory:
+  total_limt: 22000
+  workspace_summary: { limit: 2500, max_percent: 0.15 }
+  agent_memory: { limit: 3000, max_percent: 0.2 }
+  history_messages: { limit: 6500, max_percent: 0.35 }
+  workspace_worklog: { limit: 7000, max_percent: 0.4 }
+  session_summaries: { limit: 3000, max_percent: 0.2 }
+  workspace_todo: { limit: 9000, max_percent: 0.5 }
+
+input: |
+  {{last_step_summary}}
+  {{new_msg}}
+  {{workspace.todolist.__OPENDAN_ENV(params.todo)__}}
+
+
+step_summary: |
+  {{llm_result.thinking}}
+  {{llm_result.todo}}
+  {{llm_result.actions}}
+  {{llm_result.action_results}}
+
+faild_back: adjust
+step_limit: 24
+
+limits:
+  max_prompt_tokens: 18000
+  max_completion_tokens: 3200
+  max_tool_rounds: 2
+  max_tool_calls_per_round: 8
+  deadline_ms: 120000
+
+llm_model:
+  name : llm.code # 让router机制决定llm.code目前具体是哪个
+  thinking_level : high

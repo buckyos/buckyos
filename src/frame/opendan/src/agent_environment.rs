@@ -708,22 +708,7 @@ fn parse_pull_limit_from_key(key: &str, prefix: &str, default_pull: usize) -> us
         .unwrap_or(default_pull)
 }
 
-fn truncate_text_lines(text: Option<String>, max_pull: usize) -> Option<String> {
-    if max_pull == 0 {
-        return None;
-    }
-    let text = clean_optional_text(text.as_deref())?;
-    let lines = text
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>();
-    if lines.is_empty() {
-        return None;
-    }
-    let start = lines.len().saturating_sub(max_pull);
-    clean_optional_text(Some(lines[start..].join("\n").as_str()))
-}
+
 
 async fn render_recent_sessions_from_disk(
     session_cwd: &Path,

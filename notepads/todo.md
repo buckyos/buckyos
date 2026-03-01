@@ -7,33 +7,100 @@
 - 查询到正确的memory
 - work_session在PLAN阶段 创建/选择 local_workspace。 这个需要完成PLAN提示词
 - 管理TODO成功（不管有没有local_workspace),TODO的实现是否可以被文件系统取代？
-
+- 能正确加载skill （PLAN阶段能给更多信息）
+- 能正确构造Action并执行
+- 能正确完成一个TODO
 
 ## BUGS
 
-- session_list支持 OK
+- session_list支持 OK 检查Render，需要看到状态
 - 修复创建session逻辑 OK
-- 确认todo是否可以无workspace构建
-- 时间困难：MsgRecord的时间没有编码进去么？
-- set_memory没有效果
+- 和MsgChannel对应的Session通常称作UI Session，其session-id是固定构造的。其它的Session是Working Session,session-id时系统分配的，通过session-id就可以区分。 OK
+
 - todo没有效果？
-- 和MsgChannel对应的Session通常称作UI Session，其session-id是固定构造的。其它的Session是Working Session,session-id时系统分配的，通过session-id就可以区分。
+  - 确认todo是否可以无workspace构建 不能
+  - 需要实现两个Result提示词，标准的和RouteResult还是不同的
+
+- 时间困难：MsgRecord的时间没有编码进去么？
+
+- set_memory没有效果
 
 
 
 
-## Session的行为约束
+
+## Review Agent Loop
+
+
+
+### ui session,default_behavior = resolve_route
+
+- session.current_behavior = DefaultBehavior ()
+=> new msg
+- resolve_route(0) : gen_input()->new_msg->llm_result.next_behavior=END, switch state to Sleep
+  - session.current_behavior = DefaultBehavior (),step=0
+=> new msg
+- resolve_route(0) : gen_input()->new_msg->llm_result.next_behavior=None,
+  - session.current_behavior=resolve_route,session.step=1
+- resolve_route(1) : gen_input()->last_step_summary->llm_result.next_behavior=WAIT_FOR_MSG,switch state to WaitForMsg
+  - session.current_behavior=resolve_route,session.step=2
+=> new msg
+- resovle_route(2) : gen_input()->last_step_summary,new_msg->llm_result.next_behavior=END,switch state to Sleep
+  - session.current_behavior = DefaultBehavior (),step=0
+
+### PDCA Work Session default_behavior = plan
+
+P-D-C-D-C-A-D-C-D-C-END
+P后面总是D
+D后面总是C
+C后面可以是D也可以是A，也是是END（最复杂）
+A后面总是D
+
+get_next_ready_do 似乎没啥用了（这个是给下循环准备的
+P-D-D-C-END (全部是序列化任务，挨个做完)
+
+PDCA实例：
+
+- session.current_behavior = DefaultBehavior ()
+=> timeout
+- plan(0) : gen_input->new_msgs->llm_result.next_behavior=None,
+  - session.current_behavior=plan,session.step=1
+- plan(1) : gen_ipput->last_step_summary->llm_result.next_behavior=Do,
+  - workspace.todolis_init()
+  - session.current_behavior=do:t1,session.step=0
+- do:T1(0) : gen_input->do_item->llm_result.next_behavior = None,
+  - session.current_behavior=do:t1,session.step=1
+- do:T1(1) : gen_input->last_step_summary,new_msg->llm_result.next_behvior = WAIT_FOR_MSG (需要用户补充信息)
+  - session.current_behavior=do:t1,sesioon.step=2
+=> new msg （这是ui session route过来的）
+- do:T1(2) : gen_input->last_step_summary,new_msg->llm_result.next_behvior = Check,
+  - session.current_behavior=check,sesioon.step=0
+- check:(0): gen_input->todolist->llm_result.next_behavior = do:T2
+  - session.current_behavior=do:T2,session.step=0
+- do:T2(0) : gen_input->do_item->llm_result.next_behvior = check,
+  - session.current_behavior=check,sesioon.step=0
+
+
 
 ### 关于Session.WAIT 
 
-在一个Behavior的开始(step0)无法获得输入，就会自动WAIT
-Action/Tools 需要执行的时候，会出发WAIT
-通过在 WAIT_FOR_MSG:$details,WAIT,WAIT_FOR_EVENT:$details 来实现确定性等待，防止精群
-使用NextBehavior=WAIT系列，改变状态，不会改变session的current_behavior,也不会改变其step
+当前behavior没有有效输入，需要等待有效输入。 
+nex-behavior 的 LLM 结果
+  None(不切换继续Step)
+  END（SLEEP等待下次唤醒，唤醒后会变成Session Default Behavior）
+  WAIT_FOR_MSG: LLM认为需要得到用户输入的二次确认才能继续。
+  使用NextBehavior=WAIT系列，改变状态，不会改变session的current_behavior,也不会改变其step
+   
+如果gen-input失败，则会进入WAIT
+如果call tool或call action触发授权请求，进入WAIT_FOR_EVENT 
 
+* behavior因为step超过限制停止时，session该怎么办？
+  本质上是behavior失败怎么办：构造一个失败的last_step_summary，根据behavior配置fall_behavior,强制切换
+* input里用了last_step_summary,可以无限触发怎办？
+  inpu里有last_step_summary的意义就是推进到结束或用户回复确认
 
 ### SLEEP
-
+从SLEEP变成Ready，会重置到该session的default behavior (丢弃旧循环从头开始)
 在StepSummary里引入Agent的 HP / TokenUsage信息
 鼓励Agent做出简单的输出，并进行适当的休息
 这个特性对SubAgent很重要
