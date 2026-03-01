@@ -10,7 +10,8 @@ use async_trait::async_trait;
 use buckyos_api::{
     msg_queue::{Message, MsgQueueClient, QueueConfig, SubPosition},
     value_to_object_map, AiToolCall, AiccClient, BoxKind, Event, EventReader, KEventClient,
-    KEventError, MsgCenterClient, MsgRecordWithObject, MsgState, SendContext, TaskManagerClient,
+    KEventError, MsgCenterClient, MsgRecord, MsgRecordWithObject, MsgState, PostSendResult,
+    SendContext, TaskManagerClient,
 };
 use chrono::Utc;
 use log::{debug, info, warn};
@@ -118,6 +119,12 @@ struct StepRouteTarget {
     title: Option<String>,
     summary: Option<String>,
     behavior: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ReplyHistoryRecord {
+    outbound: MsgObject,
+    result: PostSendResult,
 }
 
 #[derive(Clone, Debug)]
@@ -969,7 +976,8 @@ impl AIAgent {
             self.dispatch_step_msg_records(session.clone(), &llm_result)
                 .await?;
 
-            self.handle_replies(session.clone(), &trace, llm_result.reply.as_slice())
+            let reply_history = self
+                .handle_replies(session.clone(), &trace, llm_result.reply.as_slice())
                 .await;
 
             self.apply_memory_updates(&trace, &llm_result.set_memory)
@@ -1000,6 +1008,13 @@ impl AIAgent {
                 session_id.as_str(),
                 workspace_id.as_deref(),
                 &llm_result.todo,
+            )
+            .await;
+
+            self.persist_step_history_records(
+                session.clone(),
+                session_id.as_str(),
+                reply_history.as_slice(),
             )
             .await;
 
@@ -1094,11 +1109,8 @@ impl AIAgent {
         }
 
         let (source_session_id, step_inputs_raw) = {
-            let mut guard = session.lock().await;
-            (
-                guard.session_id.clone(),
-                std::mem::take(&mut guard.just_readed_input_msg),
-            )
+            let guard = session.lock().await;
+            (guard.session_id.clone(), guard.just_readed_input_msg.clone())
         };
         if step_inputs_raw.is_empty() {
             return Ok(());
@@ -2127,10 +2139,11 @@ impl AIAgent {
         source_tunnel_did: Option<DID>,
         default_audience: Option<&str>,
         replies: &[ExecutorReply],
-    ) {
+    ) -> Vec<ReplyHistoryRecord> {
         if replies.is_empty() {
-            return;
+            return vec![];
         }
+        let mut history = Vec::<ReplyHistoryRecord>::new();
         let default_audience = normalize_session_id(default_audience);
         let session_id = normalize_session_id(trace.session_id.as_deref());
         for reply in replies {
@@ -2147,15 +2160,6 @@ impl AIAgent {
             };
             let reply_format = normalize_session_id(Some(reply.format.as_str()))
                 .unwrap_or_else(|| "text".to_string());
-            self.send_reply_via_msg_center(
-                source_tunnel_did.clone(),
-                audience.as_str(),
-                reply_format.as_str(),
-                reply.content.as_str(),
-                session_id.as_deref(),
-                Some(&trace),
-            )
-            .await;
             info!(
                 "agent.reply: did={} behavior={} audience={} format={} content={}",
                 self.did,
@@ -2164,7 +2168,21 @@ impl AIAgent {
                 reply_format,
                 compact_text_for_log(reply.content.as_str(), 512)
             );
+            if let Some(record) = self
+                .send_reply_via_msg_center(
+                    source_tunnel_did.clone(),
+                    audience.as_str(),
+                    reply_format.as_str(),
+                    reply.content.as_str(),
+                    session_id.as_deref(),
+                    Some(&trace),
+                )
+                .await
+            {
+                history.push(record);
+            }
         }
+        history
     }
 
     async fn send_reply_via_msg_center(
@@ -2175,17 +2193,17 @@ impl AIAgent {
         content: &str,
         session_id: Option<&str>,
         _trace: Option<&TraceCtx>,
-    ) {
+    ) -> Option<ReplyHistoryRecord> {
         let content = content.trim();
         if content.is_empty() {
-            return;
+            return None;
         }
 
         let Some(msg_center) = self.deps.msg_center.as_ref() else {
-            return;
+            return None;
         };
         let Some(sender_did) = self.parse_owner_did_for_msg_center() else {
-            return;
+            return None;
         };
         //TODO:get target_did by owner's contact list
         let target_did: DID = match DID::from_str(audience) {
@@ -2195,7 +2213,7 @@ impl AIAgent {
                     "agent.reply_invalid_audience: did={} audience={}",
                     self.did, audience
                 );
-                return;
+                return None;
             }
         };
 
@@ -2204,7 +2222,7 @@ impl AIAgent {
                 "agent.reply_skip_self_target: did={} target={:?} audience={}",
                 self.did, target_did, audience
             );
-            return;
+            return None;
         }
 
         let mut outbound = MsgObject {
@@ -2219,7 +2237,8 @@ impl AIAgent {
             },
             ..Default::default()
         };
-        if let Some(session_id) = normalize_session_id(session_id) {
+        let normalized_session_id = normalize_session_id(session_id);
+        if let Some(session_id) = normalized_session_id.as_ref() {
             if outbound
                 .thread
                 .topic
@@ -2236,8 +2255,9 @@ impl AIAgent {
                 .insert("session_id".to_string(), Json::String(session_id.clone()));
             outbound
                 .meta
-                .insert("owner_session_id".to_string(), Json::String(session_id));
+                .insert("owner_session_id".to_string(), Json::String(session_id.clone()));
         }
+        let outbound_for_history = outbound.clone();
 
         let send_ctx = SendContext {
             contact_mgr_owner: Some(sender_did),
@@ -2254,13 +2274,19 @@ impl AIAgent {
                         target_did,
                         result.reason.unwrap_or_else(|| "unknown".to_string())
                     );
+                    return None;
                 }
+                Some(ReplyHistoryRecord {
+                    outbound: outbound_for_history,
+                    result,
+                })
             }
             Err(err) => {
                 warn!(
                     "agent.reply_post_send_failed: did={} target={:?} err={}",
                     self.did, target_did, err
                 );
+                None
             }
         }
     }
@@ -2270,7 +2296,7 @@ impl AIAgent {
         session: Arc<Mutex<AgentSession>>,
         trace: &TraceCtx,
         replies: &[ExecutorReply],
-    ) {
+    ) -> Vec<ReplyHistoryRecord> {
         let (default_audience, source_tunnel_did) = self.resolve_reply_defaults(session).await;
         self.send_msg_replies(
             trace.clone(),
@@ -2278,7 +2304,7 @@ impl AIAgent {
             default_audience.as_deref(),
             replies,
         )
-        .await;
+        .await
     }
 
     async fn resolve_reply_defaults(
@@ -2290,6 +2316,175 @@ impl AIAgent {
             normalize_session_id(guard.default_remote.as_deref())
         };
         (default_audience, None)
+    }
+
+    async fn persist_step_history_records(
+        &self,
+        session: Arc<Mutex<AgentSession>>,
+        session_id: &str,
+        reply_history: &[ReplyHistoryRecord],
+    ) {
+        let Some(session_id) = normalize_session_id(Some(session_id)) else {
+            return;
+        };
+        let step_inputs_raw = {
+            let guard = session.lock().await;
+            guard.just_readed_input_msg.clone()
+        };
+
+        for payload in &step_inputs_raw {
+            let msg_record = serde_json::from_slice::<SessionInputItem>(payload.as_slice())
+                .ok()
+                .and_then(|item| item.msg)
+                .or_else(|| serde_json::from_slice::<MsgRecord>(payload.as_slice()).ok());
+            let Some(msg_record) = msg_record else {
+                warn!(
+                    "agent.persist_step_history_skip_invalid_input: did={} session={} payload_bytes={}",
+                    self.did,
+                    session_id,
+                    payload.len()
+                );
+                continue;
+            };
+            let history_record = MsgRecordWithObject {
+                record: msg_record,
+                msg: None,
+            };
+            self.persist_session_msg_history_record(session_id.as_str(), &history_record)
+                .await;
+        }
+
+        for reply in reply_history {
+            self.persist_post_send_history(
+                session_id.as_str(),
+                &reply.outbound,
+                &reply.result,
+            )
+            .await;
+        }
+    }
+
+    async fn persist_session_msg_history_record(
+        &self,
+        session_id: &str,
+        record: &MsgRecordWithObject,
+    ) {
+        let Some(session_id) = normalize_session_id(Some(session_id)) else {
+            return;
+        };
+        let msg_obj = if let Some(msg) = record.msg.clone() {
+            msg
+        } else {
+            match record.get_msg().await {
+                Ok(msg) => msg,
+                Err(err) => {
+                    warn!(
+                        "agent.msg_history_load_msg_failed: did={} session={} record_id={} err={}",
+                        self.did, session_id, record.record.record_id, err
+                    );
+                    return;
+                }
+            }
+        };
+
+        let session_dir = self.session_mgr.sessions_root().join(session_id.as_str());
+        let session_dir_str = session_dir.to_string_lossy().to_string();
+
+        if let Err(err) = AgentSession::append_msg_record(
+            session_dir_str.as_str(),
+            record.record.clone(),
+            msg_obj,
+        )
+        .await
+        {
+            warn!(
+                "agent.msg_history_append_failed: did={} session={} session_dir={} record_id={} err={}",
+                self.did,
+                session_id,
+                session_dir.display(),
+                record.record.record_id,
+                err
+            );
+        }
+    }
+
+    async fn persist_post_send_history(
+        &self,
+        session_id: &str,
+        outbound: &MsgObject,
+        result: &PostSendResult,
+    ) {
+        let Some(msg_center) = self.deps.msg_center.as_ref() else {
+            return;
+        };
+        if result.deliveries.is_empty() {
+            return;
+        }
+
+        for delivery in &result.deliveries {
+            let mut record_with_obj = None::<MsgRecordWithObject>;
+            for attempt in 0..3 {
+                match msg_center
+                    .get_record(delivery.record_id.clone(), Some(true))
+                    .await
+                {
+                    Ok(Some(record)) => {
+                        record_with_obj = Some(record);
+                        break;
+                    }
+                    Ok(None) => {
+                        if attempt < 2 {
+                            sleep(Duration::from_millis(40)).await;
+                        } else {
+                            warn!(
+                                "agent.reply_history_record_missing: did={} session={} record_id={} msg_id={}",
+                                self.did, session_id, delivery.record_id, result.msg_id
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        warn!(
+                            "agent.reply_history_record_fetch_failed: did={} session={} record_id={} msg_id={} err={}",
+                            self.did, session_id, delivery.record_id, result.msg_id, err
+                        );
+                        break;
+                    }
+                }
+            }
+
+            if let Some(record) = record_with_obj {
+                self.persist_session_msg_history_record(session_id, &record)
+                    .await;
+                continue;
+            }
+
+            let synthetic = MsgRecordWithObject {
+                record: buckyos_api::MsgRecord {
+                    record_id: delivery.record_id.clone(),
+                    box_kind: BoxKind::Outbox,
+                    msg_id: result.msg_id.clone(),
+                    msg_kind: outbound.kind.clone(),
+                    state: MsgState::Sent,
+                    from: outbound.from.clone(),
+                    to: delivery
+                        .target_did
+                        .as_ref()
+                        .cloned()
+                        .or_else(|| outbound.to.first().cloned())
+                        .unwrap_or_else(|| outbound.from.clone()),
+                    created_at_ms: outbound.created_at_ms,
+                    updated_at_ms: now_ms(),
+                    route: None,
+                    delivery: None,
+                    thread_key: normalize_session_id(Some(session_id)),
+                    sort_key: now_ms(),
+                    tags: vec![],
+                },
+                msg: Some(outbound.clone()),
+            };
+            self.persist_session_msg_history_record(session_id, &synthetic)
+                .await;
+        }
     }
 
     async fn load_behavior_config(&self, behavior_name: &str) -> Result<BehaviorConfig> {

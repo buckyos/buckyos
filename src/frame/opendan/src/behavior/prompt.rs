@@ -936,7 +936,8 @@ async fn resolve_session_msg_record_path(
     workspace_info: Option<&Json>,
     session_cwd: &Path,
 ) -> Option<PathBuf> {
-    let mut candidates = Vec::<PathBuf>::new();
+    let mut canonical_candidates = Vec::<PathBuf>::new();
+    let mut legacy_candidates = Vec::<PathBuf>::new();
     let session_id = session_id.trim();
     if session_id.is_empty() {
         return None;
@@ -950,10 +951,10 @@ async fn resolve_session_msg_record_path(
             .map(|ext| ext.eq_ignore_ascii_case("jsonl"))
             .unwrap_or(false)
         {
-            push_unique_pathbuf(&mut candidates, session_path);
+            push_unique_pathbuf(&mut canonical_candidates, session_path);
         } else {
             for file_name in SESSION_MSG_RECORD_FILES {
-                push_unique_pathbuf(&mut candidates, session_path.join(file_name));
+                push_unique_pathbuf(&mut canonical_candidates, session_path.join(file_name));
             }
         }
     }
@@ -965,21 +966,30 @@ async fn resolve_session_msg_record_path(
     for root in roots {
         for file_name in SESSION_MSG_RECORD_FILES {
             push_unique_pathbuf(
-                &mut candidates,
+                &mut canonical_candidates,
                 root.join("session").join(session_id).join(file_name),
             );
-            push_unique_pathbuf(&mut candidates, root.join(session_id).join(file_name));
+            push_unique_pathbuf(
+                &mut legacy_candidates,
+                root.join(session_id).join(file_name),
+            );
         }
     }
     for file_name in SESSION_MSG_RECORD_FILES {
         push_unique_pathbuf(
-            &mut candidates,
+            &mut canonical_candidates,
             PathBuf::from("session").join(session_id).join(file_name),
         );
-        push_unique_pathbuf(&mut candidates, PathBuf::from(session_id).join(file_name));
+        push_unique_pathbuf(
+            &mut legacy_candidates,
+            PathBuf::from(session_id).join(file_name),
+        );
     }
 
-    for candidate in candidates {
+    for candidate in canonical_candidates
+        .into_iter()
+        .chain(legacy_candidates.into_iter())
+    {
         if fs::metadata(&candidate)
             .await
             .map(|meta| meta.is_file())
