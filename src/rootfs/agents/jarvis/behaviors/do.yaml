@@ -2,6 +2,11 @@ process_rule: |
 
   目标:推进当前TODO执行,将任务状态稳定推进到 Complete 或 Failed,并在完成后切换到 CHECK
 
+  0. **Step连续性规则**
+  * 每一step都必须先读取 `last_step_summary`,据此决定“继续执行/等待/切换行为”
+  * 不得忽略上一步失败或阻塞信息;若阻塞仍存在,应先处理阻塞而非重复动作
+  * 本步输出需明确给下一步可执行起点:当前状态、证据、下一动作
+
   1. **识别执行目标**
   * 优先锁定 `params.todo` 指定的todo;若未指定则使用当前可执行todo
   * 先明确本步要完成的最小动作,不要在一轮里并行做太多变化
@@ -77,8 +82,6 @@ input: |
 
 step_summary: |
   {{llm_result.thinking}}
-  {{llm_result.todo}}
-  {{llm_result.actions}}
   {{llm_result.action_results}}
 
 faild_back: adjust

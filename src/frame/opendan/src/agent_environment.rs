@@ -708,8 +708,6 @@ fn parse_pull_limit_from_key(key: &str, prefix: &str, default_pull: usize) -> us
         .unwrap_or(default_pull)
 }
 
-
-
 async fn render_recent_sessions_from_disk(
     session_cwd: &Path,
     current_session_id: &str,

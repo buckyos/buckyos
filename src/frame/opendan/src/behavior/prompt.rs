@@ -214,16 +214,38 @@ async fn build_memory_prompt_text(
         return String::new();
     }
 
+    let env_context = build_env_context(input);
+    let memory_head = render_memory_boundary_text(
+        cfg.memory.first_prompt.as_deref(),
+        &env_context,
+        input.session.clone(),
+    )
+    .await;
+    let memory_tail = render_memory_boundary_text(
+        cfg.memory.last_prompt.as_deref(),
+        &env_context,
+        input.session.clone(),
+    )
+    .await;
+    let fixed_prompt = compose_memory_prompt(memory_head.as_str(), "", memory_tail.as_str());
+    let fixed_budget = if fixed_prompt.is_empty() {
+        0
+    } else {
+        tokenizer.count_tokens(fixed_prompt.as_str())
+    };
+    let dynamic_budget = total_budget.saturating_sub(fixed_budget);
+
     let workspace_summary_budget =
-        calc_memory_bucket_budget(total_budget, &cfg.memory.workspace_summary);
-    let agent_memory_budget = calc_memory_bucket_budget(total_budget, &cfg.memory.agent_memory);
+        calc_memory_bucket_budget(dynamic_budget, &cfg.memory.workspace_summary);
+    let agent_memory_budget = calc_memory_bucket_budget(dynamic_budget, &cfg.memory.agent_memory);
     let history_messages_budget =
-        calc_memory_bucket_budget(total_budget, &cfg.memory.history_messages);
+        calc_memory_bucket_budget(dynamic_budget, &cfg.memory.history_messages);
     let workspace_worklog_budget =
-        calc_memory_bucket_budget(total_budget, &cfg.memory.workspace_worklog);
+        calc_memory_bucket_budget(dynamic_budget, &cfg.memory.workspace_worklog);
     let session_summaries_budget =
-        calc_memory_bucket_budget(total_budget, &cfg.memory.session_summaries);
-    let workspace_todo_budget = calc_memory_bucket_budget(total_budget, &cfg.memory.workspace_todo);
+        calc_memory_bucket_budget(dynamic_budget, &cfg.memory.session_summaries);
+    let workspace_todo_budget =
+        calc_memory_bucket_budget(dynamic_budget, &cfg.memory.workspace_todo);
 
     let mut memory_sections = Vec::<String>::new();
 
@@ -304,16 +326,83 @@ async fn build_memory_prompt_text(
         memory_sections.push(session_summary_parts.join("\n"));
     }
 
-    if memory_sections.is_empty() {
+    let mut memory_body = if dynamic_budget == 0 {
+        String::new()
+    } else {
+        fit_text_with_token_limit(memory_sections.join("\n\n"), dynamic_budget, tokenizer)
+    };
+    let mut assembled = compose_memory_prompt(
+        memory_head.as_str(),
+        memory_body.as_str(),
+        memory_tail.as_str(),
+    );
+    if assembled.is_empty() {
         return String::new();
     }
 
-    let assembled = format!("<<memory>>\n{}\n<</memory>>", memory_sections.join("\n\n"));
-    if tokenizer.count_tokens(assembled.as_str()) <= total_budget {
-        assembled
-    } else {
-        truncate_to_token_budget(assembled.as_str(), total_budget)
+    // Header/footer templates are fixed text and should never be truncated.
+    // If token count still exceeds budget, only shrink dynamic memory body.
+    let mut guard = 0_u8;
+    while !memory_body.is_empty()
+        && tokenizer.count_tokens(assembled.as_str()) > total_budget
+        && guard < 6
+    {
+        let overflow = tokenizer
+            .count_tokens(assembled.as_str())
+            .saturating_sub(total_budget);
+        let body_tokens = tokenizer.count_tokens(memory_body.as_str());
+        if body_tokens <= overflow {
+            memory_body.clear();
+        } else {
+            memory_body = truncate_to_token_budget(
+                memory_body.as_str(),
+                body_tokens.saturating_sub(overflow),
+            );
+        }
+        assembled = compose_memory_prompt(
+            memory_head.as_str(),
+            memory_body.as_str(),
+            memory_tail.as_str(),
+        );
+        guard = guard.saturating_add(1);
     }
+    assembled
+}
+
+async fn render_memory_boundary_text(
+    template: Option<&str>,
+    env_context: &HashMap<String, Json>,
+    session: Option<Arc<Mutex<AgentSession>>>,
+) -> String {
+    let Some(template) = template.map(str::trim).filter(|text| !text.is_empty()) else {
+        return String::new();
+    };
+
+    let rendered = match render_section(template, env_context, session).await {
+        Ok(text) => text,
+        Err(err) => {
+            warn!("prompt.render_memory_boundary_text failed: {}", err);
+            template.to_string()
+        }
+    };
+    sanitize_text(rendered.trim())
+}
+
+fn compose_memory_prompt(memory_head: &str, memory_body: &str, memory_tail: &str) -> String {
+    let mut parts = Vec::<String>::new();
+    if !memory_head.trim().is_empty() {
+        parts.push(memory_head.trim().to_string());
+    }
+    if !memory_body.trim().is_empty() {
+        parts.push(memory_body.trim().to_string());
+    }
+    if !memory_tail.trim().is_empty() {
+        parts.push(memory_tail.trim().to_string());
+    }
+    if parts.is_empty() {
+        return String::new();
+    }
+    format!("<<memory>>\n{}\n<</memory>>", parts.join("\n\n"))
 }
 
 #[derive(Clone, Debug)]
@@ -1812,6 +1901,78 @@ loaded_tools: [exec_bash]
         assert!(system.contains("<<output_protocol>>"));
         assert!(system.contains("You are a helpful assistant."));
         assert!(system.contains("Process rules."));
+    }
+
+    #[tokio::test]
+    async fn build_memory_prompt_keeps_head_and_tail_when_budget_is_small() {
+        let temp = tempdir().expect("create tempdir");
+        let memory = AgentMemory::new(AgentMemoryConfig::new(temp.path()))
+            .await
+            .expect("create agent memory");
+        memory
+            .set_memory(
+                "/project/context",
+                json!({
+                    "type":"fact",
+                    "summary":"DYNAMIC_MEMORY_SHOULD_NOT_APPEAR",
+                    "importance": 8,
+                    "tags": ["project"]
+                }),
+                json!({
+                    "kind":"user",
+                    "name":"chat",
+                    "retrieved_at":"2026-02-22T10:00:00Z",
+                    "locator":{"conversation_id":"c1","message_id":"m1"}
+                }),
+            )
+            .await
+            .expect("set memory");
+
+        let input = BehaviorExecInput {
+            session_id: Some("session-1".to_string()),
+            trace: TraceCtx {
+                trace_id: "trace-1".to_string(),
+                agent_did: "did:example:agent".to_string(),
+                behavior: "on_wakeup".to_string(),
+                step_idx: 1,
+                wakeup_id: "wakeup-1".to_string(),
+                session_id: None,
+            },
+            input_prompt: "user input".to_string(),
+            last_step_prompt: String::new(),
+            role_md: "You are a helpful assistant.".to_string(),
+            self_md: "Self description.".to_string(),
+            behavior_prompt: "rules".to_string(),
+            limits: StepLimits::default(),
+            behavior_cfg: BehaviorConfig::default(),
+            session: None,
+        };
+
+        let mut cfg = BehaviorConfig::default();
+        cfg.memory.total_limit = 8;
+        cfg.memory.first_prompt = Some("HEAD_FIXED alpha beta gamma".to_string());
+        cfg.memory.last_prompt = Some("TAIL_FIXED one two three".to_string());
+        cfg.memory.agent_memory = BehaviorMemoryBucketConfig {
+            limit: 256,
+            max_percent: Some(1.0),
+            is_enable: true,
+        };
+
+        let tokenizer = MockTokenizer;
+        let prompt = build_memory_prompt_text(
+            &input,
+            &cfg,
+            vec!["project".to_string()],
+            cfg.memory.total_limit,
+            &tokenizer,
+            Some(memory),
+        )
+        .await;
+
+        assert!(prompt.contains("HEAD_FIXED alpha beta gamma"));
+        assert!(prompt.contains("TAIL_FIXED one two three"));
+        assert!(!prompt.contains("DYNAMIC_MEMORY_SHOULD_NOT_APPEAR"));
+        assert!(tokenizer.count_tokens(prompt.as_str()) > cfg.memory.total_limit);
     }
 
     #[tokio::test]

@@ -717,7 +717,7 @@ impl AIAgent {
             };
 
             let remaining_steps = self.cfg.max_steps_per_wakeup.saturating_sub(step_count);
-            if remaining_steps == 0 {   
+            if remaining_steps == 0 {
                 //对么?
                 self.set_running_session_to_wait(&session).await?;
                 break;
@@ -827,11 +827,11 @@ impl AIAgent {
                 break;
             }
             let input = input.unwrap();
-            
+
             //run step
             let (llm_result, tracking, action_results) =
                 self.run_behavior_step(&trace, behavior_cfg, &input).await?;
-            
+
             //execute side effects
             self.dispatch_step_msg_records(session.clone(), &llm_result)
                 .await?;
@@ -1027,7 +1027,7 @@ impl AIAgent {
     fn gen_new_work_session_id(&self) -> String {
         let new_uuid = Uuid::new_v4().simple().to_string();
         let now = Utc::now().format("%y%m%d").to_string();
-        format!("{}-{}",now, new_uuid )
+        format!("{}-{}", now, new_uuid)
     }
 
     fn get_params_from_behavior_name(behavior_name: &str) -> Option<Json> {
@@ -1140,7 +1140,7 @@ impl AIAgent {
             .await
             .map_err(|err| anyhow!("llm behavior step failed: {err}"))?;
 
-        //如果这里执行action时，触发了请求用户授权，如何从这里重启恢复? 不恢复，此时没有side event,相当于把这个step重新做一次 
+        //如果这里执行action时，触发了请求用户授权，如何从这里重启恢复? 不恢复，此时没有side event,相当于把这个step重新做一次
         //所有action都通过授权才会执行
         let action_results = self.execute_actions(trace, &llm_result.actions).await;
 
@@ -2208,7 +2208,7 @@ fn apply_session_behavior_transition(
         } else if next_behavior.eq_ignore_ascii_case("END") {
             session.update_state(SessionState::Sleep);
             keep_running = false;
-        } else  {
+        } else {
             behavior_switched = session.current_behavior != next_behavior;
             session.current_behavior = next_behavior.to_string();
             session.step_index = 0;

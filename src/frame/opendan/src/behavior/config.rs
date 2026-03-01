@@ -201,6 +201,9 @@ pub struct BehaviorMemoryConfig {
 
     pub session_summaries: BehaviorMemoryBucketConfig,
     pub workspace_todo: BehaviorMemoryBucketConfig,
+
+    pub first_prompt: Option<String>,
+    pub last_prompt: Option<String>,
 }
 
 impl Default for BehaviorMemoryConfig {
@@ -213,6 +216,8 @@ impl Default for BehaviorMemoryConfig {
             workspace_summary: BehaviorMemoryBucketConfig::default(),
             workspace_worklog: BehaviorMemoryBucketConfig::default(),
             workspace_todo: BehaviorMemoryBucketConfig::default(),
+            first_prompt: None,
+            last_prompt: None,
         }
     }
 }
@@ -225,6 +230,8 @@ impl BehaviorMemoryConfig {
         self.workspace_summary.normalize();
         self.workspace_worklog.normalize();
         self.workspace_todo.normalize();
+        self.first_prompt = Self::normalize_optional_text(self.first_prompt.take());
+        self.last_prompt = Self::normalize_optional_text(self.last_prompt.take());
     }
 
     pub fn is_empty(&self) -> bool {
@@ -235,10 +242,26 @@ impl BehaviorMemoryConfig {
             && self.workspace_summary.is_empty()
             && self.workspace_worklog.is_empty()
             && self.workspace_todo.is_empty()
+            && self
+                .first_prompt
+                .as_ref()
+                .map(|value| value.trim().is_empty())
+                .unwrap_or(true)
+            && self
+                .last_prompt
+                .as_ref()
+                .map(|value| value.trim().is_empty())
+                .unwrap_or(true)
     }
 
     pub fn to_json_value(&self) -> Json {
         serde_json::to_value(self).unwrap_or_else(|_| serde_json::json!({}))
+    }
+
+    fn normalize_optional_text(value: Option<String>) -> Option<String> {
+        value
+            .map(|item| item.trim().to_string())
+            .filter(|item| !item.is_empty())
     }
 }
 
@@ -814,6 +837,8 @@ toolbox:
 process_rule: memory_rule
 memory:
   total_limt: 1024
+  first_prompt: "  memory header text  "
+  last_prompt: "   "
   session_summaries:
     limit: 256
     max_percent: 1.5
@@ -824,6 +849,11 @@ memory:
         .expect("parse behavior yaml");
 
         assert_eq!(cfg.memory.total_limit, 1024);
+        assert_eq!(
+            cfg.memory.first_prompt.as_deref(),
+            Some("memory header text")
+        );
+        assert_eq!(cfg.memory.last_prompt, None);
         assert_eq!(cfg.memory.session_summaries.limit, 256);
         assert_eq!(cfg.memory.session_summaries.max_percent, None);
         assert_eq!(cfg.memory.history_messages.max_percent, Some(0.4));
