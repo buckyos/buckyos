@@ -137,6 +137,7 @@ pub struct AgentSession {
     pub just_readed_input_msg: Vec<Vec<u8>>,
 
     pub cwd: PathBuf,
+    pub session_root_dir: PathBuf,
     pub workspace_info: Option<Json>,
     pub local_workspace_id: Option<String>,
     pub worklog: Vec<Json>,
@@ -176,6 +177,7 @@ impl AgentSession {
             event_kmsgqueue_curosr: 0,
             just_readed_input_msg: vec![],
             cwd: PathBuf::new(),
+            session_root_dir: PathBuf::new(),
             workspace_info: None,
             local_workspace_id: None,
             worklog: vec![],
@@ -216,6 +218,7 @@ impl AgentSession {
         Self {
             session_id: record.session_id,
             cwd: PathBuf::new(),
+            session_root_dir: PathBuf::new(),
             owner_agent: record.owner_agent,
             title: if record.title.trim().is_empty() {
                 "Untitled Session".to_string()
@@ -559,6 +562,22 @@ impl AgentSessionMgr {
         &self.sessions_root
     }
 
+    fn workspace_root(&self) -> PathBuf {
+        self.sessions_root
+            .parent()
+            .map(|path| path.to_path_buf())
+            .unwrap_or_else(|| self.sessions_root.clone())
+    }
+
+    fn hydrate_session_runtime_context(&self, session: &mut AgentSession) {
+        if session.cwd.as_os_str().is_empty() {
+            session.cwd = self.workspace_root();
+        }
+        if session.session_root_dir.as_os_str().is_empty() {
+            session.session_root_dir = self.sessions_root.clone();
+        }
+    }
+
     pub fn is_ui_session(session_id: &str) -> bool {
         if session_id.starts_with("ui") {
             return true;
@@ -584,6 +603,9 @@ impl AgentSessionMgr {
     ) -> Result<Arc<Mutex<AgentSession>>, AgentToolError> {
         let session_id = sanitize_session_id(session_id)?;
         if let Some(existing) = self.get_session(session_id.as_str()).await {
+            let mut guard = existing.lock().await;
+            self.hydrate_session_runtime_context(&mut guard);
+            drop(guard);
             return Ok(existing);
         }
         info!(
@@ -594,6 +616,7 @@ impl AgentSessionMgr {
         let behavior = behavior.map(str::trim).filter(|value| !value.is_empty());
 
         let mut session = AgentSession::new(session_id.clone(), self.owner_agent.clone(), behavior);
+        self.hydrate_session_runtime_context(&mut session);
         if let Some(title) = normalize_optional_string(title) {
             session.title = title;
         }
@@ -601,7 +624,9 @@ impl AgentSessionMgr {
         let record = session.to_record(true);
         self.write_session_record(&record).await?;
 
-        let session = Arc::new(Mutex::new(AgentSession::from_record(record)));
+        let mut session_runtime = AgentSession::from_record(record);
+        self.hydrate_session_runtime_context(&mut session_runtime);
+        let session = Arc::new(Mutex::new(session_runtime));
         self.sessions
             .write()
             .await
@@ -707,9 +732,11 @@ impl AgentSessionMgr {
         })?;
 
         let Some(session) = self.get_session(session_id.as_str()).await else {
+            let mut runtime = AgentSession::from_record(record);
+            self.hydrate_session_runtime_context(&mut runtime);
             self.sessions.write().await.insert(
                 session_id.clone(),
-                Arc::new(Mutex::new(AgentSession::from_record(record))),
+                Arc::new(Mutex::new(runtime)),
             );
             return Ok(());
         };
@@ -859,7 +886,11 @@ impl AgentSessionMgr {
 
             self.sessions.write().await.insert(
                 session_id,
-                Arc::new(Mutex::new(AgentSession::from_record(record))),
+                {
+                    let mut runtime = AgentSession::from_record(record);
+                    self.hydrate_session_runtime_context(&mut runtime);
+                    Arc::new(Mutex::new(runtime))
+                },
             );
         }
 

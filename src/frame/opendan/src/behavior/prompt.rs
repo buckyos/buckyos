@@ -3,11 +3,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use buckyos_api::{
-    features, AiMessage, AiPayload, AiToolSpec, BoxKind, Capability, CompleteRequest, ModelSpec,
+    features, AiMessage, AiPayload, AiToolSpec, Capability, CompleteRequest, ModelSpec,
     MsgRecordWithObject, Requirements,
 };
-use chrono::Utc;
-use log::warn;
+use chrono::{DateTime, Utc};
+use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value as Json};
 use tokio::fs;
@@ -825,18 +825,16 @@ async fn load_history_messages_with_limit(
         return vec![];
     }
 
-    let (session_id, workspace_info, session_cwd) = if let Some(session) = input.session.as_ref() {
+    let (session_id, session_root_dir) = if let Some(session) = input.session.as_ref() {
         let guard = session.lock().await;
         (
             normalize_optional_text(Some(guard.session_id.as_str()))
                 .or_else(|| normalize_optional_text(input.session_id.as_deref())),
-            guard.workspace_info.clone(),
-            guard.cwd.clone(),
+            guard.session_root_dir.clone(),
         )
     } else {
         (
             normalize_optional_text(input.session_id.as_deref()),
-            None,
             PathBuf::new(),
         )
     };
@@ -845,9 +843,13 @@ async fn load_history_messages_with_limit(
     };
 
     let Some(record_file) =
-        resolve_session_msg_record_path(session_id.as_str(), workspace_info.as_ref(), &session_cwd)
-            .await
+        resolve_session_msg_record_path(session_id.as_str(), &session_root_dir).await
     else {
+        debug!(
+            "prompt.load_history_messages no record file: session_id={} session_root_dir={}",
+            session_id,
+            session_root_dir.display()
+        );
         return vec![];
     };
 
@@ -933,14 +935,21 @@ async fn load_history_messages_with_limit(
 
 async fn resolve_session_msg_record_path(
     session_id: &str,
-    workspace_info: Option<&Json>,
-    session_cwd: &Path,
+    session_root_dir: &Path,
 ) -> Option<PathBuf> {
     let mut canonical_candidates = Vec::<PathBuf>::new();
-    let mut legacy_candidates = Vec::<PathBuf>::new();
     let session_id = session_id.trim();
     if session_id.is_empty() {
         return None;
+    }
+
+    if let Some(path) = non_empty_path(session_root_dir) {
+        for file_name in SESSION_MSG_RECORD_FILES {
+            push_unique_pathbuf(
+                &mut canonical_candidates,
+                path.join(session_id).join(file_name),
+            );
+        }
     }
 
     if session_id.contains('/') || session_id.contains('\\') {
@@ -959,37 +968,7 @@ async fn resolve_session_msg_record_path(
         }
     }
 
-    let roots = collect_candidate_ancestors(&collect_workspace_path_candidates(
-        workspace_info,
-        session_cwd,
-    ));
-    for root in roots {
-        for file_name in SESSION_MSG_RECORD_FILES {
-            push_unique_pathbuf(
-                &mut canonical_candidates,
-                root.join("session").join(session_id).join(file_name),
-            );
-            push_unique_pathbuf(
-                &mut legacy_candidates,
-                root.join(session_id).join(file_name),
-            );
-        }
-    }
-    for file_name in SESSION_MSG_RECORD_FILES {
-        push_unique_pathbuf(
-            &mut canonical_candidates,
-            PathBuf::from("session").join(session_id).join(file_name),
-        );
-        push_unique_pathbuf(
-            &mut legacy_candidates,
-            PathBuf::from(session_id).join(file_name),
-        );
-    }
-
-    for candidate in canonical_candidates
-        .into_iter()
-        .chain(legacy_candidates.into_iter())
-    {
+    for candidate in canonical_candidates {
         if fs::metadata(&candidate)
             .await
             .map(|meta| meta.is_file())
@@ -1015,34 +994,64 @@ fn resolve_history_msg_update_time(record: &MsgRecordWithObject) -> u64 {
 }
 
 fn render_history_msg_line(record: &MsgRecordWithObject) -> String {
-    let direction = match record.record.box_kind {
-        BoxKind::Outbox | BoxKind::TunnelOutbox => "out",
-        _ => "in",
-    };
-
-    let mut content = record
+    let from = record
+        .msg
+        .as_ref()
+        .map(|msg| msg.from.to_raw_host_name())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| record.record.from.to_raw_host_name());
+    let timestamp = format_history_timestamp(resolve_history_msg_update_time(record));
+    let content = record
         .msg
         .as_ref()
         .map(|msg| msg.content.content.as_str())
         .map(str::trim)
         .filter(|text| !text.is_empty())
-        .map(compact_one_line_text)
-        .unwrap_or_default();
-    if content.is_empty() {
-        content = format!(
+        .map(normalize_history_multiline_text)
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| {
+            format!(
             "msg_id={} state={:?}",
             record.record.msg_id, record.record.state
-        );
-    }
+            )
+        });
 
-    format!(
-        "{} {:?} {:?} -> {:?} {}",
-        direction, record.record.msg_kind, record.record.from, record.record.to, content
-    )
+    format!("{} [{}]\n{}", from, timestamp, content)
 }
 
 fn compact_one_line_text(input: &str) -> String {
     input.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn format_history_timestamp(timestamp_ms: u64) -> String {
+    let secs = (timestamp_ms / 1000) as i64;
+    let nanos = ((timestamp_ms % 1000) * 1_000_000) as u32;
+    let dt = DateTime::<Utc>::from_timestamp(secs, nanos).unwrap_or_else(Utc::now);
+    dt.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+fn normalize_history_multiline_text(input: &str) -> String {
+    let mut lines = Vec::<String>::new();
+    let mut last_blank = false;
+    for raw_line in input.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            if last_blank {
+                continue;
+            }
+            lines.push(String::new());
+            last_blank = true;
+            continue;
+        }
+        lines.push(line.to_string());
+        last_blank = false;
+    }
+    let merged = lines.join("\n");
+    if merged.trim().is_empty() {
+        String::new()
+    } else {
+        merged.trim().to_string()
+    }
 }
 
 fn normalize_worklog_record_type(record_type: &str) -> String {
@@ -2107,6 +2116,7 @@ loaded_tools: [exec_bash]
 
         let mut session = AgentSession::new(session_id, "did:web:agent.example.com", None);
         session.cwd = workspace_root.clone();
+        session.session_root_dir = workspace_root.join("session");
         let input = BehaviorExecInput {
             session_id: Some(session_id.to_string()),
             trace: TraceCtx {

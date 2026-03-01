@@ -4,6 +4,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use buckyos_api::{get_buckyos_api_runtime, MsgRecord, OpenDanAgentSessionRecord};
+use chrono::{DateTime, Utc};
 use log::{debug, warn};
 use ndn_lib::MsgObject;
 use rusqlite::Connection;
@@ -894,24 +895,27 @@ async fn render_new_msgs_from_kmsgqueue(messages: &[Message]) -> Option<String> 
     let mut lines = Vec::<String>::new();
     for message in messages {
         let Some(msg_record) = parse_msg_record_from_kmsg_payload(&message.payload) else {
-            warn!(
-                "agent_env.render_new_msgs invalid payload: expected SessionInputItem.msg or MsgRecord"
-            );
+            if let Ok(raw_text) = String::from_utf8(message.payload.clone()) {
+                let content = normalize_multiline_text(raw_text.as_str());
+                if !content.is_empty() {
+                    lines.push(format!(
+                        "unknown [{}]\n{}",
+                        format_timestamp(message.created_at),
+                        content
+                    ));
+                    continue;
+                }
+            }
+            warn!("agent_env.render_new_msgs invalid payload: expected SessionInputItem.msg or MsgRecord");
             continue;
         };
 
-        let mut rendered_line = None::<String>;
+        let mut msg_obj = None::<MsgObject>;
         if let Some(store) = named_store.as_ref() {
             let msg_id = msg_record.msg_id.clone();
             match store.get_object(&msg_id).await {
                 Ok(msg_json) => match serde_json::from_str::<MsgObject>(&msg_json) {
-                    Ok(msg_obj) => match serde_json::to_string(&msg_obj) {
-                        Ok(line) => rendered_line = Some(line),
-                        Err(error) => warn!(
-                            "agent_env.render_new_msgs serialize msg object failed: msg_id={} err={}",
-                            msg_id, error
-                        ),
-                    },
+                    Ok(value) => msg_obj = Some(value),
                     Err(error) => warn!(
                         "agent_env.render_new_msgs parse msg object failed: msg_id={} err={}",
                         msg_id, error
@@ -924,24 +928,60 @@ async fn render_new_msgs_from_kmsgqueue(messages: &[Message]) -> Option<String> 
             }
         }
 
-        if rendered_line.is_none() {
-            match serde_json::to_string(&msg_record) {
-                Ok(line) => rendered_line = Some(line),
-                Err(error) => warn!(
-                    "agent_env.render_new_msgs serialize msg record failed: record_id={} err={}",
-                    msg_record.record_id, error
-                ),
-            }
-        }
-
-        if let Some(line) = rendered_line {
-            lines.push(line);
-        }
+        lines.push(render_human_readable_msg_line(&msg_record, msg_obj.as_ref()));
     }
     if lines.is_empty() {
         return None;
     }
-    clean_optional_text(Some(lines.join("\n").as_str()))
+    clean_optional_text(Some(lines.join("\n\n").as_str()))
+}
+
+fn render_human_readable_msg_line(record: &MsgRecord, msg_obj: Option<&MsgObject>) -> String {
+    let from = msg_obj
+        .map(|msg| msg.from.to_raw_host_name())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| record.from.to_raw_host_name());
+    let time_ms = msg_obj
+        .map(|msg| msg.created_at_ms)
+        .unwrap_or(record.updated_at_ms.max(record.created_at_ms));
+    let content = msg_obj
+        .map(|msg| msg.content.content.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(normalize_multiline_text)
+        .unwrap_or_else(|| format!("msg_id={} state={:?}", record.msg_id, record.state));
+    format!("{} [{}]\n{}", from, format_timestamp(time_ms), content)
+}
+
+fn format_timestamp(timestamp_ms: u64) -> String {
+    let secs = (timestamp_ms / 1000) as i64;
+    let nanos = ((timestamp_ms % 1000) * 1_000_000) as u32;
+    let dt = DateTime::<Utc>::from_timestamp(secs, nanos).unwrap_or_else(Utc::now);
+    dt.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+fn normalize_multiline_text(input: &str) -> String {
+    let mut lines = Vec::<String>::new();
+    let mut last_blank = false;
+    for raw_line in input.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            if last_blank {
+                continue;
+            }
+            lines.push(String::new());
+            last_blank = true;
+            continue;
+        }
+        lines.push(line.to_string());
+        last_blank = false;
+    }
+    let merged = lines.join("\n");
+    if merged.trim().is_empty() {
+        String::new()
+    } else {
+        merged.trim().to_string()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1510,7 +1550,10 @@ mod tests {
         let result = AgentEnvironment::load_value_from_session(session, "new_msg.2")
             .await
             .expect("load value from session");
-        assert_eq!(result, Some("line-2\nline-3".to_string()));
+        let rendered = result.expect("new_msg should not be empty");
+        assert!(rendered.contains("line-2"), "rendered={}", rendered);
+        assert!(rendered.contains("line-3"), "rendered={}", rendered);
+        assert!(rendered.contains("["), "rendered={}", rendered);
     }
 
     #[tokio::test]
@@ -1524,7 +1567,11 @@ mod tests {
         let result = AgentEnvironment::load_value_from_session(session, "new_msg.$3")
             .await
             .expect("load value from session");
-        assert_eq!(result, Some("m2\nm3\nm4".to_string()));
+        let rendered = result.expect("new_msg should not be empty");
+        assert!(rendered.contains("m2"), "rendered={}", rendered);
+        assert!(rendered.contains("m3"), "rendered={}", rendered);
+        assert!(rendered.contains("m4"), "rendered={}", rendered);
+        assert!(rendered.contains("["), "rendered={}", rendered);
     }
 
     #[tokio::test]
