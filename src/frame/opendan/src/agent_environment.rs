@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use buckyos_api::{get_buckyos_api_runtime, MsgRecord, OpenDanAgentSessionRecord};
-use log::warn;
+use log::{debug, warn};
 use ndn_lib::MsgObject;
 use rusqlite::Connection;
 use serde_json::{json, Map, Value as Json};
@@ -258,6 +258,12 @@ impl AgentEnvironment {
             if new_msgs.is_empty() {
                 return Ok(None);
             }
+            debug!(
+                "agent_env.new_msg_pull: session={} sub_id={} count={}",
+                session_id,
+                kmsg_sub_id,
+                new_msgs.len()
+            );
 
             if let Some(last_msg) = new_msgs.last() {
                 let mut guard = session.lock().await;

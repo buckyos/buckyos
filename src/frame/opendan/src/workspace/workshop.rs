@@ -802,7 +802,7 @@ mod tests {
             .expect("create session store"),
         );
         let session = store
-            .ensure_session("session-test", Some("Session Test".to_string()), None)
+            .ensure_session("session-test", Some("Session Test".to_string()), None, None)
             .await
             .expect("ensure session");
         {

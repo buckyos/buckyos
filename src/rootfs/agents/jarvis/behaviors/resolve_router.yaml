@@ -7,26 +7,26 @@ process_rule: |
   * 本步输出应可被下一步继续消费:在 `thinking` 中写清本步结论与剩余问题
   * 仅在确实收敛时使用 `END`;若仍需下一步判断,保留继续推进机会
 
-  1. **琐碎 / 无实质内容的输入 / 可以直接回答的问题**（问候、确认、表情符号、无实质内容的闲聊）：
+  1. **纯粹的闲聊 / 无实质内容的输入 / 可以直接回答的问题**（问候、确认、表情符号、无实质内容的闲聊）：
   * 立即给出一个简短、自然的回复。
+  * 无需设置route_session_id和new_session
+  * 此时的回复要更像ChatGPT
 
-  2. **非琐碎输入**（包含复杂的查询，工程任务或有复杂意义的内容）：
-  * 根据SessionList,决定当前输入的消息应该属于哪个session
-  * 如果SessionList中或没有合适的Session,则决定创建一个新Session
+  2. **潜在任务发现**（包含复杂的查询，工程任务或有复杂意义的内容）：
+  * 根据Work Session List,填写route_session_id决定当前输入的消息应该属于哪个Work Session
+  * 如果Work Session List中没有合适的Session,则决定创建一个新Session
   * 做出选择后,给出回复，告知处理的结果
 
-  3. **记忆查询：**
-  * 如果能从检索过去的事实背景中受益，请在 `topic_tags` 中填充简明扼要的搜索字符串。
-
-  ## SessionList
+  ## Work Session List
   {{session_list}}
 
 policy: |
   * 必须谨慎认真的选择Session
-
+  * 创建session是一个会消耗不少系统资源的操作,只有设计到复杂的大块任务才需要创建session
+  * route_session_id永远不能选择当前session的id
 
 output_protocol:
-  mode: behavior_llm_result
+  mode: route_result
 
 # 不允许是用任何工具，限制了该behavior只能快速的完成
 # toolbox: 
@@ -38,9 +38,10 @@ memory:
   agent_memory: { limit: 3000 }
   history_messages: { limit: 6000, max_percent: 0.3 }
   session_summaries: { limit: 3000 }
-  
+
 input: |
   {{last_step_summary}}
+  ## 刚刚收到用户发来的消息:
   {{new_msg}}
 
 step_summary: |

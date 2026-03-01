@@ -573,92 +573,71 @@ fn normalize_output_mode(mode: &str) -> String {
     let normalized = mode.trim().to_ascii_lowercase();
     match normalized.as_str() {
         "" | "auto" => "auto".to_string(),
-        "json_v1" | "behavior_llm_result" | "behavior_result" | "executor" => {
-            "behavior_llm_result".to_string()
-        }
-        "route_result" | "route" | "route_v1" => "behavior_llm_result".to_string(),
+        "behavior_llm_result" | "behavior_result" => "behavior_llm_result".to_string(),
+        "route_result" | "route" | "route_v1" => "route_result".to_string(),
         _ => "auto".to_string(),
     }
 }
 
-fn build_behavior_llm_result_protocol() -> String {
-    let schema = json!({
-        "next_behavior": "END",
-        "thinking": "optional short reasoning for internal planning",
-        "reply": [
-            {
-                "audience": "did:web:user.example.com",
-                "format": "markdown",
-                "content": "final response for user"
-            }
-        ],
-        "todo": [
-            {
-                "op": "upsert_todo",
-                "id": "T001",
-                "title": "write summary",
-                "status": "doing"
-            }
-        ],
-        "set_memory": {
-            "/user/profile/preference": "Prefer concise response in Chinese",
-            "/project/context": "{\"type\":\"fact\",\"summary\":\"Migrate API to kRPC\",\"importance\":8,\"tags\":[\"project\"]}"
-        },
-        "toipc_tags": ["planning"],
-        "actions": {
-            "mode": "failed_end",
-            "cmds": [
-                "ls ./",
-                [
-                    "write",
-                    {
-                        "path": "artifacts/summary.txt",
-                        "content": "task completed"
-                    }
-                ],
-                {
-                    "todo_manage": {
-                        "action": "query",
-                        "limit": 5
-                    }
-                }
-            ]
-        },
-        "load_skills": ["plan"],
-        "enable_tools": ["load_memory", "todo_manage"],
-        "session_id": "session-user-1",
-        "new_session": ["Q&A Session", "Collect requirements and draft a plan"]
-    });
-    let schema_pretty = serde_json::to_string_pretty(&schema).unwrap_or_else(|_| "{}".to_string());
-
+fn build_route_result_protocol() -> String {
     format!(
-        "Return ONLY one JSON object. No markdown fences and no extra text.\n\
-Allowed top-level keys only: next_behavior, thinking, reply, todo, set_memory, toipc_tags, actions, load_skills, enable_tools, session_id, new_session.\n\
-Type rules:\n\
-- All keys are optional. Omit keys you do not use.\n\
-- `next_behavior`: string or null. Use `END` to finish, `WAIT` to pause, or another behavior name to switch.\n\
-- `thinking`: optional string.\n\
-- `reply`: array of objects with required string fields `audience`, `format`, `content`.\n\
-- `actions` is object with fields `mode` and `cmds`.\n\
-- `actions.mode`: `failed_end` (default) or `all`.\n\
-- `actions.cmds` supports two command forms:\n\
-  1) string command (maps to exec action)\n\
-  2) tool call: `[\"action_name\", {{\"param\":\"value\"}}]` or `{{\"action_name\": {{\"param\":\"value\"}}}}`\n\
-- `todo`: array of JSON objects; each item is one todo op payload.\n\
-- `set_memory`: object map where key is memory path and value is string content.\n\
-- Do NOT include `source` in `set_memory`; runtime derives source from current trace context.\n\
-- `toipc_tags`: array of strings (note: key name is exactly `toipc_tags`).\n\
-- `load_skills` / `enable_tools`: array of strings.\n\
-- `session_id`: optional string.\n\
-- `new_session`: optional 2-item string tuple `[title, summary]`; runtime generates the session_id.\n\
-JSON example:\n\
-{}",
-        schema_pretty
+        r#"Return ONLY one JSON object. No markdown fences, no extra text.
+```typescript
+type Response = {{
+  next_behavior?: "END" | "WAIT" | string;  // END=finish, WAIT=pause, or behavior name to switch
+  thinking?: string;
+  reply?: {{ content: string }}[];
+  set_memory?: Record<string, string>;       // key=memory path, value=content
+  actions?: {{
+    mode?: "failed_end" | "all";             // default: failed_end
+    cmds?: (string | [string, Record<string, any>] | Record<string, Record<string, any>>)[];
+  }};
+  route_session_id?: string;                       // route to existing session
+  new_session?: [string, string];            // [title, summary], runtime generates session_id
+}}
+```
+
+All keys optional—omit unused ones. Prefer exactly one of `session_id` or `new_session` when routing."#
+    )
+}
+
+fn build_behavior_llm_result_protocol() -> String {
+    format!(
+        r#"Return ONLY one JSON object. No markdown fences, no extra text.
+```typescript
+type Response = {{
+  next_behavior?: String // follow process rules
+  thinking?: string;
+  reply?: {{
+    audience?: string;   // optional; runtime falls back to session.default_remote
+    format?: string;     // optional; defaults to "text"
+    content: string;
+  }}[];
+  todo?: {{
+    op: string;         // e.g. "upsert_todo"
+    id?: string;
+    title?: string;
+    status?: string;
+    [key: string]: any; // other op-specific fields
+  }}[];
+  set_memory?: Record<string, string>;       // key=memory path, value=content. 
+  toipc_tags?: string[];                     // note: key is exactly `toipc_tags`
+  actions?: {{
+    mode?: "failed_end" | "all";             // default: failed_end
+    cmds?: (string | [string, Record<string, any>] | Record<string, Record<string, any>>)[];
+  }};
+  load_skills?: string[];
+  enable_tools?: string[];
+}}
+```
+
+All keys optional—omit unused ones."#
     )
 }
 
 fn default_output_protocol_text(mode: &str) -> String {
     match mode {
+        "route_result" => build_route_result_protocol(),
         "behavior_llm_result" => build_behavior_llm_result_protocol(),
         _ => String::new(),
     }
@@ -796,10 +775,27 @@ llm:
 
         assert_eq!(cfg.name, "on_msg");
         assert_eq!(cfg.llm.output_protocol, "protocol_from_cfg".to_string());
-        assert_eq!(cfg.llm.output_mode, "behavior_llm_result");
+        assert_eq!(cfg.llm.output_mode, "route_result");
         assert_eq!(cfg.llm.process_name, "custom-process");
         assert_eq!(cfg.llm.model_policy.preferred, "fast-model");
         assert_eq!(cfg.llm.model_policy.temperature, 0.2);
+    }
+
+    #[test]
+    fn route_result_protocol_includes_session_routing_keys() {
+        let protocol = build_route_result_protocol();
+        assert!(protocol.contains("session_id"));
+        assert!(protocol.contains("new_session"));
+        assert!(protocol.contains("Session routing is first-class in this mode"));
+    }
+
+    #[test]
+    fn behavior_llm_result_protocol_disallows_session_routing_keys() {
+        let protocol = build_behavior_llm_result_protocol();
+        assert!(
+            !protocol.contains("Allowed top-level keys only: next_behavior, thinking, reply, todo, set_memory, toipc_tags, actions, load_skills, enable_tools, session_id, new_session.")
+        );
+        assert!(protocol.contains("Do NOT include `session_id` or `new_session` in this mode."));
     }
 
     #[test]

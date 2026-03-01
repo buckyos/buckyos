@@ -45,6 +45,8 @@ const DEFAULT_SESSION_ID: &str = "default";
 const INBOX_SESSION_ID: &str = DEFAULT_SESSION_ID;
 const MAX_MSG_PULL_PER_TICK: usize = 16;
 const MAX_EVENT_PULL_PER_TICK: usize = 16;
+const MAX_EVENT_PULL_TIMEOUT_MS: u64 = 10_000;
+const MAX_SESSION_WORKER_IDLE_SLEEP_MS: u64 = 10_000;
 const MSG_ROUTED_REASON: &str = "routed_by_opendan_runtime";
 const MSG_CENTER_EVENT_BOX_NAMES: [&str; 3] = ["in", "group_in", "request"];
 const SESSION_QUEUE_APP_ID: &str = "opendan";
@@ -363,7 +365,7 @@ impl AIAgent {
 
     async fn run_agent_dispatch_loop(&self, stop_after_ticks: Option<u32>) -> Result<()> {
         let mut tick = 0_u32;
-        let mut sleep_ms = self.cfg.default_sleep_ms;
+        let event_pull_timeout_ms = MAX_EVENT_PULL_TIMEOUT_MS;
 
         loop {
             if let Some(max_tick) = stop_after_ticks {
@@ -379,8 +381,18 @@ impl AIAgent {
                 .map_err(|err| anyhow!("refresh session status failed: {err}"))?;
 
             let (pulled_msgs, pulled_events, waited_on_events) =
-                self.pull_msgs_and_events(sleep_ms).await?;
+                self.pull_msgs_and_events(event_pull_timeout_ms).await?;
             let has_inputs = !pulled_msgs.is_empty() || !pulled_events.is_empty();
+            if has_inputs {
+                info!(
+                    "agent.dispatch_tick_inputs: did={} tick={} pulled_msgs={} pulled_events={} waited_on_events={}",
+                    self.did,
+                    tick,
+                    pulled_msgs.len(),
+                    pulled_events.len(),
+                    waited_on_events
+                );
+            }
             if has_inputs {
                 self.dispatch_pulled_inputs(pulled_msgs, pulled_events)
                     .await?;
@@ -391,13 +403,8 @@ impl AIAgent {
                 .await
                 .map_err(|err| anyhow!("schedule session wait-timeout failed: {err}"))?;
 
-            if has_inputs {
-                sleep_ms = self.cfg.default_sleep_ms;
-            } else {
-                if !waited_on_events {
-                    sleep(Duration::from_millis(sleep_ms)).await;
-                }
-                sleep_ms = (sleep_ms.saturating_mul(2)).min(self.cfg.max_sleep_ms);
+            if !has_inputs && !waited_on_events {
+                sleep(Duration::from_millis(event_pull_timeout_ms)).await;
             }
         }
 
@@ -417,8 +424,22 @@ impl AIAgent {
             tick = tick.saturating_add(1);
 
             let Some(session) = self.session_mgr.get_next_ready_session().await else {
-                sleep(Duration::from_millis(sleep_ms)).await;
-                sleep_ms = (sleep_ms.saturating_mul(2)).min(self.cfg.max_sleep_ms);
+                let wait_ms = sleep_ms.min(MAX_SESSION_WORKER_IDLE_SLEEP_MS);
+                let woke_by_notify = self
+                    .session_mgr
+                    .wait_for_ready_or_timeout(Duration::from_millis(wait_ms))
+                    .await;
+                if woke_by_notify {
+                    info!(
+                        "agent.session_worker_wakeup: did={} reason=notify wait_ms={}",
+                        self.did, wait_ms
+                    );
+                    sleep_ms = self.cfg.default_sleep_ms;
+                } else {
+                    sleep_ms = (sleep_ms.saturating_mul(2))
+                        .min(self.cfg.max_sleep_ms)
+                        .min(MAX_SESSION_WORKER_IDLE_SLEEP_MS);
+                }
                 continue;
             };
 
@@ -494,6 +515,13 @@ impl AIAgent {
                         self.did, reader_id, drained_events
                     );
                 }
+                info!(
+                    "agent.event_pull_targets: did={} reader_id={} msg_pull_boxes={:?} pulled_events={}",
+                    self.did,
+                    reader_id,
+                    msg_pull_boxes,
+                    pulled_events.len()
+                );
             }
             Ok(None) => {
                 // KEvent is a poll accelerator. Timeout still falls back to queue pull.
@@ -522,6 +550,14 @@ impl AIAgent {
             self.pull_msg_packs_by_boxes(msg_pull_boxes.as_slice())
                 .await
         };
+        info!(
+            "agent.pull_msgs_and_events_done: did={} reader_id={} msg_pull_boxes={:?} pulled_msgs={} pulled_events={}",
+            self.did,
+            reader_id,
+            msg_pull_boxes,
+            pulled_msgs.len(),
+            pulled_events.len()
+        );
         Ok((pulled_msgs, pulled_events, true))
     }
 
@@ -541,30 +577,99 @@ impl AIAgent {
 
         let mut out = Vec::<PulledMsg>::new();
         for box_kind in box_kinds {
-            for _ in 0..MAX_MSG_PULL_PER_TICK {
+            let state_filter = Self::msg_pull_state_filter_for_box(box_kind);
+            info!(
+                "agent.msg_pull_box_begin: did={} box_kind={:?} state_filter={:?}",
+                self.did, box_kind, state_filter
+            );
+            let mut pulled_in_box = 0usize;
+            for attempt in 0..MAX_MSG_PULL_PER_TICK {
+                info!(
+                    "agent.msg_pull_get_next_call: did={} box_kind={:?} attempt={} state_filter={:?}",
+                    self.did,
+                    box_kind,
+                    attempt + 1,
+                    state_filter
+                );
                 match msg_center
                     .get_next(
                         owner_did.clone(),
                         box_kind.clone(),
-                        Some(vec![MsgState::Unread]),
+                        state_filter.clone(),
                         Some(true),
                         Some(true),
                     )
                     .await
                 {
-                    Ok(Some(record)) => out.push(Self::msg_record_to_pulled_msg(record)),
-                    Ok(None) => break,
+                    Ok(Some(record)) => {
+                        pulled_in_box = pulled_in_box.saturating_add(1);
+                        info!(
+                            "agent.msg_pull_get_next_hit: did={} box_kind={:?} attempt={} record_id={} state={:?} thread_key={:?}",
+                            self.did,
+                            box_kind,
+                            attempt + 1,
+                            record.record.record_id,
+                            record.record.state,
+                            record.record.thread_key
+                        );
+                        if !Self::is_expected_pulled_msg_state(box_kind, &record.record.state) {
+                            warn!(
+                                "agent.msg_pull_unexpected_state: did={} box_kind={:?} record_id={} state={:?} expected=unread_or_reading",
+                                self.did,
+                                box_kind,
+                                record.record.record_id,
+                                record.record.state
+                            );
+                            break;
+                        }
+                        out.push(Self::msg_record_to_pulled_msg(record));
+                    }
+                    Ok(None) => {
+                        info!(
+                            "agent.msg_pull_get_next_miss: did={} box_kind={:?} attempt={} pulled_in_box={}",
+                            self.did,
+                            box_kind,
+                            attempt + 1,
+                            pulled_in_box
+                        );
+                        break;
+                    }
                     Err(err) => {
                         warn!(
-                            "agent.msg_pull_failed: did={} box_kind={:?} err={}",
-                            self.did, box_kind, err
+                            "agent.msg_pull_failed: did={} box_kind={:?} attempt={} err={}",
+                            self.did,
+                            box_kind,
+                            attempt + 1,
+                            err
                         );
                         break;
                     }
                 }
             }
+            info!(
+                "agent.msg_pull_box_done: did={} box_kind={:?} pulled_in_box={}",
+                self.did, box_kind, pulled_in_box
+            );
         }
         out
+    }
+
+    fn msg_pull_state_filter_for_box(box_kind: &BoxKind) -> Option<Vec<MsgState>> {
+        match box_kind {
+            BoxKind::Inbox | BoxKind::GroupInbox | BoxKind::RequestBox => {
+                Some(vec![MsgState::Unread])
+            }
+            BoxKind::Outbox | BoxKind::TunnelOutbox => None,
+        }
+    }
+
+    fn is_expected_pulled_msg_state(box_kind: &BoxKind, state: &MsgState) -> bool {
+        match box_kind {
+            BoxKind::Inbox | BoxKind::GroupInbox | BoxKind::RequestBox => {
+                matches!(state, MsgState::Unread | MsgState::Reading)
+            }
+            BoxKind::Outbox | BoxKind::TunnelOutbox => true,
+        }
     }
 
     async fn dispatch_pulled_inputs(
@@ -572,16 +677,29 @@ impl AIAgent {
         pulled_msgs: Vec<PulledMsg>,
         pulled_events: Vec<PulledEvent>,
     ) -> Result<()> {
+        info!(
+            "agent.dispatch_pulled_inputs_begin: did={} pulled_msgs={} pulled_events={}",
+            self.did,
+            pulled_msgs.len(),
+            pulled_events.len()
+        );
         for pulled in pulled_msgs {
             let record_id = pulled.record.record.record_id.clone();
             let msg_record = pulled.record.record.clone();
+            info!(
+                "agent.dispatch_msg_begin: did={} record_id={} state={:?} thread_key={:?}",
+                self.did, record_id, msg_record.state, msg_record.thread_key
+            );
 
             let route_result = self
                 .route_msg_pack(pulled.session_id.as_deref(), &pulled.record)
                 .await?;
-            debug!(
-                "agent.route_and_link_msg_pack: did={} record_id={} linked_sessions={:?}",
-                self.did, record_id, route_result.linked_session_ids,
+            info!(
+                "agent.route_and_link_msg_pack: did={} record_id={} route_reason={} linked_sessions={:?}",
+                self.did,
+                record_id,
+                route_result.reason.as_str(),
+                route_result.linked_session_ids,
             );
 
             let session_input = SessionInputItem {
@@ -603,6 +721,10 @@ impl AIAgent {
                     .map_err(|err| {
                         anyhow!("mark msg arrival for session `{session_id}` failed: {err}")
                     })?;
+                info!(
+                    "agent.dispatch_msg_linked: did={} record_id={} session_id={}",
+                    self.did, record_id, session_id
+                );
             }
 
             self.set_msg_readed(record_id).await;
@@ -612,6 +734,7 @@ impl AIAgent {
             //TODO：Event可能能1次唤醒多个Session，这里需要改造
             unimplemented!()
         }
+        info!("agent.dispatch_pulled_inputs_done: did={}", self.did);
         Ok(())
     }
 
@@ -802,6 +925,16 @@ impl AIAgent {
                 }
                 session_id = guard.session_id.clone();
             }
+            {
+                let mut guard = session.lock().await;
+                if guard.owner_agent != self.did {
+                    warn!(
+                        "agent.session_owner_mismatch: did={} session={} session_owner={} normalize_to={}",
+                        self.did, guard.session_id, guard.owner_agent, self.did
+                    );
+                    guard.owner_agent = self.did.clone();
+                }
+            }
 
             let trace = TraceCtx {
                 trace_id: wakeup_id.to_string(),
@@ -836,7 +969,7 @@ impl AIAgent {
             self.dispatch_step_msg_records(session.clone(), &llm_result)
                 .await?;
 
-            self.handle_replies(&trace, llm_result.reply.as_slice())
+            self.handle_replies(session.clone(), &trace, llm_result.reply.as_slice())
                 .await;
 
             self.apply_memory_updates(&trace, &llm_result.set_memory)
@@ -852,12 +985,13 @@ impl AIAgent {
             )
             .await;
 
-            let (workspace_id, msg_cursor) = {
+            let (workspace_id, msg_cursor, msg_owner_agent) = {
                 let mut guard = session.lock().await;
                 guard.last_step_summary = step_summary.clone();
                 (
                     resolve_session_workspace_id(&guard),
                     guard.msg_kmsgqueue_curosr,
+                    guard.owner_agent.clone(),
                 )
             };
 
@@ -870,8 +1004,12 @@ impl AIAgent {
             .await;
 
             //update input is all used
-            self.commit_session_queue_msg_ack(session_id.as_str(), msg_cursor)
-                .await?;
+            self.commit_session_queue_msg_ack(
+                msg_owner_agent.as_str(),
+                session_id.as_str(),
+                msg_cursor,
+            )
+            .await?;
             {
                 let mut guard = session.lock().await;
                 guard.just_readed_input_msg.clear();
@@ -917,7 +1055,7 @@ impl AIAgent {
     ) -> Result<()> {
         let mut route_targets = HashMap::<String, StepRouteTarget>::new();
 
-        if let Some(session_id) = llm_result.session_id.as_deref() {
+        if let Some(session_id) = llm_result.route_session_id.as_deref() {
             if let Some(valid_session_id) = normalize_routed_session_id(Some(session_id)) {
                 route_targets
                     .entry(valid_session_id)
@@ -985,6 +1123,10 @@ impl AIAgent {
             return Ok(());
         }
 
+        let default_remote = step_msg_inputs
+            .iter()
+            .find_map(|item| item.msg.as_ref().map(|record| record.from.to_string()));
+
         for (target_session_id, target) in route_targets {
             let target_session = self
                 .session_mgr
@@ -992,6 +1134,7 @@ impl AIAgent {
                     target_session_id.as_str(),
                     target.title,
                     target.behavior.as_deref(),
+                    default_remote.as_deref(),
                 )
                 .await?;
             if let Some(summary) = target.summary {
@@ -1163,6 +1306,13 @@ impl AIAgent {
                 "agent.msg_mark_read_failed: did={} record_id={} err={}",
                 self.did, record_id, err
             );
+        } else {
+            info!(
+                "agent.msg_mark_read_ok: did={} record_id={} state={:?}",
+                self.did,
+                record_id,
+                MsgState::Readed
+            );
         }
     }
 
@@ -1170,7 +1320,7 @@ impl AIAgent {
         let owner_token = owner.to_raw_host_name();
         MSG_CENTER_EVENT_BOX_NAMES
             .iter()
-            .map(|box_name| format!("/msg_center/{owner_token}/box/{box_name}/*"))
+            .map(|box_name| format!("/msg_center/{owner_token}/box/{box_name}/**"))
             .collect()
     }
 
@@ -1231,28 +1381,19 @@ impl AIAgent {
     }
 
     fn msg_center_event_box_kind(event: &Event) -> Option<BoxKind> {
-        let mut parts = event.eventid.split('/').filter(|part| !part.is_empty());
-        let Some(prefix) = parts.next() else {
+        let parts: Vec<&str> = event
+            .eventid
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .collect();
+        if parts.len() < 4 {
             return None;
-        };
-        let Some(_owner) = parts.next() else {
-            return None;
-        };
-        let Some(scope) = parts.next() else {
-            return None;
-        };
-        let Some(box_name) = parts.next() else {
-            return None;
-        };
-        let Some(_event_name) = parts.next() else {
-            return None;
-        };
-
-        if prefix != "msg_center" || scope != "box" {
+        }
+        if parts[0] != "msg_center" || parts[2] != "box" {
             return None;
         }
 
-        match box_name {
+        match parts[3] {
             "in" => Some(BoxKind::Inbox),
             "group_in" => Some(BoxKind::GroupInbox),
             "request" => Some(BoxKind::RequestBox),
@@ -1277,6 +1418,14 @@ impl AIAgent {
             if !msg_pull_boxes.contains(&box_kind) {
                 msg_pull_boxes.push(box_kind);
             }
+            return;
+        }
+        if event.eventid.starts_with("/msg_center/") {
+            warn!(
+                "agent.msg_center_event_unrecognized: event_id={} fallback=pull_all_boxes",
+                event.eventid
+            );
+            Self::append_all_msg_center_boxes(msg_pull_boxes);
             return;
         }
         if let Some(pulled) = Self::kevent_event_to_pulled(event) {
@@ -1603,6 +1752,7 @@ impl AIAgent {
 
     async fn commit_session_queue_msg_ack(
         &self,
+        owner_id: &str,
         session_id: &str,
         last_pulled_msg_index: u64,
     ) -> Result<()> {
@@ -1612,11 +1762,13 @@ impl AIAgent {
         let Some(msg_queue) = self.deps.msg_queue.as_ref() else {
             return Err(anyhow!("message queue dependency not available"));
         };
-        let Some(binding) = self.ensure_session_queue_binding(session_id).await? else {
-            return Err(anyhow!("failed to ensure session queue binding"));
-        };
+        let sub_id = Self::get_session_kmsgqueue_sub_id(owner_id, session_id, InputQueueKind::Msg);
+        debug!(
+            "agent.commit_msg_ack: session={} sub_id={} index={}",
+            session_id, sub_id, last_pulled_msg_index
+        );
         msg_queue
-            .commit_ack(binding.msg_sub_id.as_str(), last_pulled_msg_index as u64)
+            .commit_ack(sub_id.as_str(), last_pulled_msg_index as u64)
             .await?;
         Ok(())
     }
@@ -1878,11 +2030,7 @@ impl AIAgent {
         out
     }
 
-    async fn apply_memory_updates(
-        &self,
-        trace: &TraceCtx,
-        set_memory: &HashMap<String, String>,
-    ) {
+    async fn apply_memory_updates(&self, trace: &TraceCtx, set_memory: &HashMap<String, String>) {
         let source = json!({
             "trace_id": trace.trace_id,
             "behavior": trace.behavior,
@@ -1977,17 +2125,32 @@ impl AIAgent {
         &self,
         trace: TraceCtx,
         source_tunnel_did: Option<DID>,
+        default_audience: Option<&str>,
         replies: &[ExecutorReply],
     ) {
         if replies.is_empty() {
             return;
         }
+        let default_audience = normalize_session_id(default_audience);
         let session_id = normalize_session_id(trace.session_id.as_deref());
         for reply in replies {
+            let audience = normalize_session_id(Some(reply.audience.as_str()))
+                .or_else(|| default_audience.clone());
+            let Some(audience) = audience else {
+                warn!(
+                    "agent.reply_missing_audience: did={} behavior={} content={}",
+                    self.did,
+                    trace.behavior,
+                    compact_text_for_log(reply.content.as_str(), 256),
+                );
+                continue;
+            };
+            let reply_format = normalize_session_id(Some(reply.format.as_str()))
+                .unwrap_or_else(|| "text".to_string());
             self.send_reply_via_msg_center(
                 source_tunnel_did.clone(),
-                reply.audience.as_str(),
-                reply.format.as_str(),
+                audience.as_str(),
+                reply_format.as_str(),
                 reply.content.as_str(),
                 session_id.as_deref(),
                 Some(&trace),
@@ -1997,8 +2160,8 @@ impl AIAgent {
                 "agent.reply: did={} behavior={} audience={} format={} content={}",
                 self.did,
                 trace.behavior,
-                reply.audience,
-                reply.format,
+                audience,
+                reply_format,
                 compact_text_for_log(reply.content.as_str(), 512)
             );
         }
@@ -2102,8 +2265,31 @@ impl AIAgent {
         }
     }
 
-    async fn handle_replies(&self, trace: &TraceCtx, replies: &[ExecutorReply]) {
-        self.send_msg_replies(trace.clone(), None, replies).await;
+    async fn handle_replies(
+        &self,
+        session: Arc<Mutex<AgentSession>>,
+        trace: &TraceCtx,
+        replies: &[ExecutorReply],
+    ) {
+        let (default_audience, source_tunnel_did) = self.resolve_reply_defaults(session).await;
+        self.send_msg_replies(
+            trace.clone(),
+            source_tunnel_did,
+            default_audience.as_deref(),
+            replies,
+        )
+        .await;
+    }
+
+    async fn resolve_reply_defaults(
+        &self,
+        session: Arc<Mutex<AgentSession>>,
+    ) -> (Option<String>, Option<DID>) {
+        let default_audience = {
+            let guard = session.lock().await;
+            normalize_session_id(guard.default_remote.as_deref())
+        };
+        (default_audience, None)
     }
 
     async fn load_behavior_config(&self, behavior_name: &str) -> Result<BehaviorConfig> {
@@ -2199,6 +2385,7 @@ fn apply_session_behavior_transition(
             session.update_state(SessionState::WaitForMsg);
             keep_running = false;
         } else if next_behavior.eq_ignore_ascii_case("END") {
+            session.last_step_summary = None;
             session.update_state(SessionState::Sleep);
             keep_running = false;
         } else {
@@ -2675,5 +2862,54 @@ impl WorklogSink for JsonlWorklogSink {
             }),
         };
         self.append_json_line(payload).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn make_event(eventid: &str) -> Event {
+        Event {
+            eventid: eventid.to_string(),
+            source_node: "test-node".to_string(),
+            source_pid: 1,
+            ingress_node: None,
+            timestamp: 0,
+            data: json!({}),
+        }
+    }
+
+    #[test]
+    fn msg_center_event_box_kind_parses_known_box() {
+        let event = make_event("/msg_center/agent.example/box/in/changed");
+        assert_eq!(
+            AIAgent::msg_center_event_box_kind(&event),
+            Some(BoxKind::Inbox)
+        );
+    }
+
+    #[test]
+    fn msg_center_event_box_kind_accepts_extended_suffix() {
+        let event = make_event("/msg_center/agent.example/box/request/changed/v2");
+        assert_eq!(
+            AIAgent::msg_center_event_box_kind(&event),
+            Some(BoxKind::RequestBox)
+        );
+    }
+
+    #[test]
+    fn collect_event_pull_targets_falls_back_for_unknown_msg_center_event() {
+        let event = make_event("/msg_center/agent.example/box/unknown/changed");
+        let mut msg_pull_boxes = Vec::new();
+        let mut pulled_events = Vec::new();
+
+        AIAgent::collect_event_pull_targets(event, &mut msg_pull_boxes, &mut pulled_events);
+
+        assert!(msg_pull_boxes.contains(&BoxKind::Inbox));
+        assert!(msg_pull_boxes.contains(&BoxKind::GroupInbox));
+        assert!(msg_pull_boxes.contains(&BoxKind::RequestBox));
+        assert!(pulled_events.is_empty());
     }
 }

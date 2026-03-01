@@ -153,7 +153,7 @@ pub struct BehaviorLLMResult {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enable_tools: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
+    pub route_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_session: Option<(String, String)>,
 }

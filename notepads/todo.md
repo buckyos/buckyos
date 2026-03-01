@@ -2,20 +2,26 @@
 
 ### 基本的状态测试
 
-- 创建session / 选择session
-- set_memory成功
-- 查询到正确的memory
+- 创建session / 选择session 
+- set_memory成功 OK 
+- 查询到正确的memory OK 
+
+
 - work_session在PLAN阶段 创建/选择 local_workspace。 这个需要完成PLAN提示词
 - 管理TODO成功（不管有没有local_workspace),TODO的实现是否可以被文件系统取代？
 - 能正确加载skill （PLAN阶段能给更多信息）
 - 能正确构造Action并执行
 - 能正确完成一个TODO
+- 使用文生图，正确得到一张图（用action方式)
 
 ## BUGS
 
 - session_list支持 OK 检查Render，需要看到状态
 - 修复创建session逻辑 OK
 - 和MsgChannel对应的Session通常称作UI Session，其session-id是固定构造的。其它的Session是Working Session,session-id时系统分配的，通过session-id就可以区分。 OK
+- new_msg的bug OK
+- 能正确加载msg history 
+- new_msg在提示词中能正确显示
 
 - todo没有效果？
   - 确认todo是否可以无workspace构建 不能

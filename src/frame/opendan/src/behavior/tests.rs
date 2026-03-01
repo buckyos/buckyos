@@ -951,6 +951,7 @@ async fn run_step_with_workshop_list_dir_then_plan_python_actions() {
             "session-workshop",
             Some("Session Workshop".to_string()),
             None,
+            None,
         )
         .await
         .expect("ensure session");

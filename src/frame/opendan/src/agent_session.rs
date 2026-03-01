@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value as Json};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock};
 
 use crate::agent_tool::{AgentTool, AgentToolError, ToolSpec, TOOL_GET_SESSION};
 use crate::behavior::{self, TraceCtx};
@@ -84,6 +84,7 @@ struct SessionRuntimeMeta {
     state: SessionState,
     wait_details: Option<SessionWaitDetails>,
     current_behavior: Option<String>,
+    default_remote: Option<String>,
     step_index: u32,
     last_step_summary: Option<Json>,
     workspace_info: Option<Json>,
@@ -100,6 +101,7 @@ impl Default for SessionRuntimeMeta {
             state: SessionState::Wait,
             wait_details: None,
             current_behavior: None,
+            default_remote: None,
             step_index: 0,
             last_step_summary: None,
             workspace_info: None,
@@ -126,6 +128,7 @@ pub struct AgentSession {
     pub state: SessionState,
     pub wait_details: Option<SessionWaitDetails>,
     pub current_behavior: String,
+    pub default_remote: Option<String>,
     pub step_index: u32,
 
     pub msg_kmsgqueue_curosr: u64,
@@ -166,6 +169,7 @@ impl AgentSession {
             state: SessionState::Wait,
             wait_details: None,
             current_behavior,
+            default_remote: None,
             step_index: 0,
             last_step_summary: None,
             msg_kmsgqueue_curosr: 0,
@@ -223,6 +227,7 @@ impl AgentSession {
             wait_details: runtime_meta.wait_details,
             current_behavior: normalize_optional_string(runtime_meta.current_behavior)
                 .unwrap_or_default(),
+            default_remote: normalize_optional_string(runtime_meta.default_remote),
             step_index: runtime_meta.step_index,
             last_step_summary: runtime_last_step_summary,
             msg_kmsgqueue_curosr: 0,
@@ -289,6 +294,7 @@ impl AgentSession {
             state: self.state,
             wait_details: self.wait_details.clone(),
             current_behavior: normalize_optional_string(Some(self.current_behavior.clone())),
+            default_remote: self.default_remote.clone(),
             step_index: self.step_index,
             last_step_summary: self.last_step_summary.clone().map(Json::String),
             workspace_info: self.workspace_info.clone(),
@@ -373,6 +379,7 @@ impl AgentSession {
             "title": self.title,
             "summary": self.summary,
             "current_behavior": self.current_behavior,
+            "default_remote": self.default_remote.clone(),
             "step_index": self.step_index,
             "updated_at_ms": self.updated_at_ms,
             "last_activity_ms": self.last_activity_ms,
@@ -510,6 +517,7 @@ pub struct AgentSessionMgr {
     default_behavior: String,
     sessions: Arc<RwLock<HashMap<String, Arc<Mutex<AgentSession>>>>>,
     scheduler_lock: Arc<Mutex<()>>,
+    ready_notify: Arc<Notify>,
 }
 
 impl AgentSessionMgr {
@@ -541,6 +549,7 @@ impl AgentSessionMgr {
             default_behavior,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             scheduler_lock: Arc::new(Mutex::new(())),
+            ready_notify: Arc::new(Notify::new()),
         };
         store.load_existing().await?;
         Ok(store)
@@ -571,6 +580,7 @@ impl AgentSessionMgr {
         session_id: &str,
         title: Option<String>,
         behavior: Option<&str>,
+        default_remote: Option<&str>,
     ) -> Result<Arc<Mutex<AgentSession>>, AgentToolError> {
         let session_id = sanitize_session_id(session_id)?;
         if let Some(existing) = self.get_session(session_id.as_str()).await {
@@ -587,6 +597,7 @@ impl AgentSessionMgr {
         if let Some(title) = normalize_optional_string(title) {
             session.title = title;
         }
+        session.default_remote = normalize_optional_string(default_remote.map(str::to_string));
         let record = session.to_record(true);
         self.write_session_record(&record).await?;
 
@@ -610,11 +621,21 @@ impl AgentSessionMgr {
         session_id: &str,
         input_item: &SessionInputItem,
     ) -> Result<(), AgentToolError> {
-        let session = self.ensure_session(session_id, None, None).await?;
+        let default_remote = input_item.msg.as_ref().map(|msg| msg.from.to_string());
+        let session = self
+            .ensure_session(session_id, None, None, default_remote.as_deref())
+            .await?;
         let mut guard = session.lock().await;
 
         guard.update_state_on_input_arrived(&input_item, SessionState::WaitForMsg);
-        self.save_session_locked(&guard).await
+        info!(
+            "agent.session_try_wakeup: session_id={} state={:?}",
+            guard.session_id, guard.state
+        );
+        self.save_session_locked(&guard).await?;
+        // Wake one worker immediately after session state turns Ready.
+        self.ready_notify.notify_one();
+        Ok(())
     }
 
     pub async fn save_session(&self, session_id: &str) -> Result<(), AgentToolError> {
@@ -637,6 +658,7 @@ impl AgentSessionMgr {
             let guard = self.sessions.read().await;
             guard.values().cloned().collect::<Vec<_>>()
         };
+        let mut woke_any = false;
 
         for session in sessions {
             let mut guard = session.lock().await;
@@ -644,7 +666,11 @@ impl AgentSessionMgr {
                 guard.wait_details = None;
                 guard.update_state(SessionState::Ready);
                 self.save_session_locked(&guard).await?;
+                woke_any = true;
             }
+        }
+        if woke_any {
+            self.ready_notify.notify_one();
         }
         Ok(())
     }
@@ -744,6 +770,12 @@ impl AgentSessionMgr {
         None
     }
 
+    pub async fn wait_for_ready_or_timeout(&self, timeout: std::time::Duration) -> bool {
+        tokio::time::timeout(timeout, self.ready_notify.notified())
+            .await
+            .is_ok()
+    }
+
     pub async fn session_view(&self, session_id: &str) -> Result<Json, AgentToolError> {
         let session_id = sanitize_session_id(session_id)?;
         self.refresh_status_from_disk(session_id.as_str()).await?;
@@ -816,6 +848,12 @@ impl AgentSessionMgr {
             };
             record.session_id = session_id.clone();
             if record.owner_agent.trim().is_empty() {
+                record.owner_agent = self.owner_agent.clone();
+            } else if record.owner_agent != self.owner_agent {
+                warn!(
+                    "agent_session.load normalize owner_agent: session={} owner_agent={} normalized={}",
+                    session_id, record.owner_agent, self.owner_agent
+                );
                 record.owner_agent = self.owner_agent.clone();
             }
 

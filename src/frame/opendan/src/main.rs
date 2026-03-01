@@ -34,6 +34,7 @@ use log::{error, info, warn};
 use server_runner::Runner;
 use tokio::fs;
 use tokio::task::JoinSet;
+use tokio::time::{sleep, Duration};
 
 use crate::agent::{AIAgent, AIAgentDeps};
 use crate::agent_config::AIAgentConfig;
@@ -93,6 +94,7 @@ impl HttpServer for OpenDanHttpServer {
 
 const OPENDAN_AGENTS_ROOT_ENV: &str = "OPENDAN_AGENTS_ROOT";
 const OPENDAN_SESSION_WORKER_THREADS_ENV: &str = "OPENDAN_SESSION_WORKER_THREADS";
+const OPENDAN_STARTUP_DEP_READY_WAIT_SECS: u64 = 10;
 
 fn resolve_agents_root() -> Result<PathBuf> {
     if let Ok(path) = std::env::var(OPENDAN_AGENTS_ROOT_ENV) {
@@ -228,6 +230,11 @@ async fn service_main() -> Result<()> {
         .login()
         .await
         .context("opendan login to buckyos failed")?;
+    info!(
+        "opendan login succeeded, waiting {}s for dependent services to get ready",
+        OPENDAN_STARTUP_DEP_READY_WAIT_SECS
+    );
+    sleep(Duration::from_secs(OPENDAN_STARTUP_DEP_READY_WAIT_SECS)).await;
     runtime.set_main_service_port(OPENDAN_SERVICE_PORT).await;
     set_buckyos_api_runtime(runtime);
 

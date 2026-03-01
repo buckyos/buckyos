@@ -731,17 +731,17 @@ fn is_expired_at(raw_expired_at: Option<&Json>, now: &DateTime<Utc>) -> bool {
 }
 
 fn normalize_key(raw_key: &str) -> Result<String, AgentToolError> {
-    let key = raw_key.trim();
-    if key.is_empty() {
+    let raw = raw_key.trim();
+    if raw.is_empty() {
         return Err(AgentToolError::InvalidArgs(
             "memory key cannot be empty".to_string(),
         ));
     }
-    if !key.starts_with('/') {
-        return Err(AgentToolError::InvalidArgs(
-            "memory key must start with `/`".to_string(),
-        ));
-    }
+    let key = if raw.starts_with('/') {
+        raw.to_string()
+    } else {
+        format!("/{raw}")
+    };
     if key.contains('\0') || key.contains('\n') || key.contains('\r') {
         return Err(AgentToolError::InvalidArgs(
             "memory key contains forbidden control characters".to_string(),
@@ -1007,6 +1007,38 @@ mod tests {
         print!("Loaded memory:\n{memory_text}");
         assert!(memory_text.contains("user/preference/style"));
         assert!(memory_text.contains("用户偏好简洁回复"));
+    }
+
+    #[tokio::test]
+    async fn set_memory_without_leading_slash_is_normalized() {
+        let temp = tempdir().expect("create tempdir");
+        let root = temp.path().to_path_buf();
+        let memory = AgentMemory::new(AgentMemoryConfig::new(&root))
+            .await
+            .expect("create memory");
+
+        let result = memory
+            .set_memory(
+                "user_profile/location",
+                r#"{"type":"profile","summary":"用户居住在 Cupertino"}"#,
+                json!({
+                    "kind":"user",
+                    "name":"chat",
+                    "retrieved_at":"2026-02-22T10:00:00Z",
+                    "locator":{"conversation_id":"c1","message_id":"m2"}
+                }),
+            )
+            .await
+            .expect("set memory");
+
+        assert_eq!(result["key"], "/user_profile/location");
+
+        let loaded = memory
+            .load_memory(Some(200), vec![], None)
+            .await
+            .expect("load memory");
+        let memory_text = AgentMemory::render_memory_items(&loaded);
+        assert!(memory_text.contains("user_profile/location"));
     }
 
     #[tokio::test]
