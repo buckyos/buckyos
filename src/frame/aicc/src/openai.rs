@@ -2,19 +2,19 @@ use crate::aicc::{
     AIComputeCenter, CostEstimate, Provider, ProviderError, ProviderInstance, ProviderStartResult,
     ResolvedRequest, TaskEventSink,
 };
-use crate::openai_protocol::{merge_options, merge_tool_calls};
-use anyhow::{Context, Result, anyhow};
+use crate::openai_protocol::{merge_options, merge_requirements_response_format, merge_tool_calls};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
-use base64::Engine as _;
 use base64::engine::general_purpose;
+use base64::Engine as _;
 use buckyos_api::{
-    AiArtifact, AiCost, AiResponseSummary, AiToolCall, AiUsage, Capability, CompleteRequest,
-    Feature, ResourceRef, features, value_to_object_map,
+    features, value_to_object_map, AiArtifact, AiCost, AiResponseSummary, AiToolCall, AiUsage,
+    Capability, CompleteRequest, Feature, ResourceRef,
 };
 use log::{info, warn};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -195,7 +195,11 @@ impl OpenAIProvider {
                         .and_then(|value| value.as_str())
                 })
                 .unwrap_or("standard");
-            if quality == "hd" { 0.08 } else { 0.04 }
+            if quality == "hd" {
+                0.08
+            } else {
+                0.04
+            }
         } else {
             0.04
         };
@@ -613,6 +617,7 @@ impl OpenAIProvider {
         if let Some(options) = req.payload.options.as_ref() {
             ignored_options = merge_options(&mut request_obj, options)?;
         }
+        merge_requirements_response_format(&mut request_obj, req);
         merge_tool_calls(&mut request_obj, req.payload.tool_specs.as_slice())?;
         if !ignored_options.is_empty() {
             warn!(
@@ -682,7 +687,8 @@ impl OpenAIProvider {
             .requirements
             .must_features
             .iter()
-            .any(|feature| feature == features::JSON_OUTPUT);
+            .any(|feature| feature == features::JSON_OUTPUT)
+            || req.requirements.resp_foramt == buckyos_api::RespFormat::Json;
 
         let parsed_json = if json_output_required {
             content

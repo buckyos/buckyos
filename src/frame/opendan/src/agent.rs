@@ -585,13 +585,15 @@ impl AIAgent {
         let mut out = Vec::<PulledMsg>::new();
         for box_kind in box_kinds {
             let state_filter = Self::msg_pull_state_filter_for_box(box_kind);
-            info!(
+            debug!(
                 "agent.msg_pull_box_begin: did={} box_kind={:?} state_filter={:?}",
-                self.did, box_kind, state_filter
+                self.did,
+                box_kind,
+                state_filter
             );
             let mut pulled_in_box = 0usize;
             for attempt in 0..MAX_MSG_PULL_PER_TICK {
-                info!(
+                debug!(
                     "agent.msg_pull_get_next_call: did={} box_kind={:?} attempt={} state_filter={:?}",
                     self.did,
                     box_kind,
@@ -632,7 +634,7 @@ impl AIAgent {
                         out.push(Self::msg_record_to_pulled_msg(record));
                     }
                     Ok(None) => {
-                        info!(
+                        debug!(
                             "agent.msg_pull_get_next_miss: did={} box_kind={:?} attempt={} pulled_in_box={}",
                             self.did,
                             box_kind,
@@ -2493,25 +2495,65 @@ impl AIAgent {
             return Err(anyhow!("behavior name cannot be empty"));
         }
 
-        if let Some(cached) = self
-            .behavior_cfg_cache
-            .read()
-            .await
-            .get(behavior_name)
-            .cloned()
+        let lookup_names = Self::build_behavior_lookup_names(behavior_name);
         {
-            return Ok(cached);
+            let cache = self.behavior_cfg_cache.read().await;
+            for lookup_name in &lookup_names {
+                if let Some(cached) = cache.get(lookup_name).cloned() {
+                    return Ok(cached);
+                }
+            }
         }
 
-        let loaded = BehaviorConfig::load_from_dir(&self.behaviors_dir, behavior_name)
-            .await
-            .map_err(|err| anyhow!("load behavior `{behavior_name}` failed: {err}"))?;
+        let mut last_err: Option<anyhow::Error> = None;
+        for lookup_name in &lookup_names {
+            match BehaviorConfig::load_from_dir(&self.behaviors_dir, lookup_name).await {
+                Ok(loaded) => {
+                    let mut cache = self.behavior_cfg_cache.write().await;
+                    for alias in &lookup_names {
+                        cache.insert(alias.clone(), loaded.clone());
+                    }
+                    return Ok(loaded);
+                }
+                Err(err) => {
+                    last_err = Some(anyhow!(
+                        "lookup `{lookup_name}` failed while loading behavior `{behavior_name}`: {err}"
+                    ));
+                }
+            }
+        }
 
-        self.behavior_cfg_cache
-            .write()
-            .await
-            .insert(behavior_name.to_string(), loaded.clone());
-        Ok(loaded)
+        let looked_up = lookup_names.join(", ");
+        Err(last_err.unwrap_or_else(|| {
+            anyhow!(
+                "load behavior `{behavior_name}` failed: no matching behavior config found (tried: {looked_up})"
+            )
+        }))
+    }
+
+    fn build_behavior_lookup_names(behavior_name: &str) -> Vec<String> {
+        let trimmed = behavior_name.trim();
+        if trimmed.is_empty() {
+            return Vec::new();
+        }
+
+        let mut out = Vec::new();
+        out.push(trimmed.to_string());
+
+        let base = trimmed
+            .split_once(':')
+            .map(|(name, _)| name.trim())
+            .unwrap_or(trimmed);
+        if !base.is_empty() && !out.iter().any(|name| name == base) {
+            out.push(base.to_string());
+        }
+
+        let lower = base.to_ascii_lowercase();
+        if !lower.is_empty() && !out.iter().any(|name| name == &lower) {
+            out.push(lower);
+        }
+
+        out
     }
 
     pub fn did(&self) -> &str {

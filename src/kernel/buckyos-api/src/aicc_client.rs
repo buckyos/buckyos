@@ -35,6 +35,20 @@ pub mod features {
     pub const VIDEO_UNDERSTAND: &str = "video_understand";
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RespFormat {
+    #[default]
+    #[serde(alias = "Text")]
+    Text,
+    #[serde(alias = "Json", alias = "JSON")]
+    Json,
+}
+
+fn is_default_resp_foramt(resp_foramt: &RespFormat) -> bool {
+    matches!(resp_foramt, RespFormat::Text)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ResourceRef {
@@ -90,6 +104,8 @@ pub struct Requirements {
     pub max_latency_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "is_default_resp_foramt")]
+    pub resp_foramt: RespFormat,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extra: Option<Value>,
 }
@@ -105,6 +121,7 @@ impl Requirements {
             must_features,
             max_latency_ms,
             max_cost_usd,
+            resp_foramt: RespFormat::default(),
             extra,
         }
     }

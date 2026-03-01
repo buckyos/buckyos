@@ -1,5 +1,5 @@
 use crate::aicc::ProviderError;
-use buckyos_api::AiToolSpec;
+use buckyos_api::{AiToolSpec, CompleteRequest, RespFormat};
 use serde_json::{json, Map, Value};
 
 const OPENAI_OPTION_ALLOWLIST: &[&str] = &[
@@ -254,11 +254,39 @@ pub(crate) fn merge_options(
     Ok(ignored)
 }
 
+pub(crate) fn merge_requirements_response_format(
+    target: &mut Map<String, Value>,
+    req: &CompleteRequest,
+) {
+    if target.contains_key("response_format") {
+        return;
+    }
+
+    if req.requirements.resp_foramt == RespFormat::Json {
+        target.insert(
+            "response_format".to_string(),
+            json!({ "type": "json_object" }),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buckyos_api::{AiToolSpec, value_to_object_map};
+    use buckyos_api::{
+        value_to_object_map, AiPayload, AiToolSpec, Capability, ModelSpec, Requirements,
+    };
     use serde_json::json;
+
+    fn base_request() -> CompleteRequest {
+        CompleteRequest::new(
+            Capability::LlmRouter,
+            ModelSpec::new("llm.default".to_string(), None),
+            Requirements::default(),
+            AiPayload::default(),
+            None,
+        )
+    }
 
     #[test]
     fn merge_options_converts_internal_tools_to_openai_format() {
@@ -484,6 +512,52 @@ mod tests {
                 "type": "object",
                 "properties": {
                     "command": { "type": "string" }
+                }
+            }))
+        );
+    }
+
+    #[test]
+    fn merge_requirements_response_format_sets_json_object_for_json() {
+        let mut target = Map::new();
+        let mut req = base_request();
+        req.requirements.resp_foramt = RespFormat::Json;
+
+        merge_requirements_response_format(&mut target, &req);
+
+        assert_eq!(
+            target.get("response_format"),
+            Some(&json!({
+                "type": "json_object"
+            }))
+        );
+    }
+
+    #[test]
+    fn merge_requirements_response_format_does_not_override_existing() {
+        let mut target = Map::new();
+        target.insert(
+            "response_format".to_string(),
+            json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "custom",
+                    "schema": {"type": "object"}
+                }
+            }),
+        );
+        let mut req = base_request();
+        req.requirements.resp_foramt = RespFormat::Json;
+
+        merge_requirements_response_format(&mut target, &req);
+
+        assert_eq!(
+            target.get("response_format"),
+            Some(&json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "custom",
+                    "schema": {"type": "object"}
                 }
             }))
         );

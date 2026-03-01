@@ -1438,8 +1438,8 @@ impl AIComputeCenter {
         let request_log = serde_json::to_string(&req.request)
             .unwrap_or_else(|err| format!("{{\"serialize_error\":\"{}\"}}", err));
         info!(
-            "aicc.llm.input task_id={} tenant={} trace_id={:?} request={}",
-            task_id, ctx.tenant_id, ctx.trace_id, request_log
+            "aicc.llm.input task_id={} tenant={} trace_id={:?}",
+            task_id, ctx.tenant_id, ctx.trace_id
         );
 
         for attempt in decision.attempts() {

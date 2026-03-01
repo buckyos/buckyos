@@ -72,7 +72,7 @@ memory:
   session_summaries: { limit: 3000, max_percent: 0.25 }
   workspace_todo: { limit: 4500, max_percent: 0.35 }
   first_prompt: |
-  ## 下面是已有的local workspace
+    ## 下面是已有的local workspace
     {{local_workspace_list}}
 
 input: |

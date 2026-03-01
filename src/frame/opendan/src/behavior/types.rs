@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value as Json;
+use serde_json::{Map, Value as Json};
 use tokio::sync::Mutex;
 
 use crate::agent_session::AgentSession;
@@ -163,16 +163,104 @@ impl BehaviorLLMResult {
     }
 
     pub fn from_json_str(input: &str) -> Result<Self, LLMComputeError> {
-        let mut result: Self =
-            serde_json::from_str(input).map_err(|e| LLMComputeError::Internal(e.to_string()))?;
-        if result.next_behavior.is_none() {
-            if let Ok(v) = serde_json::from_str::<Json>(input) {
-                if v.get("is_sleep").and_then(|x| x.as_bool()) == Some(true) {
-                    result.next_behavior = Some("END".to_string());
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return Err(LLMComputeError::Internal(
+                "empty llm behavior output".to_string(),
+            ));
+        }
+
+        let payload = parse_behavior_payload_json(trimmed)
+            .map_err(|err| LLMComputeError::Internal(err.to_string()))?;
+        let mut result: Self = serde_json::from_value(payload.clone())
+            .map_err(|e| LLMComputeError::Internal(e.to_string()))?;
+
+        Ok(result)
+    }
+}
+
+fn parse_behavior_payload_json(input: &str) -> Result<Json, serde_json::Error> {
+    match serde_json::from_str::<Json>(input) {
+        Ok(value) => Ok(unwrap_nested_json_string(value)),
+        Err(primary_err) => {
+            if let Some(values) = extract_json_values(input) {
+                return Ok(unwrap_nested_json_string(merge_json_values(values)));
+            }
+            Err(primary_err)
+        }
+    }
+}
+
+fn unwrap_nested_json_string(mut value: Json) -> Json {
+    for _ in 0..2 {
+        let Some(raw) = value.as_str().map(str::trim) else {
+            break;
+        };
+        let Some(values) = extract_json_values(raw) else {
+            break;
+        };
+        value = merge_json_values(values);
+    }
+    value
+}
+
+fn merge_json_values(values: Vec<Json>) -> Json {
+    let mut merged = Map::new();
+    let mut has_object = false;
+    let mut last_non_object = Json::Null;
+
+    for value in values {
+        match value {
+            Json::Object(obj) => {
+                has_object = true;
+                for (key, item) in obj {
+                    merged.insert(key, item);
                 }
             }
+            other => last_non_object = other,
         }
-        Ok(result)
+    }
+
+    if has_object {
+        Json::Object(merged)
+    } else {
+        last_non_object
+    }
+}
+
+fn extract_json_values(input: &str) -> Option<Vec<Json>> {
+    if let Some(values) = parse_json_stream_prefix(input) {
+        return Some(values);
+    }
+
+    for (idx, ch) in input.char_indices() {
+        if ch != '{' && ch != '[' && ch != '"' {
+            continue;
+        }
+        if let Some(values) = parse_json_stream_prefix(&input[idx..]) {
+            return Some(values);
+        }
+    }
+    None
+}
+
+fn parse_json_stream_prefix(input: &str) -> Option<Vec<Json>> {
+    let mut stream = serde_json::Deserializer::from_str(input).into_iter::<Json>();
+    let mut values = Vec::new();
+
+    loop {
+        match stream.next() {
+            Some(Ok(value)) => values.push(value),
+            Some(Err(_)) if values.is_empty() => return None,
+            Some(Err(_)) => break,
+            None => break,
+        }
+    }
+
+    if values.is_empty() {
+        None
+    } else {
+        Some(values)
     }
 }
 
@@ -260,5 +348,32 @@ impl Default for ModelPolicy {
             fallback: vec![],
             temperature: 0.2,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn behavior_result_accepts_concatenated_json_objects() {
+        let raw = r#"{"actions":{"mode":"all","cmds":[["create_local_workspace",{"name":"small_toy_web"}]]}}{"next_behavior":"DO:1","thinking":"done"}"#;
+        let parsed =
+            BehaviorLLMResult::from_json_str(raw).expect("concatenated json should be parsed");
+
+        assert_eq!(parsed.actions.mode, "all");
+        assert_eq!(parsed.actions.cmds.len(), 1);
+        assert_eq!(parsed.next_behavior.as_deref(), Some("DO:1"));
+        assert_eq!(parsed.thinking.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn behavior_result_accepts_markdown_wrapped_json() {
+        let raw = r#"```json
+{"next_behavior":"END","thinking":"ok"}
+```"#;
+        let parsed = BehaviorLLMResult::from_json_str(raw).expect("markdown wrapped json");
+        assert_eq!(parsed.next_behavior.as_deref(), Some("END"));
+        assert_eq!(parsed.thinking.as_deref(), Some("ok"));
     }
 }
