@@ -23,9 +23,11 @@ import {
   Upload,
   type LucideIcon,
   X,
-  ZoomIn,
-  ZoomOut,
 } from 'lucide-react'
+
+import FilePreviewPanel from '@/ui/components/file_manager/FilePreviewPanel'
+import ImageViewerModal from '@/ui/components/file_manager/ImageViewerModal'
+import { getFilePreviewKind, type FilePreviewKind } from '@/ui/components/file_manager/filePreview'
 
 type FileEntry = {
   name: string
@@ -271,50 +273,6 @@ const formatTimestamp = (value: number) => {
   return new Date(value * 1000).toLocaleString()
 }
 
-type FilePreviewKind = 'image' | 'pdf' | 'text' | 'office' | 'unknown'
-
-const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'])
-const TEXT_DOCUMENT_EXTENSIONS = new Set([
-  'txt',
-  'md',
-  'markdown',
-  'json',
-  'yaml',
-  'yml',
-  'toml',
-  'ini',
-  'conf',
-  'log',
-  'csv',
-  'xml',
-])
-const OFFICE_DOCUMENT_EXTENSIONS = new Set(['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp'])
-
-const getFileExtension = (name: string) => {
-  const dot = name.lastIndexOf('.')
-  if (dot < 0 || dot === name.length - 1) {
-    return ''
-  }
-  return name.slice(dot + 1).toLowerCase()
-}
-
-const getFilePreviewKind = (entry: FileEntry): FilePreviewKind => {
-  const ext = getFileExtension(entry.name)
-  if (IMAGE_EXTENSIONS.has(ext)) {
-    return 'image'
-  }
-  if (ext === 'pdf') {
-    return 'pdf'
-  }
-  if (TEXT_DOCUMENT_EXTENSIONS.has(ext)) {
-    return 'text'
-  }
-  if (OFFICE_DOCUMENT_EXTENSIONS.has(ext)) {
-    return 'office'
-  }
-  return 'unknown'
-}
-
 type IconName =
   | 'open'
   | 'up'
@@ -337,9 +295,6 @@ type IconName =
   | 'close'
   | 'folder'
   | 'more'
-  | 'zoom-in'
-  | 'zoom-out'
-  | 'zoom-reset'
 
 const Icon = ({ name, className = '' }: { name: IconName; className?: string }) => {
   const icons: Record<IconName, LucideIcon> = {
@@ -364,9 +319,6 @@ const Icon = ({ name, className = '' }: { name: IconName; className?: string }) 
     save: Save,
     close: X,
     folder: Folder,
-    'zoom-in': ZoomIn,
-    'zoom-out': ZoomOut,
-    'zoom-reset': RotateCw,
   }
 
   const Lucide = icons[name]
@@ -993,40 +945,38 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
     [visibleItems, selectedPaths],
   )
 
-  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  const sleep = useCallback((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)), [])
 
-  const createUploadSession = async (
-    authToken: string,
-    targetPath: string,
-    size: number,
-    chunkSize: number,
-  ) => {
-    const response = await fetch('/api/upload/session', {
-      method: 'POST',
-      headers: withAuthHeaders(authToken, {
-        'Content-Type': 'application/json',
-      }),
-      body: JSON.stringify({
-        path: targetPath,
-        size,
-        chunk_size: chunkSize,
-        override_existing: true,
-      }),
-    })
+  const createUploadSession = useCallback(
+    async (authToken: string, targetPath: string, size: number, chunkSize: number) => {
+      const response = await fetch('/api/upload/session', {
+        method: 'POST',
+        headers: withAuthHeaders(authToken, {
+          'Content-Type': 'application/json',
+        }),
+        body: JSON.stringify({
+          path: targetPath,
+          size,
+          chunk_size: chunkSize,
+          override_existing: true,
+        }),
+      })
 
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => ({}))) as { error?: string }
-      throw new Error(payload.error ?? `Create upload session failed (${response.status})`)
-    }
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { error?: string }
+        throw new Error(payload.error ?? `Create upload session failed (${response.status})`)
+      }
 
-    const payload = (await response.json()) as { session?: UploadSessionRecord }
-    if (!payload.session) {
-      throw new Error('Create upload session failed: invalid response')
-    }
-    return payload.session
-  }
+      const payload = (await response.json()) as { session?: UploadSessionRecord }
+      if (!payload.session) {
+        throw new Error('Create upload session failed: invalid response')
+      }
+      return payload.session
+    },
+    [],
+  )
 
-  const getUploadSession = async (authToken: string, sessionId: string) => {
+  const getUploadSession = useCallback(async (authToken: string, sessionId: string) => {
     const response = await fetch(`/api/upload/session/${encodeURIComponent(sessionId)}`, {
       headers: withAuthHeaders(authToken),
     })
@@ -1035,42 +985,40 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
     }
     const payload = (await response.json()) as { session?: UploadSessionRecord }
     return payload.session ?? null
-  }
+  }, [])
 
-  const uploadSessionChunk = async (
-    authToken: string,
-    sessionId: string,
-    offset: number,
-    chunk: Blob,
-  ) => {
-    const response = await fetch(`/api/upload/session/${encodeURIComponent(sessionId)}?offset=${offset}`, {
-      method: 'PUT',
-      headers: withAuthHeaders(authToken),
-      body: chunk,
-    })
+  const uploadSessionChunk = useCallback(
+    async (authToken: string, sessionId: string, offset: number, chunk: Blob) => {
+      const response = await fetch(`/api/upload/session/${encodeURIComponent(sessionId)}?offset=${offset}`, {
+        method: 'PUT',
+        headers: withAuthHeaders(authToken),
+        body: chunk,
+      })
 
-    if (response.status === 409) {
-      const payload = (await response.json().catch(() => ({}))) as { expected_offset?: number; error?: string }
-      return {
-        ok: false,
-        expectedOffset: payload.expected_offset,
-        error: payload.error ?? 'Chunk offset mismatch',
+      if (response.status === 409) {
+        const payload = (await response.json().catch(() => ({}))) as { expected_offset?: number; error?: string }
+        return {
+          ok: false,
+          expectedOffset: payload.expected_offset,
+          error: payload.error ?? 'Chunk offset mismatch',
+        }
       }
-    }
 
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => ({}))) as { error?: string }
-      throw new Error(payload.error ?? `Upload chunk failed (${response.status})`)
-    }
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { error?: string }
+        throw new Error(payload.error ?? `Upload chunk failed (${response.status})`)
+      }
 
-    const payload = (await response.json()) as { uploaded_size?: number }
-    return {
-      ok: true,
-      uploadedSize: payload.uploaded_size ?? offset + chunk.size,
-    }
-  }
+      const payload = (await response.json()) as { uploaded_size?: number }
+      return {
+        ok: true,
+        uploadedSize: payload.uploaded_size ?? offset + chunk.size,
+      }
+    },
+    [],
+  )
 
-  const completeUploadSession = async (authToken: string, sessionId: string) => {
+  const completeUploadSession = useCallback(async (authToken: string, sessionId: string) => {
     const response = await fetch(`/api/upload/session/${encodeURIComponent(sessionId)}/complete`, {
       method: 'POST',
       headers: withAuthHeaders(authToken),
@@ -1079,9 +1027,9 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
       const payload = (await response.json().catch(() => ({}))) as { error?: string }
       throw new Error(payload.error ?? `Complete upload failed (${response.status})`)
     }
-  }
+  }, [])
 
-  const deleteUploadSession = async (authToken: string, sessionId: string) => {
+  const deleteUploadSession = useCallback(async (authToken: string, sessionId: string) => {
     const response = await fetch(`/api/upload/session/${encodeURIComponent(sessionId)}`, {
       method: 'DELETE',
       headers: withAuthHeaders(authToken),
@@ -1094,7 +1042,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
       const payload = (await response.json().catch(() => ({}))) as { error?: string }
       throw new Error(payload.error ?? `Delete upload session failed (${response.status})`)
     }
-  }
+  }, [])
 
   const performUploadFile = useCallback(
     async (
@@ -1744,7 +1692,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
 
     setLoading(true)
     try {
-      const response = await fetch(`/api/resources${encodePath(entry.path)}`, {
+      const response = await fetch(`/api/resources${encodePath(entry.path)}?content=1`, {
         headers: withAuthHeaders(effectiveToken),
       })
 
@@ -1885,6 +1833,11 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   }
 
   const downloadQuery = useMemo(() => encodeURIComponent(effectiveToken), [effectiveToken])
+  const buildRawFileUrl = useCallback(
+    (path: string, forceDownload = false) =>
+      `/api/raw${encodePath(path)}?auth=${downloadQuery}${forceDownload ? '&download=1' : ''}`,
+    [downloadQuery],
+  )
   const publicPathSegments = useMemo(() => publicSharePath.split('/').filter(Boolean), [publicSharePath])
   const activeUploadCount = useMemo(
     () => uploadProgress.filter((item) => item.status === 'uploading' || item.status === 'paused').length,
@@ -1957,8 +1910,8 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
     if (!previewEntry) {
       return ''
     }
-    return `/api/raw${encodePath(previewEntry.path)}?auth=${downloadQuery}`
-  }, [downloadQuery, previewEntry])
+    return buildRawFileUrl(previewEntry.path)
+  }, [buildRawFileUrl, previewEntry])
   const publicImageSrc = useMemo(() => {
     if (!publicShareId) {
       return ''
@@ -2308,78 +2261,27 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
           ) : null}
         </section>
 
-        {imageViewerOpen ? (
-          <div className={`${embedded ? 'absolute' : 'fixed'} inset-0 z-50 flex flex-col bg-black/85 p-4`}>
-            <div className="mx-auto flex w-full max-w-6xl items-center justify-between gap-2 rounded-xl bg-white/95 px-3 py-2">
-              <p className="truncate text-sm font-semibold text-slate-800">{imageViewerTitle || 'Image preview'}</p>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={zoomOutImage}
-                  className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
-                >
-                  <span className="inline-flex items-center gap-1.5">
-                    <Icon name="zoom-out" />
-                    Zoom out
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={resetImageZoom}
-                  className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
-                >
-                  <span className="inline-flex items-center gap-1.5">
-                    <Icon name="zoom-reset" />
-                    Reset
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={zoomInImage}
-                  className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
-                >
-                  <span className="inline-flex items-center gap-1.5">
-                    <Icon name="zoom-in" />
-                    Zoom in
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={closeImageViewer}
-                  className="rounded-lg border border-rose-300 bg-white px-2 py-1 text-xs font-semibold text-rose-700 transition hover:bg-rose-50"
-                >
-                  <span className="inline-flex items-center gap-1.5">
-                    <Icon name="close" />
-                    Close
-                  </span>
-                </button>
-              </div>
-            </div>
-
-            <div className="relative mt-3 flex min-h-0 flex-1 items-center justify-center overflow-auto">
-              {viewerImageLoading ? (
-                <div className="absolute inset-0 z-10 flex items-center justify-center">
-                  <div className="rounded-xl bg-white/95 px-4 py-2 text-sm font-semibold text-slate-700 shadow">Loading image...</div>
-                </div>
-              ) : null}
-              <img
-                src={imageViewerSrc}
-                alt={imageViewerTitle}
-                className={`max-h-full w-auto max-w-none cursor-zoom-in transition-opacity ${viewerImageLoading ? 'opacity-0' : 'opacity-100'}`}
-                style={{ transform: `scale(${imageViewerScale})`, transformOrigin: 'center center' }}
-                onLoad={() => setViewerImageLoading(false)}
-                onError={() => setViewerImageLoading(false)}
-                onClick={() => {
-                  if (imageViewerScale < 2) {
-                    zoomInImage()
-                  } else {
-                    resetImageZoom()
-                  }
-                }}
-              />
-            </div>
-          </div>
-        ) : null}
+        <ImageViewerModal
+          open={imageViewerOpen}
+          embedded={embedded}
+          title={imageViewerTitle}
+          src={imageViewerSrc}
+          scale={imageViewerScale}
+          loading={viewerImageLoading}
+          onZoomOut={zoomOutImage}
+          onResetZoom={resetImageZoom}
+          onZoomIn={zoomInImage}
+          onClose={closeImageViewer}
+          onImageLoad={() => setViewerImageLoading(false)}
+          onImageError={() => setViewerImageLoading(false)}
+          onImageClick={() => {
+            if (imageViewerScale < 2) {
+              zoomInImage()
+            } else {
+              resetImageZoom()
+            }
+          }}
+        />
       </main>
     )
   }
@@ -2747,7 +2649,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                 >
                   {!openActionEntry.is_dir ? (
                     <a
-                      href={`/api/raw${encodePath(openActionEntry.path)}?auth=${downloadQuery}`}
+                      href={buildRawFileUrl(openActionEntry.path, true)}
                       className={rowActionItemClass}
                       onClick={closeRowActionMenu}
                     >
@@ -2828,86 +2730,23 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
               )
             : null}
 
-          {previewEntry ? (
-            <section
-              className={`border-t border-slate-200 bg-slate-50/80 px-5 pt-4 ${
-                embedded ? 'min-h-0 flex-1 overflow-y-auto pb-10' : 'pb-4'
-              }`}
-            >
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <p className="text-sm font-semibold text-slate-800">File preview</p>
-                  <p className="text-xs text-slate-500">
-                    {previewEntry.name} · {formatBytes(previewEntry.size)} · {formatTimestamp(previewEntry.modified)}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={onClosePreview}
-                  className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
-                >
-                  <span className="inline-flex items-center gap-1.5">
-                    <Icon name="close" />
-                    Close preview
-                  </span>
-                </button>
-              </div>
-
-              {previewLoading ? (
-                <div className="rounded-xl border border-slate-200 bg-white px-3 py-8 text-center text-sm text-slate-500">
-                  Loading preview...
-                </div>
-              ) : previewError ? (
-                <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-3 text-sm text-rose-700">{previewError}</div>
-              ) : previewKind === 'image' ? (
-                <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-3">
-                  <div className="flex justify-end">
-                    <button
-                      type="button"
-                      onClick={() => openImageViewer(previewRawUrl, previewEntry.name)}
-                      className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
-                    >
-                      <span className="inline-flex items-center gap-1.5">
-                        <Icon name="open" />
-                        View original
-                      </span>
-                    </button>
-                  </div>
-                  <img
-                    src={previewRawUrl}
-                    alt={previewEntry.name}
-                    className={`mx-auto max-h-[520px] w-auto max-w-full transition-opacity ${previewImageLoading ? 'opacity-0' : 'opacity-100'}`}
-                    loading="lazy"
-                    onLoad={() => setPreviewImageLoading(false)}
-                    onError={() => setPreviewImageLoading(false)}
-                    onClick={() => openImageViewer(previewRawUrl, previewEntry.name)}
-                  />
-                  {previewImageLoading ? (
-                    <div className="flex items-center justify-center py-16 text-sm font-medium text-slate-500">Loading image preview...</div>
-                  ) : null}
-                </div>
-              ) : previewKind === 'pdf' ? (
-                <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-                  <iframe src={previewRawUrl} title={previewEntry.name} className="h-[560px] w-full" />
-                </div>
-              ) : previewKind === 'text' ? (
-                <pre className="max-h-[520px] overflow-auto rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-800">
-                  {previewTextContent || '(empty file)'}
-                </pre>
-              ) : previewKind === 'office' && officePreviewUrl ? (
-                <div className="space-y-2">
-                  <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-                    <iframe src={officePreviewUrl} title={`${previewEntry.name} (office preview)`} className="h-[560px] w-full" />
-                  </div>
-                  <p className="text-xs text-slate-500">If the office preview fails, use download and open locally.</p>
-                </div>
-              ) : (
-                <div className="rounded-xl border border-dashed border-slate-300 bg-white px-3 py-4 text-sm text-slate-600">
-                  This file type is not supported for inline preview yet. Use download instead.
-                </div>
-              )}
-            </section>
-          ) : null}
+          <FilePreviewPanel
+            embedded={embedded}
+            previewEntry={previewEntry}
+            previewKind={previewKind}
+            previewRawUrl={previewRawUrl}
+            previewLoading={previewLoading}
+            previewError={previewError}
+            previewTextContent={previewTextContent}
+            previewImageLoading={previewImageLoading}
+            officePreviewUrl={officePreviewUrl}
+            onClosePreview={onClosePreview}
+            onOpenImageViewer={openImageViewer}
+            onPreviewImageLoad={() => setPreviewImageLoading(false)}
+            onPreviewImageError={() => setPreviewImageLoading(false)}
+            formatBytes={formatBytes}
+            formatTimestamp={formatTimestamp}
+          />
 
             </div>
           ) : null}
@@ -3178,78 +3017,27 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
           </button>
         </div>
 
-        {imageViewerOpen ? (
-          <div className={`${embedded ? 'absolute' : 'fixed'} inset-0 z-50 flex flex-col bg-black/85 p-4`}>
-            <div className="mx-auto flex w-full max-w-6xl items-center justify-between gap-2 rounded-xl bg-white/95 px-3 py-2">
-              <p className="truncate text-sm font-semibold text-slate-800">{imageViewerTitle || 'Image preview'}</p>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={zoomOutImage}
-                  className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
-                >
-                  <span className="inline-flex items-center gap-1.5">
-                    <Icon name="zoom-out" />
-                    Zoom out
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={resetImageZoom}
-                  className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
-                >
-                  <span className="inline-flex items-center gap-1.5">
-                    <Icon name="zoom-reset" />
-                    Reset
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={zoomInImage}
-                  className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
-                >
-                  <span className="inline-flex items-center gap-1.5">
-                    <Icon name="zoom-in" />
-                    Zoom in
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={closeImageViewer}
-                  className="rounded-lg border border-rose-300 bg-white px-2 py-1 text-xs font-semibold text-rose-700 transition hover:bg-rose-50"
-                >
-                  <span className="inline-flex items-center gap-1.5">
-                    <Icon name="close" />
-                    Close
-                  </span>
-                </button>
-              </div>
-            </div>
-
-            <div className="relative mt-3 flex min-h-0 flex-1 items-center justify-center overflow-auto">
-              {viewerImageLoading ? (
-                <div className="absolute inset-0 z-10 flex items-center justify-center">
-                  <div className="rounded-xl bg-white/95 px-4 py-2 text-sm font-semibold text-slate-700 shadow">Loading image...</div>
-                </div>
-              ) : null}
-              <img
-                src={imageViewerSrc}
-                alt={imageViewerTitle}
-                className={`max-h-full w-auto max-w-none cursor-zoom-in transition-opacity ${viewerImageLoading ? 'opacity-0' : 'opacity-100'}`}
-                style={{ transform: `scale(${imageViewerScale})`, transformOrigin: 'center center' }}
-                onLoad={() => setViewerImageLoading(false)}
-                onError={() => setViewerImageLoading(false)}
-                onClick={() => {
-                  if (imageViewerScale < 2) {
-                    zoomInImage()
-                  } else {
-                    resetImageZoom()
-                  }
-                }}
-              />
-            </div>
-          </div>
-        ) : null}
+        <ImageViewerModal
+          open={imageViewerOpen}
+          embedded={embedded}
+          title={imageViewerTitle}
+          src={imageViewerSrc}
+          scale={imageViewerScale}
+          loading={viewerImageLoading}
+          onZoomOut={zoomOutImage}
+          onResetZoom={resetImageZoom}
+          onZoomIn={zoomInImage}
+          onClose={closeImageViewer}
+          onImageLoad={() => setViewerImageLoading(false)}
+          onImageError={() => setViewerImageLoading(false)}
+          onImageClick={() => {
+            if (imageViewerScale < 2) {
+              zoomInImage()
+            } else {
+              resetImageZoom()
+            }
+          }}
+        />
       </div>
     </main>
   )

@@ -1,40 +1,37 @@
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use buckyos_api::{
-    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType,
-    ControlPanelClient,
-};
-use buckyos_kit::{get_buckyos_root_dir, init_logging};
+use buckyos_api::{get_buckyos_api_runtime, ControlPanelClient};
+use buckyos_kit::get_buckyos_root_dir;
 use bytes::Bytes;
 use cyfs_gateway_lib::{
     serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
     StreamInfo,
 };
-use http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE};
+use http::header::{
+    ACCEPT_RANGES, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE,
+    RANGE,
+};
 use http::{Method, StatusCode, Version};
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use kRPC::{RPCErrors, RPCHandler, RPCRequest, RPCResponse, RPCResult, RPCSessionToken};
-use log::{error, info, warn};
+use log::{info, warn};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use server_runner::DirHandlerOptions;
-use server_runner::Runner;
 use sha2::{Digest, Sha256};
 use std::io::SeekFrom;
 use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use uuid::Uuid;
 
 const BUCKY_FILE_SERVICE_NAME: &str = "bucky-file";
-const BUCKY_FILE_SERVICE_PORT: u16 = 4070;
 const TOKEN_EXPIRE_SECONDS: u64 = 2 * 60 * 60;
 const FILE_AUTH_DISABLE_ENV: &str = "CONTROL_PANEL_FILE_AUTH_DISABLED";
 const FILE_AUTH_BYPASS_USER_ENV: &str = "CONTROL_PANEL_FILE_AUTH_BYPASS_USER";
+const INLINE_TEXT_CONTENT_MAX_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub(crate) struct BuckyFileServer {
@@ -143,6 +140,12 @@ struct ShareItem {
     created_at: u64,
     expires_at: Option<u64>,
     password_required: bool,
+}
+
+enum RawByteRange {
+    Full,
+    Partial { start: u64, end: u64 },
+    Unsatisfiable,
 }
 
 impl BuckyFileServer {
@@ -1034,6 +1037,171 @@ impl BuckyFileServer {
                 .find(|(k, _)| k == key)
                 .map(|(_, v)| v.to_string())
         })
+    }
+
+    fn parse_query_bool(value: &str) -> bool {
+        let normalized = value.trim().to_ascii_lowercase();
+        matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+    }
+
+    fn content_type_for_path(path: &Path) -> &'static str {
+        let extension = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+            .unwrap_or_default();
+
+        match extension.as_str() {
+            "txt" | "md" | "markdown" | "csv" | "log" => "text/plain; charset=utf-8",
+            "json" => "application/json; charset=utf-8",
+            "xml" => "application/xml; charset=utf-8",
+            "yaml" | "yml" => "application/yaml; charset=utf-8",
+            "toml" | "ini" | "conf" => "text/plain; charset=utf-8",
+            "html" | "htm" => "text/html; charset=utf-8",
+            "css" => "text/css; charset=utf-8",
+            "js" | "mjs" => "application/javascript; charset=utf-8",
+            "pdf" => "application/pdf",
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            "bmp" => "image/bmp",
+            "svg" => "image/svg+xml",
+            "doc" => "application/msword",
+            "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "xls" => "application/vnd.ms-excel",
+            "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "ppt" => "application/vnd.ms-powerpoint",
+            "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "odt" => "application/vnd.oasis.opendocument.text",
+            "ods" => "application/vnd.oasis.opendocument.spreadsheet",
+            "odp" => "application/vnd.oasis.opendocument.presentation",
+            "mp3" => "audio/mpeg",
+            "wav" => "audio/wav",
+            "ogg" => "audio/ogg",
+            "m4a" => "audio/mp4",
+            "aac" => "audio/aac",
+            "flac" => "audio/flac",
+            "mp4" | "m4v" => "video/mp4",
+            "mov" => "video/quicktime",
+            "webm" => "video/webm",
+            "ogv" => "video/ogg",
+            "mkv" => "video/x-matroska",
+            _ => "application/octet-stream",
+        }
+    }
+
+    fn is_inline_text_extension(path: &Path) -> bool {
+        let extension = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+            .unwrap_or_default();
+
+        if extension.is_empty() {
+            return true;
+        }
+
+        matches!(
+            extension.as_str(),
+            "txt"
+                | "md"
+                | "markdown"
+                | "json"
+                | "yaml"
+                | "yml"
+                | "toml"
+                | "ini"
+                | "conf"
+                | "log"
+                | "csv"
+                | "xml"
+                | "js"
+                | "mjs"
+                | "css"
+                | "html"
+                | "htm"
+                | "rs"
+                | "ts"
+                | "tsx"
+                | "jsx"
+        )
+    }
+
+    fn should_include_inline_file_content(
+        path: &Path,
+        file_size: u64,
+        force_content: bool,
+    ) -> bool {
+        if force_content {
+            return true;
+        }
+        if file_size > INLINE_TEXT_CONTENT_MAX_BYTES {
+            return false;
+        }
+        Self::is_inline_text_extension(path)
+    }
+
+    fn parse_raw_range_header(range_header: &str, file_size: u64) -> RawByteRange {
+        if !range_header.starts_with("bytes=") {
+            return RawByteRange::Full;
+        }
+
+        let range_value = range_header[6..].trim();
+        if range_value.is_empty() || range_value.contains(',') {
+            return RawByteRange::Full;
+        }
+
+        let Some((start_raw, end_raw)) = range_value.split_once('-') else {
+            return RawByteRange::Full;
+        };
+
+        if start_raw.is_empty() {
+            let suffix_length = match end_raw.trim().parse::<u64>() {
+                Ok(value) if value > 0 => value,
+                _ => return RawByteRange::Unsatisfiable,
+            };
+
+            if file_size == 0 {
+                return RawByteRange::Unsatisfiable;
+            }
+
+            let actual_length = suffix_length.min(file_size);
+            return RawByteRange::Partial {
+                start: file_size - actual_length,
+                end: file_size - 1,
+            };
+        }
+
+        let start = match start_raw.trim().parse::<u64>() {
+            Ok(value) => value,
+            Err(_) => return RawByteRange::Full,
+        };
+
+        if file_size == 0 || start >= file_size {
+            return RawByteRange::Unsatisfiable;
+        }
+
+        if end_raw.trim().is_empty() {
+            return RawByteRange::Partial {
+                start,
+                end: file_size - 1,
+            };
+        }
+
+        let end = match end_raw.trim().parse::<u64>() {
+            Ok(value) => value,
+            Err(_) => return RawByteRange::Full,
+        };
+
+        if end < start {
+            return RawByteRange::Unsatisfiable;
+        }
+
+        RawByteRange::Partial {
+            start,
+            end: end.min(file_size - 1),
+        }
     }
 
     fn parse_upload_chunk_size(input: Option<u64>) -> u64 {
@@ -2049,10 +2217,18 @@ impl BuckyFileServer {
             );
         }
 
-        let file_data = tokio::fs::read(&target).await.map_err(|err| {
-            server_err!(ServerErrorCode::InvalidData, "read file failed: {}", err)
-        })?;
-        let content = String::from_utf8(file_data).ok();
+        let force_content = Self::get_query_param(&req, "content")
+            .map(|value| Self::parse_query_bool(&value))
+            .unwrap_or(false);
+        let content =
+            if Self::should_include_inline_file_content(&rel_path, metadata.len(), force_content) {
+                let file_data = tokio::fs::read(&target).await.map_err(|err| {
+                    server_err!(ServerErrorCode::InvalidData, "read file failed: {}", err)
+                })?;
+                String::from_utf8(file_data).ok()
+            } else {
+                None
+            };
 
         Self::json_response(
             StatusCode::OK,
@@ -2948,21 +3124,102 @@ impl BuckyFileServer {
             );
         }
 
-        let content = tokio::fs::read(&target).await.map_err(|err| {
-            server_err!(ServerErrorCode::InvalidData, "read file failed: {}", err)
-        })?;
+        let force_download = Self::get_query_param(&req, "download")
+            .map(|value| Self::parse_query_bool(&value))
+            .unwrap_or(false);
+        let content_type = Self::content_type_for_path(&target);
         let filename = rel_path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "download.bin".to_string());
+        let disposition_type = if force_download {
+            "attachment"
+        } else {
+            "inline"
+        };
+        let content_disposition = format!("{}; filename=\"{}\"", disposition_type, filename);
+        let file_size = metadata.len();
+
+        let range = req
+            .headers()
+            .get(RANGE)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| Self::parse_raw_range_header(value, file_size))
+            .unwrap_or(RawByteRange::Full);
+
+        if matches!(range, RawByteRange::Unsatisfiable) {
+            return http::Response::builder()
+                .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                .header(ACCEPT_RANGES, "bytes")
+                .header(CONTENT_RANGE, format!("bytes */{}", file_size))
+                .header(CACHE_CONTROL, "no-store")
+                .body(Self::boxed_body(Vec::new()))
+                .map_err(|err| {
+                    server_err!(
+                        ServerErrorCode::InvalidData,
+                        "build range not satisfiable response failed: {}",
+                        err
+                    )
+                });
+        }
+
+        if let RawByteRange::Partial { start, end } = range {
+            let length = end.saturating_sub(start).saturating_add(1);
+            if length > usize::MAX as u64 {
+                return Err(server_err!(
+                    ServerErrorCode::InvalidData,
+                    "requested file range is too large: {}",
+                    length
+                ));
+            }
+
+            let mut file = tokio::fs::File::open(&target).await.map_err(|err| {
+                server_err!(ServerErrorCode::InvalidData, "open file failed: {}", err)
+            })?;
+            file.seek(SeekFrom::Start(start)).await.map_err(|err| {
+                server_err!(ServerErrorCode::InvalidData, "seek file failed: {}", err)
+            })?;
+
+            let mut content = vec![0u8; length as usize];
+            file.read_exact(&mut content).await.map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "read file range failed: {}",
+                    err
+                )
+            })?;
+
+            return http::Response::builder()
+                .status(StatusCode::PARTIAL_CONTENT)
+                .header(CONTENT_TYPE, content_type)
+                .header(CONTENT_DISPOSITION, content_disposition)
+                .header(ACCEPT_RANGES, "bytes")
+                .header(CONTENT_LENGTH, length.to_string())
+                .header(
+                    CONTENT_RANGE,
+                    format!("bytes {}-{}/{}", start, end, file_size),
+                )
+                .header(CACHE_CONTROL, "no-store")
+                .body(Self::boxed_body(content))
+                .map_err(|err| {
+                    server_err!(
+                        ServerErrorCode::InvalidData,
+                        "build partial content response failed: {}",
+                        err
+                    )
+                });
+        }
+
+        let content = tokio::fs::read(&target).await.map_err(|err| {
+            server_err!(ServerErrorCode::InvalidData, "read file failed: {}", err)
+        })?;
 
         http::Response::builder()
             .status(StatusCode::OK)
-            .header(CONTENT_TYPE, "application/octet-stream")
-            .header(
-                CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{}\"", filename),
-            )
+            .header(CONTENT_TYPE, content_type)
+            .header(CONTENT_DISPOSITION, content_disposition)
+            .header(ACCEPT_RANGES, "bytes")
+            .header(CONTENT_LENGTH, content.len().to_string())
             .header(CACHE_CONTROL, "no-store")
             .body(Self::boxed_body(content))
             .map_err(|err| {
@@ -3134,114 +3391,4 @@ impl HttpServer for BuckyFileServer {
     fn http3_port(&self) -> Option<u16> {
         None
     }
-}
-
-async fn start_bucky_file_service() -> anyhow::Result<()> {
-    let standalone_requested = std::env::var("BUCKY_FILE_STANDALONE")
-        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    let require_runtime = std::env::var("BUCKY_FILE_REQUIRE_RUNTIME")
-        .or_else(|_| std::env::var("BUCKY_FILE_FORCE_RUNTIME"))
-        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-
-    let mut standalone_mode = standalone_requested;
-    if standalone_requested {
-        warn!("bucky-file standalone mode explicitly requested by env");
-    } else {
-        let runtime_result = async {
-            let mut runtime = init_buckyos_api_runtime(
-                BUCKY_FILE_SERVICE_NAME,
-                None,
-                BuckyOSRuntimeType::KernelService,
-            )
-            .await?;
-            runtime.login().await?;
-            runtime.set_main_service_port(BUCKY_FILE_SERVICE_PORT).await;
-            set_buckyos_api_runtime(runtime);
-            Ok::<(), RPCErrors>(())
-        }
-        .await;
-
-        if let Err(err) = runtime_result {
-            if require_runtime {
-                return Err(anyhow::anyhow!(
-                    "bucky-file runtime login required but failed: {:?}",
-                    err
-                ));
-            }
-            warn!(
-                "bucky-file runtime login failed: {:?}; falling back to standalone mode",
-                err
-            );
-            standalone_mode = true;
-        }
-    }
-
-    let data_folder = if standalone_mode {
-        std::env::temp_dir().join("bucky-file-data")
-    } else {
-        get_buckyos_root_dir()
-            .join("data")
-            .join(BUCKY_FILE_SERVICE_NAME)
-    };
-    if !data_folder.exists() {
-        tokio::fs::create_dir_all(&data_folder).await?;
-    }
-
-    let server = Arc::new(BuckyFileServer::new(data_folder.clone(), standalone_mode));
-    if standalone_mode {
-        warn!("bucky-file standalone mode enabled; runtime login is skipped");
-    } else {
-        info!("bucky-file runtime login succeeded");
-    }
-
-    server
-        .init_share_db()
-        .await
-        .map_err(|err| anyhow::anyhow!("init share db failed: {}", err))?;
-
-    let runner = Runner::new(BUCKY_FILE_SERVICE_PORT);
-    let _ = runner.add_http_server("/kapi/bucky-file".to_string(), server.clone());
-    let _ = runner.add_http_server("/api".to_string(), server.clone());
-
-    let web_dir = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|parent| parent.join("web")));
-    if let Some(web_dir) = web_dir {
-        let _ = runner
-            .add_dir_handler_with_options(
-                "/".to_string(),
-                web_dir,
-                DirHandlerOptions {
-                    fallback_file: Some("index.html".to_string()),
-                    ..Default::default()
-                },
-            )
-            .await;
-    } else {
-        warn!("bucky-file web directory not found, static UI disabled");
-    }
-
-    let _ = runner.start();
-    info!(
-        "bucky-file service started at port {}",
-        BUCKY_FILE_SERVICE_PORT
-    );
-    Ok(())
-}
-
-async fn service_main() {
-    init_logging("bucky-file", true);
-    if let Err(err) = start_bucky_file_service().await {
-        error!("bucky-file service start failed: {:?}", err);
-        return;
-    }
-
-    let _ = tokio::signal::ctrl_c().await;
-}
-
-fn main() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(service_main());
 }
