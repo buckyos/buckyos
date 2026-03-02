@@ -1,10 +1,12 @@
-use super::store::{KLogStateMachineMeta, KLogStateSnapshot, KLogStateStore};
+use super::store::{
+    KLogQuery, KLogQueryOrder, KLogStateMachineMeta, KLogStateSnapshot, KLogStateStore,
+};
 use crate::{KLogEntry, KLogError, KResult};
 use rocksdb::backup::{BackupEngine, BackupEngineOptions, RestoreOptions};
 use rocksdb::checkpoint::Checkpoint;
 use rocksdb::{
-    ColumnFamilyDescriptor, DB, DEFAULT_COLUMN_FAMILY_NAME, Env, IteratorMode, Options, WriteBatch,
-    WriteOptions,
+    ColumnFamilyDescriptor, DB, DEFAULT_COLUMN_FAMILY_NAME, Direction, Env, IteratorMode, Options,
+    WriteBatch, WriteOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -1236,6 +1238,97 @@ impl KLogStateStore for RocksDbStateStore {
             self.snapshot_mode
         );
         Ok(())
+    }
+
+    async fn query(&self, query: KLogQuery) -> KResult<Vec<KLogEntry>> {
+        let logs_cf = self.db.cf_handle(CF_LOGS).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_LOGS);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+
+        if query.limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut out = Vec::with_capacity(query.limit.min(1024));
+
+        match query.order {
+            KLogQueryOrder::Asc => {
+                let iter = if let Some(start_id) = query.start_id {
+                    let start_key = entry_key(start_id);
+                    self.db
+                        .iterator_cf(&logs_cf, IteratorMode::From(&start_key, Direction::Forward))
+                } else {
+                    self.db.iterator_cf(&logs_cf, IteratorMode::Start)
+                };
+
+                for item in iter {
+                    let (k, v) = item
+                        .map_err(|e| klog_err_with_context("Failed to iterate rocksdb entry", e))?;
+                    let Some(id) = decode_entry_key(&k) else {
+                        continue;
+                    };
+                    if query.start_id.map(|start| id < start).unwrap_or(false) {
+                        continue;
+                    }
+                    if query.end_id.map(|end| id > end).unwrap_or(false) {
+                        break;
+                    }
+
+                    let (entry, _): (KLogEntry, usize) =
+                        bincode::serde::decode_from_slice(v.as_ref(), bincode::config::legacy())
+                            .map_err(|e| {
+                                klog_err_with_context(
+                                    "Failed to deserialize state entry from rocksdb",
+                                    e,
+                                )
+                            })?;
+                    out.push(entry);
+                    if out.len() >= query.limit {
+                        break;
+                    }
+                }
+            }
+            KLogQueryOrder::Desc => {
+                let iter = if let Some(end_id) = query.end_id {
+                    let end_key = entry_key(end_id);
+                    self.db
+                        .iterator_cf(&logs_cf, IteratorMode::From(&end_key, Direction::Reverse))
+                } else {
+                    self.db.iterator_cf(&logs_cf, IteratorMode::End)
+                };
+
+                for item in iter {
+                    let (k, v) = item
+                        .map_err(|e| klog_err_with_context("Failed to iterate rocksdb entry", e))?;
+                    let Some(id) = decode_entry_key(&k) else {
+                        continue;
+                    };
+                    if query.end_id.map(|end| id > end).unwrap_or(false) {
+                        continue;
+                    }
+                    if query.start_id.map(|start| id < start).unwrap_or(false) {
+                        break;
+                    }
+
+                    let (entry, _): (KLogEntry, usize) =
+                        bincode::serde::decode_from_slice(v.as_ref(), bincode::config::legacy())
+                            .map_err(|e| {
+                                klog_err_with_context(
+                                    "Failed to deserialize state entry from rocksdb",
+                                    e,
+                                )
+                            })?;
+                    out.push(entry);
+                    if out.len() >= query.limit {
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(out)
     }
 
     async fn build_snapshot(&self) -> KResult<KLogStateSnapshot> {

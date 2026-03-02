@@ -1,4 +1,6 @@
-use super::store::{KLogStateMachineMeta, KLogStateSnapshot, KLogStateStore};
+use super::store::{
+    KLogQuery, KLogQueryOrder, KLogStateMachineMeta, KLogStateSnapshot, KLogStateStore,
+};
 use crate::{KLogEntry, KLogError, KResult};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -49,6 +51,30 @@ impl KLogStateStore for MemoryStateStore {
         }
 
         Ok(())
+    }
+
+    async fn query(&self, query: KLogQuery) -> KResult<Vec<KLogEntry>> {
+        let logs = self.logs.lock().await;
+        let mut entries = logs
+            .iter()
+            .filter(|e| {
+                query.start_id.map(|start| e.id >= start).unwrap_or(true)
+                    && query.end_id.map(|end| e.id <= end).unwrap_or(true)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        drop(logs);
+
+        entries.sort_by_key(|e| e.id);
+        if query.order == KLogQueryOrder::Desc {
+            entries.reverse();
+        }
+
+        if entries.len() > query.limit {
+            entries.truncate(query.limit);
+        }
+
+        Ok(entries)
     }
 
     async fn build_snapshot(&self) -> KResult<KLogStateSnapshot> {

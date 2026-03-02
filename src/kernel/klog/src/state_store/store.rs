@@ -8,6 +8,32 @@ pub struct KLogStateSnapshot {
     pub data: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum KLogQueryOrder {
+    #[default]
+    Asc,
+    Desc,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KLogQuery {
+    pub start_id: Option<u64>,
+    pub end_id: Option<u64>,
+    pub limit: usize,
+    pub order: KLogQueryOrder,
+}
+
+impl Default for KLogQuery {
+    fn default() -> Self {
+        Self {
+            start_id: None,
+            end_id: None,
+            limit: 100,
+            order: KLogQueryOrder::Asc,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KLogStateMachineMeta {
     pub last_applied_log_id: Option<KLogId>,
@@ -17,6 +43,8 @@ pub struct KLogStateMachineMeta {
 #[async_trait::async_trait]
 pub trait KLogStateStore: Send + Sync {
     async fn append(&self, entries: Vec<KLogEntry>) -> KResult<()>;
+
+    async fn query(&self, query: KLogQuery) -> KResult<Vec<KLogEntry>>;
 
     async fn build_snapshot(&self) -> KResult<KLogStateSnapshot>;
 
@@ -106,6 +134,10 @@ impl KLogStateStoreManager {
 
     pub async fn build_snapshot(&self) -> KResult<KLogStateSnapshot> {
         self.state_store.build_snapshot().await
+    }
+
+    pub async fn query_entries(&self, query: KLogQuery) -> KResult<Vec<KLogEntry>> {
+        self.state_store.query(query).await
     }
 
     pub async fn install_snapshot(&self, snapshot: KLogStateSnapshot) -> KResult<()> {

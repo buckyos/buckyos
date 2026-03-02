@@ -1,8 +1,8 @@
 use super::common::{decode_entry_ids, sample_membership, sample_state_entries, unique_test_path};
 use crate::KLogEntry;
 use crate::state_store::{
-    KLogStateMachineMeta, KLogStateSnapshot, KLogStateStore, KLogStateStoreManager,
-    MemoryStateStore, RocksDbSnapshotMode, RocksDbStateStore,
+    KLogQuery, KLogQueryOrder, KLogStateMachineMeta, KLogStateSnapshot, KLogStateStore,
+    KLogStateStoreManager, MemoryStateStore, RocksDbSnapshotMode, RocksDbStateStore,
 };
 use openraft::{CommittedLeaderId, LogId};
 use std::sync::Arc;
@@ -278,6 +278,106 @@ async fn test_rocksdb_backup_engine_mode_install_enumerate_snapshot() -> anyhow:
     let restored = verify_mgr.build_snapshot().await?;
     let ids = decode_entry_ids(&restored)?;
     assert_eq!(ids, vec![11, 12]);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_rocksdb_query_entries_asc_range_limit() -> anyhow::Result<()> {
+    let path = unique_test_path("state_store_query_asc.rocks");
+    let rocks = RocksDbStateStore::open_with_mode(&path, RocksDbSnapshotMode::Enumerate)
+        .map_err(anyhow::Error::msg)?;
+    let state_store = Arc::new(Box::new(rocks) as Box<dyn KLogStateStore>);
+    let manager = KLogStateStoreManager::new(state_store).await?;
+    manager
+        .append(vec![
+            KLogEntry {
+                id: 10,
+                timestamp: 1,
+                node_id: 1,
+                message: "m10".to_string(),
+            },
+            KLogEntry {
+                id: 11,
+                timestamp: 2,
+                node_id: 1,
+                message: "m11".to_string(),
+            },
+            KLogEntry {
+                id: 12,
+                timestamp: 3,
+                node_id: 1,
+                message: "m12".to_string(),
+            },
+            KLogEntry {
+                id: 13,
+                timestamp: 4,
+                node_id: 1,
+                message: "m13".to_string(),
+            },
+        ])
+        .await?;
+
+    let items = manager
+        .query_entries(KLogQuery {
+            start_id: Some(11),
+            end_id: Some(13),
+            limit: 2,
+            order: KLogQueryOrder::Asc,
+        })
+        .await?;
+    let ids = items.into_iter().map(|e| e.id).collect::<Vec<_>>();
+    assert_eq!(ids, vec![11, 12]);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_rocksdb_query_entries_desc_range_limit() -> anyhow::Result<()> {
+    let path = unique_test_path("state_store_query_desc.rocks");
+    let rocks = RocksDbStateStore::open_with_mode(&path, RocksDbSnapshotMode::Enumerate)
+        .map_err(anyhow::Error::msg)?;
+    let state_store = Arc::new(Box::new(rocks) as Box<dyn KLogStateStore>);
+    let manager = KLogStateStoreManager::new(state_store).await?;
+    manager
+        .append(vec![
+            KLogEntry {
+                id: 20,
+                timestamp: 1,
+                node_id: 1,
+                message: "m20".to_string(),
+            },
+            KLogEntry {
+                id: 21,
+                timestamp: 2,
+                node_id: 1,
+                message: "m21".to_string(),
+            },
+            KLogEntry {
+                id: 22,
+                timestamp: 3,
+                node_id: 1,
+                message: "m22".to_string(),
+            },
+            KLogEntry {
+                id: 23,
+                timestamp: 4,
+                node_id: 1,
+                message: "m23".to_string(),
+            },
+        ])
+        .await?;
+
+    let items = manager
+        .query_entries(KLogQuery {
+            start_id: Some(21),
+            end_id: Some(23),
+            limit: 2,
+            order: KLogQueryOrder::Desc,
+        })
+        .await?;
+    let ids = items.into_iter().map(|e| e.id).collect::<Vec<_>>();
+    assert_eq!(ids, vec![23, 22]);
 
     Ok(())
 }

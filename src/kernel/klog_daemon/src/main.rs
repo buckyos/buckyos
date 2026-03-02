@@ -106,7 +106,7 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
     );
 
     let snapshot_manager = Arc::new(SnapshotManager::new(cfg.data_dir.clone()));
-    let state_machine = KLogStateMachine::new(state_store_manager, snapshot_manager)
+    let state_machine = KLogStateMachine::new(state_store_manager.clone(), snapshot_manager)
         .await
         .map_err(|e| format!("Failed to initialize state machine: {}", e))?;
 
@@ -140,6 +140,7 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
     let join_task = spawn_auto_join_task(&cfg);
 
     let network_server = KNetworkServer::new(cfg.listen_addr.clone(), raft)
+        .with_state_store_manager(state_store_manager)
         .with_admin_local_only(cfg.admin_local_only)
         .with_cluster_identity(cfg.cluster_name.clone(), cfg.cluster_id.clone());
     info!("Starting raft RPC server: listen_addr={}", cfg.listen_addr);

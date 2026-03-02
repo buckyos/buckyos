@@ -1,4 +1,4 @@
-use crate::{KLogError, KNode, KNodeId, KResult, KTypeConfig};
+use crate::{KLogEntry, KLogError, KNode, KNodeId, KResult, KTypeConfig};
 use openraft::error::PayloadTooLarge;
 use openraft::error::{InstallSnapshotError, RaftError};
 use openraft::network::RPCTypes;
@@ -74,6 +74,50 @@ impl KLogAdminRequestType {
     pub fn klog_path(&self) -> String {
         format!("/klog/admin/{}", self.as_str())
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KLogDataRequestType {
+    Append,
+    Query,
+}
+
+impl KLogDataRequestType {
+    pub fn as_str(&self) -> &str {
+        match self {
+            KLogDataRequestType::Append => "append",
+            KLogDataRequestType::Query => "query",
+        }
+    }
+
+    pub fn klog_path(&self) -> String {
+        format!("/klog/data/{}", self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KLogAppendRequest {
+    pub message: String,
+    pub timestamp: Option<u64>,
+    pub node_id: Option<KNodeId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KLogAppendResponse {
+    pub id: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct KLogQueryRequest {
+    pub start_id: Option<u64>,
+    pub end_id: Option<u64>,
+    pub limit: Option<usize>,
+    pub desc: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KLogQueryResponse {
+    pub items: Vec<KLogEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -444,5 +488,11 @@ mod tests {
             KLogAdminRequestType::ClusterState.klog_path(),
             "/klog/admin/cluster-state"
         );
+    }
+
+    #[test]
+    fn test_data_request_paths() {
+        assert_eq!(KLogDataRequestType::Append.klog_path(), "/klog/data/append");
+        assert_eq!(KLogDataRequestType::Query.klog_path(), "/klog/data/query");
     }
 }
