@@ -189,6 +189,17 @@
 - HTTP: POST /kapi/control-panel
 - Body: kRPC 请求结构 (method/params/id)
 
+## Files/Share 当前实现状态（2026-03）
+- Files 能力已并入 `control_panel` 进程，不再要求单独启动 `bucky-file` 独立服务。
+- `control_panel` 在 HTTP 层统一承载 `/api`，并将 `/api/*` 请求转发给内嵌文件模块（`file_manager`）。
+- 当前 Files 前端主链路使用 HTTP API，而非 `files.*`/`share.*` kRPC。
+- 当前已上线 API（HTTP）:
+  - `GET/POST /api/resources...`、`PUT/PATCH/DELETE /api/resources...`
+  - `POST /api/upload/session`、`GET/PUT/DELETE /api/upload/session/:id`、`POST /api/upload/session/:id/complete`
+  - `GET/POST /api/share`、`DELETE /api/share/:id`
+  - `GET /api/public/share/:id`、`GET /api/public/dl/:id`
+- 说明：本文中的 `share.*`、`files.*` 仍保留为控制面板统一 RPC 目标接口，当前大部分处于规划状态。
+
 示例请求:
 ```json
 { "id": 1, "method": "ui.dashboard", "params": { "session_token": "..." } }
@@ -520,6 +531,10 @@
 
 ### 共享 (share.*)
 
+实现状态（当前）:
+- 目前 UI 侧分享管理走 HTTP `/api/share*`，可创建、列表、删除分享链接。
+- `share.*` kRPC 尚未完成落地，实现路径保留在 control_panel 内。
+
 #### share.list
 响应字段:
 - items: array
@@ -556,6 +571,10 @@
 - ok: boolean
 
 ### 文件 (files.*)
+
+实现状态（当前）:
+- 目前 UI 侧文件浏览/上传/编辑/下载走 HTTP `/api/resources*`、`/api/upload/session*`、`/api/raw*`。
+- `files.*` kRPC 尚未完成落地，实现路径保留在 control_panel 内。
 
 #### files.browse
 用途: 列目录。
@@ -642,6 +661,23 @@
 
 响应字段:
 - url: string 或 download_token: string
+
+### Files 分享能力迭代计划（对齐 ShareContentMgr）
+
+#### P0（当前版本增强，先可用）
+- API 补齐：`GET /api/share/:id`、`PATCH /api/share/:id`（过期时间/密码/启停）。
+- 前端改造：将 `prompt` 创建分享升级为表单弹窗，支持编辑与状态展示。
+- 安全增强：公共访问减少对 URL query 密码的长期依赖，改为短期访问凭据或一次性验证。
+- 可观测：记录公共访问成功/失败日志，形成基础审计能力。
+
+#### P1（能力对齐 ShareContentMgr）
+- 将分享发布元数据接入 `ShareContentMgr`，引入 `name -> obj_id` 映射。
+- 每次分享更新采用 sequence + CAS，保留不可变 revision 历史。
+- 统一 share policy（`public` / `token_required` / `encrypted`）与扩展配置。
+
+#### P2（运营与审计）
+- 聚合访问统计（`request_count`、`bytes_sent`、`last_access_ts`），支持小时/天时间窗。
+- 提供访问日志查询与图表展示，支持按状态码、来源设备、时间范围筛选。
 
 ### 备份 (backup.*)
 
