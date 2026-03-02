@@ -1612,40 +1612,6 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
       body: JSON.stringify(payload),
     })
 
-  const onCreateTextFile = async () => {
-    const fileName = window.prompt('Text file name', 'untitled.txt')?.trim()
-    if (!fileName) {
-      return
-    }
-
-    const targetPath = joinPath(currentPath, fileName)
-    setLoading(true)
-    try {
-      const response = await fetch(`/api/resources${encodePath(targetPath)}`, {
-        method: 'PUT',
-        headers: withAuthHeaders(effectiveToken, {
-          'Content-Type': 'application/json',
-        }),
-        body: JSON.stringify({ content: '' }),
-      })
-
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => ({}))) as { error?: string }
-        setMessage(payload.error ?? `Create file failed (${response.status})`)
-        return
-      }
-
-      clearSearchState()
-      await loadDirectory(currentPath, effectiveToken)
-      setEditorPath(targetPath)
-      setEditorContent('')
-      setEditorDirty(false)
-      setMessage(`Created ${targetPath}`)
-    } finally {
-      setLoading(false)
-    }
-  }
-
   const onMoveOrCopy = async (entry: FileEntry, action: 'move' | 'copy') => {
     const suggested = action === 'copy' ? `${entry.path}.copy` : entry.path
     const destination = window.prompt(`${action === 'move' ? 'Move' : 'Copy'} destination path`, suggested)?.trim()
@@ -2445,34 +2411,38 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
           </header>
         ) : null}
 
-        <nav className="rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
-          <div className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1 text-sm font-semibold text-slate-600">
-            <button
-              type="button"
-              onClick={() => navigateToMainTab('files')}
-              className={`rounded-lg px-3 py-1.5 transition ${
-                mainTab === 'files' ? 'bg-white text-primary shadow-sm' : 'hover:text-primary'
-              }`}
-            >
-              Files
-            </button>
-            <button
-              type="button"
-              onClick={() => navigateToMainTab('shares')}
-              className={`rounded-lg px-3 py-1.5 transition ${
-                mainTab === 'shares' ? 'bg-white text-primary shadow-sm' : 'hover:text-primary'
-              }`}
-            >
-              Shares
-            </button>
-          </div>
-        </nav>
-
         <section
           className={`overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm ${
             embedded && mainTab === 'files' ? 'flex min-h-0 flex-1 flex-col' : ''
           }`}
         >
+          <div className="border-b border-slate-200 bg-white px-5">
+            <div className="-mb-px flex items-center gap-6">
+              <button
+                type="button"
+                onClick={() => navigateToMainTab('files')}
+                className={`border-b-2 px-1 py-3 text-sm font-semibold transition ${
+                  mainTab === 'files'
+                    ? 'border-primary text-primary'
+                    : 'border-transparent text-slate-500 hover:text-primary'
+                }`}
+              >
+                Files
+              </button>
+              <button
+                type="button"
+                onClick={() => navigateToMainTab('shares')}
+                className={`border-b-2 px-1 py-3 text-sm font-semibold transition ${
+                  mainTab === 'shares'
+                    ? 'border-primary text-primary'
+                    : 'border-transparent text-slate-500 hover:text-primary'
+                }`}
+              >
+                Shares
+              </button>
+            </div>
+          </div>
+
           {mainTab === 'files' ? (
             <div className={embedded ? 'flex min-h-0 flex-1 flex-col' : ''}>
               <header className="border-b border-slate-200 px-5 py-4">
@@ -2492,16 +2462,6 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                     <span className="inline-flex items-center gap-1.5">
                       <Icon name="new-folder" />
                       Add folder
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void onCreateTextFile()}
-                    className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-primary hover:text-primary"
-                  >
-                    <span className="inline-flex items-center gap-1.5">
-                      <Icon name="new-file" />
-                      Add file
                     </span>
                   </button>
                   <button
@@ -2556,32 +2516,33 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
               </header>
 
               <div className="border-b border-slate-200 px-5 py-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
-                    Path: {currentPath}
-                  </span>
-                  {currentPathIsDir ? (
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0 flex flex-wrap items-center gap-2">
                     <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
-                      {visibleFolderCount} folders · {visibleFileCount} files
+                      Path: {currentPath}
                     </span>
-                  ) : (
-                    <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">File preview mode</span>
-                  )}
-                  {loading ? <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">Working...</span> : null}
-                  {searchActive ? (
-                    <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700">
-                      {searchResults.length} result(s){searchTruncated ? ' · truncated' : ''}
-                    </span>
-                  ) : null}
-                  {currentPathIsDir && selectedEntries.length > 0 ? (
-                    <span className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">
-                      {selectedEntries.length} selected
-                    </span>
-                  ) : null}
-                </div>
+                    {currentPathIsDir ? (
+                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
+                        {visibleFolderCount} folders · {visibleFileCount} files
+                      </span>
+                    ) : (
+                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">File preview mode</span>
+                    )}
+                    {loading ? <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">Working...</span> : null}
+                    {searchActive ? (
+                      <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700">
+                        {searchResults.length} result(s){searchTruncated ? ' · truncated' : ''}
+                      </span>
+                    ) : null}
+                    {currentPathIsDir && selectedEntries.length > 0 ? (
+                      <span className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">
+                        {selectedEntries.length} selected
+                      </span>
+                    ) : null}
+                  </div>
 
-                {currentPathIsDir ? (
-                  <div className="mt-4 py-1.5 flex flex-wrap items-center gap-2">
+                  {currentPathIsDir ? (
+                    <div className="ml-3 flex shrink-0 items-center justify-end gap-2">
                     <button
                       type="button"
                       disabled={selectedEntries.length === 0}
@@ -2617,6 +2578,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                     </button>
                   </div>
                 ) : null}
+                </div>
               </div>
 
           {message ? (
@@ -2867,7 +2829,11 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
             : null}
 
           {previewEntry ? (
-            <section className="border-t border-slate-200 bg-slate-50/80 px-5 py-4">
+            <section
+              className={`border-t border-slate-200 bg-slate-50/80 px-5 pt-4 ${
+                embedded ? 'min-h-0 flex-1 overflow-y-auto pb-10' : 'pb-4'
+              }`}
+            >
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <p className="text-sm font-semibold text-slate-800">File preview</p>
@@ -3202,12 +3168,12 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
           <button
             type="button"
             onClick={() => setUploadPanelOpen((prev) => !prev)}
-            className="rounded-2xl bg-primary px-4 py-3 text-sm font-semibold text-white shadow-lg transition hover:bg-teal-700"
+            className="min-h-8 rounded-xl border border-white/25 bg-primary/65 px-2.5 py-1.5 text-xs font-semibold text-white shadow-md shadow-teal-900/20 backdrop-blur-md transition hover:bg-primary/80"
           >
-            <span className="inline-flex items-center gap-2">
-              <Icon name="upload" />
+            <span className="inline-flex items-center gap-1.5">
+              <Icon name="upload" className="size-3.5" />
               Uploads
-              <span className="rounded-full bg-white/20 px-2 py-0.5 text-xs font-semibold">{uploadQueueCount}</span>
+              <span className="rounded-full bg-white/20 px-1.5 py-0 text-[11px] font-semibold">{uploadQueueCount}</span>
             </span>
           </button>
         </div>

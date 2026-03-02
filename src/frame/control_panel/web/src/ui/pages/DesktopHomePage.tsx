@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom'
 
 import {
   fetchAppsList,
+  fetchAppsVersionList,
   fetchContainerOverview,
   fetchGatewayFile,
   fetchGatewayOverview,
@@ -155,6 +156,10 @@ const DesktopHomePage = () => {
   const [status, setStatus] = useState<SystemStatusResponse>(mockSystemStatus)
   const [apps, setApps] = useState<DappCard[]>([])
   const [appsError, setAppsError] = useState<string | null>(null)
+  const [appsVersionMap, setAppsVersionMap] = useState<Record<string, string>>({})
+  const [appsVersionLoading, setAppsVersionLoading] = useState(false)
+  const [appsVersionError, setAppsVersionError] = useState<string | null>(null)
+  const appsVersionRequestRef = useRef(0)
   const [networkOverview, setNetworkOverview] = useState<NetworkOverview | null>(null)
   const [networkError, setNetworkError] = useState<string | null>(null)
   const [containerOverview, setContainerOverview] = useState<ContainerOverview | null>(null)
@@ -170,6 +175,7 @@ const DesktopHomePage = () => {
   const [windows, setWindows] = useState<DesktopWindow[]>([])
   const windowMemoryRef = useRef<Partial<Record<WindowId, Pick<DesktopWindow, 'x' | 'y' | 'width' | 'height'>>>>({})
   const logsWindowOpen = windows.some((win) => win.id === 'logs' && !win.minimized)
+  const appsWindowOpen = windows.some((win) => win.id === 'apps' && !win.minimized)
   const dragRef = useRef<{
     id: WindowId
     pointerId: number
@@ -231,6 +237,52 @@ const DesktopHomePage = () => {
       cancelled = true
     }
   }, [])
+
+  const loadAppVersions = useCallback(async () => {
+    const names = apps
+      .map((app) => app.name.trim())
+      .filter((name, index, all) => Boolean(name) && all.indexOf(name) === index)
+
+    if (names.length === 0) {
+      setAppsVersionMap({})
+      setAppsVersionError(null)
+      setAppsVersionLoading(false)
+      return
+    }
+
+    const requestId = appsVersionRequestRef.current + 1
+    appsVersionRequestRef.current = requestId
+
+    setAppsVersionLoading(true)
+    setAppsVersionError(null)
+    setAppsVersionMap({})
+
+    const { data, error } = await fetchAppsVersionList(names)
+    if (appsVersionRequestRef.current !== requestId) {
+      return
+    }
+
+    if (error) {
+      const message =
+        error instanceof Error ? error.message : typeof error === 'string' ? error : 'Apps version request failed'
+      setAppsVersionError(message)
+    } else {
+      setAppsVersionError(null)
+    }
+
+    if (data) {
+      setAppsVersionMap(data)
+    }
+
+    setAppsVersionLoading(false)
+  }, [apps])
+
+  useEffect(() => {
+    if (!appsWindowOpen) {
+      return
+    }
+    void loadAppVersions()
+  }, [appsWindowOpen, loadAppVersions])
 
   useEffect(() => {
     let cancelled = false
@@ -1009,6 +1061,9 @@ const DesktopHomePage = () => {
       layout,
       apps,
       appsError,
+      appsVersionMap,
+      appsVersionLoading,
+      appsVersionError,
       networkOverview,
       networkError,
       containerOverview,
@@ -1029,6 +1084,9 @@ const DesktopHomePage = () => {
     [
       apps,
       appsError,
+      appsVersionMap,
+      appsVersionLoading,
+      appsVersionError,
       networkError,
       networkOverview,
       containerError,
@@ -1482,6 +1540,9 @@ type WindowData = {
   layout: RootLayoutData
   apps: DappCard[]
   appsError: string | null
+  appsVersionMap: Record<string, string>
+  appsVersionLoading: boolean
+  appsVersionError: string | null
   networkOverview: NetworkOverview | null
   networkError: string | null
   containerOverview: ContainerOverview | null
@@ -1843,6 +1904,9 @@ const WindowBody = memo((props: WindowBodyProps) => {
     overviewError,
     layout,
     apps,
+    appsVersionMap,
+    appsVersionLoading,
+    appsVersionError,
     networkOverview,
     networkError,
     containerOverview,
@@ -2119,6 +2183,9 @@ const WindowBody = memo((props: WindowBodyProps) => {
         <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4 text-sm">
           <p className="font-semibold text-[var(--cp-ink)]">Installed services</p>
           <p className="mt-1 text-xs text-[var(--cp-muted)]">Quick glance at apps known to the system config.</p>
+          {appsVersionError ? (
+            <p className="mt-2 text-xs text-amber-700">Version sync fallback is active: {appsVersionError}</p>
+          ) : null}
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           {(apps.length ? apps : []).slice(0, 6).map((app) => (
@@ -2137,7 +2204,18 @@ const WindowBody = memo((props: WindowBodyProps) => {
                   {app.status}
                 </span>
               </div>
-              <p className="mt-2 text-xs text-[var(--cp-muted)]">v{app.version}</p>
+              <p className="mt-2 text-xs text-[var(--cp-muted)]">
+                {appsVersionMap[app.name] ? (
+                  `v${appsVersionMap[app.name]}`
+                ) : appsVersionLoading ? (
+                  <span className="inline-flex items-center gap-2">
+                    <span className="size-3 animate-spin rounded-full border border-[var(--cp-border)] border-t-[var(--cp-primary)]" />
+                    Loading version...
+                  </span>
+                ) : (
+                  'Version unavailable'
+                )}
+              </p>
             </div>
           ))}
         </div>

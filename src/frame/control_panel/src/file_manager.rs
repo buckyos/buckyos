@@ -14,14 +14,14 @@ use http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE};
 use http::{Method, StatusCode, Version};
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
-use kRPC::{RPCHandler, RPCErrors, RPCRequest, RPCResponse, RPCResult, RPCSessionToken};
+use kRPC::{RPCErrors, RPCHandler, RPCRequest, RPCResponse, RPCResult, RPCSessionToken};
 use log::{error, info, warn};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
-use server_runner::Runner;
 use server_runner::DirHandlerOptions;
+use server_runner::Runner;
+use sha2::{Digest, Sha256};
 use std::io::SeekFrom;
 use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
@@ -159,8 +159,7 @@ impl BuckyFileServer {
 
         info!(
             "file-manager auth switch: disabled={}, bypass_user={}",
-            auth_disabled,
-            auth_bypass_user
+            auth_disabled, auth_bypass_user
         );
 
         Self {
@@ -223,8 +222,9 @@ impl BuckyFileServer {
         let db_path = self.db_path();
         let upload_tmp_dir = self.upload_tmp_dir();
         tokio::task::spawn_blocking(move || -> Result<(), RPCErrors> {
-            let conn = Connection::open(db_path)
-                .map_err(|err| RPCErrors::ReasonError(format!("open share database failed: {}", err)))?;
+            let conn = Connection::open(db_path).map_err(|err| {
+                RPCErrors::ReasonError(format!("open share database failed: {}", err))
+            })?;
             conn.execute_batch(
                 "
                 CREATE TABLE IF NOT EXISTS shares (
@@ -251,7 +251,9 @@ impl BuckyFileServer {
                 CREATE INDEX IF NOT EXISTS idx_upload_sessions_owner ON upload_sessions(owner);
                 ",
             )
-            .map_err(|err| RPCErrors::ReasonError(format!("init share database failed: {}", err)))?;
+            .map_err(|err| {
+                RPCErrors::ReasonError(format!("init share database failed: {}", err))
+            })?;
 
             std::fs::create_dir_all(&upload_tmp_dir).map_err(|err| {
                 RPCErrors::ReasonError(format!("prepare upload tmp dir failed: {}", err))
@@ -358,8 +360,9 @@ impl BuckyFileServer {
         let owner = owner.to_string();
         let share_id = share_id.to_string();
         tokio::task::spawn_blocking(move || -> Result<bool, RPCErrors> {
-            let conn = Connection::open(db_path)
-                .map_err(|err| RPCErrors::ReasonError(format!("open share database failed: {}", err)))?;
+            let conn = Connection::open(db_path).map_err(|err| {
+                RPCErrors::ReasonError(format!("open share database failed: {}", err))
+            })?;
             let rows = conn
                 .execute(
                     "DELETE FROM shares WHERE id = ?1 AND owner = ?2",
@@ -372,7 +375,10 @@ impl BuckyFileServer {
         .map_err(|err| RPCErrors::ReasonError(format!("delete share join error: {}", err)))?
     }
 
-    async fn get_share_record(&self, share_id: &str) -> Result<Option<(ShareItem, Option<String>)>, RPCErrors> {
+    async fn get_share_record(
+        &self,
+        share_id: &str,
+    ) -> Result<Option<(ShareItem, Option<String>)>, RPCErrors> {
         let db_path = self.db_path();
         let share_id = share_id.to_string();
         tokio::task::spawn_blocking(move || -> Result<Option<(ShareItem, Option<String>)>, RPCErrors> {
@@ -587,18 +593,23 @@ impl BuckyFileServer {
         let owner = owner.to_string();
         let session_id = session_id.to_string();
         tokio::task::spawn_blocking(move || -> Result<bool, RPCErrors> {
-            let conn = Connection::open(db_path)
-                .map_err(|err| RPCErrors::ReasonError(format!("open upload database failed: {}", err)))?;
+            let conn = Connection::open(db_path).map_err(|err| {
+                RPCErrors::ReasonError(format!("open upload database failed: {}", err))
+            })?;
             let deleted = conn
                 .execute(
                     "DELETE FROM upload_sessions WHERE id = ?1 AND owner = ?2",
                     params![session_id, owner],
                 )
-                .map_err(|err| RPCErrors::ReasonError(format!("delete upload session failed: {}", err)))?;
+                .map_err(|err| {
+                    RPCErrors::ReasonError(format!("delete upload session failed: {}", err))
+                })?;
             Ok(deleted > 0)
         })
         .await
-        .map_err(|err| RPCErrors::ReasonError(format!("delete upload session join error: {}", err)))?
+        .map_err(|err| {
+            RPCErrors::ReasonError(format!("delete upload session join error: {}", err))
+        })?
     }
 
     fn boxed_body(bytes: Vec<u8>) -> BoxBody<Bytes, ServerError> {
@@ -697,7 +708,10 @@ impl BuckyFileServer {
         .map_err(|err| RPCErrors::ReasonError(format!("invalid token: {}", err)))
     }
 
-    async fn get_user_settings(&self, username: &str) -> Result<buckyos_api::UserSettings, RPCErrors> {
+    async fn get_user_settings(
+        &self,
+        username: &str,
+    ) -> Result<buckyos_api::UserSettings, RPCErrors> {
         let runtime = get_buckyos_api_runtime()?;
         let system_config_client = runtime.get_system_config_client().await?;
         let control_panel_client = ControlPanelClient::new(system_config_client);
@@ -712,7 +726,11 @@ impl BuckyFileServer {
         STANDARD.encode(digest)
     }
 
-    async fn validate_user_credentials(&self, username: &str, password: &str) -> Result<(), RPCErrors> {
+    async fn validate_user_credentials(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> Result<(), RPCErrors> {
         if self.standalone_mode {
             if username.trim().is_empty() || password.trim().is_empty() {
                 return Err(RPCErrors::InvalidPassword);
@@ -729,7 +747,8 @@ impl BuckyFileServer {
         let stored_password = user_settings.password.trim();
         let provided_password = password.trim();
 
-        let matched = password_from_plain == stored_password || provided_password == stored_password;
+        let matched =
+            password_from_plain == stored_password || provided_password == stored_password;
         if !matched {
             return Err(RPCErrors::InvalidPassword);
         }
@@ -742,13 +761,15 @@ impl BuckyFileServer {
         let verify_hub_client = runtime.get_verify_hub_client().await?;
         let verified = verify_hub_client.verify_token(token, None).await?;
         if !verified {
-            return Err(RPCErrors::InvalidToken("verify-hub token is invalid".to_string()));
+            return Err(RPCErrors::InvalidToken(
+                "verify-hub token is invalid".to_string(),
+            ));
         }
 
         let parsed = RPCSessionToken::from_string(token)?;
-        let username = parsed
-            .sub
-            .ok_or_else(|| RPCErrors::InvalidToken("verify-hub token missing subject".to_string()))?;
+        let username = parsed.sub.ok_or_else(|| {
+            RPCErrors::InvalidToken("verify-hub token missing subject".to_string())
+        })?;
 
         let user_settings = self.get_user_settings(&username).await?;
         if !matches!(user_settings.state, buckyos_api::UserState::Active) {
@@ -809,11 +830,7 @@ impl BuckyFileServer {
 
             let username = self.auth_bypass_user.clone();
             if let Err(err) = tokio::fs::create_dir_all(self.user_root(&username)).await {
-                warn!(
-                    "create bypass user root failed for {}: {}",
-                    username,
-                    err
-                );
+                warn!("create bypass user root failed for {}: {}", username, err);
             }
             return Ok(username);
         }
@@ -821,18 +838,16 @@ impl BuckyFileServer {
         let token = match Self::extract_auth_token(req) {
             Some(v) => v,
             None => {
-                return Err(
-                    Self::json_response(
-                        StatusCode::UNAUTHORIZED,
-                        json!({"error": "missing authentication token"}),
-                    )
-                    .unwrap_or_else(|_| {
-                        http::Response::builder()
-                            .status(StatusCode::UNAUTHORIZED)
-                            .body(Self::boxed_body(Vec::new()))
-                            .unwrap_or_else(|_| unreachable!())
-                    }),
+                return Err(Self::json_response(
+                    StatusCode::UNAUTHORIZED,
+                    json!({"error": "missing authentication token"}),
                 )
+                .unwrap_or_else(|_| {
+                    http::Response::builder()
+                        .status(StatusCode::UNAUTHORIZED)
+                        .body(Self::boxed_body(Vec::new()))
+                        .unwrap_or_else(|_| unreachable!())
+                }))
             }
         };
 
@@ -854,18 +869,16 @@ impl BuckyFileServer {
             }
         }
 
-        Err(
-            Self::json_response(
-                StatusCode::UNAUTHORIZED,
-                json!({"error": "invalid authentication token"}),
-            )
-            .unwrap_or_else(|_| {
-                http::Response::builder()
-                    .status(StatusCode::UNAUTHORIZED)
-                    .body(Self::boxed_body(Vec::new()))
-                    .unwrap_or_else(|_| unreachable!())
-            }),
+        Err(Self::json_response(
+            StatusCode::UNAUTHORIZED,
+            json!({"error": "invalid authentication token"}),
         )
+        .unwrap_or_else(|_| {
+            http::Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .body(Self::boxed_body(Vec::new()))
+                .unwrap_or_else(|_| unreachable!())
+        }))
     }
 
     fn user_root(&self, username: &str) -> PathBuf {
@@ -1012,7 +1025,10 @@ impl BuckyFileServer {
         Self::text_response(StatusCode::OK, &token)
     }
 
-    fn get_query_param(req: &http::Request<BoxBody<Bytes, ServerError>>, key: &str) -> Option<String> {
+    fn get_query_param(
+        req: &http::Request<BoxBody<Bytes, ServerError>>,
+        key: &str,
+    ) -> Option<String> {
         req.uri().query().and_then(|query| {
             url::form_urlencoded::parse(query.as_bytes())
                 .find(|(k, _)| k == key)
@@ -1033,13 +1049,17 @@ impl BuckyFileServer {
     fn parse_upload_session_id(raw: &str) -> Result<String, RPCErrors> {
         let value = raw.trim();
         if value.is_empty() {
-            return Err(RPCErrors::ReasonError("upload session id is required".to_string()));
+            return Err(RPCErrors::ReasonError(
+                "upload session id is required".to_string(),
+            ));
         }
         if !value
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
         {
-            return Err(RPCErrors::ReasonError("invalid upload session id".to_string()));
+            return Err(RPCErrors::ReasonError(
+                "invalid upload session id".to_string(),
+            ));
         }
         Ok(value.to_string())
     }
@@ -1291,7 +1311,11 @@ impl BuckyFileServer {
             )
         })?;
         file.flush().await.map_err(|err| {
-            server_err!(ServerErrorCode::InvalidData, "flush upload chunk failed: {}", err)
+            server_err!(
+                ServerErrorCode::InvalidData,
+                "flush upload chunk failed: {}",
+                err
+            )
         })?;
 
         let next_uploaded_size = session.uploaded_size + chunk_size;
@@ -1440,13 +1464,15 @@ impl BuckyFileServer {
                 target.display(),
                 err
             );
-            tokio::fs::copy(&tmp_path, &target).await.map_err(|copy_err| {
-                server_err!(
-                    ServerErrorCode::InvalidData,
-                    "copy upload temp file failed: {}",
-                    copy_err
-                )
-            })?;
+            tokio::fs::copy(&tmp_path, &target)
+                .await
+                .map_err(|copy_err| {
+                    server_err!(
+                        ServerErrorCode::InvalidData,
+                        "copy upload temp file failed: {}",
+                        copy_err
+                    )
+                })?;
             let _ = tokio::fs::remove_file(&tmp_path).await;
         }
 
@@ -1567,7 +1593,9 @@ impl BuckyFileServer {
         }
 
         let now = Self::now_unix();
-        let expires_at = payload.expires_in_seconds.map(|seconds| now.saturating_add(seconds));
+        let expires_at = payload
+            .expires_in_seconds
+            .map(|seconds| now.saturating_add(seconds));
         let password_hash = Self::hash_optional_password(payload.password.as_deref());
         let share_item = self
             .create_share_record(
@@ -1654,58 +1682,61 @@ impl BuckyFileServer {
         req: &http::Request<BoxBody<Bytes, ServerError>>,
         share_id: &str,
     ) -> Result<(ShareItem, PathBuf, PathBuf), http::Response<BoxBody<Bytes, ServerError>>> {
-        let Some((share_item, password_hash)) = self.get_share_record(share_id).await.map_err(|err| {
-            Self::json_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({"error": format!("load share failed: {}", err)}),
+        let Some((share_item, password_hash)) =
+            self.get_share_record(share_id).await.map_err(|err| {
+                Self::json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({"error": format!("load share failed: {}", err)}),
+                )
+                .unwrap_or_else(|_| {
+                    http::Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(Self::boxed_body(Vec::new()))
+                        .unwrap_or_else(|_| unreachable!())
+                })
+            })?
+        else {
+            return Err(Self::json_response(
+                StatusCode::NOT_FOUND,
+                json!({"error": "share not found"}),
             )
             .unwrap_or_else(|_| {
                 http::Response::builder()
-                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .status(StatusCode::NOT_FOUND)
                     .body(Self::boxed_body(Vec::new()))
                     .unwrap_or_else(|_| unreachable!())
-            })
-        })? else {
-            return Err(
-                Self::json_response(StatusCode::NOT_FOUND, json!({"error": "share not found"}))
-                    .unwrap_or_else(|_| {
-                        http::Response::builder()
-                            .status(StatusCode::NOT_FOUND)
-                            .body(Self::boxed_body(Vec::new()))
-                            .unwrap_or_else(|_| unreachable!())
-                    }),
-            );
+            }));
         };
 
         if let Some(expires_at) = share_item.expires_at {
             if expires_at <= Self::now_unix() {
-                return Err(
-                    Self::json_response(StatusCode::GONE, json!({"error": "share expired"}))
-                        .unwrap_or_else(|_| {
-                            http::Response::builder()
-                                .status(StatusCode::GONE)
-                                .body(Self::boxed_body(Vec::new()))
-                                .unwrap_or_else(|_| unreachable!())
-                        }),
-                );
+                return Err(Self::json_response(
+                    StatusCode::GONE,
+                    json!({"error": "share expired"}),
+                )
+                .unwrap_or_else(|_| {
+                    http::Response::builder()
+                        .status(StatusCode::GONE)
+                        .body(Self::boxed_body(Vec::new()))
+                        .unwrap_or_else(|_| unreachable!())
+                }));
             }
         }
 
         if let Some(stored_hash) = password_hash {
-            let provided_hash = Self::hash_optional_password(Self::get_share_password(req).as_deref());
+            let provided_hash =
+                Self::hash_optional_password(Self::get_share_password(req).as_deref());
             if provided_hash.as_deref() != Some(stored_hash.as_str()) {
-                return Err(
-                    Self::json_response(
-                        StatusCode::UNAUTHORIZED,
-                        json!({"error": "share password required or invalid"}),
-                    )
-                    .unwrap_or_else(|_| {
-                        http::Response::builder()
-                            .status(StatusCode::UNAUTHORIZED)
-                            .body(Self::boxed_body(Vec::new()))
-                            .unwrap_or_else(|_| unreachable!())
-                    }),
-                );
+                return Err(Self::json_response(
+                    StatusCode::UNAUTHORIZED,
+                    json!({"error": "share password required or invalid"}),
+                )
+                .unwrap_or_else(|_| {
+                    http::Response::builder()
+                        .status(StatusCode::UNAUTHORIZED)
+                        .body(Self::boxed_body(Vec::new()))
+                        .unwrap_or_else(|_| unreachable!())
+                }));
             }
         }
 
@@ -1739,15 +1770,16 @@ impl BuckyFileServer {
         let share_root = self.user_root(&share_item.owner).join(&share_root_rel_path);
         let target = share_root.join(&sub_rel_path);
         if !target.exists() {
-            return Err(
-                Self::json_response(StatusCode::NOT_FOUND, json!({"error": "shared path not found"}))
-                    .unwrap_or_else(|_| {
-                        http::Response::builder()
-                            .status(StatusCode::NOT_FOUND)
-                            .body(Self::boxed_body(Vec::new()))
-                            .unwrap_or_else(|_| unreachable!())
-                    }),
-            );
+            return Err(Self::json_response(
+                StatusCode::NOT_FOUND,
+                json!({"error": "shared path not found"}),
+            )
+            .unwrap_or_else(|_| {
+                http::Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .body(Self::boxed_body(Vec::new()))
+                    .unwrap_or_else(|_| unreachable!())
+            }));
         }
 
         Ok((share_item, share_root, target))
@@ -1758,7 +1790,8 @@ impl BuckyFileServer {
         req: http::Request<BoxBody<Bytes, ServerError>>,
         share_id: &str,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let (share_item, share_root, target) = match self.resolve_public_share(&req, share_id).await {
+        let (share_item, share_root, target) = match self.resolve_public_share(&req, share_id).await
+        {
             Ok(value) => value,
             Err(resp) => return Ok(resp),
         };
@@ -1784,7 +1817,11 @@ impl BuckyFileServer {
         if metadata.is_dir() {
             let mut items: Vec<FileEntry> = Vec::new();
             let mut reader = tokio::fs::read_dir(&target).await.map_err(|err| {
-                server_err!(ServerErrorCode::InvalidData, "read shared directory failed: {}", err)
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "read shared directory failed: {}",
+                    err
+                )
             })?;
 
             while let Some(entry) = reader.next_entry().await.map_err(|err| {
@@ -1811,7 +1848,11 @@ impl BuckyFileServer {
                     path: Self::to_display_path(&item_rel_path),
                     name,
                     is_dir: entry_meta.is_dir(),
-                    size: if entry_meta.is_file() { entry_meta.len() } else { 0 },
+                    size: if entry_meta.is_file() {
+                        entry_meta.len()
+                    } else {
+                        0
+                    },
                     modified: Self::unix_mtime(&entry_meta),
                 });
             }
@@ -1865,10 +1906,11 @@ impl BuckyFileServer {
         req: http::Request<BoxBody<Bytes, ServerError>>,
         share_id: &str,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let (_share_item, _share_root, target) = match self.resolve_public_share(&req, share_id).await {
-            Ok(value) => value,
-            Err(resp) => return Ok(resp),
-        };
+        let (_share_item, _share_root, target) =
+            match self.resolve_public_share(&req, share_id).await {
+                Ok(value) => value,
+                Err(resp) => return Ok(resp),
+            };
 
         let metadata = tokio::fs::metadata(&target).await.map_err(|err| {
             server_err!(
@@ -1899,7 +1941,10 @@ impl BuckyFileServer {
         http::Response::builder()
             .status(StatusCode::OK)
             .header(CONTENT_TYPE, "application/octet-stream")
-            .header(CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", filename))
+            .header(
+                CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", filename),
+            )
             .header(CACHE_CONTROL, "no-store")
             .body(Self::boxed_body(content))
             .map_err(|err| {
@@ -1951,7 +1996,11 @@ impl BuckyFileServer {
             })?;
 
             while let Some(entry) = reader.next_entry().await.map_err(|err| {
-                server_err!(ServerErrorCode::InvalidData, "read dir entry failed: {}", err)
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "read dir entry failed: {}",
+                    err
+                )
             })? {
                 let file_name = entry.file_name().to_string_lossy().to_string();
                 let entry_meta = entry.metadata().await.map_err(|err| {
@@ -1971,7 +2020,11 @@ impl BuckyFileServer {
                     name: file_name,
                     path: Self::to_display_path(&item_rel_path),
                     is_dir: entry_meta.is_dir(),
-                    size: if entry_meta.is_file() { entry_meta.len() } else { 0 },
+                    size: if entry_meta.is_file() {
+                        entry_meta.len()
+                    } else {
+                        0
+                    },
                     modified: Self::unix_mtime(&entry_meta),
                 });
             }
@@ -2150,7 +2203,11 @@ impl BuckyFileServer {
         let target = self.user_root(&username).join(&rel_path);
         if target.exists() {
             let metadata = tokio::fs::metadata(&target).await.map_err(|err| {
-                server_err!(ServerErrorCode::InvalidData, "read metadata failed: {}", err)
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "read metadata failed: {}",
+                    err
+                )
             })?;
             if metadata.is_dir() {
                 return Self::json_response(
@@ -2178,9 +2235,11 @@ impl BuckyFileServer {
             )
         })?;
 
-        tokio::fs::write(&target, &content_bytes).await.map_err(|err| {
-            server_err!(ServerErrorCode::InvalidData, "write file failed: {}", err)
-        })?;
+        tokio::fs::write(&target, &content_bytes)
+            .await
+            .map_err(|err| {
+                server_err!(ServerErrorCode::InvalidData, "write file failed: {}", err)
+            })?;
 
         Self::json_response(
             StatusCode::OK,
@@ -2323,7 +2382,8 @@ impl BuckyFileServer {
 
                     let normalized_name = file_name.to_lowercase();
                     let normalized_path = item_rel_path.to_string_lossy().to_lowercase();
-                    let matched = normalized_name.contains(keyword) || normalized_path.contains(keyword);
+                    let matched =
+                        normalized_name.contains(keyword) || normalized_path.contains(keyword);
                     if allowed_by_kind && matched {
                         results.push(FileEntry {
                             name: file_name,
@@ -2552,7 +2612,11 @@ impl BuckyFileServer {
             })?;
             if metadata.is_dir() {
                 Self::copy_dir_recursive(&source, &target).map_err(|err| {
-                    server_err!(ServerErrorCode::InvalidData, "copy directory failed: {}", err)
+                    server_err!(
+                        ServerErrorCode::InvalidData,
+                        "copy directory failed: {}",
+                        err
+                    )
                 })?;
             } else {
                 if let Some(parent) = target.parent() {
@@ -2734,21 +2798,25 @@ impl BuckyFileServer {
                         );
                         Self::copy_path(&source_abs_path, &target_abs_path).await?;
                         if source_metadata.is_dir() {
-                            tokio::fs::remove_dir_all(&source_abs_path).await.map_err(|remove_err| {
-                                server_err!(
-                                    ServerErrorCode::InvalidData,
-                                    "remove source directory after move failed: {}",
-                                    remove_err
-                                )
-                            })?;
+                            tokio::fs::remove_dir_all(&source_abs_path).await.map_err(
+                                |remove_err| {
+                                    server_err!(
+                                        ServerErrorCode::InvalidData,
+                                        "remove source directory after move failed: {}",
+                                        remove_err
+                                    )
+                                },
+                            )?;
                         } else {
-                            tokio::fs::remove_file(&source_abs_path).await.map_err(|remove_err| {
-                                server_err!(
-                                    ServerErrorCode::InvalidData,
-                                    "remove source file after move failed: {}",
-                                    remove_err
-                                )
-                            })?;
+                            tokio::fs::remove_file(&source_abs_path).await.map_err(
+                                |remove_err| {
+                                    server_err!(
+                                        ServerErrorCode::InvalidData,
+                                        "remove source file after move failed: {}",
+                                        remove_err
+                                    )
+                                },
+                            )?;
                         }
                     } else {
                         return Err(server_err!(
@@ -2867,7 +2935,11 @@ impl BuckyFileServer {
             return Self::json_response(StatusCode::NOT_FOUND, json!({"error": "file not found"}));
         }
         let metadata = tokio::fs::metadata(&target).await.map_err(|err| {
-            server_err!(ServerErrorCode::InvalidData, "read metadata failed: {}", err)
+            server_err!(
+                ServerErrorCode::InvalidData,
+                "read metadata failed: {}",
+                err
+            )
         })?;
         if metadata.is_dir() {
             return Self::json_response(
@@ -2887,7 +2959,10 @@ impl BuckyFileServer {
         http::Response::builder()
             .status(StatusCode::OK)
             .header(CONTENT_TYPE, "application/octet-stream")
-            .header(CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", filename))
+            .header(
+                CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", filename),
+            )
             .header(CACHE_CONTROL, "no-store")
             .body(Self::boxed_body(content))
             .map_err(|err| {
@@ -2961,7 +3036,10 @@ impl HttpServer for BuckyFileServer {
             let suffix = path.strip_prefix("/api/upload/session/").unwrap_or("");
             if let Some(session_id) = suffix.strip_suffix("/complete") {
                 return match method {
-                    Method::POST => self.handle_api_upload_session_complete(req, session_id).await,
+                    Method::POST => {
+                        self.handle_api_upload_session_complete(req, session_id)
+                            .await
+                    }
                     _ => Self::json_response(
                         StatusCode::METHOD_NOT_ALLOWED,
                         json!({"error": "method not allowed"}),
@@ -3022,8 +3100,14 @@ impl HttpServer for BuckyFileServer {
                         .await
                 }
                 Method::PUT => self.handle_api_resources_put(req, raw_resource_path).await,
-                Method::PATCH => self.handle_api_resources_patch(req, raw_resource_path).await,
-                Method::DELETE => self.handle_api_resources_delete(req, raw_resource_path).await,
+                Method::PATCH => {
+                    self.handle_api_resources_patch(req, raw_resource_path)
+                        .await
+                }
+                Method::DELETE => {
+                    self.handle_api_resources_delete(req, raw_resource_path)
+                        .await
+                }
                 _ => Self::json_response(
                     StatusCode::METHOD_NOT_ALLOWED,
                     json!({"error": "method not allowed"}),
@@ -3066,9 +3150,12 @@ async fn start_bucky_file_service() -> anyhow::Result<()> {
         warn!("bucky-file standalone mode explicitly requested by env");
     } else {
         let runtime_result = async {
-            let mut runtime =
-                init_buckyos_api_runtime(BUCKY_FILE_SERVICE_NAME, None, BuckyOSRuntimeType::KernelService)
-                    .await?;
+            let mut runtime = init_buckyos_api_runtime(
+                BUCKY_FILE_SERVICE_NAME,
+                None,
+                BuckyOSRuntimeType::KernelService,
+            )
+            .await?;
             runtime.login().await?;
             runtime.set_main_service_port(BUCKY_FILE_SERVICE_PORT).await;
             set_buckyos_api_runtime(runtime);
@@ -3094,7 +3181,9 @@ async fn start_bucky_file_service() -> anyhow::Result<()> {
     let data_folder = if standalone_mode {
         std::env::temp_dir().join("bucky-file-data")
     } else {
-        get_buckyos_root_dir().join("data").join(BUCKY_FILE_SERVICE_NAME)
+        get_buckyos_root_dir()
+            .join("data")
+            .join(BUCKY_FILE_SERVICE_NAME)
     };
     if !data_folder.exists() {
         tokio::fs::create_dir_all(&data_folder).await?;

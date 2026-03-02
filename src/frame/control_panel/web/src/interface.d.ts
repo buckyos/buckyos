@@ -473,6 +473,16 @@ declare global {
     key?: string
   }
 
+  type AppVersionItem = {
+    name: string
+    version: string
+  }
+
+  type AppsVersionListResponse = {
+    items: AppVersionItem[]
+    key?: string
+  }
+
   type SettingBlock = {
     title: string
     description: string

@@ -480,6 +480,30 @@ export const fetchAppsList = async (): Promise<{ data: DappCard[] | null; error:
   return { data: data.items.map((item) => normalizeAppItem(item)), error }
 }
 
+export const fetchAppsVersionList = async (
+  names: string[] = [],
+): Promise<{ data: Record<string, string> | null; error: unknown }> => {
+  const params = names.length > 0 ? { names } : {}
+  const { data, error } = await callRpc<AppsVersionListResponse>('apps.version.list', params)
+  if (!data || !Array.isArray(data.items)) {
+    return { data: null, error }
+  }
+
+  const versions: Record<string, string> = {}
+  for (const item of data.items) {
+    if (!item || typeof item.name !== 'string' || typeof item.version !== 'string') {
+      continue
+    }
+    const name = item.name.trim()
+    if (!name) {
+      continue
+    }
+    versions[name] = item.version
+  }
+
+  return { data: versions, error }
+}
+
 export const fetchSystemOverview = async (): Promise<{
   data: SystemOverview | null
   error: unknown
