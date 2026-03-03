@@ -11,6 +11,7 @@ use std::sync::Arc;
 pub mod logs;
 pub mod network;
 pub mod rpc;
+pub(crate) mod service;
 pub mod state_machine;
 pub mod state_store;
 #[cfg(test)]
