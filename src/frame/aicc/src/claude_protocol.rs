@@ -736,8 +736,8 @@ pub(crate) fn convert_complete_request(
 mod tests {
     use super::*;
     use buckyos_api::{
-        AiMessage, AiPayload, AiToolSpec, Capability, CompleteRequest, ModelSpec, Requirements,
-        value_to_object_map,
+        value_to_object_map, AiMessage, AiPayload, AiToolSpec, Capability, CompleteRequest,
+        ModelSpec, Requirements,
     };
 
     fn base_request() -> CompleteRequest {

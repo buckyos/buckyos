@@ -1240,12 +1240,10 @@ mod tests {
         let first_line = stdout.lines().next().unwrap_or_default();
         let forwarded: Json = serde_json::from_str(first_line).expect("stdout json line");
         assert_eq!(forwarded["ok"], true);
-        assert!(
-            forwarded["path"]
-                .as_str()
-                .unwrap_or_default()
-                .ends_with("/notes/forward.txt")
-        );
+        assert!(forwarded["path"]
+            .as_str()
+            .unwrap_or_default()
+            .ends_with("/notes/forward.txt"));
         assert_eq!(forwarded["content"], "L1");
 
         let _ = fs::remove_dir_all(root).await;

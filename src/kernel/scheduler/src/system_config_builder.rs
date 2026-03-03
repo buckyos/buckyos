@@ -3,10 +3,9 @@ use buckyos_api::msg_queue::{
     generate_kmsg_service_doc, KMSG_SERVICE_MAIN_PORT, KMSG_SERVICE_UNIQUE_ID,
 };
 use buckyos_api::{
-    generate_aicc_service_doc, generate_control_panel_service_doc,
-    generate_msg_center_service_doc, generate_opendan_service_doc, generate_repo_service_doc,
-    generate_scheduler_service_doc, generate_smb_service_doc, generate_task_manager_service_doc,
-    generate_verify_hub_service_doc,
+    generate_aicc_service_doc, generate_control_panel_service_doc, generate_msg_center_service_doc,
+    generate_opendan_service_doc, generate_repo_service_doc, generate_scheduler_service_doc,
+    generate_smb_service_doc, generate_task_manager_service_doc, generate_verify_hub_service_doc,
     AppDoc, AppServiceSpec, AppType, GatewaySettings, GatewayShortcut, KernelServiceSpec,
     NodeConfig, NodeState, SelectorType, ServiceExposeConfig, ServiceInfo, ServiceInstallConfig,
     ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, UserSettings,

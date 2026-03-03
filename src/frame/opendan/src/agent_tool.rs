@@ -888,7 +888,9 @@ impl AgentToolManager {
         let Ok(guard) = self.tools.read() else {
             return None;
         };
-        guard.contains_key(normalized.as_str()).then_some(normalized)
+        guard
+            .contains_key(normalized.as_str())
+            .then_some(normalized)
     }
 
     pub async fn call_tool_from_bash_line(
@@ -896,7 +898,8 @@ impl AgentToolManager {
         ctx: &SessionRuntimeContext,
         line: &str,
     ) -> Result<Option<Json>, AgentToolError> {
-        self.call_tool_from_bash_line_with_cwd(ctx, line, None).await
+        self.call_tool_from_bash_line_with_cwd(ctx, line, None)
+            .await
     }
 
     pub async fn call_tool_from_bash_line_with_cwd(
@@ -1086,7 +1089,11 @@ fn build_positional_arg_keys(
     }
 
     let mut keys = Vec::<String>::new();
-    if let Some(required) = spec.args_schema.get("required").and_then(|value| value.as_array()) {
+    if let Some(required) = spec
+        .args_schema
+        .get("required")
+        .and_then(|value| value.as_array())
+    {
         for key in required {
             if let Some(key) = key.as_str() {
                 let key = key.trim();

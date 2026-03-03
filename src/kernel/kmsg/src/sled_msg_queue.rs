@@ -856,7 +856,10 @@ mod tests {
         let history = queue
             .handle_read_message(&queue_urn, 1, 2, RPCContext::default())
             .await?;
-        assert_eq!(history.iter().map(|m| m.index).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(
+            history.iter().map(|m| m.index).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
         let msgs = queue
             .handle_fetch_messages(&sub_id, 1, false, RPCContext::default())
             .await?;

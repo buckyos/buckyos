@@ -1647,7 +1647,13 @@ async fn ensure_tmux_session(session_name: &str, cwd: &Path) -> Result<(), Agent
 
 async fn read_tmux_pane_current_path(target: &str) -> Result<Option<PathBuf>, AgentToolError> {
     let output = Command::new("tmux")
-        .args(["display-message", "-p", "-t", target, "#{pane_current_path}"])
+        .args([
+            "display-message",
+            "-p",
+            "-t",
+            target,
+            "#{pane_current_path}",
+        ])
         .output()
         .await
         .map_err(|err| AgentToolError::ExecFailed(format!("tmux display-message failed: {err}")))?;

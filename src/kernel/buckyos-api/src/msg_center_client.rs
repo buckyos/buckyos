@@ -259,7 +259,7 @@ impl MsgRecordWithObject {
             }
         }
 
-        return "default".to_string()        
+        return "default".to_string();
     }
 }
 

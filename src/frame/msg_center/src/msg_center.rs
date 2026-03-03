@@ -215,7 +215,10 @@ impl MessageCenter {
                         event_id, err
                     );
                 } else {
-                    debug!("msg_center.box_changed_event_published: event_id={}", event_id);
+                    debug!(
+                        "msg_center.box_changed_event_published: event_id={}",
+                        event_id
+                    );
                 }
             });
         } else {

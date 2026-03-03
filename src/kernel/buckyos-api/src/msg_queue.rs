@@ -1396,7 +1396,10 @@ mod tests {
             .unwrap();
         client.commit_ack(&sub_id, second_index).await.unwrap();
 
-        let messages = client.read_message(&queue_urn, first_index, 2).await.unwrap();
+        let messages = client
+            .read_message(&queue_urn, first_index, 2)
+            .await
+            .unwrap();
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].index, first_index);
         assert_eq!(messages[1].index, second_index);

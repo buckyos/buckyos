@@ -2,18 +2,18 @@ use crate::aicc::{
     AIComputeCenter, CostEstimate, Provider, ProviderError, ProviderInstance, ProviderStartResult,
     ResolvedRequest, TaskEventSink,
 };
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
-use base64::Engine as _;
 use base64::engine::general_purpose;
+use base64::Engine as _;
 use buckyos_api::{
-    AiArtifact, AiCost, AiResponseSummary, AiUsage, Capability, CompleteRequest, Feature,
-    ResourceRef, features,
+    features, AiArtifact, AiCost, AiResponseSummary, AiUsage, Capability, CompleteRequest, Feature,
+    ResourceRef,
 };
 use log::{info, warn};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;

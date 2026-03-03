@@ -1,12 +1,12 @@
 use crate::complete_request_queue::QUEUE_STATUS_QUEUED;
 use ::kRPC::*;
 use async_trait::async_trait;
-use base64::Engine as _;
 use base64::engine::general_purpose;
+use base64::Engine as _;
 use buckyos_api::{
-    AICC_SERVICE_SERVICE_NAME, AiResponseSummary, AiccHandler, CancelResponse, Capability,
-    CompleteRequest, CompleteResponse, CompleteStatus, CreateTaskOptions, Feature, ResourceRef,
-    TaskManagerClient, TaskStatus,
+    AiResponseSummary, AiccHandler, CancelResponse, Capability, CompleteRequest, CompleteResponse,
+    CompleteStatus, CreateTaskOptions, Feature, ResourceRef, TaskManagerClient, TaskStatus,
+    AICC_SERVICE_SERVICE_NAME,
 };
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
@@ -563,7 +563,7 @@ pub trait Provider: Send + Sync {
         sink: Arc<dyn TaskEventSink>,
     ) -> std::result::Result<ProviderStartResult, ProviderError>;
     async fn cancel(&self, ctx: InvokeCtx, task_id: &str)
-    -> std::result::Result<(), ProviderError>;
+        -> std::result::Result<(), ProviderError>;
 }
 
 #[derive(Clone, Debug, Default)]
