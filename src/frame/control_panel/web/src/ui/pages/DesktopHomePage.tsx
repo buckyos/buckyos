@@ -1,6 +1,5 @@
 import type { MouseEvent, PointerEvent } from 'react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { buckyos } from 'buckyos'
 import { Link, useNavigate } from 'react-router-dom'
 
 import {
@@ -21,7 +20,7 @@ import {
   mockSystemStatus,
   querySystemLogs,
 } from '@/api'
-import { clearStoredSession } from '@/auth/session'
+import { useAuth } from '@/auth/useAuth'
 import ContainerOverviewPanel from '../components/ContainerOverviewPanel'
 import NetworkOverviewPanel from '../components/NetworkOverviewPanel'
 import { NetworkTrendChart, ResourceTrendChart } from '../components/MonitorTrendCharts'
@@ -146,6 +145,7 @@ const SETTINGS_POLICY_BASELINE = [
 
 const DesktopHomePage = () => {
   const navigate = useNavigate()
+  const { signOut } = useAuth()
   const navigateTo = useCallback((to: string) => navigate(to), [navigate])
   const prefersReducedMotion = usePrefersReducedMotion()
 
@@ -1117,16 +1117,9 @@ const DesktopHomePage = () => {
   const onOpenNetworkWindow = useCallback(() => openWindow('network'), [openWindow])
   const onNavigateSettings = useCallback(() => navigateTo('/settings'), [navigateTo])
   const onSignOutClick = useCallback(async () => {
-    try {
-      await buckyos.initBuckyOS('control-panel')
-      buckyos.logout(true)
-    } catch (error) {
-      console.warn('logout failed, clearing session locally', error)
-    }
-
-    clearStoredSession()
+    await signOut()
     navigate('/login', { replace: true })
-  }, [navigate])
+  }, [navigate, signOut])
   const goDesktop = useCallback(() => {
     if (mode === 'desktop') {
       return

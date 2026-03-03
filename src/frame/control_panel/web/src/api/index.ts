@@ -1,18 +1,50 @@
 import {buckyos} from 'buckyos'
+import { ensureSessionToken } from '@/auth/authManager'
 
 const rpcClient = new buckyos.kRPCClient('/kapi/control-panel')
+
+const isAuthError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  const normalized = message.toLowerCase()
+  return (
+    normalized.includes('401') ||
+    normalized.includes('403') ||
+    normalized.includes('invalid token') ||
+    normalized.includes('permission denied') ||
+    normalized.includes('no permission') ||
+    normalized.includes('token')
+  )
+}
 
 const callRpc = async <T>(
   method: string,
   params: Record<string, unknown> = {},
 ): Promise<{ data: T | null; error: unknown }> => {
   try {
+    const sessionToken = await ensureSessionToken()
+    rpcClient.setSessionToken(sessionToken)
+
     const result = await rpcClient.call(method, params)
     if (!result || typeof result !== 'object') {
       throw new Error(`Invalid ${method} response`)
     }
     return { data: result as T, error: null }
   } catch (error) {
+    if (isAuthError(error)) {
+      try {
+        const refreshedToken = await ensureSessionToken({ forceRefresh: true })
+        rpcClient.setSessionToken(refreshedToken)
+
+        const retried = await rpcClient.call(method, params)
+        if (!retried || typeof retried !== 'object') {
+          throw new Error(`Invalid ${method} response`)
+        }
+        return { data: retried as T, error: null }
+      } catch (retryError) {
+        return { data: null, error: retryError }
+      }
+    }
+
     return { data: null, error }
   }
 }

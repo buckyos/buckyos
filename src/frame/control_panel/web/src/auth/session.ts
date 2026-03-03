@@ -1,10 +1,14 @@
 const ACCOUNT_STORAGE_KEY = 'buckyos.account_info'
 
-type StoredAccountInfo = {
+export type StoredAccountInfo = {
+  user_name?: string
+  user_id?: string
+  user_type?: string
   session_token?: string
+  refresh_token?: string
 }
 
-export const getStoredSessionToken = () => {
+export const getStoredAccountInfo = (): StoredAccountInfo | null => {
   if (typeof window === 'undefined') {
     return null
   }
@@ -16,11 +20,30 @@ export const getStoredSessionToken = () => {
 
   try {
     const parsed = JSON.parse(raw) as StoredAccountInfo
-    const token = parsed.session_token?.trim()
-    return token ? token : null
+    return parsed && typeof parsed === 'object' ? parsed : null
   } catch {
     return null
   }
+}
+
+export const saveStoredAccountInfo = (accountInfo: StoredAccountInfo) => {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  window.localStorage.setItem(ACCOUNT_STORAGE_KEY, JSON.stringify(accountInfo))
+}
+
+export const getStoredSessionToken = () => {
+  const parsed = getStoredAccountInfo()
+  const token = parsed?.session_token?.trim()
+  return token ? token : null
+}
+
+export const getStoredRefreshToken = () => {
+  const parsed = getStoredAccountInfo()
+  const token = parsed?.refresh_token?.trim()
+  return token ? token : null
 }
 
 export const hasStoredSession = () => Boolean(getStoredSessionToken())

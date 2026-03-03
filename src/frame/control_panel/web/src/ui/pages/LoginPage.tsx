@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import { buckyos } from 'buckyos'
 import { useLocation, useNavigate } from 'react-router-dom'
 
-import { hasStoredSession, sanitizeRedirectPath } from '@/auth/session'
+import { useAuth } from '@/auth/useAuth'
+import { sanitizeRedirectPath } from '@/auth/session'
 import MessageModal from '@/ui/components/MessageModal'
 
 import Icon from '../icons'
@@ -73,41 +73,28 @@ const getReadableLoginError = (rawError: unknown) => {
 const LoginPage = () => {
   const location = useLocation()
   const navigate = useNavigate()
+  const { status, initError, signInWithPassword } = useAuth()
   const defaultUsername = useState(resolveDefaultUsernameFromHost)[0]
   const [username, setUsername] = useState('')
   const [usernameEditable, setUsernameEditable] = useState(defaultUsername.length === 0)
   const [password, setPassword] = useState('')
-  const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
-  const [initError, setInitError] = useState<string | null>(null)
   const [messageModal, setMessageModal] = useState<LoginModalState | null>(null)
   const redirectTarget = sanitizeRedirectPath(new URLSearchParams(location.search).get('redirect'))
+  const loading = status === 'loading'
 
   useEffect(() => {
     document.title = 'BuckyOS | Control Panel Login'
-
-    const init = async () => {
-      try {
-        await buckyos.initBuckyOS('control-panel')
-        if (hasStoredSession()) {
-          navigate(redirectTarget, { replace: true })
-          return
-        }
-
-        if (defaultUsername) {
-          setUsername((prev) => prev || defaultUsername)
-        }
-
-        setLoading(false)
-      } catch (err) {
-        console.error('initBuckyOS failed', err)
-        setInitError('Failed to initialize BuckyOS. Please check your network and try again.')
-        setLoading(false)
-      }
+    if (defaultUsername) {
+      setUsername((prev) => prev || defaultUsername)
     }
+  }, [defaultUsername])
 
-    void init()
-  }, [defaultUsername, navigate, redirectTarget])
+  useEffect(() => {
+    if (status === 'authenticated' && !submitting && !messageModal) {
+      navigate(redirectTarget, { replace: true })
+    }
+  }, [messageModal, navigate, redirectTarget, status, submitting])
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -125,15 +112,7 @@ const LoginPage = () => {
     setSubmitting(true)
 
     try {
-      const accountInfo = await buckyos.doLogin(username.trim(), password)
-      if (!accountInfo) {
-        setMessageModal({
-          tone: 'error',
-          title: 'Login Failed',
-          message: 'No session information was returned. Please try again.',
-        })
-        return
-      }
+      await signInWithPassword(username.trim(), password)
 
       setMessageModal({
         tone: 'success',
