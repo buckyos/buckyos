@@ -172,9 +172,12 @@ fn build_env_context(input: &BehaviorExecInput) -> HashMap<String, Json> {
     let mut ctx = HashMap::new();
     ctx.insert("role_md".to_string(), Json::String(input.role_md.clone()));
     ctx.insert("self_md".to_string(), Json::String(input.self_md.clone()));
-    if let Some(ref sid) = input.session_id {
-        ctx.insert("session_id".to_string(), Json::String(sid.clone()));
-        ctx.insert("loop.session_id".to_string(), Json::String(sid.clone()));
+    if !input.session_id.trim().is_empty() {
+        ctx.insert("session_id".to_string(), Json::String(input.session_id.clone()));
+        ctx.insert(
+            "loop.session_id".to_string(),
+            Json::String(input.session_id.clone()),
+        );
     }
     ctx.insert(
         "step.index".to_string(),
@@ -829,12 +832,12 @@ async fn load_history_messages_with_limit(
         let guard = session.lock().await;
         (
             normalize_optional_text(Some(guard.session_id.as_str()))
-                .or_else(|| normalize_optional_text(input.session_id.as_deref())),
+                .or_else(|| normalize_optional_text(Some(input.session_id.as_str()))),
             guard.session_root_dir.clone(),
         )
     } else {
         (
-            normalize_optional_text(input.session_id.as_deref()),
+            normalize_optional_text(Some(input.session_id.as_str())),
             PathBuf::new(),
         )
     };
@@ -1099,14 +1102,14 @@ async fn load_workspace_worklog_with_limit(
             let guard = session.lock().await;
             (
                 normalize_optional_text(Some(guard.session_id.as_str()))
-                    .or_else(|| normalize_optional_text(input.session_id.as_deref())),
+                    .or_else(|| normalize_optional_text(Some(input.session_id.as_str()))),
                 guard.local_workspace_id.clone(),
                 guard.workspace_info.clone(),
                 guard.cwd.clone(),
             )
         } else {
             (
-                normalize_optional_text(input.session_id.as_deref()),
+                normalize_optional_text(Some(input.session_id.as_str())),
                 None,
                 None,
                 PathBuf::new(),

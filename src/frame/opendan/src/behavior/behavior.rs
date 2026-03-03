@@ -415,7 +415,8 @@ impl LLMBehavior {
         input: &BehaviorExecInput,
     ) -> Result<i64, LLMComputeError> {
         let session_id = input.session_id.clone();
-        let rootid = resolve_rootid_for_task(input.trace.agent_name.as_str(), session_id.as_deref());
+        let rootid =
+            resolve_rootid_for_task(input.trace.agent_name.as_str(), Some(session_id.as_str()));
         let data = json!({
             "trace_id": input.trace.trace_id,
             "agent_did": input.trace.agent_name,
@@ -1129,10 +1130,7 @@ async fn append_todo_or_subagent_worklog(
 }
 
 fn extract_session_id_for_task(input: &BehaviorExecInput) -> Option<String> {
-    input
-        .session_id
-        .as_deref()
-        .and_then(normalize_non_empty_str)
+    normalize_non_empty_str(input.session_id.as_str())
 }
 
 fn normalize_non_empty_str(value: &str) -> Option<String> {

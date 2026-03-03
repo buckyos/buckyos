@@ -3,7 +3,7 @@ use std::future::Future;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use buckyos_api::{get_buckyos_api_runtime, MsgRecord, AgentSessionRecord};
+use buckyos_api::{get_buckyos_api_runtime, MsgRecord, OpenDanAgentSessionRecord};
 use chrono::{DateTime, Utc};
 use log::{debug, warn};
 use ndn_lib::MsgObject;
@@ -746,7 +746,7 @@ async fn render_recent_sessions_from_disk(
 
     let session_root = resolve_session_root_from_cwd(session_cwd, current_session_id).await?;
     let mut entries = fs::read_dir(&session_root).await.ok()?;
-    let mut records = Vec::<AgentSessionRecord>::new();
+    let mut records = Vec::<OpenDanAgentSessionRecord>::new();
 
     loop {
         let Ok(Some(entry)) = entries.next_entry().await else {
@@ -773,7 +773,7 @@ async fn render_recent_sessions_from_disk(
         let Ok(raw) = fs::read_to_string(&session_file).await else {
             continue;
         };
-        let Ok(mut record) = serde_json::from_str::<AgentSessionRecord>(&raw) else {
+        let Ok(mut record) = serde_json::from_str::<OpenDanAgentSessionRecord>(&raw) else {
             continue;
         };
         if record.session_id.trim().is_empty() {
@@ -1973,7 +1973,7 @@ mod tests {
         ) {
             let dir = session_root.join(session_id);
             fs::create_dir_all(&dir).await.expect("create session dir");
-            let record = AgentSessionRecord {
+            let record = OpenDanAgentSessionRecord {
                 session_id: session_id.to_string(),
                 owner_agent: "did:test:agent".to_string(),
                 title: title.to_string(),

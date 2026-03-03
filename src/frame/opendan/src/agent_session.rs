@@ -8,7 +8,7 @@ use buckyos_api::{
     get_buckyos_api_runtime, MsgRecord, MsgRecordWithObject, OpenDanAgentSessionRecord,
     OpenDanSessionLink,
 };
-use log::{info, warn};
+use log::{debug, info, warn};
 use name_lib::DID;
 use ndn_lib::MsgObject;
 use serde::{Deserialize, Serialize};
@@ -30,8 +30,6 @@ const WORK_SESSION_PREFIX: &str = "work-";
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SessionState {
-    //Pause,//人工暂停，恢复后直接变成Ready？ 按道理应该回复到之前的状态
-
     Wait,//运行中，等待任意触发
     WaitForMsg,//运行中，等待特定触发
     WaitForEvent,//运行中，等待特定触发
@@ -40,6 +38,19 @@ pub enum SessionState {
     Running,//正在运行中
 
     End,//结束，再次触发会从Default behavior中唤醒
+}
+
+impl ToString for SessionState {
+    fn to_string(&self) -> String {
+        match self {
+            SessionState::Wait => "wait".to_string(),
+            SessionState::WaitForMsg => "wait_for_msg".to_string(),
+            SessionState::WaitForEvent => "wait_for_event".to_string(),
+            SessionState::Ready => "ready".to_string(),
+            SessionState::Running => "running".to_string(),
+            SessionState::End => "end".to_string(),
+        }
+    }
 }
 
 impl Default for SessionState {
@@ -100,6 +111,7 @@ struct SessionRuntimeState {
     
     workspace_info: Option<Json>,
     local_workspace_id: Option<String>,
+    worklog: Vec<Json>,
 
     loaded_skills: Vec<String>,
     allow_tools: Vec<String>,
@@ -110,7 +122,7 @@ impl Default for SessionRuntimeState {
     fn default() -> Self {
         Self {
             state: SessionState::Wait,
-            state_before_pause : SessionState::Wait,
+            is_paused: false,
             wait_details: None,
             current_behavior: None,
             default_remote: None,
@@ -180,6 +192,7 @@ impl AgentSession {
             summary: String::new(),
             session_id,
             owner_agent: owner_agent.into(),
+            is_paused: false,
             state: SessionState::Wait,
             wait_details: None,
             current_behavior,
@@ -209,12 +222,8 @@ impl AgentSession {
     pub fn from_record(record: OpenDanAgentSessionRecord) -> Self {
         let runtime_meta = parse_runtime_meta(&record.meta);
         let mut state = runtime_meta.state;
-        if matches!(
-            record.status.trim().to_ascii_lowercase().as_str(),
-            SESSION_STATUS_PAUSE
-        ) {
-            state = SessionState::Pause;
-        }
+        let is_paused = runtime_meta.is_paused;
+
         let mut meta = record.meta.clone();
         if let Some(map) = meta.as_object_mut() {
             map.remove("runtime_state");
@@ -239,6 +248,7 @@ impl AgentSession {
                 record.title
             },
             summary,
+            is_paused,
             state,
             wait_details: runtime_meta.wait_details,
             current_behavior: normalize_optional_string(runtime_meta.current_behavior)
@@ -295,7 +305,7 @@ impl AgentSession {
                 .trim()
                 .to_string()
                 .if_empty_then(|| self.last_step_summary.clone().unwrap_or_default()),
-            status: self.record_status().to_string(),
+            status: self.state.to_string(),
             created_at_ms: self.created_at_ms,
             updated_at_ms,
             last_activity_ms,
@@ -308,6 +318,7 @@ impl AgentSession {
     fn runtime_meta(&self) -> SessionRuntimeState {
         SessionRuntimeState {
             state: self.state,
+            is_paused: self.is_paused,
             wait_details: self.wait_details.clone(),
             current_behavior: normalize_optional_string(Some(self.current_behavior.clone())),
             default_remote: self.default_remote.clone(),
@@ -322,38 +333,14 @@ impl AgentSession {
         }
     }
 
-    pub fn record_status(&self) -> &'static str {
-        if self.state == SessionState::Pause {
-            SESSION_STATUS_PAUSE
-        } else {
-            SESSION_STATUS_NORMAL
-        }
-    }
 
-    pub fn update_state(&mut self, new_state: SessionState) {
-        self.state = new_state;
-        self.updated_at_ms = now_ms();
-        if new_state == SessionState::Running {
-            self.last_activity_ms = self.updated_at_ms;
-        }
-    }
-
-    pub fn set_wait_state(
-        &mut self,
-        state: SessionState,
-        wait_details: Option<SessionWaitDetails>,
-    ) {
-        self.state = state;
-        self.wait_details = wait_details;
-        self.updated_at_ms = now_ms();
-    }
 
     pub fn mark_msg_arrived(&mut self, item: &SessionInputItem) {
-        self.update_state_on_input_arrived(item, SessionState::WaitForMsg);
+        self.update_state_on_input_arrived(item);
     }
 
     pub fn mark_event_arrived(&mut self, item: &SessionInputItem) {
-        self.update_state_on_input_arrived(item, SessionState::WaitForEvent);
+        self.update_state_on_input_arrived(item);
     }
 
     pub fn mark_input_links_used(&mut self, link_ids: &[String]) {
@@ -390,7 +377,7 @@ impl AgentSession {
     pub fn summary_view_json(&self) -> Json {
         json!({
             "session_id": self.session_id,
-            "status": self.record_status(),
+            "status": self.state.to_string(),
             "state": format!("{:?}", self.state).to_uppercase(),
             "title": self.title,
             "summary": self.summary,
@@ -421,19 +408,28 @@ impl AgentSession {
         if self.state == SessionState::WaitForMsg && item.msg.is_some() {
             self.updated_at_ms = now_ms();
             self.state = SessionState::Ready;
-            info!("{} will wakeup session:{} from WaitForMsg", self.agent_name, self.session_id);
+            info!(
+                "{} will wakeup session:{} from WaitForMsg",
+                self.owner_agent, self.session_id
+            );
             return;
         }
         if self.state == SessionState::WaitForEvent && item.event_id.is_some() {
             self.updated_at_ms = now_ms();
             self.state = SessionState::Ready;
-            info!("{} will wakeup session:{} from WaitForEvent", self.agent_name, self.session_id);
+            info!(
+                "{} will wakeup session:{} from WaitForEvent",
+                self.owner_agent, self.session_id
+            );
             return;
         }
         if self.state == SessionState::Wait || self.state == SessionState::End {
             self.updated_at_ms = now_ms();
             self.state = SessionState::Ready;
-            debug!("{} will wakeup session:{} by input", self.agent_name, self.session_id);
+            debug!(
+                "{} will wakeup session:{} by input",
+                self.owner_agent, self.session_id
+            );
             return;
         }
         return;
@@ -718,7 +714,7 @@ impl AgentSessionMgr {
                 let mut guard = session.lock().await;
                 if guard.should_ready_by_wait_timeout(now_ms) {
                     guard.wait_details = None;
-                    guard.update_state(SessionState::Ready);
+                    guard.state = SessionState::Ready;
                     Some(guard.to_record(true))
                 } else {
                     None
@@ -766,7 +762,7 @@ impl AgentSessionMgr {
             ))
         })?;
 
-        let Some(session) = self.get_session(session_id.as_str()).await else {
+        let Some(_session) = self.get_session(session_id.as_str()).await else {
             let mut runtime = AgentSession::from_record(record);
             self.hydrate_session_runtime_context(&mut runtime);
             self.sessions
@@ -776,16 +772,6 @@ impl AgentSessionMgr {
             return Ok(());
         };
 
-        let mut guard = session.lock().await;
-        let paused = matches!(
-            record.status.trim().to_ascii_lowercase().as_str(),
-            SESSION_STATUS_PAUSE
-        );
-        if paused {
-            guard.state = SessionState::Pause;
-        } else if guard.state == SessionState::Pause {
-            guard.state = SessionState::Wait;
-        }
         Ok(())
     }
 
@@ -825,7 +811,7 @@ impl AgentSessionMgr {
                     }
                     occupied_local_workspaces.insert(local_workspace_id.to_string());
                 }
-                guard.update_state(SessionState::Running);
+                guard.state = SessionState::Running;
                 return Some(session.clone());
             }
         }

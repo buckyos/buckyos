@@ -3,16 +3,20 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use log::info;
+use log::{info, warn};
 use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
+use tokio::fs;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::Mutex;
 use tokio::task;
 
 use crate::agent_tool::{AgentTool, AgentToolError, ToolSpec, TOOL_WORKLOG_MANAGE};
-use crate::behavior::TraceCtx;
+use crate::behavior::{AgentWorkEvent, TraceCtx, WorklogSink};
 
 const DEFAULT_LIST_LIMIT: usize = 64;
 const DEFAULT_MAX_LIST_LIMIT: usize = 256;

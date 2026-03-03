@@ -172,6 +172,13 @@ impl Default for BehaviorLoopReport {
     }
 }
 
+struct NoopWorklogSink;
+
+#[async_trait]
+impl WorklogSink for NoopWorklogSink {
+    async fn emit(&self, _event: AgentWorkEvent) {}
+}
+
 #[derive(Clone)]
 pub struct AIAgentDeps {
     pub taskmgr: Arc<TaskManagerClient>,
@@ -232,9 +239,11 @@ impl AIAgent {
             )
         })?;
 
-        let did = load_agent_did(&agent_root).await?;
-        let owner_did = DID::from_str(did.as_str())
-            .map_err(|err| anyhow!("invalid owner did in agent doc: did={} err={}", did, err))?;
+        let did_raw = load_agent_did(&agent_root).await?;
+        let did = DID::from_str(did_raw.as_str())
+            .map_err(|err| anyhow!("invalid owner did in agent doc: did={:?} err={}", did_raw, err))?;
+        let owner_did = did.clone();
+        let agent_name = did.to_raw_host_name();
         let role_path = agent_root.join(&cfg.role_file_name);
         let self_path = agent_root.join(&cfg.self_file_name);
         let role_md = read_text_if_exists(&role_path)
@@ -275,7 +284,7 @@ impl AIAgent {
             resolve_default_worker_behavior_name(&behaviors_dir, default_behavior.as_str()).await;
 
         let session_store = Arc::new(
-            AgentSessionMgr::new(did.clone(), session_root, default_behavior.clone())
+            AgentSessionMgr::new(agent_name.clone(), session_root, default_behavior.clone())
                 .await
                 .map_err(|err| anyhow!("init session store failed: {err}"))?,
         );
@@ -302,7 +311,9 @@ impl AIAgent {
         let agent = Self {
             cfg,
             did,
+            agent_name,
             owner_did,
+            owner_agent_name: None,
             role_md,
             self_md,
             behaviors_dir,
@@ -343,7 +354,7 @@ impl AIAgent {
             let handle = task::spawn(async move {
                 if let Err(err) = worker_agent.run_session_worker_loop(stop_after_ticks).await {
                     warn!(
-                        "agent.session_worker_loop exited with error: did={} worker={} err={}",
+                        "agent.session_worker_loop exited with error: did={:?} worker={} err={}",
                         worker_agent.did, worker_idx, err
                     );
                 }
@@ -442,7 +453,7 @@ impl AIAgent {
             let result = self.run_session_loop(session.clone()).await;
 
             if let Err(err) = result {
-                warn!("agent.session_loop failed: did={} err={}", self.did, err);
+                warn!("agent.session_loop failed: did={:?} err={}", self.did, err);
             }
             let session_id = {
                 let mut guard = session.lock().await;
@@ -537,13 +548,13 @@ impl AIAgent {
         for box_kind in box_kinds {
             let state_filter = Self::msg_pull_state_filter_for_box(box_kind);
             debug!(
-                "agent.msg_pull_box_begin: did={} box_kind={:?} state_filter={:?}",
+                "agent.msg_pull_box_begin: did={:?} box_kind={:?} state_filter={:?}",
                 self.did, box_kind, state_filter
             );
             let mut pulled_in_box = 0usize;
             for attempt in 0..MAX_MSG_PULL_PER_TICK {
                 debug!(
-                    "agent.msg_pull_get_next_call: did={} box_kind={:?} attempt={} state_filter={:?}",
+                    "agent.msg_pull_get_next_call: did={:?} box_kind={:?} attempt={} state_filter={:?}",
                     self.did,
                     box_kind,
                     attempt + 1,
@@ -572,7 +583,7 @@ impl AIAgent {
                         );
                         if !Self::is_expected_pulled_msg_state(box_kind, &record.record.state) {
                             warn!(
-                                "agent.msg_pull_unexpected_state: did={} box_kind={:?} record_id={} state={:?} expected=unread_or_reading",
+                                "agent.msg_pull_unexpected_state: did={:?} box_kind={:?} record_id={} state={:?} expected=unread_or_reading",
                                 self.did,
                                 box_kind,
                                 record.record.record_id,
@@ -584,7 +595,7 @@ impl AIAgent {
                     }
                     Ok(None) => {
                         debug!(
-                            "agent.msg_pull_get_next_miss: did={} box_kind={:?} attempt={} pulled_in_box={}",
+                            "agent.msg_pull_get_next_miss: did={:?} box_kind={:?} attempt={} pulled_in_box={}",
                             self.did,
                             box_kind,
                             attempt + 1,
@@ -594,7 +605,7 @@ impl AIAgent {
                     }
                     Err(err) => {
                         warn!(
-                            "agent.msg_pull_failed: did={} box_kind={:?} attempt={} err={}",
+                            "agent.msg_pull_failed: did={:?} box_kind={:?} attempt={} err={}",
                             self.did,
                             box_kind,
                             attempt + 1,
@@ -605,7 +616,7 @@ impl AIAgent {
                 }
             }
             info!(
-                "agent.msg_pull_box_done: did={} box_kind={:?} pulled_in_box={}",
+                "agent.msg_pull_box_done: did={:?} box_kind={:?} pulled_in_box={}",
                 self.did, box_kind, pulled_in_box
             );
         }
@@ -636,7 +647,7 @@ impl AIAgent {
         pulled_events: Vec<PulledEvent>,
     ) -> Result<()> {
         debug!(
-            "agent.dispatch_pulled_inputs_begin: did={} pulled_msgs={} pulled_events={}",
+            "agent.dispatch_pulled_inputs_begin: did={:?} pulled_msgs={} pulled_events={}",
             self.did,
             pulled_msgs.len(),
             pulled_events.len()
@@ -694,7 +705,7 @@ impl AIAgent {
             //TODO：Event可能能1次唤醒多个Session，这里需要改造
             unimplemented!()
         }
-        info!("agent.dispatch_pulled_inputs_done: did={}", self.did);
+        info!("agent.dispatch_pulled_inputs_done: did={:?}", self.did);
         Ok(())
     }
 
@@ -802,11 +813,10 @@ impl AIAgent {
 
             if report.behavior_switched {
                 info!(
-                    "{}.{} behavior switched from {} to {:?}!",
+                    "{}.{} behavior switched from {}",
                     self.agent_name,
                     session_id,
                     behavior_name,
-                    report.next_behavior
                 );
             }
 
@@ -883,14 +893,14 @@ impl AIAgent {
                     tools: self.tools.clone(),
                     memory: Some(self.memory.clone()),
                     policy: self.policy.clone(),
-    
+                    worklog: Arc::new(NoopWorklogSink),
                     tokenizer: self.tokenizer.clone(),
                     environment: self.environment.clone(),
                 },
             );
 
             //run step
-            let (llm_result, tracking) = llm_behavior.run_step(input)
+            let (llm_result, tracking) = llm_behavior.run_step(&input)
                 .await
                 .map_err(|err| anyhow!("llm behavior step failed: {err}"))?;
 
@@ -910,7 +920,7 @@ impl AIAgent {
 
             //如果这里执行action时，触发了请求用户授权，如何从这里重启恢复? 不恢复，此时没有side event,相当于把这个step重新做一次
             //所有action都通过授权才会执行
-            let action_results = self.execute_actions(trace, &llm_result.actions).await;
+            let action_results = self.execute_actions(&trace, &llm_result.actions).await;
 
             let step_summary = build_step_summary(
                 &trace,
@@ -985,15 +995,15 @@ impl AIAgent {
 
         if let Some(session_id) = llm_result.route_session_id.as_deref() {
             route_targets
-                .entry(session_id)
+                .entry(session_id.to_string())
                 .or_insert_with(StepRouteTarget::default);
         } else if let Some((new_session_title, new_session_summary)) = llm_result.new_session.as_ref() {
             let new_session_id = self.gen_new_work_session_id();
             route_targets.insert(
                 new_session_id,
                 StepRouteTarget {
-                    title: new_session_title.clone(),
-                    summary: new_session_summary.clone(),
+                    title: Some(new_session_title.clone()),
+                    summary: Some(new_session_summary.clone()),
                     behavior: Some(self.default_worker_behavior.clone()),
                 },
             );
@@ -1155,7 +1165,7 @@ impl AIAgent {
                 behavior_prompt: behavior_cfg.process_rule.clone(),
                 limits: behavior_cfg.limits.clone(),
                 behavior_cfg: behavior_cfg.clone(),
-                session_id: Some(session_id),
+                session_id,
                 input_prompt: input_prompt_result.rendered,
                 last_step_prompt: String::new(),
                 session: Some(session.clone()),
@@ -1179,12 +1189,12 @@ impl AIAgent {
             .await
         {
             warn!(
-                "agent.msg_mark_read_failed: did={} record_id={} err={}",
+                "agent.msg_mark_read_failed: did={:?} record_id={} err={}",
                 self.did, record_id, err
             );
         } else {
             info!(
-                "agent.msg_mark_read_ok: did={} record_id={} state={:?}",
+                "agent.msg_mark_read_ok: did={:?} record_id={} state={:?}",
                 self.did,
                 record_id,
                 MsgState::Readed
@@ -1216,7 +1226,7 @@ impl AIAgent {
                 let reader = Arc::new(reader);
                 *guard = Some(reader.clone());
                 debug!(
-                    "agent.event_reader_created: did={} owner_did={} patterns={:?} reader_id={}",
+                    "agent.event_reader_created: did={:?} owner_did={:?} patterns={:?} reader_id={}",
                     self.did,
                     self.owner_did.to_string(),
                     patterns,
@@ -1227,7 +1237,7 @@ impl AIAgent {
             Err(err) => {
                 if matches!(err, KEventError::InvalidPattern(_)) {
                     warn!(
-                        "agent.event_reader_create_failed: did={} owner_did={} reason=invalid_pattern patterns={:?} err={:?}",
+                        "agent.event_reader_create_failed: did={:?} owner_did={:?} reason=invalid_pattern patterns={:?} err={:?}",
                         self.did,
                         self.owner_did.to_string(),
                         patterns,
@@ -1235,7 +1245,7 @@ impl AIAgent {
                     );
                 } else {
                     debug!(
-                        "agent.event_reader_create_failed: did={} owner_did={} patterns={:?} err={:?}",
+                        "agent.event_reader_create_failed: did={:?} owner_did={:?} patterns={:?} err={:?}",
                         self.did,
                         self.owner_did.to_string(),
                         patterns,
@@ -1373,7 +1383,7 @@ impl AIAgent {
                     .create_queue(
                         Some(queue_name),
                         SESSION_QUEUE_APP_ID,
-                        self.did.as_str(),
+                        self.agent_name.as_str(),
                         queue_cfg,
                     )
                     .await
@@ -1426,7 +1436,7 @@ impl AIAgent {
                 match msg_queue
                     .subscribe(
                         queue_urn,
-                        self.did.as_str(),
+                        self.agent_name.as_str(),
                         SESSION_QUEUE_APP_ID,
                         Some(sub_id.to_string()),
                         SubPosition::Earliest,
@@ -1487,7 +1497,7 @@ impl AIAgent {
         self.ensure_session_queue_exists(
             msg_queue.as_ref(),
             session_id,
-            binding.msg_queue_name.as_str(),
+            binding.msg_queue_urn.as_str(),
             binding.msg_queue_urn.as_str(),
             queue_cfg.clone(),
         )
@@ -1495,7 +1505,7 @@ impl AIAgent {
         self.ensure_session_queue_exists(
             msg_queue.as_ref(),
             session_id,
-            binding.event_queue_name.as_str(),
+            binding.event_queue_urn.as_str(),
             binding.event_queue_urn.as_str(),
             queue_cfg,
         )
@@ -1692,7 +1702,7 @@ impl AIAgent {
         let session_id = {
             let mut guard = session.lock().await;
             if guard.state == SessionState::Running {
-                guard.update_state(SessionState::Wait);
+                guard.state = SessionState::Wait;
             }
             guard.session_id.clone()
         };
@@ -1927,7 +1937,7 @@ impl AIAgent {
                 .await
             {
                 warn!(
-                    "agent.set_memory failed: did={} key={} err={}",
+                    "agent.set_memory failed: did={:?} key={} err={}",
                     self.did, key, err
                 );
             }
@@ -1948,21 +1958,31 @@ impl AIAgent {
         let mut history = Vec::<ReplyHistoryRecord>::new();
         let session_id = trace.session_id.clone();
         for reply in replies {
-            let audience = reply.audience.clone()
-                .or_else(|| default_audience.clone());
-            let Some(audience) = audience else {
+            let audience = if reply.audience.trim().is_empty() {
+                default_audience
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_default()
+            } else {
+                reply.audience.clone()
+            };
+            if audience.is_empty() {
                 warn!(
-                    "agent.reply_missing_audience: did={} behavior={} content={}",
+                    "agent.reply_missing_audience: did={:?} behavior={} content={}",
                     self.did,
                     trace.behavior,
                     compact_text_for_log(reply.content.as_str(), 256),
                 );
                 continue;
+            }
+            let reply_format = if reply.format.trim().is_empty() {
+                "text".to_string()
+            } else {
+                reply.format.clone()
             };
-            let reply_format = reply.format.clone()
-                .unwrap_or_else(|| "text".to_string());
             info!(
-                "agent.reply: did={} behavior={} audience={} format={} content={}",
+                "agent.reply: did={:?} behavior={} audience={} format={} content={}",
                 self.did,
                 trace.behavior,
                 audience,
@@ -2011,7 +2031,7 @@ impl AIAgent {
             Ok(did) => did,
             Err(_) => {
                 warn!(
-                    "agent.reply_invalid_audience: did={} audience={}",
+                    "agent.reply_invalid_audience: did={:?} audience={}",
                     self.did, audience
                 );
                 return None;
@@ -2020,7 +2040,7 @@ impl AIAgent {
 
         if target_did == sender_did {
             debug!(
-                "agent.reply_skip_self_target: did={} target={:?} audience={}",
+                "agent.reply_skip_self_target: did={:?} target={:?} audience={}",
                 self.did, target_did, audience
             );
             return None;
@@ -2038,7 +2058,10 @@ impl AIAgent {
             },
             ..Default::default()
         };
-        let normalized_session_id = session_id.clone();
+        let normalized_session_id = session_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
 
         if will_send_msg
             .thread
@@ -2048,16 +2071,18 @@ impl AIAgent {
             .filter(|value| !value.is_empty())
             .is_none()
         {
-            will_send_msg.thread.topic = Some(session_id.clone());
+            will_send_msg.thread.topic = normalized_session_id.clone();
         }
-        will_send_msg.thread.correlation_id = Some(session_id.clone());
-        will_send_msg
-            .meta
-            .insert("session_id".to_string(), Json::String(session_id.clone()));
-        will_send_msg.meta.insert(
-            "owner_session_id".to_string(),
-            Json::String(session_id.clone()),
-        );
+        will_send_msg.thread.correlation_id = normalized_session_id.clone();
+        if let Some(session_id) = normalized_session_id.as_ref() {
+            will_send_msg
+                .meta
+                .insert("session_id".to_string(), Json::String(session_id.clone()));
+            will_send_msg.meta.insert(
+                "owner_session_id".to_string(),
+                Json::String(session_id.clone()),
+            );
+        }
         
         let outbound_for_history = will_send_msg.clone();
 
@@ -2071,7 +2096,7 @@ impl AIAgent {
             Ok(result) => {
                 if !result.ok {
                     warn!(
-                        "agent.reply_post_send_rejected: did={} target={:?} reason={}",
+                        "agent.reply_post_send_rejected: did={:?} target={:?} reason={}",
                         self.did,
                         target_did,
                         result.reason.unwrap_or_else(|| "unknown".to_string())
@@ -2085,7 +2110,7 @@ impl AIAgent {
             }
             Err(err) => {
                 warn!(
-                    "agent.reply_post_send_failed: did={} target={:?} err={}",
+                    "agent.reply_post_send_failed: did={:?} target={:?} err={}",
                     self.did, target_did, err
                 );
                 None
@@ -2139,7 +2164,7 @@ impl AIAgent {
                 .or_else(|| serde_json::from_slice::<MsgRecord>(readed_input_item.as_slice()).ok());
             let Some(msg_record) = msg_record else {
                 warn!(
-                    "agent.persist_step_history_skip_invalid_input: did={} session={} payload_bytes={}",
+                    "agent.persist_step_history_skip_invalid_input: did={:?} session={} payload_bytes={}",
                     self.did,
                     session_id,
                     readed_input_item.len()
@@ -2150,12 +2175,12 @@ impl AIAgent {
                 record: msg_record,
                 msg: None,
             };
-            self.persist_session_msg_history_record(session_id.as_str(), &history_record)
+            self.persist_session_msg_history_record(session_id, &history_record)
                 .await;
         }
 
         for reply in reply_history {
-            self.persist_post_send_history(session_id.as_str(), &reply.outbound, &reply.result)
+            self.persist_post_send_history(session_id, &reply.outbound, &reply.result)
                 .await;
         }
     }
@@ -2165,9 +2190,11 @@ impl AIAgent {
         session_id: &str,
         record: &MsgRecordWithObject,
     ) {
-        let Some(session_id) = normalize_session_id(Some(session_id)) else {
+        let session_id = session_id.trim();
+        if session_id.is_empty() {
             return;
-        };
+        }
+        let session_id = session_id.to_string();
         let msg_obj = if let Some(msg) = record.msg.clone() {
             msg
         } else {
@@ -2175,7 +2202,7 @@ impl AIAgent {
                 Ok(msg) => msg,
                 Err(err) => {
                     warn!(
-                        "agent.msg_history_load_msg_failed: did={} session={} record_id={} err={}",
+                        "agent.msg_history_load_msg_failed: did={:?} session={} record_id={} err={}",
                         self.did, session_id, record.record.record_id, err
                     );
                     return;
@@ -2194,7 +2221,7 @@ impl AIAgent {
         .await
         {
             warn!(
-                "agent.msg_history_append_failed: did={} session={} session_dir={} record_id={} err={}",
+                "agent.msg_history_append_failed: did={:?} session={} session_dir={} record_id={} err={}",
                 self.did,
                 session_id,
                 session_dir.display(),
@@ -2234,14 +2261,14 @@ impl AIAgent {
                             sleep(Duration::from_millis(40)).await;
                         } else {
                             warn!(
-                                "agent.reply_history_record_missing: did={} session={} record_id={} msg_id={}",
+                                "agent.reply_history_record_missing: did={:?} session={} record_id={} msg_id={}",
                                 self.did, session_id, delivery.record_id, result.msg_id
                             );
                         }
                     }
                     Err(err) => {
                         warn!(
-                            "agent.reply_history_record_fetch_failed: did={} session={} record_id={} msg_id={} err={}",
+                            "agent.reply_history_record_fetch_failed: did={:?} session={} record_id={} msg_id={} err={}",
                             self.did, session_id, delivery.record_id, result.msg_id, err
                         );
                         break;
@@ -2273,7 +2300,7 @@ impl AIAgent {
                     updated_at_ms: now_ms(),
                     route: None,
                     delivery: None,
-                    ui_session_id: session_id.clone(),
+                    ui_session_id: Some(session_id.to_string()),
                     sort_key: now_ms(),
                     tags: vec![],
                 },
@@ -2349,8 +2376,8 @@ impl AIAgent {
         out
     }
 
-    pub fn did(&self) -> &str {
-        self.did.to_string().as_str()
+    pub fn did(&self) -> String {
+        self.did.to_string()
     }
 
     pub fn workspace_root(&self) -> &Path {
@@ -2364,7 +2391,17 @@ impl AIAgent {
     fn did_token_or_sanitized(raw: &str) -> String {
         DID::from_str(raw)
             .map(|did| did.to_raw_host_name())
-            .unwrap_or_else(|_| Self::sanitize_kevent_token(raw))
+            .unwrap_or_else(|_| {
+                raw.chars()
+                    .map(|ch| {
+                        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
+                            ch
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect()
+            })
     }
 }
 
@@ -2385,22 +2422,21 @@ fn apply_session_behavior_transition(
         if next_behavior.eq_ignore_ascii_case("WAIT") {
             if session.state != SessionState::WaitForMsg
                 && session.state != SessionState::WaitForEvent
-                && session.state != SessionState::Pause
                 && session.state != SessionState::End
             {
-                session.update_state(SessionState::Wait);
+                session.state = SessionState::Wait;
             } else {
                 // Respect wait-like states previously written in session_delta.
-                session.update_state(session.state);
+                session.state = session.state;
             }
             keep_running = false;
         } else if next_behavior.starts_with("WAIT_FOR_MSG") {
-            session.update_state(SessionState::WaitForMsg);
+            session.state = SessionState::WaitForMsg;
             keep_running = false;
         } else if next_behavior.eq_ignore_ascii_case("END") {
             //不切换behavior,但是当前behavior loop结束了
             session.last_step_summary = None;
-            session.update_state(SessionState::End);
+            session.state = SessionState::End;
             keep_running = false;
         } else {
             let previous_behavior = session.current_behavior.clone();
@@ -2410,7 +2446,7 @@ fn apply_session_behavior_transition(
             session.step_index = 0;
             //这个实现需要仔细考虑
             session.last_step_summary = None;
-            session.update_state(SessionState::Running);
+            session.state = SessionState::Running;
             if behavior_switched {
                 info!(
                     "agent.session_behavior_switch: session={} from={} to={} reason=next_behavior",
@@ -2433,7 +2469,7 @@ fn apply_session_behavior_transition(
                 behavior_switched = session.current_behavior != fallback_behavior;
                 session.current_behavior = fallback_behavior.to_string();
                 session.step_index = 0;
-                session.update_state(SessionState::Wait);
+                session.state = SessionState::Wait;
                 if behavior_switched {
                     info!(
                         "agent.session_behavior_switch: session={} from={} to={} reason=step_limit_fallback step_limit={}",
