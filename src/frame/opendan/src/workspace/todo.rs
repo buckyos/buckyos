@@ -14,7 +14,7 @@ use serde_json::{json, Value as Json};
 use tokio::task;
 
 use crate::agent_tool::{AgentTool, AgentToolError, ToolSpec, TOOL_TODO_MANAGE};
-use crate::behavior::TraceCtx;
+use crate::behavior::SessionRuntimeContext;
 
 const DEFAULT_LIST_LIMIT: usize = 32;
 const DEFAULT_MAX_LIST_LIMIT: usize = 128;
@@ -209,7 +209,7 @@ impl AgentTool for TodoTool {
         }
     }
 
-    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
         let action = require_string(&args, "action")?;
         let workspace_id = args
             .get("workspace_id")
@@ -322,7 +322,11 @@ impl TodoTool {
         }))
     }
 
-    async fn call_apply_delta(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
+    async fn call_apply_delta(
+        &self,
+        ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<Json, AgentToolError> {
         let input = ApplyDeltaInput::from_args(ctx, &args)?;
         let oplog_path = self.oplog_path.clone();
         let rsp = self
@@ -650,7 +654,7 @@ struct ActorCtx {
 }
 
 impl ActorCtx {
-    fn from_args(ctx: &TraceCtx, args: &Json) -> Result<Self, AgentToolError> {
+    fn from_args(ctx: &SessionRuntimeContext, args: &Json) -> Result<Self, AgentToolError> {
         let actor_raw = args.get("actor_ctx").and_then(|v| v.as_object());
         let kind = actor_raw
             .and_then(|m| m.get("kind"))
@@ -809,7 +813,7 @@ struct ApplyDeltaInput {
 }
 
 impl ApplyDeltaInput {
-    fn from_args(ctx: &TraceCtx, args: &Json) -> Result<Self, AgentToolError> {
+    fn from_args(ctx: &SessionRuntimeContext, args: &Json) -> Result<Self, AgentToolError> {
         let workspace_id = require_workspace_id(args)?;
         let actor = ActorCtx::from_args(ctx, args)?;
 
@@ -3180,18 +3184,22 @@ fn u64_to_usize(v: u64, field: &str) -> Result<usize, AgentToolError> {
 mod tests {
     use super::*;
     use serde_json::json;
-    fn test_ctx(agent_did: &str) -> TraceCtx {
-        TraceCtx {
+    fn test_ctx(agent_did: &str) -> SessionRuntimeContext {
+        SessionRuntimeContext {
             trace_id: "trace-test".to_string(),
             agent_name: agent_did.to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-test".to_string(),
-            session_id: None,
+            session_id: "sess-demo".to_string(),
         }
     }
 
-    async fn call(tool: &TodoTool, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(
+        tool: &TodoTool,
+        ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<Json, AgentToolError> {
         tool.call(ctx, args).await
     }
 

@@ -14,13 +14,13 @@ pub type InboxPack = Json;
 pub type MemoryPack = Json;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TraceCtx {
+pub struct SessionRuntimeContext {
     pub trace_id: String,
     pub agent_name: String,
     pub behavior: String,
     pub step_idx: u32,
     pub wakeup_id: String,
-    pub session_id: Option<String>,
+    pub session_id: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -56,7 +56,7 @@ impl Default for StepLimits {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct BehaviorExecInput {
     pub session_id: String,
-    pub trace: TraceCtx,
+    pub trace: SessionRuntimeContext,
 
     pub input_prompt: String,
     pub last_step_prompt: String,
@@ -171,7 +171,6 @@ impl BehaviorLLMResult {
             return Err(LLMComputeError::Internal(err.to_string()));
         }
         return Ok(result.unwrap());
-     
     }
 }
 

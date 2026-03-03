@@ -18,7 +18,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, Notify, RwLock};
 
 use crate::agent_tool::{AgentTool, AgentToolError, ToolSpec, TOOL_GET_SESSION};
-use crate::behavior::TraceCtx;
+use crate::behavior::SessionRuntimeContext;
 
 const DEFAULT_SESSION_FILE: &str = "session.json";
 const DEFAULT_MSG_RECORD_FILE: &str = "msg_record.jsonl";
@@ -28,14 +28,14 @@ const WORK_SESSION_PREFIX: &str = "work-";
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SessionState {
-    Wait,//运行中，等待任意触发
-    WaitForMsg,//运行中，等待特定触发
-    WaitForEvent,//运行中，等待特定触发
-    
-    Ready,//已经触发，等待调度成Running
-    Running,//正在运行中
+    Wait,         //运行中，等待任意触发
+    WaitForMsg,   //运行中，等待特定触发
+    WaitForEvent, //运行中，等待特定触发
 
-    End,//结束，再次触发会从Default behavior中唤醒
+    Ready,   //已经触发，等待调度成Running
+    Running, //正在运行中
+
+    End, //结束，再次触发会从Default behavior中唤醒
 }
 
 impl ToString for SessionState {
@@ -96,8 +96,8 @@ impl Default for SessionInputItem {
 #[serde(default)]
 struct SessionRuntimeState {
     state: SessionState,
-    is_paused:bool,
-    
+    is_paused: bool,
+
     //TODO 简化成wait特定的object_id + event_id （比如等待授权任务的task)
     wait_details: Option<SessionWaitDetails>,
     current_behavior: Option<String>,
@@ -106,7 +106,7 @@ struct SessionRuntimeState {
 
     step_index: u32,
     last_step_summary: Option<Json>,
-    
+
     workspace_info: Option<Json>,
     local_workspace_id: Option<String>,
     worklog: Vec<Json>,
@@ -147,7 +147,7 @@ pub struct AgentSession {
     pub meta: Json,
 
     pub last_step_summary: Option<String>,
-    pub is_paused:bool,
+    pub is_paused: bool,
     pub state: SessionState,
     pub wait_details: Option<SessionWaitDetails>,
     pub current_behavior: String,
@@ -331,8 +331,6 @@ impl AgentSession {
         }
     }
 
-
-
     pub fn mark_msg_arrived(&mut self, item: &SessionInputItem) {
         self.update_state_on_input_arrived(item);
     }
@@ -395,10 +393,7 @@ impl AgentSession {
         })
     }
 
-    fn update_state_on_input_arrived(
-        &mut self,
-        item: &SessionInputItem,
-    ) {
+    fn update_state_on_input_arrived(&mut self, item: &SessionInputItem) {
         if self.state == SessionState::Running {
             return;
         }
@@ -668,14 +663,14 @@ impl AgentSessionMgr {
         let session = self
             .ensure_session(session_id, None, None, default_remote.as_deref())
             .await?;
-        
+
         let mut guard = session.lock().await;
         guard.update_state_on_input_arrived(input_item);
         info!(
             "agent.session_try_wakeup: session_id={} state={:?}",
             guard.session_id, guard.state
         );
-        
+
         self.ready_notify.notify_one();
         Ok(())
     }
@@ -994,7 +989,7 @@ impl AgentTool for GetSessionTool {
         }
     }
 
-    async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(&self, _ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
         let session_id = require_string(&args, "session_id")?;
         let session = self.store.session_view(&session_id).await?;
         Ok(json!({

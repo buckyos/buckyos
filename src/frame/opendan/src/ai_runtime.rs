@@ -23,7 +23,7 @@ use crate::agent_tool::{
     AgentTool, AgentToolError, AgentToolManager, ToolSpec, TOOL_BIND_EXTERNAL_WORKSPACE,
     TOOL_CREATE_SUB_AGENT, TOOL_LIST_EXTERNAL_WORKSPACES,
 };
-use crate::behavior::TraceCtx;
+use crate::behavior::SessionRuntimeContext;
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
 const DEFAULT_SUB_AGENTS_DIR: &str = "sub-agents";
@@ -1808,7 +1808,7 @@ impl AgentTool for RuntimeCreateSubAgentTool {
         }
     }
 
-    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
         let parent_did = optional_string(&args, "parent_did")?.unwrap_or(ctx.agent_name.clone());
         let req = CreateSubAgentRequest {
             name: require_string(&args, "name")?,
@@ -1858,7 +1858,7 @@ impl AgentTool for RuntimeBindExternalWorkspaceTool {
         }
     }
 
-    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
         let agent_did = optional_string(&args, "agent_did")?.unwrap_or(ctx.agent_name.clone());
         let req = BindExternalWorkspaceRequest {
             name: require_string(&args, "name")?,
@@ -1904,7 +1904,7 @@ impl AgentTool for RuntimeListExternalWorkspacesTool {
         }
     }
 
-    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
         let agent_did = optional_string(&args, "agent_did")?.unwrap_or(ctx.agent_name.clone());
         let workspaces = self.runtime.list_external_workspaces(&agent_did).await?;
         Ok(json!({
@@ -2359,14 +2359,14 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
         .expect("join sqlite session writer");
     }
 
-    fn call_ctx(agent_did: &str) -> TraceCtx {
-        TraceCtx {
+    fn call_ctx(agent_did: &str) -> SessionRuntimeContext {
+        SessionRuntimeContext {
             trace_id: "trace-1".to_string(),
             agent_name: agent_did.to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-1".to_string(),
-            session_id: None,
+            session_id: "session-test".to_string(),
         }
     }
 

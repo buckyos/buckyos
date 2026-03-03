@@ -13,7 +13,7 @@ use serde_json::{json, Value as Json};
 use tokio::task;
 
 use crate::agent_tool::{AgentTool, AgentToolError, ToolSpec, TOOL_WORKLOG_MANAGE};
-use crate::behavior::TraceCtx;
+use crate::behavior::SessionRuntimeContext;
 
 const DEFAULT_LIST_LIMIT: usize = 64;
 const DEFAULT_MAX_LIST_LIMIT: usize = 256;
@@ -51,11 +51,11 @@ impl WorklogToolConfig {
 }
 
 #[derive(Clone, Debug)]
-pub struct WorklogTool {
+pub struct WorklogService {
     cfg: WorklogToolConfig,
 }
 
-impl WorklogTool {
+impl WorklogService {
     pub fn new(mut cfg: WorklogToolConfig) -> Result<Self, AgentToolError> {
         if cfg.default_list_limit == 0 {
             cfg.default_list_limit = DEFAULT_LIST_LIMIT;
@@ -133,67 +133,105 @@ impl WorklogTool {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct WorklogTool {
+    service: WorklogService,
+}
+
+impl WorklogTool {
+    pub fn new(cfg: WorklogToolConfig) -> Result<Self, AgentToolError> {
+        Ok(Self {
+            service: WorklogService::new(cfg)?,
+        })
+    }
+
+    pub fn service(&self) -> &WorklogService {
+        &self.service
+    }
+
+    pub async fn list_worklog_records(
+        &self,
+        options: WorklogListOptions,
+    ) -> Result<Vec<WorklogRecord>, AgentToolError> {
+        self.service.list_worklog_records(options).await
+    }
+}
+
+fn worklog_tool_spec() -> ToolSpec {
+    ToolSpec {
+        name: TOOL_WORKLOG_MANAGE.to_string(),
+        description: "Structured workspace worklog with event records, step summary and prompt-safe rendering.".to_string(),
+        args_schema: json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "append_worklog",
+                        "append_step_summary",
+                        "mark_step_committed",
+                        "list_worklog",
+                        "get_worklog",
+                        "list_step",
+                        "build_prompt_worklog",
+                        "append",
+                        "list",
+                        "get",
+                        "render_for_prompt"
+                    ]
+                },
+                "record": { "type": "object" },
+                "log_id": { "type": "string" },
+                "id": { "type": "string" },
+                "step_id": { "type": "string" },
+                "owner_session_id": { "type": "string" },
+                "workspace_id": { "type": "string" },
+                "todo_id": { "type": "string" },
+                "type": { "type": "string" },
+                "status": { "type": "string" },
+                "tag": { "type": "string" },
+                "limit": { "type": "integer", "minimum": 1 },
+                "offset": { "type": "integer", "minimum": 0 },
+                "token_budget": { "type": "integer", "minimum": 1 }
+            },
+            "required": ["action"],
+            "additionalProperties": true
+        }),
+        output_schema: json!({
+            "type": "object",
+            "properties": {
+                "ok": { "type": "boolean" },
+                "action": { "type": "string" },
+                "record": { "type": "object" },
+                "records": { "type": "array", "items": { "type": "object" } },
+                "logs": { "type": "array", "items": { "type": "object" } },
+                "log": { "type": "object" },
+                "total": { "type": "integer" },
+                "text": { "type": "string" },
+                "prompt_text": { "type": "string" },
+                "updated": { "type": "integer" }
+            }
+        }),
+    }
+}
+
 #[async_trait]
 impl AgentTool for WorklogTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_WORKLOG_MANAGE.to_string(),
-            description: "Structured workspace worklog with event records, step summary and prompt-safe rendering.".to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": [
-                            "append_worklog",
-                            "append_step_summary",
-                            "mark_step_committed",
-                            "list_worklog",
-                            "get_worklog",
-                            "list_step",
-                            "build_prompt_worklog",
-                            "append",
-                            "list",
-                            "get",
-                            "render_for_prompt"
-                        ]
-                    },
-                    "record": { "type": "object" },
-                    "log_id": { "type": "string" },
-                    "id": { "type": "string" },
-                    "step_id": { "type": "string" },
-                    "owner_session_id": { "type": "string" },
-                    "workspace_id": { "type": "string" },
-                    "todo_id": { "type": "string" },
-                    "type": { "type": "string" },
-                    "status": { "type": "string" },
-                    "tag": { "type": "string" },
-                    "limit": { "type": "integer", "minimum": 1 },
-                    "offset": { "type": "integer", "minimum": 0 },
-                    "token_budget": { "type": "integer", "minimum": 1 }
-                },
-                "required": ["action"],
-                "additionalProperties": true
-            }),
-            output_schema: json!({
-                "type": "object",
-                "properties": {
-                    "ok": { "type": "boolean" },
-                    "action": { "type": "string" },
-                    "record": { "type": "object" },
-                    "records": { "type": "array", "items": { "type": "object" } },
-                    "logs": { "type": "array", "items": { "type": "object" } },
-                    "log": { "type": "object" },
-                    "total": { "type": "integer" },
-                    "text": { "type": "string" },
-                    "prompt_text": { "type": "string" },
-                    "updated": { "type": "integer" }
-                }
-            }),
-        }
+        worklog_tool_spec()
     }
 
-    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
+        self.service.execute_action(ctx, args).await
+    }
+}
+
+impl WorklogService {
+    pub async fn execute_action(
+        &self,
+        ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<Json, AgentToolError> {
         let action = require_string(&args, "action")?;
         match action.as_str() {
             "append_worklog" | "append" => self.call_append_worklog(ctx, args).await,
@@ -210,10 +248,10 @@ impl AgentTool for WorklogTool {
     }
 }
 
-impl WorklogTool {
+impl WorklogService {
     async fn call_append_worklog(
         &self,
-        ctx: &TraceCtx,
+        ctx: &SessionRuntimeContext,
         args: Json,
     ) -> Result<Json, AgentToolError> {
         let input = AppendRecordInput::parse(ctx, &args)?;
@@ -231,7 +269,7 @@ impl WorklogTool {
 
     async fn call_append_step_summary(
         &self,
-        ctx: &TraceCtx,
+        ctx: &SessionRuntimeContext,
         args: Json,
     ) -> Result<Json, AgentToolError> {
         let summary_input = StepSummaryInput::parse(ctx, &args)?;
@@ -479,7 +517,7 @@ struct AppendRecordInput {
 }
 
 impl AppendRecordInput {
-    fn parse(ctx: &TraceCtx, args: &Json) -> Result<Self, AgentToolError> {
+    fn parse(ctx: &SessionRuntimeContext, args: &Json) -> Result<Self, AgentToolError> {
         let raw = args.get("record").unwrap_or(args);
         let map = raw.as_object().ok_or_else(|| {
             AgentToolError::InvalidArgs("`record` must be a json object".to_string())
@@ -743,7 +781,7 @@ struct StepSummaryInput {
 }
 
 impl StepSummaryInput {
-    fn parse(ctx: &TraceCtx, args: &Json) -> Result<Self, AgentToolError> {
+    fn parse(ctx: &SessionRuntimeContext, args: &Json) -> Result<Self, AgentToolError> {
         let mut input = AppendRecordInput::parse(ctx, args)?;
         input.record_type = TYPE_STEP_SUMMARY.to_string();
         input.impact = WorklogImpact {
@@ -2162,13 +2200,13 @@ mod tests {
         let dir = tempdir().expect("temp dir");
         let db = dir.path().join("worklog.db");
         let tool = WorklogTool::new(WorklogToolConfig::with_db_path(db)).expect("create tool");
-        let ctx = TraceCtx {
+        let ctx = SessionRuntimeContext {
             trace_id: "trace-1".to_string(),
             agent_name: "did:opendan:test".to_string(),
             behavior: "DO".to_string(),
             step_idx: 1,
             wakeup_id: "wakeup-1".to_string(),
-            session_id: None,
+            session_id: "sess-1".to_string(),
         };
 
         let rsp = tool
@@ -2249,13 +2287,13 @@ mod tests {
         let dir = tempdir().expect("temp dir");
         let db = dir.path().join("worklog.db");
         let tool = WorklogTool::new(WorklogToolConfig::with_db_path(db)).expect("create tool");
-        let ctx = TraceCtx {
+        let ctx = SessionRuntimeContext {
             trace_id: "trace-render".to_string(),
             agent_name: "did:opendan:test".to_string(),
             behavior: "DO".to_string(),
             step_idx: 7,
             wakeup_id: "wakeup-render".to_string(),
-            session_id: None,
+            session_id: "sess-render".to_string(),
         };
 
         let _ = tool

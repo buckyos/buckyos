@@ -10,7 +10,7 @@ use serde_json::{json, Value as Json};
 use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
 
-use crate::behavior::{BehaviorConfig, BehaviorExecInput, PolicyEngine, TraceCtx};
+use crate::behavior::{BehaviorConfig, BehaviorExecInput, PolicyEngine, SessionRuntimeContext};
 use crate::buildin_tool::{builtin_tool_args_schema, builtin_tool_summary};
 
 pub const TOOL_CREATE_SUB_AGENT: &str = "create_sub_agent";
@@ -434,7 +434,7 @@ pub(crate) fn normalize_tool_name(name: &str) -> String {
 #[async_trait]
 pub trait AgentTool: Send + Sync {
     fn spec(&self) -> ToolSpec;
-    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError>;
+    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError>;
 }
 
 pub struct MCPTool {
@@ -509,7 +509,7 @@ impl AgentTool for MCPTool {
         self.spec.clone()
     }
 
-    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
         let request_body = json!({
             "jsonrpc": "2.0",
             "id": format!(
@@ -621,7 +621,7 @@ impl AgentTool for RegisteredTool {
         self.spec.clone()
     }
 
-    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
         self.inner.call(ctx, args).await
     }
 }
@@ -870,13 +870,13 @@ impl AgentToolManager {
 
     pub async fn call_tool(
         &self,
-        ctx: &TraceCtx,
+        ctx: &SessionRuntimeContext,
         call: AiToolCall,
     ) -> Result<Json, AgentToolError> {
         let tool_name = call.name;
         let call_id = call.call_id;
         let args = Json::Object(call.args.into_iter().collect());
-        let session_id = ctx.session_id.as_deref().unwrap_or("-");
+        let session_id = ctx.session_id.as_str();
 
         info!(
             "opendan.tool_call: status=start tool={} call_id={} trace_id={} session_id={}",
@@ -1056,14 +1056,14 @@ mod tests {
         None
     }
 
-    fn test_call_ctx() -> TraceCtx {
-        TraceCtx {
+    fn test_call_ctx() -> SessionRuntimeContext {
+        SessionRuntimeContext {
             trace_id: "trace-1".to_string(),
             agent_name: "did:example:agent".to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-1".to_string(),
-            session_id: None,
+            session_id: "session-test".to_string(),
         }
     }
 
@@ -1221,7 +1221,11 @@ mod tests {
             }
         }
 
-        async fn call(&self, _ctx: &TraceCtx, _args: Json) -> Result<Json, AgentToolError> {
+        async fn call(
+            &self,
+            _ctx: &SessionRuntimeContext,
+            _args: Json,
+        ) -> Result<Json, AgentToolError> {
             Ok(json!({"ok": true}))
         }
     }

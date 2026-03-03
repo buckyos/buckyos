@@ -20,7 +20,7 @@ use crate::agent_tool::{
     ToolSpec, TOOL_BIND_LOCAL_WORKSPACE, TOOL_CREATE_LOCAL_WORKSPACE, TOOL_EDIT_FILE,
     TOOL_EXEC_BASH, TOOL_READ_FILE, TOOL_TODO_MANAGE, TOOL_WORKLOG_MANAGE, TOOL_WRITE_FILE,
 };
-use crate::behavior::TraceCtx;
+use crate::behavior::SessionRuntimeContext;
 use crate::buildin_tool::{
     EditFileTool as BuiltinEditFileTool, ExecBashTool as BuiltinExecBashTool,
     ReadFileTool as BuiltinReadFileTool, WorkshopWriteAudit as BuiltinWorkshopWriteAudit,
@@ -456,7 +456,7 @@ impl AgentTool for CreateLocalWorkspaceTool {
         }
     }
 
-    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
         let name = require_string_arg(&args, "name")?;
         let template = optional_string_arg(&args, "template")?;
         let owner = match optional_string_arg(&args, "owner")?.as_deref() {
@@ -470,7 +470,7 @@ impl AgentTool for CreateLocalWorkspaceTool {
         };
         let bind_session = optional_bool_arg(&args, "bind_session")?.unwrap_or(true);
         let session_id =
-            optional_string_arg(&args, "session_id")?.or_else(|| ctx.session_id.clone());
+            optional_string_arg(&args, "session_id")?.or_else(|| Some(ctx.session_id.clone()));
         let created_by_session =
             optional_string_arg(&args, "created_by_session")?.or_else(|| session_id.clone());
         let policy_profile_id = optional_string_arg(&args, "policy_profile_id")?;
@@ -592,10 +592,10 @@ impl AgentTool for BindLocalWorkspaceTool {
         }
     }
 
-    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
         let local_workspace_id = require_string_arg(&args, "local_workspace_id")?;
         let session_id = optional_string_arg(&args, "session_id")?
-            .or_else(|| ctx.session_id.clone())
+            .or_else(|| Some(ctx.session_id.clone()))
             .ok_or_else(|| {
                 AgentToolError::InvalidArgs(
                     "session_id is required for bind_local_workspace".to_string(),
@@ -1080,7 +1080,7 @@ fn u64_to_usize(v: u64) -> Result<usize, AgentToolError> {
 mod tests {
     use super::*;
     use crate::agent_session::AgentSessionMgr;
-    use crate::behavior::TraceCtx;
+    use crate::behavior::SessionRuntimeContext;
     use buckyos_api::{value_to_object_map, AiToolCall};
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::process::Command;
@@ -1125,13 +1125,13 @@ mod tests {
     ) -> Result<Json, AgentToolError> {
         tool_mgr
             .call_tool(
-                &TraceCtx {
+                &SessionRuntimeContext {
                     trace_id: "trace-test".to_string(),
                     agent_name: "did:example:agent".to_string(),
                     behavior: "on_wakeup".to_string(),
                     step_idx: 0,
                     wakeup_id: "wakeup-test".to_string(),
-                    session_id: Some("session-test".to_string()),
+                    session_id: "session-test".to_string(),
                 },
                 AiToolCall {
                     name: name.to_string(),

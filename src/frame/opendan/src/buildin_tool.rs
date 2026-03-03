@@ -11,8 +11,8 @@ use tokio::time::{sleep, Duration, Instant};
 
 use crate::agent_session::AgentSessionMgr;
 use crate::agent_tool::{AgentTool, AgentToolError, ToolSpec};
-use crate::behavior::TraceCtx;
-use crate::worklog::{WorklogTool, WorklogToolConfig};
+use crate::behavior::SessionRuntimeContext;
+use crate::worklog::{WorklogService, WorklogToolConfig};
 use crate::workspace::workshop::{AgentWorkshopConfig, WorkshopToolConfig};
 
 pub const TOOL_EDIT_FILE: &str = "edit";
@@ -349,19 +349,9 @@ impl AgentTool for ExecBashTool {
         }
     }
 
-    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
         let command = require_string(&args, "command")?;
-        let session_id = ctx
-            .session_id
-            .as_deref()
-            .ok_or_else(|| {
-                AgentToolError::InvalidArgs(
-                    "missing session context for exec_bash; runtime should bind TraceCtx.session_id"
-                        .to_string(),
-                )
-            })?
-            .to_string();
-        let session_id = sanitize_exec_session_id(&session_id)?;
+        let session_id = sanitize_exec_session_id(ctx.session_id.as_str())?;
         let cwd = self.resolve_session_cwd(&session_id).await?;
 
         let timeout_ms =
@@ -455,7 +445,7 @@ impl ExecBashTool {
 
     async fn run_tmux_bash(
         &self,
-        ctx: &TraceCtx,
+        ctx: &SessionRuntimeContext,
         session_id: &str,
         command: &str,
         cwd: &Path,
@@ -597,7 +587,7 @@ impl AgentTool for EditFileTool {
         }
     }
 
-    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
         let file_path = require_string(&args, "path")?;
         let abs_path = resolve_path_in_workspace(&self.cfg.workspace_root, &file_path)?;
         if !is_path_under_any(&abs_path, &self.policy.allowed_write_roots) {
@@ -757,7 +747,7 @@ impl AgentTool for WriteFileTool {
         }
     }
 
-    async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
         let file_path = require_string(&args, "path")?;
         let content = require_string(&args, "content")?;
         let abs_path = resolve_path_in_workspace(&self.cfg.workspace_root, &file_path)?;
@@ -897,7 +887,7 @@ impl AgentTool for ReadFileTool {
         }
     }
 
-    async fn call(&self, _ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(&self, _ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
         let file_path = require_string(&args, "path")?;
         let abs_path = resolve_path_in_workspace(&self.cfg.workspace_root, &file_path)?;
         if !is_path_under_any(&abs_path, &self.policy.allowed_read_roots) {
@@ -961,11 +951,11 @@ impl WorkshopWriteAudit {
 
     async fn record_file_write(
         &self,
-        ctx: &TraceCtx,
+        ctx: &SessionRuntimeContext,
         args: &Json,
         record: &FileWriteAuditRecord,
     ) -> Result<(), AgentToolError> {
-        let worklog_tool = WorklogTool::new(self.worklog_cfg.clone())?;
+        let worklog_service = WorklogService::new(self.worklog_cfg.clone())?;
         let owner_session_id = optional_string(args, "session_id")?;
         let step_id = optional_string(args, "step_id")?
             .unwrap_or_else(|| format!("{}#{}", ctx.behavior, ctx.step_idx));
@@ -981,8 +971,8 @@ impl WorkshopWriteAudit {
             tags.push("diff_truncated".to_string());
         }
 
-        let _ = worklog_tool
-            .call(
+        let _ = worklog_service
+            .execute_action(
                 ctx,
                 json!({
                     "action": "append",

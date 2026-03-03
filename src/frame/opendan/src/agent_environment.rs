@@ -34,7 +34,6 @@ const DEFAULT_LOCAL_WORKSPACE_LIST_MAX_PULL: usize = 16;
 const SESSION_RECORD_FILE_NAME: &str = "session.json";
 const WORKSHOP_INDEX_FILE_NAME: &str = "index.json";
 
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TemplateRenderMode {
     Text,
@@ -222,7 +221,6 @@ impl AgentEnvironment {
                 guard.cwd.clone(),
                 guard.owner_agent.clone(),
                 guard.local_workspace_id.clone(),
-                
             )
         };
 
@@ -1996,8 +1994,14 @@ mod tests {
         write_session_record(&session_root, "work-s2", "Session 2", "Summary 2", 300).await;
         write_session_record(&session_root, "work-s3", "Session 3", "Summary 3", 200).await;
         write_session_record(&session_root, "ui-chat-1", "UI Session", "UI Summary", 500).await;
-        write_session_record(&session_root, "tg:lzc_jarvis:5397330802", "TG Session", "", 600)
-            .await;
+        write_session_record(
+            &session_root,
+            "tg:lzc_jarvis:5397330802",
+            "TG Session",
+            "",
+            600,
+        )
+        .await;
 
         let session = Arc::new(Mutex::new(AgentSession::new(
             "work-s1",
@@ -2017,11 +2021,9 @@ mod tests {
         assert_eq!(items[1]["session_id"], "work-s3");
         assert_eq!(items[2]["session_id"], "work-s1");
         assert!(items.iter().all(|item| item["session_id"] != "ui-chat-1"));
-        assert!(
-            items
-                .iter()
-                .all(|item| item["session_id"] != "tg:lzc_jarvis:5397330802")
-        );
+        assert!(items
+            .iter()
+            .all(|item| item["session_id"] != "tg:lzc_jarvis:5397330802"));
 
         let rendered_2 = AgentEnvironment::load_value_from_session(session, "session_list.$2")
             .await

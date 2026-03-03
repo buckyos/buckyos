@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use super::types::{TokenUsage, TraceCtx};
+use super::types::{SessionRuntimeContext, TokenUsage};
 
 #[async_trait]
 pub trait WorklogSink: Send + Sync {
@@ -10,28 +10,28 @@ pub trait WorklogSink: Send + Sync {
 #[derive(Clone, Debug, PartialEq)]
 pub enum AgentWorkEvent {
     LLMStarted {
-        trace: TraceCtx,
+        trace: SessionRuntimeContext,
         model: String,
     },
     LLMFinished {
-        trace: TraceCtx,
+        trace: SessionRuntimeContext,
         usage: TokenUsage,
         ok: bool,
     },
     ToolCallPlanned {
-        trace: TraceCtx,
+        trace: SessionRuntimeContext,
         tool: String,
         call_id: String,
     },
     ToolCallFinished {
-        trace: TraceCtx,
+        trace: SessionRuntimeContext,
         tool: String,
         call_id: String,
         ok: bool,
         duration_ms: u64,
     },
     ParseWarning {
-        trace: TraceCtx,
+        trace: SessionRuntimeContext,
         msg: String,
     },
 }

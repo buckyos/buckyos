@@ -20,7 +20,7 @@ use crate::agent_session::AgentSession;
 use crate::agent_tool::{normalize_tool_name, ActionSpec};
 use crate::behavior::config::BehaviorMemoryBucketConfig;
 use crate::behavior::BehaviorConfig;
-use crate::worklog::{WorklogListOptions, WorklogRecord, WorklogTool, WorklogToolConfig};
+use crate::worklog::{WorklogListOptions, WorklogRecord, WorklogService, WorklogToolConfig};
 use crate::workspace::todo::render_workspace_todo_prompt_from_db;
 
 use super::sanitize::{sanitize_json_compact, sanitize_text};
@@ -173,7 +173,10 @@ fn build_env_context(input: &BehaviorExecInput) -> HashMap<String, Json> {
     ctx.insert("role_md".to_string(), Json::String(input.role_md.clone()));
     ctx.insert("self_md".to_string(), Json::String(input.self_md.clone()));
     if !input.session_id.trim().is_empty() {
-        ctx.insert("session_id".to_string(), Json::String(input.session_id.clone()));
+        ctx.insert(
+            "session_id".to_string(),
+            Json::String(input.session_id.clone()),
+        );
         ctx.insert(
             "loop.session_id".to_string(),
             Json::String(input.session_id.clone()),
@@ -1124,12 +1127,12 @@ async fn load_workspace_worklog_with_limit(
     let query_limit = usize::try_from(token_limit.saturating_mul(2))
         .unwrap_or(usize::MAX)
         .clamp(16, 256);
-    let worklog_tool =
-        match WorklogTool::new(WorklogToolConfig::with_db_path(worklog_db_path.clone())) {
-            Ok(tool) => tool,
+    let worklog_service =
+        match WorklogService::new(WorklogToolConfig::with_db_path(worklog_db_path.clone())) {
+            Ok(service) => service,
             Err(err) => {
                 warn!(
-                    "prompt.load_workspace_worklog create tool failed: path={} err={}",
+                    "prompt.load_workspace_worklog create service failed: path={} err={}",
                     worklog_db_path.display(),
                     err
                 );
@@ -1137,7 +1140,7 @@ async fn load_workspace_worklog_with_limit(
             }
         };
 
-    let worklog_records = match worklog_tool
+    let worklog_records = match worklog_service
         .list_worklog_records(WorklogListOptions {
             owner_session_id: session_id,
             workspace_id,
@@ -1286,7 +1289,8 @@ async fn build_toolbox(
     let behavior_skills = cfg.toolbox.effective_skills();
     let loaded_skills = merge_unique_string_slices(&behavior_skills, &session_loaded_skills);
 
-    let mut requested_actions = normalize_unique_string_list(cfg.toolbox.default_load_actions.clone());
+    let mut requested_actions =
+        normalize_unique_string_list(cfg.toolbox.default_load_actions.clone());
     let mut loaded_tool_names = Vec::<String>::new();
     for skill_name in &loaded_skills {
         let Some(spec) = workspace_skill_specs.get(skill_name.as_str()) else {
@@ -1767,7 +1771,7 @@ mod tests {
     use crate::agent_memory::{AgentMemory, AgentMemoryConfig};
     use crate::agent_session::AgentSession;
     use crate::agent_tool::AgentTool;
-    use crate::behavior::types::{StepLimits, TraceCtx};
+    use crate::behavior::types::{SessionRuntimeContext, StepLimits};
     use crate::worklog::{WorklogTool, WorklogToolConfig};
     use buckyos_api::MsgRecordWithObject;
     use tempfile::tempdir;
@@ -1906,14 +1910,14 @@ loaded_tools: [exec_bash]
     #[tokio::test]
     async fn build_produces_valid_prompt() {
         let input = BehaviorExecInput {
-            session_id: Some("session-1".to_string()),
-            trace: TraceCtx {
+            session_id: "session-1".to_string(),
+            trace: SessionRuntimeContext {
                 trace_id: "trace-1".to_string(),
                 agent_name: "did:example:agent".to_string(),
                 behavior: "on_wakeup".to_string(),
                 step_idx: 2,
                 wakeup_id: "wakeup-1".to_string(),
-                session_id: None,
+                session_id: "session-test".to_string(),
             },
             input_prompt: "user input".to_string(),
             last_step_prompt: String::new(),
@@ -1977,14 +1981,14 @@ loaded_tools: [exec_bash]
             .expect("set memory");
 
         let input = BehaviorExecInput {
-            session_id: Some("session-1".to_string()),
-            trace: TraceCtx {
+            session_id: "session-1".to_string(),
+            trace: SessionRuntimeContext {
                 trace_id: "trace-1".to_string(),
                 agent_name: "did:example:agent".to_string(),
                 behavior: "on_wakeup".to_string(),
                 step_idx: 1,
                 wakeup_id: "wakeup-1".to_string(),
-                session_id: None,
+                session_id: "session-test".to_string(),
             },
             input_prompt: "user input".to_string(),
             last_step_prompt: String::new(),
@@ -2044,14 +2048,14 @@ loaded_tools: [exec_bash]
             .expect("set memory");
 
         let input = BehaviorExecInput {
-            session_id: Some("session-1".to_string()),
-            trace: TraceCtx {
+            session_id: "session-1".to_string(),
+            trace: SessionRuntimeContext {
                 trace_id: "trace-1".to_string(),
                 agent_name: "did:example:agent".to_string(),
                 behavior: "on_wakeup".to_string(),
                 step_idx: 1,
                 wakeup_id: "wakeup-1".to_string(),
-                session_id: None,
+                session_id: "session-test".to_string(),
             },
             input_prompt: "user input".to_string(),
             last_step_prompt: String::new(),
@@ -2152,14 +2156,14 @@ loaded_tools: [exec_bash]
         session.cwd = workspace_root.clone();
         session.session_root_dir = workspace_root.join("session");
         let input = BehaviorExecInput {
-            session_id: Some(session_id.to_string()),
-            trace: TraceCtx {
+            session_id: session_id.to_string(),
+            trace: SessionRuntimeContext {
                 trace_id: "trace-1".to_string(),
                 agent_name: "did:web:agent.example.com".to_string(),
                 behavior: "on_wakeup".to_string(),
                 step_idx: 1,
                 wakeup_id: "wakeup-1".to_string(),
-                session_id: None,
+                session_id: "session-test".to_string(),
             },
             input_prompt: "user input".to_string(),
             last_step_prompt: String::new(),
@@ -2194,13 +2198,13 @@ loaded_tools: [exec_bash]
 
         let worklog_tool =
             WorklogTool::new(WorklogToolConfig::with_db_path(worklog_db)).expect("create tool");
-        let trace_ctx = TraceCtx {
+        let trace_ctx = SessionRuntimeContext {
             trace_id: "trace-worklog".to_string(),
             agent_name: "did:web:agent.example.com".to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 1,
             wakeup_id: "wakeup-worklog".to_string(),
-            session_id: None,
+            session_id: "session-test".to_string(),
         };
         let _ = worklog_tool
             .call(
@@ -2248,14 +2252,14 @@ loaded_tools: [exec_bash]
         let mut session = AgentSession::new("session-1", "did:web:agent.example.com", None);
         session.cwd = workspace_root;
         let input = BehaviorExecInput {
-            session_id: Some("session-1".to_string()),
-            trace: TraceCtx {
+            session_id: "session-1".to_string(),
+            trace: SessionRuntimeContext {
                 trace_id: "trace-1".to_string(),
                 agent_name: "did:web:agent.example.com".to_string(),
                 behavior: "on_wakeup".to_string(),
                 step_idx: 1,
                 wakeup_id: "wakeup-1".to_string(),
-                session_id: None,
+                session_id: "session-test".to_string(),
             },
             input_prompt: "user input".to_string(),
             last_step_prompt: String::new(),

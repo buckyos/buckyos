@@ -36,7 +36,7 @@ use crate::agent_tool::{
 };
 use crate::behavior::{
     AgentWorkEvent, BehaviorConfig, BehaviorExecInput, BehaviorLLMResult, ExecutorReply,
-    LLMBehavior, LLMBehaviorDeps, LLMTrackingInfo, Tokenizer, TraceCtx, WorklogSink,
+    LLMBehavior, LLMBehaviorDeps, LLMTrackingInfo, SessionRuntimeContext, Tokenizer, WorklogSink,
 };
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
@@ -161,8 +161,8 @@ pub struct AIAgentDeps {
 pub struct AIAgent {
     cfg: AIAgentConfig,
     did: DID,
-    agent_name:String,
-    owner_did: DID,//user-did
+    agent_name: String,
+    owner_did: DID, //user-did
 
     role_md: String,
     self_md: String,
@@ -180,15 +180,12 @@ pub struct AIAgent {
     environment: Arc<AgentEnvironment>,
     workspace_root: PathBuf,
 
-
     tokenizer: Arc<SimpleTokenizer>,
 
     deps: AIAgentDeps,
     kevent_client: KEventClient,
     msg_center_event_reader: Mutex<Option<Arc<EventReader>>>,
     session_queue_bindings: Arc<RwLock<HashMap<String, SessionQueueBinding>>>,
-
-
 }
 
 impl AIAgent {
@@ -210,8 +207,13 @@ impl AIAgent {
         })?;
 
         let did_raw = load_agent_did(&agent_root).await?;
-        let did = DID::from_str(did_raw.as_str())
-            .map_err(|err| anyhow!("invalid owner did in agent doc: did={:?} err={}", did_raw, err))?;
+        let did = DID::from_str(did_raw.as_str()).map_err(|err| {
+            anyhow!(
+                "invalid owner did in agent doc: did={:?} err={}",
+                did_raw,
+                err
+            )
+        })?;
         let owner_did = did.clone();
         let agent_name = did.to_raw_host_name();
         let role_path = agent_root.join(&cfg.role_file_name);
@@ -293,7 +295,7 @@ impl AIAgent {
             session_mgr: session_store,
             behavior_cfg_cache,
             policy,
-  
+
             tokenizer: Arc::new(SimpleTokenizer),
             deps,
             kevent_client: KEventClient::new_full(kevent_source_node, None),
@@ -446,10 +448,7 @@ impl AIAgent {
         //目前Agent关心的外部输入,后续需要根据agent的配置订阅新的event
         // - /msg_center/{owner_did}/box/{box_name}/**
         let Some(event_reader) = self.ensure_msg_center_event_reader().await else {
-            warn!(
-                "{}.event_reader_unavailable",
-                self.agent_name
-            );
+            warn!("{}.event_reader_unavailable", self.agent_name);
             let pulled_msgs = self.pull_msg_packs().await;
             return Ok((pulled_msgs, vec![], false));
         };
@@ -458,7 +457,7 @@ impl AIAgent {
         match event_reader.pull_event(Some(wait_timeout_ms)).await {
             Ok(Some(event)) => {
                 Self::collect_event_pull_targets(event, &mut msg_pull_boxes, &mut pulled_events);
-            
+
                 info!(
                     "{}.event_pull_targets: msg_pull_boxes={:?} pulled_events={}",
                     self.agent_name,
@@ -468,18 +467,13 @@ impl AIAgent {
             }
             Ok(None) => {
                 // KEvent is a poll accelerator. Timeout still falls back to queue pull.
-                info!(
-                    "{}.event_pull_timeout",
-                    self.agent_name
-                );
+                info!("{}.event_pull_timeout", self.agent_name);
                 Self::append_all_msg_center_boxes_updated(&mut msg_pull_boxes);
             }
             Err(err) => {
                 warn!(
                     "{}.event_pull_failed: phase=wait timeout_ms={} err={:?}",
-                    self.agent_name,
-                    wait_timeout_ms,
-                    err
+                    self.agent_name, wait_timeout_ms, err
                 );
                 if matches!(err, KEventError::ReaderClosed(_)) {
                     self.reset_msg_center_event_reader().await;
@@ -657,7 +651,7 @@ impl AIAgent {
                     InputQueueKind::Msg,
                 )
                 .await?;
-    
+
                 self.session_mgr
                     .try_wakeup_session_by_input_item(session_id.as_str(), &session_input)
                     .await
@@ -666,8 +660,7 @@ impl AIAgent {
                     })?;
                 info!(
                     "{}.try_wakeup_session_by_input_item: record_id={} session_id={}",
-                    self.agent_name,
-                    record_id, session_id
+                    self.agent_name, record_id, session_id
                 );
             }
 
@@ -703,8 +696,8 @@ impl AIAgent {
         let default_ui_session_id = self
             .session_mgr
             .get_ui_session_id(&record.get_target_did(), &record.get_msg_tunnel_ui_id());
-       
-       return Ok(RouteDecision {
+
+        return Ok(RouteDecision {
             linked_session_ids: vec![default_ui_session_id],
             reason: RouteLinkReason::DefaultSession,
         });
@@ -752,7 +745,7 @@ impl AIAgent {
                 Err(err) => {
                     warn!(
                         "{}'s behavior {} not found! err={}",
-                        self.agent_name , behavior_name, err
+                        self.agent_name, behavior_name, err
                     );
                     break;
                 }
@@ -786,9 +779,7 @@ impl AIAgent {
             if report.behavior_switched {
                 info!(
                     "{}.{} behavior switched from {}",
-                    self.agent_name,
-                    session_id,
-                    behavior_name,
+                    self.agent_name, session_id, behavior_name,
                 );
             }
 
@@ -829,13 +820,13 @@ impl AIAgent {
                 (session_id, current_step_index)
             };
 
-            let trace = TraceCtx {
+            let trace = SessionRuntimeContext {
                 trace_id: wakeup_id.to_string(),
                 agent_name: self.agent_name.clone(),
                 behavior: behavior_name.to_string(),
                 step_idx: current_step_index,
                 wakeup_id: wakeup_id.to_string(),
-                session_id: Some(session_id.clone()),
+                session_id: session_id.clone(),
             };
 
             // Ensure per-session queues/subscriptions exist before template placeholders
@@ -870,7 +861,8 @@ impl AIAgent {
             );
 
             //run step
-            let (llm_result, tracking) = llm_behavior.run_step(&input)
+            let (llm_result, tracking) = llm_behavior
+                .run_step(&input)
                 .await
                 .map_err(|err| anyhow!("llm behavior step failed: {err}"))?;
 
@@ -899,17 +891,15 @@ impl AIAgent {
                 &tracking,
                 &action_results,
                 session.clone(),
-            ).await;
-            
+            )
+            .await;
+
             let (msg_cursor, msg_owner_agent) = {
                 let mut guard = session.lock().await;
                 guard.last_step_summary = step_summary.clone();
-                (
-                    guard.msg_kmsgqueue_curosr,
-                    guard.owner_agent.clone(),
-                )
+                (guard.msg_kmsgqueue_curosr, guard.owner_agent.clone())
             };
-            
+
             //write just readed input msg to msg_record(both work-session record and ui-session record)
             self.persist_step_history_records(
                 session.clone(),
@@ -930,7 +920,7 @@ impl AIAgent {
                 guard.just_readed_input_msg.clear();
             }
 
-            result_report.executed_steps = result_report.executed_steps +1;
+            result_report.executed_steps = result_report.executed_steps + 1;
             result_report.last_result = Some(llm_result.clone());
 
             //process next_behavior
@@ -966,7 +956,9 @@ impl AIAgent {
             route_targets
                 .entry(session_id.to_string())
                 .or_insert_with(StepRouteTarget::default);
-        } else if let Some((new_session_title, new_session_summary)) = llm_result.new_session.as_ref() {
+        } else if let Some((new_session_title, new_session_summary)) =
+            llm_result.new_session.as_ref()
+        {
             let new_session_id = self.gen_new_work_session_id();
             route_targets.insert(
                 new_session_id,
@@ -1090,7 +1082,7 @@ impl AIAgent {
 
     async fn generate_input(
         &self,
-        trace: &TraceCtx,
+        trace: &SessionRuntimeContext,
         behavior_name: &str,
         behavior_cfg: &BehaviorConfig,
         session: Arc<Mutex<AgentSession>>,
@@ -1143,7 +1135,6 @@ impl AIAgent {
             return Ok(None);
         }
     }
-
 
     async fn set_msg_readed(&self, record_id: String) {
         let Some(msg_center) = self.deps.msg_center.as_ref() else {
@@ -1302,10 +1293,26 @@ impl AIAgent {
 
     fn build_session_queue_binding(&self, session_id: &str) -> SessionQueueBinding {
         SessionQueueBinding {
-            msg_queue_urn: Self::get_session_kmsgqueue_urn(self.agent_name.as_str(), session_id, InputQueueKind::Msg),
-            event_queue_urn: Self::get_session_kmsgqueue_urn(self.agent_name.as_str(), session_id, InputQueueKind::Event),
-            msg_sub_id: Self::get_session_kmsgqueue_sub_id(self.agent_name.as_str(), session_id, InputQueueKind::Msg),
-            event_sub_id: Self::get_session_kmsgqueue_sub_id(self.agent_name.as_str(), session_id, InputQueueKind::Event),
+            msg_queue_urn: Self::get_session_kmsgqueue_urn(
+                self.agent_name.as_str(),
+                session_id,
+                InputQueueKind::Msg,
+            ),
+            event_queue_urn: Self::get_session_kmsgqueue_urn(
+                self.agent_name.as_str(),
+                session_id,
+                InputQueueKind::Event,
+            ),
+            msg_sub_id: Self::get_session_kmsgqueue_sub_id(
+                self.agent_name.as_str(),
+                session_id,
+                InputQueueKind::Msg,
+            ),
+            event_sub_id: Self::get_session_kmsgqueue_sub_id(
+                self.agent_name.as_str(),
+                session_id,
+                InputQueueKind::Event,
+            ),
         }
     }
 
@@ -1486,7 +1493,7 @@ impl AIAgent {
             binding.event_sub_id.as_str(),
         )
         .await?;
-    
+
         self.session_queue_bindings
             .write()
             .await
@@ -1494,7 +1501,6 @@ impl AIAgent {
             .or_insert_with(|| binding.clone());
         Ok(Some(binding))
     }
-
 
     pub(crate) fn get_session_kmsgqueue_urn(
         agent_name: &str,
@@ -1598,7 +1604,11 @@ impl AIAgent {
         Ok(())
     }
 
-    async fn execute_actions(&self, trace: &TraceCtx, actions: &DoActions) -> DoActionResults {
+    async fn execute_actions(
+        &self,
+        trace: &SessionRuntimeContext,
+        actions: &DoActions,
+    ) -> DoActionResults {
         let mut out = DoActionResults::default();
         if actions.cmds.is_empty() {
             out.summary = "SUCCESS (0), FAILED (0)".to_string();
@@ -1805,7 +1815,11 @@ impl AIAgent {
         out
     }
 
-    async fn apply_memory_updates(&self, trace: &TraceCtx, set_memory: &HashMap<String, String>) {
+    async fn apply_memory_updates(
+        &self,
+        trace: &SessionRuntimeContext,
+        set_memory: &HashMap<String, String>,
+    ) {
         let source = json!({
             "trace_id": trace.trace_id,
             "behavior": trace.behavior,
@@ -1832,10 +1846,9 @@ impl AIAgent {
         }
     }
 
-
     async fn send_msg_replies(
         &self,
-        trace: TraceCtx,
+        trace: SessionRuntimeContext,
         source_tunnel_did: Option<DID>,
         default_audience: Option<&str>,
         replies: &[ExecutorReply],
@@ -1883,7 +1896,7 @@ impl AIAgent {
                     audience.as_str(),
                     reply_format.as_str(),
                     reply.content.as_str(),
-                    session_id.as_deref(),
+                    Some(session_id.as_str()),
                     Some(&trace),
                 )
                 .await
@@ -1901,7 +1914,7 @@ impl AIAgent {
         _format: &str,
         content: &str,
         session_id: Option<&str>,
-        _trace: Option<&TraceCtx>,
+        _trace: Option<&SessionRuntimeContext>,
     ) -> Option<ReplyHistoryRecord> {
         let content = content.trim();
         if content.is_empty() {
@@ -1971,7 +1984,7 @@ impl AIAgent {
                 Json::String(session_id.clone()),
             );
         }
-        
+
         let outbound_for_history = will_send_msg.clone();
 
         let send_ctx = SendContext {
@@ -1980,7 +1993,10 @@ impl AIAgent {
             ..Default::default()
         };
 
-        match msg_center.post_send(will_send_msg, Some(send_ctx), None).await {
+        match msg_center
+            .post_send(will_send_msg, Some(send_ctx), None)
+            .await
+        {
             Ok(result) => {
                 if !result.ok {
                     warn!(
@@ -2009,7 +2025,7 @@ impl AIAgent {
     async fn handle_replies(
         &self,
         session: Arc<Mutex<AgentSession>>,
-        trace: &TraceCtx,
+        trace: &SessionRuntimeContext,
         replies: &[ExecutorReply],
     ) -> Vec<ReplyHistoryRecord> {
         let (default_audience, source_tunnel_did) = self.resolve_reply_defaults(session).await;
@@ -2039,17 +2055,19 @@ impl AIAgent {
         session_id: &str,
         reply_history: &[ReplyHistoryRecord],
     ) {
-
         let just_readed_input_msg = {
             let guard = session.lock().await;
             guard.just_readed_input_msg.clone()
         };
 
         for readed_input_item in &just_readed_input_msg {
-            let msg_record = serde_json::from_slice::<SessionInputItem>(readed_input_item.as_slice())
-                .ok()
-                .and_then(|item| item.msg)
-                .or_else(|| serde_json::from_slice::<MsgRecord>(readed_input_item.as_slice()).ok());
+            let msg_record =
+                serde_json::from_slice::<SessionInputItem>(readed_input_item.as_slice())
+                    .ok()
+                    .and_then(|item| item.msg)
+                    .or_else(|| {
+                        serde_json::from_slice::<MsgRecord>(readed_input_item.as_slice()).ok()
+                    });
             let Some(msg_record) = msg_record else {
                 warn!(
                     "agent.persist_step_history_skip_invalid_input: did={:?} session={} payload_bytes={}",
@@ -2246,7 +2264,7 @@ impl AIAgent {
         //类似 DO:todo=t01:p2=3 这样的名字，有
         //  DO:todo=t01:p2=3
         //  DO:todo=t01
-        //  DO 
+        //  DO
         //共计3个lookup name
         let base = trimmed
             .split_once(':')
@@ -2359,7 +2377,7 @@ fn apply_session_behavior_transition(
 }
 
 async fn build_step_summary(
-    trace: &TraceCtx,
+    trace: &SessionRuntimeContext,
     behavior_cfg: &BehaviorConfig,
     llm_result: &BehaviorLLMResult,
     _tracking: &LLMTrackingInfo,

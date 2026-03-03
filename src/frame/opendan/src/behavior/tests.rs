@@ -69,7 +69,7 @@ impl AgentTool for EchoTool {
 
     async fn call(
         &self,
-        _ctx: &TraceCtx,
+        _ctx: &SessionRuntimeContext,
         args: Json,
     ) -> Result<Json, crate::agent_tool::AgentToolError> {
         println!("[TEST][TOOL] tool.echo called with args: {}", args);
@@ -229,19 +229,19 @@ tools:
 
     let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
     let input = BehaviorExecInput {
-        trace: TraceCtx {
+        trace: SessionRuntimeContext {
             trace_id: "trace-1".to_string(),
             agent_name: "did:example:agent".to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-1".to_string(),
-            session_id: None,
+            session_id: "session-test".to_string(),
         },
         input_prompt: String::new(),
         last_step_prompt: String::new(),
         role_md: "role".to_string(),
         self_md: "self".to_string(),
-        session_id: None,
+        session_id: "session-test".to_string(),
         behavior_prompt: behavior_cfg.process_rule.clone(),
         limits: behavior_cfg.limits.clone(),
         behavior_cfg: behavior_cfg.clone(),
@@ -349,19 +349,19 @@ process_rule: test_rule
 
     let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
     let input = BehaviorExecInput {
-        trace: TraceCtx {
+        trace: SessionRuntimeContext {
             trace_id: "trace-3".to_string(),
             agent_name: "did:example:agent".to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-3".to_string(),
-            session_id: None,
+            session_id: "session-test".to_string(),
         },
         input_prompt: String::new(),
         last_step_prompt: String::new(),
         role_md: "role".to_string(),
         self_md: "self".to_string(),
-        session_id: None,
+        session_id: "session-test".to_string(),
         behavior_prompt: behavior_cfg.process_rule.clone(),
         limits: behavior_cfg.limits.clone(),
         behavior_cfg: behavior_cfg.clone(),
@@ -433,19 +433,19 @@ process_rule: test_rule
 
     let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
     let input = BehaviorExecInput {
-        trace: TraceCtx {
+        trace: SessionRuntimeContext {
             trace_id: "trace-2".to_string(),
             agent_name: "did:example:agent".to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-2".to_string(),
-            session_id: None,
+            session_id: "session-test".to_string(),
         },
         input_prompt: String::new(),
         last_step_prompt: String::new(),
         role_md: "role".to_string(),
         self_md: "self".to_string(),
-        session_id: None,
+        session_id: "session-test".to_string(),
         behavior_prompt: behavior_cfg.process_rule.clone(),
         limits: behavior_cfg.limits.clone(),
         behavior_cfg: behavior_cfg.clone(),
@@ -514,19 +514,19 @@ process_rule: test_rule
     };
     let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
     let input = BehaviorExecInput {
-        trace: TraceCtx {
+        trace: SessionRuntimeContext {
             trace_id: "trace-parent-1".to_string(),
             agent_name: "did:example:agent".to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-parent-1".to_string(),
-            session_id: None,
+            session_id: "session-test".to_string(),
         },
         input_prompt: String::new(),
         last_step_prompt: String::new(),
         role_md: "role".to_string(),
         self_md: "self".to_string(),
-        session_id: None,
+        session_id: "session-test".to_string(),
         behavior_prompt: behavior_cfg.process_rule.clone(),
         limits: behavior_cfg.limits.clone(),
         behavior_cfg: behavior_cfg.clone(),
@@ -641,19 +641,19 @@ process_rule: test_rule
     };
     let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
     let input = BehaviorExecInput {
-        trace: TraceCtx {
+        trace: SessionRuntimeContext {
             trace_id: "trace-parent-2".to_string(),
             agent_name: "did:example:agent".to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-parent-2".to_string(),
-            session_id: None,
+            session_id: "session-test".to_string(),
         },
         input_prompt: String::new(),
         last_step_prompt: String::new(),
         role_md: "role".to_string(),
         self_md: "self".to_string(),
-        session_id: Some("session-user-1".to_string()),
+        session_id: "session-user-1".to_string(),
         behavior_prompt: behavior_cfg.process_rule.clone(),
         limits: behavior_cfg.limits.clone(),
         behavior_cfg: behavior_cfg.clone(),
@@ -846,13 +846,13 @@ tools:
 
     let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
 
-    let base_trace = TraceCtx {
+    let base_trace = SessionRuntimeContext {
         trace_id: "trace-actions".to_string(),
         agent_name: "did:example:agent".to_string(),
         behavior: "on_wakeup".to_string(),
         step_idx: 0,
         wakeup_id: "wakeup-actions".to_string(),
-        session_id: None,
+        session_id: "session-test".to_string(),
     };
 
     let first_input = BehaviorExecInput {
@@ -861,7 +861,7 @@ tools:
         last_step_prompt: String::new(),
         role_md: "role".to_string(),
         self_md: "self".to_string(),
-        session_id: None,
+        session_id: "session-test".to_string(),
         behavior_prompt: behavior_cfg.process_rule.clone(),
         limits: behavior_cfg.limits.clone(),
         behavior_cfg: behavior_cfg.clone(),
@@ -885,7 +885,7 @@ tools:
     let _action_observations = run_actions_for_test(&first_result.actions);
 
     let second_input = BehaviorExecInput {
-        trace: TraceCtx {
+        trace: SessionRuntimeContext {
             step_idx: 1,
             ..base_trace
         },
@@ -893,7 +893,7 @@ tools:
         last_step_prompt: String::new(),
         role_md: "role".to_string(),
         self_md: "self".to_string(),
-        session_id: None,
+        session_id: "session-test".to_string(),
         behavior_prompt: behavior_cfg.process_rule.clone(),
         limits: behavior_cfg.limits.clone(),
         behavior_cfg: behavior_cfg.clone(),
@@ -1064,19 +1064,19 @@ tools:
 
     let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
     let input = BehaviorExecInput {
-        trace: TraceCtx {
+        trace: SessionRuntimeContext {
             trace_id: "trace-workshop-actions".to_string(),
             agent_name: "did:example:agent".to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-workshop-actions".to_string(),
-            session_id: Some("session-workshop".to_string()),
+            session_id: "session-workshop".to_string(),
         },
         input_prompt: String::new(),
         last_step_prompt: String::new(),
         role_md: "role".to_string(),
         self_md: "self".to_string(),
-        session_id: None,
+        session_id: "session-test".to_string(),
         behavior_prompt: behavior_cfg.process_rule.clone(),
         limits: behavior_cfg.limits.clone(),
         behavior_cfg: behavior_cfg.clone(),
@@ -1121,13 +1121,13 @@ tools:
     assert!(tool_messages.contains("seed.txt"));
 
     // Formally execute planned actions through workshop.exec_bash.
-    let action_ctx = TraceCtx {
+    let action_ctx = SessionRuntimeContext {
         trace_id: "trace-workshop-actions".to_string(),
         agent_name: "did:example:agent".to_string(),
         behavior: "on_action".to_string(),
         step_idx: 1,
         wakeup_id: "wakeup-workshop-actions".to_string(),
-        session_id: Some("session-workshop".to_string()),
+        session_id: "session-workshop".to_string(),
     };
     for (idx, action) in result.actions.cmds.iter().enumerate() {
         let command = match action {
