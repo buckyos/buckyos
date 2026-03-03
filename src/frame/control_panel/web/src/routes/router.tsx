@@ -4,6 +4,7 @@ import DashboardPage from '../ui/pages/DashboardPage'
 import DesktopHomePage from '../ui/pages/DesktopHomePage'
 import LoginPage from '../ui/pages/LoginPage'
 import FileManagerPage from '../ui/pages/FileManagerPage'
+import FileDetailPage from '../ui/pages/FileDetailPage'
 import ContainerPage from '../ui/pages/ContainerPage'
 import NetworkPage from '../ui/pages/NetworkPage'
 import PlaceholderPage from '../ui/pages/PlaceholderPage'
@@ -33,6 +34,7 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <DesktopHomePage /> },
       { path: 'share/:shareId', element: <FileManagerPage /> },
+      { path: 'files/detail', element: <FileDetailPage /> },
       { path: 'index', element: <Navigate to="/monitor" replace /> },
       { path: 'index.html', element: <Navigate to="/monitor" replace /> },
       {

@@ -43,42 +43,34 @@ const ImageViewerModal = ({
           <button
             type="button"
             onClick={onZoomOut}
-            className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-semibold leading-none text-slate-700 transition hover:border-primary hover:text-primary"
           >
-            <span className="inline-flex items-center gap-1.5">
-              <ZoomOut className="size-4 shrink-0" aria-hidden />
-              Zoom out
-            </span>
+            <ZoomOut className="size-4 shrink-0" aria-hidden />
+            Zoom out
           </button>
           <button
             type="button"
             onClick={onResetZoom}
-            className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-semibold leading-none text-slate-700 transition hover:border-primary hover:text-primary"
           >
-            <span className="inline-flex items-center gap-1.5">
-              <RotateCw className="size-4 shrink-0" aria-hidden />
-              Reset
-            </span>
+            <RotateCw className="size-4 shrink-0" aria-hidden />
+            Reset
           </button>
           <button
             type="button"
             onClick={onZoomIn}
-            className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-semibold leading-none text-slate-700 transition hover:border-primary hover:text-primary"
           >
-            <span className="inline-flex items-center gap-1.5">
-              <ZoomIn className="size-4 shrink-0" aria-hidden />
-              Zoom in
-            </span>
+            <ZoomIn className="size-4 shrink-0" aria-hidden />
+            Zoom in
           </button>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg border border-rose-300 bg-white px-2 py-1 text-xs font-semibold text-rose-700 transition hover:bg-rose-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-rose-300 bg-white px-2 py-1 text-xs font-semibold leading-none text-rose-700 transition hover:bg-rose-50"
           >
-            <span className="inline-flex items-center gap-1.5">
-              <X className="size-4 shrink-0" aria-hidden />
-              Close
-            </span>
+            <X className="size-4 shrink-0" aria-hidden />
+            Close
           </button>
         </div>
       </div>

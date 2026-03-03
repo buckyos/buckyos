@@ -16,7 +16,6 @@ type FilePreviewPanelProps = {
   previewTextContent: string
   previewImageLoading: boolean
   officePreviewUrl: string
-  onClosePreview: () => void
   onOpenImageViewer: (src: string, title: string) => void
   onPreviewImageLoad: () => void
   onPreviewImageError: () => void
@@ -34,7 +33,6 @@ const FilePreviewPanel = ({
   previewTextContent,
   previewImageLoading,
   officePreviewUrl,
-  onClosePreview,
   onOpenImageViewer,
   onPreviewImageLoad,
   onPreviewImageError,
@@ -48,7 +46,7 @@ const FilePreviewPanel = ({
   return (
     <section
       className={`border-t border-slate-200 bg-slate-50/80 px-5 pt-4 ${
-        embedded ? 'min-h-0 flex-1 overflow-y-auto pb-10' : 'pb-4'
+        embedded ? 'min-h-0 flex-1 overflow-y-auto pb-14' : 'pb-6'
       }`}
     >
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -58,13 +56,6 @@ const FilePreviewPanel = ({
             {previewEntry.name} · {formatBytes(previewEntry.size)} · {formatTimestamp(previewEntry.modified)}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onClosePreview}
-          className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
-        >
-          Close preview
-        </button>
       </div>
 
       {previewLoading ? (
@@ -75,7 +66,7 @@ const FilePreviewPanel = ({
         <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-3 text-sm text-rose-700">{previewError}</div>
       ) : previewKind === 'image' ? (
         <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-3">
-          <div className="flex justify-end">
+          <div className="flex justify-center">
             <button
               type="button"
               onClick={() => onOpenImageViewer(previewRawUrl, previewEntry.name)}

@@ -166,6 +166,9 @@ const buildPublicDownloadPathForTarget = (shareId: string, targetPath: string, p
   return `/api/public/dl/${encodeURIComponent(shareId)}${suffix ? `?${suffix}` : ''}`
 }
 
+const buildFileDetailPath = (path: string) =>
+  `/files/detail?path=${encodeURIComponent(normalizeUrlPath(path))}`
+
 const buildPublicShareApiPath = (shareId: string, path: string, password?: string) => {
   const query = new URLSearchParams()
   if (path && path !== '/') {
@@ -1350,22 +1353,6 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
 
     await uploadFilesToCurrentPath(droppedFiles)
   }
-
-  const onPreviewFile = (entry: FileEntry) => {
-    if (entry.is_dir) {
-      return
-    }
-    clearSearchState()
-    setCurrentPath(normalizeUrlPath(entry.path))
-  }
-
-  const onClosePreview = useCallback(() => {
-    if (!currentPathIsDir) {
-      openDirectory(parentPath(currentPath))
-      return
-    }
-    clearPreviewState()
-  }, [clearPreviewState, currentPath, currentPathIsDir, openDirectory])
 
   const onCancelUpload = async (key: string) => {
     uploadCancelledRef.current.add(key)
@@ -2604,13 +2591,14 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                                 </span>
                               </button>
                             ) : (
-                              <button
-                                type="button"
-                                onClick={() => void onPreviewFile(entry)}
+                              <a
+                                href={buildFileDetailPath(entry.path)}
+                                target="_blank"
+                                rel="noreferrer"
                                 className="rounded px-1 py-0.5 text-left text-slate-800 transition hover:bg-slate-100"
                               >
                                 {entry.name}
-                              </button>
+                              </a>
                             )}
                           </td>
                           {searchActive ? <td className="border-b border-slate-100 px-3 py-2 text-slate-600">{parentPath(entry.path)}</td> : null}
@@ -2647,6 +2635,18 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                   style={{ top: actionMenuPosition.top, left: actionMenuPosition.left }}
                   data-row-actions="true"
                 >
+                  {!openActionEntry.is_dir ? (
+                    <a
+                      href={buildFileDetailPath(openActionEntry.path)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className={rowActionItemClass}
+                      onClick={closeRowActionMenu}
+                    >
+                      <Icon name="open" />
+                      Open
+                    </a>
+                  ) : null}
                   {!openActionEntry.is_dir ? (
                     <a
                       href={buildRawFileUrl(openActionEntry.path, true)}
@@ -2740,7 +2740,6 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
             previewTextContent={previewTextContent}
             previewImageLoading={previewImageLoading}
             officePreviewUrl={officePreviewUrl}
-            onClosePreview={onClosePreview}
             onOpenImageViewer={openImageViewer}
             onPreviewImageLoad={() => setPreviewImageLoading(false)}
             onPreviewImageError={() => setPreviewImageLoading(false)}

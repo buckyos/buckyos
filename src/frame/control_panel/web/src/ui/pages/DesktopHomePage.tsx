@@ -2311,6 +2311,8 @@ const WindowBody = memo((props: WindowBodyProps) => {
     const storageTotal = metrics.disk?.totalGb ?? 0
     const snUrlDisplay = (zoneOverview?.sn.url ?? '').replace(/^https?:\/\//, '') || '-'
     const uptimeLabel = formatUptime(overview?.uptime_seconds ?? metrics.uptimeSeconds ?? 0)
+    const filesBackendUser = (zoneOverview?.zone.userName || layout.profile.name || 'root').trim() || 'root'
+    const filesBackendDir = `/opt/buckyos/home/${filesBackendUser}`
 
     const contentByMenu: Record<SettingsMenuKey, React.ReactNode> = {
       general: (
@@ -2694,6 +2696,15 @@ const WindowBody = memo((props: WindowBodyProps) => {
             </p>
             <div className="mt-3">
               <StorageDiskStatusPanel disk={metrics.disk} compact maxItems={4} />
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">Files management</p>
+            <p className="mt-1 text-xs text-[var(--cp-muted)]">Current backend storage path for Files.</p>
+            <div className="mt-3 rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2">
+              <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Files backend directory</p>
+              <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">{filesBackendDir}</p>
             </div>
           </div>
         </div>
