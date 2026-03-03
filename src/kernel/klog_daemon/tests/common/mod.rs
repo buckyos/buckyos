@@ -22,6 +22,7 @@ pub struct AppendLogBody {
     pub message: String,
     pub timestamp: Option<u64>,
     pub node_id: Option<u64>,
+    pub request_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -272,14 +273,45 @@ pub async fn spawn_node(
         target_role,
     )?;
 
+    let mut child = spawn_daemon_child(&config_path).await?;
+
+    wait_node_http_ready_after_spawn(&mut child, node_id, port, rpc_port, Duration::from_secs(12))
+        .await?;
+
+    Ok(TestNode {
+        node_id,
+        port,
+        rpc_port,
+        data_dir,
+        config_path,
+        child,
+    })
+}
+
+pub async fn restart_node(node: &mut TestNode) -> Result<(), String> {
+    node.stop().await;
+    let mut child = spawn_daemon_child(&node.config_path).await?;
+    wait_node_http_ready_after_spawn(
+        &mut child,
+        node.node_id,
+        node.port,
+        node.rpc_port,
+        Duration::from_secs(12),
+    )
+    .await?;
+    node.child = child;
+    Ok(())
+}
+
+async fn spawn_daemon_child(config_path: &PathBuf) -> Result<Child, String> {
     let (daemon_bin, candidates) = resolve_daemon_bin()?;
     let mut cmd = Command::new(&daemon_bin);
-    cmd.env("KLOG_CONFIG_FILE", &config_path)
+    cmd.env("KLOG_CONFIG_FILE", config_path)
         .env("RUST_LOG", "warn")
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
 
-    let mut child = cmd.spawn().map_err(|e| {
+    cmd.spawn().map_err(|e| {
         let candidate_strings = candidates
             .iter()
             .map(|p| p.display().to_string())
@@ -296,18 +328,6 @@ pub async fn spawn_node(
             candidate_strings,
             e
         )
-    })?;
-
-    wait_node_http_ready_after_spawn(&mut child, node_id, port, rpc_port, Duration::from_secs(12))
-        .await?;
-
-    Ok(TestNode {
-        node_id,
-        port,
-        rpc_port,
-        data_dir,
-        config_path,
-        child,
     })
 }
 
@@ -386,11 +406,23 @@ pub async fn append_log(
     timestamp: Option<u64>,
     node_id: Option<u64>,
 ) -> Result<AppendLogResponse, String> {
+    append_log_with_request_id(client, port, message, timestamp, node_id, None).await
+}
+
+pub async fn append_log_with_request_id(
+    client: &reqwest::Client,
+    port: u16,
+    message: &str,
+    timestamp: Option<u64>,
+    node_id: Option<u64>,
+    request_id: Option<&str>,
+) -> Result<AppendLogResponse, String> {
     let url = format!("http://127.0.0.1:{}/klog/data/append", port);
     let body = AppendLogBody {
         message: message.to_string(),
         timestamp,
         node_id,
+        request_id: request_id.map(|v| v.to_string()),
     };
 
     let resp = client

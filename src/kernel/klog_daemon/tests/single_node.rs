@@ -102,3 +102,85 @@ async fn test_single_node_business_log_append_and_query() -> Result<(), String> 
     node.stop().await;
     result
 }
+
+#[tokio::test]
+async fn test_single_node_request_id_dedup_survives_process_restart() -> Result<(), String> {
+    if !can_bind_localhost() {
+        eprintln!("skip single-node restart dedup test: localhost bind is not available");
+        return Ok(());
+    }
+
+    let port = choose_free_port().map_err(|e| format!("choose free port failed: {}", e))?;
+    let cluster_name = format!("klog_request_id_restart_{}", port);
+    let mut node = spawn_node(1, port, &cluster_name, true, &[], "voter").await?;
+
+    let result = async {
+        wait_single_node_leader(port, 1, Duration::from_secs(20)).await?;
+        let rpc_port = node.rpc_port;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .map_err(|e| format!("failed to build http client: {}", e))?;
+
+        let request_id = format!("restart-dedup-{}", port);
+        let first = append_log_with_request_id(
+            &client,
+            rpc_port,
+            "restart-dedup-message",
+            Some(900),
+            Some(1),
+            Some(request_id.as_str()),
+        )
+        .await?;
+
+        restart_node(&mut node).await?;
+        wait_single_node_leader(port, 1, Duration::from_secs(20)).await?;
+
+        let retry = append_log_with_request_id(
+            &client,
+            rpc_port,
+            "restart-dedup-message-retry",
+            Some(901),
+            Some(1),
+            Some(request_id.as_str()),
+        )
+        .await?;
+
+        if retry.id != first.id {
+            return Err(format!(
+                "request_id dedup failed after restart: first_id={}, retry_id={}",
+                first.id, retry.id
+            ));
+        }
+
+        let queried = query_logs(
+            &client,
+            rpc_port,
+            Some(first.id),
+            Some(first.id),
+            Some(10),
+            Some(false),
+        )
+        .await?;
+        if queried.items.len() != 1 {
+            return Err(format!(
+                "unexpected dedup query len after restart: expected=1, got={}",
+                queried.items.len()
+            ));
+        }
+
+        let item = &queried.items[0];
+        if item.id != first.id || item.message != "restart-dedup-message" {
+            return Err(format!(
+                "unexpected dedup item after restart: id={}, message={}",
+                item.id, item.message
+            ));
+        }
+
+        Ok(())
+    }
+    .await;
+
+    node.stop().await;
+    result
+}
