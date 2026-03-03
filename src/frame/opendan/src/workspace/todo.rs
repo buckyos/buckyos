@@ -9,13 +9,14 @@ use async_trait::async_trait;
 use buckyos_api::KEventClient;
 use log::{info, warn};
 use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::task;
 
-use crate::agent_tool::{AgentTool, AgentToolError, ToolSpec, TOOL_TODO_MANAGE};
+use crate::agent_tool::{tokenize_bash_command_line, AgentTool, AgentToolError, ToolSpec};
 use crate::behavior::SessionRuntimeContext;
 
+const TOOL_TODO: &str = "todo";
 const DEFAULT_LIST_LIMIT: usize = 32;
 const DEFAULT_MAX_LIST_LIMIT: usize = 128;
 const MAX_TEXT_256: usize = 256;
@@ -27,8 +28,41 @@ const MAX_DEPS: usize = 128;
 const MAX_NOTES_FETCH: usize = 100;
 const RENDER_ITEM_LIMIT: usize = 64;
 const DEFAULT_TOKEN_BUDGET: usize = 1600;
+const DEFAULT_PRIORITY_GAP: i64 = 10;
 
 static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+const TODO_USAGE: &str = "\
+todo <command> [args...]
+
+Plan:
+  todo clear
+  todo add \"title\" [--type=Task|Bench] [--priority=N] [--deps=T001,T003|--no-deps]
+
+Do:
+  todo start  T001 [\"reason\"]
+  todo done   T001 \"reason\"
+  todo fail   T001 \"reason\" [--error='{\"code\":\"...\",\"message\":\"...\"}']
+
+Check:
+  todo pass   T001 [\"reason\"]
+  todo reject T001 \"reason\"
+
+Notes:
+  todo note   T001 \"content\" [--kind=note|result|error]
+
+Query:
+  todo ls     [--all] [--status=WAIT,IN_PROGRESS] [--type=Task|Bench] [-q \"keyword\"]
+  todo show   T001
+  todo next
+  todo pending [--status=WAIT,IN_PROGRESS]
+
+Prompt:
+  todo prompt [--budget=N]
+  todo current [T001]
+
+Global flags:
+  --ws=<workspace_id> --session=<session_id> --agent=<agent_id> --op-id=<op_id>";
 
 #[derive(Clone, Debug)]
 pub struct TodoToolConfig {
@@ -127,15 +161,558 @@ impl TodoTool {
         .await
         .map_err(|err| AgentToolError::ExecFailed(format!("{op_name} join error: {err}")))?
     }
+
+    fn resolve_workspace_id_for_exec(
+        &self,
+        explicit_ws: Option<String>,
+        ctx: &SessionRuntimeContext,
+        shell_cwd: Option<&Path>,
+    ) -> Result<String, AgentToolError> {
+        if let Some(workspace_id) = explicit_ws {
+            return Ok(workspace_id);
+        }
+        if let Some(workspace_id) = self.lookup_bound_workspace_id(ctx.session_id.as_str()) {
+            return Ok(workspace_id);
+        }
+        if let Some(workspace_id) = extract_workspace_id_from_cwd(shell_cwd) {
+            return Ok(workspace_id);
+        }
+        Err(AgentToolError::InvalidArgs(
+            "workspace_id is required; use `--ws=<workspace_id>` or bind a workspace for this session"
+                .to_string(),
+        ))
+    }
+
+    fn lookup_bound_workspace_id(&self, session_id: &str) -> Option<String> {
+        let session_id = session_id.trim();
+        if session_id.is_empty() {
+            return None;
+        }
+        let workshop_root = self.cfg.db_path.parent()?.parent()?;
+        let bindings_path = workshop_root.join("sessions/local_workspace_bindings.json");
+        let raw = std::fs::read_to_string(bindings_path).ok()?;
+        let parsed = serde_json::from_str::<TodoSessionBindingsFile>(&raw).ok()?;
+        parsed
+            .bindings
+            .into_iter()
+            .find(|item| item.session_id.trim() == session_id)
+            .map(|item| item.local_workspace_id.trim().to_string())
+            .filter(|item| !item.is_empty())
+    }
+
+    fn build_cli_actor(agent_id: &str, session_id: &str) -> Json {
+        json!({
+            "kind": "root_agent",
+            "did": agent_id,
+            "session_id": session_id
+        })
+    }
+
+    fn build_apply_delta_args(
+        workspace_id: &str,
+        session_id: &str,
+        agent_id: &str,
+        op_id: Option<String>,
+        ops: Vec<Json>,
+    ) -> Json {
+        let mut delta = serde_json::Map::new();
+        if let Some(op_id) = op_id {
+            delta.insert("op_id".to_string(), Json::String(op_id));
+        }
+        delta.insert("ops".to_string(), Json::Array(ops));
+
+        json!({
+            "action": "apply_delta",
+            "workspace_id": workspace_id,
+            "session_id": session_id,
+            "actor_ctx": Self::build_cli_actor(agent_id, session_id),
+            "delta": Json::Object(delta)
+        })
+    }
+
+    fn exec_clear(
+        &self,
+        cli_args: &TodoCliArgs,
+        workspace_id: &str,
+        session_id: &str,
+        agent_id: &str,
+        op_id: Option<String>,
+    ) -> Result<Json, AgentToolError> {
+        cli_args.expect_no_positionals("clear")?;
+        cli_args.ensure_allowed_flags("clear", &["ws", "session", "agent", "op-id"])?;
+        Ok(Self::build_apply_delta_args(
+            workspace_id,
+            session_id,
+            agent_id,
+            op_id,
+            vec![json!({
+                "op": "init",
+                "mode": "replace",
+                "items": []
+            })],
+        ))
+    }
+
+    async fn exec_add(
+        &self,
+        cli_args: &TodoCliArgs,
+        workspace_id: &str,
+        session_id: &str,
+        agent_id: &str,
+        op_id: Option<String>,
+    ) -> Result<Json, AgentToolError> {
+        cli_args.ensure_allowed_flags(
+            "add",
+            &[
+                "type",
+                "priority",
+                "deps",
+                "no-deps",
+                "labels",
+                "skills",
+                "desc",
+                "description",
+                "assignee",
+                "ws",
+                "session",
+                "agent",
+                "op-id",
+            ],
+        )?;
+        let title = cli_args.require_positional("add", 0, "title")?;
+        if cli_args.positionals.len() > 1 {
+            return Err(AgentToolError::InvalidArgs(
+                "todo add only accepts one positional argument: title".to_string(),
+            ));
+        }
+
+        let todo_type = cli_args
+            .flag_string("type")?
+            .unwrap_or_else(|| TodoType::Task.as_str().to_string());
+        let todo_type = TodoType::parse(&todo_type)?;
+
+        let no_deps = cli_args.flag_switch("no-deps")?;
+        let deps_flag = cli_args.flag_string("deps")?;
+        if no_deps && deps_flag.is_some() {
+            return Err(AgentToolError::InvalidArgs(
+                "todo add cannot use both --deps and --no-deps".to_string(),
+            ));
+        }
+
+        let priority = if let Some(raw_priority) = cli_args.flag_string("priority")? {
+            Some(parse_i64_flag("priority", &raw_priority)?)
+        } else {
+            let ws_for_db = workspace_id.to_string();
+            Some(
+                self.run_db("todo add default priority", move |conn| {
+                    read_next_default_priority(conn, &ws_for_db)
+                })
+                .await?,
+            )
+        };
+
+        let has_existing_todos = if !no_deps && deps_flag.is_none() && todo_type == TodoType::Task {
+            let ws_for_db = workspace_id.to_string();
+            self.run_db("todo add has existing", move |conn| {
+                workspace_has_todos(conn, &ws_for_db)
+            })
+            .await?
+        } else {
+            false
+        };
+
+        let deps = if no_deps {
+            Some(Vec::<String>::new())
+        } else if let Some(raw_deps) = deps_flag {
+            Some(parse_csv_codes("deps", &raw_deps)?)
+        } else if todo_type == TodoType::Task && has_existing_todos {
+            Some(vec!["@prev".to_string()])
+        } else {
+            None
+        };
+
+        let labels = cli_args
+            .flag_string("labels")?
+            .map(|value| parse_csv_tokens("labels", &value))
+            .transpose()?
+            .unwrap_or_default();
+        let skills = cli_args
+            .flag_string("skills")?
+            .map(|value| parse_csv_tokens("skills", &value))
+            .transpose()?
+            .unwrap_or_default();
+        let description = cli_args
+            .flag_string("desc")?
+            .or(cli_args.flag_string("description")?);
+        let assignee = cli_args.flag_string("assignee")?;
+
+        let mut item = serde_json::Map::new();
+        item.insert("title".to_string(), Json::String(title));
+        item.insert(
+            "type".to_string(),
+            Json::String(todo_type.as_str().to_string()),
+        );
+        if let Some(priority) = priority {
+            item.insert("priority".to_string(), Json::Number(priority.into()));
+        }
+        if let Some(description) = description {
+            item.insert("description".to_string(), Json::String(description));
+        }
+        if !labels.is_empty() {
+            item.insert(
+                "labels".to_string(),
+                Json::Array(labels.into_iter().map(Json::String).collect()),
+            );
+        }
+        if !skills.is_empty() {
+            item.insert(
+                "skills".to_string(),
+                Json::Array(skills.into_iter().map(Json::String).collect()),
+            );
+        }
+        if let Some(assignee) = assignee {
+            item.insert("assignee".to_string(), Json::String(assignee));
+        }
+        if let Some(deps) = deps {
+            item.insert(
+                "deps".to_string(),
+                Json::Array(deps.into_iter().map(Json::String).collect()),
+            );
+        }
+
+        Ok(Self::build_apply_delta_args(
+            workspace_id,
+            session_id,
+            agent_id,
+            op_id,
+            vec![json!({
+                "op": "init",
+                "mode": "merge",
+                "items": [Json::Object(item)]
+            })],
+        ))
+    }
+
+    fn exec_update(
+        &self,
+        cli_args: &TodoCliArgs,
+        workspace_id: &str,
+        session_id: &str,
+        agent_id: &str,
+        op_id: Option<String>,
+        to_status: TodoStatus,
+        reason_required: bool,
+        default_reason: Option<&str>,
+    ) -> Result<Json, AgentToolError> {
+        cli_args.ensure_allowed_flags("update", &["ws", "session", "agent", "op-id", "error"])?;
+        let todo_code = cli_args.require_positional("update", 0, "todo_code")?;
+        let todo_code = normalize_todo_code(&todo_code)?;
+        let reason = cli_args.positionals.get(1).cloned();
+        if cli_args.positionals.len() > 2 {
+            return Err(AgentToolError::InvalidArgs(
+                "status update only supports: <todo_code> [reason]".to_string(),
+            ));
+        }
+
+        let reason = match reason {
+            Some(reason) if !reason.trim().is_empty() => reason.trim().to_string(),
+            _ if reason_required => {
+                return Err(AgentToolError::InvalidArgs(
+                    "reason is required for this command".to_string(),
+                ));
+            }
+            _ => default_reason.unwrap_or("updated").to_string(),
+        };
+
+        let mut op = serde_json::Map::new();
+        op.insert(
+            "op".to_string(),
+            Json::String(format!("update:{todo_code}")),
+        );
+        op.insert(
+            "to_status".to_string(),
+            Json::String(to_status.as_str().to_string()),
+        );
+        op.insert("reason".to_string(), Json::String(reason));
+
+        if let Some(error) = cli_args.flag_string("error")? {
+            let parsed: Json = serde_json::from_str(error.as_str()).map_err(|err| {
+                AgentToolError::InvalidArgs(format!("invalid --error json payload: {err}"))
+            })?;
+            op.insert("last_error".to_string(), parsed);
+        }
+
+        Ok(Self::build_apply_delta_args(
+            workspace_id,
+            session_id,
+            agent_id,
+            op_id,
+            vec![Json::Object(op)],
+        ))
+    }
+
+    fn exec_fail(
+        &self,
+        cli_args: &TodoCliArgs,
+        workspace_id: &str,
+        session_id: &str,
+        agent_id: &str,
+        op_id: Option<String>,
+    ) -> Result<Json, AgentToolError> {
+        self.exec_update(
+            cli_args,
+            workspace_id,
+            session_id,
+            agent_id,
+            op_id,
+            TodoStatus::Failed,
+            true,
+            None,
+        )
+    }
+
+    fn exec_note(
+        &self,
+        cli_args: &TodoCliArgs,
+        workspace_id: &str,
+        session_id: &str,
+        agent_id: &str,
+        op_id: Option<String>,
+    ) -> Result<Json, AgentToolError> {
+        cli_args.ensure_allowed_flags("note", &["kind", "ws", "session", "agent", "op-id"])?;
+        if cli_args.positionals.len() != 2 {
+            return Err(AgentToolError::InvalidArgs(
+                "todo note requires exactly: <todo_code> <content>".to_string(),
+            ));
+        }
+        let todo_code = normalize_todo_code(
+            cli_args
+                .positionals
+                .first()
+                .map(String::as_str)
+                .unwrap_or_default(),
+        )?;
+        let content = cli_args
+            .positionals
+            .get(1)
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| {
+                AgentToolError::InvalidArgs("note content cannot be empty".to_string())
+            })?;
+        let kind = cli_args
+            .flag_string("kind")?
+            .unwrap_or_else(|| "note".to_string());
+
+        Ok(Self::build_apply_delta_args(
+            workspace_id,
+            session_id,
+            agent_id,
+            op_id,
+            vec![json!({
+                "op": format!("note:{todo_code}"),
+                "kind": kind,
+                "content": content
+            })],
+        ))
+    }
+
+    fn exec_list(
+        &self,
+        cli_args: &TodoCliArgs,
+        workspace_id: &str,
+    ) -> Result<Json, AgentToolError> {
+        cli_args.ensure_allowed_flags(
+            "ls",
+            &[
+                "all", "status", "type", "assignee", "label", "q", "query", "limit", "offset",
+                "sort", "sort_by", "asc", "ws", "session", "agent", "op-id",
+            ],
+        )?;
+        cli_args.expect_max_positionals("ls", 0)?;
+        let all = cli_args.flag_switch("all")?;
+        let statuses = if all {
+            Vec::new()
+        } else if let Some(raw_status) = cli_args.flag_string("status")? {
+            parse_csv_tokens("status", &raw_status)?
+        } else {
+            vec![
+                TodoStatus::Wait.as_str().to_string(),
+                TodoStatus::InProgress.as_str().to_string(),
+                TodoStatus::Complete.as_str().to_string(),
+                TodoStatus::Failed.as_str().to_string(),
+                TodoStatus::CheckFailed.as_str().to_string(),
+            ]
+        };
+
+        let mut filters = serde_json::Map::new();
+        if !statuses.is_empty() {
+            filters.insert(
+                "status".to_string(),
+                Json::Array(statuses.into_iter().map(Json::String).collect()),
+            );
+        }
+        if let Some(todo_type) = cli_args.flag_string("type")? {
+            filters.insert("type".to_string(), Json::String(todo_type));
+        }
+        if let Some(assignee) = cli_args.flag_string("assignee")? {
+            filters.insert("assignee".to_string(), Json::String(assignee));
+        }
+        if let Some(label) = cli_args.flag_string("label")? {
+            filters.insert("label".to_string(), Json::String(label));
+        }
+        if let Some(query) = cli_args
+            .flag_string("q")?
+            .or(cli_args.flag_string("query")?)
+        {
+            filters.insert("query".to_string(), Json::String(query));
+        }
+        if let Some(sort_by) = cli_args
+            .flag_string("sort")?
+            .or(cli_args.flag_string("sort_by")?)
+        {
+            filters.insert("sort_by".to_string(), Json::String(sort_by));
+        }
+        if cli_args.flag_switch("asc")? {
+            filters.insert("asc".to_string(), Json::Bool(true));
+        }
+
+        let mut args = serde_json::Map::new();
+        args.insert("action".to_string(), Json::String("list".to_string()));
+        args.insert(
+            "workspace_id".to_string(),
+            Json::String(workspace_id.to_string()),
+        );
+        if !filters.is_empty() {
+            args.insert("filters".to_string(), Json::Object(filters));
+        }
+        if let Some(limit) = cli_args.flag_string("limit")? {
+            args.insert(
+                "limit".to_string(),
+                Json::Number(parse_u64_flag("limit", &limit)?.into()),
+            );
+        }
+        if let Some(offset) = cli_args.flag_string("offset")? {
+            args.insert(
+                "offset".to_string(),
+                Json::Number(parse_u64_flag("offset", &offset)?.into()),
+            );
+        }
+        Ok(Json::Object(args))
+    }
+
+    fn exec_show(
+        &self,
+        cli_args: &TodoCliArgs,
+        workspace_id: &str,
+    ) -> Result<Json, AgentToolError> {
+        cli_args.ensure_allowed_flags("show", &["ws", "session", "agent", "op-id"])?;
+        let todo_ref = cli_args.require_positional("show", 0, "todo_code")?;
+        cli_args.expect_max_positionals("show", 1)?;
+        Ok(json!({
+            "action": "get",
+            "workspace_id": workspace_id,
+            "todo_ref": todo_ref
+        }))
+    }
+
+    fn exec_next(
+        &self,
+        cli_args: &TodoCliArgs,
+        workspace_id: &str,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<Json, AgentToolError> {
+        cli_args.ensure_allowed_flags("next", &["ws", "session", "agent", "op-id"])?;
+        cli_args.expect_no_positionals("next")?;
+        Ok(json!({
+            "action": "get_next_ready_todo",
+            "workspace_id": workspace_id,
+            "session_id": session_id,
+            "agent_id": agent_id
+        }))
+    }
+
+    fn exec_pending(
+        &self,
+        cli_args: &TodoCliArgs,
+        workspace_id: &str,
+    ) -> Result<Json, AgentToolError> {
+        cli_args.ensure_allowed_flags("pending", &["status", "ws", "session", "agent", "op-id"])?;
+        cli_args.expect_no_positionals("pending")?;
+        let mut args = serde_json::Map::new();
+        args.insert(
+            "action".to_string(),
+            Json::String("query_pending".to_string()),
+        );
+        args.insert(
+            "workspace_id".to_string(),
+            Json::String(workspace_id.to_string()),
+        );
+        if let Some(status) = cli_args.flag_string("status")? {
+            args.insert(
+                "states".to_string(),
+                Json::Array(
+                    parse_csv_tokens("status", &status)?
+                        .into_iter()
+                        .map(Json::String)
+                        .collect(),
+                ),
+            );
+        }
+        Ok(Json::Object(args))
+    }
+
+    fn exec_prompt(
+        &self,
+        cli_args: &TodoCliArgs,
+        workspace_id: &str,
+    ) -> Result<Json, AgentToolError> {
+        cli_args.ensure_allowed_flags("prompt", &["budget", "ws", "session", "agent", "op-id"])?;
+        cli_args.expect_no_positionals("prompt")?;
+        let mut args = serde_json::Map::new();
+        args.insert(
+            "action".to_string(),
+            Json::String("render_for_prompt".to_string()),
+        );
+        args.insert(
+            "workspace_id".to_string(),
+            Json::String(workspace_id.to_string()),
+        );
+        if let Some(budget) = cli_args.flag_string("budget")? {
+            args.insert(
+                "token_budget".to_string(),
+                Json::Number(parse_u64_flag("budget", &budget)?.into()),
+            );
+        }
+        Ok(Json::Object(args))
+    }
+
+    fn exec_current(
+        &self,
+        cli_args: &TodoCliArgs,
+        workspace_id: &str,
+        session_id: &str,
+    ) -> Result<Json, AgentToolError> {
+        cli_args.ensure_allowed_flags("current", &["ws", "session", "agent", "op-id"])?;
+        cli_args.expect_max_positionals("current", 1)?;
+        let todo_ref = cli_args.positionals.first().cloned();
+        Ok(json!({
+            "action": "render_current_details",
+            "workspace_id": workspace_id,
+            "session_id": session_id,
+            "todo_ref": todo_ref
+        }))
+    }
 }
 
 #[async_trait]
 impl AgentTool for TodoTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: TOOL_TODO_MANAGE.to_string(),
+            name: TOOL_TODO.to_string(),
             description:
-                "Workspace todo delta engine with sqlite/oplog persistence and PDCA state guardrails."
+                "Workspace todo CLI with sqlite/oplog persistence and PDCA state guardrails."
                     .to_string(),
             args_schema: json!({
                 "type": "object",
@@ -206,7 +783,7 @@ impl AgentTool for TodoTool {
                     "text": { "type": "string" }
                 }
             }),
-            usage: None,
+            usage: Some(TODO_USAGE.to_string()),
         }
     }
 
@@ -218,6 +795,108 @@ impl AgentTool for TodoTool {
     }
     fn support_llm_tool_call(&self) -> bool {
         false
+    }
+
+    async fn exec(
+        &self,
+        ctx: &SessionRuntimeContext,
+        line: &str,
+        shell_cwd: Option<&Path>,
+    ) -> Result<Json, AgentToolError> {
+        let tokens = tokenize_bash_command_line(line)?;
+        if tokens.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "empty bash command line".to_string(),
+            ));
+        }
+        if tokens.len() < 2 {
+            return Err(AgentToolError::InvalidArgs(
+                "missing todo subcommand".to_string(),
+            ));
+        }
+
+        let subcommand = tokens[1].trim().to_lowercase();
+        let cli_args = TodoCliArgs::parse(&tokens[2..])?;
+        let workspace_id =
+            self.resolve_workspace_id_for_exec(cli_args.flag_string("ws")?, ctx, shell_cwd)?;
+        let session_id = cli_args
+            .flag_string("session")?
+            .unwrap_or_else(|| ctx.session_id.clone());
+        let agent_id = cli_args
+            .flag_string("agent")?
+            .unwrap_or_else(|| ctx.agent_name.clone());
+        let op_id = cli_args.flag_string("op-id")?;
+
+        let args = match subcommand.as_str() {
+            "clear" => self.exec_clear(&cli_args, &workspace_id, &session_id, &agent_id, op_id)?,
+            "add" => {
+                self.exec_add(&cli_args, &workspace_id, &session_id, &agent_id, op_id)
+                    .await?
+            }
+            "start" => self.exec_update(
+                &cli_args,
+                &workspace_id,
+                &session_id,
+                &agent_id,
+                op_id,
+                TodoStatus::InProgress,
+                false,
+                Some("started"),
+            )?,
+            "done" => self.exec_update(
+                &cli_args,
+                &workspace_id,
+                &session_id,
+                &agent_id,
+                op_id,
+                TodoStatus::Complete,
+                true,
+                None,
+            )?,
+            "fail" => self.exec_fail(&cli_args, &workspace_id, &session_id, &agent_id, op_id)?,
+            "pass" => self.exec_update(
+                &cli_args,
+                &workspace_id,
+                &session_id,
+                &agent_id,
+                op_id,
+                TodoStatus::Done,
+                false,
+                Some("verified"),
+            )?,
+            "reject" => self.exec_update(
+                &cli_args,
+                &workspace_id,
+                &session_id,
+                &agent_id,
+                op_id,
+                TodoStatus::CheckFailed,
+                true,
+                None,
+            )?,
+            "note" => self.exec_note(&cli_args, &workspace_id, &session_id, &agent_id, op_id)?,
+            "ls" => self.exec_list(&cli_args, &workspace_id)?,
+            "show" => self.exec_show(&cli_args, &workspace_id)?,
+            "next" => self.exec_next(&cli_args, &workspace_id, &session_id, &agent_id)?,
+            "pending" => self.exec_pending(&cli_args, &workspace_id)?,
+            "prompt" => self.exec_prompt(&cli_args, &workspace_id)?,
+            "current" => self.exec_current(&cli_args, &workspace_id, &session_id)?,
+            "help" => {
+                return Ok(json!({
+                    "ok": true,
+                    "tool": TOOL_TODO,
+                    "usage": TODO_USAGE
+                }));
+            }
+            _ => {
+                return Err(AgentToolError::InvalidArgs(format!(
+                    "unsupported todo subcommand `{}`",
+                    tokens[1]
+                )));
+            }
+        };
+
+        self.call(ctx, args).await
     }
 
     async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
@@ -244,13 +923,13 @@ impl AgentTool for TodoTool {
             Ok(_) => {
                 info!(
                     "opendan.tool_call: tool={} status=success trace_id={} action={} workspace_id={}",
-                    TOOL_TODO_MANAGE, ctx.trace_id, action, workspace_id
+                    TOOL_TODO, ctx.trace_id, action, workspace_id
                 );
             }
             Err(err) => {
                 warn!(
                     "opendan.tool_call: tool={} status=failed trace_id={} action={} workspace_id={} err={}",
-                    TOOL_TODO_MANAGE, ctx.trace_id, action, workspace_id, err
+                    TOOL_TODO, ctx.trace_id, action, workspace_id, err
                 );
             }
         }
@@ -544,6 +1223,238 @@ impl TodoTool {
             "version": version
         }))
     }
+}
+
+#[derive(Clone, Debug, Default)]
+struct TodoCliArgs {
+    positionals: Vec<String>,
+    flags: HashMap<String, Option<String>>,
+}
+
+impl TodoCliArgs {
+    fn parse(tokens: &[String]) -> Result<Self, AgentToolError> {
+        let mut parsed = Self::default();
+        let mut idx = 0usize;
+        while idx < tokens.len() {
+            let token = tokens[idx].trim().to_string();
+            if token.is_empty() {
+                idx += 1;
+                continue;
+            }
+            if token == "-q" {
+                let value = tokens.get(idx + 1).ok_or_else(|| {
+                    AgentToolError::InvalidArgs("`-q` requires a query value".to_string())
+                })?;
+                parsed.insert_flag("q".to_string(), Some(value.trim().to_string()))?;
+                idx += 2;
+                continue;
+            }
+            if let Some(raw_query) = token.strip_prefix("-q=") {
+                parsed.insert_flag("q".to_string(), Some(raw_query.trim().to_string()))?;
+                idx += 1;
+                continue;
+            }
+            if let Some(raw_flag) = token.strip_prefix("--") {
+                if raw_flag.is_empty() {
+                    return Err(AgentToolError::InvalidArgs(
+                        "invalid empty flag `--`".to_string(),
+                    ));
+                }
+                if let Some((raw_key, raw_value)) = raw_flag.split_once('=') {
+                    let key = raw_key.trim().to_string();
+                    if key.is_empty() {
+                        return Err(AgentToolError::InvalidArgs(
+                            "flag key cannot be empty".to_string(),
+                        ));
+                    }
+                    parsed.insert_flag(key, Some(raw_value.trim().to_string()))?;
+                    idx += 1;
+                    continue;
+                }
+
+                let key = raw_flag.trim().to_string();
+                if key.is_empty() {
+                    return Err(AgentToolError::InvalidArgs(
+                        "flag key cannot be empty".to_string(),
+                    ));
+                }
+                if let Some(next) = tokens.get(idx + 1) {
+                    if !next.starts_with('-') {
+                        parsed.insert_flag(key, Some(next.trim().to_string()))?;
+                        idx += 2;
+                        continue;
+                    }
+                }
+                parsed.insert_flag(key, None)?;
+                idx += 1;
+                continue;
+            }
+            if token.starts_with('-') {
+                return Err(AgentToolError::InvalidArgs(format!(
+                    "unsupported short flag `{token}`"
+                )));
+            }
+
+            parsed.positionals.push(token);
+            idx += 1;
+        }
+        Ok(parsed)
+    }
+
+    fn insert_flag(&mut self, key: String, value: Option<String>) -> Result<(), AgentToolError> {
+        if self.flags.contains_key(key.as_str()) {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "duplicated flag `--{key}`"
+            )));
+        }
+        self.flags.insert(key, value);
+        Ok(())
+    }
+
+    fn ensure_allowed_flags(&self, command: &str, allowed: &[&str]) -> Result<(), AgentToolError> {
+        let allowed: HashSet<&str> = allowed.iter().copied().collect();
+        for key in self.flags.keys() {
+            if !allowed.contains(key.as_str()) {
+                return Err(AgentToolError::InvalidArgs(format!(
+                    "unsupported flag `--{}` for `{command}`",
+                    key
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn flag_string(&self, key: &str) -> Result<Option<String>, AgentToolError> {
+        match self.flags.get(key) {
+            None => Ok(None),
+            Some(Some(value)) => {
+                let value = value.trim();
+                if value.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(value.to_string()))
+                }
+            }
+            Some(None) => Err(AgentToolError::InvalidArgs(format!(
+                "flag `--{key}` requires a value"
+            ))),
+        }
+    }
+
+    fn flag_switch(&self, key: &str) -> Result<bool, AgentToolError> {
+        match self.flags.get(key) {
+            None => Ok(false),
+            Some(None) => Ok(true),
+            Some(Some(_)) => Err(AgentToolError::InvalidArgs(format!(
+                "flag `--{key}` does not take a value"
+            ))),
+        }
+    }
+
+    fn require_positional(
+        &self,
+        command: &str,
+        index: usize,
+        name: &str,
+    ) -> Result<String, AgentToolError> {
+        self.positionals
+            .get(index)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                AgentToolError::InvalidArgs(format!(
+                    "`todo {command}` missing required argument `{name}`"
+                ))
+            })
+    }
+
+    fn expect_no_positionals(&self, command: &str) -> Result<(), AgentToolError> {
+        self.expect_max_positionals(command, 0)
+    }
+
+    fn expect_max_positionals(&self, command: &str, max: usize) -> Result<(), AgentToolError> {
+        if self.positionals.len() <= max {
+            return Ok(());
+        }
+        Err(AgentToolError::InvalidArgs(format!(
+            "`todo {command}` accepts at most {max} positional arguments"
+        )))
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Default)]
+#[serde(default)]
+struct TodoSessionBindingsFile {
+    bindings: Vec<TodoSessionBinding>,
+}
+
+#[derive(Clone, Debug, Deserialize, Default)]
+#[serde(default)]
+struct TodoSessionBinding {
+    session_id: String,
+    local_workspace_id: String,
+}
+
+fn parse_u64_flag(name: &str, raw: &str) -> Result<u64, AgentToolError> {
+    raw.trim().parse::<u64>().map_err(|err| {
+        AgentToolError::InvalidArgs(format!("invalid --{name} value `{}`: {err}", raw.trim()))
+    })
+}
+
+fn parse_i64_flag(name: &str, raw: &str) -> Result<i64, AgentToolError> {
+    raw.trim().parse::<i64>().map_err(|err| {
+        AgentToolError::InvalidArgs(format!("invalid --{name} value `{}`: {err}", raw.trim()))
+    })
+}
+
+fn parse_csv_tokens(name: &str, raw: &str) -> Result<Vec<String>, AgentToolError> {
+    let mut out = Vec::new();
+    for item in raw.split(',') {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+        if !out.iter().any(|existing| existing == item) {
+            out.push(item.to_string());
+        }
+    }
+    if out.is_empty() {
+        return Err(AgentToolError::InvalidArgs(format!(
+            "`--{name}` cannot be empty"
+        )));
+    }
+    Ok(out)
+}
+
+fn parse_csv_codes(name: &str, raw: &str) -> Result<Vec<String>, AgentToolError> {
+    let mut out = Vec::new();
+    for item in parse_csv_tokens(name, raw)? {
+        out.push(normalize_todo_code(item.as_str())?);
+    }
+    Ok(out)
+}
+
+fn extract_workspace_id_from_cwd(shell_cwd: Option<&Path>) -> Option<String> {
+    let shell_cwd = shell_cwd?;
+    let components: Vec<String> = shell_cwd
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => part.to_str().map(|v| v.to_string()),
+            _ => None,
+        })
+        .collect();
+    if components.len() < 3 {
+        return None;
+    }
+    for idx in 0..(components.len() - 2) {
+        if components[idx] == "workspaces" && components[idx + 1] == "local" {
+            let workspace_id = components[idx + 2].trim().to_string();
+            if !workspace_id.is_empty() {
+                return Some(workspace_id);
+            }
+        }
+    }
+    None
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -919,9 +1830,9 @@ impl DeltaOp {
             let items_raw = map.get("items").and_then(|v| v.as_array()).ok_or_else(|| {
                 AgentToolError::InvalidArgs("init op missing `items[]`".to_string())
             })?;
-            if items_raw.is_empty() {
+            if items_raw.is_empty() && !matches!(mode, InitMode::Replace) {
                 return Err(AgentToolError::InvalidArgs(
-                    "init op `items` cannot be empty".to_string(),
+                    "init op `items` cannot be empty unless mode=replace".to_string(),
                 ));
             }
             let mut items = Vec::with_capacity(items_raw.len());
@@ -1761,13 +2672,7 @@ fn resolve_init_deps(
     op: &DeltaOp,
 ) -> Result<Vec<String>, DomainError> {
     match item.deps.as_ref() {
-        Some(deps) if deps.is_empty() => {
-            if let Some(prev) = previous_todo_id.as_ref() {
-                Ok(vec![prev.clone()])
-            } else {
-                Ok(Vec::new())
-            }
-        }
+        Some(deps) if deps.is_empty() => Ok(Vec::new()),
         Some(deps) => {
             let mut out = Vec::new();
             for dep in deps {
@@ -2089,6 +2994,40 @@ fn next_order_pos(tx: &rusqlite::Transaction<'_>, workspace_id: &str) -> Result<
         |row| row.get::<_, i64>(0),
     )
     .map_err(|err| DomainError::invalid_args(format!("query next order pos failed: {err}"), None))
+}
+
+fn read_next_default_priority(
+    conn: &Connection,
+    workspace_id: &str,
+) -> Result<i64, AgentToolError> {
+    let max_priority = conn
+        .query_row(
+            "SELECT MAX(priority) FROM todo_items WHERE workspace_id = ?1",
+            params![workspace_id],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .map_err(|err| {
+            AgentToolError::ExecFailed(format!("query next default priority failed: {err}"))
+        })?
+        .unwrap_or(0);
+
+    let next = if max_priority <= 0 {
+        DEFAULT_PRIORITY_GAP
+    } else {
+        max_priority.saturating_add(DEFAULT_PRIORITY_GAP)
+    };
+    Ok(next)
+}
+
+fn workspace_has_todos(conn: &Connection, workspace_id: &str) -> Result<bool, AgentToolError> {
+    let count = conn
+        .query_row(
+            "SELECT COUNT(1) FROM todo_items WHERE workspace_id = ?1",
+            params![workspace_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|err| AgentToolError::ExecFailed(format!("query todo count failed: {err}")))?;
+    Ok(count > 0)
 }
 
 fn load_todo_for_update(
@@ -3214,11 +4153,46 @@ mod tests {
         tool.call(ctx, args).await
     }
 
+    async fn exec(
+        tool: &TodoTool,
+        ctx: &SessionRuntimeContext,
+        line: &str,
+    ) -> Result<Json, AgentToolError> {
+        tool.exec(ctx, line, None).await
+    }
+
     fn tool_for_test() -> TodoTool {
         let root = std::env::temp_dir().join(format!("opendan-todo-{}", generate_id("test")));
         std::fs::create_dir_all(&root).expect("create test root");
         let db_path = root.join("todo").join("todo.db");
         TodoTool::new(TodoToolConfig::with_db_path(db_path)).expect("create todo tool")
+    }
+
+    fn write_session_binding(tool: &TodoTool, session_id: &str, workspace_id: &str) {
+        let workshop_root = tool
+            .cfg
+            .db_path
+            .parent()
+            .and_then(|parent| parent.parent())
+            .expect("workshop root from db path");
+        let bindings_path = workshop_root.join("sessions/local_workspace_bindings.json");
+        std::fs::create_dir_all(bindings_path.parent().expect("bindings parent"))
+            .expect("create sessions dir");
+        let payload = json!({
+            "bindings": [
+                {
+                    "session_id": session_id,
+                    "local_workspace_id": workspace_id,
+                    "workspace_path": format!("/tmp/{workspace_id}"),
+                    "bound_at_ms": 1
+                }
+            ]
+        });
+        std::fs::write(
+            bindings_path,
+            serde_json::to_vec(&payload).expect("serialize bindings"),
+        )
+        .expect("write bindings");
     }
 
     #[test]
@@ -3595,6 +4569,89 @@ mod tests {
             second["new_version"].as_i64().unwrap_or_default(),
             version_after_first
         );
+    }
+
+    #[tokio::test]
+    async fn todo_cli_exec_supports_plan_do_check_with_implicit_workspace() {
+        let tool = tool_for_test();
+        let ctx = test_ctx("did:od:jarvis");
+        write_session_binding(&tool, "sess-demo", "ws-cli");
+
+        exec(&tool, &ctx, "todo clear").await.expect("todo clear");
+        exec(&tool, &ctx, "todo add \"prepare env\"")
+            .await
+            .expect("todo add t001");
+        exec(&tool, &ctx, "todo add \"implement api\"")
+            .await
+            .expect("todo add t002");
+
+        let t002 = call(
+            &tool,
+            &ctx,
+            json!({
+                "action": "get",
+                "workspace_id": "ws-cli",
+                "todo_ref": "T002"
+            }),
+        )
+        .await
+        .expect("get T002");
+        assert_eq!(t002["deps"], json!(["T001"]));
+        assert_eq!(t002["item"]["priority"], 20);
+
+        let next = exec(&tool, &ctx, "todo next").await.expect("todo next");
+        assert_eq!(next["item"]["todo_code"], "T001");
+
+        exec(&tool, &ctx, "todo start T001")
+            .await
+            .expect("todo start");
+        exec(&tool, &ctx, "todo done T001 \"implemented\"")
+            .await
+            .expect("todo done");
+        exec(&tool, &ctx, "todo pass T001")
+            .await
+            .expect("todo pass");
+
+        let t001 = call(
+            &tool,
+            &ctx,
+            json!({
+                "action": "get",
+                "workspace_id": "ws-cli",
+                "todo_ref": "T001"
+            }),
+        )
+        .await
+        .expect("get T001");
+        assert_eq!(t001["item"]["status"], "DONE");
+    }
+
+    #[tokio::test]
+    async fn todo_cli_exec_no_deps_overrides_default_chain() {
+        let tool = tool_for_test();
+        let ctx = test_ctx("did:od:jarvis");
+        write_session_binding(&tool, "sess-demo", "ws-nodeps");
+
+        exec(&tool, &ctx, "todo clear").await.expect("clear");
+        exec(&tool, &ctx, "todo add \"task A\"")
+            .await
+            .expect("add A");
+        exec(&tool, &ctx, "todo add \"task B\" --no-deps")
+            .await
+            .expect("add B");
+
+        let t002 = call(
+            &tool,
+            &ctx,
+            json!({
+                "action": "get",
+                "workspace_id": "ws-nodeps",
+                "todo_ref": "T002"
+            }),
+        )
+        .await
+        .expect("get T002");
+        assert_eq!(t002["deps"], json!([]));
     }
 
     #[tokio::test]

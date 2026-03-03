@@ -855,10 +855,7 @@ fn normalize_edit_mode(raw: &str) -> Result<&'static str, AgentToolError> {
 }
 
 fn parse_write_mode(args: &Json) -> Result<&'static str, AgentToolError> {
-    let raw = args
-        .get("mode")
-        .and_then(|v| v.as_str())
-        .unwrap_or("write");
+    let raw = args.get("mode").and_then(|v| v.as_str()).unwrap_or("write");
     normalize_write_mode(raw)
 }
 
@@ -894,7 +891,10 @@ struct LineRangeSpec {
     default_end: RangeDefaultEnd,
 }
 
-fn parse_line_range(args: &Json, total_lines: usize) -> Result<Option<(usize, usize)>, AgentToolError> {
+fn parse_line_range(
+    args: &Json,
+    total_lines: usize,
+) -> Result<Option<(usize, usize)>, AgentToolError> {
     let Some(spec) = parse_line_range_spec(args)? else {
         return Ok(None);
     };
@@ -1136,7 +1136,10 @@ fn parse_line_count_json(value: &Json, name: &str) -> Result<usize, AgentToolErr
     u64_to_usize(count_u64)
 }
 
-fn resolve_line_range(spec: LineRangeSpec, total_lines: usize) -> Result<(usize, usize), AgentToolError> {
+fn resolve_line_range(
+    spec: LineRangeSpec,
+    total_lines: usize,
+) -> Result<(usize, usize), AgentToolError> {
     let total_i64 = i64::try_from(total_lines)
         .map_err(|_| AgentToolError::InvalidArgs("file is too large".to_string()))?;
 
@@ -1440,7 +1443,9 @@ mod tests {
     fn parse_line_range_errors_on_invalid_forms() {
         assert!(parse_line_range(&json!({"range": "0"}), 10).is_err());
         assert!(parse_line_range(&json!({"range": "10,+0"}), 10).is_err());
-        assert!(parse_line_range(&json!({"range": {"start": 1, "end": 2, "count": 3}}), 10).is_err());
+        assert!(
+            parse_line_range(&json!({"range": {"start": 1, "end": 2, "count": 3}}), 10).is_err()
+        );
         assert!(parse_line_range(&json!({"range": {"count": 3}}), 10).is_err());
         assert!(parse_line_range(&json!({"range": [1, 2, 3]}), 10).is_err());
     }
