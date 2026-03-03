@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
@@ -7,49 +9,49 @@ use tokio::process::{Child, Command};
 use tokio::time::{Instant, sleep};
 
 #[derive(Debug, Clone, Deserialize)]
-struct ClusterState {
-    node_id: u64,
-    server_state: String,
-    current_leader: Option<u64>,
-    voters: Vec<u64>,
-    learners: Vec<u64>,
+pub struct ClusterState {
+    pub node_id: u64,
+    pub server_state: String,
+    pub current_leader: Option<u64>,
+    pub voters: Vec<u64>,
+    pub learners: Vec<u64>,
 }
 
 #[derive(Debug, Serialize)]
-struct AppendLogBody {
-    message: String,
-    timestamp: Option<u64>,
-    node_id: Option<u64>,
+pub struct AppendLogBody {
+    pub message: String,
+    pub timestamp: Option<u64>,
+    pub node_id: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
-struct AppendLogResponse {
-    id: u64,
+pub struct AppendLogResponse {
+    pub id: u64,
 }
 
 #[derive(Debug, Deserialize)]
-struct QueryLogEntry {
-    id: u64,
-    timestamp: u64,
-    node_id: u64,
-    message: String,
+pub struct QueryLogEntry {
+    pub id: u64,
+    pub timestamp: u64,
+    pub node_id: u64,
+    pub message: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct QueryLogResponse {
-    items: Vec<QueryLogEntry>,
+pub struct QueryLogResponse {
+    pub items: Vec<QueryLogEntry>,
 }
 
-struct TestNode {
-    node_id: u64,
-    port: u16,
-    data_dir: PathBuf,
-    config_path: PathBuf,
-    child: Child,
+pub struct TestNode {
+    pub node_id: u64,
+    pub port: u16,
+    pub data_dir: PathBuf,
+    pub config_path: PathBuf,
+    pub child: Child,
 }
 
 impl TestNode {
-    async fn stop(&mut self) {
+    pub async fn stop(&mut self) {
         let _ = self.child.kill().await;
         let _ = self.child.wait().await;
     }
@@ -63,7 +65,7 @@ impl Drop for TestNode {
     }
 }
 
-fn unique_tmp_path(tag: &str) -> PathBuf {
+pub fn unique_tmp_path(tag: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -76,12 +78,12 @@ fn unique_tmp_path(tag: &str) -> PathBuf {
     ))
 }
 
-fn choose_free_port() -> std::io::Result<u16> {
+pub fn choose_free_port() -> std::io::Result<u16> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     Ok(listener.local_addr()?.port())
 }
 
-fn choose_unique_ports(count: usize) -> Result<Vec<u16>, String> {
+pub fn choose_unique_ports(count: usize) -> Result<Vec<u16>, String> {
     let mut ports = Vec::with_capacity(count);
     let mut guard = HashSet::new();
     let mut attempts = 0usize;
@@ -101,11 +103,11 @@ fn choose_unique_ports(count: usize) -> Result<Vec<u16>, String> {
     Ok(ports)
 }
 
-fn can_bind_localhost() -> bool {
+pub fn can_bind_localhost() -> bool {
     std::net::TcpListener::bind("127.0.0.1:0").is_ok()
 }
 
-fn make_targets_toml(targets: &[String]) -> String {
+pub fn make_targets_toml(targets: &[String]) -> String {
     let quoted = targets
         .iter()
         .map(|x| format!("\"{}\"", x))
@@ -114,7 +116,7 @@ fn make_targets_toml(targets: &[String]) -> String {
     format!("[{}]", quoted)
 }
 
-fn write_config_file(
+pub fn write_config_file(
     path: &PathBuf,
     node_id: u64,
     port: u16,
@@ -162,7 +164,7 @@ target_role = "{target_role}"
         .map_err(|e| format!("failed to write config {}: {}", path.display(), e))
 }
 
-fn daemon_bin_filename() -> &'static str {
+pub fn daemon_bin_filename() -> &'static str {
     if cfg!(windows) {
         "klog_daemon.exe"
     } else {
@@ -170,7 +172,7 @@ fn daemon_bin_filename() -> &'static str {
     }
 }
 
-fn daemon_bin_candidates() -> Vec<PathBuf> {
+pub fn daemon_bin_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
     if let Ok(v) = std::env::var("KLOG_DAEMON_BIN") {
@@ -216,7 +218,7 @@ fn daemon_bin_candidates() -> Vec<PathBuf> {
     unique
 }
 
-fn resolve_daemon_bin() -> Result<(PathBuf, Vec<PathBuf>), String> {
+pub fn resolve_daemon_bin() -> Result<(PathBuf, Vec<PathBuf>), String> {
     let candidates = daemon_bin_candidates();
 
     for c in &candidates {
@@ -235,7 +237,7 @@ fn resolve_daemon_bin() -> Result<(PathBuf, Vec<PathBuf>), String> {
     Err("no daemon binary candidates available".to_string())
 }
 
-async fn spawn_node(
+pub async fn spawn_node(
     node_id: u64,
     port: u16,
     cluster_name: &str,
@@ -295,7 +297,7 @@ async fn spawn_node(
     })
 }
 
-async fn wait_node_http_ready_after_spawn(
+pub async fn wait_node_http_ready_after_spawn(
     child: &mut Child,
     node_id: u64,
     port: u16,
@@ -337,7 +339,10 @@ async fn wait_node_http_ready_after_spawn(
     }
 }
 
-async fn fetch_cluster_state(client: &reqwest::Client, port: u16) -> Result<ClusterState, String> {
+pub async fn fetch_cluster_state(
+    client: &reqwest::Client,
+    port: u16,
+) -> Result<ClusterState, String> {
     let url = format!("http://127.0.0.1:{}/klog/admin/cluster-state", port);
     let resp = client
         .get(&url)
@@ -354,7 +359,7 @@ async fn fetch_cluster_state(client: &reqwest::Client, port: u16) -> Result<Clus
         .map_err(|e| format!("decode {} failed: {}", url, e))
 }
 
-async fn append_log(
+pub async fn append_log(
     client: &reqwest::Client,
     port: u16,
     message: &str,
@@ -385,7 +390,7 @@ async fn append_log(
         .map_err(|e| format!("decode {} failed: {}", url, e))
 }
 
-async fn query_logs(
+pub async fn query_logs(
     client: &reqwest::Client,
     port: u16,
     start_id: Option<u64>,
@@ -427,7 +432,11 @@ async fn query_logs(
         .map_err(|e| format!("decode {} failed: {}", url, e))
 }
 
-async fn wait_single_node_leader(port: u16, node_id: u64, timeout: Duration) -> Result<(), String> {
+pub async fn wait_single_node_leader(
+    port: u16,
+    node_id: u64,
+    timeout: Duration,
+) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(800))
         .build()
@@ -452,7 +461,7 @@ async fn wait_single_node_leader(port: u16, node_id: u64, timeout: Duration) -> 
     }
 }
 
-async fn wait_cluster_voters(
+pub async fn wait_cluster_voters(
     ports: &[u16],
     expect_voters: &[u64],
     timeout: Duration,
@@ -460,7 +469,7 @@ async fn wait_cluster_voters(
     wait_cluster_membership(ports, expect_voters, &[], timeout).await
 }
 
-async fn wait_cluster_membership(
+pub async fn wait_cluster_membership(
     ports: &[u16],
     expect_voters: &[u64],
     expect_learners: &[u64],
@@ -509,7 +518,7 @@ async fn wait_cluster_membership(
     }
 }
 
-async fn send_remove_learner(port: u16, node_id: u64) -> Result<String, String> {
+pub async fn send_remove_learner(port: u16, node_id: u64) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(1200))
         .build()
@@ -532,7 +541,7 @@ async fn send_remove_learner(port: u16, node_id: u64) -> Result<String, String> 
     }
 }
 
-async fn send_add_learner(
+pub async fn send_add_learner(
     port: u16,
     node_id: u64,
     addr: &str,
@@ -565,7 +574,7 @@ async fn send_add_learner(
     }
 }
 
-async fn add_learner_with_retry(
+pub async fn add_learner_with_retry(
     voter_ports: &[u16],
     node_id: u64,
     node_port: u16,
@@ -652,7 +661,7 @@ async fn add_learner_with_retry(
     }
 }
 
-async fn remove_learners_with_retry(
+pub async fn remove_learners_with_retry(
     voter_ports: &[u16],
     final_voters: &[u64],
     learner_ids: &[u64],
@@ -776,7 +785,7 @@ async fn remove_learners_with_retry(
     }
 }
 
-async fn ensure_learners_absent_for_duration(
+pub async fn ensure_learners_absent_for_duration(
     voter_ports: &[u16],
     absent_learner_ids: &[u64],
     duration: Duration,
@@ -804,7 +813,7 @@ async fn ensure_learners_absent_for_duration(
     Ok(())
 }
 
-async fn spawn_three_voter_cluster(
+pub async fn spawn_three_voter_cluster(
     cluster_name: &str,
     port1: u16,
     port2: u16,
@@ -833,7 +842,7 @@ async fn spawn_three_voter_cluster(
     Ok(nodes)
 }
 
-async fn wait_new_leader_on_ports(
+pub async fn wait_new_leader_on_ports(
     ports: &[u16],
     old_leader: u64,
     timeout: Duration,
@@ -903,7 +912,10 @@ async fn wait_new_leader_on_ports(
     }
 }
 
-async fn wait_consistent_leader_on_ports(ports: &[u16], timeout: Duration) -> Result<u64, String> {
+pub async fn wait_consistent_leader_on_ports(
+    ports: &[u16],
+    timeout: Duration,
+) -> Result<u64, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(800))
         .build()
@@ -953,591 +965,4 @@ async fn wait_consistent_leader_on_ports(ports: &[u16], timeout: Duration) -> Re
 
         sleep(Duration::from_millis(250)).await;
     }
-}
-
-#[tokio::test]
-async fn test_single_node_smoke() -> Result<(), String> {
-    if !can_bind_localhost() {
-        eprintln!("skip single-node smoke: localhost bind is not available");
-        return Ok(());
-    }
-
-    let port = choose_free_port().map_err(|e| format!("choose free port failed: {}", e))?;
-    let cluster_name = format!("klog_smoke_{}", port);
-    let mut node = spawn_node(1, port, &cluster_name, true, &[], "voter").await?;
-
-    let wait_result = wait_single_node_leader(port, 1, Duration::from_secs(20)).await;
-    node.stop().await;
-    wait_result
-}
-
-#[tokio::test]
-async fn test_single_node_business_log_append_and_query() -> Result<(), String> {
-    if !can_bind_localhost() {
-        eprintln!("skip single-node business-log test: localhost bind is not available");
-        return Ok(());
-    }
-
-    let port = choose_free_port().map_err(|e| format!("choose free port failed: {}", e))?;
-    let cluster_name = format!("klog_business_log_{}", port);
-    let mut node = spawn_node(1, port, &cluster_name, true, &[], "voter").await?;
-
-    let result = async {
-        wait_single_node_leader(port, 1, Duration::from_secs(20)).await?;
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(3))
-            .build()
-            .map_err(|e| format!("failed to build http client: {}", e))?;
-
-        let append1 = append_log(&client, port, "kernel-init", Some(100), Some(1)).await?;
-        let append2 = append_log(&client, port, "driver-up", Some(101), Some(1)).await?;
-        let append3 = append_log(&client, port, "service-ready", Some(102), Some(1)).await?;
-
-        if !(append1.id < append2.id && append2.id < append3.id) {
-            return Err(format!(
-                "append ids are not strictly increasing: [{}, {}, {}]",
-                append1.id, append2.id, append3.id
-            ));
-        }
-
-        let asc = query_logs(
-            &client,
-            port,
-            Some(append1.id),
-            Some(append3.id),
-            Some(10),
-            Some(false),
-        )
-        .await?;
-        let asc_ids = asc.items.iter().map(|e| e.id).collect::<Vec<_>>();
-        if asc_ids != vec![append1.id, append2.id, append3.id] {
-            return Err(format!("unexpected asc ids: {:?}", asc_ids));
-        }
-
-        let desc = query_logs(
-            &client,
-            port,
-            Some(append1.id),
-            Some(append3.id),
-            Some(2),
-            Some(true),
-        )
-        .await?;
-        let desc_ids = desc.items.iter().map(|e| e.id).collect::<Vec<_>>();
-        if desc_ids != vec![append3.id, append2.id] {
-            return Err(format!("unexpected desc ids: {:?}", desc_ids));
-        }
-
-        if asc.items[0].message != "kernel-init"
-            || asc.items[1].message != "driver-up"
-            || asc.items[2].message != "service-ready"
-        {
-            return Err(format!(
-                "unexpected query messages: [{}, {}, {}]",
-                asc.items[0].message, asc.items[1].message, asc.items[2].message
-            ));
-        }
-
-        if asc.items[0].timestamp != 100
-            || asc.items[1].timestamp != 101
-            || asc.items[2].timestamp != 102
-            || asc.items.iter().any(|e| e.node_id != 1)
-        {
-            return Err("unexpected query timestamps or node_id".to_string());
-        }
-
-        Ok(())
-    }
-    .await;
-
-    node.stop().await;
-    result
-}
-
-#[tokio::test]
-async fn test_three_node_append_via_follower_auto_forwards_to_leader() -> Result<(), String> {
-    if !can_bind_localhost() {
-        eprintln!("skip follower-forward append test: localhost bind is not available");
-        return Ok(());
-    }
-
-    let ports = choose_unique_ports(3)?;
-    let port1 = ports[0];
-    let port2 = ports[1];
-    let port3 = ports[2];
-    let cluster_name = format!("klog_append_forward_{}_{}_{}", port1, port2, port3);
-    let mut nodes = spawn_three_voter_cluster(&cluster_name, port1, port2, port3).await?;
-
-    let result = async {
-        let leader_id =
-            wait_consistent_leader_on_ports(&[port1, port2, port3], Duration::from_secs(40))
-                .await?;
-        let leader_port = match leader_id {
-            1 => port1,
-            2 => port2,
-            3 => port3,
-            _ => return Err(format!("unexpected leader id: {}", leader_id)),
-        };
-        let follower_port = [port1, port2, port3]
-            .into_iter()
-            .find(|p| *p != leader_port)
-            .ok_or_else(|| "failed to choose follower port".to_string())?;
-
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(3))
-            .build()
-            .map_err(|e| format!("failed to build http client: {}", e))?;
-
-        let appended = append_log(
-            &client,
-            follower_port,
-            "forwarded-from-follower",
-            Some(300),
-            Some(2),
-        )
-        .await?;
-
-        let queried = query_logs(
-            &client,
-            leader_port,
-            Some(appended.id),
-            Some(appended.id),
-            Some(1),
-            Some(false),
-        )
-        .await?;
-        if queried.items.len() != 1 {
-            return Err(format!(
-                "unexpected query result len: expected=1, got={}",
-                queried.items.len()
-            ));
-        }
-
-        let item = &queried.items[0];
-        if item.id != appended.id || item.message != "forwarded-from-follower" {
-            return Err(format!(
-                "unexpected queried item: id={}, message={}",
-                item.id, item.message
-            ));
-        }
-
-        Ok(())
-    }
-    .await;
-
-    for n in &mut nodes {
-        n.stop().await;
-    }
-    result
-}
-
-#[tokio::test]
-async fn test_three_node_cluster_and_failover() -> Result<(), String> {
-    if !can_bind_localhost() {
-        eprintln!("skip three-node cluster test: localhost bind is not available");
-        return Ok(());
-    }
-
-    let ports = choose_unique_ports(3)?;
-    let port1 = ports[0];
-    let port2 = ports[1];
-    let port3 = ports[2];
-    let cluster_name = format!("klog_cluster_{}_{}_{}", port1, port2, port3);
-    let join_seed = vec![format!("127.0.0.1:{}", port1)];
-
-    let mut nodes = Vec::new();
-    nodes.push(spawn_node(1, port1, &cluster_name, true, &[], "voter").await?);
-    wait_single_node_leader(port1, 1, Duration::from_secs(20)).await?;
-
-    // Join one by one to avoid concurrent membership-change races that may leave
-    // the cluster in a hard-to-elect transitional state.
-    nodes.push(spawn_node(2, port2, &cluster_name, false, &join_seed, "voter").await?);
-    let _ = wait_cluster_voters(&[port1, port2], &[1, 2], Duration::from_secs(40)).await?;
-
-    nodes.push(spawn_node(3, port3, &cluster_name, false, &join_seed, "voter").await?);
-
-    let states =
-        wait_cluster_voters(&[port1, port2, port3], &[1, 2, 3], Duration::from_secs(40)).await?;
-    let leader = states
-        .iter()
-        .find_map(|s| s.current_leader)
-        .ok_or_else(|| "cluster has no leader after convergence".to_string())?;
-    if ![1_u64, 2_u64, 3_u64].contains(&leader) {
-        for n in &mut nodes {
-            n.stop().await;
-        }
-        return Err(format!("unexpected leader id: {}", leader));
-    }
-
-    let leader_index = nodes
-        .iter()
-        .position(|n| n.node_id == leader)
-        .ok_or_else(|| format!("cannot find leader node process for id={}", leader))?;
-    nodes[leader_index].stop().await;
-
-    let remaining_ports = nodes
-        .iter()
-        .enumerate()
-        .filter_map(|(i, n)| {
-            if i == leader_index {
-                None
-            } else {
-                Some(n.port)
-            }
-        })
-        .collect::<Vec<_>>();
-    let new_leader =
-        wait_new_leader_on_ports(&remaining_ports, leader, Duration::from_secs(40)).await?;
-
-    for n in &mut nodes {
-        n.stop().await;
-    }
-
-    if new_leader == leader {
-        return Err(format!(
-            "new leader did not change: old={}, new={}",
-            leader, new_leader
-        ));
-    }
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_three_node_concurrent_startup_converges() -> Result<(), String> {
-    if !can_bind_localhost() {
-        eprintln!("skip concurrent-startup cluster test: localhost bind is not available");
-        return Ok(());
-    }
-
-    let ports = choose_unique_ports(5)?;
-    let port1 = ports[0];
-    let port2 = ports[1];
-    let port3 = ports[2];
-    let port4 = ports[3];
-    let port5 = ports[4];
-    let cluster_name = format!(
-        "klog_cluster_concurrent_{}_{}_{}_{}_{}",
-        port1, port2, port3, port4, port5
-    );
-    let join_seed = vec![format!("127.0.0.1:{}", port1)];
-
-    let (node1, node2, node3, node4, node5) = tokio::try_join!(
-        spawn_node(1, port1, &cluster_name, true, &[], "voter"),
-        spawn_node(2, port2, &cluster_name, false, &join_seed, "voter"),
-        spawn_node(3, port3, &cluster_name, false, &join_seed, "voter"),
-        spawn_node(4, port4, &cluster_name, false, &join_seed, "learner"),
-        spawn_node(5, port5, &cluster_name, false, &join_seed, "learner"),
-    )?;
-
-    let mut nodes = vec![node1, node2, node3, node4, node5];
-    let result = async {
-        let states = wait_cluster_membership(
-            &[port1, port2, port3, port4, port5],
-            &[1, 2, 3],
-            &[4, 5],
-            Duration::from_secs(80),
-        )
-        .await?;
-        for state in states
-            .iter()
-            .filter(|s| s.node_id == 4 || s.node_id == 5)
-        {
-            if state.voters.contains(&state.node_id) || !state.learners.contains(&state.node_id) {
-                return Err(format!(
-                    "learner node state mismatch: node_id={}, voters={:?}, learners={:?}, server_state={}",
-                    state.node_id, state.voters, state.learners, state.server_state
-                ));
-            }
-        }
-
-        let leader =
-            wait_consistent_leader_on_ports(&[port1, port2, port3], Duration::from_secs(40))
-                .await?;
-        if ![1_u64, 2_u64, 3_u64].contains(&leader) {
-            return Err(format!("unexpected leader id: {}", leader));
-        }
-
-        remove_learners_with_retry(
-            &[port1, port2, port3],
-            &[1, 2, 3],
-            &[4, 5],
-            Duration::from_secs(45),
-        )
-        .await?;
-        let _ = wait_cluster_membership(
-            &[port1, port2, port3],
-            &[1, 2, 3],
-            &[],
-            Duration::from_secs(60),
-        )
-        .await?;
-        Ok(())
-    }
-    .await;
-
-    for n in &mut nodes {
-        n.stop().await;
-    }
-    result
-}
-
-#[tokio::test]
-async fn test_remove_offline_learner_succeeds() -> Result<(), String> {
-    if !can_bind_localhost() {
-        eprintln!("skip remove-offline-learner test: localhost bind is not available");
-        return Ok(());
-    }
-
-    let ports = choose_unique_ports(4)?;
-    let port1 = ports[0];
-    let port2 = ports[1];
-    let port3 = ports[2];
-    let port4 = ports[3];
-    let cluster_name = format!(
-        "klog_remove_offline_learner_{}_{}_{}_{}",
-        port1, port2, port3, port4
-    );
-
-    let mut nodes = spawn_three_voter_cluster(&cluster_name, port1, port2, port3).await?;
-    nodes.push(spawn_node(4, port4, &cluster_name, false, &[], "learner").await?);
-
-    let result = async {
-        add_learner_with_retry(&[port1, port2, port3], 4, port4, Duration::from_secs(45)).await?;
-        let _ = wait_cluster_membership(
-            &[port1, port2, port3],
-            &[1, 2, 3],
-            &[4],
-            Duration::from_secs(50),
-        )
-        .await?;
-
-        let learner_idx = nodes
-            .iter()
-            .position(|n| n.node_id == 4)
-            .ok_or_else(|| "learner node(4) process not found".to_string())?;
-        nodes[learner_idx].stop().await;
-
-        remove_learners_with_retry(
-            &[port1, port2, port3],
-            &[1, 2, 3],
-            &[4],
-            Duration::from_secs(50),
-        )
-        .await?;
-        let _ = wait_cluster_membership(
-            &[port1, port2, port3],
-            &[1, 2, 3],
-            &[],
-            Duration::from_secs(60),
-        )
-        .await?;
-
-        let leader =
-            wait_consistent_leader_on_ports(&[port1, port2, port3], Duration::from_secs(40))
-                .await?;
-        if ![1_u64, 2_u64, 3_u64].contains(&leader) {
-            return Err(format!(
-                "unexpected leader after offline learner removal: {}",
-                leader
-            ));
-        }
-        Ok(())
-    }
-    .await;
-
-    for n in &mut nodes {
-        n.stop().await;
-    }
-    result
-}
-
-#[tokio::test]
-async fn test_remove_both_learners_when_one_offline() -> Result<(), String> {
-    if !can_bind_localhost() {
-        eprintln!("skip remove-two-learners test: localhost bind is not available");
-        return Ok(());
-    }
-
-    let ports = choose_unique_ports(5)?;
-    let port1 = ports[0];
-    let port2 = ports[1];
-    let port3 = ports[2];
-    let port4 = ports[3];
-    let port5 = ports[4];
-    let cluster_name = format!(
-        "klog_remove_two_learners_{}_{}_{}_{}_{}",
-        port1, port2, port3, port4, port5
-    );
-
-    let mut nodes = spawn_three_voter_cluster(&cluster_name, port1, port2, port3).await?;
-    nodes.push(spawn_node(4, port4, &cluster_name, false, &[], "learner").await?);
-    nodes.push(spawn_node(5, port5, &cluster_name, false, &[], "learner").await?);
-
-    let result = async {
-        add_learner_with_retry(&[port1, port2, port3], 4, port4, Duration::from_secs(45)).await?;
-        add_learner_with_retry(&[port1, port2, port3], 5, port5, Duration::from_secs(45)).await?;
-        let _ = wait_cluster_membership(
-            &[port1, port2, port3],
-            &[1, 2, 3],
-            &[4, 5],
-            Duration::from_secs(60),
-        )
-        .await?;
-
-        let learner4_idx = nodes
-            .iter()
-            .position(|n| n.node_id == 4)
-            .ok_or_else(|| "learner node(4) process not found".to_string())?;
-        nodes[learner4_idx].stop().await;
-
-        remove_learners_with_retry(
-            &[port1, port2, port3],
-            &[1, 2, 3],
-            &[4, 5],
-            Duration::from_secs(55),
-        )
-        .await?;
-        let _ = wait_cluster_membership(
-            &[port1, port2, port3],
-            &[1, 2, 3],
-            &[],
-            Duration::from_secs(60),
-        )
-        .await?;
-
-        let leader =
-            wait_consistent_leader_on_ports(&[port1, port2, port3], Duration::from_secs(40))
-                .await?;
-        if ![1_u64, 2_u64, 3_u64].contains(&leader) {
-            return Err(format!(
-                "unexpected leader after removing both learners: {}",
-                leader
-            ));
-        }
-        Ok(())
-    }
-    .await;
-
-    for n in &mut nodes {
-        n.stop().await;
-    }
-    result
-}
-
-#[tokio::test]
-async fn test_offline_learner_rejoin_requires_add_learner_again() -> Result<(), String> {
-    if !can_bind_localhost() {
-        eprintln!("skip learner-rejoin test: localhost bind is not available");
-        return Ok(());
-    }
-
-    let ports = choose_unique_ports(4)?;
-    let port1 = ports[0];
-    let port2 = ports[1];
-    let port3 = ports[2];
-    let port4 = ports[3];
-    let cluster_name = format!(
-        "klog_learner_rejoin_requires_add_{}_{}_{}_{}",
-        port1, port2, port3, port4
-    );
-
-    let mut nodes = spawn_three_voter_cluster(&cluster_name, port1, port2, port3).await?;
-    nodes.push(spawn_node(4, port4, &cluster_name, false, &[], "learner").await?);
-
-    let result = async {
-        add_learner_with_retry(&[port1, port2, port3], 4, port4, Duration::from_secs(45)).await?;
-        let _ = wait_cluster_membership(
-            &[port1, port2, port3],
-            &[1, 2, 3],
-            &[4],
-            Duration::from_secs(50),
-        )
-        .await?;
-
-        let learner_idx = nodes
-            .iter()
-            .position(|n| n.node_id == 4)
-            .ok_or_else(|| "learner node(4) process not found".to_string())?;
-        nodes[learner_idx].stop().await;
-
-        remove_learners_with_retry(
-            &[port1, port2, port3],
-            &[1, 2, 3],
-            &[4],
-            Duration::from_secs(55),
-        )
-        .await?;
-        let _ = wait_cluster_membership(
-            &[port1, port2, port3],
-            &[1, 2, 3],
-            &[],
-            Duration::from_secs(60),
-        )
-        .await?;
-
-        // Re-start the removed learner node without auto-join target.
-        nodes.push(spawn_node(4, port4, &cluster_name, false, &[], "learner").await?);
-        ensure_learners_absent_for_duration(&[port1, port2, port3], &[4], Duration::from_secs(5))
-            .await?;
-
-        add_learner_with_retry(&[port1, port2, port3], 4, port4, Duration::from_secs(45)).await?;
-        let _ = wait_cluster_membership(
-            &[port1, port2, port3],
-            &[1, 2, 3],
-            &[4],
-            Duration::from_secs(60),
-        )
-        .await?;
-        Ok(())
-    }
-    .await;
-
-    for n in &mut nodes {
-        n.stop().await;
-    }
-    result
-}
-
-#[tokio::test]
-async fn test_bootstrap_late_start_converges() -> Result<(), String> {
-    if !can_bind_localhost() {
-        eprintln!("skip bootstrap-late-start cluster test: localhost bind is not available");
-        return Ok(());
-    }
-
-    let ports = choose_unique_ports(3)?;
-    let port1 = ports[0];
-    let port2 = ports[1];
-    let port3 = ports[2];
-    let cluster_name = format!("klog_cluster_bootstrap_late_{}_{}_{}", port1, port2, port3);
-    let join_seed = vec![format!("127.0.0.1:{}", port1)];
-
-    let (node2, node3) = tokio::try_join!(
-        spawn_node(2, port2, &cluster_name, false, &join_seed, "voter"),
-        spawn_node(3, port3, &cluster_name, false, &join_seed, "voter"),
-    )?;
-
-    let mut nodes = vec![node2, node3];
-    // Simulate unpredictable startup order: non-bootstrap nodes start first.
-    sleep(Duration::from_millis(1500)).await;
-    nodes.push(spawn_node(1, port1, &cluster_name, true, &[], "voter").await?);
-
-    let result = async {
-        let _ = wait_cluster_voters(&[port1, port2, port3], &[1, 2, 3], Duration::from_secs(70))
-            .await?;
-        let leader =
-            wait_consistent_leader_on_ports(&[port1, port2, port3], Duration::from_secs(40))
-                .await?;
-        if ![1_u64, 2_u64, 3_u64].contains(&leader) {
-            return Err(format!("unexpected leader id: {}", leader));
-        }
-        Ok(())
-    }
-    .await;
-
-    for n in &mut nodes {
-        n.stop().await;
-    }
-    result
 }
