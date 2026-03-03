@@ -450,6 +450,18 @@ pub async fn query_logs(
     limit: Option<usize>,
     desc: Option<bool>,
 ) -> Result<QueryLogResponse, String> {
+    query_logs_with_strong_read(client, port, start_id, end_id, limit, desc, None).await
+}
+
+pub async fn query_logs_with_strong_read(
+    client: &reqwest::Client,
+    port: u16,
+    start_id: Option<u64>,
+    end_id: Option<u64>,
+    limit: Option<usize>,
+    desc: Option<bool>,
+    strong_read: Option<bool>,
+) -> Result<QueryLogResponse, String> {
     let mut url = reqwest::Url::parse(&format!("http://127.0.0.1:{}/klog/data/query", port))
         .map_err(|e| format!("invalid query url: {}", e))?;
     {
@@ -465,6 +477,9 @@ pub async fn query_logs(
         }
         if let Some(v) = desc {
             q.append_pair("desc", if v { "true" } else { "false" });
+        }
+        if let Some(v) = strong_read {
+            q.append_pair("strong_read", if v { "true" } else { "false" });
         }
     }
 

@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const DATA_QUERY_DEFAULT_LIMIT: usize = 200;
 pub const DATA_QUERY_MAX_LIMIT: usize = 2_000;
+pub const DATA_QUERY_MAX_FORWARD_HOPS: u32 = 2;
 pub const DATA_APPEND_MAX_MESSAGE_BYTES: usize = 64 * 1024;
 pub const DATA_APPEND_MAX_REQUEST_ID_BYTES: usize = 128;
 pub const DATA_APPEND_MAX_FORWARD_HOPS: u32 = 2;
@@ -277,6 +278,7 @@ pub struct KLogQueryService {
     service_name: &'static str,
     raft: KRaftRef,
     state_store_manager: KLogStateStoreManagerRef,
+    data_client: KDataClient,
 }
 
 impl KLogQueryService {
@@ -289,30 +291,99 @@ impl KLogQueryService {
             service_name,
             raft,
             state_store_manager,
+            data_client: KDataClient::new(),
         }
     }
 
     pub async fn query(
         &self,
+        headers: &HeaderMap,
         query: KLogQueryRequest,
     ) -> Result<KLogQueryResponse, (StatusCode, String)> {
         let strong_read = query.strong_read.unwrap_or(false);
+        let forward_hops = self.parse_forward_hops(headers).map_err(|msg| {
+            error!("{}", msg);
+            (StatusCode::BAD_REQUEST, msg)
+        })?;
+        let forwarded_by = headers
+            .get(KLOG_FORWARDED_BY_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("-");
         if strong_read {
+            if forward_hops > DATA_QUERY_MAX_FORWARD_HOPS {
+                let msg = format!(
+                    "{} data query rejected: too many forward hops, hops={}, max_hops={}, forwarded_by={}",
+                    self.service_name, forward_hops, DATA_QUERY_MAX_FORWARD_HOPS, forwarded_by
+                );
+                error!("{}", msg);
+                return Err((StatusCode::BAD_GATEWAY, msg));
+            }
+
+            let metrics = self.raft.metrics().borrow().clone();
+            let local_node_id = metrics.id;
             match self.raft.ensure_linearizable().await {
                 Ok(read_log_id) => {
                     info!(
-                        "{} data query linearizable barrier passed: read_log_id={:?}",
-                        self.service_name, read_log_id
+                        "{} data query linearizable barrier passed: read_log_id={:?}, local_node_id={}, forward_hops={}, forwarded_by={}",
+                        self.service_name, read_log_id, local_node_id, forward_hops, forwarded_by
                     );
                 }
                 Err(err) => {
                     if let Some(forward) = err.forward_to_leader::<KNode>() {
-                        let msg = format!(
-                            "{} data query strong_read rejected on non-leader: leader_id={:?}, leader_node={:?}",
-                            self.service_name, forward.leader_id, forward.leader_node
+                        if forward_hops >= DATA_QUERY_MAX_FORWARD_HOPS {
+                            let msg = format!(
+                                "{} data query forward aborted due to hop limit: local_node_id={}, leader_id={:?}, leader_node={:?}, hops={}, max_hops={}",
+                                self.service_name,
+                                local_node_id,
+                                forward.leader_id,
+                                forward.leader_node,
+                                forward_hops,
+                                DATA_QUERY_MAX_FORWARD_HOPS
+                            );
+                            error!("{}", msg);
+                            return Err((StatusCode::BAD_GATEWAY, msg));
+                        }
+
+                        let leader_node = forward.leader_node.clone().or_else(|| {
+                            forward.leader_id.and_then(|leader_id| {
+                                metrics.membership_config.nodes().find_map(|(id, node)| {
+                                    (*id == leader_id).then_some(node.clone())
+                                })
+                            })
+                        });
+                        let Some(leader_node) = leader_node else {
+                            let msg = format!(
+                                "{} data query can not resolve leader node for forwarding: local_node_id={}, leader_id={:?}",
+                                self.service_name, local_node_id, forward.leader_id
+                            );
+                            warn!("{}", msg);
+                            return Err((StatusCode::SERVICE_UNAVAILABLE, msg));
+                        };
+
+                        let target_hops = forward_hops + 1;
+                        warn!(
+                            "{} data query forwarding to leader: local_node_id={}, leader_id={}, leader_addr={}:{}, hops={} -> {}",
+                            self.service_name,
+                            local_node_id,
+                            leader_node.id,
+                            leader_node.addr,
+                            leader_node.port,
+                            forward_hops,
+                            target_hops
                         );
-                        warn!("{}", msg);
-                        return Err((StatusCode::CONFLICT, msg));
+
+                        return self
+                            .data_client
+                            .query_to_node(&leader_node, &query, target_hops, local_node_id)
+                            .await
+                            .map_err(|forward_err| {
+                                let msg = format!(
+                                    "{} data query forward failed: local_node_id={}, leader_id={}, err={}",
+                                    self.service_name, local_node_id, leader_node.id, forward_err
+                                );
+                                error!("{}", msg);
+                                (StatusCode::BAD_GATEWAY, msg)
+                            });
                     }
 
                     let msg = format!(
@@ -352,8 +423,15 @@ impl KLogQueryService {
             KLogQueryOrder::Asc
         };
         info!(
-            "{} data query request: strong_read={}, start_id={:?}, end_id={:?}, limit={}, order={:?}",
-            self.service_name, strong_read, query.start_id, query.end_id, limit, order
+            "{} data query request: strong_read={}, start_id={:?}, end_id={:?}, limit={}, order={:?}, forward_hops={}, forwarded_by={}",
+            self.service_name,
+            strong_read,
+            query.start_id,
+            query.end_id,
+            limit,
+            order,
+            forward_hops,
+            forwarded_by
         );
 
         let entries = self
@@ -377,6 +455,24 @@ impl KLogQueryService {
             entries.len()
         );
         Ok(KLogQueryResponse { items: entries })
+    }
+
+    fn parse_forward_hops(&self, headers: &HeaderMap) -> Result<u32, String> {
+        let Some(raw) = headers.get(KLOG_FORWARD_HOPS_HEADER) else {
+            return Ok(0);
+        };
+        let raw = raw.to_str().map_err(|e| {
+            format!(
+                "{} data query invalid {} header utf8: {}",
+                self.service_name, KLOG_FORWARD_HOPS_HEADER, e
+            )
+        })?;
+        raw.parse::<u32>().map_err(|e| {
+            format!(
+                "{} data query invalid {} header '{}': {}",
+                self.service_name, KLOG_FORWARD_HOPS_HEADER, raw, e
+            )
+        })
     }
 }
 

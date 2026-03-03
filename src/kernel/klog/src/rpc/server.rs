@@ -154,9 +154,10 @@ impl KRpcServer {
 
     async fn handle_data_query_request(
         State(state): State<KRpcServerState>,
+        headers: HeaderMap,
         Query(query): Query<KLogQueryRequest>,
     ) -> Response {
-        match state.query_service.query(query).await {
+        match state.query_service.query(&headers, query).await {
             Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
             Err((status, msg)) => Self::error_response(status, msg),
         }
@@ -228,7 +229,7 @@ impl KRpcServer {
                     }
                 };
 
-                match state.query_service.query(params).await {
+                match state.query_service.query(&headers, params).await {
                     Ok(result) => (
                         StatusCode::OK,
                         Json(KLogJsonRpcResponse::success(req_id, result)),

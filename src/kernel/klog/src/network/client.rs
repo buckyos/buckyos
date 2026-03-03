@@ -1,6 +1,6 @@
 use super::request::{
     KLOG_FORWARD_HOPS_HEADER, KLOG_FORWARDED_BY_HEADER, KLogAppendRequest, KLogAppendResponse,
-    KLogDataRequestType, RaftRequest, RaftResponse,
+    KLogDataRequestType, KLogQueryRequest, KLogQueryResponse, RaftRequest, RaftResponse,
 };
 use crate::{KNode, KNodeId, KTypeConfig};
 use openraft::error::{
@@ -105,6 +105,51 @@ impl KDataClient {
         response.json::<KLogAppendResponse>().await.map_err(|e| {
             format!(
                 "forward data append decode failed: target={}({}:{}), url={}, err={}",
+                target.id, target.addr, target.port, url, e
+            )
+        })
+    }
+
+    pub async fn query_to_node(
+        &self,
+        target: &KNode,
+        req: &KLogQueryRequest,
+        forward_hops: u32,
+        forwarded_by: KNodeId,
+    ) -> Result<KLogQueryResponse, String> {
+        let path = KLogDataRequestType::Query.klog_path();
+        let url = format!("http://{}:{}{}", target.addr, target.port, path);
+        let response = self
+            .client
+            .get(&url)
+            .timeout(self.timeout)
+            .header(KLOG_FORWARD_HOPS_HEADER, forward_hops.to_string())
+            .header(KLOG_FORWARDED_BY_HEADER, forwarded_by.to_string())
+            .query(req)
+            .send()
+            .await
+            .map_err(|e| {
+                format!(
+                    "forward data query send failed: target={}({}:{}), url={}, err={}",
+                    target.id, target.addr, target.port, url, e
+                )
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<failed to read body: {}>", e));
+            return Err(format!(
+                "forward data query failed: target={}({}:{}), url={}, status={}, body={}",
+                target.id, target.addr, target.port, url, status, body
+            ));
+        }
+
+        response.json::<KLogQueryResponse>().await.map_err(|e| {
+            format!(
+                "forward data query decode failed: target={}({}:{}), url={}, err={}",
                 target.id, target.addr, target.port, url, e
             )
         })

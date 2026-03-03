@@ -1,8 +1,8 @@
 use super::request::{
     KLogAdminRequestType, KLogAppendRequest, KLogClusterStateResponse, KLogDataRequestType,
-    RaftRequest, RaftRequestType, RaftResponse,
+    KLogQueryRequest, RaftRequest, RaftRequestType, RaftResponse,
 };
-use crate::service::KLogWriteService;
+use crate::service::{KLogQueryService, KLogWriteService};
 use crate::state_store::KLogStateStoreManagerRef;
 use crate::{KNode, KNodeId, KRaftRef};
 use axum::Json;
@@ -58,6 +58,7 @@ struct RemoveLearnerQuery {
 struct KNetworkServerState {
     raft: KRaftRef,
     write_service: Option<KLogWriteService>,
+    query_service: Option<KLogQueryService>,
     admin_local_only: bool,
     cluster_name: String,
     cluster_id: String,
@@ -116,6 +117,9 @@ impl KNetworkServer {
             write_service: self.state_store_manager.clone().map(|state_store_manager| {
                 KLogWriteService::new("KNetworkServer", self.raft.clone(), state_store_manager)
             }),
+            query_service: self.state_store_manager.clone().map(|state_store_manager| {
+                KLogQueryService::new("KNetworkServer", self.raft.clone(), state_store_manager)
+            }),
             admin_local_only: self.admin_local_only,
             cluster_name: self.cluster_name.clone(),
             cluster_id: self.cluster_id.clone(),
@@ -133,6 +137,7 @@ impl KNetworkServer {
         let append_entries_path = RaftRequestType::AppendEntries.klog_path();
         let vote_path = RaftRequestType::Vote.klog_path();
         let data_append_path = KLogDataRequestType::Append.klog_path();
+        let data_query_path = KLogDataRequestType::Query.klog_path();
         let admin_add_learner_path = KLogAdminRequestType::AddLearner.klog_path();
         let admin_remove_learner_path = KLogAdminRequestType::RemoveLearner.klog_path();
         let admin_change_membership_path = KLogAdminRequestType::ChangeMembership.klog_path();
@@ -145,6 +150,7 @@ impl KNetworkServer {
             )
             .route(&vote_path, post(Self::handle_vote_request))
             .route(&data_append_path, post(Self::handle_data_append_request))
+            .route(&data_query_path, get(Self::handle_data_query_request))
             .route(
                 &admin_add_learner_path,
                 post(Self::handle_add_learner_request),
@@ -187,7 +193,7 @@ impl KNetworkServer {
             .with_state(state);
 
         info!(
-            "KNetworkServer start listening at {}, cluster_name={}, cluster_id={}, control_limit_bytes={}, snapshot_limit_bytes={}, control_concurrency={}, snapshot_concurrency={}, control_timeout_ms={}, snapshot_timeout_ms={}, admin_local_only={}, data_append_path={}, admin_add_learner_path={}, admin_remove_learner_path={}, admin_change_membership_path={}, admin_cluster_state_path={}",
+            "KNetworkServer start listening at {}, cluster_name={}, cluster_id={}, control_limit_bytes={}, snapshot_limit_bytes={}, control_concurrency={}, snapshot_concurrency={}, control_timeout_ms={}, snapshot_timeout_ms={}, admin_local_only={}, data_append_path={}, data_query_path={}, admin_add_learner_path={}, admin_remove_learner_path={}, admin_change_membership_path={}, admin_cluster_state_path={}",
             self.addr,
             self.cluster_name.as_str(),
             self.cluster_id.as_str(),
@@ -199,6 +205,7 @@ impl KNetworkServer {
             SNAPSHOT_RPC_TIMEOUT_MS,
             self.admin_local_only,
             data_append_path,
+            data_query_path,
             admin_add_learner_path,
             admin_remove_learner_path,
             admin_change_membership_path,
@@ -378,6 +385,24 @@ impl KNetworkServer {
         };
 
         match write_service.append(&headers, req).await {
+            Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
+            Err((status, msg)) => Self::error_response(status, msg),
+        }
+    }
+
+    async fn handle_data_query_request(
+        State(state): State<KNetworkServerState>,
+        headers: HeaderMap,
+        Query(query): Query<KLogQueryRequest>,
+    ) -> Response {
+        let Some(query_service) = state.query_service.as_ref() else {
+            let msg = "KNetworkServer data query rejected: state store manager is not configured"
+                .to_string();
+            error!("{}", msg);
+            return Self::error_response(StatusCode::INTERNAL_SERVER_ERROR, msg);
+        };
+
+        match query_service.query(&headers, query).await {
             Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
             Err((status, msg)) => Self::error_response(status, msg),
         }
