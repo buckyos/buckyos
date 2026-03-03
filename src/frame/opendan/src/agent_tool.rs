@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
-use buckyos_api::{value_to_object_map, AiToolCall};
+use buckyos_api::AiToolCall;
 use log::{debug, info, warn};
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -445,6 +445,22 @@ pub trait AgentTool: Send + Sync {
     fn support_llm_tool_call(&self) -> bool;
 
     async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError>;
+
+    async fn exec(
+        &self,
+        ctx: &SessionRuntimeContext,
+        line: &str,
+        _shell_cwd: Option<&Path>,
+    ) -> Result<Json, AgentToolError> {
+        let tokens = tokenize_bash_command_line(line)?;
+        if tokens.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "empty bash command line".to_string(),
+            ));
+        }
+        let args = parse_default_bash_exec_args(&tokens[1..])?;
+        self.call(ctx, args).await
+    }
 }
 
 pub struct MCPTool {
@@ -659,6 +675,15 @@ impl AgentTool for RegisteredTool {
 
     async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
         self.inner.call(ctx, args).await
+    }
+
+    async fn exec(
+        &self,
+        ctx: &SessionRuntimeContext,
+        line: &str,
+        shell_cwd: Option<&Path>,
+    ) -> Result<Json, AgentToolError> {
+        self.inner.exec(ctx, line, shell_cwd).await
     }
 }
 
@@ -1045,36 +1070,39 @@ impl AgentToolManager {
             return Ok(None);
         };
         let spec = tool.spec();
-        let Some(usage) = render_bash_tool_usage(&spec) else {
-            return Err(AgentToolError::InvalidArgs(format!(
-                "tool `{}` does not support bash line invocation",
-                tool_name
-            )));
-        };
+        let usage = render_bash_tool_usage(&spec);
         if is_help_flag(&tokens[1..]) {
             return Ok(Some(json!({
                 "ok": true,
                 "tool": tool_name,
-                "usage": usage
+                "usage": usage,
+                "args_schema": spec.args_schema
             })));
         }
 
-        let mut args = parse_bash_style_tool_args(&spec, &tokens[1..])
-            .map_err(|err| append_usage_on_invalid_args(err, usage.as_str()))?;
-        if let Some(shell_cwd) = shell_cwd {
-            rewrite_path_args_for_shell_cwd(tool_name.as_str(), &mut args, shell_cwd);
+        let call_id = format!("bash-cli-{}-{}", ctx.trace_id, ctx.step_idx);
+        info!(
+            "opendan.tool_call: status=start tool={} call_id={} trace_id={} session_id={} source=bash",
+            tool_name, call_id, ctx.trace_id, ctx.session_id
+        );
+        let result = tool.exec(ctx, line, shell_cwd).await;
+        if let Err(err) = &result {
+            warn!(
+                "opendan.tool_call: status=failed tool={} call_id={} trace_id={} session_id={} source=bash err={}",
+                tool_name, call_id, ctx.trace_id, ctx.session_id, err
+            );
         }
-        let result = self
-            .call_tool(
-                ctx,
-                AiToolCall {
-                    name: tool_name,
-                    args: value_to_object_map(args),
-                    call_id: format!("bash-cli-{}-{}", ctx.trace_id, ctx.step_idx),
-                },
-            )
-            .await
-            .map_err(|err| append_usage_on_invalid_args(err, usage.as_str()))?;
+        let result = result.map_err(|err| {
+            if let Some(usage) = usage.as_deref() {
+                append_usage_on_invalid_args(err, usage)
+            } else {
+                err
+            }
+        })?;
+        info!(
+            "opendan.tool_call: status=success tool={} call_id={} trace_id={} session_id={} source=bash",
+            tool_name, call_id, ctx.trace_id, ctx.session_id
+        );
         Ok(Some(result))
     }
 
@@ -1123,7 +1151,7 @@ impl AgentToolManager {
     }
 }
 
-fn tokenize_bash_command_line(line: &str) -> Result<Vec<String>, AgentToolError> {
+pub(crate) fn tokenize_bash_command_line(line: &str) -> Result<Vec<String>, AgentToolError> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut in_single = false;
@@ -1192,162 +1220,55 @@ fn append_usage_on_invalid_args(err: AgentToolError, usage: &str) -> AgentToolEr
     }
 }
 
-fn parse_bash_style_tool_args(spec: &ToolSpec, tokens: &[String]) -> Result<Json, AgentToolError> {
-    let properties = spec
-        .args_schema
-        .get("properties")
-        .and_then(|value| value.as_object());
-    let mut out = serde_json::Map::<String, Json>::new();
+fn parse_default_bash_exec_args(tokens: &[String]) -> Result<Json, AgentToolError> {
+    if tokens.is_empty() {
+        return Ok(json!({}));
+    }
 
-    let has_key_value = tokens.iter().any(|token| token.contains('='));
-    if has_key_value {
-        if tokens.iter().any(|token| !token.contains('=')) {
-            return Err(AgentToolError::InvalidArgs(
-                "bash style tool args cannot mix positional args with key=value args".to_string(),
-            ));
-        }
-        for token in tokens {
-            let (raw_key, raw_value) = token.split_once('=').ok_or_else(|| {
-                AgentToolError::InvalidArgs("invalid key=value token".to_string())
+    if tokens.len() == 1 {
+        let raw = tokens[0].trim();
+        if raw.starts_with('{') {
+            let parsed: Json = serde_json::from_str(raw).map_err(|err| {
+                AgentToolError::InvalidArgs(format!(
+                    "invalid json object args: {err}; quote as: tool '{{\"key\":\"value\"}}'"
+                ))
             })?;
-            let key = raw_key.trim();
-            if key.is_empty() {
+            if !parsed.is_object() {
                 return Err(AgentToolError::InvalidArgs(
-                    "arg key cannot be empty".to_string(),
+                    "bash args json must be an object".to_string(),
                 ));
             }
-            let schema = properties.and_then(|props| props.get(key));
-            out.insert(
-                key.to_string(),
-                parse_bash_arg_value(raw_value.trim(), schema),
-            );
+            return Ok(parsed);
         }
-        return Ok(Json::Object(out));
     }
 
-    if tokens.is_empty() {
-        return Ok(Json::Object(out));
-    }
-    let Some(props) = properties else {
-        return Err(AgentToolError::InvalidArgs(format!(
-            "tool `{}` does not support positional bash args",
-            spec.name
-        )));
-    };
-    let keys = build_positional_arg_keys(spec, props);
-    if tokens.len() > keys.len() {
-        return Err(AgentToolError::InvalidArgs(format!(
-            "too many positional args for tool `{}`: got {}, max {}",
-            spec.name,
-            tokens.len(),
-            keys.len()
-        )));
-    }
-
-    for (idx, token) in tokens.iter().enumerate() {
-        let key = &keys[idx];
-        let schema = props.get(key.as_str());
-        out.insert(key.clone(), parse_bash_arg_value(token.as_str(), schema));
+    let mut out = serde_json::Map::<String, Json>::new();
+    for token in tokens {
+        let (raw_key, raw_value) = token.split_once('=').ok_or_else(|| {
+            AgentToolError::InvalidArgs(
+                "default bash exec requires key=value args or one json object".to_string(),
+            )
+        })?;
+        let key = raw_key.trim();
+        if key.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "arg key cannot be empty".to_string(),
+            ));
+        }
+        out.insert(
+            key.to_string(),
+            parse_default_bash_exec_value(raw_value.trim()),
+        );
     }
     Ok(Json::Object(out))
 }
 
-fn build_positional_arg_keys(
-    spec: &ToolSpec,
-    props: &serde_json::Map<String, Json>,
-) -> Vec<String> {
-    if spec.name == TOOL_READ_FILE {
-        return ["path", "range", "first_chunk"]
-            .iter()
-            .filter(|key| props.contains_key(**key))
-            .map(|key| (*key).to_string())
-            .collect();
-    }
-
-    let mut keys = Vec::<String>::new();
-    if let Some(required) = spec
-        .args_schema
-        .get("required")
-        .and_then(|value| value.as_array())
-    {
-        for key in required {
-            if let Some(key) = key.as_str() {
-                let key = key.trim();
-                if !key.is_empty() && props.contains_key(key) && !keys.iter().any(|k| k == key) {
-                    keys.push(key.to_string());
-                }
-            }
-        }
-    }
-    for key in props.keys() {
-        if !keys.iter().any(|item| item == key) {
-            keys.push(key.clone());
-        }
-    }
-    keys
-}
-
-fn parse_bash_arg_value(raw: &str, schema: Option<&Json>) -> Json {
+fn parse_default_bash_exec_value(raw: &str) -> Json {
     let value = raw.trim();
     if value.is_empty() {
         return Json::String(String::new());
     }
-    let type_hint = schema
-        .and_then(|item| item.get("type"))
-        .and_then(|item| item.as_str());
-    match type_hint {
-        Some("boolean") => match value.to_ascii_lowercase().as_str() {
-            "true" => Json::Bool(true),
-            "false" => Json::Bool(false),
-            _ => Json::String(value.to_string()),
-        },
-        Some("integer") => value
-            .parse::<i64>()
-            .map(Json::from)
-            .unwrap_or_else(|_| Json::String(value.to_string())),
-        Some("number") => value
-            .parse::<f64>()
-            .ok()
-            .and_then(serde_json::Number::from_f64)
-            .map(Json::Number)
-            .unwrap_or_else(|| Json::String(value.to_string())),
-        Some("array") | Some("object") => {
-            serde_json::from_str(value).unwrap_or_else(|_| Json::String(value.to_string()))
-        }
-        _ => Json::String(value.to_string()),
-    }
-}
-
-fn rewrite_path_args_for_shell_cwd(tool_name: &str, args: &mut Json, shell_cwd: &Path) {
-    let path_keys: &[&str] = match tool_name {
-        TOOL_READ_FILE | TOOL_WRITE_FILE | TOOL_EDIT_FILE => &["path"],
-        _ => &[],
-    };
-    if path_keys.is_empty() {
-        return;
-    }
-    let Some(map) = args.as_object_mut() else {
-        return;
-    };
-
-    for key in path_keys {
-        let Some(raw_path) = map.get(*key).and_then(|value| value.as_str()) else {
-            continue;
-        };
-        let trimmed = raw_path.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let parsed = Path::new(trimmed);
-        if parsed.is_absolute() {
-            continue;
-        }
-        let joined = shell_cwd.join(parsed);
-        map.insert(
-            (*key).to_string(),
-            Json::String(joined.to_string_lossy().to_string()),
-        );
-    }
+    serde_json::from_str(value).unwrap_or_else(|_| Json::String(value.to_string()))
 }
 
 #[derive(Clone)]
@@ -1749,6 +1670,70 @@ mod tests {
         ) -> Result<Json, AgentToolError> {
             Ok(json!({"ok": true, "args": args}))
         }
+
+        async fn exec(
+            &self,
+            _ctx: &SessionRuntimeContext,
+            line: &str,
+            shell_cwd: Option<&Path>,
+        ) -> Result<Json, AgentToolError> {
+            let tokens = tokenize_bash_command_line(line)?;
+            if tokens.is_empty() {
+                return Err(AgentToolError::InvalidArgs(
+                    "empty bash command line".to_string(),
+                ));
+            }
+            let arg_tokens = &tokens[1..];
+            let mut out = serde_json::Map::<String, Json>::new();
+            let has_key_value = arg_tokens.iter().any(|token| token.contains('='));
+
+            if has_key_value {
+                if arg_tokens.iter().any(|token| !token.contains('=')) {
+                    return Err(AgentToolError::InvalidArgs(
+                        "bash args cannot mix positional args with key=value args".to_string(),
+                    ));
+                }
+                for token in arg_tokens {
+                    let (raw_key, raw_value) = token.split_once('=').ok_or_else(|| {
+                        AgentToolError::InvalidArgs("invalid key=value token".to_string())
+                    })?;
+                    let key = raw_key.trim();
+                    if key.is_empty() {
+                        return Err(AgentToolError::InvalidArgs(
+                            "arg key cannot be empty".to_string(),
+                        ));
+                    }
+                    out.insert(key.to_string(), Json::String(raw_value.trim().to_string()));
+                }
+            } else {
+                if arg_tokens.len() > 2 {
+                    return Err(AgentToolError::InvalidArgs(format!(
+                        "too many positional args for tool `{}`: got {}, max 2",
+                        self.name,
+                        arg_tokens.len()
+                    )));
+                }
+                if let Some(path) = arg_tokens.first() {
+                    out.insert("path".to_string(), Json::String(path.trim().to_string()));
+                }
+                if let Some(range) = arg_tokens.get(1) {
+                    out.insert("range".to_string(), Json::String(range.trim().to_string()));
+                }
+            }
+
+            if let Some(shell_cwd) = shell_cwd {
+                if let Some(raw_path) = out.get("path").and_then(|value| value.as_str()) {
+                    let parsed = Path::new(raw_path);
+                    if !parsed.is_absolute() {
+                        out.insert(
+                            "path".to_string(),
+                            Json::String(shell_cwd.join(parsed).to_string_lossy().to_string()),
+                        );
+                    }
+                }
+            }
+            Ok(json!({"ok": true, "args": Json::Object(out)}))
+        }
     }
 
     #[async_trait]
@@ -1791,6 +1776,7 @@ mod tests {
             }
             Ok(json!({"ok": true}))
         }
+
     }
 
     #[async_trait]
@@ -2035,15 +2021,12 @@ mod tests {
     #[tokio::test]
     async fn call_tool_from_bash_line_skips_tool_without_bash_namespace() {
         let mgr = AgentToolManager::new();
-        mgr.register_tool(EchoArgsTool {
+        mgr.register_tool(NamespaceFilteredTool {
             name: "read_file".to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"}
-                }
-            }),
-            usage: None,
+            usage: Some("read_file".to_string()),
+            support_bash: false,
+            support_action: true,
+            support_llm_tool_call: false,
         })
         .expect("register tool");
 

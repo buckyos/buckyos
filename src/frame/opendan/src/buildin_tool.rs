@@ -10,7 +10,9 @@ use tokio::process::Command;
 use tokio::time::{sleep, Duration, Instant};
 
 use crate::agent_session::AgentSessionMgr;
-use crate::agent_tool::{AgentTool, AgentToolError, AgentToolManager, ToolSpec};
+use crate::agent_tool::{
+    tokenize_bash_command_line, AgentTool, AgentToolError, AgentToolManager, ToolSpec,
+};
 use crate::behavior::SessionRuntimeContext;
 use crate::worklog::{WorklogService, WorklogToolConfig};
 use crate::workspace::workshop::{AgentWorkshopConfig, WorkshopToolConfig};
@@ -1174,6 +1176,119 @@ impl AgentTool for ReadFileTool {
             "truncated": truncated,
         }))
     }
+
+    async fn exec(
+        &self,
+        ctx: &SessionRuntimeContext,
+        line: &str,
+        shell_cwd: Option<&Path>,
+    ) -> Result<Json, AgentToolError> {
+        let tokens = tokenize_bash_command_line(line)?;
+        if tokens.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "empty bash command line".to_string(),
+            ));
+        }
+
+        let mut args = parse_read_file_bash_args(&tokens[1..])?;
+        if let Some(shell_cwd) = shell_cwd {
+            rewrite_read_file_path_with_shell_cwd(&mut args, shell_cwd);
+        }
+        self.call(ctx, args).await
+    }
+}
+
+fn parse_read_file_bash_args(tokens: &[String]) -> Result<Json, AgentToolError> {
+    let mut out = serde_json::Map::<String, Json>::new();
+    if tokens.is_empty() {
+        return Err(AgentToolError::InvalidArgs(
+            "missing required arg `path`".to_string(),
+        ));
+    }
+
+    let has_key_value = tokens.iter().any(|token| token.contains('='));
+    if has_key_value {
+        if tokens.iter().any(|token| !token.contains('=')) {
+            return Err(AgentToolError::InvalidArgs(
+                "read_file bash args cannot mix positional args with key=value args".to_string(),
+            ));
+        }
+        for token in tokens {
+            let (raw_key, raw_value) = token.split_once('=').ok_or_else(|| {
+                AgentToolError::InvalidArgs("invalid key=value token".to_string())
+            })?;
+            let key = raw_key.trim();
+            if key.is_empty() {
+                return Err(AgentToolError::InvalidArgs(
+                    "arg key cannot be empty".to_string(),
+                ));
+            }
+            if key != "path" && key != "range" && key != "first_chunk" {
+                return Err(AgentToolError::InvalidArgs(format!(
+                    "unsupported read_file arg `{key}`"
+                )));
+            }
+            out.insert(key.to_string(), Json::String(raw_value.trim().to_string()));
+        }
+    } else {
+        if tokens.len() > 3 {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "too many positional args for tool `{}`: got {}, max 3",
+                TOOL_READ_FILE,
+                tokens.len()
+            )));
+        }
+        if let Some(path) = tokens.first() {
+            out.insert("path".to_string(), Json::String(path.trim().to_string()));
+        }
+        if let Some(range) = tokens.get(1) {
+            out.insert("range".to_string(), Json::String(range.trim().to_string()));
+        }
+        if let Some(first_chunk) = tokens.get(2) {
+            out.insert(
+                "first_chunk".to_string(),
+                Json::String(first_chunk.trim().to_string()),
+            );
+        }
+    }
+
+    if out
+        .get("path")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        return Err(AgentToolError::InvalidArgs(
+            "missing required arg `path`".to_string(),
+        ));
+    }
+
+    Ok(Json::Object(out))
+}
+
+fn rewrite_read_file_path_with_shell_cwd(args: &mut Json, shell_cwd: &Path) {
+    let Some(map) = args.as_object_mut() else {
+        return;
+    };
+    let Some(raw_path) = map.get("path").and_then(|value| value.as_str()) else {
+        return;
+    };
+
+    let trimmed = raw_path.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let parsed = Path::new(trimmed);
+    if parsed.is_absolute() {
+        return;
+    }
+
+    let joined = shell_cwd.join(parsed);
+    map.insert(
+        "path".to_string(),
+        Json::String(joined.to_string_lossy().to_string()),
+    );
 }
 
 #[derive(Clone, Debug)]

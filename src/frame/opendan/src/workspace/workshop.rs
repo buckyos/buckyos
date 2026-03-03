@@ -1103,6 +1103,7 @@ fn u64_to_usize(v: u64) -> Result<usize, AgentToolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_tool::{DoAction, DoActions};
     use crate::agent_session::AgentSessionMgr;
     use crate::behavior::SessionRuntimeContext;
     use buckyos_api::{value_to_object_map, AiToolCall};
@@ -1330,6 +1331,110 @@ mod tests {
         let forwarded: Json = serde_json::from_str(json_line).expect("parse tool json line");
         assert_eq!(forwarded["ok"], true);
         assert_eq!(forwarded["content"], "pane-line");
+
+        let _ = fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn do_actions_mixed_cmds_and_calls_support_builtin_tools_in_bash_cmd() {
+        let root = unique_workspace_root("do-actions-mixed");
+        let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
+            .await
+            .expect("create workshop");
+        let session_store = create_session_store(&root).await;
+        let tool_mgr = AgentToolManager::new();
+        workshop
+            .register_tools(&tool_mgr, session_store)
+            .expect("register workshop tools");
+
+        let actions: DoActions = serde_json::from_value(json!({
+            "mode": "all",
+            "cmds": [
+                ["write_file", {
+                    "path": "notes/mixed.txt",
+                    "content": "L1\nL2\n",
+                    "mode": "new"
+                }],
+                "read_file notes/mixed.txt 1:1",
+                {"write_file": {
+                    "path": "notes/mixed.txt",
+                    "content": "L1\nL2-updated\n",
+                    "mode": "write"
+                }},
+                "read_file notes/mixed.txt 1:2",
+                ["read_file", {
+                    "path": "notes/mixed.txt",
+                    "range": "1:2"
+                }]
+            ]
+        }))
+        .expect("raw json should deserialize as DoActions");
+
+        assert_eq!(actions.mode, "all");
+        assert_eq!(actions.cmds.len(), 5);
+        let exec_count = actions
+            .cmds
+            .iter()
+            .filter(|item| matches!(item, DoAction::Exec(_)))
+            .count();
+        let call_count = actions
+            .cmds
+            .iter()
+            .filter(|item| matches!(item, DoAction::Call(_)))
+            .count();
+        assert_eq!(exec_count, 2);
+        assert_eq!(call_count, 3);
+
+        let mut results = Vec::with_capacity(actions.cmds.len());
+        for (idx, action) in actions.cmds.iter().enumerate() {
+            let result = match action {
+                DoAction::Exec(command) => {
+                    call(&tool_mgr, TOOL_EXEC_BASH, json!({ "command": command }))
+                        .await
+                        .expect("exec action should run")
+                }
+                DoAction::Call(call_action) => {
+                    call(
+                        &tool_mgr,
+                        call_action.call_action_name.as_str(),
+                        call_action.call_params.clone(),
+                    )
+                    .await
+                    .expect("call action should run")
+                }
+            };
+            assert_eq!(result["ok"], true, "action #{idx} should succeed: {}", result);
+            results.push(result);
+        }
+
+        let first_bash = &results[1];
+        assert_eq!(first_bash["engine"], "tool");
+        let first_line = first_bash["stdout"]
+            .as_str()
+            .unwrap_or_default()
+            .lines()
+            .next()
+            .unwrap_or_default();
+        let first_forwarded: Json =
+            serde_json::from_str(first_line).expect("first bash stdout json line");
+        assert_eq!(first_forwarded["ok"], true);
+        assert_eq!(first_forwarded["content"], "L1");
+
+        let second_bash = &results[3];
+        assert_eq!(second_bash["engine"], "tool");
+        let second_line = second_bash["stdout"]
+            .as_str()
+            .unwrap_or_default()
+            .lines()
+            .next()
+            .unwrap_or_default();
+        let second_forwarded: Json =
+            serde_json::from_str(second_line).expect("second bash stdout json line");
+        assert_eq!(second_forwarded["ok"], true);
+        assert_eq!(second_forwarded["content"], "L1\nL2-updated");
+
+        let final_call = &results[4];
+        assert_eq!(final_call["content"], "L1\nL2-updated");
 
         let _ = fs::remove_dir_all(root).await;
     }
