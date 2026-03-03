@@ -5,8 +5,8 @@ actions:
   - edit
   - write
   - read
-  - create_local_workspace
-  - bind_local_workspace
+  - create_workspace
+  - bind_workspace
   # - create_sub_agent
   # - list_external_workspaces
   # - bind_external_workspace
@@ -24,8 +24,8 @@ rules: |
 
   当前 action 角色分工
   - todo_manage: 维护任务主状态机（list/get/apply_delta/query_pending/render_for_prompt/render_current_details/get_next_ready_todo）。
-  - create_local_workspace: 创建并可自动绑定本地 workspace，用于后续任务执行与产物落盘。
-  - bind_local_workspace: 绑定已有 local workspace 到当前会话，若会话已有绑定则应失败并保留原绑定。
+  - create_workspace: 创建session的wrokspace并设置为session的default workspace（仅支持 bash 调用）。
+  - bind_workspace: 设置agent_session的当前workspace（仅支持 bash 调用）。
   - read: 读取文件/片段，构建事实基础。
   - write: 新建或覆写文件（mode: new/append/write）。
   - edit: 基于锚点做局部修改（replace/after/before）。
@@ -38,7 +38,7 @@ rules: |
   - 对目标文件调用 read；信息不足时再用 exec(只读命令)补充事实。
 
   2) 计划构建（默认只读）
-  - 若 workspace 决策为“新建 workspace”，优先调用 create_local_workspace 完成创建与绑定，再继续 TODO 规划。
+  - 若 workspace 决策为“新建 workspace”，优先通过 bash 执行 create_workspace 完成创建与绑定，再继续 TODO 规划。
   - workspace 名称建议使用项目/主题名，避免动词前缀（例如不要用 `bugfix-xxx`、`feature-xxx`）。
   - 将目标拆解为可验证 TODO，优先用 todo_manage(action=apply_delta)写入计划。
   - 每个 TODO 需包含：目标、依赖、完成判定、建议 action 组合。
@@ -58,9 +58,9 @@ rules: |
   - 模板 A（纯规划）:
     todo_manage(query_pending) -> read(按需) -> todo_manage(apply_delta)
   - 模板 A2（新建工作区后规划）:
-    create_local_workspace(name, bind_session=true) -> todo_manage(apply_delta)
+    exec("create_workspace <name> [template]") -> todo_manage(apply_delta)
   - 模板 A3（复用工作区后规划）:
-    bind_local_workspace(local_workspace_id) -> todo_manage(apply_delta)
+    exec("bind_workspace <workspace_id|workspace_path>") -> todo_manage(apply_delta)
   - 模板 B（代码修复）:
     todo_manage(get_next_ready_todo) -> read -> edit/write -> read -> exec -> todo_manage(apply_delta)
   - 模板 C（验证回归）:
@@ -68,9 +68,10 @@ rules: |
 
   参数与兼容性约束
   - todo_manage 必须提供 action；具体字段按 action 子类型补齐。
-  - create_local_workspace 至少提供 name；默认 bind_session=true，会优先使用当前会话进行绑定。
-  - create_local_workspace 可选参数：template / owner / policy_profile_id / session_id / created_by_session。
-  - bind_local_workspace 需提供 local_workspace_id；若当前会话已有绑定，调用必须失败，不应隐式切换。
+  - create_workspace 参数为 `<name> [template]`，会使用 Context 中当前 session 完成创建与绑定。
+  - create_workspace 仅支持 bash 模式；action / llm tool call 均为 not support。
+  - bind_workspace 参数为 `workspace_id` 或 `workspace_path`，会自动识别是否路径。
+  - bind_workspace 仅支持 bash 模式；action / llm tool call 均为 not support。
   - exec 命令默认按最小权限与最小作用域执行，先无副作用命令。
 
   失败处理与降级

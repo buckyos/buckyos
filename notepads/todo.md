@@ -23,7 +23,7 @@
  LastStep最为重要
 Action:
   bind_external_workspace $target_workspace_name
-  bind_local_workspace $target_workspace_name
+  bind_workspace $target_workspace_name
   create_local_workspace $workspace_name
   edit $path
 
@@ -75,13 +75,14 @@ Behavior里不内置动态加载机制：配置是什么就是什么
 ### ACTION bind_external_workspace
 
 
-### ACTION bind_local_workspace
+### ACTION bind_workspace
 
-**bind_local_workspace**
- - Action Name: bind_local_workspace
+**bind_workspace**
+ - Action Name: bind_workspace
 
- - Usage: [bind_local_workspace $local_workspace_name]
- - Description: Bind an existing local workspace to current session (without rebind)
+ - Usage: [bind_workspace $workspace_id_or_workspace_path]
+ - Description: 设置agent_session的当前workspace（自动识别 workspace_id / workspace_path）
+ - Action/LLM Tool Call: not support（仅支持 bash）
 
 ### ACTION create_local_workspace
 **create_local_workspace**

@@ -17,8 +17,8 @@ process_rule: |
     - 新建workspace:给出命名(建议是项目名,不要包含动词。下面这两个就不是好的名字`bugfix-xxx`/`feature-xxx`)
     - 复用已有workspace:给出被选workspace及复用理由(目标一致/上下文连续/已有中间产物)
     - 暂不使用workspace:给出理由(任务过小/一次性答复/无需落盘)
-  * 若已确定“新建workspace”且信息充分,优先发起 `create_local_workspace` action 执行创建与绑定,并在thinking/todo中记录 workspace_id
-  * 若已确定“复用已有workspace”且信息充分,优先发起 `bind_local_workspace` action 绑定到当前session,并在thinking/todo中记录 workspace_id
+  * 若已确定“新建workspace”且信息充分,优先通过 bash 执行 `create_workspace <name> [template]` 完成创建与绑定,并在thinking/todo中记录 workspace_id
+  * 若已确定“复用已有workspace”且信息充分,优先通过 bash 执行 `bind_workspace <workspace_id|workspace_path>` 绑定到当前session,并在thinking/todo中记录 workspace_id
   * 若信息不足以决策workspace,优先通过 `reply` 给出选项或最小必要澄清问题,让用户参与决策
 
   3. **构建计划**
@@ -46,8 +46,8 @@ policy: |
   * 必须优先保证计划的可执行性与可验证性,避免空泛建议
   * 必须先完成workspace决策,再输出执行TODO;禁止跳过workspace判断
   * 必须明确写出workspace结论(新建/复用/不使用)及理由;若新建需给出名称
-  * 若选择新建workspace且无需额外确认,应优先执行 `create_local_workspace`;若不执行需说明原因
-  * 若选择复用已有workspace且无需额外确认,应优先执行 `bind_local_workspace`;若不执行需说明原因
+  * 若选择新建workspace且无需额外确认,应优先执行 bash `create_workspace <name> [template]`;若不执行需说明原因
+  * 若选择复用已有workspace且无需额外确认,应优先执行 bash `bind_workspace <workspace_id|workspace_path>`;若不执行需说明原因
   * 必须显式区分事实与假设,对不确定内容给出说明
   * 必须在回复中清晰说明当前结论与下一步
   * 必须控制成本:信息足够时立即进入do阶段
@@ -65,8 +65,8 @@ toolbox:
       - edit
       - write
       - read
-      - create_local_workspace
-      - bind_local_workspace
+      - create_workspace
+      - bind_workspace
       - todo_manage
   load_skills: ["planner"]
 

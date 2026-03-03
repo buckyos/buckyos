@@ -30,13 +30,13 @@ This workshop only enables a subset and defines per-tool boundaries.
       }
     },
     {
-      "name": "create_local_workspace",
+      "name": "create_workspace",
       "kind": "builtin",
       "enabled": true,
       "params": {}
     },
     {
-      "name": "bind_local_workspace",
+      "name": "bind_workspace",
       "kind": "builtin",
       "enabled": true,
       "params": {}
