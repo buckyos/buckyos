@@ -36,6 +36,40 @@ type LoginModalState = {
   nextPath?: string
 }
 
+const getReadableLoginError = (rawError: unknown) => {
+  const rawMessage = rawError instanceof Error ? rawError.message : String(rawError ?? '')
+  const normalized = rawMessage.toLowerCase()
+
+  if (
+    normalized.includes('rpc call error: 401') ||
+    normalized.includes('rpc call error: 403') ||
+    normalized.includes('rpc call error: 500') ||
+    normalized.includes('invalid password') ||
+    normalized.includes('invalid username') ||
+    normalized.includes('wrong password') ||
+    normalized.includes('auth failed') ||
+    normalized.includes('login failed')
+  ) {
+    return 'Authentication failed. Please check your username and password and try again.'
+  }
+
+  if (
+    normalized.includes('failed to fetch') ||
+    normalized.includes('network') ||
+    normalized.includes('timeout') ||
+    normalized.includes('timed out') ||
+    normalized.includes('connection refused')
+  ) {
+    return 'Unable to reach the authentication service. Please check your network and try again.'
+  }
+
+  if (normalized.includes('too many') || normalized.includes('rate limit')) {
+    return 'Too many sign-in attempts. Please wait a moment and try again.'
+  }
+
+  return 'Sign-in failed. Please try again.'
+}
+
 const LoginPage = () => {
   const location = useLocation()
   const navigate = useNavigate()
@@ -67,7 +101,7 @@ const LoginPage = () => {
         setLoading(false)
       } catch (err) {
         console.error('initBuckyOS failed', err)
-        setInitError('初始化 BuckyOS 失败，请检查网络或稍后再试。')
+        setInitError('Failed to initialize BuckyOS. Please check your network and try again.')
         setLoading(false)
       }
     }
@@ -82,8 +116,8 @@ const LoginPage = () => {
     if (!username.trim() || !password) {
       setMessageModal({
         tone: 'error',
-        title: '登录失败',
-        message: '请输入用户名和密码。',
+        title: 'Login Failed',
+        message: 'Please enter both username and password.',
       })
       return
     }
@@ -95,25 +129,24 @@ const LoginPage = () => {
       if (!accountInfo) {
         setMessageModal({
           tone: 'error',
-          title: '登录失败',
-          message: '未获取到会话信息，请重试。',
+          title: 'Login Failed',
+          message: 'No session information was returned. Please try again.',
         })
         return
       }
 
       setMessageModal({
         tone: 'success',
-        title: '登录成功',
-        message: '会话已建立，点击确认进入控制台。',
+        title: 'Login Successful',
+        message: 'Session created. Click confirm to enter the control panel.',
         nextPath: redirectTarget,
       })
     } catch (err) {
       console.error('login failed', err)
-      const message = err instanceof Error ? err.message : String(err)
       setMessageModal({
         tone: 'error',
-        title: '登录失败',
-        message: message || '登录失败，请重试。',
+        title: 'Login Failed',
+        message: getReadableLoginError(err),
       })
     } finally {
       setSubmitting(false)
@@ -133,8 +166,7 @@ const LoginPage = () => {
                 B
               </span>
               <div className="leading-tight">
-                <p className="text-xs font-semibold text-[var(--cp-muted)]">BuckyOS · Control Panel</p>
-                <p className="text-lg font-semibold">控制台登录</p>
+                <p className="text-lg font-semibold">BuckyOS Desktop Login</p>
               </div>
             </div>
           </div>
@@ -145,8 +177,6 @@ const LoginPage = () => {
               App ID: control-panel
             </span>
           </div>
-
-          <p className="mt-3 text-sm leading-relaxed text-[var(--cp-muted)]">登录后将进入控制台首页。第三方应用授权请使用 /sso/login。</p>
 
           <div className="mt-6 space-y-6">
             {loading ? (
@@ -160,7 +190,7 @@ const LoginPage = () => {
                 <div className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
                   <Icon name="alert" className="mt-0.5 size-5" />
                   <div>
-                    <p className="font-semibold">无法完成登录</p>
+                    <p className="font-semibold">Unable to Sign In</p>
                     <p className="leading-relaxed text-amber-800">{initError}</p>
                   </div>
                 </div>
@@ -170,21 +200,21 @@ const LoginPage = () => {
                     className="flex-1 rounded-2xl border border-[var(--cp-border)] bg-white px-4 py-3 font-semibold text-[var(--cp-ink)] transition hover:border-[var(--cp-primary)] hover:text-[var(--cp-primary)]"
                     onClick={() => window.location.reload()}
                   >
-                    重试
+                    Retry
                   </button>
                   <button
                     type="button"
                     className="flex-1 rounded-2xl bg-[var(--cp-primary)] px-4 py-3 font-semibold text-white shadow-lg shadow-emerald-200 transition hover:bg-[var(--cp-primary-strong)]"
                     onClick={() => window.close()}
                   >
-                    关闭窗口
+                    Close Window
                   </button>
                 </div>
               </div>
             ) : (
               <form className="space-y-4" onSubmit={handleSubmit}>
                 <div className="space-y-1">
-                  <label className="block text-sm font-semibold text-[var(--cp-muted)]">用户名</label>
+                  <label className="block text-sm font-semibold text-[var(--cp-muted)]">Username</label>
                   <div className="relative">
                     <input
                       autoFocus
@@ -194,10 +224,10 @@ const LoginPage = () => {
                           ? 'text-slate-500'
                           : 'text-slate-600'
                       }`}
-                      placeholder="输入管理员用户名"
+                      placeholder="Enter username"
                       value={username}
                       onChange={(event) => setUsername(event.target.value)}
-                      aria-label="用户名"
+                      aria-label="Username"
                       readOnly={!usernameEditable && Boolean(defaultUsername)}
                       required
                     />
@@ -220,21 +250,21 @@ const LoginPage = () => {
                   </div>
                   {defaultUsername ? (
                     <p className="text-[11px] leading-relaxed text-[var(--cp-muted)]">
-                      默认用户名取自当前域名：{defaultUsername}。如需授权子账号，请点击 Change 手动填写。
+                      Default username comes from current domain: {defaultUsername}. Click Change to enter a delegated sub-account.
                     </p>
                   ) : null}
                 </div>
 
                 <div className="space-y-1">
-                  <label className="block text-sm font-semibold text-[var(--cp-muted)]">密码</label>
+                  <label className="block text-sm font-semibold text-[var(--cp-muted)]">Password</label>
                   <input
                     type="password"
                     autoComplete="current-password"
                     className={fieldClasses}
-                    placeholder="输入密码"
+                    placeholder="Enter password"
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
-                    aria-label="密码"
+                    aria-label="Password"
                     required
                   />
                 </div>
@@ -244,10 +274,8 @@ const LoginPage = () => {
                   disabled={disabled}
                   className="mt-1 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[var(--cp-primary)] px-4 py-3 text-[15px] font-semibold text-white shadow-lg shadow-emerald-200 transition duration-200 hover:bg-[var(--cp-primary-strong)] disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {submitting ? '正在登录…' : '登录'}
+                  {submitting ? 'Signing in...' : 'Sign in'}
                 </button>
-
-                <p className="text-center text-[11px] leading-relaxed text-[var(--cp-muted)]">用于 control-panel 控制台访问。</p>
               </form>
             )}
           </div>
@@ -259,7 +287,7 @@ const LoginPage = () => {
         tone={messageModal?.tone ?? 'success'}
         title={messageModal?.title ?? ''}
         message={messageModal?.message ?? ''}
-        confirmLabel={messageModal?.tone === 'success' ? '进入控制台' : '知道了'}
+        confirmLabel={messageModal?.tone === 'success' ? 'Enter Control Panel' : 'OK'}
         onConfirm={() => {
           if (messageModal?.tone === 'success') {
             navigate(messageModal.nextPath || '/', { replace: true })
