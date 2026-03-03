@@ -1,42 +1,21 @@
+use crate::constants::{
+    DEFAULT_ADMIN_LOCAL_ONLY, DEFAULT_ADVERTISE_ADDR, DEFAULT_AUTO_BOOTSTRAP,
+    DEFAULT_ENABLE_RPC_SERVER, DEFAULT_JOIN_BLOCKING, DEFAULT_JOIN_MAX_ATTEMPTS,
+    DEFAULT_JOIN_RETRY_INTERVAL_MS, DEFAULT_LISTEN_HOST, DEFAULT_RAFT_PORT,
+    DEFAULT_RPC_LISTEN_HOST, DEFAULT_RPC_PORT, DEFAULT_STATE_STORE_SYNC_WRITE,
+    ENV_ADMIN_LOCAL_ONLY, ENV_ADVERTISE_ADDR, ENV_ADVERTISE_PORT, ENV_AUTO_BOOTSTRAP,
+    ENV_CLUSTER_ID, ENV_CLUSTER_NAME, ENV_CONFIG_FILE, ENV_DATA_DIR, ENV_ENABLE_RPC_SERVER,
+    ENV_JOIN_BLOCKING, ENV_JOIN_MAX_ATTEMPTS, ENV_JOIN_RETRY_INTERVAL_MS, ENV_JOIN_TARGET_ROLE,
+    ENV_JOIN_TARGETS, ENV_LISTEN_ADDR, ENV_NODE_ID, ENV_RPC_ADVERTISE_PORT, ENV_RPC_LISTEN_ADDR,
+    ENV_STATE_STORE_SYNC_WRITE, KLOG_SERVICE_NAME,
+};
 use buckyos_kit::get_buckyos_service_data_dir;
 use klog::KNodeId;
 use log::error;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-pub const ENV_CONFIG_FILE: &str = "KLOG_CONFIG_FILE";
-pub const ENV_NODE_ID: &str = "KLOG_NODE_ID";
-pub const ENV_LISTEN_ADDR: &str = "KLOG_LISTEN_ADDR";
-pub const ENV_RPC_LISTEN_ADDR: &str = "KLOG_RPC_LISTEN_ADDR";
-pub const ENV_ADVERTISE_ADDR: &str = "KLOG_ADVERTISE_ADDR";
-pub const ENV_ADVERTISE_PORT: &str = "KLOG_ADVERTISE_PORT";
-pub const ENV_RPC_ADVERTISE_PORT: &str = "KLOG_RPC_ADVERTISE_PORT";
-pub const ENV_ENABLE_RPC_SERVER: &str = "KLOG_ENABLE_RPC_SERVER";
-pub const ENV_DATA_DIR: &str = "KLOG_DATA_DIR";
-pub const ENV_CLUSTER_NAME: &str = "KLOG_CLUSTER_NAME";
-pub const ENV_CLUSTER_ID: &str = "KLOG_CLUSTER_ID";
-pub const ENV_AUTO_BOOTSTRAP: &str = "KLOG_AUTO_BOOTSTRAP";
-pub const ENV_STATE_STORE_SYNC_WRITE: &str = "KLOG_STATE_STORE_SYNC_WRITE";
-pub const ENV_JOIN_TARGETS: &str = "KLOG_JOIN_TARGETS";
-pub const ENV_JOIN_RETRY_INTERVAL_MS: &str = "KLOG_JOIN_RETRY_INTERVAL_MS";
-pub const ENV_JOIN_MAX_ATTEMPTS: &str = "KLOG_JOIN_MAX_ATTEMPTS";
-pub const ENV_JOIN_BLOCKING: &str = "KLOG_JOIN_BLOCKING";
-pub const ENV_JOIN_TARGET_ROLE: &str = "KLOG_JOIN_TARGET_ROLE";
-pub const ENV_ADMIN_LOCAL_ONLY: &str = "KLOG_ADMIN_LOCAL_ONLY";
-
-const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:21001";
-const DEFAULT_RPC_LISTEN_ADDR: &str = "127.0.0.1:21101";
-const DEFAULT_ADVERTISE_ADDR: &str = "127.0.0.1";
-const DEFAULT_ADVERTISE_PORT: u16 = 21001;
-const DEFAULT_RPC_ADVERTISE_PORT: u16 = 21101;
-const DEFAULT_ENABLE_RPC_SERVER: bool = true;
-const DEFAULT_AUTO_BOOTSTRAP: bool = false;
-const DEFAULT_STATE_STORE_SYNC_WRITE: bool = true;
-const DEFAULT_JOIN_RETRY_INTERVAL_MS: u64 = 3_000;
-const DEFAULT_JOIN_MAX_ATTEMPTS: u32 = 0; // 0 means retry forever.
-const DEFAULT_JOIN_BLOCKING: bool = false;
 const DEFAULT_JOIN_TARGET_ROLE: KLogJoinTargetRole = KLogJoinTargetRole::Voter;
-const DEFAULT_ADMIN_LOCAL_ONLY: bool = true;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -87,76 +66,151 @@ impl std::fmt::Display for KLogRuntimeConfigSource {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KLogRuntimeConfig {
+    /// Raft node id in current cluster, must be greater than 0.
     pub node_id: KNodeId,
+
+    /// Raft protocol listen address, format "host:port".
     pub listen_addr: String,
+
+    /// Whether client-facing RPC server is enabled.
     pub enable_rpc_server: bool,
+
+    /// Client-facing RPC listen address, format "host:port".
     pub rpc_listen_addr: String,
+
+    /// Advertised host/IP for other raft nodes to connect.
     pub advertise_addr: String,
+
+    /// Advertised raft protocol port for peer-to-peer traffic.
     pub advertise_port: u16,
+
+    /// Advertised client RPC port, set to 0 when RPC server is disabled.
     pub rpc_advertise_port: u16,
+
+    /// Root data directory for raft log, state store and snapshots.
     pub data_dir: PathBuf,
+
+    /// Human-readable cluster name for operation and diagnostics.
     pub cluster_name: String,
+
+    /// Stable cluster identity string for join validation.
     pub cluster_id: String,
+
+    /// Whether this node should bootstrap a new single-node cluster.
     pub auto_bootstrap: bool,
+
+    /// Whether state store writes use sync/fdatasync for durability.
     pub state_store_sync_write: bool,
+
+    /// Seed targets for auto join, each item format "host:port".
     pub join_targets: Vec<String>,
+
+    /// Retry interval for auto join loop, in milliseconds.
     pub join_retry_interval_ms: u64,
+
+    /// Max retries for auto join loop, 0 means retry forever.
     pub join_max_attempts: u32,
+
+    /// Whether add-learner uses blocking mode during auto join.
     pub join_blocking: bool,
+
+    /// Target role after joining cluster: learner or voter.
     pub join_target_role: KLogJoinTargetRole,
+
+    /// Restrict admin APIs to loopback clients only.
     pub admin_local_only: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KLogNetworkConfigPatch {
+    /// Optional override for raft listen address.
     pub listen_addr: Option<String>,
+
+    /// Optional override for client RPC enable flag.
     pub enable_rpc_server: Option<bool>,
+
+    /// Optional override for client RPC listen address.
     pub rpc_listen_addr: Option<String>,
+
+    /// Optional override for advertised host/IP.
     pub advertise_addr: Option<String>,
+
+    /// Optional override for advertised raft port.
     pub advertise_port: Option<u16>,
+
+    /// Optional override for advertised client RPC port.
     pub rpc_advertise_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KLogStorageConfigPatch {
+    /// Optional override for root data directory.
     pub data_dir: Option<PathBuf>,
+
+    /// Optional override for state-store sync-write mode.
     pub state_store_sync_write: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KLogClusterConfigPatch {
+    /// Optional override for cluster name.
     pub name: Option<String>,
+
+    /// Optional override for cluster id.
     pub id: Option<String>,
+
+    /// Optional override for auto bootstrap switch.
     pub auto_bootstrap: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KLogJoinConfigPatch {
+    /// Optional override for join seed targets.
     pub targets: Option<Vec<String>>,
+
+    /// Optional override for join retry interval milliseconds.
     pub retry_interval_ms: Option<u64>,
+
+    /// Optional override for join max attempts, 0 means forever.
     pub max_attempts: Option<u32>,
+
+    /// Optional override for add-learner blocking mode.
     pub blocking: Option<bool>,
+
+    /// Optional override for target role after join.
     pub target_role: Option<KLogJoinTargetRole>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KLogAdminConfigPatch {
+    /// Optional override for admin local-only access control.
     pub local_only: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KLogRuntimeConfigPatch {
+    /// Optional grouped network section.
     pub network: Option<KLogNetworkConfigPatch>,
+
+    /// Optional grouped storage section.
     pub storage: Option<KLogStorageConfigPatch>,
+
+    /// Optional grouped cluster identity section.
     pub cluster: Option<KLogClusterConfigPatch>,
+
+    /// Optional grouped auto-join section.
     pub join: Option<KLogJoinConfigPatch>,
+
+    /// Optional grouped admin API section.
     pub admin: Option<KLogAdminConfigPatch>,
+
+    /// Required node id; can also come from env.
     pub node_id: Option<KNodeId>,
 }
 
@@ -320,22 +374,18 @@ impl KLogRuntimeConfig {
 
         Ok(Self {
             node_id,
-            listen_addr: network
-                .listen_addr
-                .unwrap_or_else(|| DEFAULT_LISTEN_ADDR.to_string()),
+            listen_addr: network.listen_addr.unwrap_or_else(default_listen_addr),
             enable_rpc_server: network
                 .enable_rpc_server
                 .unwrap_or(DEFAULT_ENABLE_RPC_SERVER),
             rpc_listen_addr: network
                 .rpc_listen_addr
-                .unwrap_or_else(|| DEFAULT_RPC_LISTEN_ADDR.to_string()),
+                .unwrap_or_else(default_rpc_listen_addr),
             advertise_addr: network
                 .advertise_addr
                 .unwrap_or_else(|| DEFAULT_ADVERTISE_ADDR.to_string()),
-            advertise_port: network.advertise_port.unwrap_or(DEFAULT_ADVERTISE_PORT),
-            rpc_advertise_port: network
-                .rpc_advertise_port
-                .unwrap_or(DEFAULT_RPC_ADVERTISE_PORT),
+            advertise_port: network.advertise_port.unwrap_or(DEFAULT_RAFT_PORT),
+            rpc_advertise_port: network.rpc_advertise_port.unwrap_or(DEFAULT_RPC_PORT),
             data_dir: storage.data_dir.unwrap_or(default_data_dir),
             cluster_name,
             cluster_id,
@@ -356,7 +406,15 @@ impl KLogRuntimeConfig {
 }
 
 fn default_data_dir() -> PathBuf {
-    get_buckyos_service_data_dir("klog")
+    get_buckyos_service_data_dir(KLOG_SERVICE_NAME)
+}
+
+fn default_listen_addr() -> String {
+    format!("{}:{}", DEFAULT_LISTEN_HOST, DEFAULT_RAFT_PORT)
+}
+
+fn default_rpc_listen_addr() -> String {
+    format!("{}:{}", DEFAULT_RPC_LISTEN_HOST, DEFAULT_RPC_PORT)
 }
 
 fn parse_env_string(key: &str) -> Result<Option<String>, String> {
@@ -577,12 +635,12 @@ id = "cluster_partial_id"
 
         let cfg = KLogRuntimeConfig::from_file(&file).expect("parse file");
         assert_eq!(cfg.node_id, 7);
-        assert_eq!(cfg.listen_addr, DEFAULT_LISTEN_ADDR);
+        assert_eq!(cfg.listen_addr, default_listen_addr());
         assert_eq!(cfg.enable_rpc_server, DEFAULT_ENABLE_RPC_SERVER);
-        assert_eq!(cfg.rpc_listen_addr, DEFAULT_RPC_LISTEN_ADDR);
+        assert_eq!(cfg.rpc_listen_addr, default_rpc_listen_addr());
         assert_eq!(cfg.advertise_addr, "192.168.2.7");
-        assert_eq!(cfg.advertise_port, DEFAULT_ADVERTISE_PORT);
-        assert_eq!(cfg.rpc_advertise_port, DEFAULT_RPC_ADVERTISE_PORT);
+        assert_eq!(cfg.advertise_port, DEFAULT_RAFT_PORT);
+        assert_eq!(cfg.rpc_advertise_port, DEFAULT_RPC_PORT);
         assert_eq!(cfg.data_dir, default_data_dir());
         assert_eq!(cfg.cluster_name, "cluster_partial");
         assert_eq!(cfg.cluster_id, "cluster_partial_id");
