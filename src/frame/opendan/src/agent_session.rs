@@ -986,8 +986,20 @@ impl AgentTool for GetSessionTool {
                     "session": { "type": "object" }
                 }
             }),
+            usage: None,
         }
     }
+
+    fn support_bash(&self) -> bool {
+        true
+    }
+    fn support_action(&self) -> bool {
+        false
+    }
+    fn support_llm_tool_call(&self) -> bool {
+        false
+    }
+
 
     async fn call(&self, _ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
         let session_id = require_string(&args, "session_id")?;

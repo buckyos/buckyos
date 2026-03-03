@@ -863,12 +863,14 @@ memory:
                 description: "bash".to_string(),
                 args_schema: serde_json::json!({"type":"object"}),
                 output_schema: serde_json::json!({"type":"object"}),
+                usage: None,
             },
             ToolSpec {
                 name: "load_memory".to_string(),
                 description: "memory".to_string(),
                 args_schema: serde_json::json!({"type":"object"}),
                 output_schema: serde_json::json!({"type":"object"}),
+                usage: None,
             },
         ];
 

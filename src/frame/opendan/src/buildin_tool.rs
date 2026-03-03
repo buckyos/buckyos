@@ -349,7 +349,23 @@ impl AgentTool for ExecBashTool {
                 "additionalProperties": true
             }),
             output_schema: json!({"type": "object"}),
+            usage: Some(
+                "exec command=\"<shell command>\" [timeout_ms=<ms>] [env=<json object>]"
+                    .to_string(),
+            ),
         }
+    }
+
+    fn support_bash(&self) -> bool {
+        false
+    }
+
+    fn support_action(&self) -> bool {
+        false
+    }
+
+    fn support_llm_tool_call(&self) -> bool {
+        true
     }
 
     async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
@@ -773,7 +789,17 @@ impl AgentTool for EditFileTool {
                 "additionalProperties": true
             }),
             output_schema: json!({"type": "object"}),
+            usage: Some("edit_file <path> <pos_chunk> <new_content> <mode>".to_string()),
         }
+    }
+    fn support_bash(&self) -> bool {
+        false
+    }
+    fn support_action(&self) -> bool {
+        true
+    }
+    fn support_llm_tool_call(&self) -> bool {
+        false
     }
 
     async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
@@ -933,9 +959,18 @@ impl AgentTool for WriteFileTool {
                 "additionalProperties": true
             }),
             output_schema: json!({"type": "object"}),
+            usage: Some("write_file <path> <content> <mode>".to_string()),
         }
     }
-
+    fn support_bash(&self) -> bool {
+        false
+    }
+    fn support_action(&self) -> bool {
+        true
+    }
+    fn support_llm_tool_call(&self) -> bool {
+        false
+    }
     async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
         let file_path = require_string(&args, "path")?;
         let content = require_string(&args, "content")?;
@@ -1073,7 +1108,20 @@ impl AgentTool for ReadFileTool {
                 "additionalProperties": true
             }),
             output_schema: json!({"type": "object"}),
+            usage: Some("read_file <path> [range] [first_chunk]".to_string()),
         }
+    }
+
+    fn support_bash(&self) -> bool {
+        true
+    }
+
+    fn support_action(&self) -> bool {
+        false
+    }
+
+    fn support_llm_tool_call(&self) -> bool {
+        true
     }
 
     async fn call(&self, _ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {

@@ -586,7 +586,18 @@ impl AgentTool for LoadMemoryTool {
             output_schema: json!({
                 "type":"string"
             }),
+            usage: None,
         }
+    }
+
+    fn support_bash(&self) -> bool {
+        true
+    }
+    fn support_action(&self) -> bool {
+        false
+    }
+    fn support_llm_tool_call(&self) -> bool {
+        true
     }
 
     async fn call(&self, _ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {

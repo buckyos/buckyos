@@ -1805,8 +1805,20 @@ impl AgentTool for RuntimeCreateSubAgentTool {
                     "sub_agent": { "type": "object" }
                 }
             }),
+            usage: None,
         }
     }
+
+    fn support_bash(&self) -> bool {
+        true
+    }
+    fn support_action(&self) -> bool {
+        false
+    }
+    fn support_llm_tool_call(&self) -> bool {
+        false
+    }
+
 
     async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
         let parent_did = optional_string(&args, "parent_did")?.unwrap_or(ctx.agent_name.clone());
@@ -1855,7 +1867,18 @@ impl AgentTool for RuntimeBindExternalWorkspaceTool {
                     "binding": { "type": "object" }
                 }
             }),
+            usage: None,
         }
+    }
+
+    fn support_bash(&self) -> bool {
+        true
+    }
+    fn support_action(&self) -> bool {
+        false
+    }
+    fn support_llm_tool_call(&self) -> bool {
+        false
     }
 
     async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
@@ -1901,7 +1924,18 @@ impl AgentTool for RuntimeListExternalWorkspacesTool {
                     "workspaces": { "type": "array", "items": { "type": "object" } }
                 }
             }),
+            usage: None,
         }
+    }
+
+    fn support_bash(&self) -> bool {
+        true
+    }
+    fn support_action(&self) -> bool {
+        false
+    }
+    fn support_llm_tool_call(&self) -> bool {
+        false
     }
 
     async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {

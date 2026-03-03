@@ -64,7 +64,18 @@ impl AgentTool for EchoTool {
             description: "echo".to_string(),
             args_schema: json!({"type":"object"}),
             output_schema: json!({"type":"object"}),
+            usage: None,
         }
+    }
+
+    fn support_bash(&self) -> bool {
+        false
+    }
+    fn support_action(&self) -> bool {
+        true
+    }
+    fn support_llm_tool_call(&self) -> bool {
+        false
     }
 
     async fn call(
@@ -220,6 +231,7 @@ tools:
                 description: "echo".to_string(),
                 args_schema: json!({"type":"object"}),
                 output_schema: json!({"type":"object"}),
+                usage: None,
             }]),
         }),
         worklog: Arc::new(MockWorklog),

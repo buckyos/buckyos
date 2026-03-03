@@ -206,7 +206,18 @@ impl AgentTool for TodoTool {
                     "text": { "type": "string" }
                 }
             }),
+            usage: None,
         }
+    }
+
+    fn support_bash(&self) -> bool {
+        true
+    }
+    fn support_action(&self) -> bool {
+        false
+    }
+    fn support_llm_tool_call(&self) -> bool {
+        false
     }
 
     async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {

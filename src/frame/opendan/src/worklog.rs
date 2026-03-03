@@ -212,6 +212,7 @@ fn worklog_tool_spec() -> ToolSpec {
                 "updated": { "type": "integer" }
             }
         }),
+        usage: None,
     }
 }
 
@@ -219,6 +220,16 @@ fn worklog_tool_spec() -> ToolSpec {
 impl AgentTool for WorklogTool {
     fn spec(&self) -> ToolSpec {
         worklog_tool_spec()
+    }
+    
+    fn support_bash(&self) -> bool {
+        true
+    }
+    fn support_action(&self) -> bool {
+        false
+    }
+    fn support_llm_tool_call(&self) -> bool {
+        false
     }
 
     async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {

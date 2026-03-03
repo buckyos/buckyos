@@ -454,7 +454,18 @@ impl AgentTool for CreateLocalWorkspaceTool {
                     "session_updated": { "type": "boolean" }
                 }
             }),
+            usage: None,
         }
+    }
+
+    fn support_bash(&self) -> bool {
+        true
+    }
+    fn support_action(&self) -> bool {
+        false
+    }
+    fn support_llm_tool_call(&self) -> bool {
+        false
     }
 
     async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
@@ -590,8 +601,20 @@ impl AgentTool for BindLocalWorkspaceTool {
                     "session_updated": { "type": "boolean" }
                 }
             }),
+            usage: None,
         }
     }
+
+    fn support_bash(&self) -> bool {
+        true
+    }
+    fn support_action(&self) -> bool {
+        false
+    }
+    fn support_llm_tool_call(&self) -> bool {
+        false
+    }
+    
 
     async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
         let local_workspace_id = require_string_arg(&args, "local_workspace_id")?;

@@ -371,6 +371,8 @@ pub struct ToolSpec {
     pub description: String,
     pub args_schema: Json,
     pub output_schema: Json,
+    #[serde(default)]
+    pub usage: Option<String>,
 }
 
 impl ToolSpec {
@@ -435,6 +437,13 @@ pub(crate) fn normalize_tool_name(name: &str) -> String {
 #[async_trait]
 pub trait AgentTool: Send + Sync {
     fn spec(&self) -> ToolSpec;
+
+    // Explicit namespace exposure flags.
+    // Implementers can override these for precise routing.
+    fn support_bash(&self) -> bool;
+    fn support_action(&self) -> bool;
+    fn support_llm_tool_call(&self) -> bool;
+
     async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError>;
 }
 
@@ -494,6 +503,7 @@ impl MCPTool {
                 description,
                 args_schema: cfg.args_schema,
                 output_schema: cfg.output_schema,
+                usage: None,
             },
             endpoint: endpoint.to_string(),
             mcp_tool_name,
@@ -508,6 +518,16 @@ impl MCPTool {
 impl AgentTool for MCPTool {
     fn spec(&self) -> ToolSpec {
         self.spec.clone()
+    }
+
+    fn support_bash(&self) -> bool {
+        true
+    }
+    fn support_action(&self) -> bool {
+        true
+    }
+    fn support_llm_tool_call(&self) -> bool {
+        false 
     }
 
     async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
@@ -614,12 +634,27 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
 struct RegisteredTool {
     spec: ToolSpec,
     inner: Arc<dyn AgentTool>,
+    support_bash: bool,
+    support_action: bool,
+    support_llm_tool_call: bool,
 }
 
 #[async_trait]
 impl AgentTool for RegisteredTool {
     fn spec(&self) -> ToolSpec {
         self.spec.clone()
+    }
+
+    fn support_bash(&self) -> bool {
+        self.support_bash
+    }
+
+    fn support_action(&self) -> bool {
+        self.support_action
+    }
+
+    fn support_llm_tool_call(&self) -> bool {
+        self.support_llm_tool_call
     }
 
     async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
@@ -745,9 +780,17 @@ fn action_spec_from_tool_spec(spec: &ToolSpec) -> ActionSpec {
     }
 }
 
+#[derive(Default)]
+struct ToolNamespaceRegistry {
+    all_tools: HashMap<String, Arc<dyn AgentTool>>,
+    llm_tools: HashMap<String, Arc<dyn AgentTool>>,
+    bash_cmds: HashMap<String, Arc<dyn AgentTool>>,
+    action_tools: HashMap<String, Arc<dyn AgentTool>>,
+}
+
 #[derive(Clone)]
 pub struct AgentToolManager {
-    tools: Arc<StdRwLock<HashMap<String, Arc<dyn AgentTool>>>>,
+    namespaces: Arc<StdRwLock<ToolNamespaceRegistry>>,
     actions: Arc<AgentActionManager>,
 }
 
@@ -760,7 +803,7 @@ impl Default for AgentToolManager {
 impl AgentToolManager {
     pub fn new() -> Self {
         Self {
-            tools: Arc::new(StdRwLock::new(HashMap::new())),
+            namespaces: Arc::new(StdRwLock::new(ToolNamespaceRegistry::default())),
             actions: Arc::new(AgentActionManager::new()),
         }
     }
@@ -792,19 +835,58 @@ impl AgentToolManager {
             )));
         }
         spec.name = normalized_name.clone();
-        let action_spec = action_spec_from_tool_spec(&spec);
-        let registered: Arc<dyn AgentTool> = Arc::new(RegisteredTool { spec, inner: tool });
+        spec.usage = spec
+            .usage
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string());
+        let support_bash = tool.support_bash();
+        let support_action = tool.support_action();
+        let support_llm_tool_call = tool.support_llm_tool_call();
+        if !support_bash && !support_action && !support_llm_tool_call {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "tool `{}` must support at least one namespace",
+                normalized_name
+            )));
+        }
+
+        let action_spec = support_action.then(|| action_spec_from_tool_spec(&spec));
+        let registered: Arc<dyn AgentTool> = Arc::new(RegisteredTool {
+            spec,
+            inner: tool,
+            support_bash,
+            support_action,
+            support_llm_tool_call,
+        });
 
         let mut guard = self
-            .tools
+            .namespaces
             .write()
-            .map_err(|_| AgentToolError::ExecFailed("tool registry lock poisoned".to_string()))?;
-        if guard.contains_key(&normalized_name) {
+            .map_err(|_| AgentToolError::ExecFailed("tool namespace lock poisoned".to_string()))?;
+        if guard.all_tools.contains_key(&normalized_name) {
             return Err(AgentToolError::AlreadyExists(normalized_name));
         }
 
-        self.actions.register_action_spec(action_spec)?;
-        guard.insert(normalized_name.clone(), registered);
+        if let Some(action_spec) = action_spec {
+            self.actions.register_action_spec(action_spec)?;
+        }
+        guard
+            .all_tools
+            .insert(normalized_name.clone(), registered.clone());
+        if support_llm_tool_call {
+            guard
+                .llm_tools
+                .insert(normalized_name.clone(), registered.clone());
+        }
+        if support_bash {
+            guard
+                .bash_cmds
+                .insert(normalized_name.clone(), registered.clone());
+        }
+        if support_action {
+            guard.action_tools.insert(normalized_name.clone(), registered);
+        }
         if normalized_name != original_name {
             warn!(
                 "tool name normalized for provider compatibility: original={} normalized={}",
@@ -823,30 +905,53 @@ impl AgentToolManager {
         if normalized_name.is_empty() {
             return false;
         }
-        let Ok(mut guard) = self.tools.write() else {
+        let Ok(mut guard) = self.namespaces.write() else {
             return false;
         };
-        let removed = guard.remove(normalized_name.as_str()).is_some();
-        if removed {
+        let removed = guard.all_tools.remove(normalized_name.as_str()).is_some();
+        if !removed {
+            return false;
+        }
+
+        guard.llm_tools.remove(normalized_name.as_str());
+        guard.bash_cmds.remove(normalized_name.as_str());
+        let action_removed = guard.action_tools.remove(normalized_name.as_str()).is_some();
+        drop(guard);
+
+        if action_removed {
             let _ = self
                 .actions
                 .unregister_action_spec(normalized_name.as_str());
         }
-        removed
+        true
     }
 
     pub fn has_tool(&self, name: &str) -> bool {
-        let Ok(guard) = self.tools.read() else {
+        let Ok(guard) = self.namespaces.read() else {
             return false;
         };
-        guard.contains_key(name)
+        guard.llm_tools.contains_key(name)
     }
 
     pub fn get_tool(&self, name: &str) -> Option<Arc<dyn AgentTool>> {
-        let Ok(guard) = self.tools.read() else {
+        let Ok(guard) = self.namespaces.read() else {
             return None;
         };
-        guard.get(name).cloned()
+        guard.llm_tools.get(name).cloned()
+    }
+
+    pub fn get_bash_cmd(&self, name: &str) -> Option<Arc<dyn AgentTool>> {
+        let Ok(guard) = self.namespaces.read() else {
+            return None;
+        };
+        guard.bash_cmds.get(name).cloned()
+    }
+
+    pub fn get_action(&self, name: &str) -> Option<Arc<dyn AgentTool>> {
+        let Ok(guard) = self.namespaces.read() else {
+            return None;
+        };
+        guard.action_tools.get(name).cloned()
     }
 
     pub fn get_tool_spec(&self, name: &str) -> Option<ToolSpec> {
@@ -854,10 +959,28 @@ impl AgentToolManager {
     }
 
     pub fn list_tool_specs(&self) -> Vec<ToolSpec> {
-        let Ok(guard) = self.tools.read() else {
+        let Ok(guard) = self.namespaces.read() else {
             return vec![];
         };
-        let mut specs: Vec<ToolSpec> = guard.values().map(|tool| tool.spec()).collect();
+        let mut specs: Vec<ToolSpec> = guard.llm_tools.values().map(|tool| tool.spec()).collect();
+        specs.sort_by(|a, b| a.name.cmp(&b.name));
+        specs
+    }
+
+    pub fn list_bash_cmd_specs(&self) -> Vec<ToolSpec> {
+        let Ok(guard) = self.namespaces.read() else {
+            return vec![];
+        };
+        let mut specs: Vec<ToolSpec> = guard.bash_cmds.values().map(|tool| tool.spec()).collect();
+        specs.sort_by(|a, b| a.name.cmp(&b.name));
+        specs
+    }
+
+    pub fn list_action_tool_specs(&self) -> Vec<ToolSpec> {
+        let Ok(guard) = self.namespaces.read() else {
+            return vec![];
+        };
+        let mut specs: Vec<ToolSpec> = guard.action_tools.values().map(|tool| tool.spec()).collect();
         specs.sort_by(|a, b| a.name.cmp(&b.name));
         specs
     }
@@ -885,10 +1008,11 @@ impl AgentToolManager {
         if normalized.is_empty() {
             return None;
         }
-        let Ok(guard) = self.tools.read() else {
+        let Ok(guard) = self.namespaces.read() else {
             return None;
         };
         guard
+            .bash_cmds
             .contains_key(normalized.as_str())
             .then_some(normalized)
     }
@@ -917,11 +1041,26 @@ impl AgentToolManager {
         if tool_name.is_empty() {
             return Ok(None);
         }
-        let Some(tool) = self.get_tool(tool_name.as_str()) else {
+        let Some(tool) = self.get_bash_cmd(tool_name.as_str()) else {
             return Ok(None);
         };
+        let spec = tool.spec();
+        let Some(usage) = render_bash_tool_usage(&spec) else {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "tool `{}` does not support bash line invocation",
+                tool_name
+            )));
+        };
+        if is_help_flag(&tokens[1..]) {
+            return Ok(Some(json!({
+                "ok": true,
+                "tool": tool_name,
+                "usage": usage
+            })));
+        }
 
-        let mut args = parse_bash_style_tool_args(&tool.spec(), &tokens[1..])?;
+        let mut args = parse_bash_style_tool_args(&spec, &tokens[1..])
+            .map_err(|err| append_usage_on_invalid_args(err, usage.as_str()))?;
         if let Some(shell_cwd) = shell_cwd {
             rewrite_path_args_for_shell_cwd(tool_name.as_str(), &mut args, shell_cwd);
         }
@@ -934,7 +1073,8 @@ impl AgentToolManager {
                     call_id: format!("bash-cli-{}-{}", ctx.trace_id, ctx.step_idx),
                 },
             )
-            .await?;
+            .await
+            .map_err(|err| append_usage_on_invalid_args(err, usage.as_str()))?;
         Ok(Some(result))
     }
 
@@ -953,7 +1093,7 @@ impl AgentToolManager {
             tool_name, call_id, ctx.trace_id, session_id
         );
 
-        let Some(tool) = self.get_tool(&tool_name) else {
+        let Some(tool) = self.get_registered_tool(&tool_name) else {
             warn!(
                 "opendan.tool_call: status=failed tool={} call_id={} trace_id={} session_id={} err=tool not found",
                 tool_name, call_id, ctx.trace_id, session_id
@@ -973,6 +1113,13 @@ impl AgentToolManager {
             ),
         }
         result
+    }
+
+    fn get_registered_tool(&self, name: &str) -> Option<Arc<dyn AgentTool>> {
+        let Ok(guard) = self.namespaces.read() else {
+            return None;
+        };
+        guard.all_tools.get(name).cloned()
     }
 }
 
@@ -1014,6 +1161,35 @@ fn tokenize_bash_command_line(line: &str) -> Result<Vec<String>, AgentToolError>
         tokens.push(current);
     }
     Ok(tokens)
+}
+
+fn render_bash_tool_usage(spec: &ToolSpec) -> Option<String> {
+    spec.usage
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+}
+
+fn is_help_flag(tokens: &[String]) -> bool {
+    tokens.len() == 1 && tokens[0] == "--help"
+}
+
+fn append_usage_on_invalid_args(err: AgentToolError, usage: &str) -> AgentToolError {
+    match err {
+        AgentToolError::InvalidArgs(message) => {
+            if message.contains("Usage:") {
+                return AgentToolError::InvalidArgs(message);
+            }
+            let trimmed = message.trim();
+            if trimmed.is_empty() {
+                AgentToolError::InvalidArgs(format!("Usage: {usage}"))
+            } else {
+                AgentToolError::InvalidArgs(format!("{trimmed}\nUsage: {usage}"))
+            }
+        }
+        other => other,
+    }
 }
 
 fn parse_bash_style_tool_args(spec: &ToolSpec, tokens: &[String]) -> Result<Json, AgentToolError> {
@@ -1252,7 +1428,10 @@ impl PolicyEngine for AgentPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_environment::AgentEnvironment;
     use crate::agent_memory::{AgentMemory, AgentMemoryConfig};
+    use crate::agent_session::{AgentSessionMgr, GetSessionTool};
+    use crate::ai_runtime::{AiRuntime, AiRuntimeConfig};
     use buckyos_api::value_to_object_map;
     use tempfile::tempdir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1335,58 +1514,60 @@ mod tests {
         }
     }
 
-    fn documented_action_names() -> Vec<&'static str> {
-        vec![
-            TOOL_EXEC_BASH,
-            TOOL_EDIT_FILE,
-            TOOL_WRITE_FILE,
-            TOOL_READ_FILE,
-            TOOL_CREATE_SUB_AGENT,
-            TOOL_GET_SESSION,
-            TOOL_LIST_SESSION,
-            TOOL_LIST_EXTERNAL_WORKSPACES,
-            TOOL_BIND_EXTERNAL_WORKSPACE,
-            TOOL_CREATE_LOCAL_WORKSPACE,
-            TOOL_BIND_LOCAL_WORKSPACE,
-            TOOL_LOAD_MEMORY,
-            TOOL_TODO_MANAGE,
-        ]
+    async fn build_real_tool_catalog_for_review() -> (Vec<ToolSpec>, Vec<ToolSpec>, Vec<ToolSpec>, Vec<ActionSpec>) {
+        let temp = tempdir().expect("create tempdir for tool catalog");
+        let workspace_root = temp.path().join("workspace");
+        let sessions_root = workspace_root.join("session");
+        let agent_root = temp.path().join("agent");
+        let runtime_agents_root = temp.path().join("runtime_agents");
+
+        let tool_mgr = AgentToolManager::new();
+        let session_store = Arc::new(
+            AgentSessionMgr::new("did:example:agent", sessions_root, "on_wakeup".to_string())
+                .await
+                .expect("create session store"),
+        );
+
+        let environment = AgentEnvironment::new(workspace_root)
+            .await
+            .expect("create agent environment");
+        environment
+            .register_workshop_tools(&tool_mgr, session_store.clone())
+            .expect("register workshop tools");
+
+        let memory = AgentMemory::new(AgentMemoryConfig::new(agent_root))
+            .await
+            .expect("create agent memory");
+        memory
+            .register_tools(&tool_mgr)
+            .expect("register memory tools");
+
+        tool_mgr
+            .register_tool(GetSessionTool::new(session_store))
+            .expect("register get_session tool");
+
+        let runtime = AiRuntime::new(AiRuntimeConfig::new(runtime_agents_root))
+            .await
+            .expect("create ai runtime");
+        runtime
+            .register_tools(&tool_mgr)
+            .await
+            .expect("register runtime tools");
+
+        (
+            tool_mgr.list_tool_specs(),
+            tool_mgr.list_bash_cmd_specs(),
+            tool_mgr.list_action_tool_specs(),
+            tool_mgr.list_action_specs(),
+        )
     }
 
-    fn documented_tool_specs() -> Vec<ToolSpec> {
-        let mut specs = documented_action_names()
-            .iter()
-            .map(|name| ToolSpec {
-                name: (*name).to_string(),
-                description: builtin_action_summary(name).to_string(),
-                args_schema: builtin_action_args_schema(name),
-                output_schema: json!({ "type": "object" }),
-            })
-            .collect::<Vec<_>>();
-        specs.sort_by(|a, b| a.name.cmp(&b.name));
-        specs
-    }
+    #[tokio::test]
+    async fn print_all_tools() {
+        let (tool_specs, bash_specs, action_tool_specs, action_specs) =
+            build_real_tool_catalog_for_review().await;
 
-    fn documented_action_specs() -> Vec<ActionSpec> {
-        let mut specs = documented_action_names()
-            .iter()
-            .map(|name| ActionSpec {
-                kind: ActionKind::CallTool,
-                name: (*name).to_string(),
-                introduce: builtin_action_summary(name).to_string(),
-                description: None,
-            })
-            .collect::<Vec<_>>();
-        specs.sort_by(|a, b| a.name.cmp(&b.name));
-        specs
-    }
-
-    #[test]
-    fn print_tool_and_action_prompt_catalog_for_review() {
-        let tool_specs = documented_tool_specs();
-        let action_specs = documented_action_specs();
-
-        println!("\n================ TOOL PROMPTS ================");
+        println!("\n================ TOOL NAMESPACE (LLM) ================");
         println!("[List Mode] name + summary");
         for spec in &tool_specs {
             println!("- {} : {}", spec.name, spec.description);
@@ -1402,9 +1583,14 @@ mod tests {
             );
         }
 
-        println!("\n[Prompt Payload] ToolSpec::render_for_prompt output");
-        println!("{}", ToolSpec::render_for_prompt(&tool_specs));
 
+        println!("\n================ BASH NAMESPACE ================");
+        println!("[List Mode] name + summary");
+        for spec in &bash_specs {
+            println!("- {} : {}", spec.name, spec.description);
+            println!("{:?}", spec.usage);
+        }
+   
         println!("\n================ ACTION PROMPTS ================");
         println!("[List Mode] name + introduce");
         for spec in &action_specs {
@@ -1420,6 +1606,14 @@ mod tests {
         assert!(
             !tool_specs.is_empty(),
             "documented tool specs should not be empty"
+        );
+        assert!(
+            !bash_specs.is_empty(),
+            "bash namespace tool specs should not be empty"
+        );
+        assert!(
+            !action_tool_specs.is_empty(),
+            "action namespace tool specs should not be empty"
         );
         assert!(
             !action_specs.is_empty(),
@@ -1486,9 +1680,19 @@ mod tests {
                 description: "dummy".to_string(),
                 args_schema: json!({"type":"object"}),
                 output_schema: json!({"type":"object"}),
+                usage: None,
             }
         }
 
+        fn support_bash(&self) -> bool {
+            false
+        }
+        fn support_action(&self) -> bool {
+            true
+        }
+        fn support_llm_tool_call(&self) -> bool {
+            true
+        }
         async fn call(
             &self,
             _ctx: &SessionRuntimeContext,
@@ -1501,6 +1705,20 @@ mod tests {
     struct EchoArgsTool {
         name: String,
         args_schema: Json,
+        usage: Option<String>,
+    }
+
+    struct StrictArgsTool {
+        name: String,
+        usage: Option<String>,
+    }
+
+    struct NamespaceFilteredTool {
+        name: String,
+        usage: Option<String>,
+        support_bash: bool,
+        support_action: bool,
+        support_llm_tool_call: bool,
     }
 
     #[async_trait]
@@ -1511,7 +1729,54 @@ mod tests {
                 description: "echo args".to_string(),
                 args_schema: self.args_schema.clone(),
                 output_schema: json!({"type":"object"}),
+                usage: self.usage.clone(),
             }
+        }
+
+        fn support_bash(&self) -> bool {
+            true
+        }
+        fn support_action(&self) -> bool {
+            true
+        }
+        fn support_llm_tool_call(&self) -> bool {
+            false
+        }
+        async fn call(
+            &self,
+            _ctx: &SessionRuntimeContext,
+            args: Json,
+        ) -> Result<Json, AgentToolError> {
+            Ok(json!({"ok": true, "args": args}))
+        }
+    }
+
+    #[async_trait]
+    impl AgentTool for StrictArgsTool {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: self.name.clone(),
+                description: "strict args".to_string(),
+                args_schema: json!({
+                    "type":"object",
+                    "properties": {
+                        "path": {"type":"string"}
+                    },
+                    "required": ["path"]
+                }),
+                output_schema: json!({"type":"object"}),
+                usage: self.usage.clone(),
+            }
+        }
+
+        fn support_bash(&self) -> bool {
+            true
+        }
+        fn support_action(&self) -> bool {
+            true
+        }
+        fn support_llm_tool_call(&self) -> bool {
+            false
         }
 
         async fn call(
@@ -1519,7 +1784,45 @@ mod tests {
             _ctx: &SessionRuntimeContext,
             args: Json,
         ) -> Result<Json, AgentToolError> {
-            Ok(json!({"ok": true, "args": args}))
+            if args.get("path").and_then(|value| value.as_str()).is_none() {
+                return Err(AgentToolError::InvalidArgs(
+                    "missing required arg `path`".to_string(),
+                ));
+            }
+            Ok(json!({"ok": true}))
+        }
+    }
+
+    #[async_trait]
+    impl AgentTool for NamespaceFilteredTool {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: self.name.clone(),
+                description: "namespace filtered".to_string(),
+                args_schema: json!({"type":"object"}),
+                output_schema: json!({"type":"object"}),
+                usage: self.usage.clone(),
+            }
+        }
+
+        fn support_bash(&self) -> bool {
+            self.support_bash
+        }
+
+        fn support_action(&self) -> bool {
+            self.support_action
+        }
+
+        fn support_llm_tool_call(&self) -> bool {
+            self.support_llm_tool_call
+        }
+
+        async fn call(
+            &self,
+            _ctx: &SessionRuntimeContext,
+            _args: Json,
+        ) -> Result<Json, AgentToolError> {
+            Ok(json!({"ok": true}))
         }
     }
 
@@ -1582,6 +1885,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn explicit_namespace_flags_take_priority_over_tool_spec_usage() {
+        let mgr = AgentToolManager::new();
+        mgr.register_tool(NamespaceFilteredTool {
+            name: "namespaced_tool".to_string(),
+            usage: Some("namespaced_tool --help".to_string()),
+            support_bash: false,
+            support_action: true,
+            support_llm_tool_call: false,
+        })
+        .expect("register tool");
+
+        assert!(mgr.get_tool("namespaced_tool").is_none());
+        assert!(mgr.get_bash_cmd("namespaced_tool").is_none());
+        assert!(mgr.get_action("namespaced_tool").is_some());
+        assert!(mgr.get_action_spec("namespaced_tool").is_some());
+        assert!(
+            mgr.list_tool_specs()
+                .iter()
+                .all(|item| item.name != "namespaced_tool")
+        );
+
+        let result = mgr
+            .call_tool(
+                &test_call_ctx(),
+                AiToolCall {
+                    name: "namespaced_tool".to_string(),
+                    args: value_to_object_map(json!({})),
+                    call_id: "call-action-only-1".to_string(),
+                },
+            )
+            .await
+            .expect("registered action namespace tool should still be callable");
+        assert_eq!(result["ok"], true);
+
+        let bash_match = mgr
+            .call_tool_from_bash_line(&test_call_ctx(), "namespaced_tool --help")
+            .await
+            .expect("bash lookup should complete");
+        assert!(bash_match.is_none());
+    }
+
+    #[test]
+    fn register_tool_must_expose_at_least_one_namespace() {
+        let mgr = AgentToolManager::new();
+        let err = mgr
+            .register_tool(NamespaceFilteredTool {
+                name: "hidden_tool".to_string(),
+                usage: Some("hidden_tool".to_string()),
+                support_bash: false,
+                support_action: false,
+                support_llm_tool_call: false,
+            })
+            .expect_err("tool with no namespace exposure should fail");
+        assert!(matches!(err, AgentToolError::InvalidArgs(_)));
+        assert!(err
+            .to_string()
+            .contains("must support at least one namespace"));
+    }
+
+    #[tokio::test]
     async fn call_tool_from_bash_line_supports_positional_style() {
         let mgr = AgentToolManager::new();
         mgr.register_tool(EchoArgsTool {
@@ -1593,6 +1956,7 @@ mod tests {
                     "range": {"type": "string"}
                 }
             }),
+            usage: Some("read_file <path> [range]".to_string()),
         })
         .expect("register tool");
 
@@ -1619,6 +1983,7 @@ mod tests {
                     "range": {"type": "string"}
                 }
             }),
+            usage: Some("read_file path=<path> [range=<range>]".to_string()),
         })
         .expect("register tool");
 
@@ -1648,6 +2013,7 @@ mod tests {
                     "range": {"type": "string"}
                 }
             }),
+            usage: Some("read_file <path> [range]".to_string()),
         })
         .expect("register tool");
 
@@ -1664,6 +2030,103 @@ mod tests {
         assert_eq!(result["ok"], true);
         assert_eq!(result["args"]["path"], "/tmp/opendan-shell-cwd/1.txt");
         assert_eq!(result["args"]["range"], "1:1");
+    }
+
+    #[tokio::test]
+    async fn call_tool_from_bash_line_skips_tool_without_bash_namespace() {
+        let mgr = AgentToolManager::new();
+        mgr.register_tool(EchoArgsTool {
+            name: "read_file".to_string(),
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"}
+                }
+            }),
+            usage: None,
+        })
+        .expect("register tool");
+
+        let result = mgr
+            .call_tool_from_bash_line(&test_call_ctx(), "read_file 1.txt")
+            .await
+            .expect("non-bash tool lookup should complete");
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn call_tool_from_bash_line_help_outputs_usage() {
+        let mgr = AgentToolManager::new();
+        let usage = "read_file <path> [range]";
+        mgr.register_tool(EchoArgsTool {
+            name: "read_file".to_string(),
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "range": {"type": "string"}
+                }
+            }),
+            usage: Some(usage.to_string()),
+        })
+        .expect("register tool");
+
+        let result = mgr
+            .call_tool_from_bash_line(&test_call_ctx(), "read_file --help")
+            .await
+            .expect("help should succeed")
+            .expect("tool should be matched");
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["usage"], usage);
+    }
+
+    #[tokio::test]
+    async fn call_tool_from_bash_line_invalid_args_reports_usage() {
+        let mgr = AgentToolManager::new();
+        let usage = "read_file <path>";
+        mgr.register_tool(StrictArgsTool {
+            name: "read_file".to_string(),
+            usage: Some(usage.to_string()),
+        })
+        .expect("register tool");
+
+        let err = mgr
+            .call_tool_from_bash_line(&test_call_ctx(), "read_file")
+            .await
+            .expect_err("missing arg should fail");
+        assert!(matches!(err, AgentToolError::InvalidArgs(_)));
+        let err_text = err.to_string();
+        assert!(err_text.contains("missing required arg `path`"));
+        assert!(err_text.contains("Usage:"));
+        assert!(err_text.contains(usage));
+    }
+
+    #[tokio::test]
+    async fn call_tool_from_bash_line_parse_error_reports_usage() {
+        let mgr = AgentToolManager::new();
+        let usage = "read_file <path> [range]";
+        mgr.register_tool(EchoArgsTool {
+            name: "read_file".to_string(),
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "range": {"type": "string"}
+                }
+            }),
+            usage: Some(usage.to_string()),
+        })
+        .expect("register tool");
+
+        let err = mgr
+            .call_tool_from_bash_line(&test_call_ctx(), "read_file 1.txt 1:2 extra")
+            .await
+            .expect_err("too many positional args should fail");
+        assert!(matches!(err, AgentToolError::InvalidArgs(_)));
+        let err_text = err.to_string();
+        assert!(err_text.contains("too many positional args"));
+        assert!(err_text.contains("Usage:"));
+        assert!(err_text.contains(usage));
     }
 
     #[tokio::test]
