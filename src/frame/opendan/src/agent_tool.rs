@@ -12,7 +12,6 @@ use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
 
 use crate::behavior::{BehaviorConfig, BehaviorExecInput, PolicyEngine, SessionRuntimeContext};
-use crate::buildin_tool::{builtin_tool_args_schema, builtin_tool_summary};
 
 pub const TOOL_CREATE_SUB_AGENT: &str = "create_sub_agent";
 pub use crate::buildin_tool::{TOOL_EDIT_FILE, TOOL_EXEC_BASH, TOOL_READ_FILE, TOOL_WRITE_FILE};
@@ -26,19 +25,6 @@ pub const TOOL_BIND_LOCAL_WORKSPACE: &str = "bind_local_workspace";
 pub const TOOL_LOAD_MEMORY: &str = "load_memory";
 pub const TOOL_TODO_MANAGE: &str = "todo_manage";
 pub const TOOL_WORKLOG_MANAGE: &str = "worklog_manage";
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ActionKind {
-    CallTool, //指向一个内置的tool
-              //ExecScript,//运行一个特定的脚本
-}
-
-impl Default for ActionKind {
-    fn default() -> Self {
-        Self::CallTool
-    }
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -57,162 +43,6 @@ impl Default for ActionExecutionMode {
 pub struct FsScope {
     pub read_roots: Vec<String>,
     pub write_roots: Vec<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ActionSpec {
-    #[serde(default)]
-    pub kind: ActionKind,
-    pub name: String,
-    pub introduce: String,
-    pub description: Option<String>,
-}
-
-impl ActionSpec {
-    pub fn render_introduce_prompt(&self) -> String {
-        return format!("- {} : {}", self.name, self.introduce);
-    }
-
-    pub fn render_prompt(&self) -> String {
-        let action_name = self.name.trim();
-        let usage = render_action_usage(action_name);
-        let description = self
-            .description
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| render_action_description(action_name));
-
-        format!(
-            "**{}**\n - Action Name: {}\n - Kind: call_tool\n - Usage: {}\n - Description: {}",
-            action_name, action_name, usage, description
-        )
-    }
-}
-
-fn render_action_usage(action_name: &str) -> String {
-    let schema = builtin_action_args_schema(action_name);
-    format!(
-        "[\"{}\", {}]",
-        action_name,
-        serde_json::to_string(&schema).unwrap_or_else(|_| "{}".to_string())
-    )
-}
-
-fn render_action_description(action_name: &str) -> String {
-    let summary = builtin_action_summary(action_name);
-    let args_schema = builtin_action_args_schema(action_name);
-    let args_text = serde_json::to_string(&args_schema).unwrap_or_else(|_| "{}".to_string());
-    format!("{summary} Args schema: {args_text}")
-}
-
-fn builtin_action_summary(action_name: &str) -> &'static str {
-    if let Some(summary) = builtin_tool_summary(action_name) {
-        return summary;
-    }
-
-    match action_name {
-        TOOL_CREATE_SUB_AGENT => "Create a sub-agent execution session.",
-        TOOL_GET_SESSION => "Get current session detail.",
-        TOOL_LIST_SESSION => "List available sessions.",
-        TOOL_LIST_EXTERNAL_WORKSPACES => "List bindable external workspaces.",
-        TOOL_BIND_EXTERNAL_WORKSPACE => "Bind an external workspace to current session.",
-        TOOL_CREATE_LOCAL_WORKSPACE => "Create and optionally bind a local workspace.",
-        TOOL_BIND_LOCAL_WORKSPACE => {
-            "Bind an existing local workspace to current session (without rebind)."
-        }
-        TOOL_LOAD_MEMORY => "Load memory entries by token budget, tags, and reference time.",
-        TOOL_TODO_MANAGE => "Manage workspace todos.",
-        _ => "Call runtime tool action.",
-    }
-}
-
-fn builtin_action_args_schema(action_name: &str) -> Json {
-    if let Some(schema) = builtin_tool_args_schema(action_name) {
-        return schema;
-    }
-
-    match action_name {
-        TOOL_CREATE_SUB_AGENT => json!({
-            "type": "object",
-            "properties": {
-                "role": { "type": "string" },
-                "goal": { "type": "string" }
-            }
-        }),
-        TOOL_GET_SESSION => json!({
-            "type": "object",
-            "properties": {
-                "session_id": { "type": "string" }
-            }
-        }),
-        TOOL_LIST_SESSION => json!({
-            "type": "object",
-            "properties": {
-                "limit": { "type": "integer", "minimum": 1 }
-            }
-        }),
-        TOOL_LIST_EXTERNAL_WORKSPACES => json!({
-            "type": "object",
-            "properties": {
-                "provider": { "type": "string" }
-            }
-        }),
-        TOOL_BIND_EXTERNAL_WORKSPACE => json!({
-            "type": "object",
-            "properties": {
-                "workspace_id": { "type": "string" }
-            },
-            "required": ["workspace_id"]
-        }),
-        TOOL_CREATE_LOCAL_WORKSPACE => json!({
-            "type": "object",
-            "properties": {
-                "name": { "type": "string" },
-                "template": { "type": "string" },
-                "owner": {
-                    "type": "string",
-                    "enum": ["agent_created", "user_provided"]
-                },
-                "policy_profile_id": { "type": "string" },
-                "created_by_session": { "type": "string" },
-                "session_id": { "type": "string" },
-                "bind_session": { "type": "boolean" }
-            },
-            "required": ["name"]
-        }),
-        TOOL_BIND_LOCAL_WORKSPACE => json!({
-            "type": "object",
-            "properties": {
-                "local_workspace_id": { "type": "string" },
-                "session_id": { "type": "string" }
-            },
-            "required": ["local_workspace_id"]
-        }),
-        TOOL_LOAD_MEMORY => json!({
-            "type": "object",
-            "properties": {
-                "token_limit": { "type":"number" },
-                "tags": {
-                    "type":"array",
-                    "items": { "type":"string" }
-                },
-                "current_time": { "type":"string" }
-            }
-        }),
-        TOOL_TODO_MANAGE => json!({
-            "type": "object",
-            "properties": {
-                "ops": { "type": "array" },
-                "workspace_id": { "type": "string" }
-            },
-            "required": ["ops"]
-        }),
-        _ => json!({
-            "type": "object"
-        }),
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -378,6 +208,44 @@ pub struct ToolSpec {
 impl ToolSpec {
     pub fn render_for_prompt(tools: &[ToolSpec]) -> String {
         serde_json::to_string(tools).unwrap_or_else(|_| "[]".to_string())
+    }
+
+    pub fn render_action_introduce_prompt(&self) -> String {
+        format!("- {} : {}", self.name, self.action_introduce())
+    }
+
+    pub fn render_action_prompt(&self) -> String {
+        let action_name = self.name.trim();
+        let usage = format!(
+            "[\"{}\", {}]",
+            action_name,
+            serde_json::to_string(&self.args_schema).unwrap_or_else(|_| "{}".to_string())
+        );
+        let args_schema =
+            serde_json::to_string(&self.args_schema).unwrap_or_else(|_| "{}".to_string());
+        let output_schema =
+            serde_json::to_string(&self.output_schema).unwrap_or_else(|_| "{}".to_string());
+        let description = format!(
+            "{} Args schema: {} Output schema: {}",
+            self.description.trim(),
+            args_schema,
+            output_schema
+        );
+
+        format!(
+            "**{}**\n - Action Name: {}\n - Kind: call_tool\n - Usage: {}\n - Description: {}",
+            action_name, action_name, usage, description
+        )
+    }
+
+    fn action_introduce(&self) -> String {
+        self.description
+            .split('.')
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| format!("Call `{}` tool action", self.name))
     }
 }
 
@@ -687,124 +555,6 @@ impl AgentTool for RegisteredTool {
     }
 }
 
-pub struct AgentActionManager {
-    actions: StdRwLock<HashMap<String, ActionSpec>>,
-}
-
-impl Default for AgentActionManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl AgentActionManager {
-    pub fn new() -> Self {
-        Self {
-            actions: StdRwLock::new(HashMap::new()),
-        }
-    }
-
-    pub fn register_action_spec(&self, mut spec: ActionSpec) -> Result<(), AgentToolError> {
-        let normalized_name = normalize_tool_name(spec.name.as_str());
-        if normalized_name.is_empty() {
-            return Err(AgentToolError::InvalidArgs(
-                "action name cannot be empty".to_string(),
-            ));
-        }
-        spec.name = normalized_name.clone();
-        spec.introduce = spec.introduce.trim().to_string();
-        if spec.introduce.is_empty() {
-            spec.introduce = format!("Call `{}` action", spec.name);
-        }
-        spec.description = spec
-            .description
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| value.to_string());
-
-        let mut guard = self
-            .actions
-            .write()
-            .map_err(|_| AgentToolError::ExecFailed("action registry lock poisoned".to_string()))?;
-        if guard.contains_key(&normalized_name) {
-            return Err(AgentToolError::AlreadyExists(normalized_name));
-        }
-        guard.insert(normalized_name, spec);
-        Ok(())
-    }
-
-    pub fn unregister_action_spec(&self, name: &str) -> bool {
-        let normalized_name = normalize_tool_name(name);
-        if normalized_name.is_empty() {
-            return false;
-        }
-        let Ok(mut guard) = self.actions.write() else {
-            return false;
-        };
-        guard.remove(normalized_name.as_str()).is_some()
-    }
-
-    pub fn has_action_spec(&self, name: &str) -> bool {
-        let normalized_name = normalize_tool_name(name);
-        if normalized_name.is_empty() {
-            return false;
-        }
-        let Ok(guard) = self.actions.read() else {
-            return false;
-        };
-        guard.contains_key(normalized_name.as_str())
-    }
-
-    pub fn get_action_spec(&self, name: &str) -> Option<ActionSpec> {
-        let normalized_name = normalize_tool_name(name);
-        if normalized_name.is_empty() {
-            return None;
-        }
-        let Ok(guard) = self.actions.read() else {
-            return None;
-        };
-        guard.get(normalized_name.as_str()).cloned()
-    }
-
-    pub fn list_action_specs(&self) -> Vec<ActionSpec> {
-        let Ok(guard) = self.actions.read() else {
-            return vec![];
-        };
-        let mut specs = guard.values().cloned().collect::<Vec<_>>();
-        specs.sort_by(|a, b| a.name.cmp(&b.name));
-        specs
-    }
-}
-
-fn action_spec_from_tool_spec(spec: &ToolSpec) -> ActionSpec {
-    let name = normalize_tool_name(spec.name.as_str());
-    let introduce = spec
-        .description
-        .split('.')
-        .next()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| format!("Call `{}` tool action", name));
-    let args_schema = serde_json::to_string(&spec.args_schema).unwrap_or_else(|_| "{}".to_string());
-    let output_schema =
-        serde_json::to_string(&spec.output_schema).unwrap_or_else(|_| "{}".to_string());
-    let description = Some(format!(
-        "{} Args schema: {} Output schema: {}",
-        spec.description.trim(),
-        args_schema,
-        output_schema
-    ));
-
-    ActionSpec {
-        kind: ActionKind::CallTool,
-        name,
-        introduce,
-        description,
-    }
-}
-
 #[derive(Default)]
 struct ToolNamespaceRegistry {
     all_tools: HashMap<String, Arc<dyn AgentTool>>,
@@ -816,7 +566,6 @@ struct ToolNamespaceRegistry {
 #[derive(Clone)]
 pub struct AgentToolManager {
     namespaces: Arc<StdRwLock<ToolNamespaceRegistry>>,
-    actions: Arc<AgentActionManager>,
 }
 
 impl Default for AgentToolManager {
@@ -829,12 +578,7 @@ impl AgentToolManager {
     pub fn new() -> Self {
         Self {
             namespaces: Arc::new(StdRwLock::new(ToolNamespaceRegistry::default())),
-            actions: Arc::new(AgentActionManager::new()),
         }
-    }
-
-    pub fn action_mgr(&self) -> &AgentActionManager {
-        self.actions.as_ref()
     }
 
     pub fn register_tool<T>(&self, tool: T) -> Result<(), AgentToolError>
@@ -876,7 +620,6 @@ impl AgentToolManager {
             )));
         }
 
-        let action_spec = support_action.then(|| action_spec_from_tool_spec(&spec));
         let registered: Arc<dyn AgentTool> = Arc::new(RegisteredTool {
             spec,
             inner: tool,
@@ -891,10 +634,6 @@ impl AgentToolManager {
             .map_err(|_| AgentToolError::ExecFailed("tool namespace lock poisoned".to_string()))?;
         if guard.all_tools.contains_key(&normalized_name) {
             return Err(AgentToolError::AlreadyExists(normalized_name));
-        }
-
-        if let Some(action_spec) = action_spec {
-            self.actions.register_action_spec(action_spec)?;
         }
         guard
             .all_tools
@@ -940,14 +679,7 @@ impl AgentToolManager {
 
         guard.llm_tools.remove(normalized_name.as_str());
         guard.bash_cmds.remove(normalized_name.as_str());
-        let action_removed = guard.action_tools.remove(normalized_name.as_str()).is_some();
-        drop(guard);
-
-        if action_removed {
-            let _ = self
-                .actions
-                .unregister_action_spec(normalized_name.as_str());
-        }
+        guard.action_tools.remove(normalized_name.as_str());
         true
     }
 
@@ -977,6 +709,10 @@ impl AgentToolManager {
             return None;
         };
         guard.action_tools.get(name).cloned()
+    }
+
+    pub fn get_action_tool_spec(&self, name: &str) -> Option<ToolSpec> {
+        self.get_action(name).map(|tool| tool.spec())
     }
 
     pub fn get_tool_spec(&self, name: &str) -> Option<ToolSpec> {
@@ -1010,12 +746,12 @@ impl AgentToolManager {
         specs
     }
 
-    pub fn list_action_specs(&self) -> Vec<ActionSpec> {
-        self.actions.list_action_specs()
+    pub fn list_action_specs(&self) -> Vec<ToolSpec> {
+        self.list_action_tool_specs()
     }
 
-    pub fn get_action_spec(&self, name: &str) -> Option<ActionSpec> {
-        self.actions.get_action_spec(name)
+    pub fn get_action_spec(&self, name: &str) -> Option<ToolSpec> {
+        self.get_action_tool_spec(name)
     }
 
     pub fn parse_bash_command_name(line: &str) -> Option<String> {
@@ -1435,7 +1171,7 @@ mod tests {
         }
     }
 
-    async fn build_real_tool_catalog_for_review() -> (Vec<ToolSpec>, Vec<ToolSpec>, Vec<ToolSpec>, Vec<ActionSpec>) {
+    async fn build_real_tool_catalog_for_review() -> (Vec<ToolSpec>, Vec<ToolSpec>, Vec<ToolSpec>, Vec<ToolSpec>) {
         let temp = tempdir().expect("create tempdir for tool catalog");
         let workspace_root = temp.path().join("workspace");
         let sessions_root = workspace_root.join("session");
@@ -1515,13 +1251,13 @@ mod tests {
         println!("\n================ ACTION PROMPTS ================");
         println!("[List Mode] name + introduce");
         for spec in &action_specs {
-            println!("{}", spec.render_introduce_prompt());
+            println!("{}", spec.render_action_introduce_prompt());
         }
 
         println!("\n[Detail Mode] one action prompt per block");
         for spec in &action_specs {
             println!("\n### ACTION {}", spec.name);
-            println!("{}", spec.render_prompt());
+            println!("{}", spec.render_action_prompt());
         }
 
         assert!(
@@ -1556,14 +1292,15 @@ mod tests {
     }
 
     #[test]
-    fn action_spec_render_prompt_falls_back_to_builtin_schema_description() {
-        let spec = ActionSpec {
-            kind: ActionKind::CallTool,
+    fn tool_spec_render_action_prompt_includes_schema_details() {
+        let spec = ToolSpec {
             name: TOOL_EXEC_BASH.to_string(),
-            introduce: "run shell command".to_string(),
-            description: None,
+            description: "run shell command".to_string(),
+            args_schema: json!({"type":"object","properties":{"command":{"type":"string"}}}),
+            output_schema: json!({"type":"object"}),
+            usage: None,
         };
-        let rendered = spec.render_prompt();
+        let rendered = spec.render_action_prompt();
         assert!(rendered.contains("Action Name: exec"));
         assert!(rendered.contains("Kind: call_tool"));
         assert!(rendered.contains("[\"exec\","));
@@ -1571,7 +1308,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_memory_action_schema_matches_runtime_tool_spec() {
+    async fn load_memory_tool_not_exposed_to_action_namespace() {
         let temp = tempdir().expect("create tempdir");
         let memory = AgentMemory::new(AgentMemoryConfig::new(temp.path()))
             .await
@@ -1582,10 +1319,10 @@ mod tests {
         let runtime_spec = mgr
             .get_tool_spec(TOOL_LOAD_MEMORY)
             .expect("load_memory tool should be registered");
-        let action_schema = builtin_action_args_schema(TOOL_LOAD_MEMORY);
-        assert_eq!(
-            runtime_spec.args_schema, action_schema,
-            "load_memory action schema must match runtime tool args schema"
+        assert_eq!(runtime_spec.name, TOOL_LOAD_MEMORY);
+        assert!(
+            mgr.get_action_tool_spec(TOOL_LOAD_MEMORY).is_none(),
+            "load_memory support_action=false should keep it out of action namespace"
         );
     }
 
@@ -1829,7 +1566,11 @@ mod tests {
         let action_specs = mgr.list_action_specs();
         assert_eq!(action_specs.len(), 1);
         assert_eq!(action_specs[0].name, "exec_bash");
-        assert!(action_specs[0].introduce.contains("dummy"));
+        assert!(
+            action_specs[0]
+                .render_action_introduce_prompt()
+                .contains("dummy")
+        );
 
         let err = mgr
             .call_tool(

@@ -7,7 +7,7 @@ pub mod sanitize;
 pub mod tool_loop;
 pub mod types;
 
-pub use crate::agent_tool::{ActionExecutionMode, ActionKind, ActionSpec, FsScope};
+pub use crate::agent_tool::{ActionExecutionMode, FsScope};
 pub use behavior::*;
 pub use config::{BehaviorConfig, BehaviorConfigError};
 pub use observability::{AgentWorkEvent, WorklogSink};

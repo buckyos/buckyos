@@ -36,62 +36,6 @@ const EXEC_BASH_TMUX_GC_TRIGGER_COUNT: usize = 16;
 const EXEC_BASH_TMUX_GC_IDLE_SECS: u64 = 24 * 60 * 60;
 const EXEC_BASH_TMUX_LIST_FORMAT: &str = "#{session_name}\t#{session_activity}";
 
-pub fn builtin_tool_summary(action_name: &str) -> Option<&'static str> {
-    match action_name {
-        TOOL_EXEC_BASH => Some("Run shell command."),
-        TOOL_EDIT_FILE => Some("Edit file by anchor."),
-        TOOL_WRITE_FILE => Some("Write file."),
-        TOOL_READ_FILE => Some("Read file."),
-        _ => None,
-    }
-}
-
-pub fn builtin_tool_args_schema(action_name: &str) -> Option<Json> {
-    match action_name {
-        TOOL_EXEC_BASH => Some(json!({
-            "type": "object",
-            "properties": {
-                "command": { "type": "string" },
-                "timeout_ms": { "type": "integer", "minimum": 1 },
-                "env": {
-                    "type": "object",
-                    "additionalProperties": { "type": "string" }
-                }
-            },
-            "required": ["command"]
-        })),
-        TOOL_EDIT_FILE => Some(json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string" },
-                "pos_chunk": { "type": "string" },
-                "new_content": { "type": "string" },
-                "mode": { "type": "string", "enum": ["replace", "after", "before"] }
-            },
-            "required": ["path", "pos_chunk", "new_content", "mode"]
-        })),
-        TOOL_WRITE_FILE => Some(json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string" },
-                "content": { "type": "string" },
-                "mode": { "type": "string", "enum": ["new", "append", "write"] }
-            },
-            "required": ["path", "content", "mode"]
-        })),
-        TOOL_READ_FILE => Some(json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string" },
-                "range": {},
-                "first_chunk": { "type": "string" }
-            },
-            "required": ["path"]
-        })),
-        _ => None,
-    }
-}
-
 #[derive(Clone, Debug)]
 struct ExecBashPolicy {
     default_timeout_ms: u64,

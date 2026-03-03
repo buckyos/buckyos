@@ -20,7 +20,7 @@ use super::tool_loop::{self, ToolContext};
 use super::types::*;
 use crate::agent_environment::AgentEnvironment;
 use crate::agent_memory::AgentMemory;
-use crate::agent_tool::{ActionSpec, AgentToolManager};
+use crate::agent_tool::{AgentToolManager, ToolSpec};
 
 #[derive(Clone)]
 pub struct LLMBehaviorDeps {
@@ -151,9 +151,9 @@ impl LLMBehavior {
             })
             .collect();
 
-        let allowed_action_specs: Vec<ActionSpec> = allowed_tools
+        let allowed_action_specs: Vec<ToolSpec> = allowed_tools
             .iter()
-            .filter_map(|tool| self.deps.tools.get_action_spec(tool.name.as_str()))
+            .filter_map(|tool| self.deps.tools.get_action_tool_spec(tool.name.as_str()))
             .collect();
 
         let llm_req = PromptBuilder::build(

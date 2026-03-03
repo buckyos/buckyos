@@ -17,7 +17,7 @@ use tokio::task;
 use crate::agent_environment::AgentEnvironment;
 use crate::agent_memory::AgentMemory;
 use crate::agent_session::AgentSession;
-use crate::agent_tool::{normalize_tool_name, ActionSpec};
+use crate::agent_tool::{normalize_tool_name, ToolSpec};
 use crate::behavior::config::BehaviorMemoryBucketConfig;
 use crate::behavior::BehaviorConfig;
 use crate::worklog::{WorklogListOptions, WorklogRecord, WorklogService, WorklogToolConfig};
@@ -53,7 +53,7 @@ impl PromptBuilder {
     pub async fn build(
         input: &BehaviorExecInput,
         tools: &[AiToolSpec],
-        action_specs: &[ActionSpec],
+        action_specs: &[ToolSpec],
         cfg: &BehaviorConfig,
         tokenizer: &dyn Tokenizer,
         session: Option<Arc<Mutex<AgentSession>>>,
@@ -1259,7 +1259,7 @@ impl RawToolboxSkillSpec {
 // 当前加载的tools的定义 （合并所有已经加载的skills的tool定义)
 async fn build_toolbox(
     tools: &[AiToolSpec],
-    action_specs: &[ActionSpec],
+    action_specs: &[ToolSpec],
     cfg: &BehaviorConfig,
     session: Option<Arc<Mutex<AgentSession>>>,
 ) -> Option<(String, Vec<AiToolSpec>)> {
@@ -1334,7 +1334,7 @@ async fn build_toolbox(
     }
     let selected_action_prompts = selected_action_specs
         .iter()
-        .map(|spec| spec.render_prompt())
+        .map(|spec| spec.render_action_prompt())
         .collect::<Vec<_>>();
     let value = json!({
         "workspace_skill_records": workspace_skill_records,
@@ -1349,11 +1349,11 @@ async fn build_toolbox(
     Some((sanitize_json_compact(&value), merged_tools))
 }
 
-fn select_action_specs(action_specs: &[ActionSpec], action_names: &[String]) -> Vec<ActionSpec> {
+fn select_action_specs(action_specs: &[ToolSpec], action_names: &[String]) -> Vec<ToolSpec> {
     if action_specs.is_empty() || action_names.is_empty() {
         return vec![];
     }
-    let mut by_name = HashMap::<String, ActionSpec>::new();
+    let mut by_name = HashMap::<String, ToolSpec>::new();
     for spec in action_specs {
         let normalized = normalize_tool_name(spec.name.as_str());
         if normalized.is_empty() {
@@ -1362,7 +1362,7 @@ fn select_action_specs(action_specs: &[ActionSpec], action_names: &[String]) -> 
         by_name.insert(normalized, spec.clone());
     }
 
-    let mut selected = Vec::<ActionSpec>::new();
+    let mut selected = Vec::<ToolSpec>::new();
     for action_name in action_names {
         let normalized = normalize_tool_name(action_name.as_str());
         if normalized.is_empty() {
@@ -1830,17 +1830,19 @@ loaded_tools: [exec_bash]
             },
         ];
         let action_specs = vec![
-            ActionSpec {
-                kind: crate::agent_tool::ActionKind::CallTool,
+            ToolSpec {
                 name: "build".to_string(),
-                introduce: "build project".to_string(),
-                description: Some("run build workflow".to_string()),
+                description: "run build workflow".to_string(),
+                args_schema: json!({"type":"object"}),
+                output_schema: json!({"type":"object"}),
+                usage: None,
             },
-            ActionSpec {
-                kind: crate::agent_tool::ActionKind::CallTool,
+            ToolSpec {
                 name: "test".to_string(),
-                introduce: "run tests".to_string(),
-                description: Some("run test workflow".to_string()),
+                description: "run test workflow".to_string(),
+                args_schema: json!({"type":"object"}),
+                output_schema: json!({"type":"object"}),
+                usage: None,
             },
         ];
 
