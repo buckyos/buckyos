@@ -310,6 +310,7 @@ impl AgentWorkshop {
                             &self.cfg,
                             tool,
                             session_store.clone(),
+                            tool_mgr.clone(),
                         )?)?;
                     }
                     TOOL_EDIT_FILE => {
@@ -1192,6 +1193,122 @@ mod tests {
         assert_eq!(result["stdout"], "hello-linux");
         assert_eq!(result["details"], "hello-linux");
         assert_eq!(result["engine"], "tmux");
+
+        let _ = fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn exec_bash_tool_can_forward_line_to_registered_tool() {
+        let root = unique_workspace_root("exec-bash-forward-tool");
+        let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
+            .await
+            .expect("create workshop");
+        let session_store = create_session_store(&root).await;
+        let tool_mgr = AgentToolManager::new();
+        workshop
+            .register_tools(&tool_mgr, session_store)
+            .expect("register workshop tools");
+
+        call(
+            &tool_mgr,
+            TOOL_WRITE_FILE,
+            json!({
+                "path": "notes/forward.txt",
+                "content": "L1\nL2\n",
+                "mode": "new"
+            }),
+        )
+        .await
+        .expect("seed file");
+
+        let result = call(
+            &tool_mgr,
+            TOOL_EXEC_BASH,
+            json!({
+                "command": "read_file notes/forward.txt 1:1",
+            }),
+        )
+        .await
+        .expect("exec should forward to tool");
+
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["exit_code"], 0);
+        assert_eq!(result["engine"], "tool");
+        assert_eq!(result["line_results"][0]["mode"], "tool");
+
+        let stdout = result["stdout"].as_str().unwrap_or_default();
+        let first_line = stdout.lines().next().unwrap_or_default();
+        let forwarded: Json = serde_json::from_str(first_line).expect("stdout json line");
+        assert_eq!(forwarded["ok"], true);
+        assert!(
+            forwarded["path"]
+                .as_str()
+                .unwrap_or_default()
+                .ends_with("/notes/forward.txt")
+        );
+        assert_eq!(forwarded["content"], "L1");
+
+        let _ = fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn exec_bash_tool_forwarded_read_file_uses_tmux_pane_cwd_for_relative_path() {
+        if !tmux_ready().await {
+            return;
+        }
+        let root = unique_workspace_root("exec-bash-pane-cwd");
+        fs::create_dir_all(root.join("subdir"))
+            .await
+            .expect("create subdir");
+        fs::write(root.join("subdir/1.txt"), "pane-line\n")
+            .await
+            .expect("write file in subdir");
+
+        let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
+            .await
+            .expect("create workshop");
+        let session_store = create_session_store(&root).await;
+        let session = session_store
+            .get_session("session-test")
+            .await
+            .expect("session should exist");
+        {
+            let mut guard = session.lock().await;
+            guard.cwd = root.join("subdir");
+        }
+        session_store
+            .save_session("session-test")
+            .await
+            .expect("save session");
+
+        let tool_mgr = AgentToolManager::new();
+        workshop
+            .register_tools(&tool_mgr, session_store)
+            .expect("register workshop tools");
+
+        let result = call(
+            &tool_mgr,
+            TOOL_EXEC_BASH,
+            json!({
+                "command": "cat 1.txt\nread_file 1.txt 1:1",
+            }),
+        )
+        .await
+        .expect("exec should succeed");
+
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["engine"], "tmux+tool");
+        let stdout = result["stdout"].as_str().unwrap_or_default();
+        assert!(stdout.lines().any(|line| line.trim() == "pane-line"));
+
+        let json_line = stdout
+            .lines()
+            .rev()
+            .find(|line| line.trim_start().starts_with('{'))
+            .expect("stdout should contain tool json line");
+        let forwarded: Json = serde_json::from_str(json_line).expect("parse tool json line");
+        assert_eq!(forwarded["ok"], true);
+        assert_eq!(forwarded["content"], "pane-line");
 
         let _ = fs::remove_dir_all(root).await;
     }

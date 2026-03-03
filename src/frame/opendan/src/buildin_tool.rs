@@ -10,15 +10,15 @@ use tokio::process::Command;
 use tokio::time::{sleep, Duration, Instant};
 
 use crate::agent_session::AgentSessionMgr;
-use crate::agent_tool::{AgentTool, AgentToolError, ToolSpec};
+use crate::agent_tool::{AgentTool, AgentToolError, AgentToolManager, ToolSpec};
 use crate::behavior::SessionRuntimeContext;
 use crate::worklog::{WorklogService, WorklogToolConfig};
 use crate::workspace::workshop::{AgentWorkshopConfig, WorkshopToolConfig};
 
-pub const TOOL_EDIT_FILE: &str = "edit";
+pub const TOOL_EDIT_FILE: &str = "edit_file";
 pub const TOOL_EXEC_BASH: &str = "exec";
-pub const TOOL_WRITE_FILE: &str = "write";
-pub const TOOL_READ_FILE: &str = "read";
+pub const TOOL_WRITE_FILE: &str = "write_file";
+pub const TOOL_READ_FILE: &str = "read_file";
 
 const DEFAULT_BASH_PATH: &str = "/bin/bash";
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
@@ -305,11 +305,12 @@ impl ReadFilePolicy {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ExecBashTool {
     cfg: AgentWorkshopConfig,
     policy: ExecBashPolicy,
     session_store: Arc<AgentSessionMgr>,
+    tool_mgr: AgentToolManager,
 }
 
 impl ExecBashTool {
@@ -317,11 +318,13 @@ impl ExecBashTool {
         cfg: &AgentWorkshopConfig,
         tool_cfg: &WorkshopToolConfig,
         session_store: Arc<AgentSessionMgr>,
+        tool_mgr: AgentToolManager,
     ) -> Result<Self, AgentToolError> {
         Ok(Self {
             cfg: cfg.clone(),
             policy: ExecBashPolicy::from_tool_config(cfg, tool_cfg)?,
             session_store,
+            tool_mgr,
         })
     }
 }
@@ -365,7 +368,7 @@ impl AgentTool for ExecBashTool {
 
         let env_vars = parse_exec_env_args(&args, self.policy.allow_env)?;
         let run_result = self
-            .run_tmux_bash(ctx, &session_id, &command, &cwd, timeout_ms, &env_vars)
+            .run_command_lines(ctx, &session_id, &command, &cwd, timeout_ms, &env_vars)
             .await?;
         let (stdout, stdout_truncated) = truncate_bytes(
             &run_result.stdout,
@@ -395,9 +398,20 @@ impl AgentTool for ExecBashTool {
             "cwd": cwd.to_string_lossy().to_string(),
             "session_id": session_id,
             "tmux_session": run_result.tmux_session,
-            "engine": "tmux"
+            "engine": run_result.engine,
+            "line_results": run_result.line_results,
         }))
     }
+}
+
+struct ExecBashRunResult {
+    exit_code: i32,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    duration_ms: u64,
+    tmux_session: String,
+    engine: &'static str,
+    line_results: Vec<Json>,
 }
 
 struct ExecBashTmuxRunResult {
@@ -409,6 +423,181 @@ struct ExecBashTmuxRunResult {
 }
 
 impl ExecBashTool {
+    async fn run_command_lines(
+        &self,
+        ctx: &SessionRuntimeContext,
+        session_id: &str,
+        command: &str,
+        cwd: &Path,
+        timeout_ms: u64,
+        env_vars: &[(String, String)],
+    ) -> Result<ExecBashRunResult, AgentToolError> {
+        let mut aggregate_stdout = Vec::<u8>::new();
+        let mut aggregate_stderr = Vec::<u8>::new();
+        let mut aggregate_duration_ms: u64 = 0;
+        let mut aggregate_exit_code: i32 = 0;
+        let mut tmux_session = String::new();
+        let mut used_tmux = false;
+        let mut used_tool = false;
+        let mut line_results = Vec::<Json>::new();
+        let mut has_non_empty_line = false;
+
+        for (idx, raw_line) in command.lines().enumerate() {
+            let line = raw_line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            has_non_empty_line = true;
+
+            let command_name = AgentToolManager::parse_bash_command_name(line);
+            if let Some(tool_name) = self.tool_mgr.resolve_bash_registered_tool_name(line) {
+                // Avoid recursive exec -> exec forwarding.
+                if tool_name != TOOL_EXEC_BASH {
+                    let pane_cwd = self.resolve_tmux_pane_cwd(session_id, cwd).await;
+                    let tool_result = self
+                        .tool_mgr
+                        .call_tool_from_bash_line_with_cwd(ctx, line, Some(pane_cwd.as_path()))
+                        .await;
+                    match tool_result {
+                        Ok(Some(result)) => {
+                            used_tool = true;
+                            let rendered = serde_json::to_string(&result).unwrap_or_else(|_| {
+                                "{\"ok\":false,\"error\":\"tool result serialize failed\"}"
+                                    .to_string()
+                            });
+                            aggregate_stdout.extend_from_slice(rendered.as_bytes());
+                            aggregate_stdout.push(b'\n');
+                            line_results.push(json!({
+                                "line": idx + 1,
+                                "mode": "tool",
+                                "command": line,
+                                "command_name": command_name.clone().unwrap_or_default(),
+                                "tool_name": tool_name,
+                                "cwd": pane_cwd.to_string_lossy().to_string(),
+                                "ok": true,
+                            }));
+                            continue;
+                        }
+                        Ok(None) => {}
+                        Err(err) => {
+                            aggregate_exit_code = 1;
+                            let err_text = err.to_string();
+                            aggregate_stderr.extend_from_slice(err_text.as_bytes());
+                            if !err_text.ends_with('\n') {
+                                aggregate_stderr.push(b'\n');
+                            }
+                            line_results.push(json!({
+                                "line": idx + 1,
+                                "mode": "tool",
+                                "command": line,
+                                "command_name": command_name.unwrap_or_default(),
+                                "tool_name": tool_name,
+                                "cwd": pane_cwd.to_string_lossy().to_string(),
+                                "ok": false,
+                                "error": err_text,
+                            }));
+                            return Ok(ExecBashRunResult {
+                                exit_code: aggregate_exit_code,
+                                stdout: aggregate_stdout,
+                                stderr: aggregate_stderr,
+                                duration_ms: aggregate_duration_ms,
+                                tmux_session,
+                                engine: if used_tmux { "tmux+tool" } else { "tool" },
+                                line_results,
+                            });
+                        }
+                    }
+                }
+            }
+
+            let run_result = self
+                .run_tmux_bash(ctx, session_id, line, cwd, timeout_ms, env_vars)
+                .await?;
+            used_tmux = true;
+            tmux_session = run_result.tmux_session.clone();
+            aggregate_duration_ms = aggregate_duration_ms.saturating_add(run_result.duration_ms);
+            aggregate_stdout.extend_from_slice(&run_result.stdout);
+            aggregate_stderr.extend_from_slice(&run_result.stderr);
+            line_results.push(json!({
+                "line": idx + 1,
+                "mode": "bash",
+                "command": line,
+                "command_name": command_name.unwrap_or_default(),
+                "exit_code": run_result.exit_code,
+            }));
+            if run_result.exit_code != 0 {
+                aggregate_exit_code = run_result.exit_code;
+                return Ok(ExecBashRunResult {
+                    exit_code: aggregate_exit_code,
+                    stdout: aggregate_stdout,
+                    stderr: aggregate_stderr,
+                    duration_ms: aggregate_duration_ms,
+                    tmux_session,
+                    engine: if used_tool { "tmux+tool" } else { "tmux" },
+                    line_results,
+                });
+            }
+        }
+
+        if !has_non_empty_line {
+            let run_result = self
+                .run_tmux_bash(ctx, session_id, command, cwd, timeout_ms, env_vars)
+                .await?;
+            used_tmux = true;
+            tmux_session = run_result.tmux_session.clone();
+            aggregate_duration_ms = aggregate_duration_ms.saturating_add(run_result.duration_ms);
+            aggregate_stdout.extend_from_slice(&run_result.stdout);
+            aggregate_stderr.extend_from_slice(&run_result.stderr);
+            aggregate_exit_code = run_result.exit_code;
+        }
+
+        Ok(ExecBashRunResult {
+            exit_code: aggregate_exit_code,
+            stdout: aggregate_stdout,
+            stderr: aggregate_stderr,
+            duration_ms: aggregate_duration_ms,
+            tmux_session,
+            engine: if used_tmux && used_tool {
+                "tmux+tool"
+            } else if used_tool {
+                "tool"
+            } else {
+                "tmux"
+            },
+            line_results,
+        })
+    }
+
+    async fn resolve_tmux_pane_cwd(&self, session_id: &str, fallback_cwd: &Path) -> PathBuf {
+        let tmux_session = build_tmux_session_name(session_id);
+        if let Err(err) = ensure_tmux_session(&tmux_session, fallback_cwd).await {
+            warn!(
+                "resolve tmux pane cwd fallback to session cwd: session={} err={}",
+                session_id, err
+            );
+            return fallback_cwd.to_path_buf();
+        }
+        let tmux_target = format!("{tmux_session}:0.0");
+        match read_tmux_pane_current_path(&tmux_target).await {
+            Ok(Some(path)) => {
+                let normalized = normalize_abs_path(&path);
+                if normalized.starts_with(&self.cfg.workspace_root) {
+                    normalized
+                } else {
+                    fallback_cwd.to_path_buf()
+                }
+            }
+            Ok(None) => fallback_cwd.to_path_buf(),
+            Err(err) => {
+                warn!(
+                    "read tmux pane current_path failed, fallback to session cwd: session={} err={}",
+                    session_id, err
+                );
+                fallback_cwd.to_path_buf()
+            }
+        }
+    }
+
     async fn resolve_session_cwd(&self, session_id: &str) -> Result<PathBuf, AgentToolError> {
         let Some(session) = self.session_store.get_session(session_id).await else {
             return Err(AgentToolError::InvalidArgs(format!(
@@ -1454,6 +1643,31 @@ async fn ensure_tmux_session(session_name: &str, cwd: &Path) -> Result<(), Agent
         "create tmux session `{session_name}` failed: {}",
         String::from_utf8_lossy(&output.stderr)
     )))
+}
+
+async fn read_tmux_pane_current_path(target: &str) -> Result<Option<PathBuf>, AgentToolError> {
+    let output = Command::new("tmux")
+        .args(["display-message", "-p", "-t", target, "#{pane_current_path}"])
+        .output()
+        .await
+        .map_err(|err| AgentToolError::ExecFailed(format!("tmux display-message failed: {err}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let lower = stderr.to_ascii_lowercase();
+        if lower.contains("can't find pane") || lower.contains("can't find session") {
+            return Ok(None);
+        }
+        return Err(AgentToolError::ExecFailed(format!(
+            "tmux display-message `{target}` failed: {}",
+            stderr
+        )));
+    }
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let value = raw.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(PathBuf::from(value)))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
