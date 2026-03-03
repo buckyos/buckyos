@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tokio::sync::Mutex;
 
-use crate::agent_tool::{AgentSkillRecord, AgentSkillSpec, AgentToolError};
+use super::agent_skill::{self, AgentSkillRecord, AgentSkillSpec};
+use crate::agent_tool::AgentToolError;
 
 const DEFAULT_LOCK_TTL_MS: u64 = 120_000;
 const MAX_WORKSPACE_NAME_LEN: usize = 96;
@@ -16,8 +17,6 @@ const MAX_POLICY_PROFILE_ID_LEN: usize = 128;
 const WORKSHOP_INDEX_FILE_NAME: &str = "index.json";
 const SESSION_BINDINGS_REL_PATH: &str = "sessions/local_workspace_bindings.json";
 const LOCAL_WORKSPACES_REL_PATH: &str = "workspaces/local";
-const SKILLS_REL_PATH: &str = "skills";
-const SKILL_FILE_EXTENSIONS: [&str; 3] = ["yaml", "yml", "json"];
 
 static LOCAL_WORKSPACE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -218,35 +217,6 @@ pub struct LocalWorkspaceManager {
 struct LocalWorkspaceState {
     index: WorkshopIndex,
     session_bindings: HashMap<String, SessionWorkspaceBinding>,
-}
-
-#[derive(Clone, Debug, Deserialize, Default)]
-#[serde(default)]
-struct RawAgentSkillSpec {
-    name: String,
-    introduce: String,
-    rules: String,
-    actions: Vec<String>,
-    loaded_tools: Vec<String>,
-}
-
-impl RawAgentSkillSpec {
-    fn normalize(&mut self) {
-        self.name = self.name.trim().to_string();
-        self.introduce = self.introduce.trim().to_string();
-        self.rules = self.rules.trim().to_string();
-        self.actions = normalize_unique_string_list(std::mem::take(&mut self.actions));
-        self.loaded_tools = normalize_unique_string_list(std::mem::take(&mut self.loaded_tools));
-    }
-
-    fn to_skill_spec(self) -> AgentSkillSpec {
-        AgentSkillSpec {
-            introduce: self.introduce,
-            rules: self.rules,
-            actions: self.actions,
-            loaded_tools: self.loaded_tools,
-        }
-    }
 }
 
 impl LocalWorkspaceManager {
@@ -855,12 +825,13 @@ impl LocalWorkspaceManager {
         }
 
         let mut skill_records = HashMap::<String, AgentSkillRecord>::new();
-        let agent_skills_root = self.cfg.workshop_root.join(SKILLS_REL_PATH);
-        merge_skill_records_from_dir(&agent_skills_root, &mut skill_records).await?;
+        let agent_skills_root = self.cfg.workshop_root.join(agent_skill::SKILLS_REL_PATH);
+        agent_skill::merge_skill_records_from_dir(&agent_skills_root, &mut skill_records).await?;
 
         let local_workspace_path = self.get_local_workspace_path(local_workspace_id).await?;
-        let workspace_skills_root = local_workspace_path.join(SKILLS_REL_PATH);
-        merge_skill_records_from_dir(&workspace_skills_root, &mut skill_records).await?;
+        let workspace_skills_root = local_workspace_path.join(agent_skill::SKILLS_REL_PATH);
+        agent_skill::merge_skill_records_from_dir(&workspace_skills_root, &mut skill_records)
+            .await?;
 
         let mut out: Vec<AgentSkillRecord> = skill_records.into_values().collect();
         out.sort_by(|left, right| left.name.cmp(&right.name));
@@ -868,13 +839,8 @@ impl LocalWorkspaceManager {
     }
 
     pub async fn load_skill(&self, skill_name: &str) -> Result<AgentSkillSpec, AgentToolError> {
-        let skill_name = validate_skill_name(skill_name)?;
-        let skills_root = self.cfg.workshop_root.join(SKILLS_REL_PATH);
-        let skill_path = find_skill_file(&skills_root, skill_name)
-            .await?
-            .ok_or_else(|| AgentToolError::NotFound(format!("skill not found: {skill_name}")))?;
-        let raw_spec = read_skill_spec_file(&skill_path).await?;
-        Ok(raw_spec.to_skill_spec())
+        let skills_root = self.cfg.workshop_root.join(agent_skill::SKILLS_REL_PATH);
+        agent_skill::load_skill_from_root(&skills_root, skill_name).await
     }
 }
 
@@ -909,26 +875,6 @@ fn validate_session_id(input: &str) -> Result<&str, AgentToolError> {
     if trimmed.is_empty() {
         return Err(AgentToolError::InvalidArgs(
             "session_id cannot be empty".to_string(),
-        ));
-    }
-    Ok(trimmed)
-}
-
-fn validate_skill_name(input: &str) -> Result<&str, AgentToolError> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return Err(AgentToolError::InvalidArgs(
-            "skill_name cannot be empty".to_string(),
-        ));
-    }
-    if trimmed.contains('/') || trimmed.contains('\\') {
-        return Err(AgentToolError::InvalidArgs(
-            "skill_name cannot contain path separators".to_string(),
-        ));
-    }
-    if trimmed.contains("..") {
-        return Err(AgentToolError::InvalidArgs(
-            "skill_name cannot contain `..`".to_string(),
         ));
     }
     Ok(trimmed)
@@ -980,148 +926,6 @@ async fn ensure_workshop_layout(workshop_root: &Path) -> Result<(), AgentToolErr
             .map_err(|err| io_error("create workshop layout", &dir, err))?;
     }
     Ok(())
-}
-
-async fn merge_skill_records_from_dir(
-    skills_root: &Path,
-    records: &mut HashMap<String, AgentSkillRecord>,
-) -> Result<(), AgentToolError> {
-    if !fs::try_exists(skills_root)
-        .await
-        .map_err(|err| io_error("check skills dir", skills_root, err))?
-    {
-        return Ok(());
-    }
-
-    let mut entries = fs::read_dir(skills_root)
-        .await
-        .map_err(|err| io_error("read skills dir", skills_root, err))?;
-    while let Some(entry) = entries
-        .next_entry()
-        .await
-        .map_err(|err| io_error("read skill dir entry", skills_root, err))?
-    {
-        let entry_path = entry.path();
-        let metadata = entry
-            .metadata()
-            .await
-            .map_err(|err| io_error("read skill dir metadata", &entry_path, err))?;
-        if !metadata.is_dir() {
-            continue;
-        }
-
-        let Some(skill_key_raw) = entry.file_name().to_str().map(|value| value.to_string()) else {
-            continue;
-        };
-        let skill_key = skill_key_raw.trim();
-        if skill_key.is_empty() {
-            continue;
-        }
-
-        let Some(skill_file_path) = find_skill_file(skills_root, skill_key).await? else {
-            continue;
-        };
-        let raw_spec = read_skill_spec_file(&skill_file_path).await?;
-        let skill_name = if raw_spec.name.is_empty() {
-            skill_key.to_string()
-        } else {
-            raw_spec.name.clone()
-        };
-
-        records.insert(
-            skill_key.to_string(),
-            AgentSkillRecord {
-                name: skill_name,
-                introduce: raw_spec.introduce,
-            },
-        );
-    }
-
-    Ok(())
-}
-
-async fn find_skill_file(
-    skills_root: &Path,
-    skill_name: &str,
-) -> Result<Option<PathBuf>, AgentToolError> {
-    let skill_name = skill_name.trim();
-    if skill_name.is_empty() {
-        return Ok(None);
-    }
-
-    let skill_dir = skills_root.join(skill_name);
-    if !fs::try_exists(&skill_dir)
-        .await
-        .map_err(|err| io_error("check skill dir", &skill_dir, err))?
-    {
-        return Ok(None);
-    }
-
-    let metadata = fs::metadata(&skill_dir)
-        .await
-        .map_err(|err| io_error("read skill dir metadata", &skill_dir, err))?;
-    if !metadata.is_dir() {
-        return Ok(None);
-    }
-
-    for ext in SKILL_FILE_EXTENSIONS {
-        let path = skill_dir.join(format!("{skill_name}.{ext}"));
-        if fs::try_exists(&path)
-            .await
-            .map_err(|err| io_error("check skill file", &path, err))?
-        {
-            let file_meta = fs::metadata(&path)
-                .await
-                .map_err(|err| io_error("read skill file metadata", &path, err))?;
-            if file_meta.is_file() {
-                return Ok(Some(path));
-            }
-        }
-    }
-
-    Ok(None)
-}
-
-async fn read_skill_spec_file(path: &Path) -> Result<RawAgentSkillSpec, AgentToolError> {
-    let content = fs::read_to_string(path)
-        .await
-        .map_err(|err| io_error("read skill file", path, err))?;
-
-    let ext = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| value.to_ascii_lowercase());
-
-    let mut spec =
-        match ext.as_deref() {
-            Some("json") => {
-                serde_json::from_str::<RawAgentSkillSpec>(&content).map_err(|err| {
-                    AgentToolError::ExecFailed(format!(
-                        "parse skill config `{}` failed: {err}",
-                        path.display()
-                    ))
-                })?
-            }
-            Some("yaml") | Some("yml") => {
-                serde_yaml::from_str::<RawAgentSkillSpec>(&content).map_err(|err| {
-                    AgentToolError::ExecFailed(format!(
-                        "parse skill config `{}` failed: {err}",
-                        path.display()
-                    ))
-                })?
-            }
-            _ => serde_json::from_str::<RawAgentSkillSpec>(&content).or_else(|json_err| {
-                serde_yaml::from_str::<RawAgentSkillSpec>(&content).map_err(|yaml_err| {
-                    AgentToolError::ExecFailed(format!(
-                        "parse skill config `{}` failed: json error: {json_err}; yaml error: {yaml_err}",
-                        path.display()
-                    ))
-                })
-            })?,
-        };
-
-    spec.normalize();
-    Ok(spec)
 }
 
 async fn load_session_bindings(
@@ -1229,21 +1033,6 @@ fn normalize_abs_path(path: &Path) -> PathBuf {
         }
     }
     normalized
-}
-
-fn normalize_unique_string_list(items: Vec<String>) -> Vec<String> {
-    let mut seen = HashSet::<String>::new();
-    let mut out = Vec::<String>::new();
-    for item in items {
-        let trimmed = item.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if seen.insert(trimmed.to_string()) {
-            out.push(trimmed.to_string());
-        }
-    }
-    out
 }
 
 #[derive(Clone, Debug, Default)]

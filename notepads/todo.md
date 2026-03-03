@@ -69,67 +69,31 @@ Behavior里不内置动态加载机制：配置是什么就是什么
 最终，toolbox里要得到的是
 - 可用的action列表
 - 可用的tool列表
+- 可用的cmd列表
 
 机制很丰富，但也许对behavior的作者来说，配置一个skills最简单可控
 
-### ACTION bind_external_workspace
+- 当前加载了哪些Skills 是 Session的状态
+- 切换behavior无非是3种结果
+ - alone:替换成behavior配置的skill (清零逻辑) 
+ - inherbit:合并到当前skill(追加逻辑)
 
+```yaml
+toolbox:
+    mode: alone
+    skills: ["coding/rust"] # 这个例子没有default_load_skills，纯拼
+    default_allow_functions: ["read_file","bash"] # 在function里使用read tool
+```
 
-### ACTION bind_workspace
+skills文件的定义
+- process_rule定义
+- process_rule中用到的cli的说明
+- allow_cmds[""]
 
-**bind_workspace**
- - Action Name: bind_workspace
+### TODO Mgr 的简化 （OK）
 
- - Usage: [bind_workspace $workspace_id_or_workspace_path]
- - Description: 设置agent_session的当前workspace（自动识别 workspace_id / workspace_path）
- - Action/LLM Tool Call: not support（仅支持 bash）
+TODO cli化
 
-### ACTION create_local_workspace
-**create_local_workspace**
- - Action Name: create_local_workspace
- - Usage: create_local_workspace $local_workspace_name
-
-
-
-### ACTION read
-**read**
- - Action Name: read
- - Kind: call_tool
- - Usage: [read $path [first_chunk] [max-lines]
- - Description: Read file. Args schema: {"properties":{"first_chunk":{"type":"string"},"path":{"type":"string"},"range":{}},"required":["path"],"type":"object"}
-
-### ACTION todo_manage
-**todo_manage**
- - Action Name: todo_manage
- - Kind: call_tool
-
-todo_add T01 title="xxxxx" 
-todo_update T01 complete
-
-
-
-====================
-
-### ACTION edit
-**edit**
- - Action Name: edit
- - Kind: call_tool
- - Usage: ["edit", {"properties":{"mode":{"enum":["replace","after","before"],"type":"string"},"new_content":{"type":"string"},"path":{"type":"string"},"pos_chunk":{"type":"string"}},"required":["path","pos_chunk","new_content","mode"],"type":"object"}]
- - Description: Edit file by anchor. Args schema: {"properties":{"mode":{"enum":["replace","after","before"],"type":"string"},"new_content":{"type":"string"},"path":{"type":"string"},"pos_chunk":{"type":"string"}},"required":["path","pos_chunk","new_content","mode"],"type":"object"}
-
-
-### ACTION write
-**write**
- - Action Name: write
- - Kind: call_tool
- - Usage: ["write", {"properties":{"content":{"type":"string"},"mode":{"enum":["new","append","write"],"type":"string"},"path":{"type":"string"}},"required":["path","content","mode"],"type":"object"}]
- - Description: Write file. Args schema: {"properties":{"content":{"type":"string"},"mode":{"enum":["new","append","write"],"type":"string"},"path":{"type":"string"}},"required":["path","content","mode"],"type":"object"}
-test agent_tool::tests::print_tool_and_action_prompt_catalog_for_review ... ok
-
-
-### TODO体系的简化
-
-现在参数太多了，难以填对
 
 ## Review OpenDAN的API Gateway和调试控制台
 
