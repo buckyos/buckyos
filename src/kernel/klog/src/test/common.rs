@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::Once;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing_subscriber::{EnvFilter, fmt};
 
 pub(crate) struct TestMemoryContext {
@@ -144,10 +145,15 @@ pub(crate) fn init_test_logging() {
 
 pub(crate) fn unique_test_path(name: &str) -> std::path::PathBuf {
     let id = TEST_ID.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     std::env::temp_dir().join(format!(
-        "buckyos_klog_{}_{}_{}",
+        "buckyos_klog_{}_{}_{}_{}",
         std::process::id(),
         id,
+        nanos,
         name
     ))
 }
@@ -172,12 +178,14 @@ pub(crate) fn sample_state_entries() -> Vec<KLogEntry> {
             id: 11,
             timestamp: 100,
             node_id: 1,
+            request_id: None,
             message: "kernel-boot".to_string(),
         },
         KLogEntry {
             id: 12,
             timestamp: 101,
             node_id: 1,
+            request_id: None,
             message: "driver-online".to_string(),
         },
     ]

@@ -49,6 +49,7 @@ impl KLogClient {
                 message: message.into(),
                 timestamp: None,
                 node_id: None,
+                request_id: None,
             })
             .await?;
         Ok(resp.id)
@@ -248,6 +249,7 @@ mod tests {
                 message: "hello-klog".to_string(),
                 timestamp: Some(1000),
                 node_id: Some(1),
+                request_id: Some("req-1".to_string()),
             })
             .await
             .map_err(|e| anyhow::anyhow!("append failed: {}", e))?;
@@ -272,6 +274,7 @@ mod tests {
                             id: 7,
                             timestamp: 123,
                             node_id: 1,
+                            request_id: None,
                             message: "q-result".to_string(),
                         }],
                     },

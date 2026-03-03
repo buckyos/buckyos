@@ -1,8 +1,14 @@
 use crate::{KLogEntry, KLogId, KNode, KNodeId, KResult};
 use openraft::StoredMembership;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::Mutex as AsyncMutex;
+
+const REQUEST_DEDUP_WINDOW_MS: u64 = 5 * 60 * 1000;
+const REQUEST_DEDUP_MAX_ITEMS: usize = 10_000;
 
 pub struct KLogStateSnapshot {
     pub data: Vec<u8>,
@@ -66,11 +72,79 @@ pub trait KLogStateStore: Send + Sync {
 
 pub type KLogStateStoreRef = Arc<Box<dyn KLogStateStore>>;
 
+#[derive(Debug, Clone, Copy)]
+struct RequestDedupRecord {
+    log_id: u64,
+    seen_at_ms: u64,
+}
+
+#[derive(Debug, Default)]
+struct RequestDedupCache {
+    records: HashMap<String, RequestDedupRecord>,
+    order: VecDeque<(u64, String)>,
+}
+
+impl RequestDedupCache {
+    fn lookup(&mut self, request_id: &str, now_ms: u64) -> Option<u64> {
+        self.cleanup(now_ms);
+        self.records.get(request_id).map(|r| r.log_id)
+    }
+
+    fn remember(&mut self, request_id: String, log_id: u64, now_ms: u64) {
+        self.cleanup(now_ms);
+
+        self.records.insert(
+            request_id.clone(),
+            RequestDedupRecord {
+                log_id,
+                seen_at_ms: now_ms,
+            },
+        );
+        self.order.push_back((now_ms, request_id));
+        self.cleanup(now_ms);
+    }
+
+    fn clear(&mut self) {
+        self.records.clear();
+        self.order.clear();
+    }
+
+    fn cleanup(&mut self, now_ms: u64) {
+        loop {
+            let should_pop = match self.order.front() {
+                Some((seen_at_ms, _)) => {
+                    let expired = now_ms.saturating_sub(*seen_at_ms) > REQUEST_DEDUP_WINDOW_MS;
+                    expired || self.records.len() > REQUEST_DEDUP_MAX_ITEMS
+                }
+                None => false,
+            };
+
+            if !should_pop {
+                break;
+            }
+
+            let Some((seen_at_ms, request_id)) = self.order.pop_front() else {
+                break;
+            };
+
+            let remove = self
+                .records
+                .get(request_id.as_str())
+                .map(|v| v.seen_at_ms == seen_at_ms)
+                .unwrap_or(false);
+            if remove {
+                self.records.remove(request_id.as_str());
+            }
+        }
+    }
+}
+
 pub struct KLogStateStoreManager {
     state_store: KLogStateStoreRef,
 
     // The kernel state: next id to assign to the next state entry
     next_log_id: AtomicU64,
+    request_dedup: AsyncMutex<RequestDedupCache>,
 }
 
 impl std::fmt::Debug for KLogStateStoreManager {
@@ -92,10 +166,18 @@ impl KLogStateStoreManager {
         Ok(Self {
             state_store,
             next_log_id: AtomicU64::new(recovered_next),
+            request_dedup: AsyncMutex::new(RequestDedupCache::default()),
         })
     }
 
     pub async fn append(&self, entries: Vec<KLogEntry>) -> KResult<()> {
+        let request_id_pairs = entries
+            .iter()
+            .filter_map(|e| {
+                normalize_request_id(e.request_id.as_deref())
+                    .map(|request_id| (request_id.to_string(), e.id))
+            })
+            .collect::<Vec<_>>();
         let committed_next = entries
             .iter()
             .map(|e| e.id.saturating_add(1))
@@ -103,7 +185,9 @@ impl KLogStateStoreManager {
             .unwrap_or(0);
 
         self.state_store.append(entries).await?;
-        self.advance_next_log_id(committed_next).await
+        self.advance_next_log_id(committed_next).await?;
+        self.remember_request_ids(request_id_pairs).await;
+        Ok(())
     }
 
     /// Allocate a deterministic id on leader before writing to raft log.
@@ -124,9 +208,26 @@ impl KLogStateStoreManager {
         item
     }
 
+    pub async fn find_recent_request_id(&self, request_id: &str) -> Option<u64> {
+        let request_id = normalize_request_id(Some(request_id))?;
+        let now_ms = now_millis();
+        let mut dedup = self.request_dedup.lock().await;
+        dedup.lookup(request_id, now_ms)
+    }
+
     /// Append an already prepared entry.
     /// This is used by state machine apply path to avoid re-assigning ids on followers.
     pub async fn append_prepared_entry(&self, item: KLogEntry) -> KResult<u64> {
+        if let Some(request_id) = normalize_request_id(item.request_id.as_deref())
+            && let Some(existing_id) = self.find_recent_request_id(request_id).await
+        {
+            info!(
+                "KLogStateStoreManager dedup hit in append_prepared_entry: request_id={}, existing_id={}, incoming_id={}",
+                request_id, existing_id, item.id
+            );
+            return Ok(existing_id);
+        }
+
         let id = item.id;
         self.append(vec![item]).await?;
         Ok(id)
@@ -144,6 +245,7 @@ impl KLogStateStoreManager {
         self.state_store.install_snapshot(snapshot).await?;
         let recovered_next = self.state_store.load_next_log_id().await?.unwrap_or(1);
         self.next_log_id.store(recovered_next, Ordering::SeqCst);
+        self.request_dedup.lock().await.clear();
         info!(
             "KLogStateStoreManager install_snapshot reload next_log_id from store: {}",
             recovered_next
@@ -186,6 +288,29 @@ impl KLogStateStoreManager {
 
         Ok(())
     }
+
+    async fn remember_request_ids(&self, request_ids: Vec<(String, u64)>) {
+        if request_ids.is_empty() {
+            return;
+        }
+
+        let now_ms = now_millis();
+        let mut dedup = self.request_dedup.lock().await;
+        for (request_id, log_id) in request_ids {
+            dedup.remember(request_id, log_id, now_ms);
+        }
+    }
 }
 
 pub type KLogStateStoreManagerRef = Arc<KLogStateStoreManager>;
+
+fn normalize_request_id(request_id: Option<&str>) -> Option<&str> {
+    request_id.map(|v| v.trim()).filter(|v| !v.is_empty())
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}

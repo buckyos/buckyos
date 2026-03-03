@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const DATA_QUERY_DEFAULT_LIMIT: usize = 200;
 pub const DATA_QUERY_MAX_LIMIT: usize = 2_000;
 pub const DATA_APPEND_MAX_MESSAGE_BYTES: usize = 64 * 1024;
+pub const DATA_APPEND_MAX_REQUEST_ID_BYTES: usize = 128;
 pub const DATA_APPEND_MAX_FORWARD_HOPS: u32 = 2;
 
 #[derive(Clone)]
@@ -56,6 +57,37 @@ impl KLogWriteService {
             return Err((StatusCode::PAYLOAD_TOO_LARGE, msg));
         }
 
+        let request_id = req
+            .request_id
+            .as_ref()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        if let Some(request_id) = request_id.as_ref()
+            && request_id.len() > DATA_APPEND_MAX_REQUEST_ID_BYTES
+        {
+            let msg = format!(
+                "{} data append rejected: request_id too large, bytes={}, max_bytes={}",
+                self.service_name,
+                request_id.len(),
+                DATA_APPEND_MAX_REQUEST_ID_BYTES
+            );
+            error!("{}", msg);
+            return Err((StatusCode::BAD_REQUEST, msg));
+        }
+
+        if let Some(request_id) = request_id.as_ref()
+            && let Some(existing_id) = self
+                .state_store_manager
+                .find_recent_request_id(request_id)
+                .await
+        {
+            info!(
+                "{} data append dedup hit before raft write: request_id={}, existing_id={}",
+                self.service_name, request_id, existing_id
+            );
+            return Ok(KLogAppendResponse { id: existing_id });
+        }
+
         let forward_hops = self.parse_forward_hops(headers).map_err(|msg| {
             error!("{}", msg);
             (StatusCode::BAD_REQUEST, msg)
@@ -80,20 +112,23 @@ impl KLogWriteService {
             message: req.message,
             timestamp: req.timestamp.or_else(|| Some(now_millis())),
             node_id: req.node_id.or(Some(local_node_id)),
+            request_id: request_id.clone(),
         };
 
         let item = self.state_store_manager.prepare_append_entry(KLogEntry {
             id: 0,
             timestamp: req.timestamp.unwrap_or(0),
             node_id: req.node_id.unwrap_or(local_node_id),
+            request_id,
             message: req.message.clone(),
         });
         let requested_id = item.id;
 
         info!(
-            "{} data append request: id={}, timestamp={}, node_id={}, msg_len={}, local_node_id={}, current_leader={:?}, forward_hops={}, forwarded_by={}",
+            "{} data append request: id={}, request_id={:?}, timestamp={}, node_id={}, msg_len={}, local_node_id={}, current_leader={:?}, forward_hops={}, forwarded_by={}",
             self.service_name,
             item.id,
+            item.request_id.as_deref(),
             item.timestamp,
             item.node_id,
             item.message.len(),

@@ -27,6 +27,7 @@ async fn test_manager_recovers_next_log_id_after_rocksdb_reopen() -> anyhow::Res
         id: 0,
         timestamp: 300,
         node_id: 1,
+        request_id: None,
         message: "after-reopen".to_string(),
     });
     assert_eq!(prepared.id, 13);
@@ -113,6 +114,7 @@ async fn test_rocksdb_state_store_install_snapshot() -> anyhow::Result<()> {
             id: 999,
             timestamp: 1,
             node_id: 7,
+            request_id: None,
             message: "old-data".to_string(),
         }])
         .await?;
@@ -126,6 +128,7 @@ async fn test_rocksdb_state_store_install_snapshot() -> anyhow::Result<()> {
         id: 0,
         timestamp: 500,
         node_id: 1,
+        request_id: None,
         message: "after-install-snapshot".to_string(),
     });
     assert_eq!(prepared.id, 13);
@@ -157,6 +160,7 @@ async fn test_rocksdb_checkpoint_mode_snapshot_roundtrip() -> anyhow::Result<()>
             id: 999,
             timestamp: 1,
             node_id: 7,
+            request_id: None,
             message: "old-data".to_string(),
         }])
         .await?;
@@ -193,6 +197,7 @@ async fn test_rocksdb_checkpoint_mode_install_enumerate_snapshot() -> anyhow::Re
             id: 500,
             timestamp: 2,
             node_id: 9,
+            request_id: None,
             message: "stale-data".to_string(),
         }])
         .await?;
@@ -230,6 +235,7 @@ async fn test_rocksdb_backup_engine_mode_snapshot_roundtrip() -> anyhow::Result<
             id: 999,
             timestamp: 1,
             node_id: 7,
+            request_id: None,
             message: "old-data".to_string(),
         }])
         .await?;
@@ -265,6 +271,7 @@ async fn test_rocksdb_backup_engine_mode_install_enumerate_snapshot() -> anyhow:
             id: 501,
             timestamp: 2,
             node_id: 9,
+            request_id: None,
             message: "stale-data".to_string(),
         }])
         .await?;
@@ -295,24 +302,28 @@ async fn test_rocksdb_query_entries_asc_range_limit() -> anyhow::Result<()> {
                 id: 10,
                 timestamp: 1,
                 node_id: 1,
+                request_id: None,
                 message: "m10".to_string(),
             },
             KLogEntry {
                 id: 11,
                 timestamp: 2,
                 node_id: 1,
+                request_id: None,
                 message: "m11".to_string(),
             },
             KLogEntry {
                 id: 12,
                 timestamp: 3,
                 node_id: 1,
+                request_id: None,
                 message: "m12".to_string(),
             },
             KLogEntry {
                 id: 13,
                 timestamp: 4,
                 node_id: 1,
+                request_id: None,
                 message: "m13".to_string(),
             },
         ])
@@ -345,24 +356,28 @@ async fn test_rocksdb_query_entries_desc_range_limit() -> anyhow::Result<()> {
                 id: 20,
                 timestamp: 1,
                 node_id: 1,
+                request_id: None,
                 message: "m20".to_string(),
             },
             KLogEntry {
                 id: 21,
                 timestamp: 2,
                 node_id: 1,
+                request_id: None,
                 message: "m21".to_string(),
             },
             KLogEntry {
                 id: 22,
                 timestamp: 3,
                 node_id: 1,
+                request_id: None,
                 message: "m22".to_string(),
             },
             KLogEntry {
                 id: 23,
                 timestamp: 4,
                 node_id: 1,
+                request_id: None,
                 message: "m23".to_string(),
             },
         ])

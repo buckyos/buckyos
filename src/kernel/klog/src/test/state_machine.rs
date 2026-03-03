@@ -1,7 +1,8 @@
 use super::common::{TestMemoryContext, sample_membership, unique_test_path};
 use crate::state_machine::{KLogStateMachine, SnapshotManager};
 use crate::state_store::{
-    KLogStateStore, KLogStateStoreManager, MemoryStateStore, RocksDbSnapshotMode, RocksDbStateStore,
+    KLogQuery, KLogStateStore, KLogStateStoreManager, MemoryStateStore, RocksDbSnapshotMode,
+    RocksDbStateStore,
 };
 use crate::{KLogEntry, KLogRequest, KLogResponse};
 use openraft::entry::EntryPayload;
@@ -19,6 +20,7 @@ async fn test_prepare_append_entry_assigns_id_on_leader_only() -> anyhow::Result
         id: 0,
         timestamp: 100,
         node_id: 1,
+        request_id: Some("sm-prepare-1".to_string()),
         message: "leader-alloc-id".to_string(),
     };
 
@@ -33,6 +35,7 @@ async fn test_prepare_append_entry_assigns_id_on_leader_only() -> anyhow::Result
         id: 42,
         timestamp: 101,
         node_id: 1,
+        request_id: Some("sm-prepare-2".to_string()),
         message: "already-has-id".to_string(),
     };
     let prepared_fixed = manager.prepare_append_entry(fixed_id_entry.clone());
@@ -60,6 +63,7 @@ async fn test_state_machine_apply_keeps_prepared_id() -> anyhow::Result<()> {
                 id: prepared_id,
                 timestamp: 200,
                 node_id: 1,
+                request_id: Some("sm-apply-1".to_string()),
                 message: "already-prepared".to_string(),
             },
         }),
@@ -71,6 +75,41 @@ async fn test_state_machine_apply_keeps_prepared_id() -> anyhow::Result<()> {
         KLogResponse::AppendOk { id } => assert_eq!(*id, prepared_id),
         other => panic!("unexpected response: {:?}", other),
     }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_state_store_manager_request_id_dedup() -> anyhow::Result<()> {
+    let state_store = MemoryStateStore::new();
+    let state_store = Arc::new(Box::new(state_store) as Box<dyn KLogStateStore>);
+    let manager = KLogStateStoreManager::new(state_store).await?;
+
+    let first = manager.prepare_append_entry(KLogEntry {
+        id: 0,
+        timestamp: 300,
+        node_id: 1,
+        request_id: Some("idem-1".to_string()),
+        message: "first-write".to_string(),
+    });
+    let first_id = manager.append_prepared_entry(first).await?;
+
+    let retry = manager.prepare_append_entry(KLogEntry {
+        id: 0,
+        timestamp: 301,
+        node_id: 1,
+        request_id: Some("idem-1".to_string()),
+        message: "retry-write-should-dedup".to_string(),
+    });
+    let retry_id = manager.append_prepared_entry(retry).await?;
+
+    assert_eq!(retry_id, first_id);
+
+    let entries = manager.query_entries(KLogQuery::default()).await?;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].id, first_id);
+    assert_eq!(entries[0].message, "first-write");
+    assert_eq!(entries[0].request_id.as_deref(), Some("idem-1"));
 
     Ok(())
 }

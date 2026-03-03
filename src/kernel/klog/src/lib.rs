@@ -31,6 +31,8 @@ pub struct KLogEntry {
     pub id: u64, // The unique ID of the log entry
     pub timestamp: u64,
     pub node_id: u64, // The ID of the node that created the log entry
+    #[serde(default)]
+    pub request_id: Option<String>, // Optional idempotency key for dedup.
     pub message: String,
 }
 

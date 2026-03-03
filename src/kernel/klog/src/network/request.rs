@@ -102,6 +102,7 @@ pub struct KLogAppendRequest {
     pub message: String,
     pub timestamp: Option<u64>,
     pub node_id: Option<KNodeId>,
+    pub request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
