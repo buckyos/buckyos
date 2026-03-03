@@ -475,7 +475,7 @@ mod tests {
                 ..Default::default()
             }),
             delivery: None,
-            thread_key: msg.thread.topic.clone(),
+            ui_session_id: msg.thread.topic.clone(),
             sort_key: 1,
             tags: Vec::new(),
         };

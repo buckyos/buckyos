@@ -3,7 +3,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use log::info;
+use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::fs;
@@ -26,7 +26,7 @@ use crate::buildin_tool::{
     ReadFileTool as BuiltinReadFileTool, WorkshopWriteAudit as BuiltinWorkshopWriteAudit,
     WriteFileTool as BuiltinWriteFileTool,
 };
-use crate::worklog::{WorklogTool, WorklogToolConfig};
+use crate::worklog::WorklogToolConfig;
 
 const DEFAULT_BASH_PATH: &str = "/bin/bash";
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
@@ -34,7 +34,6 @@ const DEFAULT_MAX_OUTPUT_BYTES: usize = 32 * 1024;
 const DEFAULT_MAX_DIFF_LINES: usize = 200;
 const DEFAULT_MAX_FILE_WRITE_BYTES: usize = 256 * 1024;
 const DEFAULT_TOOLS_JSON_REL_PATH: &str = "tools/tools.json";
-const DEFAULT_TOOLS_MD_REL_PATH: &str = "tools/tools.md";
 const DEFAULT_TODO_DB_REL_PATH: &str = "todo/todo.db";
 const DEFAULT_WORKLOG_DB_REL_PATH: &str = "worklog/worklog.db";
 const DEFAULT_TODO_LIST_LIMIT: usize = 32;
@@ -54,7 +53,6 @@ pub struct AgentWorkshopConfig {
     pub default_max_diff_lines: usize,
     pub default_max_file_write_bytes: usize,
     pub tools_json_rel_path: PathBuf,
-    pub tools_markdown_rel_path: PathBuf,
     pub local_workspace_lock_ttl_ms: u64,
 }
 
@@ -69,7 +67,6 @@ impl AgentWorkshopConfig {
             default_max_diff_lines: DEFAULT_MAX_DIFF_LINES,
             default_max_file_write_bytes: DEFAULT_MAX_FILE_WRITE_BYTES,
             tools_json_rel_path: PathBuf::from(DEFAULT_TOOLS_JSON_REL_PATH),
-            tools_markdown_rel_path: PathBuf::from(DEFAULT_TOOLS_MD_REL_PATH),
             local_workspace_lock_ttl_ms: DEFAULT_LOCAL_WORKSPACE_LOCK_TTL_MS,
         }
     }
@@ -90,7 +87,6 @@ impl Default for AgentWorkshopToolsConfig {
                 WorkshopToolConfig::enabled(TOOL_WRITE_FILE),
                 WorkshopToolConfig::enabled(TOOL_READ_FILE),
                 WorkshopToolConfig::enabled(TOOL_TODO_MANAGE),
-                WorkshopToolConfig::enabled(TOOL_WORKLOG_MANAGE),
                 WorkshopToolConfig::enabled(TOOL_CREATE_LOCAL_WORKSPACE),
                 WorkshopToolConfig::enabled(TOOL_BIND_LOCAL_WORKSPACE),
             ],
@@ -344,12 +340,10 @@ impl AgentWorkshop {
                         })?)?;
                     }
                     TOOL_WORKLOG_MANAGE => {
-                        let policy = WorklogToolPolicy::from_tool_config(&self.cfg, tool)?;
-                        tool_mgr.register_tool(WorklogTool::new(WorklogToolConfig {
-                            db_path: policy.db_path,
-                            default_list_limit: policy.default_list_limit,
-                            max_list_limit: policy.max_list_limit,
-                        })?)?;
+                        // worklog_manage is no longer exposed as a runtime tool.
+                        // Keep params parsing for backward-compatible tools.json configs
+                        // so write-audit settings can still be reused.
+                        let _ = WorklogToolPolicy::from_tool_config(&self.cfg, tool)?;
                     }
                     TOOL_CREATE_LOCAL_WORKSPACE => {
                         tool_mgr.register_tool(CreateLocalWorkspaceTool::new(
@@ -480,48 +474,74 @@ impl AgentTool for CreateLocalWorkspaceTool {
         let created_by_session =
             optional_string_arg(&args, "created_by_session")?.or_else(|| session_id.clone());
         let policy_profile_id = optional_string_arg(&args, "policy_profile_id")?;
-
-        let workspace = self
-            .local_workspace_mgr
-            .create_local_workspace(CreateLocalWorkspaceRequest {
-                name,
-                template,
-                owner,
-                created_by_session,
-                policy_profile_id,
-            })
-            .await?;
-
-        let mut binding: Option<SessionWorkspaceBinding> = None;
-        let mut session_updated = false;
-        if bind_session {
-            let session_id = session_id.clone().ok_or_else(|| {
-                AgentToolError::InvalidArgs(
-                    "session_id is required when `bind_session` is true".to_string(),
-                )
-            })?;
-            let bind_result = self
+        let result = async {
+            let workspace = self
                 .local_workspace_mgr
-                .bind_local_workspace(&session_id, &workspace.workspace_id)
+                .create_local_workspace(CreateLocalWorkspaceRequest {
+                    name,
+                    template,
+                    owner,
+                    created_by_session,
+                    policy_profile_id,
+                })
                 .await?;
-            binding = Some(bind_result.clone());
-            session_updated = persist_session_workspace_binding(
-                &self.session_store,
-                &session_id,
-                &workspace.workspace_id,
-                Some(workspace.name.as_str()),
-                &bind_result,
-            )
-            .await?;
+
+            let mut binding: Option<SessionWorkspaceBinding> = None;
+            let mut session_updated = false;
+            if bind_session {
+                let session_id = session_id.clone().ok_or_else(|| {
+                    AgentToolError::InvalidArgs(
+                        "session_id is required when `bind_session` is true".to_string(),
+                    )
+                })?;
+                let bind_result = self
+                    .local_workspace_mgr
+                    .bind_local_workspace(&session_id, &workspace.workspace_id)
+                    .await?;
+                binding = Some(bind_result.clone());
+                session_updated = persist_session_workspace_binding(
+                    &self.session_store,
+                    &session_id,
+                    &workspace.workspace_id,
+                    Some(workspace.name.as_str()),
+                    &bind_result,
+                )
+                .await?;
+            }
+
+            Ok::<Json, AgentToolError>(json!({
+                "ok": true,
+                "workspace": workspace,
+                "binding": binding,
+                "session_id": session_id,
+                "session_updated": session_updated
+            }))
+        }
+        .await;
+
+        match &result {
+            Ok(_) => {
+                info!(
+                    "opendan.tool_call: tool={} status=success trace_id={} session_id={} bind_session={}",
+                    TOOL_CREATE_LOCAL_WORKSPACE,
+                    ctx.trace_id,
+                    session_id.as_deref().unwrap_or_default(),
+                    bind_session
+                );
+            }
+            Err(err) => {
+                warn!(
+                    "opendan.tool_call: tool={} status=failed trace_id={} session_id={} bind_session={} err={}",
+                    TOOL_CREATE_LOCAL_WORKSPACE,
+                    ctx.trace_id,
+                    session_id.as_deref().unwrap_or_default(),
+                    bind_session,
+                    err
+                );
+            }
         }
 
-        Ok(json!({
-            "ok": true,
-            "workspace": workspace,
-            "binding": binding,
-            "session_id": session_id,
-            "session_updated": session_updated
-        }))
+        result
     }
 }
 
@@ -582,65 +602,92 @@ impl AgentTool for BindLocalWorkspaceTool {
                 )
             })?;
 
-        let session = self
-            .session_store
-            .get_session(&session_id)
-            .await
-            .ok_or_else(|| {
-                AgentToolError::InvalidArgs(format!("session not found: {session_id}"))
-            })?;
+        let result = async {
+            let session = self
+                .session_store
+                .get_session(&session_id)
+                .await
+                .ok_or_else(|| {
+                    AgentToolError::InvalidArgs(format!("session not found: {session_id}"))
+                })?;
 
-        {
-            let guard = session.lock().await;
-            if let Some(bound_workspace_id) = guard
-                .local_workspace_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
+            {
+                let guard = session.lock().await;
+                if let Some(bound_workspace_id) = guard
+                    .local_workspace_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    return Err(AgentToolError::InvalidArgs(format!(
+                        "session `{session_id}` already bound local workspace `{bound_workspace_id}`"
+                    )));
+                }
+            }
+
+            if let Some(existing_binding) = self
+                .local_workspace_mgr
+                .get_bound_local_workspace(&session_id)
+                .await?
             {
                 return Err(AgentToolError::InvalidArgs(format!(
-                    "session `{session_id}` already bound local workspace `{bound_workspace_id}`"
+                    "session `{session_id}` already bound local workspace `{}`",
+                    existing_binding.local_workspace_id
                 )));
+            }
+
+            let bind_result = self
+                .local_workspace_mgr
+                .bind_local_workspace(&session_id, &local_workspace_id)
+                .await?;
+            let workspace_name = self
+                .local_workspace_mgr
+                .list_workspaces()
+                .await
+                .into_iter()
+                .find(|item| item.workspace_id == local_workspace_id)
+                .map(|item| item.name);
+            let session_updated = persist_session_workspace_binding(
+                &self.session_store,
+                &session_id,
+                &local_workspace_id,
+                workspace_name.as_deref(),
+                &bind_result,
+            )
+            .await?;
+
+            Ok::<Json, AgentToolError>(json!({
+                "ok": true,
+                "binding": bind_result,
+                "session_id": session_id,
+                "session_updated": session_updated
+            }))
+        }
+        .await;
+
+        match &result {
+            Ok(_) => {
+                info!(
+                    "opendan.tool_call: tool={} status=success trace_id={} session_id={} local_workspace_id={}",
+                    TOOL_BIND_LOCAL_WORKSPACE,
+                    ctx.trace_id,
+                    session_id,
+                    local_workspace_id
+                );
+            }
+            Err(err) => {
+                warn!(
+                    "opendan.tool_call: tool={} status=failed trace_id={} session_id={} local_workspace_id={} err={}",
+                    TOOL_BIND_LOCAL_WORKSPACE,
+                    ctx.trace_id,
+                    session_id,
+                    local_workspace_id,
+                    err
+                );
             }
         }
 
-        if let Some(existing_binding) = self
-            .local_workspace_mgr
-            .get_bound_local_workspace(&session_id)
-            .await?
-        {
-            return Err(AgentToolError::InvalidArgs(format!(
-                "session `{session_id}` already bound local workspace `{}`",
-                existing_binding.local_workspace_id
-            )));
-        }
-
-        let bind_result = self
-            .local_workspace_mgr
-            .bind_local_workspace(&session_id, &local_workspace_id)
-            .await?;
-        let workspace_name = self
-            .local_workspace_mgr
-            .list_workspaces()
-            .await
-            .into_iter()
-            .find(|item| item.workspace_id == local_workspace_id)
-            .map(|item| item.name);
-        let session_updated = persist_session_workspace_binding(
-            &self.session_store,
-            &session_id,
-            &local_workspace_id,
-            workspace_name.as_deref(),
-            &bind_result,
-        )
-        .await?;
-
-        Ok(json!({
-            "ok": true,
-            "binding": bind_result,
-            "session_id": session_id,
-            "session_updated": session_updated
-        }))
+        result
     }
 }
 
@@ -832,8 +879,8 @@ async fn persist_session_workspace_binding(
     workspace_info["workspace_type"] = Json::String("local".to_string());
     workspace_info["binding"] = json!(binding);
     guard.workspace_info = Some(workspace_info);
-
-    session_store.save_session_locked(&guard).await?;
+    drop(guard);
+    session_store.save_session(session_id).await?;
     Ok(true)
 }
 
@@ -964,46 +1011,7 @@ async fn load_tools_config(
             )));
         }
     }
-
-    let tools_md_path = workspace_root.join(&workshop_cfg.tools_markdown_rel_path);
-    match fs::read_to_string(&tools_md_path).await {
-        Ok(content) => parse_tools_markdown_config(&tools_md_path, &content),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            Ok(AgentWorkshopToolsConfig::default())
-        }
-        Err(err) => Err(AgentToolError::ExecFailed(format!(
-            "read tools config markdown `{}` failed: {err}",
-            tools_md_path.display()
-        ))),
-    }
-}
-
-fn parse_tools_markdown_config(
-    source_path: &Path,
-    content: &str,
-) -> Result<AgentWorkshopToolsConfig, AgentToolError> {
-    let trimmed = content.trim();
-    if trimmed.is_empty() {
-        return Ok(AgentWorkshopToolsConfig::default());
-    }
-
-    if let Ok(cfg) = serde_json::from_str::<AgentWorkshopToolsConfig>(trimmed) {
-        return Ok(cfg);
-    }
-
-    let Some(json_block) = try_extract_json_block(trimmed) else {
-        return Err(AgentToolError::InvalidArgs(format!(
-            "tools markdown `{}` does not contain valid json config block",
-            source_path.display()
-        )));
-    };
-
-    serde_json::from_str::<AgentWorkshopToolsConfig>(&json_block).map_err(|err| {
-        AgentToolError::InvalidArgs(format!(
-            "invalid tools markdown config `{}`: {err}",
-            source_path.display()
-        ))
-    })
+    Ok(AgentWorkshopToolsConfig::default())
 }
 
 fn validate_tools_config(cfg: &AgentWorkshopToolsConfig) -> Result<(), AgentToolError> {
@@ -1022,34 +1030,6 @@ fn validate_tools_config(cfg: &AgentWorkshopToolsConfig) -> Result<(), AgentTool
         }
     }
     Ok(())
-}
-
-fn try_extract_json_block(content: &str) -> Option<String> {
-    let fence_parts: Vec<&str> = content.split("```").collect();
-    if fence_parts.len() >= 3 {
-        for segment in fence_parts.iter().skip(1).step_by(2) {
-            let trimmed = segment.trim();
-            let payload = if let Some(rest) = trimmed.strip_prefix("json") {
-                rest.trim()
-            } else {
-                trimmed
-            };
-            if serde_json::from_str::<Json>(payload).is_ok() {
-                return Some(payload.to_string());
-            }
-        }
-    }
-
-    let start = content.find('{')?;
-    let end = content.rfind('}')?;
-    if end <= start {
-        return None;
-    }
-    let candidate = &content[start..=end];
-    if serde_json::from_str::<Json>(candidate).is_ok() {
-        return Some(candidate.to_string());
-    }
-    None
 }
 
 fn resolve_path_in_workspace(
@@ -1147,7 +1127,7 @@ mod tests {
             .call_tool(
                 &TraceCtx {
                     trace_id: "trace-test".to_string(),
-                    agent_did: "did:example:agent".to_string(),
+                    agent_name: "did:example:agent".to_string(),
                     behavior: "on_wakeup".to_string(),
                     step_idx: 0,
                     wakeup_id: "wakeup-test".to_string(),
@@ -1693,7 +1673,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_markdown_json_block_is_loaded() {
+    async fn tools_markdown_is_ignored_without_tools_json() {
         let root = unique_workspace_root("tool-md");
         let md_path = root.join("tools/tools.md");
         fs::create_dir_all(md_path.parent().expect("tools parent"))
@@ -1726,16 +1706,36 @@ mod tests {
             .expect("register workshop tools");
 
         assert!(tool_mgr.has_tool(TOOL_EXEC_BASH));
-        assert!(!tool_mgr.has_tool(TOOL_EDIT_FILE));
-        assert!(!tool_mgr.has_tool(TOOL_TODO_MANAGE));
+        assert!(tool_mgr.has_tool(TOOL_EDIT_FILE));
+        assert!(tool_mgr.has_tool(TOOL_TODO_MANAGE));
         assert!(!tool_mgr.has_tool(TOOL_WORKLOG_MANAGE));
+        assert!(tool_mgr.has_tool(TOOL_CREATE_LOCAL_WORKSPACE));
+        assert!(tool_mgr.has_tool(TOOL_BIND_LOCAL_WORKSPACE));
 
         let _ = fs::remove_dir_all(root).await;
     }
 
     #[tokio::test]
-    async fn worklog_manage_tool_supports_append_and_query_fields() {
-        let root = unique_workspace_root("worklog-manage");
+    async fn worklog_manage_tool_is_not_registered_even_if_enabled() {
+        let root = unique_workspace_root("worklog-manage-removed");
+        write_tools_json(
+            &root,
+            json!({
+                "enabled_tools": [
+                    {
+                        "name": "worklog_manage",
+                        "enabled": true,
+                        "params": {
+                            "db_path": "worklog/custom.db",
+                            "default_list_limit": 16,
+                            "max_list_limit": 128
+                        }
+                    }
+                ]
+            }),
+        )
+        .await;
+
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
@@ -1745,58 +1745,17 @@ mod tests {
             .register_tools(&tool_mgr, session_store)
             .expect("register workshop tools");
 
-        assert!(tool_mgr.has_tool(TOOL_WORKLOG_MANAGE));
-
-        let appended = call(
+        assert!(!tool_mgr.has_tool(TOOL_WORKLOG_MANAGE));
+        let err = call(
             &tool_mgr,
             TOOL_WORKLOG_MANAGE,
             json!({
-                "action": "append",
-                "type": "function_call",
-                "status": "success",
-                "step_id": "step-1",
-                "owner_session_id": "session-alpha",
-                "summary": "exec_bash finished",
-                "tags": ["tool", "runtime"],
-                "payload": { "tool": "exec_bash", "ok": true }
+                "action": "list"
             }),
         )
         .await
-        .expect("append worklog should succeed");
-        let log_id = appended["log"]["log_id"]
-            .as_str()
-            .expect("log id should exist")
-            .to_string();
-
-        let listed = call(
-            &tool_mgr,
-            TOOL_WORKLOG_MANAGE,
-            json!({
-                "action": "list",
-                "owner_session_id": "session-alpha",
-                "tag": "runtime"
-            }),
-        )
-        .await
-        .expect("list worklog should succeed");
-        let listed_logs = listed["logs"].as_array().expect("logs should be an array");
-        assert_eq!(listed_logs.len(), 1);
-        assert_eq!(listed_logs[0]["log_id"], log_id);
-
-        let got = call(
-            &tool_mgr,
-            TOOL_WORKLOG_MANAGE,
-            json!({
-                "action": "get",
-                "log_id": log_id
-            }),
-        )
-        .await
-        .expect("get worklog should succeed");
-        println!("got log: {got}");
-        assert_eq!(got["log"]["log_type"], "opendan.worklog.FunctionRecord.v1");
-        assert_eq!(got["log"]["owner_session_id"], "session-alpha");
-        assert!(fs::metadata(root.join("worklog/worklog.db")).await.is_ok());
+        .expect_err("worklog_manage should not be callable");
+        assert!(matches!(err, AgentToolError::NotFound(_)));
 
         let _ = fs::remove_dir_all(root).await;
     }

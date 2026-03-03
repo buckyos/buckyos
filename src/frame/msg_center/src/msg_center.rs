@@ -459,15 +459,15 @@ impl MessageCenter {
     ) -> std::result::Result<MsgRecord, RPCErrors> {
         let msg_id = Self::message_obj_id(msg);
         let record_id = Self::build_record_id(&owner, &box_kind, &msg_id, variant);
-        let msg_thread_key = Self::normalize_non_empty(msg.thread.topic.as_deref())
+        let ui_session_id = Self::normalize_non_empty(msg.thread.topic.as_deref())
             .or_else(|| Self::extract_record_session_id(msg));
         if let Some(existing) = self.msg_box_db.get_record(&owner, &record_id)? {
             let mut record_for_update = existing.clone();
             if record_for_update.msg_kind != msg.kind {
                 record_for_update.msg_kind = msg.kind;
             }
-            if record_for_update.thread_key.is_none() {
-                record_for_update.thread_key = msg_thread_key;
+            if record_for_update.ui_session_id.is_none() {
+                record_for_update.ui_session_id = ui_session_id;
             }
             self.msg_box_db
                 .upsert_record_with_msg(&record_for_update, Some(msg))?;
@@ -494,7 +494,7 @@ impl MessageCenter {
             updated_at_ms: now_ms,
             route,
             delivery,
-            thread_key: msg_thread_key,
+            ui_session_id,
             sort_key: if msg.created_at_ms > 0 {
                 msg.created_at_ms
             } else {
@@ -1275,11 +1275,11 @@ impl MessageCenter {
             .get_record(&owner, &record_id)?
             .ok_or_else(|| RPCErrors::ReasonError(format!("record {} not found", record_id)))?;
 
-        if record.thread_key.as_deref() == Some(session_id) {
+        if record.ui_session_id.as_deref() == Some(session_id) {
             return Ok(record);
         }
 
-        record.thread_key = Some(session_id.to_string());
+        record.ui_session_id = Some(session_id.to_string());
         record.updated_at_ms = Self::now_ms();
         self.msg_box_db.upsert_record(&record)?;
         Self::publish_box_changed_event(&record, "session");

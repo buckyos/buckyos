@@ -969,7 +969,7 @@ mod tests {
     fn test_trace_ctx() -> TraceCtx {
         TraceCtx {
             trace_id: "trace-memory".to_string(),
-            agent_did: "did:example:agent".to_string(),
+            agent_name: "did:example:agent".to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-memory".to_string(),

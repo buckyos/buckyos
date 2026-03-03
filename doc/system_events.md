@@ -1,6 +1,17 @@
 # BuckyOS System Events
 
 kevent-bus 的基本模式介绍: 减少轮询操作
+其设计意图类似传统的Windows的 WaitForMuiltObj(Vec<Path>)
+由于objname是系统级去重的，所以
+
+## 对象的R-Link 
+
+二级实体（全网看来）
+did:bns:$obj_name.zone_name
+
+系统内全局对象:
+/
+
 
 ## timer events
 

@@ -1809,7 +1809,7 @@ impl AgentTool for RuntimeCreateSubAgentTool {
     }
 
     async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
-        let parent_did = optional_string(&args, "parent_did")?.unwrap_or(ctx.agent_did.clone());
+        let parent_did = optional_string(&args, "parent_did")?.unwrap_or(ctx.agent_name.clone());
         let req = CreateSubAgentRequest {
             name: require_string(&args, "name")?,
             did: optional_string(&args, "did")?,
@@ -1859,7 +1859,7 @@ impl AgentTool for RuntimeBindExternalWorkspaceTool {
     }
 
     async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
-        let agent_did = optional_string(&args, "agent_did")?.unwrap_or(ctx.agent_did.clone());
+        let agent_did = optional_string(&args, "agent_did")?.unwrap_or(ctx.agent_name.clone());
         let req = BindExternalWorkspaceRequest {
             name: require_string(&args, "name")?,
             workspace_path: require_string(&args, "workspace_path")?,
@@ -1905,7 +1905,7 @@ impl AgentTool for RuntimeListExternalWorkspacesTool {
     }
 
     async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
-        let agent_did = optional_string(&args, "agent_did")?.unwrap_or(ctx.agent_did.clone());
+        let agent_did = optional_string(&args, "agent_did")?.unwrap_or(ctx.agent_name.clone());
         let workspaces = self.runtime.list_external_workspaces(&agent_did).await?;
         Ok(json!({
             "ok": true,
@@ -2362,7 +2362,7 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
     fn call_ctx(agent_did: &str) -> TraceCtx {
         TraceCtx {
             trace_id: "trace-1".to_string(),
-            agent_did: agent_did.to_string(),
+            agent_name: agent_did.to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-1".to_string(),

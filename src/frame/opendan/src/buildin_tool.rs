@@ -988,7 +988,7 @@ impl WorkshopWriteAudit {
                     "action": "append",
                     "type": "workspace_file_write",
                     "status": "success",
-                    "agent_id": ctx.agent_did,
+                    "agent_id": ctx.agent_name,
                     "owner_session_id": owner_session_id,
                     "run_id": run_id,
                     "step_id": step_id,

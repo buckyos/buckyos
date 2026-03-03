@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
 use buckyos_api::AiToolCall;
-use log::{debug, warn};
+use log::{debug, info, warn};
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Value as Json};
@@ -123,7 +123,6 @@ fn builtin_action_summary(action_name: &str) -> &'static str {
         }
         TOOL_LOAD_MEMORY => "Load memory entries by token budget, tags, and reference time.",
         TOOL_TODO_MANAGE => "Manage workspace todos.",
-        TOOL_WORKLOG_MANAGE => "Write or query worklog records.",
         _ => "Call runtime tool action.",
     }
 }
@@ -208,14 +207,6 @@ fn builtin_action_args_schema(action_name: &str) -> Json {
                 "workspace_id": { "type": "string" }
             },
             "required": ["ops"]
-        }),
-        TOOL_WORKLOG_MANAGE => json!({
-            "type": "object",
-            "properties": {
-                "op": { "type": "string" },
-                "workspace_id": { "type": "string" }
-            },
-            "required": ["op"]
         }),
         _ => json!({
             "type": "object"
@@ -886,11 +877,36 @@ impl AgentToolManager {
         ctx: &TraceCtx,
         call: AiToolCall,
     ) -> Result<Json, AgentToolError> {
-        let Some(tool) = self.get_tool(&call.name) else {
-            return Err(AgentToolError::NotFound(call.name));
+        let tool_name = call.name;
+        let call_id = call.call_id;
+        let args = Json::Object(call.args.into_iter().collect());
+        let session_id = ctx.session_id.as_deref().unwrap_or("-");
+
+        info!(
+            "opendan.tool_call: status=start tool={} call_id={} trace_id={} session_id={}",
+            tool_name, call_id, ctx.trace_id, session_id
+        );
+
+        let Some(tool) = self.get_tool(&tool_name) else {
+            warn!(
+                "opendan.tool_call: status=failed tool={} call_id={} trace_id={} session_id={} err=tool not found",
+                tool_name, call_id, ctx.trace_id, session_id
+            );
+            return Err(AgentToolError::NotFound(tool_name));
         };
-        tool.call(ctx, Json::Object(call.args.into_iter().collect()))
-            .await
+
+        let result = tool.call(ctx, args).await;
+        match &result {
+            Ok(_) => info!(
+                "opendan.tool_call: status=success tool={} call_id={} trace_id={} session_id={}",
+                tool_name, call_id, ctx.trace_id, session_id
+            ),
+            Err(err) => warn!(
+                "opendan.tool_call: status=failed tool={} call_id={} trace_id={} session_id={} err={}",
+                tool_name, call_id, ctx.trace_id, session_id, err
+            ),
+        }
+        result
     }
 }
 
@@ -1047,7 +1063,7 @@ mod tests {
     fn test_call_ctx() -> TraceCtx {
         TraceCtx {
             trace_id: "trace-1".to_string(),
-            agent_did: "did:example:agent".to_string(),
+            agent_name: "did:example:agent".to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-1".to_string(),
@@ -1070,7 +1086,6 @@ mod tests {
             TOOL_BIND_LOCAL_WORKSPACE,
             TOOL_LOAD_MEMORY,
             TOOL_TODO_MANAGE,
-            TOOL_WORKLOG_MANAGE,
         ]
     }
 

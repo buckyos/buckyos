@@ -3,7 +3,7 @@ use std::future::Future;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use buckyos_api::{get_buckyos_api_runtime, MsgRecord, OpenDanAgentSessionRecord};
+use buckyos_api::{get_buckyos_api_runtime, MsgRecord, AgentSessionRecord};
 use chrono::{DateTime, Utc};
 use log::{debug, warn};
 use ndn_lib::MsgObject;
@@ -33,6 +33,7 @@ const DEFAULT_SESSION_LIST_MAX_PULL: usize = 16;
 const DEFAULT_LOCAL_WORKSPACE_LIST_MAX_PULL: usize = 16;
 const SESSION_RECORD_FILE_NAME: &str = "session.json";
 const WORKSHOP_INDEX_FILE_NAME: &str = "index.json";
+
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TemplateRenderMode {
@@ -221,6 +222,7 @@ impl AgentEnvironment {
                 guard.cwd.clone(),
                 guard.owner_agent.clone(),
                 guard.local_workspace_id.clone(),
+                
             )
         };
 
@@ -744,7 +746,7 @@ async fn render_recent_sessions_from_disk(
 
     let session_root = resolve_session_root_from_cwd(session_cwd, current_session_id).await?;
     let mut entries = fs::read_dir(&session_root).await.ok()?;
-    let mut records = Vec::<OpenDanAgentSessionRecord>::new();
+    let mut records = Vec::<AgentSessionRecord>::new();
 
     loop {
         let Ok(Some(entry)) = entries.next_entry().await else {
@@ -771,7 +773,7 @@ async fn render_recent_sessions_from_disk(
         let Ok(raw) = fs::read_to_string(&session_file).await else {
             continue;
         };
-        let Ok(mut record) = serde_json::from_str::<OpenDanAgentSessionRecord>(&raw) else {
+        let Ok(mut record) = serde_json::from_str::<AgentSessionRecord>(&raw) else {
             continue;
         };
         if record.session_id.trim().is_empty() {
@@ -1971,7 +1973,7 @@ mod tests {
         ) {
             let dir = session_root.join(session_id);
             fs::create_dir_all(&dir).await.expect("create session dir");
-            let record = OpenDanAgentSessionRecord {
+            let record = AgentSessionRecord {
                 session_id: session_id.to_string(),
                 owner_agent: "did:test:agent".to_string(),
                 title: title.to_string(),
@@ -1990,13 +1992,15 @@ mod tests {
                 .expect("write session file");
         }
 
-        write_session_record(&session_root, "s1", "Session 1", "Summary 1", 100).await;
-        write_session_record(&session_root, "s2", "Session 2", "Summary 2", 300).await;
-        write_session_record(&session_root, "s3", "Session 3", "Summary 3", 200).await;
+        write_session_record(&session_root, "work-s1", "Session 1", "Summary 1", 100).await;
+        write_session_record(&session_root, "work-s2", "Session 2", "Summary 2", 300).await;
+        write_session_record(&session_root, "work-s3", "Session 3", "Summary 3", 200).await;
         write_session_record(&session_root, "ui-chat-1", "UI Session", "UI Summary", 500).await;
+        write_session_record(&session_root, "tg:lzc_jarvis:5397330802", "TG Session", "", 600)
+            .await;
 
         let session = Arc::new(Mutex::new(AgentSession::new(
-            "s1",
+            "work-s1",
             "did:test:agent",
             Some("on_wakeup"),
         )));
@@ -2009,10 +2013,15 @@ mod tests {
 
         let items: Vec<Json> = serde_json::from_str(&rendered).expect("parse rendered list");
         assert_eq!(items.len(), 3);
-        assert_eq!(items[0]["session_id"], "s2");
-        assert_eq!(items[1]["session_id"], "s3");
-        assert_eq!(items[2]["session_id"], "s1");
+        assert_eq!(items[0]["session_id"], "work-s2");
+        assert_eq!(items[1]["session_id"], "work-s3");
+        assert_eq!(items[2]["session_id"], "work-s1");
         assert!(items.iter().all(|item| item["session_id"] != "ui-chat-1"));
+        assert!(
+            items
+                .iter()
+                .all(|item| item["session_id"] != "tg:lzc_jarvis:5397330802")
+        );
 
         let rendered_2 = AgentEnvironment::load_value_from_session(session, "session_list.$2")
             .await
@@ -2020,8 +2029,8 @@ mod tests {
             .expect("session_list.$2 should be rendered");
         let items_2: Vec<Json> = serde_json::from_str(&rendered_2).expect("parse rendered list");
         assert_eq!(items_2.len(), 2);
-        assert_eq!(items_2[0]["session_id"], "s2");
-        assert_eq!(items_2[1]["session_id"], "s3");
+        assert_eq!(items_2[0]["session_id"], "work-s2");
+        assert_eq!(items_2[1]["session_id"], "work-s3");
     }
 
     #[tokio::test]

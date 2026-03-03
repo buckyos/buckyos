@@ -1291,13 +1291,13 @@ async fn build_toolbox(
     let behavior_skills = cfg.toolbox.effective_skills();
     let loaded_skills = merge_unique_string_slices(&behavior_skills, &session_loaded_skills);
 
-    let mut actions = normalize_unique_string_list(cfg.toolbox.default_load_actions.clone());
+    let mut requested_actions = normalize_unique_string_list(cfg.toolbox.default_load_actions.clone());
     let mut loaded_tool_names = Vec::<String>::new();
     for skill_name in &loaded_skills {
         let Some(spec) = workspace_skill_specs.get(skill_name.as_str()) else {
             continue;
         };
-        actions = merge_unique_string_slices(&actions, &spec.actions);
+        requested_actions = merge_unique_string_slices(&requested_actions, &spec.actions);
         loaded_tool_names = merge_unique_string_slices(&loaded_tool_names, &spec.loaded_tools);
     }
 
@@ -1307,12 +1307,32 @@ async fn build_toolbox(
     if merged_tools.is_empty()
         && loaded_skills.is_empty()
         && workspace_skill_records.is_empty()
-        && actions.is_empty()
+        && requested_actions.is_empty()
     {
         return None;
     }
 
-    let selected_action_specs = select_action_specs(action_specs, &actions);
+    let selected_action_specs = select_action_specs(action_specs, &requested_actions);
+    let selected_actions = selected_action_specs
+        .iter()
+        .map(|spec| normalize_tool_name(spec.name.as_str()))
+        .filter(|name| !name.is_empty())
+        .collect::<Vec<_>>();
+    let selected_action_set = selected_actions
+        .iter()
+        .cloned()
+        .collect::<HashSet<String>>();
+    let unresolved_actions = requested_actions
+        .iter()
+        .map(|name| normalize_tool_name(name.as_str()))
+        .filter(|name| !name.is_empty() && !selected_action_set.contains(name))
+        .collect::<Vec<_>>();
+    if !unresolved_actions.is_empty() {
+        warn!(
+            "prompt.build_toolbox unresolved_actions_ignored={}",
+            unresolved_actions.join(",")
+        );
+    }
     let selected_action_prompts = selected_action_specs
         .iter()
         .map(|spec| spec.render_prompt())
@@ -1320,8 +1340,10 @@ async fn build_toolbox(
     let value = json!({
         "workspace_skill_records": workspace_skill_records,
         "loaded_skills": loaded_skills,
-        "allow_actions": actions,
-        "actions": actions,
+        "requested_actions": requested_actions,
+        "allow_actions": selected_actions,
+        "actions": selected_actions,
+        "unresolved_actions": unresolved_actions,
         "action_specs": selected_action_specs,
         "action_prompts": selected_action_prompts,
     });
@@ -1847,13 +1869,30 @@ loaded_tools: [exec_bash]
             .collect::<Vec<_>>();
         assert_eq!(loaded_skills, vec!["coding"]);
 
+        let requested_actions = toolbox_json["requested_actions"]
+            .as_array()
+            .expect("requested_actions should be array")
+            .iter()
+            .filter_map(|item| item.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(requested_actions, vec!["lint", "build", "test"]);
+
         let actions = toolbox_json["actions"]
             .as_array()
             .expect("actions should be array")
             .iter()
             .filter_map(|item| item.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(actions, vec!["lint", "build", "test"]);
+        assert_eq!(actions, vec!["build", "test"]);
+
+        let unresolved_actions = toolbox_json["unresolved_actions"]
+            .as_array()
+            .expect("unresolved_actions should be array")
+            .iter()
+            .filter_map(|item| item.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(unresolved_actions, vec!["lint"]);
+
         let action_prompts = toolbox_json["action_prompts"]
             .as_array()
             .expect("action_prompts should be array")
@@ -1875,7 +1914,7 @@ loaded_tools: [exec_bash]
             session_id: Some("session-1".to_string()),
             trace: TraceCtx {
                 trace_id: "trace-1".to_string(),
-                agent_did: "did:example:agent".to_string(),
+                agent_name: "did:example:agent".to_string(),
                 behavior: "on_wakeup".to_string(),
                 step_idx: 2,
                 wakeup_id: "wakeup-1".to_string(),
@@ -1946,7 +1985,7 @@ loaded_tools: [exec_bash]
             session_id: Some("session-1".to_string()),
             trace: TraceCtx {
                 trace_id: "trace-1".to_string(),
-                agent_did: "did:example:agent".to_string(),
+                agent_name: "did:example:agent".to_string(),
                 behavior: "on_wakeup".to_string(),
                 step_idx: 1,
                 wakeup_id: "wakeup-1".to_string(),
@@ -2013,7 +2052,7 @@ loaded_tools: [exec_bash]
             session_id: Some("session-1".to_string()),
             trace: TraceCtx {
                 trace_id: "trace-1".to_string(),
-                agent_did: "did:example:agent".to_string(),
+                agent_name: "did:example:agent".to_string(),
                 behavior: "on_wakeup".to_string(),
                 step_idx: 1,
                 wakeup_id: "wakeup-1".to_string(),
@@ -2121,7 +2160,7 @@ loaded_tools: [exec_bash]
             session_id: Some(session_id.to_string()),
             trace: TraceCtx {
                 trace_id: "trace-1".to_string(),
-                agent_did: "did:web:agent.example.com".to_string(),
+                agent_name: "did:web:agent.example.com".to_string(),
                 behavior: "on_wakeup".to_string(),
                 step_idx: 1,
                 wakeup_id: "wakeup-1".to_string(),
@@ -2162,7 +2201,7 @@ loaded_tools: [exec_bash]
             WorklogTool::new(WorklogToolConfig::with_db_path(worklog_db)).expect("create tool");
         let trace_ctx = TraceCtx {
             trace_id: "trace-worklog".to_string(),
-            agent_did: "did:web:agent.example.com".to_string(),
+            agent_name: "did:web:agent.example.com".to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 1,
             wakeup_id: "wakeup-worklog".to_string(),
@@ -2217,7 +2256,7 @@ loaded_tools: [exec_bash]
             session_id: Some("session-1".to_string()),
             trace: TraceCtx {
                 trace_id: "trace-1".to_string(),
-                agent_did: "did:web:agent.example.com".to_string(),
+                agent_name: "did:web:agent.example.com".to_string(),
                 behavior: "on_wakeup".to_string(),
                 step_idx: 1,
                 wakeup_id: "wakeup-1".to_string(),

@@ -231,7 +231,7 @@ tools:
     let input = BehaviorExecInput {
         trace: TraceCtx {
             trace_id: "trace-1".to_string(),
-            agent_did: "did:example:agent".to_string(),
+            agent_name: "did:example:agent".to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-1".to_string(),
@@ -351,7 +351,7 @@ process_rule: test_rule
     let input = BehaviorExecInput {
         trace: TraceCtx {
             trace_id: "trace-3".to_string(),
-            agent_did: "did:example:agent".to_string(),
+            agent_name: "did:example:agent".to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-3".to_string(),
@@ -435,7 +435,7 @@ process_rule: test_rule
     let input = BehaviorExecInput {
         trace: TraceCtx {
             trace_id: "trace-2".to_string(),
-            agent_did: "did:example:agent".to_string(),
+            agent_name: "did:example:agent".to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-2".to_string(),
@@ -516,7 +516,7 @@ process_rule: test_rule
     let input = BehaviorExecInput {
         trace: TraceCtx {
             trace_id: "trace-parent-1".to_string(),
-            agent_did: "did:example:agent".to_string(),
+            agent_name: "did:example:agent".to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-parent-1".to_string(),
@@ -643,7 +643,7 @@ process_rule: test_rule
     let input = BehaviorExecInput {
         trace: TraceCtx {
             trace_id: "trace-parent-2".to_string(),
-            agent_did: "did:example:agent".to_string(),
+            agent_name: "did:example:agent".to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-parent-2".to_string(),
@@ -848,7 +848,7 @@ tools:
 
     let base_trace = TraceCtx {
         trace_id: "trace-actions".to_string(),
-        agent_did: "did:example:agent".to_string(),
+        agent_name: "did:example:agent".to_string(),
         behavior: "on_wakeup".to_string(),
         step_idx: 0,
         wakeup_id: "wakeup-actions".to_string(),
@@ -1066,7 +1066,7 @@ tools:
     let input = BehaviorExecInput {
         trace: TraceCtx {
             trace_id: "trace-workshop-actions".to_string(),
-            agent_did: "did:example:agent".to_string(),
+            agent_name: "did:example:agent".to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-workshop-actions".to_string(),
@@ -1123,7 +1123,7 @@ tools:
     // Formally execute planned actions through workshop.exec_bash.
     let action_ctx = TraceCtx {
         trace_id: "trace-workshop-actions".to_string(),
-        agent_did: "did:example:agent".to_string(),
+        agent_name: "did:example:agent".to_string(),
         behavior: "on_action".to_string(),
         step_idx: 1,
         wakeup_id: "wakeup-workshop-actions".to_string(),

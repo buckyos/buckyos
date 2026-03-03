@@ -205,7 +205,7 @@ pub struct MsgRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delivery: Option<DeliveryInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub thread_key: Option<String>,
+    pub ui_session_id: Option<String>,
     // #[serde(skip_serializing_if = "Option::is_none")]
     // pub session_id: Option<String>,
     pub sort_key: u64,

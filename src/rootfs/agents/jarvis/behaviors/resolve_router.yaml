@@ -15,15 +15,13 @@ process_rule: |
   2. **潜在任务发现**（包含复杂的查询，工程任务或有复杂意义的内容）：
   * 根据Work Session List,填写route_session_id决定当前输入的消息应该属于哪个Work Session
   * 如果Work Session List中没有合适的Session,则决定创建一个新Session
-  * 做出选择后,给出回复，告知处理的结果
 
-  ## Work Session List
+  ## WorkSessionList
   {{session_list}}
 
 policy: |
-  * 必须谨慎认真的选择Session
-  * 创建session是一个会消耗不少系统资源的操作,只有设计到复杂的大块任务才需要创建session
-  * route_session_id永远不能选择当前session的id
+  * 创建session是一个会消耗不少系统资源的操作,只有设计到复杂的大块任务才需要创建session. 创建session必须填写reply。
+  * route_session_id只能在`Work Session List`里选择,填写route_session_id后。一定不填写reply。
 
 output_protocol:
   mode: route_result
@@ -37,10 +35,9 @@ memory:
   total_limt: 12000
   agent_memory: { limit: 3000 }
   history_messages: { limit: 6000, max_percent: 0.3 }
-  session_summaries: { limit: 3000 }
+  #session_summaries: { limit: 3000 }
 
 input: |
-  {{last_step_summary}}
   ## 刚刚收到用户发来的消息:
   {{new_msg}}
 

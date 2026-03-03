@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use log::warn;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as Json};
 use tokio::sync::Mutex;
@@ -15,7 +16,7 @@ pub type MemoryPack = Json;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TraceCtx {
     pub trace_id: String,
-    pub agent_did: String,
+    pub agent_name: String,
     pub behavior: String,
     pub step_idx: u32,
     pub wakeup_id: String,
@@ -54,11 +55,11 @@ impl Default for StepLimits {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct BehaviorExecInput {
-    pub session_id: Option<String>,
+    pub session_id: String,
     pub trace: TraceCtx,
+
     pub input_prompt: String,
     pub last_step_prompt: String,
-
     pub role_md: String,
     pub self_md: String,
     pub behavior_prompt: String,
@@ -141,17 +142,18 @@ pub struct BehaviorLLMResult {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reply: Vec<ExecutorReply>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub todo: Vec<Json>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub set_memory: HashMap<String, String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub toipc_tags: Vec<String>,
     #[serde(default, skip_serializing_if = "DoActions::is_empty")]
     pub actions: DoActions,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub load_skills: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub enable_tools: Vec<String>,
+
+    // #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    // pub todo: Vec<Json>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub set_memory: HashMap<String, String>,
+    //#[serde(default, skip_serializing_if = "Vec::is_empty")]
+    //pub load_skills: Vec<String>,
+    //#[serde(default, skip_serializing_if = "Vec::is_empty")]
+    //pub enable_tools: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -163,19 +165,24 @@ impl BehaviorLLMResult {
     }
 
     pub fn from_json_str(input: &str) -> Result<Self, LLMComputeError> {
-        let trimmed = input.trim();
-        if trimmed.is_empty() {
-            return Err(LLMComputeError::Internal(
-                "empty llm behavior output".to_string(),
-            ));
+        let result = serde_json::from_str::<Self>(input);
+        if let Err(err) = result {
+            warn!("failed to parse BehaviorLLMResult output: {:?}", err);
+            return Err(LLMComputeError::Internal(err.to_string()));
         }
+        return Ok(result.unwrap());
+     
+    }
 
-        let payload = parse_behavior_payload_json(trimmed)
-            .map_err(|err| LLMComputeError::Internal(err.to_string()))?;
-        let mut result: Self = serde_json::from_value(payload.clone())
-            .map_err(|e| LLMComputeError::Internal(e.to_string()))?;
-
-        Ok(result)
+    fn is_empty_payload(&self) -> bool {
+        self.next_behavior.is_none()
+            && self.thinking.is_none()
+            && self.reply.is_empty()
+            && self.set_memory.is_empty()
+            && self.toipc_tags.is_empty()
+            && self.actions.is_empty()
+            && self.route_session_id.is_none()
+            && self.new_session.is_none()
     }
 }
 
@@ -261,6 +268,55 @@ fn parse_json_stream_prefix(input: &str) -> Option<Vec<Json>> {
         None
     } else {
         Some(values)
+    }
+}
+
+fn parse_nested_behavior_result(value: &Json, depth: usize) -> Option<BehaviorLLMResult> {
+    if depth > 8 {
+        return None;
+    }
+
+    match value {
+        Json::String(text) => {
+            let nested = parse_behavior_payload_json(text.trim()).ok()?;
+            let parsed = serde_json::from_value::<BehaviorLLMResult>(nested.clone()).ok();
+            if let Some(result) = parsed {
+                if !result.is_empty_payload() {
+                    return Some(result);
+                }
+            }
+            parse_nested_behavior_result(&nested, depth.saturating_add(1))
+        }
+        Json::Object(map) => {
+            for key in [
+                "choices", "message", "content", "result", "output", "data", "text",
+            ] {
+                if let Some(candidate) = map.get(key) {
+                    if let Some(result) =
+                        parse_nested_behavior_result(candidate, depth.saturating_add(1))
+                    {
+                        return Some(result);
+                    }
+                }
+            }
+            for candidate in map.values() {
+                if let Some(result) =
+                    parse_nested_behavior_result(candidate, depth.saturating_add(1))
+                {
+                    return Some(result);
+                }
+            }
+            None
+        }
+        Json::Array(items) => {
+            for item in items {
+                if let Some(result) = parse_nested_behavior_result(item, depth.saturating_add(1)) {
+                    return Some(result);
+                }
+            }
+            None
+        }
+        _ => None,
     }
 }
 
@@ -375,5 +431,25 @@ mod tests {
         let parsed = BehaviorLLMResult::from_json_str(raw).expect("markdown wrapped json");
         assert_eq!(parsed.next_behavior.as_deref(), Some("END"));
         assert_eq!(parsed.thinking.as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn behavior_result_accepts_openai_wrapped_content_payload() {
+        let raw = r#"{
+  "id":"chatcmpl-test",
+  "object":"chat.completion",
+  "choices":[
+    {
+      "message":{
+        "role":"assistant",
+        "content":"{\"thinking\":\"switch\",\"next_behavior\":\"DO:todo=T01\"}"
+      }
+    }
+  ]
+}"#;
+        let parsed =
+            BehaviorLLMResult::from_json_str(raw).expect("openai wrapped content should parse");
+        assert_eq!(parsed.next_behavior.as_deref(), Some("DO:todo=T01"));
+        assert_eq!(parsed.thinking.as_deref(), Some("switch"));
     }
 }

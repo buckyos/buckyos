@@ -211,7 +211,12 @@ impl AgentTool for TodoTool {
 
     async fn call(&self, ctx: &TraceCtx, args: Json) -> Result<Json, AgentToolError> {
         let action = require_string(&args, "action")?;
-        match action.as_str() {
+        let workspace_id = args
+            .get("workspace_id")
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let result = match action.as_str() {
             "list" => self.call_list(args).await,
             "get" => self.call_get(args).await,
             "apply_delta" => self.call_apply_delta(ctx, args).await,
@@ -222,7 +227,24 @@ impl AgentTool for TodoTool {
             _ => Err(AgentToolError::InvalidArgs(format!(
                 "unsupported action `{action}`, expected list/get/apply_delta/query_pending/render_for_prompt/render_current_details/get_next_ready_todo"
             ))),
+        };
+
+        match &result {
+            Ok(_) => {
+                info!(
+                    "opendan.tool_call: tool={} status=success trace_id={} action={} workspace_id={}",
+                    TOOL_TODO_MANAGE, ctx.trace_id, action, workspace_id
+                );
+            }
+            Err(err) => {
+                warn!(
+                    "opendan.tool_call: tool={} status=failed trace_id={} action={} workspace_id={} err={}",
+                    TOOL_TODO_MANAGE, ctx.trace_id, action, workspace_id, err
+                );
+            }
         }
+
+        result
     }
 }
 
@@ -643,7 +665,7 @@ impl ActorCtx {
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| {
-                let v = ctx.agent_did.trim();
+                let v = ctx.agent_name.trim();
                 if v.is_empty() {
                     "did:opendan:unknown".to_string()
                 } else {
@@ -3161,7 +3183,7 @@ mod tests {
     fn test_ctx(agent_did: &str) -> TraceCtx {
         TraceCtx {
             trace_id: "trace-test".to_string(),
-            agent_did: agent_did.to_string(),
+            agent_name: agent_did.to_string(),
             behavior: "on_wakeup".to_string(),
             step_idx: 0,
             wakeup_id: "wakeup-test".to_string(),

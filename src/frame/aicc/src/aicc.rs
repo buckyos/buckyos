@@ -8,7 +8,7 @@ use buckyos_api::{
     CompleteRequest, CompleteResponse, CompleteStatus, CreateTaskOptions, Feature, ResourceRef,
     TaskManagerClient, TaskStatus,
 };
-use log::{info, warn};
+use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::cmp::Ordering;
@@ -1474,7 +1474,7 @@ impl AIComputeCenter {
                                 serde_json::to_string(summary).unwrap_or_else(|err| {
                                     format!("{{\"serialize_error\":\"{}\"}}", err)
                                 });
-                            info!(
+                            debug!(
                                 "aicc.llm.output task_id={} tenant={} trace_id={:?} instance_id={} provider_model={} elapsed_ms={} summary={}",
                                 task_id,
                                 ctx.tenant_id,

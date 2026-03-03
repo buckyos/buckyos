@@ -28,6 +28,18 @@ This workshop only enables a subset and defines per-tool boundaries.
         "max_diff_lines": 200,
         "allowed_write_roots": ["todo", "artifacts", "tools", "worklog"]
       }
+    },
+    {
+      "name": "create_local_workspace",
+      "kind": "builtin",
+      "enabled": true,
+      "params": {}
+    },
+    {
+      "name": "bind_local_workspace",
+      "kind": "builtin",
+      "enabled": true,
+      "params": {}
     }
   ]
 }

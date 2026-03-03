@@ -24,8 +24,7 @@ process_rule: |
   3. **构建计划**
   * PLAN阶段聚焦分析与拆解:给出可执行、可验证、可交付的TODO列表
   * 每个TODO应尽量包含:目标、依赖关系、优先级、完成标准
-  * 构造每个TODO时,必须从可用skills列表中选择最合适的skill并写明理由
-  * 若无合适skill,必须显式标注 `skill: none` 并说明为何可在无skill情况下推进
+  * TODO的item_id应该使用T01,T02 这种格式
   * 将可以并行推进的事项拆分为独立TODO;将阻塞事项标注为等待确认/等待输入
 
   4. **能力与风险判断**
@@ -33,7 +32,7 @@ process_rule: |
   * 当能力不足时,先给出替代方案或请求用户授权,不要直接执行高风险动作
 
   5. **行为切换**
-  * 已形成可执行计划且可继续推进时,`next_behavior` 设为 `DO:$item_id`
+  * 已形成可执行计划且可继续推进时,`next_behavior` 设为可以执行的第一个todo `DO:todo=$item_id`
   * 本轮已可直接答复且无需继续推进时,`next_behavior` 设为 `END`
   * 需要等待用户补充信息或授权时,在设置reply的同时,也要将`next_behavior` 设为 `WAIT_FOR_MSG`
 
@@ -49,7 +48,6 @@ policy: |
   * 必须明确写出workspace结论(新建/复用/不使用)及理由;若新建需给出名称
   * 若选择新建workspace且无需额外确认,应优先执行 `create_local_workspace`;若不执行需说明原因
   * 若选择复用已有workspace且无需额外确认,应优先执行 `bind_local_workspace`;若不执行需说明原因
-  * 必须为每个TODO给出skill选择结论(具体skill或 `none`)及依据,禁止省略
   * 必须显式区分事实与假设,对不确定内容给出说明
   * 必须在回复中清晰说明当前结论与下一步
   * 必须控制成本:信息足够时立即进入do阶段
@@ -60,6 +58,16 @@ output_protocol:
 
 toolbox:
   mode: alone
+  tools:
+    mode: allow_list
+    names:
+      - exec
+      - edit
+      - write
+      - read
+      - create_local_workspace
+      - bind_local_workspace
+      - todo_manage
   load_skills: ["planner"]
 
 # TODO: memory应该加一个不会被裁剪的,用环境变量拼接的段落
@@ -72,7 +80,7 @@ memory:
   session_summaries: { limit: 3000, max_percent: 0.25 }
   workspace_todo: { limit: 4500, max_percent: 0.35 }
   first_prompt: |
-    ## 下面是已有的local workspace
+    ## 下面是已有的local workspace(可能为空)
     {{local_workspace_list}}
 
 input: |

@@ -25,17 +25,21 @@ const DEFAULT_MSG_RECORD_FILE: &str = "msg_record.jsonl";
 const MAX_SESSION_ID_LEN: usize = 180;
 const SESSION_STATUS_PAUSE: &str = "pause";
 const SESSION_STATUS_NORMAL: &str = "normal";
+const WORK_SESSION_PREFIX: &str = "work-";
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SessionState {
-    Pause,
-    Wait,
-    WaitForMsg,
-    WaitForEvent,
-    Ready,
-    Running,
-    Sleep,
+    //Pause,//人工暂停，恢复后直接变成Ready？ 按道理应该回复到之前的状态
+
+    Wait,//运行中，等待任意触发
+    WaitForMsg,//运行中，等待特定触发
+    WaitForEvent,//运行中，等待特定触发
+    
+    Ready,//已经触发，等待调度成Running
+    Running,//正在运行中
+
+    End,//结束，再次触发会从Default behavior中唤醒
 }
 
 impl Default for SessionState {
@@ -78,27 +82,35 @@ impl Default for SessionInputItem {
     }
 }
 
+//下面结构定义了会被序列化的状态
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
-struct SessionRuntimeMeta {
+struct SessionRuntimeState {
     state: SessionState,
+    is_paused:bool,
+    
+    //TODO 简化成wait特定的object_id + event_id （比如等待授权任务的task)
     wait_details: Option<SessionWaitDetails>,
     current_behavior: Option<String>,
+    //reply的默认对象
     default_remote: Option<String>,
+
     step_index: u32,
     last_step_summary: Option<Json>,
+    
     workspace_info: Option<Json>,
     local_workspace_id: Option<String>,
-    worklog: Vec<Json>,
+
     loaded_skills: Vec<String>,
     allow_tools: Vec<String>,
     cost_trace: Json,
 }
 
-impl Default for SessionRuntimeMeta {
+impl Default for SessionRuntimeState {
     fn default() -> Self {
         Self {
             state: SessionState::Wait,
+            state_before_pause : SessionState::Wait,
             wait_details: None,
             current_behavior: None,
             default_remote: None,
@@ -125,6 +137,7 @@ pub struct AgentSession {
     pub meta: Json,
 
     pub last_step_summary: Option<String>,
+    pub is_paused:bool,
     pub state: SessionState,
     pub wait_details: Option<SessionWaitDetails>,
     pub current_behavior: String,
@@ -292,8 +305,8 @@ impl AgentSession {
         }
     }
 
-    fn runtime_meta(&self) -> SessionRuntimeMeta {
-        SessionRuntimeMeta {
+    fn runtime_meta(&self) -> SessionRuntimeState {
+        SessionRuntimeState {
             state: self.state,
             wait_details: self.wait_details.clone(),
             current_behavior: normalize_optional_string(Some(self.current_behavior.clone())),
@@ -399,15 +412,31 @@ impl AgentSession {
 
     fn update_state_on_input_arrived(
         &mut self,
-        _item: &SessionInputItem,
-        _wait_state: SessionState,
+        item: &SessionInputItem,
     ) {
-        self.updated_at_ms = now_ms();
-        if self.state == SessionState::Wait || self.state == SessionState::Sleep {
-            self.state = SessionState::Ready;
+        if self.state == SessionState::Running {
             return;
         }
-        self.state = SessionState::Ready;
+
+        if self.state == SessionState::WaitForMsg && item.msg.is_some() {
+            self.updated_at_ms = now_ms();
+            self.state = SessionState::Ready;
+            info!("{} will wakeup session:{} from WaitForMsg", self.agent_name, self.session_id);
+            return;
+        }
+        if self.state == SessionState::WaitForEvent && item.event_id.is_some() {
+            self.updated_at_ms = now_ms();
+            self.state = SessionState::Ready;
+            info!("{} will wakeup session:{} from WaitForEvent", self.agent_name, self.session_id);
+            return;
+        }
+        if self.state == SessionState::Wait || self.state == SessionState::End {
+            self.updated_at_ms = now_ms();
+            self.state = SessionState::Ready;
+            debug!("{} will wakeup session:{} by input", self.agent_name, self.session_id);
+            return;
+        }
+        return;
     }
 
     pub async fn pull_new_msg_from_kmsgqueue(
@@ -579,10 +608,7 @@ impl AgentSessionMgr {
     }
 
     pub fn is_ui_session(session_id: &str) -> bool {
-        if session_id.starts_with("ui") {
-            return true;
-        }
-        return false;
+        !session_id.starts_with(WORK_SESSION_PREFIX)
     }
 
     pub fn get_ui_session_id(&self, target: &DID, ui_msg_tunnel_id: &str) -> String {
@@ -650,15 +676,14 @@ impl AgentSessionMgr {
         let session = self
             .ensure_session(session_id, None, None, default_remote.as_deref())
             .await?;
+        
         let mut guard = session.lock().await;
-
-        guard.update_state_on_input_arrived(&input_item, SessionState::WaitForMsg);
+        guard.update_state_on_input_arrived(input_item);
         info!(
             "agent.session_try_wakeup: session_id={} state={:?}",
             guard.session_id, guard.state
         );
-        self.save_session_locked(&guard).await?;
-        // Wake one worker immediately after session state turns Ready.
+        
         self.ready_notify.notify_one();
         Ok(())
     }
@@ -669,8 +694,11 @@ impl AgentSessionMgr {
                 "session not found: {session_id}"
             )));
         };
-        let guard = session.lock().await;
-        self.save_session_locked(&guard).await
+        let record = {
+            let guard = session.lock().await;
+            guard.to_record(true)
+        };
+        self.write_session_record(&record).await
     }
 
     pub async fn save_session_locked(&self, session: &AgentSession) -> Result<(), AgentToolError> {
@@ -686,11 +714,18 @@ impl AgentSessionMgr {
         let mut woke_any = false;
 
         for session in sessions {
-            let mut guard = session.lock().await;
-            if guard.should_ready_by_wait_timeout(now_ms) {
-                guard.wait_details = None;
-                guard.update_state(SessionState::Ready);
-                self.save_session_locked(&guard).await?;
+            let record = {
+                let mut guard = session.lock().await;
+                if guard.should_ready_by_wait_timeout(now_ms) {
+                    guard.wait_details = None;
+                    guard.update_state(SessionState::Ready);
+                    Some(guard.to_record(true))
+                } else {
+                    None
+                }
+            };
+            if let Some(record) = record {
+                self.write_session_record(&record).await?;
                 woke_any = true;
             }
         }
@@ -1019,10 +1054,10 @@ fn extract_step_summary_text(summary: &Json) -> Option<String> {
     None
 }
 
-fn parse_runtime_meta(meta: &Json) -> SessionRuntimeMeta {
+fn parse_runtime_meta(meta: &Json) -> SessionRuntimeState {
     meta.get("runtime_state")
         .cloned()
-        .and_then(|value| serde_json::from_value::<SessionRuntimeMeta>(value).ok())
+        .and_then(|value| serde_json::from_value::<SessionRuntimeState>(value).ok())
         .unwrap_or_default()
 }
 

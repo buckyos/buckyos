@@ -2229,6 +2229,7 @@ impl BotApiTgGateway {
                     .or_else(|| attachment_ref.file_name.clone()),
             });
         }
+        //TODO 非常重要的id设计
         msg.thread.topic = Some(format!("tg:{}:{}", bot_account_id, chat_id));
 
         let ingress_ctx = IngressContext {
@@ -2969,7 +2970,7 @@ mod tests {
         let msg_id = msg.gen_obj_id().0;
 
         let record = MsgRecord {
-            record_id: format!("record-{}", msg_id.to_string()),
+            record_id: format!("tg-{}", msg_id.to_string()),
             box_kind: BoxKind::TunnelOutbox,
             msg_id: msg_id.clone(),
             msg_kind: msg.kind,
@@ -2983,7 +2984,7 @@ mod tests {
                 ..Default::default()
             }),
             delivery: None,
-            thread_key: msg.thread.topic.clone(),
+            ui_session_id: msg.thread.topic.clone(),
             sort_key: 1,
             tags: Vec::new(),
         };

@@ -32,6 +32,129 @@ const TYPE_STEP_SUMMARY: &str = "opendan.worklog.StepSummary.v1";
 
 static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+
+#[derive(Debug)]
+struct JsonlWorklogSink {
+    path: PathBuf,
+    write_lock: Mutex<()>,
+}
+
+impl JsonlWorklogSink {
+    async fn new(path: PathBuf) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            info!(
+                "agent.persist_entity_prepare: kind=worklog_dir path={}",
+                parent.display()
+            );
+            fs::create_dir_all(parent).await.map_err(|err| {
+                anyhow!(
+                    "create worklog dir failed: path={} err={}",
+                    parent.display(),
+                    err
+                )
+            })?;
+        }
+        Ok(Self {
+            path,
+            write_lock: Mutex::new(()),
+        })
+    }
+
+    async fn append_json_line(&self, line: Json) {
+        let _guard = self.write_lock.lock().await;
+        let text = match serde_json::to_string(&line) {
+            Ok(text) => text,
+            Err(err) => {
+                warn!("serialize worklog event failed: {}", err);
+                return;
+            }
+        };
+
+        let mut file = match tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .await
+        {
+            Ok(file) => file,
+            Err(err) => {
+                warn!(
+                    "open worklog sink failed: path={} err={}",
+                    self.path.display(),
+                    err
+                );
+                return;
+            }
+        };
+
+        if let Err(err) = file.write_all(format!("{text}\n").as_bytes()).await {
+            warn!(
+                "write worklog sink failed: path={} err={}",
+                self.path.display(),
+                err
+            );
+        }
+    }
+}
+
+#[async_trait]
+impl WorklogSink for JsonlWorklogSink {
+    async fn emit(&self, event: AgentWorkEvent) {
+        let payload = match event {
+            AgentWorkEvent::LLMStarted { trace, model } => json!({
+                "kind": "llm_started",
+                "ts_ms": now_ms(),
+                "trace": trace,
+                "model": model,
+            }),
+            AgentWorkEvent::LLMFinished { trace, usage, ok } => json!({
+                "kind": "llm_finished",
+                "ts_ms": now_ms(),
+                "trace": trace,
+                "ok": ok,
+                "usage": {
+                    "prompt": usage.prompt,
+                    "completion": usage.completion,
+                    "total": usage.total,
+                }
+            }),
+            AgentWorkEvent::ToolCallPlanned {
+                trace,
+                tool,
+                call_id,
+            } => json!({
+                "kind": "tool_call_planned",
+                "ts_ms": now_ms(),
+                "trace": trace,
+                "tool": tool,
+                "call_id": call_id,
+            }),
+            AgentWorkEvent::ToolCallFinished {
+                trace,
+                tool,
+                call_id,
+                ok,
+                duration_ms,
+            } => json!({
+                "kind": "tool_call_finished",
+                "ts_ms": now_ms(),
+                "trace": trace,
+                "tool": tool,
+                "call_id": call_id,
+                "ok": ok,
+                "duration_ms": duration_ms,
+            }),
+            AgentWorkEvent::ParseWarning { trace, msg } => json!({
+                "kind": "parse_warning",
+                "ts_ms": now_ms(),
+                "trace": trace,
+                "message": msg,
+            }),
+        };
+        self.append_json_line(payload).await;
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct WorklogToolConfig {
     pub db_path: PathBuf,
@@ -562,7 +685,7 @@ impl AppendRecordInput {
                     .map(|v| v.to_string())
             })
             .or_else(|| {
-                let v = ctx.agent_did.trim();
+                let v = ctx.agent_name.trim();
                 if v.is_empty() {
                     None
                 } else {
@@ -2163,7 +2286,7 @@ mod tests {
         let tool = WorklogTool::new(WorklogToolConfig::with_db_path(db)).expect("create tool");
         let ctx = TraceCtx {
             trace_id: "trace-1".to_string(),
-            agent_did: "did:opendan:test".to_string(),
+            agent_name: "did:opendan:test".to_string(),
             behavior: "DO".to_string(),
             step_idx: 1,
             wakeup_id: "wakeup-1".to_string(),
@@ -2250,7 +2373,7 @@ mod tests {
         let tool = WorklogTool::new(WorklogToolConfig::with_db_path(db)).expect("create tool");
         let ctx = TraceCtx {
             trace_id: "trace-render".to_string(),
-            agent_did: "did:opendan:test".to_string(),
+            agent_name: "did:opendan:test".to_string(),
             behavior: "DO".to_string(),
             step_idx: 7,
             wakeup_id: "wakeup-render".to_string(),

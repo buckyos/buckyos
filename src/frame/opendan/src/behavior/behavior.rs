@@ -114,6 +114,7 @@ impl LLMBehavior {
             .as_ref()
             .map(|(_, tracking)| tracking.token_usage.clone())
             .unwrap_or_default();
+
         self.deps
             .worklog
             .emit(AgentWorkEvent::LLMFinished {
@@ -155,6 +156,7 @@ impl LLMBehavior {
                 output_schema: tool.output_schema.clone(),
             })
             .collect();
+        
         let allowed_action_specs: Vec<ActionSpec> = allowed_tools
             .iter()
             .filter_map(|tool| self.deps.tools.get_action_spec(tool.name.as_str()))
@@ -172,11 +174,11 @@ impl LLMBehavior {
         .await
         .map_err(LLMComputeError::Internal)?;
 
-        self.ensure_session_normal_before_next_llm(input).await?;
 
         let (mut usage, mut llm_resp, first_task_id) = self
             .do_inference_once(llm_req.clone(), None, behavior_task_id)
             .await?;
+
         Self::update_track_from_llm_response(&mut track, &llm_resp, first_task_id);
 
         let mut rounds_left = input.limits.max_tool_rounds;
@@ -195,8 +197,6 @@ impl LLMBehavior {
                 .await?;
             tool_trace.extend(executed.tool_trace);
 
-            self.ensure_session_normal_before_next_llm(input).await?;
-
             let (usage2, followup_resp, followup_task_id) = self
                 .do_inference_once(llm_req.clone(), Some(executed.tool_ctx), behavior_task_id)
                 .await?;
@@ -211,7 +211,7 @@ impl LLMBehavior {
         }
 
         track.latency_ms = now_ms().saturating_sub(started);
-
+        
         let behavior_result = BehaviorLLMResult::from_json_str(&llm_resp.content)?;
 
         let tracking = LLMTrackingInfo {
@@ -410,75 +410,15 @@ impl LLMBehavior {
         })
     }
 
-    async fn ensure_session_normal_before_next_llm(
-        &self,
-        input: &BehaviorExecInput,
-    ) -> Result<(), LLMComputeError> {
-        let Some(session_id) = extract_session_id_for_task(input) else {
-            return Ok(());
-        };
-        if session_id.trim().is_empty() {
-            return Ok(());
-        }
-        if !self.deps.tools.has_tool(TOOL_GET_SESSION) {
-            return Ok(());
-        }
-
-        let call = AiToolCall {
-            name: TOOL_GET_SESSION.to_string(),
-            call_id: format!("session-status-check-{}-{}", input.trace.step_idx, now_ms()),
-            args: value_to_object_map(json!({
-                "session_id": session_id
-            })),
-        };
-        let ctx = tool_loop::trace_to_tool_call_context(&input.trace);
-        let result = self.deps.tools.call_tool(&ctx, call).await;
-        let raw = match result {
-            Ok(raw) => raw,
-            Err(AgentToolError::InvalidArgs(msg))
-                if msg.to_ascii_lowercase().contains("session not found") =>
-            {
-                return Ok(());
-            }
-            Err(err) => {
-                return Err(LLMComputeError::Internal(format!(
-                    "session status check failed: {err}"
-                )));
-            }
-        };
-
-        // FIXME(opendan-strong-typing): Weakly-typed compatibility lookup from Json is forbidden.
-        // Replace with strongly-typed structs + serde deserialization.
-        let status = raw
-            .pointer("/session/status")
-            .and_then(|value| value.as_str())
-            .map(|value| value.trim().to_ascii_lowercase())
-            .unwrap_or_default();
-
-        if status == "normal" {
-            return Ok(());
-        }
-
-        if status.is_empty() {
-            return Err(LLMComputeError::Internal(
-                "session status check failed: missing session.status".to_string(),
-            ));
-        }
-
-        Err(LLMComputeError::Internal(format!(
-            "user canceled: session is `{status}`"
-        )))
-    }
-
     async fn create_behavior_task(
         &self,
         input: &BehaviorExecInput,
     ) -> Result<i64, LLMComputeError> {
         let session_id = input.session_id.clone();
-        let rootid = resolve_rootid_for_task(input.trace.agent_did.as_str(), session_id.as_deref());
+        let rootid = resolve_rootid_for_task(input.trace.agent_name.as_str(), session_id.as_deref());
         let data = json!({
             "trace_id": input.trace.trace_id,
-            "agent_did": input.trace.agent_did,
+            "agent_did": input.trace.agent_name,
             "behavior": input.trace.behavior,
             "step_idx": input.trace.step_idx,
             "wakeup_id": input.trace.wakeup_id,
@@ -500,7 +440,7 @@ impl LLMBehavior {
                 ),
                 LLM_BEHAVIOR_TASK_TYPE,
                 Some(data),
-                &input.trace.agent_did,
+                &input.trace.agent_name,
                 &self.cfg.process_name,
                 Some(CreateTaskOptions::with_root_id(rootid)),
             )
@@ -1055,7 +995,7 @@ async fn append_workspace_worklog_via_tool(
         "action": "append",
         "type": log_type,
         "status": status,
-        "agent_id": trace.agent_did,
+        "agent_id": trace.agent_name,
         "run_id": trace.wakeup_id,
         "step_id": format!("step-{}", trace.step_idx),
         "summary": summary,
