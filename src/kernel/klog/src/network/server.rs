@@ -1,7 +1,8 @@
+use super::client::KDataClient;
 use super::request::{
-    KLogAdminRequestType, KLogAppendRequest, KLogAppendResponse, KLogClusterStateResponse,
-    KLogDataRequestType, KLogQueryRequest, KLogQueryResponse, RaftRequest, RaftRequestType,
-    RaftResponse,
+    KLOG_FORWARD_HOPS_HEADER, KLOG_FORWARDED_BY_HEADER, KLogAdminRequestType, KLogAppendRequest,
+    KLogAppendResponse, KLogClusterStateResponse, KLogDataRequestType, KLogQueryRequest,
+    KLogQueryResponse, RaftRequest, RaftRequestType, RaftResponse,
 };
 use crate::state_store::{KLogQuery, KLogQueryOrder, KLogStateStoreManagerRef};
 use crate::{KLogRequest, KLogResponse, KNode, KNodeId, KRaftRef};
@@ -10,7 +11,7 @@ use axum::Router;
 use axum::body::Bytes;
 use axum::error_handling::HandleErrorLayer;
 use axum::extract::{ConnectInfo, Query, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use openraft::ChangeMembers;
@@ -37,6 +38,7 @@ const SNAPSHOT_RPC_TIMEOUT_MS: u64 = 30_000;
 const DATA_QUERY_DEFAULT_LIMIT: usize = 200;
 const DATA_QUERY_MAX_LIMIT: usize = 2_000;
 const DATA_APPEND_MAX_MESSAGE_BYTES: usize = 64 * 1024;
+const DATA_APPEND_MAX_FORWARD_HOPS: u32 = 2;
 
 #[derive(Debug, Deserialize)]
 struct AddLearnerQuery {
@@ -61,6 +63,7 @@ struct RemoveLearnerQuery {
 struct KNetworkServerState {
     raft: KRaftRef,
     state_store_manager: Option<KLogStateStoreManagerRef>,
+    data_client: KDataClient,
     admin_local_only: bool,
     cluster_name: String,
     cluster_id: String,
@@ -117,6 +120,7 @@ impl KNetworkServer {
         let state = KNetworkServerState {
             raft: self.raft.clone(),
             state_store_manager: self.state_store_manager.clone(),
+            data_client: KDataClient::new(),
             admin_local_only: self.admin_local_only,
             cluster_name: self.cluster_name.clone(),
             cluster_id: self.cluster_id.clone(),
@@ -371,6 +375,7 @@ impl KNetworkServer {
 
     async fn handle_data_append_request(
         State(state): State<KNetworkServerState>,
+        headers: HeaderMap,
         Json(req): Json<KLogAppendRequest>,
     ) -> Response {
         if req.message.trim().is_empty() {
@@ -389,6 +394,27 @@ impl KNetworkServer {
             return Self::error_response(StatusCode::PAYLOAD_TOO_LARGE, msg);
         }
 
+        let forward_hops = match Self::parse_forward_hops(&headers) {
+            Ok(v) => v,
+            Err(msg) => {
+                error!("{}", msg);
+                return Self::error_response(StatusCode::BAD_REQUEST, msg);
+            }
+        };
+        let forwarded_by = headers
+            .get(KLOG_FORWARDED_BY_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("-");
+
+        if forward_hops > DATA_APPEND_MAX_FORWARD_HOPS {
+            let msg = format!(
+                "KNetworkServer data append rejected: too many forward hops, hops={}, max_hops={}, forwarded_by={}",
+                forward_hops, DATA_APPEND_MAX_FORWARD_HOPS, forwarded_by
+            );
+            error!("{}", msg);
+            return Self::error_response(StatusCode::BAD_GATEWAY, msg);
+        }
+
         let Some(state_store_manager) = state.state_store_manager.as_ref() else {
             let msg = "KNetworkServer data append rejected: state_store_manager is not configured"
                 .to_string();
@@ -397,41 +423,31 @@ impl KNetworkServer {
         };
 
         let metrics = state.raft.metrics().borrow().clone();
-        if metrics.current_leader != Some(metrics.id) {
-            let leader_node = metrics.current_leader.and_then(|id| {
-                metrics
-                    .membership_config
-                    .nodes()
-                    .find_map(|(node_id, node)| (*node_id == id).then_some(node.clone()))
-            });
-            let msg = format!(
-                "KNetworkServer data append rejected on non-leader: local_node_id={}, current_leader={:?}, leader_node={:?}",
-                metrics.id, metrics.current_leader, leader_node
-            );
-            warn!("{}", msg);
-            return Self::error_response(StatusCode::CONFLICT, msg);
-        }
+        let local_node_id = metrics.id;
+        let req = KLogAppendRequest {
+            message: req.message,
+            timestamp: req.timestamp.or_else(|| Some(Self::now_millis())),
+            node_id: req.node_id.or(Some(local_node_id)),
+        };
 
-        let timestamp = req.timestamp.unwrap_or_else(|| {
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0)
-        });
         let item = state_store_manager.prepare_append_entry(crate::KLogEntry {
             id: 0,
-            timestamp,
-            node_id: req.node_id.unwrap_or(metrics.id),
-            message: req.message,
+            timestamp: req.timestamp.unwrap_or(0),
+            node_id: req.node_id.unwrap_or(local_node_id),
+            message: req.message.clone(),
         });
         let requested_id = item.id;
 
         info!(
-            "KNetworkServer data append request: id={}, timestamp={}, node_id={}, msg_len={}",
+            "KNetworkServer data append request: id={}, timestamp={}, node_id={}, msg_len={}, local_node_id={}, current_leader={:?}, forward_hops={}, forwarded_by={}",
             item.id,
             item.timestamp,
             item.node_id,
-            item.message.len()
+            item.message.len(),
+            local_node_id,
+            metrics.current_leader,
+            forward_hops,
+            forwarded_by
         );
 
         match state
@@ -463,12 +479,69 @@ impl KNetworkServer {
             },
             Err(err) => {
                 if let Some(forward) = err.forward_to_leader::<KNode>() {
-                    let msg = format!(
-                        "KNetworkServer data append forward required: leader_id={:?}, leader_node={:?}",
-                        forward.leader_id, forward.leader_node
+                    if forward_hops >= DATA_APPEND_MAX_FORWARD_HOPS {
+                        let msg = format!(
+                            "KNetworkServer data append forward aborted due to hop limit: local_node_id={}, requested_id={}, leader_id={:?}, leader_node={:?}, hops={}, max_hops={}",
+                            local_node_id,
+                            requested_id,
+                            forward.leader_id,
+                            forward.leader_node,
+                            forward_hops,
+                            DATA_APPEND_MAX_FORWARD_HOPS
+                        );
+                        error!("{}", msg);
+                        return Self::error_response(StatusCode::BAD_GATEWAY, msg);
+                    }
+
+                    let leader_node = forward.leader_node.clone().or_else(|| {
+                        forward.leader_id.and_then(|leader_id| {
+                            metrics
+                                .membership_config
+                                .nodes()
+                                .find_map(|(id, node)| (*id == leader_id).then_some(node.clone()))
+                        })
+                    });
+                    let Some(leader_node) = leader_node else {
+                        let msg = format!(
+                            "KNetworkServer data append can not resolve leader node for forwarding: local_node_id={}, requested_id={}, leader_id={:?}",
+                            local_node_id, requested_id, forward.leader_id
+                        );
+                        warn!("{}", msg);
+                        return Self::error_response(StatusCode::SERVICE_UNAVAILABLE, msg);
+                    };
+
+                    let target_hops = forward_hops + 1;
+                    warn!(
+                        "KNetworkServer data append forwarding to leader: local_node_id={}, requested_id={}, leader_id={}, leader_addr={}:{}, hops={} -> {}",
+                        local_node_id,
+                        requested_id,
+                        leader_node.id,
+                        leader_node.addr,
+                        leader_node.port,
+                        forward_hops,
+                        target_hops
                     );
-                    warn!("{}", msg);
-                    return Self::error_response(StatusCode::CONFLICT, msg);
+                    match state
+                        .data_client
+                        .append_to_node(&leader_node, &req, target_hops, local_node_id)
+                        .await
+                    {
+                        Ok(resp) => {
+                            info!(
+                                "KNetworkServer data append forwarded and committed: local_node_id={}, requested_id={}, committed_id={}, leader_id={}, hops={}",
+                                local_node_id, requested_id, resp.id, leader_node.id, target_hops
+                            );
+                            return (StatusCode::OK, Json(resp)).into_response();
+                        }
+                        Err(forward_err) => {
+                            let msg = format!(
+                                "KNetworkServer data append forward failed: local_node_id={}, requested_id={}, leader_id={}, err={}",
+                                local_node_id, requested_id, leader_node.id, forward_err
+                            );
+                            error!("{}", msg);
+                            return Self::error_response(StatusCode::BAD_GATEWAY, msg);
+                        }
+                    }
                 }
 
                 let msg = format!(
@@ -712,6 +785,31 @@ impl KNetworkServer {
         (StatusCode::OK, Json(body)).into_response()
     }
 
+    fn parse_forward_hops(headers: &HeaderMap) -> Result<u32, String> {
+        let Some(raw) = headers.get(KLOG_FORWARD_HOPS_HEADER) else {
+            return Ok(0);
+        };
+        let raw = raw.to_str().map_err(|e| {
+            format!(
+                "KNetworkServer data append invalid {} header utf8: {}",
+                KLOG_FORWARD_HOPS_HEADER, e
+            )
+        })?;
+        raw.parse::<u32>().map_err(|e| {
+            format!(
+                "KNetworkServer data append invalid {} header '{}': {}",
+                KLOG_FORWARD_HOPS_HEADER, raw, e
+            )
+        })
+    }
+
+    fn now_millis() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+
     fn decode_request(expected: RaftRequestType, body: &[u8]) -> Result<RaftRequest, Response> {
         info!(
             "KNetworkServer decode request: rpc={}, body_bytes={}",
@@ -833,7 +931,9 @@ fn parse_voter_ids_csv(raw: &str) -> Result<Vec<KNodeId>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_voter_ids_csv;
+    use super::{KNetworkServer, parse_voter_ids_csv};
+    use crate::network::KLOG_FORWARD_HOPS_HEADER;
+    use axum::http::HeaderMap;
 
     #[test]
     fn test_parse_voter_ids_csv_ok() {
@@ -851,5 +951,31 @@ mod tests {
     fn test_parse_voter_ids_csv_invalid_rejected() {
         let err = parse_voter_ids_csv("1,a").expect_err("invalid voter should fail");
         assert!(err.contains("invalid node id"));
+    }
+
+    #[test]
+    fn test_parse_forward_hops_default_zero() {
+        let headers = HeaderMap::new();
+        let hops = KNetworkServer::parse_forward_hops(&headers).expect("parse hops");
+        assert_eq!(hops, 0);
+    }
+
+    #[test]
+    fn test_parse_forward_hops_ok() {
+        let mut headers = HeaderMap::new();
+        headers.insert(KLOG_FORWARD_HOPS_HEADER, "2".parse().expect("header value"));
+        let hops = KNetworkServer::parse_forward_hops(&headers).expect("parse hops");
+        assert_eq!(hops, 2);
+    }
+
+    #[test]
+    fn test_parse_forward_hops_invalid_rejected() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            KLOG_FORWARD_HOPS_HEADER,
+            "abc".parse().expect("header value"),
+        );
+        let err = KNetworkServer::parse_forward_hops(&headers).expect_err("invalid hops");
+        assert!(err.contains("invalid"));
     }
 }

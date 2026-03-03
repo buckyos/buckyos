@@ -1,4 +1,7 @@
-use super::request::{RaftRequest, RaftResponse};
+use super::request::{
+    KLOG_FORWARD_HOPS_HEADER, KLOG_FORWARDED_BY_HEADER, KLogAppendRequest, KLogAppendResponse,
+    KLogDataRequestType, RaftRequest, RaftResponse,
+};
 use crate::{KNode, KNodeId, KTypeConfig};
 use openraft::error::{
     InstallSnapshotError, NetworkError, RPCError, RaftError, RemoteError, Timeout, Unreachable,
@@ -8,6 +11,9 @@ use openraft::raft::{
     AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
     VoteRequest, VoteResponse,
 };
+use std::time::Duration;
+
+const DEFAULT_DATA_RPC_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub struct KNetworkFactory {
     local: KNodeId,
@@ -32,6 +38,77 @@ pub struct KNetworkClient {
     local: KNodeId,
     target: KNodeId,
     node: KNode,
+}
+
+#[derive(Clone)]
+pub struct KDataClient {
+    client: reqwest::Client,
+    timeout: Duration,
+}
+
+impl Default for KDataClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl KDataClient {
+    pub fn new() -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            timeout: DEFAULT_DATA_RPC_TIMEOUT,
+        }
+    }
+
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    pub async fn append_to_node(
+        &self,
+        target: &KNode,
+        req: &KLogAppendRequest,
+        forward_hops: u32,
+        forwarded_by: KNodeId,
+    ) -> Result<KLogAppendResponse, String> {
+        let path = KLogDataRequestType::Append.klog_path();
+        let url = format!("http://{}:{}{}", target.addr, target.port, path);
+        let response = self
+            .client
+            .post(&url)
+            .timeout(self.timeout)
+            .header(KLOG_FORWARD_HOPS_HEADER, forward_hops.to_string())
+            .header(KLOG_FORWARDED_BY_HEADER, forwarded_by.to_string())
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| {
+                format!(
+                    "forward data append send failed: target={}({}:{}), url={}, err={}",
+                    target.id, target.addr, target.port, url, e
+                )
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<failed to read body: {}>", e));
+            return Err(format!(
+                "forward data append failed: target={}({}:{}), url={}, status={}, body={}",
+                target.id, target.addr, target.port, url, status, body
+            ));
+        }
+
+        response.json::<KLogAppendResponse>().await.map_err(|e| {
+            format!(
+                "forward data append decode failed: target={}({}:{}), url={}, err={}",
+                target.id, target.addr, target.port, url, e
+            )
+        })
+    }
 }
 
 impl KNetworkClient {

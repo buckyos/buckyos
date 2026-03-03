@@ -14,6 +14,8 @@ const NETWORK_MAGIC: &[u8; 8] = b"KLOGRPC1";
 const NETWORK_VERSION_V1: u16 = 1;
 const NETWORK_CODEC_BINCODE_LEGACY: u8 = 1;
 const NETWORK_HEADER_LEN: usize = 8 + 2 + 1 + 1 + 1 + 4;
+pub const KLOG_FORWARD_HOPS_HEADER: &str = "x-klog-forward-hops";
+pub const KLOG_FORWARDED_BY_HEADER: &str = "x-klog-forwarded-by";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RaftRequestType {
