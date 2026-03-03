@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex as AsyncMutex;
 
-const REQUEST_DEDUP_WINDOW_MS: u64 = 5 * 60 * 1000;
-const REQUEST_DEDUP_MAX_ITEMS: usize = 10_000;
+pub(crate) const REQUEST_DEDUP_WINDOW_MS: u64 = 5 * 60 * 1000;
+pub(crate) const REQUEST_DEDUP_MAX_ITEMS: usize = 10_000;
 
 pub struct KLogStateSnapshot {
     pub data: Vec<u8>,
@@ -68,6 +68,11 @@ pub trait KLogStateStore: Send + Sync {
 
     /// Persist state-machine metadata.
     async fn save_state_machine_meta(&self, meta: KLogStateMachineMeta) -> KResult<()>;
+
+    /// Lookup recent request id for idempotency.
+    /// Returns committed log id when request id is still valid in dedup window.
+    async fn lookup_recent_request_id(&self, request_id: &str, now_ms: u64)
+    -> KResult<Option<u64>>;
 }
 
 pub type KLogStateStoreRef = Arc<Box<dyn KLogStateStore>>;
@@ -211,8 +216,32 @@ impl KLogStateStoreManager {
     pub async fn find_recent_request_id(&self, request_id: &str) -> Option<u64> {
         let request_id = normalize_request_id(Some(request_id))?;
         let now_ms = now_millis();
-        let mut dedup = self.request_dedup.lock().await;
-        dedup.lookup(request_id, now_ms)
+        {
+            let mut dedup = self.request_dedup.lock().await;
+            if let Some(existing_id) = dedup.lookup(request_id, now_ms) {
+                return Some(existing_id);
+            }
+        }
+
+        match self
+            .state_store
+            .lookup_recent_request_id(request_id, now_ms)
+            .await
+        {
+            Ok(Some(existing_id)) => {
+                let mut dedup = self.request_dedup.lock().await;
+                dedup.remember(request_id.to_string(), existing_id, now_ms);
+                Some(existing_id)
+            }
+            Ok(None) => None,
+            Err(err) => {
+                warn!(
+                    "KLogStateStoreManager lookup request_id in state_store failed: request_id={}, err={}",
+                    request_id, err
+                );
+                None
+            }
+        }
     }
 
     /// Append an already prepared entry.

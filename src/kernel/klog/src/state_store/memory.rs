@@ -1,16 +1,84 @@
 use super::store::{
     KLogQuery, KLogQueryOrder, KLogStateMachineMeta, KLogStateSnapshot, KLogStateStore,
+    REQUEST_DEDUP_MAX_ITEMS, REQUEST_DEDUP_WINDOW_MS,
 };
 use crate::{KLogEntry, KLogError, KResult};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex as AsyncMutex;
+
+#[derive(Debug, Clone, Copy)]
+struct RequestDedupRecord {
+    log_id: u64,
+    seen_at_ms: u64,
+}
+
+#[derive(Debug, Default)]
+struct RequestDedupIndex {
+    records: HashMap<String, RequestDedupRecord>,
+    order: VecDeque<(u64, String)>,
+}
+
+impl RequestDedupIndex {
+    fn lookup(&mut self, request_id: &str, now_ms: u64) -> Option<u64> {
+        self.cleanup(now_ms);
+        self.records.get(request_id).map(|v| v.log_id)
+    }
+
+    fn remember(&mut self, request_id: String, log_id: u64, now_ms: u64) {
+        self.cleanup(now_ms);
+        self.records.insert(
+            request_id.clone(),
+            RequestDedupRecord {
+                log_id,
+                seen_at_ms: now_ms,
+            },
+        );
+        self.order.push_back((now_ms, request_id));
+        self.cleanup(now_ms);
+    }
+
+    fn clear(&mut self) {
+        self.records.clear();
+        self.order.clear();
+    }
+
+    fn cleanup(&mut self, now_ms: u64) {
+        loop {
+            let should_pop = match self.order.front() {
+                Some((seen_at_ms, _)) => {
+                    let expired = now_ms.saturating_sub(*seen_at_ms) > REQUEST_DEDUP_WINDOW_MS;
+                    expired || self.records.len() > REQUEST_DEDUP_MAX_ITEMS
+                }
+                None => false,
+            };
+            if !should_pop {
+                break;
+            }
+
+            let Some((seen_at_ms, request_id)) = self.order.pop_front() else {
+                break;
+            };
+            let remove = self
+                .records
+                .get(request_id.as_str())
+                .map(|v| v.seen_at_ms == seen_at_ms)
+                .unwrap_or(false);
+            if remove {
+                self.records.remove(request_id.as_str());
+            }
+        }
+    }
+}
 
 /// A simple in-memory state store implementation.
 pub struct MemoryStateStore {
     logs: Arc<AsyncMutex<Vec<KLogEntry>>>,
     next_log_id: AtomicU64,
     state_machine_meta: Arc<AsyncMutex<Option<KLogStateMachineMeta>>>,
+    request_dedup: Arc<AsyncMutex<RequestDedupIndex>>,
 }
 
 impl MemoryStateStore {
@@ -19,6 +87,7 @@ impl MemoryStateStore {
             logs: Arc::new(AsyncMutex::new(Vec::new())),
             next_log_id: AtomicU64::new(1),
             state_machine_meta: Arc::new(AsyncMutex::new(None)),
+            request_dedup: Arc::new(AsyncMutex::new(RequestDedupIndex::default())),
         }
     }
 }
@@ -26,6 +95,14 @@ impl MemoryStateStore {
 #[async_trait::async_trait]
 impl KLogStateStore for MemoryStateStore {
     async fn append(&self, entries: Vec<KLogEntry>) -> KResult<()> {
+        let now_ms = now_millis();
+        let request_id_pairs = entries
+            .iter()
+            .filter_map(|entry| {
+                normalize_request_id(entry.request_id.as_deref())
+                    .map(|request_id| (request_id.to_string(), entry.id))
+            })
+            .collect::<Vec<_>>();
         let candidate_next = entries
             .iter()
             .map(|e| e.id.saturating_add(1))
@@ -47,6 +124,13 @@ impl KLogStateStore for MemoryStateStore {
                     Ok(_) => break,
                     Err(actual) => current = actual,
                 }
+            }
+        }
+
+        if !request_id_pairs.is_empty() {
+            let mut dedup = self.request_dedup.lock().await;
+            for (request_id, log_id) in request_id_pairs {
+                dedup.remember(request_id, log_id, now_ms);
             }
         }
 
@@ -107,6 +191,8 @@ impl KLogStateStore for MemoryStateStore {
         let mut logs = self.logs.lock().await;
         *logs = entries;
         self.next_log_id.store(candidate_next, Ordering::SeqCst);
+        let mut dedup = self.request_dedup.lock().await;
+        dedup.clear();
         debug!(
             "MemoryStateStore install_snapshot reset next_log_id={}",
             candidate_next
@@ -133,4 +219,27 @@ impl KLogStateStore for MemoryStateStore {
         *guard = Some(meta);
         Ok(())
     }
+
+    async fn lookup_recent_request_id(
+        &self,
+        request_id: &str,
+        now_ms: u64,
+    ) -> KResult<Option<u64>> {
+        let Some(request_id) = normalize_request_id(Some(request_id)) else {
+            return Ok(None);
+        };
+        let mut dedup = self.request_dedup.lock().await;
+        Ok(dedup.lookup(request_id, now_ms))
+    }
+}
+
+fn normalize_request_id(request_id: Option<&str>) -> Option<&str> {
+    request_id.map(|v| v.trim()).filter(|v| !v.is_empty())
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }

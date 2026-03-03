@@ -1,5 +1,6 @@
 use super::store::{
     KLogQuery, KLogQueryOrder, KLogStateMachineMeta, KLogStateSnapshot, KLogStateStore,
+    REQUEST_DEDUP_WINDOW_MS,
 };
 use crate::{KLogEntry, KLogError, KResult};
 use rocksdb::backup::{BackupEngine, BackupEngineOptions, RestoreOptions};
@@ -18,6 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const KEY_PREFIX_ENTRY: u8 = b'e';
 const KEY_NEXT_LOG_ID_META: &[u8] = b"m:next_log_id";
 const KEY_STATE_MACHINE_META: &[u8] = b"m:state_machine_meta";
+const KEY_REQUEST_DEDUP_PREFIX: &[u8] = b"m:req:";
 const CF_LOGS: &str = "logs";
 const CF_META: &str = "meta";
 const CHECKPOINT_SNAPSHOT_MAGIC: &str = "klog-rdb-checkpoint-v1";
@@ -25,6 +27,12 @@ const CHECKPOINT_SNAPSHOT_PREFIX: &[u8] = b"KLOG_RDB_CP1";
 const BACKUP_ENGINE_SNAPSHOT_MAGIC: &str = "klog-rdb-backup-v1";
 const BACKUP_ENGINE_SNAPSHOT_PREFIX: &[u8] = b"KLOG_RDB_BK1";
 static TEMP_DIR_SEQ: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RequestDedupMeta {
+    log_id: u64,
+    seen_at_ms: u64,
+}
 
 fn entry_key(id: u64) -> [u8; 9] {
     let mut key = [0u8; 9];
@@ -73,6 +81,24 @@ fn summarize_entry_ids(entries: &[KLogEntry]) -> String {
     };
 
     format!("{}..={} ({} entries)", first.id, last.id, entries.len())
+}
+
+fn request_dedup_meta_key(request_id: &str) -> Vec<u8> {
+    let mut key = Vec::with_capacity(KEY_REQUEST_DEDUP_PREFIX.len() + request_id.len());
+    key.extend_from_slice(KEY_REQUEST_DEDUP_PREFIX);
+    key.extend_from_slice(request_id.as_bytes());
+    key
+}
+
+fn normalize_request_id(request_id: Option<&str>) -> Option<&str> {
+    request_id.map(|v| v.trim()).filter(|v| !v.is_empty())
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn unique_temp_dir(prefix: &str) -> PathBuf {
@@ -499,6 +525,34 @@ impl RocksDbStateStore {
         Ok(())
     }
 
+    fn clear_request_dedup_in_batch(&self, batch: &mut WriteBatch) -> KResult<()> {
+        let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_META);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+        let mut deleted = 0usize;
+        let iter = self.db.iterator_cf(
+            &meta_cf,
+            IteratorMode::From(KEY_REQUEST_DEDUP_PREFIX, Direction::Forward),
+        );
+        for item in iter {
+            let (k, _) = item.map_err(|e| {
+                klog_err_with_context("Failed to iterate rocksdb while clearing request dedup", e)
+            })?;
+            if !k.as_ref().starts_with(KEY_REQUEST_DEDUP_PREFIX) {
+                break;
+            }
+            batch.delete_cf(&meta_cf, k.as_ref());
+            deleted += 1;
+        }
+        debug!(
+            "RocksDbStateStore clear_request_dedup_in_batch done: deleted={}",
+            deleted
+        );
+        Ok(())
+    }
+
     fn replace_with_entries(&self, entries: Vec<KLogEntry>) -> KResult<()> {
         info!(
             "RocksDbStateStore replace_with_entries start: snapshot_mode={:?}, incoming_entries={}",
@@ -507,6 +561,7 @@ impl RocksDbStateStore {
         );
         let mut batch = WriteBatch::default();
         self.clear_entries_in_batch(&mut batch)?;
+        self.clear_request_dedup_in_batch(&mut batch)?;
         let logs_cf = self.db.cf_handle(CF_LOGS).ok_or_else(|| {
             let msg = format!("Missing column family '{}'", CF_LOGS);
             error!("{}", msg);
@@ -552,6 +607,7 @@ impl RocksDbStateStore {
         );
         let mut batch = WriteBatch::default();
         self.clear_entries_in_batch(&mut batch)?;
+        self.clear_request_dedup_in_batch(&mut batch)?;
         let logs_cf = self.db.cf_handle(CF_LOGS).ok_or_else(|| {
             let msg = format!("Missing column family '{}'", CF_LOGS);
             error!("{}", msg);
@@ -567,8 +623,14 @@ impl RocksDbStateStore {
             error!("{}", msg);
             klog_err(msg)
         })?;
+        let source_meta_cf = source_db.cf_handle(CF_META).ok_or_else(|| {
+            let msg = format!("Missing source column family '{}'", CF_META);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
 
         let mut copied = 0usize;
+        let mut copied_dedup = 0usize;
         let mut max_id = 0u64;
         for item in source_db.iterator_cf(&source_logs_cf, IteratorMode::Start) {
             let (k, v) = item
@@ -585,13 +647,28 @@ impl RocksDbStateStore {
         let next_log_id = max_id.saturating_add(1).max(1);
         batch.put_cf(&meta_cf, KEY_NEXT_LOG_ID_META, next_log_id.to_be_bytes());
 
+        let dedup_iter = source_db.iterator_cf(
+            &source_meta_cf,
+            IteratorMode::From(KEY_REQUEST_DEDUP_PREFIX, Direction::Forward),
+        );
+        for item in dedup_iter {
+            let (k, v) = item.map_err(|e| {
+                klog_err_with_context("Failed to iterate source request dedup index", e)
+            })?;
+            if !k.as_ref().starts_with(KEY_REQUEST_DEDUP_PREFIX) {
+                break;
+            }
+            batch.put_cf(&meta_cf, k.as_ref(), v.as_ref());
+            copied_dedup += 1;
+        }
+
         let write_opts = self.write_options();
         self.db.write_opt(batch, &write_opts).map_err(|e| {
             klog_err_with_context("Failed to apply checkpoint snapshot into rocksdb", e)
         })?;
         info!(
-            "RocksDbStateStore replace_with_db completed: copied_entries={}, next_log_id={}",
-            copied, next_log_id
+            "RocksDbStateStore replace_with_db completed: copied_entries={}, copied_dedup={}, next_log_id={}",
+            copied, copied_dedup, next_log_id
         );
 
         Ok(())
@@ -1219,6 +1296,12 @@ impl KLogStateStore for RocksDbStateStore {
             error!("{}", msg);
             klog_err(msg)
         })?;
+        let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_META);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+        let now_ms = now_millis();
         let mut batch = WriteBatch::default();
         for entry in entries {
             let key = entry_key(entry.id);
@@ -1227,6 +1310,18 @@ impl KLogStateStore for RocksDbStateStore {
                     klog_err_with_context("Failed to serialize state entry for rocksdb", e)
                 })?;
             batch.put_cf(&logs_cf, key, value);
+            if let Some(request_id) = normalize_request_id(entry.request_id.as_deref()) {
+                let dedup_key = request_dedup_meta_key(request_id);
+                let dedup_value = bincode::serde::encode_to_vec(
+                    &RequestDedupMeta {
+                        log_id: entry.id,
+                        seen_at_ms: now_ms,
+                    },
+                    bincode::config::legacy(),
+                )
+                .map_err(|e| klog_err_with_context("Failed to encode request dedup index", e))?;
+                batch.put_cf(&meta_cf, dedup_key, dedup_value);
+            }
         }
 
         let write_opts = self.write_options();
@@ -1389,5 +1484,44 @@ impl KLogStateStore for RocksDbStateStore {
 
     async fn save_state_machine_meta(&self, meta: KLogStateMachineMeta) -> KResult<()> {
         self.persist_state_machine_meta(&meta)
+    }
+
+    async fn lookup_recent_request_id(
+        &self,
+        request_id: &str,
+        now_ms: u64,
+    ) -> KResult<Option<u64>> {
+        let Some(request_id) = normalize_request_id(Some(request_id)) else {
+            return Ok(None);
+        };
+
+        let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_META);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+        let key = request_dedup_meta_key(request_id);
+        let Some(raw) = self
+            .db
+            .get_cf(&meta_cf, key.as_slice())
+            .map_err(|e| klog_err_with_context("Failed to read request dedup index", e))?
+        else {
+            return Ok(None);
+        };
+        let (record, _): (RequestDedupMeta, usize) =
+            bincode::serde::decode_from_slice(raw.as_ref(), bincode::config::legacy())
+                .map_err(|e| klog_err_with_context("Failed to decode request dedup index", e))?;
+
+        if now_ms.saturating_sub(record.seen_at_ms) > REQUEST_DEDUP_WINDOW_MS {
+            let write_opts = self.write_options();
+            self.db
+                .delete_cf_opt(&meta_cf, key.as_slice(), &write_opts)
+                .map_err(|e| {
+                    klog_err_with_context("Failed to delete expired request dedup index", e)
+                })?;
+            return Ok(None);
+        }
+
+        Ok(Some(record.log_id))
     }
 }

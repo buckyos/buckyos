@@ -36,6 +36,57 @@ async fn test_manager_recovers_next_log_id_after_rocksdb_reopen() -> anyhow::Res
 }
 
 #[tokio::test]
+async fn test_rocksdb_request_id_dedup_persists_after_reopen() -> anyhow::Result<()> {
+    let path = unique_test_path("state_store_request_dedup_reopen.rocks");
+    let rocks = RocksDbStateStore::open_with_mode(&path, RocksDbSnapshotMode::Enumerate)
+        .map_err(anyhow::Error::msg)?;
+    let state_store = Arc::new(Box::new(rocks) as Box<dyn KLogStateStore>);
+    let manager = KLogStateStoreManager::new(state_store).await?;
+
+    let first = manager.prepare_append_entry(KLogEntry {
+        id: 0,
+        timestamp: 123,
+        node_id: 1,
+        request_id: Some("rk-dedup-1".to_string()),
+        message: "first-write".to_string(),
+    });
+    let first_id = manager.append_prepared_entry(first).await?;
+    drop(manager);
+
+    let reopened = RocksDbStateStore::open_with_mode(&path, RocksDbSnapshotMode::Enumerate)
+        .map_err(anyhow::Error::msg)?;
+    let reopened = Arc::new(Box::new(reopened) as Box<dyn KLogStateStore>);
+    let manager = KLogStateStoreManager::new(reopened).await?;
+
+    let found = manager.find_recent_request_id("rk-dedup-1").await;
+    assert_eq!(found, Some(first_id));
+
+    let retry = manager.prepare_append_entry(KLogEntry {
+        id: 0,
+        timestamp: 124,
+        node_id: 1,
+        request_id: Some("rk-dedup-1".to_string()),
+        message: "retry-write".to_string(),
+    });
+    let retry_id = manager.append_prepared_entry(retry).await?;
+    assert_eq!(retry_id, first_id);
+
+    let items = manager
+        .query_entries(KLogQuery {
+            start_id: Some(first_id),
+            end_id: Some(first_id),
+            limit: 10,
+            order: KLogQueryOrder::Asc,
+        })
+        .await?;
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].id, first_id);
+    assert_eq!(items[0].message, "first-write");
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_manager_recovers_next_log_id_from_entries_without_meta() -> anyhow::Result<()> {
     let path = unique_test_path("state_store_next_id_from_entries.rocks");
     let rocks = RocksDbStateStore::open_with_mode(&path, RocksDbSnapshotMode::Enumerate)
