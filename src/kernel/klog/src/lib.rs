@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 pub mod logs;
 pub mod network;
+pub mod rpc;
 pub mod state_machine;
 pub mod state_store;
 #[cfg(test)]
@@ -52,6 +53,8 @@ pub struct KNode {
     pub id: KNodeId,
     pub addr: String,
     pub port: u16,
+    #[serde(default)]
+    pub rpc_port: u16,
 }
 
 declare_raft_types!(

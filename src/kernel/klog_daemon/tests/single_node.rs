@@ -32,14 +32,15 @@ async fn test_single_node_business_log_append_and_query() -> Result<(), String> 
 
     let result = async {
         wait_single_node_leader(port, 1, Duration::from_secs(20)).await?;
+        let rpc_port = node.rpc_port;
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(3))
             .build()
             .map_err(|e| format!("failed to build http client: {}", e))?;
 
-        let append1 = append_log(&client, port, "kernel-init", Some(100), Some(1)).await?;
-        let append2 = append_log(&client, port, "driver-up", Some(101), Some(1)).await?;
-        let append3 = append_log(&client, port, "service-ready", Some(102), Some(1)).await?;
+        let append1 = append_log(&client, rpc_port, "kernel-init", Some(100), Some(1)).await?;
+        let append2 = append_log(&client, rpc_port, "driver-up", Some(101), Some(1)).await?;
+        let append3 = append_log(&client, rpc_port, "service-ready", Some(102), Some(1)).await?;
 
         if !(append1.id < append2.id && append2.id < append3.id) {
             return Err(format!(
@@ -50,7 +51,7 @@ async fn test_single_node_business_log_append_and_query() -> Result<(), String> 
 
         let asc = query_logs(
             &client,
-            port,
+            rpc_port,
             Some(append1.id),
             Some(append3.id),
             Some(10),
@@ -64,7 +65,7 @@ async fn test_single_node_business_log_append_and_query() -> Result<(), String> 
 
         let desc = query_logs(
             &client,
-            port,
+            rpc_port,
             Some(append1.id),
             Some(append3.id),
             Some(2),

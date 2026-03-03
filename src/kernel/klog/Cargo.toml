@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 openraft = { version = "0.9", features = ["serde", "storage-v2", "anyhow"]}
 serde = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 log = { workspace = true }

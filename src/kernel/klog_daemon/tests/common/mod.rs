@@ -45,6 +45,7 @@ pub struct QueryLogResponse {
 pub struct TestNode {
     pub node_id: u64,
     pub port: u16,
+    pub rpc_port: u16,
     pub data_dir: PathBuf,
     pub config_path: PathBuf,
     pub child: Child,
@@ -120,6 +121,7 @@ pub fn write_config_file(
     path: &PathBuf,
     node_id: u64,
     port: u16,
+    rpc_port: u16,
     data_dir: &PathBuf,
     cluster_name: &str,
     auto_bootstrap: bool,
@@ -132,8 +134,10 @@ node_id = {node_id}
 
 [network]
 listen_addr = "127.0.0.1:{port}"
+rpc_listen_addr = "127.0.0.1:{rpc_port}"
 advertise_addr = "127.0.0.1"
 advertise_port = {port}
+rpc_advertise_port = {rpc_port}
 
 [storage]
 data_dir = "{data_dir}"
@@ -153,6 +157,7 @@ target_role = "{target_role}"
 "#,
         node_id = node_id,
         port = port,
+        rpc_port = rpc_port,
         data_dir = data_dir.display(),
         cluster_name = cluster_name,
         auto_bootstrap = auto_bootstrap,
@@ -249,10 +254,17 @@ pub async fn spawn_node(
     let config_path = unique_tmp_path(&format!("node{}_config.toml", node_id));
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| format!("failed to create data dir {}: {}", data_dir.display(), e))?;
+    let rpc_port = loop {
+        let p = choose_free_port().map_err(|e| format!("choose rpc port failed: {}", e))?;
+        if p != port {
+            break p;
+        }
+    };
     write_config_file(
         &config_path,
         node_id,
         port,
+        rpc_port,
         &data_dir,
         cluster_name,
         auto_bootstrap,
@@ -286,11 +298,13 @@ pub async fn spawn_node(
         )
     })?;
 
-    wait_node_http_ready_after_spawn(&mut child, node_id, port, Duration::from_secs(12)).await?;
+    wait_node_http_ready_after_spawn(&mut child, node_id, port, rpc_port, Duration::from_secs(12))
+        .await?;
 
     Ok(TestNode {
         node_id,
         port,
+        rpc_port,
         data_dir,
         config_path,
         child,
@@ -301,6 +315,7 @@ pub async fn wait_node_http_ready_after_spawn(
     child: &mut Child,
     node_id: u64,
     port: u16,
+    rpc_port: u16,
     timeout: Duration,
 ) -> Result<(), String> {
     let client = reqwest::Client::builder()
@@ -322,7 +337,12 @@ pub async fn wait_node_http_ready_after_spawn(
         }
 
         match fetch_cluster_state(&client, port).await {
-            Ok(_) => return Ok(()),
+            Ok(_) => match query_logs(&client, rpc_port, None, None, Some(1), Some(false)).await {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    last_err = format!("cluster-state ok but rpc not ready: {}", e);
+                }
+            },
             Err(e) => {
                 last_err = e;
             }
@@ -840,6 +860,14 @@ pub async fn spawn_three_voter_cluster(
     }
 
     Ok(nodes)
+}
+
+pub fn rpc_port_by_node_id(nodes: &[TestNode], node_id: u64) -> Result<u16, String> {
+    nodes
+        .iter()
+        .find(|n| n.node_id == node_id)
+        .map(|n| n.rpc_port)
+        .ok_or_else(|| format!("rpc port not found for node_id={}", node_id))
 }
 
 pub async fn wait_new_leader_on_ports(

@@ -7,6 +7,7 @@ use cluster::{initialize_cluster_if_needed, spawn_auto_join_task};
 use config::KLogRuntimeConfig;
 use klog::logs::SqliteLogStorage;
 use klog::network::{KNetworkFactory, KNetworkServer};
+use klog::rpc::KRpcServer;
 use klog::state_machine::{KLogStateMachine, SnapshotManager};
 use klog::state_store::{
     KLogStateStore, KLogStateStoreManager, RocksDbSnapshotMode, RocksDbStateStore,
@@ -46,11 +47,14 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
     })?;
 
     info!(
-        "klog startup config: node_id={}, listen_addr={}, advertise_addr={}:{}, data_dir={}, cluster_name={}, cluster_id={}, auto_bootstrap={}, state_store_sync_write={}, join_targets={:?}, join_retry_interval_ms={}, join_max_attempts={}, join_blocking={}, join_target_role={}, admin_local_only={}",
+        "klog startup config: node_id={}, listen_addr={}, rpc_enabled={}, rpc_listen_addr={}, advertise_addr={}:{}, rpc_advertise_port={}, data_dir={}, cluster_name={}, cluster_id={}, auto_bootstrap={}, state_store_sync_write={}, join_targets={:?}, join_retry_interval_ms={}, join_max_attempts={}, join_blocking={}, join_target_role={}, admin_local_only={}",
         cfg.node_id,
         cfg.listen_addr,
+        cfg.enable_rpc_server,
+        cfg.rpc_listen_addr,
         cfg.advertise_addr,
         cfg.advertise_port,
+        cfg.rpc_advertise_port,
         cfg.data_dir.display(),
         cfg.cluster_name,
         cfg.cluster_id,
@@ -139,10 +143,29 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
     initialize_cluster_if_needed(&cfg, &raft).await;
     let join_task = spawn_auto_join_task(&cfg);
 
-    let network_server = KNetworkServer::new(cfg.listen_addr.clone(), raft)
-        .with_state_store_manager(state_store_manager)
+    let network_server = KNetworkServer::new(cfg.listen_addr.clone(), raft.clone())
+        .with_state_store_manager(state_store_manager.clone())
         .with_admin_local_only(cfg.admin_local_only)
         .with_cluster_identity(cfg.cluster_name.clone(), cfg.cluster_id.clone());
-    info!("Starting raft RPC server: listen_addr={}", cfg.listen_addr);
-    run_server_lifecycle(network_server, join_task).await
+    info!(
+        "Starting raft protocol server: listen_addr={}",
+        cfg.listen_addr
+    );
+
+    let rpc_server = if cfg.enable_rpc_server {
+        info!(
+            "Starting client RPC server: rpc_listen_addr={}",
+            cfg.rpc_listen_addr
+        );
+        Some(KRpcServer::new(
+            cfg.rpc_listen_addr.clone(),
+            raft,
+            state_store_manager,
+        ))
+    } else {
+        warn!("Client RPC server is disabled by config");
+        None
+    };
+
+    run_server_lifecycle(network_server, rpc_server, join_task).await
 }

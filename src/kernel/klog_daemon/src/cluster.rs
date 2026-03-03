@@ -15,6 +15,11 @@ pub async fn initialize_cluster_if_needed(cfg: &KLogRuntimeConfig, raft: &KRaftR
                 id: cfg.node_id,
                 addr: cfg.advertise_addr.clone(),
                 port: cfg.advertise_port,
+                rpc_port: if cfg.enable_rpc_server {
+                    cfg.rpc_advertise_port
+                } else {
+                    0
+                },
             },
         );
         match raft.initialize(members).await {
@@ -184,18 +189,29 @@ async fn join_and_promote_once(
     }
 
     if !state_before.learners.contains(&cfg.node_id) {
+        let advertised_rpc_port = if cfg.enable_rpc_server {
+            cfg.rpc_advertise_port
+        } else {
+            0
+        };
         let mut add_url = build_admin_url(admin_target, &add_learner_path)?;
         {
             let mut q = add_url.query_pairs_mut();
             q.append_pair("node_id", &cfg.node_id.to_string());
             q.append_pair("addr", &cfg.advertise_addr);
             q.append_pair("port", &cfg.advertise_port.to_string());
+            q.append_pair("rpc_port", &advertised_rpc_port.to_string());
             q.append_pair("blocking", if cfg.join_blocking { "true" } else { "false" });
         }
 
         info!(
-            "Auto-join add-learner: admin_target={}, node_id={}, addr={}, port={}, blocking={}",
-            admin_target, cfg.node_id, cfg.advertise_addr, cfg.advertise_port, cfg.join_blocking
+            "Auto-join add-learner: admin_target={}, node_id={}, addr={}, port={}, rpc_port={}, blocking={}",
+            admin_target,
+            cfg.node_id,
+            cfg.advertise_addr,
+            cfg.advertise_port,
+            advertised_rpc_port,
+            cfg.join_blocking
         );
         let add_result = send_admin_post(client, add_url, "add-learner").await?;
         info!(
@@ -444,6 +460,7 @@ mod tests {
             id: 10 as KNodeId,
             addr: "127.0.0.1".to_string(),
             port: 21001,
+            rpc_port: 31001,
         };
         let target = admin_target_from_node(&node);
         assert_eq!(target, "127.0.0.1:21001");
@@ -468,8 +485,11 @@ mod tests {
         KLogRuntimeConfig {
             node_id: 1,
             listen_addr: "0.0.0.0:21001".to_string(),
+            enable_rpc_server: true,
+            rpc_listen_addr: "127.0.0.1:21101".to_string(),
             advertise_addr: "127.0.0.1".to_string(),
             advertise_port: 21001,
+            rpc_advertise_port: 21101,
             data_dir: PathBuf::from("/tmp/klog_cluster_test"),
             cluster_name: cluster_name.to_string(),
             cluster_id: cluster_id.to_string(),

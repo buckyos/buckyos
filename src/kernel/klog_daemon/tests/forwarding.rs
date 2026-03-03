@@ -31,6 +31,14 @@ async fn test_three_node_append_via_follower_auto_forwards_to_leader() -> Result
             .into_iter()
             .find(|p| *p != leader_port)
             .ok_or_else(|| "failed to choose follower port".to_string())?;
+        let leader_rpc_port = rpc_port_by_node_id(&nodes, leader_id)?;
+        let follower_id = match follower_port {
+            p if p == port1 => 1,
+            p if p == port2 => 2,
+            p if p == port3 => 3,
+            _ => return Err(format!("unexpected follower raft port: {}", follower_port)),
+        };
+        let follower_rpc_port = rpc_port_by_node_id(&nodes, follower_id)?;
 
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(3))
@@ -39,7 +47,7 @@ async fn test_three_node_append_via_follower_auto_forwards_to_leader() -> Result
 
         let appended = append_log(
             &client,
-            follower_port,
+            follower_rpc_port,
             "forwarded-from-follower",
             Some(300),
             Some(2),
@@ -48,7 +56,7 @@ async fn test_three_node_append_via_follower_auto_forwards_to_leader() -> Result
 
         let queried = query_logs(
             &client,
-            leader_port,
+            leader_rpc_port,
             Some(appended.id),
             Some(appended.id),
             Some(1),
