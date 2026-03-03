@@ -1,5 +1,6 @@
 #[allow(non_snake_case)]
 pub mod agent;
+pub mod agent_bash;
 pub mod agent_config;
 pub mod agent_environment;
 pub mod agent_memory;

@@ -411,7 +411,7 @@ impl AgentTool for MCPTool {
         true
     }
     fn support_llm_tool_call(&self) -> bool {
-        false 
+        false
     }
 
     async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
@@ -649,7 +649,9 @@ impl AgentToolManager {
                 .insert(normalized_name.clone(), registered.clone());
         }
         if support_action {
-            guard.action_tools.insert(normalized_name.clone(), registered);
+            guard
+                .action_tools
+                .insert(normalized_name.clone(), registered);
         }
         if normalized_name != original_name {
             warn!(
@@ -741,7 +743,11 @@ impl AgentToolManager {
         let Ok(guard) = self.namespaces.read() else {
             return vec![];
         };
-        let mut specs: Vec<ToolSpec> = guard.action_tools.values().map(|tool| tool.spec()).collect();
+        let mut specs: Vec<ToolSpec> = guard
+            .action_tools
+            .values()
+            .map(|tool| tool.spec())
+            .collect();
         specs.sort_by(|a, b| a.name.cmp(&b.name));
         specs
     }
@@ -1171,7 +1177,8 @@ mod tests {
         }
     }
 
-    async fn build_real_tool_catalog_for_review() -> (Vec<ToolSpec>, Vec<ToolSpec>, Vec<ToolSpec>, Vec<ToolSpec>) {
+    async fn build_real_tool_catalog_for_review(
+    ) -> (Vec<ToolSpec>, Vec<ToolSpec>, Vec<ToolSpec>, Vec<ToolSpec>) {
         let temp = tempdir().expect("create tempdir for tool catalog");
         let workspace_root = temp.path().join("workspace");
         let sessions_root = workspace_root.join("session");
@@ -1240,14 +1247,13 @@ mod tests {
             );
         }
 
-
         println!("\n================ BASH NAMESPACE ================");
         println!("[List Mode] name + summary");
         for spec in &bash_specs {
             println!("- {} : {}", spec.name, spec.description);
             println!("{:?}", spec.usage);
         }
-   
+
         println!("\n================ ACTION PROMPTS ================");
         println!("[List Mode] name + introduce");
         for spec in &action_specs {
@@ -1513,7 +1519,6 @@ mod tests {
             }
             Ok(json!({"ok": true}))
         }
-
     }
 
     #[async_trait]
@@ -1566,11 +1571,9 @@ mod tests {
         let action_specs = mgr.list_action_specs();
         assert_eq!(action_specs.len(), 1);
         assert_eq!(action_specs[0].name, "exec_bash");
-        assert!(
-            action_specs[0]
-                .render_action_introduce_prompt()
-                .contains("dummy")
-        );
+        assert!(action_specs[0]
+            .render_action_introduce_prompt()
+            .contains("dummy"));
 
         let err = mgr
             .call_tool(
@@ -1627,11 +1630,10 @@ mod tests {
         assert!(mgr.get_bash_cmd("namespaced_tool").is_none());
         assert!(mgr.get_action("namespaced_tool").is_some());
         assert!(mgr.get_action_spec("namespaced_tool").is_some());
-        assert!(
-            mgr.list_tool_specs()
-                .iter()
-                .all(|item| item.name != "namespaced_tool")
-        );
+        assert!(mgr
+            .list_tool_specs()
+            .iter()
+            .all(|item| item.name != "namespaced_tool"));
 
         let result = mgr
             .call_tool(

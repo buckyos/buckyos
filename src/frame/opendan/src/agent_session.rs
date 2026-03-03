@@ -1000,7 +1000,6 @@ impl AgentTool for GetSessionTool {
         false
     }
 
-
     async fn call(&self, _ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
         let session_id = require_string(&args, "session_id")?;
         let session = self.store.session_view(&session_id).await?;

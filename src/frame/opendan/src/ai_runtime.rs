@@ -1819,7 +1819,6 @@ impl AgentTool for RuntimeCreateSubAgentTool {
         false
     }
 
-
     async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
         let parent_did = optional_string(&args, "parent_did")?.unwrap_or(ctx.agent_name.clone());
         let req = CreateSubAgentRequest {

@@ -14,6 +14,7 @@ use super::local_workspace::{
     SessionWorkspaceBinding, WorkshopIndex, WorkshopWorkspaceRecord, WorkspaceOwner,
 };
 use super::todo::{TodoTool, TodoToolConfig};
+use crate::agent_bash::ExecBashTool as BuiltinExecBashTool;
 use crate::agent_session::AgentSessionMgr;
 use crate::agent_tool::{
     AgentSkillRecord, AgentSkillSpec, AgentTool, AgentToolError, AgentToolManager, MCPToolConfig,
@@ -22,9 +23,8 @@ use crate::agent_tool::{
 };
 use crate::behavior::SessionRuntimeContext;
 use crate::buildin_tool::{
-    EditFileTool as BuiltinEditFileTool, ExecBashTool as BuiltinExecBashTool,
-    ReadFileTool as BuiltinReadFileTool, WorkshopWriteAudit as BuiltinWorkshopWriteAudit,
-    WriteFileTool as BuiltinWriteFileTool,
+    EditFileTool as BuiltinEditFileTool, ReadFileTool as BuiltinReadFileTool,
+    WorkshopWriteAudit as BuiltinWorkshopWriteAudit, WriteFileTool as BuiltinWriteFileTool,
 };
 use crate::worklog::WorklogToolConfig;
 
@@ -614,7 +614,6 @@ impl AgentTool for BindLocalWorkspaceTool {
     fn support_llm_tool_call(&self) -> bool {
         false
     }
-    
 
     async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
         let local_workspace_id = require_string_arg(&args, "local_workspace_id")?;
@@ -1103,8 +1102,8 @@ fn u64_to_usize(v: u64) -> Result<usize, AgentToolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_tool::{DoAction, DoActions};
     use crate::agent_session::AgentSessionMgr;
+    use crate::agent_tool::{DoAction, DoActions};
     use crate::behavior::SessionRuntimeContext;
     use buckyos_api::{value_to_object_map, AiToolCall};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1393,17 +1392,19 @@ mod tests {
                         .await
                         .expect("exec action should run")
                 }
-                DoAction::Call(call_action) => {
-                    call(
-                        &tool_mgr,
-                        call_action.call_action_name.as_str(),
-                        call_action.call_params.clone(),
-                    )
-                    .await
-                    .expect("call action should run")
-                }
+                DoAction::Call(call_action) => call(
+                    &tool_mgr,
+                    call_action.call_action_name.as_str(),
+                    call_action.call_params.clone(),
+                )
+                .await
+                .expect("call action should run"),
             };
-            assert_eq!(result["ok"], true, "action #{idx} should succeed: {}", result);
+            assert_eq!(
+                result["ok"], true,
+                "action #{idx} should succeed: {}",
+                result
+            );
             results.push(result);
         }
 

@@ -221,7 +221,7 @@ impl AgentTool for WorklogTool {
     fn spec(&self) -> ToolSpec {
         worklog_tool_spec()
     }
-    
+
     fn support_bash(&self) -> bool {
         true
     }
