@@ -6,6 +6,7 @@ use crate::network::{KLogAppendRequest, KLogAppendResponse, KLogQueryRequest, KL
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use uuid::Uuid;
 
 const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -14,24 +15,29 @@ pub struct KLogClient {
     client: reqwest::Client,
     next_id: AtomicU64,
     timeout: Duration,
+    request_node_id: u64,
 }
 
 impl KLogClient {
-    pub fn new(endpoint: impl Into<String>) -> Self {
+    pub fn new(endpoint: impl Into<String>, request_node_id: u64) -> Self {
         Self {
             endpoint: normalize_endpoint(endpoint.into()),
             client: reqwest::Client::new(),
             next_id: AtomicU64::new(1),
             timeout: DEFAULT_RPC_TIMEOUT,
+            request_node_id,
         }
     }
 
-    pub fn from_daemon_addr(addr: &str) -> Self {
-        Self::new(format!("http://{}{}", addr, KLOG_JSON_RPC_PATH))
+    pub fn from_daemon_addr(addr: &str, request_node_id: u64) -> Self {
+        Self::new(
+            format!("http://{}{}", addr, KLOG_JSON_RPC_PATH),
+            request_node_id,
+        )
     }
 
-    pub fn local_default() -> Self {
-        Self::from_daemon_addr("127.0.0.1:21101")
+    pub fn local_default(request_node_id: u64) -> Self {
+        Self::from_daemon_addr("127.0.0.1:21101", request_node_id)
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
@@ -39,7 +45,12 @@ impl KLogClient {
         self
     }
 
+    pub fn generate_request_id(node_id: u64) -> String {
+        format!("{}-{}", node_id, Uuid::now_v7())
+    }
+
     pub async fn append(&self, req: KLogAppendRequest) -> Result<KLogAppendResponse, String> {
+        let req = self.fill_append_defaults(req);
         self.call(KLOG_RPC_METHOD_APPEND, &req).await
     }
 
@@ -138,6 +149,20 @@ impl KLogClient {
             )
         })
     }
+
+    fn fill_append_defaults(&self, mut req: KLogAppendRequest) -> KLogAppendRequest {
+        let request_id = req
+            .request_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_string());
+        req.request_id = Some(request_id.unwrap_or_else(|| {
+            let request_node_id = req.node_id.unwrap_or(self.request_node_id);
+            Self::generate_request_id(request_node_id)
+        }));
+        req
+    }
 }
 
 fn normalize_endpoint(raw: String) -> String {
@@ -166,6 +191,7 @@ mod tests {
     use std::net::SocketAddr;
     use std::time::Duration;
     use tokio::task::JoinHandle;
+    use uuid::Uuid;
 
     struct TestJsonRpcServer {
         addr: SocketAddr,
@@ -203,7 +229,7 @@ mod tests {
         }
 
         fn client(&self) -> KLogClient {
-            KLogClient::from_daemon_addr(&self.addr.to_string())
+            KLogClient::from_daemon_addr(&self.addr.to_string(), 9)
                 .with_timeout(Duration::from_secs(1))
         }
     }
@@ -254,6 +280,44 @@ mod tests {
             .await
             .map_err(|e| anyhow::anyhow!("append failed: {}", e))?;
         assert_eq!(resp.id, 42);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_json_rpc_client_append_auto_request_id_uses_nodeid_uuid() -> anyhow::Result<()> {
+        let app = Router::new().route(
+            KLOG_JSON_RPC_PATH,
+            post(|Json(request): Json<KLogJsonRpcRequest>| async move {
+                assert_eq!(request.method, KLOG_RPC_METHOD_APPEND);
+                let params: KLogAppendRequest =
+                    serde_json::from_value(request.params).expect("append params");
+                let request_id = params.request_id.expect("request_id should be auto-filled");
+                let (node_prefix, uuid_part) = request_id
+                    .split_once('-')
+                    .expect("request_id should be in nodeid-uuid format");
+                assert_eq!(node_prefix, "9");
+                Uuid::parse_str(uuid_part).expect("uuid part should be valid");
+
+                let response =
+                    KLogJsonRpcResponse::success(request.id, KLogAppendResponse { id: 43 });
+                (StatusCode::OK, Json(response))
+            }),
+        );
+
+        let Some(server) = TestJsonRpcServer::try_start(app).await? else {
+            return Ok(());
+        };
+        let client = server.client();
+        let resp = client
+            .append(KLogAppendRequest {
+                message: "auto-request-id".to_string(),
+                timestamp: Some(2000),
+                node_id: None,
+                request_id: None,
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("append failed: {}", e))?;
+        assert_eq!(resp.id, 43);
         Ok(())
     }
 
