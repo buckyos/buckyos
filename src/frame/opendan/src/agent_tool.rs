@@ -350,10 +350,6 @@ pub struct DoActionResults {
     pub details: HashMap<String, Json>,
 }
 
-fn default_action_timeout_ms() -> u64 {
-    120_000
-}
-
 pub struct AgentSkillRecord {
     pub name: String,
     pub introduce: String,

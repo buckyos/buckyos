@@ -18,13 +18,11 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, Notify, RwLock};
 
 use crate::agent_tool::{AgentTool, AgentToolError, ToolSpec, TOOL_GET_SESSION};
-use crate::behavior::{self, TraceCtx};
+use crate::behavior::TraceCtx;
 
 const DEFAULT_SESSION_FILE: &str = "session.json";
 const DEFAULT_MSG_RECORD_FILE: &str = "msg_record.jsonl";
 const MAX_SESSION_ID_LEN: usize = 180;
-const SESSION_STATUS_PAUSE: &str = "pause";
-const SESSION_STATUS_NORMAL: &str = "normal";
 const WORK_SESSION_PREFIX: &str = "work-";
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -221,7 +219,7 @@ impl AgentSession {
 
     pub fn from_record(record: OpenDanAgentSessionRecord) -> Self {
         let runtime_meta = parse_runtime_meta(&record.meta);
-        let mut state = runtime_meta.state;
+        let state = runtime_meta.state;
         let is_paused = runtime_meta.is_paused;
 
         let mut meta = record.meta.clone();
@@ -542,7 +540,6 @@ impl AgentSession {
 pub struct AgentSessionMgr {
     owner_agent: String,
     sessions_root: PathBuf,
-    default_behavior: String,
     sessions: Arc<RwLock<HashMap<String, Arc<Mutex<AgentSession>>>>>,
     scheduler_lock: Arc<Mutex<()>>,
     ready_notify: Arc<Notify>,
@@ -552,7 +549,7 @@ impl AgentSessionMgr {
     pub async fn new(
         owner_agent: impl Into<String>,
         sessions_root: impl Into<PathBuf>,
-        default_behavior: String,
+        _default_behavior: String,
     ) -> Result<Self, AgentToolError> {
         let owner_agent = owner_agent.into();
         let sessions_root = sessions_root.into();
@@ -574,7 +571,6 @@ impl AgentSessionMgr {
         let store = Self {
             owner_agent,
             sessions_root,
-            default_behavior,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             scheduler_lock: Arc::new(Mutex::new(())),
             ready_notify: Arc::new(Notify::new()),

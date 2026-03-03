@@ -24,7 +24,7 @@ use crate::worklog::{WorklogListOptions, WorklogRecord, WorklogTool, WorklogTool
 use crate::workspace::todo::render_workspace_todo_prompt_from_db;
 
 use super::sanitize::{sanitize_json_compact, sanitize_text};
-use super::types::{BehaviorExecInput, LLMBehaviorConfig};
+use super::types::BehaviorExecInput;
 use super::Tokenizer;
 
 const SESSION_MSG_RECORD_FILES: [&str; 2] = ["msg_record.jsonl", "message_record.jsonl"];
@@ -456,12 +456,9 @@ async fn load_workspace_summary_with_limit(
         return String::new();
     };
 
-    let (local_workspace_id, workspace_info) = {
+    let workspace_info = {
         let guard = session.lock().await;
-        (
-            guard.local_workspace_id.clone(),
-            guard.workspace_info.clone(),
-        )
+        guard.workspace_info.clone()
     };
 
     let mut lines = Vec::<String>::new();
@@ -536,17 +533,12 @@ async fn load_session_summaries_with_limit(
         return String::new();
     };
 
-    let (session_id, title, summary, last_step_summary, state, current_behavior, step_index, links) = {
+    let (session_id, title, summary) = {
         let guard = session.lock().await;
         (
             guard.session_id.clone(),
             guard.title.clone(),
             guard.summary.clone(),
-            guard.last_step_summary.clone(),
-            format!("{:?}", guard.state),
-            guard.current_behavior.clone(),
-            guard.step_index,
-            guard.links.clone(),
         )
     };
 

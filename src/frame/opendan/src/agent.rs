@@ -19,7 +19,6 @@ use name_lib::DID;
 use ndn_lib::{MsgContent, MsgContentFormat, MsgObjKind, MsgObject};
 
 use serde_json::{json, Value as Json};
-use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::sleep;
 use tokio::{fs, task};
@@ -33,19 +32,16 @@ use crate::agent_session::{
 };
 use crate::agent_tool::{
     normalize_tool_name, AgentPolicy, AgentToolManager, DoAction, DoActionResults, DoActions,
-    TOOL_EXEC_BASH, TOOL_TODO_MANAGE,
+    TOOL_EXEC_BASH,
 };
 use crate::behavior::{
-    self, AgentWorkEvent, BehaviorConfig, BehaviorExecInput, BehaviorLLMResult, ExecutorReply,
+    AgentWorkEvent, BehaviorConfig, BehaviorExecInput, BehaviorLLMResult, ExecutorReply,
     LLMBehavior, LLMBehaviorDeps, LLMTrackingInfo, Tokenizer, TraceCtx, WorklogSink,
 };
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
 const LEGACY_ENV_DIR_NAME: &str = "environment";
-const DEFAULT_SESSION_ID: &str = "default";
-const INBOX_SESSION_ID: &str = DEFAULT_SESSION_ID;
 const MAX_MSG_PULL_PER_TICK: usize = 128;
-const MAX_EVENT_PULL_PER_TICK: usize = 16;
 const MAX_EVENT_PULL_TIMEOUT_MS: u64 = 10_000;
 const MAX_SESSION_WORKER_IDLE_SLEEP_MS: u64 = 10_000;
 const MSG_ROUTED_REASON: &str = "routed_by_opendan_runtime";
@@ -53,13 +49,7 @@ const MSG_CENTER_EVENT_BOX_NAMES: [&str; 3] = ["in", "group_in", "request"];
 const SESSION_QUEUE_APP_ID: &str = "opendan";
 const SESSION_QUEUE_RETENTION_SECONDS: u64 = 7 * 24 * 60 * 60;
 const SESSION_QUEUE_MAX_MESSAGES: u64 = 4096;
-const SESSION_QUEUE_FETCH_BATCH: usize = 64;
-const DEFAULT_NEW_MSG_MAX_PULL: usize = 32;
-const DEFAULT_NEW_EVENT_MAX_PULL: usize = 64;
-const DEFAULT_HISTORY_MSG_MAX_PULL: usize = 32;
-const DEFAULT_HISTORY_EVENT_MAX_PULL: usize = 64;
 const AGENT_BEHAVIOR_ROUTER_RESOLVE: &str = "resolve_router";
-const WORK_SESSION_PREFIX: &str = "work-";
 
 #[derive(Debug)]
 struct PulledMsg {
@@ -68,10 +58,7 @@ struct PulledMsg {
 }
 
 #[derive(Debug)]
-struct PulledEvent {
-    session_id: Option<String>,
-    payload: Event,
-}
+struct PulledEvent;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum InputQueueKind {
@@ -111,11 +98,6 @@ struct RouteDecision {
 }
 
 #[derive(Clone, Debug, Default)]
-struct RouteAndLinkResult {
-    linked_session_ids: Vec<String>,
-}
-
-#[derive(Clone, Debug, Default)]
 struct StepRouteTarget {
     title: Option<String>,
     summary: Option<String>,
@@ -137,14 +119,7 @@ struct SessionQueueBinding {
 }
 
 #[derive(Clone, Debug)]
-struct IndexedSessionInputItem {
-    index: u64,
-    item: SessionInputItem,
-}
-
-#[derive(Clone, Debug)]
 struct StepTransition {
-    session_id: String,
     keep_running: bool,
     behavior_switched: bool,
 }
@@ -154,8 +129,6 @@ struct BehaviorLoopReport {
     executed_steps: u32,
     keep_running: bool,
     behavior_switched: bool,
-    hit_step_limit: bool,
-    hit_walltime: bool,
     last_result: Option<BehaviorLLMResult>,
 }
 
@@ -165,8 +138,6 @@ impl Default for BehaviorLoopReport {
             executed_steps: 0,
             keep_running: false,
             behavior_switched: false,
-            hit_step_limit: false,
-            hit_walltime: false,
             last_result: None,
         }
     }
@@ -192,7 +163,6 @@ pub struct AIAgent {
     did: DID,
     agent_name:String,
     owner_did: DID,//user-did
-    owner_agent_name:Option<String>,//for sub agent
 
     role_md: String,
     self_md: String,
@@ -313,7 +283,6 @@ impl AIAgent {
             did,
             agent_name,
             owner_did,
-            owner_agent_name: None,
             role_md,
             self_md,
             behaviors_dir,
@@ -456,10 +425,15 @@ impl AIAgent {
                 warn!("agent.session_loop failed: did={:?} err={}", self.did, err);
             }
             let session_id = {
-                let mut guard = session.lock().await;
+                let guard = session.lock().await;
                 guard.session_id.clone()
             };
-            self.session_mgr.save_session(&session_id).await;
+            if let Err(err) = self.session_mgr.save_session(&session_id).await {
+                warn!(
+                    "agent.session_save_failed: did={:?} session_id={} err={}",
+                    self.did, session_id, err
+                );
+            }
         }
 
         Ok(())
@@ -481,7 +455,6 @@ impl AIAgent {
         };
         let mut pulled_events = Vec::<PulledEvent>::new();
         let mut msg_pull_boxes = Vec::<BoxKind>::new();
-        let reader_id = event_reader.reader_id().to_string();
         match event_reader.pull_event(Some(wait_timeout_ms)).await {
             Ok(Some(event)) => {
                 Self::collect_event_pull_targets(event, &mut msg_pull_boxes, &mut pulled_events);
@@ -701,7 +674,7 @@ impl AIAgent {
             self.set_msg_readed(record_id).await;
         }
 
-        for pulled in pulled_events {
+        for _pulled in pulled_events {
             //TODO：Event可能能1次唤醒多个Session，这里需要改造
             unimplemented!()
         }
@@ -750,7 +723,6 @@ impl AIAgent {
         let started_at = now_ms();
         let deadline_ms = started_at.saturating_add(self.cfg.max_walltime_ms);
         let mut step_count = 0_u32;
-        let mut behavior_hops = 0_u32;
 
         loop {
             if step_count >= self.cfg.max_steps_per_wakeup {
@@ -763,7 +735,7 @@ impl AIAgent {
             }
 
             let (session_id, behavior_name, state) = {
-                let mut guard = session.lock().await;
+                let guard = session.lock().await;
                 (
                     guard.session_id.clone(),
                     guard.current_behavior.clone(),
@@ -837,11 +809,9 @@ impl AIAgent {
         wakeup_id: &str,
     ) -> Result<BehaviorLoopReport> {
         let mut result_report = BehaviorLoopReport::default();
-        let mut session_id = String::new();
-        let mut current_step_index:u32 = 0;
 
         loop {
-            {
+            let (session_id, current_step_index) = {
                 //TODO 支持sub agent,可能还需要考虑读取owner agent的pause状态
                 let mut guard = session.lock().await;
                 if guard.state != SessionState::Running {
@@ -850,14 +820,14 @@ impl AIAgent {
                 if guard.is_paused {
                     break;
                 }
-                current_step_index = guard.step_index;
-                session_id = guard.session_id.clone();
+                let current_step_index = guard.step_index;
+                let session_id = guard.session_id.clone();
                 if guard.step_index == 0 {
                     //TODO 应该是session有一个通用函数，自动load当前behavior的skills
                     guard.loaded_skills = behavior_cfg.toolbox.load_skills.clone();
                 }
-            }
-
+                (session_id, current_step_index)
+            };
 
             let trace = TraceCtx {
                 trace_id: wakeup_id.to_string(),
@@ -931,11 +901,10 @@ impl AIAgent {
                 session.clone(),
             ).await;
             
-            let (workspace_id, msg_cursor, msg_owner_agent) = {
+            let (msg_cursor, msg_owner_agent) = {
                 let mut guard = session.lock().await;
                 guard.last_step_summary = step_summary.clone();
                 (
-                    guard.local_workspace_id.clone(),
                     guard.msg_kmsgqueue_curosr,
                     guard.owner_agent.clone(),
                 )
@@ -1323,14 +1292,7 @@ impl AIAgent {
             );
             return None;
         }
-        let session_id = extract_session_id_hint(&event.data).or_else(|| {
-            let payload = serde_json::to_value(&event).unwrap_or_else(|_| json!({}));
-            extract_session_id_hint(&payload)
-        });
-        Some(PulledEvent {
-            session_id,
-            payload: event,
-        })
+        Some(PulledEvent)
     }
 
     fn msg_record_to_pulled_msg(record: MsgRecordWithObject) -> PulledMsg {
@@ -1339,7 +1301,6 @@ impl AIAgent {
     }
 
     fn build_session_queue_binding(&self, session_id: &str) -> SessionQueueBinding {
-        let owner_token = self.owner_did.to_raw_host_name();
         SessionQueueBinding {
             msg_queue_urn: Self::get_session_kmsgqueue_urn(self.agent_name.as_str(), session_id, InputQueueKind::Msg),
             event_queue_urn: Self::get_session_kmsgqueue_urn(self.agent_name.as_str(), session_id, InputQueueKind::Event),
@@ -1620,79 +1581,6 @@ impl AIAgent {
             .commit_ack(sub_id.as_str(), last_pulled_msg_index as u64)
             .await?;
         Ok(())
-    }
-
-    async fn read_session_queue_history_by_kind(
-        &self,
-        session_id: &str,
-        queue_urn: &str,
-        history_sub_id: &str,
-        acked_index: u64,
-        max_items: usize,
-    ) -> Result<Vec<SessionInputItem>> {
-        if acked_index == 0 || max_items == 0 {
-            return Ok(vec![]);
-        }
-        let Some(msg_queue) = self.deps.msg_queue.as_ref() else {
-            return Ok(vec![]);
-        };
-
-        msg_queue
-            .seek(history_sub_id, SubPosition::Earliest)
-            .await
-            .map_err(|err| {
-                anyhow!(
-                    "seek session history queue failed: session={} queue={} err={}",
-                    session_id,
-                    queue_urn,
-                    err
-                )
-            })?;
-
-        let mut out = Vec::<SessionInputItem>::new();
-        loop {
-            let messages = msg_queue
-                .fetch_messages(history_sub_id, SESSION_QUEUE_FETCH_BATCH, true)
-                .await
-                .map_err(|err| {
-                    anyhow!(
-                        "fetch session history messages failed: session={} queue={} err={}",
-                        session_id,
-                        queue_urn,
-                        err
-                    )
-                })?;
-            if messages.is_empty() {
-                break;
-            }
-
-            let mut reached_acked_end = false;
-            for message in messages {
-                if message.index > acked_index {
-                    reached_acked_end = true;
-                    break;
-                }
-                let item = serde_json::from_slice::<SessionInputItem>(message.payload.as_slice())
-                    .map_err(|err| {
-                    anyhow!(
-                        "deserialize session history item failed: session={} queue={} err={}",
-                        session_id,
-                        queue_urn,
-                        err
-                    )
-                })?;
-                out.push(item);
-            }
-
-            if reached_acked_end {
-                break;
-            }
-        }
-        if out.len() <= max_items {
-            return Ok(out);
-        }
-        let start = out.len().saturating_sub(max_items);
-        Ok(out.split_off(start))
     }
 
     async fn set_running_session_to_wait(
@@ -2387,22 +2275,6 @@ impl AIAgent {
     fn parse_owner_did_for_msg_center(&self) -> Option<DID> {
         Some(self.owner_did.clone())
     }
-
-    fn did_token_or_sanitized(raw: &str) -> String {
-        DID::from_str(raw)
-            .map(|did| did.to_raw_host_name())
-            .unwrap_or_else(|_| {
-                raw.chars()
-                    .map(|ch| {
-                        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
-                            ch
-                        } else {
-                            '_'
-                        }
-                    })
-                    .collect()
-            })
-    }
 }
 
 fn apply_session_behavior_transition(
@@ -2425,9 +2297,6 @@ fn apply_session_behavior_transition(
                 && session.state != SessionState::End
             {
                 session.state = SessionState::Wait;
-            } else {
-                // Respect wait-like states previously written in session_delta.
-                session.state = session.state;
             }
             keep_running = false;
         } else if next_behavior.starts_with("WAIT_FOR_MSG") {
@@ -2484,7 +2353,6 @@ fn apply_session_behavior_transition(
     }
 
     StepTransition {
-        session_id: session.session_id.clone(),
         keep_running,
         behavior_switched,
     }
@@ -2653,46 +2521,6 @@ async fn is_existing_dir(path: &Path) -> bool {
         .await
         .map(|meta| meta.is_dir())
         .unwrap_or(false)
-}
-
-
-fn extract_session_id_hint(payload: &Json) -> Option<String> {
-    // FIXME(opendan-strong-typing): Weakly-typed compatibility lookup from Json is forbidden.
-    // Replace with strongly-typed structs + serde deserialization.
-    for pointer in [
-        "/session_id",
-        "/thread_key",
-        "/record/session_id",
-        "/record/thread_key",
-        "/payload/session_id",
-        "/payload/thread_key",
-        "/payload/payload/session_id",
-        "/payload/payload/thread_key",
-        "/msg/session_id",
-        "/msg/thread_key",
-        "/msg/payload/session_id",
-        "/msg/payload/thread_key",
-        "/msg/meta/session_id",
-        "/msg/meta/thread_key",
-        "/content/machine/data/session_id",
-        "/msg/content/machine/data/session_id",
-        "/msg/meta/payload/session_id",
-        "/msg/meta/payload/thread_key",
-        "/meta/payload/session_id",
-        "/meta/payload/thread_key",
-        "/meta/session_id",
-        "/meta/thread_key",
-    ] {
-        if let Some(session_id) = payload
-            .pointer(pointer)
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            return Some(session_id.to_string());
-        }
-    }
-    None
 }
 
 fn compact_text_for_log(value: &str, max_chars: usize) -> String {

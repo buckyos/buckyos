@@ -5,10 +5,9 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use buckyos_api::{
-    features, value_to_object_map, AiMessage, AiPayload, AiToolCall, AiToolSpec, AiccClient,
-    Capability, CompleteRequest, CompleteResponse, CompleteStatus, CompleteTaskOptions,
-    CreateTaskOptions, ModelSpec, Requirements, TaskFilter, TaskManagerClient, TaskStatus,
-    AICC_SERVICE_SERVICE_NAME,
+    value_to_object_map, AiToolCall, AiToolSpec, AiccClient, CompleteRequest, CompleteResponse,
+    CompleteStatus, CompleteTaskOptions, CreateTaskOptions, TaskFilter, TaskManagerClient,
+    TaskStatus, AICC_SERVICE_SERVICE_NAME,
 };
 use log::warn;
 use serde_json::{json, Map, Value as Json};
@@ -23,8 +22,8 @@ use super::types::*;
 use crate::agent_environment::AgentEnvironment;
 use crate::agent_memory::AgentMemory;
 use crate::agent_tool::{
-    ActionSpec, AgentToolError, AgentToolManager, ToolSpec, TOOL_CREATE_SUB_AGENT,
-    TOOL_GET_SESSION, TOOL_TODO_MANAGE, TOOL_WORKLOG_MANAGE,
+    ActionSpec, AgentToolError, AgentToolManager, TOOL_CREATE_SUB_AGENT, TOOL_TODO_MANAGE,
+    TOOL_WORKLOG_MANAGE,
 };
 
 #[derive(Clone)]
@@ -723,15 +722,6 @@ impl AiccRequestBuilder {
     }
 }
 
-fn chat_role_to_aicc_role(role: &ChatRole) -> String {
-    match role {
-        ChatRole::System => "system".to_string(),
-        ChatRole::User => "user".to_string(),
-        ChatRole::Assistant => "assistant".to_string(),
-        ChatRole::Tool => "tool".to_string(),
-    }
-}
-
 fn map_aicc_error(err: kRPC::RPCErrors) -> LLMComputeError {
     let msg = err.to_string().to_lowercase();
     if msg.contains("timeout") {
@@ -1127,10 +1117,6 @@ async fn append_todo_or_subagent_worklog(
         )
         .await;
     }
-}
-
-fn extract_session_id_for_task(input: &BehaviorExecInput) -> Option<String> {
-    normalize_non_empty_str(input.session_id.as_str())
 }
 
 fn normalize_non_empty_str(value: &str) -> Option<String> {

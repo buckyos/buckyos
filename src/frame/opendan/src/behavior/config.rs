@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use buckyos_api::AiToolSpec;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value as Json};
+use serde_json::Value as Json;
 use tokio::fs;
 
 use crate::agent_tool::ToolSpec;

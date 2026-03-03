@@ -3,20 +3,17 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use log::{info, warn};
+use log::info;
 use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
-use tokio::fs;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::Mutex;
 use tokio::task;
 
 use crate::agent_tool::{AgentTool, AgentToolError, ToolSpec, TOOL_WORKLOG_MANAGE};
-use crate::behavior::{AgentWorkEvent, TraceCtx, WorklogSink};
+use crate::behavior::TraceCtx;
 
 const DEFAULT_LIST_LIMIT: usize = 64;
 const DEFAULT_MAX_LIST_LIMIT: usize = 256;
@@ -35,129 +32,6 @@ const TYPE_CREATE_SUB_AGENT: &str = "opendan.worklog.CreateSubAgent.v1";
 const TYPE_STEP_SUMMARY: &str = "opendan.worklog.StepSummary.v1";
 
 static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-
-#[derive(Debug)]
-struct JsonlWorklogSink {
-    path: PathBuf,
-    write_lock: Mutex<()>,
-}
-
-impl JsonlWorklogSink {
-    async fn new(path: PathBuf) -> Result<Self> {
-        if let Some(parent) = path.parent() {
-            info!(
-                "agent.persist_entity_prepare: kind=worklog_dir path={}",
-                parent.display()
-            );
-            fs::create_dir_all(parent).await.map_err(|err| {
-                anyhow!(
-                    "create worklog dir failed: path={} err={}",
-                    parent.display(),
-                    err
-                )
-            })?;
-        }
-        Ok(Self {
-            path,
-            write_lock: Mutex::new(()),
-        })
-    }
-
-    async fn append_json_line(&self, line: Json) {
-        let _guard = self.write_lock.lock().await;
-        let text = match serde_json::to_string(&line) {
-            Ok(text) => text,
-            Err(err) => {
-                warn!("serialize worklog event failed: {}", err);
-                return;
-            }
-        };
-
-        let mut file = match tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-            .await
-        {
-            Ok(file) => file,
-            Err(err) => {
-                warn!(
-                    "open worklog sink failed: path={} err={}",
-                    self.path.display(),
-                    err
-                );
-                return;
-            }
-        };
-
-        if let Err(err) = file.write_all(format!("{text}\n").as_bytes()).await {
-            warn!(
-                "write worklog sink failed: path={} err={}",
-                self.path.display(),
-                err
-            );
-        }
-    }
-}
-
-#[async_trait]
-impl WorklogSink for JsonlWorklogSink {
-    async fn emit(&self, event: AgentWorkEvent) {
-        let payload = match event {
-            AgentWorkEvent::LLMStarted { trace, model } => json!({
-                "kind": "llm_started",
-                "ts_ms": now_ms(),
-                "trace": trace,
-                "model": model,
-            }),
-            AgentWorkEvent::LLMFinished { trace, usage, ok } => json!({
-                "kind": "llm_finished",
-                "ts_ms": now_ms(),
-                "trace": trace,
-                "ok": ok,
-                "usage": {
-                    "prompt": usage.prompt,
-                    "completion": usage.completion,
-                    "total": usage.total,
-                }
-            }),
-            AgentWorkEvent::ToolCallPlanned {
-                trace,
-                tool,
-                call_id,
-            } => json!({
-                "kind": "tool_call_planned",
-                "ts_ms": now_ms(),
-                "trace": trace,
-                "tool": tool,
-                "call_id": call_id,
-            }),
-            AgentWorkEvent::ToolCallFinished {
-                trace,
-                tool,
-                call_id,
-                ok,
-                duration_ms,
-            } => json!({
-                "kind": "tool_call_finished",
-                "ts_ms": now_ms(),
-                "trace": trace,
-                "tool": tool,
-                "call_id": call_id,
-                "ok": ok,
-                "duration_ms": duration_ms,
-            }),
-            AgentWorkEvent::ParseWarning { trace, msg } => json!({
-                "kind": "parse_warning",
-                "ts_ms": now_ms(),
-                "trace": trace,
-                "message": msg,
-            }),
-        };
-        self.append_json_line(payload).await;
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct WorklogToolConfig {

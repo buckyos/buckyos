@@ -142,9 +142,9 @@ test agent_tool::tests::print_tool_and_action_prompt_catalog_for_review ... ok
   - 当前topic驱动自动route？可以先用成本换效果
   - 效果真的好么
 - 简化reply
-  - 当前session有default reply对象
+  - 当前session有default reply对象 OK
   - 当不与default对象通信时，需要用action（此时会变成系统里的一个意图？）
-- 简化Msg Render(Input和History是一样的)
+- 简化Msg Prompt Render(Input和History是一样的)
   - 使用Nickname(did)+time的方法 说明消息的来源
   - 自己回复的消息用 Me + time 渲染
 - 上述逻辑是否对群聊有效
@@ -153,6 +153,8 @@ test agent_tool::tests::print_tool_and_action_prompt_catalog_for_review ... ok
 - 查看历史记录的问题：
   - ui session查看历史记录很简单：所有的消息都能看到
   - work session查看历史消息记录，只看和自己有关的(session是我们缩小状态范围的目标)
+  - work session触发reply后，ui和自己都能看到？
+  - Work session不再看到
 
 
 #### 回复信息
