@@ -357,6 +357,7 @@ mod tests {
                 end_id: Some(9),
                 limit: Some(2),
                 desc: Some(false),
+                strong_read: None,
             })
             .await
             .map_err(|e| anyhow::anyhow!("query failed: {}", e))?;

@@ -68,7 +68,11 @@ impl KRpcServer {
                 self.raft.clone(),
                 self.state_store_manager.clone(),
             ),
-            query_service: KLogQueryService::new("KRpcServer", self.state_store_manager.clone()),
+            query_service: KLogQueryService::new(
+                "KRpcServer",
+                self.raft.clone(),
+                self.state_store_manager.clone(),
+            ),
         };
 
         let rpc_middleware = ServiceBuilder::new()

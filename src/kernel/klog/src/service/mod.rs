@@ -275,13 +275,19 @@ impl KLogWriteService {
 #[derive(Clone)]
 pub struct KLogQueryService {
     service_name: &'static str,
+    raft: KRaftRef,
     state_store_manager: KLogStateStoreManagerRef,
 }
 
 impl KLogQueryService {
-    pub fn new(service_name: &'static str, state_store_manager: KLogStateStoreManagerRef) -> Self {
+    pub fn new(
+        service_name: &'static str,
+        raft: KRaftRef,
+        state_store_manager: KLogStateStoreManagerRef,
+    ) -> Self {
         Self {
             service_name,
+            raft,
             state_store_manager,
         }
     }
@@ -290,6 +296,35 @@ impl KLogQueryService {
         &self,
         query: KLogQueryRequest,
     ) -> Result<KLogQueryResponse, (StatusCode, String)> {
+        let strong_read = query.strong_read.unwrap_or(false);
+        if strong_read {
+            match self.raft.ensure_linearizable().await {
+                Ok(read_log_id) => {
+                    info!(
+                        "{} data query linearizable barrier passed: read_log_id={:?}",
+                        self.service_name, read_log_id
+                    );
+                }
+                Err(err) => {
+                    if let Some(forward) = err.forward_to_leader::<KNode>() {
+                        let msg = format!(
+                            "{} data query strong_read rejected on non-leader: leader_id={:?}, leader_node={:?}",
+                            self.service_name, forward.leader_id, forward.leader_node
+                        );
+                        warn!("{}", msg);
+                        return Err((StatusCode::CONFLICT, msg));
+                    }
+
+                    let msg = format!(
+                        "{} data query strong_read failed to ensure linearizable read: {}",
+                        self.service_name, err
+                    );
+                    error!("{}", msg);
+                    return Err((StatusCode::SERVICE_UNAVAILABLE, msg));
+                }
+            }
+        }
+
         if let (Some(start_id), Some(end_id)) = (query.start_id, query.end_id)
             && start_id > end_id
         {
@@ -317,8 +352,8 @@ impl KLogQueryService {
             KLogQueryOrder::Asc
         };
         info!(
-            "{} data query request: start_id={:?}, end_id={:?}, limit={}, order={:?}",
-            self.service_name, query.start_id, query.end_id, limit, order
+            "{} data query request: strong_read={}, start_id={:?}, end_id={:?}, limit={}, order={:?}",
+            self.service_name, strong_read, query.start_id, query.end_id, limit, order
         );
 
         let entries = self
