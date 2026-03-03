@@ -1661,6 +1661,36 @@ mod tests {
         let content = result["content"].as_str().unwrap_or_default();
         assert_eq!(content, "L3\nL4");
 
+        let chunk_to_end = call(
+            &tool_mgr,
+            TOOL_READ_FILE,
+            json!({
+                "path": "notes/read.txt",
+                "first_chunk": "L3",
+                "range": "-"
+            }),
+        )
+        .await
+        .expect("read from chunk to end should succeed");
+        assert_eq!(chunk_to_end["matched"], true);
+        assert_eq!(chunk_to_end["line_range"], "");
+        let chunk_content = chunk_to_end["content"].as_str().unwrap_or_default();
+        assert_eq!(chunk_content, "L3\nL4\nL5\n");
+
+        let last_line_in_chunk = call(
+            &tool_mgr,
+            TOOL_READ_FILE,
+            json!({
+                "path": "notes/read.txt",
+                "first_chunk": "L3",
+                "range": "-1"
+            }),
+        )
+        .await
+        .expect("read last line in chunk should succeed");
+        assert_eq!(last_line_in_chunk["matched"], true);
+        assert_eq!(last_line_in_chunk["content"], "L5");
+
         let _ = fs::remove_dir_all(root).await;
     }
 

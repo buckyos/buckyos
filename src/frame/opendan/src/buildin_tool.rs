@@ -217,11 +217,11 @@ impl AgentTool for EditFileTool {
                     "new_content": { "type": "string" },
                     "mode": { "type": "string", "enum": ["replace", "after", "before"] }
                 },
-                "required": ["path", "pos_chunk", "new_content", "mode"],
+                "required": ["path", "pos_chunk", "new_content"],
                 "additionalProperties": true
             }),
             output_schema: json!({"type": "object"}),
-            usage: Some("edit_file <path> <pos_chunk> <new_content> <mode>".to_string()),
+            usage: None,
         }
     }
     fn support_bash(&self) -> bool {
@@ -387,11 +387,11 @@ impl AgentTool for WriteFileTool {
                     "content": { "type": "string" },
                     "mode": { "type": "string", "enum": ["new", "append", "write"] }
                 },
-                "required": ["path", "content", "mode"],
+                "required": ["path", "content"],
                 "additionalProperties": true
             }),
             output_schema: json!({"type": "object"}),
-            usage: Some("write_file <path> <content> <mode>".to_string()),
+            usage: None,
         }
     }
     fn support_bash(&self) -> bool {
@@ -540,7 +540,10 @@ impl AgentTool for ReadFileTool {
                 "additionalProperties": true
             }),
             output_schema: json!({"type": "object"}),
-            usage: Some("read_file <path> [range] [first_chunk]".to_string()),
+            usage: Some(
+                "read_file <path> [range] [first_chunk]\n\trange: 1-based; supports negative/$/+N, and applies within first_chunk slice"
+                    .to_string(),
+            ),
         }
     }
 
@@ -577,9 +580,9 @@ impl AgentTool for ReadFileTool {
                 (full_content.clone(), true)
             };
 
-        let (selected_content, line_range_label) =
-            if let Some((start, end)) = parse_line_range(&args)? {
-                let lines = selected_content.lines().collect::<Vec<_>>();
+        let (selected_content, line_range_label) = {
+            let lines = selected_content.lines().collect::<Vec<_>>();
+            if let Some((start, end)) = parse_line_range(&args, lines.len())? {
                 let start_idx = start.saturating_sub(1).min(lines.len());
                 let end_idx = end.min(lines.len());
                 let slice = if start_idx < end_idx {
@@ -590,7 +593,8 @@ impl AgentTool for ReadFileTool {
                 (slice, format!("{start}-{end}"))
             } else {
                 (selected_content, String::new())
-            };
+            }
+        };
 
         let (content, truncated) =
             truncate_bytes(selected_content.as_bytes(), self.policy.max_read_bytes);
@@ -832,8 +836,11 @@ pub(crate) fn optional_u64(args: &Json, key: &str) -> Result<Option<u64>, AgentT
 }
 
 fn parse_edit_mode(args: &Json) -> Result<&'static str, AgentToolError> {
-    let raw = require_string(args, "mode")?;
-    normalize_edit_mode(raw.as_str())
+    let raw = args
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("replace");
+    normalize_edit_mode(raw)
 }
 
 fn normalize_edit_mode(raw: &str) -> Result<&'static str, AgentToolError> {
@@ -848,8 +855,11 @@ fn normalize_edit_mode(raw: &str) -> Result<&'static str, AgentToolError> {
 }
 
 fn parse_write_mode(args: &Json) -> Result<&'static str, AgentToolError> {
-    let raw = require_string(args, "mode")?;
-    normalize_write_mode(raw.as_str())
+    let raw = args
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("write");
+    normalize_write_mode(raw)
 }
 
 fn normalize_write_mode(raw: &str) -> Result<&'static str, AgentToolError> {
@@ -863,79 +873,313 @@ fn normalize_write_mode(raw: &str) -> Result<&'static str, AgentToolError> {
     }
 }
 
-fn parse_line_range(args: &Json) -> Result<Option<(usize, usize)>, AgentToolError> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LineMarker {
+    Index(i64),
+    End,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RangeDefaultEnd {
+    SameAsStart,
+    End,
+    TailIfStartNegative,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LineRangeSpec {
+    start: Option<LineMarker>,
+    end: Option<LineMarker>,
+    count: Option<usize>,
+    default_end: RangeDefaultEnd,
+}
+
+fn parse_line_range(args: &Json, total_lines: usize) -> Result<Option<(usize, usize)>, AgentToolError> {
+    let Some(spec) = parse_line_range_spec(args)? else {
+        return Ok(None);
+    };
+    let (start, end) = resolve_line_range(spec, total_lines)?;
+    Ok(Some((start, end)))
+}
+
+fn parse_line_range_spec(args: &Json) -> Result<Option<LineRangeSpec>, AgentToolError> {
     let Some(raw) = args.get("range") else {
         return Ok(None);
     };
-    let (start_u64, end_u64) = if let Some(obj) = raw.as_object() {
-        let start = obj.get("start").and_then(|v| v.as_u64()).ok_or_else(|| {
-            AgentToolError::InvalidArgs("range.start must be positive integer".to_string())
-        })?;
-        let end = obj.get("end").and_then(|v| v.as_u64()).unwrap_or(start);
-        (start, end)
+
+    if let Some(obj) = raw.as_object() {
+        let start = obj
+            .get("start")
+            .map(|v| parse_line_marker_json(v, "range.start"))
+            .transpose()?;
+        let end = obj
+            .get("end")
+            .map(|v| parse_line_marker_json(v, "range.end"))
+            .transpose()?;
+        let count = obj
+            .get("count")
+            .map(|v| parse_line_count_json(v, "range.count"))
+            .transpose()?;
+
+        if count.is_some() && end.is_some() {
+            return Err(AgentToolError::InvalidArgs(
+                "range cannot set both `end` and `count`".to_string(),
+            ));
+        }
+        if count.is_some() && start.is_none() {
+            return Err(AgentToolError::InvalidArgs(
+                "range.count requires range.start".to_string(),
+            ));
+        }
+        if start.is_none() && end.is_none() && count.is_none() {
+            return Err(AgentToolError::InvalidArgs(
+                "range object must contain at least one of start/end/count".to_string(),
+            ));
+        }
+
+        return Ok(Some(LineRangeSpec {
+            start,
+            end,
+            count,
+            default_end: RangeDefaultEnd::TailIfStartNegative,
+        }));
     } else if let Some(arr) = raw.as_array() {
         if arr.is_empty() || arr.len() > 2 {
             return Err(AgentToolError::InvalidArgs(
                 "range array must be [start] or [start,end]".to_string(),
             ));
         }
-        let start = arr[0].as_u64().ok_or_else(|| {
-            AgentToolError::InvalidArgs("range[0] must be positive integer".to_string())
-        })?;
+        let start = parse_line_marker_json(&arr[0], "range[0]")?;
         let end = if arr.len() == 2 {
-            arr[1].as_u64().ok_or_else(|| {
-                AgentToolError::InvalidArgs("range[1] must be positive integer".to_string())
-            })?
+            Some(parse_line_marker_json(&arr[1], "range[1]")?)
         } else {
-            start
+            None
         };
-        (start, end)
-    } else if let Some(num) = raw.as_u64() {
-        (num, num)
+        return Ok(Some(LineRangeSpec {
+            start: Some(start),
+            end,
+            count: None,
+            default_end: RangeDefaultEnd::SameAsStart,
+        }));
+    } else if raw.is_i64() || raw.is_u64() {
+        let marker = parse_line_marker_json(raw, "range")?;
+        return Ok(Some(LineRangeSpec {
+            start: Some(marker),
+            end: None,
+            count: None,
+            default_end: RangeDefaultEnd::SameAsStart,
+        }));
     } else if let Some(text) = raw.as_str() {
-        parse_line_range_text(text)?
+        return parse_line_range_text(text);
     } else {
         return Err(AgentToolError::InvalidArgs(
             "range must be string/number/array/object".to_string(),
         ));
-    };
-
-    if start_u64 == 0 || end_u64 == 0 {
-        return Err(AgentToolError::InvalidArgs(
-            "range must be 1-based positive integers".to_string(),
-        ));
     }
-    if end_u64 < start_u64 {
-        return Err(AgentToolError::InvalidArgs(format!(
-            "invalid range: end({end_u64}) < start({start_u64})"
-        )));
-    }
-    let start = u64_to_usize(start_u64)?;
-    let end = u64_to_usize(end_u64)?;
-    Ok(Some((start, end)))
 }
 
-fn parse_line_range_text(raw: &str) -> Result<(u64, u64), AgentToolError> {
-    let parts = raw
-        .split(|ch: char| !ch.is_ascii_digit())
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>();
-    if parts.is_empty() || parts.len() > 2 {
+fn parse_line_range_text(raw: &str) -> Result<Option<LineRangeSpec>, AgentToolError> {
+    let text = raw.trim();
+    if text.is_empty() || text == "-" {
+        return Ok(None);
+    }
+
+    if text.contains(',') || text.contains(':') {
+        let has_comma = text.contains(',');
+        let has_colon = text.contains(':');
+        if has_comma && has_colon {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "invalid range text `{raw}`"
+            )));
+        }
+        let delim = if has_comma { ',' } else { ':' };
+        let parts = text.split(delim).collect::<Vec<_>>();
+        if parts.len() != 2 {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "invalid range text `{raw}`"
+            )));
+        }
+
+        let start = if parts[0].trim().is_empty() {
+            None
+        } else {
+            Some(parse_line_marker_token(parts[0].trim(), raw)?)
+        };
+
+        let end_text = parts[1].trim();
+        if end_text.starts_with('+') {
+            if start.is_none() {
+                return Err(AgentToolError::InvalidArgs(format!(
+                    "range `{raw}` with `+count` requires start"
+                )));
+            }
+            let count = parse_line_count_text(end_text, raw)?;
+            return Ok(Some(LineRangeSpec {
+                start,
+                end: None,
+                count: Some(count),
+                default_end: RangeDefaultEnd::SameAsStart,
+            }));
+        }
+        let end = if end_text.is_empty() {
+            None
+        } else {
+            Some(parse_line_marker_token(end_text, raw)?)
+        };
+        return Ok(Some(LineRangeSpec {
+            start,
+            end,
+            count: None,
+            default_end: RangeDefaultEnd::End,
+        }));
+    }
+
+    if let Some((left, right)) = text.split_once('-') {
+        let left_trim = left.trim();
+        let right_trim = right.trim();
+        if !left_trim.is_empty()
+            && !right_trim.is_empty()
+            && left_trim.chars().all(|ch| ch.is_ascii_digit())
+            && right_trim.chars().all(|ch| ch.is_ascii_digit())
+        {
+            let start = parse_line_marker_token(left_trim, raw)?;
+            let end = parse_line_marker_token(right_trim, raw)?;
+            return Ok(Some(LineRangeSpec {
+                start: Some(start),
+                end: Some(end),
+                count: None,
+                default_end: RangeDefaultEnd::SameAsStart,
+            }));
+        }
+    }
+
+    let marker = parse_line_marker_token(text, raw)?;
+    Ok(Some(LineRangeSpec {
+        start: Some(marker),
+        end: None,
+        count: None,
+        default_end: RangeDefaultEnd::SameAsStart,
+    }))
+}
+
+fn parse_line_marker_token(raw: &str, range_text: &str) -> Result<LineMarker, AgentToolError> {
+    let token = raw.trim();
+    if token == "$" {
+        return Ok(LineMarker::End);
+    }
+    if token.starts_with('+') {
         return Err(AgentToolError::InvalidArgs(format!(
-            "invalid range text `{raw}`"
+            "invalid range text `{range_text}`"
         )));
     }
-    let start = parts[0]
-        .parse::<u64>()
-        .map_err(|_| AgentToolError::InvalidArgs(format!("invalid range start in `{raw}`")))?;
-    let end = if parts.len() == 2 {
-        parts[1]
-            .parse::<u64>()
-            .map_err(|_| AgentToolError::InvalidArgs(format!("invalid range end in `{raw}`")))?
-    } else {
-        start
+    let value = token
+        .parse::<i64>()
+        .map_err(|_| AgentToolError::InvalidArgs(format!("invalid range text `{range_text}`")))?;
+    if value == 0 {
+        return Err(AgentToolError::InvalidArgs(
+            "range must be 1-based, zero is invalid".to_string(),
+        ));
+    }
+    Ok(LineMarker::Index(value))
+}
+
+fn parse_line_count_text(raw: &str, range_text: &str) -> Result<usize, AgentToolError> {
+    let token = raw.trim();
+    let Some(count_text) = token.strip_prefix('+') else {
+        return Err(AgentToolError::InvalidArgs(format!(
+            "invalid range text `{range_text}`"
+        )));
     };
+    let count_u64 = count_text
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| AgentToolError::InvalidArgs(format!("invalid range text `{range_text}`")))?;
+    if count_u64 == 0 {
+        return Err(AgentToolError::InvalidArgs(
+            "range count must be positive integer".to_string(),
+        ));
+    }
+    u64_to_usize(count_u64)
+}
+
+fn parse_line_marker_json(value: &Json, name: &str) -> Result<LineMarker, AgentToolError> {
+    if let Some(text) = value.as_str() {
+        return parse_line_marker_token(text, name);
+    }
+    if let Some(v) = value.as_i64() {
+        if v == 0 {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "{name} must be non-zero integer"
+            )));
+        }
+        return Ok(LineMarker::Index(v));
+    }
+    if let Some(v) = value.as_u64() {
+        let as_i64 = i64::try_from(v)
+            .map_err(|_| AgentToolError::InvalidArgs(format!("{name} is too large")))?;
+        return Ok(LineMarker::Index(as_i64));
+    }
+    Err(AgentToolError::InvalidArgs(format!(
+        "{name} must be integer or `$`"
+    )))
+}
+
+fn parse_line_count_json(value: &Json, name: &str) -> Result<usize, AgentToolError> {
+    let count_u64 = value
+        .as_u64()
+        .ok_or_else(|| AgentToolError::InvalidArgs(format!("{name} must be positive integer")))?;
+    if count_u64 == 0 {
+        return Err(AgentToolError::InvalidArgs(format!(
+            "{name} must be positive integer"
+        )));
+    }
+    u64_to_usize(count_u64)
+}
+
+fn resolve_line_range(spec: LineRangeSpec, total_lines: usize) -> Result<(usize, usize), AgentToolError> {
+    let total_i64 = i64::try_from(total_lines)
+        .map_err(|_| AgentToolError::InvalidArgs("file is too large".to_string()))?;
+
+    let start_marker = spec.start.unwrap_or(LineMarker::Index(1));
+    let start_raw = resolve_line_marker(start_marker, total_i64);
+
+    let end_raw = if let Some(count) = spec.count {
+        let count_i64 = i64::try_from(count)
+            .map_err(|_| AgentToolError::InvalidArgs("range count is too large".to_string()))?;
+        start_raw
+            .checked_add(count_i64 - 1)
+            .ok_or_else(|| AgentToolError::InvalidArgs("range end overflow".to_string()))?
+    } else if let Some(end_marker) = spec.end {
+        resolve_line_marker(end_marker, total_i64)
+    } else {
+        match spec.default_end {
+            RangeDefaultEnd::SameAsStart => start_raw,
+            RangeDefaultEnd::End => total_i64,
+            RangeDefaultEnd::TailIfStartNegative => {
+                if matches!(start_marker, LineMarker::Index(v) if v < 0) {
+                    total_i64
+                } else {
+                    start_raw
+                }
+            }
+        }
+    };
+
+    let start_clamped = start_raw.clamp(1, total_i64.saturating_add(1));
+    let end_clamped = end_raw.clamp(0, total_i64);
+    let start = usize::try_from(start_clamped)
+        .map_err(|_| AgentToolError::InvalidArgs("range start out of bounds".to_string()))?;
+    let end = usize::try_from(end_clamped)
+        .map_err(|_| AgentToolError::InvalidArgs("range end out of bounds".to_string()))?;
     Ok((start, end))
+}
+
+fn resolve_line_marker(marker: LineMarker, total_lines: i64) -> i64 {
+    match marker {
+        LineMarker::End => total_lines,
+        LineMarker::Index(v) if v > 0 => v,
+        LineMarker::Index(v) => total_lines.saturating_add(v).saturating_add(1),
+    }
 }
 
 pub(crate) fn read_u64_from_map(
@@ -1098,4 +1342,106 @@ fn build_simple_diff(
 
 fn u64_to_usize(v: u64) -> Result<usize, AgentToolError> {
     usize::try_from(v).map_err(|_| AgentToolError::InvalidArgs(format!("value too large: {v}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_line_range_text_formats() {
+        assert_eq!(
+            parse_line_range(&json!({"range": "10,20"}), 100).expect("parse"),
+            Some((10, 20))
+        );
+        assert_eq!(
+            parse_line_range(&json!({"range": "10:20"}), 100).expect("parse"),
+            Some((10, 20))
+        );
+        assert_eq!(
+            parse_line_range(&json!({"range": "10"}), 100).expect("parse"),
+            Some((10, 10))
+        );
+        assert_eq!(
+            parse_line_range(&json!({"range": "10,+5"}), 100).expect("parse"),
+            Some((10, 14))
+        );
+        assert_eq!(
+            parse_line_range(&json!({"range": ",30"}), 100).expect("parse"),
+            Some((1, 30))
+        );
+        assert_eq!(
+            parse_line_range(&json!({"range": "-30,"}), 100).expect("parse"),
+            Some((71, 100))
+        );
+        assert_eq!(
+            parse_line_range(&json!({"range": "-30,$"}), 100).expect("parse"),
+            Some((71, 100))
+        );
+        assert_eq!(
+            parse_line_range(&json!({"range": "-1"}), 100).expect("parse"),
+            Some((100, 100))
+        );
+        assert_eq!(
+            parse_line_range(&json!({"range": "-5,-1"}), 100).expect("parse"),
+            Some((96, 100))
+        );
+        assert_eq!(
+            parse_line_range(&json!({"range": "10,$"}), 100).expect("parse"),
+            Some((10, 100))
+        );
+        assert_eq!(
+            parse_line_range(&json!({"range": "$"}), 100).expect("parse"),
+            Some((100, 100))
+        );
+        assert_eq!(
+            parse_line_range(&json!({"range": "1-2"}), 100).expect("parse"),
+            Some((1, 2))
+        );
+        assert_eq!(
+            parse_line_range(&json!({"range": "-"}), 100).expect("parse"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_line_range_json_formats() {
+        assert_eq!(
+            parse_line_range(&json!({"range": {"start": 10, "end": 20}}), 100).expect("parse"),
+            Some((10, 20))
+        );
+        assert_eq!(
+            parse_line_range(&json!({"range": {"start": 10}}), 100).expect("parse"),
+            Some((10, 10))
+        );
+        assert_eq!(
+            parse_line_range(&json!({"range": {"start": -5}}), 100).expect("parse"),
+            Some((96, 100))
+        );
+        assert_eq!(
+            parse_line_range(&json!({"range": {"start": 10, "count": 5}}), 100).expect("parse"),
+            Some((10, 14))
+        );
+        assert_eq!(
+            parse_line_range(&json!({"range": [10, 20]}), 100).expect("parse"),
+            Some((10, 20))
+        );
+        assert_eq!(
+            parse_line_range(&json!({"range": [10]}), 100).expect("parse"),
+            Some((10, 10))
+        );
+        assert_eq!(
+            parse_line_range(&json!({"range": 10}), 100).expect("parse"),
+            Some((10, 10))
+        );
+    }
+
+    #[test]
+    fn parse_line_range_errors_on_invalid_forms() {
+        assert!(parse_line_range(&json!({"range": "0"}), 10).is_err());
+        assert!(parse_line_range(&json!({"range": "10,+0"}), 10).is_err());
+        assert!(parse_line_range(&json!({"range": {"start": 1, "end": 2, "count": 3}}), 10).is_err());
+        assert!(parse_line_range(&json!({"range": {"count": 3}}), 10).is_err());
+        assert!(parse_line_range(&json!({"range": [1, 2, 3]}), 10).is_err());
+    }
 }
