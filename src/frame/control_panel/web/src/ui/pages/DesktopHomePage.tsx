@@ -1,5 +1,6 @@
 import type { MouseEvent, PointerEvent } from 'react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { buckyos } from 'buckyos'
 import { Link, useNavigate } from 'react-router-dom'
 
 import {
@@ -20,6 +21,7 @@ import {
   mockSystemStatus,
   querySystemLogs,
 } from '@/api'
+import { clearStoredSession } from '@/auth/session'
 import ContainerOverviewPanel from '../components/ContainerOverviewPanel'
 import NetworkOverviewPanel from '../components/NetworkOverviewPanel'
 import { NetworkTrendChart, ResourceTrendChart } from '../components/MonitorTrendCharts'
@@ -1114,6 +1116,17 @@ const DesktopHomePage = () => {
   const onNotificationsClick = useCallback(() => navigateTo('/notifications'), [navigateTo])
   const onOpenNetworkWindow = useCallback(() => openWindow('network'), [openWindow])
   const onNavigateSettings = useCallback(() => navigateTo('/settings'), [navigateTo])
+  const onSignOutClick = useCallback(async () => {
+    try {
+      await buckyos.initBuckyOS('control-panel')
+      buckyos.logout(true)
+    } catch (error) {
+      console.warn('logout failed, clearing session locally', error)
+    }
+
+    clearStoredSession()
+    navigate('/login', { replace: true })
+  }, [navigate])
   const goDesktop = useCallback(() => {
     if (mode === 'desktop') {
       return
@@ -1158,6 +1171,7 @@ const DesktopHomePage = () => {
         txRate={txRate}
         onNotificationsClick={onNotificationsClick}
         onNetworkClick={onOpenNetworkWindow}
+        onSignOutClick={onSignOutClick}
       />
 
       <main className="relative z-10 min-h-screen">
@@ -1214,6 +1228,7 @@ type DesktopHeaderProps = {
   txRate: number
   onNotificationsClick: () => void
   onNetworkClick: () => void
+  onSignOutClick: () => void
 }
 
 const DesktopHeader = memo((props: DesktopHeaderProps) => {
@@ -1228,6 +1243,7 @@ const DesktopHeader = memo((props: DesktopHeaderProps) => {
     txRate,
     onNotificationsClick,
     onNetworkClick,
+    onSignOutClick,
   } = props
 
   return (
@@ -1300,11 +1316,21 @@ const DesktopHeader = memo((props: DesktopHeaderProps) => {
             </p>
           </button>
 
-          <div className="flex items-center gap-3">
-            <UserPatternAvatar name={profileName} className="size-8" />
+          <div tabIndex={0} className="group relative flex items-center gap-3 rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30">
+            <UserPatternAvatar name={profileName} className="size-8 ring-1 ring-white/25" />
             <div className="hidden min-w-0 leading-tight sm:block">
               <p className="truncate text-sm font-semibold">{profileName}</p>
               <p className="truncate text-xs text-white/70">{profileEmail}</p>
+            </div>
+            <div className="pointer-events-none absolute right-0 top-[calc(100%+8px)] z-20 min-w-32 rounded-xl border border-white/20 bg-slate-900/90 p-1.5 opacity-0 shadow-2xl transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
+              <button
+                type="button"
+                onClick={onSignOutClick}
+                className="pointer-events-auto inline-flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-white/90 transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+              >
+                <Icon name="signout" className="size-4" />
+                Sign out
+              </button>
             </div>
           </div>
         </div>
