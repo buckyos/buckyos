@@ -12,15 +12,12 @@ pub struct LogUploader {
     node: String,
     service_endpoint: String,
     client: reqwest::Client,
+    timeout: Duration,
 }
 
 impl LogUploader {
     pub fn new(node: String, service_endpoint: String, timeout_secs: u64) -> Self {
-        let timeout_secs = if timeout_secs == 0 {
-            DEFAULT_UPLOAD_TIMEOUT_SECS
-        } else {
-            timeout_secs
-        };
+        let timeout_secs = Self::effective_timeout_secs(timeout_secs);
         let timeout = Duration::from_secs(timeout_secs);
         let client = reqwest::Client::builder()
             .timeout(timeout)
@@ -35,6 +32,7 @@ impl LogUploader {
             node,
             service_endpoint,
             client,
+            timeout,
         }
     }
 
@@ -54,6 +52,7 @@ impl LogUploader {
         let response = self
             .client
             .post(&self.service_endpoint)
+            .timeout(self.timeout)
             .json(&payload)
             .send()
             .await
@@ -71,6 +70,14 @@ impl LogUploader {
         })?;
 
         Self::validate_upload_response(status, &body)
+    }
+
+    fn effective_timeout_secs(timeout_secs: u64) -> u64 {
+        if timeout_secs == 0 {
+            DEFAULT_UPLOAD_TIMEOUT_SECS
+        } else {
+            timeout_secs
+        }
     }
 
     fn validate_upload_response(status: reqwest::StatusCode, body: &str) -> Result<(), String> {
@@ -102,6 +109,7 @@ impl LogUploader {
 #[cfg(test)]
 mod tests {
     use super::LogUploader;
+    use crate::constants::DEFAULT_UPLOAD_TIMEOUT_SECS;
 
     #[test]
     fn test_validate_upload_response_success_when_ret_is_zero() {
@@ -141,5 +149,18 @@ mod tests {
                 .unwrap_err()
                 .contains("failed to parse upload response from server")
         );
+    }
+
+    #[test]
+    fn test_effective_timeout_secs_uses_default_when_zero() {
+        assert_eq!(
+            LogUploader::effective_timeout_secs(0),
+            DEFAULT_UPLOAD_TIMEOUT_SECS
+        );
+    }
+
+    #[test]
+    fn test_effective_timeout_secs_keeps_non_zero_value() {
+        assert_eq!(LogUploader::effective_timeout_secs(25), 25);
     }
 }
