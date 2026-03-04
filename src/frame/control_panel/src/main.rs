@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
 use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType,
-    SystemConfigClient, CONTROL_PANEL_SERVICE_NAME, CONTROL_PANEL_SERVICE_PORT,
+    SystemConfigClient, UserState, UserType, CONTROL_PANEL_SERVICE_NAME,
+    CONTROL_PANEL_SERVICE_PORT,
 };
 use buckyos_kit::*;
 use bytes::Bytes;
@@ -62,6 +63,13 @@ const ZONE_CONFIG_FILES: [&str; 3] = [
     "node_device_config.json",
     "node_identity.json",
 ];
+const CONTROL_PANEL_AUTH_APPID: &str = "control-panel";
+
+#[derive(Clone, Debug)]
+struct RpcAuthPrincipal {
+    username: String,
+    user_type: UserType,
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 struct LogQueryCursor {
@@ -598,6 +606,117 @@ impl ControlPanelServer {
 
     fn require_param_str(req: &RPCRequest, key: &str) -> Result<String, RPCErrors> {
         Self::param_str(req, key).ok_or(RPCErrors::ParseRequestError(format!("Missing {}", key)))
+    }
+
+    fn is_public_rpc_method(method: &str) -> bool {
+        matches!(method, "auth.login" | "auth.refresh" | "auth.logout")
+    }
+
+    fn is_read_only_rpc_method(method: &str) -> bool {
+        matches!(
+            method,
+            "main"
+                | "layout"
+                | "dashboard"
+                | "ui.main"
+                | "ui.layout"
+                | "ui.dashboard"
+                | "system.overview"
+                | "system.status"
+                | "system.metrics"
+                | "system.logs.list"
+                | "system.logs.query"
+                | "system.logs.tail"
+                | "system.logs.download"
+                | "system.config.test"
+                | "network.overview"
+                | "network.metrics"
+                | "zone.overview"
+                | "zone.config"
+                | "gateway.overview"
+                | "gateway.config"
+                | "gateway.file.get"
+                | "container.overview"
+                | "containers.overview"
+                | "docker.overview"
+                | "apps.list"
+                | "apps.version.list"
+                | "sys_config.get"
+                | "sys_config.list"
+                | "sys_config.tree"
+        )
+    }
+
+    fn can_access_rpc_method(method: &str, user_type: &UserType) -> bool {
+        match user_type {
+            UserType::Root | UserType::Admin => true,
+            UserType::User | UserType::Limited | UserType::Guest => {
+                Self::is_read_only_rpc_method(method)
+            }
+        }
+    }
+
+    fn extract_rpc_session_token(req: &RPCRequest) -> Option<String> {
+        req.token
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .or_else(|| Self::param_str(req, "session_token"))
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+
+    async fn authenticate_rpc_request(
+        &self,
+        req: &RPCRequest,
+    ) -> Result<Option<RpcAuthPrincipal>, RPCErrors> {
+        if Self::is_public_rpc_method(req.method.as_str()) {
+            return Ok(None);
+        }
+
+        let token = Self::extract_rpc_session_token(req)
+            .ok_or_else(|| RPCErrors::InvalidToken("missing session token".to_string()))?;
+
+        let runtime = get_buckyos_api_runtime()?;
+        let verify_hub_client = runtime.get_verify_hub_client().await?;
+        let verified = verify_hub_client
+            .verify_token(&token, Some(CONTROL_PANEL_AUTH_APPID))
+            .await?;
+        if !verified {
+            return Err(RPCErrors::InvalidToken(
+                "verify-hub token is invalid".to_string(),
+            ));
+        }
+
+        let parsed = RPCSessionToken::from_string(&token).map_err(|error| {
+            RPCErrors::InvalidToken(format!("invalid session token format: {}", error))
+        })?;
+        let username = parsed
+            .sub
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| RPCErrors::InvalidToken("session token missing subject".to_string()))?;
+
+        let control_panel_client = runtime.get_control_panel_client().await?;
+        let user_settings = control_panel_client
+            .get_user_settings_by_username(&username)
+            .await?;
+
+        if !matches!(user_settings.state, UserState::Active) {
+            return Err(RPCErrors::NoPermission("user is not active".to_string()));
+        }
+
+        if !Self::can_access_rpc_method(req.method.as_str(), &user_settings.user_type) {
+            return Err(RPCErrors::NoPermission(format!(
+                "method {} requires higher privileges",
+                req.method
+            )));
+        }
+
+        Ok(Some(RpcAuthPrincipal {
+            username,
+            user_type: user_settings.user_type,
+        }))
     }
 
     fn parse_zone_name_from_did(did: &str) -> Option<String> {
@@ -3567,9 +3686,22 @@ impl ControlPanelServer {
 impl RPCHandler for ControlPanelServer {
     async fn handle_rpc_call(
         &self,
-        req: RPCRequest,
+        mut req: RPCRequest,
         _ip_from: IpAddr,
     ) -> Result<RPCResponse, RPCErrors> {
+        if req.token.is_none() {
+            req.token = Self::extract_rpc_session_token(&req);
+        }
+
+        if let Some(principal) = self.authenticate_rpc_request(&req).await? {
+            log::debug!(
+                "control-panel rpc auth: method={}, user={}, type={:?}",
+                req.method,
+                principal.username,
+                principal.user_type
+            );
+        }
+
         match req.method.as_str() {
             // Core / UI bootstrap
             "main" | "ui.main" => self.handle_main(req).await,

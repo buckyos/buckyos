@@ -96,6 +96,20 @@ const LoginPage = () => {
     }
   }, [messageModal, navigate, redirectTarget, status, submitting])
 
+  useEffect(() => {
+    if (messageModal?.tone !== 'success') {
+      return
+    }
+
+    const timer = window.setTimeout(() => {
+      navigate(messageModal.nextPath || '/', { replace: true })
+    }, 1500)
+
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [messageModal, navigate])
+
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (loading || submitting) return
@@ -117,7 +131,7 @@ const LoginPage = () => {
       setMessageModal({
         tone: 'success',
         title: 'Login Successful',
-        message: 'Session created. Click confirm to enter the control panel.',
+        message: 'Session created. Redirecting...',
         nextPath: redirectTarget,
       })
     } catch (err) {
@@ -266,13 +280,9 @@ const LoginPage = () => {
         tone={messageModal?.tone ?? 'success'}
         title={messageModal?.title ?? ''}
         message={messageModal?.message ?? ''}
-        confirmLabel={messageModal?.tone === 'success' ? 'Enter Control Panel' : 'OK'}
+        showConfirm={messageModal?.tone === 'error'}
+        confirmLabel="OK"
         onConfirm={() => {
-          if (messageModal?.tone === 'success') {
-            navigate(messageModal.nextPath || '/', { replace: true })
-            return
-          }
-
           setMessageModal(null)
         }}
       />

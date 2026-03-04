@@ -1,4 +1,5 @@
 const ACCOUNT_STORAGE_KEY = 'buckyos.account_info'
+const SESSION_COOKIE_NAMES = ['control-panel_token', 'control_panel_token', 'auth']
 
 export type StoredAccountInfo = {
   user_name?: string
@@ -44,6 +45,42 @@ export const getStoredRefreshToken = () => {
   const parsed = getStoredAccountInfo()
   const token = parsed?.refresh_token?.trim()
   return token ? token : null
+}
+
+export const getSessionTokenFromCookies = () => {
+  if (typeof document === 'undefined') {
+    return null
+  }
+
+  const rawCookies = document.cookie
+  if (!rawCookies) {
+    return null
+  }
+
+  for (const pair of rawCookies.split(';')) {
+    const [rawKey, ...valueParts] = pair.split('=')
+    if (!rawKey || valueParts.length === 0) {
+      continue
+    }
+
+    const key = rawKey.trim()
+    if (!SESSION_COOKIE_NAMES.includes(key)) {
+      continue
+    }
+
+    const value = valueParts.join('=').trim()
+    if (!value) {
+      continue
+    }
+
+    try {
+      return decodeURIComponent(value)
+    } catch {
+      return value
+    }
+  }
+
+  return null
 }
 
 export const hasStoredSession = () => Boolean(getStoredSessionToken())

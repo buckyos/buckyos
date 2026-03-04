@@ -5,6 +5,7 @@ type MessageModalProps = {
   tone: 'success' | 'error'
   title: string
   message: string
+  showConfirm?: boolean
   confirmLabel?: string
   onConfirm: () => void
 }
@@ -14,6 +15,7 @@ const MessageModal = ({
   tone,
   title,
   message,
+  showConfirm = true,
   confirmLabel,
   onConfirm,
 }: MessageModalProps) => {
@@ -40,17 +42,19 @@ const MessageModal = ({
           </div>
         </div>
 
-        <div className="mt-5 flex justify-end">
-          <button
-            type="button"
-            onClick={onConfirm}
-            className={`inline-flex items-center rounded-xl px-4 py-2 text-sm font-semibold text-white transition ${
-              isError ? 'bg-rose-600 hover:bg-rose-700' : 'bg-[var(--cp-primary)] hover:bg-[var(--cp-primary-strong)]'
-            }`}
-          >
-            {confirmLabel ?? 'OK'}
-          </button>
-        </div>
+        {showConfirm ? (
+          <div className="mt-5 flex justify-end">
+            <button
+              type="button"
+              onClick={onConfirm}
+              className={`inline-flex items-center rounded-xl px-4 py-2 text-sm font-semibold text-white transition ${
+                isError ? 'bg-rose-600 hover:bg-rose-700' : 'bg-[var(--cp-primary)] hover:bg-[var(--cp-primary-strong)]'
+              }`}
+            >
+              {confirmLabel ?? 'OK'}
+            </button>
+          </div>
+        ) : null}
       </div>
     </div>
   )

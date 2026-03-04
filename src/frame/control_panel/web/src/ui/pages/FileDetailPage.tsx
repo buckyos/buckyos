@@ -2,7 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ArrowLeft, Download } from 'lucide-react'
 import { useLocation } from 'react-router-dom'
 
+import { ensureSessionToken } from '@/auth/authManager'
+import { getSessionTokenFromCookies, getStoredSessionToken } from '@/auth/session'
 import FilePreviewPanel from '@/ui/components/file_manager/FilePreviewPanel'
+import { downloadImageWithProgress } from '@/ui/components/file_manager/imageDownload'
 import ImageViewerModal from '@/ui/components/file_manager/ImageViewerModal'
 import { getFilePreviewKind, type FilePreviewKind } from '@/ui/components/file_manager/filePreview'
 
@@ -20,23 +23,6 @@ type FileResponse = {
   size: number
   modified: number
   content?: string | null
-}
-
-const TOKEN_STORAGE_KEY = 'bucky-file-token'
-
-const getCookieAuthToken = () => {
-  if (typeof document === 'undefined') {
-    return ''
-  }
-  const matched = document.cookie.match(/(?:^|;\s*)auth=([^;]+)/)
-  if (!matched?.[1]) {
-    return ''
-  }
-  try {
-    return decodeURIComponent(matched[1])
-  } catch {
-    return matched[1]
-  }
 }
 
 const withAuthHeaders = (authToken: string) => {
@@ -74,6 +60,13 @@ const fileNameFromPath = (path: string) => {
   return parts[parts.length - 1] ?? ''
 }
 
+const revokeBlobUrl = (url: string) => {
+  if (!url.startsWith('blob:')) {
+    return
+  }
+  URL.revokeObjectURL(url)
+}
+
 const formatBytes = (value: number) => {
   if (!Number.isFinite(value) || value <= 0) {
     return '-'
@@ -93,7 +86,7 @@ const formatTimestamp = (value: number) => {
 
 const FileDetailPage = () => {
   const location = useLocation()
-  const [token, setToken] = useState(() => localStorage.getItem(TOKEN_STORAGE_KEY) || getCookieAuthToken() || '')
+  const [token, setToken] = useState(() => getStoredSessionToken() || getSessionTokenFromCookies() || '')
   const [previewEntry, setPreviewEntry] = useState<FileEntry | null>(null)
   const [previewKind, setPreviewKind] = useState<FilePreviewKind>('unknown')
   const [previewTextContent, setPreviewTextContent] = useState('')
@@ -105,9 +98,13 @@ const FileDetailPage = () => {
   const [imageViewerTitle, setImageViewerTitle] = useState('')
   const [imageViewerScale, setImageViewerScale] = useState(1)
   const [previewImageLoading, setPreviewImageLoading] = useState(false)
+  const [previewImageSrc, setPreviewImageSrc] = useState('')
+  const [previewImageLoadedBytes, setPreviewImageLoadedBytes] = useState(0)
+  const [previewImageTotalBytes, setPreviewImageTotalBytes] = useState<number | null>(null)
+  const [previewImageProgressPercent, setPreviewImageProgressPercent] = useState<number | null>(null)
   const [viewerImageLoading, setViewerImageLoading] = useState(false)
 
-  const effectiveToken = token || getCookieAuthToken()
+  const effectiveToken = token || getStoredSessionToken() || getSessionTokenFromCookies() || ''
   const requestedPath = useMemo(() => {
     const rawPath = new URLSearchParams(location.search).get('path') || '/'
     return normalizeUrlPath(rawPath)
@@ -134,11 +131,6 @@ const FileDetailPage = () => {
 
   const setSessionToken = useCallback((next: string) => {
     setToken(next)
-    if (next) {
-      localStorage.setItem(TOKEN_STORAGE_KEY, next)
-      return
-    }
-    localStorage.removeItem(TOKEN_STORAGE_KEY)
   }, [])
 
   const closeImageViewer = useCallback(() => {
@@ -188,12 +180,30 @@ const FileDetailPage = () => {
   }, [])
 
   useEffect(() => {
+    let cancelled = false
+
     if (token) {
-      return
+      return () => {
+        cancelled = true
+      }
     }
-    const cookieToken = getCookieAuthToken()
-    if (cookieToken) {
-      setSessionToken(cookieToken)
+
+    const storedToken = getStoredSessionToken() || getSessionTokenFromCookies()
+    if (storedToken) {
+      setSessionToken(storedToken)
+      return () => {
+        cancelled = true
+      }
+    }
+
+    void ensureSessionToken().then((nextToken) => {
+      if (!cancelled && nextToken) {
+        setSessionToken(nextToken)
+      }
+    })
+
+    return () => {
+      cancelled = true
     }
   }, [token, setSessionToken])
 
@@ -205,11 +215,24 @@ const FileDetailPage = () => {
       setPageError('')
       setPreviewError('')
       setPreviewTextContent('')
+      setPreviewImageSrc((prev) => {
+        revokeBlobUrl(prev)
+        return ''
+      })
+      setPreviewImageLoadedBytes(0)
+      setPreviewImageTotalBytes(null)
+      setPreviewImageProgressPercent(null)
       setPreviewEntry(null)
       setPreviewKind('unknown')
 
       if (requestedPath === '/') {
         setPageError('Missing file path. Please reopen from file list.')
+        setPageLoading(false)
+        return
+      }
+
+      if (!effectiveToken) {
+        setPageError('Session unavailable. Please log in again from Control Panel.')
         setPageLoading(false)
         return
       }
@@ -274,12 +297,65 @@ const FileDetailPage = () => {
   }, [effectiveToken, requestedPath, setSessionToken])
 
   useEffect(() => {
-    if (previewEntry && previewKind === 'image' && previewRawUrl) {
-      setPreviewImageLoading(true)
-      return
+    let cancelled = false
+    const controller = new AbortController()
+
+    setPreviewImageSrc((prev) => {
+      revokeBlobUrl(prev)
+      return ''
+    })
+    setPreviewImageLoadedBytes(0)
+    setPreviewImageTotalBytes(null)
+    setPreviewImageProgressPercent(null)
+
+    if (!previewEntry || previewKind !== 'image' || !previewRawUrl) {
+      setPreviewImageLoading(false)
+      return () => {
+        cancelled = true
+        controller.abort()
+      }
     }
-    setPreviewImageLoading(false)
+
+    setPreviewError('')
+    setPreviewImageLoading(true)
+    void downloadImageWithProgress(previewRawUrl, controller.signal, (progress) => {
+      if (cancelled) {
+        return
+      }
+      setPreviewImageLoadedBytes(progress.loadedBytes)
+      setPreviewImageTotalBytes(progress.totalBytes)
+      setPreviewImageProgressPercent(progress.progressPercent)
+    })
+      .then((blob) => {
+        if (cancelled) {
+          return
+        }
+        const objectUrl = URL.createObjectURL(blob)
+        setPreviewImageSrc((prev) => {
+          revokeBlobUrl(prev)
+          return objectUrl
+        })
+      })
+      .catch((err) => {
+        if (cancelled || controller.signal.aborted) {
+          return
+        }
+        console.error('image preview download failed', err)
+        setPreviewImageLoading(false)
+        setPreviewError('Image preview failed to download. Please retry.')
+      })
+
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
   }, [previewEntry, previewKind, previewRawUrl])
+
+  useEffect(() => {
+    return () => {
+      revokeBlobUrl(previewImageSrc)
+    }
+  }, [previewImageSrc])
 
   useEffect(() => {
     if (!imageViewerOpen) {
@@ -358,14 +434,21 @@ const FileDetailPage = () => {
             previewEntry={previewEntry}
             previewKind={previewKind}
             previewRawUrl={previewRawUrl}
+            previewImageSrc={previewImageSrc}
             previewLoading={false}
             previewError={previewError}
             previewTextContent={previewTextContent}
             previewImageLoading={previewImageLoading}
+            previewImageProgressPercent={previewImageProgressPercent}
+            previewImageLoadedBytes={previewImageLoadedBytes}
+            previewImageTotalBytes={previewImageTotalBytes}
             officePreviewUrl={officePreviewUrl}
             onOpenImageViewer={openImageViewer}
             onPreviewImageLoad={() => setPreviewImageLoading(false)}
-            onPreviewImageError={() => setPreviewImageLoading(false)}
+            onPreviewImageError={() => {
+              setPreviewImageLoading(false)
+              setPreviewError('Image preview failed to render. Please retry.')
+            }}
             formatBytes={formatBytes}
             formatTimestamp={formatTimestamp}
           />

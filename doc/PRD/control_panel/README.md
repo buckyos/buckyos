@@ -12,7 +12,7 @@ BuckyOS Control Panel是系统服务，使用短域名 sys （https://sys.$zoneh
 
 ## SSO
 
-** /sso/login.html (弹窗)
+** /sso/login (弹窗)
 
 ** /login_index.html
 
@@ -35,7 +35,6 @@ BuckyOS Control Panel是系统服务，使用短域名 sys （https://sys.$zoneh
 
 ## App Store
 独立成另一个系统服务，不在本PRD中描述
-
 
 
 

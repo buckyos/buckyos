@@ -193,6 +193,11 @@
 - Files 能力已并入 `control_panel` 进程，不再要求单独启动 `bucky-file` 独立服务。
 - `control_panel` 在 HTTP 层统一承载 `/api`，并将 `/api/*` 请求转发给内嵌文件模块（`file_manager`）。
 - 当前 Files 前端主链路使用 HTTP API，而非 `files.*`/`share.*` kRPC。
+- Files HTTP 鉴权已统一使用 control_panel/verify-hub session token，不再保留 `file_manager` 独立登录。
+- 已下线旧接口：`POST /api/login`、`POST /api/renew`。
+- Files HTTP token 来源：`X-Auth`、查询参数 `auth`、Cookie(`control-panel_token`/`control_panel_token`/`auth`)。
+- Files 存储默认采用共享 base 目录（优先 `BUCKY_FILE_ROOT`，否则 `/opt/buckyos/home/admin`，回退 `/opt/buckyos/home`），不再按用户名切物理根目录。
+- 默认子账号 ACL：`root/admin` 可读写全目录；`user/limited/guest` 可读 `Public` + `Inbox/<username>`，可写 `Inbox/<username>`。
 - 当前已上线 API（HTTP）:
   - `GET/POST /api/resources...`、`PUT/PATCH/DELETE /api/resources...`
   - `POST /api/upload/session`、`GET/PUT/DELETE /api/upload/session/:id`、`POST /api/upload/session/:id/complete`
@@ -215,7 +220,8 @@
 - UI 相关采用 `ui.*`，旧的 `main/layout/dashboard` 仍保留别名
 
 ## 通用字段约定
-- 鉴权: 除 auth.* 外，建议通过 params 携带 `session_token` 或 `api_key`
+- 鉴权: 除 auth.* 外，接口要求 verify-hub `session_token`（可走 kRPC token，兼容 `params.session_token`）
+- 授权: 后端按用户类型执行方法级授权（`root/admin` 可写；`user/limited/guest` 默认只读）
 - 分页: list 类接口支持 `page`/`page_size` 或 `cursor`/`limit`
 - 排序: `sort` + `order` (asc/desc)
 - 过滤: `query` 用于搜索关键词

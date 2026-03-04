@@ -1,6 +1,10 @@
 # BuckyOS 中的SSO 
 SSO是BuckyOS为Web类应用提供的认证安全整体解决方案
 
+## Control Panel 路由约定（2026-03）
+- `/login`: control_panel 自身登录页面（登录后进入 desktop）
+- `/sso/login`: SSO 授权弹窗页面（供其他应用获取授权）
+
 ## 基本原理
 
 SSO的核心，是Web页面在向node-gateway发起http请求时，能携带一个正确的session-token. session-token中包含了正确的appid和当前登录用户信息。

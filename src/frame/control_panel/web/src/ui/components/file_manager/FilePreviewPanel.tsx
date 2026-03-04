@@ -1,4 +1,5 @@
 import type { FilePreviewKind } from './filePreview'
+import ProgressRing from './ProgressRing'
 
 type PreviewFileEntry = {
   name: string
@@ -11,10 +12,14 @@ type FilePreviewPanelProps = {
   previewEntry: PreviewFileEntry | null
   previewKind: FilePreviewKind
   previewRawUrl: string
+  previewImageSrc: string
   previewLoading: boolean
   previewError: string
   previewTextContent: string
   previewImageLoading: boolean
+  previewImageProgressPercent: number | null
+  previewImageLoadedBytes: number
+  previewImageTotalBytes: number | null
   officePreviewUrl: string
   onOpenImageViewer: (src: string, title: string) => void
   onPreviewImageLoad: () => void
@@ -28,10 +33,14 @@ const FilePreviewPanel = ({
   previewEntry,
   previewKind,
   previewRawUrl,
+  previewImageSrc,
   previewLoading,
   previewError,
   previewTextContent,
   previewImageLoading,
+  previewImageProgressPercent,
+  previewImageLoadedBytes,
+  previewImageTotalBytes,
   officePreviewUrl,
   onOpenImageViewer,
   onPreviewImageLoad,
@@ -65,27 +74,37 @@ const FilePreviewPanel = ({
       ) : previewError ? (
         <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-3 text-sm text-rose-700">{previewError}</div>
       ) : previewKind === 'image' ? (
-        <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-3">
+        <div className="space-y-2 rounded-xl border border-slate-200 bg-white px-3 pt-3 pb-10">
           <div className="flex justify-center">
             <button
               type="button"
-              onClick={() => onOpenImageViewer(previewRawUrl, previewEntry.name)}
+              onClick={() => onOpenImageViewer(previewImageSrc || previewRawUrl, previewEntry.name)}
               className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
             >
               View original
             </button>
           </div>
-          <img
-            src={previewRawUrl}
-            alt={previewEntry.name}
-            className={`mx-auto max-h-[520px] w-auto max-w-full transition-opacity ${previewImageLoading ? 'opacity-0' : 'opacity-100'}`}
-            loading="lazy"
-            onLoad={onPreviewImageLoad}
-            onError={onPreviewImageError}
-            onClick={() => onOpenImageViewer(previewRawUrl, previewEntry.name)}
-          />
+          {previewImageSrc ? (
+            <img
+              src={previewImageSrc}
+              alt={previewEntry.name}
+              className={`mx-auto max-h-[520px] w-auto max-w-full transition-opacity ${previewImageLoading ? 'opacity-0' : 'opacity-100'}`}
+              loading="lazy"
+              onLoad={onPreviewImageLoad}
+              onError={onPreviewImageError}
+              onClick={() => onOpenImageViewer(previewImageSrc || previewRawUrl, previewEntry.name)}
+            />
+          ) : null}
           {previewImageLoading ? (
-            <div className="flex items-center justify-center py-16 text-sm font-medium text-slate-500">Loading image preview...</div>
+            <div className="flex flex-col items-center gap-2 px-1 py-10 text-center">
+              <ProgressRing progressPercent={previewImageProgressPercent} />
+              <p className="text-xs font-medium text-slate-600">Loading image preview...</p>
+              <p className="text-[11px] text-slate-500">
+                {previewImageTotalBytes != null
+                  ? `${formatBytes(previewImageLoadedBytes)} / ${formatBytes(previewImageTotalBytes)}`
+                  : formatBytes(previewImageLoadedBytes)}
+              </p>
+            </div>
           ) : null}
         </div>
       ) : previewKind === 'pdf' ? (

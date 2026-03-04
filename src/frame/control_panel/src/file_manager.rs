@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use buckyos_api::{get_buckyos_api_runtime, ControlPanelClient};
+use buckyos_api::{get_buckyos_api_runtime, ControlPanelClient, UserState, UserType};
 use buckyos_kit::get_buckyos_root_dir;
 use bytes::Bytes;
 use cyfs_gateway_lib::{
@@ -13,9 +13,8 @@ use http::header::{
 };
 use http::{Method, StatusCode, Version};
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use kRPC::{RPCErrors, RPCHandler, RPCRequest, RPCResponse, RPCResult, RPCSessionToken};
-use log::{info, warn};
+use log::warn;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -28,32 +27,22 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use uuid::Uuid;
 
 const BUCKY_FILE_SERVICE_NAME: &str = "bucky-file";
-const TOKEN_EXPIRE_SECONDS: u64 = 2 * 60 * 60;
-const FILE_AUTH_DISABLE_ENV: &str = "CONTROL_PANEL_FILE_AUTH_DISABLED";
-const FILE_AUTH_BYPASS_USER_ENV: &str = "CONTROL_PANEL_FILE_AUTH_BYPASS_USER";
+const CONTROL_PANEL_AUTH_APPID: &str = "control-panel";
+const DEFAULT_SHARED_OWNER_DIR: &str = "admin";
+const SHARED_PUBLIC_DIR: &str = "Public";
+const SHARED_INBOX_DIR: &str = "Inbox";
 const INLINE_TEXT_CONTENT_MAX_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub(crate) struct BuckyFileServer {
-    jwt_secret: String,
-    standalone_mode: bool,
     data_folder: PathBuf,
     db_path: PathBuf,
-    auth_disabled: bool,
-    auth_bypass_user: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct LoginRequest {
+#[derive(Debug, Clone)]
+struct FileAuthPrincipal {
     username: String,
-    password: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Claims {
-    sub: String,
-    iat: u64,
-    exp: u64,
+    user_type: UserType,
 }
 
 #[derive(Debug, Serialize)]
@@ -149,50 +138,13 @@ enum RawByteRange {
 }
 
 impl BuckyFileServer {
-    pub(crate) fn new(data_folder: PathBuf, standalone_mode: bool) -> Self {
-        let jwt_secret = std::env::var("BUCKY_FILE_JWT_SECRET")
-            .unwrap_or_else(|_| "bucky-file-dev-secret-change-me".to_string());
+    pub(crate) fn new(data_folder: PathBuf, _standalone_mode: bool) -> Self {
         let db_path = data_folder.join("bucky_file.db");
-        let auth_disabled = Self::read_env_bool(FILE_AUTH_DISABLE_ENV, true);
-        let auth_bypass_user = std::env::var(FILE_AUTH_BYPASS_USER_ENV)
-            .map(|value| value.trim().to_string())
-            .ok()
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "admin".to_string());
-
-        info!(
-            "file-manager auth switch: disabled={}, bypass_user={}",
-            auth_disabled, auth_bypass_user
-        );
 
         Self {
-            jwt_secret,
-            standalone_mode,
             data_folder,
             db_path,
-            auth_disabled,
-            auth_bypass_user,
         }
-    }
-
-    fn read_env_bool(key: &str, default_value: bool) -> bool {
-        match std::env::var(key) {
-            Ok(value) => {
-                let normalized = value.trim().to_ascii_lowercase();
-                if matches!(normalized.as_str(), "1" | "true" | "yes" | "on") {
-                    true
-                } else if matches!(normalized.as_str(), "0" | "false" | "no" | "off") {
-                    false
-                } else {
-                    default_value
-                }
-            }
-            Err(_) => default_value,
-        }
-    }
-
-    fn token_validation() -> Validation {
-        Validation::new(Algorithm::HS256)
     }
 
     fn now_unix() -> u64 {
@@ -623,23 +575,6 @@ impl BuckyFileServer {
         )
     }
 
-    fn text_response(
-        status: StatusCode,
-        text: &str,
-    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        http::Response::builder()
-            .status(status)
-            .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-            .body(Self::boxed_body(text.as_bytes().to_vec()))
-            .map_err(|err| {
-                server_err!(
-                    ServerErrorCode::InvalidData,
-                    "build text response failed: {}",
-                    err
-                )
-            })
-    }
-
     fn json_response(
         status: StatusCode,
         value: Value,
@@ -686,31 +621,6 @@ impl BuckyFileServer {
         Ok(collected.to_bytes().to_vec())
     }
 
-    fn issue_token(&self, username: &str) -> Result<String, RPCErrors> {
-        let now = Self::now_unix();
-        let claims = Claims {
-            sub: username.to_string(),
-            iat: now,
-            exp: now + TOKEN_EXPIRE_SECONDS,
-        };
-        encode(
-            &Header::new(Algorithm::HS256),
-            &claims,
-            &EncodingKey::from_secret(self.jwt_secret.as_bytes()),
-        )
-        .map_err(|err| RPCErrors::ReasonError(format!("issue token failed: {}", err)))
-    }
-
-    fn decode_token(&self, token: &str) -> Result<Claims, RPCErrors> {
-        decode::<Claims>(
-            token,
-            &DecodingKey::from_secret(self.jwt_secret.as_bytes()),
-            &Self::token_validation(),
-        )
-        .map(|v| v.claims)
-        .map_err(|err| RPCErrors::ReasonError(format!("invalid token: {}", err)))
-    }
-
     async fn get_user_settings(
         &self,
         username: &str,
@@ -723,63 +633,37 @@ impl BuckyFileServer {
             .await
     }
 
-    fn calc_password_hash(username: &str, password: &str) -> String {
-        let source = format!("{}{}.buckyos", password, username);
-        let digest = Sha256::digest(source.as_bytes());
-        STANDARD.encode(digest)
-    }
-
-    async fn validate_user_credentials(
-        &self,
-        username: &str,
-        password: &str,
-    ) -> Result<(), RPCErrors> {
-        if self.standalone_mode {
-            if username.trim().is_empty() || password.trim().is_empty() {
-                return Err(RPCErrors::InvalidPassword);
-            }
-            return Ok(());
-        }
-
-        let user_settings = self.get_user_settings(username).await?;
-        if !matches!(user_settings.state, buckyos_api::UserState::Active) {
-            return Err(RPCErrors::NoPermission("user is not active".to_string()));
-        }
-
-        let password_from_plain = Self::calc_password_hash(username, password);
-        let stored_password = user_settings.password.trim();
-        let provided_password = password.trim();
-
-        let matched =
-            password_from_plain == stored_password || provided_password == stored_password;
-        if !matched {
-            return Err(RPCErrors::InvalidPassword);
-        }
-
-        Ok(())
-    }
-
-    async fn verify_verify_hub_token(&self, token: &str) -> Result<String, RPCErrors> {
+    async fn verify_verify_hub_token(&self, token: &str) -> Result<FileAuthPrincipal, RPCErrors> {
         let runtime = get_buckyos_api_runtime()?;
         let verify_hub_client = runtime.get_verify_hub_client().await?;
-        let verified = verify_hub_client.verify_token(token, None).await?;
+        let verified = verify_hub_client
+            .verify_token(token, Some(CONTROL_PANEL_AUTH_APPID))
+            .await?;
         if !verified {
             return Err(RPCErrors::InvalidToken(
                 "verify-hub token is invalid".to_string(),
             ));
         }
 
-        let parsed = RPCSessionToken::from_string(token)?;
-        let username = parsed.sub.ok_or_else(|| {
-            RPCErrors::InvalidToken("verify-hub token missing subject".to_string())
-        })?;
+        let parsed = RPCSessionToken::from_string(token)
+            .map_err(|err| RPCErrors::InvalidToken(format!("invalid session token: {}", err)))?;
+        let username = parsed
+            .sub
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                RPCErrors::InvalidToken("verify-hub token missing subject".to_string())
+            })?;
 
         let user_settings = self.get_user_settings(&username).await?;
-        if !matches!(user_settings.state, buckyos_api::UserState::Active) {
+        if !matches!(user_settings.state, UserState::Active) {
             return Err(RPCErrors::NoPermission("user is not active".to_string()));
         }
 
-        Ok(username)
+        Ok(FileAuthPrincipal {
+            username,
+            user_type: user_settings.user_type,
+        })
     }
 
     fn extract_auth_token(req: &http::Request<BoxBody<Bytes, ServerError>>) -> Option<String> {
@@ -803,9 +687,11 @@ impl BuckyFileServer {
             if let Ok(raw_cookie) = cookie_header.to_str() {
                 for piece in raw_cookie.split(';') {
                     let segment = piece.trim();
-                    if let Some(token) = segment.strip_prefix("auth=") {
-                        if !token.trim().is_empty() {
-                            return Some(token.trim().to_string());
+                    for key in ["auth=", "control-panel_token=", "control_panel_token="] {
+                        if let Some(token) = segment.strip_prefix(key) {
+                            if !token.trim().is_empty() {
+                                return Some(token.trim().to_string());
+                            }
                         }
                     }
                 }
@@ -815,29 +701,109 @@ impl BuckyFileServer {
         None
     }
 
-    async fn auth_user(
-        &self,
-        req: &http::Request<BoxBody<Bytes, ServerError>>,
-    ) -> Result<String, http::Response<BoxBody<Bytes, ServerError>>> {
-        if self.auth_disabled {
-            if let Some(token) = Self::extract_auth_token(req) {
-                if let Ok(claims) = self.decode_token(&token) {
-                    return Ok(claims.sub);
-                }
-                if !self.standalone_mode {
-                    if let Ok(username) = self.verify_verify_hub_token(&token).await {
-                        return Ok(username);
-                    }
-                }
-            }
+    fn is_privileged_user_type(user_type: &UserType) -> bool {
+        matches!(user_type, UserType::Root | UserType::Admin)
+    }
 
-            let username = self.auth_bypass_user.clone();
-            if let Err(err) = tokio::fs::create_dir_all(self.user_root(&username)).await {
-                warn!("create bypass user root failed for {}: {}", username, err);
-            }
-            return Ok(username);
+    fn shared_inbox_prefix(username: &str) -> PathBuf {
+        PathBuf::from(SHARED_INBOX_DIR).join(username)
+    }
+
+    fn can_read_rel_path(principal: &FileAuthPrincipal, rel_path: &Path) -> bool {
+        if Self::is_privileged_user_type(&principal.user_type) {
+            return true;
         }
 
+        if rel_path.as_os_str().is_empty() {
+            return true;
+        }
+
+        if rel_path.starts_with(Path::new(SHARED_PUBLIC_DIR)) {
+            return true;
+        }
+
+        if rel_path == Path::new(SHARED_INBOX_DIR) {
+            return true;
+        }
+
+        rel_path.starts_with(Self::shared_inbox_prefix(&principal.username))
+    }
+
+    fn can_write_rel_path(principal: &FileAuthPrincipal, rel_path: &Path) -> bool {
+        if Self::is_privileged_user_type(&principal.user_type) {
+            return true;
+        }
+
+        rel_path.starts_with(Self::shared_inbox_prefix(&principal.username))
+    }
+
+    fn files_root(&self) -> PathBuf {
+        if let Ok(root) = std::env::var("BUCKY_FILE_ROOT") {
+            let trimmed = root.trim();
+            if !trimmed.is_empty() {
+                return PathBuf::from(trimmed);
+            }
+        }
+
+        let home_root = get_buckyos_root_dir().join("home");
+        let admin_root = home_root.join(DEFAULT_SHARED_OWNER_DIR);
+        if admin_root.exists() {
+            admin_root
+        } else {
+            home_root
+        }
+    }
+
+    async fn ensure_shared_root_structure(&self, principal: &FileAuthPrincipal) {
+        let root = self.files_root();
+        if let Err(err) = tokio::fs::create_dir_all(&root).await {
+            warn!(
+                "prepare shared file root failed at {}: {}",
+                root.display(),
+                err
+            );
+            return;
+        }
+
+        let public_root = root.join(SHARED_PUBLIC_DIR);
+        if let Err(err) = tokio::fs::create_dir_all(&public_root).await {
+            warn!(
+                "prepare shared public directory failed at {}: {}",
+                public_root.display(),
+                err
+            );
+        }
+
+        let inbox_root = root.join(SHARED_INBOX_DIR);
+        if let Err(err) = tokio::fs::create_dir_all(&inbox_root).await {
+            warn!(
+                "prepare shared inbox root failed at {}: {}",
+                inbox_root.display(),
+                err
+            );
+        }
+
+        let user_inbox = root.join(Self::shared_inbox_prefix(&principal.username));
+        if let Err(err) = tokio::fs::create_dir_all(&user_inbox).await {
+            warn!(
+                "prepare shared inbox for {} failed at {}: {}",
+                principal.username,
+                user_inbox.display(),
+                err
+            );
+        }
+    }
+
+    fn forbidden_response(
+        message: &str,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        Self::json_response(StatusCode::FORBIDDEN, json!({"error": message}))
+    }
+
+    async fn auth_principal(
+        &self,
+        req: &http::Request<BoxBody<Bytes, ServerError>>,
+    ) -> Result<FileAuthPrincipal, http::Response<BoxBody<Bytes, ServerError>>> {
         let token = match Self::extract_auth_token(req) {
             Some(v) => v,
             None => {
@@ -854,22 +820,9 @@ impl BuckyFileServer {
             }
         };
 
-        if let Ok(claims) = self.decode_token(&token) {
-            if self.standalone_mode {
-                return Ok(claims.sub);
-            }
-
-            if let Ok(user_settings) = self.get_user_settings(&claims.sub).await {
-                if matches!(user_settings.state, buckyos_api::UserState::Active) {
-                    return Ok(claims.sub);
-                }
-            }
-        }
-
-        if !self.standalone_mode {
-            if let Ok(username) = self.verify_verify_hub_token(&token).await {
-                return Ok(username);
-            }
+        if let Ok(principal) = self.verify_verify_hub_token(&token).await {
+            self.ensure_shared_root_structure(&principal).await;
+            return Ok(principal);
         }
 
         Err(Self::json_response(
@@ -884,11 +837,8 @@ impl BuckyFileServer {
         }))
     }
 
-    fn user_root(&self, username: &str) -> PathBuf {
-        if let Ok(root) = std::env::var("BUCKY_FILE_ROOT") {
-            return PathBuf::from(root).join(username);
-        }
-        get_buckyos_root_dir().join("home").join(username)
+    fn user_root(&self, _username: &str) -> PathBuf {
+        self.files_root()
     }
 
     fn parse_relative_path(raw: &str) -> Result<PathBuf, RPCErrors> {
@@ -954,78 +904,6 @@ impl BuckyFileServer {
         } else {
             format!("/{}", relative.to_string_lossy().replace('\\', "/"))
         }
-    }
-
-    async fn handle_api_login(
-        &self,
-        req: http::Request<BoxBody<Bytes, ServerError>>,
-    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let body = Self::read_body_bytes(req).await?;
-        let login_req: LoginRequest = match serde_json::from_slice(&body) {
-            Ok(v) => v,
-            Err(_) => {
-                return Self::json_response(
-                    StatusCode::BAD_REQUEST,
-                    json!({"error": "invalid login payload"}),
-                )
-            }
-        };
-
-        let username = login_req.username.trim();
-        let password = login_req.password.trim();
-        if username.is_empty() || password.is_empty() {
-            return Self::json_response(
-                StatusCode::BAD_REQUEST,
-                json!({"error": "username and password are required"}),
-            );
-        }
-
-        if let Err(err) = self.validate_user_credentials(username, password).await {
-            warn!("bucky-file login failed for {}: {}", username, err);
-            return Self::json_response(
-                StatusCode::UNAUTHORIZED,
-                json!({"error": "invalid username or password"}),
-            );
-        }
-
-        tokio::fs::create_dir_all(self.user_root(username))
-            .await
-            .map_err(|err| {
-                server_err!(
-                    ServerErrorCode::InvalidData,
-                    "prepare user root directory failed: {}",
-                    err
-                )
-            })?;
-
-        let token = self.issue_token(username).map_err(|err| {
-            server_err!(
-                ServerErrorCode::InvalidData,
-                "issue login token failed: {}",
-                err
-            )
-        })?;
-
-        Self::text_response(StatusCode::OK, &token)
-    }
-
-    async fn handle_api_renew(
-        &self,
-        req: http::Request<BoxBody<Bytes, ServerError>>,
-    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let username = match self.auth_user(&req).await {
-            Ok(v) => v,
-            Err(resp) => return Ok(resp),
-        };
-
-        let token = self.issue_token(&username).map_err(|err| {
-            server_err!(
-                ServerErrorCode::InvalidData,
-                "issue renew token failed: {}",
-                err
-            )
-        })?;
-        Self::text_response(StatusCode::OK, &token)
     }
 
     fn get_query_param(
@@ -1236,7 +1114,7 @@ impl BuckyFileServer {
         &self,
         req: http::Request<BoxBody<Bytes, ServerError>>,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let username = match self.auth_user(&req).await {
+        let principal = match self.auth_principal(&req).await {
             Ok(v) => v,
             Err(resp) => return Ok(resp),
         };
@@ -1265,10 +1143,15 @@ impl BuckyFileServer {
                 json!({"error": "target path is required"}),
             );
         }
+        if !Self::can_write_rel_path(&principal, &rel_path) {
+            return Self::forbidden_response(
+                "permission denied: write access to target path is required",
+            );
+        }
 
         let chunk_size = Self::parse_upload_chunk_size(payload.chunk_size);
         let override_existing = payload.override_existing.unwrap_or(false);
-        let target = self.user_root(&username).join(&rel_path);
+        let target = self.user_root(&principal.username).join(&rel_path);
         if target.exists() && !override_existing {
             return Self::json_response(
                 StatusCode::CONFLICT,
@@ -1288,7 +1171,7 @@ impl BuckyFileServer {
 
         let session = self
             .create_upload_session_record(
-                &username,
+                &principal.username,
                 &Self::to_display_path(&rel_path),
                 payload.size,
                 chunk_size,
@@ -1326,7 +1209,7 @@ impl BuckyFileServer {
         req: http::Request<BoxBody<Bytes, ServerError>>,
         session_id: &str,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let username = match self.auth_user(&req).await {
+        let principal = match self.auth_principal(&req).await {
             Ok(v) => v,
             Err(resp) => return Ok(resp),
         };
@@ -1342,7 +1225,7 @@ impl BuckyFileServer {
         };
 
         let Some(mut session) = self
-            .get_upload_session_record(&username, &session_id)
+            .get_upload_session_record(&principal.username, &session_id)
             .await
             .map_err(|err| {
                 server_err!(
@@ -1363,7 +1246,11 @@ impl BuckyFileServer {
             let actual_uploaded = meta.len();
             if actual_uploaded != session.uploaded_size {
                 let _ = self
-                    .update_upload_session_progress(&username, &session.id, actual_uploaded)
+                    .update_upload_session_progress(
+                        &principal.username,
+                        &session.id,
+                        actual_uploaded,
+                    )
                     .await;
                 session.uploaded_size = actual_uploaded;
                 session.updated_at = Self::now_unix();
@@ -1384,7 +1271,7 @@ impl BuckyFileServer {
         req: http::Request<BoxBody<Bytes, ServerError>>,
         session_id: &str,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let username = match self.auth_user(&req).await {
+        let principal = match self.auth_principal(&req).await {
             Ok(v) => v,
             Err(resp) => return Ok(resp),
         };
@@ -1400,7 +1287,7 @@ impl BuckyFileServer {
         };
 
         let Some(session) = self
-            .get_upload_session_record(&username, &session_id)
+            .get_upload_session_record(&principal.username, &session_id)
             .await
             .map_err(|err| {
                 server_err!(
@@ -1487,7 +1374,7 @@ impl BuckyFileServer {
         })?;
 
         let next_uploaded_size = session.uploaded_size + chunk_size;
-        self.update_upload_session_progress(&username, &session.id, next_uploaded_size)
+        self.update_upload_session_progress(&principal.username, &session.id, next_uploaded_size)
             .await
             .map_err(|err| {
                 server_err!(
@@ -1514,7 +1401,7 @@ impl BuckyFileServer {
         req: http::Request<BoxBody<Bytes, ServerError>>,
         session_id: &str,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let username = match self.auth_user(&req).await {
+        let principal = match self.auth_principal(&req).await {
             Ok(v) => v,
             Err(resp) => return Ok(resp),
         };
@@ -1530,7 +1417,7 @@ impl BuckyFileServer {
         };
 
         let Some(mut session) = self
-            .get_upload_session_record(&username, &session_id)
+            .get_upload_session_record(&principal.username, &session_id)
             .await
             .map_err(|err| {
                 server_err!(
@@ -1553,7 +1440,7 @@ impl BuckyFileServer {
             .unwrap_or(session.uploaded_size);
         if actual_uploaded != session.uploaded_size {
             let _ = self
-                .update_upload_session_progress(&username, &session.id, actual_uploaded)
+                .update_upload_session_progress(&principal.username, &session.id, actual_uploaded)
                 .await;
             session.uploaded_size = actual_uploaded;
         }
@@ -1584,8 +1471,13 @@ impl BuckyFileServer {
                 json!({"error": "target path is required"}),
             );
         }
+        if !Self::can_write_rel_path(&principal, &rel_path) {
+            return Self::forbidden_response(
+                "permission denied: write access to target path is required",
+            );
+        }
 
-        let target = self.user_root(&username).join(&rel_path);
+        let target = self.user_root(&principal.username).join(&rel_path);
         if target.exists() {
             if !session.override_existing {
                 return Self::json_response(
@@ -1645,7 +1537,7 @@ impl BuckyFileServer {
         }
 
         let _ = self
-            .delete_upload_session_record(&username, &session.id)
+            .delete_upload_session_record(&principal.username, &session.id)
             .await
             .map_err(|err| {
                 server_err!(
@@ -1670,7 +1562,7 @@ impl BuckyFileServer {
         req: http::Request<BoxBody<Bytes, ServerError>>,
         session_id: &str,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let username = match self.auth_user(&req).await {
+        let principal = match self.auth_principal(&req).await {
             Ok(v) => v,
             Err(resp) => return Ok(resp),
         };
@@ -1686,7 +1578,7 @@ impl BuckyFileServer {
         };
 
         let deleted = self
-            .delete_upload_session_record(&username, &session_id)
+            .delete_upload_session_record(&principal.username, &session_id)
             .await
             .map_err(|err| {
                 server_err!(
@@ -1725,7 +1617,7 @@ impl BuckyFileServer {
         &self,
         req: http::Request<BoxBody<Bytes, ServerError>>,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let username = match self.auth_user(&req).await {
+        let principal = match self.auth_principal(&req).await {
             Ok(v) => v,
             Err(resp) => return Ok(resp),
         };
@@ -1754,8 +1646,13 @@ impl BuckyFileServer {
                 json!({"error": "share path is required"}),
             );
         }
+        if !Self::can_write_rel_path(&principal, &rel_path) {
+            return Self::forbidden_response(
+                "permission denied: share can only be created for writable paths",
+            );
+        }
 
-        let target = self.user_root(&username).join(&rel_path);
+        let target = self.user_root(&principal.username).join(&rel_path);
         if !target.exists() {
             return Self::json_response(StatusCode::NOT_FOUND, json!({"error": "path not found"}));
         }
@@ -1767,7 +1664,7 @@ impl BuckyFileServer {
         let password_hash = Self::hash_optional_password(payload.password.as_deref());
         let share_item = self
             .create_share_record(
-                &username,
+                &principal.username,
                 &Self::to_display_path(&rel_path),
                 expires_at,
                 password_hash,
@@ -1795,18 +1692,21 @@ impl BuckyFileServer {
         &self,
         req: http::Request<BoxBody<Bytes, ServerError>>,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let username = match self.auth_user(&req).await {
+        let principal = match self.auth_principal(&req).await {
             Ok(v) => v,
             Err(resp) => return Ok(resp),
         };
 
-        let items = self.list_share_records(&username).await.map_err(|err| {
-            server_err!(
-                ServerErrorCode::InvalidData,
-                "list share records failed: {}",
-                err
-            )
-        })?;
+        let items = self
+            .list_share_records(&principal.username)
+            .await
+            .map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "list share records failed: {}",
+                    err
+                )
+            })?;
         Self::json_response(StatusCode::OK, json!({"items": items}))
     }
 
@@ -1815,7 +1715,7 @@ impl BuckyFileServer {
         req: http::Request<BoxBody<Bytes, ServerError>>,
         share_id: &str,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let username = match self.auth_user(&req).await {
+        let principal = match self.auth_principal(&req).await {
             Ok(v) => v,
             Err(resp) => return Ok(resp),
         };
@@ -1828,7 +1728,7 @@ impl BuckyFileServer {
         }
 
         let deleted = self
-            .delete_share_record(&username, share_id)
+            .delete_share_record(&principal.username, share_id)
             .await
             .map_err(|err| {
                 server_err!(
@@ -2129,7 +2029,7 @@ impl BuckyFileServer {
         req: http::Request<BoxBody<Bytes, ServerError>>,
         raw_path: &str,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let username = match self.auth_user(&req).await {
+        let principal = match self.auth_principal(&req).await {
             Ok(v) => v,
             Err(resp) => return Ok(resp),
         };
@@ -2143,8 +2043,11 @@ impl BuckyFileServer {
                 )
             }
         };
+        if !Self::can_read_rel_path(&principal, &rel_path) {
+            return Self::forbidden_response("permission denied: read access to path is required");
+        }
 
-        let target = self.user_root(&username).join(&rel_path);
+        let target = self.user_root(&principal.username).join(&rel_path);
         if !target.exists() {
             return Self::json_response(StatusCode::NOT_FOUND, json!({"error": "path not found"}));
         }
@@ -2184,6 +2087,9 @@ impl BuckyFileServer {
                 } else {
                     rel_path.join(&file_name)
                 };
+                if !Self::can_read_rel_path(&principal, &item_rel_path) {
+                    continue;
+                }
                 items.push(FileEntry {
                     name: file_name,
                     path: Self::to_display_path(&item_rel_path),
@@ -2248,7 +2154,7 @@ impl BuckyFileServer {
         raw_path: &str,
         create_dir: bool,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let username = match self.auth_user(&req).await {
+        let principal = match self.auth_principal(&req).await {
             Ok(v) => v,
             Err(resp) => return Ok(resp),
         };
@@ -2268,6 +2174,11 @@ impl BuckyFileServer {
                 json!({"error": "target path is required"}),
             );
         }
+        if !Self::can_write_rel_path(&principal, &rel_path) {
+            return Self::forbidden_response(
+                "permission denied: write access to target path is required",
+            );
+        }
 
         let should_override = req
             .uri()
@@ -2278,7 +2189,7 @@ impl BuckyFileServer {
             })
             .unwrap_or(false);
 
-        let target = self.user_root(&username).join(&rel_path);
+        let target = self.user_root(&principal.username).join(&rel_path);
 
         if create_dir {
             tokio::fs::create_dir_all(&target).await.map_err(|err| {
@@ -2334,7 +2245,7 @@ impl BuckyFileServer {
         req: http::Request<BoxBody<Bytes, ServerError>>,
         raw_path: &str,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let username = match self.auth_user(&req).await {
+        let principal = match self.auth_principal(&req).await {
             Ok(v) => v,
             Err(resp) => return Ok(resp),
         };
@@ -2352,6 +2263,11 @@ impl BuckyFileServer {
             return Self::json_response(
                 StatusCode::BAD_REQUEST,
                 json!({"error": "target path is required"}),
+            );
+        }
+        if !Self::can_write_rel_path(&principal, &rel_path) {
+            return Self::forbidden_response(
+                "permission denied: write access to target path is required",
             );
         }
 
@@ -2376,7 +2292,7 @@ impl BuckyFileServer {
             bytes
         };
 
-        let target = self.user_root(&username).join(&rel_path);
+        let target = self.user_root(&principal.username).join(&rel_path);
         if target.exists() {
             let metadata = tokio::fs::metadata(&target).await.map_err(|err| {
                 server_err!(
@@ -2651,7 +2567,7 @@ impl BuckyFileServer {
         &self,
         req: http::Request<BoxBody<Bytes, ServerError>>,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let username = match self.auth_user(&req).await {
+        let principal = match self.auth_principal(&req).await {
             Ok(v) => v,
             Err(resp) => return Ok(resp),
         };
@@ -2675,6 +2591,11 @@ impl BuckyFileServer {
                 )
             }
         };
+        if !Self::can_read_rel_path(&principal, &rel_path) {
+            return Self::forbidden_response(
+                "permission denied: read access to search path is required",
+            );
+        }
 
         let kind = Self::get_query_param(&req, "kind")
             .unwrap_or_else(|| "all".to_string())
@@ -2688,7 +2609,7 @@ impl BuckyFileServer {
         }
 
         let limit = Self::parse_search_limit(Self::get_query_param(&req, "limit"));
-        let user_root = self.user_root(&username);
+        let user_root = self.user_root(&principal.username);
         let search_root = user_root.join(&rel_path);
         if !search_root.exists() {
             return Self::json_response(
@@ -2697,7 +2618,7 @@ impl BuckyFileServer {
             );
         }
 
-        let (items, truncated) = self
+        let (mut items, truncated) = self
             .search_resources(
                 user_root,
                 rel_path.clone(),
@@ -2713,6 +2634,13 @@ impl BuckyFileServer {
                     err
                 )
             })?;
+        items.retain(|entry| {
+            let parsed = Self::parse_relative_path(&entry.path).ok();
+            parsed
+                .as_ref()
+                .map(|path| Self::can_read_rel_path(&principal, path))
+                .unwrap_or(false)
+        });
 
         Self::json_response(
             StatusCode::OK,
@@ -2825,7 +2753,7 @@ impl BuckyFileServer {
         req: http::Request<BoxBody<Bytes, ServerError>>,
         raw_path: &str,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let username = match self.auth_user(&req).await {
+        let principal = match self.auth_principal(&req).await {
             Ok(v) => v,
             Err(resp) => return Ok(resp),
         };
@@ -2855,7 +2783,7 @@ impl BuckyFileServer {
             )
         })?;
 
-        let source_abs_path = self.user_root(&username).join(&source_rel_path);
+        let source_abs_path = self.user_root(&principal.username).join(&source_rel_path);
         if !source_abs_path.exists() {
             return Self::json_response(
                 StatusCode::NOT_FOUND,
@@ -2933,7 +2861,29 @@ impl BuckyFileServer {
             );
         }
 
-        let target_abs_path = self.user_root(&username).join(&target_rel_path);
+        let source_read_allowed = Self::can_read_rel_path(&principal, &source_rel_path);
+        let source_write_allowed = Self::can_write_rel_path(&principal, &source_rel_path);
+        let target_write_allowed = Self::can_write_rel_path(&principal, &target_rel_path);
+
+        match action.as_str() {
+            "copy" => {
+                if !source_read_allowed || !target_write_allowed {
+                    return Self::forbidden_response(
+                        "permission denied: copy requires read source and write target permissions",
+                    );
+                }
+            }
+            "move" | "rename" => {
+                if !source_write_allowed || !target_write_allowed {
+                    return Self::forbidden_response(
+                        "permission denied: move/rename requires write permissions on source and target",
+                    );
+                }
+            }
+            _ => {}
+        }
+
+        let target_abs_path = self.user_root(&principal.username).join(&target_rel_path);
 
         if source_metadata.is_dir() && target_abs_path.starts_with(&source_abs_path) {
             return Self::json_response(
@@ -3025,7 +2975,7 @@ impl BuckyFileServer {
         req: http::Request<BoxBody<Bytes, ServerError>>,
         raw_path: &str,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let username = match self.auth_user(&req).await {
+        let principal = match self.auth_principal(&req).await {
             Ok(v) => v,
             Err(resp) => return Ok(resp),
         };
@@ -3046,8 +2996,13 @@ impl BuckyFileServer {
                 json!({"error": "root path cannot be deleted"}),
             );
         }
+        if !Self::can_write_rel_path(&principal, &rel_path) {
+            return Self::forbidden_response(
+                "permission denied: write access to target path is required",
+            );
+        }
 
-        let target = self.user_root(&username).join(&rel_path);
+        let target = self.user_root(&principal.username).join(&rel_path);
         if !target.exists() {
             return Self::json_response(StatusCode::NOT_FOUND, json!({"error": "path not found"}));
         }
@@ -3085,7 +3040,7 @@ impl BuckyFileServer {
         req: http::Request<BoxBody<Bytes, ServerError>>,
         raw_path: &str,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let username = match self.auth_user(&req).await {
+        let principal = match self.auth_principal(&req).await {
             Ok(v) => v,
             Err(resp) => return Ok(resp),
         };
@@ -3105,8 +3060,13 @@ impl BuckyFileServer {
                 json!({"error": "file path is required"}),
             );
         }
+        if !Self::can_read_rel_path(&principal, &rel_path) {
+            return Self::forbidden_response(
+                "permission denied: read access to file path is required",
+            );
+        }
 
-        let target = self.user_root(&username).join(&rel_path);
+        let target = self.user_root(&principal.username).join(&rel_path);
         if !target.exists() {
             return Self::json_response(StatusCode::NOT_FOUND, json!({"error": "file not found"}));
         }
@@ -3265,14 +3225,6 @@ impl HttpServer for BuckyFileServer {
 
         if method == Method::GET && path == "/api/health" {
             return Self::json_response(StatusCode::OK, json!({"ok": true}));
-        }
-
-        if method == Method::POST && path == "/api/login" {
-            return self.handle_api_login(req).await;
-        }
-
-        if method == Method::POST && path == "/api/renew" {
-            return self.handle_api_renew(req).await;
         }
 
         if method == Method::GET && path == "/api/search" {

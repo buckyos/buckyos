@@ -25,7 +25,11 @@ import {
   X,
 } from 'lucide-react'
 
+import { ensureSessionToken } from '@/auth/authManager'
+import { getSessionTokenFromCookies, getStoredSessionToken } from '@/auth/session'
 import FilePreviewPanel from '@/ui/components/file_manager/FilePreviewPanel'
+import { downloadImageWithProgress } from '@/ui/components/file_manager/imageDownload'
+import ProgressRing from '@/ui/components/file_manager/ProgressRing'
 import ImageViewerModal from '@/ui/components/file_manager/ImageViewerModal'
 import { getFilePreviewKind, type FilePreviewKind } from '@/ui/components/file_manager/filePreview'
 
@@ -101,7 +105,6 @@ type UploadProgressItem = {
   error?: string
 }
 
-const TOKEN_STORAGE_KEY = 'bucky-file-token'
 const DEFAULT_UPLOAD_CHUNK_SIZE = 2 * 1024 * 1024
 const UPLOAD_CONCURRENCY = 2
 const UPLOAD_MAX_RETRY = 3
@@ -119,21 +122,6 @@ const getPublicShareIdFromPath = (path: string) => {
 }
 
 const getSearchParam = (key: string) => new URLSearchParams(window.location.search).get(key) ?? ''
-
-const getCookieAuthToken = () => {
-  if (typeof document === 'undefined') {
-    return ''
-  }
-  const matched = document.cookie.match(/(?:^|;\s*)auth=([^;]+)/)
-  if (!matched?.[1]) {
-    return ''
-  }
-  try {
-    return decodeURIComponent(matched[1])
-  } catch {
-    return matched[1]
-  }
-}
 
 const withAuthHeaders = (authToken: string, extraHeaders?: Record<string, string>) => {
   const headers: Record<string, string> = {
@@ -183,6 +171,13 @@ const buildPublicShareApiPath = (shareId: string, path: string, password?: strin
 
 const getUploadResumeKey = (targetPath: string, size: number, lastModified: number) =>
   `bucky-file-upload-session:${targetPath}:${size}:${lastModified}`
+
+const revokeBlobUrl = (url: string) => {
+  if (!url.startsWith('blob:')) {
+    return
+  }
+  URL.revokeObjectURL(url)
+}
 
 type MainTab = 'files' | 'shares' | 'editor'
 
@@ -333,7 +328,7 @@ type FileManagerPageProps = {
 }
 
 const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
-  const [token, setToken] = useState(() => localStorage.getItem(TOKEN_STORAGE_KEY) || getCookieAuthToken() || '')
+  const [token, setToken] = useState(() => getStoredSessionToken() || getSessionTokenFromCookies() || '')
   const [locationPathname, setLocationPathname] = useState(() => (embedded ? '/desktop/files' : window.location.pathname))
   const publicShareId = useMemo(() => getPublicShareIdFromPath(locationPathname), [locationPathname])
   const [mainTab, setMainTab] = useState<MainTab>(() => (embedded ? 'files' : getMainTabFromPathname(window.location.pathname)))
@@ -382,12 +377,20 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   const [imageViewerTitle, setImageViewerTitle] = useState('')
   const [imageViewerScale, setImageViewerScale] = useState(1)
   const [previewImageLoading, setPreviewImageLoading] = useState(false)
+  const [previewImageSrc, setPreviewImageSrc] = useState('')
+  const [previewImageLoadedBytes, setPreviewImageLoadedBytes] = useState(0)
+  const [previewImageTotalBytes, setPreviewImageTotalBytes] = useState<number | null>(null)
+  const [previewImageProgressPercent, setPreviewImageProgressPercent] = useState<number | null>(null)
   const [publicImageLoading, setPublicImageLoading] = useState(false)
+  const [publicImageDisplaySrc, setPublicImageDisplaySrc] = useState('')
+  const [publicImageLoadedBytes, setPublicImageLoadedBytes] = useState(0)
+  const [publicImageTotalBytes, setPublicImageTotalBytes] = useState<number | null>(null)
+  const [publicImageProgressPercent, setPublicImageProgressPercent] = useState<number | null>(null)
   const [viewerImageLoading, setViewerImageLoading] = useState(false)
   const [openActionPath, setOpenActionPath] = useState('')
   const [actionMenuPosition, setActionMenuPosition] = useState<{ top: number; left: number } | null>(null)
 
-  const effectiveToken = token || getCookieAuthToken()
+  const effectiveToken = token || getStoredSessionToken() || getSessionTokenFromCookies() || ''
   const uploadPausedRef = useRef(false)
   const dropDragDepthRef = useRef(0)
   const uploadFilesRef = useRef(new Map<string, { file: File; targetPath: string; resumeKey: string }>())
@@ -407,6 +410,13 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   }, [])
 
   const clearPreviewState = useCallback(() => {
+    setPreviewImageSrc((prev) => {
+      revokeBlobUrl(prev)
+      return ''
+    })
+    setPreviewImageLoadedBytes(0)
+    setPreviewImageTotalBytes(null)
+    setPreviewImageProgressPercent(null)
     setPreviewEntry(null)
     setPreviewKind('unknown')
     setPreviewTextContent('')
@@ -551,22 +561,41 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
 
   const setSessionToken = useCallback((next: string) => {
     setToken(next)
-    if (next) {
-      localStorage.setItem(TOKEN_STORAGE_KEY, next)
-    } else {
-      localStorage.removeItem(TOKEN_STORAGE_KEY)
-    }
   }, [])
 
   useEffect(() => {
+    let cancelled = false
+
     if (token) {
-      return
+      return () => {
+        cancelled = true
+      }
     }
-    const cookieToken = getCookieAuthToken()
-    if (cookieToken) {
-      setSessionToken(cookieToken)
+
+    const storedToken = getStoredSessionToken() || getSessionTokenFromCookies()
+    if (storedToken) {
+      setSessionToken(storedToken)
+      return () => {
+        cancelled = true
+      }
     }
-  }, [token, setSessionToken])
+
+    if (!embedded && publicShareId) {
+      return () => {
+        cancelled = true
+      }
+    }
+
+    void ensureSessionToken().then((nextToken) => {
+      if (!cancelled && nextToken) {
+        setSessionToken(nextToken)
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [embedded, publicShareId, token, setSessionToken])
 
   const loadDirectory = useCallback(
     async (path: string, authToken: string) => {
@@ -718,7 +747,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   }, [syncPublicSharePathToUrl])
 
   useEffect(() => {
-    if (publicShareId || mainTab !== 'files') {
+    if (!effectiveToken || publicShareId || mainTab !== 'files') {
       return
     }
     void loadDirectory(currentPath, effectiveToken)
@@ -744,6 +773,9 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   }, [embedded, locationPathname, mainTab, publicShareId])
 
   useEffect(() => {
+    if (!effectiveToken) {
+      return
+    }
     void loadShares(effectiveToken)
   }, [effectiveToken, loadShares, clearPreviewState, clearSearchState])
 
@@ -1899,7 +1931,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
     }
     return buildRawFileUrl(previewEntry.path)
   }, [buildRawFileUrl, previewEntry])
-  const publicImageSrc = useMemo(() => {
+  const publicImageRawUrl = useMemo(() => {
     if (!publicShareId) {
       return ''
     }
@@ -1958,20 +1990,121 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   const visibleFileCount = useMemo(() => visibleItems.filter((item) => !item.is_dir).length, [visibleItems])
 
   useEffect(() => {
-    if (previewEntry && previewKind === 'image' && previewRawUrl) {
-      setPreviewImageLoading(true)
-    } else {
+    let cancelled = false
+    const controller = new AbortController()
+
+    setPreviewImageSrc((prev) => {
+      revokeBlobUrl(prev)
+      return ''
+    })
+    setPreviewImageLoadedBytes(0)
+    setPreviewImageTotalBytes(null)
+    setPreviewImageProgressPercent(null)
+
+    if (!previewEntry || previewKind !== 'image' || !previewRawUrl) {
       setPreviewImageLoading(false)
+      return () => {
+        cancelled = true
+        controller.abort()
+      }
+    }
+
+    setPreviewError('')
+    setPreviewImageLoading(true)
+    void downloadImageWithProgress(previewRawUrl, controller.signal, (progress) => {
+      if (cancelled) {
+        return
+      }
+      setPreviewImageLoadedBytes(progress.loadedBytes)
+      setPreviewImageTotalBytes(progress.totalBytes)
+      setPreviewImageProgressPercent(progress.progressPercent)
+    })
+      .then((blob) => {
+        if (cancelled) {
+          return
+        }
+        const objectUrl = URL.createObjectURL(blob)
+        setPreviewImageSrc((prev) => {
+          revokeBlobUrl(prev)
+          return objectUrl
+        })
+      })
+      .catch((err) => {
+        if (cancelled || controller.signal.aborted) {
+          return
+        }
+        console.error('image preview download failed', err)
+        setPreviewImageLoading(false)
+        setPreviewError('Image preview failed to download. Please retry.')
+      })
+
+    return () => {
+      cancelled = true
+      controller.abort()
     }
   }, [previewEntry, previewKind, previewRawUrl])
 
   useEffect(() => {
-    if (publicShareData && !publicShareData.is_dir && publicShareIsImage && publicImageSrc) {
-      setPublicImageLoading(true)
-    } else {
+    let cancelled = false
+    const controller = new AbortController()
+
+    setPublicImageDisplaySrc((prev) => {
+      revokeBlobUrl(prev)
+      return ''
+    })
+    setPublicImageLoadedBytes(0)
+    setPublicImageTotalBytes(null)
+    setPublicImageProgressPercent(null)
+
+    if (!publicShareData || publicShareData.is_dir || !publicShareIsImage || !publicImageRawUrl) {
       setPublicImageLoading(false)
+      return () => {
+        cancelled = true
+        controller.abort()
+      }
     }
-  }, [publicImageSrc, publicShareData, publicShareIsImage])
+
+    setPublicShareError('')
+    setPublicImageLoading(true)
+    void downloadImageWithProgress(publicImageRawUrl, controller.signal, (progress) => {
+      if (cancelled) {
+        return
+      }
+      setPublicImageLoadedBytes(progress.loadedBytes)
+      setPublicImageTotalBytes(progress.totalBytes)
+      setPublicImageProgressPercent(progress.progressPercent)
+    })
+      .then((blob) => {
+        if (cancelled) {
+          return
+        }
+        const objectUrl = URL.createObjectURL(blob)
+        setPublicImageDisplaySrc((prev) => {
+          revokeBlobUrl(prev)
+          return objectUrl
+        })
+      })
+      .catch((err) => {
+        if (cancelled || controller.signal.aborted) {
+          return
+        }
+        console.error('public image preview download failed', err)
+        setPublicImageLoading(false)
+        setPublicShareError('Image preview failed to download. Please retry.')
+      })
+
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [publicImageRawUrl, publicShareData, publicShareIsImage])
+
+  useEffect(() => {
+    return () => {
+      revokeBlobUrl(previewImageSrc)
+      revokeBlobUrl(publicImageDisplaySrc)
+    }
+  }, [previewImageSrc, publicImageDisplaySrc])
 
   if (publicShareId) {
     return (
@@ -2207,7 +2340,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                           type="button"
                           onClick={() =>
                             openImageViewer(
-                              publicImageSrc,
+                              publicImageDisplaySrc || publicImageRawUrl,
                               publicSharePath,
                             )
                           }
@@ -2219,22 +2352,35 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                           </span>
                         </button>
                       </div>
-                      <img
-                        src={publicImageSrc}
-                        alt={publicSharePath}
-                        className={`mx-auto max-h-[520px] w-auto max-w-full transition-opacity ${publicImageLoading ? 'opacity-0' : 'opacity-100'}`}
-                        loading="lazy"
-                        onLoad={() => setPublicImageLoading(false)}
-                        onError={() => setPublicImageLoading(false)}
-                        onClick={() =>
-                          openImageViewer(
-                            publicImageSrc,
-                            publicSharePath,
-                          )
-                        }
-                      />
+                      {publicImageDisplaySrc ? (
+                        <img
+                          src={publicImageDisplaySrc}
+                          alt={publicSharePath}
+                          className={`mx-auto max-h-[520px] w-auto max-w-full transition-opacity ${publicImageLoading ? 'opacity-0' : 'opacity-100'}`}
+                          loading="lazy"
+                          onLoad={() => setPublicImageLoading(false)}
+                          onError={() => {
+                            setPublicImageLoading(false)
+                            setPublicShareError('Image preview failed to render. Please reopen the share.')
+                          }}
+                          onClick={() =>
+                            openImageViewer(
+                              publicImageDisplaySrc || publicImageRawUrl,
+                              publicSharePath,
+                            )
+                          }
+                        />
+                      ) : null}
                       {publicImageLoading ? (
-                        <div className="flex items-center justify-center py-16 text-sm font-medium text-slate-500">Loading image preview...</div>
+                        <div className="flex flex-col items-center gap-2 px-1 py-10 text-center">
+                          <ProgressRing progressPercent={publicImageProgressPercent} />
+                          <p className="text-xs font-medium text-slate-600">Loading image preview...</p>
+                          <p className="text-[11px] text-slate-500">
+                            {publicImageTotalBytes != null
+                              ? `${formatBytes(publicImageLoadedBytes)} / ${formatBytes(publicImageTotalBytes)}`
+                              : formatBytes(publicImageLoadedBytes)}
+                          </p>
+                        </div>
                       ) : null}
                     </div>
                   ) : (
@@ -2735,14 +2881,21 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
             previewEntry={previewEntry}
             previewKind={previewKind}
             previewRawUrl={previewRawUrl}
+            previewImageSrc={previewImageSrc}
             previewLoading={previewLoading}
             previewError={previewError}
             previewTextContent={previewTextContent}
             previewImageLoading={previewImageLoading}
+            previewImageProgressPercent={previewImageProgressPercent}
+            previewImageLoadedBytes={previewImageLoadedBytes}
+            previewImageTotalBytes={previewImageTotalBytes}
             officePreviewUrl={officePreviewUrl}
             onOpenImageViewer={openImageViewer}
             onPreviewImageLoad={() => setPreviewImageLoading(false)}
-            onPreviewImageError={() => setPreviewImageLoading(false)}
+            onPreviewImageError={() => {
+              setPreviewImageLoading(false)
+              setPreviewError('Image preview failed to render. Please retry.')
+            }}
             formatBytes={formatBytes}
             formatTimestamp={formatTimestamp}
           />
