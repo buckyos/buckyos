@@ -50,6 +50,7 @@ const SESSION_QUEUE_APP_ID: &str = "opendan";
 const SESSION_QUEUE_RETENTION_SECONDS: u64 = 7 * 24 * 60 * 60;
 const SESSION_QUEUE_MAX_MESSAGES: u64 = 4096;
 const AGENT_BEHAVIOR_ROUTER_RESOLVE: &str = "resolve_router";
+const SESSION_META_CREATOR_UI_SESSION_ID: &str = "creator_ui_session_id";
 
 #[derive(Debug)]
 struct PulledMsg {
@@ -1022,6 +1023,9 @@ impl AIAgent {
         let default_remote = step_msg_inputs
             .iter()
             .find_map(|item| item.msg.as_ref().map(|record| record.from.to_string()));
+        let creator_ui_session_id = self
+            .resolve_creator_ui_session_id(source_session_id.as_str(), step_msg_inputs.as_slice())
+            .await;
 
         for (target_session_id, target) in route_targets {
             let target_session = self
@@ -1039,6 +1043,12 @@ impl AIAgent {
                 if guard.summary.trim().is_empty() {
                     guard.summary = summary;
                 }
+                if let Some(ui_session_id) = creator_ui_session_id.as_deref() {
+                    Self::set_creator_ui_session_id_meta(&mut guard.meta, ui_session_id);
+                }
+            } else if let Some(ui_session_id) = creator_ui_session_id.as_deref() {
+                let mut guard = target_session.lock().await;
+                Self::set_creator_ui_session_id_meta(&mut guard.meta, ui_session_id);
             }
 
             for input_item in &step_msg_inputs {
@@ -2094,6 +2104,115 @@ impl AIAgent {
             .or_else(|| serde_json::from_slice::<MsgRecord>(payload).ok())
     }
 
+    fn normalize_ui_session_id(value: &str) -> Option<String> {
+        let session_id = value.trim();
+        if session_id.is_empty() {
+            return None;
+        }
+        if !AgentSessionMgr::is_ui_session(session_id) {
+            return None;
+        }
+        Some(session_id.to_string())
+    }
+
+    fn creator_ui_session_id_from_meta(meta: &Json) -> Option<String> {
+        let obj = meta.as_object()?;
+        let raw = obj.get(SESSION_META_CREATOR_UI_SESSION_ID)?;
+        match raw {
+            Json::String(value) => Self::normalize_ui_session_id(value),
+            Json::Array(items) => items.iter().find_map(|item| {
+                item.as_str()
+                    .and_then(|value| Self::normalize_ui_session_id(value))
+            }),
+            _ => None,
+        }
+    }
+
+    fn set_creator_ui_session_id_meta(meta: &mut Json, creator_ui_session_id: &str) {
+        let Some(creator_ui_session_id) = Self::normalize_ui_session_id(creator_ui_session_id)
+        else {
+            return;
+        };
+        if !meta.is_object() {
+            *meta = json!({});
+        }
+        let Some(obj) = meta.as_object_mut() else {
+            return;
+        };
+        if obj
+            .get(SESSION_META_CREATOR_UI_SESSION_ID)
+            .and_then(Json::as_str)
+            .and_then(Self::normalize_ui_session_id)
+            .is_some()
+        {
+            return;
+        }
+        obj.insert(
+            SESSION_META_CREATOR_UI_SESSION_ID.to_string(),
+            Json::String(creator_ui_session_id),
+        );
+    }
+
+    async fn resolve_creator_ui_session_id(
+        &self,
+        source_session_id: &str,
+        step_msg_inputs: &[SessionInputItem],
+    ) -> Option<String> {
+        if let Some(session_id) = Self::normalize_ui_session_id(source_session_id) {
+            return Some(session_id);
+        }
+
+        if let Some(session_id) = step_msg_inputs.iter().find_map(|item| {
+            item.msg
+                .as_ref()
+                .and_then(|msg| msg.ui_session_id.as_deref())
+                .and_then(Self::normalize_ui_session_id)
+        }) {
+            return Some(session_id);
+        }
+
+        let Some(source_session) = self.session_mgr.get_session(source_session_id).await else {
+            return None;
+        };
+        let guard = source_session.lock().await;
+        Self::creator_ui_session_id_from_meta(&guard.meta)
+    }
+
+    fn collect_reply_sync_ui_session_ids(
+        session_id: &str,
+        creator_ui_session_id: Option<String>,
+        step_inputs: &[Vec<u8>],
+    ) -> Vec<String> {
+        let current_session_id = session_id.trim();
+        let mut targets = HashSet::<String>::new();
+
+        if let Some(ui_session_id) = creator_ui_session_id {
+            if ui_session_id.as_str() != current_session_id {
+                targets.insert(ui_session_id);
+            }
+        }
+
+        for raw in step_inputs {
+            let Some(msg) = Self::parse_step_input_msg_record(raw.as_slice()) else {
+                continue;
+            };
+            let Some(ui_session_id) = msg
+                .ui_session_id
+                .as_deref()
+                .and_then(Self::normalize_ui_session_id)
+            else {
+                continue;
+            };
+            if ui_session_id.as_str() != current_session_id {
+                targets.insert(ui_session_id);
+            }
+        }
+
+        let mut out = targets.into_iter().collect::<Vec<_>>();
+        out.sort();
+        out
+    }
+
     async fn append_worklog_action_record(
         &self,
         session: Arc<Mutex<AgentSession>>,
@@ -2412,10 +2531,18 @@ impl AIAgent {
         session_id: &str,
         reply_history: &[ReplyHistoryRecord],
     ) {
-        let just_readed_input_msg = {
+        let (just_readed_input_msg, creator_ui_session_id) = {
             let guard = session.lock().await;
-            guard.just_readed_input_msg.clone()
+            (
+                guard.just_readed_input_msg.clone(),
+                Self::creator_ui_session_id_from_meta(&guard.meta),
+            )
         };
+        let reply_sync_ui_session_ids = Self::collect_reply_sync_ui_session_ids(
+            session_id,
+            creator_ui_session_id,
+            just_readed_input_msg.as_slice(),
+        );
 
         for readed_input_item in &just_readed_input_msg {
             let msg_record =
@@ -2445,6 +2572,14 @@ impl AIAgent {
         for reply in reply_history {
             self.persist_post_send_history(session_id, &reply.outbound, &reply.result)
                 .await;
+            for ui_session_id in &reply_sync_ui_session_ids {
+                self.persist_post_send_history(
+                    ui_session_id.as_str(),
+                    &reply.outbound,
+                    &reply.result,
+                )
+                .await;
+            }
         }
     }
 
@@ -3140,6 +3275,72 @@ mod tests {
                 DoAction::Exec("echo from-shell-1".to_string()),
                 DoAction::Exec("echo from-shell-2".to_string()),
             ]
+        );
+    }
+
+    fn build_step_input_payload(record_id: &str, ui_session_id: Option<&str>) -> Vec<u8> {
+        let mut msg_record = json!({
+            "record_id": record_id,
+            "box_kind": "INBOX",
+            "msg_id": "sha256:11111111111111111111111111111111",
+            "msg_kind": "chat",
+            "state": "UNREAD",
+            "from": "did:web:alice.example.com",
+            "to": "did:web:agent.example.com",
+            "created_at_ms": 1000,
+            "updated_at_ms": 1000,
+            "sort_key": 1000,
+            "tags": []
+        });
+        if let Some(value) = ui_session_id {
+            msg_record
+                .as_object_mut()
+                .expect("msg record object")
+                .insert("ui_session_id".to_string(), Json::String(value.to_string()));
+        }
+        serde_json::to_vec(&json!({
+            "msg": msg_record,
+            "event_id": null
+        }))
+        .expect("serialize step input payload")
+    }
+
+    #[test]
+    fn collect_reply_sync_ui_session_ids_prefers_ui_sessions_only() {
+        let step_inputs = vec![
+            build_step_input_payload("r1", Some("ui-owner")),
+            build_step_input_payload("r2", Some("ui-extra")),
+            build_step_input_payload("r3", Some("work-should-skip")),
+            b"{\"msg\":\"invalid\"}".to_vec(),
+        ];
+
+        let targets = AIAgent::collect_reply_sync_ui_session_ids(
+            "work-abc",
+            Some("ui-owner".to_string()),
+            step_inputs.as_slice(),
+        );
+        assert_eq!(
+            targets,
+            vec!["ui-extra".to_string(), "ui-owner".to_string()]
+        );
+    }
+
+    #[test]
+    fn set_creator_ui_session_id_meta_keeps_existing_value() {
+        let mut meta = json!({
+            "creator_ui_session_id": "ui-first"
+        });
+        AIAgent::set_creator_ui_session_id_meta(&mut meta, "ui-second");
+        assert_eq!(
+            AIAgent::creator_ui_session_id_from_meta(&meta),
+            Some("ui-first".to_string())
+        );
+
+        let mut empty_meta = json!({});
+        AIAgent::set_creator_ui_session_id_meta(&mut empty_meta, "ui-owner");
+        assert_eq!(
+            AIAgent::creator_ui_session_id_from_meta(&empty_meta),
+            Some("ui-owner".to_string())
         );
     }
 
