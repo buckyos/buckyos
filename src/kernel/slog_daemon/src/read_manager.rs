@@ -44,15 +44,26 @@ impl LogReaderManager {
     fn run(data_tx: mpsc::Sender<LogRecordLoad>, dir_reader: LogDirReader) {
         // Update dir every while 1 minute
         let mut last_update_dir_tick = std::time::Instant::now();
-        let mut retry_states: HashMap<String, RetryState> = HashMap::new();
+        let mut upload_retry_states: HashMap<String, RetryState> = HashMap::new();
+        let mut flush_retry_states: HashMap<String, RetryState> = HashMap::new();
 
         loop {
+            Self::retry_pending_flush_read_pos(&dir_reader, &mut flush_retry_states);
+
             let mut read_count = 0;
 
             match dir_reader.try_read_records(READ_RECORD_BATCH_SIZE) {
                 Ok(items) => {
                     for item in items {
-                        if !Self::should_attempt_upload(&retry_states, &item.id) {
+                        if flush_retry_states.contains_key(&item.id) {
+                            debug!(
+                                "skip upload for item {} due pending read-pos flush retry",
+                                item.id
+                            );
+                            continue;
+                        }
+
+                        if !Self::should_attempt_action(&upload_retry_states, &item.id, "upload") {
                             continue;
                         }
 
@@ -66,18 +77,20 @@ impl LogReaderManager {
                         };
 
                         if upload_ok {
-                            retry_states.remove(&item.id);
-                            read_count += item.records.len();
+                            upload_retry_states.remove(&item.id);
 
                             // Update last read pos
                             if let Err(e) = dir_reader.flush_read_pos(&item.id) {
                                 let msg = format!("failed to flush read pos: {}", e);
                                 error!("{}", msg);
-                                // FIXME: What to do here if failed to flush read pos?
+                                Self::record_flush_failure(&mut flush_retry_states, &item.id);
                                 continue;
                             }
+
+                            flush_retry_states.remove(&item.id);
+                            read_count += item.records.len();
                         } else {
-                            Self::record_upload_failure(&mut retry_states, &item.id);
+                            Self::record_upload_failure(&mut upload_retry_states, &item.id);
                         }
                     }
                 }
@@ -109,7 +122,33 @@ impl LogReaderManager {
         }
     }
 
-    fn should_attempt_upload(retry_states: &HashMap<String, RetryState>, id: &str) -> bool {
+    fn retry_pending_flush_read_pos(
+        dir_reader: &LogDirReader,
+        flush_retry_states: &mut HashMap<String, RetryState>,
+    ) {
+        let ids: Vec<String> = flush_retry_states.keys().cloned().collect();
+        for id in ids {
+            if !Self::should_attempt_action(flush_retry_states, &id, "flush_read_pos") {
+                continue;
+            }
+
+            if let Err(e) = dir_reader.flush_read_pos(&id) {
+                let msg = format!("failed to retry flush read pos for {}: {}", id, e);
+                error!("{}", msg);
+                Self::record_flush_failure(flush_retry_states, &id);
+                continue;
+            }
+
+            flush_retry_states.remove(&id);
+            info!("retry flush read pos succeeded for {}", id);
+        }
+    }
+
+    fn should_attempt_action(
+        retry_states: &HashMap<String, RetryState>,
+        id: &str,
+        action: &str,
+    ) -> bool {
         match retry_states.get(id) {
             Some(state) => {
                 if Instant::now() >= state.next_retry_at {
@@ -120,8 +159,8 @@ impl LogReaderManager {
                         .saturating_duration_since(Instant::now())
                         .as_secs();
                     debug!(
-                        "skip upload for item {} due retry backoff, next attempt in {}s",
-                        id, remain
+                        "skip {} for item {} due retry backoff, next attempt in {}s",
+                        action, id, remain
                     );
                     false
                 }
@@ -144,7 +183,11 @@ impl LogReaderManager {
         }
     }
 
-    fn record_upload_failure(retry_states: &mut HashMap<String, RetryState>, id: &str) {
+    fn record_action_failure(
+        retry_states: &mut HashMap<String, RetryState>,
+        id: &str,
+        action: &str,
+    ) {
         let retry_interval_secs =
             Self::next_retry_interval_secs(retry_states.get(id).map(|s| s.retry_interval_secs));
         let next_retry_at = Instant::now() + Duration::from_secs(retry_interval_secs);
@@ -158,9 +201,17 @@ impl LogReaderManager {
         );
 
         warn!(
-            "upload failed for item {}, schedule retry in {}s",
-            id, retry_interval_secs
+            "{} failed for item {}, schedule retry in {}s",
+            action, id, retry_interval_secs
         );
+    }
+
+    fn record_upload_failure(retry_states: &mut HashMap<String, RetryState>, id: &str) {
+        Self::record_action_failure(retry_states, id, "upload")
+    }
+
+    fn record_flush_failure(retry_states: &mut HashMap<String, RetryState>, id: &str) {
+        Self::record_action_failure(retry_states, id, "flush_read_pos")
     }
 
     fn process_record_item(
@@ -199,7 +250,9 @@ impl LogReaderManager {
 
 #[cfg(test)]
 mod tests {
-    use super::LogReaderManager;
+    use super::{LogReaderManager, RetryState};
+    use std::collections::HashMap;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn test_next_retry_interval_secs_backoff_and_cap() {
@@ -219,5 +272,47 @@ mod tests {
 
         let still_max = LogReaderManager::next_retry_interval_secs(Some(max));
         assert_eq!(still_max, 120);
+    }
+
+    #[test]
+    fn test_should_attempt_action_respects_next_retry_at() {
+        let mut retry_states = HashMap::new();
+        retry_states.insert(
+            "svc".to_string(),
+            RetryState {
+                retry_interval_secs: 2,
+                next_retry_at: Instant::now() + Duration::from_secs(5),
+            },
+        );
+
+        let should_skip = LogReaderManager::should_attempt_action(&retry_states, "svc", "upload");
+        assert!(!should_skip);
+
+        let should_run_for_unknown =
+            LogReaderManager::should_attempt_action(&retry_states, "unknown", "upload");
+        assert!(should_run_for_unknown);
+    }
+
+    #[test]
+    fn test_record_flush_failure_backoff_and_cap() {
+        let mut retry_states = HashMap::new();
+        LogReaderManager::record_flush_failure(&mut retry_states, "svc");
+        let first = retry_states.get("svc").unwrap().retry_interval_secs;
+        assert_eq!(first, 2);
+
+        LogReaderManager::record_flush_failure(&mut retry_states, "svc");
+        let second = retry_states.get("svc").unwrap().retry_interval_secs;
+        assert_eq!(second, 4);
+
+        retry_states.insert(
+            "svc".to_string(),
+            RetryState {
+                retry_interval_secs: 120,
+                next_retry_at: Instant::now() + Duration::from_secs(120),
+            },
+        );
+        LogReaderManager::record_flush_failure(&mut retry_states, "svc");
+        let capped = retry_states.get("svc").unwrap().retry_interval_secs;
+        assert_eq!(capped, 120);
     }
 }
