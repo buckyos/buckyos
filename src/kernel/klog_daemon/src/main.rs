@@ -16,7 +16,6 @@ use klog::state_store::{
 use lifecycle::run_server_lifecycle;
 use log::{error, info, warn};
 use logging::init_logging;
-use openraft::Config;
 use std::sync::Arc;
 
 #[tokio::main]
@@ -48,7 +47,7 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
     })?;
 
     info!(
-        "klog startup config: node_id={}, raft_listen_addr={}, inter_node_listen_addr={}, admin_listen_addr={}, rpc_enabled={}, rpc_listen_addr={}, advertise_addr={}, advertise_port={}, advertise_inter_port={}, advertise_admin_port={}, rpc_advertise_port={}, data_dir={}, cluster_name={}, cluster_id={}, auto_bootstrap={}, state_store_sync_write={}, join_targets={:?}, join_retry_interval_ms={}, join_max_attempts={}, join_blocking={}, join_target_role={}, admin_local_only={}, rpc_append(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_query(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_jsonrpc(timeout_ms={}, body_limit_bytes={}, concurrency={})",
+        "klog startup config: node_id={}, raft_listen_addr={}, inter_node_listen_addr={}, admin_listen_addr={}, rpc_enabled={}, rpc_listen_addr={}, advertise_addr={}, advertise_port={}, advertise_inter_port={}, advertise_admin_port={}, rpc_advertise_port={}, data_dir={}, cluster_name={}, cluster_id={}, auto_bootstrap={}, state_store_sync_write={}, join_targets={:?}, join_blocking={}, join_target_role={}, join_retry(strategy={}, initial_interval_ms={}, max_interval_ms={}, multiplier={}, jitter_ratio={}, max_attempts={}, request_timeout_ms={}, shuffle_targets_each_round={}, config_change_conflict_extra_backoff_ms={}), raft(election_timeout_min_ms={}, election_timeout_max_ms={}, heartbeat_interval_ms={}, install_snapshot_timeout_ms={}, max_payload_entries={}, replication_lag_threshold={}, snapshot_policy={}, snapshot_max_chunk_size_bytes={}, max_in_snapshot_log_to_keep={}, purge_batch_size={}), admin_local_only={}, rpc_append(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_query(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_jsonrpc(timeout_ms={}, body_limit_bytes={}, concurrency={})",
         cfg.node_id,
         cfg.listen_addr,
         cfg.inter_node_listen_addr,
@@ -66,10 +65,27 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
         cfg.auto_bootstrap,
         cfg.state_store_sync_write,
         cfg.join_targets,
-        cfg.join_retry_interval_ms,
-        cfg.join_max_attempts,
         cfg.join_blocking,
         cfg.join_target_role,
+        cfg.join_retry.strategy,
+        cfg.join_retry.initial_interval_ms,
+        cfg.join_retry.max_interval_ms,
+        cfg.join_retry.multiplier,
+        cfg.join_retry.jitter_ratio,
+        cfg.join_retry.max_attempts,
+        cfg.join_retry.request_timeout_ms,
+        cfg.join_retry.shuffle_targets_each_round,
+        cfg.join_retry.config_change_conflict_extra_backoff_ms,
+        cfg.raft.election_timeout_min_ms,
+        cfg.raft.election_timeout_max_ms,
+        cfg.raft.heartbeat_interval_ms,
+        cfg.raft.install_snapshot_timeout_ms,
+        cfg.raft.max_payload_entries,
+        cfg.raft.replication_lag_threshold,
+        cfg.raft.snapshot_policy,
+        cfg.raft.snapshot_max_chunk_size_bytes,
+        cfg.raft.max_in_snapshot_log_to_keep,
+        cfg.raft.purge_batch_size,
         cfg.admin_local_only,
         cfg.rpc.append.timeout_ms,
         cfg.rpc.append.body_limit_bytes,
@@ -128,12 +144,10 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
         .await
         .map_err(|e| format!("Failed to initialize state machine: {}", e))?;
 
-    let raft_config = Config {
-        cluster_name: cfg.cluster_name.clone(),
-        ..Default::default()
-    }
-    .validate()
-    .map_err(|e| format!("Invalid openraft config: {}", e))?;
+    let raft_config = cfg
+        .raft
+        .to_openraft_config(cfg.cluster_name.clone())
+        .map_err(|e| format!("Invalid openraft config: {}", e))?;
     info!(
         "OpenRaft config ready: cluster_name={}, election_timeout={}..{}, heartbeat_interval={}",
         raft_config.cluster_name,

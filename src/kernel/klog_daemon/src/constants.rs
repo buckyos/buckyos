@@ -52,17 +52,39 @@ pub const ENV_STATE_STORE_SYNC_WRITE: &str = "KLOG_STATE_STORE_SYNC_WRITE";
 /// Environment variable key: comma-separated join targets (admin endpoint host:port).
 pub const ENV_JOIN_TARGETS: &str = "KLOG_JOIN_TARGETS";
 
-/// Environment variable key: auto-join retry interval milliseconds.
-pub const ENV_JOIN_RETRY_INTERVAL_MS: &str = "KLOG_JOIN_RETRY_INTERVAL_MS";
-
-/// Environment variable key: max auto-join attempts.
-pub const ENV_JOIN_MAX_ATTEMPTS: &str = "KLOG_JOIN_MAX_ATTEMPTS";
-
 /// Environment variable key: auto-join add-learner blocking mode.
 pub const ENV_JOIN_BLOCKING: &str = "KLOG_JOIN_BLOCKING";
 
 /// Environment variable key: target role after join, learner/voter.
 pub const ENV_JOIN_TARGET_ROLE: &str = "KLOG_JOIN_TARGET_ROLE";
+
+/// Environment variable key: auto-join retry strategy, fixed/exponential.
+pub const ENV_JOIN_RETRY_STRATEGY: &str = "KLOG_JOIN_RETRY_STRATEGY";
+
+/// Environment variable key: auto-join initial retry interval in milliseconds.
+pub const ENV_JOIN_RETRY_INITIAL_INTERVAL_MS: &str = "KLOG_JOIN_RETRY_INITIAL_INTERVAL_MS";
+
+/// Environment variable key: auto-join maximum retry interval in milliseconds.
+pub const ENV_JOIN_RETRY_MAX_INTERVAL_MS: &str = "KLOG_JOIN_RETRY_MAX_INTERVAL_MS";
+
+/// Environment variable key: auto-join exponential multiplier.
+pub const ENV_JOIN_RETRY_MULTIPLIER: &str = "KLOG_JOIN_RETRY_MULTIPLIER";
+
+/// Environment variable key: auto-join jitter ratio in [0.0, 1.0].
+pub const ENV_JOIN_RETRY_JITTER_RATIO: &str = "KLOG_JOIN_RETRY_JITTER_RATIO";
+
+/// Environment variable key: max auto-join attempts, 0 means retry forever.
+pub const ENV_JOIN_RETRY_MAX_ATTEMPTS: &str = "KLOG_JOIN_RETRY_MAX_ATTEMPTS";
+
+/// Environment variable key: auto-join HTTP request timeout in milliseconds.
+pub const ENV_JOIN_RETRY_REQUEST_TIMEOUT_MS: &str = "KLOG_JOIN_RETRY_REQUEST_TIMEOUT_MS";
+
+/// Environment variable key: shuffle join targets every retry round.
+pub const ENV_JOIN_RETRY_SHUFFLE_TARGETS: &str = "KLOG_JOIN_RETRY_SHUFFLE_TARGETS";
+
+/// Environment variable key: extra backoff when config-change conflict is detected.
+pub const ENV_JOIN_RETRY_CONFIG_CHANGE_CONFLICT_EXTRA_BACKOFF_MS: &str =
+    "KLOG_JOIN_RETRY_CONFIG_CHANGE_CONFLICT_EXTRA_BACKOFF_MS";
 
 /// Environment variable key: restrict admin APIs to loopback access.
 pub const ENV_ADMIN_LOCAL_ONLY: &str = "KLOG_ADMIN_LOCAL_ONLY";
@@ -93,6 +115,36 @@ pub const ENV_RPC_JSONRPC_BODY_LIMIT_BYTES: &str = "KLOG_RPC_JSONRPC_BODY_LIMIT_
 
 /// Environment variable key: json-rpc concurrency limit.
 pub const ENV_RPC_JSONRPC_CONCURRENCY: &str = "KLOG_RPC_JSONRPC_CONCURRENCY";
+
+/// Environment variable key: raft election timeout lower bound in milliseconds.
+pub const ENV_RAFT_ELECTION_TIMEOUT_MIN_MS: &str = "KLOG_RAFT_ELECTION_TIMEOUT_MIN_MS";
+
+/// Environment variable key: raft election timeout upper bound in milliseconds.
+pub const ENV_RAFT_ELECTION_TIMEOUT_MAX_MS: &str = "KLOG_RAFT_ELECTION_TIMEOUT_MAX_MS";
+
+/// Environment variable key: raft heartbeat interval in milliseconds.
+pub const ENV_RAFT_HEARTBEAT_INTERVAL_MS: &str = "KLOG_RAFT_HEARTBEAT_INTERVAL_MS";
+
+/// Environment variable key: raft install snapshot timeout in milliseconds.
+pub const ENV_RAFT_INSTALL_SNAPSHOT_TIMEOUT_MS: &str = "KLOG_RAFT_INSTALL_SNAPSHOT_TIMEOUT_MS";
+
+/// Environment variable key: raft max payload entries for replication.
+pub const ENV_RAFT_MAX_PAYLOAD_ENTRIES: &str = "KLOG_RAFT_MAX_PAYLOAD_ENTRIES";
+
+/// Environment variable key: raft replication lag threshold.
+pub const ENV_RAFT_REPLICATION_LAG_THRESHOLD: &str = "KLOG_RAFT_REPLICATION_LAG_THRESHOLD";
+
+/// Environment variable key: raft snapshot policy, e.g. since_last:5000 or never.
+pub const ENV_RAFT_SNAPSHOT_POLICY: &str = "KLOG_RAFT_SNAPSHOT_POLICY";
+
+/// Environment variable key: raft snapshot max chunk size in bytes.
+pub const ENV_RAFT_SNAPSHOT_MAX_CHUNK_SIZE_BYTES: &str = "KLOG_RAFT_SNAPSHOT_MAX_CHUNK_SIZE_BYTES";
+
+/// Environment variable key: raft max in-snapshot logs to keep.
+pub const ENV_RAFT_MAX_IN_SNAPSHOT_LOG_TO_KEEP: &str = "KLOG_RAFT_MAX_IN_SNAPSHOT_LOG_TO_KEEP";
+
+/// Environment variable key: raft purge batch size.
+pub const ENV_RAFT_PURGE_BATCH_SIZE: &str = "KLOG_RAFT_PURGE_BATCH_SIZE";
 
 /// Default host for raft protocol listener.
 pub const DEFAULT_LISTEN_HOST: &str = "0.0.0.0";
@@ -133,17 +185,68 @@ pub const DEFAULT_AUTO_BOOTSTRAP: bool = false;
 /// Default switch: enable state-store sync write for durability.
 pub const DEFAULT_STATE_STORE_SYNC_WRITE: bool = true;
 
-/// Default retry interval for auto join loop.
-pub const DEFAULT_JOIN_RETRY_INTERVAL_MS: u64 = 3_000;
-
-/// Default max attempts for auto join loop, 0 means retry forever.
-pub const DEFAULT_JOIN_MAX_ATTEMPTS: u32 = 0;
-
 /// Default add-learner request mode, non-blocking.
 pub const DEFAULT_JOIN_BLOCKING: bool = false;
 
+/// Default retry strategy for auto-join loop.
+pub const DEFAULT_JOIN_RETRY_STRATEGY: &str = "exponential";
+
+/// Default initial retry interval for auto-join loop.
+pub const DEFAULT_JOIN_RETRY_INITIAL_INTERVAL_MS: u64 = 3_000;
+
+/// Default upper bound for auto-join retry interval.
+pub const DEFAULT_JOIN_RETRY_MAX_INTERVAL_MS: u64 = 30_000;
+
+/// Default multiplier for exponential auto-join backoff.
+pub const DEFAULT_JOIN_RETRY_MULTIPLIER: f64 = 1.8;
+
+/// Default random jitter ratio for auto-join interval in [0.0, 1.0].
+pub const DEFAULT_JOIN_RETRY_JITTER_RATIO: f64 = 0.2;
+
+/// Default max attempts for auto-join loop, 0 means retry forever.
+pub const DEFAULT_JOIN_RETRY_MAX_ATTEMPTS: u32 = 0;
+
+/// Default HTTP timeout for auto-join admin requests.
+pub const DEFAULT_JOIN_RETRY_REQUEST_TIMEOUT_MS: u64 = 3_000;
+
+/// Default switch: shuffle join targets every retry round.
+pub const DEFAULT_JOIN_RETRY_SHUFFLE_TARGETS: bool = true;
+
+/// Default extra backoff for config-change conflict failures.
+pub const DEFAULT_JOIN_RETRY_CONFIG_CHANGE_CONFLICT_EXTRA_BACKOFF_MS: u64 = 1_500;
+
 /// Default switch: admin APIs are loopback-only.
 pub const DEFAULT_ADMIN_LOCAL_ONLY: bool = true;
+
+/// Default raft election timeout lower bound in milliseconds.
+pub const DEFAULT_RAFT_ELECTION_TIMEOUT_MIN_MS: u64 = 150;
+
+/// Default raft election timeout upper bound in milliseconds.
+pub const DEFAULT_RAFT_ELECTION_TIMEOUT_MAX_MS: u64 = 300;
+
+/// Default raft heartbeat interval in milliseconds.
+pub const DEFAULT_RAFT_HEARTBEAT_INTERVAL_MS: u64 = 50;
+
+/// Default raft install snapshot timeout in milliseconds.
+pub const DEFAULT_RAFT_INSTALL_SNAPSHOT_TIMEOUT_MS: u64 = 200;
+
+/// Default raft max payload entries for replication.
+pub const DEFAULT_RAFT_MAX_PAYLOAD_ENTRIES: u64 = 300;
+
+/// Default raft replication lag threshold.
+pub const DEFAULT_RAFT_REPLICATION_LAG_THRESHOLD: u64 = 5_000;
+
+/// Default raft snapshot policy string.
+pub const DEFAULT_RAFT_SNAPSHOT_POLICY: &str = "since_last:5000";
+
+/// Default raft snapshot max chunk size in bytes (3MiB).
+pub const DEFAULT_RAFT_SNAPSHOT_MAX_CHUNK_SIZE_BYTES: u64 = 3 * 1024 * 1024;
+
+/// Default raft max in-snapshot logs to keep.
+pub const DEFAULT_RAFT_MAX_IN_SNAPSHOT_LOG_TO_KEEP: u64 = 1_000;
+
+/// Default raft purge batch size.
+pub const DEFAULT_RAFT_PURGE_BATCH_SIZE: u64 = 1;
 
 /// Service name used to derive default data dir.
 pub const KLOG_SERVICE_NAME: &str = "klog";

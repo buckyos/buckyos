@@ -1,15 +1,31 @@
 use crate::constants::{
     DEFAULT_ADMIN_LOCAL_ONLY, DEFAULT_ADMIN_PORT, DEFAULT_ADVERTISE_ADDR, DEFAULT_AUTO_BOOTSTRAP,
     DEFAULT_ENABLE_RPC_SERVER, DEFAULT_INTER_NODE_PORT, DEFAULT_JOIN_BLOCKING,
-    DEFAULT_JOIN_MAX_ATTEMPTS, DEFAULT_JOIN_RETRY_INTERVAL_MS, DEFAULT_LISTEN_HOST,
-    DEFAULT_RAFT_PORT, DEFAULT_RPC_BODY_LIMIT_BYTES, DEFAULT_RPC_CONCURRENCY_LIMIT,
-    DEFAULT_RPC_LISTEN_HOST, DEFAULT_RPC_PORT, DEFAULT_RPC_TIMEOUT_MS,
-    DEFAULT_STATE_STORE_SYNC_WRITE, ENV_ADMIN_ADVERTISE_PORT, ENV_ADMIN_LISTEN_ADDR,
-    ENV_ADMIN_LOCAL_ONLY, ENV_ADVERTISE_ADDR, ENV_ADVERTISE_INTER_PORT, ENV_ADVERTISE_PORT,
-    ENV_AUTO_BOOTSTRAP, ENV_CLUSTER_ID, ENV_CLUSTER_NAME, ENV_CONFIG_FILE, ENV_DATA_DIR,
-    ENV_ENABLE_RPC_SERVER, ENV_INTER_NODE_LISTEN_ADDR, ENV_JOIN_BLOCKING, ENV_JOIN_MAX_ATTEMPTS,
-    ENV_JOIN_RETRY_INTERVAL_MS, ENV_JOIN_TARGET_ROLE, ENV_JOIN_TARGETS, ENV_LISTEN_ADDR,
-    ENV_NODE_ID, ENV_RPC_ADVERTISE_PORT, ENV_RPC_APPEND_BODY_LIMIT_BYTES,
+    DEFAULT_JOIN_RETRY_CONFIG_CHANGE_CONFLICT_EXTRA_BACKOFF_MS,
+    DEFAULT_JOIN_RETRY_INITIAL_INTERVAL_MS, DEFAULT_JOIN_RETRY_JITTER_RATIO,
+    DEFAULT_JOIN_RETRY_MAX_ATTEMPTS, DEFAULT_JOIN_RETRY_MAX_INTERVAL_MS,
+    DEFAULT_JOIN_RETRY_MULTIPLIER, DEFAULT_JOIN_RETRY_REQUEST_TIMEOUT_MS,
+    DEFAULT_JOIN_RETRY_SHUFFLE_TARGETS, DEFAULT_JOIN_RETRY_STRATEGY, DEFAULT_LISTEN_HOST,
+    DEFAULT_RAFT_ELECTION_TIMEOUT_MAX_MS, DEFAULT_RAFT_ELECTION_TIMEOUT_MIN_MS,
+    DEFAULT_RAFT_HEARTBEAT_INTERVAL_MS, DEFAULT_RAFT_INSTALL_SNAPSHOT_TIMEOUT_MS,
+    DEFAULT_RAFT_MAX_IN_SNAPSHOT_LOG_TO_KEEP, DEFAULT_RAFT_MAX_PAYLOAD_ENTRIES, DEFAULT_RAFT_PORT,
+    DEFAULT_RAFT_PURGE_BATCH_SIZE, DEFAULT_RAFT_REPLICATION_LAG_THRESHOLD,
+    DEFAULT_RAFT_SNAPSHOT_MAX_CHUNK_SIZE_BYTES, DEFAULT_RAFT_SNAPSHOT_POLICY,
+    DEFAULT_RPC_BODY_LIMIT_BYTES, DEFAULT_RPC_CONCURRENCY_LIMIT, DEFAULT_RPC_LISTEN_HOST,
+    DEFAULT_RPC_PORT, DEFAULT_RPC_TIMEOUT_MS, DEFAULT_STATE_STORE_SYNC_WRITE,
+    ENV_ADMIN_ADVERTISE_PORT, ENV_ADMIN_LISTEN_ADDR, ENV_ADMIN_LOCAL_ONLY, ENV_ADVERTISE_ADDR,
+    ENV_ADVERTISE_INTER_PORT, ENV_ADVERTISE_PORT, ENV_AUTO_BOOTSTRAP, ENV_CLUSTER_ID,
+    ENV_CLUSTER_NAME, ENV_CONFIG_FILE, ENV_DATA_DIR, ENV_ENABLE_RPC_SERVER,
+    ENV_INTER_NODE_LISTEN_ADDR, ENV_JOIN_BLOCKING,
+    ENV_JOIN_RETRY_CONFIG_CHANGE_CONFLICT_EXTRA_BACKOFF_MS, ENV_JOIN_RETRY_INITIAL_INTERVAL_MS,
+    ENV_JOIN_RETRY_JITTER_RATIO, ENV_JOIN_RETRY_MAX_ATTEMPTS, ENV_JOIN_RETRY_MAX_INTERVAL_MS,
+    ENV_JOIN_RETRY_MULTIPLIER, ENV_JOIN_RETRY_REQUEST_TIMEOUT_MS, ENV_JOIN_RETRY_SHUFFLE_TARGETS,
+    ENV_JOIN_RETRY_STRATEGY, ENV_JOIN_TARGET_ROLE, ENV_JOIN_TARGETS, ENV_LISTEN_ADDR, ENV_NODE_ID,
+    ENV_RAFT_ELECTION_TIMEOUT_MAX_MS, ENV_RAFT_ELECTION_TIMEOUT_MIN_MS,
+    ENV_RAFT_HEARTBEAT_INTERVAL_MS, ENV_RAFT_INSTALL_SNAPSHOT_TIMEOUT_MS,
+    ENV_RAFT_MAX_IN_SNAPSHOT_LOG_TO_KEEP, ENV_RAFT_MAX_PAYLOAD_ENTRIES, ENV_RAFT_PURGE_BATCH_SIZE,
+    ENV_RAFT_REPLICATION_LAG_THRESHOLD, ENV_RAFT_SNAPSHOT_MAX_CHUNK_SIZE_BYTES,
+    ENV_RAFT_SNAPSHOT_POLICY, ENV_RPC_ADVERTISE_PORT, ENV_RPC_APPEND_BODY_LIMIT_BYTES,
     ENV_RPC_APPEND_CONCURRENCY, ENV_RPC_APPEND_TIMEOUT_MS, ENV_RPC_JSONRPC_BODY_LIMIT_BYTES,
     ENV_RPC_JSONRPC_CONCURRENCY, ENV_RPC_JSONRPC_TIMEOUT_MS, ENV_RPC_LISTEN_ADDR,
     ENV_RPC_QUERY_BODY_LIMIT_BYTES, ENV_RPC_QUERY_CONCURRENCY, ENV_RPC_QUERY_TIMEOUT_MS,
@@ -19,6 +35,7 @@ use buckyos_kit::get_buckyos_service_data_dir;
 use klog::KNodeId;
 use klog::rpc::{KRpcRoutePolicy, KRpcServerPolicy};
 use log::error;
+use openraft::{Config as OpenRaftConfig, SnapshotPolicy};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -49,6 +66,36 @@ impl KLogJoinTargetRole {
 }
 
 impl std::fmt::Display for KLogJoinTargetRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum KLogJoinRetryStrategy {
+    Fixed,
+    Exponential,
+}
+
+impl KLogJoinRetryStrategy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            KLogJoinRetryStrategy::Fixed => "fixed",
+            KLogJoinRetryStrategy::Exponential => "exponential",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "fixed" => Ok(KLogJoinRetryStrategy::Fixed),
+            "exponential" => Ok(KLogJoinRetryStrategy::Exponential),
+            _ => Err("expected fixed or exponential".to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for KLogJoinRetryStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.as_str())
     }
@@ -125,6 +172,126 @@ impl From<KLogRpcConfig> for KRpcServerPolicy {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KLogRaftConfig {
+    /// Election timeout lower bound in milliseconds.
+    pub election_timeout_min_ms: u64,
+
+    /// Election timeout upper bound in milliseconds.
+    pub election_timeout_max_ms: u64,
+
+    /// Heartbeat interval in milliseconds.
+    pub heartbeat_interval_ms: u64,
+
+    /// Install snapshot timeout in milliseconds.
+    pub install_snapshot_timeout_ms: u64,
+
+    /// Max number of log entries in one replication payload.
+    pub max_payload_entries: u64,
+
+    /// Replication lag threshold to switch to snapshot transfer.
+    pub replication_lag_threshold: u64,
+
+    /// Snapshot policy string, e.g. "since_last:5000" or "never".
+    pub snapshot_policy: String,
+
+    /// Snapshot transport max chunk size in bytes.
+    pub snapshot_max_chunk_size_bytes: u64,
+
+    /// Max number of logs already in snapshot to keep.
+    pub max_in_snapshot_log_to_keep: u64,
+
+    /// Purge batch size for applied logs.
+    pub purge_batch_size: u64,
+}
+
+impl Default for KLogRaftConfig {
+    fn default() -> Self {
+        Self {
+            election_timeout_min_ms: DEFAULT_RAFT_ELECTION_TIMEOUT_MIN_MS,
+            election_timeout_max_ms: DEFAULT_RAFT_ELECTION_TIMEOUT_MAX_MS,
+            heartbeat_interval_ms: DEFAULT_RAFT_HEARTBEAT_INTERVAL_MS,
+            install_snapshot_timeout_ms: DEFAULT_RAFT_INSTALL_SNAPSHOT_TIMEOUT_MS,
+            max_payload_entries: DEFAULT_RAFT_MAX_PAYLOAD_ENTRIES,
+            replication_lag_threshold: DEFAULT_RAFT_REPLICATION_LAG_THRESHOLD,
+            snapshot_policy: DEFAULT_RAFT_SNAPSHOT_POLICY.to_string(),
+            snapshot_max_chunk_size_bytes: DEFAULT_RAFT_SNAPSHOT_MAX_CHUNK_SIZE_BYTES,
+            max_in_snapshot_log_to_keep: DEFAULT_RAFT_MAX_IN_SNAPSHOT_LOG_TO_KEEP,
+            purge_batch_size: DEFAULT_RAFT_PURGE_BATCH_SIZE,
+        }
+    }
+}
+
+impl KLogRaftConfig {
+    pub fn to_openraft_config(&self, cluster_name: String) -> Result<OpenRaftConfig, String> {
+        let snapshot_policy = parse_snapshot_policy(&self.snapshot_policy)?;
+        let cfg = OpenRaftConfig {
+            cluster_name,
+            election_timeout_min: self.election_timeout_min_ms,
+            election_timeout_max: self.election_timeout_max_ms,
+            heartbeat_interval: self.heartbeat_interval_ms,
+            install_snapshot_timeout: self.install_snapshot_timeout_ms,
+            max_payload_entries: self.max_payload_entries,
+            replication_lag_threshold: self.replication_lag_threshold,
+            snapshot_policy,
+            snapshot_max_chunk_size: self.snapshot_max_chunk_size_bytes,
+            max_in_snapshot_log_to_keep: self.max_in_snapshot_log_to_keep,
+            purge_batch_size: self.purge_batch_size,
+            ..Default::default()
+        };
+        cfg.validate()
+            .map_err(|e| format!("Invalid openraft config: {}", e))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct KLogJoinRetryConfig {
+    /// Retry strategy: fixed interval or exponential backoff.
+    pub strategy: KLogJoinRetryStrategy,
+
+    /// Initial retry interval in milliseconds.
+    pub initial_interval_ms: u64,
+
+    /// Max retry interval in milliseconds.
+    pub max_interval_ms: u64,
+
+    /// Exponential multiplier (only used by exponential strategy).
+    pub multiplier: f64,
+
+    /// Random jitter ratio in [0.0, 1.0].
+    pub jitter_ratio: f64,
+
+    /// Max retry attempts, 0 means retry forever.
+    pub max_attempts: u32,
+
+    /// HTTP timeout for join/admin requests in milliseconds.
+    pub request_timeout_ms: u64,
+
+    /// Whether to shuffle join targets every retry round.
+    pub shuffle_targets_each_round: bool,
+
+    /// Extra backoff in milliseconds for config-change conflict errors.
+    pub config_change_conflict_extra_backoff_ms: u64,
+}
+
+impl Default for KLogJoinRetryConfig {
+    fn default() -> Self {
+        Self {
+            strategy: KLogJoinRetryStrategy::parse(DEFAULT_JOIN_RETRY_STRATEGY)
+                .expect("DEFAULT_JOIN_RETRY_STRATEGY must be valid"),
+            initial_interval_ms: DEFAULT_JOIN_RETRY_INITIAL_INTERVAL_MS,
+            max_interval_ms: DEFAULT_JOIN_RETRY_MAX_INTERVAL_MS,
+            multiplier: DEFAULT_JOIN_RETRY_MULTIPLIER,
+            jitter_ratio: DEFAULT_JOIN_RETRY_JITTER_RATIO,
+            max_attempts: DEFAULT_JOIN_RETRY_MAX_ATTEMPTS,
+            request_timeout_ms: DEFAULT_JOIN_RETRY_REQUEST_TIMEOUT_MS,
+            shuffle_targets_each_round: DEFAULT_JOIN_RETRY_SHUFFLE_TARGETS,
+            config_change_conflict_extra_backoff_ms:
+                DEFAULT_JOIN_RETRY_CONFIG_CHANGE_CONFLICT_EXTRA_BACKOFF_MS,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KLogRuntimeConfig {
     /// Raft node id in current cluster, must be greater than 0.
@@ -178,17 +345,17 @@ pub struct KLogRuntimeConfig {
     /// Seed admin targets for auto join, each item format "host:port".
     pub join_targets: Vec<String>,
 
-    /// Retry interval for auto join loop, in milliseconds.
-    pub join_retry_interval_ms: u64,
-
-    /// Max retries for auto join loop, 0 means retry forever.
-    pub join_max_attempts: u32,
-
     /// Whether add-learner uses blocking mode during auto join.
     pub join_blocking: bool,
 
     /// Target role after joining cluster: learner or voter.
     pub join_target_role: KLogJoinTargetRole,
+
+    /// Retry/backoff policy for auto join workflow.
+    pub join_retry: KLogJoinRetryConfig,
+
+    /// OpenRaft core runtime settings.
+    pub raft: KLogRaftConfig,
 
     /// Restrict admin APIs to loopback clients only.
     pub admin_local_only: bool,
@@ -260,17 +427,79 @@ pub struct KLogJoinConfigPatch {
     /// Optional override for join seed admin targets.
     pub targets: Option<Vec<String>>,
 
-    /// Optional override for join retry interval milliseconds.
-    pub retry_interval_ms: Option<u64>,
-
-    /// Optional override for join max attempts, 0 means forever.
-    pub max_attempts: Option<u32>,
-
     /// Optional override for add-learner blocking mode.
     pub blocking: Option<bool>,
 
     /// Optional override for target role after join.
     pub target_role: Option<KLogJoinTargetRole>,
+
+    /// Optional override for join retry/backoff policy.
+    pub retry: Option<KLogJoinRetryConfigPatch>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KLogJoinRetryConfigPatch {
+    /// Optional retry strategy: fixed or exponential.
+    pub strategy: Option<KLogJoinRetryStrategy>,
+
+    /// Optional initial retry interval in milliseconds.
+    pub initial_interval_ms: Option<u64>,
+
+    /// Optional max retry interval in milliseconds.
+    pub max_interval_ms: Option<u64>,
+
+    /// Optional exponential multiplier.
+    pub multiplier: Option<f64>,
+
+    /// Optional jitter ratio in [0.0, 1.0].
+    pub jitter_ratio: Option<f64>,
+
+    /// Optional max retry attempts, 0 means retry forever.
+    pub max_attempts: Option<u32>,
+
+    /// Optional HTTP request timeout in milliseconds.
+    pub request_timeout_ms: Option<u64>,
+
+    /// Optional switch to shuffle targets every retry round.
+    pub shuffle_targets_each_round: Option<bool>,
+
+    /// Optional extra backoff for config-change conflict errors in milliseconds.
+    pub config_change_conflict_extra_backoff_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KLogRaftConfigPatch {
+    /// Optional election timeout lower bound in milliseconds.
+    pub election_timeout_min_ms: Option<u64>,
+
+    /// Optional election timeout upper bound in milliseconds.
+    pub election_timeout_max_ms: Option<u64>,
+
+    /// Optional heartbeat interval in milliseconds.
+    pub heartbeat_interval_ms: Option<u64>,
+
+    /// Optional install snapshot timeout in milliseconds.
+    pub install_snapshot_timeout_ms: Option<u64>,
+
+    /// Optional max payload entries per replication round.
+    pub max_payload_entries: Option<u64>,
+
+    /// Optional replication lag threshold before snapshot transfer.
+    pub replication_lag_threshold: Option<u64>,
+
+    /// Optional snapshot policy string.
+    pub snapshot_policy: Option<String>,
+
+    /// Optional snapshot max chunk size in bytes.
+    pub snapshot_max_chunk_size_bytes: Option<u64>,
+
+    /// Optional max in-snapshot logs to keep.
+    pub max_in_snapshot_log_to_keep: Option<u64>,
+
+    /// Optional purge batch size.
+    pub purge_batch_size: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -320,6 +549,9 @@ pub struct KLogRuntimeConfigPatch {
 
     /// Optional grouped auto-join section.
     pub join: Option<KLogJoinConfigPatch>,
+
+    /// Optional grouped raft runtime section.
+    pub raft: Option<KLogRaftConfigPatch>,
 
     /// Optional grouped admin API section.
     pub admin: Option<KLogAdminConfigPatch>,
@@ -384,10 +616,35 @@ impl KLogRuntimeConfig {
             }),
             join: Some(KLogJoinConfigPatch {
                 targets: parse_env_string_list(ENV_JOIN_TARGETS)?,
-                retry_interval_ms: parse_env_u64(ENV_JOIN_RETRY_INTERVAL_MS)?,
-                max_attempts: parse_env_u32(ENV_JOIN_MAX_ATTEMPTS)?,
                 blocking: parse_env_bool(ENV_JOIN_BLOCKING)?,
                 target_role: parse_env_join_target_role(ENV_JOIN_TARGET_ROLE)?,
+                retry: Some(KLogJoinRetryConfigPatch {
+                    strategy: parse_env_join_retry_strategy(ENV_JOIN_RETRY_STRATEGY)?,
+                    initial_interval_ms: parse_env_u64(ENV_JOIN_RETRY_INITIAL_INTERVAL_MS)?,
+                    max_interval_ms: parse_env_u64(ENV_JOIN_RETRY_MAX_INTERVAL_MS)?,
+                    multiplier: parse_env_f64(ENV_JOIN_RETRY_MULTIPLIER)?,
+                    jitter_ratio: parse_env_f64(ENV_JOIN_RETRY_JITTER_RATIO)?,
+                    max_attempts: parse_env_u32(ENV_JOIN_RETRY_MAX_ATTEMPTS)?,
+                    request_timeout_ms: parse_env_u64(ENV_JOIN_RETRY_REQUEST_TIMEOUT_MS)?,
+                    shuffle_targets_each_round: parse_env_bool(ENV_JOIN_RETRY_SHUFFLE_TARGETS)?,
+                    config_change_conflict_extra_backoff_ms: parse_env_u64(
+                        ENV_JOIN_RETRY_CONFIG_CHANGE_CONFLICT_EXTRA_BACKOFF_MS,
+                    )?,
+                }),
+            }),
+            raft: Some(KLogRaftConfigPatch {
+                election_timeout_min_ms: parse_env_u64(ENV_RAFT_ELECTION_TIMEOUT_MIN_MS)?,
+                election_timeout_max_ms: parse_env_u64(ENV_RAFT_ELECTION_TIMEOUT_MAX_MS)?,
+                heartbeat_interval_ms: parse_env_u64(ENV_RAFT_HEARTBEAT_INTERVAL_MS)?,
+                install_snapshot_timeout_ms: parse_env_u64(ENV_RAFT_INSTALL_SNAPSHOT_TIMEOUT_MS)?,
+                max_payload_entries: parse_env_u64(ENV_RAFT_MAX_PAYLOAD_ENTRIES)?,
+                replication_lag_threshold: parse_env_u64(ENV_RAFT_REPLICATION_LAG_THRESHOLD)?,
+                snapshot_policy: parse_env_string(ENV_RAFT_SNAPSHOT_POLICY)?,
+                snapshot_max_chunk_size_bytes: parse_env_u64(
+                    ENV_RAFT_SNAPSHOT_MAX_CHUNK_SIZE_BYTES,
+                )?,
+                max_in_snapshot_log_to_keep: parse_env_u64(ENV_RAFT_MAX_IN_SNAPSHOT_LOG_TO_KEEP)?,
+                purge_batch_size: parse_env_u64(ENV_RAFT_PURGE_BATCH_SIZE)?,
             }),
             admin: Some(KLogAdminConfigPatch {
                 local_only: parse_env_bool(ENV_ADMIN_LOCAL_ONLY)?,
@@ -453,6 +710,7 @@ impl KLogRuntimeConfig {
             storage,
             cluster,
             join,
+            raft,
             admin,
             rpc,
             node_id,
@@ -462,6 +720,7 @@ impl KLogRuntimeConfig {
         let storage = storage.unwrap_or_default();
         let cluster = cluster.unwrap_or_default();
         let join = join.unwrap_or_default();
+        let raft = raft.unwrap_or_default();
         let admin = admin.unwrap_or_default();
         let rpc = rpc.unwrap_or_default();
 
@@ -512,6 +771,8 @@ impl KLogRuntimeConfig {
 
         let default_data_dir = default_data_dir();
         let rpc_cfg = merge_rpc_config(rpc)?;
+        let join_retry_cfg = merge_join_retry_config(join.retry.unwrap_or_default())?;
+        let raft_cfg = merge_raft_config(raft)?;
         let listen_addr = network.listen_addr.unwrap_or_else(default_listen_addr);
         let inter_node_listen_addr = network
             .inter_node_listen_addr
@@ -586,12 +847,10 @@ impl KLogRuntimeConfig {
                 .state_store_sync_write
                 .unwrap_or(DEFAULT_STATE_STORE_SYNC_WRITE),
             join_targets,
-            join_retry_interval_ms: join
-                .retry_interval_ms
-                .unwrap_or(DEFAULT_JOIN_RETRY_INTERVAL_MS),
-            join_max_attempts: join.max_attempts.unwrap_or(DEFAULT_JOIN_MAX_ATTEMPTS),
             join_blocking: join.blocking.unwrap_or(DEFAULT_JOIN_BLOCKING),
             join_target_role: join.target_role.unwrap_or(DEFAULT_JOIN_TARGET_ROLE),
+            join_retry: join_retry_cfg,
+            raft: raft_cfg,
             admin_local_only: admin.local_only.unwrap_or(DEFAULT_ADMIN_LOCAL_ONLY),
             rpc: rpc_cfg,
         })
@@ -667,6 +926,214 @@ fn merge_rpc_route_config(
     }
 
     Ok(cfg)
+}
+
+fn merge_join_retry_config(patch: KLogJoinRetryConfigPatch) -> Result<KLogJoinRetryConfig, String> {
+    let cfg = KLogJoinRetryConfig {
+        strategy: patch
+            .strategy
+            .unwrap_or(KLogJoinRetryConfig::default().strategy),
+        initial_interval_ms: patch
+            .initial_interval_ms
+            .unwrap_or(DEFAULT_JOIN_RETRY_INITIAL_INTERVAL_MS),
+        max_interval_ms: patch
+            .max_interval_ms
+            .unwrap_or(DEFAULT_JOIN_RETRY_MAX_INTERVAL_MS),
+        multiplier: patch.multiplier.unwrap_or(DEFAULT_JOIN_RETRY_MULTIPLIER),
+        jitter_ratio: patch
+            .jitter_ratio
+            .unwrap_or(DEFAULT_JOIN_RETRY_JITTER_RATIO),
+        max_attempts: patch
+            .max_attempts
+            .unwrap_or(DEFAULT_JOIN_RETRY_MAX_ATTEMPTS),
+        request_timeout_ms: patch
+            .request_timeout_ms
+            .unwrap_or(DEFAULT_JOIN_RETRY_REQUEST_TIMEOUT_MS),
+        shuffle_targets_each_round: patch
+            .shuffle_targets_each_round
+            .unwrap_or(DEFAULT_JOIN_RETRY_SHUFFLE_TARGETS),
+        config_change_conflict_extra_backoff_ms: patch
+            .config_change_conflict_extra_backoff_ms
+            .unwrap_or(DEFAULT_JOIN_RETRY_CONFIG_CHANGE_CONFLICT_EXTRA_BACKOFF_MS),
+    };
+
+    if cfg.initial_interval_ms == 0 {
+        let msg =
+            "Invalid join.retry.initial_interval_ms=0: initial_interval_ms must be greater than 0"
+                .to_string();
+        error!("{}", msg);
+        return Err(msg);
+    }
+    if cfg.max_interval_ms == 0 {
+        let msg = "Invalid join.retry.max_interval_ms=0: max_interval_ms must be greater than 0"
+            .to_string();
+        error!("{}", msg);
+        return Err(msg);
+    }
+    if cfg.max_interval_ms < cfg.initial_interval_ms {
+        let msg = format!(
+            "Invalid join.retry.max_interval_ms={}: max_interval_ms must be >= initial_interval_ms ({})",
+            cfg.max_interval_ms, cfg.initial_interval_ms
+        );
+        error!("{}", msg);
+        return Err(msg);
+    }
+    if cfg.multiplier < 1.0 {
+        let msg = format!(
+            "Invalid join.retry.multiplier={}: multiplier must be >= 1.0",
+            cfg.multiplier
+        );
+        error!("{}", msg);
+        return Err(msg);
+    }
+    if !(0.0..=1.0).contains(&cfg.jitter_ratio) {
+        let msg = format!(
+            "Invalid join.retry.jitter_ratio={}: jitter_ratio must be in [0.0, 1.0]",
+            cfg.jitter_ratio
+        );
+        error!("{}", msg);
+        return Err(msg);
+    }
+    if cfg.request_timeout_ms == 0 {
+        let msg =
+            "Invalid join.retry.request_timeout_ms=0: request_timeout_ms must be greater than 0"
+                .to_string();
+        error!("{}", msg);
+        return Err(msg);
+    }
+
+    Ok(cfg)
+}
+
+fn merge_raft_config(patch: KLogRaftConfigPatch) -> Result<KLogRaftConfig, String> {
+    let cfg = KLogRaftConfig {
+        election_timeout_min_ms: patch
+            .election_timeout_min_ms
+            .unwrap_or(DEFAULT_RAFT_ELECTION_TIMEOUT_MIN_MS),
+        election_timeout_max_ms: patch
+            .election_timeout_max_ms
+            .unwrap_or(DEFAULT_RAFT_ELECTION_TIMEOUT_MAX_MS),
+        heartbeat_interval_ms: patch
+            .heartbeat_interval_ms
+            .unwrap_or(DEFAULT_RAFT_HEARTBEAT_INTERVAL_MS),
+        install_snapshot_timeout_ms: patch
+            .install_snapshot_timeout_ms
+            .unwrap_or(DEFAULT_RAFT_INSTALL_SNAPSHOT_TIMEOUT_MS),
+        max_payload_entries: patch
+            .max_payload_entries
+            .unwrap_or(DEFAULT_RAFT_MAX_PAYLOAD_ENTRIES),
+        replication_lag_threshold: patch
+            .replication_lag_threshold
+            .unwrap_or(DEFAULT_RAFT_REPLICATION_LAG_THRESHOLD),
+        snapshot_policy: patch
+            .snapshot_policy
+            .unwrap_or_else(|| DEFAULT_RAFT_SNAPSHOT_POLICY.to_string()),
+        snapshot_max_chunk_size_bytes: patch
+            .snapshot_max_chunk_size_bytes
+            .unwrap_or(DEFAULT_RAFT_SNAPSHOT_MAX_CHUNK_SIZE_BYTES),
+        max_in_snapshot_log_to_keep: patch
+            .max_in_snapshot_log_to_keep
+            .unwrap_or(DEFAULT_RAFT_MAX_IN_SNAPSHOT_LOG_TO_KEEP),
+        purge_batch_size: patch
+            .purge_batch_size
+            .unwrap_or(DEFAULT_RAFT_PURGE_BATCH_SIZE),
+    };
+
+    if cfg.election_timeout_min_ms == 0 {
+        let msg = "Invalid raft.election_timeout_min_ms=0: must be greater than 0".to_string();
+        error!("{}", msg);
+        return Err(msg);
+    }
+    if cfg.election_timeout_max_ms <= cfg.election_timeout_min_ms {
+        let msg = format!(
+            "Invalid raft election timeout range: min={} max={} (max must be greater than min)",
+            cfg.election_timeout_min_ms, cfg.election_timeout_max_ms
+        );
+        error!("{}", msg);
+        return Err(msg);
+    }
+    if cfg.heartbeat_interval_ms == 0 {
+        let msg = "Invalid raft.heartbeat_interval_ms=0: must be greater than 0".to_string();
+        error!("{}", msg);
+        return Err(msg);
+    }
+    if cfg.election_timeout_min_ms <= cfg.heartbeat_interval_ms {
+        let msg = format!(
+            "Invalid raft timing: election_timeout_min_ms={} must be greater than heartbeat_interval_ms={}",
+            cfg.election_timeout_min_ms, cfg.heartbeat_interval_ms
+        );
+        error!("{}", msg);
+        return Err(msg);
+    }
+    if cfg.install_snapshot_timeout_ms == 0 {
+        let msg = "Invalid raft.install_snapshot_timeout_ms=0: must be greater than 0".to_string();
+        error!("{}", msg);
+        return Err(msg);
+    }
+    if cfg.max_payload_entries == 0 {
+        let msg = "Invalid raft.max_payload_entries=0: must be greater than 0".to_string();
+        error!("{}", msg);
+        return Err(msg);
+    }
+    if cfg.replication_lag_threshold == 0 {
+        let msg = "Invalid raft.replication_lag_threshold=0: must be greater than 0".to_string();
+        error!("{}", msg);
+        return Err(msg);
+    }
+    if cfg.snapshot_max_chunk_size_bytes == 0 {
+        let msg =
+            "Invalid raft.snapshot_max_chunk_size_bytes=0: must be greater than 0".to_string();
+        error!("{}", msg);
+        return Err(msg);
+    }
+    if cfg.max_in_snapshot_log_to_keep == 0 {
+        let msg = "Invalid raft.max_in_snapshot_log_to_keep=0: must be greater than 0".to_string();
+        error!("{}", msg);
+        return Err(msg);
+    }
+    if cfg.purge_batch_size == 0 {
+        let msg = "Invalid raft.purge_batch_size=0: must be greater than 0".to_string();
+        error!("{}", msg);
+        return Err(msg);
+    }
+    parse_snapshot_policy(&cfg.snapshot_policy)?;
+
+    Ok(cfg)
+}
+
+fn parse_snapshot_policy(input: &str) -> Result<SnapshotPolicy, String> {
+    let v = input.trim();
+    if v.eq_ignore_ascii_case("never") {
+        return Ok(SnapshotPolicy::Never);
+    }
+
+    let Some((kind, value)) = v.split_once(':') else {
+        let msg = format!(
+            "Invalid raft.snapshot_policy='{}': expected 'never' or 'since_last:<u64>'",
+            input
+        );
+        error!("{}", msg);
+        return Err(msg);
+    };
+
+    if !kind.eq_ignore_ascii_case("since_last") {
+        let msg = format!(
+            "Invalid raft.snapshot_policy='{}': expected prefix 'since_last'",
+            input
+        );
+        error!("{}", msg);
+        return Err(msg);
+    }
+
+    let n = value.trim().parse::<u64>().map_err(|e| {
+        let msg = format!(
+            "Invalid raft.snapshot_policy='{}': invalid since_last value: {}",
+            input, e
+        );
+        error!("{}", msg);
+        msg
+    })?;
+    Ok(SnapshotPolicy::LogsSinceLast(n))
 }
 
 fn parse_port_from_addr(addr: &str) -> Option<u16> {
@@ -754,6 +1221,16 @@ fn parse_env_u32(key: &str) -> Result<Option<u32>, String> {
     }
 }
 
+fn parse_env_f64(key: &str) -> Result<Option<f64>, String> {
+    match parse_env_string(key)? {
+        Some(v) => v
+            .parse::<f64>()
+            .map(Some)
+            .map_err(|e| format!("Invalid {}='{}': {}", key, v, e)),
+        None => Ok(None),
+    }
+}
+
 fn parse_env_bool(key: &str) -> Result<Option<bool>, String> {
     match parse_env_string(key)? {
         Some(v) => {
@@ -774,6 +1251,15 @@ fn parse_env_bool(key: &str) -> Result<Option<bool>, String> {
 fn parse_env_join_target_role(key: &str) -> Result<Option<KLogJoinTargetRole>, String> {
     match parse_env_string(key)? {
         Some(v) => KLogJoinTargetRole::parse(&v)
+            .map(Some)
+            .map_err(|e| format!("Invalid {}='{}': {}", key, v, e)),
+        None => Ok(None),
+    }
+}
+
+fn parse_env_join_retry_strategy(key: &str) -> Result<Option<KLogJoinRetryStrategy>, String> {
+    match parse_env_string(key)? {
+        Some(v) => KLogJoinRetryStrategy::parse(&v)
             .map(Some)
             .map_err(|e| format!("Invalid {}='{}': {}", key, v, e)),
         None => Ok(None),
@@ -827,10 +1313,31 @@ auto_bootstrap = false
 
 [join]
 targets = ["127.0.0.1:21001", "127.0.0.1:21002"]
-retry_interval_ms = 1500
-max_attempts = 9
 blocking = true
 target_role = "learner"
+
+[join.retry]
+strategy = "fixed"
+initial_interval_ms = 1500
+max_interval_ms = 6000
+multiplier = 2.0
+jitter_ratio = 0.1
+max_attempts = 9
+request_timeout_ms = 1800
+shuffle_targets_each_round = false
+config_change_conflict_extra_backoff_ms = 900
+
+[raft]
+election_timeout_min_ms = 300
+election_timeout_max_ms = 900
+heartbeat_interval_ms = 120
+install_snapshot_timeout_ms = 2300
+max_payload_entries = 512
+replication_lag_threshold = 15000
+snapshot_policy = "since_last:8000"
+snapshot_max_chunk_size_bytes = 4194304
+max_in_snapshot_log_to_keep = 2000
+purge_batch_size = 64
 
 [admin]
 local_only = false
@@ -873,10 +1380,27 @@ concurrency = 128
             cfg.join_targets,
             vec!["127.0.0.1:21001".to_string(), "127.0.0.1:21002".to_string()]
         );
-        assert_eq!(cfg.join_retry_interval_ms, 1500);
-        assert_eq!(cfg.join_max_attempts, 9);
         assert!(cfg.join_blocking);
         assert_eq!(cfg.join_target_role, KLogJoinTargetRole::Learner);
+        assert_eq!(cfg.join_retry.strategy, KLogJoinRetryStrategy::Fixed);
+        assert_eq!(cfg.join_retry.initial_interval_ms, 1500);
+        assert_eq!(cfg.join_retry.max_interval_ms, 6000);
+        assert_eq!(cfg.join_retry.multiplier, 2.0);
+        assert_eq!(cfg.join_retry.jitter_ratio, 0.1);
+        assert_eq!(cfg.join_retry.max_attempts, 9);
+        assert_eq!(cfg.join_retry.request_timeout_ms, 1800);
+        assert!(!cfg.join_retry.shuffle_targets_each_round);
+        assert_eq!(cfg.join_retry.config_change_conflict_extra_backoff_ms, 900);
+        assert_eq!(cfg.raft.election_timeout_min_ms, 300);
+        assert_eq!(cfg.raft.election_timeout_max_ms, 900);
+        assert_eq!(cfg.raft.heartbeat_interval_ms, 120);
+        assert_eq!(cfg.raft.install_snapshot_timeout_ms, 2300);
+        assert_eq!(cfg.raft.max_payload_entries, 512);
+        assert_eq!(cfg.raft.replication_lag_threshold, 15000);
+        assert_eq!(cfg.raft.snapshot_policy, "since_last:8000");
+        assert_eq!(cfg.raft.snapshot_max_chunk_size_bytes, 4194304);
+        assert_eq!(cfg.raft.max_in_snapshot_log_to_keep, 2000);
+        assert_eq!(cfg.raft.purge_batch_size, 64);
         assert!(!cfg.admin_local_only);
         assert_eq!(cfg.rpc.append.timeout_ms, 3100);
         assert_eq!(cfg.rpc.append.body_limit_bytes, 131072);
@@ -904,8 +1428,7 @@ cluster_name = "legacy_cluster"
 auto_bootstrap = false
 state_store_sync_write = false
 join_targets = ["127.0.0.1:21001"]
-join_retry_interval_ms = 2500
-join_max_attempts = 5
+join_retry_max_attempts = 5
 join_blocking = true
 join_target_role = "learner"
 "#;
@@ -950,10 +1473,69 @@ id = "cluster_partial_id"
         assert_eq!(cfg.auto_bootstrap, DEFAULT_AUTO_BOOTSTRAP);
         assert_eq!(cfg.state_store_sync_write, DEFAULT_STATE_STORE_SYNC_WRITE);
         assert!(cfg.join_targets.is_empty());
-        assert_eq!(cfg.join_retry_interval_ms, DEFAULT_JOIN_RETRY_INTERVAL_MS);
-        assert_eq!(cfg.join_max_attempts, DEFAULT_JOIN_MAX_ATTEMPTS);
         assert_eq!(cfg.join_blocking, DEFAULT_JOIN_BLOCKING);
         assert_eq!(cfg.join_target_role, DEFAULT_JOIN_TARGET_ROLE);
+        assert_eq!(
+            cfg.join_retry.strategy.as_str(),
+            DEFAULT_JOIN_RETRY_STRATEGY
+        );
+        assert_eq!(
+            cfg.join_retry.initial_interval_ms,
+            DEFAULT_JOIN_RETRY_INITIAL_INTERVAL_MS
+        );
+        assert_eq!(
+            cfg.join_retry.max_interval_ms,
+            DEFAULT_JOIN_RETRY_MAX_INTERVAL_MS
+        );
+        assert_eq!(cfg.join_retry.multiplier, DEFAULT_JOIN_RETRY_MULTIPLIER);
+        assert_eq!(cfg.join_retry.jitter_ratio, DEFAULT_JOIN_RETRY_JITTER_RATIO);
+        assert_eq!(cfg.join_retry.max_attempts, DEFAULT_JOIN_RETRY_MAX_ATTEMPTS);
+        assert_eq!(
+            cfg.join_retry.request_timeout_ms,
+            DEFAULT_JOIN_RETRY_REQUEST_TIMEOUT_MS
+        );
+        assert_eq!(
+            cfg.join_retry.shuffle_targets_each_round,
+            DEFAULT_JOIN_RETRY_SHUFFLE_TARGETS
+        );
+        assert_eq!(
+            cfg.join_retry.config_change_conflict_extra_backoff_ms,
+            DEFAULT_JOIN_RETRY_CONFIG_CHANGE_CONFLICT_EXTRA_BACKOFF_MS
+        );
+        assert_eq!(
+            cfg.raft.election_timeout_min_ms,
+            DEFAULT_RAFT_ELECTION_TIMEOUT_MIN_MS
+        );
+        assert_eq!(
+            cfg.raft.election_timeout_max_ms,
+            DEFAULT_RAFT_ELECTION_TIMEOUT_MAX_MS
+        );
+        assert_eq!(
+            cfg.raft.heartbeat_interval_ms,
+            DEFAULT_RAFT_HEARTBEAT_INTERVAL_MS
+        );
+        assert_eq!(
+            cfg.raft.install_snapshot_timeout_ms,
+            DEFAULT_RAFT_INSTALL_SNAPSHOT_TIMEOUT_MS
+        );
+        assert_eq!(
+            cfg.raft.max_payload_entries,
+            DEFAULT_RAFT_MAX_PAYLOAD_ENTRIES
+        );
+        assert_eq!(
+            cfg.raft.replication_lag_threshold,
+            DEFAULT_RAFT_REPLICATION_LAG_THRESHOLD
+        );
+        assert_eq!(cfg.raft.snapshot_policy, DEFAULT_RAFT_SNAPSHOT_POLICY);
+        assert_eq!(
+            cfg.raft.snapshot_max_chunk_size_bytes,
+            DEFAULT_RAFT_SNAPSHOT_MAX_CHUNK_SIZE_BYTES
+        );
+        assert_eq!(
+            cfg.raft.max_in_snapshot_log_to_keep,
+            DEFAULT_RAFT_MAX_IN_SNAPSHOT_LOG_TO_KEEP
+        );
+        assert_eq!(cfg.raft.purge_batch_size, DEFAULT_RAFT_PURGE_BATCH_SIZE);
         assert_eq!(cfg.admin_local_only, DEFAULT_ADMIN_LOCAL_ONLY);
         assert_eq!(cfg.rpc.append.timeout_ms, DEFAULT_RPC_TIMEOUT_MS);
         assert_eq!(
@@ -1095,10 +1677,31 @@ id = "cluster_admin_conflict_id"
             }),
             join: Some(KLogJoinConfigPatch {
                 targets: Some(vec!["10.0.0.1:21001".to_string()]),
-                retry_interval_ms: Some(6000),
-                max_attempts: Some(3),
                 blocking: Some(true),
                 target_role: Some(KLogJoinTargetRole::Learner),
+                retry: Some(KLogJoinRetryConfigPatch {
+                    strategy: Some(KLogJoinRetryStrategy::Fixed),
+                    initial_interval_ms: Some(6000),
+                    max_interval_ms: Some(20000),
+                    multiplier: Some(1.0),
+                    jitter_ratio: Some(0.0),
+                    max_attempts: Some(3),
+                    request_timeout_ms: Some(2200),
+                    shuffle_targets_each_round: Some(false),
+                    config_change_conflict_extra_backoff_ms: Some(700),
+                }),
+            }),
+            raft: Some(KLogRaftConfigPatch {
+                election_timeout_min_ms: Some(400),
+                election_timeout_max_ms: Some(1200),
+                heartbeat_interval_ms: Some(150),
+                install_snapshot_timeout_ms: Some(2800),
+                max_payload_entries: Some(256),
+                replication_lag_threshold: Some(12000),
+                snapshot_policy: Some("since_last:6000".to_string()),
+                snapshot_max_chunk_size_bytes: Some(2 * 1024 * 1024),
+                max_in_snapshot_log_to_keep: Some(1500),
+                purge_batch_size: Some(8),
             }),
             admin: Some(KLogAdminConfigPatch {
                 local_only: Some(false),
@@ -1127,10 +1730,27 @@ id = "cluster_admin_conflict_id"
         assert!(!cfg.auto_bootstrap);
         assert!(!cfg.state_store_sync_write);
         assert_eq!(cfg.join_targets, vec!["10.0.0.1:21001".to_string()]);
-        assert_eq!(cfg.join_retry_interval_ms, 6000);
-        assert_eq!(cfg.join_max_attempts, 3);
         assert!(cfg.join_blocking);
         assert_eq!(cfg.join_target_role, KLogJoinTargetRole::Learner);
+        assert_eq!(cfg.join_retry.strategy, KLogJoinRetryStrategy::Fixed);
+        assert_eq!(cfg.join_retry.initial_interval_ms, 6000);
+        assert_eq!(cfg.join_retry.max_interval_ms, 20000);
+        assert_eq!(cfg.join_retry.multiplier, 1.0);
+        assert_eq!(cfg.join_retry.jitter_ratio, 0.0);
+        assert_eq!(cfg.join_retry.max_attempts, 3);
+        assert_eq!(cfg.join_retry.request_timeout_ms, 2200);
+        assert!(!cfg.join_retry.shuffle_targets_each_round);
+        assert_eq!(cfg.join_retry.config_change_conflict_extra_backoff_ms, 700);
+        assert_eq!(cfg.raft.election_timeout_min_ms, 400);
+        assert_eq!(cfg.raft.election_timeout_max_ms, 1200);
+        assert_eq!(cfg.raft.heartbeat_interval_ms, 150);
+        assert_eq!(cfg.raft.install_snapshot_timeout_ms, 2800);
+        assert_eq!(cfg.raft.max_payload_entries, 256);
+        assert_eq!(cfg.raft.replication_lag_threshold, 12000);
+        assert_eq!(cfg.raft.snapshot_policy, "since_last:6000");
+        assert_eq!(cfg.raft.snapshot_max_chunk_size_bytes, 2 * 1024 * 1024);
+        assert_eq!(cfg.raft.max_in_snapshot_log_to_keep, 1500);
+        assert_eq!(cfg.raft.purge_batch_size, 8);
         assert!(!cfg.admin_local_only);
         assert_eq!(cfg.rpc.append.timeout_ms, DEFAULT_RPC_TIMEOUT_MS);
         assert_eq!(cfg.rpc.query.timeout_ms, DEFAULT_RPC_TIMEOUT_MS);

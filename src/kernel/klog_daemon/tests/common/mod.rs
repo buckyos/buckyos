@@ -237,10 +237,19 @@ auto_bootstrap = {auto_bootstrap}
 
 [join]
 targets = {join_targets}
-retry_interval_ms = 500
-max_attempts = 0
 blocking = true
 target_role = "{target_role}"
+
+[join.retry]
+strategy = "fixed"
+initial_interval_ms = 500
+max_interval_ms = 500
+multiplier = 1.0
+jitter_ratio = 0.0
+max_attempts = 0
+request_timeout_ms = 2000
+shuffle_targets_each_round = false
+config_change_conflict_extra_backoff_ms = 0
 "#,
         node_id = node_id,
         port = port,

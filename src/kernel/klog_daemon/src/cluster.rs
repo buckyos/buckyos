@@ -1,10 +1,16 @@
-use crate::config::{KLogJoinTargetRole, KLogRuntimeConfig};
+use crate::config::{
+    KLogJoinRetryConfig, KLogJoinRetryStrategy, KLogJoinTargetRole, KLogRuntimeConfig,
+};
 use klog::network::{KLogAdminRequestType, KLogClusterStateResponse};
 use klog::{KNode, KRaftRef};
 use log::{error, info, warn};
+use rand::Rng;
+use rand::seq::SliceRandom;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 use tokio::task::JoinHandle;
+
+const CONFIG_CHANGE_CONFLICT_MARKER: &str = "undergoing a configuration change";
 
 pub async fn initialize_cluster_if_needed(cfg: &KLogRuntimeConfig, raft: &KRaftRef) {
     if cfg.auto_bootstrap {
@@ -61,7 +67,7 @@ pub fn spawn_auto_join_task(cfg: &KLogRuntimeConfig) -> Option<JoinHandle<()>> {
 
 async fn run_auto_join_loop(cfg: KLogRuntimeConfig) {
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
+        .timeout(Duration::from_millis(cfg.join_retry.request_timeout_ms))
         .build();
     let client = match client {
         Ok(client) => client,
@@ -73,10 +79,10 @@ async fn run_auto_join_loop(cfg: KLogRuntimeConfig) {
 
     let mut attempts: u32 = 0;
     loop {
-        if cfg.join_max_attempts > 0 && attempts >= cfg.join_max_attempts {
+        if cfg.join_retry.max_attempts > 0 && attempts >= cfg.join_retry.max_attempts {
             warn!(
                 "Auto-join reached max attempts without success: attempts={}, node_id={}, targets={:?}, join_target_role={}",
-                cfg.join_max_attempts, cfg.node_id, cfg.join_targets, cfg.join_target_role
+                cfg.join_retry.max_attempts, cfg.node_id, cfg.join_targets, cfg.join_target_role
             );
             return;
         }
@@ -91,14 +97,14 @@ async fn run_auto_join_loop(cfg: KLogRuntimeConfig) {
                 return;
             }
             Err(e) => {
+                let sleep_ms = compute_retry_delay_ms(&cfg.join_retry, attempts, &e);
                 warn!(
-                    "Auto-join attempt failed: node_id={}, attempt={}, join_target_role={}, err={}",
-                    cfg.node_id, attempts, cfg.join_target_role, e
+                    "Auto-join attempt failed: node_id={}, attempt={}, join_target_role={}, err={}, next_retry_in_ms={}",
+                    cfg.node_id, attempts, cfg.join_target_role, e, sleep_ms
                 );
+                tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
             }
         }
-
-        tokio::time::sleep(Duration::from_millis(cfg.join_retry_interval_ms)).await;
     }
 }
 
@@ -109,7 +115,13 @@ async fn try_join_once(
     let cluster_state_path = KLogAdminRequestType::ClusterState.klog_path();
     let mut errors = Vec::new();
 
-    for target in &cfg.join_targets {
+    let mut seed_targets = cfg.join_targets.clone();
+    if cfg.join_retry.shuffle_targets_each_round {
+        let mut rng = rand::thread_rng();
+        seed_targets.shuffle(&mut rng);
+    }
+
+    for target in &seed_targets {
         let seed_state = match fetch_cluster_state(client, target, &cluster_state_path).await {
             Ok(state) => state,
             Err(err) => {
@@ -153,6 +165,38 @@ async fn try_join_once(
     }
 
     Err(errors.join(" | "))
+}
+
+fn compute_retry_delay_ms(retry: &KLogJoinRetryConfig, attempts: u32, last_err: &str) -> u64 {
+    let base = match retry.strategy {
+        KLogJoinRetryStrategy::Fixed => retry.initial_interval_ms,
+        KLogJoinRetryStrategy::Exponential => {
+            let power = attempts.saturating_sub(1) as i32;
+            let factor = retry.multiplier.powi(power);
+            ((retry.initial_interval_ms as f64) * factor).round() as u64
+        }
+    }
+    .clamp(1, retry.max_interval_ms);
+
+    let jittered = apply_jitter(base, retry.jitter_ratio);
+    let mut total = jittered;
+    if last_err.contains(CONFIG_CHANGE_CONFLICT_MARKER) {
+        total = total.saturating_add(retry.config_change_conflict_extra_backoff_ms);
+    }
+    total.max(1)
+}
+
+fn apply_jitter(base_ms: u64, jitter_ratio: f64) -> u64 {
+    if jitter_ratio <= 0.0 || base_ms == 0 {
+        return base_ms.max(1);
+    }
+
+    let r = jitter_ratio.clamp(0.0, 1.0);
+    let low = 1.0 - r;
+    let high = 1.0 + r;
+    let mut rng = rand::thread_rng();
+    let factor: f64 = rng.gen_range(low..=high);
+    ((base_ms as f64) * factor).round() as u64
 }
 
 async fn join_and_promote_once(
@@ -438,7 +482,9 @@ mod tests {
         admin_target_from_node, build_admin_url, build_promote_voters_csv, dedup_targets,
         ensure_cluster_identity_matches,
     };
-    use crate::config::{KLogJoinTargetRole, KLogRuntimeConfig};
+    use crate::config::{
+        KLogJoinRetryConfig, KLogJoinTargetRole, KLogRaftConfig, KLogRuntimeConfig,
+    };
     use klog::network::KLogClusterStateResponse;
     use klog::{KNode, KNodeId};
     use std::collections::BTreeMap;
@@ -529,10 +575,10 @@ mod tests {
             auto_bootstrap: false,
             state_store_sync_write: true,
             join_targets: vec![],
-            join_retry_interval_ms: 3000,
-            join_max_attempts: 0,
             join_blocking: false,
             join_target_role: KLogJoinTargetRole::Voter,
+            join_retry: KLogJoinRetryConfig::default(),
+            raft: KLogRaftConfig::default(),
             admin_local_only: true,
             rpc: Default::default(),
         }
