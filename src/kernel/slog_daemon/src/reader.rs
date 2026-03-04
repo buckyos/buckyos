@@ -1,4 +1,5 @@
 use slog::{FileLogReader, SystemLogRecord};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -92,6 +93,7 @@ impl LogDirReader {
 
     pub fn update_dir(&self) -> Result<(), String> {
         let log_dirs = self.scan_dir(&self.dir)?;
+        let log_dir_set: HashSet<PathBuf> = log_dirs.iter().cloned().collect();
 
         let mut list_lock = self.list.lock().unwrap();
 
@@ -122,7 +124,12 @@ impl LogDirReader {
             }
         }
 
-        // TODO: remove deleted dirs
+        let old_len = list_lock.len();
+        list_lock.retain(|item| log_dir_set.contains(&item.path));
+        let removed = old_len.saturating_sub(list_lock.len());
+        if removed > 0 {
+            info!("removed {} deleted log dir readers", removed);
+        }
 
         Ok(())
     }
@@ -161,5 +168,45 @@ impl LogDirReader {
         }
 
         Ok(log_dirs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_service_dir(root: &Path, name: &str) -> PathBuf {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let meta = dir.join("log_meta.db");
+        std::fs::File::create(meta).unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_update_dir_removes_deleted_dirs() {
+        let base = std::env::temp_dir().join(format!(
+            "buckyos/slog_daemon_reader_test_{}",
+            std::process::id()
+        ));
+        if base.exists() {
+            std::fs::remove_dir_all(&base).unwrap();
+        }
+        std::fs::create_dir_all(&base).unwrap();
+
+        let service_a = create_service_dir(&base, "service_a");
+        let _service_b = create_service_dir(&base, "service_b");
+
+        let reader = LogDirReader::open(&base, vec![]).unwrap();
+        assert!(reader.flush_read_pos("service_a").is_ok());
+        assert!(reader.flush_read_pos("service_b").is_ok());
+
+        std::fs::remove_dir_all(&service_a).unwrap();
+        reader.update_dir().unwrap();
+
+        assert!(reader.flush_read_pos("service_a").is_err());
+        assert!(reader.flush_read_pos("service_b").is_ok());
+
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }
