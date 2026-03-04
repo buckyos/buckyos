@@ -52,17 +52,33 @@ impl LogDaemonClient {
     }
 
     pub async fn shutdown(self) -> Result<(), String> {
+        let LogDaemonClient {
+            node,
+            service_endpoint,
+            log_dir,
+            reader_manager,
+            upload_task,
+            shutdown_token,
+        } = self;
+
         info!(
             "shutting down slog daemon client, node={}, endpoint={}, log_dir={}",
-            self.node,
-            self.service_endpoint,
-            self.log_dir.display()
+            node,
+            service_endpoint,
+            log_dir.display()
         );
 
-        self.shutdown_token.cancel();
-        self.reader_manager.shutdown()?;
+        shutdown_token.cancel();
 
-        self.upload_task.await.map_err(|e| {
+        tokio::task::spawn_blocking(move || reader_manager.shutdown())
+            .await
+            .map_err(|e| {
+                let msg = format!("log reader manager shutdown task join failed: {}", e);
+                error!("{}", msg);
+                msg
+            })??;
+
+        upload_task.await.map_err(|e| {
             let msg = format!("log upload processor task join failed: {}", e);
             error!("{}", msg);
             msg

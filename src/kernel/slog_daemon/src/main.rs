@@ -5,6 +5,8 @@ mod config;
 mod constants;
 mod read_manager;
 mod reader;
+#[cfg(test)]
+mod test;
 mod upload;
 
 #[macro_use]
