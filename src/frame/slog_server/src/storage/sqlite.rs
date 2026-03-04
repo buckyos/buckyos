@@ -320,81 +320,91 @@ impl LogStorage for SqliteLogStorage {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
     use slog::{LogLevel, SystemLogRecord};
-    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_db_path(prefix: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "buckyos/slog_server_tests/{}_{}_{}",
+            prefix,
+            std::process::id(),
+            nanos
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("test_logs.db")
+    }
+
+    fn sample_record(level: LogLevel, time: u64, content: &str) -> SystemLogRecord {
+        SystemLogRecord {
+            level,
+            target: "test_target".to_string(),
+            time,
+            file: None,
+            line: None,
+            content: content.to_string(),
+        }
+    }
 
     #[test]
-    fn test_sqlite_log_storage() {
-        // Get a temporary database path
-        let dir = std::env::temp_dir().join("buckyos/slog_test");
-        fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("test_logs.db");
-        if db_path.exists() {
-            fs::remove_file(&db_path).unwrap();
-        }
-
+    fn test_sqlite_storage_append_and_query_with_filters() {
+        let db_path = temp_db_path("append_query");
         let storage = SqliteLogStorage::open(&db_path).unwrap();
 
-        let records = vec![
-            SystemLogRecord {
-                level: LogLevel::Info,
-                target: "test_target".to_string(),
-                time: 1625079600000,
-                file: Some("test_file.rs".to_string()),
-                line: Some(42),
-                content: "This is a test log message.".to_string(),
-            },
-            SystemLogRecord {
-                level: LogLevel::Error,
-                target: "test_target".to_string(),
-                time: 1625079660000,
-                file: None,
-                line: None,
-                content: "This is another test log message.".to_string(),
-            },
-        ];
+        storage
+            .append(LogRecords {
+                node: "node-1".to_string(),
+                service: "svc-a".to_string(),
+                logs: vec![
+                    sample_record(LogLevel::Info, 1000, "a-1"),
+                    sample_record(LogLevel::Error, 1010, "a-2"),
+                ],
+            })
+            .unwrap();
 
-        let log_records = LogRecords {
-            node: "test_node".to_string(),
-            service: "test_service".to_string(),
-            logs: records,
-        };
+        storage
+            .append(LogRecords {
+                node: "node-2".to_string(),
+                service: "svc-b".to_string(),
+                logs: vec![sample_record(LogLevel::Warn, 1020, "b-1")],
+            })
+            .unwrap();
 
-        storage.append(log_records).unwrap();
+        let all = storage
+            .query(LogQueryRequest {
+                node: None,
+                service: None,
+                level: None,
+                start_time: None,
+                end_time: None,
+                limit: None,
+            })
+            .unwrap();
+        assert_eq!(all.len(), 2);
 
-        // For another node and service
-        let records2 = vec![
-            SystemLogRecord {
-                level: LogLevel::Warn,
-                target: "test_target_2".to_string(),
-                time: 1625079720000,
-                file: Some("test_file_2.rs".to_string()),
-                line: Some(84),
-                content: "This is a warning log message.".to_string(),
-            },
-            SystemLogRecord {
-                level: LogLevel::Debug,
-                target: "test_target_2".to_string(),
-                time: 1625079780000,
-                file: None,
-                line: None,
-                content: "This is a debug log message.".to_string(),
-            },
-        ];
+        let only_error = storage
+            .query(LogQueryRequest {
+                node: Some("node-1".to_string()),
+                service: Some("svc-a".to_string()),
+                level: Some(LogLevel::Error),
+                start_time: None,
+                end_time: None,
+                limit: Some(10),
+            })
+            .unwrap();
+        assert_eq!(only_error.len(), 1);
+        assert_eq!(only_error[0].node, "node-1");
+        assert_eq!(only_error[0].service, "svc-a");
+        assert_eq!(only_error[0].logs.len(), 1);
+        assert_eq!(only_error[0].logs[0].content, "a-2");
+        assert_eq!(only_error[0].logs[0].level, LogLevel::Error);
 
-        let log_records2 = LogRecords {
-            node: "test_node_2".to_string(),
-            service: "test_service_2".to_string(),
-            logs: records2,
-        };
-
-        storage.append(log_records2).unwrap();
-
-        drop(storage);
-
-        // Clean up
-        fs::remove_file(&db_path).unwrap();
+        std::fs::remove_file(&db_path).unwrap();
+        std::fs::remove_dir_all(db_path.parent().unwrap()).unwrap();
     }
 }

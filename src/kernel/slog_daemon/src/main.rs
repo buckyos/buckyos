@@ -5,9 +5,6 @@ mod read_manager;
 mod reader;
 mod upload;
 
-#[cfg(test)]
-mod test;
-
 #[macro_use]
 extern crate log;
 

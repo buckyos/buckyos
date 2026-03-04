@@ -84,7 +84,8 @@ impl LogUploader {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::LogUploader;
+
     #[test]
     fn test_validate_upload_response_success_when_ret_is_zero() {
         let result = LogUploader::validate_upload_response(

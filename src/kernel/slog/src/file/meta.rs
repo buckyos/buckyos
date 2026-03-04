@@ -324,3 +324,77 @@ impl LogMeta {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::LogMeta;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn new_temp_log_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "buckyos/slog_tests/{}_{}_{}",
+            prefix,
+            std::process::id(),
+            nanos
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_get_last_sealed_file_returns_none_when_no_sealed_file() {
+        let log_dir = new_temp_log_dir("meta_none");
+        let meta = LogMeta::open(&log_dir).unwrap();
+
+        let ret = meta.get_last_sealed_file().unwrap();
+        assert!(ret.is_none());
+
+        std::fs::remove_dir_all(&log_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_last_sealed_file_field_mapping() {
+        let log_dir = new_temp_log_dir("meta_mapping");
+        let meta = LogMeta::open(&log_dir).unwrap();
+
+        meta.append_new_file("service.1.log").unwrap();
+        meta.update_current_write_index(123).unwrap();
+        meta.seal_current_write_file().unwrap();
+        meta.update_current_read_index(45).unwrap();
+
+        let file = meta.get_last_sealed_file().unwrap().unwrap();
+        assert_eq!(file.name, "service.1.log");
+        assert_eq!(file.write_index, 123);
+        assert!(file.is_sealed);
+        assert_eq!(file.read_index, 45);
+        assert!(!file.is_read_complete);
+
+        std::fs::remove_dir_all(&log_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_last_sealed_file_returns_latest_sealed_file() {
+        let log_dir = new_temp_log_dir("meta_latest");
+        let meta = LogMeta::open(&log_dir).unwrap();
+
+        meta.append_new_file("service.1.log").unwrap();
+        meta.update_current_write_index(1).unwrap();
+        meta.seal_current_write_file().unwrap();
+
+        meta.append_new_file("service.2.log").unwrap();
+        meta.update_current_write_index(2).unwrap();
+        meta.seal_current_write_file().unwrap();
+
+        let file = meta.get_last_sealed_file().unwrap().unwrap();
+        assert_eq!(file.name, "service.2.log");
+        assert_eq!(file.write_index, 2);
+        assert!(file.is_sealed);
+
+        std::fs::remove_dir_all(&log_dir).unwrap();
+    }
+}
