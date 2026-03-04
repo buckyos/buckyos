@@ -106,6 +106,21 @@ impl LogReaderManager {
                             continue;
                         }
 
+                        if item.flush_only {
+                            if let Err(e) = dir_reader.flush_read_pos(&item.id) {
+                                Self::handle_flush_read_pos_error(
+                                    &mut flush_retry_states,
+                                    &item.id,
+                                    e,
+                                    false,
+                                );
+                                continue;
+                            }
+
+                            flush_retry_states.remove(&item.id);
+                            continue;
+                        }
+
                         if !Self::should_attempt_action(&upload_retry_states, &item.id, "upload") {
                             continue;
                         }

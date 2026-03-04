@@ -13,6 +13,7 @@ pub struct LogRecordItem {
     pub id: String,
     pub batch_id: String,
     pub record_ids: Vec<String>,
+    pub flush_only: bool,
 }
 
 struct LogDirItem {
@@ -130,32 +131,51 @@ impl LogDirReader {
             let service_batch_size = remain_size.min(READ_RECORD_PER_SERVICE_QUOTA);
             match item.reader.try_read_next_records(service_batch_size) {
                 Ok(records) => {
+                    let window = item.reader.get_current_read_window();
+                    let parse_failures = item.reader.get_current_batch_parse_failures();
                     if !records.is_empty() {
                         assert!(remain_size >= records.len());
                         remain_size -= records.len();
-                        let (batch_id, record_ids) =
-                            if let Some(window) = item.reader.get_current_read_window() {
-                                let offsets = item
-                                    .reader
-                                    .get_current_batch_record_offsets()
-                                    .unwrap_or_default();
-                                if offsets.len() == records.len() {
-                                    (
-                                        Self::make_batch_id(&item.id, &window),
-                                        Self::make_record_ids(&item.id, &window, &offsets),
-                                    )
-                                } else {
-                                    (Self::make_fallback_batch_id(&item.id, &records), Vec::new())
-                                }
+                        let (batch_id, record_ids) = if let Some(window) = window.as_ref() {
+                            let offsets = item
+                                .reader
+                                .get_current_batch_record_offsets()
+                                .unwrap_or_default();
+                            if offsets.len() == records.len() {
+                                (
+                                    Self::make_batch_id(&item.id, &window),
+                                    Self::make_record_ids(&item.id, &window, &offsets),
+                                )
                             } else {
                                 (Self::make_fallback_batch_id(&item.id, &records), Vec::new())
-                            };
+                            }
+                        } else {
+                            (Self::make_fallback_batch_id(&item.id, &records), Vec::new())
+                        };
 
                         result.push(LogRecordItem {
                             records,
                             id: item.id.clone(),
                             batch_id,
                             record_ids,
+                            flush_only: false,
+                        });
+                    } else if parse_failures > 0
+                        && window
+                            .as_ref()
+                            .map(|w| w.end_index > w.start_index)
+                            .unwrap_or(false)
+                    {
+                        warn!(
+                            "all lines in batch failed parse for service {}, schedule flush-only read-index update",
+                            item.id
+                        );
+                        result.push(LogRecordItem {
+                            records: Vec::new(),
+                            id: item.id.clone(),
+                            batch_id: String::new(),
+                            record_ids: Vec::new(),
+                            flush_only: true,
                         });
                     }
                 }
@@ -379,6 +399,7 @@ mod tests {
         assert_eq!(items.len(), 3);
         for item in items {
             assert!(item.records.len() <= READ_RECORD_PER_SERVICE_QUOTA);
+            assert!(!item.flush_only);
         }
 
         std::fs::remove_dir_all(&base).unwrap();
@@ -399,12 +420,46 @@ mod tests {
                 .try_read_records(READ_RECORD_PER_SERVICE_QUOTA)
                 .unwrap();
             assert_eq!(items.len(), 1);
+            assert!(!items[0].flush_only);
             first_service_ids.push(items[0].id.clone());
             reader.flush_read_pos(&items[0].id).unwrap();
         }
 
         let unique: HashSet<String> = first_service_ids.into_iter().collect();
         assert_eq!(unique.len(), 3);
+
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn test_try_read_records_emits_flush_only_item_for_invalid_lines() {
+        let base = new_temp_root("invalid_line_flush_only");
+        let dir = base.join("service_invalid");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let meta = LogMeta::open(&dir).unwrap();
+        let file_name = "service_invalid.1.log";
+        meta.append_new_file(file_name).unwrap();
+        let invalid_line = "invalid-log-line-without-required-format\n";
+        std::fs::write(dir.join(file_name), invalid_line).unwrap();
+        meta.update_current_write_index(invalid_line.len() as u64)
+            .unwrap();
+
+        let reader = LogDirReader::open(&base, vec![]).unwrap();
+        let first = reader
+            .try_read_records(READ_RECORD_PER_SERVICE_QUOTA)
+            .unwrap();
+        assert_eq!(first.len(), 1);
+        assert!(first[0].records.is_empty());
+        assert!(first[0].flush_only);
+        assert_eq!(first[0].id, "service_invalid");
+
+        reader.flush_read_pos(&first[0].id).unwrap();
+
+        let second = reader
+            .try_read_records(READ_RECORD_PER_SERVICE_QUOTA)
+            .unwrap();
+        assert!(second.is_empty());
 
         std::fs::remove_dir_all(&base).unwrap();
     }

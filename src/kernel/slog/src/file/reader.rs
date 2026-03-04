@@ -2,17 +2,22 @@ use super::format::SystemLogRecordLineFormatter;
 use super::meta::LogFileReadInfo;
 use super::meta::LogMeta;
 use crate::system_log::SystemLogRecord;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::Seek;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+const CORRUPT_LOG_FILE_NAME: &str = "corrupt.log";
+const PARSE_ERROR_ALERT_THRESHOLD_PER_BATCH: usize = 10;
 
 struct ReadFileInfo {
     meta: LogFileReadInfo,
     file: File,
     last_read_index: usize, // The last read index in the current buffer, >= meta.read_index
     last_record_offsets: Vec<i64>,
+    last_batch_parse_failures: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +34,36 @@ pub struct FileLogReader {
 }
 
 impl FileLogReader {
+    fn append_corrupt_line(&self, source_file: &Path, offset: u64, line: &str, err: &str) {
+        let corrupt_path = self.dir.join(CORRUPT_LOG_FILE_NAME);
+        let timestamp_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let escaped_line = line.replace('\n', "\\n").replace('\r', "\\r");
+        let entry = format!(
+            "ts_ms={} source={} offset={} err={} line={}\n",
+            timestamp_ms,
+            source_file.display(),
+            offset,
+            err,
+            escaped_line
+        );
+
+        if let Err(e) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&corrupt_path)
+            .and_then(|mut f| f.write_all(entry.as_bytes()))
+        {
+            error!(
+                "failed to append corrupt log line to {}: {}",
+                corrupt_path.display(),
+                e
+            );
+        }
+    }
+
     pub fn open(log_dir: &Path) -> Result<Self, String> {
         let meta = LogMeta::open(std::path::Path::new(&log_dir)).map_err(|e| {
             let msg = format!(
@@ -196,6 +231,7 @@ impl FileLogReader {
             *current_file = Some(ReadFileInfo {
                 last_read_index: read_info.read_index as usize,
                 last_record_offsets: Vec::new(),
+                last_batch_parse_failures: 0,
                 meta: read_info,
                 file,
             });
@@ -211,6 +247,11 @@ impl FileLogReader {
         let has_lines = self.check_current_read_file()?;
 
         if !has_lines {
+            let mut file_lock = self.file.lock().unwrap();
+            if let Some(read_info) = file_lock.as_mut() {
+                read_info.last_record_offsets.clear();
+                read_info.last_batch_parse_failures = 0;
+            }
             return Ok(Vec::new());
         }
 
@@ -245,6 +286,7 @@ impl FileLogReader {
         let mut line = String::new();
         let mut next_line_offset = read_info.meta.read_index as u64;
         let mut record_offsets = Vec::new();
+        let mut parse_failures = 0usize;
 
         for _ in 0..batch_size {
             line.clear();
@@ -288,14 +330,16 @@ impl FileLogReader {
                     record_offsets.push(line_start_offset as i64);
                 }
                 Err(e) => {
+                    parse_failures += 1;
+                    self.append_corrupt_line(&file_path, line_start_offset, line.trim_end(), &e);
                     warn!(
-                        "failed to parse log record from line: file={}, line='{}', err={}",
+                        "failed to parse log record line, file={}, offset={}, err={}",
                         file_path.display(),
-                        line.trim_end(),
+                        line_start_offset,
                         e
                     );
 
-                    // TODO: skip invalid log line for now
+                    // Skip invalid lines after writing them into corrupt.log
                     continue;
                 }
             }
@@ -318,9 +362,27 @@ impl FileLogReader {
             file_path.display(),
             current_pos
         );
+        if parse_failures > 0 {
+            warn!(
+                "encountered {} parse failures in batch for {}, bad lines are written to {}",
+                parse_failures,
+                file_path.display(),
+                self.dir.join(CORRUPT_LOG_FILE_NAME).display()
+            );
+            if parse_failures >= PARSE_ERROR_ALERT_THRESHOLD_PER_BATCH {
+                error!(
+                    "high parse-failure rate in one batch: service_dir={}, file={}, parse_failures={}, threshold={}",
+                    self.dir.display(),
+                    file_path.display(),
+                    parse_failures,
+                    PARSE_ERROR_ALERT_THRESHOLD_PER_BATCH
+                );
+            }
+        }
         // Just update last_read_index in memory, must call flush_read_index to persist to meta db
         read_info.last_read_index = current_pos as usize;
         read_info.last_record_offsets = record_offsets;
+        read_info.last_batch_parse_failures = parse_failures;
 
         Ok(records)
     }
@@ -370,6 +432,14 @@ impl FileLogReader {
         let file_lock = self.file.lock().unwrap();
         let read_info = file_lock.as_ref()?;
         Some(read_info.last_record_offsets.clone())
+    }
+
+    pub fn get_current_batch_parse_failures(&self) -> usize {
+        let file_lock = self.file.lock().unwrap();
+        file_lock
+            .as_ref()
+            .map(|read_info| read_info.last_batch_parse_failures)
+            .unwrap_or(0)
     }
 }
 
@@ -454,6 +524,40 @@ mod tests {
         let second_read = reader.try_read_next_records(10);
         assert!(second_read.is_ok());
         assert!(second_read.unwrap().is_empty());
+
+        std::fs::remove_dir_all(&log_dir).unwrap();
+    }
+
+    #[test]
+    fn test_try_read_next_records_writes_invalid_lines_to_corrupt_log() {
+        let log_dir = new_temp_log_dir("invalid_line_corrupt_log");
+        let meta = LogMeta::open(&log_dir).unwrap();
+        let file_name = "svc_invalid.1.log";
+        meta.append_new_file(file_name).unwrap();
+
+        let invalid_line = "invalid-log-line-without-required-format\n";
+        let file_path = log_dir.join(file_name);
+        std::fs::write(&file_path, invalid_line).unwrap();
+        meta.update_current_write_index(invalid_line.len() as u64)
+            .unwrap();
+
+        let reader = FileLogReader::open(&log_dir).unwrap();
+        let records = reader.try_read_next_records(10).unwrap();
+        assert!(records.is_empty());
+        assert_eq!(reader.get_current_batch_parse_failures(), 1);
+
+        let window = reader.get_current_read_window().unwrap();
+        assert!(window.end_index > window.start_index);
+
+        let corrupt_path = log_dir.join(super::CORRUPT_LOG_FILE_NAME);
+        let corrupt_content = std::fs::read_to_string(corrupt_path).unwrap();
+        assert!(corrupt_content.contains("offset=0"));
+        assert!(corrupt_content.contains("invalid-log-line-without-required-format"));
+
+        reader.flush_read_index().unwrap();
+        let second = reader.try_read_next_records(10).unwrap();
+        assert!(second.is_empty());
+        assert_eq!(reader.get_current_batch_parse_failures(), 0);
 
         std::fs::remove_dir_all(&log_dir).unwrap();
     }
