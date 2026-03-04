@@ -1,6 +1,6 @@
+use crate::constants::DEFAULT_UPLOAD_TIMEOUT_SECS;
 use slog::SystemLogRecord;
 use std::time::Duration;
-use crate::constants::DEFAULT_UPLOAD_TIMEOUT_SECS;
 
 #[derive(serde::Deserialize)]
 struct UploadResponse {

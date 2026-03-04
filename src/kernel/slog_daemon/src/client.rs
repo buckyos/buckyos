@@ -18,7 +18,8 @@ impl LogDaemonClient {
         log_dir: &Path,
         excluded: Vec<String>,
     ) -> Result<Self, String> {
-        let uploader = LogUploader::new(node.clone(), service_endpoint.clone(), upload_timeout_secs);
+        let uploader =
+            LogUploader::new(node.clone(), service_endpoint.clone(), upload_timeout_secs);
 
         let (tx, rx) = mpsc::channel::<LogRecordLoad>(100);
         let reader_manager = LogReaderManager::open(log_dir, excluded, tx).map_err(|e| {

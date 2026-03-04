@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 mod client;
+mod config;
 mod constants;
 mod read_manager;
 mod reader;
@@ -10,47 +11,58 @@ mod upload;
 extern crate log;
 
 use crate::client::LogDaemonClient;
+use crate::config::{DaemonConfig, DaemonEnvOverrides};
 use crate::constants::*;
 use std::path::PathBuf;
 
-fn read_env_or_default(env_key: &str, default_value: &str) -> String {
+fn read_env_nonempty(env_key: &str) -> Option<String> {
     match std::env::var(env_key) {
-        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => default_value.to_string(),
+        Ok(v) if !v.trim().is_empty() => Some(v.trim().to_string()),
+        _ => None,
     }
 }
 
-fn resolve_log_dir() -> PathBuf {
-    match std::env::var(SLOG_LOG_DIR_ENV_KEY) {
-        Ok(v) if !v.trim().is_empty() => PathBuf::from(v.trim()),
-        _ => slog::get_buckyos_log_root_dir(),
+fn read_env_path(env_key: &str) -> Option<PathBuf> {
+    match std::env::var(env_key) {
+        Ok(v) if !v.trim().is_empty() => Some(PathBuf::from(v.trim())),
+        _ => None,
     }
 }
 
-fn parse_env_positive_u64(env_key: &str, default_value: u64) -> u64 {
+fn parse_env_positive_u64(env_key: &str, default_value: u64) -> Option<u64> {
     match std::env::var(env_key) {
         Ok(v) if !v.trim().is_empty() => match v.trim().parse::<u64>() {
-            Ok(v) if v > 0 => v,
+            Ok(v) if v > 0 => Some(v),
             _ => {
                 warn!(
                     "invalid {} value '{}', fallback to default {}",
                     env_key, v, default_value
                 );
-                default_value
+                None
             }
         },
-        _ => default_value,
+        _ => None,
     }
 }
 
 #[tokio::main]
 async fn main() {
-    let node_id = read_env_or_default(SLOG_NODE_ID_ENV_KEY, DEFAULT_NODE_ID);
-    let service_endpoint =
-        read_env_or_default(SLOG_SERVER_ENDPOINT_ENV_KEY, DEFAULT_SERVER_ENDPOINT);
-    let upload_timeout_secs =
-        parse_env_positive_u64(SLOG_UPLOAD_TIMEOUT_SECS_ENV_KEY, DEFAULT_UPLOAD_TIMEOUT_SECS);
-    let log_dir = resolve_log_dir();
+    let mut cfg = DaemonConfig::default();
+    let env_overrides = DaemonEnvOverrides {
+        node_id: read_env_nonempty(SLOG_NODE_ID_ENV_KEY),
+        server_endpoint: read_env_nonempty(SLOG_SERVER_ENDPOINT_ENV_KEY),
+        log_dir: read_env_path(SLOG_LOG_DIR_ENV_KEY),
+        upload_timeout_secs: parse_env_positive_u64(
+            SLOG_UPLOAD_TIMEOUT_SECS_ENV_KEY,
+            DEFAULT_UPLOAD_TIMEOUT_SECS,
+        ),
+    };
+    cfg.apply_env_overrides(env_overrides);
+
+    let node_id = cfg.node.node_id;
+    let service_endpoint = cfg.server.endpoint;
+    let upload_timeout_secs = cfg.upload.timeout_secs;
+    let log_dir = cfg.path.log_dir;
 
     // Init slog daemon own logs, output to file and console
     let daemon_log_dir = log_dir.join(SERVICE_NAME);

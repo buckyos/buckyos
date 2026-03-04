@@ -1,5 +1,5 @@
 use crate::storage::{LogRecords, LogStorageRef};
-use axum::{http::StatusCode, routing::post, Json, Router};
+use axum::{Json, Router, http::StatusCode, routing::post};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

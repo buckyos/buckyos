@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+mod config;
 mod server;
 mod storage;
 
@@ -8,12 +9,12 @@ extern crate log;
 
 use crate::server::LogHttpServer;
 use crate::storage::{LogStorageType, create_log_storage_with_dir};
+use config::{
+    SLOG_SERVER_BIND_ENV_KEY, SLOG_STORAGE_DIR_ENV_KEY, ServerConfig, ServerEnvOverrides,
+};
 use std::path::PathBuf;
 
 pub const SERVICE_NAME: &str = "slog_server";
-const SLOG_SERVER_BIND_ENV_KEY: &str = "SLOG_SERVER_BIND";
-const SLOG_STORAGE_DIR_ENV_KEY: &str = "SLOG_STORAGE_DIR";
-const DEFAULT_SERVER_BIND: &str = "127.0.0.1:8089";
 
 fn read_env_nonempty(env_key: &str) -> Option<String> {
     match std::env::var(env_key) {
@@ -22,14 +23,10 @@ fn read_env_nonempty(env_key: &str) -> Option<String> {
     }
 }
 
-fn resolve_bind_addr() -> String {
-    read_env_nonempty(SLOG_SERVER_BIND_ENV_KEY).unwrap_or_else(|| DEFAULT_SERVER_BIND.to_string())
-}
-
-fn resolve_storage_dir() -> PathBuf {
-    match read_env_nonempty(SLOG_STORAGE_DIR_ENV_KEY) {
-        Some(v) => PathBuf::from(v),
-        None => slog::get_buckyos_root_dir().join("slog_server"),
+fn read_env_path(env_key: &str) -> Option<PathBuf> {
+    match std::env::var(env_key) {
+        Ok(v) if !v.trim().is_empty() => Some(PathBuf::from(v.trim())),
+        _ => None,
     }
 }
 
@@ -49,8 +46,15 @@ async fn main() {
             .unwrap();
     logger.start();
 
-    let bind_addr = resolve_bind_addr();
-    let storage_dir = resolve_storage_dir();
+    let mut cfg = ServerConfig::default();
+    let env_overrides = ServerEnvOverrides {
+        bind_addr: read_env_nonempty(SLOG_SERVER_BIND_ENV_KEY),
+        storage_dir: read_env_path(SLOG_STORAGE_DIR_ENV_KEY),
+    };
+    cfg.apply_env_overrides(env_overrides);
+
+    let bind_addr = cfg.network.bind_addr;
+    let storage_dir = cfg.storage.storage_dir;
 
     info!(
         "slog_server config: bind_addr={}, storage_dir={}",
