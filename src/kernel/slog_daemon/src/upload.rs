@@ -1,4 +1,6 @@
 use slog::SystemLogRecord;
+use std::time::Duration;
+use crate::constants::DEFAULT_UPLOAD_TIMEOUT_SECS;
 
 #[derive(serde::Deserialize)]
 struct UploadResponse {
@@ -13,11 +15,26 @@ pub struct LogUploader {
 }
 
 impl LogUploader {
-    pub fn new(node: String, service_endpoint: String) -> Self {
+    pub fn new(node: String, service_endpoint: String, timeout_secs: u64) -> Self {
+        let timeout_secs = if timeout_secs == 0 {
+            DEFAULT_UPLOAD_TIMEOUT_SECS
+        } else {
+            timeout_secs
+        };
+        let timeout = Duration::from_secs(timeout_secs);
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .connect_timeout(timeout)
+            .build()
+            .unwrap_or_else(|e| {
+                error!("failed to build reqwest client with timeout: {}", e);
+                reqwest::Client::new()
+            });
+
         Self {
             node,
             service_endpoint,
-            client: reqwest::Client::new(),
+            client,
         }
     }
 

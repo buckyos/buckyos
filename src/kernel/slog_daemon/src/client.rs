@@ -14,10 +14,11 @@ impl LogDaemonClient {
     pub fn new(
         node: String,
         service_endpoint: String,
+        upload_timeout_secs: u64,
         log_dir: &Path,
         excluded: Vec<String>,
     ) -> Result<Self, String> {
-        let uploader = LogUploader::new(node.clone(), service_endpoint.clone());
+        let uploader = LogUploader::new(node.clone(), service_endpoint.clone(), upload_timeout_secs);
 
         let (tx, rx) = mpsc::channel::<LogRecordLoad>(100);
         let reader_manager = LogReaderManager::open(log_dir, excluded, tx).map_err(|e| {
