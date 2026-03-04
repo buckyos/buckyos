@@ -1,6 +1,9 @@
 mod test_pipeline_all_invalid_lines;
+mod test_pipeline_append_during_runtime;
+mod test_pipeline_backpressure_slow_server;
 mod test_pipeline_corrupt_line_sidecar;
 mod test_pipeline_crash_recovery;
+mod test_pipeline_dynamic_service_lifecycle;
 mod test_pipeline_file_rotation;
 mod test_pipeline_graceful_shutdown_drain;
 mod test_pipeline_happy_path;
