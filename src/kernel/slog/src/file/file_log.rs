@@ -11,38 +11,200 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Upper bound for cached log record count before dropping.
+const DEFAULT_CACHE_MAX_RECORDS: usize = 100_000;
+/// Upper bound for cached log bytes before dropping.
+const DEFAULT_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
+/// Max records flushed from cache in one round.
+const FLUSH_BATCH_MAX_RECORDS: usize = 1024;
+/// Max approximate bytes flushed from cache in one round.
+const FLUSH_BATCH_MAX_BYTES: usize = 1024 * 1024;
+
+struct CachedRecord {
+    record: SystemLogRecord,
+    approx_size: usize,
+}
+
+struct LogRecordCacheState {
+    records: VecDeque<CachedRecord>,
+    bytes: usize,
+    dropped_oldest_total: u64,
+    dropped_newest_total: u64,
+}
+
+enum EvictDirection {
+    Front,
+    Back,
+}
+
 // Cache log records before flushing to file, then we flush log every interval
 struct LogRecordCache {
-    records: Mutex<VecDeque<SystemLogRecord>>,
+    state: Mutex<LogRecordCacheState>,
+    max_records: usize,
+    max_bytes: usize,
 }
 
 impl LogRecordCache {
     pub fn new() -> Self {
+        Self::with_limits(DEFAULT_CACHE_MAX_RECORDS, DEFAULT_CACHE_MAX_BYTES)
+    }
+
+    fn with_limits(max_records: usize, max_bytes: usize) -> Self {
         LogRecordCache {
-            records: Mutex::new(VecDeque::new()),
+            state: Mutex::new(LogRecordCacheState {
+                records: VecDeque::new(),
+                bytes: 0,
+                dropped_oldest_total: 0,
+                dropped_newest_total: 0,
+            }),
+            max_records: max_records.max(1),
+            max_bytes: max_bytes.max(1),
         }
     }
 
     pub fn add_record(&self, record: SystemLogRecord) {
-        let mut records = self.records.lock().unwrap();
-        records.push_back(record);
+        self.add_records_back(vec![record]);
     }
 
-    pub fn fetch_all(&self) -> Vec<SystemLogRecord> {
-        let mut records = self.records.lock().unwrap();
-        std::mem::take(&mut *records).into_iter().collect()
+    fn add_records_back(&self, records: Vec<SystemLogRecord>) {
+        self.add_records(records, false);
     }
 
     // Requeue failed flush records to the front, so old records are retried first.
     pub fn add_records_front(&self, failed_records: Vec<SystemLogRecord>) {
-        if failed_records.is_empty() {
+        self.add_records(failed_records, true);
+    }
+
+    fn add_records(&self, records: Vec<SystemLogRecord>, insert_front: bool) {
+        if records.is_empty() {
             return;
         }
 
-        let mut records = self.records.lock().unwrap();
-        let mut pending = VecDeque::from(failed_records);
-        pending.append(&mut records);
-        *records = pending;
+        let mut state = self.state.lock().unwrap();
+
+        if insert_front {
+            for record in records.into_iter().rev() {
+                let approx_size = Self::estimate_record_size(&record);
+                state.records.push_front(CachedRecord {
+                    record,
+                    approx_size,
+                });
+                state.bytes = state.bytes.saturating_add(approx_size);
+            }
+            self.enforce_limits_locked(&mut state, EvictDirection::Back);
+        } else {
+            for record in records {
+                let approx_size = Self::estimate_record_size(&record);
+                state.records.push_back(CachedRecord {
+                    record,
+                    approx_size,
+                });
+                state.bytes = state.bytes.saturating_add(approx_size);
+            }
+            self.enforce_limits_locked(&mut state, EvictDirection::Front);
+        }
+    }
+
+    pub fn pop_batch(&self, max_records: usize, max_bytes: usize) -> Vec<SystemLogRecord> {
+        let max_records = max_records.max(1);
+        let max_bytes = max_bytes.max(1);
+        let mut state = self.state.lock().unwrap();
+        if state.records.is_empty() {
+            return Vec::new();
+        }
+
+        let mut result = Vec::new();
+        let mut batch_bytes = 0usize;
+        loop {
+            let Some(front) = state.records.front() else {
+                break;
+            };
+
+            let next_batch_bytes = batch_bytes.saturating_add(front.approx_size);
+            let reached_record_limit = result.len() >= max_records;
+            let reached_byte_limit = next_batch_bytes > max_bytes;
+            if !result.is_empty() && (reached_record_limit || reached_byte_limit) {
+                break;
+            }
+
+            let Some(item) = state.records.pop_front() else {
+                break;
+            };
+            state.bytes = state.bytes.saturating_sub(item.approx_size);
+            batch_bytes = batch_bytes.saturating_add(item.approx_size);
+            result.push(item.record);
+        }
+
+        result
+    }
+
+    pub fn fetch_all(&self) -> Vec<SystemLogRecord> {
+        self.pop_batch(usize::MAX, usize::MAX)
+    }
+
+    fn estimate_record_size(record: &SystemLogRecord) -> usize {
+        // Rough in-memory estimate: struct overhead + owned strings.
+        let mut size = 96usize;
+        size = size.saturating_add(record.target.len());
+        size = size.saturating_add(record.content.len());
+        size = size.saturating_add(record.file.as_ref().map(|v| v.len()).unwrap_or(0));
+        size
+    }
+
+    fn enforce_limits_locked(
+        &self,
+        state: &mut LogRecordCacheState,
+        evict_direction: EvictDirection,
+    ) {
+        let mut dropped = 0u64;
+        while state.records.len() > self.max_records || state.bytes > self.max_bytes {
+            let removed = match evict_direction {
+                EvictDirection::Front => state.records.pop_front(),
+                EvictDirection::Back => state.records.pop_back(),
+            };
+
+            let Some(item) = removed else {
+                break;
+            };
+            state.bytes = state.bytes.saturating_sub(item.approx_size);
+            dropped += 1;
+        }
+
+        if dropped == 0 {
+            return;
+        }
+
+        match evict_direction {
+            EvictDirection::Front => state.dropped_oldest_total += dropped,
+            EvictDirection::Back => state.dropped_newest_total += dropped,
+        }
+
+        warn!(
+            "log cache overflow, dropped={} (oldest_total={}, newest_total={}), cache_records={}, cache_bytes={}, limit_records={}, limit_bytes={}",
+            dropped,
+            state.dropped_oldest_total,
+            state.dropped_newest_total,
+            state.records.len(),
+            state.bytes,
+            self.max_records,
+            self.max_bytes,
+        );
+    }
+
+    #[cfg(test)]
+    fn stats_for_test(&self) -> (usize, usize, u64, u64) {
+        let state = self.state.lock().unwrap();
+        (
+            state.records.len(),
+            state.bytes,
+            state.dropped_oldest_total,
+            state.dropped_newest_total,
+        )
+    }
+
+    #[cfg(test)]
+    fn max_bytes_for_test(&self) -> usize {
+        self.max_bytes
     }
 }
 
@@ -121,32 +283,41 @@ impl FileLogTarget {
 
     fn flush_to_file(&self) {
         self.try_sync_pending_write_index();
+        loop {
+            let records = self
+                .inner
+                .cache
+                .pop_batch(FLUSH_BATCH_MAX_RECORDS, FLUSH_BATCH_MAX_BYTES);
+            if records.is_empty() {
+                break;
+            }
 
-        let records = self.inner.cache.fetch_all();
-        if records.is_empty() {
-            return;
-        }
+            let result = self.log_to_file(&records);
+            if let Some(e) = result.error.as_ref() {
+                error!("failed to flush logs to file: {}", e);
+            }
 
-        let result = self.log_to_file(&records);
-        if let Some(e) = result.error {
-            error!("failed to flush logs to file: {}", e);
-        }
+            if result.written_count < records.len() {
+                let failed_records = records[result.written_count..].to_vec();
+                let count = failed_records.len();
+                self.inner.cache.add_records_front(failed_records);
+                warn!(
+                    "requeued {} unwritten log records after flush failure, written_count={}",
+                    count, result.written_count
+                );
+                break;
+            }
 
-        if result.written_count < records.len() {
-            let failed_records = records[result.written_count..].to_vec();
-            let count = failed_records.len();
-            self.inner.cache.add_records_front(failed_records);
-            warn!(
-                "requeued {} unwritten log records after flush failure, written_count={}",
-                count, result.written_count
-            );
-        }
+            if !result.meta_synced {
+                warn!(
+                    "write index meta sync is pending for service {}",
+                    self.inner.service_name
+                );
+            }
 
-        if !result.meta_synced {
-            warn!(
-                "write index meta sync is pending for service {}",
-                self.inner.service_name
-            );
+            if result.error.is_some() {
+                break;
+            }
         }
     }
 
@@ -527,6 +698,64 @@ mod tests {
         assert_eq!(all[1].content, "old-2");
         assert_eq!(all[2].content, "new-1");
         assert_eq!(all[3].content, "new-2");
+    }
+
+    #[test]
+    fn test_log_record_cache_drops_oldest_when_record_limit_exceeded() {
+        let cache = LogRecordCache::with_limits(2, usize::MAX);
+        cache.add_record(make_record("a"));
+        cache.add_record(make_record("b"));
+        cache.add_record(make_record("c"));
+
+        let all = cache.fetch_all();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].content, "b");
+        assert_eq!(all[1].content, "c");
+
+        let (_, _, dropped_oldest, dropped_newest) = cache.stats_for_test();
+        assert_eq!(dropped_oldest, 1);
+        assert_eq!(dropped_newest, 0);
+    }
+
+    #[test]
+    fn test_log_record_cache_requeue_front_evicts_newest_when_overflow() {
+        let cache = LogRecordCache::with_limits(3, usize::MAX);
+        cache.add_record(make_record("new-1"));
+        cache.add_record(make_record("new-2"));
+        cache.add_record(make_record("new-3"));
+
+        cache.add_records_front(vec![make_record("old-1"), make_record("old-2")]);
+
+        let all = cache.fetch_all();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].content, "old-1");
+        assert_eq!(all[1].content, "old-2");
+        assert_eq!(all[2].content, "new-1");
+
+        let (_, _, dropped_oldest, dropped_newest) = cache.stats_for_test();
+        assert_eq!(dropped_oldest, 0);
+        assert_eq!(dropped_newest, 2);
+    }
+
+    #[test]
+    fn test_log_record_cache_pop_batch_limits_records_and_bytes() {
+        let cache = LogRecordCache::with_limits(100, usize::MAX);
+        cache.add_record(make_record("one"));
+        cache.add_record(make_record("two"));
+        cache.add_record(make_record("three"));
+
+        let batch_by_count = cache.pop_batch(2, usize::MAX);
+        assert_eq!(batch_by_count.len(), 2);
+        assert_eq!(batch_by_count[0].content, "one");
+        assert_eq!(batch_by_count[1].content, "two");
+
+        let (remain_count, _, _, _) = cache.stats_for_test();
+        assert_eq!(remain_count, 1);
+
+        cache.add_record(make_record("four"));
+        let tiny_bytes = cache.max_bytes_for_test().min(100);
+        let batch_by_bytes = cache.pop_batch(100, tiny_bytes);
+        assert_eq!(batch_by_bytes.len(), 1);
     }
 
     #[test]
