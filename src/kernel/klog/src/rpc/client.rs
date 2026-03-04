@@ -1,7 +1,7 @@
 use super::{
-    KLOG_JSON_RPC_PATH, KLOG_JSON_RPC_VERSION, KLOG_RPC_METHOD_APPEND, KLOG_RPC_METHOD_META_DELETE,
-    KLOG_RPC_METHOD_META_PUT, KLOG_RPC_METHOD_META_QUERY, KLOG_RPC_METHOD_QUERY,
-    KLogJsonRpcRequest, KLogJsonRpcResponse,
+    KLOG_JSON_RPC_PATH, KLOG_JSON_RPC_VERSION, KLOG_RPC_METHOD_LOG_APPEND,
+    KLOG_RPC_METHOD_LOG_QUERY, KLOG_RPC_METHOD_META_DELETE, KLOG_RPC_METHOD_META_PUT,
+    KLOG_RPC_METHOD_META_QUERY, KLogJsonRpcRequest, KLogJsonRpcResponse,
 };
 use crate::KNode;
 use crate::error::{
@@ -114,25 +114,28 @@ impl KLogClient {
         format!("{}-{}", node_id, Uuid::now_v7())
     }
 
-    pub async fn append(
+    pub async fn append_log(
         &self,
         req: KLogAppendRequest,
     ) -> Result<KLogAppendResponse, KLogClientError> {
-        let (resp, _) = self.append_with_trace(req).await?;
+        let (resp, _) = self.append_log_with_trace(req).await?;
         Ok(resp)
     }
 
-    pub async fn append_with_trace(
+    pub async fn append_log_with_trace(
         &self,
         req: KLogAppendRequest,
     ) -> Result<(KLogAppendResponse, KLogCallTrace), KLogClientError> {
         let req = self.fill_append_defaults(req);
-        self.call_with_trace(KLOG_RPC_METHOD_APPEND, &req).await
+        self.call_with_trace(KLOG_RPC_METHOD_LOG_APPEND, &req).await
     }
 
-    pub async fn append_message(&self, message: impl Into<String>) -> Result<u64, KLogClientError> {
+    pub async fn append_log_message(
+        &self,
+        message: impl Into<String>,
+    ) -> Result<u64, KLogClientError> {
         let resp = self
-            .append(KLogAppendRequest {
+            .append_log(KLogAppendRequest {
                 message: message.into(),
                 timestamp: None,
                 node_id: None,
@@ -145,16 +148,19 @@ impl KLogClient {
         Ok(resp.id)
     }
 
-    pub async fn query(&self, req: KLogQueryRequest) -> Result<KLogQueryResponse, KLogClientError> {
-        let (resp, _) = self.query_with_trace(req).await?;
+    pub async fn query_log(
+        &self,
+        req: KLogQueryRequest,
+    ) -> Result<KLogQueryResponse, KLogClientError> {
+        let (resp, _) = self.query_log_with_trace(req).await?;
         Ok(resp)
     }
 
-    pub async fn query_with_trace(
+    pub async fn query_log_with_trace(
         &self,
         req: KLogQueryRequest,
     ) -> Result<(KLogQueryResponse, KLogCallTrace), KLogClientError> {
-        self.call_with_trace(KLOG_RPC_METHOD_QUERY, &req).await
+        self.call_with_trace(KLOG_RPC_METHOD_LOG_QUERY, &req).await
     }
 
     pub async fn put_meta(
@@ -387,9 +393,9 @@ mod tests {
         KLogMetaQueryResponse, KLogQueryRequest, KLogQueryResponse,
     };
     use crate::rpc::{
-        KLOG_JSON_RPC_PATH, KLOG_RPC_ERR_METHOD_NOT_FOUND, KLOG_RPC_METHOD_APPEND,
-        KLOG_RPC_METHOD_META_DELETE, KLOG_RPC_METHOD_META_PUT, KLOG_RPC_METHOD_META_QUERY,
-        KLOG_RPC_METHOD_QUERY, KLogJsonRpcRequest, KLogJsonRpcResponse,
+        KLOG_JSON_RPC_PATH, KLOG_RPC_ERR_METHOD_NOT_FOUND, KLOG_RPC_METHOD_LOG_APPEND,
+        KLOG_RPC_METHOD_LOG_QUERY, KLOG_RPC_METHOD_META_DELETE, KLOG_RPC_METHOD_META_PUT,
+        KLOG_RPC_METHOD_META_QUERY, KLogJsonRpcRequest, KLogJsonRpcResponse,
     };
     use axum::Router;
     use axum::extract::Json;
@@ -463,7 +469,7 @@ mod tests {
         let app = Router::new().route(
             KLOG_JSON_RPC_PATH,
             post(|Json(request): Json<KLogJsonRpcRequest>| async move {
-                assert_eq!(request.method, KLOG_RPC_METHOD_APPEND);
+                assert_eq!(request.method, KLOG_RPC_METHOD_LOG_APPEND);
                 let params: KLogAppendRequest =
                     serde_json::from_value(request.params).expect("append params");
                 assert_eq!(params.message, "hello-klog");
@@ -507,7 +513,7 @@ mod tests {
             KLOG_JSON_RPC_PATH,
             post(
                 |headers: HeaderMap, Json(request): Json<KLogJsonRpcRequest>| async move {
-                    assert_eq!(request.method, KLOG_RPC_METHOD_APPEND);
+                    assert_eq!(request.method, KLOG_RPC_METHOD_LOG_APPEND);
                     let trace_id = headers
                         .get(KLOG_TRACE_ID_HEADER)
                         .and_then(|v| v.to_str().ok())
@@ -556,7 +562,7 @@ mod tests {
         let app = Router::new().route(
             KLOG_JSON_RPC_PATH,
             post(|Json(request): Json<KLogJsonRpcRequest>| async move {
-                assert_eq!(request.method, KLOG_RPC_METHOD_APPEND);
+                assert_eq!(request.method, KLOG_RPC_METHOD_LOG_APPEND);
                 let params: KLogAppendRequest =
                     serde_json::from_value(request.params).expect("append params");
                 let request_id = params.request_id.expect("request_id should be auto-filled");
@@ -597,7 +603,7 @@ mod tests {
         let app = Router::new().route(
             KLOG_JSON_RPC_PATH,
             post(|Json(request): Json<KLogJsonRpcRequest>| async move {
-                assert_eq!(request.method, KLOG_RPC_METHOD_QUERY);
+                assert_eq!(request.method, KLOG_RPC_METHOD_LOG_QUERY);
                 let params: KLogQueryRequest =
                     serde_json::from_value(request.params).expect("query params");
                 assert_eq!(params.limit, Some(2));

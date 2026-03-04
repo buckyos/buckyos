@@ -12,8 +12,9 @@ use crate::{
     rpc::{
         KLOG_JSON_RPC_PATH, KLOG_JSON_RPC_VERSION, KLOG_RPC_ERR_INTERNAL,
         KLOG_RPC_ERR_INVALID_PARAMS, KLOG_RPC_ERR_INVALID_REQUEST, KLOG_RPC_ERR_METHOD_NOT_FOUND,
-        KLOG_RPC_METHOD_APPEND, KLOG_RPC_METHOD_META_DELETE, KLOG_RPC_METHOD_META_PUT,
-        KLOG_RPC_METHOD_META_QUERY, KLOG_RPC_METHOD_QUERY, KLogJsonRpcRequest, KLogJsonRpcResponse,
+        KLOG_RPC_METHOD_LOG_APPEND, KLOG_RPC_METHOD_LOG_APPEND_LEGACY, KLOG_RPC_METHOD_LOG_QUERY,
+        KLOG_RPC_METHOD_LOG_QUERY_LEGACY, KLOG_RPC_METHOD_META_DELETE, KLOG_RPC_METHOD_META_PUT,
+        KLOG_RPC_METHOD_META_QUERY, KLogJsonRpcRequest, KLogJsonRpcResponse,
     },
 };
 use axum::Json;
@@ -395,11 +396,11 @@ impl KRpcServer {
         }
 
         match request.method.as_str() {
-            KLOG_RPC_METHOD_APPEND => {
+            KLOG_RPC_METHOD_LOG_APPEND | KLOG_RPC_METHOD_LOG_APPEND_LEGACY => {
                 let params: KLogAppendRequest = match serde_json::from_value(request.params) {
                     Ok(params) => params,
                     Err(e) => {
-                        let msg = format!("Invalid params for {}: {}", KLOG_RPC_METHOD_APPEND, e);
+                        let msg = format!("Invalid params for {}: {}", request.method, e);
                         let envelope = KLogErrorEnvelope::new(
                             KLogErrorCode::InvalidArgument,
                             msg.clone(),
@@ -451,15 +452,14 @@ impl KRpcServer {
                     }
                 }
             }
-            KLOG_RPC_METHOD_QUERY => {
+            KLOG_RPC_METHOD_LOG_QUERY | KLOG_RPC_METHOD_LOG_QUERY_LEGACY => {
                 let params: KLogQueryRequest = if request.params.is_null() {
                     KLogQueryRequest::default()
                 } else {
                     match serde_json::from_value(request.params) {
                         Ok(params) => params,
                         Err(e) => {
-                            let msg =
-                                format!("Invalid params for {}: {}", KLOG_RPC_METHOD_QUERY, e);
+                            let msg = format!("Invalid params for {}: {}", request.method, e);
                             let envelope = KLogErrorEnvelope::new(
                                 KLogErrorCode::InvalidArgument,
                                 msg.clone(),

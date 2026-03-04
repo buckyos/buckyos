@@ -9,8 +9,12 @@ pub use server::*;
 
 pub const KLOG_JSON_RPC_VERSION: &str = "2.0";
 pub const KLOG_JSON_RPC_PATH: &str = "/klog/rpc";
-pub const KLOG_RPC_METHOD_APPEND: &str = "klog.append";
-pub const KLOG_RPC_METHOD_QUERY: &str = "klog.query";
+pub const KLOG_RPC_METHOD_LOG_APPEND: &str = "klog.log.append";
+pub const KLOG_RPC_METHOD_LOG_QUERY: &str = "klog.log.query";
+pub const KLOG_RPC_METHOD_LOG_APPEND_LEGACY: &str = "klog.append";
+pub const KLOG_RPC_METHOD_LOG_QUERY_LEGACY: &str = "klog.query";
+pub const KLOG_RPC_METHOD_APPEND: &str = KLOG_RPC_METHOD_LOG_APPEND;
+pub const KLOG_RPC_METHOD_QUERY: &str = KLOG_RPC_METHOD_LOG_QUERY;
 pub const KLOG_RPC_METHOD_META_PUT: &str = "klog.meta.put";
 pub const KLOG_RPC_METHOD_META_DELETE: &str = "klog.meta.delete";
 pub const KLOG_RPC_METHOD_META_QUERY: &str = "klog.meta.query";
