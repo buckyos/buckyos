@@ -1,7 +1,7 @@
 use super::snapshot::{KSnapshotMeta, SnapshotManager, SnapshotManagerRef};
 use crate::state_machine::snapshot::KSnapshotData;
 use crate::state_store::KLogStateStoreManagerRef;
-use crate::state_store::{KLogStateMachineMeta, KLogStateSnapshot};
+use crate::state_store::{KLogMetaPutResult, KLogStateMachineMeta, KLogStateSnapshot};
 use crate::{KLogId, KLogRequest, KLogResponse, KNode, KNodeId, KTypeConfig, StorageResult};
 use openraft::{
     Entry, EntryPayload, OptionalSend, RaftSnapshotBuilder, SnapshotMeta, StoredMembership,
@@ -107,17 +107,25 @@ impl KLogStateMachine {
                     }
                 }
             }
-            KLogRequest::PutMeta { item } => {
+            KLogRequest::PutMeta {
+                item,
+                expected_revision,
+            } => {
                 debug!(
-                    "StateMachine process put-meta request: key={}, value_len={}, updated_at={}, updated_by={}",
+                    "StateMachine process put-meta request: key={}, value_len={}, updated_at={}, updated_by={}, expected_revision={:?}",
                     item.key,
                     item.value.len(),
                     item.updated_at,
-                    item.updated_by
+                    item.updated_by,
+                    expected_revision
                 );
                 let key = item.key.clone();
-                match self.state_store.put_meta_entry(item).await {
-                    Ok(stored) => {
+                match self
+                    .state_store
+                    .put_meta_entry_with_expected_revision(item, expected_revision)
+                    .await
+                {
+                    Ok(KLogMetaPutResult::Stored(stored)) => {
                         debug!(
                             "StateMachine put-meta request committed: key={}, revision={}",
                             key, stored.revision
@@ -125,6 +133,20 @@ impl KLogStateMachine {
                         KLogResponse::MetaPutOk {
                             key,
                             revision: stored.revision,
+                        }
+                    }
+                    Ok(KLogMetaPutResult::VersionConflict {
+                        expected_revision,
+                        current_revision,
+                    }) => {
+                        warn!(
+                            "StateMachine put-meta request CAS conflict: key={}, expected_revision={}, current_revision={:?}",
+                            key, expected_revision, current_revision
+                        );
+                        KLogResponse::MetaPutConflict {
+                            key,
+                            expected_revision,
+                            current_revision,
                         }
                     }
                     Err(err) => {

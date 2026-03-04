@@ -49,9 +49,16 @@ pub struct KLogMetaEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum KLogRequest {
-    AppendLog { item: KLogEntry },
-    PutMeta { item: KLogMetaEntry },
-    DeleteMeta { key: String },
+    AppendLog {
+        item: KLogEntry,
+    },
+    PutMeta {
+        item: KLogMetaEntry,
+        expected_revision: Option<u64>,
+    },
+    DeleteMeta {
+        key: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,6 +71,11 @@ pub enum KLogResponse {
     MetaPutOk {
         key: String,
         revision: u64,
+    },
+    MetaPutConflict {
+        key: String,
+        expected_revision: u64,
+        current_revision: Option<u64>,
     },
     MetaDeleteOk {
         key: String,

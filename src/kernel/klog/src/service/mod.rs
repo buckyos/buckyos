@@ -404,6 +404,7 @@ impl KLogWriteService {
 
         let metrics = self.raft.metrics().borrow().clone();
         let local_node_id = metrics.id;
+        let expected_revision = req.expected_revision;
         let item = KLogMetaEntry {
             key: key.clone(),
             value: req.value.clone(),
@@ -412,20 +413,28 @@ impl KLogWriteService {
             revision: 0,
         };
         info!(
-            "{} meta put request: trace_id={}, key={}, value_len={}, updated_at={}, updated_by={}, local_node_id={}, current_leader={:?}, forward_hops={}, forwarded_by={}",
+            "{} meta put request: trace_id={}, key={}, value_len={}, updated_at={}, updated_by={}, expected_revision={:?}, local_node_id={}, current_leader={:?}, forward_hops={}, forwarded_by={}",
             self.service_name,
             trace_id,
             item.key,
             item.value.len(),
             item.updated_at,
             item.updated_by,
+            expected_revision,
             local_node_id,
             metrics.current_leader,
             forward_hops,
             forwarded_by
         );
 
-        match self.raft.client_write(KLogRequest::PutMeta { item }).await {
+        match self
+            .raft
+            .client_write(KLogRequest::PutMeta {
+                item,
+                expected_revision,
+            })
+            .await
+        {
             Ok(resp) => match resp.data {
                 KLogResponse::MetaPutOk { key, revision } => {
                     info!(
@@ -433,6 +442,23 @@ impl KLogWriteService {
                         self.service_name, key, revision
                     );
                     Ok(KLogMetaPutResponse { key, revision })
+                }
+                KLogResponse::MetaPutConflict {
+                    key,
+                    expected_revision,
+                    current_revision,
+                } => {
+                    let msg = format!(
+                        "{} meta put version conflict: key={}, expected_revision={}, current_revision={:?}",
+                        self.service_name, key, expected_revision, current_revision
+                    );
+                    warn!("{}", msg);
+                    Err(self.service_error(
+                        StatusCode::CONFLICT,
+                        KLogErrorCode::VersionConflict,
+                        msg,
+                        &trace_id,
+                    ))
                 }
                 KLogResponse::Err(err_msg) => {
                     let msg = format!(
@@ -528,6 +554,7 @@ impl KLogWriteService {
                                 value: req.value,
                                 updated_at: req.updated_at,
                                 updated_by: req.updated_by,
+                                expected_revision: req.expected_revision,
                             },
                             target_hops,
                             local_node_id,

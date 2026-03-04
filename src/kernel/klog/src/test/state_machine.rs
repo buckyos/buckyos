@@ -182,6 +182,7 @@ async fn test_state_machine_apply_meta_put_and_delete() -> anyhow::Result<()> {
                 updated_by: 1,
                 revision: 0,
             },
+            expected_revision: None,
         }),
     };
     let del = Entry {
@@ -202,6 +203,73 @@ async fn test_state_machine_apply_meta_put_and_delete() -> anyhow::Result<()> {
         KLogResponse::MetaDeleteOk {
             existed: true,
             prev_meta: Some(KLogMetaEntry { revision: 1, .. }),
+            ..
+        }
+    ));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_state_machine_apply_meta_put_with_optional_cas() -> anyhow::Result<()> {
+    let context = TestMemoryContext::new().await;
+    let mut sm = context.state_machine;
+
+    let create = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(5, 0), 1),
+        payload: EntryPayload::Normal(KLogRequest::PutMeta {
+            item: KLogMetaEntry {
+                key: "cluster/config/name".to_string(),
+                value: "alpha".to_string(),
+                updated_at: 6000,
+                updated_by: 1,
+                revision: 0,
+            },
+            expected_revision: Some(0),
+        }),
+    };
+    let update = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(5, 0), 2),
+        payload: EntryPayload::Normal(KLogRequest::PutMeta {
+            item: KLogMetaEntry {
+                key: "cluster/config/name".to_string(),
+                value: "beta".to_string(),
+                updated_at: 6001,
+                updated_by: 1,
+                revision: 0,
+            },
+            expected_revision: Some(1),
+        }),
+    };
+    let conflict = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(5, 0), 3),
+        payload: EntryPayload::Normal(KLogRequest::PutMeta {
+            item: KLogMetaEntry {
+                key: "cluster/config/name".to_string(),
+                value: "gamma".to_string(),
+                updated_at: 6002,
+                updated_by: 1,
+                revision: 0,
+            },
+            expected_revision: Some(1),
+        }),
+    };
+
+    let responses = sm.apply(vec![create, update, conflict]).await?;
+    assert_eq!(responses.len(), 3);
+    assert!(matches!(
+        responses[0],
+        KLogResponse::MetaPutOk { revision: 1, .. }
+    ));
+    assert!(matches!(
+        responses[1],
+        KLogResponse::MetaPutOk { revision: 2, .. }
+    ));
+    assert!(matches!(
+        responses[2],
+        KLogResponse::MetaPutConflict {
+            expected_revision: 1,
+            current_revision: Some(2),
             ..
         }
     ));

@@ -713,7 +713,9 @@ impl KRpcServer {
     fn rpc_error_code_from_error_code(code: KLogErrorCode) -> i64 {
         if matches!(
             code,
-            KLogErrorCode::InvalidArgument | KLogErrorCode::PayloadTooLarge
+            KLogErrorCode::InvalidArgument
+                | KLogErrorCode::PayloadTooLarge
+                | KLogErrorCode::VersionConflict
         ) {
             KLOG_RPC_ERR_INVALID_PARAMS
         } else if matches!(

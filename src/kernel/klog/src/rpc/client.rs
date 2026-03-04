@@ -695,6 +695,7 @@ mod tests {
                 value: "42".to_string(),
                 updated_at: Some(1234),
                 updated_by: Some(1),
+                expected_revision: None,
             })
             .await
             .map_err(|e| anyhow::anyhow!("put_meta failed: {}", e))?;

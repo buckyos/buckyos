@@ -14,6 +14,15 @@ pub struct KLogStateSnapshot {
     pub data: Vec<u8>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KLogMetaPutResult {
+    Stored(KLogMetaEntry),
+    VersionConflict {
+        expected_revision: u64,
+        current_revision: Option<u64>,
+    },
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KLogStateSnapshotData {
     pub entries: Vec<KLogEntry>,
@@ -286,6 +295,32 @@ impl KLogStateStoreManager {
 
     pub async fn put_meta_entry(&self, item: KLogMetaEntry) -> KResult<KLogMetaEntry> {
         self.state_store.put_meta(item).await
+    }
+
+    pub async fn put_meta_entry_with_expected_revision(
+        &self,
+        item: KLogMetaEntry,
+        expected_revision: Option<u64>,
+    ) -> KResult<KLogMetaPutResult> {
+        if let Some(expected_revision) = expected_revision {
+            let current = self.state_store.get_meta(item.key.as_str()).await?;
+            let current_revision = current.as_ref().map(|v| v.revision);
+            let matched = if expected_revision == 0 {
+                current.is_none()
+            } else {
+                current_revision == Some(expected_revision)
+            };
+
+            if !matched {
+                return Ok(KLogMetaPutResult::VersionConflict {
+                    expected_revision,
+                    current_revision,
+                });
+            }
+        }
+
+        let stored = self.state_store.put_meta(item).await?;
+        Ok(KLogMetaPutResult::Stored(stored))
     }
 
     pub async fn delete_meta_key(&self, key: &str) -> KResult<Option<KLogMetaEntry>> {
