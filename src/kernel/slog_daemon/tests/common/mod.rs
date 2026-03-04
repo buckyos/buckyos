@@ -5,6 +5,7 @@ use slog_server::storage::{LogQueryRequest, LogStorage};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -274,6 +275,10 @@ impl ChildGuard {
             Err(e) => format!("failed to read stderr log {}: {}", path.display(), e),
         }
     }
+
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
 }
 
 impl Drop for ChildGuard {
@@ -442,6 +447,50 @@ pub async fn wait_for_tcp_not_ready(addr: &str, timeout: Duration) -> Result<(),
             }
             Err(_) => return Ok(()),
         }
+    }
+}
+
+pub fn send_sigint(process: &ChildGuard) -> Result<(), String> {
+    let pid = process.pid().to_string();
+    let status = Command::new("kill")
+        .arg("-INT")
+        .arg(&pid)
+        .status()
+        .map_err(|e| format!("failed to send SIGINT to pid {}: {}", pid, e))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "kill -INT failed for pid {} with status {}",
+            pid, status
+        ))
+    }
+}
+
+pub async fn wait_for_process_exit(
+    process: &mut ChildGuard,
+    timeout: Duration,
+) -> Result<ExitStatus, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = process
+            .child
+            .try_wait()
+            .map_err(|e| format!("failed to poll child process status: {}", e))?
+        {
+            return Ok(status);
+        }
+
+        if Instant::now() >= deadline {
+            let stderr_tail = process.read_stderr_tail(8192);
+            return Err(format!(
+                "timeout waiting process '{}' exit, stderr_tail={}",
+                process.name, stderr_tail
+            ));
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
