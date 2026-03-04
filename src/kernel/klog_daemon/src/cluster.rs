@@ -501,6 +501,7 @@ mod tests {
             join_blocking: false,
             join_target_role: KLogJoinTargetRole::Voter,
             admin_local_only: true,
+            rpc: Default::default(),
         }
     }
 

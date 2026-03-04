@@ -48,7 +48,7 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
     })?;
 
     info!(
-        "klog startup config: node_id={}, listen_addr={}, rpc_enabled={}, rpc_listen_addr={}, advertise_addr={}:{}, rpc_advertise_port={}, data_dir={}, cluster_name={}, cluster_id={}, auto_bootstrap={}, state_store_sync_write={}, join_targets={:?}, join_retry_interval_ms={}, join_max_attempts={}, join_blocking={}, join_target_role={}, admin_local_only={}",
+        "klog startup config: node_id={}, listen_addr={}, rpc_enabled={}, rpc_listen_addr={}, advertise_addr={}:{}, rpc_advertise_port={}, data_dir={}, cluster_name={}, cluster_id={}, auto_bootstrap={}, state_store_sync_write={}, join_targets={:?}, join_retry_interval_ms={}, join_max_attempts={}, join_blocking={}, join_target_role={}, admin_local_only={}, rpc_append(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_query(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_jsonrpc(timeout_ms={}, body_limit_bytes={}, concurrency={})",
         cfg.node_id,
         cfg.listen_addr,
         cfg.enable_rpc_server,
@@ -66,7 +66,16 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
         cfg.join_max_attempts,
         cfg.join_blocking,
         cfg.join_target_role,
-        cfg.admin_local_only
+        cfg.admin_local_only,
+        cfg.rpc.append.timeout_ms,
+        cfg.rpc.append.body_limit_bytes,
+        cfg.rpc.append.concurrency,
+        cfg.rpc.query.timeout_ms,
+        cfg.rpc.query.body_limit_bytes,
+        cfg.rpc.query.concurrency,
+        cfg.rpc.jsonrpc.timeout_ms,
+        cfg.rpc.jsonrpc.body_limit_bytes,
+        cfg.rpc.jsonrpc.concurrency
     );
     if cfg.admin_local_only {
         warn!(
@@ -158,11 +167,10 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
             "Starting client RPC server: rpc_listen_addr={}",
             cfg.rpc_listen_addr
         );
-        Some(KRpcServer::new(
-            cfg.rpc_listen_addr.clone(),
-            raft,
-            state_store_manager,
-        ))
+        Some(
+            KRpcServer::new(cfg.rpc_listen_addr.clone(), raft, state_store_manager)
+                .with_policy(cfg.rpc.into()),
+        )
     } else {
         warn!("Client RPC server is disabled by config");
         None

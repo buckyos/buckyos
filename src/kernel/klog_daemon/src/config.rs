@@ -2,15 +2,20 @@ use crate::constants::{
     DEFAULT_ADMIN_LOCAL_ONLY, DEFAULT_ADVERTISE_ADDR, DEFAULT_AUTO_BOOTSTRAP,
     DEFAULT_ENABLE_RPC_SERVER, DEFAULT_JOIN_BLOCKING, DEFAULT_JOIN_MAX_ATTEMPTS,
     DEFAULT_JOIN_RETRY_INTERVAL_MS, DEFAULT_LISTEN_HOST, DEFAULT_RAFT_PORT,
-    DEFAULT_RPC_LISTEN_HOST, DEFAULT_RPC_PORT, DEFAULT_STATE_STORE_SYNC_WRITE,
-    ENV_ADMIN_LOCAL_ONLY, ENV_ADVERTISE_ADDR, ENV_ADVERTISE_PORT, ENV_AUTO_BOOTSTRAP,
-    ENV_CLUSTER_ID, ENV_CLUSTER_NAME, ENV_CONFIG_FILE, ENV_DATA_DIR, ENV_ENABLE_RPC_SERVER,
-    ENV_JOIN_BLOCKING, ENV_JOIN_MAX_ATTEMPTS, ENV_JOIN_RETRY_INTERVAL_MS, ENV_JOIN_TARGET_ROLE,
-    ENV_JOIN_TARGETS, ENV_LISTEN_ADDR, ENV_NODE_ID, ENV_RPC_ADVERTISE_PORT, ENV_RPC_LISTEN_ADDR,
+    DEFAULT_RPC_BODY_LIMIT_BYTES, DEFAULT_RPC_CONCURRENCY_LIMIT, DEFAULT_RPC_LISTEN_HOST,
+    DEFAULT_RPC_PORT, DEFAULT_RPC_TIMEOUT_MS, DEFAULT_STATE_STORE_SYNC_WRITE, ENV_ADMIN_LOCAL_ONLY,
+    ENV_ADVERTISE_ADDR, ENV_ADVERTISE_PORT, ENV_AUTO_BOOTSTRAP, ENV_CLUSTER_ID, ENV_CLUSTER_NAME,
+    ENV_CONFIG_FILE, ENV_DATA_DIR, ENV_ENABLE_RPC_SERVER, ENV_JOIN_BLOCKING, ENV_JOIN_MAX_ATTEMPTS,
+    ENV_JOIN_RETRY_INTERVAL_MS, ENV_JOIN_TARGET_ROLE, ENV_JOIN_TARGETS, ENV_LISTEN_ADDR,
+    ENV_NODE_ID, ENV_RPC_ADVERTISE_PORT, ENV_RPC_APPEND_BODY_LIMIT_BYTES,
+    ENV_RPC_APPEND_CONCURRENCY, ENV_RPC_APPEND_TIMEOUT_MS, ENV_RPC_JSONRPC_BODY_LIMIT_BYTES,
+    ENV_RPC_JSONRPC_CONCURRENCY, ENV_RPC_JSONRPC_TIMEOUT_MS, ENV_RPC_LISTEN_ADDR,
+    ENV_RPC_QUERY_BODY_LIMIT_BYTES, ENV_RPC_QUERY_CONCURRENCY, ENV_RPC_QUERY_TIMEOUT_MS,
     ENV_STATE_STORE_SYNC_WRITE, KLOG_SERVICE_NAME,
 };
 use buckyos_kit::get_buckyos_service_data_dir;
 use klog::KNodeId;
+use klog::rpc::{KRpcRoutePolicy, KRpcServerPolicy};
 use log::error;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -60,6 +65,60 @@ impl std::fmt::Display for KLogRuntimeConfigSource {
             Self::Env => write!(f, "env"),
             Self::File(path) => write!(f, "file({})", path.display()),
             Self::Buckyos => write!(f, "buckyos"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KLogRpcRouteConfig {
+    /// Request timeout in milliseconds.
+    pub timeout_ms: u64,
+
+    /// Maximum request body bytes.
+    pub body_limit_bytes: usize,
+
+    /// Maximum in-flight requests.
+    pub concurrency: usize,
+}
+
+impl Default for KLogRpcRouteConfig {
+    fn default() -> Self {
+        Self {
+            timeout_ms: DEFAULT_RPC_TIMEOUT_MS,
+            body_limit_bytes: DEFAULT_RPC_BODY_LIMIT_BYTES,
+            concurrency: DEFAULT_RPC_CONCURRENCY_LIMIT,
+        }
+    }
+}
+
+impl From<KLogRpcRouteConfig> for KRpcRoutePolicy {
+    fn from(value: KLogRpcRouteConfig) -> Self {
+        Self {
+            timeout_ms: value.timeout_ms,
+            body_limit_bytes: value.body_limit_bytes,
+            concurrency: value.concurrency,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct KLogRpcConfig {
+    /// Route policy for `/klog/data/append`.
+    pub append: KLogRpcRouteConfig,
+
+    /// Route policy for `/klog/data/query`.
+    pub query: KLogRpcRouteConfig,
+
+    /// Route policy for `/klog/rpc`.
+    pub jsonrpc: KLogRpcRouteConfig,
+}
+
+impl From<KLogRpcConfig> for KRpcServerPolicy {
+    fn from(value: KLogRpcConfig) -> Self {
+        Self {
+            append: value.append.into(),
+            query: value.query.into(),
+            jsonrpc: value.jsonrpc.into(),
         }
     }
 }
@@ -119,6 +178,9 @@ pub struct KLogRuntimeConfig {
 
     /// Restrict admin APIs to loopback clients only.
     pub admin_local_only: bool,
+
+    /// Route-level RPC policies for append/query/jsonrpc.
+    pub rpc: KLogRpcConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -194,6 +256,32 @@ pub struct KLogAdminConfigPatch {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct KLogRpcRouteConfigPatch {
+    /// Optional timeout in milliseconds.
+    pub timeout_ms: Option<u64>,
+
+    /// Optional request body limit in bytes.
+    pub body_limit_bytes: Option<usize>,
+
+    /// Optional concurrency limit.
+    pub concurrency: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KLogRpcConfigPatch {
+    /// Optional append route policy patch.
+    pub append: Option<KLogRpcRouteConfigPatch>,
+
+    /// Optional query route policy patch.
+    pub query: Option<KLogRpcRouteConfigPatch>,
+
+    /// Optional json-rpc route policy patch.
+    pub jsonrpc: Option<KLogRpcRouteConfigPatch>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KLogRuntimeConfigPatch {
     /// Optional grouped network section.
     pub network: Option<KLogNetworkConfigPatch>,
@@ -209,6 +297,9 @@ pub struct KLogRuntimeConfigPatch {
 
     /// Optional grouped admin API section.
     pub admin: Option<KLogAdminConfigPatch>,
+
+    /// Optional grouped rpc policy section.
+    pub rpc: Option<KLogRpcConfigPatch>,
 
     /// Required node id; can also come from env.
     pub node_id: Option<KNodeId>,
@@ -271,6 +362,23 @@ impl KLogRuntimeConfig {
             admin: Some(KLogAdminConfigPatch {
                 local_only: parse_env_bool(ENV_ADMIN_LOCAL_ONLY)?,
             }),
+            rpc: Some(KLogRpcConfigPatch {
+                append: Some(KLogRpcRouteConfigPatch {
+                    timeout_ms: parse_env_u64(ENV_RPC_APPEND_TIMEOUT_MS)?,
+                    body_limit_bytes: parse_env_usize(ENV_RPC_APPEND_BODY_LIMIT_BYTES)?,
+                    concurrency: parse_env_usize(ENV_RPC_APPEND_CONCURRENCY)?,
+                }),
+                query: Some(KLogRpcRouteConfigPatch {
+                    timeout_ms: parse_env_u64(ENV_RPC_QUERY_TIMEOUT_MS)?,
+                    body_limit_bytes: parse_env_usize(ENV_RPC_QUERY_BODY_LIMIT_BYTES)?,
+                    concurrency: parse_env_usize(ENV_RPC_QUERY_CONCURRENCY)?,
+                }),
+                jsonrpc: Some(KLogRpcRouteConfigPatch {
+                    timeout_ms: parse_env_u64(ENV_RPC_JSONRPC_TIMEOUT_MS)?,
+                    body_limit_bytes: parse_env_usize(ENV_RPC_JSONRPC_BODY_LIMIT_BYTES)?,
+                    concurrency: parse_env_usize(ENV_RPC_JSONRPC_CONCURRENCY)?,
+                }),
+            }),
             ..Default::default()
         };
 
@@ -316,6 +424,7 @@ impl KLogRuntimeConfig {
             cluster,
             join,
             admin,
+            rpc,
             node_id,
         } = patch;
 
@@ -324,6 +433,7 @@ impl KLogRuntimeConfig {
         let cluster = cluster.unwrap_or_default();
         let join = join.unwrap_or_default();
         let admin = admin.unwrap_or_default();
+        let rpc = rpc.unwrap_or_default();
 
         let node_id = match node_id {
             Some(v) => v,
@@ -371,6 +481,7 @@ impl KLogRuntimeConfig {
         }
 
         let default_data_dir = default_data_dir();
+        let rpc_cfg = merge_rpc_config(rpc)?;
 
         Ok(Self {
             node_id,
@@ -401,6 +512,7 @@ impl KLogRuntimeConfig {
             join_blocking: join.blocking.unwrap_or(DEFAULT_JOIN_BLOCKING),
             join_target_role: join.target_role.unwrap_or(DEFAULT_JOIN_TARGET_ROLE),
             admin_local_only: admin.local_only.unwrap_or(DEFAULT_ADMIN_LOCAL_ONLY),
+            rpc: rpc_cfg,
         })
     }
 }
@@ -415,6 +527,57 @@ fn default_listen_addr() -> String {
 
 fn default_rpc_listen_addr() -> String {
     format!("{}:{}", DEFAULT_RPC_LISTEN_HOST, DEFAULT_RPC_PORT)
+}
+
+fn merge_rpc_config(patch: KLogRpcConfigPatch) -> Result<KLogRpcConfig, String> {
+    let append = merge_rpc_route_config("append", patch.append.unwrap_or_default())?;
+    let query = merge_rpc_route_config("query", patch.query.unwrap_or_default())?;
+    let jsonrpc = merge_rpc_route_config("jsonrpc", patch.jsonrpc.unwrap_or_default())?;
+    Ok(KLogRpcConfig {
+        append,
+        query,
+        jsonrpc,
+    })
+}
+
+fn merge_rpc_route_config(
+    route_name: &str,
+    patch: KLogRpcRouteConfigPatch,
+) -> Result<KLogRpcRouteConfig, String> {
+    let cfg = KLogRpcRouteConfig {
+        timeout_ms: patch.timeout_ms.unwrap_or(DEFAULT_RPC_TIMEOUT_MS),
+        body_limit_bytes: patch
+            .body_limit_bytes
+            .unwrap_or(DEFAULT_RPC_BODY_LIMIT_BYTES),
+        concurrency: patch.concurrency.unwrap_or(DEFAULT_RPC_CONCURRENCY_LIMIT),
+    };
+
+    if cfg.timeout_ms == 0 {
+        let msg = format!(
+            "Invalid rpc.{} timeout_ms=0: timeout_ms must be greater than 0",
+            route_name
+        );
+        error!("{}", msg);
+        return Err(msg);
+    }
+    if cfg.body_limit_bytes == 0 {
+        let msg = format!(
+            "Invalid rpc.{} body_limit_bytes=0: body_limit_bytes must be greater than 0",
+            route_name
+        );
+        error!("{}", msg);
+        return Err(msg);
+    }
+    if cfg.concurrency == 0 {
+        let msg = format!(
+            "Invalid rpc.{} concurrency=0: concurrency must be greater than 0",
+            route_name
+        );
+        error!("{}", msg);
+        return Err(msg);
+    }
+
+    Ok(cfg)
 }
 
 fn parse_env_string(key: &str) -> Result<Option<String>, String> {
@@ -461,6 +624,16 @@ fn parse_env_u64(key: &str) -> Result<Option<u64>, String> {
     match parse_env_string(key)? {
         Some(v) => v
             .parse::<u64>()
+            .map(Some)
+            .map_err(|e| format!("Invalid {}='{}': {}", key, v, e)),
+        None => Ok(None),
+    }
+}
+
+fn parse_env_usize(key: &str) -> Result<Option<usize>, String> {
+    match parse_env_string(key)? {
+        Some(v) => v
+            .parse::<usize>()
             .map(Some)
             .map_err(|e| format!("Invalid {}='{}': {}", key, v, e)),
         None => Ok(None),
@@ -563,6 +736,21 @@ target_role = "learner"
 
 [admin]
 local_only = false
+
+[rpc.append]
+timeout_ms = 3100
+body_limit_bytes = 131072
+concurrency = 64
+
+[rpc.query]
+timeout_ms = 3200
+body_limit_bytes = 262144
+concurrency = 96
+
+[rpc.jsonrpc]
+timeout_ms = 3300
+body_limit_bytes = 1048576
+concurrency = 128
 "#;
         std::fs::write(&file, content).expect("write file");
 
@@ -588,6 +776,15 @@ local_only = false
         assert!(cfg.join_blocking);
         assert_eq!(cfg.join_target_role, KLogJoinTargetRole::Learner);
         assert!(!cfg.admin_local_only);
+        assert_eq!(cfg.rpc.append.timeout_ms, 3100);
+        assert_eq!(cfg.rpc.append.body_limit_bytes, 131072);
+        assert_eq!(cfg.rpc.append.concurrency, 64);
+        assert_eq!(cfg.rpc.query.timeout_ms, 3200);
+        assert_eq!(cfg.rpc.query.body_limit_bytes, 262144);
+        assert_eq!(cfg.rpc.query.concurrency, 96);
+        assert_eq!(cfg.rpc.jsonrpc.timeout_ms, 3300);
+        assert_eq!(cfg.rpc.jsonrpc.body_limit_bytes, 1048576);
+        assert_eq!(cfg.rpc.jsonrpc.concurrency, 128);
 
         let _ = std::fs::remove_file(&file);
     }
@@ -652,6 +849,21 @@ id = "cluster_partial_id"
         assert_eq!(cfg.join_blocking, DEFAULT_JOIN_BLOCKING);
         assert_eq!(cfg.join_target_role, DEFAULT_JOIN_TARGET_ROLE);
         assert_eq!(cfg.admin_local_only, DEFAULT_ADMIN_LOCAL_ONLY);
+        assert_eq!(cfg.rpc.append.timeout_ms, DEFAULT_RPC_TIMEOUT_MS);
+        assert_eq!(
+            cfg.rpc.append.body_limit_bytes,
+            DEFAULT_RPC_BODY_LIMIT_BYTES
+        );
+        assert_eq!(cfg.rpc.append.concurrency, DEFAULT_RPC_CONCURRENCY_LIMIT);
+        assert_eq!(cfg.rpc.query.timeout_ms, DEFAULT_RPC_TIMEOUT_MS);
+        assert_eq!(cfg.rpc.query.body_limit_bytes, DEFAULT_RPC_BODY_LIMIT_BYTES);
+        assert_eq!(cfg.rpc.query.concurrency, DEFAULT_RPC_CONCURRENCY_LIMIT);
+        assert_eq!(cfg.rpc.jsonrpc.timeout_ms, DEFAULT_RPC_TIMEOUT_MS);
+        assert_eq!(
+            cfg.rpc.jsonrpc.body_limit_bytes,
+            DEFAULT_RPC_BODY_LIMIT_BYTES
+        );
+        assert_eq!(cfg.rpc.jsonrpc.concurrency, DEFAULT_RPC_CONCURRENCY_LIMIT);
 
         let _ = std::fs::remove_file(&file);
     }
@@ -783,5 +995,30 @@ targets = ["127.0.0.1:21001"]
         assert!(cfg.join_blocking);
         assert_eq!(cfg.join_target_role, KLogJoinTargetRole::Learner);
         assert!(!cfg.admin_local_only);
+        assert_eq!(cfg.rpc.append.timeout_ms, DEFAULT_RPC_TIMEOUT_MS);
+        assert_eq!(cfg.rpc.query.timeout_ms, DEFAULT_RPC_TIMEOUT_MS);
+        assert_eq!(cfg.rpc.jsonrpc.timeout_ms, DEFAULT_RPC_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn test_from_file_rpc_invalid_zero_rejected() {
+        let file = unique_test_file("rpc_invalid_zero");
+        let content = r#"
+node_id = 7
+
+[cluster]
+name = "cluster_rpc_invalid"
+id = "cluster_rpc_invalid_id"
+
+[rpc.append]
+concurrency = 0
+"#;
+        std::fs::write(&file, content).expect("write file");
+
+        let err =
+            KLogRuntimeConfig::from_file(&file).expect_err("rpc.append.concurrency=0 must fail");
+        assert!(err.contains("rpc.append concurrency=0"));
+
+        let _ = std::fs::remove_file(&file);
     }
 }

@@ -31,9 +31,63 @@ use tower::timeout::TimeoutLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
-const RPC_BODY_LIMIT_BYTES: usize = 1 * 1024 * 1024;
-const RPC_CONCURRENCY_LIMIT: usize = 128;
-const RPC_TIMEOUT_MS: u64 = 3_000;
+const DEFAULT_RPC_BODY_LIMIT_BYTES: usize = 1 * 1024 * 1024;
+const DEFAULT_RPC_CONCURRENCY_LIMIT: usize = 128;
+const DEFAULT_RPC_TIMEOUT_MS: u64 = 3_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KRpcRoutePolicy {
+    pub timeout_ms: u64,
+    pub body_limit_bytes: usize,
+    pub concurrency: usize,
+}
+
+impl KRpcRoutePolicy {
+    fn validate(self, route_name: &str) -> Result<(), String> {
+        if self.timeout_ms == 0 {
+            let msg = format!(
+                "Invalid rpc {} policy: timeout_ms must be > 0, got {}",
+                route_name, self.timeout_ms
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        if self.body_limit_bytes == 0 {
+            let msg = format!(
+                "Invalid rpc {} policy: body_limit_bytes must be > 0, got {}",
+                route_name, self.body_limit_bytes
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        if self.concurrency == 0 {
+            let msg = format!(
+                "Invalid rpc {} policy: concurrency must be > 0, got {}",
+                route_name, self.concurrency
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        Ok(())
+    }
+}
+
+impl Default for KRpcRoutePolicy {
+    fn default() -> Self {
+        Self {
+            timeout_ms: DEFAULT_RPC_TIMEOUT_MS,
+            body_limit_bytes: DEFAULT_RPC_BODY_LIMIT_BYTES,
+            concurrency: DEFAULT_RPC_CONCURRENCY_LIMIT,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct KRpcServerPolicy {
+    pub append: KRpcRoutePolicy,
+    pub query: KRpcRoutePolicy,
+    pub jsonrpc: KRpcRoutePolicy,
+}
 #[derive(Clone)]
 struct KRpcServerState {
     write_service: KLogWriteService,
@@ -44,6 +98,7 @@ pub struct KRpcServer {
     addr: String,
     raft: KRaftRef,
     state_store_manager: KLogStateStoreManagerRef,
+    policy: KRpcServerPolicy,
 }
 
 impl KRpcServer {
@@ -56,7 +111,13 @@ impl KRpcServer {
             addr,
             raft,
             state_store_manager,
+            policy: KRpcServerPolicy::default(),
         }
+    }
+
+    pub fn with_policy(mut self, policy: KRpcServerPolicy) -> Self {
+        self.policy = policy;
+        self
     }
 
     pub async fn run(&self) -> Result<(), String> {
@@ -80,29 +141,76 @@ impl KRpcServer {
             ),
         };
 
-        let rpc_middleware = ServiceBuilder::new()
+        self.policy.append.validate("append")?;
+        self.policy.query.validate("query")?;
+        self.policy.jsonrpc.validate("jsonrpc")?;
+
+        let append_middleware = ServiceBuilder::new()
             .layer(HandleErrorLayer::new(Self::handle_middleware_error))
             .layer(LoadShedLayer::new())
-            .layer(ConcurrencyLimitLayer::new(RPC_CONCURRENCY_LIMIT))
-            .layer(TimeoutLayer::new(Duration::from_millis(RPC_TIMEOUT_MS)))
-            .layer(RequestBodyLimitLayer::new(RPC_BODY_LIMIT_BYTES));
+            .layer(ConcurrencyLimitLayer::new(self.policy.append.concurrency))
+            .layer(TimeoutLayer::new(Duration::from_millis(
+                self.policy.append.timeout_ms,
+            )))
+            .layer(RequestBodyLimitLayer::new(
+                self.policy.append.body_limit_bytes,
+            ));
+
+        let query_middleware = ServiceBuilder::new()
+            .layer(HandleErrorLayer::new(Self::handle_middleware_error))
+            .layer(LoadShedLayer::new())
+            .layer(ConcurrencyLimitLayer::new(self.policy.query.concurrency))
+            .layer(TimeoutLayer::new(Duration::from_millis(
+                self.policy.query.timeout_ms,
+            )))
+            .layer(RequestBodyLimitLayer::new(
+                self.policy.query.body_limit_bytes,
+            ));
+
+        let jsonrpc_middleware = ServiceBuilder::new()
+            .layer(HandleErrorLayer::new(Self::handle_middleware_error))
+            .layer(LoadShedLayer::new())
+            .layer(ConcurrencyLimitLayer::new(self.policy.jsonrpc.concurrency))
+            .layer(TimeoutLayer::new(Duration::from_millis(
+                self.policy.jsonrpc.timeout_ms,
+            )))
+            .layer(RequestBodyLimitLayer::new(
+                self.policy.jsonrpc.body_limit_bytes,
+            ));
 
         let data_append_path = KLogDataRequestType::Append.klog_path();
         let data_query_path = KLogDataRequestType::Query.klog_path();
         let app = Router::new()
-            .route(&data_append_path, post(Self::handle_data_append_request))
-            .route(&data_query_path, get(Self::handle_data_query_request))
-            .route(KLOG_JSON_RPC_PATH, post(Self::handle_json_rpc_request))
-            .route_layer(rpc_middleware)
+            .merge(
+                Router::new()
+                    .route(&data_append_path, post(Self::handle_data_append_request))
+                    .route_layer(append_middleware),
+            )
+            .merge(
+                Router::new()
+                    .route(&data_query_path, get(Self::handle_data_query_request))
+                    .route_layer(query_middleware),
+            )
+            .merge(
+                Router::new()
+                    .route(KLOG_JSON_RPC_PATH, post(Self::handle_json_rpc_request))
+                    .route_layer(jsonrpc_middleware),
+            )
             .layer(TraceLayer::new_for_http())
             .with_state(state);
 
         info!(
-            "KRpcServer start listening at {}, rpc_limit_bytes={}, rpc_concurrency={}, rpc_timeout_ms={}, data_append_path={}, data_query_path={}, json_rpc_path={}",
+            "KRpcServer start listening at {}, append(body_limit_bytes={}, concurrency={}, timeout_ms={}), query(body_limit_bytes={}, concurrency={}, timeout_ms={}), jsonrpc(body_limit_bytes={}, concurrency={}, timeout_ms={}), data_append_path={}, data_query_path={}, json_rpc_path={}",
             self.addr,
-            RPC_BODY_LIMIT_BYTES,
-            RPC_CONCURRENCY_LIMIT,
-            RPC_TIMEOUT_MS,
+            self.policy.append.body_limit_bytes,
+            self.policy.append.concurrency,
+            self.policy.append.timeout_ms,
+            self.policy.query.body_limit_bytes,
+            self.policy.query.concurrency,
+            self.policy.query.timeout_ms,
+            self.policy.jsonrpc.body_limit_bytes,
+            self.policy.jsonrpc.concurrency,
+            self.policy.jsonrpc.timeout_ms,
             data_append_path,
             data_query_path,
             KLOG_JSON_RPC_PATH

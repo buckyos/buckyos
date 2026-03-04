@@ -55,6 +55,33 @@ pub const ENV_JOIN_TARGET_ROLE: &str = "KLOG_JOIN_TARGET_ROLE";
 /// Environment variable key: restrict admin APIs to loopback access.
 pub const ENV_ADMIN_LOCAL_ONLY: &str = "KLOG_ADMIN_LOCAL_ONLY";
 
+/// Environment variable key: append API timeout in milliseconds.
+pub const ENV_RPC_APPEND_TIMEOUT_MS: &str = "KLOG_RPC_APPEND_TIMEOUT_MS";
+
+/// Environment variable key: append API body size limit in bytes.
+pub const ENV_RPC_APPEND_BODY_LIMIT_BYTES: &str = "KLOG_RPC_APPEND_BODY_LIMIT_BYTES";
+
+/// Environment variable key: append API concurrency limit.
+pub const ENV_RPC_APPEND_CONCURRENCY: &str = "KLOG_RPC_APPEND_CONCURRENCY";
+
+/// Environment variable key: query API timeout in milliseconds.
+pub const ENV_RPC_QUERY_TIMEOUT_MS: &str = "KLOG_RPC_QUERY_TIMEOUT_MS";
+
+/// Environment variable key: query API body size limit in bytes.
+pub const ENV_RPC_QUERY_BODY_LIMIT_BYTES: &str = "KLOG_RPC_QUERY_BODY_LIMIT_BYTES";
+
+/// Environment variable key: query API concurrency limit.
+pub const ENV_RPC_QUERY_CONCURRENCY: &str = "KLOG_RPC_QUERY_CONCURRENCY";
+
+/// Environment variable key: json-rpc timeout in milliseconds.
+pub const ENV_RPC_JSONRPC_TIMEOUT_MS: &str = "KLOG_RPC_JSONRPC_TIMEOUT_MS";
+
+/// Environment variable key: json-rpc body size limit in bytes.
+pub const ENV_RPC_JSONRPC_BODY_LIMIT_BYTES: &str = "KLOG_RPC_JSONRPC_BODY_LIMIT_BYTES";
+
+/// Environment variable key: json-rpc concurrency limit.
+pub const ENV_RPC_JSONRPC_CONCURRENCY: &str = "KLOG_RPC_JSONRPC_CONCURRENCY";
+
 /// Default host for raft protocol listener.
 pub const DEFAULT_LISTEN_HOST: &str = "0.0.0.0";
 
@@ -69,6 +96,15 @@ pub const DEFAULT_RAFT_PORT: u16 = 21001;
 
 /// Default client RPC port (local service client).
 pub const DEFAULT_RPC_PORT: u16 = 21101;
+
+/// Default timeout for append/query/json-rpc handlers in milliseconds.
+pub const DEFAULT_RPC_TIMEOUT_MS: u64 = 3_000;
+
+/// Default request body size limit for append/query/json-rpc handlers.
+pub const DEFAULT_RPC_BODY_LIMIT_BYTES: usize = 1 * 1024 * 1024;
+
+/// Default in-flight request limit for append/query/json-rpc handlers.
+pub const DEFAULT_RPC_CONCURRENCY_LIMIT: usize = 128;
 
 /// Default switch: enable client RPC server.
 pub const DEFAULT_ENABLE_RPC_SERVER: bool = true;
