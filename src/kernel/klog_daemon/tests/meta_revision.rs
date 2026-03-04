@@ -44,8 +44,6 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
             .put_meta(KLogMetaPutRequest {
                 key: key.clone(),
                 value: "v1".to_string(),
-                updated_at: Some(1_001),
-                updated_by: Some(follower_id),
                 expected_revision: Some(0),
             })
             .await
@@ -61,8 +59,6 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
             .put_meta(KLogMetaPutRequest {
                 key: key.clone(),
                 value: "v-create-conflict".to_string(),
-                updated_at: Some(1_002),
-                updated_by: Some(follower_id),
                 expected_revision: Some(0),
             })
             .await
@@ -79,8 +75,6 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
             .put_meta(KLogMetaPutRequest {
                 key: key.clone(),
                 value: "v2".to_string(),
-                updated_at: Some(1_003),
-                updated_by: Some(follower_id),
                 expected_revision: Some(1),
             })
             .await
@@ -96,8 +90,6 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
             .put_meta(KLogMetaPutRequest {
                 key: key.clone(),
                 value: "v-stale".to_string(),
-                updated_at: Some(1_004),
-                updated_by: Some(follower_id),
                 expected_revision: Some(1),
             })
             .await
@@ -114,8 +106,6 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
             .put_meta(KLogMetaPutRequest {
                 key: key.clone(),
                 value: "v3-non-cas".to_string(),
-                updated_at: Some(1_005),
-                updated_by: Some(follower_id),
                 expected_revision: None,
             })
             .await
@@ -185,8 +175,6 @@ async fn test_three_node_meta_revision_kept_after_leader_failover() -> Result<()
             .put_meta(KLogMetaPutRequest {
                 key: key.clone(),
                 value: "before-failover".to_string(),
-                updated_at: Some(2_001),
-                updated_by: Some(leader_id),
                 expected_revision: Some(0),
             })
             .await
@@ -246,8 +234,6 @@ async fn test_three_node_meta_revision_kept_after_leader_failover() -> Result<()
             .put_meta(KLogMetaPutRequest {
                 key: key.clone(),
                 value: "after-failover".to_string(),
-                updated_at: Some(2_002),
-                updated_by: Some(new_leader_id),
                 expected_revision: Some(1),
             })
             .await

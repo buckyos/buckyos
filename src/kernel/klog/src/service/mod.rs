@@ -408,8 +408,9 @@ impl KLogWriteService {
         let item = KLogMetaEntry {
             key: key.clone(),
             value: req.value.clone(),
-            updated_at: req.updated_at.unwrap_or_else(now_millis),
-            updated_by: req.updated_by.unwrap_or(local_node_id),
+            // Meta write audit fields are owned by the raft service, not client input.
+            updated_at: now_millis(),
+            updated_by: local_node_id,
             revision: 0,
         };
         info!(
@@ -552,8 +553,6 @@ impl KLogWriteService {
                             &KLogMetaPutRequest {
                                 key: key.clone(),
                                 value: req.value,
-                                updated_at: req.updated_at,
-                                updated_by: req.updated_by,
                                 expected_revision: req.expected_revision,
                             },
                             target_hops,

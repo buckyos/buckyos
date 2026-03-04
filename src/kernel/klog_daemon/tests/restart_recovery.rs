@@ -73,8 +73,6 @@ async fn test_three_voter_full_restart_recovers_membership_leader_and_writes() -
             .put_meta(KLogMetaPutRequest {
                 key: meta_key.clone(),
                 value: "before-restart".to_string(),
-                updated_at: Some(3003),
-                updated_by: Some(leader_before),
                 expected_revision: Some(0),
             })
             .await
@@ -187,8 +185,6 @@ async fn test_three_voter_full_restart_recovers_membership_leader_and_writes() -
             .put_meta(KLogMetaPutRequest {
                 key: meta_key.clone(),
                 value: "after-restart".to_string(),
-                updated_at: Some(3005),
-                updated_by: Some(leader_after),
                 expected_revision: Some(1),
             })
             .await

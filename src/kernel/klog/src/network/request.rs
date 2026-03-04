@@ -136,8 +136,6 @@ pub struct KLogQueryResponse {
 pub struct KLogMetaPutRequest {
     pub key: String,
     pub value: String,
-    pub updated_at: Option<u64>,
-    pub updated_by: Option<KNodeId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expected_revision: Option<u64>,
 }

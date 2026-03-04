@@ -693,8 +693,6 @@ mod tests {
             .put_meta(KLogMetaPutRequest {
                 key: "cluster/config/epoch".to_string(),
                 value: "42".to_string(),
-                updated_at: Some(1234),
-                updated_by: Some(1),
                 expected_revision: None,
             })
             .await
