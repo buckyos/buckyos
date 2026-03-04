@@ -16,6 +16,7 @@ type LogEntry = Entry<KTypeConfig>;
 const META_VOTE: &str = "vote";
 const META_LAST_PURGED: &str = "last_purged";
 const META_COMMITTED: &str = "committed";
+const SQLITE_LOG_INDEX_MAX_U64: u64 = i64::MAX as u64;
 
 #[derive(Debug, Clone)]
 pub struct SqliteLogStorage {
@@ -117,20 +118,59 @@ impl SqliteLogStorage {
         })
     }
 
-    fn in_range<RB: RangeBounds<u64>>(range: &RB, idx: u64) -> bool {
-        let lower_ok = match range.start_bound() {
-            Bound::Included(v) => idx >= *v,
-            Bound::Excluded(v) => idx > *v,
-            Bound::Unbounded => true,
+    fn build_range_query<RB: RangeBounds<u64>>(
+        range: &RB,
+    ) -> Result<(Option<String>, Vec<i64>), openraft::StorageError<KNodeId>> {
+        let mut clauses = Vec::new();
+        let mut params = Vec::new();
+
+        match range.start_bound() {
+            Bound::Included(v) => {
+                if *v > SQLITE_LOG_INDEX_MAX_U64 {
+                    return Ok((None, Vec::new()));
+                }
+                clauses.push("log_index >= ?".to_string());
+                params.push(Self::u64_to_i64(*v)?);
+            }
+            Bound::Excluded(v) => {
+                if *v >= SQLITE_LOG_INDEX_MAX_U64 {
+                    return Ok((None, Vec::new()));
+                }
+                clauses.push("log_index > ?".to_string());
+                params.push(Self::u64_to_i64(*v)?);
+            }
+            Bound::Unbounded => {}
+        }
+
+        match range.end_bound() {
+            Bound::Included(v) => {
+                if *v <= SQLITE_LOG_INDEX_MAX_U64 {
+                    clauses.push("log_index <= ?".to_string());
+                    params.push(Self::u64_to_i64(*v)?);
+                }
+            }
+            Bound::Excluded(v) => {
+                if *v == 0 {
+                    return Ok((None, Vec::new()));
+                }
+                if *v <= SQLITE_LOG_INDEX_MAX_U64 {
+                    clauses.push("log_index < ?".to_string());
+                    params.push(Self::u64_to_i64(*v)?);
+                }
+            }
+            Bound::Unbounded => {}
+        }
+
+        let sql = if clauses.is_empty() {
+            "SELECT entry FROM raft_logs ORDER BY log_index ASC".to_string()
+        } else {
+            format!(
+                "SELECT entry FROM raft_logs WHERE {} ORDER BY log_index ASC",
+                clauses.join(" AND ")
+            )
         };
 
-        let upper_ok = match range.end_bound() {
-            Bound::Included(v) => idx <= *v,
-            Bound::Excluded(v) => idx < *v,
-            Bound::Unbounded => true,
-        };
-
-        lower_ok && upper_ok
+        Ok((Some(sql), params))
     }
 
     async fn read_meta_value(&self, key: &str) -> StorageResult<Option<Vec<u8>>> {
@@ -196,27 +236,41 @@ impl RaftLogReader<KTypeConfig> for SqliteLogStorage {
         range: RB,
     ) -> StorageResult<Vec<LogEntry>> {
         debug!("sqlite::try_get_log_entries: range={:?}", range);
+        let (sql, params_i64) = Self::build_range_query(&range)?;
+        let Some(sql) = sql else {
+            return Ok(Vec::new());
+        };
 
         let conn = self.conn.lock().await;
-        let mut stmt = conn
-            .prepare("SELECT entry FROM raft_logs ORDER BY log_index ASC")
-            .map_err(Self::sql_read_err)?;
+        let mut stmt = conn.prepare(&sql).map_err(Self::sql_read_err)?;
 
-        let mut rows = stmt.query([]).map_err(Self::sql_read_err)?;
+        let mut rows = match params_i64.as_slice() {
+            [] => stmt.query([]).map_err(Self::sql_read_err)?,
+            [p1] => stmt.query(params![p1]).map_err(Self::sql_read_err)?,
+            [p1, p2] => stmt.query(params![p1, p2]).map_err(Self::sql_read_err)?,
+            _ => {
+                let io_err = std::io::Error::other(format!(
+                    "Unexpected sqlite range parameter count: {}",
+                    params_i64.len()
+                ));
+                return Err(openraft::StorageError::IO {
+                    source: openraft::StorageIOError::read(&io_err),
+                });
+            }
+        };
+
         let mut entries = Vec::new();
         while let Some(row) = rows.next().map_err(Self::sql_read_err)? {
             let bytes: Vec<u8> = row.get(0).map_err(Self::sql_read_err)?;
             let entry: LogEntry =
                 Self::de(PersistPayloadType::SqliteLogEntry, &bytes, "raft log entry")?;
-            if Self::in_range(&range, entry.log_id.index) {
-                if entry.get_membership().is_some() {
-                    debug!(
-                        "sqlite::try_get_log_entries found membership entry: {:?}",
-                        entry
-                    );
-                }
-                entries.push(entry);
+            if entry.get_membership().is_some() {
+                debug!(
+                    "sqlite::try_get_log_entries found membership entry: {:?}",
+                    entry
+                );
             }
+            entries.push(entry);
         }
 
         Ok(entries)

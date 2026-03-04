@@ -96,3 +96,66 @@ async fn test_log_storage_committed_log_id_is_monotonic() -> anyhow::Result<()> 
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_sqlite_log_reader_range_bounds_match_memory() -> anyhow::Result<()> {
+    let memory = MemoryLogStorage::new();
+    let sqlite = SqliteLogStorage::open(unique_test_path("sqlite_range_bounds.db"))
+        .map_err(anyhow::Error::msg)?;
+
+    let entries = vec![
+        blank_entry(1, 1),
+        blank_entry(1, 2),
+        blank_entry(1, 3),
+        blank_entry(1, 4),
+        blank_entry(1, 5),
+    ];
+
+    memory.append_entries_for_test(entries.clone()).await?;
+    sqlite.append_entries_for_test(entries).await?;
+
+    let mut mem_reader = memory.clone();
+    let mut sqlite_reader = sqlite.clone();
+
+    let mem_excluded = mem_reader.try_get_log_entries(2..5).await?;
+    let sqlite_excluded = sqlite_reader.try_get_log_entries(2..5).await?;
+    assert_eq!(
+        mem_excluded
+            .iter()
+            .map(|e| e.log_id.index)
+            .collect::<Vec<_>>(),
+        sqlite_excluded
+            .iter()
+            .map(|e| e.log_id.index)
+            .collect::<Vec<_>>()
+    );
+
+    let mem_included = mem_reader.try_get_log_entries(2..=4).await?;
+    let sqlite_included = sqlite_reader.try_get_log_entries(2..=4).await?;
+    assert_eq!(
+        mem_included
+            .iter()
+            .map(|e| e.log_id.index)
+            .collect::<Vec<_>>(),
+        sqlite_included
+            .iter()
+            .map(|e| e.log_id.index)
+            .collect::<Vec<_>>()
+    );
+
+    let mem_to_max = mem_reader
+        .try_get_log_entries((u64::MAX - 1)..u64::MAX)
+        .await?;
+    let sqlite_to_max = sqlite_reader
+        .try_get_log_entries((u64::MAX - 1)..u64::MAX)
+        .await?;
+    assert_eq!(mem_to_max.len(), sqlite_to_max.len());
+    assert!(sqlite_to_max.is_empty());
+
+    let mem_over_max = mem_reader.try_get_log_entries(u64::MAX..).await?;
+    let sqlite_over_max = sqlite_reader.try_get_log_entries(u64::MAX..).await?;
+    assert_eq!(mem_over_max.len(), sqlite_over_max.len());
+    assert!(sqlite_over_max.is_empty());
+
+    Ok(())
+}
