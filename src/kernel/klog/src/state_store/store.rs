@@ -1,4 +1,4 @@
-use crate::{KLogEntry, KLogId, KNode, KNodeId, KResult};
+use crate::{KLogEntry, KLogId, KLogMetaEntry, KNode, KNodeId, KResult};
 use openraft::StoredMembership;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -12,6 +12,12 @@ pub(crate) const REQUEST_DEDUP_MAX_ITEMS: usize = 10_000;
 
 pub struct KLogStateSnapshot {
     pub data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KLogStateSnapshotData {
+    pub entries: Vec<KLogEntry>,
+    pub meta_entries: Vec<KLogMetaEntry>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -51,6 +57,14 @@ pub trait KLogStateStore: Send + Sync {
     async fn append(&self, entries: Vec<KLogEntry>) -> KResult<()>;
 
     async fn query(&self, query: KLogQuery) -> KResult<Vec<KLogEntry>>;
+
+    async fn put_meta(&self, item: KLogMetaEntry) -> KResult<()>;
+
+    async fn delete_meta(&self, key: &str) -> KResult<bool>;
+
+    async fn get_meta(&self, key: &str) -> KResult<Option<KLogMetaEntry>>;
+
+    async fn list_meta(&self, prefix: Option<&str>, limit: usize) -> KResult<Vec<KLogMetaEntry>>;
 
     async fn build_snapshot(&self) -> KResult<KLogStateSnapshot>;
 
@@ -268,6 +282,26 @@ impl KLogStateStoreManager {
 
     pub async fn query_entries(&self, query: KLogQuery) -> KResult<Vec<KLogEntry>> {
         self.state_store.query(query).await
+    }
+
+    pub async fn put_meta_entry(&self, item: KLogMetaEntry) -> KResult<()> {
+        self.state_store.put_meta(item).await
+    }
+
+    pub async fn delete_meta_key(&self, key: &str) -> KResult<bool> {
+        self.state_store.delete_meta(key).await
+    }
+
+    pub async fn get_meta_entry(&self, key: &str) -> KResult<Option<KLogMetaEntry>> {
+        self.state_store.get_meta(key).await
+    }
+
+    pub async fn list_meta_entries(
+        &self,
+        prefix: Option<&str>,
+        limit: usize,
+    ) -> KResult<Vec<KLogMetaEntry>> {
+        self.state_store.list_meta(prefix, limit).await
     }
 
     pub async fn install_snapshot(&self, snapshot: KLogStateSnapshot) -> KResult<()> {

@@ -107,6 +107,42 @@ impl KLogStateMachine {
                     }
                 }
             }
+            KLogRequest::PutMeta { item } => {
+                debug!(
+                    "StateMachine process put-meta request: key={}, value_len={}, updated_at={}, updated_by={}",
+                    item.key,
+                    item.value.len(),
+                    item.updated_at,
+                    item.updated_by
+                );
+                let key = item.key.clone();
+                match self.state_store.put_meta_entry(item).await {
+                    Ok(()) => {
+                        debug!("StateMachine put-meta request committed: key={}", key);
+                        KLogResponse::MetaPutOk { key }
+                    }
+                    Err(err) => {
+                        error!("StateMachine put-meta request failed: {}", err);
+                        KLogResponse::Err(err.to_string())
+                    }
+                }
+            }
+            KLogRequest::DeleteMeta { key } => {
+                debug!("StateMachine process delete-meta request: key={}", key);
+                match self.state_store.delete_meta_key(&key).await {
+                    Ok(existed) => {
+                        debug!(
+                            "StateMachine delete-meta request committed: key={}, existed={}",
+                            key, existed
+                        );
+                        KLogResponse::MetaDeleteOk { key, existed }
+                    }
+                    Err(err) => {
+                        error!("StateMachine delete-meta request failed: {}", err);
+                        KLogResponse::Err(err.to_string())
+                    }
+                }
+            }
         }
     }
 }

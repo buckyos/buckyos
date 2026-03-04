@@ -1,7 +1,8 @@
 use crate::logs::{MemoryLogStorage, SqliteLogStorage};
 use crate::state_machine::{KLogStateMachine, SnapshotManager};
 use crate::state_store::{
-    KLogStateSnapshot, KLogStateStore, KLogStateStoreManager, MemoryStateStore,
+    KLogStateSnapshot, KLogStateSnapshotData, KLogStateStore, KLogStateStoreManager,
+    MemoryStateStore,
 };
 use crate::{KLogEntry, KNode, KNodeId, KTypeConfig, StorageResult};
 use openraft::entry::EntryPayload;
@@ -210,6 +211,12 @@ pub(crate) fn sample_membership(node_id: KNodeId) -> Membership<KNodeId, KNode> 
 }
 
 pub(crate) fn decode_entry_ids(snapshot: &KLogStateSnapshot) -> anyhow::Result<Vec<u64>> {
+    let decoded_new: Result<(KLogStateSnapshotData, usize), _> =
+        bincode::serde::decode_from_slice(&snapshot.data, bincode::config::legacy());
+    if let Ok((snapshot_data, _)) = decoded_new {
+        return Ok(snapshot_data.entries.into_iter().map(|e| e.id).collect());
+    }
+
     let (decoded, _): (Vec<KLogEntry>, usize) =
         bincode::serde::decode_from_slice(&snapshot.data, bincode::config::legacy())?;
     Ok(decoded.into_iter().map(|e| e.id).collect())

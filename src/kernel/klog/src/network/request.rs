@@ -1,4 +1,4 @@
-use crate::{KLogEntry, KLogError, KNode, KNodeId, KResult, KTypeConfig};
+use crate::{KLogEntry, KLogError, KLogMetaEntry, KNode, KNodeId, KResult, KTypeConfig};
 use openraft::error::PayloadTooLarge;
 use openraft::error::{InstallSnapshotError, RaftError};
 use openraft::network::RPCTypes;
@@ -83,6 +83,9 @@ impl KLogAdminRequestType {
 pub enum KLogDataRequestType {
     Append,
     Query,
+    MetaPut,
+    MetaDelete,
+    MetaQuery,
 }
 
 impl KLogDataRequestType {
@@ -90,6 +93,9 @@ impl KLogDataRequestType {
         match self {
             KLogDataRequestType::Append => "append",
             KLogDataRequestType::Query => "query",
+            KLogDataRequestType::MetaPut => "meta-put",
+            KLogDataRequestType::MetaDelete => "meta-delete",
+            KLogDataRequestType::MetaQuery => "meta-query",
         }
     }
 
@@ -124,6 +130,44 @@ pub struct KLogQueryRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KLogQueryResponse {
     pub items: Vec<KLogEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KLogMetaPutRequest {
+    pub key: String,
+    pub value: String,
+    pub updated_at: Option<u64>,
+    pub updated_by: Option<KNodeId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KLogMetaPutResponse {
+    pub key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KLogMetaDeleteRequest {
+    pub key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KLogMetaDeleteResponse {
+    pub key: String,
+    pub existed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct KLogMetaQueryRequest {
+    pub key: Option<String>,
+    pub prefix: Option<String>,
+    pub limit: Option<usize>,
+    /// When true, require linearizable read on leader before serving query.
+    pub strong_read: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KLogMetaQueryResponse {
+    pub items: Vec<KLogMetaEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -500,5 +544,17 @@ mod tests {
     fn test_data_request_paths() {
         assert_eq!(KLogDataRequestType::Append.klog_path(), "/klog/data/append");
         assert_eq!(KLogDataRequestType::Query.klog_path(), "/klog/data/query");
+        assert_eq!(
+            KLogDataRequestType::MetaPut.klog_path(),
+            "/klog/data/meta-put"
+        );
+        assert_eq!(
+            KLogDataRequestType::MetaDelete.klog_path(),
+            "/klog/data/meta-delete"
+        );
+        assert_eq!(
+            KLogDataRequestType::MetaQuery.klog_path(),
+            "/klog/data/meta-query"
+        );
     }
 }

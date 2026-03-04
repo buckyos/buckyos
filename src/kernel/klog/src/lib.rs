@@ -37,9 +37,19 @@ pub struct KLogEntry {
     pub message: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct KLogMetaEntry {
+    pub key: String,
+    pub value: String,
+    pub updated_at: u64,
+    pub updated_by: KNodeId,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum KLogRequest {
     AppendLog { item: KLogEntry },
+    PutMeta { item: KLogMetaEntry },
+    DeleteMeta { key: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +57,8 @@ pub enum KLogResponse {
     Ok,
     Empty, // For empty and membership payloads
     AppendOk { id: u64 },
+    MetaPutOk { key: String },
+    MetaDeleteOk { key: String, existed: bool },
     Err(String),
 }
 

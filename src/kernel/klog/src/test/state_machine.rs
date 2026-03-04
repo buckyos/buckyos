@@ -1,10 +1,10 @@
 use super::common::{TestMemoryContext, sample_membership, unique_test_path};
 use crate::state_machine::{KLogStateMachine, SnapshotManager};
 use crate::state_store::{
-    KLogQuery, KLogStateStore, KLogStateStoreManager, MemoryStateStore, RocksDbSnapshotMode,
-    RocksDbStateStore,
+    KLogQuery, KLogStateSnapshotData, KLogStateStore, KLogStateStoreManager, MemoryStateStore,
+    RocksDbSnapshotMode, RocksDbStateStore,
 };
-use crate::{KLogEntry, KLogRequest, KLogResponse};
+use crate::{KLogEntry, KLogMetaEntry, KLogRequest, KLogResponse};
 use openraft::entry::EntryPayload;
 use openraft::storage::RaftStateMachine;
 use openraft::{CommittedLeaderId, Entry, LogId};
@@ -42,10 +42,10 @@ async fn test_prepare_append_entry_assigns_id_on_leader_only() -> anyhow::Result
     assert_eq!(prepared_fixed.id, 42);
 
     let snapshot = manager.build_snapshot().await?;
-    let (decoded, _): (Vec<KLogEntry>, usize) =
+    let (decoded, _): (KLogStateSnapshotData, usize) =
         bincode::serde::decode_from_slice(&snapshot.data, bincode::config::legacy())?;
-    assert_eq!(decoded.len(), 1);
-    assert_eq!(decoded[0].id, allocated_id);
+    assert_eq!(decoded.entries.len(), 1);
+    assert_eq!(decoded.entries[0].id, allocated_id);
 
     Ok(())
 }
@@ -163,6 +163,40 @@ async fn test_state_machine_recovers_persisted_meta_after_restart() -> anyhow::R
     let (last_applied, last_membership) = reopened_sm.applied_state().await?;
     assert_eq!(last_applied, Some(expected_log_id));
     assert_eq!(last_membership, expected_membership);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_state_machine_apply_meta_put_and_delete() -> anyhow::Result<()> {
+    let context = TestMemoryContext::new().await;
+    let mut sm = context.state_machine;
+
+    let put = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(4, 0), 1),
+        payload: EntryPayload::Normal(KLogRequest::PutMeta {
+            item: KLogMetaEntry {
+                key: "cluster/config/epoch".to_string(),
+                value: "42".to_string(),
+                updated_at: 5000,
+                updated_by: 1,
+            },
+        }),
+    };
+    let del = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(4, 0), 2),
+        payload: EntryPayload::Normal(KLogRequest::DeleteMeta {
+            key: "cluster/config/epoch".to_string(),
+        }),
+    };
+
+    let responses = sm.apply(vec![put, del]).await?;
+    assert_eq!(responses.len(), 2);
+    assert!(matches!(responses[0], KLogResponse::MetaPutOk { .. }));
+    assert!(matches!(
+        responses[1],
+        KLogResponse::MetaDeleteOk { existed: true, .. }
+    ));
 
     Ok(())
 }

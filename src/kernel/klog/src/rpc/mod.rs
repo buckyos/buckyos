@@ -11,6 +11,9 @@ pub const KLOG_JSON_RPC_VERSION: &str = "2.0";
 pub const KLOG_JSON_RPC_PATH: &str = "/klog/rpc";
 pub const KLOG_RPC_METHOD_APPEND: &str = "klog.append";
 pub const KLOG_RPC_METHOD_QUERY: &str = "klog.query";
+pub const KLOG_RPC_METHOD_META_PUT: &str = "klog.meta.put";
+pub const KLOG_RPC_METHOD_META_DELETE: &str = "klog.meta.delete";
+pub const KLOG_RPC_METHOD_META_QUERY: &str = "klog.meta.query";
 
 pub const KLOG_RPC_ERR_INVALID_REQUEST: i64 = -32600;
 pub const KLOG_RPC_ERR_METHOD_NOT_FOUND: i64 = -32601;

@@ -1,5 +1,6 @@
 use super::{
-    KLOG_JSON_RPC_PATH, KLOG_JSON_RPC_VERSION, KLOG_RPC_METHOD_APPEND, KLOG_RPC_METHOD_QUERY,
+    KLOG_JSON_RPC_PATH, KLOG_JSON_RPC_VERSION, KLOG_RPC_METHOD_APPEND, KLOG_RPC_METHOD_META_DELETE,
+    KLOG_RPC_METHOD_META_PUT, KLOG_RPC_METHOD_META_QUERY, KLOG_RPC_METHOD_QUERY,
     KLogJsonRpcRequest, KLogJsonRpcResponse,
 };
 use crate::KNode;
@@ -8,8 +9,9 @@ use crate::error::{
     map_json_rpc_error_code_to_klog_error_code, parse_error_envelope_json,
 };
 use crate::network::{
-    KLOG_TRACE_ID_HEADER, KLogAppendRequest, KLogAppendResponse, KLogQueryRequest,
-    KLogQueryResponse,
+    KLOG_TRACE_ID_HEADER, KLogAppendRequest, KLogAppendResponse, KLogMetaDeleteRequest,
+    KLogMetaDeleteResponse, KLogMetaPutRequest, KLogMetaPutResponse, KLogMetaQueryRequest,
+    KLogMetaQueryResponse, KLogQueryRequest, KLogQueryResponse,
 };
 use reqwest::StatusCode;
 use serde::Serialize;
@@ -150,6 +152,52 @@ impl KLogClient {
         req: KLogQueryRequest,
     ) -> Result<(KLogQueryResponse, KLogCallTrace), KLogClientError> {
         self.call_with_trace(KLOG_RPC_METHOD_QUERY, &req).await
+    }
+
+    pub async fn put_meta(
+        &self,
+        req: KLogMetaPutRequest,
+    ) -> Result<KLogMetaPutResponse, KLogClientError> {
+        let (resp, _) = self.put_meta_with_trace(req).await?;
+        Ok(resp)
+    }
+
+    pub async fn put_meta_with_trace(
+        &self,
+        req: KLogMetaPutRequest,
+    ) -> Result<(KLogMetaPutResponse, KLogCallTrace), KLogClientError> {
+        self.call_with_trace(KLOG_RPC_METHOD_META_PUT, &req).await
+    }
+
+    pub async fn delete_meta(
+        &self,
+        req: KLogMetaDeleteRequest,
+    ) -> Result<KLogMetaDeleteResponse, KLogClientError> {
+        let (resp, _) = self.delete_meta_with_trace(req).await?;
+        Ok(resp)
+    }
+
+    pub async fn delete_meta_with_trace(
+        &self,
+        req: KLogMetaDeleteRequest,
+    ) -> Result<(KLogMetaDeleteResponse, KLogCallTrace), KLogClientError> {
+        self.call_with_trace(KLOG_RPC_METHOD_META_DELETE, &req)
+            .await
+    }
+
+    pub async fn query_meta(
+        &self,
+        req: KLogMetaQueryRequest,
+    ) -> Result<KLogMetaQueryResponse, KLogClientError> {
+        let (resp, _) = self.query_meta_with_trace(req).await?;
+        Ok(resp)
+    }
+
+    pub async fn query_meta_with_trace(
+        &self,
+        req: KLogMetaQueryRequest,
+    ) -> Result<(KLogMetaQueryResponse, KLogCallTrace), KLogClientError> {
+        self.call_with_trace(KLOG_RPC_METHOD_META_QUERY, &req).await
     }
 
     async fn call_with_trace<Req, Resp>(
@@ -331,11 +379,13 @@ mod tests {
     use crate::KLogEntry;
     use crate::error::KLogErrorCode;
     use crate::network::{
-        KLOG_TRACE_ID_HEADER, KLogAppendRequest, KLogAppendResponse, KLogQueryRequest,
-        KLogQueryResponse,
+        KLOG_TRACE_ID_HEADER, KLogAppendRequest, KLogAppendResponse, KLogMetaDeleteRequest,
+        KLogMetaDeleteResponse, KLogMetaPutRequest, KLogMetaPutResponse, KLogMetaQueryRequest,
+        KLogMetaQueryResponse, KLogQueryRequest, KLogQueryResponse,
     };
     use crate::rpc::{
         KLOG_JSON_RPC_PATH, KLOG_RPC_ERR_METHOD_NOT_FOUND, KLOG_RPC_METHOD_APPEND,
+        KLOG_RPC_METHOD_META_DELETE, KLOG_RPC_METHOD_META_PUT, KLOG_RPC_METHOD_META_QUERY,
         KLOG_RPC_METHOD_QUERY, KLogJsonRpcRequest, KLogJsonRpcResponse,
     };
     use axum::Router;
@@ -564,6 +614,100 @@ mod tests {
             .map_err(|e| anyhow::anyhow!("query failed: {}", e))?;
         assert_eq!(resp.items.len(), 1);
         assert_eq!(resp.items[0].id, 7);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_json_rpc_client_meta_methods_success() -> anyhow::Result<()> {
+        let app = Router::new().route(
+            KLOG_JSON_RPC_PATH,
+            post(|Json(request): Json<KLogJsonRpcRequest>| async move {
+                match request.method.as_str() {
+                    KLOG_RPC_METHOD_META_PUT => {
+                        let params: KLogMetaPutRequest =
+                            serde_json::from_value(request.params).expect("meta put params");
+                        assert_eq!(params.key, "cluster/config/epoch");
+                        let response = KLogJsonRpcResponse::success(
+                            request.id,
+                            KLogMetaPutResponse { key: params.key },
+                        );
+                        (StatusCode::OK, Json(response))
+                    }
+                    KLOG_RPC_METHOD_META_QUERY => {
+                        let params: KLogMetaQueryRequest =
+                            serde_json::from_value(request.params).expect("meta query params");
+                        assert_eq!(params.key.as_deref(), Some("cluster/config/epoch"));
+                        let response = KLogJsonRpcResponse::success(
+                            request.id,
+                            KLogMetaQueryResponse {
+                                items: vec![crate::KLogMetaEntry {
+                                    key: "cluster/config/epoch".to_string(),
+                                    value: "42".to_string(),
+                                    updated_at: 1234,
+                                    updated_by: 1,
+                                }],
+                            },
+                        );
+                        (StatusCode::OK, Json(response))
+                    }
+                    KLOG_RPC_METHOD_META_DELETE => {
+                        let params: KLogMetaDeleteRequest =
+                            serde_json::from_value(request.params).expect("meta delete params");
+                        let response = KLogJsonRpcResponse::success(
+                            request.id,
+                            KLogMetaDeleteResponse {
+                                key: params.key,
+                                existed: true,
+                            },
+                        );
+                        (StatusCode::OK, Json(response))
+                    }
+                    other => {
+                        let response = KLogJsonRpcResponse::error(
+                            request.id,
+                            KLOG_RPC_ERR_METHOD_NOT_FOUND,
+                            format!("unexpected method: {}", other),
+                        );
+                        (StatusCode::OK, Json(response))
+                    }
+                }
+            }),
+        );
+
+        let Some(server) = TestJsonRpcServer::try_start(app).await? else {
+            return Ok(());
+        };
+        let client = server.client();
+        let put = client
+            .put_meta(KLogMetaPutRequest {
+                key: "cluster/config/epoch".to_string(),
+                value: "42".to_string(),
+                updated_at: Some(1234),
+                updated_by: Some(1),
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("put_meta failed: {}", e))?;
+        assert_eq!(put.key, "cluster/config/epoch");
+
+        let query = client
+            .query_meta(KLogMetaQueryRequest {
+                key: Some("cluster/config/epoch".to_string()),
+                prefix: None,
+                limit: None,
+                strong_read: None,
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("query_meta failed: {}", e))?;
+        assert_eq!(query.items.len(), 1);
+        assert_eq!(query.items[0].value, "42");
+
+        let del = client
+            .delete_meta(KLogMetaDeleteRequest {
+                key: "cluster/config/epoch".to_string(),
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("delete_meta failed: {}", e))?;
+        assert!(del.existed);
         Ok(())
     }
 

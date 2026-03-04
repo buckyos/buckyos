@@ -1,7 +1,8 @@
 use super::request::{
     KLOG_FORWARD_HOPS_HEADER, KLOG_FORWARDED_BY_HEADER, KLOG_TRACE_ID_HEADER, KLogAppendRequest,
-    KLogAppendResponse, KLogDataRequestType, KLogQueryRequest, KLogQueryResponse, RaftRequest,
-    RaftResponse,
+    KLogAppendResponse, KLogDataRequestType, KLogMetaDeleteRequest, KLogMetaDeleteResponse,
+    KLogMetaPutRequest, KLogMetaPutResponse, KLogMetaQueryRequest, KLogMetaQueryResponse,
+    KLogQueryRequest, KLogQueryResponse, RaftRequest, RaftResponse,
 };
 use crate::error::{KLogErrorCode, KLogServiceError, parse_error_envelope_json};
 use crate::{KNode, KNodeId, KTypeConfig};
@@ -198,6 +199,222 @@ impl KDataClient {
         response.json::<KLogQueryResponse>().await.map_err(|e| {
             let msg = format!(
                 "forward data query decode failed: target={}({}:{}), url={}, err={}",
+                target.id, target.addr, target.port, url, e
+            );
+            KLogServiceError::new(
+                reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                KLogErrorCode::Unavailable,
+                msg,
+                trace_id.to_string(),
+            )
+        })
+    }
+
+    pub async fn put_meta_to_node(
+        &self,
+        target: &KNode,
+        req: &KLogMetaPutRequest,
+        forward_hops: u32,
+        forwarded_by: KNodeId,
+        trace_id: &str,
+    ) -> Result<KLogMetaPutResponse, KLogServiceError> {
+        let path = KLogDataRequestType::MetaPut.klog_path();
+        let url = format!("http://{}:{}{}", target.addr, target.port, path);
+        let response = self
+            .client
+            .post(&url)
+            .timeout(self.timeout)
+            .header(KLOG_FORWARD_HOPS_HEADER, forward_hops.to_string())
+            .header(KLOG_FORWARDED_BY_HEADER, forwarded_by.to_string())
+            .header(KLOG_TRACE_ID_HEADER, trace_id)
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| {
+                let msg = format!(
+                    "forward meta put send failed: target={}({}:{}), url={}, err={}",
+                    target.id, target.addr, target.port, url, e
+                );
+                KLogServiceError::new(
+                    reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                    KLogErrorCode::Unavailable,
+                    msg,
+                    trace_id.to_string(),
+                )
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!(r#"{{"message":"<failed to read body: {}>"}}"#, e));
+            let fallback_msg = format!(
+                "forward meta put failed: target={}({}:{}), url={}, status={}, body={}",
+                target.id, target.addr, target.port, url, status, body
+            );
+            return Err(parse_error_envelope_json(&body)
+                .map(|e| KLogServiceError {
+                    http_status: status.as_u16(),
+                    error: e,
+                })
+                .unwrap_or_else(|| {
+                    KLogServiceError::from_http_status(
+                        status.as_u16(),
+                        fallback_msg,
+                        trace_id.to_string(),
+                    )
+                }));
+        }
+
+        response.json::<KLogMetaPutResponse>().await.map_err(|e| {
+            let msg = format!(
+                "forward meta put decode failed: target={}({}:{}), url={}, err={}",
+                target.id, target.addr, target.port, url, e
+            );
+            KLogServiceError::new(
+                reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                KLogErrorCode::Unavailable,
+                msg,
+                trace_id.to_string(),
+            )
+        })
+    }
+
+    pub async fn delete_meta_to_node(
+        &self,
+        target: &KNode,
+        req: &KLogMetaDeleteRequest,
+        forward_hops: u32,
+        forwarded_by: KNodeId,
+        trace_id: &str,
+    ) -> Result<KLogMetaDeleteResponse, KLogServiceError> {
+        let path = KLogDataRequestType::MetaDelete.klog_path();
+        let url = format!("http://{}:{}{}", target.addr, target.port, path);
+        let response = self
+            .client
+            .post(&url)
+            .timeout(self.timeout)
+            .header(KLOG_FORWARD_HOPS_HEADER, forward_hops.to_string())
+            .header(KLOG_FORWARDED_BY_HEADER, forwarded_by.to_string())
+            .header(KLOG_TRACE_ID_HEADER, trace_id)
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| {
+                let msg = format!(
+                    "forward meta delete send failed: target={}({}:{}), url={}, err={}",
+                    target.id, target.addr, target.port, url, e
+                );
+                KLogServiceError::new(
+                    reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                    KLogErrorCode::Unavailable,
+                    msg,
+                    trace_id.to_string(),
+                )
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!(r#"{{"message":"<failed to read body: {}>"}}"#, e));
+            let fallback_msg = format!(
+                "forward meta delete failed: target={}({}:{}), url={}, status={}, body={}",
+                target.id, target.addr, target.port, url, status, body
+            );
+            return Err(parse_error_envelope_json(&body)
+                .map(|e| KLogServiceError {
+                    http_status: status.as_u16(),
+                    error: e,
+                })
+                .unwrap_or_else(|| {
+                    KLogServiceError::from_http_status(
+                        status.as_u16(),
+                        fallback_msg,
+                        trace_id.to_string(),
+                    )
+                }));
+        }
+
+        response
+            .json::<KLogMetaDeleteResponse>()
+            .await
+            .map_err(|e| {
+                let msg = format!(
+                    "forward meta delete decode failed: target={}({}:{}), url={}, err={}",
+                    target.id, target.addr, target.port, url, e
+                );
+                KLogServiceError::new(
+                    reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                    KLogErrorCode::Unavailable,
+                    msg,
+                    trace_id.to_string(),
+                )
+            })
+    }
+
+    pub async fn query_meta_to_node(
+        &self,
+        target: &KNode,
+        req: &KLogMetaQueryRequest,
+        forward_hops: u32,
+        forwarded_by: KNodeId,
+        trace_id: &str,
+    ) -> Result<KLogMetaQueryResponse, KLogServiceError> {
+        let path = KLogDataRequestType::MetaQuery.klog_path();
+        let url = format!("http://{}:{}{}", target.addr, target.port, path);
+        let response = self
+            .client
+            .get(&url)
+            .timeout(self.timeout)
+            .header(KLOG_FORWARD_HOPS_HEADER, forward_hops.to_string())
+            .header(KLOG_FORWARDED_BY_HEADER, forwarded_by.to_string())
+            .header(KLOG_TRACE_ID_HEADER, trace_id)
+            .query(req)
+            .send()
+            .await
+            .map_err(|e| {
+                let msg = format!(
+                    "forward meta query send failed: target={}({}:{}), url={}, err={}",
+                    target.id, target.addr, target.port, url, e
+                );
+                KLogServiceError::new(
+                    reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                    KLogErrorCode::Unavailable,
+                    msg,
+                    trace_id.to_string(),
+                )
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!(r#"{{"message":"<failed to read body: {}>"}}"#, e));
+            let fallback_msg = format!(
+                "forward meta query failed: target={}({}:{}), url={}, status={}, body={}",
+                target.id, target.addr, target.port, url, status, body
+            );
+            return Err(parse_error_envelope_json(&body)
+                .map(|e| KLogServiceError {
+                    http_status: status.as_u16(),
+                    error: e,
+                })
+                .unwrap_or_else(|| {
+                    KLogServiceError::from_http_status(
+                        status.as_u16(),
+                        fallback_msg,
+                        trace_id.to_string(),
+                    )
+                }));
+        }
+
+        response.json::<KLogMetaQueryResponse>().await.map_err(|e| {
+            let msg = format!(
+                "forward meta query decode failed: target={}({}:{}), url={}, err={}",
                 target.id, target.addr, target.port, url, e
             );
             KLogServiceError::new(

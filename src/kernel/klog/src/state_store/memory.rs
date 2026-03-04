@@ -1,8 +1,8 @@
 use super::store::{
-    KLogQuery, KLogQueryOrder, KLogStateMachineMeta, KLogStateSnapshot, KLogStateStore,
-    REQUEST_DEDUP_MAX_ITEMS, REQUEST_DEDUP_WINDOW_MS,
+    KLogQuery, KLogQueryOrder, KLogStateMachineMeta, KLogStateSnapshot, KLogStateSnapshotData,
+    KLogStateStore, REQUEST_DEDUP_MAX_ITEMS, REQUEST_DEDUP_WINDOW_MS,
 };
-use crate::{KLogEntry, KLogError, KResult};
+use crate::{KLogEntry, KLogError, KLogMetaEntry, KResult};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -76,6 +76,7 @@ impl RequestDedupIndex {
 /// A simple in-memory state store implementation.
 pub struct MemoryStateStore {
     logs: Arc<AsyncMutex<Vec<KLogEntry>>>,
+    metas: Arc<AsyncMutex<HashMap<String, KLogMetaEntry>>>,
     next_log_id: AtomicU64,
     state_machine_meta: Arc<AsyncMutex<Option<KLogStateMachineMeta>>>,
     request_dedup: Arc<AsyncMutex<RequestDedupIndex>>,
@@ -85,6 +86,7 @@ impl MemoryStateStore {
     pub fn new() -> Self {
         Self {
             logs: Arc::new(AsyncMutex::new(Vec::new())),
+            metas: Arc::new(AsyncMutex::new(HashMap::new())),
             next_log_id: AtomicU64::new(1),
             state_machine_meta: Arc::new(AsyncMutex::new(None)),
             request_dedup: Arc::new(AsyncMutex::new(RequestDedupIndex::default())),
@@ -161,10 +163,62 @@ impl KLogStateStore for MemoryStateStore {
         Ok(entries)
     }
 
+    async fn put_meta(&self, item: KLogMetaEntry) -> KResult<()> {
+        let mut metas = self.metas.lock().await;
+        metas.insert(item.key.clone(), item);
+        Ok(())
+    }
+
+    async fn delete_meta(&self, key: &str) -> KResult<bool> {
+        let mut metas = self.metas.lock().await;
+        Ok(metas.remove(key).is_some())
+    }
+
+    async fn get_meta(&self, key: &str) -> KResult<Option<KLogMetaEntry>> {
+        let metas = self.metas.lock().await;
+        Ok(metas.get(key).cloned())
+    }
+
+    async fn list_meta(&self, prefix: Option<&str>, limit: usize) -> KResult<Vec<KLogMetaEntry>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let metas = self.metas.lock().await;
+        let mut keys = metas.keys().cloned().collect::<Vec<_>>();
+        keys.sort();
+
+        let normalized_prefix = prefix.map(str::trim).filter(|v| !v.is_empty());
+        let mut out = Vec::with_capacity(limit.min(keys.len()));
+        for key in keys {
+            if let Some(prefix) = normalized_prefix
+                && !key.starts_with(prefix)
+            {
+                continue;
+            }
+
+            if let Some(item) = metas.get(&key) {
+                out.push(item.clone());
+                if out.len() >= limit {
+                    break;
+                }
+            }
+        }
+
+        Ok(out)
+    }
+
     async fn build_snapshot(&self) -> KResult<KLogStateSnapshot> {
         let logs = self.logs.lock().await;
-        let data =
-            bincode::serde::encode_to_vec(&*logs, bincode::config::legacy()).map_err(|e| {
+        let metas = self.metas.lock().await;
+        let mut meta_entries = metas.values().cloned().collect::<Vec<_>>();
+        meta_entries.sort_by(|a, b| a.key.cmp(&b.key));
+        let snapshot_data = KLogStateSnapshotData {
+            entries: logs.clone(),
+            meta_entries,
+        };
+        let data = bincode::serde::encode_to_vec(&snapshot_data, bincode::config::legacy())
+            .map_err(|e| {
                 let msg = format!("Failed to serialize logs for snapshot: {}", e);
                 error!("{}", msg);
                 KLogError::InvalidFormat(msg)
@@ -174,14 +228,12 @@ impl KLogStateStore for MemoryStateStore {
     }
 
     async fn install_snapshot(&self, snapshot: KLogStateSnapshot) -> KResult<()> {
-        let (entries, _): (Vec<KLogEntry>, usize) =
-            bincode::serde::decode_from_slice(&snapshot.data, bincode::config::legacy()).map_err(
-                |e| {
-                    let msg = format!("Failed to decode state snapshot: {}", e);
-                    error!("{}", msg);
-                    KLogError::InvalidFormat(msg)
-                },
-            )?;
+        let snapshot_data = decode_snapshot_data(&snapshot.data)?;
+        let entries = snapshot_data.entries;
+        let mut metas = HashMap::new();
+        for item in snapshot_data.meta_entries {
+            metas.insert(item.key.clone(), item);
+        }
 
         let candidate_next = entries
             .iter()
@@ -190,6 +242,8 @@ impl KLogStateStore for MemoryStateStore {
             .unwrap_or(1);
         let mut logs = self.logs.lock().await;
         *logs = entries;
+        let mut stored_metas = self.metas.lock().await;
+        *stored_metas = metas;
         self.next_log_id.store(candidate_next, Ordering::SeqCst);
         let mut dedup = self.request_dedup.lock().await;
         dedup.clear();
@@ -242,4 +296,24 @@ fn now_millis() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+fn decode_snapshot_data(data: &[u8]) -> KResult<KLogStateSnapshotData> {
+    let decoded_new: Result<(KLogStateSnapshotData, usize), _> =
+        bincode::serde::decode_from_slice(data, bincode::config::legacy());
+    if let Ok((snapshot_data, _)) = decoded_new {
+        return Ok(snapshot_data);
+    }
+
+    // Temporary fallback for old test snapshots generated before meta support.
+    let (entries, _): (Vec<KLogEntry>, usize) =
+        bincode::serde::decode_from_slice(data, bincode::config::legacy()).map_err(|e| {
+            let msg = format!("Failed to decode state snapshot: {}", e);
+            error!("{}", msg);
+            KLogError::InvalidFormat(msg)
+        })?;
+    Ok(KLogStateSnapshotData {
+        entries,
+        meta_entries: Vec::new(),
+    })
 }

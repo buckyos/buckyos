@@ -1,6 +1,7 @@
 use super::request::{
     KLogAdminRequestType, KLogAppendRequest, KLogClusterStateResponse, KLogDataRequestType,
-    KLogQueryRequest, RaftRequest, RaftRequestType, RaftResponse,
+    KLogMetaDeleteRequest, KLogMetaPutRequest, KLogMetaQueryRequest, KLogQueryRequest, RaftRequest,
+    RaftRequestType, RaftResponse,
 };
 use crate::error::{KLogErrorEnvelope, KLogServiceError, generate_trace_id};
 use crate::service::{KLogQueryService, KLogWriteService};
@@ -139,6 +140,9 @@ impl KNetworkServer {
         let vote_path = RaftRequestType::Vote.klog_path();
         let data_append_path = KLogDataRequestType::Append.klog_path();
         let data_query_path = KLogDataRequestType::Query.klog_path();
+        let data_meta_put_path = KLogDataRequestType::MetaPut.klog_path();
+        let data_meta_delete_path = KLogDataRequestType::MetaDelete.klog_path();
+        let data_meta_query_path = KLogDataRequestType::MetaQuery.klog_path();
         let admin_add_learner_path = KLogAdminRequestType::AddLearner.klog_path();
         let admin_remove_learner_path = KLogAdminRequestType::RemoveLearner.klog_path();
         let admin_change_membership_path = KLogAdminRequestType::ChangeMembership.klog_path();
@@ -152,6 +156,12 @@ impl KNetworkServer {
             .route(&vote_path, post(Self::handle_vote_request))
             .route(&data_append_path, post(Self::handle_data_append_request))
             .route(&data_query_path, get(Self::handle_data_query_request))
+            .route(&data_meta_put_path, post(Self::handle_meta_put_request))
+            .route(
+                &data_meta_delete_path,
+                post(Self::handle_meta_delete_request),
+            )
+            .route(&data_meta_query_path, get(Self::handle_meta_query_request))
             .route(
                 &admin_add_learner_path,
                 post(Self::handle_add_learner_request),
@@ -194,7 +204,7 @@ impl KNetworkServer {
             .with_state(state);
 
         info!(
-            "KNetworkServer start listening at {}, cluster_name={}, cluster_id={}, control_limit_bytes={}, snapshot_limit_bytes={}, control_concurrency={}, snapshot_concurrency={}, control_timeout_ms={}, snapshot_timeout_ms={}, admin_local_only={}, data_append_path={}, data_query_path={}, admin_add_learner_path={}, admin_remove_learner_path={}, admin_change_membership_path={}, admin_cluster_state_path={}",
+            "KNetworkServer start listening at {}, cluster_name={}, cluster_id={}, control_limit_bytes={}, snapshot_limit_bytes={}, control_concurrency={}, snapshot_concurrency={}, control_timeout_ms={}, snapshot_timeout_ms={}, admin_local_only={}, data_append_path={}, data_query_path={}, data_meta_put_path={}, data_meta_delete_path={}, data_meta_query_path={}, admin_add_learner_path={}, admin_remove_learner_path={}, admin_change_membership_path={}, admin_cluster_state_path={}",
             self.addr,
             self.cluster_name.as_str(),
             self.cluster_id.as_str(),
@@ -207,6 +217,9 @@ impl KNetworkServer {
             self.admin_local_only,
             data_append_path,
             data_query_path,
+            data_meta_put_path,
+            data_meta_delete_path,
+            data_meta_query_path,
             admin_add_learner_path,
             admin_remove_learner_path,
             admin_change_membership_path,
@@ -404,6 +417,60 @@ impl KNetworkServer {
         };
 
         match query_service.query(&headers, query).await {
+            Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
+            Err(err) => Self::service_error_response(err),
+        }
+    }
+
+    async fn handle_meta_put_request(
+        State(state): State<KNetworkServerState>,
+        headers: HeaderMap,
+        Json(req): Json<KLogMetaPutRequest>,
+    ) -> Response {
+        let Some(write_service) = state.write_service.as_ref() else {
+            let msg = "KNetworkServer meta put rejected: state store manager is not configured"
+                .to_string();
+            error!("{}", msg);
+            return Self::error_response(StatusCode::INTERNAL_SERVER_ERROR, msg);
+        };
+
+        match write_service.put_meta(&headers, req).await {
+            Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
+            Err(err) => Self::service_error_response(err),
+        }
+    }
+
+    async fn handle_meta_delete_request(
+        State(state): State<KNetworkServerState>,
+        headers: HeaderMap,
+        Json(req): Json<KLogMetaDeleteRequest>,
+    ) -> Response {
+        let Some(write_service) = state.write_service.as_ref() else {
+            let msg = "KNetworkServer meta delete rejected: state store manager is not configured"
+                .to_string();
+            error!("{}", msg);
+            return Self::error_response(StatusCode::INTERNAL_SERVER_ERROR, msg);
+        };
+
+        match write_service.delete_meta(&headers, req).await {
+            Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
+            Err(err) => Self::service_error_response(err),
+        }
+    }
+
+    async fn handle_meta_query_request(
+        State(state): State<KNetworkServerState>,
+        headers: HeaderMap,
+        Query(query): Query<KLogMetaQueryRequest>,
+    ) -> Response {
+        let Some(query_service) = state.query_service.as_ref() else {
+            let msg = "KNetworkServer meta query rejected: state store manager is not configured"
+                .to_string();
+            error!("{}", msg);
+            return Self::error_response(StatusCode::INTERNAL_SERVER_ERROR, msg);
+        };
+
+        match query_service.query_meta(&headers, query).await {
             Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
             Err(err) => Self::service_error_response(err),
         }

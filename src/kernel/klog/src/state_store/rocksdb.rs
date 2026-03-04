@@ -1,8 +1,8 @@
 use super::store::{
-    KLogQuery, KLogQueryOrder, KLogStateMachineMeta, KLogStateSnapshot, KLogStateStore,
-    REQUEST_DEDUP_WINDOW_MS,
+    KLogQuery, KLogQueryOrder, KLogStateMachineMeta, KLogStateSnapshot, KLogStateSnapshotData,
+    KLogStateStore, REQUEST_DEDUP_WINDOW_MS,
 };
-use crate::{KLogEntry, KLogError, KResult};
+use crate::{KLogEntry, KLogError, KLogMetaEntry, KResult};
 use rocksdb::backup::{BackupEngine, BackupEngineOptions, RestoreOptions};
 use rocksdb::checkpoint::Checkpoint;
 use rocksdb::{
@@ -20,6 +20,7 @@ const KEY_PREFIX_ENTRY: u8 = b'e';
 const KEY_NEXT_LOG_ID_META: &[u8] = b"m:next_log_id";
 const KEY_STATE_MACHINE_META: &[u8] = b"m:state_machine_meta";
 const KEY_REQUEST_DEDUP_PREFIX: &[u8] = b"m:req:";
+const KEY_DATA_META_PREFIX: &[u8] = b"d:";
 const CF_LOGS: &str = "logs";
 const CF_META: &str = "meta";
 const CHECKPOINT_SNAPSHOT_MAGIC: &str = "klog-rdb-checkpoint-v1";
@@ -88,6 +89,20 @@ fn request_dedup_meta_key(request_id: &str) -> Vec<u8> {
     key.extend_from_slice(KEY_REQUEST_DEDUP_PREFIX);
     key.extend_from_slice(request_id.as_bytes());
     key
+}
+
+fn data_meta_key(key: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(KEY_DATA_META_PREFIX.len() + key.len());
+    out.extend_from_slice(KEY_DATA_META_PREFIX);
+    out.extend_from_slice(key.as_bytes());
+    out
+}
+
+fn decode_data_meta_key(raw: &[u8]) -> Option<&str> {
+    if !raw.starts_with(KEY_DATA_META_PREFIX) {
+        return None;
+    }
+    std::str::from_utf8(&raw[KEY_DATA_META_PREFIX.len()..]).ok()
 }
 
 fn normalize_request_id(request_id: Option<&str>) -> Option<&str> {
@@ -498,6 +513,44 @@ impl RocksDbStateStore {
         Ok(entries)
     }
 
+    fn read_all_meta_entries(&self) -> KResult<Vec<KLogMetaEntry>> {
+        let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_META);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+
+        let mut out = Vec::new();
+        let iter = self.db.iterator_cf(
+            &meta_cf,
+            IteratorMode::From(KEY_DATA_META_PREFIX, Direction::Forward),
+        );
+        for item in iter {
+            let (k, v) =
+                item.map_err(|e| klog_err_with_context("Failed to iterate rocksdb meta entry", e))?;
+            if !k.as_ref().starts_with(KEY_DATA_META_PREFIX) {
+                break;
+            }
+
+            let Some(key) = decode_data_meta_key(k.as_ref()) else {
+                continue;
+            };
+            let (entry, _): (KLogMetaEntry, usize) =
+                bincode::serde::decode_from_slice(v.as_ref(), bincode::config::legacy()).map_err(
+                    |e| klog_err_with_context("Failed to deserialize rocksdb meta entry", e),
+                )?;
+            if entry.key != key {
+                warn!(
+                    "RocksDbStateStore meta key mismatch, key_from_index='{}', key_in_value='{}'",
+                    key, entry.key
+                );
+            }
+            out.push(entry);
+        }
+        out.sort_by(|a, b| a.key.cmp(&b.key));
+        Ok(out)
+    }
+
     fn clear_entries_in_batch(&self, batch: &mut WriteBatch) -> KResult<()> {
         debug!(
             "RocksDbStateStore clear_entries_in_batch start: snapshot_mode={:?}",
@@ -553,15 +606,49 @@ impl RocksDbStateStore {
         Ok(())
     }
 
-    fn replace_with_entries(&self, entries: Vec<KLogEntry>) -> KResult<()> {
+    fn clear_data_meta_in_batch(&self, batch: &mut WriteBatch) -> KResult<()> {
+        let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_META);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+        let mut deleted = 0usize;
+        let iter = self.db.iterator_cf(
+            &meta_cf,
+            IteratorMode::From(KEY_DATA_META_PREFIX, Direction::Forward),
+        );
+        for item in iter {
+            let (k, _) = item.map_err(|e| {
+                klog_err_with_context("Failed to iterate rocksdb while clearing data meta", e)
+            })?;
+            if !k.as_ref().starts_with(KEY_DATA_META_PREFIX) {
+                break;
+            }
+            batch.delete_cf(&meta_cf, k.as_ref());
+            deleted += 1;
+        }
+        debug!(
+            "RocksDbStateStore clear_data_meta_in_batch done: deleted={}",
+            deleted
+        );
+        Ok(())
+    }
+
+    fn replace_with_entries(
+        &self,
+        entries: Vec<KLogEntry>,
+        meta_entries: Vec<KLogMetaEntry>,
+    ) -> KResult<()> {
         info!(
-            "RocksDbStateStore replace_with_entries start: snapshot_mode={:?}, incoming_entries={}",
+            "RocksDbStateStore replace_with_entries start: snapshot_mode={:?}, incoming_entries={}, incoming_meta_entries={}",
             self.snapshot_mode,
-            summarize_entry_ids(&entries)
+            summarize_entry_ids(&entries),
+            meta_entries.len()
         );
         let mut batch = WriteBatch::default();
         self.clear_entries_in_batch(&mut batch)?;
         self.clear_request_dedup_in_batch(&mut batch)?;
+        self.clear_data_meta_in_batch(&mut batch)?;
         let logs_cf = self.db.cf_handle(CF_LOGS).ok_or_else(|| {
             let msg = format!("Missing column family '{}'", CF_LOGS);
             error!("{}", msg);
@@ -587,6 +674,12 @@ impl RocksDbStateStore {
         }
         let next_log_id = max_id.saturating_add(1).max(1);
         batch.put_cf(&meta_cf, KEY_NEXT_LOG_ID_META, next_log_id.to_be_bytes());
+        for item in meta_entries {
+            let encoded = bincode::serde::encode_to_vec(&item, bincode::config::legacy())
+                .map_err(|e| klog_err_with_context("Failed to encode data meta entry", e))?;
+            let key = data_meta_key(item.key.as_str());
+            batch.put_cf(&meta_cf, key, encoded);
+        }
 
         let write_opts = self.write_options();
         self.db.write_opt(batch, &write_opts).map_err(|e| {
@@ -608,6 +701,7 @@ impl RocksDbStateStore {
         let mut batch = WriteBatch::default();
         self.clear_entries_in_batch(&mut batch)?;
         self.clear_request_dedup_in_batch(&mut batch)?;
+        self.clear_data_meta_in_batch(&mut batch)?;
         let logs_cf = self.db.cf_handle(CF_LOGS).ok_or_else(|| {
             let msg = format!("Missing column family '{}'", CF_LOGS);
             error!("{}", msg);
@@ -631,6 +725,7 @@ impl RocksDbStateStore {
 
         let mut copied = 0usize;
         let mut copied_dedup = 0usize;
+        let mut copied_meta = 0usize;
         let mut max_id = 0u64;
         for item in source_db.iterator_cf(&source_logs_cf, IteratorMode::Start) {
             let (k, v) = item
@@ -661,14 +756,28 @@ impl RocksDbStateStore {
             batch.put_cf(&meta_cf, k.as_ref(), v.as_ref());
             copied_dedup += 1;
         }
+        let meta_iter = source_db.iterator_cf(
+            &source_meta_cf,
+            IteratorMode::From(KEY_DATA_META_PREFIX, Direction::Forward),
+        );
+        for item in meta_iter {
+            let (k, v) = item.map_err(|e| {
+                klog_err_with_context("Failed to iterate source data meta entries", e)
+            })?;
+            if !k.as_ref().starts_with(KEY_DATA_META_PREFIX) {
+                break;
+            }
+            batch.put_cf(&meta_cf, k.as_ref(), v.as_ref());
+            copied_meta += 1;
+        }
 
         let write_opts = self.write_options();
         self.db.write_opt(batch, &write_opts).map_err(|e| {
             klog_err_with_context("Failed to apply checkpoint snapshot into rocksdb", e)
         })?;
         info!(
-            "RocksDbStateStore replace_with_db completed: copied_entries={}, copied_dedup={}, next_log_id={}",
-            copied, copied_dedup, next_log_id
+            "RocksDbStateStore replace_with_db completed: copied_entries={}, copied_dedup={}, copied_meta={}, next_log_id={}",
+            copied, copied_dedup, copied_meta, next_log_id
         );
 
         Ok(())
@@ -1131,6 +1240,24 @@ fn try_decode_backup_engine_archive(data: &[u8]) -> KResult<Option<BackupEngineS
     Ok(Some(archive))
 }
 
+fn decode_snapshot_data(data: &[u8]) -> KResult<KLogStateSnapshotData> {
+    let decoded_new: Result<(KLogStateSnapshotData, usize), _> =
+        bincode::serde::decode_from_slice(data, bincode::config::legacy());
+    if let Ok((snapshot_data, _)) = decoded_new {
+        return Ok(snapshot_data);
+    }
+
+    // Temporary fallback for snapshots built before meta support.
+    let (entries, _): (Vec<KLogEntry>, usize) =
+        bincode::serde::decode_from_slice(data, bincode::config::legacy()).map_err(|e| {
+            klog_err_with_context("Failed to decode rocksdb enumerate snapshot payload", e)
+        })?;
+    Ok(KLogStateSnapshotData {
+        entries,
+        meta_entries: Vec::new(),
+    })
+}
+
 impl RocksDbSnapshotStrategy for EnumerateSnapshotStrategy {
     fn mode(&self) -> RocksDbSnapshotMode {
         RocksDbSnapshotMode::Enumerate
@@ -1142,13 +1269,19 @@ impl RocksDbSnapshotStrategy for EnumerateSnapshotStrategy {
             store.snapshot_mode
         );
         let entries = store.read_all_entries()?;
-        let data =
-            bincode::serde::encode_to_vec(&entries, bincode::config::legacy()).map_err(|e| {
+        let meta_entries = store.read_all_meta_entries()?;
+        let snapshot_data = KLogStateSnapshotData {
+            entries,
+            meta_entries,
+        };
+        let data = bincode::serde::encode_to_vec(&snapshot_data, bincode::config::legacy())
+            .map_err(|e| {
                 klog_err_with_context("Failed to serialize rocksdb enumerate snapshot", e)
             })?;
         info!(
-            "RocksDb enumerate build_snapshot done: entries={}, payload_bytes={}",
-            entries.len(),
+            "RocksDb enumerate build_snapshot done: entries={}, meta_entries={}, payload_bytes={}",
+            snapshot_data.entries.len(),
+            snapshot_data.meta_entries.len(),
             data.len()
         );
         Ok(KLogStateSnapshot { data })
@@ -1169,22 +1302,23 @@ impl RocksDbSnapshotStrategy for EnumerateSnapshotStrategy {
             return Ok(false);
         }
 
-        let decoded: Result<(Vec<KLogEntry>, usize), _> =
-            bincode::serde::decode_from_slice(&snapshot.data, bincode::config::legacy());
-
-        let Ok((entries, _)) = decoded else {
-            warn!(
-                "RocksDb enumerate install_snapshot decode failed: payload_bytes={}",
-                snapshot.data.len()
-            );
-            return Ok(false);
+        let snapshot_data = match decode_snapshot_data(&snapshot.data) {
+            Ok(v) => v,
+            Err(_) => {
+                warn!(
+                    "RocksDb enumerate install_snapshot decode failed: payload_bytes={}",
+                    snapshot.data.len()
+                );
+                return Ok(false);
+            }
         };
 
         info!(
-            "RocksDb enumerate install_snapshot apply: entries={}",
-            summarize_entry_ids(&entries)
+            "RocksDb enumerate install_snapshot apply: entries={}, meta_entries={}",
+            summarize_entry_ids(&snapshot_data.entries),
+            snapshot_data.meta_entries.len()
         );
-        store.replace_with_entries(entries)?;
+        store.replace_with_entries(snapshot_data.entries, snapshot_data.meta_entries)?;
         Ok(true)
     }
 }
@@ -1423,6 +1557,120 @@ impl KLogStateStore for RocksDbStateStore {
             }
         }
 
+        Ok(out)
+    }
+
+    async fn put_meta(&self, item: KLogMetaEntry) -> KResult<()> {
+        let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_META);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+        let encoded = bincode::serde::encode_to_vec(&item, bincode::config::legacy())
+            .map_err(|e| klog_err_with_context("Failed to encode rocksdb data meta entry", e))?;
+        let key = data_meta_key(item.key.as_str());
+        let write_opts = self.write_options();
+        self.db
+            .put_cf_opt(&meta_cf, key, encoded, &write_opts)
+            .map_err(|e| klog_err_with_context("Failed to persist rocksdb data meta entry", e))
+    }
+
+    async fn delete_meta(&self, key: &str) -> KResult<bool> {
+        let key = key.trim();
+        if key.is_empty() {
+            return Ok(false);
+        }
+
+        let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_META);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+        let meta_key = data_meta_key(key);
+        let existed = self
+            .db
+            .get_cf(&meta_cf, meta_key.as_slice())
+            .map_err(|e| klog_err_with_context("Failed to read rocksdb data meta entry", e))?
+            .is_some();
+        if !existed {
+            return Ok(false);
+        }
+        let write_opts = self.write_options();
+        self.db
+            .delete_cf_opt(&meta_cf, meta_key.as_slice(), &write_opts)
+            .map_err(|e| klog_err_with_context("Failed to delete rocksdb data meta entry", e))?;
+        Ok(true)
+    }
+
+    async fn get_meta(&self, key: &str) -> KResult<Option<KLogMetaEntry>> {
+        let key = key.trim();
+        if key.is_empty() {
+            return Ok(None);
+        }
+
+        let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_META);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+        let meta_key = data_meta_key(key);
+        let Some(raw) = self
+            .db
+            .get_cf(&meta_cf, meta_key.as_slice())
+            .map_err(|e| klog_err_with_context("Failed to read rocksdb data meta entry", e))?
+        else {
+            return Ok(None);
+        };
+        let (item, _): (KLogMetaEntry, usize) =
+            bincode::serde::decode_from_slice(raw.as_ref(), bincode::config::legacy()).map_err(
+                |e| klog_err_with_context("Failed to decode rocksdb data meta entry", e),
+            )?;
+        Ok(Some(item))
+    }
+
+    async fn list_meta(&self, prefix: Option<&str>, limit: usize) -> KResult<Vec<KLogMetaEntry>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_META);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+        let normalized_prefix = prefix.map(str::trim).filter(|v| !v.is_empty());
+        let seek_key = normalized_prefix
+            .map(data_meta_key)
+            .unwrap_or_else(|| KEY_DATA_META_PREFIX.to_vec());
+
+        let mut out = Vec::with_capacity(limit.min(1024));
+        let iter = self.db.iterator_cf(
+            &meta_cf,
+            IteratorMode::From(seek_key.as_slice(), Direction::Forward),
+        );
+        for item in iter {
+            let (k, v) =
+                item.map_err(|e| klog_err_with_context("Failed to iterate rocksdb data meta", e))?;
+            if !k.as_ref().starts_with(KEY_DATA_META_PREFIX) {
+                break;
+            }
+            let Some(key) = decode_data_meta_key(k.as_ref()) else {
+                continue;
+            };
+            if let Some(prefix) = normalized_prefix
+                && !key.starts_with(prefix)
+            {
+                continue;
+            }
+            let (item, _): (KLogMetaEntry, usize) =
+                bincode::serde::decode_from_slice(v.as_ref(), bincode::config::legacy()).map_err(
+                    |e| klog_err_with_context("Failed to decode rocksdb data meta entry", e),
+                )?;
+            out.push(item);
+            if out.len() >= limit {
+                break;
+            }
+        }
         Ok(out)
     }
 

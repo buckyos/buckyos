@@ -1,9 +1,9 @@
 use super::common::{decode_entry_ids, sample_membership, sample_state_entries, unique_test_path};
-use crate::KLogEntry;
 use crate::state_store::{
     KLogQuery, KLogQueryOrder, KLogStateMachineMeta, KLogStateSnapshot, KLogStateStore,
     KLogStateStoreManager, MemoryStateStore, RocksDbSnapshotMode, RocksDbStateStore,
 };
+use crate::{KLogEntry, KLogMetaEntry};
 use openraft::{CommittedLeaderId, LogId};
 use std::sync::Arc;
 
@@ -82,6 +82,78 @@ async fn test_rocksdb_request_id_dedup_persists_after_reopen() -> anyhow::Result
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].id, first_id);
     assert_eq!(items[0].message, "first-write");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_rocksdb_meta_persists_after_reopen() -> anyhow::Result<()> {
+    let path = unique_test_path("state_store_meta_reopen.rocks");
+    let rocks = RocksDbStateStore::open_with_mode(&path, RocksDbSnapshotMode::Enumerate)
+        .map_err(anyhow::Error::msg)?;
+    let state_store = Arc::new(Box::new(rocks) as Box<dyn KLogStateStore>);
+    let manager = KLogStateStoreManager::new(state_store).await?;
+    manager
+        .put_meta_entry(KLogMetaEntry {
+            key: "cluster/config/max_clients".to_string(),
+            value: "64".to_string(),
+            updated_at: 1000,
+            updated_by: 1,
+        })
+        .await?;
+    drop(manager);
+
+    let reopened = RocksDbStateStore::open_with_mode(&path, RocksDbSnapshotMode::Enumerate)
+        .map_err(anyhow::Error::msg)?;
+    let reopened = Arc::new(Box::new(reopened) as Box<dyn KLogStateStore>);
+    let manager = KLogStateStoreManager::new(reopened).await?;
+    let item = manager
+        .get_meta_entry("cluster/config/max_clients")
+        .await?
+        .expect("meta must exist");
+    assert_eq!(item.value, "64");
+    assert_eq!(item.updated_by, 1);
+
+    let listed = manager
+        .list_meta_entries(Some("cluster/config"), 10)
+        .await?;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].key, "cluster/config/max_clients");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_rocksdb_meta_snapshot_roundtrip() -> anyhow::Result<()> {
+    let src = MemoryStateStore::new();
+    let src = Arc::new(Box::new(src) as Box<dyn KLogStateStore>);
+    let src_mgr = KLogStateStoreManager::new(src).await?;
+    src_mgr.append(sample_state_entries()).await?;
+    src_mgr
+        .put_meta_entry(KLogMetaEntry {
+            key: "cluster/config/version".to_string(),
+            value: "v1".to_string(),
+            updated_at: 2000,
+            updated_by: 2,
+        })
+        .await?;
+    let src_snapshot = src_mgr.build_snapshot().await?;
+
+    let dst = RocksDbStateStore::open_with_mode(
+        unique_test_path("state_store_meta_snapshot.rocks"),
+        RocksDbSnapshotMode::Enumerate,
+    )
+    .map_err(anyhow::Error::msg)?;
+    let dst = Arc::new(Box::new(dst) as Box<dyn KLogStateStore>);
+    let dst_mgr = KLogStateStoreManager::new(dst).await?;
+    dst_mgr.install_snapshot(src_snapshot).await?;
+
+    let item = dst_mgr
+        .get_meta_entry("cluster/config/version")
+        .await?
+        .expect("meta must exist after snapshot install");
+    assert_eq!(item.value, "v1");
+    assert_eq!(item.updated_by, 2);
 
     Ok(())
 }
