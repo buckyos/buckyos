@@ -237,6 +237,22 @@ pub struct FileLogTarget {
 }
 
 impl FileLogTarget {
+    fn lock_pending_write_index(&self) -> Result<std::sync::MutexGuard<'_, Option<u64>>, String> {
+        self.inner.pending_write_index.lock().map_err(|e| {
+            let msg = format!("failed to lock pending write index: {}", e);
+            error!("{}", msg);
+            msg
+        })
+    }
+
+    fn lock_current_file(&self) -> Result<std::sync::MutexGuard<'_, Option<FileInfo>>, String> {
+        self.inner.current_file.lock().map_err(|e| {
+            let msg = format!("failed to lock current log file state: {}", e);
+            error!("{}", msg);
+            msg
+        })
+    }
+
     pub fn new(
         log_dir: &Path,
         service_name: String,
@@ -276,7 +292,14 @@ impl FileLogTarget {
                 std::thread::sleep(std::time::Duration::from_millis(
                     this.inner.flush_interval_ms,
                 ));
-                this.flush_to_file();
+                let flush_result =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| this.flush_to_file()));
+                if flush_result.is_err() {
+                    error!(
+                        "flush thread panicked for service {}, keep thread alive for next round",
+                        this.inner.service_name
+                    );
+                }
             }
         });
     }
@@ -322,9 +345,12 @@ impl FileLogTarget {
     }
 
     fn try_sync_pending_write_index(&self) {
-        let pending = {
-            let pending_lock = self.inner.pending_write_index.lock().unwrap();
-            *pending_lock
+        let pending = match self.lock_pending_write_index() {
+            Ok(pending_lock) => *pending_lock,
+            Err(e) => {
+                error!("failed to read pending write index: {}", e);
+                return;
+            }
         };
 
         if let Some(index) = pending {
@@ -337,8 +363,17 @@ impl FileLogTarget {
     }
 
     fn has_pending_write_index(&self) -> bool {
-        let pending_lock = self.inner.pending_write_index.lock().unwrap();
-        pending_lock.is_some()
+        match self.lock_pending_write_index() {
+            Ok(pending_lock) => pending_lock.is_some(),
+            Err(e) => {
+                // Be conservative: treat lock failure as pending state and avoid file sealing.
+                warn!(
+                    "treating pending write index as present due lock failure: {}",
+                    e
+                );
+                true
+            }
+        }
     }
 
     fn sync_write_index_or_mark_pending(&self, new_index: u64) -> bool {
@@ -348,7 +383,10 @@ impl FileLogTarget {
             .force_next_meta_sync_fail
             .swap(false, Ordering::SeqCst)
         {
-            let mut pending_lock = self.inner.pending_write_index.lock().unwrap();
+            let mut pending_lock = match self.lock_pending_write_index() {
+                Ok(lock) => lock,
+                Err(_) => return false,
+            };
             *pending_lock = Some(pending_lock.unwrap_or(0).max(new_index));
             error!(
                 "forced meta sync failure for test, pending write index={}",
@@ -359,12 +397,18 @@ impl FileLogTarget {
 
         match self.inner.meta.update_current_write_index(new_index) {
             Ok(_) => {
-                let mut pending_lock = self.inner.pending_write_index.lock().unwrap();
+                let mut pending_lock = match self.lock_pending_write_index() {
+                    Ok(lock) => lock,
+                    Err(_) => return false,
+                };
                 *pending_lock = None;
                 true
             }
             Err(e) => {
-                let mut pending_lock = self.inner.pending_write_index.lock().unwrap();
+                let mut pending_lock = match self.lock_pending_write_index() {
+                    Ok(lock) => lock,
+                    Err(_) => return false,
+                };
                 *pending_lock = Some(pending_lock.unwrap_or(0).max(new_index));
                 error!(
                     "failed to update write index of current log file to {}, mark pending: {}",
@@ -404,7 +448,14 @@ impl FileLogTarget {
             info!("created new log file: {}", file_name);
             file_name
         } else {
-            let info = write_info.unwrap();
+            let info = match write_info {
+                Some(info) => info,
+                None => {
+                    let msg = "active write file metadata missing unexpectedly".to_string();
+                    error!("{}", msg);
+                    return Err(msg);
+                }
+            };
             info!("continue using existing log file: {}", info.name);
             info.name
         };
@@ -443,7 +494,7 @@ impl FileLogTarget {
 
         let file_info = FileInfo { size, file };
 
-        println!("Opened log file: {}", log_file.display());
+        info!("opened log file: {}", log_file.display());
         Ok(file_info)
     }
 
@@ -457,7 +508,16 @@ impl FileLogTarget {
         }
 
         // Try to open current log file and check size
-        let mut current_file = self.inner.current_file.lock().unwrap();
+        let mut current_file = match self.lock_current_file() {
+            Ok(lock) => lock,
+            Err(e) => {
+                return FlushToFileResult {
+                    written_count: 0,
+                    meta_synced: true,
+                    error: Some(e),
+                };
+            }
+        };
         if current_file.is_none() {
             let file_info = match self.open_current_log_file() {
                 Ok(file) => file,
@@ -471,7 +531,16 @@ impl FileLogTarget {
             };
             *current_file = Some(file_info);
         } else {
-            let file_info = current_file.as_ref().unwrap();
+            let file_info = match current_file.as_ref() {
+                Some(file_info) => file_info,
+                None => {
+                    return FlushToFileResult {
+                        written_count: 0,
+                        meta_synced: true,
+                        error: Some("current log file unexpectedly missing".to_string()),
+                    };
+                }
+            };
             if file_info.size >= self.inner.max_file_size {
                 if self.has_pending_write_index() {
                     warn!(
@@ -507,7 +576,16 @@ impl FileLogTarget {
             }
         }
 
-        let file_info = current_file.as_mut().unwrap();
+        let file_info = match current_file.as_mut() {
+            Some(file_info) => file_info,
+            None => {
+                return FlushToFileResult {
+                    written_count: 0,
+                    meta_synced: true,
+                    error: Some("current log file unexpectedly missing".to_string()),
+                };
+            }
+        };
 
         // Get current pos of the file
         use std::io::Seek;

@@ -35,15 +35,28 @@ async fn main() {
     // First init logs output
     let log_root_dir = slog::get_buckyos_log_root_dir();
     let log_dir = log_root_dir.join(SERVICE_NAME);
-    std::fs::create_dir_all(&log_dir).unwrap();
+    if let Err(e) = std::fs::create_dir_all(&log_dir) {
+        eprintln!(
+            "Failed to create slog server log directory {}: {}",
+            log_dir.display(),
+            e
+        );
+        return;
+    }
 
     let logger =
         slog::SystemLoggerBuilder::new(&log_dir, SERVICE_NAME, slog::SystemLoggerCategory::Service)
             .level("info")
             .console("debug")
             .file(true)
-            .build()
-            .unwrap();
+            .build();
+    let logger = match logger {
+        Ok(logger) => logger,
+        Err(e) => {
+            eprintln!("Failed to build slog server logger: {}", e);
+            return;
+        }
+    };
     logger.start();
 
     let mut cfg = ServerConfig::default();
@@ -65,7 +78,7 @@ async fn main() {
     let storage = match create_log_storage_with_dir(LogStorageType::Sqlite, &storage_dir) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("Failed to create log storage: {}", e);
+            error!("failed to create log storage: {}", e);
             return;
         }
     };
