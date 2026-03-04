@@ -1,6 +1,7 @@
 use super::format::SystemLogRecordLineFormatter;
 use super::meta::LogMeta;
 use crate::system_log::{SystemLogRecord, SystemLogTarget};
+use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::{
@@ -10,26 +11,36 @@ use std::{
 
 // Cache log records before flushing to file, then we flush log every interval
 struct LogRecordCache {
-    records: Mutex<Vec<SystemLogRecord>>,
+    records: Mutex<VecDeque<SystemLogRecord>>,
 }
 
 impl LogRecordCache {
     pub fn new() -> Self {
         LogRecordCache {
-            records: Mutex::new(Vec::new()),
+            records: Mutex::new(VecDeque::new()),
         }
     }
 
     pub fn add_record(&self, record: SystemLogRecord) {
         let mut records = self.records.lock().unwrap();
-        records.push(record);
+        records.push_back(record);
     }
 
     pub fn fetch_all(&self) -> Vec<SystemLogRecord> {
         let mut records = self.records.lock().unwrap();
-        let fetched = records.clone();
-        records.clear();
-        fetched
+        std::mem::take(&mut *records).into_iter().collect()
+    }
+
+    // Requeue failed flush records to the front, so old records are retried first.
+    pub fn add_records_front(&self, failed_records: Vec<SystemLogRecord>) {
+        if failed_records.is_empty() {
+            return;
+        }
+
+        let mut records = self.records.lock().unwrap();
+        let mut pending = VecDeque::from(failed_records);
+        pending.append(&mut records);
+        *records = pending;
     }
 }
 
@@ -104,7 +115,10 @@ impl FileLogTarget {
         // println!("Flushing {} log records to file...", records.len());
         // First try to log to file
         if let Err(e) = self.log_to_file(&records) {
+            let count = records.len();
+            self.inner.cache.add_records_front(records);
             error!("failed to flush logs to file: {}", e);
+            warn!("requeued {} log records after flush failure", count);
         }
     }
 
@@ -270,5 +284,53 @@ impl SystemLogTarget for FileLogTarget {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LogRecordCache;
+    use crate::system_log::{LogLevel, SystemLogRecord};
+
+    fn make_record(content: &str) -> SystemLogRecord {
+        SystemLogRecord {
+            level: LogLevel::Info,
+            target: "test".to_string(),
+            time: 1,
+            file: None,
+            line: None,
+            content: content.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_log_record_cache_fetch_all_keeps_order() {
+        let cache = LogRecordCache::new();
+        cache.add_record(make_record("a"));
+        cache.add_record(make_record("b"));
+
+        let first = cache.fetch_all();
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].content, "a");
+        assert_eq!(first[1].content, "b");
+
+        let second = cache.fetch_all();
+        assert!(second.is_empty());
+    }
+
+    #[test]
+    fn test_log_record_cache_requeue_front_preserves_old_first() {
+        let cache = LogRecordCache::new();
+        cache.add_record(make_record("new-1"));
+        cache.add_record(make_record("new-2"));
+
+        cache.add_records_front(vec![make_record("old-1"), make_record("old-2")]);
+
+        let all = cache.fetch_all();
+        assert_eq!(all.len(), 4);
+        assert_eq!(all[0].content, "old-1");
+        assert_eq!(all[1].content, "old-2");
+        assert_eq!(all[2].content, "new-1");
+        assert_eq!(all[3].content, "new-2");
     }
 }
