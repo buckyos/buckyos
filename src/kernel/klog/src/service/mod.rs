@@ -147,11 +147,20 @@ impl KLogWriteService {
         let metrics = self.raft.metrics().borrow().clone();
         let local_node_id = metrics.id;
         let level = req.level.unwrap_or(KLogLevel::Info);
+        let source = req
+            .source
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_string());
+        let attrs = req.attrs.unwrap_or_default();
         let req = KLogAppendRequest {
             message: req.message,
             timestamp: req.timestamp.or_else(|| Some(now_millis())),
             node_id: req.node_id.or(Some(local_node_id)),
             level: Some(level),
+            source: source.clone(),
+            attrs: Some(attrs.clone()),
             request_id: request_id.clone(),
         };
 
@@ -161,12 +170,14 @@ impl KLogWriteService {
             node_id: req.node_id.unwrap_or(local_node_id),
             request_id,
             level,
+            source,
+            attrs,
             message: req.message.clone(),
         });
         let requested_id = item.id;
 
         info!(
-            "{} data append request: trace_id={}, id={}, request_id={:?}, timestamp={}, node_id={}, level={:?}, msg_len={}, local_node_id={}, current_leader={:?}, forward_hops={}, forwarded_by={}",
+            "{} data append request: trace_id={}, id={}, request_id={:?}, timestamp={}, node_id={}, level={:?}, source={:?}, attrs_len={}, msg_len={}, local_node_id={}, current_leader={:?}, forward_hops={}, forwarded_by={}",
             self.service_name,
             trace_id,
             item.id,
@@ -174,6 +185,8 @@ impl KLogWriteService {
             item.timestamp,
             item.node_id,
             item.level,
+            item.source.as_deref(),
+            item.attrs.len(),
             item.message.len(),
             local_node_id,
             metrics.current_leader,

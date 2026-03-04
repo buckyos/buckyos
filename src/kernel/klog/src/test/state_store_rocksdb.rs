@@ -29,6 +29,8 @@ async fn test_manager_recovers_next_log_id_after_rocksdb_reopen() -> anyhow::Res
         node_id: 1,
         request_id: None,
         level: Default::default(),
+        source: None,
+        attrs: Default::default(),
         message: "after-reopen".to_string(),
     });
     assert_eq!(prepared.id, 13);
@@ -50,6 +52,8 @@ async fn test_rocksdb_request_id_dedup_persists_after_reopen() -> anyhow::Result
         node_id: 1,
         request_id: Some("rk-dedup-1".to_string()),
         level: Default::default(),
+        source: None,
+        attrs: Default::default(),
         message: "first-write".to_string(),
     });
     let first_id = manager.append_prepared_entry(first).await?;
@@ -69,6 +73,8 @@ async fn test_rocksdb_request_id_dedup_persists_after_reopen() -> anyhow::Result
         node_id: 1,
         request_id: Some("rk-dedup-1".to_string()),
         level: Default::default(),
+        source: None,
+        attrs: Default::default(),
         message: "retry-write".to_string(),
     });
     let retry_id = manager.append_prepared_entry(retry).await?;
@@ -258,6 +264,8 @@ async fn test_rocksdb_state_store_install_snapshot() -> anyhow::Result<()> {
             node_id: 7,
             request_id: None,
             level: Default::default(),
+            source: None,
+            attrs: Default::default(),
             message: "old-data".to_string(),
         }])
         .await?;
@@ -273,6 +281,8 @@ async fn test_rocksdb_state_store_install_snapshot() -> anyhow::Result<()> {
         node_id: 1,
         request_id: None,
         level: Default::default(),
+        source: None,
+        attrs: Default::default(),
         message: "after-install-snapshot".to_string(),
     });
     assert_eq!(prepared.id, 13);
@@ -306,6 +316,8 @@ async fn test_rocksdb_checkpoint_mode_snapshot_roundtrip() -> anyhow::Result<()>
             node_id: 7,
             request_id: None,
             level: Default::default(),
+            source: None,
+            attrs: Default::default(),
             message: "old-data".to_string(),
         }])
         .await?;
@@ -344,6 +356,8 @@ async fn test_rocksdb_checkpoint_mode_install_enumerate_snapshot() -> anyhow::Re
             node_id: 9,
             request_id: None,
             level: Default::default(),
+            source: None,
+            attrs: Default::default(),
             message: "stale-data".to_string(),
         }])
         .await?;
@@ -383,6 +397,8 @@ async fn test_rocksdb_backup_engine_mode_snapshot_roundtrip() -> anyhow::Result<
             node_id: 7,
             request_id: None,
             level: Default::default(),
+            source: None,
+            attrs: Default::default(),
             message: "old-data".to_string(),
         }])
         .await?;
@@ -420,6 +436,8 @@ async fn test_rocksdb_backup_engine_mode_install_enumerate_snapshot() -> anyhow:
             node_id: 9,
             request_id: None,
             level: Default::default(),
+            source: None,
+            attrs: Default::default(),
             message: "stale-data".to_string(),
         }])
         .await?;
@@ -452,6 +470,8 @@ async fn test_rocksdb_query_entries_asc_range_limit() -> anyhow::Result<()> {
                 node_id: 1,
                 request_id: None,
                 level: Default::default(),
+                source: None,
+                attrs: Default::default(),
                 message: "m10".to_string(),
             },
             KLogEntry {
@@ -460,6 +480,8 @@ async fn test_rocksdb_query_entries_asc_range_limit() -> anyhow::Result<()> {
                 node_id: 1,
                 request_id: None,
                 level: Default::default(),
+                source: None,
+                attrs: Default::default(),
                 message: "m11".to_string(),
             },
             KLogEntry {
@@ -468,6 +490,8 @@ async fn test_rocksdb_query_entries_asc_range_limit() -> anyhow::Result<()> {
                 node_id: 1,
                 request_id: None,
                 level: Default::default(),
+                source: None,
+                attrs: Default::default(),
                 message: "m12".to_string(),
             },
             KLogEntry {
@@ -476,6 +500,8 @@ async fn test_rocksdb_query_entries_asc_range_limit() -> anyhow::Result<()> {
                 node_id: 1,
                 request_id: None,
                 level: Default::default(),
+                source: None,
+                attrs: Default::default(),
                 message: "m13".to_string(),
             },
         ])
@@ -510,6 +536,8 @@ async fn test_rocksdb_query_entries_desc_range_limit() -> anyhow::Result<()> {
                 node_id: 1,
                 request_id: None,
                 level: Default::default(),
+                source: None,
+                attrs: Default::default(),
                 message: "m20".to_string(),
             },
             KLogEntry {
@@ -518,6 +546,8 @@ async fn test_rocksdb_query_entries_desc_range_limit() -> anyhow::Result<()> {
                 node_id: 1,
                 request_id: None,
                 level: Default::default(),
+                source: None,
+                attrs: Default::default(),
                 message: "m21".to_string(),
             },
             KLogEntry {
@@ -526,6 +556,8 @@ async fn test_rocksdb_query_entries_desc_range_limit() -> anyhow::Result<()> {
                 node_id: 1,
                 request_id: None,
                 level: Default::default(),
+                source: None,
+                attrs: Default::default(),
                 message: "m22".to_string(),
             },
             KLogEntry {
@@ -534,6 +566,8 @@ async fn test_rocksdb_query_entries_desc_range_limit() -> anyhow::Result<()> {
                 node_id: 1,
                 request_id: None,
                 level: Default::default(),
+                source: None,
+                attrs: Default::default(),
                 message: "m23".to_string(),
             },
         ])

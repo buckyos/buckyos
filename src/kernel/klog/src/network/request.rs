@@ -111,6 +111,10 @@ pub struct KLogAppendRequest {
     pub node_id: Option<KNodeId>,
     #[serde(default)]
     pub level: Option<KLogLevel>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub attrs: Option<BTreeMap<String, String>>,
     pub request_id: Option<String>,
 }
 

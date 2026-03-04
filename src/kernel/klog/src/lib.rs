@@ -6,6 +6,7 @@ extern crate log;
 use openraft::Raft;
 use openraft::{LogId, declare_raft_types};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub mod error;
@@ -48,6 +49,10 @@ pub struct KLogEntry {
     pub request_id: Option<String>, // Optional idempotency key for dedup.
     #[serde(default)]
     pub level: KLogLevel,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub attrs: BTreeMap<String, String>,
     pub message: String,
 }
 

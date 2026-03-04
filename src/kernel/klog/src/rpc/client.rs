@@ -137,6 +137,8 @@ impl KLogClient {
                 timestamp: None,
                 node_id: None,
                 level: None,
+                source: None,
+                attrs: None,
                 request_id: None,
             })
             .await?;
@@ -394,6 +396,7 @@ mod tests {
     use axum::http::{HeaderMap, HeaderValue, StatusCode};
     use axum::routing::post;
     use std::net::SocketAddr;
+    use std::collections::BTreeMap;
     use std::time::Duration;
     use tokio::task::JoinHandle;
     use uuid::Uuid;
@@ -464,6 +467,8 @@ mod tests {
                 let params: KLogAppendRequest =
                     serde_json::from_value(request.params).expect("append params");
                 assert_eq!(params.message, "hello-klog");
+                assert_eq!(params.source.as_deref(), Some("kernel/kmsg"));
+                assert_eq!(params.attrs.as_ref().and_then(|m| m.get("pid")), Some(&"42".to_string()));
 
                 let response =
                     KLogJsonRpcResponse::success(request.id, KLogAppendResponse { id: 42 });
@@ -475,12 +480,16 @@ mod tests {
             return Ok(());
         };
         let client = server.client();
+        let mut attrs = BTreeMap::new();
+        attrs.insert("pid".to_string(), "42".to_string());
         let resp = client
             .append(KLogAppendRequest {
                 message: "hello-klog".to_string(),
                 timestamp: Some(1000),
                 node_id: Some(1),
                 level: None,
+                source: Some("kernel/kmsg".to_string()),
+                attrs: Some(attrs),
                 request_id: Some("req-1".to_string()),
             })
             .await
@@ -528,6 +537,8 @@ mod tests {
                 timestamp: Some(1001),
                 node_id: Some(1),
                 level: None,
+                source: None,
+                attrs: None,
                 request_id: Some("req-trace".to_string()),
             })
             .await
@@ -568,6 +579,8 @@ mod tests {
                 timestamp: Some(2000),
                 node_id: None,
                 level: None,
+                source: None,
+                attrs: None,
                 request_id: None,
             })
             .await
@@ -595,6 +608,8 @@ mod tests {
                             node_id: 1,
                             request_id: None,
                             level: Default::default(),
+                            source: None,
+                            attrs: Default::default(),
                             message: "q-result".to_string(),
                         }],
                     },
