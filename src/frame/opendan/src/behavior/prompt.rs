@@ -230,7 +230,7 @@ async fn render_skills_text(
             guard.loaded_skills.clone(),
             guard.local_workspace_id.clone(),
             guard.workspace_info.clone(),
-            guard.cwd.clone(),
+            guard.pwd.clone(),
         )
     };
 
@@ -629,7 +629,7 @@ async fn load_workspace_todo_with_limit(
         (
             guard.local_workspace_id.clone(),
             guard.workspace_info.clone(),
-            guard.cwd.clone(),
+            guard.pwd.clone(),
         )
     };
 
@@ -1156,7 +1156,7 @@ async fn load_workspace_worklog_with_limit(
                     .or_else(|| normalize_optional_text(Some(input.session_id.as_str()))),
                 guard.local_workspace_id.clone(),
                 guard.workspace_info.clone(),
-                guard.cwd.clone(),
+                guard.pwd.clone(),
             )
         } else {
             (
@@ -1332,7 +1332,7 @@ async fn build_toolbox(
         session_loaded_skills = normalize_unique_string_list(guard.loaded_skills.clone());
         local_workspace_id = normalize_optional_text(guard.local_workspace_id.as_deref());
         workspace_info = guard.workspace_info.clone();
-        session_cwd = guard.cwd.clone();
+        session_cwd = guard.pwd.clone();
     }
 
     let (workspace_skill_records, workspace_skill_specs) = load_workspace_skill_catalog(
@@ -1862,7 +1862,7 @@ loaded_tools: [exec_bash]
         .expect("write skill spec");
 
         let mut session = AgentSession::new("session-1", "did:web:agent.example.com", None);
-        session.cwd = workspace_root;
+        session.pwd = workspace_root;
         session.loaded_skills = vec!["coding".to_string()];
         let session = Arc::new(Mutex::new(session));
 
@@ -2211,7 +2211,7 @@ loaded_tools: [exec_bash]
         .expect("write msg record file");
 
         let mut session = AgentSession::new(session_id, "did:web:agent.example.com", None);
-        session.cwd = workspace_root.clone();
+        session.pwd = workspace_root.clone();
         session.session_root_dir = workspace_root.join("session");
         let input = BehaviorExecInput {
             session_id: session_id.to_string(),
@@ -2308,7 +2308,7 @@ loaded_tools: [exec_bash]
             .expect("append worklog for session-2");
 
         let mut session = AgentSession::new("session-1", "did:web:agent.example.com", None);
-        session.cwd = workspace_root;
+        session.pwd = workspace_root;
         let input = BehaviorExecInput {
             session_id: "session-1".to_string(),
             trace: SessionRuntimeContext {

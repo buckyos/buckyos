@@ -206,7 +206,7 @@ Agent的llm_result.action, 成为workflow的ouput
 
 ## 上一步的结果
 
-- 读取 b.index [0:100] 成功，内容如下:
+- read_file b.index 0:100 => OK  ，result:
 ```
 xxxxx
 xxx
@@ -214,10 +214,29 @@ xxxxxxx
 xxx
 xxxxxxxxxx
 ```
-
+- write_file index.html => OK, write 435 bytes(+29 lines)
+- edit_file b.js => OK,replace 23 lines
+- git diff d1e711b7  -- agent_tool.rs => OK,result:
 ```
-
-
+diff --git a/src/frame/opendan/src/agent_tool.rs b/src/frame/opendan/src/agent_tool.rs ==
+index 6325c39e..4f1212b1 100644
+--- a/src/frame/opendan/src/agent_tool.rs
++++ b/src/frame/opendan/src/agent_tool.rs
+@@ -291,6 +291,13 @@ pub(crate) fn normalize_tool_name(name: &str) -> String {
+         .to_string()
+ }
+ 
++pub struct AgentToolResult {
++    pub exit_code: i32,
++    pub full_cmd_line:String,
++    pub result:Option<String>,
++    pub error:Option<String>,
++}
++
+ #[async_trait]
+ pub trait AgentTool: Send + Sync {
+     fn spec(&self) -> ToolSpec;
+```
 ### Loop 例子
 
 核心点：

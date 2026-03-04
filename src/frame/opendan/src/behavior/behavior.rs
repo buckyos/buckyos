@@ -270,10 +270,16 @@ impl LLMBehavior {
 
             match exec {
                 Ok(raw) => {
+                    let raw_json = serde_json::to_value(&raw).unwrap_or_else(|_| {
+                        json!({
+                            "ok": false,
+                            "error": "serialize tool result failed"
+                        })
+                    });
                     let obs = Sanitizer::sanitize_observation(
                         ObservationSource::Tool,
                         &call.name,
-                        raw.clone(),
+                        raw_json,
                         input.limits.max_observation_bytes,
                     );
                     tool_observations.push(obs);

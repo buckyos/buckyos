@@ -218,7 +218,7 @@ impl AgentEnvironment {
                 guard.step_index,
                 guard.last_step_summary.clone(),
                 guard.workspace_info.clone(),
-                guard.cwd.clone(),
+                guard.pwd.clone(),
                 guard.owner_agent.clone(),
                 guard.local_workspace_id.clone(),
             )
@@ -2008,7 +2008,7 @@ mod tests {
             "did:test:agent",
             Some("on_wakeup"),
         )));
-        session.lock().await.cwd = root.path().to_path_buf();
+        session.lock().await.pwd = root.path().to_path_buf();
 
         let rendered = AgentEnvironment::load_value_from_session(session.clone(), "session_list")
             .await
@@ -2085,7 +2085,7 @@ mod tests {
             "did:test:agent",
             Some("on_wakeup"),
         )));
-        session.lock().await.cwd = root.path().to_path_buf();
+        session.lock().await.pwd = root.path().to_path_buf();
 
         let rendered =
             AgentEnvironment::load_value_from_session(session.clone(), "local_workspace_list")

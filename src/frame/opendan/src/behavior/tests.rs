@@ -15,7 +15,7 @@ use super::*;
 use crate::agent_environment::AgentEnvironment;
 use crate::agent_session::AgentSessionMgr;
 use crate::agent_tool::{
-    AgentTool, AgentToolManager, DoAction, DoActions, ToolSpec, TOOL_EXEC_BASH,
+    AgentTool, AgentToolManager, AgentToolResult, DoAction, DoActions, ToolSpec, TOOL_EXEC_BASH,
 };
 use crate::test_utils::{MockAicc, MockTaskMgrHandler};
 use crate::workspace::{AgentWorkshop, AgentWorkshopConfig};
@@ -82,9 +82,12 @@ impl AgentTool for EchoTool {
         &self,
         _ctx: &SessionRuntimeContext,
         args: Json,
-    ) -> Result<Json, crate::agent_tool::AgentToolError> {
+    ) -> Result<AgentToolResult, crate::agent_tool::AgentToolError> {
         println!("[TEST][TOOL] tool.echo called with args: {}", args);
-        Ok(json!({"tool": "tool.echo", "ok": true, "args": args}))
+        Ok(
+            AgentToolResult::from_details(json!({"tool": "tool.echo", "ok": true, "args": args}))
+                .with_result("ok"),
+        )
     }
 }
 
@@ -969,7 +972,7 @@ async fn run_step_with_workshop_list_dir_then_plan_python_actions() {
         .expect("ensure session");
     {
         let mut guard = session.lock().await;
-        guard.cwd = root.clone();
+        guard.pwd = root.clone();
     }
     session_store
         .save_session("session-workshop")

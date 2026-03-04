@@ -4,7 +4,9 @@ use async_trait::async_trait;
 use serde_json::{json, Value as Json};
 use tokio::fs;
 
-use crate::agent_tool::{tokenize_bash_command_line, AgentTool, AgentToolError, ToolSpec};
+use crate::agent_tool::{
+    tokenize_bash_command_line, AgentTool, AgentToolError, AgentToolResult, ToolSpec,
+};
 use crate::behavior::SessionRuntimeContext;
 use crate::worklog::{WorklogService, WorklogToolConfig};
 use crate::workspace::workshop::{AgentWorkshopConfig, WorkshopToolConfig};
@@ -234,7 +236,11 @@ impl AgentTool for EditFileTool {
         false
     }
 
-    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(
+        &self,
+        ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<AgentToolResult, AgentToolError> {
         let file_path = require_string(&args, "path")?;
         let abs_path = resolve_path_in_workspace(&self.cfg.workspace_root, &file_path)?;
         if !is_path_under_any(&abs_path, &self.policy.allowed_write_roots) {
@@ -337,7 +343,7 @@ impl AgentTool for EditFileTool {
                 .await?;
         }
 
-        Ok(json!({
+        let details = json!({
             "ok": true,
             "path": file_path,
             "abs_path": abs_path.to_string_lossy().to_string(),
@@ -349,7 +355,17 @@ impl AgentTool for EditFileTool {
             "bytes_after": updated_content.len(),
             "diff": diff,
             "diff_truncated": diff_truncated
-        }))
+        });
+        let summary = if changed {
+            format!("{} {} -> {} bytes", operation, original_content.len(), updated_content.len())
+        } else if !matched {
+            "anchor not found, no change".to_string()
+        } else {
+            "no change".to_string()
+        };
+        Ok(AgentToolResult::from_details(details)
+            .with_cmd_line(format!("{} {}", TOOL_EDIT_FILE, abs_path.to_string_lossy()))
+            .with_result(summary))
     }
 }
 
@@ -403,7 +419,11 @@ impl AgentTool for WriteFileTool {
     fn support_llm_tool_call(&self) -> bool {
         false
     }
-    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(
+        &self,
+        ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<AgentToolResult, AgentToolError> {
         let file_path = require_string(&args, "path")?;
         let content = require_string(&args, "content")?;
         let abs_path = resolve_path_in_workspace(&self.cfg.workspace_root, &file_path)?;
@@ -489,7 +509,7 @@ impl AgentTool for WriteFileTool {
             )
             .await?;
 
-        Ok(json!({
+        let details = json!({
             "ok": true,
             "path": file_path,
             "abs_path": abs_path.to_string_lossy().to_string(),
@@ -501,7 +521,16 @@ impl AgentTool for WriteFileTool {
             "bytes_after": updated_content.len(),
             "diff": diff,
             "diff_truncated": diff_truncated
-        }))
+        });
+        let summary = format!(
+            "{} {} -> {} bytes",
+            operation,
+            original_content.len(),
+            updated_content.len()
+        );
+        Ok(AgentToolResult::from_details(details)
+            .with_cmd_line(format!("{} {}", TOOL_WRITE_FILE, abs_path.to_string_lossy()))
+            .with_result(summary))
     }
 }
 
@@ -559,7 +588,11 @@ impl AgentTool for ReadFileTool {
         true
     }
 
-    async fn call(&self, _ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(
+        &self,
+        _ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<AgentToolResult, AgentToolError> {
         let file_path = require_string(&args, "path")?;
         let abs_path = resolve_path_in_workspace(&self.cfg.workspace_root, &file_path)?;
         if !is_path_under_any(&abs_path, &self.policy.allowed_read_roots) {
@@ -599,7 +632,7 @@ impl AgentTool for ReadFileTool {
         let (content, truncated) =
             truncate_bytes(selected_content.as_bytes(), self.policy.max_read_bytes);
 
-        Ok(json!({
+        let details = json!({
             "ok": true,
             "path": file_path,
             "abs_path": abs_path.to_string_lossy().to_string(),
@@ -608,7 +641,18 @@ impl AgentTool for ReadFileTool {
             "line_range": line_range_label,
             "bytes": full_content.len(),
             "truncated": truncated,
-        }))
+            "pwd": self.cfg.workspace_root.to_string_lossy().to_string(),
+        });
+        let summary = format!(
+            "read {} bytes{}",
+            full_content.len(),
+            if truncated { " (truncated)" } else { "" }
+        );
+        let stdout_payload = (!content.trim().is_empty()).then_some(content.clone());
+        Ok(AgentToolResult::from_details(details)
+            .with_cmd_line(format!("{} {}", TOOL_READ_FILE, file_path))
+            .with_result(summary)
+            .with_stdout(stdout_payload))
     }
 
     async fn exec(
@@ -616,7 +660,7 @@ impl AgentTool for ReadFileTool {
         ctx: &SessionRuntimeContext,
         line: &str,
         shell_cwd: Option<&Path>,
-    ) -> Result<Json, AgentToolError> {
+    ) -> Result<AgentToolResult, AgentToolError> {
         let tokens = tokenize_bash_command_line(line)?;
         if tokens.is_empty() {
             return Err(AgentToolError::InvalidArgs(
@@ -625,10 +669,21 @@ impl AgentTool for ReadFileTool {
         }
 
         let mut args = parse_read_file_bash_args(&tokens[1..])?;
+        let shell_cwd_for_details = shell_cwd.map(|cwd| cwd.to_path_buf());
         if let Some(shell_cwd) = shell_cwd {
             rewrite_read_file_path_with_shell_cwd(&mut args, shell_cwd);
         }
-        self.call(ctx, args).await
+        let mut result = self.call(ctx, args).await?;
+        result.cmd_line = line.trim().to_string();
+        if let Some(cwd) = shell_cwd_for_details {
+            if let Some(map) = result.details.as_object_mut() {
+                map.insert(
+                    "pwd".to_string(),
+                    Json::String(cwd.to_string_lossy().to_string()),
+                );
+            }
+        }
+        Ok(result)
     }
 }
 

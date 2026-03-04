@@ -20,8 +20,8 @@ use serde_json::{json, Value as Json};
 use tokio::{fs, task};
 
 use crate::agent_tool::{
-    AgentTool, AgentToolError, AgentToolManager, ToolSpec, TOOL_BIND_EXTERNAL_WORKSPACE,
-    TOOL_CREATE_SUB_AGENT, TOOL_LIST_EXTERNAL_WORKSPACES,
+    AgentTool, AgentToolError, AgentToolManager, AgentToolResult, ToolSpec,
+    TOOL_BIND_EXTERNAL_WORKSPACE, TOOL_CREATE_SUB_AGENT, TOOL_LIST_EXTERNAL_WORKSPACES,
 };
 use crate::behavior::SessionRuntimeContext;
 
@@ -1819,7 +1819,11 @@ impl AgentTool for RuntimeCreateSubAgentTool {
         false
     }
 
-    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(
+        &self,
+        ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<AgentToolResult, AgentToolError> {
         let parent_did = optional_string(&args, "parent_did")?.unwrap_or(ctx.agent_name.clone());
         let req = CreateSubAgentRequest {
             name: require_string(&args, "name")?,
@@ -1829,10 +1833,14 @@ impl AgentTool for RuntimeCreateSubAgentTool {
         };
 
         let result = self.runtime.create_sub_agent(&parent_did, req).await?;
-        Ok(json!({
+        Ok(
+            AgentToolResult::from_details(json!({
             "ok": true,
             "sub_agent": result
-        }))
+            }))
+            .with_cmd_line(TOOL_CREATE_SUB_AGENT.to_string())
+            .with_result("ok"),
+        )
     }
 }
 
@@ -1880,7 +1888,11 @@ impl AgentTool for RuntimeBindExternalWorkspaceTool {
         false
     }
 
-    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(
+        &self,
+        ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<AgentToolResult, AgentToolError> {
         let agent_did = optional_string(&args, "agent_did")?.unwrap_or(ctx.agent_name.clone());
         let req = BindExternalWorkspaceRequest {
             name: require_string(&args, "name")?,
@@ -1891,10 +1903,14 @@ impl AgentTool for RuntimeBindExternalWorkspaceTool {
             .runtime
             .bind_external_workspace(&agent_did, req)
             .await?;
-        Ok(json!({
+        Ok(
+            AgentToolResult::from_details(json!({
             "ok": true,
             "binding": binding
-        }))
+            }))
+            .with_cmd_line(TOOL_BIND_EXTERNAL_WORKSPACE.to_string())
+            .with_result("ok"),
+        )
     }
 }
 
@@ -1937,13 +1953,21 @@ impl AgentTool for RuntimeListExternalWorkspacesTool {
         false
     }
 
-    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(
+        &self,
+        ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<AgentToolResult, AgentToolError> {
         let agent_did = optional_string(&args, "agent_did")?.unwrap_or(ctx.agent_name.clone());
         let workspaces = self.runtime.list_external_workspaces(&agent_did).await?;
-        Ok(json!({
+        Ok(
+            AgentToolResult::from_details(json!({
             "ok": true,
             "workspaces": workspaces
-        }))
+            }))
+            .with_cmd_line(TOOL_LIST_EXTERNAL_WORKSPACES.to_string())
+            .with_result("ok"),
+        )
     }
 }
 

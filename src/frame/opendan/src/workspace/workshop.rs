@@ -18,9 +18,9 @@ use super::todo::{TodoTool, TodoToolConfig};
 use crate::agent_bash::ExecBashTool as BuiltinExecBashTool;
 use crate::agent_session::AgentSessionMgr;
 use crate::agent_tool::{
-    tokenize_bash_command_line, AgentTool, AgentToolError, AgentToolManager, MCPToolConfig,
-    ToolSpec, TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE, TOOL_EXEC_BASH,
-    TOOL_READ_FILE, TOOL_TODO_MANAGE, TOOL_WORKLOG_MANAGE, TOOL_WRITE_FILE,
+    tokenize_bash_command_line, AgentTool, AgentToolError, AgentToolManager, AgentToolResult,
+    MCPToolConfig, ToolSpec, TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE,
+    TOOL_EXEC_BASH, TOOL_READ_FILE, TOOL_TODO_MANAGE, TOOL_WORKLOG_MANAGE, TOOL_WRITE_FILE,
 };
 use crate::behavior::SessionRuntimeContext;
 use crate::buildin_tool::{
@@ -530,7 +530,7 @@ impl AgentTool for CreateWorkspaceTool {
         &self,
         _ctx: &SessionRuntimeContext,
         _args: Json,
-    ) -> Result<Json, AgentToolError> {
+    ) -> Result<AgentToolResult, AgentToolError> {
         Err(AgentToolError::InvalidArgs(
             "not support: create_workspace only supports bash mode".to_string(),
         ))
@@ -541,7 +541,7 @@ impl AgentTool for CreateWorkspaceTool {
         ctx: &SessionRuntimeContext,
         line: &str,
         _shell_cwd: Option<&Path>,
-    ) -> Result<Json, AgentToolError> {
+    ) -> Result<AgentToolResult, AgentToolError> {
         let tokens = tokenize_bash_command_line(line)?;
         if tokens.len() < 2 {
             return Err(AgentToolError::InvalidArgs(
@@ -565,7 +565,13 @@ impl AgentTool for CreateWorkspaceTool {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
 
-        self.create_workspace(ctx, name.to_string(), template).await
+        self.create_workspace(ctx, name.to_string(), template)
+            .await
+            .map(|details| {
+                AgentToolResult::from_details(details)
+                    .with_cmd_line(line.trim().to_string())
+                    .with_result("ok")
+            })
     }
 }
 
@@ -788,7 +794,7 @@ impl AgentTool for BindWorkspaceTool {
         &self,
         _ctx: &SessionRuntimeContext,
         _args: Json,
-    ) -> Result<Json, AgentToolError> {
+    ) -> Result<AgentToolResult, AgentToolError> {
         Err(AgentToolError::InvalidArgs(
             "not support: bind_workspace only supports bash mode".to_string(),
         ))
@@ -799,7 +805,7 @@ impl AgentTool for BindWorkspaceTool {
         ctx: &SessionRuntimeContext,
         line: &str,
         shell_cwd: Option<&Path>,
-    ) -> Result<Json, AgentToolError> {
+    ) -> Result<AgentToolResult, AgentToolError> {
         let tokens = tokenize_bash_command_line(line)?;
         if tokens.len() < 2 {
             return Err(AgentToolError::InvalidArgs(
@@ -843,6 +849,11 @@ impl AgentTool for BindWorkspaceTool {
         let workspace_id = self.resolve_workspace_id(workspace_ref, shell_cwd).await?;
         self.bind_workspace(ctx, ctx.session_id.as_str(), workspace_id.as_str())
             .await
+            .map(|details| {
+                AgentToolResult::from_details(details)
+                    .with_cmd_line(line.trim().to_string())
+                    .with_result("ok")
+            })
     }
 }
 
@@ -1230,7 +1241,7 @@ mod tests {
             .expect("ensure session");
         {
             let mut guard = session.lock().await;
-            guard.cwd = root.to_path_buf();
+            guard.pwd = root.to_path_buf();
         }
         store
             .save_session("session-test")
@@ -1243,7 +1254,7 @@ mod tests {
         tool_mgr: &AgentToolManager,
         name: &str,
         args: Json,
-    ) -> Result<Json, AgentToolError> {
+    ) -> Result<AgentToolResult, AgentToolError> {
         tool_mgr
             .call_tool(
                 &SessionRuntimeContext {
@@ -1266,7 +1277,7 @@ mod tests {
     async fn call_bash_tool(
         tool_mgr: &AgentToolManager,
         line: &str,
-    ) -> Result<Json, AgentToolError> {
+    ) -> Result<AgentToolResult, AgentToolError> {
         tool_mgr
             .call_tool_from_bash_line(
                 &SessionRuntimeContext {
@@ -1416,7 +1427,7 @@ mod tests {
             .expect("session should exist");
         {
             let mut guard = session.lock().await;
-            guard.cwd = root.join("subdir");
+            guard.pwd = root.join("subdir");
         }
         session_store
             .save_session("session-test")
@@ -1451,6 +1462,77 @@ mod tests {
         let forwarded: Json = serde_json::from_str(json_line).expect("parse tool json line");
         assert_eq!(forwarded["ok"], true);
         assert_eq!(forwarded["content"], "pane-line");
+
+        let _ = fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn exec_bash_tool_cd_updates_tmux_pane_pwd_for_forwarded_read_file() {
+        if !tmux_ready().await {
+            return;
+        }
+        let root = unique_workspace_root("exec-bash-cd-pane-pwd");
+        fs::create_dir_all(root.join("subdir"))
+            .await
+            .expect("create subdir");
+        fs::write(root.join("subdir/1.txt"), "cd-pane-line\n")
+            .await
+            .expect("write file in subdir");
+
+        let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
+            .await
+            .expect("create workshop");
+        let session_store = create_session_store(&root).await;
+        let session = session_store
+            .get_session("session-test")
+            .await
+            .expect("session should exist");
+        {
+            let mut guard = session.lock().await;
+            guard.pwd = root.clone();
+        }
+        session_store
+            .save_session("session-test")
+            .await
+            .expect("save session");
+
+        let tool_mgr = AgentToolManager::new();
+        workshop
+            .register_tools(&tool_mgr, session_store)
+            .expect("register workshop tools");
+
+        let result = call(
+            &tool_mgr,
+            TOOL_EXEC_BASH,
+            json!({
+                "command": "cd subdir\nread_file 1.txt 1:1",
+            }),
+        )
+        .await
+        .expect("exec should succeed");
+
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["engine"], "tmux+tool");
+        assert_eq!(result["line_results"][0]["mode"], "bash");
+        assert_eq!(result["line_results"][1]["mode"], "tool");
+        assert_eq!(result["line_results"][0]["command"], "cd subdir");
+        assert!(result["pwd"]
+            .as_str()
+            .unwrap_or_default()
+            .ends_with("/subdir"));
+
+        let stdout = result["stdout"].as_str().unwrap_or_default();
+        let json_line = stdout
+            .lines()
+            .find(|line| line.trim_start().starts_with('{'))
+            .expect("stdout should contain tool json line");
+        let forwarded: Json = serde_json::from_str(json_line).expect("parse tool json line");
+        assert_eq!(forwarded["ok"], true);
+        assert_eq!(forwarded["content"], "cd-pane-line");
+        assert!(forwarded["pwd"]
+            .as_str()
+            .unwrap_or_default()
+            .ends_with("/subdir"));
 
         let _ = fs::remove_dir_all(root).await;
     }

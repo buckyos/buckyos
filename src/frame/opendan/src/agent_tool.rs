@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::ops::Deref;
 use std::path::Path;
 use std::sync::{Arc, RwLock as StdRwLock};
 
@@ -176,6 +177,8 @@ impl DoActions {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct DoActionResults {
     pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pwd: Option<String>,
     // do action cmd -> do result
     // "cat abc.json" -> "{"aaa":"bbb"}"
     pub details: HashMap<String, Json>,
@@ -291,6 +294,145 @@ pub(crate) fn normalize_tool_name(name: &str) -> String {
         .to_string()
 }
 
+// render to:
+// - cmd_line => result
+// ```
+// stdout
+// stderr
+// ```
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AgentToolResult {
+    pub cmd_line: String,      // 压缩后的 cmd line
+    pub result: Option<String>, // 渲染后一行字结果
+    // stdout 或 stderr 有内容，就会渲染到 result 下面的 ``` ``` 中
+    pub stdout: Option<String>,
+    pub stderr: Option<String>,
+    pub details: Json,
+}
+
+const PROMPT_STDIO_MAX_LINES: usize = 100;
+
+fn truncate_prompt_stream_lines(content: &str, max_lines: usize) -> String {
+    if max_lines == 0 {
+        return String::new();
+    }
+
+    let mut kept = Vec::<&str>::new();
+    let mut total_lines = 0usize;
+    for line in content.lines() {
+        total_lines = total_lines.saturating_add(1);
+        if kept.len() < max_lines {
+            kept.push(line);
+        }
+    }
+
+    if total_lines <= max_lines {
+        return content.to_string();
+    }
+
+    let mut out = kept.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(
+        format!(
+            "... [TRUNCATED FOR ACTION PREVIEW: Showing first {} lines only] ...",
+            max_lines
+        )
+        .as_str(),
+    );
+    out
+}
+
+impl AgentToolResult {
+    pub fn from_details(details: Json) -> Self {
+        Self {
+            cmd_line: String::new(),
+            result: None,
+            stdout: None,
+            stderr: None,
+            details,
+        }
+    }
+
+    pub fn with_cmd_line(mut self, cmd_line: impl Into<String>) -> Self {
+        self.cmd_line = cmd_line.into();
+        self
+    }
+
+    pub fn with_result(mut self, result: impl Into<String>) -> Self {
+        self.result = Some(result.into());
+        self
+    }
+
+    pub fn with_stdout(mut self, stdout: Option<String>) -> Self {
+        self.stdout = stdout;
+        self
+    }
+
+    pub fn with_stderr(mut self, stderr: Option<String>) -> Self {
+        self.stderr = stderr;
+        self
+    }
+
+    pub fn render_prompt(&self) -> String {
+        let mut lines = Vec::<String>::new();
+        let ok = self
+            .details
+            .get("ok")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let summary = match (
+            self.cmd_line.trim().is_empty(),
+            self.result.as_deref().map(str::trim).filter(|v| !v.is_empty()),
+        ) {
+            (false, Some(result)) => format!("{} => {}", self.cmd_line.trim(), result),
+            (false, None) => self.cmd_line.trim().to_string(),
+            (true, Some(result)) => result.to_string(),
+            (true, None) => compact_json_text(&self.details, 220),
+        };
+        lines.push(summary);
+
+        if let Some(stdout) = self
+            .stdout
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            lines.push("```stdout".to_string());
+            lines.push(truncate_prompt_stream_lines(stdout, PROMPT_STDIO_MAX_LINES));
+            lines.push("```".to_string());
+        }
+        if !ok {
+            if let Some(stderr) = self
+                .stderr
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
+                lines.push("```stderr".to_string());
+                lines.push(truncate_prompt_stream_lines(stderr, PROMPT_STDIO_MAX_LINES));
+                lines.push("```".to_string());
+            }
+        }
+        lines.join("\n")
+    }
+}
+
+impl Deref for AgentToolResult {
+    type Target = Json;
+
+    fn deref(&self) -> &Self::Target {
+        &self.details
+    }
+}
+
+impl std::fmt::Display for AgentToolResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.render_prompt())
+    }
+}
+
 #[async_trait]
 pub trait AgentTool: Send + Sync {
     fn spec(&self) -> ToolSpec;
@@ -301,14 +443,14 @@ pub trait AgentTool: Send + Sync {
     fn support_action(&self) -> bool;
     fn support_llm_tool_call(&self) -> bool;
 
-    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError>;
+    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<AgentToolResult, AgentToolError>;
 
     async fn exec(
         &self,
         ctx: &SessionRuntimeContext,
         line: &str,
         _shell_cwd: Option<&Path>,
-    ) -> Result<Json, AgentToolError> {
+    ) -> Result<AgentToolResult, AgentToolError> {
         let tokens = tokenize_bash_command_line(line)?;
         if tokens.is_empty() {
             return Err(AgentToolError::InvalidArgs(
@@ -403,7 +545,11 @@ impl AgentTool for MCPTool {
         false
     }
 
-    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(
+        &self,
+        ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<AgentToolResult, AgentToolError> {
         let request_body = json!({
             "jsonrpc": "2.0",
             "id": format!(
@@ -464,7 +610,9 @@ impl AgentTool for MCPTool {
             )));
         }
 
-        Ok(result)
+        Ok(AgentToolResult::from_details(result)
+            .with_cmd_line(self.spec.name.clone())
+            .with_result("OK"))
     }
 }
 
@@ -504,6 +652,11 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect::<String>() + "...[TRUNCATED]"
 }
 
+fn compact_json_text(value: &Json, max_chars: usize) -> String {
+    let rendered = serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string());
+    truncate_text(rendered.as_str(), max_chars)
+}
+
 struct RegisteredTool {
     spec: ToolSpec,
     inner: Arc<dyn AgentTool>,
@@ -530,7 +683,11 @@ impl AgentTool for RegisteredTool {
         self.support_llm_tool_call
     }
 
-    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(
+        &self,
+        ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<AgentToolResult, AgentToolError> {
         self.inner.call(ctx, args).await
     }
 
@@ -539,7 +696,7 @@ impl AgentTool for RegisteredTool {
         ctx: &SessionRuntimeContext,
         line: &str,
         shell_cwd: Option<&Path>,
-    ) -> Result<Json, AgentToolError> {
+    ) -> Result<AgentToolResult, AgentToolError> {
         self.inner.exec(ctx, line, shell_cwd).await
     }
 }
@@ -777,7 +934,7 @@ impl AgentToolManager {
         &self,
         ctx: &SessionRuntimeContext,
         line: &str,
-    ) -> Result<Option<Json>, AgentToolError> {
+    ) -> Result<Option<AgentToolResult>, AgentToolError> {
         self.call_tool_from_bash_line_with_cwd(ctx, line, None)
             .await
     }
@@ -787,7 +944,7 @@ impl AgentToolManager {
         ctx: &SessionRuntimeContext,
         line: &str,
         shell_cwd: Option<&Path>,
-    ) -> Result<Option<Json>, AgentToolError> {
+    ) -> Result<Option<AgentToolResult>, AgentToolError> {
         let tokens = tokenize_bash_command_line(line)?;
         if tokens.is_empty() {
             return Ok(None);
@@ -803,12 +960,16 @@ impl AgentToolManager {
         let spec = tool.spec();
         let usage = render_bash_tool_usage(&spec);
         if is_help_flag(&tokens[1..]) {
-            return Ok(Some(json!({
-                "ok": true,
-                "tool": tool_name,
-                "usage": usage,
-                "args_schema": spec.args_schema
-            })));
+            return Ok(Some(
+                AgentToolResult::from_details(json!({
+                    "ok": true,
+                    "tool": tool_name,
+                    "usage": usage,
+                    "args_schema": spec.args_schema
+                }))
+                .with_cmd_line(line.trim().to_string())
+                .with_result("show usage"),
+            ));
         }
 
         let call_id = format!("bash-cli-{}-{}", ctx.trace_id, ctx.step_idx);
@@ -841,7 +1002,7 @@ impl AgentToolManager {
         &self,
         ctx: &SessionRuntimeContext,
         call: AiToolCall,
-    ) -> Result<Json, AgentToolError> {
+    ) -> Result<AgentToolResult, AgentToolError> {
         let tool_name = call.name;
         let call_id = call.call_id;
         let args = Json::Object(call.args.into_iter().collect());
@@ -1302,6 +1463,50 @@ mod tests {
         assert!(rendered.contains("Args schema"));
     }
 
+    #[test]
+    fn agent_tool_result_render_prompt_truncates_stdout_by_lines() {
+        let stdout = (0..120)
+            .map(|idx| format!("line-{idx:03}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let rendered = AgentToolResult::from_details(json!({"ok": true}))
+            .with_cmd_line("read_file ./large.txt")
+            .with_result("read 12345 bytes (truncated)")
+            .with_stdout(Some(stdout))
+            .render_prompt();
+
+        assert!(rendered.contains("```stdout"));
+        assert!(rendered.contains("line-000"));
+        assert!(rendered.contains("line-099"));
+        assert!(!rendered.contains("line-100"));
+        assert!(rendered.contains(
+            "... [TRUNCATED FOR ACTION PREVIEW: Showing first 100 lines only] ..."
+        ));
+        assert!(rendered.ends_with("```"));
+    }
+
+    #[test]
+    fn agent_tool_result_render_prompt_truncates_stderr_by_lines_when_failed() {
+        let stderr = (0..130)
+            .map(|idx| format!("err-{idx:03}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let rendered = AgentToolResult::from_details(json!({"ok": false}))
+            .with_cmd_line("some-long-bash")
+            .with_result("FAILED (exit=1)")
+            .with_stderr(Some(stderr))
+            .render_prompt();
+
+        assert!(rendered.contains("```stderr"));
+        assert!(rendered.contains("err-000"));
+        assert!(rendered.contains("err-099"));
+        assert!(!rendered.contains("err-100"));
+        assert!(rendered.contains(
+            "... [TRUNCATED FOR ACTION PREVIEW: Showing first 100 lines only] ..."
+        ));
+        assert!(rendered.ends_with("```"));
+    }
+
     #[tokio::test]
     async fn load_memory_tool_not_exposed_to_action_namespace() {
         let temp = tempdir().expect("create tempdir");
@@ -1350,8 +1555,8 @@ mod tests {
             &self,
             _ctx: &SessionRuntimeContext,
             _args: Json,
-        ) -> Result<Json, AgentToolError> {
-            Ok(json!({"ok": true}))
+        ) -> Result<AgentToolResult, AgentToolError> {
+            Ok(AgentToolResult::from_details(json!({"ok": true})).with_result("ok"))
         }
     }
 
@@ -1399,8 +1604,8 @@ mod tests {
             &self,
             _ctx: &SessionRuntimeContext,
             args: Json,
-        ) -> Result<Json, AgentToolError> {
-            Ok(json!({"ok": true, "args": args}))
+        ) -> Result<AgentToolResult, AgentToolError> {
+            Ok(AgentToolResult::from_details(json!({"ok": true, "args": args})).with_result("ok"))
         }
 
         async fn exec(
@@ -1408,7 +1613,7 @@ mod tests {
             _ctx: &SessionRuntimeContext,
             line: &str,
             shell_cwd: Option<&Path>,
-        ) -> Result<Json, AgentToolError> {
+        ) -> Result<AgentToolResult, AgentToolError> {
             let tokens = tokenize_bash_command_line(line)?;
             if tokens.is_empty() {
                 return Err(AgentToolError::InvalidArgs(
@@ -1464,7 +1669,9 @@ mod tests {
                     }
                 }
             }
-            Ok(json!({"ok": true, "args": Json::Object(out)}))
+            Ok(AgentToolResult::from_details(json!({"ok": true, "args": Json::Object(out)}))
+                .with_cmd_line(line.trim().to_string())
+                .with_result("ok"))
         }
     }
 
@@ -1500,13 +1707,13 @@ mod tests {
             &self,
             _ctx: &SessionRuntimeContext,
             args: Json,
-        ) -> Result<Json, AgentToolError> {
+        ) -> Result<AgentToolResult, AgentToolError> {
             if args.get("path").and_then(|value| value.as_str()).is_none() {
                 return Err(AgentToolError::InvalidArgs(
                     "missing required arg `path`".to_string(),
                 ));
             }
-            Ok(json!({"ok": true}))
+            Ok(AgentToolResult::from_details(json!({"ok": true})).with_result("ok"))
         }
     }
 
@@ -1538,8 +1745,8 @@ mod tests {
             &self,
             _ctx: &SessionRuntimeContext,
             _args: Json,
-        ) -> Result<Json, AgentToolError> {
-            Ok(json!({"ok": true}))
+        ) -> Result<AgentToolResult, AgentToolError> {
+            Ok(AgentToolResult::from_details(json!({"ok": true})).with_result("ok"))
         }
     }
 
@@ -1635,7 +1842,7 @@ mod tests {
             )
             .await
             .expect("registered action namespace tool should still be callable");
-        assert_eq!(result["ok"], true);
+        assert_eq!(result.details["ok"], true);
 
         let bash_match = mgr
             .call_tool_from_bash_line(&test_call_ctx(), "namespaced_tool --help")
@@ -1685,8 +1892,8 @@ mod tests {
             .expect("tool should be matched");
 
         assert_eq!(result["ok"], true);
-        assert_eq!(result["args"]["path"], "~/1.txt");
-        assert_eq!(result["args"]["range"], "0:200");
+        assert_eq!(result.details["args"]["path"], "~/1.txt");
+        assert_eq!(result.details["args"]["range"], "0:200");
     }
 
     #[tokio::test]
@@ -1714,9 +1921,9 @@ mod tests {
             .expect("bash style kv call should succeed")
             .expect("tool should be matched");
 
-        assert_eq!(result["ok"], true);
-        assert_eq!(result["args"]["path"], "~/1.txt");
-        assert_eq!(result["args"]["range"], "0:200");
+        assert_eq!(result.details["ok"], true);
+        assert_eq!(result.details["args"]["path"], "~/1.txt");
+        assert_eq!(result.details["args"]["range"], "0:200");
     }
 
     #[tokio::test]
@@ -1745,9 +1952,9 @@ mod tests {
             .expect("bash style cwd rewrite call should succeed")
             .expect("tool should be matched");
 
-        assert_eq!(result["ok"], true);
-        assert_eq!(result["args"]["path"], "/tmp/opendan-shell-cwd/1.txt");
-        assert_eq!(result["args"]["range"], "1:1");
+        assert_eq!(result.details["ok"], true);
+        assert_eq!(result.details["args"]["path"], "/tmp/opendan-shell-cwd/1.txt");
+        assert_eq!(result.details["args"]["range"], "1:1");
     }
 
     #[tokio::test]
@@ -1791,8 +1998,8 @@ mod tests {
             .await
             .expect("help should succeed")
             .expect("tool should be matched");
-        assert_eq!(result["ok"], true);
-        assert_eq!(result["usage"], usage);
+        assert_eq!(result.details["ok"], true);
+        assert_eq!(result.details["usage"], usage);
     }
 
     #[tokio::test]
@@ -1874,7 +2081,7 @@ mod tests {
             .await
             .expect("mcp tool call should succeed");
 
-        assert_eq!(output["data"]["answer"], 42);
+        assert_eq!(output.details["data"]["answer"], 42);
 
         let request = req_rx.await.expect("receive http request");
         assert!(request.contains("\"method\":\"tools/call\""));

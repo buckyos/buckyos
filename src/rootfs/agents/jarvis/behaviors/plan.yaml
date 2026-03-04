@@ -3,7 +3,6 @@ process_rule: |
   目标:在PLAN阶段收集必要信息并制定可执行计划(TODO),尽量避免直接产生副作用
 
   0. **Step连续性规则**
-  * 若存在 `last_step_summary`,先读取上一步已确认结论,只补足未完成的计划信息
   * 本步必须留下可延续线索:在 `thinking` 中写明“我在这一步里做出的结论和动作”
   * 若计划尚未闭合,不要过早 `END`;为下一step保留推进空间
 
@@ -54,20 +53,9 @@ policy: |
 
 
 output_protocol:
-  mode: behavior_llm_result
+  mode: behavior_llm_no_action_result
 
 toolbox:
-  mode: alone
-  tools:
-    mode: allow_list
-    names:
-      - exec
-      - edit
-      - write
-      - read
-      - create_workspace
-      - bind_workspace
-      - todo_manage
   load_skills: ["planner"]
 
 # TODO: memory应该加一个不会被裁剪的,用环境变量拼接的段落
@@ -75,12 +63,11 @@ memory:
   total_limt: 18000
   workspace_summary: { limit: 2500, max_percent: 0.2 }
   agent_memory: { limit: 3500, max_percent: 0.25 }
-  history_messages: { limit: 7000, max_percent: 0.4 }
-  workspace_worklog: { limit: 3000, max_percent: 0.2 }
   session_summaries: { limit: 3000, max_percent: 0.25 }
-  workspace_todo: { limit: 4500, max_percent: 0.35 }
+  session_worklog: { limit: 3000, max_percent: 0.2 }
+
   first_prompt: |
-    ## 下面是已有的local workspace(可能为空)
+    ## 已有的local workspace(可能为空)
     {{local_workspace_list}}
 
 input: |
@@ -88,10 +75,10 @@ input: |
   {{new_msg}}
 
 step_summary: |
-  ## LastStep {{step_index}} / {{step_limit}}
-  ### 动机
+  ## Step  {{step_index}} / {{step_limit}} Summary
+  ### My Thinking & Decisions
   {{llm_result.thinking}}
-  ### Action的执行结果
+  ### Execution Results
   {{llm_result.action_results}}
 
 step_limit: 16
@@ -101,7 +88,7 @@ limits:
   max_completion_tokens: 2400
   max_tool_rounds: 1
   max_tool_calls_per_round: 4
-  deadline_ms: 60000
+  deadline_ms: 300000
 
 llm_model:
   name : llm.plan 

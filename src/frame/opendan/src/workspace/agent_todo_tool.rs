@@ -6,7 +6,9 @@ use log::{info, warn};
 use serde::Deserialize;
 use serde_json::{json, Value as Json};
 
-use crate::agent_tool::{tokenize_bash_command_line, AgentTool, AgentToolError, ToolSpec};
+use crate::agent_tool::{
+    tokenize_bash_command_line, AgentTool, AgentToolError, AgentToolResult, ToolSpec,
+};
 use crate::behavior::SessionRuntimeContext;
 
 use super::*;
@@ -686,7 +688,7 @@ impl AgentTool for TodoTool {
         ctx: &SessionRuntimeContext,
         line: &str,
         shell_cwd: Option<&Path>,
-    ) -> Result<Json, AgentToolError> {
+    ) -> Result<AgentToolResult, AgentToolError> {
         let tokens = tokenize_bash_command_line(line)?;
         if tokens.is_empty() {
             return Err(AgentToolError::InvalidArgs(
@@ -766,11 +768,15 @@ impl AgentTool for TodoTool {
             "prompt" => self.exec_prompt(&cli_args, &workspace_id)?,
             "current" => self.exec_current(&cli_args, &workspace_id, &session_id)?,
             "help" => {
-                return Ok(json!({
+                return Ok(
+                    AgentToolResult::from_details(json!({
                     "ok": true,
                     "tool": TOOL_TODO,
                     "usage": TODO_USAGE
-                }));
+                    }))
+                    .with_cmd_line(line.trim().to_string())
+                    .with_result("show usage"),
+                );
             }
             _ => {
                 return Err(AgentToolError::InvalidArgs(format!(
@@ -783,7 +789,11 @@ impl AgentTool for TodoTool {
         self.call(ctx, args).await
     }
 
-    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(
+        &self,
+        ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<AgentToolResult, AgentToolError> {
         let action = require_string(&args, "action")?;
         let workspace_id = args
             .get("workspace_id")
@@ -818,7 +828,11 @@ impl AgentTool for TodoTool {
             }
         }
 
-        result
+        result.map(|details| {
+            AgentToolResult::from_details(details)
+                .with_cmd_line(format!("{TOOL_TODO} {action}"))
+                .with_result("ok")
+        })
     }
 }
 
@@ -1360,7 +1374,7 @@ mod tests {
         tool: &TodoTool,
         ctx: &SessionRuntimeContext,
         args: Json,
-    ) -> Result<Json, AgentToolError> {
+    ) -> Result<AgentToolResult, AgentToolError> {
         tool.call(ctx, args).await
     }
 
@@ -1368,7 +1382,7 @@ mod tests {
         tool: &TodoTool,
         ctx: &SessionRuntimeContext,
         line: &str,
-    ) -> Result<Json, AgentToolError> {
+    ) -> Result<AgentToolResult, AgentToolError> {
         tool.exec(ctx, line, None).await
     }
 

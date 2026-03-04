@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::task;
 
-use crate::agent_tool::{AgentTool, AgentToolError, ToolSpec, TOOL_WORKLOG_MANAGE};
+use crate::agent_tool::{AgentTool, AgentToolError, AgentToolResult, ToolSpec, TOOL_WORKLOG_MANAGE};
 use crate::behavior::SessionRuntimeContext;
 
 const DEFAULT_LIST_LIMIT: usize = 64;
@@ -232,8 +232,20 @@ impl AgentTool for WorklogTool {
         false
     }
 
-    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
-        self.service.execute_action(ctx, args).await
+    async fn call(
+        &self,
+        ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<AgentToolResult, AgentToolError> {
+        let details = self.service.execute_action(ctx, args).await?;
+        let action = details
+            .get("action")
+            .and_then(Json::as_str)
+            .unwrap_or("worklog")
+            .to_string();
+        Ok(AgentToolResult::from_details(details)
+            .with_cmd_line(TOOL_WORKLOG_MANAGE.to_string())
+            .with_result(action))
     }
 }
 

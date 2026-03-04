@@ -311,7 +311,7 @@ mod tests {
 
     async fn render_toolbox_prompt_preview(skill_name: &str, workspace_root: &Path) -> (String, Vec<AiToolSpec>) {
         let mut session = AgentSession::new("session-1", "did:web:agent.example.com", None);
-        session.cwd = workspace_root.to_path_buf();
+        session.pwd = workspace_root.to_path_buf();
         session.loaded_skills = vec![skill_name.to_string()];
         let session = Arc::new(Mutex::new(session));
 

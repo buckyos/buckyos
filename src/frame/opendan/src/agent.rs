@@ -1617,7 +1617,10 @@ impl AIAgent {
         }
 
         let allowed_tool_names = {
-            let all = self.tools.list_tool_specs();
+            let mut all = self.tools.list_tool_specs();
+            all.extend(self.tools.list_action_specs());
+            all.sort_by(|a, b| a.name.cmp(&b.name));
+            all.dedup_by(|a, b| a.name == b.name);
             let cfg = {
                 let guard = self.behavior_cfg_cache.read().await;
                 guard.get(trace.behavior.as_str()).cloned()
@@ -1637,9 +1640,10 @@ impl AIAgent {
         let mut success = 0usize;
         let mut failed = 0usize;
         let mut skipped = 0usize;
+        let mut latest_pwd = None::<String>;
 
         for (idx, action) in actions.cmds.iter().enumerate() {
-            let (tool_name, tool_args, detail_key, detail_action) = match action {
+            let (tool_name, tool_args, exec_id, detail_action, action_cmd_line) = match action {
                 DoAction::Exec(command) => {
                     let command = command.trim();
                     if command.is_empty() {
@@ -1661,11 +1665,12 @@ impl AIAgent {
                     (
                         TOOL_EXEC_BASH.to_string(),
                         json!({ "command": command }),
-                        format!("#{idx}:exec `{command}`"),
+                        format!("#{idx}:`{command}`"),
                         json!({
                             "kind": "exec",
                             "command": command,
                         }),
+                        command.to_string(),
                     )
                 }
                 DoAction::Call(call) => {
@@ -1691,7 +1696,7 @@ impl AIAgent {
                     if !call.call_params.is_object() {
                         failed = failed.saturating_add(1);
                         out.details.insert(
-                            format!("#{idx}:call `{normalized_name}`"),
+                            format!("#{idx}:`{normalized_name}`"),
                             json!({
                                 "ok": false,
                                 "action": "call_tool",
@@ -1712,6 +1717,7 @@ impl AIAgent {
                         if let Some(obj) = params.as_object_mut() {
                             obj.remove("session_id");
                             obj.remove("cwd");
+                            obj.remove("pwd");
                         }
                     }
                     (
@@ -1723,6 +1729,7 @@ impl AIAgent {
                             "action_name": normalized_name,
                             "params": params,
                         }),
+                        compact_action_cmd_line(normalized_name.as_str(), &params),
                     )
                 }
             };
@@ -1730,11 +1737,19 @@ impl AIAgent {
             if !allowed_tool_names.contains(tool_name.as_str()) {
                 failed = failed.saturating_add(1);
                 out.details.insert(
-                    detail_key,
+                    exec_id,
                     json!({
                         "ok": false,
                         "tool": tool_name,
                         "action": detail_action,
+                        "prompt": format!(
+                            "{}  =>  {}",
+                            action_cmd_line,
+                            format!(
+                                "tool `{}` is unavailable or not allowed for behavior `{}`",
+                                tool_name, trace.behavior
+                            )
+                        ),
                         "error": format!(
                             "tool `{}` is unavailable or not allowed for behavior `{}`",
                             tool_name, trace.behavior
@@ -1768,24 +1783,33 @@ impl AIAgent {
             match run_result {
                 Ok(result) => {
                     success = success.saturating_add(1);
+                    if let Some(pwd) = extract_action_result_pwd(&result) {
+                        latest_pwd = Some(pwd);
+                    }
+                    let rendered = result.render_prompt();
+                    let result_json = serde_json::to_value(&result)
+                        .unwrap_or_else(|_| json!({"error": "serialize result failed"}));
                     out.details.insert(
-                        detail_key,
+                        exec_id,
                         json!({
                             "ok": true,
                             "tool": tool_name,
                             "action": detail_action,
-                            "result": result,
+                            "prompt": rendered,
+                            "result": result_json,
                         }),
                     );
                 }
                 Err(err) => {
                     failed = failed.saturating_add(1);
+                    let prompt_error = compact_action_error_for_prompt(&err);
                     out.details.insert(
-                        detail_key,
+                        exec_id,
                         json!({
                             "ok": false,
                             "tool": tool_name,
                             "action": detail_action,
+                            "prompt": format!("{}  =>  {}", action_cmd_line, prompt_error),
                             "error": err.to_string(),
                         }),
                     );
@@ -1807,6 +1831,7 @@ impl AIAgent {
                 }),
             );
         }
+        out.pwd = latest_pwd;
 
         out.summary = if skipped > 0 {
             format!("SUCCESS ({success}), FAILED ({failed}), SKIPPED ({skipped})")
@@ -2412,6 +2437,80 @@ fn merged_actions_from_llm_result(llm_result: &BehaviorLLMResult) -> DoActions {
     merged
 }
 
+fn compact_action_cmd_line(tool_name: &str, args: &Json) -> String {
+    let Some(map) = args.as_object() else {
+        return tool_name.to_string();
+    };
+
+    if let Some(command) = map
+        .get("command")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        return command.to_string();
+    }
+
+    let mut parts = Vec::<String>::new();
+    for key in [
+        "path",
+        "range",
+        "first_chunk",
+        "name",
+        "workspace",
+        "workspace_id",
+        "mode",
+    ] {
+        let Some(value) = map.get(key) else {
+            continue;
+        };
+        if let Some(raw) = value.as_str() {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if key == "path" || key == "range" {
+                parts.push(trimmed.to_string());
+            } else {
+                parts.push(format!("{key}={trimmed}"));
+            }
+            continue;
+        }
+        if !value.is_null() {
+            parts.push(format!(
+                "{key}={}",
+                serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
+            ));
+        }
+    }
+
+    if parts.is_empty() {
+        return tool_name.to_string();
+    }
+    format!("{tool_name} {}", parts.join(" "))
+}
+
+fn compact_action_error_for_prompt(err: &crate::agent_tool::AgentToolError) -> String {
+    match err {
+        crate::agent_tool::AgentToolError::ExecFailed(msg)
+        | crate::agent_tool::AgentToolError::InvalidArgs(msg)
+        | crate::agent_tool::AgentToolError::NotFound(msg)
+        | crate::agent_tool::AgentToolError::AlreadyExists(msg) => msg.trim().to_string(),
+        crate::agent_tool::AgentToolError::Timeout => "timeout".to_string(),
+    }
+}
+
+fn extract_action_result_pwd(result: &crate::agent_tool::AgentToolResult) -> Option<String> {
+    result
+        .details
+        .get("pwd")
+        .or_else(|| result.details.get("cwd"))
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+}
+
 async fn resolve_workspace_root(agent_root: &Path, env_name: &str) -> Result<PathBuf> {
     let normal = agent_root.join(env_name);
     let legacy = agent_root.join(LEGACY_ENV_DIR_NAME);
@@ -2578,7 +2677,64 @@ impl Tokenizer for SimpleTokenizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{HashMap, VecDeque};
+    use std::sync::{Arc, Mutex};
+
     use serde_json::json;
+    use tempfile::tempdir;
+    use tokio::fs;
+
+    use crate::test_utils::{MockAicc, MockTaskMgrHandler};
+
+    fn render_action_results_for_prompt(results: &DoActionResults) -> String {
+        let mut keys = results.details.keys().cloned().collect::<Vec<_>>();
+        keys.sort();
+
+        let mut lines = vec![format!("ActionResults: {}", results.summary)];
+        if let Some(pwd) = results
+            .pwd
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            lines.push(format!("pwd: {pwd}"));
+        }
+        for key in keys {
+            let detail = results.details.get(&key).cloned().unwrap_or(Json::Null);
+            if let Some(prompt) = detail
+                .get("prompt")
+                .and_then(Json::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
+                let mut prompt_lines = prompt.lines();
+                if let Some(first) = prompt_lines.next() {
+                    lines.push(format!("- {}", first));
+                    for line in prompt_lines {
+                        lines.push(line.to_string());
+                    }
+                } else {
+                    lines.push("-".to_string());
+                }
+                continue;
+            }
+            if let Some(error) = detail
+                .get("error")
+                .and_then(Json::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
+                lines.push(format!("- {} ERROR: {}", key, error));
+                continue;
+            }
+            lines.push(format!(
+                "- {} {}",
+                key,
+                serde_json::to_string(&detail).unwrap_or_else(|_| "{}".to_string())
+            ));
+        }
+        lines.join("\n")
+    }
 
     fn make_event(eventid: &str) -> Event {
         Event {
@@ -2648,5 +2804,193 @@ mod tests {
                 DoAction::Exec("echo from-shell-2".to_string()),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn print_action_results_prompt_preview() {
+        let temp = tempdir().expect("create tempdir");
+        let agent_root = temp.path().join("agent");
+        fs::create_dir_all(agent_root.join("behaviors"))
+            .await
+            .expect("create behaviors dir");
+        fs::write(
+            agent_root.join("agent.json.doc"),
+            r#"{"id":"did:opendan:test-agent"}"#,
+        )
+        .await
+        .expect("write agent doc");
+        fs::write(
+            agent_root.join("behaviors/resolve_router.yaml"),
+            r#"
+process_rule: "test behavior for action rendering"
+"#,
+        )
+        .await
+        .expect("write behavior config");
+
+        let taskmgr = Arc::new(buckyos_api::TaskManagerClient::new_in_process(Box::new(
+            MockTaskMgrHandler {
+                counter: Mutex::new(0),
+                tasks: Arc::new(Mutex::new(HashMap::new())),
+            },
+        )));
+        let aicc = Arc::new(buckyos_api::AiccClient::new_in_process(Box::new(MockAicc {
+            responses: Arc::new(Mutex::new(VecDeque::new())),
+            requests: Arc::new(Mutex::new(Vec::new())),
+        })));
+
+        let agent = AIAgent::load(
+            AIAgentConfig::new(agent_root.clone()),
+            AIAgentDeps {
+                taskmgr,
+                aicc,
+                msg_center: None,
+                msg_queue: None,
+            },
+        )
+        .await
+        .expect("load agent");
+
+        let session = agent
+            .session_mgr
+            .ensure_session(
+                "session-test",
+                Some("Session Test".to_string()),
+                None,
+                Some("resolve_router"),
+            )
+            .await
+            .expect("ensure session");
+        {
+            let mut guard = session.lock().await;
+            guard.pwd = agent.workspace_root.clone();
+        }
+        agent
+            .session_mgr
+            .save_session("session-test")
+            .await
+            .expect("save session");
+
+        fs::write(
+            agent.workspace_root.join("prompt_preview.txt"),
+            "line-1\nline-2\nline-3\n",
+        )
+        .await
+        .expect("write preview file");
+        fs::write(
+            agent.workspace_root.join("edit_preview.txt"),
+            "line-alpha\nline-beta\nline-gamma\n",
+        )
+        .await
+        .expect("write edit preview file");
+
+        let mut large_content = String::new();
+        for i in 0..20_000 {
+            large_content.push_str(format!("large-line-{i:05}\n").as_str());
+        }
+        let large_bytes = large_content.len();
+        fs::write(agent.workspace_root.join("large_preview.txt"), large_content)
+            .await
+            .expect("write large preview file");
+
+        let tree_root = agent.workspace_root.join("tree_preview");
+        for i in 0..8 {
+            let branch = tree_root.join(format!("dir-{i:02}"));
+            fs::create_dir_all(branch.join("nested"))
+                .await
+                .expect("create tree branch");
+            for j in 0..8 {
+                fs::write(
+                    branch.join(format!("file-{j:02}.txt")),
+                    format!("tree-file-{i}-{j}\n"),
+                )
+                .await
+                .expect("write tree file");
+            }
+            fs::write(
+                branch.join("nested").join("leaf.txt"),
+                format!("tree-leaf-{i}\n"),
+            )
+            .await
+            .expect("write nested tree file");
+        }
+
+        let curl_source = "curl-source-line\n".repeat(1024);
+        fs::write(agent.workspace_root.join("curl_source.txt"), &curl_source)
+            .await
+            .expect("write curl source file");
+
+        let actions: DoActions = serde_json::from_value(json!({
+            "mode": "all",
+            "cmds": [
+                "echo step-summary-preview",
+                ["read_file", {"path":"prompt_preview.txt","range":"1-2"}],
+                ["read_file", {"path":"large_preview.txt"}],
+                ["edit_file", {"path":"edit_preview.txt","pos_chunk":"line-beta","new_content":"line-beta-updated","mode":"replace"}],
+                ["edit_file", {"path":"edit_preview.txt","pos_chunk":"line-gamma","new_content":"\nline-gamma-after","mode":"after"}],
+                ["edit_file", {"path":"edit_preview.txt","pos_chunk":"line-alpha","new_content":"line-alpha-before\n","mode":"before"}],
+                "if command -v tree >/dev/null 2>&1; then tree tree_preview; else find tree_preview -print | sort; fi",
+                "sleep 1 && if command -v curl >/dev/null 2>&1; then curl -fsSL \"file://$(pwd)/curl_source.txt\" -o curl_download.txt && echo curl_download_ok; else cp curl_source.txt curl_download.txt && echo curl_fallback_ok; fi && wc -c curl_download.txt",
+                "cd tree_preview/dir-03",
+                "read_file file-00.txt 1-1",
+                ["read_file", {"path":"missing-file.txt"}]
+            ]
+        }))
+        .expect("parse actions");
+        let trace = SessionRuntimeContext {
+            trace_id: "trace-preview".to_string(),
+            agent_name: "did:opendan:test-agent".to_string(),
+            behavior: "resolve_router".to_string(),
+            step_idx: 3,
+            wakeup_id: "wakeup-preview".to_string(),
+            session_id: "session-test".to_string(),
+        };
+
+        let results = agent.execute_actions(&trace, &actions).await;
+        let rendered = render_action_results_for_prompt(&results);
+        println!(
+            "\n=== Action Results Prompt Preview ===\n{}\n=== End Preview ===\n",
+            rendered
+        );
+
+        assert!(rendered.contains("ActionResults:"));
+        assert!(rendered.contains("step-summary-preview"));
+        assert!(rendered.contains("read_file prompt_preview.txt => read"));
+        assert!(rendered.contains("line-1"));
+        assert!(rendered.contains("line-2"));
+        assert!(rendered.contains("read_file large_preview.txt => read"));
+        assert!(rendered.contains(format!("read {large_bytes} bytes (truncated)").as_str()));
+        assert!(rendered.contains(
+            "... [TRUNCATED FOR ACTION PREVIEW: Showing first 100 lines only] ..."
+        ));
+        assert!(rendered.contains("pwd: "));
+        assert!(rendered.contains("tree_preview/dir-03"));
+        assert!(rendered.contains("edit_preview.txt => replace"));
+        assert!(rendered.contains("edit_preview.txt => after"));
+        assert!(rendered.contains("edit_preview.txt => before"));
+        assert!(rendered.contains("tree tree_preview"));
+        assert!(rendered.contains("tree_preview"));
+        assert!(rendered.contains("curl -fsSL"));
+        assert!(rendered.contains("read_file file-00.txt 1-1 => read"));
+        assert!(rendered.contains("tree-file-3-0"));
+        assert!(
+            rendered.contains("curl_download_ok")
+                || rendered.contains("curl_fallback_ok")
+        );
+        assert!(rendered.contains(
+            "read_file missing-file.txt  =>  read file failed: No such file or directory (os error 2)"
+        ));
+
+        let edited = fs::read_to_string(agent.workspace_root.join("edit_preview.txt"))
+            .await
+            .expect("read edited file");
+        assert!(edited.contains("line-alpha-before\nline-alpha\n"));
+        assert!(edited.contains("line-beta-updated"));
+        assert!(edited.contains("line-gamma\nline-gamma-after\n"));
+
+        let downloaded = fs::read_to_string(agent.workspace_root.join("curl_download.txt"))
+            .await
+            .expect("read downloaded file");
+        assert_eq!(downloaded, curl_source);
     }
 }

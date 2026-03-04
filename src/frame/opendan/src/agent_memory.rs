@@ -13,7 +13,9 @@ use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
-use crate::agent_tool::{AgentTool, AgentToolError, AgentToolManager, ToolSpec, TOOL_LOAD_MEMORY};
+use crate::agent_tool::{
+    AgentTool, AgentToolError, AgentToolManager, AgentToolResult, ToolSpec, TOOL_LOAD_MEMORY,
+};
 use crate::behavior::SessionRuntimeContext;
 
 const DEFAULT_MEMORY_DIR_NAME: &str = "memory";
@@ -600,7 +602,11 @@ impl AgentTool for LoadMemoryTool {
         true
     }
 
-    async fn call(&self, _ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(
+        &self,
+        _ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<AgentToolResult, AgentToolError> {
         let token_limit = args
             .get("token_limit")
             .and_then(|v| v.as_u64())
@@ -624,7 +630,10 @@ impl AgentTool for LoadMemoryTool {
             .memory
             .load_memory(token_limit, tags, current_time)
             .await?;
-        Ok(Json::String(AgentMemory::render_memory_items(&items)))
+        let rendered = AgentMemory::render_memory_items(&items);
+        Ok(AgentToolResult::from_details(Json::String(rendered.clone()))
+            .with_cmd_line(TOOL_LOAD_MEMORY.to_string())
+            .with_result(format!("loaded {} memory item(s)", items.len())))
     }
 }
 

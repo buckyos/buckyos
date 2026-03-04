@@ -10,7 +10,7 @@ use tokio::process::Command;
 use tokio::time::{sleep, Duration, Instant};
 
 use crate::agent_session::AgentSessionMgr;
-use crate::agent_tool::{AgentTool, AgentToolError, AgentToolManager, ToolSpec};
+use crate::agent_tool::{AgentTool, AgentToolError, AgentToolManager, AgentToolResult, ToolSpec};
 use crate::behavior::SessionRuntimeContext;
 use crate::buildin_tool::{
     is_path_under_any, normalize_abs_path, optional_u64, parse_workspace_relative_roots,
@@ -139,10 +139,14 @@ impl AgentTool for ExecBashTool {
         true
     }
 
-    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(
+        &self,
+        ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<AgentToolResult, AgentToolError> {
         let command = require_string(&args, "command")?;
         let session_id = sanitize_exec_session_id(ctx.session_id.as_str())?;
-        let cwd = self.resolve_session_cwd(&session_id).await?;
+        let pwd = self.resolve_session_pwd(&session_id).await?;
 
         let timeout_ms =
             optional_u64(&args, "timeout_ms")?.unwrap_or(self.policy.default_timeout_ms);
@@ -155,8 +159,10 @@ impl AgentTool for ExecBashTool {
 
         let env_vars = parse_exec_env_args(&args, self.policy.allow_env)?;
         let run_result = self
-            .run_command_lines(ctx, &session_id, &command, &cwd, timeout_ms, &env_vars)
+            .run_command_lines(ctx, &session_id, &command, &pwd, timeout_ms, &env_vars)
             .await?;
+        self.persist_session_pwd(&session_id, &run_result.pwd).await;
+        let pwd = run_result.pwd.clone();
         let (stdout, stdout_truncated) = truncate_bytes(
             &run_result.stdout,
             self.cfg.max_output_bytes.max(DEFAULT_MAX_OUTPUT_BYTES),
@@ -172,7 +178,7 @@ impl AgentTool for ExecBashTool {
             stderr.clone()
         };
 
-        Ok(json!({
+        let details_json = json!({
             "ok": ok,
             "exit_code": run_result.exit_code,
             "stdout": stdout,
@@ -182,12 +188,25 @@ impl AgentTool for ExecBashTool {
             "stderr_truncated": stderr_truncated,
             "duration_ms": run_result.duration_ms,
             "command": command,
-            "cwd": cwd.to_string_lossy().to_string(),
+            "cwd": pwd.to_string_lossy().to_string(),
+            "pwd": pwd.to_string_lossy().to_string(),
             "session_id": session_id,
             "tmux_session": run_result.tmux_session,
             "engine": run_result.engine,
             "line_results": run_result.line_results,
-        }))
+        });
+        let summary = if ok {
+            format!("OK (exit=0, {}ms)", run_result.duration_ms)
+        } else {
+            format!("FAILED (exit={})", run_result.exit_code)
+        };
+        let stdout_prompt = (!stdout.trim().is_empty()).then_some(stdout.clone());
+        let stderr_prompt = (!stderr.trim().is_empty()).then_some(stderr.clone());
+        Ok(AgentToolResult::from_details(details_json)
+            .with_cmd_line(command)
+            .with_result(summary)
+            .with_stdout(stdout_prompt)
+            .with_stderr(stderr_prompt))
     }
 }
 
@@ -196,6 +215,7 @@ struct ExecBashRunResult {
     stdout: Vec<u8>,
     stderr: Vec<u8>,
     duration_ms: u64,
+    pwd: PathBuf,
     tmux_session: String,
     engine: &'static str,
     line_results: Vec<Json>,
@@ -215,7 +235,7 @@ impl ExecBashTool {
         ctx: &SessionRuntimeContext,
         session_id: &str,
         command: &str,
-        cwd: &Path,
+        pwd: &Path,
         timeout_ms: u64,
         env_vars: &[(String, String)],
     ) -> Result<ExecBashRunResult, AgentToolError> {
@@ -228,6 +248,7 @@ impl ExecBashTool {
         let mut used_tool = false;
         let mut line_results = Vec::<Json>::new();
         let mut has_non_empty_line = false;
+        let mut current_pwd = self.resolve_tmux_pane_cwd(session_id, pwd).await;
 
         for (idx, raw_line) in command.lines().enumerate() {
             let line = raw_line.trim();
@@ -236,30 +257,35 @@ impl ExecBashTool {
             }
             has_non_empty_line = true;
 
+            current_pwd = self.resolve_tmux_pane_cwd(session_id, current_pwd.as_path()).await;
+
             let command_name = AgentToolManager::parse_bash_command_name(line);
             if let Some(tool_name) = self.tool_mgr.resolve_bash_registered_tool_name(line) {
                 if tool_name != TOOL_EXEC_BASH {
-                    let pane_cwd = self.resolve_tmux_pane_cwd(session_id, cwd).await;
+                    let pane_pwd = current_pwd.clone();
                     let tool_result = self
                         .tool_mgr
-                        .call_tool_from_bash_line_with_cwd(ctx, line, Some(pane_cwd.as_path()))
+                        .call_tool_from_bash_line_with_cwd(ctx, line, Some(pane_pwd.as_path()))
                         .await;
                     match tool_result {
                         Ok(Some(result)) => {
                             used_tool = true;
-                            let rendered = serde_json::to_string(&result).unwrap_or_else(|_| {
-                                "{\"ok\":false,\"error\":\"tool result serialize failed\"}"
-                                    .to_string()
-                            });
-                            aggregate_stdout.extend_from_slice(rendered.as_bytes());
+                            let json_line = serde_json::to_string(&result.details)
+                                .unwrap_or_else(|_| "{\"ok\":false}".to_string());
+                            aggregate_stdout.extend_from_slice(json_line.as_bytes());
                             aggregate_stdout.push(b'\n');
+                            let rendered = result.render_prompt();
+                            if !rendered.trim().is_empty() {
+                                aggregate_stdout.extend_from_slice(rendered.as_bytes());
+                                aggregate_stdout.push(b'\n');
+                            }
                             line_results.push(json!({
                                 "line": idx + 1,
                                 "mode": "tool",
                                 "command": line,
                                 "command_name": command_name.clone().unwrap_or_default(),
                                 "tool_name": tool_name,
-                                "cwd": pane_cwd.to_string_lossy().to_string(),
+                                "cwd": pane_pwd.to_string_lossy().to_string(),
                                 "ok": true,
                             }));
                             continue;
@@ -278,7 +304,7 @@ impl ExecBashTool {
                                 "command": line,
                                 "command_name": command_name.unwrap_or_default(),
                                 "tool_name": tool_name,
-                                "cwd": pane_cwd.to_string_lossy().to_string(),
+                                "cwd": pane_pwd.to_string_lossy().to_string(),
                                 "ok": false,
                                 "error": err_text,
                             }));
@@ -287,6 +313,7 @@ impl ExecBashTool {
                                 stdout: aggregate_stdout,
                                 stderr: aggregate_stderr,
                                 duration_ms: aggregate_duration_ms,
+                                pwd: current_pwd,
                                 tmux_session,
                                 engine: if used_tmux { "tmux+tool" } else { "tool" },
                                 line_results,
@@ -297,19 +324,21 @@ impl ExecBashTool {
             }
 
             let run_result = self
-                .run_tmux_bash(ctx, session_id, line, cwd, timeout_ms, env_vars)
+                .run_tmux_bash(ctx, session_id, line, current_pwd.as_path(), timeout_ms, env_vars)
                 .await?;
             used_tmux = true;
             tmux_session = run_result.tmux_session.clone();
             aggregate_duration_ms = aggregate_duration_ms.saturating_add(run_result.duration_ms);
             aggregate_stdout.extend_from_slice(&run_result.stdout);
             aggregate_stderr.extend_from_slice(&run_result.stderr);
+            current_pwd = self.resolve_tmux_pane_cwd(session_id, current_pwd.as_path()).await;
             line_results.push(json!({
                 "line": idx + 1,
                 "mode": "bash",
                 "command": line,
                 "command_name": command_name.unwrap_or_default(),
                 "exit_code": run_result.exit_code,
+                "cwd": current_pwd.to_string_lossy().to_string(),
             }));
             if run_result.exit_code != 0 {
                 aggregate_exit_code = run_result.exit_code;
@@ -318,6 +347,7 @@ impl ExecBashTool {
                     stdout: aggregate_stdout,
                     stderr: aggregate_stderr,
                     duration_ms: aggregate_duration_ms,
+                    pwd: current_pwd,
                     tmux_session,
                     engine: if used_tool { "tmux+tool" } else { "tmux" },
                     line_results,
@@ -327,7 +357,7 @@ impl ExecBashTool {
 
         if !has_non_empty_line {
             let run_result = self
-                .run_tmux_bash(ctx, session_id, command, cwd, timeout_ms, env_vars)
+                .run_tmux_bash(ctx, session_id, command, current_pwd.as_path(), timeout_ms, env_vars)
                 .await?;
             used_tmux = true;
             tmux_session = run_result.tmux_session.clone();
@@ -335,6 +365,7 @@ impl ExecBashTool {
             aggregate_stdout.extend_from_slice(&run_result.stdout);
             aggregate_stderr.extend_from_slice(&run_result.stderr);
             aggregate_exit_code = run_result.exit_code;
+            current_pwd = self.resolve_tmux_pane_cwd(session_id, current_pwd.as_path()).await;
         }
 
         Ok(ExecBashRunResult {
@@ -342,6 +373,7 @@ impl ExecBashTool {
             stdout: aggregate_stdout,
             stderr: aggregate_stderr,
             duration_ms: aggregate_duration_ms,
+            pwd: current_pwd,
             tmux_session,
             engine: if used_tmux && used_tool {
                 "tmux+tool"
@@ -365,14 +397,10 @@ impl ExecBashTool {
         }
         let tmux_target = format!("{tmux_session}:0.0");
         match read_tmux_pane_current_path(&tmux_target).await {
-            Ok(Some(path)) => {
-                let normalized = normalize_abs_path(&path);
-                if normalized.starts_with(&self.cfg.workspace_root) {
-                    normalized
-                } else {
-                    fallback_cwd.to_path_buf()
-                }
-            }
+            Ok(Some(path)) => self
+                .align_tmux_path_to_workspace(path.as_path())
+                .await
+                .unwrap_or_else(|| fallback_cwd.to_path_buf()),
             Ok(None) => fallback_cwd.to_path_buf(),
             Err(err) => {
                 warn!(
@@ -384,38 +412,75 @@ impl ExecBashTool {
         }
     }
 
-    async fn resolve_session_cwd(&self, session_id: &str) -> Result<PathBuf, AgentToolError> {
+    async fn align_tmux_path_to_workspace(&self, tmux_path: &Path) -> Option<PathBuf> {
+        let normalized = normalize_abs_path(tmux_path);
+        if normalized.starts_with(&self.cfg.workspace_root) {
+            return Some(normalized);
+        }
+
+        // tmux may report a different absolute alias (e.g. /private/var vs /var on macOS).
+        // Canonicalize and remap back under workspace_root so downstream policy checks remain stable.
+        let canonical_tmux = fs::canonicalize(tmux_path).await.ok()?;
+        let canonical_root = fs::canonicalize(&self.cfg.workspace_root).await.ok()?;
+        let relative = canonical_tmux.strip_prefix(&canonical_root).ok()?;
+        Some(normalize_abs_path(&self.cfg.workspace_root.join(relative)))
+    }
+
+    async fn resolve_session_pwd(&self, session_id: &str) -> Result<PathBuf, AgentToolError> {
         let Some(session) = self.session_store.get_session(session_id).await else {
             return Err(AgentToolError::InvalidArgs(format!(
                 "session not found for exec_bash: {session_id}"
             )));
         };
-        let raw_cwd = {
+        let raw_pwd = {
             let guard = session.lock().await;
-            guard.cwd.clone()
+            guard.pwd.clone()
         };
-        let cwd = if raw_cwd.as_os_str().is_empty() {
+        let pwd = if raw_pwd.as_os_str().is_empty() {
             self.cfg.workspace_root.clone()
-        } else if raw_cwd.is_absolute() {
-            normalize_abs_path(&raw_cwd)
+        } else if raw_pwd.is_absolute() {
+            normalize_abs_path(&raw_pwd)
         } else {
-            normalize_abs_path(&self.cfg.workspace_root.join(raw_cwd))
+            normalize_abs_path(&self.cfg.workspace_root.join(raw_pwd))
         };
 
-        if !cwd.starts_with(&self.cfg.workspace_root) {
+        if !pwd.starts_with(&self.cfg.workspace_root) {
             return Err(AgentToolError::InvalidArgs(format!(
-                "session cwd out of workspace scope: {}",
-                cwd.display()
+                "session pwd out of workspace scope: {}",
+                pwd.display()
             )));
         }
-        if !is_path_under_any(&cwd, &self.policy.allowed_cwd_roots) {
+        if !is_path_under_any(&pwd, &self.policy.allowed_cwd_roots) {
             return Err(AgentToolError::InvalidArgs(format!(
-                "session cwd `{}` not allowed by workshop tool policy",
-                cwd.display()
+                "session pwd `{}` not allowed by workshop tool policy",
+                pwd.display()
             )));
         }
 
-        Ok(cwd)
+        Ok(pwd)
+    }
+
+    async fn persist_session_pwd(&self, session_id: &str, pwd: &Path) {
+        if !pwd.starts_with(&self.cfg.workspace_root)
+            || !is_path_under_any(pwd, &self.policy.allowed_cwd_roots)
+        {
+            return;
+        }
+        let Some(session) = self.session_store.get_session(session_id).await else {
+            return;
+        };
+        {
+            let mut guard = session.lock().await;
+            guard.pwd = pwd.to_path_buf();
+        }
+        if let Err(err) = self.session_store.save_session(session_id).await {
+            warn!(
+                "persist exec_bash session pwd failed: session={} pwd={} err={}",
+                session_id,
+                pwd.display(),
+                err
+            );
+        }
     }
 
     async fn run_tmux_bash(
@@ -461,7 +526,6 @@ impl ExecBashTool {
             cwd,
             command,
             env_vars,
-            &self.cfg.bash_path,
         );
         fs::write(&script_path, script).await.map_err(|err| {
             AgentToolError::ExecFailed(format!(
@@ -472,11 +536,7 @@ impl ExecBashTool {
 
         clear_tmux_history(&tmux_target).await?;
 
-        let invoke = format!(
-            "{} {}",
-            shell_single_quote(self.cfg.bash_path.to_string_lossy().as_ref()),
-            shell_single_quote(script_path.to_string_lossy().as_ref())
-        );
+        let invoke = format!(". {}", shell_single_quote(script_path.to_string_lossy().as_ref()));
         send_tmux_command(&tmux_target, &invoke).await?;
 
         let started = Instant::now();
@@ -629,10 +689,8 @@ fn build_tmux_exec_script(
     cwd: &Path,
     command: &str,
     env_vars: &[(String, String)],
-    bash_path: &Path,
 ) -> String {
     let mut lines = Vec::new();
-    lines.push("#!/usr/bin/env bash".to_string());
     lines.push(format!("__od_run_id={}", shell_single_quote(run_id)));
     lines.push(format!(
         "__od_stdout={}",
@@ -646,16 +704,14 @@ fn build_tmux_exec_script(
         "__od_cwd={}",
         shell_single_quote(cwd.to_string_lossy().as_ref())
     ));
-    lines.push(format!(
-        "__od_bash={}",
-        shell_single_quote(bash_path.to_string_lossy().as_ref())
-    ));
     lines.push("printf \"__OD_BEGIN__%s\\n\" \"$__od_run_id\"".to_string());
     lines.push("mkdir -p \"$(dirname \"$__od_stdout\")\"".to_string());
     lines.push(": > \"$__od_stdout\"".to_string());
     lines.push(": > \"$__od_stderr\"".to_string());
     lines.push("{".to_string());
-    lines.push("  cd \"$__od_cwd\" || exit 97".to_string());
+    lines.push(
+        "  cd \"$__od_cwd\" || { echo \"cd failed: $__od_cwd\" >&2; false; }".to_string(),
+    );
     for (key, value) in env_vars {
         lines.push(format!(
             "  export {}={}",
@@ -663,13 +719,10 @@ fn build_tmux_exec_script(
             shell_single_quote(value.as_str())
         ));
     }
-    lines.push("  \"$__od_bash\" <<'__OD_COMMAND__'".to_string());
     lines.push(command.to_string());
-    lines.push("__OD_COMMAND__".to_string());
     lines.push("} > >(tee \"$__od_stdout\") 2> >(tee \"$__od_stderr\" >&2)".to_string());
     lines.push("__od_ec=$?".to_string());
     lines.push("printf \"__OD_EXIT__%s:%s\\n\" \"$__od_run_id\" \"$__od_ec\"".to_string());
-    lines.push("exit 0".to_string());
     lines.join("\n")
 }
 

@@ -17,7 +17,7 @@ use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, Notify, RwLock};
 
-use crate::agent_tool::{AgentTool, AgentToolError, ToolSpec, TOOL_GET_SESSION};
+use crate::agent_tool::{AgentTool, AgentToolError, AgentToolResult, ToolSpec, TOOL_GET_SESSION};
 use crate::behavior::SessionRuntimeContext;
 
 const DEFAULT_SESSION_FILE: &str = "session.json";
@@ -159,7 +159,7 @@ pub struct AgentSession {
     //这个不会被序列化
     pub just_readed_input_msg: Vec<Vec<u8>>,
 
-    pub cwd: PathBuf,
+    pub pwd: PathBuf,
     pub session_root_dir: PathBuf,
     pub workspace_info: Option<Json>,
     pub local_workspace_id: Option<String>,
@@ -200,7 +200,7 @@ impl AgentSession {
             msg_kmsgqueue_curosr: 0,
             event_kmsgqueue_curosr: 0,
             just_readed_input_msg: vec![],
-            cwd: PathBuf::new(),
+            pwd: PathBuf::new(),
             session_root_dir: PathBuf::new(),
             workspace_info: None,
             local_workspace_id: None,
@@ -237,7 +237,7 @@ impl AgentSession {
 
         Self {
             session_id: record.session_id,
-            cwd: PathBuf::new(),
+            pwd: PathBuf::new(),
             session_root_dir: PathBuf::new(),
             owner_agent: record.owner_agent,
             title: if record.title.trim().is_empty() {
@@ -586,8 +586,8 @@ impl AgentSessionMgr {
     }
 
     fn hydrate_session_runtime_context(&self, session: &mut AgentSession) {
-        if session.cwd.as_os_str().is_empty() {
-            session.cwd = self.workspace_root();
+        if session.pwd.as_os_str().is_empty() {
+            session.pwd = self.workspace_root();
         }
         if session.session_root_dir.as_os_str().is_empty() {
             session.session_root_dir = self.sessions_root.clone();
@@ -1000,13 +1000,21 @@ impl AgentTool for GetSessionTool {
         false
     }
 
-    async fn call(&self, _ctx: &SessionRuntimeContext, args: Json) -> Result<Json, AgentToolError> {
+    async fn call(
+        &self,
+        _ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<AgentToolResult, AgentToolError> {
         let session_id = require_string(&args, "session_id")?;
         let session = self.store.session_view(&session_id).await?;
-        Ok(json!({
+        Ok(
+            AgentToolResult::from_details(json!({
             "ok": true,
             "session": session
-        }))
+            }))
+            .with_cmd_line(format!("{TOOL_GET_SESSION} {session_id}"))
+            .with_result("ok"),
+        )
     }
 }
 
