@@ -2,13 +2,76 @@ use super::{
     KLOG_JSON_RPC_PATH, KLOG_JSON_RPC_VERSION, KLOG_RPC_METHOD_APPEND, KLOG_RPC_METHOD_QUERY,
     KLogJsonRpcRequest, KLogJsonRpcResponse,
 };
-use crate::network::{KLogAppendRequest, KLogAppendResponse, KLogQueryRequest, KLogQueryResponse};
+use crate::KNode;
+use crate::error::{
+    KLogErrorCode, KLogErrorEnvelope, generate_trace_id, map_http_status_to_error_code,
+    map_json_rpc_error_code_to_klog_error_code, parse_error_envelope_json,
+};
+use crate::network::{
+    KLOG_TRACE_ID_HEADER, KLogAppendRequest, KLogAppendResponse, KLogQueryRequest,
+    KLogQueryResponse,
+};
+use reqwest::StatusCode;
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use uuid::Uuid;
 
 const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(3);
+
+#[derive(Debug, Clone, thiserror::Error)]
+#[error(
+    "klog rpc error: endpoint={endpoint}, method={method}, status={http_status:?}, code={error_code:?}, retryable={retryable}, leader_hint={leader_hint:?}, trace_id={trace_id}, message={message}"
+)]
+pub struct KLogClientError {
+    pub endpoint: String,
+    pub method: String,
+    pub http_status: Option<u16>,
+    pub error_code: KLogErrorCode,
+    pub message: String,
+    pub retryable: bool,
+    pub leader_hint: Option<KNode>,
+    pub trace_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KLogCallTrace {
+    pub trace_id: String,
+}
+
+impl KLogClientError {
+    fn from_envelope(
+        endpoint: &str,
+        method: &str,
+        http_status: Option<u16>,
+        envelope: KLogErrorEnvelope,
+    ) -> Self {
+        Self {
+            endpoint: endpoint.to_string(),
+            method: method.to_string(),
+            http_status,
+            error_code: envelope.error_code,
+            message: envelope.message,
+            retryable: envelope.retryable,
+            leader_hint: envelope.leader_hint,
+            trace_id: envelope.trace_id,
+        }
+    }
+
+    fn internal(endpoint: &str, method: &str, message: impl Into<String>) -> Self {
+        let trace_id = generate_trace_id();
+        let envelope = KLogErrorEnvelope::new(KLogErrorCode::Internal, message, trace_id);
+        Self::from_envelope(endpoint, method, None, envelope)
+    }
+
+    pub fn is_retryable(&self) -> bool {
+        self.retryable
+    }
+
+    pub fn leader_hint(&self) -> Option<&KNode> {
+        self.leader_hint.as_ref()
+    }
+}
 
 pub struct KLogClient {
     endpoint: String,
@@ -49,12 +112,23 @@ impl KLogClient {
         format!("{}-{}", node_id, Uuid::now_v7())
     }
 
-    pub async fn append(&self, req: KLogAppendRequest) -> Result<KLogAppendResponse, String> {
-        let req = self.fill_append_defaults(req);
-        self.call(KLOG_RPC_METHOD_APPEND, &req).await
+    pub async fn append(
+        &self,
+        req: KLogAppendRequest,
+    ) -> Result<KLogAppendResponse, KLogClientError> {
+        let (resp, _) = self.append_with_trace(req).await?;
+        Ok(resp)
     }
 
-    pub async fn append_message(&self, message: impl Into<String>) -> Result<u64, String> {
+    pub async fn append_with_trace(
+        &self,
+        req: KLogAppendRequest,
+    ) -> Result<(KLogAppendResponse, KLogCallTrace), KLogClientError> {
+        let req = self.fill_append_defaults(req);
+        self.call_with_trace(KLOG_RPC_METHOD_APPEND, &req).await
+    }
+
+    pub async fn append_message(&self, message: impl Into<String>) -> Result<u64, KLogClientError> {
         let resp = self
             .append(KLogAppendRequest {
                 message: message.into(),
@@ -66,20 +140,37 @@ impl KLogClient {
         Ok(resp.id)
     }
 
-    pub async fn query(&self, req: KLogQueryRequest) -> Result<KLogQueryResponse, String> {
-        self.call(KLOG_RPC_METHOD_QUERY, &req).await
+    pub async fn query(&self, req: KLogQueryRequest) -> Result<KLogQueryResponse, KLogClientError> {
+        let (resp, _) = self.query_with_trace(req).await?;
+        Ok(resp)
     }
 
-    async fn call<Req, Resp>(&self, method: &str, params: &Req) -> Result<Resp, String>
+    pub async fn query_with_trace(
+        &self,
+        req: KLogQueryRequest,
+    ) -> Result<(KLogQueryResponse, KLogCallTrace), KLogClientError> {
+        self.call_with_trace(KLOG_RPC_METHOD_QUERY, &req).await
+    }
+
+    async fn call_with_trace<Req, Resp>(
+        &self,
+        method: &str,
+        params: &Req,
+    ) -> Result<(Resp, KLogCallTrace), KLogClientError>
     where
         Req: Serialize,
         Resp: for<'de> serde::Deserialize<'de>,
     {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let request_trace_id = generate_trace_id();
         let params = serde_json::to_value(params).map_err(|e| {
-            format!(
-                "Failed to encode json-rpc params for method {}: {}",
-                method, e
+            KLogClientError::internal(
+                self.endpoint.as_str(),
+                method,
+                format!(
+                    "Failed to encode json-rpc params for method {}: {}",
+                    method, e
+                ),
             )
         })?;
         let request = KLogJsonRpcRequest {
@@ -93,13 +184,18 @@ impl KLogClient {
             .client
             .post(self.endpoint.as_str())
             .timeout(self.timeout)
+            .header(KLOG_TRACE_ID_HEADER, request_trace_id.clone())
             .json(&request)
             .send()
             .await
             .map_err(|e| {
-                format!(
-                    "Failed to send json-rpc request: endpoint={}, method={}, id={}, err={}",
-                    self.endpoint, method, id, e
+                KLogClientError::internal(
+                    self.endpoint.as_str(),
+                    method,
+                    format!(
+                        "Failed to send json-rpc request: endpoint={}, method={}, id={}, err={}",
+                        self.endpoint, method, id, e
+                    ),
                 )
             })?;
 
@@ -109,16 +205,36 @@ impl KLogClient {
                 .text()
                 .await
                 .unwrap_or_else(|e| format!("<failed to read body: {}>", e));
-            return Err(format!(
-                "json-rpc http status not success: endpoint={}, method={}, id={}, status={}, body={}",
-                self.endpoint, method, id, status, body
+            let envelope = parse_error_envelope_json(&body).unwrap_or_else(|| {
+                let msg = format!(
+                    "json-rpc http status not success: endpoint={}, method={}, id={}, status={}, body={}",
+                    self.endpoint, method, id, status, body
+                );
+                KLogErrorEnvelope {
+                    error_code: map_http_status_to_error_code(status.as_u16()),
+                    message: msg,
+                    retryable: map_http_status_to_error_code(status.as_u16()).is_retryable(),
+                    leader_hint: None,
+                    trace_id: request_trace_id.clone(),
+                }
+            });
+            return Err(KLogClientError::from_envelope(
+                self.endpoint.as_str(),
+                method,
+                Some(status.as_u16()),
+                envelope,
             ));
         }
 
+        let response_trace_id = response_trace_id_from_headers(response.headers());
         let payload = response.json::<KLogJsonRpcResponse>().await.map_err(|e| {
-            format!(
-                "Failed to decode json-rpc response: endpoint={}, method={}, id={}, err={}",
-                self.endpoint, method, id, e
+            KLogClientError::internal(
+                self.endpoint.as_str(),
+                method,
+                format!(
+                    "Failed to decode json-rpc response: endpoint={}, method={}, id={}, err={}",
+                    self.endpoint, method, id, e
+                ),
             )
         })?;
 
@@ -130,24 +246,51 @@ impl KLogClient {
         }
 
         if let Some(err) = payload.error {
-            return Err(format!(
-                "json-rpc error: endpoint={}, method={}, id={}, code={}, message={}",
-                self.endpoint, method, payload.id, err.code, err.message
+            let envelope = err
+                .data
+                .and_then(|v| serde_json::from_value::<KLogErrorEnvelope>(v).ok())
+                .unwrap_or_else(|| {
+                    let error_code = map_json_rpc_error_code_to_klog_error_code(err.code);
+                    KLogErrorEnvelope {
+                        error_code,
+                        message: err.message,
+                        retryable: error_code.is_retryable(),
+                        leader_hint: None,
+                        trace_id: request_trace_id.clone(),
+                    }
+                });
+
+            return Err(KLogClientError::from_envelope(
+                self.endpoint.as_str(),
+                method,
+                Some(StatusCode::OK.as_u16()),
+                envelope,
             ));
         }
 
         let result = payload.result.ok_or_else(|| {
-            format!(
-                "json-rpc missing result: endpoint={}, method={}, id={}",
-                self.endpoint, method, payload.id
+            KLogClientError::internal(
+                self.endpoint.as_str(),
+                method,
+                format!(
+                    "json-rpc missing result: endpoint={}, method={}, id={}",
+                    self.endpoint, method, payload.id
+                ),
             )
         })?;
-        serde_json::from_value(result).map_err(|e| {
-            format!(
-                "Failed to decode json-rpc result: endpoint={}, method={}, id={}, err={}",
-                self.endpoint, method, payload.id, e
+        let trace_id = response_trace_id.unwrap_or_else(|| request_trace_id.clone());
+        let resp = serde_json::from_value(result).map_err(|e| {
+            KLogClientError::internal(
+                self.endpoint.as_str(),
+                method,
+                format!(
+                    "Failed to decode json-rpc result: endpoint={}, method={}, id={}, err={}",
+                    self.endpoint, method, payload.id, e
+                ),
             )
-        })
+        })?;
+
+        Ok((resp, KLogCallTrace { trace_id }))
     }
 
     fn fill_append_defaults(&self, mut req: KLogAppendRequest) -> KLogAppendRequest {
@@ -165,6 +308,15 @@ impl KLogClient {
     }
 }
 
+fn response_trace_id_from_headers(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    headers
+        .get(KLOG_TRACE_ID_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+}
+
 fn normalize_endpoint(raw: String) -> String {
     let trimmed = raw.trim();
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
@@ -177,8 +329,10 @@ fn normalize_endpoint(raw: String) -> String {
 mod tests {
     use super::{KLogClient, normalize_endpoint};
     use crate::KLogEntry;
+    use crate::error::KLogErrorCode;
     use crate::network::{
-        KLogAppendRequest, KLogAppendResponse, KLogQueryRequest, KLogQueryResponse,
+        KLOG_TRACE_ID_HEADER, KLogAppendRequest, KLogAppendResponse, KLogQueryRequest,
+        KLogQueryResponse,
     };
     use crate::rpc::{
         KLOG_JSON_RPC_PATH, KLOG_RPC_ERR_METHOD_NOT_FOUND, KLOG_RPC_METHOD_APPEND,
@@ -186,7 +340,7 @@ mod tests {
     };
     use axum::Router;
     use axum::extract::Json;
-    use axum::http::StatusCode;
+    use axum::http::{HeaderMap, HeaderValue, StatusCode};
     use axum::routing::post;
     use std::net::SocketAddr;
     use std::time::Duration;
@@ -280,6 +434,53 @@ mod tests {
             .await
             .map_err(|e| anyhow::anyhow!("append failed: {}", e))?;
         assert_eq!(resp.id, 42);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_json_rpc_client_append_with_trace_roundtrip() -> anyhow::Result<()> {
+        let app = Router::new().route(
+            KLOG_JSON_RPC_PATH,
+            post(
+                |headers: HeaderMap, Json(request): Json<KLogJsonRpcRequest>| async move {
+                    assert_eq!(request.method, KLOG_RPC_METHOD_APPEND);
+                    let trace_id = headers
+                        .get(KLOG_TRACE_ID_HEADER)
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())
+                        .expect("trace id should be present in request header")
+                        .to_string();
+
+                    let response =
+                        KLogJsonRpcResponse::success(request.id, KLogAppendResponse { id: 77 });
+                    (
+                        StatusCode::OK,
+                        [(
+                            KLOG_TRACE_ID_HEADER,
+                            HeaderValue::from_str(&trace_id).expect("trace header"),
+                        )],
+                        Json(response),
+                    )
+                },
+            ),
+        );
+
+        let Some(server) = TestJsonRpcServer::try_start(app).await? else {
+            return Ok(());
+        };
+        let client = server.client();
+        let (resp, trace) = client
+            .append_with_trace(KLogAppendRequest {
+                message: "hello-trace".to_string(),
+                timestamp: Some(1001),
+                node_id: Some(1),
+                request_id: Some("req-trace".to_string()),
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("append_with_trace failed: {}", e))?;
+        assert_eq!(resp.id, 77);
+        assert!(!trace.trace_id.is_empty());
         Ok(())
     }
 
@@ -388,8 +589,10 @@ mod tests {
             .append_message("should-fail")
             .await
             .expect_err("json-rpc error expected");
-        assert!(err.contains("code=-32601"));
-        assert!(err.contains("Unknown method"));
+        assert_eq!(err.error_code, KLogErrorCode::InvalidArgument);
+        assert_eq!(err.message, "Unknown method");
+        assert!(!err.retryable);
+        assert!(!err.trace_id.is_empty());
         Ok(())
     }
 
@@ -408,8 +611,13 @@ mod tests {
             .append_message("should-fail-http")
             .await
             .expect_err("http error expected");
-        assert!(err.contains("status=503 Service Unavailable"));
-        assert!(err.contains("overloaded"));
+        assert_eq!(
+            err.http_status,
+            Some(StatusCode::SERVICE_UNAVAILABLE.as_u16())
+        );
+        assert_eq!(err.error_code, KLogErrorCode::Unavailable);
+        assert!(err.message.contains("overloaded"));
+        assert!(err.retryable);
         Ok(())
     }
 }

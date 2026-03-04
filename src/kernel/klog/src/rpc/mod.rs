@@ -67,4 +67,22 @@ impl KLogJsonRpcResponse {
             id,
         }
     }
+
+    pub fn error_with_data(
+        id: u64,
+        code: i64,
+        message: impl Into<String>,
+        data: Option<Value>,
+    ) -> Self {
+        Self {
+            jsonrpc: KLOG_JSON_RPC_VERSION.to_string(),
+            result: None,
+            error: Some(KLogJsonRpcError {
+                code,
+                message: message.into(),
+                data,
+            }),
+            id,
+        }
+    }
 }

@@ -1,7 +1,9 @@
 use super::request::{
-    KLOG_FORWARD_HOPS_HEADER, KLOG_FORWARDED_BY_HEADER, KLogAppendRequest, KLogAppendResponse,
-    KLogDataRequestType, KLogQueryRequest, KLogQueryResponse, RaftRequest, RaftResponse,
+    KLOG_FORWARD_HOPS_HEADER, KLOG_FORWARDED_BY_HEADER, KLOG_TRACE_ID_HEADER, KLogAppendRequest,
+    KLogAppendResponse, KLogDataRequestType, KLogQueryRequest, KLogQueryResponse, RaftRequest,
+    RaftResponse,
 };
+use crate::error::{KLogErrorCode, KLogServiceError, parse_error_envelope_json};
 use crate::{KNode, KNodeId, KTypeConfig};
 use openraft::error::{
     InstallSnapshotError, NetworkError, RPCError, RaftError, RemoteError, Timeout, Unreachable,
@@ -71,7 +73,8 @@ impl KDataClient {
         req: &KLogAppendRequest,
         forward_hops: u32,
         forwarded_by: KNodeId,
-    ) -> Result<KLogAppendResponse, String> {
+        trace_id: &str,
+    ) -> Result<KLogAppendResponse, KLogServiceError> {
         let path = KLogDataRequestType::Append.klog_path();
         let url = format!("http://{}:{}{}", target.addr, target.port, path);
         let response = self
@@ -80,13 +83,20 @@ impl KDataClient {
             .timeout(self.timeout)
             .header(KLOG_FORWARD_HOPS_HEADER, forward_hops.to_string())
             .header(KLOG_FORWARDED_BY_HEADER, forwarded_by.to_string())
+            .header(KLOG_TRACE_ID_HEADER, trace_id)
             .json(req)
             .send()
             .await
             .map_err(|e| {
-                format!(
+                let msg = format!(
                     "forward data append send failed: target={}({}:{}), url={}, err={}",
                     target.id, target.addr, target.port, url, e
+                );
+                KLogServiceError::new(
+                    reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                    KLogErrorCode::Unavailable,
+                    msg,
+                    trace_id.to_string(),
                 )
             })?;
 
@@ -95,17 +105,35 @@ impl KDataClient {
             let body = response
                 .text()
                 .await
-                .unwrap_or_else(|e| format!("<failed to read body: {}>", e));
-            return Err(format!(
+                .unwrap_or_else(|e| format!(r#"{{"message":"<failed to read body: {}>"}}"#, e));
+            let fallback_msg = format!(
                 "forward data append failed: target={}({}:{}), url={}, status={}, body={}",
                 target.id, target.addr, target.port, url, status, body
-            ));
+            );
+            return Err(parse_error_envelope_json(&body)
+                .map(|e| KLogServiceError {
+                    http_status: status.as_u16(),
+                    error: e,
+                })
+                .unwrap_or_else(|| {
+                    KLogServiceError::from_http_status(
+                        status.as_u16(),
+                        fallback_msg,
+                        trace_id.to_string(),
+                    )
+                }));
         }
 
         response.json::<KLogAppendResponse>().await.map_err(|e| {
-            format!(
+            let msg = format!(
                 "forward data append decode failed: target={}({}:{}), url={}, err={}",
                 target.id, target.addr, target.port, url, e
+            );
+            KLogServiceError::new(
+                reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                KLogErrorCode::Unavailable,
+                msg,
+                trace_id.to_string(),
             )
         })
     }
@@ -116,7 +144,8 @@ impl KDataClient {
         req: &KLogQueryRequest,
         forward_hops: u32,
         forwarded_by: KNodeId,
-    ) -> Result<KLogQueryResponse, String> {
+        trace_id: &str,
+    ) -> Result<KLogQueryResponse, KLogServiceError> {
         let path = KLogDataRequestType::Query.klog_path();
         let url = format!("http://{}:{}{}", target.addr, target.port, path);
         let response = self
@@ -125,13 +154,20 @@ impl KDataClient {
             .timeout(self.timeout)
             .header(KLOG_FORWARD_HOPS_HEADER, forward_hops.to_string())
             .header(KLOG_FORWARDED_BY_HEADER, forwarded_by.to_string())
+            .header(KLOG_TRACE_ID_HEADER, trace_id)
             .query(req)
             .send()
             .await
             .map_err(|e| {
-                format!(
+                let msg = format!(
                     "forward data query send failed: target={}({}:{}), url={}, err={}",
                     target.id, target.addr, target.port, url, e
+                );
+                KLogServiceError::new(
+                    reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                    KLogErrorCode::Unavailable,
+                    msg,
+                    trace_id.to_string(),
                 )
             })?;
 
@@ -140,17 +176,35 @@ impl KDataClient {
             let body = response
                 .text()
                 .await
-                .unwrap_or_else(|e| format!("<failed to read body: {}>", e));
-            return Err(format!(
+                .unwrap_or_else(|e| format!(r#"{{"message":"<failed to read body: {}>"}}"#, e));
+            let fallback_msg = format!(
                 "forward data query failed: target={}({}:{}), url={}, status={}, body={}",
                 target.id, target.addr, target.port, url, status, body
-            ));
+            );
+            return Err(parse_error_envelope_json(&body)
+                .map(|e| KLogServiceError {
+                    http_status: status.as_u16(),
+                    error: e,
+                })
+                .unwrap_or_else(|| {
+                    KLogServiceError::from_http_status(
+                        status.as_u16(),
+                        fallback_msg,
+                        trace_id.to_string(),
+                    )
+                }));
         }
 
         response.json::<KLogQueryResponse>().await.map_err(|e| {
-            format!(
+            let msg = format!(
                 "forward data query decode failed: target={}({}:{}), url={}, err={}",
                 target.id, target.addr, target.port, url, e
+            );
+            KLogServiceError::new(
+                reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                KLogErrorCode::Unavailable,
+                msg,
+                trace_id.to_string(),
             )
         })
     }

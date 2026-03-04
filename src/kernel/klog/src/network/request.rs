@@ -16,6 +16,7 @@ const NETWORK_CODEC_BINCODE_LEGACY: u8 = 1;
 const NETWORK_HEADER_LEN: usize = 8 + 2 + 1 + 1 + 1 + 4;
 pub const KLOG_FORWARD_HOPS_HEADER: &str = "x-klog-forward-hops";
 pub const KLOG_FORWARDED_BY_HEADER: &str = "x-klog-forwarded-by";
+pub const KLOG_TRACE_ID_HEADER: &str = "x-klog-trace-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RaftRequestType {

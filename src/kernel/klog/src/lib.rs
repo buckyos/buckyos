@@ -8,6 +8,7 @@ use openraft::{LogId, declare_raft_types};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+pub mod error;
 pub mod logs;
 pub mod network;
 pub mod rpc;

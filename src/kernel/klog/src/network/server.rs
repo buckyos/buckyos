@@ -2,6 +2,7 @@ use super::request::{
     KLogAdminRequestType, KLogAppendRequest, KLogClusterStateResponse, KLogDataRequestType,
     KLogQueryRequest, RaftRequest, RaftRequestType, RaftResponse,
 };
+use crate::error::{KLogErrorEnvelope, KLogServiceError, generate_trace_id};
 use crate::service::{KLogQueryService, KLogWriteService};
 use crate::state_store::KLogStateStoreManagerRef;
 use crate::{KNode, KNodeId, KRaftRef};
@@ -386,7 +387,7 @@ impl KNetworkServer {
 
         match write_service.append(&headers, req).await {
             Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
-            Err((status, msg)) => Self::error_response(status, msg),
+            Err(err) => Self::service_error_response(err),
         }
     }
 
@@ -404,7 +405,7 @@ impl KNetworkServer {
 
         match query_service.query(&headers, query).await {
             Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
-            Err((status, msg)) => Self::error_response(status, msg),
+            Err(err) => Self::service_error_response(err),
         }
     }
 
@@ -669,7 +670,15 @@ impl KNetworkServer {
     }
 
     fn error_response(status: StatusCode, msg: String) -> Response {
-        (status, msg).into_response()
+        let trace_id = generate_trace_id();
+        let envelope = KLogErrorEnvelope::from_http_status(status.as_u16(), msg, trace_id);
+        (status, Json(envelope)).into_response()
+    }
+
+    fn service_error_response(err: KLogServiceError) -> Response {
+        let status =
+            StatusCode::from_u16(err.http_status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        (status, Json(err.error)).into_response()
     }
 }
 

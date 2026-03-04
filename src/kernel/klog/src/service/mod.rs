@@ -1,6 +1,7 @@
+use crate::error::{KLogErrorCode, KLogServiceError, normalize_trace_id};
 use crate::network::{
-    KDataClient, KLOG_FORWARD_HOPS_HEADER, KLOG_FORWARDED_BY_HEADER, KLogAppendRequest,
-    KLogAppendResponse, KLogQueryRequest, KLogQueryResponse,
+    KDataClient, KLOG_FORWARD_HOPS_HEADER, KLOG_FORWARDED_BY_HEADER, KLOG_TRACE_ID_HEADER,
+    KLogAppendRequest, KLogAppendResponse, KLogQueryRequest, KLogQueryResponse,
 };
 use crate::state_store::{KLogQuery, KLogQueryOrder, KLogStateStoreManagerRef};
 use crate::{KLogEntry, KLogRequest, KLogResponse, KNode, KRaftRef};
@@ -13,6 +14,7 @@ pub const DATA_QUERY_MAX_FORWARD_HOPS: u32 = 2;
 pub const DATA_APPEND_MAX_MESSAGE_BYTES: usize = 64 * 1024;
 pub const DATA_APPEND_MAX_REQUEST_ID_BYTES: usize = 128;
 pub const DATA_APPEND_MAX_FORWARD_HOPS: u32 = 2;
+pub type KServiceResult<T> = Result<T, KLogServiceError>;
 
 #[derive(Clone)]
 pub struct KLogWriteService {
@@ -40,11 +42,17 @@ impl KLogWriteService {
         &self,
         headers: &HeaderMap,
         req: KLogAppendRequest,
-    ) -> Result<KLogAppendResponse, (StatusCode, String)> {
+    ) -> KServiceResult<KLogAppendResponse> {
+        let trace_id = self.resolve_trace_id(headers);
         if req.message.trim().is_empty() {
             let msg = format!("{} data append rejected: empty message", self.service_name);
             error!("{}", msg);
-            return Err((StatusCode::BAD_REQUEST, msg));
+            return Err(self.service_error(
+                StatusCode::BAD_REQUEST,
+                KLogErrorCode::InvalidArgument,
+                msg,
+                &trace_id,
+            ));
         }
 
         if req.message.len() > DATA_APPEND_MAX_MESSAGE_BYTES {
@@ -55,7 +63,12 @@ impl KLogWriteService {
                 DATA_APPEND_MAX_MESSAGE_BYTES
             );
             error!("{}", msg);
-            return Err((StatusCode::PAYLOAD_TOO_LARGE, msg));
+            return Err(self.service_error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                KLogErrorCode::PayloadTooLarge,
+                msg,
+                &trace_id,
+            ));
         }
 
         let request_id = req
@@ -73,7 +86,12 @@ impl KLogWriteService {
                 DATA_APPEND_MAX_REQUEST_ID_BYTES
             );
             error!("{}", msg);
-            return Err((StatusCode::BAD_REQUEST, msg));
+            return Err(self.service_error(
+                StatusCode::BAD_REQUEST,
+                KLogErrorCode::InvalidArgument,
+                msg,
+                &trace_id,
+            ));
         }
 
         if let Some(request_id) = request_id.as_ref()
@@ -91,7 +109,12 @@ impl KLogWriteService {
 
         let forward_hops = self.parse_forward_hops(headers).map_err(|msg| {
             error!("{}", msg);
-            (StatusCode::BAD_REQUEST, msg)
+            self.service_error(
+                StatusCode::BAD_REQUEST,
+                KLogErrorCode::InvalidArgument,
+                msg,
+                &trace_id,
+            )
         })?;
         let forwarded_by = headers
             .get(KLOG_FORWARDED_BY_HEADER)
@@ -104,7 +127,12 @@ impl KLogWriteService {
                 self.service_name, forward_hops, DATA_APPEND_MAX_FORWARD_HOPS, forwarded_by
             );
             error!("{}", msg);
-            return Err((StatusCode::BAD_GATEWAY, msg));
+            return Err(self.service_error(
+                StatusCode::BAD_GATEWAY,
+                KLogErrorCode::LeaderUnavailable,
+                msg,
+                &trace_id,
+            ));
         }
 
         let metrics = self.raft.metrics().borrow().clone();
@@ -126,8 +154,9 @@ impl KLogWriteService {
         let requested_id = item.id;
 
         info!(
-            "{} data append request: id={}, request_id={:?}, timestamp={}, node_id={}, msg_len={}, local_node_id={}, current_leader={:?}, forward_hops={}, forwarded_by={}",
+            "{} data append request: trace_id={}, id={}, request_id={:?}, timestamp={}, node_id={}, msg_len={}, local_node_id={}, current_leader={:?}, forward_hops={}, forwarded_by={}",
             self.service_name,
+            trace_id,
             item.id,
             item.request_id.as_deref(),
             item.timestamp,
@@ -155,7 +184,12 @@ impl KLogWriteService {
                         self.service_name, requested_id, err_msg
                     );
                     error!("{}", msg);
-                    Err((StatusCode::INTERNAL_SERVER_ERROR, msg))
+                    Err(self.service_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        KLogErrorCode::Internal,
+                        msg,
+                        &trace_id,
+                    ))
                 }
                 other => {
                     let msg = format!(
@@ -163,7 +197,12 @@ impl KLogWriteService {
                         self.service_name, requested_id, other
                     );
                     error!("{}", msg);
-                    Err((StatusCode::INTERNAL_SERVER_ERROR, msg))
+                    Err(self.service_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        KLogErrorCode::Internal,
+                        msg,
+                        &trace_id,
+                    ))
                 }
             },
             Err(err) => {
@@ -180,7 +219,12 @@ impl KLogWriteService {
                             DATA_APPEND_MAX_FORWARD_HOPS
                         );
                         error!("{}", msg);
-                        return Err((StatusCode::BAD_GATEWAY, msg));
+                        return Err(self.service_error(
+                            StatusCode::BAD_GATEWAY,
+                            KLogErrorCode::LeaderUnavailable,
+                            msg,
+                            &trace_id,
+                        ));
                     }
 
                     let leader_node = forward.leader_node.clone().or_else(|| {
@@ -197,7 +241,14 @@ impl KLogWriteService {
                             self.service_name, local_node_id, requested_id, forward.leader_id
                         );
                         warn!("{}", msg);
-                        return Err((StatusCode::SERVICE_UNAVAILABLE, msg));
+                        return Err(self
+                            .service_error(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                KLogErrorCode::LeaderUnavailable,
+                                msg,
+                                &trace_id,
+                            )
+                            .with_leader_hint(forward.leader_node.clone()));
                     };
 
                     let target_hops = forward_hops + 1;
@@ -214,13 +265,14 @@ impl KLogWriteService {
                     );
                     match self
                         .data_client
-                        .append_to_node(&leader_node, &req, target_hops, local_node_id)
+                        .append_to_node(&leader_node, &req, target_hops, local_node_id, &trace_id)
                         .await
                     {
                         Ok(resp) => {
                             info!(
-                                "{} data append forwarded and committed: local_node_id={}, requested_id={}, committed_id={}, leader_id={}, hops={}",
+                                "{} data append forwarded and committed: trace_id={}, local_node_id={}, requested_id={}, committed_id={}, leader_id={}, hops={}",
                                 self.service_name,
+                                trace_id,
                                 local_node_id,
                                 requested_id,
                                 resp.id,
@@ -229,7 +281,7 @@ impl KLogWriteService {
                             );
                             Ok(resp)
                         }
-                        Err(forward_err) => {
+                        Err(mut forward_err) => {
                             let msg = format!(
                                 "{} data append forward failed: local_node_id={}, requested_id={}, leader_id={}, err={}",
                                 self.service_name,
@@ -239,7 +291,12 @@ impl KLogWriteService {
                                 forward_err
                             );
                             error!("{}", msg);
-                            Err((StatusCode::BAD_GATEWAY, msg))
+                            forward_err.http_status = StatusCode::BAD_GATEWAY.as_u16();
+                            forward_err.error.message = msg;
+                            if forward_err.error.leader_hint.is_none() {
+                                forward_err.error.leader_hint = Some(leader_node);
+                            }
+                            Err(forward_err)
                         }
                     }
                 } else {
@@ -248,7 +305,12 @@ impl KLogWriteService {
                         self.service_name, requested_id, err
                     );
                     error!("{}", msg);
-                    Err((StatusCode::INTERNAL_SERVER_ERROR, msg))
+                    Err(self.service_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        KLogErrorCode::Internal,
+                        msg,
+                        &trace_id,
+                    ))
                 }
             }
         }
@@ -270,6 +332,24 @@ impl KLogWriteService {
                 self.service_name, KLOG_FORWARD_HOPS_HEADER, raw, e
             )
         })
+    }
+
+    fn resolve_trace_id(&self, headers: &HeaderMap) -> String {
+        normalize_trace_id(
+            headers
+                .get(KLOG_TRACE_ID_HEADER)
+                .and_then(|v| v.to_str().ok()),
+        )
+    }
+
+    fn service_error(
+        &self,
+        status: StatusCode,
+        code: KLogErrorCode,
+        message: String,
+        trace_id: &str,
+    ) -> KLogServiceError {
+        KLogServiceError::new(status.as_u16(), code, message, trace_id.to_string())
     }
 }
 
@@ -299,11 +379,17 @@ impl KLogQueryService {
         &self,
         headers: &HeaderMap,
         query: KLogQueryRequest,
-    ) -> Result<KLogQueryResponse, (StatusCode, String)> {
+    ) -> KServiceResult<KLogQueryResponse> {
+        let trace_id = self.resolve_trace_id(headers);
         let strong_read = query.strong_read.unwrap_or(false);
         let forward_hops = self.parse_forward_hops(headers).map_err(|msg| {
             error!("{}", msg);
-            (StatusCode::BAD_REQUEST, msg)
+            self.service_error(
+                StatusCode::BAD_REQUEST,
+                KLogErrorCode::InvalidArgument,
+                msg,
+                &trace_id,
+            )
         })?;
         let forwarded_by = headers
             .get(KLOG_FORWARDED_BY_HEADER)
@@ -316,7 +402,12 @@ impl KLogQueryService {
                     self.service_name, forward_hops, DATA_QUERY_MAX_FORWARD_HOPS, forwarded_by
                 );
                 error!("{}", msg);
-                return Err((StatusCode::BAD_GATEWAY, msg));
+                return Err(self.service_error(
+                    StatusCode::BAD_GATEWAY,
+                    KLogErrorCode::LeaderUnavailable,
+                    msg,
+                    &trace_id,
+                ));
             }
 
             let metrics = self.raft.metrics().borrow().clone();
@@ -324,8 +415,13 @@ impl KLogQueryService {
             match self.raft.ensure_linearizable().await {
                 Ok(read_log_id) => {
                     info!(
-                        "{} data query linearizable barrier passed: read_log_id={:?}, local_node_id={}, forward_hops={}, forwarded_by={}",
-                        self.service_name, read_log_id, local_node_id, forward_hops, forwarded_by
+                        "{} data query linearizable barrier passed: trace_id={}, read_log_id={:?}, local_node_id={}, forward_hops={}, forwarded_by={}",
+                        self.service_name,
+                        trace_id,
+                        read_log_id,
+                        local_node_id,
+                        forward_hops,
+                        forwarded_by
                     );
                 }
                 Err(err) => {
@@ -341,7 +437,12 @@ impl KLogQueryService {
                                 DATA_QUERY_MAX_FORWARD_HOPS
                             );
                             error!("{}", msg);
-                            return Err((StatusCode::BAD_GATEWAY, msg));
+                            return Err(self.service_error(
+                                StatusCode::BAD_GATEWAY,
+                                KLogErrorCode::LeaderUnavailable,
+                                msg,
+                                &trace_id,
+                            ));
                         }
 
                         let leader_node = forward.leader_node.clone().or_else(|| {
@@ -357,7 +458,14 @@ impl KLogQueryService {
                                 self.service_name, local_node_id, forward.leader_id
                             );
                             warn!("{}", msg);
-                            return Err((StatusCode::SERVICE_UNAVAILABLE, msg));
+                            return Err(self
+                                .service_error(
+                                    StatusCode::SERVICE_UNAVAILABLE,
+                                    KLogErrorCode::LeaderUnavailable,
+                                    msg,
+                                    &trace_id,
+                                )
+                                .with_leader_hint(forward.leader_node.clone()));
                         };
 
                         let target_hops = forward_hops + 1;
@@ -374,7 +482,13 @@ impl KLogQueryService {
 
                         return self
                             .data_client
-                            .query_to_node(&leader_node, &query, target_hops, local_node_id)
+                            .query_to_node(
+                                &leader_node,
+                                &query,
+                                target_hops,
+                                local_node_id,
+                                &trace_id,
+                            )
                             .await
                             .map_err(|forward_err| {
                                 let msg = format!(
@@ -382,7 +496,13 @@ impl KLogQueryService {
                                     self.service_name, local_node_id, leader_node.id, forward_err
                                 );
                                 error!("{}", msg);
-                                (StatusCode::BAD_GATEWAY, msg)
+                                self.service_error(
+                                    StatusCode::BAD_GATEWAY,
+                                    KLogErrorCode::LeaderUnavailable,
+                                    msg,
+                                    &trace_id,
+                                )
+                                .with_leader_hint(Some(leader_node.clone()))
                             });
                     }
 
@@ -391,7 +511,12 @@ impl KLogQueryService {
                         self.service_name, err
                     );
                     error!("{}", msg);
-                    return Err((StatusCode::SERVICE_UNAVAILABLE, msg));
+                    return Err(self.service_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        KLogErrorCode::Unavailable,
+                        msg,
+                        &trace_id,
+                    ));
                 }
             }
         }
@@ -404,7 +529,12 @@ impl KLogQueryService {
                 self.service_name, start_id, end_id
             );
             error!("{}", msg);
-            return Err((StatusCode::BAD_REQUEST, msg));
+            return Err(self.service_error(
+                StatusCode::BAD_REQUEST,
+                KLogErrorCode::InvalidArgument,
+                msg,
+                &trace_id,
+            ));
         }
 
         let limit = query.limit.unwrap_or(DATA_QUERY_DEFAULT_LIMIT);
@@ -414,7 +544,12 @@ impl KLogQueryService {
                 self.service_name, limit, DATA_QUERY_MAX_LIMIT
             );
             error!("{}", msg);
-            return Err((StatusCode::BAD_REQUEST, msg));
+            return Err(self.service_error(
+                StatusCode::BAD_REQUEST,
+                KLogErrorCode::InvalidArgument,
+                msg,
+                &trace_id,
+            ));
         }
 
         let order = if query.desc.unwrap_or(false) {
@@ -423,8 +558,9 @@ impl KLogQueryService {
             KLogQueryOrder::Asc
         };
         info!(
-            "{} data query request: strong_read={}, start_id={:?}, end_id={:?}, limit={}, order={:?}, forward_hops={}, forwarded_by={}",
+            "{} data query request: trace_id={}, strong_read={}, start_id={:?}, end_id={:?}, limit={}, order={:?}, forward_hops={}, forwarded_by={}",
             self.service_name,
+            trace_id,
             strong_read,
             query.start_id,
             query.end_id,
@@ -446,7 +582,12 @@ impl KLogQueryService {
             .map_err(|e| {
                 let msg = format!("{} data query failed: {}", self.service_name, e);
                 error!("{}", msg);
-                (StatusCode::INTERNAL_SERVER_ERROR, msg)
+                self.service_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    KLogErrorCode::Internal,
+                    msg,
+                    &trace_id,
+                )
             })?;
 
         info!(
@@ -473,6 +614,24 @@ impl KLogQueryService {
                 self.service_name, KLOG_FORWARD_HOPS_HEADER, raw, e
             )
         })
+    }
+
+    fn resolve_trace_id(&self, headers: &HeaderMap) -> String {
+        normalize_trace_id(
+            headers
+                .get(KLOG_TRACE_ID_HEADER)
+                .and_then(|v| v.to_str().ok()),
+        )
+    }
+
+    fn service_error(
+        &self,
+        status: StatusCode,
+        code: KLogErrorCode,
+        message: String,
+        trace_id: &str,
+    ) -> KLogServiceError {
+        KLogServiceError::new(status.as_u16(), code, message, trace_id.to_string())
     }
 }
 

@@ -1,4 +1,9 @@
-use crate::network::{KLogAppendRequest, KLogDataRequestType, KLogQueryRequest};
+use crate::error::{
+    KLogErrorCode, KLogErrorEnvelope, KLogServiceError, generate_trace_id, normalize_trace_id,
+};
+use crate::network::{
+    KLOG_TRACE_ID_HEADER, KLogAppendRequest, KLogDataRequestType, KLogQueryRequest,
+};
 use crate::service::{KLogQueryService, KLogWriteService};
 use crate::state_store::KLogStateStoreManagerRef;
 use crate::{
@@ -13,7 +18,7 @@ use axum::Json;
 use axum::Router;
 use axum::error_handling::HandleErrorLayer;
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use std::future::Future;
@@ -146,9 +151,17 @@ impl KRpcServer {
         headers: HeaderMap,
         Json(req): Json<KLogAppendRequest>,
     ) -> Response {
+        let trace_id = normalize_trace_id(
+            headers
+                .get(KLOG_TRACE_ID_HEADER)
+                .and_then(|v| v.to_str().ok()),
+        );
+        let headers = Self::inject_trace_id_header(headers, &trace_id);
         match state.write_service.append(&headers, req).await {
-            Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
-            Err((status, msg)) => Self::error_response(status, msg),
+            Ok(resp) => {
+                Self::with_trace_id((StatusCode::OK, Json(resp)).into_response(), &trace_id)
+            }
+            Err(err) => Self::service_error_response(err),
         }
     }
 
@@ -157,9 +170,17 @@ impl KRpcServer {
         headers: HeaderMap,
         Query(query): Query<KLogQueryRequest>,
     ) -> Response {
+        let trace_id = normalize_trace_id(
+            headers
+                .get(KLOG_TRACE_ID_HEADER)
+                .and_then(|v| v.to_str().ok()),
+        );
+        let headers = Self::inject_trace_id_header(headers, &trace_id);
         match state.query_service.query(&headers, query).await {
-            Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
-            Err((status, msg)) => Self::error_response(status, msg),
+            Ok(resp) => {
+                Self::with_trace_id((StatusCode::OK, Json(resp)).into_response(), &trace_id)
+            }
+            Err(err) => Self::service_error_response(err),
         }
     }
 
@@ -169,16 +190,29 @@ impl KRpcServer {
         Json(request): Json<KLogJsonRpcRequest>,
     ) -> Response {
         let req_id = request.id;
+        let trace_id = normalize_trace_id(
+            headers
+                .get(KLOG_TRACE_ID_HEADER)
+                .and_then(|v| v.to_str().ok()),
+        );
+        let headers = Self::inject_trace_id_header(headers, &trace_id);
         if request.jsonrpc != KLOG_JSON_RPC_VERSION {
-            let resp = KLogJsonRpcResponse::error(
+            let msg = format!(
+                "Invalid jsonrpc version: expected={}, got={}",
+                KLOG_JSON_RPC_VERSION, request.jsonrpc
+            );
+            let envelope = KLogErrorEnvelope::new(
+                KLogErrorCode::InvalidArgument,
+                msg.clone(),
+                trace_id.clone(),
+            );
+            let resp = KLogJsonRpcResponse::error_with_data(
                 req_id,
                 KLOG_RPC_ERR_INVALID_REQUEST,
-                format!(
-                    "Invalid jsonrpc version: expected={}, got={}",
-                    KLOG_JSON_RPC_VERSION, request.jsonrpc
-                ),
+                envelope.message.clone(),
+                Some(serde_json::to_value(envelope).unwrap_or_else(|_| serde_json::Value::Null)),
             );
-            return (StatusCode::OK, Json(resp)).into_response();
+            return Self::with_trace_id((StatusCode::OK, Json(resp)).into_response(), &trace_id);
         }
 
         match request.method.as_str() {
@@ -186,30 +220,56 @@ impl KRpcServer {
                 let params: KLogAppendRequest = match serde_json::from_value(request.params) {
                     Ok(params) => params,
                     Err(e) => {
-                        let resp = KLogJsonRpcResponse::error(
+                        let msg = format!("Invalid params for {}: {}", KLOG_RPC_METHOD_APPEND, e);
+                        let envelope = KLogErrorEnvelope::new(
+                            KLogErrorCode::InvalidArgument,
+                            msg.clone(),
+                            trace_id.clone(),
+                        );
+                        let resp = KLogJsonRpcResponse::error_with_data(
                             req_id,
                             KLOG_RPC_ERR_INVALID_PARAMS,
-                            format!("Invalid params for {}: {}", KLOG_RPC_METHOD_APPEND, e),
+                            envelope.message.clone(),
+                            Some(
+                                serde_json::to_value(envelope)
+                                    .unwrap_or_else(|_| serde_json::Value::Null),
+                            ),
                         );
-                        return (StatusCode::OK, Json(resp)).into_response();
+                        return Self::with_trace_id(
+                            (StatusCode::OK, Json(resp)).into_response(),
+                            &trace_id,
+                        );
                     }
                 };
 
                 match state.write_service.append(&headers, params).await {
-                    Ok(result) => (
-                        StatusCode::OK,
-                        Json(KLogJsonRpcResponse::success(req_id, result)),
-                    )
-                        .into_response(),
-                    Err((status, msg)) => (
-                        StatusCode::OK,
-                        Json(KLogJsonRpcResponse::error(
-                            req_id,
-                            Self::rpc_error_code_from_status(status),
-                            msg,
-                        )),
-                    )
-                        .into_response(),
+                    Ok(result) => Self::with_trace_id(
+                        (
+                            StatusCode::OK,
+                            Json(KLogJsonRpcResponse::success(req_id, result)),
+                        )
+                            .into_response(),
+                        &trace_id,
+                    ),
+                    Err(err) => {
+                        let err_trace_id = err.error.trace_id.clone();
+                        Self::with_trace_id(
+                            (
+                                StatusCode::OK,
+                                Json(KLogJsonRpcResponse::error_with_data(
+                                    req_id,
+                                    Self::rpc_error_code_from_error_code(err.error.error_code),
+                                    err.error.message.clone(),
+                                    Some(
+                                        serde_json::to_value(err.error)
+                                            .unwrap_or_else(|_| serde_json::Value::Null),
+                                    ),
+                                )),
+                            )
+                                .into_response(),
+                            &err_trace_id,
+                        )
+                    }
                 }
             }
             KLOG_RPC_METHOD_QUERY => {
@@ -219,58 +279,134 @@ impl KRpcServer {
                     match serde_json::from_value(request.params) {
                         Ok(params) => params,
                         Err(e) => {
-                            let resp = KLogJsonRpcResponse::error(
+                            let msg =
+                                format!("Invalid params for {}: {}", KLOG_RPC_METHOD_QUERY, e);
+                            let envelope = KLogErrorEnvelope::new(
+                                KLogErrorCode::InvalidArgument,
+                                msg.clone(),
+                                trace_id.clone(),
+                            );
+                            let resp = KLogJsonRpcResponse::error_with_data(
                                 req_id,
                                 KLOG_RPC_ERR_INVALID_PARAMS,
-                                format!("Invalid params for {}: {}", KLOG_RPC_METHOD_QUERY, e),
+                                envelope.message.clone(),
+                                Some(
+                                    serde_json::to_value(envelope)
+                                        .unwrap_or_else(|_| serde_json::Value::Null),
+                                ),
                             );
-                            return (StatusCode::OK, Json(resp)).into_response();
+                            return Self::with_trace_id(
+                                (StatusCode::OK, Json(resp)).into_response(),
+                                &trace_id,
+                            );
                         }
                     }
                 };
 
                 match state.query_service.query(&headers, params).await {
-                    Ok(result) => (
-                        StatusCode::OK,
-                        Json(KLogJsonRpcResponse::success(req_id, result)),
-                    )
-                        .into_response(),
-                    Err((status, msg)) => (
-                        StatusCode::OK,
-                        Json(KLogJsonRpcResponse::error(
-                            req_id,
-                            Self::rpc_error_code_from_status(status),
-                            msg,
-                        )),
-                    )
-                        .into_response(),
+                    Ok(result) => Self::with_trace_id(
+                        (
+                            StatusCode::OK,
+                            Json(KLogJsonRpcResponse::success(req_id, result)),
+                        )
+                            .into_response(),
+                        &trace_id,
+                    ),
+                    Err(err) => {
+                        let err_trace_id = err.error.trace_id.clone();
+                        Self::with_trace_id(
+                            (
+                                StatusCode::OK,
+                                Json(KLogJsonRpcResponse::error_with_data(
+                                    req_id,
+                                    Self::rpc_error_code_from_error_code(err.error.error_code),
+                                    err.error.message.clone(),
+                                    Some(
+                                        serde_json::to_value(err.error)
+                                            .unwrap_or_else(|_| serde_json::Value::Null),
+                                    ),
+                                )),
+                            )
+                                .into_response(),
+                            &err_trace_id,
+                        )
+                    }
                 }
             }
-            _ => (
-                StatusCode::OK,
-                Json(KLogJsonRpcResponse::error(
-                    req_id,
-                    KLOG_RPC_ERR_METHOD_NOT_FOUND,
+            _ => {
+                let envelope = KLogErrorEnvelope::new(
+                    KLogErrorCode::InvalidArgument,
                     format!("Unknown method: {}", request.method),
-                )),
-            )
-                .into_response(),
+                    trace_id.clone(),
+                );
+                let resp = (
+                    StatusCode::OK,
+                    Json(KLogJsonRpcResponse::error_with_data(
+                        req_id,
+                        KLOG_RPC_ERR_METHOD_NOT_FOUND,
+                        envelope.message.clone(),
+                        Some(
+                            serde_json::to_value(envelope)
+                                .unwrap_or_else(|_| serde_json::Value::Null),
+                        ),
+                    )),
+                )
+                    .into_response();
+                Self::with_trace_id(resp, &trace_id)
+            }
         }
     }
 
-    fn rpc_error_code_from_status(status: StatusCode) -> i64 {
-        if status == StatusCode::BAD_REQUEST || status == StatusCode::PAYLOAD_TOO_LARGE {
+    fn rpc_error_code_from_error_code(code: KLogErrorCode) -> i64 {
+        if matches!(
+            code,
+            KLogErrorCode::InvalidArgument | KLogErrorCode::PayloadTooLarge
+        ) {
             KLOG_RPC_ERR_INVALID_PARAMS
-        } else if status == StatusCode::NOT_FOUND {
-            KLOG_RPC_ERR_METHOD_NOT_FOUND
-        } else if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-            KLOG_RPC_ERR_INVALID_REQUEST
-        } else {
+        } else if matches!(
+            code,
+            KLogErrorCode::NotLeader | KLogErrorCode::LeaderUnavailable
+        ) {
             KLOG_RPC_ERR_INTERNAL
+        } else if matches!(code, KLogErrorCode::AuthRequired | KLogErrorCode::Forbidden) {
+            KLOG_RPC_ERR_INVALID_REQUEST
+        } else if matches!(code, KLogErrorCode::Unavailable | KLogErrorCode::Timeout) {
+            KLOG_RPC_ERR_INTERNAL
+        } else if code == KLogErrorCode::Internal {
+            KLOG_RPC_ERR_INTERNAL
+        } else {
+            KLOG_RPC_ERR_METHOD_NOT_FOUND
         }
     }
 
     fn error_response(status: StatusCode, msg: String) -> Response {
-        (status, msg).into_response()
+        let trace_id = generate_trace_id();
+        let envelope = KLogErrorEnvelope::from_http_status(status.as_u16(), msg, trace_id);
+        let trace_id = envelope.trace_id.clone();
+        let resp = (status, Json(envelope)).into_response();
+        Self::with_trace_id(resp, &trace_id)
+    }
+
+    fn service_error_response(err: KLogServiceError) -> Response {
+        let status =
+            StatusCode::from_u16(err.http_status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let trace_id = err.error.trace_id.clone();
+        let resp = (status, Json(err.error)).into_response();
+        Self::with_trace_id(resp, &trace_id)
+    }
+
+    fn inject_trace_id_header(mut headers: HeaderMap, trace_id: &str) -> HeaderMap {
+        if let Ok(v) = HeaderValue::from_str(trace_id) {
+            headers.insert(HeaderName::from_static(KLOG_TRACE_ID_HEADER), v);
+        }
+        headers
+    }
+
+    fn with_trace_id(mut resp: Response, trace_id: &str) -> Response {
+        if let Ok(v) = HeaderValue::from_str(trace_id) {
+            resp.headers_mut()
+                .insert(HeaderName::from_static(KLOG_TRACE_ID_HEADER), v);
+        }
+        resp
     }
 }
