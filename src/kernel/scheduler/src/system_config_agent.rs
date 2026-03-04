@@ -674,7 +674,7 @@ pub(crate) async fn update_node_gateway_config(
 
         if zone_config.sn.is_some() {
             info!("SN enabled,add  acme functions. ");
-            let sn_url = format!("https://{}", zone_config.sn.as_ref().unwrap());
+            let sn_url = format!("https://{}/kapi/sn", zone_config.sn.as_ref().unwrap());
             let zone_hostname = zone_config.id.to_host_name();
             let wildcard_zone_domain = format!("*.{}", zone_hostname);
             let acme_functions = json!({
