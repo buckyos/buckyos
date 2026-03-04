@@ -492,7 +492,7 @@ mod tests {
         let mut attrs = BTreeMap::new();
         attrs.insert("pid".to_string(), "42".to_string());
         let resp = client
-            .append(KLogAppendRequest {
+            .append_log(KLogAppendRequest {
                 message: "hello-klog".to_string(),
                 timestamp: Some(1000),
                 node_id: Some(1),
@@ -541,7 +541,7 @@ mod tests {
         };
         let client = server.client();
         let (resp, trace) = client
-            .append_with_trace(KLogAppendRequest {
+            .append_log_with_trace(KLogAppendRequest {
                 message: "hello-trace".to_string(),
                 timestamp: Some(1001),
                 node_id: Some(1),
@@ -583,7 +583,7 @@ mod tests {
         };
         let client = server.client();
         let resp = client
-            .append(KLogAppendRequest {
+            .append_log(KLogAppendRequest {
                 message: "auto-request-id".to_string(),
                 timestamp: Some(2000),
                 node_id: None,
@@ -632,7 +632,7 @@ mod tests {
         };
         let client = server.client();
         let resp = client
-            .query(KLogQueryRequest {
+            .query_log(KLogQueryRequest {
                 start_id: Some(1),
                 end_id: Some(9),
                 limit: Some(2),
@@ -775,7 +775,7 @@ mod tests {
         };
         let client = server.client();
         let err = client
-            .append_message("should-fail")
+            .append_log_message("should-fail")
             .await
             .expect_err("json-rpc error expected");
         assert_eq!(err.error_code, KLogErrorCode::InvalidArgument);
@@ -797,7 +797,7 @@ mod tests {
         };
         let client = server.client();
         let err = client
-            .append_message("should-fail-http")
+            .append_log_message("should-fail-http")
             .await
             .expect_err("http error expected");
         assert_eq!(
