@@ -48,7 +48,10 @@ impl LogDaemonClient {
                 Some(load) => {
                     // Upload the records
                     let mut ret = true;
-                    if let Err(e) = uploader.upload_logs(&load.id, load.records).await {
+                    if let Err(e) = uploader
+                        .upload_logs(&load.id, &load.batch_id, load.record_ids, load.records)
+                        .await
+                    {
                         let msg = format!("failed to upload log records: {}", e);
                         error!("{}", msg);
                         ret = false;

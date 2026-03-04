@@ -1,6 +1,7 @@
 use crate::constants::READ_RECORD_PER_SERVICE_QUOTA;
-use slog::{FileLogReader, SystemLogRecord};
+use slog::{FileLogReader, FileReadWindow, SystemLogRecord};
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -9,6 +10,8 @@ use std::sync::Mutex;
 pub struct LogRecordItem {
     pub records: Vec<SystemLogRecord>,
     pub id: String,
+    pub batch_id: String,
+    pub record_ids: Vec<String>,
 }
 
 struct LogDirItem {
@@ -25,6 +28,34 @@ pub struct LogDirReader {
 }
 
 impl LogDirReader {
+    fn make_batch_id(id: &str, window: &FileReadWindow) -> String {
+        format!(
+            "{}:{}:{}:{}",
+            id, window.file_id, window.start_index, window.end_index
+        )
+    }
+
+    fn make_fallback_batch_id(id: &str, records: &[SystemLogRecord]) -> String {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        id.hash(&mut hasher);
+        for record in records {
+            record.time.hash(&mut hasher);
+            (record.level as u8).hash(&mut hasher);
+            record.target.hash(&mut hasher);
+            record.file.hash(&mut hasher);
+            record.line.hash(&mut hasher);
+            record.content.hash(&mut hasher);
+        }
+        format!("{}:fallback:{:x}", id, hasher.finish())
+    }
+
+    fn make_record_ids(id: &str, window: &FileReadWindow, offsets: &[i64]) -> Vec<String> {
+        offsets
+            .iter()
+            .map(|offset| format!("{}:{}:{}", id, window.file_id, offset))
+            .collect()
+    }
+
     pub fn open(log_dir: &Path, excluded: Vec<String>) -> Result<Self, String> {
         info!(
             "opening log dir reader at dir: {}, excluded: {:?}",
@@ -82,10 +113,29 @@ impl LogDirReader {
                     if !records.is_empty() {
                         assert!(remain_size >= records.len());
                         remain_size -= records.len();
+                        let (batch_id, record_ids) =
+                            if let Some(window) = item.reader.get_current_read_window() {
+                                let offsets = item
+                                    .reader
+                                    .get_current_batch_record_offsets()
+                                    .unwrap_or_default();
+                                if offsets.len() == records.len() {
+                                    (
+                                        Self::make_batch_id(&item.id, &window),
+                                        Self::make_record_ids(&item.id, &window, &offsets),
+                                    )
+                                } else {
+                                    (Self::make_fallback_batch_id(&item.id, &records), Vec::new())
+                                }
+                            } else {
+                                (Self::make_fallback_batch_id(&item.id, &records), Vec::new())
+                            };
 
                         result.push(LogRecordItem {
                             records,
                             id: item.id.clone(),
+                            batch_id,
+                            record_ids,
                         });
                     }
                 }

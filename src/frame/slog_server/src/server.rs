@@ -104,6 +104,8 @@ mod tests {
             LogRecords {
                 node: "node-1".to_string(),
                 service: "svc-a".to_string(),
+                batch_id: None,
+                record_ids: vec![],
                 logs: vec![],
             },
         )
@@ -123,6 +125,8 @@ mod tests {
             LogRecords {
                 node: "node-1".to_string(),
                 service: "svc-a".to_string(),
+                batch_id: None,
+                record_ids: vec![],
                 logs: vec![],
             },
         )

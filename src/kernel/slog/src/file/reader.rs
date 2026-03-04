@@ -12,6 +12,14 @@ struct ReadFileInfo {
     meta: LogFileReadInfo,
     file: File,
     last_read_index: usize, // The last read index in the current buffer, >= meta.read_index
+    last_record_offsets: Vec<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileReadWindow {
+    pub file_id: i64,
+    pub start_index: i64,
+    pub end_index: i64,
 }
 
 pub struct FileLogReader {
@@ -187,6 +195,7 @@ impl FileLogReader {
 
             *current_file = Some(ReadFileInfo {
                 last_read_index: read_info.read_index as usize,
+                last_record_offsets: Vec::new(),
                 meta: read_info,
                 file,
             });
@@ -234,9 +243,12 @@ impl FileLogReader {
             })?;
 
         let mut line = String::new();
+        let mut next_line_offset = read_info.meta.read_index as u64;
+        let mut record_offsets = Vec::new();
 
         for _ in 0..batch_size {
             line.clear();
+            let line_start_offset = next_line_offset;
             let bytes_read = buf_reader.read_line(&mut line).map_err(|e| {
                 let msg = format!(
                     "failed to read line from log file: {}, {}",
@@ -268,10 +280,12 @@ impl FileLogReader {
             if bytes_read == 0 {
                 break; // EOF
             }
+            next_line_offset += bytes_read as u64;
 
             match SystemLogRecordLineFormatter::parse_record(line.trim_end()) {
                 Ok(record) => {
                     records.push(record);
+                    record_offsets.push(line_start_offset as i64);
                 }
                 Err(e) => {
                     warn!(
@@ -306,6 +320,7 @@ impl FileLogReader {
         );
         // Just update last_read_index in memory, must call flush_read_index to persist to meta db
         read_info.last_read_index = current_pos as usize;
+        read_info.last_record_offsets = record_offsets;
 
         Ok(records)
     }
@@ -339,6 +354,22 @@ impl FileLogReader {
         read_info.meta.read_index = read_info.last_read_index as i64;
 
         Ok(())
+    }
+
+    pub fn get_current_read_window(&self) -> Option<FileReadWindow> {
+        let file_lock = self.file.lock().unwrap();
+        let read_info = file_lock.as_ref()?;
+        Some(FileReadWindow {
+            file_id: read_info.meta.id,
+            start_index: read_info.meta.read_index,
+            end_index: read_info.last_read_index as i64,
+        })
+    }
+
+    pub fn get_current_batch_record_offsets(&self) -> Option<Vec<i64>> {
+        let file_lock = self.file.lock().unwrap();
+        let read_info = file_lock.as_ref()?;
+        Some(read_info.last_record_offsets.clone())
     }
 }
 

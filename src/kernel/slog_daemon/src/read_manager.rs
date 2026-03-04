@@ -11,6 +11,8 @@ use tokio::sync::{mpsc, oneshot};
 
 pub struct LogRecordLoad {
     pub id: String,
+    pub batch_id: String,
+    pub record_ids: Vec<String>,
     pub records: Vec<SystemLogRecord>,
     pub ack: oneshot::Sender<bool>,
 }
@@ -227,6 +229,8 @@ impl LogReaderManager {
         let (ack_tx, ack_rx) = oneshot::channel::<bool>();
         let load = LogRecordLoad {
             id: item.id.clone(),
+            batch_id: item.batch_id,
+            record_ids: item.record_ids,
             records: item.records,
             ack: ack_tx,
         };

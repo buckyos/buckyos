@@ -39,12 +39,16 @@ impl LogUploader {
     pub async fn upload_logs(
         &self,
         service: &str,
+        batch_id: &str,
+        record_ids: Vec<String>,
         records: Vec<SystemLogRecord>,
     ) -> Result<(), String> {
         // Prepare the payload
         let payload = serde_json::json!({
             "node": self.node,
             "service": service,
+            "batch_id": batch_id,
+            "record_ids": record_ids,
             "logs": records,
         });
 

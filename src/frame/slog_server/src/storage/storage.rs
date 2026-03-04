@@ -6,6 +6,10 @@ use std::sync::Arc;
 pub struct LogRecords {
     pub node: String,
     pub service: String,
+    #[serde(default)]
+    pub batch_id: Option<String>,
+    #[serde(default)]
+    pub record_ids: Vec<String>,
     pub logs: Vec<SystemLogRecord>,
 }
 

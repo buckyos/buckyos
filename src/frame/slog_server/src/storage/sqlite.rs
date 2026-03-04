@@ -33,6 +33,23 @@ pub struct SqliteLogStorage {
 }
 
 impl SqliteLogStorage {
+    fn ensure_logs_column(conn: &Connection, col_def: &str) -> Result<(), String> {
+        let sql = format!("ALTER TABLE logs ADD COLUMN {}", col_def);
+        match conn.execute_batch(&sql) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let err_text = e.to_string();
+                if err_text.contains("duplicate column name") {
+                    Ok(())
+                } else {
+                    let msg = format!("Failed to alter logs table with '{}': {}", col_def, e);
+                    error!("{}", msg);
+                    Err(msg)
+                }
+            }
+        }
+    }
+
     pub fn open(db_path: &Path) -> Result<Self, String> {
         // First initialize the database
         let conn = Connection::open(db_path).map_err(|e| {
@@ -84,6 +101,11 @@ impl SqliteLogStorage {
             msg
         })?;
 
+        // Backward-compatible schema extension for idempotent append.
+        Self::ensure_logs_column(&conn, "batch_id TEXT")?;
+        Self::ensure_logs_column(&conn, "record_index INTEGER")?;
+        Self::ensure_logs_column(&conn, "record_id TEXT")?;
+
         // Create index on (source_fk, timestamp DESC) for efficient querying by source and time
         // Create index on (timestamp DESC) for efficient time-based queries
         conn.execute_batch(
@@ -91,7 +113,15 @@ impl SqliteLogStorage {
              ON logs (source_fk, timestamp DESC);
              
              CREATE INDEX IF NOT EXISTS idx_logs_time 
-             ON logs (timestamp DESC);",
+             ON logs (timestamp DESC);
+
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_logs_source_batch_record
+             ON logs (source_fk, batch_id, record_index)
+             WHERE batch_id IS NOT NULL;
+
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_logs_source_record_id
+             ON logs (source_fk, record_id)
+             WHERE record_id IS NOT NULL;",
         )
         .map_err(|e| {
             let msg = format!("Failed to create indexes on logs table: {}", e);
@@ -110,6 +140,13 @@ impl SqliteLogStorage {
     }
 
     fn append(&self, logs: LogRecords) -> Result<(), String> {
+        let LogRecords {
+            node,
+            service,
+            batch_id,
+            record_ids,
+            logs,
+        } = logs;
         let mut conn_lock = self.conn.lock().unwrap();
 
         // Do all operations in a transaction!
@@ -144,8 +181,9 @@ impl SqliteLogStorage {
 
         let mut log_insert_stmt = tx
             .prepare(
-                "INSERT INTO logs (source_fk, timestamp, level, target, file, line, content) 
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7);",
+                "INSERT OR IGNORE INTO logs (
+                    source_fk, timestamp, level, target, file, line, content, batch_id, record_index, record_id
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10);",
             )
             .map_err(|e| {
                 let msg = format!("Failed to prepare log insert statement: {}", e);
@@ -155,7 +193,7 @@ impl SqliteLogStorage {
 
         // Insert or get source_id
         source_stmt
-            .execute(rusqlite::params![logs.node, logs.service,])
+            .execute(rusqlite::params![&node, &service,])
             .map_err(|e| {
                 let msg = format!("Failed to insert log source: {}", e);
                 error!("{}", msg);
@@ -163,9 +201,7 @@ impl SqliteLogStorage {
             })?;
 
         let source_id: i64 = source_id_stmt
-            .query_row(rusqlite::params![logs.node, logs.service,], |row| {
-                row.get(0)
-            })
+            .query_row(rusqlite::params![&node, &service,], |row| row.get(0))
             .map_err(|e| {
                 let msg = format!("Failed to get source_id: {}", e);
                 error!("{}", msg);
@@ -173,7 +209,8 @@ impl SqliteLogStorage {
             })?;
 
         // Insert log record list
-        for record in logs.logs {
+        for (record_index, record) in logs.into_iter().enumerate() {
+            let record_id = record_ids.get(record_index).map(|s| s.as_str());
             log_insert_stmt
                 .execute(rusqlite::params![
                     source_id,
@@ -183,6 +220,9 @@ impl SqliteLogStorage {
                     record.file,
                     record.line.map(|v| v as i64),
                     record.content,
+                    batch_id.as_deref(),
+                    record_index as i64,
+                    record_id,
                 ])
                 .map_err(|e| {
                     let msg = format!("Failed to insert log record: {}", e);
@@ -300,6 +340,8 @@ impl SqliteLogStorage {
             result.push(LogRecords {
                 node,
                 service,
+                batch_id: None,
+                record_ids: vec![],
                 logs,
             });
         }
@@ -360,6 +402,8 @@ mod tests {
             .append(LogRecords {
                 node: "node-1".to_string(),
                 service: "svc-a".to_string(),
+                batch_id: Some("batch-a-1".to_string()),
+                record_ids: vec!["rid-a-1".to_string(), "rid-a-2".to_string()],
                 logs: vec![
                     sample_record(LogLevel::Info, 1000, "a-1"),
                     sample_record(LogLevel::Error, 1010, "a-2"),
@@ -371,6 +415,8 @@ mod tests {
             .append(LogRecords {
                 node: "node-2".to_string(),
                 service: "svc-b".to_string(),
+                batch_id: Some("batch-b-1".to_string()),
+                record_ids: vec!["rid-b-1".to_string()],
                 logs: vec![sample_record(LogLevel::Warn, 1020, "b-1")],
             })
             .unwrap();
@@ -403,6 +449,42 @@ mod tests {
         assert_eq!(only_error[0].logs.len(), 1);
         assert_eq!(only_error[0].logs[0].content, "a-2");
         assert_eq!(only_error[0].logs[0].level, LogLevel::Error);
+
+        std::fs::remove_file(&db_path).unwrap();
+        std::fs::remove_dir_all(db_path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn test_sqlite_storage_append_is_idempotent_for_same_batch_id() {
+        let db_path = temp_db_path("idempotent_batch");
+        let storage = SqliteLogStorage::open(&db_path).unwrap();
+
+        let payload = LogRecords {
+            node: "node-1".to_string(),
+            service: "svc-a".to_string(),
+            batch_id: Some("batch-dup-1".to_string()),
+            record_ids: vec!["rid-dup-1".to_string(), "rid-dup-2".to_string()],
+            logs: vec![
+                sample_record(LogLevel::Info, 1000, "dup-1"),
+                sample_record(LogLevel::Info, 1010, "dup-2"),
+            ],
+        };
+
+        storage.append(payload.clone()).unwrap();
+        storage.append(payload).unwrap();
+
+        let queried = storage
+            .query(LogQueryRequest {
+                node: Some("node-1".to_string()),
+                service: Some("svc-a".to_string()),
+                level: None,
+                start_time: None,
+                end_time: None,
+                limit: None,
+            })
+            .unwrap();
+        assert_eq!(queried.len(), 1);
+        assert_eq!(queried[0].logs.len(), 2);
 
         std::fs::remove_file(&db_path).unwrap();
         std::fs::remove_dir_all(db_path.parent().unwrap()).unwrap();
