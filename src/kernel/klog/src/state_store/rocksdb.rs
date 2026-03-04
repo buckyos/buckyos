@@ -1614,7 +1614,7 @@ impl KLogStateStore for RocksDbStateStore {
         Ok(stored)
     }
 
-    async fn delete_meta(&self, key: &str) -> KResult<Option<u64>> {
+    async fn delete_meta(&self, key: &str) -> KResult<Option<KLogMetaEntry>> {
         let key = key.trim();
         if key.is_empty() {
             return Ok(None);
@@ -1633,12 +1633,12 @@ impl KLogStateStore for RocksDbStateStore {
         else {
             return Ok(None);
         };
-        let prev_revision = decode_meta_entry_with_legacy(raw.as_ref())?.revision;
+        let prev_meta = decode_meta_entry_with_legacy(raw.as_ref())?;
         let write_opts = self.write_options();
         self.db
             .delete_cf_opt(&meta_cf, meta_key.as_slice(), &write_opts)
             .map_err(|e| klog_err_with_context("Failed to delete rocksdb data meta entry", e))?;
-        Ok(Some(prev_revision))
+        Ok(Some(prev_meta))
     }
 
     async fn get_meta(&self, key: &str) -> KResult<Option<KLogMetaEntry>> {

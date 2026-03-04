@@ -646,16 +646,19 @@ impl KLogWriteService {
                 KLogResponse::MetaDeleteOk {
                     key,
                     existed,
-                    prev_revision,
+                    prev_meta,
                 } => {
                     info!(
-                        "{} meta delete committed: key={}, existed={}, prev_revision={:?}",
-                        self.service_name, key, existed, prev_revision
+                        "{} meta delete committed: key={}, existed={}, prev_meta_revision={:?}",
+                        self.service_name,
+                        key,
+                        existed,
+                        prev_meta.as_ref().map(|v| v.revision)
                     );
                     Ok(KLogMetaDeleteResponse {
                         key,
                         existed,
-                        prev_revision,
+                        prev_meta,
                     })
                 }
                 KLogResponse::Err(err_msg) => {

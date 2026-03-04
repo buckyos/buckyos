@@ -176,9 +176,9 @@ impl KLogStateStore for MemoryStateStore {
         Ok(stored)
     }
 
-    async fn delete_meta(&self, key: &str) -> KResult<Option<u64>> {
+    async fn delete_meta(&self, key: &str) -> KResult<Option<KLogMetaEntry>> {
         let mut metas = self.metas.lock().await;
-        Ok(metas.remove(key).map(|v| v.revision))
+        Ok(metas.remove(key))
     }
 
     async fn get_meta(&self, key: &str) -> KResult<Option<KLogMetaEntry>> {

@@ -155,7 +155,7 @@ pub struct KLogMetaDeleteRequest {
 pub struct KLogMetaDeleteResponse {
     pub key: String,
     pub existed: bool,
-    pub prev_revision: Option<u64>,
+    pub prev_meta: Option<KLogMetaEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]

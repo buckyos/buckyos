@@ -68,7 +68,7 @@ pub enum KLogResponse {
     MetaDeleteOk {
         key: String,
         existed: bool,
-        prev_revision: Option<u64>,
+        prev_meta: Option<KLogMetaEntry>,
     },
     Err(String),
 }

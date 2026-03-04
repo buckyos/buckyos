@@ -136,16 +136,18 @@ impl KLogStateMachine {
             KLogRequest::DeleteMeta { key } => {
                 debug!("StateMachine process delete-meta request: key={}", key);
                 match self.state_store.delete_meta_key(&key).await {
-                    Ok(prev_revision) => {
-                        let existed = prev_revision.is_some();
+                    Ok(prev_meta) => {
+                        let existed = prev_meta.is_some();
                         debug!(
-                            "StateMachine delete-meta request committed: key={}, existed={}, prev_revision={:?}",
-                            key, existed, prev_revision
+                            "StateMachine delete-meta request committed: key={}, existed={}, prev_meta_revision={:?}",
+                            key,
+                            existed,
+                            prev_meta.as_ref().map(|v| v.revision)
                         );
                         KLogResponse::MetaDeleteOk {
                             key,
                             existed,
-                            prev_revision,
+                            prev_meta,
                         }
                     }
                     Err(err) => {

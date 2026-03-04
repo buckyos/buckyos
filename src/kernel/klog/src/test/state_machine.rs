@@ -201,7 +201,7 @@ async fn test_state_machine_apply_meta_put_and_delete() -> anyhow::Result<()> {
         responses[1],
         KLogResponse::MetaDeleteOk {
             existed: true,
-            prev_revision: Some(1),
+            prev_meta: Some(KLogMetaEntry { revision: 1, .. }),
             ..
         }
     ));

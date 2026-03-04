@@ -60,7 +60,7 @@ pub trait KLogStateStore: Send + Sync {
 
     async fn put_meta(&self, item: KLogMetaEntry) -> KResult<KLogMetaEntry>;
 
-    async fn delete_meta(&self, key: &str) -> KResult<Option<u64>>;
+    async fn delete_meta(&self, key: &str) -> KResult<Option<KLogMetaEntry>>;
 
     async fn get_meta(&self, key: &str) -> KResult<Option<KLogMetaEntry>>;
 
@@ -288,7 +288,7 @@ impl KLogStateStoreManager {
         self.state_store.put_meta(item).await
     }
 
-    pub async fn delete_meta_key(&self, key: &str) -> KResult<Option<u64>> {
+    pub async fn delete_meta_key(&self, key: &str) -> KResult<Option<KLogMetaEntry>> {
         self.state_store.delete_meta(key).await
     }
 
