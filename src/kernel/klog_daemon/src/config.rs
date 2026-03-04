@@ -1,12 +1,14 @@
 use crate::constants::{
     DEFAULT_ADMIN_LOCAL_ONLY, DEFAULT_ADVERTISE_ADDR, DEFAULT_AUTO_BOOTSTRAP,
-    DEFAULT_ENABLE_RPC_SERVER, DEFAULT_JOIN_BLOCKING, DEFAULT_JOIN_MAX_ATTEMPTS,
-    DEFAULT_JOIN_RETRY_INTERVAL_MS, DEFAULT_LISTEN_HOST, DEFAULT_RAFT_PORT,
-    DEFAULT_RPC_BODY_LIMIT_BYTES, DEFAULT_RPC_CONCURRENCY_LIMIT, DEFAULT_RPC_LISTEN_HOST,
-    DEFAULT_RPC_PORT, DEFAULT_RPC_TIMEOUT_MS, DEFAULT_STATE_STORE_SYNC_WRITE, ENV_ADMIN_LOCAL_ONLY,
-    ENV_ADVERTISE_ADDR, ENV_ADVERTISE_PORT, ENV_AUTO_BOOTSTRAP, ENV_CLUSTER_ID, ENV_CLUSTER_NAME,
-    ENV_CONFIG_FILE, ENV_DATA_DIR, ENV_ENABLE_RPC_SERVER, ENV_JOIN_BLOCKING, ENV_JOIN_MAX_ATTEMPTS,
-    ENV_JOIN_RETRY_INTERVAL_MS, ENV_JOIN_TARGET_ROLE, ENV_JOIN_TARGETS, ENV_LISTEN_ADDR,
+    DEFAULT_ENABLE_RPC_SERVER, DEFAULT_INTER_NODE_PORT, DEFAULT_JOIN_BLOCKING,
+    DEFAULT_JOIN_MAX_ATTEMPTS, DEFAULT_JOIN_RETRY_INTERVAL_MS, DEFAULT_LISTEN_HOST,
+    DEFAULT_RAFT_PORT, DEFAULT_RPC_BODY_LIMIT_BYTES, DEFAULT_RPC_CONCURRENCY_LIMIT,
+    DEFAULT_RPC_LISTEN_HOST, DEFAULT_RPC_PORT, DEFAULT_RPC_TIMEOUT_MS,
+    DEFAULT_STATE_STORE_SYNC_WRITE, ENV_ADMIN_LOCAL_ONLY, ENV_ADVERTISE_ADDR,
+    ENV_ADVERTISE_INTER_PORT, ENV_ADVERTISE_PORT, ENV_AUTO_BOOTSTRAP, ENV_CLUSTER_ID,
+    ENV_CLUSTER_NAME, ENV_CONFIG_FILE, ENV_DATA_DIR, ENV_ENABLE_RPC_SERVER,
+    ENV_INTER_NODE_LISTEN_ADDR, ENV_JOIN_BLOCKING, ENV_JOIN_MAX_ATTEMPTS,
+    ENV_JOIN_RETRY_INTERVAL_MS, ENV_JOIN_TARGETS, ENV_JOIN_TARGET_ROLE, ENV_LISTEN_ADDR,
     ENV_NODE_ID, ENV_RPC_ADVERTISE_PORT, ENV_RPC_APPEND_BODY_LIMIT_BYTES,
     ENV_RPC_APPEND_CONCURRENCY, ENV_RPC_APPEND_TIMEOUT_MS, ENV_RPC_JSONRPC_BODY_LIMIT_BYTES,
     ENV_RPC_JSONRPC_CONCURRENCY, ENV_RPC_JSONRPC_TIMEOUT_MS, ENV_RPC_LISTEN_ADDR,
@@ -14,8 +16,8 @@ use crate::constants::{
     ENV_STATE_STORE_SYNC_WRITE, KLOG_SERVICE_NAME,
 };
 use buckyos_kit::get_buckyos_service_data_dir;
-use klog::KNodeId;
 use klog::rpc::{KRpcRoutePolicy, KRpcServerPolicy};
+use klog::KNodeId;
 use log::error;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -131,6 +133,9 @@ pub struct KLogRuntimeConfig {
     /// Raft protocol listen address, format "host:port".
     pub listen_addr: String,
 
+    /// Inter-node data/meta/admin listen address, format "host:port".
+    pub inter_node_listen_addr: String,
+
     /// Whether client-facing RPC server is enabled.
     pub enable_rpc_server: bool,
 
@@ -142,6 +147,9 @@ pub struct KLogRuntimeConfig {
 
     /// Advertised raft protocol port for peer-to-peer traffic.
     pub advertise_port: u16,
+
+    /// Advertised inter-node data/meta/admin port.
+    pub advertise_inter_port: u16,
 
     /// Advertised client RPC port, set to 0 when RPC server is disabled.
     pub rpc_advertise_port: u16,
@@ -189,6 +197,9 @@ pub struct KLogNetworkConfigPatch {
     /// Optional override for raft listen address.
     pub listen_addr: Option<String>,
 
+    /// Optional override for inter-node data/meta/admin listen address.
+    pub inter_node_listen_addr: Option<String>,
+
     /// Optional override for client RPC enable flag.
     pub enable_rpc_server: Option<bool>,
 
@@ -200,6 +211,9 @@ pub struct KLogNetworkConfigPatch {
 
     /// Optional override for advertised raft port.
     pub advertise_port: Option<u16>,
+
+    /// Optional override for advertised inter-node data/meta/admin port.
+    pub advertise_inter_port: Option<u16>,
 
     /// Optional override for advertised client RPC port.
     pub rpc_advertise_port: Option<u16>,
@@ -337,10 +351,12 @@ impl KLogRuntimeConfig {
             node_id: parse_env_u64(ENV_NODE_ID)?,
             network: Some(KLogNetworkConfigPatch {
                 listen_addr: parse_env_string(ENV_LISTEN_ADDR)?,
+                inter_node_listen_addr: parse_env_string(ENV_INTER_NODE_LISTEN_ADDR)?,
                 enable_rpc_server: parse_env_bool(ENV_ENABLE_RPC_SERVER)?,
                 rpc_listen_addr: parse_env_string(ENV_RPC_LISTEN_ADDR)?,
                 advertise_addr: parse_env_string(ENV_ADVERTISE_ADDR)?,
                 advertise_port: parse_env_u16(ENV_ADVERTISE_PORT)?,
+                advertise_inter_port: parse_env_u16(ENV_ADVERTISE_INTER_PORT)?,
                 rpc_advertise_port: parse_env_u16(ENV_RPC_ADVERTISE_PORT)?,
             }),
             storage: Some(KLogStorageConfigPatch {
@@ -486,6 +502,9 @@ impl KLogRuntimeConfig {
         Ok(Self {
             node_id,
             listen_addr: network.listen_addr.unwrap_or_else(default_listen_addr),
+            inter_node_listen_addr: network
+                .inter_node_listen_addr
+                .unwrap_or_else(default_inter_node_listen_addr),
             enable_rpc_server: network
                 .enable_rpc_server
                 .unwrap_or(DEFAULT_ENABLE_RPC_SERVER),
@@ -496,6 +515,9 @@ impl KLogRuntimeConfig {
                 .advertise_addr
                 .unwrap_or_else(|| DEFAULT_ADVERTISE_ADDR.to_string()),
             advertise_port: network.advertise_port.unwrap_or(DEFAULT_RAFT_PORT),
+            advertise_inter_port: network
+                .advertise_inter_port
+                .unwrap_or(DEFAULT_INTER_NODE_PORT),
             rpc_advertise_port: network.rpc_advertise_port.unwrap_or(DEFAULT_RPC_PORT),
             data_dir: storage.data_dir.unwrap_or(default_data_dir),
             cluster_name,
@@ -523,6 +545,10 @@ fn default_data_dir() -> PathBuf {
 
 fn default_listen_addr() -> String {
     format!("{}:{}", DEFAULT_LISTEN_HOST, DEFAULT_RAFT_PORT)
+}
+
+fn default_inter_node_listen_addr() -> String {
+    format!("{}:{}", DEFAULT_LISTEN_HOST, DEFAULT_INTER_NODE_PORT)
 }
 
 fn default_rpc_listen_addr() -> String {
@@ -712,10 +738,12 @@ node_id = 9
 
 [network]
 listen_addr = "0.0.0.0:22001"
+inter_node_listen_addr = "0.0.0.0:22002"
 enable_rpc_server = false
 rpc_listen_addr = "0.0.0.0:22101"
 advertise_addr = "10.2.3.4"
 advertise_port = 22001
+advertise_inter_port = 22002
 rpc_advertise_port = 22101
 
 [storage]
@@ -757,10 +785,12 @@ concurrency = 128
         let cfg = KLogRuntimeConfig::from_file(&file).expect("parse file");
         assert_eq!(cfg.node_id, 9);
         assert_eq!(cfg.listen_addr, "0.0.0.0:22001");
+        assert_eq!(cfg.inter_node_listen_addr, "0.0.0.0:22002");
         assert!(!cfg.enable_rpc_server);
         assert_eq!(cfg.rpc_listen_addr, "0.0.0.0:22101");
         assert_eq!(cfg.advertise_addr, "10.2.3.4");
         assert_eq!(cfg.advertise_port, 22001);
+        assert_eq!(cfg.advertise_inter_port, 22002);
         assert_eq!(cfg.rpc_advertise_port, 22101);
         assert_eq!(cfg.data_dir, PathBuf::from("/tmp/klog_cfg_test_full"));
         assert_eq!(cfg.cluster_name, "cluster_a");
@@ -833,10 +863,12 @@ id = "cluster_partial_id"
         let cfg = KLogRuntimeConfig::from_file(&file).expect("parse file");
         assert_eq!(cfg.node_id, 7);
         assert_eq!(cfg.listen_addr, default_listen_addr());
+        assert_eq!(cfg.inter_node_listen_addr, default_inter_node_listen_addr());
         assert_eq!(cfg.enable_rpc_server, DEFAULT_ENABLE_RPC_SERVER);
         assert_eq!(cfg.rpc_listen_addr, default_rpc_listen_addr());
         assert_eq!(cfg.advertise_addr, "192.168.2.7");
         assert_eq!(cfg.advertise_port, DEFAULT_RAFT_PORT);
+        assert_eq!(cfg.advertise_inter_port, DEFAULT_INTER_NODE_PORT);
         assert_eq!(cfg.rpc_advertise_port, DEFAULT_RPC_PORT);
         assert_eq!(cfg.data_dir, default_data_dir());
         assert_eq!(cfg.cluster_name, "cluster_partial");
@@ -945,10 +977,12 @@ targets = ["127.0.0.1:21001"]
         let patch = BuckyosKlogConfig {
             network: Some(KLogNetworkConfigPatch {
                 listen_addr: Some("0.0.0.0:23001".to_string()),
+                inter_node_listen_addr: Some("0.0.0.0:23002".to_string()),
                 enable_rpc_server: Some(false),
                 rpc_listen_addr: Some("0.0.0.0:23101".to_string()),
                 advertise_addr: Some("172.20.0.3".to_string()),
                 advertise_port: Some(23001),
+                advertise_inter_port: Some(23002),
                 rpc_advertise_port: Some(23101),
             }),
             storage: Some(KLogStorageConfigPatch {
@@ -979,10 +1013,12 @@ targets = ["127.0.0.1:21001"]
         assert_eq!(source, KLogRuntimeConfigSource::Buckyos);
         assert_eq!(cfg.node_id, 3);
         assert_eq!(cfg.listen_addr, "0.0.0.0:23001");
+        assert_eq!(cfg.inter_node_listen_addr, "0.0.0.0:23002");
         assert!(!cfg.enable_rpc_server);
         assert_eq!(cfg.rpc_listen_addr, "0.0.0.0:23101");
         assert_eq!(cfg.advertise_addr, "172.20.0.3");
         assert_eq!(cfg.advertise_port, 23001);
+        assert_eq!(cfg.advertise_inter_port, 23002);
         assert_eq!(cfg.rpc_advertise_port, 23101);
         assert_eq!(cfg.data_dir, default_data_dir());
         assert_eq!(cfg.cluster_name, "bk");

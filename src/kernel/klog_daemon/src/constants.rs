@@ -10,6 +10,9 @@ pub const ENV_LISTEN_ADDR: &str = "KLOG_LISTEN_ADDR";
 /// Environment variable key: client RPC listen address.
 pub const ENV_RPC_LISTEN_ADDR: &str = "KLOG_RPC_LISTEN_ADDR";
 
+/// Environment variable key: inter-node data/meta/admin listen address.
+pub const ENV_INTER_NODE_LISTEN_ADDR: &str = "KLOG_INTER_NODE_LISTEN_ADDR";
+
 /// Environment variable key: advertised host/IP for cluster peers.
 pub const ENV_ADVERTISE_ADDR: &str = "KLOG_ADVERTISE_ADDR";
 
@@ -18,6 +21,9 @@ pub const ENV_ADVERTISE_PORT: &str = "KLOG_ADVERTISE_PORT";
 
 /// Environment variable key: advertised client RPC port.
 pub const ENV_RPC_ADVERTISE_PORT: &str = "KLOG_RPC_ADVERTISE_PORT";
+
+/// Environment variable key: advertised inter-node data/meta/admin port.
+pub const ENV_ADVERTISE_INTER_PORT: &str = "KLOG_ADVERTISE_INTER_PORT";
 
 /// Environment variable key: whether client RPC server is enabled.
 pub const ENV_ENABLE_RPC_SERVER: &str = "KLOG_ENABLE_RPC_SERVER";
@@ -93,6 +99,9 @@ pub const DEFAULT_ADVERTISE_ADDR: &str = "127.0.0.1";
 
 /// Default raft protocol port (peer-to-peer replication).
 pub const DEFAULT_RAFT_PORT: u16 = 21001;
+
+/// Default inter-node service port (data/meta/admin forwarding).
+pub const DEFAULT_INTER_NODE_PORT: u16 = 21002;
 
 /// Default client RPC port (local service client).
 pub const DEFAULT_RPC_PORT: u16 = 21101;

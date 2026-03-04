@@ -110,7 +110,12 @@ pub type KNodeId = u64;
 pub struct KNode {
     pub id: KNodeId,
     pub addr: String,
+    /// Raft protocol port for append-entries/vote/install-snapshot.
     pub port: u16,
+    /// Inter-node service port for data/meta forwarding and admin APIs.
+    #[serde(default)]
+    pub inter_port: u16,
+    /// Client-facing json-rpc port.
     #[serde(default)]
     pub rpc_port: u16,
 }

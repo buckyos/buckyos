@@ -15,6 +15,7 @@ pub async fn initialize_cluster_if_needed(cfg: &KLogRuntimeConfig, raft: &KRaftR
                 id: cfg.node_id,
                 addr: cfg.advertise_addr.clone(),
                 port: cfg.advertise_port,
+                inter_port: cfg.advertise_inter_port,
                 rpc_port: if cfg.enable_rpc_server {
                     cfg.rpc_advertise_port
                 } else {
@@ -200,16 +201,18 @@ async fn join_and_promote_once(
             q.append_pair("node_id", &cfg.node_id.to_string());
             q.append_pair("addr", &cfg.advertise_addr);
             q.append_pair("port", &cfg.advertise_port.to_string());
+            q.append_pair("inter_port", &cfg.advertise_inter_port.to_string());
             q.append_pair("rpc_port", &advertised_rpc_port.to_string());
             q.append_pair("blocking", if cfg.join_blocking { "true" } else { "false" });
         }
 
         info!(
-            "Auto-join add-learner: admin_target={}, node_id={}, addr={}, port={}, rpc_port={}, blocking={}",
+            "Auto-join add-learner: admin_target={}, node_id={}, addr={}, raft_port={}, inter_port={}, rpc_port={}, blocking={}",
             admin_target,
             cfg.node_id,
             cfg.advertise_addr,
             cfg.advertise_port,
+            cfg.advertise_inter_port,
             advertised_rpc_port,
             cfg.join_blocking
         );
@@ -460,6 +463,7 @@ mod tests {
             id: 10 as KNodeId,
             addr: "127.0.0.1".to_string(),
             port: 21001,
+            inter_port: 21002,
             rpc_port: 31001,
         };
         let target = admin_target_from_node(&node);
@@ -485,10 +489,12 @@ mod tests {
         KLogRuntimeConfig {
             node_id: 1,
             listen_addr: "0.0.0.0:21001".to_string(),
+            inter_node_listen_addr: "0.0.0.0:21002".to_string(),
             enable_rpc_server: true,
             rpc_listen_addr: "127.0.0.1:21101".to_string(),
             advertise_addr: "127.0.0.1".to_string(),
             advertise_port: 21001,
+            advertise_inter_port: 21002,
             rpc_advertise_port: 21101,
             data_dir: PathBuf::from("/tmp/klog_cluster_test"),
             cluster_name: cluster_name.to_string(),

@@ -46,6 +46,7 @@ pub struct QueryLogResponse {
 pub struct TestNode {
     pub node_id: u64,
     pub port: u16,
+    pub inter_node_port: u16,
     pub rpc_port: u16,
     pub data_dir: PathBuf,
     pub config_path: PathBuf,
@@ -122,6 +123,7 @@ pub fn write_config_file(
     path: &PathBuf,
     node_id: u64,
     port: u16,
+    inter_node_port: u16,
     rpc_port: u16,
     data_dir: &PathBuf,
     cluster_name: &str,
@@ -135,9 +137,11 @@ node_id = {node_id}
 
 [network]
 listen_addr = "127.0.0.1:{port}"
+inter_node_listen_addr = "127.0.0.1:{inter_node_port}"
 rpc_listen_addr = "127.0.0.1:{rpc_port}"
 advertise_addr = "127.0.0.1"
 advertise_port = {port}
+advertise_inter_port = {inter_node_port}
 rpc_advertise_port = {rpc_port}
 
 [storage]
@@ -158,6 +162,7 @@ target_role = "{target_role}"
 "#,
         node_id = node_id,
         port = port,
+        inter_node_port = inter_node_port,
         rpc_port = rpc_port,
         data_dir = data_dir.display(),
         cluster_name = cluster_name,
@@ -261,10 +266,17 @@ pub async fn spawn_node(
             break p;
         }
     };
+    let inter_node_port = loop {
+        let p = choose_free_port().map_err(|e| format!("choose inter-node port failed: {}", e))?;
+        if p != port && p != rpc_port {
+            break p;
+        }
+    };
     write_config_file(
         &config_path,
         node_id,
         port,
+        inter_node_port,
         rpc_port,
         &data_dir,
         cluster_name,
@@ -275,12 +287,20 @@ pub async fn spawn_node(
 
     let mut child = spawn_daemon_child(&config_path).await?;
 
-    wait_node_http_ready_after_spawn(&mut child, node_id, port, rpc_port, Duration::from_secs(12))
-        .await?;
+    wait_node_http_ready_after_spawn(
+        &mut child,
+        node_id,
+        port,
+        inter_node_port,
+        rpc_port,
+        Duration::from_secs(12),
+    )
+    .await?;
 
     Ok(TestNode {
         node_id,
         port,
+        inter_node_port,
         rpc_port,
         data_dir,
         config_path,
@@ -295,6 +315,7 @@ pub async fn restart_node(node: &mut TestNode) -> Result<(), String> {
         &mut child,
         node.node_id,
         node.port,
+        node.inter_node_port,
         node.rpc_port,
         Duration::from_secs(12),
     )
@@ -335,6 +356,7 @@ pub async fn wait_node_http_ready_after_spawn(
     child: &mut Child,
     node_id: u64,
     port: u16,
+    inter_node_port: u16,
     rpc_port: u16,
     timeout: Duration,
 ) -> Result<(), String> {
@@ -357,12 +379,21 @@ pub async fn wait_node_http_ready_after_spawn(
         }
 
         match fetch_cluster_state(&client, port).await {
-            Ok(_) => match query_logs(&client, rpc_port, None, None, Some(1), Some(false)).await {
-                Ok(_) => return Ok(()),
-                Err(e) => {
-                    last_err = format!("cluster-state ok but rpc not ready: {}", e);
+            Ok(_) => {
+                match query_logs(&client, inter_node_port, None, None, Some(1), Some(false)).await {
+                    Ok(_) => match query_logs(&client, rpc_port, None, None, Some(1), Some(false))
+                        .await
+                    {
+                        Ok(_) => return Ok(()),
+                        Err(e) => {
+                            last_err = format!("raft/inter ready but rpc not ready: {}", e);
+                        }
+                    },
+                    Err(e) => {
+                        last_err = format!("cluster-state ok but inter-node data not ready: {}", e);
+                    }
                 }
-            },
+            }
             Err(e) => {
                 last_err = e;
             }

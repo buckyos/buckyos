@@ -57,6 +57,7 @@ fn test_client(server: &TestHttpServer) -> KNetworkClient {
         id: 2,
         addr: server.addr.ip().to_string(),
         port: server.addr.port(),
+        inter_port: server.addr.port(),
         rpc_port: server.addr.port(),
     };
     KNetworkClient::new(1, 2, node)

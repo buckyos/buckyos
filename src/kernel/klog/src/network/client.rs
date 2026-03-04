@@ -77,7 +77,8 @@ impl KDataClient {
         trace_id: &str,
     ) -> Result<KLogAppendResponse, KLogServiceError> {
         let path = KLogDataRequestType::Append.klog_path();
-        let url = format!("http://{}:{}{}", target.addr, target.port, path);
+        let endpoint_port = Self::inter_node_port(target);
+        let url = format!("http://{}:{}{}", target.addr, endpoint_port, path);
         let response = self
             .client
             .post(&url)
@@ -91,7 +92,7 @@ impl KDataClient {
             .map_err(|e| {
                 let msg = format!(
                     "forward data append send failed: target={}({}:{}), url={}, err={}",
-                    target.id, target.addr, target.port, url, e
+                    target.id, target.addr, endpoint_port, url, e
                 );
                 KLogServiceError::new(
                     reqwest::StatusCode::BAD_GATEWAY.as_u16(),
@@ -109,7 +110,7 @@ impl KDataClient {
                 .unwrap_or_else(|e| format!(r#"{{"message":"<failed to read body: {}>"}}"#, e));
             let fallback_msg = format!(
                 "forward data append failed: target={}({}:{}), url={}, status={}, body={}",
-                target.id, target.addr, target.port, url, status, body
+                target.id, target.addr, endpoint_port, url, status, body
             );
             return Err(parse_error_envelope_json(&body)
                 .map(|e| KLogServiceError {
@@ -128,7 +129,7 @@ impl KDataClient {
         response.json::<KLogAppendResponse>().await.map_err(|e| {
             let msg = format!(
                 "forward data append decode failed: target={}({}:{}), url={}, err={}",
-                target.id, target.addr, target.port, url, e
+                target.id, target.addr, endpoint_port, url, e
             );
             KLogServiceError::new(
                 reqwest::StatusCode::BAD_GATEWAY.as_u16(),
@@ -148,7 +149,8 @@ impl KDataClient {
         trace_id: &str,
     ) -> Result<KLogQueryResponse, KLogServiceError> {
         let path = KLogDataRequestType::Query.klog_path();
-        let url = format!("http://{}:{}{}", target.addr, target.port, path);
+        let endpoint_port = Self::inter_node_port(target);
+        let url = format!("http://{}:{}{}", target.addr, endpoint_port, path);
         let response = self
             .client
             .get(&url)
@@ -162,7 +164,7 @@ impl KDataClient {
             .map_err(|e| {
                 let msg = format!(
                     "forward data query send failed: target={}({}:{}), url={}, err={}",
-                    target.id, target.addr, target.port, url, e
+                    target.id, target.addr, endpoint_port, url, e
                 );
                 KLogServiceError::new(
                     reqwest::StatusCode::BAD_GATEWAY.as_u16(),
@@ -180,7 +182,7 @@ impl KDataClient {
                 .unwrap_or_else(|e| format!(r#"{{"message":"<failed to read body: {}>"}}"#, e));
             let fallback_msg = format!(
                 "forward data query failed: target={}({}:{}), url={}, status={}, body={}",
-                target.id, target.addr, target.port, url, status, body
+                target.id, target.addr, endpoint_port, url, status, body
             );
             return Err(parse_error_envelope_json(&body)
                 .map(|e| KLogServiceError {
@@ -199,7 +201,7 @@ impl KDataClient {
         response.json::<KLogQueryResponse>().await.map_err(|e| {
             let msg = format!(
                 "forward data query decode failed: target={}({}:{}), url={}, err={}",
-                target.id, target.addr, target.port, url, e
+                target.id, target.addr, endpoint_port, url, e
             );
             KLogServiceError::new(
                 reqwest::StatusCode::BAD_GATEWAY.as_u16(),
@@ -219,7 +221,8 @@ impl KDataClient {
         trace_id: &str,
     ) -> Result<KLogMetaPutResponse, KLogServiceError> {
         let path = KLogDataRequestType::MetaPut.klog_path();
-        let url = format!("http://{}:{}{}", target.addr, target.port, path);
+        let endpoint_port = Self::inter_node_port(target);
+        let url = format!("http://{}:{}{}", target.addr, endpoint_port, path);
         let response = self
             .client
             .post(&url)
@@ -233,7 +236,7 @@ impl KDataClient {
             .map_err(|e| {
                 let msg = format!(
                     "forward meta put send failed: target={}({}:{}), url={}, err={}",
-                    target.id, target.addr, target.port, url, e
+                    target.id, target.addr, endpoint_port, url, e
                 );
                 KLogServiceError::new(
                     reqwest::StatusCode::BAD_GATEWAY.as_u16(),
@@ -251,7 +254,7 @@ impl KDataClient {
                 .unwrap_or_else(|e| format!(r#"{{"message":"<failed to read body: {}>"}}"#, e));
             let fallback_msg = format!(
                 "forward meta put failed: target={}({}:{}), url={}, status={}, body={}",
-                target.id, target.addr, target.port, url, status, body
+                target.id, target.addr, endpoint_port, url, status, body
             );
             return Err(parse_error_envelope_json(&body)
                 .map(|e| KLogServiceError {
@@ -270,7 +273,7 @@ impl KDataClient {
         response.json::<KLogMetaPutResponse>().await.map_err(|e| {
             let msg = format!(
                 "forward meta put decode failed: target={}({}:{}), url={}, err={}",
-                target.id, target.addr, target.port, url, e
+                target.id, target.addr, endpoint_port, url, e
             );
             KLogServiceError::new(
                 reqwest::StatusCode::BAD_GATEWAY.as_u16(),
@@ -290,7 +293,8 @@ impl KDataClient {
         trace_id: &str,
     ) -> Result<KLogMetaDeleteResponse, KLogServiceError> {
         let path = KLogDataRequestType::MetaDelete.klog_path();
-        let url = format!("http://{}:{}{}", target.addr, target.port, path);
+        let endpoint_port = Self::inter_node_port(target);
+        let url = format!("http://{}:{}{}", target.addr, endpoint_port, path);
         let response = self
             .client
             .post(&url)
@@ -304,7 +308,7 @@ impl KDataClient {
             .map_err(|e| {
                 let msg = format!(
                     "forward meta delete send failed: target={}({}:{}), url={}, err={}",
-                    target.id, target.addr, target.port, url, e
+                    target.id, target.addr, endpoint_port, url, e
                 );
                 KLogServiceError::new(
                     reqwest::StatusCode::BAD_GATEWAY.as_u16(),
@@ -322,7 +326,7 @@ impl KDataClient {
                 .unwrap_or_else(|e| format!(r#"{{"message":"<failed to read body: {}>"}}"#, e));
             let fallback_msg = format!(
                 "forward meta delete failed: target={}({}:{}), url={}, status={}, body={}",
-                target.id, target.addr, target.port, url, status, body
+                target.id, target.addr, endpoint_port, url, status, body
             );
             return Err(parse_error_envelope_json(&body)
                 .map(|e| KLogServiceError {
@@ -344,7 +348,7 @@ impl KDataClient {
             .map_err(|e| {
                 let msg = format!(
                     "forward meta delete decode failed: target={}({}:{}), url={}, err={}",
-                    target.id, target.addr, target.port, url, e
+                    target.id, target.addr, endpoint_port, url, e
                 );
                 KLogServiceError::new(
                     reqwest::StatusCode::BAD_GATEWAY.as_u16(),
@@ -364,7 +368,8 @@ impl KDataClient {
         trace_id: &str,
     ) -> Result<KLogMetaQueryResponse, KLogServiceError> {
         let path = KLogDataRequestType::MetaQuery.klog_path();
-        let url = format!("http://{}:{}{}", target.addr, target.port, path);
+        let endpoint_port = Self::inter_node_port(target);
+        let url = format!("http://{}:{}{}", target.addr, endpoint_port, path);
         let response = self
             .client
             .get(&url)
@@ -378,7 +383,7 @@ impl KDataClient {
             .map_err(|e| {
                 let msg = format!(
                     "forward meta query send failed: target={}({}:{}), url={}, err={}",
-                    target.id, target.addr, target.port, url, e
+                    target.id, target.addr, endpoint_port, url, e
                 );
                 KLogServiceError::new(
                     reqwest::StatusCode::BAD_GATEWAY.as_u16(),
@@ -396,7 +401,7 @@ impl KDataClient {
                 .unwrap_or_else(|e| format!(r#"{{"message":"<failed to read body: {}>"}}"#, e));
             let fallback_msg = format!(
                 "forward meta query failed: target={}({}:{}), url={}, status={}, body={}",
-                target.id, target.addr, target.port, url, status, body
+                target.id, target.addr, endpoint_port, url, status, body
             );
             return Err(parse_error_envelope_json(&body)
                 .map(|e| KLogServiceError {
@@ -415,7 +420,7 @@ impl KDataClient {
         response.json::<KLogMetaQueryResponse>().await.map_err(|e| {
             let msg = format!(
                 "forward meta query decode failed: target={}({}:{}), url={}, err={}",
-                target.id, target.addr, target.port, url, e
+                target.id, target.addr, endpoint_port, url, e
             );
             KLogServiceError::new(
                 reqwest::StatusCode::BAD_GATEWAY.as_u16(),
@@ -424,6 +429,14 @@ impl KDataClient {
                 trace_id.to_string(),
             )
         })
+    }
+
+    fn inter_node_port(target: &KNode) -> u16 {
+        if target.inter_port > 0 {
+            target.inter_port
+        } else {
+            target.port
+        }
     }
 }
 

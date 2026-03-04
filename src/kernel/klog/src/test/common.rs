@@ -209,6 +209,7 @@ pub(crate) fn sample_membership(node_id: KNodeId) -> Membership<KNodeId, KNode> 
             id: node_id,
             addr: "127.0.0.1".to_string(),
             port: 3000,
+            inter_port: 3002,
             rpc_port: 3001,
         },
     );
