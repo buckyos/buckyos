@@ -1,6 +1,7 @@
 use crate::constants::READ_RECORD_PER_SERVICE_QUOTA;
 use slog::{FileLogReader, FileReadWindow, SystemLogRecord};
 use std::collections::HashSet;
+use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -18,6 +19,25 @@ struct LogDirItem {
     id: String, // Unique ID for the log directory， could be the directory name
     path: PathBuf,
     reader: FileLogReader,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FlushReadPosError {
+    NotFound { id: String },
+    FlushFailed { id: String, reason: String },
+}
+
+impl fmt::Display for FlushReadPosError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FlushReadPosError::NotFound { id } => {
+                write!(f, "log dir id not found when updating read pos: {}", id)
+            }
+            FlushReadPosError::FlushFailed { id, reason } => {
+                write!(f, "failed to flush read pos for {}: {}", id, reason)
+            }
+        }
+    }
 }
 
 pub struct LogDirReader {
@@ -159,17 +179,22 @@ impl LogDirReader {
         Ok(result)
     }
 
-    pub fn flush_read_pos(&self, id: &str) -> Result<(), String> {
+    pub fn flush_read_pos(&self, id: &str) -> Result<(), FlushReadPosError> {
         let mut list_lock = self.list.lock().unwrap();
         for item in list_lock.iter_mut() {
             if item.id == id {
-                return item.reader.flush_read_index();
+                return item.reader.flush_read_index().map_err(|e| {
+                    FlushReadPosError::FlushFailed {
+                        id: id.to_string(),
+                        reason: e,
+                    }
+                });
             }
         }
 
-        let msg = format!("log dir id not found when updating read pos: {}", id);
-        error!("{}", msg);
-        Err(msg)
+        let err = FlushReadPosError::NotFound { id: id.to_string() };
+        warn!("{}", err);
+        Err(err)
     }
 
     pub fn update_dir(&self) -> Result<(), String> {
@@ -330,7 +355,10 @@ mod tests {
         std::fs::remove_dir_all(&service_a).unwrap();
         reader.update_dir().unwrap();
 
-        assert!(reader.flush_read_pos("service_a").is_err());
+        assert!(matches!(
+            reader.flush_read_pos("service_a"),
+            Err(FlushReadPosError::NotFound { .. })
+        ));
         assert!(reader.flush_read_pos("service_b").is_ok());
 
         std::fs::remove_dir_all(&base).unwrap();

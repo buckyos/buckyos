@@ -1,4 +1,4 @@
-use super::reader::{LogDirReader, LogRecordItem};
+use super::reader::{FlushReadPosError, LogDirReader, LogRecordItem};
 use crate::constants::{
     INITIAL_UPLOAD_FAILED_RETRY_INTERVAL_SECS, MAX_UPLOAD_FAILED_RETRY_INTERVAL_SECS,
     READ_RECORD_BATCH_SIZE, READ_RECORD_INTERVAL_MILLIS, UPDATE_DIR_INTERVAL_SECS,
@@ -83,9 +83,12 @@ impl LogReaderManager {
 
                             // Update last read pos
                             if let Err(e) = dir_reader.flush_read_pos(&item.id) {
-                                let msg = format!("failed to flush read pos: {}", e);
-                                error!("{}", msg);
-                                Self::record_flush_failure(&mut flush_retry_states, &item.id);
+                                Self::handle_flush_read_pos_error(
+                                    &mut flush_retry_states,
+                                    &item.id,
+                                    e,
+                                    false,
+                                );
                                 continue;
                             }
 
@@ -135,9 +138,7 @@ impl LogReaderManager {
             }
 
             if let Err(e) = dir_reader.flush_read_pos(&id) {
-                let msg = format!("failed to retry flush read pos for {}: {}", id, e);
-                error!("{}", msg);
-                Self::record_flush_failure(flush_retry_states, &id);
+                Self::handle_flush_read_pos_error(flush_retry_states, &id, e, true);
                 continue;
             }
 
@@ -216,6 +217,31 @@ impl LogReaderManager {
         Self::record_action_failure(retry_states, id, "flush_read_pos")
     }
 
+    fn handle_flush_read_pos_error(
+        flush_retry_states: &mut HashMap<String, RetryState>,
+        id: &str,
+        err: FlushReadPosError,
+        is_retrying: bool,
+    ) {
+        match err {
+            FlushReadPosError::NotFound { .. } => {
+                flush_retry_states.remove(id);
+                warn!(
+                    "skip flush_read_pos for removed service {}, clear retry state",
+                    id
+                );
+            }
+            FlushReadPosError::FlushFailed { .. } => {
+                if is_retrying {
+                    error!("failed to retry flush read pos for {}: {}", id, err);
+                } else {
+                    error!("failed to flush read pos for {}: {}", id, err);
+                }
+                Self::record_flush_failure(flush_retry_states, id);
+            }
+        }
+    }
+
     fn process_record_item(
         data_tx: &mpsc::Sender<LogRecordLoad>,
         item: LogRecordItem,
@@ -255,6 +281,7 @@ impl LogReaderManager {
 #[cfg(test)]
 mod tests {
     use super::{LogReaderManager, RetryState};
+    use crate::reader::FlushReadPosError;
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
 
@@ -318,5 +345,42 @@ mod tests {
         LogReaderManager::record_flush_failure(&mut retry_states, "svc");
         let capped = retry_states.get("svc").unwrap().retry_interval_secs;
         assert_eq!(capped, 120);
+    }
+
+    #[test]
+    fn test_handle_flush_read_pos_error_not_found_clears_retry_state() {
+        let mut retry_states = HashMap::new();
+        LogReaderManager::record_flush_failure(&mut retry_states, "svc");
+        assert!(retry_states.contains_key("svc"));
+
+        LogReaderManager::handle_flush_read_pos_error(
+            &mut retry_states,
+            "svc",
+            FlushReadPosError::NotFound {
+                id: "svc".to_string(),
+            },
+            true,
+        );
+
+        assert!(!retry_states.contains_key("svc"));
+    }
+
+    #[test]
+    fn test_handle_flush_read_pos_error_flush_failed_records_retry() {
+        let mut retry_states = HashMap::new();
+
+        LogReaderManager::handle_flush_read_pos_error(
+            &mut retry_states,
+            "svc",
+            FlushReadPosError::FlushFailed {
+                id: "svc".to_string(),
+                reason: "io failed".to_string(),
+            },
+            false,
+        );
+
+        let state = retry_states.get("svc").unwrap();
+        assert_eq!(state.retry_interval_secs, 2);
+        assert!(state.next_retry_at > Instant::now());
     }
 }
