@@ -268,13 +268,12 @@ impl FileLogReader {
                     records.push(record);
                 }
                 Err(e) => {
-                    let msg = format!(
-                        "failed to parse log record from line: {}, {}, {}",
+                    warn!(
+                        "failed to parse log record from line: file={}, line='{}', err={}",
                         file_path.display(),
                         line.trim_end(),
                         e
                     );
-                    println!("{}", msg);
 
                     // TODO: skip invalid log line for now
                     continue;

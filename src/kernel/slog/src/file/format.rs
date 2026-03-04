@@ -31,7 +31,6 @@ impl SystemLogRecordLineFormatter {
         let parts: Vec<&str> = line.splitn(4, ' ').collect();
         if parts.len() < 4 {
             let msg = format!("invalid log line format: {}", line);
-            println!("{}", msg);
             return Err(msg);
         }
 
@@ -49,22 +48,12 @@ impl SystemLogRecordLineFormatter {
             // Has file and line info
             let end_pos = content_part.find('>').ok_or_else(|| {
                 let msg = format!("invalid log line format, missing '>': {}", line);
-                println!("{}", msg);
                 msg
             })?;
             let file_line_str = &content_part[1..end_pos];
-            let file_line_parts: Vec<&str> = file_line_str.split(':').collect();
-            if file_line_parts.len() != 2 {
-                let msg = format!("invalid file and line format: {}", file_line_str);
-                println!("{}", msg);
-                return Err(msg);
-            }
-            let file = Some(file_line_parts[0].to_string());
-            let line = Some(file_line_parts[1].parse::<u32>().map_err(|e| {
-                let msg = format!("invalid line number: {}, {}", file_line_parts[1], e);
-                println!("{}", msg);
-                msg
-            })?);
+            let (file, line_num) = Self::parse_file_line(file_line_str)?;
+            let file = Some(file);
+            let line = Some(line_num);
             let content = content_part[end_pos + 1..]
                 .trim()
                 .trim_end_matches('\n')
@@ -85,6 +74,27 @@ impl SystemLogRecordLineFormatter {
         };
 
         Ok(record)
+    }
+
+    fn parse_file_line(file_line_str: &str) -> Result<(String, u32), String> {
+        // Split by the last `:` so Windows drive letters like `C:\...` are preserved.
+        let mut parts = file_line_str.rsplitn(2, ':');
+        let line_str = parts.next().unwrap_or_default().trim();
+        let file_str = parts.next().unwrap_or_default().trim();
+
+        if file_str.is_empty() || line_str.is_empty() {
+            let msg = format!("invalid file and line format: {}", file_line_str);
+            return Err(msg);
+        }
+
+        let line = line_str.parse::<u32>().map_err(|e| {
+            format!(
+                "invalid line number in file and line format: {}, {}",
+                file_line_str, e
+            )
+        })?;
+
+        Ok((file_str.to_string(), line))
     }
 }
 
@@ -113,5 +123,97 @@ mod tests {
         assert_eq!(record.file, parsed.file);
         assert_eq!(record.line, parsed.line);
         assert_eq!(record.content, parsed.content);
+    }
+
+    #[test]
+    fn test_parse_record_with_windows_file_path() {
+        let record = SystemLogRecord {
+            level: LogLevel::Warn,
+            target: "win_target".to_string(),
+            time: 1721000100000,
+            file: Some(r"C:\work\buckyos\src\main.rs".to_string()),
+            line: Some(128),
+            content: "windows path test".to_string(),
+        };
+
+        let formatted = SystemLogRecordLineFormatter::format_record(&record);
+        let parsed = SystemLogRecordLineFormatter::parse_record(&formatted).unwrap();
+        assert_eq!(parsed.file.as_deref(), Some(r"C:\work\buckyos\src\main.rs"));
+        assert_eq!(parsed.line, Some(128));
+        assert_eq!(parsed.content, "windows path test");
+        assert_eq!(parsed.level, LogLevel::Warn);
+        assert_eq!(parsed.target, "win_target");
+    }
+
+    #[test]
+    fn test_parse_record_without_file_position() {
+        let record = SystemLogRecord {
+            level: LogLevel::Info,
+            target: "no_pos_target".to_string(),
+            time: 1721000200000,
+            file: None,
+            line: None,
+            content: "content without file pos".to_string(),
+        };
+
+        let formatted = SystemLogRecordLineFormatter::format_record(&record);
+        let parsed = SystemLogRecordLineFormatter::parse_record(&formatted).unwrap();
+        assert_eq!(parsed.file, None);
+        assert_eq!(parsed.line, None);
+        assert_eq!(parsed.content, "content without file pos");
+        assert_eq!(parsed.level, LogLevel::Info);
+        assert_eq!(parsed.target, "no_pos_target");
+    }
+
+    #[test]
+    fn test_parse_record_file_path_with_extra_colon_uses_last_colon_for_line() {
+        let record = SystemLogRecord {
+            level: LogLevel::Error,
+            target: "colon_target".to_string(),
+            time: 1721000300000,
+            file: Some("/var/log/archive:v1/app.rs".to_string()),
+            line: Some(9),
+            content: "colon in file path".to_string(),
+        };
+
+        let formatted = SystemLogRecordLineFormatter::format_record(&record);
+        let parsed = SystemLogRecordLineFormatter::parse_record(&formatted).unwrap();
+        assert_eq!(parsed.file.as_deref(), Some("/var/log/archive:v1/app.rs"));
+        assert_eq!(parsed.line, Some(9));
+    }
+
+    #[test]
+    fn test_parse_record_rejects_invalid_file_line_missing_colon() {
+        let line = "2024-01-01_00:00:00.000_+00:00 [info] [test] <only_file> bad";
+        let ret = SystemLogRecordLineFormatter::parse_record(line);
+        assert!(ret.is_err());
+        assert!(
+            ret.unwrap_err()
+                .contains("invalid file and line format: only_file")
+        );
+    }
+
+    #[test]
+    fn test_parse_record_rejects_invalid_file_line_non_numeric_line() {
+        let line = "2024-01-01_00:00:00.000_+00:00 [info] [test] <C:\\a\\b.rs:xx> bad";
+        let ret = SystemLogRecordLineFormatter::parse_record(line);
+        assert!(ret.is_err());
+        assert!(ret.unwrap_err().contains("invalid line number"));
+    }
+
+    #[test]
+    fn test_parse_record_rejects_invalid_file_line_missing_file() {
+        let line = "2024-01-01_00:00:00.000_+00:00 [info] [test] <:10> bad";
+        let ret = SystemLogRecordLineFormatter::parse_record(line);
+        assert!(ret.is_err());
+        assert!(ret.unwrap_err().contains("invalid file and line format"));
+    }
+
+    #[test]
+    fn test_parse_record_rejects_invalid_file_line_missing_line() {
+        let line = "2024-01-01_00:00:00.000_+00:00 [info] [test] <C:\\a\\b.rs:> bad";
+        let ret = SystemLogRecordLineFormatter::parse_record(line);
+        assert!(ret.is_err());
+        assert!(ret.unwrap_err().contains("invalid file and line format"));
     }
 }
