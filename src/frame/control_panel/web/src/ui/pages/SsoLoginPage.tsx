@@ -116,14 +116,15 @@ const SsoLoginPage = () => {
       const trimmedUsername = username.trim()
       const nonce = Date.now()
       const passwordHash = buckyos.hashPassword(trimmedUsername, password, nonce)
-      const verifyHubClient = buckyos.getVerifyHubClient()
-      verifyHubClient.setSeq(nonce)
+      const authRpcClient = new buckyos.kRPCClient('/kapi/control-panel')
+      authRpcClient.setSeq(nonce)
 
-      const response = await verifyHubClient.loginByPassword({
+      const response = await authRpcClient.call<unknown, Record<string, unknown>>('auth.login', {
         username: trimmedUsername,
         password: passwordHash,
         appid: clientId,
         source_url: window.location.href,
+        login_nonce: nonce,
       })
       const accountInfo = normalizeSsoLoginResponse(response, trimmedUsername)
       const payload = JSON.stringify(accountInfo)

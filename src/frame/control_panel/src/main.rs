@@ -597,6 +597,62 @@ impl ControlPanelServer {
         ))
     }
 
+    async fn handle_auth_login(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let username = Self::require_param_str(&req, "username")?;
+        let password = Self::require_param_str(&req, "password")?;
+        let appid = Self::param_str(&req, "appid")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| CONTROL_PANEL_AUTH_APPID.to_string());
+        let login_nonce = req
+            .params
+            .get("login_nonce")
+            .and_then(|value| value.as_u64())
+            .or(Some(req.seq));
+
+        let runtime = get_buckyos_api_runtime()?;
+        let verify_hub_client = runtime.get_verify_hub_client().await?;
+        let login_result = verify_hub_client
+            .login_by_password(username, password, appid, login_nonce)
+            .await?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!(login_result)),
+            req.seq,
+        ))
+    }
+
+    async fn handle_auth_refresh(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let refresh_token = Self::require_param_str(&req, "refresh_token")?;
+
+        let runtime = get_buckyos_api_runtime()?;
+        let verify_hub_client = runtime.get_verify_hub_client().await?;
+        let token_pair = verify_hub_client.refresh_token(refresh_token.as_str()).await?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!(token_pair)),
+            req.seq,
+        ))
+    }
+
+    async fn handle_auth_verify(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let session_token = Self::extract_rpc_session_token(&req)
+            .ok_or_else(|| RPCErrors::ParseRequestError("Missing session_token".to_string()))?;
+        let appid = Self::param_str(&req, "appid");
+
+        let runtime = get_buckyos_api_runtime()?;
+        let verify_hub_client = runtime.get_verify_hub_client().await?;
+        let verified = verify_hub_client
+            .verify_token(session_token.as_str(), appid.as_deref())
+            .await?;
+
+        Ok(RPCResponse::new(RPCResult::Success(json!(verified)), req.seq))
+    }
+
+    async fn handle_auth_logout(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        Ok(RPCResponse::new(RPCResult::Success(json!({ "ok": true })), req.seq))
+    }
+
     fn param_str(req: &RPCRequest, key: &str) -> Option<String> {
         req.params
             .get(key)
@@ -609,7 +665,10 @@ impl ControlPanelServer {
     }
 
     fn is_public_rpc_method(method: &str) -> bool {
-        matches!(method, "auth.login" | "auth.refresh" | "auth.logout")
+        matches!(
+            method,
+            "auth.login" | "auth.refresh" | "auth.verify" | "auth.logout"
+        )
     }
 
     fn is_read_only_rpc_method(method: &str) -> bool {
@@ -3708,15 +3767,10 @@ impl RPCHandler for ControlPanelServer {
             "layout" | "ui.layout" => self.handle_layout(req).await,
             "dashboard" | "ui.dashboard" => self.handle_dashboard(req).await,
             // Auth
-            "auth.login" => {
-                self.handle_unimplemented(req, "Authenticate admin/user session")
-                    .await
-            }
-            "auth.logout" => self.handle_unimplemented(req, "Terminate session").await,
-            "auth.refresh" => {
-                self.handle_unimplemented(req, "Refresh token/session")
-                    .await
-            }
+            "auth.login" => self.handle_auth_login(req).await,
+            "auth.logout" => self.handle_auth_logout(req).await,
+            "auth.refresh" => self.handle_auth_refresh(req).await,
+            "auth.verify" => self.handle_auth_verify(req).await,
             // User & Role
             "user.list" => self.handle_unimplemented(req, "List users").await,
             "user.get" => self.handle_unimplemented(req, "Get user detail").await,

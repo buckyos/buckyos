@@ -20,6 +20,17 @@ const resolveDefaultUsernameFromHost = () => {
     return ''
   }
 
+  const isIpv4Host = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(rawHost)
+    ? rawHost.split('.').every((segment) => {
+        const value = Number.parseInt(segment, 10)
+        return Number.isInteger(value) && value >= 0 && value <= 255
+      })
+    : false
+  const isIpv6Host = rawHost.includes(':')
+  if (rawHost === 'localhost' || isIpv4Host || isIpv6Host) {
+    return ''
+  }
+
   const hostWithoutSys = rawHost.startsWith('sys.') ? rawHost.slice(4) : rawHost
   const [firstLabel] = hostWithoutSys.split('.')
   if (!firstLabel) {
@@ -212,10 +223,10 @@ const LoginPage = () => {
                     <input
                       autoFocus
                       autoComplete="username"
-                      className={`${fieldClasses} !bg-slate-200 pr-24 placeholder:text-slate-500 ${
+                      className={`${fieldClasses} pr-24 placeholder:text-slate-500 ${
                         !usernameEditable && defaultUsername
-                          ? 'text-slate-500'
-                          : 'text-slate-600'
+                          ? '!bg-slate-200 text-slate-500'
+                          : 'bg-white text-[var(--cp-ink)]'
                       }`}
                       placeholder="Enter username"
                       value={username}

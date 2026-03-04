@@ -10,6 +10,7 @@ import {
 
 const APP_ID = 'control-panel'
 const VERIFY_CACHE_TTL_MS = 30_000
+const authRpcClient = new buckyos.kRPCClient('/kapi/control-panel')
 
 let runtimeReady = false
 let runtimeInitPromise: Promise<void> | null = null
@@ -57,6 +58,9 @@ const resetVerifyCache = () => {
 const hasValidTokenPair = (accountInfo: StoredAccountInfo | null) =>
   Boolean(accountInfo?.session_token && accountInfo.session_token.trim())
 
+const callAuthRpc = async <T>(method: string, params: Record<string, unknown>) =>
+  authRpcClient.call<T, Record<string, unknown>>(method, params)
+
 export const ensureAuthRuntime = async () => {
   if (runtimeReady) {
     return
@@ -89,8 +93,7 @@ const verifySessionToken = async (sessionToken: string) => {
   }
 
   try {
-    const verifyHubClient = buckyos.getVerifyHubClient()
-    const ok = await verifyHubClient.verifyToken({
+    const ok = await callAuthRpc<boolean>('auth.verify', {
       session_token: normalizedToken,
       appid: APP_ID,
     })
@@ -108,8 +111,7 @@ const verifySessionToken = async (sessionToken: string) => {
 }
 
 const refreshSessionWithToken = async (refreshToken: string, base: StoredAccountInfo | null) => {
-  const verifyHubClient = buckyos.getVerifyHubClient()
-  const nextTokens = await verifyHubClient.refreshToken({
+  const nextTokens = await callAuthRpc<{ session_token?: string; refresh_token?: string }>('auth.refresh', {
     refresh_token: refreshToken,
   })
 
@@ -189,14 +191,14 @@ export const loginWithPassword = async (username: string, password: string) => {
   const trimmedUsername = username.trim()
   const nonce = Date.now()
   const passwordHash = buckyos.hashPassword(trimmedUsername, password, nonce)
-  const verifyHubClient = buckyos.getVerifyHubClient()
-  verifyHubClient.setSeq(nonce)
+  authRpcClient.setSeq(nonce)
 
-  const response = await verifyHubClient.loginByPassword({
+  const response = await callAuthRpc<unknown>('auth.login', {
     username: trimmedUsername,
     password: passwordHash,
     appid: APP_ID,
     source_url: window.location.href,
+    login_nonce: nonce,
   })
 
   const normalized = normalizeLoginResponse(response, trimmedUsername)
@@ -217,10 +219,9 @@ export const loginWithPassword = async (username: string, password: string) => {
 
 export const signOutSession = async () => {
   try {
-    await ensureAuthRuntime()
-    buckyos.logout(true)
+    await callAuthRpc('auth.logout', {})
   } catch {
-    // fallback to local cleanup below
+    // ignore logout RPC failures and continue local cleanup
   }
 
   clearStoredSession()
