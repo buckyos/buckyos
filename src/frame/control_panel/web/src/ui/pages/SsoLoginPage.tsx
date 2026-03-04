@@ -3,6 +3,48 @@ import { buckyos } from 'buckyos'
 
 import Icon from '../icons'
 
+type SsoAccountInfo = {
+  user_name: string
+  user_id?: string
+  user_type?: string
+  session_token: string
+  refresh_token?: string
+}
+
+const normalizeSsoLoginResponse = (response: unknown, fallbackUsername: string): SsoAccountInfo => {
+  const payload = response as {
+    user_info?: { show_name?: string; user_id?: string; user_type?: string }
+    user_name?: string
+    user_id?: string
+    user_type?: string
+    session_token?: string
+    refresh_token?: string
+  }
+
+  const sessionToken = payload.session_token?.trim()
+  if (!sessionToken) {
+    throw new Error('login response missing session token')
+  }
+
+  if (payload.user_info) {
+    return {
+      user_name: payload.user_info.show_name || fallbackUsername,
+      user_id: payload.user_info.user_id,
+      user_type: payload.user_info.user_type,
+      session_token: sessionToken,
+      refresh_token: payload.refresh_token?.trim() || undefined,
+    }
+  }
+
+  return {
+    user_name: payload.user_name || fallbackUsername,
+    user_id: payload.user_id,
+    user_type: payload.user_type,
+    session_token: sessionToken,
+    refresh_token: payload.refresh_token?.trim() || undefined,
+  }
+}
+
 const fieldClasses =
   'w-full rounded-2xl border border-[var(--cp-border)] bg-white px-4 py-3 text-[15px] text-[var(--cp-ink)] shadow-sm focus:border-[var(--cp-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--cp-primary-soft)]'
 
@@ -71,7 +113,19 @@ const SsoLoginPage = () => {
     setSubmitting(true)
 
     try {
-      const accountInfo = await buckyos.doLogin(username.trim(), password)
+      const trimmedUsername = username.trim()
+      const nonce = Date.now()
+      const passwordHash = buckyos.hashPassword(trimmedUsername, password, nonce)
+      const verifyHubClient = buckyos.getVerifyHubClient()
+      verifyHubClient.setSeq(nonce)
+
+      const response = await verifyHubClient.loginByPassword({
+        username: trimmedUsername,
+        password: passwordHash,
+        appid: clientId,
+        source_url: window.location.href,
+      })
+      const accountInfo = normalizeSsoLoginResponse(response, trimmedUsername)
       const payload = JSON.stringify(accountInfo)
 
       if (window.opener) {

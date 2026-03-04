@@ -1,4 +1,5 @@
-const ACCOUNT_STORAGE_KEY = 'buckyos.account_info'
+const ACCOUNT_STORAGE_KEY = 'buckyos.control_panel.account_info'
+const LEGACY_ACCOUNT_STORAGE_KEY = 'buckyos.account_info'
 const SESSION_COOKIE_NAMES = ['control-panel_token', 'control_panel_token', 'auth']
 
 export type StoredAccountInfo = {
@@ -9,12 +10,7 @@ export type StoredAccountInfo = {
   refresh_token?: string
 }
 
-export const getStoredAccountInfo = (): StoredAccountInfo | null => {
-  if (typeof window === 'undefined') {
-    return null
-  }
-
-  const raw = window.localStorage.getItem(ACCOUNT_STORAGE_KEY)
+const parseAccountInfo = (raw: string | null): StoredAccountInfo | null => {
   if (!raw) {
     return null
   }
@@ -25,6 +21,28 @@ export const getStoredAccountInfo = (): StoredAccountInfo | null => {
   } catch {
     return null
   }
+}
+
+const hasRefreshToken = (accountInfo: StoredAccountInfo | null) =>
+  Boolean(accountInfo?.refresh_token && accountInfo.refresh_token.trim())
+
+export const getStoredAccountInfo = (): StoredAccountInfo | null => {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  const scoped = parseAccountInfo(window.localStorage.getItem(ACCOUNT_STORAGE_KEY))
+  if (scoped) {
+    return scoped
+  }
+
+  const legacy = parseAccountInfo(window.localStorage.getItem(LEGACY_ACCOUNT_STORAGE_KEY))
+  if (!hasRefreshToken(legacy)) {
+    return null
+  }
+
+  window.localStorage.setItem(ACCOUNT_STORAGE_KEY, JSON.stringify(legacy))
+  return legacy
 }
 
 export const saveStoredAccountInfo = (accountInfo: StoredAccountInfo) => {
