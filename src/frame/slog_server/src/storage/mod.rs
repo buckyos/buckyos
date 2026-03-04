@@ -4,6 +4,7 @@ mod storage;
 pub use storage::*;
 // pub use sqlite::*;
 
+use std::path::Path;
 use std::sync::Arc;
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
@@ -12,9 +13,15 @@ pub enum LogStorageType {
 }
 
 pub fn create_log_storage(storage_type: LogStorageType) -> Result<LogStorageRef, String> {
-    let root_dir = slog::get_buckyos_root_dir();
-    let storage_dir = root_dir.join("slog_server");
-    std::fs::create_dir_all(&storage_dir).map_err(|e| {
+    let storage_dir = slog::get_buckyos_root_dir().join("slog_server");
+    create_log_storage_with_dir(storage_type, &storage_dir)
+}
+
+pub fn create_log_storage_with_dir(
+    storage_type: LogStorageType,
+    storage_dir: &Path,
+) -> Result<LogStorageRef, String> {
+    std::fs::create_dir_all(storage_dir).map_err(|e| {
         let msg = format!(
             "Failed to create storage directory {:?}: {}",
             storage_dir, e

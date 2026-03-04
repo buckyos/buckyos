@@ -7,9 +7,31 @@ mod storage;
 extern crate log;
 
 use crate::server::LogHttpServer;
-use crate::storage::{LogStorageType, create_log_storage};
+use crate::storage::{LogStorageType, create_log_storage_with_dir};
+use std::path::PathBuf;
 
 pub const SERVICE_NAME: &str = "slog_server";
+const SLOG_SERVER_BIND_ENV_KEY: &str = "SLOG_SERVER_BIND";
+const SLOG_STORAGE_DIR_ENV_KEY: &str = "SLOG_STORAGE_DIR";
+const DEFAULT_SERVER_BIND: &str = "127.0.0.1:8089";
+
+fn read_env_nonempty(env_key: &str) -> Option<String> {
+    match std::env::var(env_key) {
+        Ok(v) if !v.trim().is_empty() => Some(v.trim().to_string()),
+        _ => None,
+    }
+}
+
+fn resolve_bind_addr() -> String {
+    read_env_nonempty(SLOG_SERVER_BIND_ENV_KEY).unwrap_or_else(|| DEFAULT_SERVER_BIND.to_string())
+}
+
+fn resolve_storage_dir() -> PathBuf {
+    match read_env_nonempty(SLOG_STORAGE_DIR_ENV_KEY) {
+        Some(v) => PathBuf::from(v),
+        None => slog::get_buckyos_root_dir().join("slog_server"),
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -27,7 +49,16 @@ async fn main() {
             .unwrap();
     logger.start();
 
-    let storage = match create_log_storage(LogStorageType::Sqlite) {
+    let bind_addr = resolve_bind_addr();
+    let storage_dir = resolve_storage_dir();
+
+    info!(
+        "slog_server config: bind_addr={}, storage_dir={}",
+        bind_addr,
+        storage_dir.display()
+    );
+
+    let storage = match create_log_storage_with_dir(LogStorageType::Sqlite, &storage_dir) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Failed to create log storage: {}", e);
@@ -36,10 +67,8 @@ async fn main() {
     };
 
     let server = LogHttpServer::new(storage);
-    let addr = "127.0.0.1:8089";
-
-    info!("Starting slog server at http://{}", addr);
-    if let Err(e) = server.run(addr).await {
+    info!("Starting slog server at http://{}", bind_addr);
+    if let Err(e) = server.run(&bind_addr).await {
         error!("Log server exited with error: {}", e);
     }
 }
