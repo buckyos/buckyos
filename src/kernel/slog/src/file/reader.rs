@@ -44,33 +44,39 @@ impl FileLogReader {
     fn check_current_read_file(&self) -> Result<bool, String> {
         let mut current_file = self.file.lock().unwrap();
 
-        if current_file.is_some() {
-            let cf = current_file.as_ref().unwrap();
-            let info = self.meta.get_file_info(cf.meta.id).map_err(|e| {
+        if let Some(file_id) = current_file.as_ref().map(|cf| cf.meta.id) {
+            let info = self.meta.get_file_info(file_id).map_err(|e| {
                 let msg = format!("failed to get log file info: {}", e);
                 error!("{}", msg);
                 msg
             })?;
-            let info = info.unwrap();
-            if info.read_index >= info.write_index {
-                // Check if the file is sealed by writer
-                if info.is_sealed {
-                    // Mark read complete
-                    self.meta.mark_file_read_complete(info.id).map_err(|e| {
-                        let msg = format!("failed to mark log file read complete: {}", e);
-                        error!("{}", msg);
-                        msg
-                    })?;
+            if let Some(info) = info {
+                if info.read_index >= info.write_index {
+                    // Check if the file is sealed by writer
+                    if info.is_sealed {
+                        // Mark read complete
+                        self.meta.mark_file_read_complete(info.id).map_err(|e| {
+                            let msg = format!("failed to mark log file read complete: {}", e);
+                            error!("{}", msg);
+                            msg
+                        })?;
 
-                    // Close current file
-                    *current_file = None;
+                        // Close current file
+                        *current_file = None;
+                    } else {
+                        // No new data to read, but the file is not sealed yet, we should wait
+                        return Ok(false);
+                    }
                 } else {
-                    // No new data to read, but the file is not sealed yet, we should wait
-                    return Ok(false);
+                    // There is new data to read
+                    return Ok(true);
                 }
             } else {
-                // There is new data to read
-                return Ok(true);
+                warn!(
+                    "current read file metadata missing in db, reset local state: file_id={}",
+                    file_id
+                );
+                *current_file = None;
             }
         }
 
@@ -359,4 +365,65 @@ fn test_read() {
 
     let pos = file.seek(std::io::SeekFrom::Current(0)).unwrap();
     println!("file current position: {}", pos);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FileLogReader, LogMeta, SystemLogRecordLineFormatter};
+    use crate::system_log::{LogLevel, SystemLogRecord};
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn new_temp_log_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "buckyos/slog_reader_tests/{}_{}_{}",
+            prefix,
+            std::process::id(),
+            nanos
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn make_record(content: &str) -> SystemLogRecord {
+        SystemLogRecord {
+            level: LogLevel::Info,
+            target: "reader_test".to_string(),
+            time: 1721000000000,
+            file: Some("reader.rs".to_string()),
+            line: Some(42),
+            content: content.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_try_read_next_records_handles_missing_meta_entry_without_panic() {
+        let log_dir = new_temp_log_dir("missing_meta_entry");
+        let meta = LogMeta::open(&log_dir).unwrap();
+        let file_name = "svc.1.log";
+        meta.append_new_file(file_name).unwrap();
+
+        let line = SystemLogRecordLineFormatter::format_record(&make_record("one-line"));
+        let file_path = log_dir.join(file_name);
+        std::fs::write(&file_path, &line).unwrap();
+        meta.update_current_write_index(line.len() as u64).unwrap();
+
+        let reader = FileLogReader::open(&log_dir).unwrap();
+        let first_read = reader.try_read_next_records(10).unwrap();
+        assert_eq!(first_read.len(), 1);
+
+        let conn = rusqlite::Connection::open(log_dir.join("log_meta.db")).unwrap();
+        conn.execute("DELETE FROM LogFiles WHERE name = ?1", [file_name])
+            .unwrap();
+
+        let second_read = reader.try_read_next_records(10);
+        assert!(second_read.is_ok());
+        assert!(second_read.unwrap().is_empty());
+
+        std::fs::remove_dir_all(&log_dir).unwrap();
+    }
 }
