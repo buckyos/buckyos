@@ -35,8 +35,8 @@ use crate::agent_tool::{
     TOOL_EXEC_BASH,
 };
 use crate::behavior::{
-    AgentWorkEvent, BehaviorConfig, BehaviorExecInput, BehaviorLLMResult, ExecutorReply,
-    LLMBehavior, LLMBehaviorDeps, LLMTrackingInfo, SessionRuntimeContext, Tokenizer, WorklogSink,
+    AgentWorkEvent, BehaviorConfig, BehaviorExecInput, BehaviorLLMResult, LLMBehavior,
+    LLMBehaviorDeps, LLMTrackingInfo, SessionRuntimeContext, Tokenizer, WorklogSink,
 };
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
@@ -873,7 +873,7 @@ impl AIAgent {
             let mut reply_history = Vec::<ReplyHistoryRecord>::new();
             if llm_result.route_session_id.is_none() {
                 reply_history = self
-                    .handle_replies(session.clone(), &trace, llm_result.reply.as_slice())
+                    .handle_reply(session.clone(), &trace, llm_result.reply.as_deref())
                     .await;
             }
 
@@ -882,7 +882,8 @@ impl AIAgent {
 
             //如果这里执行action时，触发了请求用户授权，如何从这里重启恢复? 不恢复，此时没有side event,相当于把这个step重新做一次
             //所有action都通过授权才会执行
-            let action_results = self.execute_actions(&trace, &llm_result.actions).await;
+            let action_plan = merged_actions_from_llm_result(&llm_result);
+            let action_results = self.execute_actions(&trace, &action_plan).await;
 
             let step_summary = build_step_summary(
                 &trace,
@@ -1846,65 +1847,59 @@ impl AIAgent {
         }
     }
 
-    async fn send_msg_replies(
+    async fn send_msg_reply(
         &self,
         trace: SessionRuntimeContext,
         source_tunnel_did: Option<DID>,
         default_audience: Option<&str>,
-        replies: &[ExecutorReply],
+        reply: Option<&str>,
     ) -> Vec<ReplyHistoryRecord> {
-        if replies.is_empty() {
+        let Some(content) = reply
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+        else {
             return vec![];
-        }
-        let mut history = Vec::<ReplyHistoryRecord>::new();
-        let session_id = trace.session_id.clone();
-        for reply in replies {
-            let audience = if reply.audience.trim().is_empty() {
-                default_audience
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_string)
-                    .unwrap_or_default()
-            } else {
-                reply.audience.clone()
-            };
-            if audience.is_empty() {
-                warn!(
-                    "agent.reply_missing_audience: did={:?} behavior={} content={}",
-                    self.did,
-                    trace.behavior,
-                    compact_text_for_log(reply.content.as_str(), 256),
-                );
-                continue;
-            }
-            let reply_format = if reply.format.trim().is_empty() {
-                "text".to_string()
-            } else {
-                reply.format.clone()
-            };
-            info!(
-                "agent.reply: did={:?} behavior={} audience={} format={} content={}",
+        };
+
+        let audience = default_audience
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_default();
+        if audience.is_empty() {
+            warn!(
+                "agent.reply_missing_default_remote: did={:?} behavior={} content={}",
                 self.did,
                 trace.behavior,
-                audience,
-                reply_format,
-                compact_text_for_log(reply.content.as_str(), 512)
+                compact_text_for_log(content.as_str(), 256),
             );
-            if let Some(record) = self
-                .send_reply_via_msg_center(
-                    source_tunnel_did.clone(),
-                    audience.as_str(),
-                    reply_format.as_str(),
-                    reply.content.as_str(),
-                    Some(session_id.as_str()),
-                    Some(&trace),
-                )
-                .await
-            {
-                history.push(record);
-            }
+            return vec![];
         }
-        history
+
+        info!(
+            "agent.reply: did={:?} behavior={} audience={} format=text content={}",
+            self.did,
+            trace.behavior,
+            audience,
+            compact_text_for_log(content.as_str(), 512)
+        );
+
+        if let Some(record) = self
+            .send_reply_via_msg_center(
+                source_tunnel_did,
+                audience.as_str(),
+                "text",
+                content.as_str(),
+                Some(trace.session_id.as_str()),
+                Some(&trace),
+            )
+            .await
+        {
+            vec![record]
+        } else {
+            vec![]
+        }
     }
 
     async fn send_reply_via_msg_center(
@@ -2022,18 +2017,18 @@ impl AIAgent {
         }
     }
 
-    async fn handle_replies(
+    async fn handle_reply(
         &self,
         session: Arc<Mutex<AgentSession>>,
         trace: &SessionRuntimeContext,
-        replies: &[ExecutorReply],
+        reply: Option<&str>,
     ) -> Vec<ReplyHistoryRecord> {
         let (default_audience, source_tunnel_did) = self.resolve_reply_defaults(session).await;
-        self.send_msg_replies(
+        self.send_msg_reply(
             trace.clone(),
             source_tunnel_did,
             default_audience.as_deref(),
-            replies,
+            reply,
         )
         .await
     }
@@ -2405,6 +2400,18 @@ async fn build_step_summary(
         .map(|render_result| render_result.rendered)
 }
 
+fn merged_actions_from_llm_result(llm_result: &BehaviorLLMResult) -> DoActions {
+    let mut merged = llm_result.actions.clone();
+    for command in &llm_result.shell_commands {
+        let command = command.trim();
+        if command.is_empty() {
+            continue;
+        }
+        merged.cmds.push(DoAction::Exec(command.to_string()));
+    }
+    merged
+}
+
 async fn resolve_workspace_root(agent_root: &Path, env_name: &str) -> Result<PathBuf> {
     let normal = agent_root.join(env_name);
     let legacy = agent_root.join(LEGACY_ENV_DIR_NAME);
@@ -2614,5 +2621,32 @@ mod tests {
         assert!(msg_pull_boxes.contains(&BoxKind::GroupInbox));
         assert!(msg_pull_boxes.contains(&BoxKind::RequestBox));
         assert!(pulled_events.is_empty());
+    }
+
+    #[test]
+    fn merged_actions_appends_shell_commands() {
+        let mut llm_result = BehaviorLLMResult::default();
+        llm_result.actions.mode = "all".to_string();
+        llm_result
+            .actions
+            .cmds
+            .push(DoAction::Exec("echo from-actions".to_string()));
+        llm_result.shell_commands = vec![
+            "echo from-shell-1".to_string(),
+            "  ".to_string(),
+            "echo from-shell-2".to_string(),
+        ];
+
+        let merged = merged_actions_from_llm_result(&llm_result);
+        assert_eq!(merged.mode, "all");
+        assert_eq!(merged.cmds.len(), 3);
+        assert_eq!(
+            merged.cmds,
+            vec![
+                DoAction::Exec("echo from-actions".to_string()),
+                DoAction::Exec("echo from-shell-1".to_string()),
+                DoAction::Exec("echo from-shell-2".to_string()),
+            ]
+        );
     }
 }

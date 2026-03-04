@@ -1,4 +1,4 @@
-mod agent_skill;
+pub mod agent_skill;
 pub mod local_workspace;
 pub mod todo;
 pub mod workshop;

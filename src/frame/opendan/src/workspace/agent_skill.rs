@@ -233,79 +233,170 @@ fn io_error(action: &str, path: &Path, source: std::io::Error) -> AgentToolError
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::Arc;
 
+    use buckyos_api::{value_to_object_map, AiToolSpec};
     use serde_json::{json, Value as Json};
+    use tokio::sync::Mutex;
 
-    fn unique_skills_root(test_name: &str) -> PathBuf {
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        std::env::temp_dir().join(format!("opendan-agent-skill-{test_name}-{ts}"))
+    use crate::agent_environment::AgentEnvironment;
+    use crate::agent_memory::{AgentMemory, AgentMemoryConfig};
+    use crate::agent_session::{AgentSession, AgentSessionMgr, GetSessionTool};
+    use crate::agent_tool::{AgentToolManager, ToolSpec};
+    use crate::behavior::{
+        BehaviorConfig, BehaviorExecInput, PromptBuilder, SessionRuntimeContext, StepLimits,
+        Tokenizer,
+    };
+
+    struct MockTokenizer;
+
+    impl Tokenizer for MockTokenizer {
+        fn count_tokens(&self, text: &str) -> u32 {
+            text.split_whitespace().count() as u32
+        }
     }
 
-    fn render_toolbox_prompt_preview(skill_name: &str, spec: &AgentSkillSpec) -> String {
-        let selected_actions = spec.actions.clone();
-        let payload: Json = json!({
-            "workspace_skill_records": [
-                {
-                    "name": skill_name,
-                    "introduce": spec.introduce,
-                }
-            ],
-            "loaded_skills": [skill_name],
-            "requested_actions": spec.actions,
-            "allow_actions": selected_actions,
-            "actions": selected_actions,
-            "unresolved_actions": [],
-            "action_specs": [],
-            "action_prompts": [],
-            "loaded_tools_preview": spec.loaded_tools,
-            "skill_rules_preview": spec.rules,
-        });
-        serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_string())
+    fn extract_prompt_section<'a>(prompt: &'a str, section_name: &str) -> Option<&'a str> {
+        let start_marker = format!("<<{section_name}>>");
+        let end_marker = format!("<</{section_name}>>");
+        let start = prompt.find(start_marker.as_str())? + start_marker.len();
+        let section = &prompt[start..];
+        let end = section.find(end_marker.as_str())?;
+        Some(section[..end].trim())
+    }
+
+    async fn load_runtime_tool_specs(workspace_root: &Path) -> (Vec<AiToolSpec>, Vec<ToolSpec>) {
+        let tool_mgr = AgentToolManager::new();
+        let session_store = Arc::new(
+            AgentSessionMgr::new(
+                "did:web:agent.example.com",
+                workspace_root.join("session"),
+                "resolve_router".to_string(),
+            )
+            .await
+            .expect("create session store"),
+        );
+
+        let environment = AgentEnvironment::new(workspace_root.to_path_buf())
+            .await
+            .expect("create agent environment");
+        environment
+            .register_workshop_tools(&tool_mgr, session_store.clone())
+            .expect("register workshop tools");
+
+        let memory = AgentMemory::new(AgentMemoryConfig::new(workspace_root.to_path_buf()))
+            .await
+            .expect("create memory");
+        memory
+            .register_tools(&tool_mgr)
+            .expect("register memory tools");
+
+        tool_mgr
+            .register_tool(GetSessionTool::new(session_store))
+            .expect("register get_session tool");
+
+        let tools = tool_mgr
+            .list_tool_specs()
+            .into_iter()
+            .map(|tool| AiToolSpec {
+                name: tool.name.clone(),
+                description: tool.description.clone(),
+                args_schema: value_to_object_map(tool.args_schema.clone()),
+                output_schema: tool.output_schema.clone(),
+            })
+            .collect::<Vec<_>>();
+        let action_specs = tool_mgr.list_action_specs();
+        (tools, action_specs)
+    }
+
+    async fn render_toolbox_prompt_preview(skill_name: &str, workspace_root: &Path) -> (String, Vec<AiToolSpec>) {
+        let mut session = AgentSession::new("session-1", "did:web:agent.example.com", None);
+        session.cwd = workspace_root.to_path_buf();
+        session.loaded_skills = vec![skill_name.to_string()];
+        let session = Arc::new(Mutex::new(session));
+
+
+        let input = BehaviorExecInput {
+            session_id: "session-1".to_string(),
+            trace: SessionRuntimeContext {
+                trace_id: "trace-1".to_string(),
+                agent_name: "did:web:agent.example.com".to_string(),
+                behavior: "on_wakeup".to_string(),
+                step_idx: 1,
+                wakeup_id: "wakeup-1".to_string(),
+                session_id: "session-1".to_string(),
+            },
+            input_prompt: "preview toolbox prompt".to_string(),
+            last_step_prompt: String::new(),
+            role_md: "You are a test agent.".to_string(),
+            self_md: "Self description.".to_string(),
+            behavior_prompt: String::new(),
+            limits: StepLimits::default(),
+            behavior_cfg: BehaviorConfig::default(),
+            session: None,
+        };
+
+        let (tools, action_specs) = load_runtime_tool_specs(workspace_root).await;
+
+        let req = PromptBuilder::build(
+            &input,
+            &tools,
+            &action_specs,
+            &input.behavior_cfg,
+            &MockTokenizer,
+            Some(session),
+            None,
+        )
+        .await
+        .expect("build prompt");
+        let system_prompt = req
+            .payload
+            .messages
+            .first()
+            .map(|msg| msg.content.as_str())
+            .unwrap_or_default();
+        
+
+        return (system_prompt.to_string(), req.payload.tool_specs);
     }
 
     #[tokio::test]
     async fn load_skill_from_root_prints_toolbox_prompt_preview() {
-        let root = unique_skills_root("toolbox-preview");
-        let skill_name = "planner";
-        let skill_dir = root.join(skill_name);
-        tokio::fs::create_dir_all(&skill_dir)
-            .await
-            .expect("create skill dir");
-        tokio::fs::write(
-            skill_dir.join("planner.yaml"),
-            "name: planner
-introduce: Plan and track work items
-rules: Keep tasks explicit and check dependencies
-actions: [plan, execute, plan]
-loaded_tools: [exec_bash, read_file, exec_bash]
-",
-        )
-        .await
-        .expect("write skill config");
+        let skills_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../rootfs/agents/jarvis/environment/skills");
+        let workspace_root = skills_root.parent().unwrap();
+        let skill_name = "allinone";
 
-        let spec = load_skill_from_root(&root, skill_name)
+        let spec = load_skill_from_root(&skills_root, skill_name)
             .await
             .expect("load skill");
-        assert_eq!(spec.introduce, "Plan and track work items");
-        assert_eq!(spec.actions, vec!["plan".to_string(), "execute".to_string()]);
         assert_eq!(
-            spec.loaded_tools,
-            vec!["exec_bash".to_string(), "read_file".to_string()]
+            spec.introduce,
+            "All-in-one skill for OpenDAN actions,contain all the actions and tools."
         );
 
-        let toolbox_prompt = render_toolbox_prompt_preview(skill_name, &spec);
+        let (toolbox_prompt, tool_specs) = render_toolbox_prompt_preview(skill_name, workspace_root).await;
         println!(
-            "\n[toolbox prompt preview after loading skill `{}`]\n{}\n",
+            "\n[toolbox section prompt preview after loading skill `{}`]\n{}\n",
             skill_name, toolbox_prompt
         );
-        assert!(toolbox_prompt.contains("\"loaded_skills\""));
-        assert!(toolbox_prompt.contains("\"requested_actions\""));
-        assert!(toolbox_prompt.contains("\"allow_actions\""));
+        for tool_spec in tool_specs {
+            println!("tool_spec: {:?}", tool_spec);
+        }
+        println!("--------------------------------");
+        let skill_name = "planner";
+        let spec = load_skill_from_root(&skills_root, skill_name)
+            .await
+            .expect("load skill");
 
-        let _ = tokio::fs::remove_dir_all(&root).await;
+
+        let (toolbox_prompt, tool_specs) = render_toolbox_prompt_preview(skill_name, workspace_root).await;
+        println!(
+            "\n[toolbox section prompt preview after loading skill `{}`]\n{}\n",
+            skill_name, toolbox_prompt
+        );
+        for tool_spec in tool_specs {
+            println!("tool_spec: {:?}", tool_spec);
+        }
     }
 }

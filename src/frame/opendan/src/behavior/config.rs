@@ -448,7 +448,7 @@ pub struct BehaviorToolsConfig {
 impl Default for BehaviorToolsConfig {
     fn default() -> Self {
         Self {
-            mode: BehaviorToolMode::None,
+            mode: BehaviorToolMode::All,
             names: vec![],
         }
     }
@@ -520,7 +520,7 @@ pub enum BehaviorOutputProtocol {
 
 impl Default for BehaviorOutputProtocol {
     fn default() -> Self {
-        Self::Text(String::new())
+        Self::Structured(BehaviorOutputProtocolStructured::default())
     }
 }
 
@@ -562,7 +562,7 @@ pub struct BehaviorOutputProtocolStructured {
 impl Default for BehaviorOutputProtocolStructured {
     fn default() -> Self {
         Self {
-            mode: "json_v1".to_string(),
+            mode: "behavior_llm_result".to_string(),
             text: None,
             schema_hint: None,
         }
@@ -575,8 +575,94 @@ fn normalize_output_mode(mode: &str) -> String {
         "" | "auto" => "auto".to_string(),
         "behavior_llm_result" | "behavior_result" => "behavior_llm_result".to_string(),
         "route_result" | "route" | "route_v1" => "route_result".to_string(),
+        "behavior_llm_no_action_result" | "behavior_llm_bash_result" | "behavior_llm_no_action" => "behavior_llm_no_action_result".to_string(),
         _ => "auto".to_string(),
     }
+}
+
+fn default_output_protocol_text(mode: &str) -> String {
+    match mode {
+        "route_result" => build_route_result_protocol(),
+        "behavior_llm_result" => build_behavior_llm_result_protocol(),
+        "behavior_llm_no_action_result" => behavior_llm_no_action_result(),
+        _ => String::new(),
+    }
+}
+
+
+fn behavior_llm_no_action_result() -> String {
+    format!(
+        r#"Return ONLY one JSON object. No markdown fences, no extra text.
+```typescript
+type Response = {{
+  next_behavior?: String // follow process rules
+  thinking?: string;
+  reply?: string;           // only reply to current session default_remote
+  shell_commands?: string[]; // shorthand of actions.cmds with shell-command strings
+}}
+```
+All keys optional—omit unused ones.
+
+## shell_commands 字段的填写说明
+- shell_commands中的每一行都是一个shell命令,在一个与当前session绑定的bash环境中顺序执行,行执行失败会导致执行中断
+- 执行的结果会保持在step_summary中，并在下一个step中使用。(所有的读操作都需要注意控制范围，防止context window溢出)
+- 该bash环境中除了已安装prcoess_rule中提到的命令外,也预装了常见的cli 工具，不用检查直接调用
+
+"#
+    )
+}
+
+
+fn build_behavior_llm_result_protocol() -> String {
+    format!(
+        r#"Return ONLY one JSON object. No markdown fences, no extra text.
+```typescript
+type Response = {{
+  next_behavior?: String // follow process rules
+  thinking?: string;
+  reply?: string;             // only reply to current session default_remote
+  shell_commands?: string[];  // shorthand of actions.cmds with shell-command strings
+  actions?: {{
+    mode?: "failed_end" | "all";             // default: failed_end
+    cmds?: [];
+  }};
+}}
+```
+All keys optional—omit unused ones.
+Do NOT include `session_id` or `new_session` in this mode.
+
+## actions 字段的填写说明
+一个实际的例子如下:
+```json
+{{
+ "actions": {{
+    "mode": "all",
+    "cmds": [
+      "todo add T01 \"build login.html\"",
+      ["write_file",{{"path": "readme.txt","content": "login.html is a login page"}}]
+    ]
+  }}
+}}
+```
+
+- cmds中的命令会在一个与当前session绑定的bash环境中顺序执行,行执行失败会根据mode的值决定是中断执行(failed_end)还是继续执行(all)
+- 命令分两种：1. 字符串元素代表，shell命令，2.数组元素代表一个结构化的cmd_action对象，其结构为：[action_name, {{action_args}}]
+- `shell_commands` 等价于将命令字符串追加到 `actions.cmds`，仅用于 shell 命令，不支持结构化 action
+- 当要写入文本文件时，应使用write_file / edit_file cmd_action，而不是shell命令
+- 执行的结果会保持在step_summary中，并在下一个step中使用。(所有的读操作都需要注意控制范围，防止context window溢出)
+- 该bash环境中除了已安装prcoess_rule中提到的命令外,也预装了常见的cli 工具，不用检查直接调用
+
+### write_file
+- 参数: path: string, content: string, mode:"new"|"append"|"write" 
+mode的默认值为"write",不管文件是否存在都会覆盖成content
+mode为new时，如果文件存在则写入失败,为append时，会在文件的末尾追加content
+
+### edit_file: 
+- 参数: path: string, new_content: string,pos_chunk: string, mode:"replace"|"after"|"before"
+基于pos_chunk作为锚定点，根据mode设定，在文件的原内容的基础上进行 替换\插入\插入 new_content
+
+"#
+    )
 }
 
 fn build_route_result_protocol() -> String {
@@ -586,62 +672,19 @@ fn build_route_result_protocol() -> String {
 type Response = {{
   next_behavior?: "END" | "WAIT" | string;  // END=finish, WAIT=pause, or behavior name to switch
   thinking?: string;
-  reply?: {{ content: string }}[];
+  reply?: string;                        // only reply to current session default_remote
   set_memory?: Record<string, string>;       // key=memory path, value=content
-  actions?: {{
-    mode?: "failed_end" | "all";             // default: failed_end
-    cmds?: (string | [string, Record<string, any>] | Record<string, Record<string, any>>)[];
-  }};
-  route_session_id?: string;                       // route to existing session
+  toipc_tags?: string[];                     // 标记当前交流的话题tag,不超过3个
+  route_session_id?: string;                 // route to existing session
   new_session?: [string, string];            // [title, summary], runtime generates session_id
 }}
 ```
-
-All keys optional—omit unused ones. Prefer exactly one of `session_id` or `new_session` when routing."#
+All keys optional—omit unused ones.
+Session routing is first-class in this mode.
+Prefer exactly one of `route_session_id` or `new_session` when routing."#
     )
 }
 
-fn build_behavior_llm_result_protocol() -> String {
-    format!(
-        r#"Return ONLY one JSON object. No markdown fences, no extra text.
-```typescript
-type Response = {{
-  next_behavior?: String // follow process rules
-  thinking?: string;
-  reply?: {{
-    audience?: string;   // optional; runtime falls back to session.default_remote
-    format?: string;     // optional; defaults to "text"
-    content: string;
-  }}[];
-  todo?: {{
-    op: string;         // e.g. "upsert_todo"
-    id?: string;
-    title?: string;
-    status?: string;
-    [key: string]: any; // other op-specific fields
-  }}[];
-  set_memory?: Record<string, string>;       // key=memory path, value=content. 
-  toipc_tags?: string[];                     // note: key is exactly `toipc_tags`
-  actions?: {{
-    mode?: "failed_end" | "all";             // default: failed_end
-    cmds?: (string | [string, Record<string, any>] | Record<string, Record<string, any>>)[];
-  }};
-  load_skills?: string[];
-  enable_tools?: string[];
-}}
-```
-
-All keys optional—omit unused ones."#
-    )
-}
-
-fn default_output_protocol_text(mode: &str) -> String {
-    match mode {
-        "route_result" => build_route_result_protocol(),
-        "behavior_llm_result" => build_behavior_llm_result_protocol(),
-        _ => String::new(),
-    }
-}
 
 fn candidate_paths_for_behavior(behaviors_dir: &Path, behavior_name: &str) -> Vec<PathBuf> {
     let requested = behaviors_dir.join(behavior_name);

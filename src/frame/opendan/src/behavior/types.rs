@@ -139,12 +139,14 @@ pub struct BehaviorLLMResult {
     pub next_behavior: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub reply: Vec<ExecutorReply>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub toipc_tags: Vec<String>,
     #[serde(default, skip_serializing_if = "DoActions::is_empty")]
     pub actions: DoActions,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shell_commands: Vec<String>,
 
     // #[serde(default, skip_serializing_if = "Vec::is_empty")]
     // pub todo: Vec<Json>,
@@ -165,13 +167,94 @@ impl BehaviorLLMResult {
     }
 
     pub fn from_json_str(input: &str) -> Result<Self, LLMComputeError> {
-        let result = serde_json::from_str::<Self>(input);
-        if let Err(err) = result {
-            warn!("failed to parse BehaviorLLMResult output: {:?}", err);
-            return Err(LLMComputeError::Internal(err.to_string()));
+        let normalized = input.trim();
+        if let Ok(wrapper) = serde_json::from_str::<Json>(normalized) {
+            if let Some(content) = extract_openai_wrapped_content(&wrapper) {
+                if let Ok(parsed) = Self::from_json_str(content) {
+                    return Ok(parsed);
+                }
+            }
         }
-        return Ok(result.unwrap());
+
+        let direct = serde_json::from_str::<Self>(normalized);
+        if let Ok(parsed) = direct {
+            return Ok(parsed);
+        }
+
+        if let Some(json_block) = extract_json_from_markdown_fence(normalized) {
+            if let Ok(parsed) = serde_json::from_str::<Self>(json_block.as_str()) {
+                return Ok(parsed);
+            }
+        }
+
+        if let Some(merged) = parse_concatenated_json_objects(normalized) {
+            if let Ok(parsed) = serde_json::from_value::<Self>(merged) {
+                return Ok(parsed);
+            }
+        }
+
+        let err = direct
+            .err()
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "invalid behavior llm result".to_string());
+        warn!("failed to parse BehaviorLLMResult output: {}", err);
+        Err(LLMComputeError::Internal(err))
     }
+}
+
+fn extract_json_from_markdown_fence(input: &str) -> Option<String> {
+    if !input.contains("```") {
+        return None;
+    }
+    let mut parts = input.split("```");
+    let _ = parts.next();
+    while let Some(block) = parts.next() {
+        let mut candidate = block.trim();
+        if candidate.is_empty() {
+            continue;
+        }
+
+        if let Some(stripped) = candidate.strip_prefix("json") {
+            candidate = stripped.trim_start();
+        } else if let Some(stripped) = candidate.strip_prefix("JSON") {
+            candidate = stripped.trim_start();
+        }
+
+        if candidate.starts_with('{') || candidate.starts_with('[') {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+fn parse_concatenated_json_objects(input: &str) -> Option<Json> {
+    let mut stream = serde_json::Deserializer::from_str(input).into_iter::<Json>();
+    let mut merged = serde_json::Map::new();
+    let mut count = 0usize;
+
+    while let Some(item) = stream.next() {
+        let Json::Object(object) = item.ok()? else {
+            return None;
+        };
+        count = count.saturating_add(1);
+        for (key, value) in object {
+            merged.insert(key, value);
+        }
+    }
+
+    if count > 1 {
+        Some(Json::Object(merged))
+    } else {
+        None
+    }
+}
+
+fn extract_openai_wrapped_content(wrapper: &Json) -> Option<&str> {
+    wrapper
+        .pointer("/choices/0/message/content")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

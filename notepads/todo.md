@@ -90,6 +90,32 @@ skills文件的定义
 - process_rule中用到的cli的说明
 - allow_cmds[""]
 
+### 理想的提示词
+
+<<process_rule>>
+
+
+
+使用Linux Bash工具，在一个Linux Bash环境中完成工作，该环境中已经预装了主流的cli 工具可直接调用。
+
+
+<<output_protoco>>
+
+
+结构介绍
+说明actions结构 ： 执行bash命令
+针对write/edit文件的优化
+
+remove <<toolbox>> section
+
+### output_protocol修改
+类型列表
+- router
+- 带acton的bash （现在的版本）
+- 不带action的bash(文件系统只读)
+
+
+
 ### TODO Mgr 的简化 （OK）
 
 TODO cli化

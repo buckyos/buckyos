@@ -21,6 +21,9 @@ use crate::agent_tool::{normalize_tool_name, ToolSpec};
 use crate::behavior::config::BehaviorMemoryBucketConfig;
 use crate::behavior::BehaviorConfig;
 use crate::worklog::{WorklogListOptions, WorklogRecord, WorklogService, WorklogToolConfig};
+use crate::workspace::agent_skill::{
+    load_skill_from_root, merge_skill_records_from_dir, AgentSkillRecord, SKILLS_REL_PATH,
+};
 use crate::workspace::todo::render_workspace_todo_prompt_from_db;
 
 use super::sanitize::{sanitize_json_compact, sanitize_text};
@@ -93,17 +96,25 @@ impl PromptBuilder {
                 sanitize_text(policy_text.as_str())
             ));
         }
+
+        //根据当前session加载的skills,构造<<skills>> section
+        let skills_text = render_skills_text(session.clone()).await?;
+        system_parts.push(format!(
+            "<<skills>>\n{}\n<</skills>>",
+            sanitize_text(skills_text.as_str())
+        ));
+
         system_parts.push(format!(
             "<<output_protocol>>\n{}\n<</output_protocol>>",
             sanitize_text(output_protocol_text.as_str())
         ));
 
-        if let Some((toolbox, tools)) =
-            build_toolbox(tools, action_specs, cfg, session.clone()).await
-        {
-            system_parts.push(format!("<<toolbox>>\n{}\n<</toolbox>>", toolbox));
-            loaded_tools = tools;
-        }
+        // if let Some((toolbox, tools)) =
+        //     build_toolbox(tools, action_specs, cfg, session.clone()).await
+        // {
+        //     system_parts.push(format!("<<toolbox>>\n{}\n<</toolbox>>", toolbox));
+        //     loaded_tools = tools;
+        // }
 
         let system_role_prompt_text = system_parts.join("\n\n");
         let tool_define_used = 1024;
@@ -204,6 +215,51 @@ async fn render_section(
         .await
         .map_err(|e| e.to_string())?;
     Ok(result.rendered)
+}
+
+async fn render_skills_text(
+    session: Option<Arc<Mutex<AgentSession>>>,
+) -> Result<String, String> {
+    let Some(session) = session else {
+        return Ok(String::new());
+    };
+
+    let (loaded_skills, local_workspace_id, workspace_info, session_cwd) = {
+        let guard = session.lock().await;
+        (
+            guard.loaded_skills.clone(),
+            guard.local_workspace_id.clone(),
+            guard.workspace_info.clone(),
+            guard.cwd.clone(),
+        )
+    };
+
+    let skill_roots = collect_workspace_skill_roots(
+        local_workspace_id.as_deref(),
+        workspace_info.as_ref(),
+        &session_cwd,
+    )
+    .await;
+
+    let mut all_records = HashMap::<String, AgentSkillRecord>::new();
+    for root in &skill_roots {
+        let _ = merge_skill_records_from_dir(root.as_path(), &mut all_records).await;
+    }
+
+    let mut loaded_rules = Vec::<String>::new();
+    let loaded_skills = normalize_unique_string_list(loaded_skills);
+    for skill_name in &loaded_skills {
+        for root in &skill_roots {
+            if let Ok(spec) = load_skill_from_root(root.as_path(), skill_name.as_str()).await {
+                if !spec.rules.is_empty() {
+                    loaded_rules.push(format!("## {} Skill\n{}", skill_name, spec.rules));
+                }
+                break;
+            }
+        }
+    }
+
+    Ok(loaded_rules.join("\n\n"))
 }
 
 /// Build memory prompt with dynamic compression skeleton.

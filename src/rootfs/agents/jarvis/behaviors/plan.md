@@ -76,17 +76,9 @@ Typical LLM return example (JSON only):
 {
   "next_behavior": "END",
   "thinking": "work completed for this wakeup",
-  "reply": [
-    {
-      "audience": "user",
-      "format": "markdown",
-      "content": "已完成本轮处理，项目状态已整理。"
-    }
-  ],
-  "todo": [],
-  "set_memory": [],
-  "actions": [],
-  "session_delta": []
+  "reply": "已完成本轮处理，项目状态已整理。",
+  "set_memory": {},
+  "shell_commands": []
 }
 
 -----
