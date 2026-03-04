@@ -35,7 +35,6 @@ impl AgentSkillSpec {
         self.actions = normalize_unique_string_list(std::mem::take(&mut self.actions));
         self.loaded_tools = normalize_unique_string_list(std::mem::take(&mut self.loaded_tools));
     }
-
 }
 
 pub async fn merge_skill_records_from_dir(
@@ -309,12 +308,14 @@ mod tests {
         (tools, action_specs)
     }
 
-    async fn render_toolbox_prompt_preview(skill_name: &str, workspace_root: &Path) -> (String, Vec<AiToolSpec>) {
+    async fn render_toolbox_prompt_preview(
+        skill_name: &str,
+        workspace_root: &Path,
+    ) -> (String, Vec<AiToolSpec>) {
         let mut session = AgentSession::new("session-1", "did:web:agent.example.com", None);
         session.pwd = workspace_root.to_path_buf();
         session.loaded_skills = vec![skill_name.to_string()];
         let session = Arc::new(Mutex::new(session));
-
 
         let input = BehaviorExecInput {
             session_id: "session-1".to_string(),
@@ -355,7 +356,6 @@ mod tests {
             .first()
             .map(|msg| msg.content.as_str())
             .unwrap_or_default();
-        
 
         return (system_prompt.to_string(), req.payload.tool_specs);
     }
@@ -375,7 +375,8 @@ mod tests {
             "All-in-one skill for OpenDAN actions,contain all the actions and tools."
         );
 
-        let (toolbox_prompt, tool_specs) = render_toolbox_prompt_preview(skill_name, workspace_root).await;
+        let (toolbox_prompt, tool_specs) =
+            render_toolbox_prompt_preview(skill_name, workspace_root).await;
         println!(
             "\n[toolbox section prompt preview after loading skill `{}`]\n{}\n",
             skill_name, toolbox_prompt
@@ -389,8 +390,8 @@ mod tests {
             .await
             .expect("load skill");
 
-
-        let (toolbox_prompt, tool_specs) = render_toolbox_prompt_preview(skill_name, workspace_root).await;
+        let (toolbox_prompt, tool_specs) =
+            render_toolbox_prompt_preview(skill_name, workspace_root).await;
         println!(
             "\n[toolbox section prompt preview after loading skill `{}`]\n{}\n",
             skill_name, toolbox_prompt

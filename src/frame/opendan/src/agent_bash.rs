@@ -257,7 +257,9 @@ impl ExecBashTool {
             }
             has_non_empty_line = true;
 
-            current_pwd = self.resolve_tmux_pane_cwd(session_id, current_pwd.as_path()).await;
+            current_pwd = self
+                .resolve_tmux_pane_cwd(session_id, current_pwd.as_path())
+                .await;
 
             let command_name = AgentToolManager::parse_bash_command_name(line);
             if let Some(tool_name) = self.tool_mgr.resolve_bash_registered_tool_name(line) {
@@ -324,14 +326,23 @@ impl ExecBashTool {
             }
 
             let run_result = self
-                .run_tmux_bash(ctx, session_id, line, current_pwd.as_path(), timeout_ms, env_vars)
+                .run_tmux_bash(
+                    ctx,
+                    session_id,
+                    line,
+                    current_pwd.as_path(),
+                    timeout_ms,
+                    env_vars,
+                )
                 .await?;
             used_tmux = true;
             tmux_session = run_result.tmux_session.clone();
             aggregate_duration_ms = aggregate_duration_ms.saturating_add(run_result.duration_ms);
             aggregate_stdout.extend_from_slice(&run_result.stdout);
             aggregate_stderr.extend_from_slice(&run_result.stderr);
-            current_pwd = self.resolve_tmux_pane_cwd(session_id, current_pwd.as_path()).await;
+            current_pwd = self
+                .resolve_tmux_pane_cwd(session_id, current_pwd.as_path())
+                .await;
             line_results.push(json!({
                 "line": idx + 1,
                 "mode": "bash",
@@ -357,7 +368,14 @@ impl ExecBashTool {
 
         if !has_non_empty_line {
             let run_result = self
-                .run_tmux_bash(ctx, session_id, command, current_pwd.as_path(), timeout_ms, env_vars)
+                .run_tmux_bash(
+                    ctx,
+                    session_id,
+                    command,
+                    current_pwd.as_path(),
+                    timeout_ms,
+                    env_vars,
+                )
                 .await?;
             used_tmux = true;
             tmux_session = run_result.tmux_session.clone();
@@ -365,7 +383,9 @@ impl ExecBashTool {
             aggregate_stdout.extend_from_slice(&run_result.stdout);
             aggregate_stderr.extend_from_slice(&run_result.stderr);
             aggregate_exit_code = run_result.exit_code;
-            current_pwd = self.resolve_tmux_pane_cwd(session_id, current_pwd.as_path()).await;
+            current_pwd = self
+                .resolve_tmux_pane_cwd(session_id, current_pwd.as_path())
+                .await;
         }
 
         Ok(ExecBashRunResult {
@@ -519,14 +539,8 @@ impl ExecBashTool {
         let stdout_path = runtime_dir.join(format!("{run_id}.stdout.log"));
         let stderr_path = runtime_dir.join(format!("{run_id}.stderr.log"));
         let script_path = runtime_dir.join(format!("{run_id}.exec.sh"));
-        let script = build_tmux_exec_script(
-            &run_id,
-            &stdout_path,
-            &stderr_path,
-            cwd,
-            command,
-            env_vars,
-        );
+        let script =
+            build_tmux_exec_script(&run_id, &stdout_path, &stderr_path, cwd, command, env_vars);
         fs::write(&script_path, script).await.map_err(|err| {
             AgentToolError::ExecFailed(format!(
                 "write exec script `{}` failed: {err}",
@@ -536,7 +550,10 @@ impl ExecBashTool {
 
         clear_tmux_history(&tmux_target).await?;
 
-        let invoke = format!(". {}", shell_single_quote(script_path.to_string_lossy().as_ref()));
+        let invoke = format!(
+            ". {}",
+            shell_single_quote(script_path.to_string_lossy().as_ref())
+        );
         send_tmux_command(&tmux_target, &invoke).await?;
 
         let started = Instant::now();
@@ -709,9 +726,7 @@ fn build_tmux_exec_script(
     lines.push(": > \"$__od_stdout\"".to_string());
     lines.push(": > \"$__od_stderr\"".to_string());
     lines.push("{".to_string());
-    lines.push(
-        "  cd \"$__od_cwd\" || { echo \"cd failed: $__od_cwd\" >&2; false; }".to_string(),
-    );
+    lines.push("  cd \"$__od_cwd\" || { echo \"cd failed: $__od_cwd\" >&2; false; }".to_string());
     for (key, value) in env_vars {
         lines.push(format!(
             "  export {}={}",

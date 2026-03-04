@@ -5,11 +5,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use log::info;
 use serde::{Deserialize, Serialize};
+use serde_json::Value as Json;
 use tokio::fs;
 use tokio::sync::Mutex;
 
 use super::agent_skill::{self, AgentSkillRecord, AgentSkillSpec};
 use crate::agent_tool::AgentToolError;
+use crate::worklog::{WorklogRecord, WorklogService, WorklogToolConfig};
 
 const DEFAULT_LOCK_TTL_MS: u64 = 120_000;
 const MAX_WORKSPACE_NAME_LEN: usize = 96;
@@ -492,6 +494,56 @@ impl LocalWorkspaceManager {
         let session_id = validate_session_id(session_id)?;
         let guard = self.state.lock().await;
         Ok(guard.session_bindings.get(session_id).cloned())
+    }
+
+    pub async fn append_worklog(
+        &self,
+        session_id: &str,
+        agent_name: &str,
+        behavior: &str,
+        step_idx: u32,
+        record: Json,
+    ) -> Result<WorklogRecord, AgentToolError> {
+        let session_id = validate_session_id(session_id)?;
+        let Some(binding) = self.get_bound_local_workspace(session_id).await? else {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "session `{session_id}` has no bound local workspace"
+            )));
+        };
+
+        let workspace_path = self
+            .get_local_workspace_path(binding.local_workspace_id.as_str())
+            .await?;
+        let worklog_db = workspace_path.join("worklog").join("worklog.db");
+        let service = WorklogService::new(WorklogToolConfig::with_db_path(worklog_db))?;
+        service
+            .append_record_for_session(session_id, agent_name, behavior, step_idx, record)
+            .await
+    }
+
+    pub async fn append_step_summary_worklog(
+        &self,
+        session_id: &str,
+        agent_name: &str,
+        behavior: &str,
+        step_idx: u32,
+        record: Json,
+    ) -> Result<WorklogRecord, AgentToolError> {
+        let session_id = validate_session_id(session_id)?;
+        let Some(binding) = self.get_bound_local_workspace(session_id).await? else {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "session `{session_id}` has no bound local workspace"
+            )));
+        };
+
+        let workspace_path = self
+            .get_local_workspace_path(binding.local_workspace_id.as_str())
+            .await?;
+        let worklog_db = workspace_path.join("worklog").join("worklog.db");
+        let service = WorklogService::new(WorklogToolConfig::with_db_path(worklog_db))?;
+        service
+            .append_step_summary_for_session(session_id, agent_name, behavior, step_idx, record)
+            .await
     }
 
     pub async fn get_local_workspace_path(

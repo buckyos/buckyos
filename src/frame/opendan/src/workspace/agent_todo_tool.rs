@@ -768,15 +768,13 @@ impl AgentTool for TodoTool {
             "prompt" => self.exec_prompt(&cli_args, &workspace_id)?,
             "current" => self.exec_current(&cli_args, &workspace_id, &session_id)?,
             "help" => {
-                return Ok(
-                    AgentToolResult::from_details(json!({
-                    "ok": true,
-                    "tool": TOOL_TODO,
-                    "usage": TODO_USAGE
-                    }))
-                    .with_cmd_line(line.trim().to_string())
-                    .with_result("show usage"),
-                );
+                return Ok(AgentToolResult::from_details(json!({
+                "ok": true,
+                "tool": TOOL_TODO,
+                "usage": TODO_USAGE
+                }))
+                .with_cmd_line(line.trim().to_string())
+                .with_result("show usage"));
             }
             _ => {
                 return Err(AgentToolError::InvalidArgs(format!(

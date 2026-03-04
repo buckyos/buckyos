@@ -845,6 +845,8 @@ impl AIAgent {
                 break;
             }
             let input = input.unwrap();
+            self.append_incoming_message_worklogs(session.clone(), &trace)
+                .await;
 
             let llm_behavior = LLMBehavior::new(
                 behavior_cfg.to_llm_behavior_config(),
@@ -876,6 +878,8 @@ impl AIAgent {
                     .handle_reply(session.clone(), &trace, llm_result.reply.as_deref())
                     .await;
             }
+            self.append_reply_message_worklogs(session.clone(), &trace, &reply_history)
+                .await;
 
             self.apply_memory_updates(&trace, &llm_result.set_memory)
                 .await;
@@ -884,6 +888,8 @@ impl AIAgent {
             //所有action都通过授权才会执行
             let action_plan = merged_actions_from_llm_result(&llm_result);
             let action_results = self.execute_actions(&trace, &action_plan).await;
+            self.append_action_record_worklogs(session.clone(), &trace, &tracking, &action_results)
+                .await;
 
             let step_summary = build_step_summary(
                 &trace,
@@ -892,6 +898,14 @@ impl AIAgent {
                 &tracking,
                 &action_results,
                 session.clone(),
+            )
+            .await;
+            self.append_step_summary_worklog(
+                session.clone(),
+                &trace,
+                &llm_result,
+                &action_results,
+                step_summary.as_deref(),
             )
             .await;
 
@@ -2069,6 +2083,329 @@ impl AIAgent {
         (default_audience, None)
     }
 
+    fn should_append_worklog_for_trace(trace: &SessionRuntimeContext) -> bool {
+        AgentSession::is_work_session_id(trace.session_id.as_str())
+    }
+
+    fn parse_step_input_msg_record(payload: &[u8]) -> Option<MsgRecord> {
+        serde_json::from_slice::<SessionInputItem>(payload)
+            .ok()
+            .and_then(|item| item.msg)
+            .or_else(|| serde_json::from_slice::<MsgRecord>(payload).ok())
+    }
+
+    async fn append_worklog_action_record(
+        &self,
+        session: Arc<Mutex<AgentSession>>,
+        trace: &SessionRuntimeContext,
+        status: &str,
+        payload: Json,
+    ) {
+        if !Self::should_append_worklog_for_trace(trace) {
+            return;
+        }
+
+        let mut guard = session.lock().await;
+        if let Err(err) = guard
+            .append_worklog_with_runtime_context(
+                trace,
+                "ActionRecord",
+                status,
+                payload,
+                Some(self.environment.local_workspace_manager()),
+            )
+            .await
+        {
+            warn!(
+                "agent.worklog_append_failed: did={:?} session={} step={} type=ActionRecord err={}",
+                self.did, trace.session_id, trace.step_idx, err
+            );
+        }
+    }
+
+    async fn append_incoming_message_worklogs(
+        &self,
+        session: Arc<Mutex<AgentSession>>,
+        trace: &SessionRuntimeContext,
+    ) {
+        if !Self::should_append_worklog_for_trace(trace) {
+            return;
+        }
+
+        let step_inputs = {
+            let guard = session.lock().await;
+            guard.just_readed_input_msg.clone()
+        };
+        for raw in step_inputs {
+            let Some(msg) = Self::parse_step_input_msg_record(raw.as_slice()) else {
+                continue;
+            };
+            let payload = json!({
+                "msg_id": msg.msg_id,
+                "record_id": msg.record_id,
+                "from": msg.from.to_string(),
+                "to": msg.to.to_string(),
+                "channel": format!("{:?}", msg.box_kind),
+                "snippet": format!("kind={:?}", msg.msg_kind),
+            });
+            let mut guard = session.lock().await;
+            if let Err(err) = guard
+                .append_worklog_with_runtime_context(
+                    trace,
+                    "GetMessage",
+                    "OK",
+                    payload,
+                    Some(self.environment.local_workspace_manager()),
+                )
+                .await
+            {
+                warn!(
+                    "agent.worklog_append_failed: did={:?} session={} step={} type=GetMessage err={}",
+                    self.did, trace.session_id, trace.step_idx, err
+                );
+            }
+        }
+    }
+
+    async fn append_reply_message_worklogs(
+        &self,
+        session: Arc<Mutex<AgentSession>>,
+        trace: &SessionRuntimeContext,
+        reply_history: &[ReplyHistoryRecord],
+    ) {
+        if !Self::should_append_worklog_for_trace(trace) {
+            return;
+        }
+        if reply_history.is_empty() {
+            return;
+        }
+
+        let reply_to_msg_id = {
+            let guard = session.lock().await;
+            guard
+                .just_readed_input_msg
+                .iter()
+                .find_map(|raw| Self::parse_step_input_msg_record(raw.as_slice()))
+                .map(|msg| msg.msg_id)
+        };
+
+        for reply in reply_history {
+            let said = reply.outbound.content.content.trim();
+            let to = reply
+                .outbound
+                .to
+                .first()
+                .map(|did| did.to_string())
+                .unwrap_or_default();
+            let payload = json!({
+                "out_msg_id": reply.result.msg_id,
+                "to": to,
+                "reply_to": reply_to_msg_id.clone(),
+                "content_digest": compact_text_for_log(said, 220),
+                "delivery_count": reply.result.deliveries.len(),
+            });
+
+            let mut guard = session.lock().await;
+            if let Err(err) = guard
+                .append_worklog_with_runtime_context(
+                    trace,
+                    "ReplyMessage",
+                    "OK",
+                    payload,
+                    Some(self.environment.local_workspace_manager()),
+                )
+                .await
+            {
+                warn!(
+                    "agent.worklog_append_failed: did={:?} session={} step={} type=ReplyMessage err={}",
+                    self.did, trace.session_id, trace.step_idx, err
+                );
+            }
+        }
+    }
+
+    async fn append_action_record_worklogs(
+        &self,
+        session: Arc<Mutex<AgentSession>>,
+        trace: &SessionRuntimeContext,
+        tracking: &LLMTrackingInfo,
+        action_results: &DoActionResults,
+    ) {
+        if !Self::should_append_worklog_for_trace(trace) {
+            return;
+        }
+
+        for tool_record in &tracking.tool_trace {
+            let status = if tool_record.ok { "OK" } else { "FAILED" };
+            let payload = json!({
+                "action_type": "function",
+                "tool_name": tool_record.tool_name,
+                "cmd_digest": tool_record.tool_name,
+                "call_id": tool_record.call_id,
+                "duration_ms": tool_record.duration_ms,
+                "result_digest": tool_record.error.clone().unwrap_or_else(|| "ok".to_string()),
+            });
+            self.append_worklog_action_record(session.clone(), trace, status, payload)
+                .await;
+        }
+
+        let mut exec_ids = action_results.details.keys().cloned().collect::<Vec<_>>();
+        exec_ids.sort();
+
+        for exec_id in exec_ids {
+            if exec_id.starts_with("__") {
+                continue;
+            }
+            let Some(detail) = action_results.details.get(exec_id.as_str()) else {
+                continue;
+            };
+            let ok = detail.get("ok").and_then(Json::as_bool).unwrap_or(false);
+            let status = if ok { "OK" } else { "FAILED" };
+
+            let action_kind = detail
+                .get("action")
+                .and_then(|v| v.get("kind"))
+                .and_then(Json::as_str)
+                .unwrap_or("action");
+            let action_type = match action_kind {
+                "exec" => "bash",
+                "call_tool" => "tool_call",
+                other => other,
+            };
+
+            let mut cmd_digest = detail
+                .get("action")
+                .and_then(|v| v.get("command"))
+                .and_then(Json::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .unwrap_or_default();
+            if cmd_digest.is_empty() {
+                if let Some(action_name) = detail
+                    .get("action")
+                    .and_then(|v| v.get("action_name"))
+                    .and_then(Json::as_str)
+                {
+                    let params = detail
+                        .get("action")
+                        .and_then(|v| v.get("params"))
+                        .cloned()
+                        .unwrap_or_else(|| json!({}));
+                    cmd_digest = compact_action_cmd_line(action_name, &params);
+                }
+            }
+            if cmd_digest.is_empty() {
+                cmd_digest = detail
+                    .get("tool")
+                    .and_then(Json::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| "action".to_string());
+            }
+
+            let mut payload = json!({
+                "action_type": action_type,
+                "cmd_digest": compact_text_for_log(cmd_digest.as_str(), 220),
+                "exec_id": exec_id,
+                "result_digest": detail
+                    .get("prompt")
+                    .and_then(Json::as_str)
+                    .map(|v| compact_text_for_log(v, 220))
+                    .unwrap_or_default(),
+            });
+            if let Some(tool_name) = detail.get("tool").and_then(Json::as_str) {
+                payload["tool_name"] = Json::String(tool_name.to_string());
+            }
+            if let Some(exit_code) = detail
+                .get("result")
+                .and_then(|v| v.get("details"))
+                .and_then(|v| v.get("exit_code"))
+                .and_then(Json::as_i64)
+            {
+                payload["exit_code"] = Json::from(exit_code);
+            }
+            if let Some(cwd) = detail
+                .get("result")
+                .and_then(|v| v.get("details"))
+                .and_then(|v| v.get("cwd"))
+                .and_then(Json::as_str)
+                .or_else(|| {
+                    detail
+                        .get("result")
+                        .and_then(|v| v.get("details"))
+                        .and_then(|v| v.get("pwd"))
+                        .and_then(Json::as_str)
+                })
+            {
+                payload["cwd"] = Json::String(cwd.to_string());
+            }
+            if let Some(error_text) = detail
+                .get("error")
+                .and_then(Json::as_str)
+                .map(|v| compact_text_for_log(v, 220))
+            {
+                payload["stderr_digest"] = Json::String(error_text);
+            }
+            self.append_worklog_action_record(session.clone(), trace, status, payload)
+                .await;
+        }
+    }
+
+    async fn append_step_summary_worklog(
+        &self,
+        session: Arc<Mutex<AgentSession>>,
+        trace: &SessionRuntimeContext,
+        llm_result: &BehaviorLLMResult,
+        action_results: &DoActionResults,
+        summary_text: Option<&str>,
+    ) {
+        if !Self::should_append_worklog_for_trace(trace) {
+            return;
+        }
+
+        let did_digest = llm_result
+            .thinking
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| compact_text_for_log(value, 220))
+            .or_else(|| {
+                summary_text
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| compact_text_for_log(value, 220))
+            })
+            .unwrap_or_else(|| "step completed".to_string());
+        let result_digest = summary_text
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| compact_text_for_log(value, 220))
+            .unwrap_or_else(|| compact_text_for_log(action_results.summary.as_str(), 220));
+
+        let payload = json!({
+            "did_digest": did_digest,
+            "result_digest": result_digest,
+            "next_behavior": llm_result.next_behavior.clone(),
+            "action_summary": action_results.summary.as_str(),
+        });
+
+        let mut guard = session.lock().await;
+        if let Err(err) = guard
+            .append_step_summary_with_runtime_context(
+                trace,
+                payload,
+                summary_text,
+                Some(self.environment.local_workspace_manager()),
+            )
+            .await
+        {
+            warn!(
+                "agent.worklog_append_failed: did={:?} session={} step={} type=StepSummary err={}",
+                self.did, trace.session_id, trace.step_idx, err
+            );
+        }
+    }
+
     async fn persist_step_history_records(
         &self,
         session: Arc<Mutex<AgentSession>>,
@@ -2834,10 +3171,12 @@ process_rule: "test behavior for action rendering"
                 tasks: Arc::new(Mutex::new(HashMap::new())),
             },
         )));
-        let aicc = Arc::new(buckyos_api::AiccClient::new_in_process(Box::new(MockAicc {
-            responses: Arc::new(Mutex::new(VecDeque::new())),
-            requests: Arc::new(Mutex::new(Vec::new())),
-        })));
+        let aicc = Arc::new(buckyos_api::AiccClient::new_in_process(Box::new(
+            MockAicc {
+                responses: Arc::new(Mutex::new(VecDeque::new())),
+                requests: Arc::new(Mutex::new(Vec::new())),
+            },
+        )));
 
         let agent = AIAgent::load(
             AIAgentConfig::new(agent_root.clone()),
@@ -2889,9 +3228,12 @@ process_rule: "test behavior for action rendering"
             large_content.push_str(format!("large-line-{i:05}\n").as_str());
         }
         let large_bytes = large_content.len();
-        fs::write(agent.workspace_root.join("large_preview.txt"), large_content)
-            .await
-            .expect("write large preview file");
+        fs::write(
+            agent.workspace_root.join("large_preview.txt"),
+            large_content,
+        )
+        .await
+        .expect("write large preview file");
 
         let tree_root = agent.workspace_root.join("tree_preview");
         for i in 0..8 {
@@ -2960,9 +3302,8 @@ process_rule: "test behavior for action rendering"
         assert!(rendered.contains("line-2"));
         assert!(rendered.contains("read_file large_preview.txt => read"));
         assert!(rendered.contains(format!("read {large_bytes} bytes (truncated)").as_str()));
-        assert!(rendered.contains(
-            "... [TRUNCATED FOR ACTION PREVIEW: Showing first 100 lines only] ..."
-        ));
+        assert!(rendered
+            .contains("... [TRUNCATED FOR ACTION PREVIEW: Showing first 100 lines only] ..."));
         assert!(rendered.contains("pwd: "));
         assert!(rendered.contains("tree_preview/dir-03"));
         assert!(rendered.contains("edit_preview.txt => replace"));
@@ -2973,10 +3314,7 @@ process_rule: "test behavior for action rendering"
         assert!(rendered.contains("curl -fsSL"));
         assert!(rendered.contains("read_file file-00.txt 1-1 => read"));
         assert!(rendered.contains("tree-file-3-0"));
-        assert!(
-            rendered.contains("curl_download_ok")
-                || rendered.contains("curl_fallback_ok")
-        );
+        assert!(rendered.contains("curl_download_ok") || rendered.contains("curl_fallback_ok"));
         assert!(rendered.contains(
             "read_file missing-file.txt  =>  read file failed: No such file or directory (os error 2)"
         ));

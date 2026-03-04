@@ -1833,14 +1833,12 @@ impl AgentTool for RuntimeCreateSubAgentTool {
         };
 
         let result = self.runtime.create_sub_agent(&parent_did, req).await?;
-        Ok(
-            AgentToolResult::from_details(json!({
-            "ok": true,
-            "sub_agent": result
-            }))
-            .with_cmd_line(TOOL_CREATE_SUB_AGENT.to_string())
-            .with_result("ok"),
-        )
+        Ok(AgentToolResult::from_details(json!({
+        "ok": true,
+        "sub_agent": result
+        }))
+        .with_cmd_line(TOOL_CREATE_SUB_AGENT.to_string())
+        .with_result("ok"))
     }
 }
 
@@ -1903,14 +1901,12 @@ impl AgentTool for RuntimeBindExternalWorkspaceTool {
             .runtime
             .bind_external_workspace(&agent_did, req)
             .await?;
-        Ok(
-            AgentToolResult::from_details(json!({
-            "ok": true,
-            "binding": binding
-            }))
-            .with_cmd_line(TOOL_BIND_EXTERNAL_WORKSPACE.to_string())
-            .with_result("ok"),
-        )
+        Ok(AgentToolResult::from_details(json!({
+        "ok": true,
+        "binding": binding
+        }))
+        .with_cmd_line(TOOL_BIND_EXTERNAL_WORKSPACE.to_string())
+        .with_result("ok"))
     }
 }
 
@@ -1960,14 +1956,12 @@ impl AgentTool for RuntimeListExternalWorkspacesTool {
     ) -> Result<AgentToolResult, AgentToolError> {
         let agent_did = optional_string(&args, "agent_did")?.unwrap_or(ctx.agent_name.clone());
         let workspaces = self.runtime.list_external_workspaces(&agent_did).await?;
-        Ok(
-            AgentToolResult::from_details(json!({
-            "ok": true,
-            "workspaces": workspaces
-            }))
-            .with_cmd_line(TOOL_LIST_EXTERNAL_WORKSPACES.to_string())
-            .with_result("ok"),
-        )
+        Ok(AgentToolResult::from_details(json!({
+        "ok": true,
+        "workspaces": workspaces
+        }))
+        .with_cmd_line(TOOL_LIST_EXTERNAL_WORKSPACES.to_string())
+        .with_result("ok"))
     }
 }
 

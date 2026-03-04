@@ -575,7 +575,9 @@ fn normalize_output_mode(mode: &str) -> String {
         "" | "auto" => "auto".to_string(),
         "behavior_llm_result" | "behavior_result" => "behavior_llm_result".to_string(),
         "route_result" | "route" | "route_v1" => "route_result".to_string(),
-        "behavior_llm_no_action_result" | "behavior_llm_bash_result" | "behavior_llm_no_action" => "behavior_llm_no_action_result".to_string(),
+        "behavior_llm_no_action_result" | "behavior_llm_bash_result" | "behavior_llm_no_action" => {
+            "behavior_llm_no_action_result".to_string()
+        }
         _ => "auto".to_string(),
     }
 }
@@ -588,7 +590,6 @@ fn default_output_protocol_text(mode: &str) -> String {
         _ => String::new(),
     }
 }
-
 
 fn behavior_llm_no_action_result() -> String {
     format!(
@@ -611,7 +612,6 @@ All keys optional—omit unused ones.
 "#
     )
 }
-
 
 fn build_behavior_llm_result_protocol() -> String {
     format!(
@@ -684,7 +684,6 @@ Session routing is first-class in this mode.
 Prefer exactly one of `route_session_id` or `new_session` when routing."#
     )
 }
-
 
 fn candidate_paths_for_behavior(behaviors_dir: &Path, behavior_name: &str) -> Vec<PathBuf> {
     let requested = behaviors_dir.join(behavior_name);

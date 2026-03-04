@@ -217,9 +217,7 @@ async fn render_section(
     Ok(result.rendered)
 }
 
-async fn render_skills_text(
-    session: Option<Arc<Mutex<AgentSession>>>,
-) -> Result<String, String> {
+async fn render_skills_text(session: Option<Arc<Mutex<AgentSession>>>) -> Result<String, String> {
     let Some(session) = session else {
         return Ok(String::new());
     };
@@ -1108,15 +1106,8 @@ fn normalize_history_multiline_text(input: &str) -> String {
     }
 }
 
-fn normalize_worklog_record_type(record_type: &str) -> String {
-    let trimmed = record_type.trim();
-    let without_prefix = trimmed.strip_prefix("opendan.worklog.").unwrap_or(trimmed);
-    let without_version = without_prefix.strip_suffix(".v1").unwrap_or(without_prefix);
-    without_version.to_string()
-}
-
 fn render_workspace_worklog_line(record: &WorklogRecord) -> String {
-    let record_type = normalize_worklog_record_type(record.record_type.as_str());
+    let record_type = record.record_type.to_string();
     let digest = record
         .prompt_view
         .as_ref()
@@ -2270,7 +2261,7 @@ loaded_tools: [exec_bash]
                 json!({
                     "action": "append_worklog",
                     "record": {
-                        "type": "opendan.worklog.FunctionRecord.v1",
+                        "type": "FunctionRecord",
                         "owner_session_id": "session-1",
                         "status": "OK",
                         "prompt_view": {
@@ -2291,7 +2282,7 @@ loaded_tools: [exec_bash]
                 json!({
                     "action": "append_worklog",
                     "record": {
-                        "type": "opendan.worklog.FunctionRecord.v1",
+                        "type": "FunctionRecord",
                         "owner_session_id": "session-2",
                         "status": "OK",
                         "prompt_view": {

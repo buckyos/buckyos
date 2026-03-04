@@ -631,9 +631,11 @@ impl AgentTool for LoadMemoryTool {
             .load_memory(token_limit, tags, current_time)
             .await?;
         let rendered = AgentMemory::render_memory_items(&items);
-        Ok(AgentToolResult::from_details(Json::String(rendered.clone()))
-            .with_cmd_line(TOOL_LOAD_MEMORY.to_string())
-            .with_result(format!("loaded {} memory item(s)", items.len())))
+        Ok(
+            AgentToolResult::from_details(Json::String(rendered.clone()))
+                .with_cmd_line(TOOL_LOAD_MEMORY.to_string())
+                .with_result(format!("loaded {} memory item(s)", items.len())),
+        )
     }
 }
 

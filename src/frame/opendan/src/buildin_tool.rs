@@ -357,7 +357,12 @@ impl AgentTool for EditFileTool {
             "diff_truncated": diff_truncated
         });
         let summary = if changed {
-            format!("{} {} -> {} bytes", operation, original_content.len(), updated_content.len())
+            format!(
+                "{} {} -> {} bytes",
+                operation,
+                original_content.len(),
+                updated_content.len()
+            )
         } else if !matched {
             "anchor not found, no change".to_string()
         } else {
@@ -529,7 +534,11 @@ impl AgentTool for WriteFileTool {
             updated_content.len()
         );
         Ok(AgentToolResult::from_details(details)
-            .with_cmd_line(format!("{} {}", TOOL_WRITE_FILE, abs_path.to_string_lossy()))
+            .with_cmd_line(format!(
+                "{} {}",
+                TOOL_WRITE_FILE,
+                abs_path.to_string_lossy()
+            ))
             .with_result(summary))
     }
 }

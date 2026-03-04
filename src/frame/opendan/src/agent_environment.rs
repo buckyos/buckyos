@@ -21,7 +21,7 @@ use crate::agent_session::{AgentSession, AgentSessionMgr, SessionInputItem};
 use crate::agent_tool::{AgentToolError, AgentToolManager};
 use crate::workspace::{
     get_next_ready_todo_code, get_next_ready_todo_text, AgentWorkshop, AgentWorkshopConfig,
-    WorkshopIndex, WorkshopWorkspaceRecord, WorkspaceType,
+    LocalWorkspaceManager, WorkshopIndex, WorkshopWorkspaceRecord, WorkspaceType,
 };
 
 const MAX_INCLUDE_BYTES: usize = 64 * 1024;
@@ -74,6 +74,10 @@ impl AgentEnvironment {
 
     pub fn workspace_root(&self) -> &Path {
         self.workshop.workspace_root()
+    }
+
+    pub fn local_workspace_manager(&self) -> &LocalWorkspaceManager {
+        self.workshop.local_workspace_manager()
     }
 
     pub fn register_workshop_tools(

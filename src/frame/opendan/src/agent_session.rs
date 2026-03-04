@@ -19,6 +19,7 @@ use tokio::sync::{Mutex, Notify, RwLock};
 
 use crate::agent_tool::{AgentTool, AgentToolError, AgentToolResult, ToolSpec, TOOL_GET_SESSION};
 use crate::behavior::SessionRuntimeContext;
+use crate::workspace::LocalWorkspaceManager;
 
 const DEFAULT_SESSION_FILE: &str = "session.json";
 const DEFAULT_MSG_RECORD_FILE: &str = "msg_record.jsonl";
@@ -175,6 +176,86 @@ pub struct AgentSession {
 }
 
 impl AgentSession {
+    pub fn is_work_session_id(session_id: &str) -> bool {
+        session_id.trim().starts_with(WORK_SESSION_PREFIX)
+    }
+
+    pub fn worklog_step_id(step_idx: u32) -> String {
+        format!("step-{step_idx}")
+    }
+
+    pub fn build_worklog_record_from_runtime_context(
+        trace: &SessionRuntimeContext,
+        record_type: &str,
+        status: &str,
+        payload: Json,
+    ) -> Json {
+        json!({
+            "type": record_type.trim(),
+            "owner_session_id": trace.session_id.trim(),
+            "agent_did": trace.agent_name.trim(),
+            "behavior": trace.behavior.trim(),
+            "step_id": Self::worklog_step_id(trace.step_idx),
+            "step_index": trace.step_idx,
+            "status": status.trim(),
+            "trace": {
+                "taskmgr_id": trace.trace_id.trim(),
+                "span_id": trace.wakeup_id.trim(),
+            },
+            "payload": payload,
+        })
+    }
+
+    pub async fn append_worklog_with_runtime_context(
+        &mut self,
+        trace: &SessionRuntimeContext,
+        record_type: &str,
+        status: &str,
+        payload: Json,
+        local_workspace_mgr: Option<&LocalWorkspaceManager>,
+    ) -> Result<(), AgentToolError> {
+        if !Self::is_work_session_id(trace.session_id.as_str()) {
+            return Ok(());
+        }
+        let item =
+            Self::build_worklog_record_from_runtime_context(trace, record_type, status, payload);
+        self.append_worklog(item, local_workspace_mgr).await
+    }
+
+    pub async fn append_step_summary_with_runtime_context(
+        &mut self,
+        trace: &SessionRuntimeContext,
+        payload: Json,
+        summary: Option<&str>,
+        local_workspace_mgr: Option<&LocalWorkspaceManager>,
+    ) -> Result<(), AgentToolError> {
+        if !Self::is_work_session_id(trace.session_id.as_str()) {
+            return Ok(());
+        }
+
+        let mut item =
+            Self::build_worklog_record_from_runtime_context(trace, "StepSummary", "OK", payload);
+        if let Some(summary) = summary
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+        {
+            if let Some(obj) = item.as_object_mut() {
+                obj.insert("summary".to_string(), Json::String(summary));
+            }
+        }
+        self.append_step_summary_worklog(item, local_workspace_mgr)
+            .await
+    }
+
+    fn has_bound_local_workspace(&self) -> bool {
+        self.local_workspace_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some()
+    }
+
     pub fn new(
         session_id: impl Into<String>,
         owner_agent: impl Into<String>,
@@ -343,13 +424,100 @@ impl AgentSession {
         let _ = link_ids;
     }
 
-    pub fn append_worklog(&mut self, item: Json) {
-        self.worklog.push(item);
-        if self.worklog.len() > 256 {
-            let start = self.worklog.len().saturating_sub(256);
-            self.worklog = self.worklog.split_off(start);
+    pub async fn append_worklog(
+        &mut self,
+        item: Json,
+        local_workspace_mgr: Option<&LocalWorkspaceManager>,
+    ) -> Result<(), AgentToolError> {
+        let has_local_workspace = self.has_bound_local_workspace();
+
+        if has_local_workspace {
+            let Some(local_workspace_mgr) = local_workspace_mgr else {
+                return Err(AgentToolError::InvalidArgs(format!(
+                    "session `{}` is bound to local workspace but LocalWorkspaceManager is missing",
+                    self.session_id
+                )));
+            };
+            for old_item in self.worklog.drain(..) {
+                local_workspace_mgr
+                    .append_worklog(
+                        self.session_id.as_str(),
+                        self.owner_agent.as_str(),
+                        self.current_behavior.as_str(),
+                        self.step_index,
+                        old_item,
+                    )
+                    .await?;
+            }
+
+            local_workspace_mgr
+                .append_worklog(
+                    self.session_id.as_str(),
+                    self.owner_agent.as_str(),
+                    self.current_behavior.as_str(),
+                    self.step_index,
+                    item,
+                )
+                .await?;
+        } else {
+            self.worklog.push(item);
+            if self.worklog.len() > 256 {
+                let start = self.worklog.len().saturating_sub(256);
+                self.worklog = self.worklog.split_off(start);
+            }
         }
+
         self.updated_at_ms = now_ms();
+        self.last_activity_ms = self.updated_at_ms;
+        Ok(())
+    }
+
+    async fn append_step_summary_worklog(
+        &mut self,
+        item: Json,
+        local_workspace_mgr: Option<&LocalWorkspaceManager>,
+    ) -> Result<(), AgentToolError> {
+        let has_local_workspace = self.has_bound_local_workspace();
+
+        if has_local_workspace {
+            let Some(local_workspace_mgr) = local_workspace_mgr else {
+                return Err(AgentToolError::InvalidArgs(format!(
+                    "session `{}` is bound to local workspace but LocalWorkspaceManager is missing",
+                    self.session_id
+                )));
+            };
+            for old_item in self.worklog.drain(..) {
+                local_workspace_mgr
+                    .append_worklog(
+                        self.session_id.as_str(),
+                        self.owner_agent.as_str(),
+                        self.current_behavior.as_str(),
+                        self.step_index,
+                        old_item,
+                    )
+                    .await?;
+            }
+
+            local_workspace_mgr
+                .append_step_summary_worklog(
+                    self.session_id.as_str(),
+                    self.owner_agent.as_str(),
+                    self.current_behavior.as_str(),
+                    self.step_index,
+                    item,
+                )
+                .await?;
+        } else {
+            self.worklog.push(item);
+            if self.worklog.len() > 256 {
+                let start = self.worklog.len().saturating_sub(256);
+                self.worklog = self.worklog.split_off(start);
+            }
+        }
+
+        self.updated_at_ms = now_ms();
+        self.last_activity_ms = self.updated_at_ms;
+        Ok(())
     }
 
     pub fn set_last_step_summary(&mut self, summary: Json) {
@@ -1007,14 +1175,12 @@ impl AgentTool for GetSessionTool {
     ) -> Result<AgentToolResult, AgentToolError> {
         let session_id = require_string(&args, "session_id")?;
         let session = self.store.session_view(&session_id).await?;
-        Ok(
-            AgentToolResult::from_details(json!({
-            "ok": true,
-            "session": session
-            }))
-            .with_cmd_line(format!("{TOOL_GET_SESSION} {session_id}"))
-            .with_result("ok"),
-        )
+        Ok(AgentToolResult::from_details(json!({
+        "ok": true,
+        "session": session
+        }))
+        .with_cmd_line(format!("{TOOL_GET_SESSION} {session_id}"))
+        .with_result("ok"))
     }
 }
 
@@ -1152,6 +1318,10 @@ impl EmptyFallback for String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::worklog::{WorklogListOptions, WorklogRecordType, WorklogTool, WorklogToolConfig};
+    use crate::workspace::{
+        CreateLocalWorkspaceRequest, LocalWorkspaceManagerConfig, WorkspaceOwner,
+    };
 
     #[test]
     fn summary_view_has_zero_queue_counters() {
@@ -1163,5 +1333,138 @@ mod tests {
         assert_eq!(view["new_event_count"], Json::from(0));
         assert_eq!(view["history_msg_count"], Json::from(0));
         assert_eq!(view["history_event_count"], Json::from(0));
+    }
+
+    #[tokio::test]
+    async fn append_worklog_without_local_workspace_keeps_memory() {
+        let mut session = AgentSession::new("sess-memory", "did:opendan:test", Some("DO"));
+        session
+            .append_worklog(
+                json!({
+                    "type": "FunctionRecord",
+                    "status": "OK",
+                    "payload": { "tool_name": "todo_manage" }
+                }),
+                None,
+            )
+            .await
+            .expect("append in memory");
+        assert_eq!(session.worklog.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn append_worklog_with_local_workspace_delegates_to_workspace_db() {
+        let root = tempfile::tempdir().expect("create temp dir");
+        let manager = LocalWorkspaceManager::create_workshop(
+            "did:opendan:test",
+            LocalWorkspaceManagerConfig::new(root.path()),
+        )
+        .await
+        .expect("create local workspace manager");
+        let workspace = manager
+            .create_local_workspace(CreateLocalWorkspaceRequest {
+                name: "devbox".to_string(),
+                template: None,
+                owner: WorkspaceOwner::AgentCreated,
+                created_by_session: Some("sess-db".to_string()),
+                policy_profile_id: None,
+            })
+            .await
+            .expect("create workspace");
+        manager
+            .bind_local_workspace("sess-db", workspace.workspace_id.as_str())
+            .await
+            .expect("bind local workspace");
+
+        let mut session = AgentSession::new("sess-db", "did:opendan:test", Some("DO"));
+        session.local_workspace_id = Some(workspace.workspace_id.clone());
+
+        session
+            .append_worklog(
+                json!({
+                    "type": "FunctionRecord",
+                    "status": "OK",
+                    "payload": { "tool_name": "todo_manage" }
+                }),
+                Some(&manager),
+            )
+            .await
+            .expect("append to local workspace");
+        assert_eq!(session.worklog.len(), 0);
+
+        let workspace_path = manager
+            .get_local_workspace_path(workspace.workspace_id.as_str())
+            .await
+            .expect("load workspace path");
+        let worklog_tool = WorklogTool::new(WorklogToolConfig::with_db_path(
+            workspace_path.join("worklog").join("worklog.db"),
+        ))
+        .expect("create worklog tool");
+
+        let records = worklog_tool
+            .list_worklog_records(WorklogListOptions {
+                owner_session_id: Some("sess-db".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("list workspace records");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].record_type, WorklogRecordType::FunctionRecord);
+    }
+
+    #[test]
+    fn build_worklog_record_from_runtime_context_infers_core_fields() {
+        let trace = SessionRuntimeContext {
+            trace_id: "trace-1".to_string(),
+            agent_name: "did:opendan:test".to_string(),
+            behavior: "DO".to_string(),
+            step_idx: 7,
+            wakeup_id: "wakeup-1".to_string(),
+            session_id: "work-abc".to_string(),
+        };
+        let record = AgentSession::build_worklog_record_from_runtime_context(
+            &trace,
+            "ActionRecord",
+            "OK",
+            json!({"cmd_digest":"echo ok"}),
+        );
+        assert_eq!(record["type"], Json::String("ActionRecord".to_string()));
+        assert_eq!(
+            record["owner_session_id"],
+            Json::String("work-abc".to_string())
+        );
+        assert_eq!(record["behavior"], Json::String("DO".to_string()));
+        assert_eq!(record["step_id"], Json::String("step-7".to_string()));
+        assert_eq!(record["step_index"], Json::from(7));
+        assert_eq!(
+            record["trace"]["taskmgr_id"],
+            Json::String("trace-1".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn append_worklog_with_runtime_context_skips_ui_session() {
+        let mut session = AgentSession::new("ui-1", "did:opendan:test", Some("DO"));
+        let trace = SessionRuntimeContext {
+            trace_id: "trace-ui".to_string(),
+            agent_name: "did:opendan:test".to_string(),
+            behavior: "DO".to_string(),
+            step_idx: 0,
+            wakeup_id: "wakeup-ui".to_string(),
+            session_id: "ui-1".to_string(),
+        };
+
+        session
+            .append_worklog_with_runtime_context(
+                &trace,
+                "ActionRecord",
+                "OK",
+                json!({"cmd_digest":"echo skip"}),
+                None,
+            )
+            .await
+            .expect("skip ui worklog");
+
+        assert!(session.worklog.is_empty());
     }
 }

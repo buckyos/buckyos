@@ -184,9 +184,6 @@ pub struct DoActionResults {
     pub details: HashMap<String, Json>,
 }
 
-
-
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ToolSpec {
     pub name: String,
@@ -302,7 +299,7 @@ pub(crate) fn normalize_tool_name(name: &str) -> String {
 // ```
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AgentToolResult {
-    pub cmd_line: String,      // 压缩后的 cmd line
+    pub cmd_line: String,       // 压缩后的 cmd line
     pub result: Option<String>, // 渲染后一行字结果
     // stdout 或 stderr 有内容，就会渲染到 result 下面的 ``` ``` 中
     pub stdout: Option<String>,
@@ -384,7 +381,10 @@ impl AgentToolResult {
             .unwrap_or(false);
         let summary = match (
             self.cmd_line.trim().is_empty(),
-            self.result.as_deref().map(str::trim).filter(|v| !v.is_empty()),
+            self.result
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty()),
         ) {
             (false, Some(result)) => format!("{} => {}", self.cmd_line.trim(), result),
             (false, None) => self.cmd_line.trim().to_string(),
@@ -443,7 +443,11 @@ pub trait AgentTool: Send + Sync {
     fn support_action(&self) -> bool;
     fn support_llm_tool_call(&self) -> bool;
 
-    async fn call(&self, ctx: &SessionRuntimeContext, args: Json) -> Result<AgentToolResult, AgentToolError>;
+    async fn call(
+        &self,
+        ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<AgentToolResult, AgentToolError>;
 
     async fn exec(
         &self,
@@ -1479,9 +1483,8 @@ mod tests {
         assert!(rendered.contains("line-000"));
         assert!(rendered.contains("line-099"));
         assert!(!rendered.contains("line-100"));
-        assert!(rendered.contains(
-            "... [TRUNCATED FOR ACTION PREVIEW: Showing first 100 lines only] ..."
-        ));
+        assert!(rendered
+            .contains("... [TRUNCATED FOR ACTION PREVIEW: Showing first 100 lines only] ..."));
         assert!(rendered.ends_with("```"));
     }
 
@@ -1501,9 +1504,8 @@ mod tests {
         assert!(rendered.contains("err-000"));
         assert!(rendered.contains("err-099"));
         assert!(!rendered.contains("err-100"));
-        assert!(rendered.contains(
-            "... [TRUNCATED FOR ACTION PREVIEW: Showing first 100 lines only] ..."
-        ));
+        assert!(rendered
+            .contains("... [TRUNCATED FOR ACTION PREVIEW: Showing first 100 lines only] ..."));
         assert!(rendered.ends_with("```"));
     }
 
@@ -1669,9 +1671,11 @@ mod tests {
                     }
                 }
             }
-            Ok(AgentToolResult::from_details(json!({"ok": true, "args": Json::Object(out)}))
-                .with_cmd_line(line.trim().to_string())
-                .with_result("ok"))
+            Ok(
+                AgentToolResult::from_details(json!({"ok": true, "args": Json::Object(out)}))
+                    .with_cmd_line(line.trim().to_string())
+                    .with_result("ok"),
+            )
         }
     }
 
@@ -1953,7 +1957,10 @@ mod tests {
             .expect("tool should be matched");
 
         assert_eq!(result.details["ok"], true);
-        assert_eq!(result.details["args"]["path"], "/tmp/opendan-shell-cwd/1.txt");
+        assert_eq!(
+            result.details["args"]["path"],
+            "/tmp/opendan-shell-cwd/1.txt"
+        );
         assert_eq!(result.details["args"]["range"], "1:1");
     }
 
