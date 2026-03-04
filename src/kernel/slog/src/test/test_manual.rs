@@ -32,7 +32,7 @@ fn test_write() {
             .unwrap()
             .build()
             .unwrap();
-    logger.start();
+    logger.start().unwrap();
 
     log::info!("This is an info log.");
     log::debug!("This is a debug log.");

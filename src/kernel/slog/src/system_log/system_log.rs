@@ -103,9 +103,12 @@ impl SystemLoggerBuilder {
     }
 
     pub fn module(mut self, name: &str, level: Option<&str>, console_level: Option<&str>) -> Self {
-        let config = Self::new_module(name, name, level, console_level)
-            .expect(&format!("invalid module log config"));
-        self.config.add_mod(config);
+        match Self::new_module(name, name, level, console_level) {
+            Ok(config) => self.config.add_mod(config),
+            Err(e) => {
+                error!("invalid module log config for '{}': {}", name, e);
+            }
+        }
 
         self
     }
@@ -175,19 +178,19 @@ impl Into<Box<dyn Log>> for SystemLogger {
 }
 
 impl SystemLogger {
-    pub fn start(self) {
+    pub fn start(self) -> Result<(), String> {
         let max_level = self.logger.get_max_level();
-        println!("log max level: {}", max_level);
-        log::set_max_level(max_level.into());
-
         let flags = self.config.global.get_debug_info_flags();
 
         if let Err(e) = log::set_boxed_logger(self.into()) {
             let msg = format!("call set_boxed_logger failed! {}", e);
-            println!("{}", msg);
+            eprintln!("{}", msg);
+            return Err(msg);
         }
 
+        log::set_max_level(max_level.into());
         Self::display_debug_info(flags);
+        Ok(())
     }
 
     pub fn display_debug_info(flags: LogDebugInfoFlags) {
@@ -210,5 +213,36 @@ impl SystemLogger {
 
     pub fn flush() {
         log::logger().flush();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SystemLoggerBuilder, SystemLoggerCategory};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn new_temp_log_dir(prefix: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "buckyos/slog_system_logger_tests/{}_{}_{}",
+            prefix,
+            std::process::id(),
+            nanos
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_module_with_invalid_level_does_not_panic_and_keeps_buildable() {
+        let dir = new_temp_log_dir("invalid_module_level");
+        let logger = SystemLoggerBuilder::new(&dir, "svc", SystemLoggerCategory::Service)
+            .module("svc_mod", Some("invalid_level"), Some("debug"))
+            .build();
+        assert!(logger.is_ok());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -67,7 +67,7 @@ impl FlexiModuleLogger {
     }
 
     fn check_level(&self, level: log::Level) -> bool {
-        level as usize <= self.config.level as usize
+        level as usize <= self.config.max_level() as usize
     }
 
     fn new_spec(config: &mut LogModuleConfig) -> LogSpecification {
@@ -195,7 +195,7 @@ pub struct FlexiLogger {
 impl FlexiLogger {
     pub fn new(config: &LogConfig, targets: Vec<Box<dyn SystemLogTarget>>) -> Result<Self, String> {
         let global_logger = FlexiModuleLogger::new(&config.log_dir, &config.global)?;
-        let mut max_level = global_logger.config.level;
+        let mut max_level = global_logger.config.max_level();
 
         let mut module_loggers = HashMap::new();
         for (k, mod_config) in &config.modules {
@@ -203,7 +203,7 @@ impl FlexiLogger {
             let level;
             if mod_config.file_name.is_some() {
                 if let Ok(logger) = FlexiModuleLogger::new(&config.log_dir, mod_config) {
-                    level = logger.config.level;
+                    level = logger.config.max_level();
                     println!("new logger mod with isolate file: {} {}", k, level);
                     module_loggers.insert(k.clone(), logger);
                 } else {
@@ -211,7 +211,7 @@ impl FlexiLogger {
                 }
             } else {
                 let logger = global_logger.clone_with_config(mod_config);
-                level = logger.config.level;
+                level = logger.config.max_level();
                 println!("new logger mod clone from global: {} {}", k, level);
                 module_loggers.insert(k.clone(), logger);
             }
@@ -277,5 +277,75 @@ impl Log for FlexiLogger {
         for (_, mod_config) in &self.module_loggers {
             mod_config.logger.flush();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use log::Level;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn new_temp_log_dir(prefix: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "buckyos/slog_flexi_tests/{}_{}_{}",
+            prefix,
+            std::process::id(),
+            nanos
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_flexi_module_logger_check_level_uses_max_of_file_and_console() {
+        let dir = new_temp_log_dir("check_level");
+        let mut config = LogModuleConfig::new_default("svc_level_check");
+        config.file = false;
+        config.level = LogLevel::Info;
+        config.console = LogLevel::Debug;
+
+        let logger = FlexiModuleLogger::new(&dir, &config).unwrap();
+        assert!(logger.check_level(Level::Debug));
+        assert!(logger.check_level(Level::Info));
+        assert!(!logger.check_level(Level::Trace));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_flexi_logger_max_level_uses_module_max_level() {
+        let dir = new_temp_log_dir("max_level");
+        let mut config = LogConfig::new(dir.clone());
+        config.global.level = LogLevel::Info;
+        config.global.console = LogLevel::Warn;
+
+        let mut module = LogModuleConfig::new_default("svc");
+        module.file_name = None;
+        module.file = false;
+        module.level = LogLevel::Info;
+        module.console = LogLevel::Trace;
+        config.add_mod(module);
+
+        let logger = FlexiLogger::new(&config, Vec::new()).unwrap();
+        assert_eq!(logger.get_max_level(), LogLevel::Trace);
+
+        let debug_meta = log::Metadata::builder()
+            .level(Level::Debug)
+            .target("svc::worker")
+            .build();
+        assert!(logger.enabled(&debug_meta));
+
+        let trace_meta = log::Metadata::builder()
+            .level(Level::Trace)
+            .target("svc::worker")
+            .build();
+        assert!(logger.enabled(&trace_meta));
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

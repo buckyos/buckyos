@@ -57,7 +57,10 @@ async fn main() {
             return;
         }
     };
-    logger.start();
+    if let Err(e) = logger.start() {
+        eprintln!("Failed to start slog server logger: {}", e);
+        return;
+    }
 
     let mut cfg = ServerConfig::default();
     let env_overrides = ServerEnvOverrides {

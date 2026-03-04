@@ -67,7 +67,7 @@ async fn main() {
     // Init slog daemon own logs, output to file and console
     let daemon_log_dir = log_dir.join(SERVICE_NAME);
     std::fs::create_dir_all(&daemon_log_dir).unwrap();
-    slog::SystemLoggerBuilder::new(
+    if let Err(e) = slog::SystemLoggerBuilder::new(
         &daemon_log_dir,
         SERVICE_NAME,
         slog::SystemLoggerCategory::Service,
@@ -77,7 +77,11 @@ async fn main() {
     .file(true)
     .build()
     .unwrap()
-    .start();
+    .start()
+    {
+        eprintln!("Failed to start slog daemon logger: {}", e);
+        return;
+    }
 
     info!(
         "slog_daemon config: node_id={}, endpoint={}, log_dir={}, upload_timeout_secs={}",
