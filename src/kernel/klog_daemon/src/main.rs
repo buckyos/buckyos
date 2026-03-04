@@ -48,15 +48,17 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
     })?;
 
     info!(
-        "klog startup config: node_id={}, raft_listen_addr={}, inter_node_listen_addr={}, rpc_enabled={}, rpc_listen_addr={}, advertise_addr={}, advertise_port={}, advertise_inter_port={}, rpc_advertise_port={}, data_dir={}, cluster_name={}, cluster_id={}, auto_bootstrap={}, state_store_sync_write={}, join_targets={:?}, join_retry_interval_ms={}, join_max_attempts={}, join_blocking={}, join_target_role={}, admin_local_only={}, rpc_append(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_query(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_jsonrpc(timeout_ms={}, body_limit_bytes={}, concurrency={})",
+        "klog startup config: node_id={}, raft_listen_addr={}, inter_node_listen_addr={}, admin_listen_addr={}, rpc_enabled={}, rpc_listen_addr={}, advertise_addr={}, advertise_port={}, advertise_inter_port={}, advertise_admin_port={}, rpc_advertise_port={}, data_dir={}, cluster_name={}, cluster_id={}, auto_bootstrap={}, state_store_sync_write={}, join_targets={:?}, join_retry_interval_ms={}, join_max_attempts={}, join_blocking={}, join_target_role={}, admin_local_only={}, rpc_append(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_query(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_jsonrpc(timeout_ms={}, body_limit_bytes={}, concurrency={})",
         cfg.node_id,
         cfg.listen_addr,
         cfg.inter_node_listen_addr,
+        cfg.admin_listen_addr,
         cfg.enable_rpc_server,
         cfg.rpc_listen_addr,
         cfg.advertise_addr,
         cfg.advertise_port,
         cfg.advertise_inter_port,
+        cfg.advertise_admin_port,
         cfg.rpc_advertise_port,
         cfg.data_dir.display(),
         cfg.cluster_name,
@@ -157,12 +159,13 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
 
     let network_server = KNetworkServer::new(cfg.listen_addr.clone(), raft.clone())
         .with_inter_node_addr(cfg.inter_node_listen_addr.clone())
+        .with_admin_addr(cfg.admin_listen_addr.clone())
         .with_state_store_manager(state_store_manager.clone())
         .with_admin_local_only(cfg.admin_local_only)
         .with_cluster_identity(cfg.cluster_name.clone(), cfg.cluster_id.clone());
     info!(
-        "Starting network server: raft_listen_addr={}, inter_node_listen_addr={}",
-        cfg.listen_addr, cfg.inter_node_listen_addr
+        "Starting network server: raft_listen_addr={}, inter_node_listen_addr={}, admin_listen_addr={}",
+        cfg.listen_addr, cfg.inter_node_listen_addr, cfg.admin_listen_addr
     );
 
     let rpc_server = if cfg.enable_rpc_server {

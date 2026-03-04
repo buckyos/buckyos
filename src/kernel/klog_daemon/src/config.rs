@@ -1,14 +1,14 @@
 use crate::constants::{
-    DEFAULT_ADMIN_LOCAL_ONLY, DEFAULT_ADVERTISE_ADDR, DEFAULT_AUTO_BOOTSTRAP,
+    DEFAULT_ADMIN_LOCAL_ONLY, DEFAULT_ADMIN_PORT, DEFAULT_ADVERTISE_ADDR, DEFAULT_AUTO_BOOTSTRAP,
     DEFAULT_ENABLE_RPC_SERVER, DEFAULT_INTER_NODE_PORT, DEFAULT_JOIN_BLOCKING,
     DEFAULT_JOIN_MAX_ATTEMPTS, DEFAULT_JOIN_RETRY_INTERVAL_MS, DEFAULT_LISTEN_HOST,
     DEFAULT_RAFT_PORT, DEFAULT_RPC_BODY_LIMIT_BYTES, DEFAULT_RPC_CONCURRENCY_LIMIT,
     DEFAULT_RPC_LISTEN_HOST, DEFAULT_RPC_PORT, DEFAULT_RPC_TIMEOUT_MS,
-    DEFAULT_STATE_STORE_SYNC_WRITE, ENV_ADMIN_LOCAL_ONLY, ENV_ADVERTISE_ADDR,
-    ENV_ADVERTISE_INTER_PORT, ENV_ADVERTISE_PORT, ENV_AUTO_BOOTSTRAP, ENV_CLUSTER_ID,
-    ENV_CLUSTER_NAME, ENV_CONFIG_FILE, ENV_DATA_DIR, ENV_ENABLE_RPC_SERVER,
-    ENV_INTER_NODE_LISTEN_ADDR, ENV_JOIN_BLOCKING, ENV_JOIN_MAX_ATTEMPTS,
-    ENV_JOIN_RETRY_INTERVAL_MS, ENV_JOIN_TARGETS, ENV_JOIN_TARGET_ROLE, ENV_LISTEN_ADDR,
+    DEFAULT_STATE_STORE_SYNC_WRITE, ENV_ADMIN_ADVERTISE_PORT, ENV_ADMIN_LISTEN_ADDR,
+    ENV_ADMIN_LOCAL_ONLY, ENV_ADVERTISE_ADDR, ENV_ADVERTISE_INTER_PORT, ENV_ADVERTISE_PORT,
+    ENV_AUTO_BOOTSTRAP, ENV_CLUSTER_ID, ENV_CLUSTER_NAME, ENV_CONFIG_FILE, ENV_DATA_DIR,
+    ENV_ENABLE_RPC_SERVER, ENV_INTER_NODE_LISTEN_ADDR, ENV_JOIN_BLOCKING, ENV_JOIN_MAX_ATTEMPTS,
+    ENV_JOIN_RETRY_INTERVAL_MS, ENV_JOIN_TARGET_ROLE, ENV_JOIN_TARGETS, ENV_LISTEN_ADDR,
     ENV_NODE_ID, ENV_RPC_ADVERTISE_PORT, ENV_RPC_APPEND_BODY_LIMIT_BYTES,
     ENV_RPC_APPEND_CONCURRENCY, ENV_RPC_APPEND_TIMEOUT_MS, ENV_RPC_JSONRPC_BODY_LIMIT_BYTES,
     ENV_RPC_JSONRPC_CONCURRENCY, ENV_RPC_JSONRPC_TIMEOUT_MS, ENV_RPC_LISTEN_ADDR,
@@ -16,8 +16,8 @@ use crate::constants::{
     ENV_STATE_STORE_SYNC_WRITE, KLOG_SERVICE_NAME,
 };
 use buckyos_kit::get_buckyos_service_data_dir;
-use klog::rpc::{KRpcRoutePolicy, KRpcServerPolicy};
 use klog::KNodeId;
+use klog::rpc::{KRpcRoutePolicy, KRpcServerPolicy};
 use log::error;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -133,8 +133,11 @@ pub struct KLogRuntimeConfig {
     /// Raft protocol listen address, format "host:port".
     pub listen_addr: String,
 
-    /// Inter-node data/meta/admin listen address, format "host:port".
+    /// Inter-node data/meta listen address, format "host:port".
     pub inter_node_listen_addr: String,
+
+    /// Admin API listen address, format "host:port".
+    pub admin_listen_addr: String,
 
     /// Whether client-facing RPC server is enabled.
     pub enable_rpc_server: bool,
@@ -148,8 +151,11 @@ pub struct KLogRuntimeConfig {
     /// Advertised raft protocol port for peer-to-peer traffic.
     pub advertise_port: u16,
 
-    /// Advertised inter-node data/meta/admin port.
+    /// Advertised inter-node data/meta port.
     pub advertise_inter_port: u16,
+
+    /// Advertised admin API port.
+    pub advertise_admin_port: u16,
 
     /// Advertised client RPC port, set to 0 when RPC server is disabled.
     pub rpc_advertise_port: u16,
@@ -169,7 +175,7 @@ pub struct KLogRuntimeConfig {
     /// Whether state store writes use sync/fdatasync for durability.
     pub state_store_sync_write: bool,
 
-    /// Seed targets for auto join, each item format "host:port".
+    /// Seed admin targets for auto join, each item format "host:port".
     pub join_targets: Vec<String>,
 
     /// Retry interval for auto join loop, in milliseconds.
@@ -197,8 +203,11 @@ pub struct KLogNetworkConfigPatch {
     /// Optional override for raft listen address.
     pub listen_addr: Option<String>,
 
-    /// Optional override for inter-node data/meta/admin listen address.
+    /// Optional override for inter-node data/meta listen address.
     pub inter_node_listen_addr: Option<String>,
+
+    /// Optional override for admin API listen address.
+    pub admin_listen_addr: Option<String>,
 
     /// Optional override for client RPC enable flag.
     pub enable_rpc_server: Option<bool>,
@@ -212,8 +221,11 @@ pub struct KLogNetworkConfigPatch {
     /// Optional override for advertised raft port.
     pub advertise_port: Option<u16>,
 
-    /// Optional override for advertised inter-node data/meta/admin port.
+    /// Optional override for advertised inter-node data/meta port.
     pub advertise_inter_port: Option<u16>,
+
+    /// Optional override for advertised admin API port.
+    pub advertise_admin_port: Option<u16>,
 
     /// Optional override for advertised client RPC port.
     pub rpc_advertise_port: Option<u16>,
@@ -245,7 +257,7 @@ pub struct KLogClusterConfigPatch {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KLogJoinConfigPatch {
-    /// Optional override for join seed targets.
+    /// Optional override for join seed admin targets.
     pub targets: Option<Vec<String>>,
 
     /// Optional override for join retry interval milliseconds.
@@ -352,11 +364,13 @@ impl KLogRuntimeConfig {
             network: Some(KLogNetworkConfigPatch {
                 listen_addr: parse_env_string(ENV_LISTEN_ADDR)?,
                 inter_node_listen_addr: parse_env_string(ENV_INTER_NODE_LISTEN_ADDR)?,
+                admin_listen_addr: parse_env_string(ENV_ADMIN_LISTEN_ADDR)?,
                 enable_rpc_server: parse_env_bool(ENV_ENABLE_RPC_SERVER)?,
                 rpc_listen_addr: parse_env_string(ENV_RPC_LISTEN_ADDR)?,
                 advertise_addr: parse_env_string(ENV_ADVERTISE_ADDR)?,
                 advertise_port: parse_env_u16(ENV_ADVERTISE_PORT)?,
                 advertise_inter_port: parse_env_u16(ENV_ADVERTISE_INTER_PORT)?,
+                advertise_admin_port: parse_env_u16(ENV_ADMIN_ADVERTISE_PORT)?,
                 rpc_advertise_port: parse_env_u16(ENV_RPC_ADVERTISE_PORT)?,
             }),
             storage: Some(KLogStorageConfigPatch {
@@ -498,13 +512,59 @@ impl KLogRuntimeConfig {
 
         let default_data_dir = default_data_dir();
         let rpc_cfg = merge_rpc_config(rpc)?;
+        let listen_addr = network.listen_addr.unwrap_or_else(default_listen_addr);
+        let inter_node_listen_addr = network
+            .inter_node_listen_addr
+            .unwrap_or_else(default_inter_node_listen_addr);
+        let admin_listen_addr = network
+            .admin_listen_addr
+            .unwrap_or_else(default_admin_listen_addr);
+        if admin_listen_addr == listen_addr {
+            let msg = format!(
+                "Invalid config: network.admin_listen_addr ({}) must not equal network.listen_addr ({})",
+                admin_listen_addr, listen_addr
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        if admin_listen_addr == inter_node_listen_addr {
+            let msg = format!(
+                "Invalid config: network.admin_listen_addr ({}) must not equal network.inter_node_listen_addr ({})",
+                admin_listen_addr, inter_node_listen_addr
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        let advertise_port = network.advertise_port.unwrap_or(DEFAULT_RAFT_PORT);
+        let advertise_inter_port = network
+            .advertise_inter_port
+            .unwrap_or(DEFAULT_INTER_NODE_PORT);
+        let advertise_admin_port = network
+            .advertise_admin_port
+            .or_else(|| parse_port_from_addr(&admin_listen_addr))
+            .unwrap_or(DEFAULT_ADMIN_PORT);
+        if advertise_admin_port == advertise_port {
+            let msg = format!(
+                "Invalid config: network.advertise_admin_port ({}) must not equal network.advertise_port ({})",
+                advertise_admin_port, advertise_port
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        if advertise_admin_port == advertise_inter_port {
+            let msg = format!(
+                "Invalid config: network.advertise_admin_port ({}) must not equal network.advertise_inter_port ({})",
+                advertise_admin_port, advertise_inter_port
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
 
         Ok(Self {
             node_id,
-            listen_addr: network.listen_addr.unwrap_or_else(default_listen_addr),
-            inter_node_listen_addr: network
-                .inter_node_listen_addr
-                .unwrap_or_else(default_inter_node_listen_addr),
+            listen_addr,
+            inter_node_listen_addr,
+            admin_listen_addr,
             enable_rpc_server: network
                 .enable_rpc_server
                 .unwrap_or(DEFAULT_ENABLE_RPC_SERVER),
@@ -514,10 +574,9 @@ impl KLogRuntimeConfig {
             advertise_addr: network
                 .advertise_addr
                 .unwrap_or_else(|| DEFAULT_ADVERTISE_ADDR.to_string()),
-            advertise_port: network.advertise_port.unwrap_or(DEFAULT_RAFT_PORT),
-            advertise_inter_port: network
-                .advertise_inter_port
-                .unwrap_or(DEFAULT_INTER_NODE_PORT),
+            advertise_port,
+            advertise_inter_port,
+            advertise_admin_port,
             rpc_advertise_port: network.rpc_advertise_port.unwrap_or(DEFAULT_RPC_PORT),
             data_dir: storage.data_dir.unwrap_or(default_data_dir),
             cluster_name,
@@ -549,6 +608,10 @@ fn default_listen_addr() -> String {
 
 fn default_inter_node_listen_addr() -> String {
     format!("{}:{}", DEFAULT_LISTEN_HOST, DEFAULT_INTER_NODE_PORT)
+}
+
+fn default_admin_listen_addr() -> String {
+    format!("{}:{}", DEFAULT_RPC_LISTEN_HOST, DEFAULT_ADMIN_PORT)
 }
 
 fn default_rpc_listen_addr() -> String {
@@ -604,6 +667,11 @@ fn merge_rpc_route_config(
     }
 
     Ok(cfg)
+}
+
+fn parse_port_from_addr(addr: &str) -> Option<u16> {
+    let (_, port_str) = addr.rsplit_once(':')?;
+    port_str.parse::<u16>().ok()
 }
 
 fn parse_env_string(key: &str) -> Result<Option<String>, String> {
@@ -739,11 +807,13 @@ node_id = 9
 [network]
 listen_addr = "0.0.0.0:22001"
 inter_node_listen_addr = "0.0.0.0:22002"
+admin_listen_addr = "127.0.0.1:22003"
 enable_rpc_server = false
 rpc_listen_addr = "0.0.0.0:22101"
 advertise_addr = "10.2.3.4"
 advertise_port = 22001
 advertise_inter_port = 22002
+advertise_admin_port = 22003
 rpc_advertise_port = 22101
 
 [storage]
@@ -786,11 +856,13 @@ concurrency = 128
         assert_eq!(cfg.node_id, 9);
         assert_eq!(cfg.listen_addr, "0.0.0.0:22001");
         assert_eq!(cfg.inter_node_listen_addr, "0.0.0.0:22002");
+        assert_eq!(cfg.admin_listen_addr, "127.0.0.1:22003");
         assert!(!cfg.enable_rpc_server);
         assert_eq!(cfg.rpc_listen_addr, "0.0.0.0:22101");
         assert_eq!(cfg.advertise_addr, "10.2.3.4");
         assert_eq!(cfg.advertise_port, 22001);
         assert_eq!(cfg.advertise_inter_port, 22002);
+        assert_eq!(cfg.advertise_admin_port, 22003);
         assert_eq!(cfg.rpc_advertise_port, 22101);
         assert_eq!(cfg.data_dir, PathBuf::from("/tmp/klog_cfg_test_full"));
         assert_eq!(cfg.cluster_name, "cluster_a");
@@ -864,11 +936,13 @@ id = "cluster_partial_id"
         assert_eq!(cfg.node_id, 7);
         assert_eq!(cfg.listen_addr, default_listen_addr());
         assert_eq!(cfg.inter_node_listen_addr, default_inter_node_listen_addr());
+        assert_eq!(cfg.admin_listen_addr, default_admin_listen_addr());
         assert_eq!(cfg.enable_rpc_server, DEFAULT_ENABLE_RPC_SERVER);
         assert_eq!(cfg.rpc_listen_addr, default_rpc_listen_addr());
         assert_eq!(cfg.advertise_addr, "192.168.2.7");
         assert_eq!(cfg.advertise_port, DEFAULT_RAFT_PORT);
         assert_eq!(cfg.advertise_inter_port, DEFAULT_INTER_NODE_PORT);
+        assert_eq!(cfg.advertise_admin_port, DEFAULT_ADMIN_PORT);
         assert_eq!(cfg.rpc_advertise_port, DEFAULT_RPC_PORT);
         assert_eq!(cfg.data_dir, default_data_dir());
         assert_eq!(cfg.cluster_name, "cluster_partial");
@@ -973,16 +1047,41 @@ targets = ["127.0.0.1:21001"]
     }
 
     #[test]
+    fn test_from_file_admin_listener_must_be_distinct() {
+        let file = unique_test_file("admin_listener_conflict");
+        let content = r#"
+node_id = 7
+
+[network]
+listen_addr = "0.0.0.0:21001"
+inter_node_listen_addr = "0.0.0.0:21002"
+admin_listen_addr = "0.0.0.0:21001"
+
+[cluster]
+name = "cluster_admin_conflict"
+id = "cluster_admin_conflict_id"
+"#;
+        std::fs::write(&file, content).expect("write file");
+
+        let err = KLogRuntimeConfig::from_file(&file).expect_err("admin listener must be distinct");
+        assert!(err.contains("admin_listen_addr"));
+
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
     fn test_from_buckyos_patch() {
         let patch = BuckyosKlogConfig {
             network: Some(KLogNetworkConfigPatch {
                 listen_addr: Some("0.0.0.0:23001".to_string()),
                 inter_node_listen_addr: Some("0.0.0.0:23002".to_string()),
+                admin_listen_addr: Some("127.0.0.1:23003".to_string()),
                 enable_rpc_server: Some(false),
                 rpc_listen_addr: Some("0.0.0.0:23101".to_string()),
                 advertise_addr: Some("172.20.0.3".to_string()),
                 advertise_port: Some(23001),
                 advertise_inter_port: Some(23002),
+                advertise_admin_port: Some(23003),
                 rpc_advertise_port: Some(23101),
             }),
             storage: Some(KLogStorageConfigPatch {
@@ -1014,11 +1113,13 @@ targets = ["127.0.0.1:21001"]
         assert_eq!(cfg.node_id, 3);
         assert_eq!(cfg.listen_addr, "0.0.0.0:23001");
         assert_eq!(cfg.inter_node_listen_addr, "0.0.0.0:23002");
+        assert_eq!(cfg.admin_listen_addr, "127.0.0.1:23003");
         assert!(!cfg.enable_rpc_server);
         assert_eq!(cfg.rpc_listen_addr, "0.0.0.0:23101");
         assert_eq!(cfg.advertise_addr, "172.20.0.3");
         assert_eq!(cfg.advertise_port, 23001);
         assert_eq!(cfg.advertise_inter_port, 23002);
+        assert_eq!(cfg.advertise_admin_port, 23003);
         assert_eq!(cfg.rpc_advertise_port, 23101);
         assert_eq!(cfg.data_dir, default_data_dir());
         assert_eq!(cfg.cluster_name, "bk");

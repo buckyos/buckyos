@@ -10,7 +10,7 @@ pub const ENV_LISTEN_ADDR: &str = "KLOG_LISTEN_ADDR";
 /// Environment variable key: client RPC listen address.
 pub const ENV_RPC_LISTEN_ADDR: &str = "KLOG_RPC_LISTEN_ADDR";
 
-/// Environment variable key: inter-node data/meta/admin listen address.
+/// Environment variable key: inter-node data/meta listen address.
 pub const ENV_INTER_NODE_LISTEN_ADDR: &str = "KLOG_INTER_NODE_LISTEN_ADDR";
 
 /// Environment variable key: advertised host/IP for cluster peers.
@@ -22,8 +22,14 @@ pub const ENV_ADVERTISE_PORT: &str = "KLOG_ADVERTISE_PORT";
 /// Environment variable key: advertised client RPC port.
 pub const ENV_RPC_ADVERTISE_PORT: &str = "KLOG_RPC_ADVERTISE_PORT";
 
-/// Environment variable key: advertised inter-node data/meta/admin port.
+/// Environment variable key: advertised inter-node data/meta port.
 pub const ENV_ADVERTISE_INTER_PORT: &str = "KLOG_ADVERTISE_INTER_PORT";
+
+/// Environment variable key: admin API listen address.
+pub const ENV_ADMIN_LISTEN_ADDR: &str = "KLOG_ADMIN_LISTEN_ADDR";
+
+/// Environment variable key: advertised admin API port.
+pub const ENV_ADMIN_ADVERTISE_PORT: &str = "KLOG_ADMIN_ADVERTISE_PORT";
 
 /// Environment variable key: whether client RPC server is enabled.
 pub const ENV_ENABLE_RPC_SERVER: &str = "KLOG_ENABLE_RPC_SERVER";
@@ -43,7 +49,7 @@ pub const ENV_AUTO_BOOTSTRAP: &str = "KLOG_AUTO_BOOTSTRAP";
 /// Environment variable key: fsync/sync-write for state store.
 pub const ENV_STATE_STORE_SYNC_WRITE: &str = "KLOG_STATE_STORE_SYNC_WRITE";
 
-/// Environment variable key: comma-separated join targets.
+/// Environment variable key: comma-separated join targets (admin endpoint host:port).
 pub const ENV_JOIN_TARGETS: &str = "KLOG_JOIN_TARGETS";
 
 /// Environment variable key: auto-join retry interval milliseconds.
@@ -100,8 +106,11 @@ pub const DEFAULT_ADVERTISE_ADDR: &str = "127.0.0.1";
 /// Default raft protocol port (peer-to-peer replication).
 pub const DEFAULT_RAFT_PORT: u16 = 21001;
 
-/// Default inter-node service port (data/meta/admin forwarding).
+/// Default inter-node service port (data/meta forwarding).
 pub const DEFAULT_INTER_NODE_PORT: u16 = 21002;
+
+/// Default admin service port (cluster membership/state APIs).
+pub const DEFAULT_ADMIN_PORT: u16 = 21003;
 
 /// Default client RPC port (local service client).
 pub const DEFAULT_RPC_PORT: u16 = 21101;

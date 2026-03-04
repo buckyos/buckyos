@@ -16,6 +16,7 @@ pub async fn initialize_cluster_if_needed(cfg: &KLogRuntimeConfig, raft: &KRaftR
                 addr: cfg.advertise_addr.clone(),
                 port: cfg.advertise_port,
                 inter_port: cfg.advertise_inter_port,
+                admin_port: cfg.advertise_admin_port,
                 rpc_port: if cfg.enable_rpc_server {
                     cfg.rpc_advertise_port
                 } else {
@@ -202,17 +203,19 @@ async fn join_and_promote_once(
             q.append_pair("addr", &cfg.advertise_addr);
             q.append_pair("port", &cfg.advertise_port.to_string());
             q.append_pair("inter_port", &cfg.advertise_inter_port.to_string());
+            q.append_pair("admin_port", &cfg.advertise_admin_port.to_string());
             q.append_pair("rpc_port", &advertised_rpc_port.to_string());
             q.append_pair("blocking", if cfg.join_blocking { "true" } else { "false" });
         }
 
         info!(
-            "Auto-join add-learner: admin_target={}, node_id={}, addr={}, raft_port={}, inter_port={}, rpc_port={}, blocking={}",
+            "Auto-join add-learner: admin_target={}, node_id={}, addr={}, raft_port={}, inter_port={}, admin_port={}, rpc_port={}, blocking={}",
             admin_target,
             cfg.node_id,
             cfg.advertise_addr,
             cfg.advertise_port,
             cfg.advertise_inter_port,
+            cfg.advertise_admin_port,
             advertised_rpc_port,
             cfg.join_blocking
         );
@@ -385,7 +388,14 @@ fn ensure_cluster_identity_matches(
 }
 
 fn admin_target_from_node(node: &KNode) -> String {
-    format!("{}:{}", node.addr, node.port)
+    let admin_port = if node.admin_port > 0 {
+        node.admin_port
+    } else if node.inter_port > 0 {
+        node.inter_port
+    } else {
+        node.port
+    };
+    format!("{}:{}", node.addr, admin_port)
 }
 
 fn dedup_targets(targets: &mut Vec<String>) {
@@ -464,6 +474,21 @@ mod tests {
             addr: "127.0.0.1".to_string(),
             port: 21001,
             inter_port: 21002,
+            admin_port: 21003,
+            rpc_port: 31001,
+        };
+        let target = admin_target_from_node(&node);
+        assert_eq!(target, "127.0.0.1:21003");
+    }
+
+    #[test]
+    fn test_admin_target_from_node_fallback_to_raft_port() {
+        let node = KNode {
+            id: 10 as KNodeId,
+            addr: "127.0.0.1".to_string(),
+            port: 21001,
+            inter_port: 0,
+            admin_port: 0,
             rpc_port: 31001,
         };
         let target = admin_target_from_node(&node);
@@ -490,11 +515,13 @@ mod tests {
             node_id: 1,
             listen_addr: "0.0.0.0:21001".to_string(),
             inter_node_listen_addr: "0.0.0.0:21002".to_string(),
+            admin_listen_addr: "127.0.0.1:21003".to_string(),
             enable_rpc_server: true,
             rpc_listen_addr: "127.0.0.1:21101".to_string(),
             advertise_addr: "127.0.0.1".to_string(),
             advertise_port: 21001,
             advertise_inter_port: 21002,
+            advertise_admin_port: 21003,
             rpc_advertise_port: 21101,
             data_dir: PathBuf::from("/tmp/klog_cluster_test"),
             cluster_name: cluster_name.to_string(),

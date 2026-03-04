@@ -18,7 +18,7 @@ use axum::routing::{get, post};
 use openraft::ChangeMembers;
 use openraft::error::{ClientWriteError, RaftError};
 use serde::Deserialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -32,16 +32,20 @@ use tower_http::trace::TraceLayer;
 
 const CONTROL_RPC_BODY_LIMIT_BYTES: usize = 1 * 1024 * 1024;
 const SNAPSHOT_RPC_BODY_LIMIT_BYTES: usize = 8 * 1024 * 1024;
+const ADMIN_RPC_BODY_LIMIT_BYTES: usize = 1 * 1024 * 1024;
 const CONTROL_RPC_CONCURRENCY_LIMIT: usize = 128;
 const SNAPSHOT_RPC_CONCURRENCY_LIMIT: usize = 8;
+const ADMIN_RPC_CONCURRENCY_LIMIT: usize = 32;
 const CONTROL_RPC_TIMEOUT_MS: u64 = 3_000;
 const SNAPSHOT_RPC_TIMEOUT_MS: u64 = 30_000;
+const ADMIN_RPC_TIMEOUT_MS: u64 = 5_000;
 #[derive(Debug, Deserialize)]
 struct AddLearnerQuery {
     node_id: KNodeId,
     addr: String,
     port: u16,
     inter_port: Option<u16>,
+    admin_port: Option<u16>,
     rpc_port: Option<u16>,
     blocking: Option<bool>,
 }
@@ -70,6 +74,7 @@ struct KNetworkServerState {
 pub struct KNetworkServer {
     raft_addr: String,
     inter_node_addr: String,
+    admin_addr: String,
     raft: KRaftRef,
     state_store_manager: Option<KLogStateStoreManagerRef>,
     admin_local_only: bool,
@@ -81,7 +86,8 @@ impl KNetworkServer {
     pub fn new(addr: String, raft: KRaftRef) -> Self {
         Self {
             raft_addr: addr.clone(),
-            inter_node_addr: addr,
+            inter_node_addr: addr.clone(),
+            admin_addr: addr,
             raft,
             state_store_manager: None,
             admin_local_only: false,
@@ -100,6 +106,11 @@ impl KNetworkServer {
 
     pub fn with_inter_node_addr(mut self, inter_node_addr: String) -> Self {
         self.inter_node_addr = inter_node_addr;
+        self
+    }
+
+    pub fn with_admin_addr(mut self, admin_addr: String) -> Self {
+        self.admin_addr = admin_addr;
         self
     }
 
@@ -122,6 +133,23 @@ impl KNetworkServer {
     where
         F: Future<Output = ()> + Send + 'static,
     {
+        if self.admin_addr == self.raft_addr {
+            let msg = format!(
+                "Invalid KNetworkServer config: admin_addr ({}) must not equal raft_addr ({})",
+                self.admin_addr, self.raft_addr
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        if self.admin_addr == self.inter_node_addr {
+            let msg = format!(
+                "Invalid KNetworkServer config: admin_addr ({}) must not equal inter_node_addr ({})",
+                self.admin_addr, self.inter_node_addr
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
         let state = KNetworkServerState {
             raft: self.raft.clone(),
             write_service: self.state_store_manager.clone().map(|state_store_manager| {
@@ -151,6 +179,14 @@ impl KNetworkServer {
                 CONTROL_RPC_TIMEOUT_MS,
             )))
             .layer(RequestBodyLimitLayer::new(CONTROL_RPC_BODY_LIMIT_BYTES));
+        let admin_rpc_middleware = ServiceBuilder::new()
+            .layer(HandleErrorLayer::new(Self::handle_middleware_error))
+            .layer(LoadShedLayer::new())
+            .layer(ConcurrencyLimitLayer::new(ADMIN_RPC_CONCURRENCY_LIMIT))
+            .layer(TimeoutLayer::new(Duration::from_millis(
+                ADMIN_RPC_TIMEOUT_MS,
+            )))
+            .layer(RequestBodyLimitLayer::new(ADMIN_RPC_BODY_LIMIT_BYTES));
 
         let append_entries_path = RaftRequestType::AppendEntries.klog_path();
         let vote_path = RaftRequestType::Vote.klog_path();
@@ -170,6 +206,8 @@ impl KNetworkServer {
                 post(Self::handle_append_entries_request),
             )
             .route(&vote_path, post(Self::handle_vote_request))
+            .route_layer(raft_control_rpc_middleware);
+        let admin_routes = Router::new()
             .route(
                 &admin_add_learner_path,
                 post(Self::handle_add_learner_request),
@@ -186,7 +224,7 @@ impl KNetworkServer {
                 &admin_cluster_state_path,
                 get(Self::handle_cluster_state_request),
             )
-            .route_layer(raft_control_rpc_middleware);
+            .route_layer(admin_rpc_middleware);
         let inter_node_data_routes = Router::new()
             .route(&data_append_path, post(Self::handle_data_append_request))
             .route(&data_query_path, get(Self::handle_data_query_request))
@@ -222,20 +260,28 @@ impl KNetworkServer {
         let inter_node_app = Router::new()
             .merge(inter_node_data_routes)
             .layer(TraceLayer::new_for_http())
+            .with_state(state.clone());
+        let admin_app = Router::new()
+            .merge(admin_routes)
+            .layer(TraceLayer::new_for_http())
             .with_state(state);
 
         info!(
-            "KNetworkServer start: raft_addr={}, inter_node_addr={}, cluster_name={}, cluster_id={}, control_limit_bytes={}, snapshot_limit_bytes={}, control_concurrency={}, snapshot_concurrency={}, control_timeout_ms={}, snapshot_timeout_ms={}, admin_local_only={}, data_append_path={}, data_query_path={}, data_meta_put_path={}, data_meta_delete_path={}, data_meta_query_path={}, admin_add_learner_path={}, admin_remove_learner_path={}, admin_change_membership_path={}, admin_cluster_state_path={}",
+            "KNetworkServer start: raft_addr={}, inter_node_addr={}, admin_addr={}, cluster_name={}, cluster_id={}, control_limit_bytes={}, snapshot_limit_bytes={}, admin_limit_bytes={}, control_concurrency={}, snapshot_concurrency={}, admin_concurrency={}, control_timeout_ms={}, snapshot_timeout_ms={}, admin_timeout_ms={}, admin_local_only={}, data_append_path={}, data_query_path={}, data_meta_put_path={}, data_meta_delete_path={}, data_meta_query_path={}, admin_add_learner_path={}, admin_remove_learner_path={}, admin_change_membership_path={}, admin_cluster_state_path={}",
             self.raft_addr,
             self.inter_node_addr,
+            self.admin_addr,
             self.cluster_name.as_str(),
             self.cluster_id.as_str(),
             CONTROL_RPC_BODY_LIMIT_BYTES,
             SNAPSHOT_RPC_BODY_LIMIT_BYTES,
+            ADMIN_RPC_BODY_LIMIT_BYTES,
             CONTROL_RPC_CONCURRENCY_LIMIT,
             SNAPSHOT_RPC_CONCURRENCY_LIMIT,
+            ADMIN_RPC_CONCURRENCY_LIMIT,
             CONTROL_RPC_TIMEOUT_MS,
             SNAPSHOT_RPC_TIMEOUT_MS,
+            ADMIN_RPC_TIMEOUT_MS,
             self.admin_local_only,
             data_append_path,
             data_query_path,
@@ -252,103 +298,35 @@ impl KNetworkServer {
         let shutdown_tx_on_exit = shutdown_tx.clone();
         let raft_addr = self.raft_addr.clone();
         let inter_node_addr = self.inter_node_addr.clone();
+        let admin_addr = self.admin_addr.clone();
         let shutdown_task = tokio::spawn(async move {
             shutdown.await;
             info!(
-                "KNetworkServer shutdown signal received, raft_addr={}, inter_node_addr={}, stop accepting new connections and draining in-flight requests",
-                raft_addr, inter_node_addr
+                "KNetworkServer shutdown signal received, raft_addr={}, inter_node_addr={}, admin_addr={}, stop accepting new connections and draining in-flight requests",
+                raft_addr, inter_node_addr, admin_addr
             );
             let _ = shutdown_tx.send(true);
         });
 
-        let result = if self.raft_addr == self.inter_node_addr {
+        let mut listener_specs: BTreeMap<String, (Vec<&'static str>, Router)> = BTreeMap::new();
+        Self::add_listener_spec(&mut listener_specs, &self.raft_addr, "raft", raft_app);
+        Self::add_listener_spec(
+            &mut listener_specs,
+            &self.inter_node_addr,
+            "inter-node",
+            inter_node_app,
+        );
+        Self::add_listener_spec(&mut listener_specs, &self.admin_addr, "admin", admin_app);
+
+        if listener_specs.len() == 1 {
             warn!(
-                "KNetworkServer raft_addr and inter_node_addr are the same ({}), using single listener mode",
+                "KNetworkServer all listeners share same addr={}, serving raft/inter-node/admin on one listener",
                 self.raft_addr
             );
-            let app = Router::new().merge(raft_app).merge(inter_node_app);
-            let listener = tokio::net::TcpListener::bind(&self.raft_addr)
-                .await
-                .map_err(|e| {
-                    let msg = format!("KNetworkServer bind failed at {}: {}", self.raft_addr, e);
-                    error!("{}", msg);
-                    msg
-                })?;
-            axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .with_graceful_shutdown(Self::wait_shutdown_signal(shutdown_rx.clone()))
-            .await
-            .map_err(|e| {
-                let msg = format!("KNetworkServer serve failed at {}: {}", self.raft_addr, e);
-                error!("{}", msg);
-                msg
-            })
-        } else {
-            let raft_listener = tokio::net::TcpListener::bind(&self.raft_addr)
-                .await
-                .map_err(|e| {
-                    let msg = format!("KNetworkServer bind failed at {}: {}", self.raft_addr, e);
-                    error!("{}", msg);
-                    msg
-                })?;
-            let inter_listener = tokio::net::TcpListener::bind(&self.inter_node_addr)
-                .await
-                .map_err(|e| {
-                    let msg = format!(
-                        "KNetworkServer bind failed at {}: {}",
-                        self.inter_node_addr, e
-                    );
-                    error!("{}", msg);
-                    msg
-                })?;
+        }
 
-            let raft_addr = self.raft_addr.clone();
-            let inter_node_addr = self.inter_node_addr.clone();
-            let raft_shutdown_rx = shutdown_rx.clone();
-            let inter_shutdown_rx = shutdown_rx.clone();
-            let mut raft_task = tokio::spawn(async move {
-                axum::serve(
-                    raft_listener,
-                    raft_app.into_make_service_with_connect_info::<SocketAddr>(),
-                )
-                .with_graceful_shutdown(Self::wait_shutdown_signal(raft_shutdown_rx))
-                .await
-                .map_err(|e| {
-                    let msg = format!("KNetworkServer raft serve failed at {}: {}", raft_addr, e);
-                    error!("{}", msg);
-                    msg
-                })
-            });
-            let mut inter_task = tokio::spawn(async move {
-                axum::serve(inter_listener, inter_node_app)
-                    .with_graceful_shutdown(Self::wait_shutdown_signal(inter_shutdown_rx))
-                    .await
-                    .map_err(|e| {
-                        let msg = format!(
-                            "KNetworkServer inter-node serve failed at {}: {}",
-                            inter_node_addr, e
-                        );
-                        error!("{}", msg);
-                        msg
-                    })
-            });
-
-            let (raft_result, inter_result) = tokio::select! {
-                raft_done = &mut raft_task => {
-                    let _ = shutdown_tx_on_exit.send(true);
-                    let inter_done = inter_task.await;
-                    (Self::map_server_task_result("raft", raft_done), Self::map_server_task_result("inter-node", inter_done))
-                }
-                inter_done = &mut inter_task => {
-                    let _ = shutdown_tx_on_exit.send(true);
-                    let raft_done = raft_task.await;
-                    (Self::map_server_task_result("raft", raft_done), Self::map_server_task_result("inter-node", inter_done))
-                }
-            };
-            Self::combine_server_results(raft_result, inter_result)
-        };
+        let result =
+            Self::run_listener_specs(listener_specs, shutdown_rx, shutdown_tx_on_exit).await;
 
         shutdown_task.abort();
         let _ = shutdown_task.await;
@@ -366,27 +344,83 @@ impl KNetworkServer {
         }
     }
 
-    fn map_server_task_result(
-        server_name: &str,
-        result: Result<Result<(), String>, tokio::task::JoinError>,
-    ) -> Result<(), String> {
-        match result {
-            Ok(inner) => inner,
-            Err(e) => Err(format!(
-                "KNetworkServer {} task join failed: {}",
-                server_name, e
-            )),
+    fn add_listener_spec(
+        specs: &mut BTreeMap<String, (Vec<&'static str>, Router)>,
+        addr: &str,
+        role: &'static str,
+        app: Router,
+    ) {
+        match specs.remove(addr) {
+            Some((mut roles, existing_app)) => {
+                roles.push(role);
+                specs.insert(addr.to_string(), (roles, existing_app.merge(app)));
+            }
+            None => {
+                specs.insert(addr.to_string(), (vec![role], app));
+            }
         }
     }
 
-    fn combine_server_results(a: Result<(), String>, b: Result<(), String>) -> Result<(), String> {
-        match (a, b) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(e), Ok(())) | (Ok(()), Err(e)) => Err(e),
-            (Err(e1), Err(e2)) => Err(format!(
-                "both network listeners failed: raft_or_inter_err='{}'; other_err='{}'",
-                e1, e2
-            )),
+    async fn run_listener_specs(
+        specs: BTreeMap<String, (Vec<&'static str>, Router)>,
+        shutdown_rx: tokio::sync::watch::Receiver<bool>,
+        shutdown_tx_on_exit: tokio::sync::watch::Sender<bool>,
+    ) -> Result<(), String> {
+        let mut tasks = tokio::task::JoinSet::new();
+        for (addr, (roles, app)) in specs {
+            let listener = tokio::net::TcpListener::bind(&addr).await.map_err(|e| {
+                let msg = format!("KNetworkServer bind failed at {}: {}", addr, e);
+                error!("{}", msg);
+                msg
+            })?;
+            let shutdown_rx = shutdown_rx.clone();
+            let role_label = roles.join("+");
+            info!(
+                "KNetworkServer listener ready: roles={}, addr={}",
+                role_label, addr
+            );
+            tasks.spawn(async move {
+                axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .with_graceful_shutdown(Self::wait_shutdown_signal(shutdown_rx))
+                .await
+                .map_err(|e| {
+                    let msg = format!(
+                        "KNetworkServer listener serve failed: roles={}, addr={}, err={}",
+                        role_label, addr, e
+                    );
+                    error!("{}", msg);
+                    msg
+                })
+            });
+        }
+
+        let mut first_completed = false;
+        let mut errors = Vec::new();
+        while let Some(done) = tasks.join_next().await {
+            let result = match done {
+                Ok(inner) => inner,
+                Err(e) => Err(format!("KNetworkServer listener task join failed: {}", e)),
+            };
+
+            if !first_completed {
+                first_completed = true;
+                let _ = shutdown_tx_on_exit.send(true);
+            }
+
+            if let Err(e) = result {
+                errors.push(e);
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else if errors.len() == 1 {
+            Err(errors.remove(0))
+        } else {
+            Err(format!("multiple listeners failed: {}", errors.join(" | ")))
         }
     }
 
@@ -632,11 +666,20 @@ impl KNetworkServer {
             addr: query.addr.clone(),
             port: query.port,
             inter_port: query.inter_port.unwrap_or(query.port),
+            admin_port: query
+                .admin_port
+                .unwrap_or_else(|| query.inter_port.unwrap_or(query.port)),
             rpc_port: query.rpc_port.unwrap_or(query.port),
         };
         info!(
-            "KNetworkServer admin add-learner request: node_id={}, addr={}, raft_port={}, inter_port={}, rpc_port={}, blocking={}",
-            query.node_id, query.addr, query.port, node.inter_port, node.rpc_port, blocking
+            "KNetworkServer admin add-learner request: node_id={}, addr={}, raft_port={}, inter_port={}, admin_port={}, rpc_port={}, blocking={}",
+            query.node_id,
+            query.addr,
+            query.port,
+            node.inter_port,
+            node.admin_port,
+            node.rpc_port,
+            blocking
         );
 
         match state.raft.add_learner(query.node_id, node, blocking).await {

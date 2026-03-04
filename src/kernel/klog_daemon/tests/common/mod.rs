@@ -1,9 +1,10 @@
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::process::{Child, Command};
 use tokio::time::{Instant, sleep};
@@ -47,6 +48,7 @@ pub struct TestNode {
     pub node_id: u64,
     pub port: u16,
     pub inter_node_port: u16,
+    pub admin_port: u16,
     pub rpc_port: u16,
     pub data_dir: PathBuf,
     pub config_path: PathBuf,
@@ -63,9 +65,64 @@ impl TestNode {
 impl Drop for TestNode {
     fn drop(&mut self) {
         let _ = self.child.start_kill();
+        unregister_admin_port(self.port);
         let _ = std::fs::remove_file(&self.config_path);
         let _ = std::fs::remove_dir_all(&self.data_dir);
     }
+}
+
+static RAFT_TO_ADMIN_PORT_MAP: OnceLock<Mutex<HashMap<u16, u16>>> = OnceLock::new();
+
+fn admin_port_map() -> &'static Mutex<HashMap<u16, u16>> {
+    RAFT_TO_ADMIN_PORT_MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn derive_admin_port(raft_port: u16) -> u16 {
+    const OFFSET: u16 = 1_000;
+    if raft_port <= u16::MAX - OFFSET {
+        raft_port + OFFSET
+    } else {
+        raft_port - OFFSET
+    }
+}
+
+fn register_admin_port(raft_port: u16, admin_port: u16) {
+    if let Ok(mut m) = admin_port_map().lock() {
+        m.insert(raft_port, admin_port);
+    }
+}
+
+fn unregister_admin_port(raft_port: u16) {
+    if let Ok(mut m) = admin_port_map().lock() {
+        m.remove(&raft_port);
+    }
+}
+
+fn resolve_admin_port(port_or_admin: u16) -> u16 {
+    if let Ok(m) = admin_port_map().lock() {
+        if let Some(admin_port) = m.get(&port_or_admin) {
+            return *admin_port;
+        }
+        if m.values().any(|v| *v == port_or_admin) {
+            return port_or_admin;
+        }
+    }
+    derive_admin_port(port_or_admin)
+}
+
+fn normalize_join_targets_as_admin_endpoints(targets: &[String]) -> Vec<String> {
+    targets
+        .iter()
+        .map(|target| {
+            let trimmed = target.trim();
+            if let Some((host, port_str)) = trimmed.rsplit_once(':')
+                && let Ok(port) = port_str.parse::<u16>()
+            {
+                return format!("{}:{}", host, resolve_admin_port(port));
+            }
+            trimmed.to_string()
+        })
+        .collect()
 }
 
 pub fn unique_tmp_path(tag: &str) -> PathBuf {
@@ -82,8 +139,23 @@ pub fn unique_tmp_path(tag: &str) -> PathBuf {
 }
 
 pub fn choose_free_port() -> std::io::Result<u16> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    Ok(listener.local_addr()?.port())
+    for _ in 0..200 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        drop(listener);
+
+        let admin_port = derive_admin_port(port);
+        if port == admin_port {
+            continue;
+        }
+        if std::net::TcpListener::bind(("127.0.0.1", admin_port)).is_ok() {
+            return Ok(port);
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AddrNotAvailable,
+        "failed to choose free port pair for raft/admin",
+    ))
 }
 
 pub fn choose_unique_ports(count: usize) -> Result<Vec<u16>, String> {
@@ -93,9 +165,16 @@ pub fn choose_unique_ports(count: usize) -> Result<Vec<u16>, String> {
     while ports.len() < count && attempts < 200 {
         attempts += 1;
         let p = choose_free_port().map_err(|e| format!("choose free port failed: {}", e))?;
-        if guard.insert(p) {
-            ports.push(p);
+        let admin_port = derive_admin_port(p);
+        if p == admin_port || guard.contains(&p) || guard.contains(&admin_port) {
+            continue;
         }
+        if std::net::TcpListener::bind(("127.0.0.1", admin_port)).is_err() {
+            continue;
+        }
+        guard.insert(p);
+        guard.insert(admin_port);
+        ports.push(p);
     }
     if ports.len() != count {
         return Err(format!(
@@ -124,6 +203,7 @@ pub fn write_config_file(
     node_id: u64,
     port: u16,
     inter_node_port: u16,
+    admin_port: u16,
     rpc_port: u16,
     data_dir: &PathBuf,
     cluster_name: &str,
@@ -138,10 +218,12 @@ node_id = {node_id}
 [network]
 listen_addr = "127.0.0.1:{port}"
 inter_node_listen_addr = "127.0.0.1:{inter_node_port}"
+admin_listen_addr = "127.0.0.1:{admin_port}"
 rpc_listen_addr = "127.0.0.1:{rpc_port}"
 advertise_addr = "127.0.0.1"
 advertise_port = {port}
 advertise_inter_port = {inter_node_port}
+advertise_admin_port = {admin_port}
 rpc_advertise_port = {rpc_port}
 
 [storage]
@@ -163,6 +245,7 @@ target_role = "{target_role}"
         node_id = node_id,
         port = port,
         inter_node_port = inter_node_port,
+        admin_port = admin_port,
         rpc_port = rpc_port,
         data_dir = data_dir.display(),
         cluster_name = cluster_name,
@@ -266,41 +349,51 @@ pub async fn spawn_node(
             break p;
         }
     };
+    let admin_port = derive_admin_port(port);
     let inter_node_port = loop {
         let p = choose_free_port().map_err(|e| format!("choose inter-node port failed: {}", e))?;
-        if p != port && p != rpc_port {
+        if p != port && p != rpc_port && p != admin_port {
             break p;
         }
     };
+    let normalized_join_targets = normalize_join_targets_as_admin_endpoints(join_targets);
     write_config_file(
         &config_path,
         node_id,
         port,
         inter_node_port,
+        admin_port,
         rpc_port,
         &data_dir,
         cluster_name,
         auto_bootstrap,
-        join_targets,
+        &normalized_join_targets,
         target_role,
     )?;
 
     let mut child = spawn_daemon_child(&config_path).await?;
+    register_admin_port(port, admin_port);
 
-    wait_node_http_ready_after_spawn(
+    if let Err(e) = wait_node_http_ready_after_spawn(
         &mut child,
         node_id,
         port,
         inter_node_port,
+        admin_port,
         rpc_port,
         Duration::from_secs(12),
     )
-    .await?;
+    .await
+    {
+        unregister_admin_port(port);
+        return Err(e);
+    }
 
     Ok(TestNode {
         node_id,
         port,
         inter_node_port,
+        admin_port,
         rpc_port,
         data_dir,
         config_path,
@@ -311,15 +404,21 @@ pub async fn spawn_node(
 pub async fn restart_node(node: &mut TestNode) -> Result<(), String> {
     node.stop().await;
     let mut child = spawn_daemon_child(&node.config_path).await?;
-    wait_node_http_ready_after_spawn(
+    register_admin_port(node.port, node.admin_port);
+    if let Err(e) = wait_node_http_ready_after_spawn(
         &mut child,
         node.node_id,
         node.port,
         node.inter_node_port,
+        node.admin_port,
         node.rpc_port,
         Duration::from_secs(12),
     )
-    .await?;
+    .await
+    {
+        unregister_admin_port(node.port);
+        return Err(e);
+    }
     node.child = child;
     Ok(())
 }
@@ -357,6 +456,7 @@ pub async fn wait_node_http_ready_after_spawn(
     node_id: u64,
     port: u16,
     inter_node_port: u16,
+    admin_port: u16,
     rpc_port: u16,
     timeout: Duration,
 ) -> Result<(), String> {
@@ -378,7 +478,7 @@ pub async fn wait_node_http_ready_after_spawn(
             ));
         }
 
-        match fetch_cluster_state(&client, port).await {
+        match fetch_cluster_state(&client, admin_port).await {
             Ok(_) => {
                 match query_logs(&client, inter_node_port, None, None, Some(1), Some(false)).await {
                     Ok(_) => match query_logs(&client, rpc_port, None, None, Some(1), Some(false))
@@ -414,7 +514,8 @@ pub async fn fetch_cluster_state(
     client: &reqwest::Client,
     port: u16,
 ) -> Result<ClusterState, String> {
-    let url = format!("http://127.0.0.1:{}/klog/admin/cluster-state", port);
+    let admin_port = resolve_admin_port(port);
+    let url = format!("http://127.0.0.1:{}/klog/admin/cluster-state", admin_port);
     let resp = client
         .get(&url)
         .send()
@@ -621,9 +722,10 @@ pub async fn send_remove_learner(port: u16, node_id: u64) -> Result<String, Stri
         .timeout(Duration::from_millis(1200))
         .build()
         .map_err(|e| format!("failed to build http client: {}", e))?;
+    let admin_port = resolve_admin_port(port);
     let url = format!(
         "http://127.0.0.1:{}/klog/admin/remove-learner?node_id={}",
-        port, node_id
+        admin_port, node_id
     );
     let resp = client
         .post(&url)
@@ -650,9 +752,10 @@ pub async fn send_add_learner(
         .timeout(Duration::from_millis(1200))
         .build()
         .map_err(|e| format!("failed to build http client: {}", e))?;
+    let admin_port = resolve_admin_port(port);
     let url = format!(
         "http://127.0.0.1:{}/klog/admin/add-learner?node_id={}&addr={}&port={}&blocking={}",
-        port,
+        admin_port,
         node_id,
         addr,
         node_port,
