@@ -360,6 +360,13 @@ declare global {
     sn: {
       url: string
       username: string
+      host: string
+      ip: string
+      dnsARecords: string[]
+      dnsTxtRecords: string[]
+      digError: string
+      selfCertState: boolean
+      selfCertStateSource: string
     }
     files: ZoneConfigFile[]
     notes: string[]

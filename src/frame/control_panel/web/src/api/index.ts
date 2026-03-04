@@ -306,6 +306,13 @@ const mockZoneOverview: ZoneOverview = {
   sn: {
     url: 'http://sn.buckyos.ai/kapi/sn',
     username: 'meteor101',
+    host: 'sn.buckyos.ai',
+    ip: '207.246.96.13',
+    dnsARecords: ['207.246.96.13'],
+    dnsTxtRecords: ['PKX=...', 'DEV=...'],
+    digError: '',
+    selfCertState: true,
+    selfCertStateSource: '/opt/buckyos/data/cyfs_gateway/sn_dns/self_cert_state.json',
   },
   files: [
     {

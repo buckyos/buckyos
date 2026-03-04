@@ -66,6 +66,7 @@ type AccessModePill = {
 type SettingsMenuKey =
   | 'general'
   | 'zone-manager'
+  | 'sn'
   | 'sys-manager'
   | 'gateway-manager'
   | 'storage'
@@ -129,6 +130,7 @@ const USER_WINDOW_GROUPS: { id: UserGroupKey; label: string; description: string
 const SETTINGS_WINDOW_MENU: { id: SettingsMenuKey; label: string; description: string }[] = [
   { id: 'general', label: 'General', description: 'Identity and basic preferences' },
   { id: 'zone-manager', label: 'Zone Manager', description: 'Zone naming and topology' },
+  { id: 'sn', label: 'SN', description: 'SN resolver and certificate diagnostics' },
   { id: 'sys-manager', label: 'Sys Manager', description: 'Runtime and service health' },
   { id: 'gateway-manager', label: 'Gateway Manager', description: 'Ingress and access mode' },
   { id: 'storage', label: 'Storage', description: 'Capacity and disk health' },
@@ -172,6 +174,7 @@ const DesktopHomePage = () => {
   const [gatewayError, setGatewayError] = useState<string | null>(null)
   const [logPeek, setLogPeek] = useState<SystemLogEntry[] | null>(null)
   const [logPeekError, setLogPeekError] = useState<string | null>(null)
+  const [settingsMenu, setSettingsMenu] = useState<SettingsMenuKey>('general')
 
   const zCounterRef = useRef(10)
   const [windows, setWindows] = useState<DesktopWindow[]>([])
@@ -1081,6 +1084,8 @@ const DesktopHomePage = () => {
       diskPercent,
       rxRate,
       txRate,
+      settingsMenu,
+      setSettingsMenu,
       navigateTo,
     }),
     [
@@ -1109,6 +1114,8 @@ const DesktopHomePage = () => {
       navigateTo,
       rxRate,
       status,
+      settingsMenu,
+      setSettingsMenu,
       txRate,
     ],
   )
@@ -1116,6 +1123,10 @@ const DesktopHomePage = () => {
   const onNotificationsClick = useCallback(() => navigateTo('/notifications'), [navigateTo])
   const onOpenNetworkWindow = useCallback(() => openWindow('network'), [openWindow])
   const onNavigateSettings = useCallback(() => navigateTo('/settings'), [navigateTo])
+  const onOpenSnSettings = useCallback(() => {
+    setSettingsMenu('sn')
+    openWindow('settings')
+  }, [openWindow])
   const onSignOutClick = useCallback(async () => {
     await signOut()
     navigate('/login', { replace: true })
@@ -1164,6 +1175,7 @@ const DesktopHomePage = () => {
         txRate={txRate}
         onNotificationsClick={onNotificationsClick}
         onNetworkClick={onOpenNetworkWindow}
+        onSnModeClick={onOpenSnSettings}
         onSignOutClick={onSignOutClick}
       />
 
@@ -1221,6 +1233,7 @@ type DesktopHeaderProps = {
   txRate: number
   onNotificationsClick: () => void
   onNetworkClick: () => void
+  onSnModeClick: () => void
   onSignOutClick: () => void
 }
 
@@ -1236,8 +1249,10 @@ const DesktopHeader = memo((props: DesktopHeaderProps) => {
     txRate,
     onNotificationsClick,
     onNetworkClick,
+    onSnModeClick,
     onSignOutClick,
   } = props
+  const snModeClickable = accessModePill.label === 'SN mode'
 
   return (
     <header className="fixed inset-x-0 top-0 z-50 border-b border-white/10 bg-white/10 backdrop-blur-md">
@@ -1261,8 +1276,10 @@ const DesktopHeader = memo((props: DesktopHeaderProps) => {
             />
             {systemPill.label}
           </div>
-          <div
-            className={`group relative hidden items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ring-1 lg:inline-flex ${accessModePill.tone}`}
+          <button
+            type="button"
+            onClick={snModeClickable ? onSnModeClick : undefined}
+            className={`group relative hidden items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ring-1 lg:inline-flex ${accessModePill.tone} ${snModeClickable ? 'cursor-pointer' : 'cursor-default'}`}
             title={accessModePill.description}
           >
             <span className={`inline-flex size-2 rounded-full ${accessModePill.dot}`} aria-hidden />
@@ -1271,7 +1288,7 @@ const DesktopHeader = memo((props: DesktopHeaderProps) => {
               <p>{accessModePill.description}</p>
               <p className="mt-1 text-white/65">Current host: {accessModePill.host}</p>
             </div>
-          </div>
+          </button>
         </div>
 
         <div className="flex items-center gap-3">
@@ -1577,6 +1594,8 @@ type WindowData = {
   diskPercent: number
   rxRate: number
   txRate: number
+  settingsMenu: SettingsMenuKey
+  setSettingsMenu: (menu: SettingsMenuKey) => void
   navigateTo: (to: string) => void
 }
 
@@ -1941,9 +1960,10 @@ const WindowBody = memo((props: WindowBodyProps) => {
     diskPercent,
     rxRate,
     txRate,
+    settingsMenu,
+    setSettingsMenu,
     navigateTo,
   } = data
-  const [settingsMenu, setSettingsMenu] = useState<SettingsMenuKey>('general')
   const [expandedGatewayFile, setExpandedGatewayFile] = useState<string | null>(null)
   const [gatewayFileCache, setGatewayFileCache] = useState<Record<string, GatewayFileContent>>({})
   const [gatewayFileLoadingName, setGatewayFileLoadingName] = useState<string | null>(null)
@@ -2460,45 +2480,25 @@ const WindowBody = memo((props: WindowBodyProps) => {
             ) : null}
           </div>
 
-          <div className="grid gap-4 lg:grid-cols-2">
-            <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-              <p className="text-sm font-semibold text-[var(--cp-ink)]">Device profile</p>
-              <div className="mt-3 space-y-2">
-                <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Device</p>
-                  <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.device.name || '-'}</p>
-                </div>
-                <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Device DID</p>
-                  <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.device.did || '-'}</p>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                    <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Type</p>
-                    <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.device.type || '-'}</p>
-                  </div>
-                  <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                    <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Net ID</p>
-                    <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.device.netId || '-'}</p>
-                  </div>
-                </div>
+          <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">Device profile</p>
+            <div className="mt-3 space-y-2">
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Device</p>
+                <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.device.name || '-'}</p>
               </div>
-            </div>
-
-            <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-              <p className="text-sm font-semibold text-[var(--cp-ink)]">SN profile</p>
-              <div className="mt-3 space-y-2">
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Device DID</p>
+                <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.device.did || '-'}</p>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
                 <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">SN username</p>
-                  <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.sn.username || '-'}</p>
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Type</p>
+                  <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.device.type || '-'}</p>
                 </div>
                 <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">SN URL</p>
-                  <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">{snUrlDisplay}</p>
-                </div>
-                <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Config dir</p>
-                  <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.etcDir || '/opt/buckyos/etc'}</p>
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Net ID</p>
+                  <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.device.netId || '-'}</p>
                 </div>
               </div>
             </div>
@@ -2536,6 +2536,91 @@ const WindowBody = memo((props: WindowBodyProps) => {
             ) : (
               <p>Zone manager shows identity and topology values sourced from /opt/buckyos/etc.</p>
             )}
+          </div>
+        </div>
+      ),
+      sn: (
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm font-semibold text-[var(--cp-ink)]">SN profile</p>
+              <span
+                className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                  zoneOverview?.sn.selfCertState
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : 'bg-slate-200 text-slate-700'
+                }`}
+              >
+                self cert: {zoneOverview?.sn.selfCertState ? 'true' : 'false'}
+              </span>
+            </div>
+
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">SN username</p>
+                <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.sn.username || '-'}</p>
+              </div>
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">SN URL</p>
+                <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">{snUrlDisplay}</p>
+              </div>
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">SN host</p>
+                <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.sn.host || '-'}</p>
+              </div>
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">SN IP</p>
+                <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.sn.ip || '-'}</p>
+              </div>
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2 sm:col-span-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Self cert source</p>
+                <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">
+                  {zoneOverview?.sn.selfCertStateSource || '-'}
+                </p>
+              </div>
+            </div>
+
+            {zoneOverview?.sn.digError ? (
+              <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                dig diagnostics: {zoneOverview.sn.digError}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+              <p className="text-sm font-semibold text-[var(--cp-ink)]">DNS A via SN</p>
+              <div className="mt-3 space-y-2">
+                {(zoneOverview?.sn.dnsARecords ?? []).map((record) => (
+                  <div
+                    key={record}
+                    className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2 text-xs font-semibold text-[var(--cp-ink)]"
+                  >
+                    {record}
+                  </div>
+                ))}
+                {!(zoneOverview?.sn.dnsARecords ?? []).length ? (
+                  <p className="text-xs text-[var(--cp-muted)]">No A records returned from SN query.</p>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+              <p className="text-sm font-semibold text-[var(--cp-ink)]">DNS TXT via SN</p>
+              <div className="mt-3 space-y-2">
+                {(zoneOverview?.sn.dnsTxtRecords ?? []).map((record) => (
+                  <div
+                    key={record}
+                    className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2 text-xs text-[var(--cp-ink)]"
+                  >
+                    <p className="break-all font-mono">{record}</p>
+                  </div>
+                ))}
+                {!(zoneOverview?.sn.dnsTxtRecords ?? []).length ? (
+                  <p className="text-xs text-[var(--cp-muted)]">No TXT records returned from SN query.</p>
+                ) : null}
+              </div>
+            </div>
           </div>
         </div>
       ),

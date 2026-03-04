@@ -64,6 +64,7 @@ const ZONE_CONFIG_FILES: [&str; 3] = [
     "node_identity.json",
 ];
 const CONTROL_PANEL_AUTH_APPID: &str = "control-panel";
+const SN_SELF_CERT_STATE_PATH: &str = "/opt/buckyos/data/cyfs_gateway/sn_dns/self_cert_state.json";
 
 #[derive(Clone, Debug)]
 struct RpcAuthPrincipal {
@@ -3153,6 +3154,118 @@ impl ControlPanelServer {
         stacks
     }
 
+    fn extract_host_from_url(raw: &str) -> Option<String> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        let normalized = if trimmed.contains("://") {
+            trimmed.to_string()
+        } else {
+            format!("https://{}", trimmed)
+        };
+
+        url::Url::parse(normalized.as_str())
+            .ok()
+            .and_then(|value| value.host_str().map(|host| host.to_string()))
+            .map(|value| value.trim().trim_matches('.').to_string())
+            .filter(|value| !value.is_empty())
+    }
+
+    fn query_dig_short_records(
+        server: Option<&str>,
+        record_name: &str,
+        record_type: &str,
+    ) -> Result<Vec<String>, String> {
+        let mut cmd = Command::new("dig");
+        cmd.arg("+short");
+
+        if let Some(server) = server.map(|item| item.trim()).filter(|item| !item.is_empty()) {
+            cmd.arg(format!("@{}", server));
+        }
+
+        let output = cmd
+            .arg(record_name)
+            .arg(record_type)
+            .output()
+            .map_err(|err| {
+                if err.kind() == std::io::ErrorKind::NotFound {
+                    "dig command not found. Please install dnsutils/bind-tools.".to_string()
+                } else {
+                    format!("failed to execute dig: {}", err)
+                }
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if stderr.is_empty() {
+                return Err(format!(
+                    "dig {} {} failed with status {}",
+                    record_name, record_type, output.status
+                ));
+            }
+            return Err(stderr);
+        }
+
+        let records = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|line| line.trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<String>>();
+
+        Ok(records)
+    }
+
+    fn self_cert_state_matches_domain(cert_domain: &str, zone_domain: &str) -> bool {
+        let cert_domain = cert_domain.trim().trim_matches('.').to_lowercase();
+        let zone_domain = zone_domain.trim().trim_matches('.').to_lowercase();
+        if cert_domain.is_empty() || zone_domain.is_empty() {
+            return false;
+        }
+
+        if cert_domain == zone_domain {
+            return true;
+        }
+
+        cert_domain
+            .strip_prefix("*.")
+            .map(|suffix| zone_domain == suffix || zone_domain.ends_with(format!(".{}", suffix).as_str()))
+            .unwrap_or(false)
+    }
+
+    fn read_self_cert_state(zone_domain: &str) -> Result<Option<bool>, String> {
+        let content = std::fs::read_to_string(SN_SELF_CERT_STATE_PATH)
+            .map_err(|err| format!("read self cert state failed: {}", err))?;
+        let parsed = serde_json::from_str::<Value>(content.as_str())
+            .map_err(|err| format!("parse self cert state failed: {}", err))?;
+        let items = parsed
+            .as_array()
+            .ok_or_else(|| "self cert state is not an array".to_string())?;
+
+        let mut wildcard_state: Option<bool> = None;
+        for item in items {
+            let domain = item
+                .get("domain")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let state = item.get("state").and_then(|value| value.as_bool());
+            let Some(state) = state else {
+                continue;
+            };
+
+            if domain.trim().eq_ignore_ascii_case(zone_domain.trim()) {
+                return Ok(Some(state));
+            }
+
+            if wildcard_state.is_none() && Self::self_cert_state_matches_domain(domain, zone_domain) {
+                wildcard_state = Some(state);
+            }
+        }
+
+        Ok(wildcard_state)
+    }
+
     async fn handle_zone_overview(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         let start_config_path = Self::zone_config_file_path("start_config.json")
             .unwrap_or_else(|| Path::new(GATEWAY_ETC_DIR).join("start_config.json"));
@@ -3178,6 +3291,12 @@ impl ControlPanelServer {
         let mut net_id = String::new();
         let mut sn_url = String::new();
         let mut sn_username = String::new();
+        let mut sn_ip = String::new();
+        let mut sn_dns_a_records: Vec<String> = Vec::new();
+        let mut sn_dns_txt_records: Vec<String> = Vec::new();
+        let mut sn_dig_error = String::new();
+        let mut self_cert_state = false;
+        let self_cert_state_source = SN_SELF_CERT_STATE_PATH.to_string();
         let mut zone_iat: i64 = 0;
         let mut notes: Vec<String> = Vec::new();
 
@@ -3297,6 +3416,80 @@ impl ControlPanelServer {
             notes.push("device name not found in node_device_config.json".to_string());
         }
 
+        let mut dig_errors: Vec<String> = Vec::new();
+        let mut dig_available = true;
+        let sn_host = Self::extract_host_from_url(sn_url.as_str()).unwrap_or_default();
+
+        if sn_host.is_empty() {
+            notes.push("SN host cannot be parsed from sn.url".to_string());
+        } else {
+            match Self::query_dig_short_records(None, sn_host.as_str(), "A") {
+                Ok(records) => {
+                    if let Some(first_ip) = records.first() {
+                        sn_ip = first_ip.to_string();
+                    }
+                }
+                Err(err) => {
+                    dig_available = !err.contains("dig command not found");
+                    dig_errors.push(format!("resolve SN host A failed: {}", err));
+                }
+            }
+        }
+
+        if !zone_domain.is_empty() && dig_available {
+            let dns_server = if !sn_ip.is_empty() {
+                Some(sn_ip.as_str())
+            } else if !sn_host.is_empty() {
+                Some(sn_host.as_str())
+            } else {
+                None
+            };
+
+            if let Some(server) = dns_server {
+                match Self::query_dig_short_records(Some(server), zone_domain.as_str(), "A") {
+                    Ok(records) => {
+                        sn_dns_a_records = records;
+                    }
+                    Err(err) => {
+                        dig_available = !err.contains("dig command not found");
+                        dig_errors.push(format!("query zone A via SN failed: {}", err));
+                    }
+                }
+
+                if dig_available {
+                    match Self::query_dig_short_records(Some(server), zone_domain.as_str(), "TXT") {
+                        Ok(records) => {
+                            sn_dns_txt_records = records;
+                        }
+                        Err(err) => {
+                            dig_errors.push(format!("query zone TXT via SN failed: {}", err));
+                        }
+                    }
+                }
+            } else {
+                dig_errors.push("SN DNS server is unavailable for dig query".to_string());
+            }
+        }
+
+        if !dig_errors.is_empty() {
+            sn_dig_error = dig_errors.join("; ");
+            notes.push(format!("SN dig diagnostics: {}", sn_dig_error));
+        }
+
+        if !zone_domain.is_empty() {
+            match Self::read_self_cert_state(zone_domain.as_str()) {
+                Ok(Some(state)) => {
+                    self_cert_state = state;
+                }
+                Ok(None) => {
+                    notes.push("Self cert state entry not found for current zone domain".to_string());
+                }
+                Err(err) => {
+                    notes.push(format!("Self cert state read failed: {}", err));
+                }
+            }
+        }
+
         let response = json!({
             "etcDir": GATEWAY_ETC_DIR,
             "zone": {
@@ -3316,6 +3509,13 @@ impl ControlPanelServer {
             "sn": {
                 "url": sn_url,
                 "username": sn_username,
+                "host": sn_host,
+                "ip": sn_ip,
+                "dnsARecords": sn_dns_a_records,
+                "dnsTxtRecords": sn_dns_txt_records,
+                "digError": sn_dig_error,
+                "selfCertState": self_cert_state,
+                "selfCertStateSource": self_cert_state_source,
             },
             "files": files,
             "notes": notes,
