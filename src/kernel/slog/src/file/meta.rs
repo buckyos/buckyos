@@ -151,9 +151,9 @@ impl LogMeta {
                     name: row.get(1)?,
                     create_time: row.get(2)?,
                     write_index: row.get(3)?,
-                    is_sealed: row.get(3)?,
-                    read_index: row.get(4)?,
-                    is_read_complete: row.get(5)?,
+                    is_sealed: row.get(4)?,
+                    read_index: row.get(5)?,
+                    is_read_complete: row.get(6)?,
                 })
             })
             .optional()?; // Use optional to handle no rows case
