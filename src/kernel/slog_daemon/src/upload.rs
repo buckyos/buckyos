@@ -46,15 +46,24 @@ impl LogUploader {
                 msg
             })?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+        let status = response.status();
+        let body = response.text().await.map_err(|e| {
+            let msg = format!("failed to read upload response body from server: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        Self::validate_upload_response(status, &body)
+    }
+
+    fn validate_upload_response(status: reqwest::StatusCode, body: &str) -> Result<(), String> {
+        if !status.is_success() {
             let msg = format!("server returned error status: {}, body: {}", status, body);
             error!("{}", msg);
             return Err(msg);
         }
 
-        let response = response.json::<UploadResponse>().await.map_err(|e| {
+        let response = serde_json::from_str::<UploadResponse>(body).map_err(|e| {
             let msg = format!("failed to parse upload response from server: {}", e);
             error!("{}", msg);
             msg
@@ -70,5 +79,49 @@ impl LogUploader {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_validate_upload_response_success_when_ret_is_zero() {
+        let result = LogUploader::validate_upload_response(
+            reqwest::StatusCode::OK,
+            r#"{"ret":0,"message":"ok"}"#,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_upload_response_fails_when_status_is_not_success() {
+        let result = LogUploader::validate_upload_response(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            "internal error",
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("500 Internal Server Error"));
+    }
+
+    #[test]
+    fn test_validate_upload_response_fails_when_ret_is_non_zero() {
+        let result = LogUploader::validate_upload_response(
+            reqwest::StatusCode::OK,
+            r#"{"ret":1,"message":"db write failed"}"#,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("ret=1"));
+    }
+
+    #[test]
+    fn test_validate_upload_response_fails_when_response_body_is_invalid_json() {
+        let result = LogUploader::validate_upload_response(reqwest::StatusCode::OK, "not-json");
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .contains("failed to parse upload response from server")
+        );
     }
 }
