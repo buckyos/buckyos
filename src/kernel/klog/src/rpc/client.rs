@@ -395,8 +395,8 @@ mod tests {
     use axum::extract::Json;
     use axum::http::{HeaderMap, HeaderValue, StatusCode};
     use axum::routing::post;
-    use std::net::SocketAddr;
     use std::collections::BTreeMap;
+    use std::net::SocketAddr;
     use std::time::Duration;
     use tokio::task::JoinHandle;
     use uuid::Uuid;
@@ -468,7 +468,10 @@ mod tests {
                     serde_json::from_value(request.params).expect("append params");
                 assert_eq!(params.message, "hello-klog");
                 assert_eq!(params.source.as_deref(), Some("kernel/kmsg"));
-                assert_eq!(params.attrs.as_ref().and_then(|m| m.get("pid")), Some(&"42".to_string()));
+                assert_eq!(
+                    params.attrs.as_ref().and_then(|m| m.get("pid")),
+                    Some(&"42".to_string())
+                );
 
                 let response =
                     KLogJsonRpcResponse::success(request.id, KLogAppendResponse { id: 42 });
@@ -628,6 +631,10 @@ mod tests {
                 end_id: Some(9),
                 limit: Some(2),
                 desc: Some(false),
+                level: None,
+                source: None,
+                attr_key: None,
+                attr_value: None,
                 strong_read: None,
             })
             .await

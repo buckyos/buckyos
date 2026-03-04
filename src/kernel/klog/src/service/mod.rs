@@ -1087,8 +1087,39 @@ impl KLogQueryService {
         } else {
             KLogQueryOrder::Asc
         };
+        let source = query
+            .source
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_string());
+        let attr_key = query
+            .attr_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_string());
+        let attr_value = query
+            .attr_value
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_string());
+        if attr_key.is_none() && attr_value.is_some() {
+            let msg = format!(
+                "{} data query invalid attrs filter: attr_value is set but attr_key is empty",
+                self.service_name
+            );
+            error!("{}", msg);
+            return Err(self.service_error(
+                StatusCode::BAD_REQUEST,
+                KLogErrorCode::InvalidArgument,
+                msg,
+                &trace_id,
+            ));
+        }
         info!(
-            "{} data query request: trace_id={}, strong_read={}, start_id={:?}, end_id={:?}, limit={}, order={:?}, forward_hops={}, forwarded_by={}",
+            "{} data query request: trace_id={}, strong_read={}, start_id={:?}, end_id={:?}, limit={}, order={:?}, level={:?}, source={:?}, attr_key={:?}, attr_value={:?}, forward_hops={}, forwarded_by={}",
             self.service_name,
             trace_id,
             strong_read,
@@ -1096,6 +1127,10 @@ impl KLogQueryService {
             query.end_id,
             limit,
             order,
+            query.level,
+            source.as_deref(),
+            attr_key.as_deref(),
+            attr_value.as_deref(),
             forward_hops,
             forwarded_by
         );
@@ -1107,6 +1142,10 @@ impl KLogQueryService {
                 end_id: query.end_id,
                 limit,
                 order,
+                level: query.level,
+                source,
+                attr_key,
+                attr_value,
             })
             .await
             .map_err(|e| {

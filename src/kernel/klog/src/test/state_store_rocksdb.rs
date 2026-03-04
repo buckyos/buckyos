@@ -3,8 +3,9 @@ use crate::state_store::{
     KLogQuery, KLogQueryOrder, KLogStateMachineMeta, KLogStateSnapshot, KLogStateStore,
     KLogStateStoreManager, MemoryStateStore, RocksDbSnapshotMode, RocksDbStateStore,
 };
-use crate::{KLogEntry, KLogMetaEntry};
+use crate::{KLogEntry, KLogLevel, KLogMetaEntry};
 use openraft::{CommittedLeaderId, LogId};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 #[tokio::test]
@@ -86,6 +87,10 @@ async fn test_rocksdb_request_id_dedup_persists_after_reopen() -> anyhow::Result
             end_id: Some(first_id),
             limit: 10,
             order: KLogQueryOrder::Asc,
+            level: None,
+            source: None,
+            attr_key: None,
+            attr_value: None,
         })
         .await?;
     assert_eq!(items.len(), 1);
@@ -513,6 +518,10 @@ async fn test_rocksdb_query_entries_asc_range_limit() -> anyhow::Result<()> {
             end_id: Some(13),
             limit: 2,
             order: KLogQueryOrder::Asc,
+            level: None,
+            source: None,
+            attr_key: None,
+            attr_value: None,
         })
         .await?;
     let ids = items.into_iter().map(|e| e.id).collect::<Vec<_>>();
@@ -579,10 +588,126 @@ async fn test_rocksdb_query_entries_desc_range_limit() -> anyhow::Result<()> {
             end_id: Some(23),
             limit: 2,
             order: KLogQueryOrder::Desc,
+            level: None,
+            source: None,
+            attr_key: None,
+            attr_value: None,
         })
         .await?;
     let ids = items.into_iter().map(|e| e.id).collect::<Vec<_>>();
     assert_eq!(ids, vec![23, 22]);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_rocksdb_query_entries_with_source_level_and_attrs() -> anyhow::Result<()> {
+    let path = unique_test_path("state_store_query_source_level_attrs.rocks");
+    let rocks = RocksDbStateStore::open_with_mode(&path, RocksDbSnapshotMode::Enumerate)
+        .map_err(anyhow::Error::msg)?;
+    let state_store = Arc::new(Box::new(rocks) as Box<dyn KLogStateStore>);
+    let manager = KLogStateStoreManager::new(state_store).await?;
+
+    let mut attrs_a = BTreeMap::new();
+    attrs_a.insert("service".to_string(), "kmsg".to_string());
+    attrs_a.insert("pid".to_string(), "42".to_string());
+    let mut attrs_b = BTreeMap::new();
+    attrs_b.insert("service".to_string(), "kmsg".to_string());
+    attrs_b.insert("pid".to_string(), "43".to_string());
+    let mut attrs_c = BTreeMap::new();
+    attrs_c.insert("service".to_string(), "net".to_string());
+
+    manager
+        .append(vec![
+            KLogEntry {
+                id: 100,
+                timestamp: 1,
+                node_id: 1,
+                request_id: None,
+                level: KLogLevel::Info,
+                source: Some("kernel/kmsg".to_string()),
+                attrs: attrs_a,
+                message: "a".to_string(),
+            },
+            KLogEntry {
+                id: 101,
+                timestamp: 2,
+                node_id: 1,
+                request_id: None,
+                level: KLogLevel::Error,
+                source: Some("kernel/kmsg".to_string()),
+                attrs: attrs_b,
+                message: "b".to_string(),
+            },
+            KLogEntry {
+                id: 102,
+                timestamp: 3,
+                node_id: 1,
+                request_id: None,
+                level: KLogLevel::Warn,
+                source: Some("kernel/net".to_string()),
+                attrs: attrs_c,
+                message: "c".to_string(),
+            },
+        ])
+        .await?;
+    drop(manager);
+
+    let reopened = RocksDbStateStore::open_with_mode(&path, RocksDbSnapshotMode::Enumerate)
+        .map_err(anyhow::Error::msg)?;
+    let reopened = Arc::new(Box::new(reopened) as Box<dyn KLogStateStore>);
+    let manager = KLogStateStoreManager::new(reopened).await?;
+
+    let source_items = manager
+        .query_entries(KLogQuery {
+            start_id: None,
+            end_id: None,
+            limit: 10,
+            order: KLogQueryOrder::Asc,
+            level: None,
+            source: Some("kernel/kmsg".to_string()),
+            attr_key: None,
+            attr_value: None,
+        })
+        .await?;
+    assert_eq!(
+        source_items.into_iter().map(|e| e.id).collect::<Vec<_>>(),
+        vec![100, 101]
+    );
+
+    let level_items = manager
+        .query_entries(KLogQuery {
+            start_id: None,
+            end_id: None,
+            limit: 10,
+            order: KLogQueryOrder::Desc,
+            level: Some(KLogLevel::Warn),
+            source: None,
+            attr_key: None,
+            attr_value: None,
+        })
+        .await?;
+    assert_eq!(
+        level_items.into_iter().map(|e| e.id).collect::<Vec<_>>(),
+        vec![102]
+    );
+
+    let attr_items = manager
+        .query_entries(KLogQuery {
+            start_id: None,
+            end_id: None,
+            limit: 10,
+            order: KLogQueryOrder::Asc,
+            level: None,
+            source: Some("kernel/kmsg".to_string()),
+            attr_key: Some("pid".to_string()),
+            attr_value: Some("43".to_string()),
+        })
+        .await?;
+    assert_eq!(
+        attr_items.into_iter().map(|e| e.id).collect::<Vec<_>>(),
+        vec![101]
+    );
 
     Ok(())
 }

@@ -141,11 +141,49 @@ impl KLogStateStore for MemoryStateStore {
 
     async fn query(&self, query: KLogQuery) -> KResult<Vec<KLogEntry>> {
         let logs = self.logs.lock().await;
+        let source_filter = query
+            .source
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty());
+        let attr_key_filter = query
+            .attr_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty());
+        let attr_value_filter = query
+            .attr_value
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty());
+        if attr_key_filter.is_none() && attr_value_filter.is_some() {
+            return Ok(Vec::new());
+        }
         let mut entries = logs
             .iter()
             .filter(|e| {
                 query.start_id.map(|start| e.id >= start).unwrap_or(true)
                     && query.end_id.map(|end| e.id <= end).unwrap_or(true)
+                    && query.level.map(|level| e.level == level).unwrap_or(true)
+                    && source_filter
+                        .map(|source| {
+                            e.source
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|v| !v.is_empty())
+                                .map(|v| v == source)
+                                .unwrap_or(false)
+                        })
+                        .unwrap_or(true)
+                    && attr_key_filter
+                        .map(|key| {
+                            e.attrs.get(key).is_some_and(|value| {
+                                attr_value_filter
+                                    .map(|expect| value == expect)
+                                    .unwrap_or(true)
+                            })
+                        })
+                        .unwrap_or(true)
             })
             .cloned()
             .collect::<Vec<_>>();

@@ -129,6 +129,14 @@ pub struct KLogQueryRequest {
     pub end_id: Option<u64>,
     pub limit: Option<usize>,
     pub desc: Option<bool>,
+    #[serde(default)]
+    pub level: Option<KLogLevel>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub attr_key: Option<String>,
+    #[serde(default)]
+    pub attr_value: Option<String>,
     /// When true, require linearizable read on leader before serving query.
     pub strong_read: Option<bool>,
 }

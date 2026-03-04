@@ -2,7 +2,7 @@ use super::store::{
     KLogQuery, KLogQueryOrder, KLogStateMachineMeta, KLogStateSnapshot, KLogStateSnapshotData,
     KLogStateStore, REQUEST_DEDUP_WINDOW_MS,
 };
-use crate::{KLogEntry, KLogError, KLogMetaEntry, KResult};
+use crate::{KLogEntry, KLogError, KLogLevel, KLogMetaEntry, KResult};
 use rocksdb::backup::{BackupEngine, BackupEngineOptions, RestoreOptions};
 use rocksdb::checkpoint::Checkpoint;
 use rocksdb::{
@@ -23,6 +23,8 @@ const KEY_REQUEST_DEDUP_PREFIX: &[u8] = b"m:req:";
 const KEY_DATA_META_PREFIX: &[u8] = b"d:";
 const CF_LOGS: &str = "logs";
 const CF_META: &str = "meta";
+const CF_INDEX_LEVEL: &str = "idx_level";
+const CF_INDEX_SOURCE: &str = "idx_source";
 const CHECKPOINT_SNAPSHOT_MAGIC: &str = "klog-rdb-checkpoint-v1";
 const CHECKPOINT_SNAPSHOT_PREFIX: &[u8] = b"KLOG_RDB_CP1";
 const BACKUP_ENGINE_SNAPSHOT_MAGIC: &str = "klog-rdb-backup-v1";
@@ -117,6 +119,106 @@ fn normalize_request_id(request_id: Option<&str>) -> Option<&str> {
     request_id.map(|v| v.trim()).filter(|v| !v.is_empty())
 }
 
+fn normalize_source(source: Option<&str>) -> Option<&str> {
+    source.map(|v| v.trim()).filter(|v| !v.is_empty())
+}
+
+fn level_index_code(level: KLogLevel) -> u8 {
+    match level {
+        KLogLevel::Trace => 1,
+        KLogLevel::Debug => 2,
+        KLogLevel::Info => 3,
+        KLogLevel::Warn => 4,
+        KLogLevel::Error => 5,
+        KLogLevel::Fatal => 6,
+    }
+}
+
+fn level_index_key(level: KLogLevel, id: u64) -> [u8; 9] {
+    let mut key = [0u8; 9];
+    key[0] = level_index_code(level);
+    key[1..].copy_from_slice(&id.to_be_bytes());
+    key
+}
+
+fn decode_level_index_id(key: &[u8], level: KLogLevel) -> Option<u64> {
+    if key.len() != 9 || key[0] != level_index_code(level) {
+        return None;
+    }
+    let mut id = [0u8; 8];
+    id.copy_from_slice(&key[1..]);
+    Some(u64::from_be_bytes(id))
+}
+
+fn source_index_prefix(source: &str) -> Vec<u8> {
+    let source_bytes = source.as_bytes();
+    let mut key = Vec::with_capacity(4 + source_bytes.len());
+    key.extend_from_slice(&(source_bytes.len() as u32).to_be_bytes());
+    key.extend_from_slice(source_bytes);
+    key
+}
+
+fn source_index_key(source: &str, id: u64) -> Vec<u8> {
+    let mut key = source_index_prefix(source);
+    key.extend_from_slice(&id.to_be_bytes());
+    key
+}
+
+fn decode_source_index_id(key: &[u8], source: &str) -> Option<u64> {
+    let prefix = source_index_prefix(source);
+    if key.len() != prefix.len() + 8 || !key.starts_with(&prefix) {
+        return None;
+    }
+    let mut id = [0u8; 8];
+    id.copy_from_slice(&key[prefix.len()..]);
+    Some(u64::from_be_bytes(id))
+}
+
+fn entry_matches_query(entry: &KLogEntry, query: &KLogQuery) -> bool {
+    if let Some(level) = query.level
+        && entry.level != level
+    {
+        return false;
+    }
+    if let Some(source) = query
+        .source
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        let entry_source = normalize_source(entry.source.as_deref());
+        if entry_source != Some(source) {
+            return false;
+        }
+    }
+
+    let attr_key = query
+        .attr_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+    let attr_value = query
+        .attr_value
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+    if attr_key.is_none() && attr_value.is_some() {
+        return false;
+    }
+    if let Some(attr_key) = attr_key {
+        let Some(actual) = entry.attrs.get(attr_key) else {
+            return false;
+        };
+        if let Some(expected) = attr_value
+            && actual != expected
+        {
+            return false;
+        }
+    }
+
+    true
+}
+
 fn decode_meta_entry_with_legacy(raw: &[u8]) -> KResult<KLogMetaEntry> {
     let decoded_v1: Result<(KLogMetaEntry, usize), _> =
         bincode::serde::decode_from_slice(raw, bincode::config::legacy());
@@ -183,10 +285,14 @@ fn open_rocksdb_with_cfs(path: &Path, create_if_missing: bool) -> Result<DB, Str
     logs_cf_opts.set_write_buffer_size(64 * 1024 * 1024);
     let mut meta_cf_opts = Options::default();
     meta_cf_opts.set_write_buffer_size(4 * 1024 * 1024);
+    let mut idx_cf_opts = Options::default();
+    idx_cf_opts.set_write_buffer_size(8 * 1024 * 1024);
 
     let cfs = vec![
         ColumnFamilyDescriptor::new(CF_LOGS, logs_cf_opts),
         ColumnFamilyDescriptor::new(CF_META, meta_cf_opts),
+        ColumnFamilyDescriptor::new(CF_INDEX_LEVEL, idx_cf_opts.clone()),
+        ColumnFamilyDescriptor::new(CF_INDEX_SOURCE, idx_cf_opts),
     ];
 
     DB::open_cf_descriptors(&opts, path, cfs).map_err(|e| {
@@ -264,9 +370,85 @@ fn migrate_legacy_default_cf_data(db: &DB) -> Result<(), String> {
     Ok(())
 }
 
+fn rebuild_log_indexes_if_needed(db: &DB) -> Result<(), String> {
+    let logs_cf = db.cf_handle(CF_LOGS).ok_or_else(|| {
+        let msg = format!("Missing column family '{}'", CF_LOGS);
+        error!("{}", msg);
+        msg
+    })?;
+    let idx_level_cf = db.cf_handle(CF_INDEX_LEVEL).ok_or_else(|| {
+        let msg = format!("Missing column family '{}'", CF_INDEX_LEVEL);
+        error!("{}", msg);
+        msg
+    })?;
+    let idx_source_cf = db.cf_handle(CF_INDEX_SOURCE).ok_or_else(|| {
+        let msg = format!("Missing column family '{}'", CF_INDEX_SOURCE);
+        error!("{}", msg);
+        msg
+    })?;
+
+    let has_logs = db
+        .iterator_cf(&logs_cf, IteratorMode::Start)
+        .find_map(|item| match item {
+            Ok((k, _)) if decode_entry_key(k.as_ref()).is_some() => Some(true),
+            Ok(_) => None,
+            Err(_) => Some(false),
+        })
+        .unwrap_or(false);
+    if !has_logs {
+        return Ok(());
+    }
+
+    let has_level_index = db
+        .iterator_cf(&idx_level_cf, IteratorMode::Start)
+        .next()
+        .is_some();
+    if has_level_index {
+        return Ok(());
+    }
+
+    info!("RocksDbStateStore rebuilding secondary indexes from logs");
+    let mut batch = WriteBatch::default();
+    for item in db.iterator_cf(&idx_level_cf, IteratorMode::Start) {
+        let (k, _) = item.map_err(|e| format!("Failed to iterate level index cf: {}", e))?;
+        batch.delete_cf(&idx_level_cf, k.as_ref());
+    }
+    for item in db.iterator_cf(&idx_source_cf, IteratorMode::Start) {
+        let (k, _) = item.map_err(|e| format!("Failed to iterate source index cf: {}", e))?;
+        batch.delete_cf(&idx_source_cf, k.as_ref());
+    }
+
+    let mut rebuilt = 0usize;
+    for item in db.iterator_cf(&logs_cf, IteratorMode::Start) {
+        let (k, v) =
+            item.map_err(|e| format!("Failed to iterate logs cf for index rebuild: {}", e))?;
+        if decode_entry_key(k.as_ref()).is_none() {
+            continue;
+        }
+        let (entry, _): (KLogEntry, usize) =
+            bincode::serde::decode_from_slice(v.as_ref(), bincode::config::legacy())
+                .map_err(|e| format!("Failed to decode entry while rebuilding indexes: {}", e))?;
+        batch.put_cf(&idx_level_cf, level_index_key(entry.level, entry.id), []);
+        if let Some(source) = normalize_source(entry.source.as_deref()) {
+            batch.put_cf(&idx_source_cf, source_index_key(source, entry.id), []);
+        }
+        rebuilt += 1;
+    }
+
+    let write_opts = build_write_options(true);
+    db.write_opt(batch, &write_opts)
+        .map_err(|e| format!("Failed to persist rebuilt log indexes: {}", e))?;
+    info!(
+        "RocksDbStateStore rebuilt secondary indexes from logs: entries={}",
+        rebuilt
+    );
+    Ok(())
+}
+
 fn create_rocksdb(path: &Path) -> Result<DB, String> {
     let db = open_rocksdb_with_cfs(path, true)?;
     migrate_legacy_default_cf_data(&db)?;
+    rebuild_log_indexes_if_needed(&db)?;
     Ok(db)
 }
 
@@ -658,6 +840,43 @@ impl RocksDbStateStore {
         Ok(())
     }
 
+    fn clear_indexes_in_batch(&self, batch: &mut WriteBatch) -> KResult<()> {
+        let level_cf = self.db.cf_handle(CF_INDEX_LEVEL).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_INDEX_LEVEL);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+        let source_cf = self.db.cf_handle(CF_INDEX_SOURCE).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_INDEX_SOURCE);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+
+        let mut deleted_level = 0usize;
+        for item in self.db.iterator_cf(&level_cf, IteratorMode::Start) {
+            let (k, _) = item.map_err(|e| {
+                klog_err_with_context("Failed to iterate rocksdb while clearing level index", e)
+            })?;
+            batch.delete_cf(&level_cf, k.as_ref());
+            deleted_level += 1;
+        }
+
+        let mut deleted_source = 0usize;
+        for item in self.db.iterator_cf(&source_cf, IteratorMode::Start) {
+            let (k, _) = item.map_err(|e| {
+                klog_err_with_context("Failed to iterate rocksdb while clearing source index", e)
+            })?;
+            batch.delete_cf(&source_cf, k.as_ref());
+            deleted_source += 1;
+        }
+
+        debug!(
+            "RocksDbStateStore clear_indexes_in_batch done: deleted_level={}, deleted_source={}",
+            deleted_level, deleted_source
+        );
+        Ok(())
+    }
+
     fn replace_with_entries(
         &self,
         entries: Vec<KLogEntry>,
@@ -673,8 +892,19 @@ impl RocksDbStateStore {
         self.clear_entries_in_batch(&mut batch)?;
         self.clear_request_dedup_in_batch(&mut batch)?;
         self.clear_data_meta_in_batch(&mut batch)?;
+        self.clear_indexes_in_batch(&mut batch)?;
         let logs_cf = self.db.cf_handle(CF_LOGS).ok_or_else(|| {
             let msg = format!("Missing column family '{}'", CF_LOGS);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+        let idx_level_cf = self.db.cf_handle(CF_INDEX_LEVEL).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_INDEX_LEVEL);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+        let idx_source_cf = self.db.cf_handle(CF_INDEX_SOURCE).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_INDEX_SOURCE);
             error!("{}", msg);
             klog_err(msg)
         })?;
@@ -695,6 +925,10 @@ impl RocksDbStateStore {
                     klog_err_with_context("Failed to serialize state entry for rocksdb install", e)
                 })?;
             batch.put_cf(&logs_cf, key, value);
+            batch.put_cf(&idx_level_cf, level_index_key(entry.level, entry.id), []);
+            if let Some(source) = normalize_source(entry.source.as_deref()) {
+                batch.put_cf(&idx_source_cf, source_index_key(source, entry.id), []);
+            }
         }
         let next_log_id = max_id.saturating_add(1).max(1);
         batch.put_cf(&meta_cf, KEY_NEXT_LOG_ID_META, next_log_id.to_be_bytes());
@@ -726,8 +960,19 @@ impl RocksDbStateStore {
         self.clear_entries_in_batch(&mut batch)?;
         self.clear_request_dedup_in_batch(&mut batch)?;
         self.clear_data_meta_in_batch(&mut batch)?;
+        self.clear_indexes_in_batch(&mut batch)?;
         let logs_cf = self.db.cf_handle(CF_LOGS).ok_or_else(|| {
             let msg = format!("Missing column family '{}'", CF_LOGS);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+        let idx_level_cf = self.db.cf_handle(CF_INDEX_LEVEL).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_INDEX_LEVEL);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+        let idx_source_cf = self.db.cf_handle(CF_INDEX_SOURCE).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_INDEX_SOURCE);
             error!("{}", msg);
             klog_err(msg)
         })?;
@@ -757,7 +1002,15 @@ impl RocksDbStateStore {
             let Some(id) = decode_entry_key(&k) else {
                 continue;
             };
-            batch.put_cf(&logs_cf, k, v);
+            let (entry, _): (KLogEntry, usize) =
+                bincode::serde::decode_from_slice(v.as_ref(), bincode::config::legacy()).map_err(
+                    |e| klog_err_with_context("Failed to decode source entry for index rebuild", e),
+                )?;
+            batch.put_cf(&logs_cf, k.as_ref(), v.as_ref());
+            batch.put_cf(&idx_level_cf, level_index_key(entry.level, entry.id), []);
+            if let Some(source) = normalize_source(entry.source.as_deref()) {
+                batch.put_cf(&idx_source_cf, source_index_key(source, entry.id), []);
+            }
             copied += 1;
             if id > max_id {
                 max_id = id;
@@ -1454,6 +1707,16 @@ impl KLogStateStore for RocksDbStateStore {
             error!("{}", msg);
             klog_err(msg)
         })?;
+        let idx_level_cf = self.db.cf_handle(CF_INDEX_LEVEL).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_INDEX_LEVEL);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+        let idx_source_cf = self.db.cf_handle(CF_INDEX_SOURCE).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_INDEX_SOURCE);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
         let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
             let msg = format!("Missing column family '{}'", CF_META);
             error!("{}", msg);
@@ -1468,6 +1731,10 @@ impl KLogStateStore for RocksDbStateStore {
                     klog_err_with_context("Failed to serialize state entry for rocksdb", e)
                 })?;
             batch.put_cf(&logs_cf, key, value);
+            batch.put_cf(&idx_level_cf, level_index_key(entry.level, entry.id), []);
+            if let Some(source) = normalize_source(entry.source.as_deref()) {
+                batch.put_cf(&idx_source_cf, source_index_key(source, entry.id), []);
+            }
             if let Some(request_id) = normalize_request_id(entry.request_id.as_deref()) {
                 let dedup_key = request_dedup_meta_key(request_id);
                 let dedup_value = bincode::serde::encode_to_vec(
@@ -1505,6 +1772,245 @@ impl KLogStateStore for RocksDbStateStore {
         }
 
         let mut out = Vec::with_capacity(query.limit.min(1024));
+        let source_filter = query
+            .source
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_string());
+
+        if let Some(source) = source_filter.as_deref() {
+            let idx_source_cf = self.db.cf_handle(CF_INDEX_SOURCE).ok_or_else(|| {
+                let msg = format!("Missing column family '{}'", CF_INDEX_SOURCE);
+                error!("{}", msg);
+                klog_err(msg)
+            })?;
+            let source_prefix = source_index_prefix(source);
+            match query.order {
+                KLogQueryOrder::Asc => {
+                    let start_id = query.start_id.unwrap_or(0);
+                    let start_key = source_index_key(source, start_id);
+                    let iter = self.db.iterator_cf(
+                        &idx_source_cf,
+                        IteratorMode::From(&start_key, Direction::Forward),
+                    );
+                    for item in iter {
+                        let (k, _) = item.map_err(|e| {
+                            klog_err_with_context("Failed to iterate rocksdb source index", e)
+                        })?;
+                        if !k.as_ref().starts_with(&source_prefix) {
+                            break;
+                        }
+                        let Some(id) = decode_source_index_id(k.as_ref(), source) else {
+                            continue;
+                        };
+                        if query.start_id.map(|start| id < start).unwrap_or(false) {
+                            continue;
+                        }
+                        if query.end_id.map(|end| id > end).unwrap_or(false) {
+                            break;
+                        }
+                        let Some(raw) =
+                            self.db
+                                .get_cf(&logs_cf, entry_key(id).as_ref())
+                                .map_err(|e| {
+                                    klog_err_with_context(
+                                        "Failed to read state entry by source index from rocksdb",
+                                        e,
+                                    )
+                                })?
+                        else {
+                            continue;
+                        };
+                        let (entry, _): (KLogEntry, usize) = bincode::serde::decode_from_slice(
+                            raw.as_ref(),
+                            bincode::config::legacy(),
+                        )
+                        .map_err(|e| {
+                            klog_err_with_context(
+                                "Failed to deserialize state entry from rocksdb",
+                                e,
+                            )
+                        })?;
+                        if !entry_matches_query(&entry, &query) {
+                            continue;
+                        }
+                        out.push(entry);
+                        if out.len() >= query.limit {
+                            break;
+                        }
+                    }
+                }
+                KLogQueryOrder::Desc => {
+                    let end_id = query.end_id.unwrap_or(u64::MAX);
+                    let start_key = source_index_key(source, end_id);
+                    let iter = self.db.iterator_cf(
+                        &idx_source_cf,
+                        IteratorMode::From(&start_key, Direction::Reverse),
+                    );
+                    for item in iter {
+                        let (k, _) = item.map_err(|e| {
+                            klog_err_with_context("Failed to iterate rocksdb source index", e)
+                        })?;
+                        if !k.as_ref().starts_with(&source_prefix) {
+                            break;
+                        }
+                        let Some(id) = decode_source_index_id(k.as_ref(), source) else {
+                            continue;
+                        };
+                        if query.end_id.map(|end| id > end).unwrap_or(false) {
+                            continue;
+                        }
+                        if query.start_id.map(|start| id < start).unwrap_or(false) {
+                            break;
+                        }
+                        let Some(raw) =
+                            self.db
+                                .get_cf(&logs_cf, entry_key(id).as_ref())
+                                .map_err(|e| {
+                                    klog_err_with_context(
+                                        "Failed to read state entry by source index from rocksdb",
+                                        e,
+                                    )
+                                })?
+                        else {
+                            continue;
+                        };
+                        let (entry, _): (KLogEntry, usize) = bincode::serde::decode_from_slice(
+                            raw.as_ref(),
+                            bincode::config::legacy(),
+                        )
+                        .map_err(|e| {
+                            klog_err_with_context(
+                                "Failed to deserialize state entry from rocksdb",
+                                e,
+                            )
+                        })?;
+                        if !entry_matches_query(&entry, &query) {
+                            continue;
+                        }
+                        out.push(entry);
+                        if out.len() >= query.limit {
+                            break;
+                        }
+                    }
+                }
+            }
+            return Ok(out);
+        }
+
+        if let Some(level) = query.level {
+            let idx_level_cf = self.db.cf_handle(CF_INDEX_LEVEL).ok_or_else(|| {
+                let msg = format!("Missing column family '{}'", CF_INDEX_LEVEL);
+                error!("{}", msg);
+                klog_err(msg)
+            })?;
+            match query.order {
+                KLogQueryOrder::Asc => {
+                    let start_id = query.start_id.unwrap_or(0);
+                    let start_key = level_index_key(level, start_id);
+                    let iter = self.db.iterator_cf(
+                        &idx_level_cf,
+                        IteratorMode::From(&start_key, Direction::Forward),
+                    );
+                    for item in iter {
+                        let (k, _) = item.map_err(|e| {
+                            klog_err_with_context("Failed to iterate rocksdb level index", e)
+                        })?;
+                        let Some(id) = decode_level_index_id(k.as_ref(), level) else {
+                            break;
+                        };
+                        if query.start_id.map(|start| id < start).unwrap_or(false) {
+                            continue;
+                        }
+                        if query.end_id.map(|end| id > end).unwrap_or(false) {
+                            break;
+                        }
+                        let Some(raw) =
+                            self.db
+                                .get_cf(&logs_cf, entry_key(id).as_ref())
+                                .map_err(|e| {
+                                    klog_err_with_context(
+                                        "Failed to read state entry by level index from rocksdb",
+                                        e,
+                                    )
+                                })?
+                        else {
+                            continue;
+                        };
+                        let (entry, _): (KLogEntry, usize) = bincode::serde::decode_from_slice(
+                            raw.as_ref(),
+                            bincode::config::legacy(),
+                        )
+                        .map_err(|e| {
+                            klog_err_with_context(
+                                "Failed to deserialize state entry from rocksdb",
+                                e,
+                            )
+                        })?;
+                        if !entry_matches_query(&entry, &query) {
+                            continue;
+                        }
+                        out.push(entry);
+                        if out.len() >= query.limit {
+                            break;
+                        }
+                    }
+                }
+                KLogQueryOrder::Desc => {
+                    let end_id = query.end_id.unwrap_or(u64::MAX);
+                    let start_key = level_index_key(level, end_id);
+                    let iter = self.db.iterator_cf(
+                        &idx_level_cf,
+                        IteratorMode::From(&start_key, Direction::Reverse),
+                    );
+                    for item in iter {
+                        let (k, _) = item.map_err(|e| {
+                            klog_err_with_context("Failed to iterate rocksdb level index", e)
+                        })?;
+                        let Some(id) = decode_level_index_id(k.as_ref(), level) else {
+                            break;
+                        };
+                        if query.end_id.map(|end| id > end).unwrap_or(false) {
+                            continue;
+                        }
+                        if query.start_id.map(|start| id < start).unwrap_or(false) {
+                            break;
+                        }
+                        let Some(raw) =
+                            self.db
+                                .get_cf(&logs_cf, entry_key(id).as_ref())
+                                .map_err(|e| {
+                                    klog_err_with_context(
+                                        "Failed to read state entry by level index from rocksdb",
+                                        e,
+                                    )
+                                })?
+                        else {
+                            continue;
+                        };
+                        let (entry, _): (KLogEntry, usize) = bincode::serde::decode_from_slice(
+                            raw.as_ref(),
+                            bincode::config::legacy(),
+                        )
+                        .map_err(|e| {
+                            klog_err_with_context(
+                                "Failed to deserialize state entry from rocksdb",
+                                e,
+                            )
+                        })?;
+                        if !entry_matches_query(&entry, &query) {
+                            continue;
+                        }
+                        out.push(entry);
+                        if out.len() >= query.limit {
+                            break;
+                        }
+                    }
+                }
+            }
+            return Ok(out);
+        }
 
         match query.order {
             KLogQueryOrder::Asc => {
@@ -1537,6 +2043,9 @@ impl KLogStateStore for RocksDbStateStore {
                                     e,
                                 )
                             })?;
+                    if !entry_matches_query(&entry, &query) {
+                        continue;
+                    }
                     out.push(entry);
                     if out.len() >= query.limit {
                         break;
@@ -1573,6 +2082,9 @@ impl KLogStateStore for RocksDbStateStore {
                                     e,
                                 )
                             })?;
+                    if !entry_matches_query(&entry, &query) {
+                        continue;
+                    }
                     out.push(entry);
                     if out.len() >= query.limit {
                         break;

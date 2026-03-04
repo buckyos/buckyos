@@ -1,4 +1,4 @@
-use crate::{KLogEntry, KLogId, KLogMetaEntry, KNode, KNodeId, KResult};
+use crate::{KLogEntry, KLogId, KLogLevel, KLogMetaEntry, KNode, KNodeId, KResult};
 use openraft::StoredMembership;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -42,6 +42,10 @@ pub struct KLogQuery {
     pub end_id: Option<u64>,
     pub limit: usize,
     pub order: KLogQueryOrder,
+    pub level: Option<KLogLevel>,
+    pub source: Option<String>,
+    pub attr_key: Option<String>,
+    pub attr_value: Option<String>,
 }
 
 impl Default for KLogQuery {
@@ -51,6 +55,10 @@ impl Default for KLogQuery {
             end_id: None,
             limit: 100,
             order: KLogQueryOrder::Asc,
+            level: None,
+            source: None,
+            attr_key: None,
+            attr_value: None,
         }
     }
 }
