@@ -365,6 +365,7 @@ impl LogStorage for SqliteLogStorage {
 mod tests {
     use super::*;
     use slog::{LogLevel, SystemLogRecord};
+    use std::collections::HashMap;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_db_path(prefix: &str) -> std::path::PathBuf {
@@ -390,6 +391,16 @@ mod tests {
             file: None,
             line: None,
             content: content.to_string(),
+        }
+    }
+
+    fn cleanup_db_path(db_path: &std::path::Path) {
+        if db_path.exists() {
+            std::fs::remove_file(db_path).unwrap();
+        }
+        let parent = db_path.parent().unwrap();
+        if parent.exists() {
+            std::fs::remove_dir_all(parent).unwrap();
         }
     }
 
@@ -450,8 +461,7 @@ mod tests {
         assert_eq!(only_error[0].logs[0].content, "a-2");
         assert_eq!(only_error[0].logs[0].level, LogLevel::Error);
 
-        std::fs::remove_file(&db_path).unwrap();
-        std::fs::remove_dir_all(db_path.parent().unwrap()).unwrap();
+        cleanup_db_path(&db_path);
     }
 
     #[test]
@@ -486,7 +496,156 @@ mod tests {
         assert_eq!(queried.len(), 1);
         assert_eq!(queried[0].logs.len(), 2);
 
-        std::fs::remove_file(&db_path).unwrap();
-        std::fs::remove_dir_all(db_path.parent().unwrap()).unwrap();
+        cleanup_db_path(&db_path);
+    }
+
+    #[test]
+    fn test_sqlite_storage_query_isolated_by_node_for_same_service_name() {
+        let db_path = temp_db_path("node_isolation");
+        let storage = SqliteLogStorage::open(&db_path).unwrap();
+
+        storage
+            .append(LogRecords {
+                node: "node-a".to_string(),
+                service: "svc-shared".to_string(),
+                batch_id: Some("batch-a-1".to_string()),
+                record_ids: vec!["rid-a-1".to_string()],
+                logs: vec![sample_record(LogLevel::Info, 2000, "node-a-log-1")],
+            })
+            .unwrap();
+        storage
+            .append(LogRecords {
+                node: "node-b".to_string(),
+                service: "svc-shared".to_string(),
+                batch_id: Some("batch-b-1".to_string()),
+                record_ids: vec!["rid-b-1".to_string()],
+                logs: vec![sample_record(LogLevel::Info, 2010, "node-b-log-1")],
+            })
+            .unwrap();
+
+        let node_a = storage
+            .query(LogQueryRequest {
+                node: Some("node-a".to_string()),
+                service: Some("svc-shared".to_string()),
+                level: None,
+                start_time: None,
+                end_time: None,
+                limit: None,
+            })
+            .unwrap();
+        assert_eq!(node_a.len(), 1);
+        assert_eq!(node_a[0].node, "node-a");
+        assert_eq!(node_a[0].service, "svc-shared");
+        assert_eq!(node_a[0].logs.len(), 1);
+        assert_eq!(node_a[0].logs[0].content, "node-a-log-1");
+
+        let node_b = storage
+            .query(LogQueryRequest {
+                node: Some("node-b".to_string()),
+                service: Some("svc-shared".to_string()),
+                level: None,
+                start_time: None,
+                end_time: None,
+                limit: None,
+            })
+            .unwrap();
+        assert_eq!(node_b.len(), 1);
+        assert_eq!(node_b[0].node, "node-b");
+        assert_eq!(node_b[0].service, "svc-shared");
+        assert_eq!(node_b[0].logs.len(), 1);
+        assert_eq!(node_b[0].logs[0].content, "node-b-log-1");
+
+        let shared_service_all_nodes = storage
+            .query(LogQueryRequest {
+                node: None,
+                service: Some("svc-shared".to_string()),
+                level: None,
+                start_time: None,
+                end_time: None,
+                limit: None,
+            })
+            .unwrap();
+        assert_eq!(shared_service_all_nodes.len(), 2);
+        let mut by_node: HashMap<String, Vec<String>> = HashMap::new();
+        for item in shared_service_all_nodes {
+            by_node.insert(
+                item.node.clone(),
+                item.logs.iter().map(|l| l.content.clone()).collect(),
+            );
+        }
+        assert_eq!(
+            by_node.get("node-a").cloned().unwrap_or_default(),
+            vec!["node-a-log-1".to_string()]
+        );
+        assert_eq!(
+            by_node.get("node-b").cloned().unwrap_or_default(),
+            vec!["node-b-log-1".to_string()]
+        );
+
+        cleanup_db_path(&db_path);
+    }
+
+    #[test]
+    fn test_sqlite_storage_query_time_range_and_limit_contract() {
+        let db_path = temp_db_path("query_contract");
+        let storage = SqliteLogStorage::open(&db_path).unwrap();
+
+        storage
+            .append(LogRecords {
+                node: "node-1".to_string(),
+                service: "svc-contract".to_string(),
+                batch_id: Some("batch-q-1".to_string()),
+                record_ids: vec![
+                    "rid-q-1".to_string(),
+                    "rid-q-2".to_string(),
+                    "rid-q-3".to_string(),
+                    "rid-q-4".to_string(),
+                ],
+                logs: vec![
+                    sample_record(LogLevel::Info, 3000, "q-3000"),
+                    sample_record(LogLevel::Warn, 3010, "q-3010"),
+                    sample_record(LogLevel::Error, 3020, "q-3020"),
+                    sample_record(LogLevel::Info, 3030, "q-3030"),
+                ],
+            })
+            .unwrap();
+
+        // Time range should be inclusive on both boundaries.
+        let in_range = storage
+            .query(LogQueryRequest {
+                node: Some("node-1".to_string()),
+                service: Some("svc-contract".to_string()),
+                level: None,
+                start_time: Some(3010),
+                end_time: Some(3020),
+                limit: None,
+            })
+            .unwrap();
+        assert_eq!(in_range.len(), 1);
+        let mut in_range_contents: Vec<String> =
+            in_range[0].logs.iter().map(|l| l.content.clone()).collect();
+        in_range_contents.sort();
+        assert_eq!(
+            in_range_contents,
+            vec!["q-3010".to_string(), "q-3020".to_string()]
+        );
+
+        // Limit should cap returned rows after ordering by timestamp DESC.
+        let limited = storage
+            .query(LogQueryRequest {
+                node: Some("node-1".to_string()),
+                service: Some("svc-contract".to_string()),
+                level: None,
+                start_time: None,
+                end_time: None,
+                limit: Some(2),
+            })
+            .unwrap();
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].logs.len(), 2);
+        assert_eq!(limited[0].logs[0].content, "q-3030");
+        assert_eq!(limited[0].logs[1].content, "q-3020");
+
+        cleanup_db_path(&db_path);
     }
 }

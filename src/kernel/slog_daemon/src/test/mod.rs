@@ -8,5 +8,6 @@ mod test_pipeline_file_rotation;
 mod test_pipeline_graceful_shutdown_drain;
 mod test_pipeline_happy_path;
 mod test_pipeline_multi_service_fairness;
+mod test_pipeline_partial_line_and_appending;
 mod test_pipeline_retry_and_idempotency;
 mod test_pipeline_server_recovery;

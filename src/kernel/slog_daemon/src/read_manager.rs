@@ -4,7 +4,7 @@ use crate::constants::{
     READ_RECORD_BATCH_SIZE, READ_RECORD_INTERVAL_MILLIS, UPDATE_DIR_INTERVAL_SECS,
 };
 use slog::SystemLogRecord;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -172,6 +172,19 @@ impl LogReaderManager {
                 if let Err(e) = dir_reader.update_dir() {
                     let msg = format!("failed to update log dir reader: {}", e);
                     error!("{}", msg);
+                } else {
+                    let active_ids: HashSet<String> =
+                        dir_reader.get_active_ids().into_iter().collect();
+                    Self::cleanup_retry_states_for_removed_services(
+                        &mut upload_retry_states,
+                        &active_ids,
+                        "upload",
+                    );
+                    Self::cleanup_retry_states_for_removed_services(
+                        &mut flush_retry_states,
+                        &active_ids,
+                        "flush_read_pos",
+                    );
                 }
                 last_update_dir_tick = std::time::Instant::now();
             }
@@ -320,6 +333,22 @@ impl LogReaderManager {
         }
     }
 
+    fn cleanup_retry_states_for_removed_services(
+        retry_states: &mut HashMap<String, RetryState>,
+        active_ids: &HashSet<String>,
+        action: &str,
+    ) {
+        let before = retry_states.len();
+        retry_states.retain(|id, _| active_ids.contains(id));
+        let removed = before.saturating_sub(retry_states.len());
+        if removed > 0 {
+            info!(
+                "cleaned {} stale {} retry states for removed services",
+                removed, action
+            );
+        }
+    }
+
     fn process_record_item(
         data_tx: &mpsc::Sender<LogRecordLoad>,
         item: LogRecordItem,
@@ -360,7 +389,7 @@ impl LogReaderManager {
 mod tests {
     use super::{LogReaderManager, RetryState};
     use crate::reader::FlushReadPosError;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
@@ -462,6 +491,36 @@ mod tests {
         let state = retry_states.get("svc").unwrap();
         assert_eq!(state.retry_interval_secs, 2);
         assert!(state.next_retry_at > Instant::now());
+    }
+
+    #[test]
+    fn test_cleanup_retry_states_for_removed_services_keeps_only_active_ids() {
+        let mut retry_states = HashMap::new();
+        retry_states.insert(
+            "svc_a".to_string(),
+            RetryState {
+                retry_interval_secs: 2,
+                next_retry_at: Instant::now() + Duration::from_secs(2),
+            },
+        );
+        retry_states.insert(
+            "svc_b".to_string(),
+            RetryState {
+                retry_interval_secs: 4,
+                next_retry_at: Instant::now() + Duration::from_secs(4),
+            },
+        );
+
+        let active_ids = HashSet::from([String::from("svc_b"), String::from("svc_c")]);
+        LogReaderManager::cleanup_retry_states_for_removed_services(
+            &mut retry_states,
+            &active_ids,
+            "upload",
+        );
+
+        assert!(!retry_states.contains_key("svc_a"));
+        assert!(retry_states.contains_key("svc_b"));
+        assert_eq!(retry_states.len(), 1);
     }
 
     #[test]

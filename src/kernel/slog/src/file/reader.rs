@@ -322,6 +322,25 @@ impl FileLogReader {
             if bytes_read == 0 {
                 break; // EOF
             }
+
+            // A line without trailing '\n' means writer may still be appending this line.
+            // Do not consume/parse it yet; seek back so next round can read the full line.
+            if !line.ends_with('\n') {
+                buf_reader
+                    .seek(std::io::SeekFrom::Start(line_start_offset))
+                    .map_err(|e| {
+                        let msg = format!(
+                            "failed to seek back to partial line start: {}, {}, offset={}",
+                            file_path.display(),
+                            e,
+                            line_start_offset
+                        );
+                        error!("{}", msg);
+                        msg
+                    })?;
+                break;
+            }
+
             next_line_offset += bytes_read as u64;
 
             match SystemLogRecordLineFormatter::parse_record(line.trim_end()) {
@@ -472,6 +491,7 @@ fn test_read() {
 mod tests {
     use super::{FileLogReader, LogMeta, SystemLogRecordLineFormatter};
     use crate::system_log::{LogLevel, SystemLogRecord};
+    use std::io::Write;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -558,6 +578,55 @@ mod tests {
         let second = reader.try_read_next_records(10).unwrap();
         assert!(second.is_empty());
         assert_eq!(reader.get_current_batch_parse_failures(), 0);
+
+        std::fs::remove_dir_all(&log_dir).unwrap();
+    }
+
+    #[test]
+    fn test_try_read_next_records_keeps_partial_line_for_next_round() {
+        let log_dir = new_temp_log_dir("partial_line");
+        let meta = LogMeta::open(&log_dir).unwrap();
+        let file_name = "svc_partial.1.log";
+        meta.append_new_file(file_name).unwrap();
+
+        let full_line = SystemLogRecordLineFormatter::format_record(&make_record("partial-ok"));
+        let split_at = full_line.len() / 2;
+        let (first_half, second_half) = full_line.split_at(split_at);
+
+        let file_path = log_dir.join(file_name);
+        std::fs::write(&file_path, first_half).unwrap();
+        meta.update_current_write_index(first_half.len() as u64)
+            .unwrap();
+
+        let reader = FileLogReader::open(&log_dir).unwrap();
+        let first = reader.try_read_next_records(10).unwrap();
+        assert!(first.is_empty());
+        assert_eq!(reader.get_current_batch_parse_failures(), 0);
+
+        let window_first = reader.get_current_read_window().unwrap();
+        assert_eq!(window_first.start_index, window_first.end_index);
+
+        let corrupt_path = log_dir.join(super::CORRUPT_LOG_FILE_NAME);
+        assert!(!corrupt_path.exists());
+
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file_path)
+            .unwrap()
+            .write_all(second_half.as_bytes())
+            .unwrap();
+        meta.update_current_write_index(full_line.len() as u64)
+            .unwrap();
+
+        let second = reader.try_read_next_records(10).unwrap();
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].content, "partial-ok");
+        let window_second = reader.get_current_read_window().unwrap();
+        assert!(window_second.end_index > window_second.start_index);
+
+        reader.flush_read_index().unwrap();
+        let window_after_flush = reader.get_current_read_window().unwrap();
+        assert_eq!(window_after_flush.end_index, window_after_flush.start_index);
 
         std::fs::remove_dir_all(&log_dir).unwrap();
     }

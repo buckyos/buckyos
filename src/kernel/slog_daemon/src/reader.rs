@@ -267,6 +267,11 @@ impl LogDirReader {
         Ok(())
     }
 
+    pub fn get_active_ids(&self) -> Vec<String> {
+        let list_lock = self.list.lock().unwrap();
+        list_lock.iter().map(|item| item.id.clone()).collect()
+    }
+
     // Scan the log directory for subdirectories containing log files, which contain a meta file name "log_meta.db"
     fn scan_dir(&self, root: &Path) -> Result<Vec<PathBuf>, String> {
         let mut log_dirs = Vec::new();
