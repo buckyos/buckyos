@@ -10,6 +10,8 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const CORRUPT_LOG_FILE_NAME: &str = "corrupt.log";
+const CORRUPT_LOG_MAX_BACKUPS: usize = 2;
+const CORRUPT_LOG_MAX_SIZE_BYTES: u64 = if cfg!(test) { 1024 } else { 4 * 1024 * 1024 };
 const PARSE_ERROR_ALERT_THRESHOLD_PER_BATCH: usize = 10;
 
 struct ReadFileInfo {
@@ -34,8 +36,55 @@ pub struct FileLogReader {
 }
 
 impl FileLogReader {
+    fn corrupt_log_path(&self, backup_index: usize) -> PathBuf {
+        if backup_index == 0 {
+            self.dir.join(CORRUPT_LOG_FILE_NAME)
+        } else {
+            self.dir
+                .join(format!("{}.{}", CORRUPT_LOG_FILE_NAME, backup_index))
+        }
+    }
+
+    fn rotate_corrupt_logs_if_needed(&self, incoming_size: usize) {
+        let active_path = self.corrupt_log_path(0);
+        let current_size = match std::fs::metadata(&active_path) {
+            Ok(meta) => meta.len(),
+            Err(_) => 0,
+        };
+
+        if current_size + incoming_size as u64 <= CORRUPT_LOG_MAX_SIZE_BYTES {
+            return;
+        }
+
+        for idx in (1..=CORRUPT_LOG_MAX_BACKUPS).rev() {
+            let src = self.corrupt_log_path(idx - 1);
+            let dst = self.corrupt_log_path(idx);
+            if !src.exists() {
+                continue;
+            }
+            if dst.exists()
+                && let Err(e) = std::fs::remove_file(&dst)
+            {
+                error!(
+                    "failed to remove old corrupt log backup {}: {}",
+                    dst.display(),
+                    e
+                );
+                continue;
+            }
+            if let Err(e) = std::fs::rename(&src, &dst) {
+                error!(
+                    "failed to rotate corrupt log {} -> {}: {}",
+                    src.display(),
+                    dst.display(),
+                    e
+                );
+            }
+        }
+    }
+
     fn append_corrupt_line(&self, source_file: &Path, offset: u64, line: &str, err: &str) {
-        let corrupt_path = self.dir.join(CORRUPT_LOG_FILE_NAME);
+        let corrupt_path = self.corrupt_log_path(0);
         let timestamp_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis())
@@ -49,6 +98,8 @@ impl FileLogReader {
             err,
             escaped_line
         );
+
+        self.rotate_corrupt_logs_if_needed(entry.len());
 
         if let Err(e) = OpenOptions::new()
             .create(true)
@@ -627,6 +678,62 @@ mod tests {
         reader.flush_read_index().unwrap();
         let window_after_flush = reader.get_current_read_window().unwrap();
         assert_eq!(window_after_flush.end_index, window_after_flush.start_index);
+
+        std::fs::remove_dir_all(&log_dir).unwrap();
+    }
+
+    #[test]
+    fn test_try_read_next_records_rotates_corrupt_log_when_size_exceeded() {
+        let log_dir = new_temp_log_dir("corrupt_rotation");
+        let meta = LogMeta::open(&log_dir).unwrap();
+        let file_name = "svc_corrupt_rotation.1.log";
+        meta.append_new_file(file_name).unwrap();
+
+        let invalid_line = "invalid-log-line-without-required-format-and-very-long-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n";
+        let invalid_count = 20usize;
+        let mut content = String::new();
+        for _ in 0..invalid_count {
+            content.push_str(invalid_line);
+        }
+
+        let file_path = log_dir.join(file_name);
+        std::fs::write(&file_path, &content).unwrap();
+        meta.update_current_write_index(content.len() as u64)
+            .unwrap();
+
+        let reader = FileLogReader::open(&log_dir).unwrap();
+        let records = reader.try_read_next_records(invalid_count + 5).unwrap();
+        assert!(records.is_empty());
+        assert_eq!(reader.get_current_batch_parse_failures(), invalid_count);
+
+        let active = log_dir.join(super::CORRUPT_LOG_FILE_NAME);
+        let backup1 = log_dir.join(format!("{}.1", super::CORRUPT_LOG_FILE_NAME));
+        assert!(active.exists());
+        assert!(backup1.exists());
+
+        let mut total_lines = 0usize;
+        for path in [
+            active,
+            backup1,
+            log_dir.join(format!("{}.2", super::CORRUPT_LOG_FILE_NAME)),
+        ] {
+            if path.exists() {
+                total_lines += std::fs::read_to_string(&path).unwrap().lines().count();
+            }
+        }
+        assert!(total_lines > 0);
+        assert!(total_lines < invalid_count);
+
+        for path in [
+            log_dir.join(super::CORRUPT_LOG_FILE_NAME),
+            log_dir.join(format!("{}.1", super::CORRUPT_LOG_FILE_NAME)),
+            log_dir.join(format!("{}.2", super::CORRUPT_LOG_FILE_NAME)),
+        ] {
+            if path.exists() {
+                let sz = std::fs::metadata(&path).unwrap().len();
+                assert!(sz <= super::CORRUPT_LOG_MAX_SIZE_BYTES + 512);
+            }
+        }
 
         std::fs::remove_dir_all(&log_dir).unwrap();
     }

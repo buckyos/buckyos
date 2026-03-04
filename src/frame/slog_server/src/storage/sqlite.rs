@@ -648,4 +648,117 @@ mod tests {
 
         cleanup_db_path(&db_path);
     }
+
+    #[test]
+    fn test_sqlite_storage_query_filter_combination_matrix() {
+        let db_path = temp_db_path("query_matrix");
+        let storage = SqliteLogStorage::open(&db_path).unwrap();
+
+        storage
+            .append(LogRecords {
+                node: "node-1".to_string(),
+                service: "svc-a".to_string(),
+                batch_id: Some("batch-m-1".to_string()),
+                record_ids: vec![
+                    "rid-m-1".to_string(),
+                    "rid-m-2".to_string(),
+                    "rid-m-3".to_string(),
+                ],
+                logs: vec![
+                    sample_record(LogLevel::Info, 1000, "a-info-1000"),
+                    sample_record(LogLevel::Warn, 1010, "a-warn-1010"),
+                    sample_record(LogLevel::Error, 1020, "a-error-1020"),
+                ],
+            })
+            .unwrap();
+
+        storage
+            .append(LogRecords {
+                node: "node-1".to_string(),
+                service: "svc-b".to_string(),
+                batch_id: Some("batch-m-2".to_string()),
+                record_ids: vec!["rid-m-4".to_string()],
+                logs: vec![sample_record(LogLevel::Info, 1030, "b-info-1030")],
+            })
+            .unwrap();
+
+        storage
+            .append(LogRecords {
+                node: "node-2".to_string(),
+                service: "svc-a".to_string(),
+                batch_id: Some("batch-m-3".to_string()),
+                record_ids: vec!["rid-m-5".to_string()],
+                logs: vec![sample_record(LogLevel::Info, 1040, "a-node2-info-1040")],
+            })
+            .unwrap();
+
+        let q1 = storage
+            .query(LogQueryRequest {
+                node: Some("node-1".to_string()),
+                service: Some("svc-a".to_string()),
+                level: None,
+                start_time: None,
+                end_time: None,
+                limit: None,
+            })
+            .unwrap();
+        assert_eq!(q1.len(), 1);
+        assert_eq!(q1[0].logs.len(), 3);
+
+        let q2 = storage
+            .query(LogQueryRequest {
+                node: Some("node-1".to_string()),
+                service: Some("svc-a".to_string()),
+                level: Some(LogLevel::Warn),
+                start_time: None,
+                end_time: None,
+                limit: None,
+            })
+            .unwrap();
+        assert_eq!(q2.len(), 1);
+        assert_eq!(q2[0].logs.len(), 1);
+        assert_eq!(q2[0].logs[0].content, "a-warn-1010");
+
+        let q3 = storage
+            .query(LogQueryRequest {
+                node: None,
+                service: Some("svc-a".to_string()),
+                level: Some(LogLevel::Info),
+                start_time: None,
+                end_time: None,
+                limit: None,
+            })
+            .unwrap();
+        let q3_count: usize = q3.iter().map(|item| item.logs.len()).sum();
+        assert_eq!(q3_count, 2);
+
+        let q4 = storage
+            .query(LogQueryRequest {
+                node: None,
+                service: None,
+                level: None,
+                start_time: Some(1010),
+                end_time: Some(1040),
+                limit: None,
+            })
+            .unwrap();
+        let q4_count: usize = q4.iter().map(|item| item.logs.len()).sum();
+        assert_eq!(q4_count, 4);
+
+        let q5 = storage
+            .query(LogQueryRequest {
+                node: Some("node-1".to_string()),
+                service: Some("svc-a".to_string()),
+                level: None,
+                start_time: Some(1000),
+                end_time: Some(2000),
+                limit: Some(1),
+            })
+            .unwrap();
+        assert_eq!(q5.len(), 1);
+        assert_eq!(q5[0].logs.len(), 1);
+        assert_eq!(q5[0].logs[0].content, "a-error-1020");
+
+        cleanup_db_path(&db_path);
+    }
 }
