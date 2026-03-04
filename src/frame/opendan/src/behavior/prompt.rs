@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use buckyos_api::{
-    features, AiMessage, AiPayload, AiToolSpec, Capability, CompleteRequest, ModelSpec,
+    features, AiMessage, AiPayload, AiToolSpec, BoxKind, Capability, CompleteRequest, ModelSpec,
     MsgRecordWithObject, Requirements,
 };
 use chrono::{DateTime, Utc};
@@ -349,11 +349,7 @@ async fn build_memory_prompt_text(
             .then_with(|| a.source_order.cmp(&b.source_order))
     });
     if !timeline_records.is_empty() {
-        let timeline_text = timeline_records
-            .iter()
-            .map(format_memory_timeline_record)
-            .collect::<Vec<_>>()
-            .join("\n");
+        let timeline_text = render_memory_timeline_text(&timeline_records);
         memory_sections.push(format!(
             "## Timeline\n{}\n",
             sanitize_text(timeline_text.trim())
@@ -499,6 +495,33 @@ fn format_memory_timeline_record(record: &MemoryTimelineRecord) -> String {
         return String::new();
     }
     format!("[{}][{}] {}", record.source_label, record.update_time, line)
+}
+
+fn render_memory_timeline_text(records: &[MemoryTimelineRecord]) -> String {
+    let mut lines = Vec::<String>::new();
+    let mut last_msg_day: Option<String> = None;
+    for record in records {
+        let text = record.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        if record.source_label == "msg" {
+            let day = format_history_date(record.update_time);
+            if last_msg_day.as_deref() != Some(day.as_str()) {
+                if !lines.is_empty() && lines.last().is_some_and(|item| !item.is_empty()) {
+                    lines.push(String::new());
+                }
+                lines.push(format!("### {}", day));
+                last_msg_day = Some(day);
+            }
+            lines.push(text.to_string());
+            continue;
+        }
+
+        last_msg_day = None;
+        lines.push(format_memory_timeline_record(record));
+    }
+    lines.join("\n")
 }
 
 async fn load_workspace_summary_with_limit(
@@ -943,7 +966,7 @@ async fn load_history_messages_with_limit(
             }
         };
 
-        let mut text = render_history_msg_line(&msg_record);
+        let mut text = render_history_msg_line(&msg_record, Some(input.trace.agent_name.as_str()));
         if text.is_empty() {
             continue;
         }
@@ -1045,14 +1068,22 @@ fn resolve_history_msg_update_time(record: &MsgRecordWithObject) -> u64 {
         .max(obj_ts)
 }
 
-fn render_history_msg_line(record: &MsgRecordWithObject) -> String {
+fn render_history_msg_line(record: &MsgRecordWithObject, agent_did: Option<&str>) -> String {
     let from = record
         .msg
         .as_ref()
         .map(|msg| msg.from.to_raw_host_name())
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| record.record.from.to_raw_host_name());
-    let timestamp = format_history_timestamp(resolve_history_msg_update_time(record));
+    let from_did = record
+        .msg
+        .as_ref()
+        .map(|msg| msg.from.to_string())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| record.record.from.to_string());
+    let update_time = resolve_history_msg_update_time(record);
+    let sender = render_history_sender(from.as_str(), from_did.as_str(), record, agent_did);
+    let timestamp = format_history_time(update_time);
     let content = record
         .msg
         .as_ref()
@@ -1067,19 +1098,118 @@ fn render_history_msg_line(record: &MsgRecordWithObject) -> String {
                 record.record.msg_id, record.record.state
             )
         });
-
-    format!("{} [{}]\n{}", from, timestamp, content)
+    if content.contains('\n') {
+        let indented = indent_history_message_content(content.as_str());
+        format!("- {} {}:\n{}", timestamp, sender, indented)
+    } else {
+        format!("- {} {}: {}", timestamp, sender, content)
+    }
 }
 
 fn compact_one_line_text(input: &str) -> String {
     input.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn format_history_timestamp(timestamp_ms: u64) -> String {
+fn format_history_date(timestamp_ms: u64) -> String {
+    let dt = history_datetime_utc(timestamp_ms);
+    dt.format("%Y-%m-%d").to_string()
+}
+
+fn format_history_time(timestamp_ms: u64) -> String {
+    let dt = history_datetime_utc(timestamp_ms);
+    dt.format("%H:%M").to_string()
+}
+
+fn history_datetime_utc(timestamp_ms: u64) -> DateTime<Utc> {
     let secs = (timestamp_ms / 1000) as i64;
     let nanos = ((timestamp_ms % 1000) * 1_000_000) as u32;
-    let dt = DateTime::<Utc>::from_timestamp(secs, nanos).unwrap_or_else(Utc::now);
-    dt.format("%Y-%m-%d %H:%M:%S").to_string()
+    DateTime::<Utc>::from_timestamp(secs, nanos).unwrap_or_else(Utc::now)
+}
+
+fn render_history_sender(
+    from_host: &str,
+    from_did: &str,
+    record: &MsgRecordWithObject,
+    agent_did: Option<&str>,
+) -> String {
+    let from_did = from_did.trim();
+    let agent_did = agent_did.unwrap_or_default().trim();
+    let from_short = compact_history_name(from_host);
+    let is_me = record.record.box_kind == BoxKind::Outbox
+        || (!agent_did.is_empty() && from_did.eq_ignore_ascii_case(agent_did));
+    if is_me {
+        let mut agent_name = from_short.clone();
+        if agent_name.is_empty() {
+            agent_name = compact_history_name(extract_name_from_did(agent_did).as_str());
+        }
+        if agent_name.is_empty() {
+            agent_name = "Agent".to_string();
+        }
+        return format!("{}(me)", capitalize_ascii(agent_name.as_str()));
+    }
+
+    if from_did.starts_with("did:bns:") {
+        let name = if from_short.is_empty() {
+            "unknown".to_string()
+        } else {
+            from_short
+        };
+        return format!("{}({})", name, from_did);
+    }
+    if from_short.is_empty() {
+        if from_did.is_empty() {
+            "unknown".to_string()
+        } else {
+            from_did.to_string()
+        }
+    } else {
+        from_short
+    }
+}
+
+fn extract_name_from_did(value: &str) -> String {
+    let raw = value.trim();
+    if raw.is_empty() {
+        return String::new();
+    }
+    let core = raw.strip_prefix("did:").unwrap_or(raw);
+    let mut parts = core.splitn(2, ':');
+    let _method = parts.next();
+    let suffix = parts.next().unwrap_or(core);
+    suffix.to_string()
+}
+
+fn compact_history_name(value: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() {
+        return String::new();
+    }
+    value
+        .split('.')
+        .next()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(value)
+        .to_string()
+}
+
+fn capitalize_ascii(value: &str) -> String {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let mut out = String::new();
+    out.push(first.to_ascii_uppercase());
+    out.push_str(chars.as_str());
+    out
+}
+
+fn indent_history_message_content(value: &str) -> String {
+    value
+        .lines()
+        .map(|line| format!("  {}", line))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn normalize_history_multiline_text(input: &str) -> String {
@@ -2237,6 +2367,174 @@ loaded_tools: [exec_bash]
         for line in [line1.to_string(), line2.to_string()] {
             serde_json::from_str::<MsgRecordWithObject>(&line).expect("line should parse");
         }
+    }
+
+    #[tokio::test]
+    async fn build_memory_prompt_text_includes_history_messages_timeline() {
+        let temp = tempdir().expect("create tempdir");
+        let workspace_root = temp.path().join("workspace");
+        let session_id = "session-1";
+        let session_dir = workspace_root.join("session").join(session_id);
+        tokio::fs::create_dir_all(&session_dir)
+            .await
+            .expect("create session dir");
+
+        let line1 = json!({
+            "record": {
+                "record_id": "r1",
+                "box_kind": "INBOX",
+                "msg_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "msg_kind": "chat",
+                "state": "UNREAD",
+                "from": "did:web:alice.example.com",
+                "to": "did:web:bob.example.com",
+                "created_at_ms": 1772578920000_u64,
+                "updated_at_ms": 1772578920000_u64,
+                "sort_key": 1772578920000_u64,
+                "tags": []
+            },
+            "msg": {
+                "from": "did:web:alice.example.com",
+                "to": ["did:web:bob.example.com"],
+                "kind": "chat",
+                "created_at_ms": 1772578920000_u64,
+                "content": {
+                    "content": "i want to buy a new laptop"
+                }
+            }
+        });
+        let line2 = json!({
+            "record": {
+                "record_id": "r2",
+                "box_kind": "INBOX",
+                "msg_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "msg_kind": "chat",
+                "state": "UNREAD",
+                "from": "did:web:alice.example.com",
+                "to": "did:web:bob.example.com",
+                "created_at_ms": 1772578980000_u64,
+                "updated_at_ms": 1772578980000_u64,
+                "sort_key": 1772578980000_u64,
+                "tags": []
+            },
+            "msg": {
+                "from": "did:web:alice.example.com",
+                "to": ["did:web:bob.example.com"],
+                "kind": "chat",
+                "created_at_ms": 1772578980000_u64,
+                "content": {
+                    "content": "can you help me?"
+                }
+            }
+        });
+        let line3 = json!({
+            "record": {
+                "record_id": "r3",
+                "box_kind": "OUTBOX",
+                "msg_id": "sha256:cccccccccccccccccccccccccccccccc",
+                "msg_kind": "chat",
+                "state": "SENT",
+                "from": "did:web:jarvis.example.com",
+                "to": "did:web:alice.example.com",
+                "created_at_ms": 1772579040000_u64,
+                "updated_at_ms": 1772579040000_u64,
+                "sort_key": 1772579040000_u64,
+                "tags": []
+            },
+            "msg": {
+                "from": "did:web:jarvis.example.com",
+                "to": ["did:web:alice.example.com"],
+                "kind": "chat",
+                "created_at_ms": 1772579040000_u64,
+                "content": {
+                    "content": "history line3 content\nlong content\nlong content"
+                }
+            }
+        });
+        let line4 = json!({
+            "record": {
+                "record_id": "r4",
+                "box_kind": "INBOX",
+                "msg_id": "sha256:dddddddddddddddddddddddddddddddd",
+                "msg_kind": "chat",
+                "state": "UNREAD",
+                "from": "did:bns:bob",
+                "to": "did:web:jarvis.example.com",
+                "created_at_ms": 1772582520000_u64,
+                "updated_at_ms": 1772582520000_u64,
+                "sort_key": 1772582520000_u64,
+                "tags": []
+            },
+            "msg": {
+                "from": "did:bns:bob",
+                "to": ["did:web:jarvis.example.com"],
+                "kind": "chat",
+                "created_at_ms": 1772582520000_u64,
+                "content": {
+                    "content": "hello, how are you?"
+                }
+            }
+        });
+
+        tokio::fs::write(
+            session_dir.join("msg_record.jsonl"),
+            format!("{line1}\n{line2}\n{line3}\n{line4}\n"),
+        )
+        .await
+        .expect("write msg record file");
+
+        let mut session = AgentSession::new(session_id, "did:web:agent.example.com", None);
+        session.pwd = workspace_root.clone();
+        session.session_root_dir = workspace_root.join("session");
+        let input = BehaviorExecInput {
+            session_id: session_id.to_string(),
+            trace: SessionRuntimeContext {
+                trace_id: "trace-history-prompt".to_string(),
+                agent_name: "did:web:agent.example.com".to_string(),
+                behavior: "on_wakeup".to_string(),
+                step_idx: 1,
+                wakeup_id: "wakeup-history".to_string(),
+                session_id: "session-test".to_string(),
+            },
+            input_prompt: "print history_messages".to_string(),
+            last_step_prompt: String::new(),
+            role_md: "You are a helpful assistant.".to_string(),
+            self_md: "Self description.".to_string(),
+            behavior_prompt: "rules".to_string(),
+            limits: StepLimits::default(),
+            behavior_cfg: BehaviorConfig::default(),
+            session: Some(Arc::new(Mutex::new(session))),
+        };
+
+        let mut cfg = BehaviorConfig::default();
+        cfg.memory.total_limit = 256;
+        cfg.memory.history_messages = BehaviorMemoryBucketConfig {
+            limit: 256,
+            max_percent: Some(1.0),
+            is_enable: true,
+        };
+
+        let prompt = build_memory_prompt_text(
+            &input,
+            &cfg,
+            vec![],
+            cfg.memory.total_limit,
+            &MockTokenizer,
+            None,
+        )
+        .await;
+
+        println!("\n[history_messages prompt preview]\n{prompt}\n");
+        assert!(prompt.contains("<<memory>>"));
+        assert!(prompt.contains("## Timeline"));
+        assert!(prompt.contains("### 2026-03-03"));
+        assert!(prompt.contains("- 23:02 alice: i want to buy a new laptop"));
+        assert!(prompt.contains("- 23:03 alice: can you help me?"));
+        assert!(prompt.contains("- 23:04 Jarvis(me):"));
+        assert!(prompt.contains("  history line3 content"));
+        assert!(prompt.contains("  long content"));
+        assert!(prompt.contains("### 2026-03-04"));
+        assert!(prompt.contains("- 00:02 bob(did:bns:bob): hello, how are you?"));
     }
 
     #[tokio::test]
