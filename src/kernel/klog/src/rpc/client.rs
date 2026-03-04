@@ -629,7 +629,10 @@ mod tests {
                         assert_eq!(params.key, "cluster/config/epoch");
                         let response = KLogJsonRpcResponse::success(
                             request.id,
-                            KLogMetaPutResponse { key: params.key },
+                            KLogMetaPutResponse {
+                                key: params.key,
+                                revision: 7,
+                            },
                         );
                         (StatusCode::OK, Json(response))
                     }
@@ -645,6 +648,7 @@ mod tests {
                                     value: "42".to_string(),
                                     updated_at: 1234,
                                     updated_by: 1,
+                                    revision: 7,
                                 }],
                             },
                         );
@@ -658,6 +662,7 @@ mod tests {
                             KLogMetaDeleteResponse {
                                 key: params.key,
                                 existed: true,
+                                prev_revision: Some(7),
                             },
                         );
                         (StatusCode::OK, Json(response))
@@ -688,6 +693,7 @@ mod tests {
             .await
             .map_err(|e| anyhow::anyhow!("put_meta failed: {}", e))?;
         assert_eq!(put.key, "cluster/config/epoch");
+        assert_eq!(put.revision, 7);
 
         let query = client
             .query_meta(KLogMetaQueryRequest {
@@ -708,6 +714,7 @@ mod tests {
             .await
             .map_err(|e| anyhow::anyhow!("delete_meta failed: {}", e))?;
         assert!(del.existed);
+        assert_eq!(del.prev_revision, Some(7));
         Ok(())
     }
 

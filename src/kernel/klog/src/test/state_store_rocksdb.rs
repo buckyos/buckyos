@@ -99,6 +99,7 @@ async fn test_rocksdb_meta_persists_after_reopen() -> anyhow::Result<()> {
             value: "64".to_string(),
             updated_at: 1000,
             updated_by: 1,
+            revision: 0,
         })
         .await?;
     drop(manager);
@@ -113,12 +114,25 @@ async fn test_rocksdb_meta_persists_after_reopen() -> anyhow::Result<()> {
         .expect("meta must exist");
     assert_eq!(item.value, "64");
     assert_eq!(item.updated_by, 1);
+    assert_eq!(item.revision, 1);
+
+    let second = manager
+        .put_meta_entry(KLogMetaEntry {
+            key: "cluster/config/max_clients".to_string(),
+            value: "128".to_string(),
+            updated_at: 1001,
+            updated_by: 1,
+            revision: 0,
+        })
+        .await?;
+    assert_eq!(second.revision, 2);
 
     let listed = manager
         .list_meta_entries(Some("cluster/config"), 10)
         .await?;
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].key, "cluster/config/max_clients");
+    assert_eq!(listed[0].revision, 2);
 
     Ok(())
 }
@@ -135,6 +149,7 @@ async fn test_rocksdb_meta_snapshot_roundtrip() -> anyhow::Result<()> {
             value: "v1".to_string(),
             updated_at: 2000,
             updated_by: 2,
+            revision: 0,
         })
         .await?;
     let src_snapshot = src_mgr.build_snapshot().await?;
@@ -154,6 +169,7 @@ async fn test_rocksdb_meta_snapshot_roundtrip() -> anyhow::Result<()> {
         .expect("meta must exist after snapshot install");
     assert_eq!(item.value, "v1");
     assert_eq!(item.updated_by, 2);
+    assert_eq!(item.revision, 1);
 
     Ok(())
 }

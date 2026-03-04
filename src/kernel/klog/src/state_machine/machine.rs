@@ -117,9 +117,15 @@ impl KLogStateMachine {
                 );
                 let key = item.key.clone();
                 match self.state_store.put_meta_entry(item).await {
-                    Ok(()) => {
-                        debug!("StateMachine put-meta request committed: key={}", key);
-                        KLogResponse::MetaPutOk { key }
+                    Ok(stored) => {
+                        debug!(
+                            "StateMachine put-meta request committed: key={}, revision={}",
+                            key, stored.revision
+                        );
+                        KLogResponse::MetaPutOk {
+                            key,
+                            revision: stored.revision,
+                        }
                     }
                     Err(err) => {
                         error!("StateMachine put-meta request failed: {}", err);
@@ -130,12 +136,17 @@ impl KLogStateMachine {
             KLogRequest::DeleteMeta { key } => {
                 debug!("StateMachine process delete-meta request: key={}", key);
                 match self.state_store.delete_meta_key(&key).await {
-                    Ok(existed) => {
+                    Ok(prev_revision) => {
+                        let existed = prev_revision.is_some();
                         debug!(
-                            "StateMachine delete-meta request committed: key={}, existed={}",
-                            key, existed
+                            "StateMachine delete-meta request committed: key={}, existed={}, prev_revision={:?}",
+                            key, existed, prev_revision
                         );
-                        KLogResponse::MetaDeleteOk { key, existed }
+                        KLogResponse::MetaDeleteOk {
+                            key,
+                            existed,
+                            prev_revision,
+                        }
                     }
                     Err(err) => {
                         error!("StateMachine delete-meta request failed: {}", err);

@@ -163,15 +163,22 @@ impl KLogStateStore for MemoryStateStore {
         Ok(entries)
     }
 
-    async fn put_meta(&self, item: KLogMetaEntry) -> KResult<()> {
+    async fn put_meta(&self, item: KLogMetaEntry) -> KResult<KLogMetaEntry> {
         let mut metas = self.metas.lock().await;
-        metas.insert(item.key.clone(), item);
-        Ok(())
+        let key = item.key.clone();
+        let next_revision = metas
+            .get(&key)
+            .map(|v| v.revision.saturating_add(1))
+            .unwrap_or(1);
+        let mut stored = item;
+        stored.revision = next_revision;
+        metas.insert(key, stored.clone());
+        Ok(stored)
     }
 
-    async fn delete_meta(&self, key: &str) -> KResult<bool> {
+    async fn delete_meta(&self, key: &str) -> KResult<Option<u64>> {
         let mut metas = self.metas.lock().await;
-        Ok(metas.remove(key).is_some())
+        Ok(metas.remove(key).map(|v| v.revision))
     }
 
     async fn get_meta(&self, key: &str) -> KResult<Option<KLogMetaEntry>> {

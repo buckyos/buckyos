@@ -35,6 +35,14 @@ struct RequestDedupMeta {
     seen_at_ms: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LegacyKLogMetaEntryV0 {
+    key: String,
+    value: String,
+    updated_at: u64,
+    updated_by: u64,
+}
+
 fn entry_key(id: u64) -> [u8; 9] {
     let mut key = [0u8; 9];
     key[0] = KEY_PREFIX_ENTRY;
@@ -107,6 +115,25 @@ fn decode_data_meta_key(raw: &[u8]) -> Option<&str> {
 
 fn normalize_request_id(request_id: Option<&str>) -> Option<&str> {
     request_id.map(|v| v.trim()).filter(|v| !v.is_empty())
+}
+
+fn decode_meta_entry_with_legacy(raw: &[u8]) -> KResult<KLogMetaEntry> {
+    let decoded_v1: Result<(KLogMetaEntry, usize), _> =
+        bincode::serde::decode_from_slice(raw, bincode::config::legacy());
+    if let Ok((item, _)) = decoded_v1 {
+        return Ok(item);
+    }
+
+    let (legacy, _): (LegacyKLogMetaEntryV0, usize) =
+        bincode::serde::decode_from_slice(raw, bincode::config::legacy())
+            .map_err(|e| klog_err_with_context("Failed to decode rocksdb data meta entry", e))?;
+    Ok(KLogMetaEntry {
+        key: legacy.key,
+        value: legacy.value,
+        updated_at: legacy.updated_at,
+        updated_by: legacy.updated_by,
+        revision: 1,
+    })
 }
 
 fn now_millis() -> u64 {
@@ -535,10 +562,7 @@ impl RocksDbStateStore {
             let Some(key) = decode_data_meta_key(k.as_ref()) else {
                 continue;
             };
-            let (entry, _): (KLogMetaEntry, usize) =
-                bincode::serde::decode_from_slice(v.as_ref(), bincode::config::legacy()).map_err(
-                    |e| klog_err_with_context("Failed to deserialize rocksdb meta entry", e),
-                )?;
+            let entry = decode_meta_entry_with_legacy(v.as_ref())?;
             if entry.key != key {
                 warn!(
                     "RocksDbStateStore meta key mismatch, key_from_index='{}', key_in_value='{}'",
@@ -1560,25 +1584,40 @@ impl KLogStateStore for RocksDbStateStore {
         Ok(out)
     }
 
-    async fn put_meta(&self, item: KLogMetaEntry) -> KResult<()> {
+    async fn put_meta(&self, item: KLogMetaEntry) -> KResult<KLogMetaEntry> {
         let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
             let msg = format!("Missing column family '{}'", CF_META);
             error!("{}", msg);
             klog_err(msg)
         })?;
-        let encoded = bincode::serde::encode_to_vec(&item, bincode::config::legacy())
+        let meta_key = data_meta_key(item.key.as_str());
+        let prev = self
+            .db
+            .get_cf(&meta_cf, meta_key.as_slice())
+            .map_err(|e| klog_err_with_context("Failed to read rocksdb data meta entry", e))?;
+        let next_revision = match prev {
+            Some(raw) => decode_meta_entry_with_legacy(raw.as_ref())?
+                .revision
+                .saturating_add(1),
+            None => 1,
+        };
+
+        let mut stored = item;
+        stored.revision = next_revision;
+
+        let encoded = bincode::serde::encode_to_vec(&stored, bincode::config::legacy())
             .map_err(|e| klog_err_with_context("Failed to encode rocksdb data meta entry", e))?;
-        let key = data_meta_key(item.key.as_str());
         let write_opts = self.write_options();
         self.db
-            .put_cf_opt(&meta_cf, key, encoded, &write_opts)
-            .map_err(|e| klog_err_with_context("Failed to persist rocksdb data meta entry", e))
+            .put_cf_opt(&meta_cf, meta_key, encoded, &write_opts)
+            .map_err(|e| klog_err_with_context("Failed to persist rocksdb data meta entry", e))?;
+        Ok(stored)
     }
 
-    async fn delete_meta(&self, key: &str) -> KResult<bool> {
+    async fn delete_meta(&self, key: &str) -> KResult<Option<u64>> {
         let key = key.trim();
         if key.is_empty() {
-            return Ok(false);
+            return Ok(None);
         }
 
         let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
@@ -1587,19 +1626,19 @@ impl KLogStateStore for RocksDbStateStore {
             klog_err(msg)
         })?;
         let meta_key = data_meta_key(key);
-        let existed = self
+        let Some(raw) = self
             .db
             .get_cf(&meta_cf, meta_key.as_slice())
             .map_err(|e| klog_err_with_context("Failed to read rocksdb data meta entry", e))?
-            .is_some();
-        if !existed {
-            return Ok(false);
-        }
+        else {
+            return Ok(None);
+        };
+        let prev_revision = decode_meta_entry_with_legacy(raw.as_ref())?.revision;
         let write_opts = self.write_options();
         self.db
             .delete_cf_opt(&meta_cf, meta_key.as_slice(), &write_opts)
             .map_err(|e| klog_err_with_context("Failed to delete rocksdb data meta entry", e))?;
-        Ok(true)
+        Ok(Some(prev_revision))
     }
 
     async fn get_meta(&self, key: &str) -> KResult<Option<KLogMetaEntry>> {
@@ -1621,10 +1660,7 @@ impl KLogStateStore for RocksDbStateStore {
         else {
             return Ok(None);
         };
-        let (item, _): (KLogMetaEntry, usize) =
-            bincode::serde::decode_from_slice(raw.as_ref(), bincode::config::legacy()).map_err(
-                |e| klog_err_with_context("Failed to decode rocksdb data meta entry", e),
-            )?;
+        let item = decode_meta_entry_with_legacy(raw.as_ref())?;
         Ok(Some(item))
     }
 
@@ -1662,10 +1698,7 @@ impl KLogStateStore for RocksDbStateStore {
             {
                 continue;
             }
-            let (item, _): (KLogMetaEntry, usize) =
-                bincode::serde::decode_from_slice(v.as_ref(), bincode::config::legacy()).map_err(
-                    |e| klog_err_with_context("Failed to decode rocksdb data meta entry", e),
-                )?;
+            let item = decode_meta_entry_with_legacy(v.as_ref())?;
             out.push(item);
             if out.len() >= limit {
                 break;

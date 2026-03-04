@@ -180,6 +180,7 @@ async fn test_state_machine_apply_meta_put_and_delete() -> anyhow::Result<()> {
                 value: "42".to_string(),
                 updated_at: 5000,
                 updated_by: 1,
+                revision: 0,
             },
         }),
     };
@@ -192,10 +193,17 @@ async fn test_state_machine_apply_meta_put_and_delete() -> anyhow::Result<()> {
 
     let responses = sm.apply(vec![put, del]).await?;
     assert_eq!(responses.len(), 2);
-    assert!(matches!(responses[0], KLogResponse::MetaPutOk { .. }));
+    assert!(matches!(
+        responses[0],
+        KLogResponse::MetaPutOk { revision: 1, .. }
+    ));
     assert!(matches!(
         responses[1],
-        KLogResponse::MetaDeleteOk { existed: true, .. }
+        KLogResponse::MetaDeleteOk {
+            existed: true,
+            prev_revision: Some(1),
+            ..
+        }
     ));
 
     Ok(())

@@ -143,6 +143,7 @@ pub struct KLogMetaPutRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KLogMetaPutResponse {
     pub key: String,
+    pub revision: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -154,6 +155,7 @@ pub struct KLogMetaDeleteRequest {
 pub struct KLogMetaDeleteResponse {
     pub key: String,
     pub existed: bool,
+    pub prev_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]

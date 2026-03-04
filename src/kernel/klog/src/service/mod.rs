@@ -409,6 +409,7 @@ impl KLogWriteService {
             value: req.value.clone(),
             updated_at: req.updated_at.unwrap_or_else(now_millis),
             updated_by: req.updated_by.unwrap_or(local_node_id),
+            revision: 0,
         };
         info!(
             "{} meta put request: trace_id={}, key={}, value_len={}, updated_at={}, updated_by={}, local_node_id={}, current_leader={:?}, forward_hops={}, forwarded_by={}",
@@ -426,9 +427,12 @@ impl KLogWriteService {
 
         match self.raft.client_write(KLogRequest::PutMeta { item }).await {
             Ok(resp) => match resp.data {
-                KLogResponse::MetaPutOk { key } => {
-                    info!("{} meta put committed: key={}", self.service_name, key);
-                    Ok(KLogMetaPutResponse { key })
+                KLogResponse::MetaPutOk { key, revision } => {
+                    info!(
+                        "{} meta put committed: key={}, revision={}",
+                        self.service_name, key, revision
+                    );
+                    Ok(KLogMetaPutResponse { key, revision })
                 }
                 KLogResponse::Err(err_msg) => {
                     let msg = format!(
@@ -639,12 +643,20 @@ impl KLogWriteService {
             .await
         {
             Ok(resp) => match resp.data {
-                KLogResponse::MetaDeleteOk { key, existed } => {
+                KLogResponse::MetaDeleteOk {
+                    key,
+                    existed,
+                    prev_revision,
+                } => {
                     info!(
-                        "{} meta delete committed: key={}, existed={}",
-                        self.service_name, key, existed
+                        "{} meta delete committed: key={}, existed={}, prev_revision={:?}",
+                        self.service_name, key, existed, prev_revision
                     );
-                    Ok(KLogMetaDeleteResponse { key, existed })
+                    Ok(KLogMetaDeleteResponse {
+                        key,
+                        existed,
+                        prev_revision,
+                    })
                 }
                 KLogResponse::Err(err_msg) => {
                     let msg = format!(

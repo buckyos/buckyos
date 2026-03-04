@@ -43,6 +43,8 @@ pub struct KLogMetaEntry {
     pub value: String,
     pub updated_at: u64,
     pub updated_by: KNodeId,
+    #[serde(default)]
+    pub revision: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,9 +58,18 @@ pub enum KLogRequest {
 pub enum KLogResponse {
     Ok,
     Empty, // For empty and membership payloads
-    AppendOk { id: u64 },
-    MetaPutOk { key: String },
-    MetaDeleteOk { key: String, existed: bool },
+    AppendOk {
+        id: u64,
+    },
+    MetaPutOk {
+        key: String,
+        revision: u64,
+    },
+    MetaDeleteOk {
+        key: String,
+        existed: bool,
+        prev_revision: Option<u64>,
+    },
     Err(String),
 }
 
