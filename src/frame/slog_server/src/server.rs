@@ -1,5 +1,5 @@
 use crate::storage::{LogRecords, LogStorageRef};
-use axum::{Router, routing::post};
+use axum::{http::StatusCode, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -21,7 +21,7 @@ impl LogHttpServer {
         let storage = self.storage.clone();
         let app = Router::new().route(
             "/logs",
-            post(move |log_records: axum::Json<LogRecords>| {
+            post(move |log_records: Json<LogRecords>| {
                 let storage = storage.clone();
                 async move {
                     info!(
@@ -31,14 +31,20 @@ impl LogHttpServer {
                         log_records.0.logs.len()
                     );
                     match storage.append_logs(log_records.0).await {
-                        Ok(_) => axum::Json(LogResponseMessage {
-                            ret: 0,
-                            message: "Logs stored successfully".to_string(),
-                        }),
-                        Err(e) => axum::Json(LogResponseMessage {
-                            ret: 1,
-                            message: format!("Failed to store logs: {}", e),
-                        }),
+                        Ok(_) => (
+                            StatusCode::OK,
+                            Json(LogResponseMessage {
+                                ret: 0,
+                                message: "Logs stored successfully".to_string(),
+                            }),
+                        ),
+                        Err(e) => (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(LogResponseMessage {
+                                ret: 1,
+                                message: format!("Failed to store logs: {}", e),
+                            }),
+                        ),
                     }
                 }
             }),

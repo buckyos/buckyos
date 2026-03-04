@@ -1,5 +1,11 @@
 use slog::SystemLogRecord;
 
+#[derive(serde::Deserialize)]
+struct UploadResponse {
+    ret: i32,
+    message: String,
+}
+
 pub struct LogUploader {
     node: String,
     service_endpoint: String,
@@ -40,12 +46,29 @@ impl LogUploader {
                 msg
             })?;
 
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            let msg = format!("server returned error status: {}", response.status());
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            let msg = format!("server returned error status: {}, body: {}", status, body);
             error!("{}", msg);
-            Err(msg)
+            return Err(msg);
         }
+
+        let response = response.json::<UploadResponse>().await.map_err(|e| {
+            let msg = format!("failed to parse upload response from server: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        if response.ret != 0 {
+            let msg = format!(
+                "server returned upload failure: ret={}, message={}",
+                response.ret, response.message
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        Ok(())
     }
 }
