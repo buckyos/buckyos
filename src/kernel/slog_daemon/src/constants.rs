@@ -33,6 +33,12 @@ pub const UPDATE_DIR_INTERVAL_SECS: u64 = 60;
 /// Max number of records pulled from all services in one read cycle.
 pub const READ_RECORD_BATCH_SIZE: usize = 100;
 
+/// Max records read from one service in a single read cycle.
+///
+/// This prevents a single hot service from consuming the whole batch and
+/// starving other services for long periods.
+pub const READ_RECORD_PER_SERVICE_QUOTA: usize = 10;
+
 /// Base polling interval for read loop when not saturated.
 pub const READ_RECORD_INTERVAL_MILLIS: u64 = 1000;
 

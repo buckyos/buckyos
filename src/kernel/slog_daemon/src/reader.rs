@@ -1,3 +1,4 @@
+use crate::constants::READ_RECORD_PER_SERVICE_QUOTA;
 use slog::{FileLogReader, SystemLogRecord};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -20,6 +21,7 @@ pub struct LogDirReader {
     dir: PathBuf,
     excluded: Vec<String>,
     list: Mutex<Vec<LogDirItem>>,
+    next_start_index: Mutex<usize>,
 }
 
 impl LogDirReader {
@@ -34,6 +36,7 @@ impl LogDirReader {
             dir: log_dir.to_path_buf(),
             excluded,
             list: Mutex::new(Vec::new()),
+            next_start_index: Mutex::new(0),
         };
 
         reader.update_dir()?;
@@ -43,11 +46,38 @@ impl LogDirReader {
 
     pub fn try_read_records(&self, batch_size: usize) -> Result<Vec<LogRecordItem>, String> {
         let mut result = Vec::new();
+        if batch_size == 0 {
+            return Ok(result);
+        }
 
         let mut list_lock = self.list.lock().unwrap();
+        if list_lock.is_empty() {
+            return Ok(result);
+        }
+
+        let list_len = list_lock.len();
+        let start_idx = {
+            let mut idx_lock = self.next_start_index.lock().unwrap();
+            if *idx_lock >= list_len {
+                *idx_lock = 0;
+            }
+            *idx_lock
+        };
+
         let mut remain_size = batch_size;
-        for item in list_lock.iter_mut() {
-            match item.reader.try_read_next_records(remain_size) {
+        let mut visited = 0usize;
+        let mut offset = 0usize;
+        let mut last_processed_idx: Option<usize> = None;
+
+        while visited < list_len && remain_size > 0 {
+            let idx = (start_idx + offset) % list_len;
+            offset += 1;
+            visited += 1;
+            last_processed_idx = Some(idx);
+
+            let item = &mut list_lock[idx];
+            let service_batch_size = remain_size.min(READ_RECORD_PER_SERVICE_QUOTA);
+            match item.reader.try_read_next_records(service_batch_size) {
                 Ok(records) => {
                     if !records.is_empty() {
                         assert!(remain_size >= records.len());
@@ -57,10 +87,6 @@ impl LogDirReader {
                             records,
                             id: item.id.clone(),
                         });
-
-                        if remain_size == 0 {
-                            break;
-                        }
                     }
                 }
                 Err(e) => {
@@ -73,6 +99,11 @@ impl LogDirReader {
                     continue;
                 }
             }
+        }
+
+        if let Some(last_idx) = last_processed_idx {
+            let mut idx_lock = self.next_start_index.lock().unwrap();
+            *idx_lock = (last_idx + 1) % list_len;
         }
 
         Ok(result)
@@ -131,6 +162,13 @@ impl LogDirReader {
             info!("removed {} deleted log dir readers", removed);
         }
 
+        let mut idx_lock = self.next_start_index.lock().unwrap();
+        if list_lock.is_empty() {
+            *idx_lock = 0;
+        } else {
+            *idx_lock %= list_lock.len();
+        }
+
         Ok(())
     }
 
@@ -174,6 +212,9 @@ impl LogDirReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slog::{LogLevel, LogMeta, SystemLogRecordLineFormatter};
+    use std::collections::HashSet;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn create_service_dir(root: &Path, name: &str) -> PathBuf {
         let dir = root.join(name);
@@ -183,16 +224,51 @@ mod tests {
         dir
     }
 
+    fn new_temp_root(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "buckyos/slog_daemon_reader_test/{}_{}_{}",
+            prefix,
+            std::process::id(),
+            nanos
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn create_service_dir_with_logs(root: &Path, name: &str, count: usize) -> PathBuf {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let meta = LogMeta::open(&dir).unwrap();
+        let file_name = format!("{}.1.log", name);
+        meta.append_new_file(&file_name).unwrap();
+
+        let mut content = String::new();
+        for i in 0..count {
+            let record = slog::SystemLogRecord {
+                level: LogLevel::Info,
+                target: name.to_string(),
+                time: 1721000000000 + i as u64,
+                file: Some(format!("{}.rs", name)),
+                line: Some(i as u32 + 1),
+                content: format!("{}-{}", name, i),
+            };
+            content.push_str(&SystemLogRecordLineFormatter::format_record(&record));
+        }
+        std::fs::write(dir.join(&file_name), &content).unwrap();
+        meta.update_current_write_index(content.len() as u64)
+            .unwrap();
+
+        dir
+    }
+
     #[test]
     fn test_update_dir_removes_deleted_dirs() {
-        let base = std::env::temp_dir().join(format!(
-            "buckyos/slog_daemon_reader_test_{}",
-            std::process::id()
-        ));
-        if base.exists() {
-            std::fs::remove_dir_all(&base).unwrap();
-        }
-        std::fs::create_dir_all(&base).unwrap();
+        let base = new_temp_root("remove_deleted");
 
         let service_a = create_service_dir(&base, "service_a");
         let _service_b = create_service_dir(&base, "service_b");
@@ -206,6 +282,51 @@ mod tests {
 
         assert!(reader.flush_read_pos("service_a").is_err());
         assert!(reader.flush_read_pos("service_b").is_ok());
+
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn test_try_read_records_respects_per_service_quota() {
+        let base = new_temp_root("quota");
+        create_service_dir_with_logs(&base, "service_a", 100);
+        create_service_dir_with_logs(&base, "service_b", 100);
+        create_service_dir_with_logs(&base, "service_c", 100);
+
+        let reader = LogDirReader::open(&base, vec![]).unwrap();
+        let items = reader
+            .try_read_records(READ_RECORD_PER_SERVICE_QUOTA * 3)
+            .unwrap();
+
+        assert_eq!(items.len(), 3);
+        for item in items {
+            assert!(item.records.len() <= READ_RECORD_PER_SERVICE_QUOTA);
+        }
+
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn test_try_read_records_rotates_start_service_between_batches() {
+        let base = new_temp_root("round_robin");
+        create_service_dir_with_logs(&base, "service_a", 30);
+        create_service_dir_with_logs(&base, "service_b", 30);
+        create_service_dir_with_logs(&base, "service_c", 30);
+
+        let reader = LogDirReader::open(&base, vec![]).unwrap();
+        let mut first_service_ids = Vec::new();
+
+        for _ in 0..3 {
+            let items = reader
+                .try_read_records(READ_RECORD_PER_SERVICE_QUOTA)
+                .unwrap();
+            assert_eq!(items.len(), 1);
+            first_service_ids.push(items[0].id.clone());
+            reader.flush_read_pos(&items[0].id).unwrap();
+        }
+
+        let unique: HashSet<String> = first_service_ids.into_iter().collect();
+        assert_eq!(unique.len(), 3);
 
         std::fs::remove_dir_all(&base).unwrap();
     }
