@@ -1,4 +1,7 @@
+mod test_pipeline_all_invalid_lines;
 mod test_pipeline_corrupt_line_sidecar;
+mod test_pipeline_crash_recovery;
+mod test_pipeline_file_rotation;
 mod test_pipeline_graceful_shutdown_drain;
 mod test_pipeline_happy_path;
 mod test_pipeline_multi_service_fairness;
