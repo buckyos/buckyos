@@ -6,6 +6,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{Duration, Instant};
 
@@ -42,22 +43,117 @@ fn cargo_bin() -> String {
     std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string())
 }
 
-pub fn build_binaries_for_e2e() -> Result<(), String> {
-    let status = Command::new(cargo_bin())
-        .arg("build")
-        .arg("-p")
-        .arg("slog_server")
-        .arg("-p")
-        .arg("slog_daemon")
-        .current_dir(workspace_root())
-        .status()
-        .map_err(|e| format!("failed to run cargo build for e2e binaries: {}", e))?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("cargo build failed with status: {}", status))
+fn env_flag_true(key: &str) -> bool {
+    match std::env::var(key) {
+        Ok(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
     }
+}
+
+fn file_mtime(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
+}
+
+fn update_latest_mtime(path: &Path, latest: &mut SystemTime) {
+    if let Some(mtime) = file_mtime(path) {
+        if mtime > *latest {
+            *latest = mtime;
+        }
+    }
+}
+
+fn scan_dir_latest_mtime(dir: &Path, latest: &mut SystemTime) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| format!("failed to read dir {} for mtime scan: {}", dir.display(), e))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("failed to read dir entry: {}", e))?;
+        let path = entry.path();
+        if path.is_dir() {
+            scan_dir_latest_mtime(&path, latest)?;
+        } else {
+            update_latest_mtime(&path, latest);
+        }
+    }
+    Ok(())
+}
+
+fn latest_source_mtime() -> Result<SystemTime, String> {
+    let ws = workspace_root();
+    let mut latest = UNIX_EPOCH;
+
+    // Workspace-level change points.
+    update_latest_mtime(&ws.join("Cargo.toml"), &mut latest);
+    update_latest_mtime(&ws.join("Cargo.lock"), &mut latest);
+
+    // Crates participating in the process e2e flow.
+    let crate_paths = [
+        ws.join("frame/slog_server/Cargo.toml"),
+        ws.join("frame/slog_server/src"),
+        ws.join("kernel/slog_daemon/Cargo.toml"),
+        ws.join("kernel/slog_daemon/src"),
+        ws.join("kernel/slog/Cargo.toml"),
+        ws.join("kernel/slog/src"),
+    ];
+
+    for path in crate_paths {
+        if path.is_dir() {
+            scan_dir_latest_mtime(&path, &mut latest)?;
+        } else {
+            update_latest_mtime(&path, &mut latest);
+        }
+    }
+
+    Ok(latest)
+}
+
+fn e2e_bins_up_to_date() -> Result<bool, String> {
+    let server_bin = target_debug_bin("slog_server");
+    let daemon_bin = target_debug_bin("slog_daemon");
+    if !server_bin.exists() || !daemon_bin.exists() {
+        return Ok(false);
+    }
+
+    let server_mtime = file_mtime(&server_bin).unwrap_or(UNIX_EPOCH);
+    let daemon_mtime = file_mtime(&daemon_bin).unwrap_or(UNIX_EPOCH);
+    let oldest_bin_mtime = std::cmp::min(server_mtime, daemon_mtime);
+
+    let latest_src = latest_source_mtime()?;
+    Ok(oldest_bin_mtime >= latest_src)
+}
+
+pub fn build_binaries_for_e2e() -> Result<(), String> {
+    static BUILD_ONCE: OnceLock<Result<(), String>> = OnceLock::new();
+    BUILD_ONCE
+        .get_or_init(|| {
+            if env_flag_true("SLOG_E2E_SKIP_BUILD") {
+                return Ok(());
+            }
+
+            let force_build = env_flag_true("SLOG_E2E_FORCE_BUILD");
+            if !force_build && e2e_bins_up_to_date()? {
+                return Ok(());
+            }
+
+            let status = Command::new(cargo_bin())
+                .arg("build")
+                .arg("-p")
+                .arg("slog_server")
+                .arg("-p")
+                .arg("slog_daemon")
+                .current_dir(workspace_root())
+                .status()
+                .map_err(|e| format!("failed to run cargo build for e2e binaries: {}", e))?;
+
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("cargo build failed with status: {}", status))
+            }
+        })
+        .clone()
 }
 
 pub fn allocate_bind_addr() -> Result<String, String> {
