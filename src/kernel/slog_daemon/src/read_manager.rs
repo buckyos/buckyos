@@ -6,8 +6,10 @@ use crate::constants::{
 use slog::SystemLogRecord;
 use std::collections::HashMap;
 use std::path::Path;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 
 pub struct LogRecordLoad {
     pub id: String,
@@ -17,7 +19,10 @@ pub struct LogRecordLoad {
     pub ack: oneshot::Sender<bool>,
 }
 
-pub struct LogReaderManager {}
+pub struct LogReaderManager {
+    shutdown_token: CancellationToken,
+    thread_handle: Option<JoinHandle<()>>,
+}
 
 #[derive(Debug, Clone)]
 struct RetryState {
@@ -30,26 +35,55 @@ impl LogReaderManager {
         log_dir: &Path,
         excluded: Vec<String>,
         data_tx: mpsc::Sender<LogRecordLoad>,
+        shutdown_token: CancellationToken,
     ) -> Result<Self, String> {
         let dir_reader = LogDirReader::open(log_dir, excluded)?;
 
-        std::thread::spawn({
+        let thread_shutdown_token = shutdown_token.child_token();
+        let thread_handle = std::thread::spawn({
             move || {
                 info!("starting log reader manager thread...");
-                Self::run(data_tx, dir_reader);
+                Self::run(data_tx, dir_reader, thread_shutdown_token);
             }
         });
 
-        Ok(LogReaderManager {})
+        Ok(LogReaderManager {
+            shutdown_token,
+            thread_handle: Some(thread_handle),
+        })
     }
 
-    fn run(data_tx: mpsc::Sender<LogRecordLoad>, dir_reader: LogDirReader) {
+    pub fn shutdown(mut self) -> Result<(), String> {
+        self.shutdown_token.cancel();
+        if let Some(handle) = self.thread_handle.take() {
+            match handle.join() {
+                Ok(_) => {}
+                Err(_) => {
+                    let msg = "log reader manager thread panicked during shutdown".to_string();
+                    error!("{}", msg);
+                    return Err(msg);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn run(
+        data_tx: mpsc::Sender<LogRecordLoad>,
+        dir_reader: LogDirReader,
+        shutdown: CancellationToken,
+    ) {
         // Update dir every while 1 minute
         let mut last_update_dir_tick = std::time::Instant::now();
         let mut upload_retry_states: HashMap<String, RetryState> = HashMap::new();
         let mut flush_retry_states: HashMap<String, RetryState> = HashMap::new();
 
         loop {
+            if shutdown.is_cancelled() {
+                info!("log reader manager received shutdown signal, exiting read loop");
+                break;
+            }
+
             Self::retry_pending_flush_read_pos(&dir_reader, &mut flush_retry_states);
 
             let mut read_count = 0;
@@ -57,6 +91,13 @@ impl LogReaderManager {
             match dir_reader.try_read_records(READ_RECORD_BATCH_SIZE) {
                 Ok(items) => {
                     for item in items {
+                        if shutdown.is_cancelled() {
+                            info!(
+                                "stop reading new records due to shutdown signal, pending items stay on disk"
+                            );
+                            break;
+                        }
+
                         if flush_retry_states.contains_key(&item.id) {
                             debug!(
                                 "skip upload for item {} due pending read-pos flush retry",
@@ -121,10 +162,32 @@ impl LogReaderManager {
             }
 
             // Sleep a while before next read
-            std::thread::sleep(std::time::Duration::from_millis(
-                READ_RECORD_INTERVAL_MILLIS,
-            ));
+            if Self::sleep_with_cancellation(
+                &shutdown,
+                std::time::Duration::from_millis(READ_RECORD_INTERVAL_MILLIS),
+            ) {
+                info!("log reader manager interrupted during sleep by shutdown signal");
+                break;
+            }
         }
+    }
+
+    fn sleep_with_cancellation(shutdown: &CancellationToken, duration: Duration) -> bool {
+        if shutdown.is_cancelled() {
+            return true;
+        }
+
+        let step = Duration::from_millis(100);
+        let started = Instant::now();
+        while started.elapsed() < duration {
+            if shutdown.is_cancelled() {
+                return true;
+            }
+            let remaining = duration.saturating_sub(started.elapsed());
+            std::thread::sleep(remaining.min(step));
+        }
+
+        shutdown.is_cancelled()
     }
 
     fn retry_pending_flush_read_pos(
@@ -283,7 +346,9 @@ mod tests {
     use super::{LogReaderManager, RetryState};
     use crate::reader::FlushReadPosError;
     use std::collections::HashMap;
-    use std::time::{Duration, Instant};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
 
     #[test]
     fn test_next_retry_interval_secs_backoff_and_cap() {
@@ -382,5 +447,26 @@ mod tests {
         let state = retry_states.get("svc").unwrap();
         assert_eq!(state.retry_interval_secs, 2);
         assert!(state.next_retry_at > Instant::now());
+    }
+
+    #[test]
+    fn test_log_reader_manager_shutdown_stops_thread() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "buckyos/slog_daemon_shutdown_test/{}_{}",
+            std::process::id(),
+            nanos
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let (tx, _rx) = mpsc::channel(1);
+        let shutdown_token = CancellationToken::new();
+        let manager = LogReaderManager::open(&root, vec![], tx, shutdown_token).unwrap();
+        assert!(manager.shutdown().is_ok());
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

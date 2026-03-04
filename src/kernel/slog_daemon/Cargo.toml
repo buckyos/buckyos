@@ -10,4 +10,5 @@ tokio = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tokio-util = { version = "0.7.12", features = ["rt"] }
 buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit" }

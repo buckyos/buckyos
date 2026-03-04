@@ -90,7 +90,7 @@ async fn main() {
     // Specify excluded services
     // We should not upload logs from slog_daemon itself and slog_server
     let excluded = vec![SERVICE_NAME.to_string(), "slog_server".to_string()];
-    let _client = match LogDaemonClient::new(
+    let client = match LogDaemonClient::new(
         node_id,
         service_endpoint,
         upload_timeout_secs,
@@ -104,8 +104,16 @@ async fn main() {
         }
     };
 
-    // Sleep indefinitely (or implement actual logic)
-    tokio::signal::ctrl_c().await.unwrap();
+    match tokio::signal::ctrl_c().await {
+        Ok(_) => {
+            info!("received ctrl-c signal, shutting down slog daemon...");
+        }
+        Err(e) => {
+            error!("failed to listen ctrl-c signal: {}", e);
+        }
+    }
 
-    info!("Log daemon client exiting.");
+    if let Err(e) = client.shutdown().await {
+        error!("slog daemon client shutdown failed: {}", e);
+    }
 }
