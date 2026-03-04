@@ -136,6 +136,7 @@ impl KLogClient {
                 message: message.into(),
                 timestamp: None,
                 node_id: None,
+                level: None,
                 request_id: None,
             })
             .await?;
@@ -479,6 +480,7 @@ mod tests {
                 message: "hello-klog".to_string(),
                 timestamp: Some(1000),
                 node_id: Some(1),
+                level: None,
                 request_id: Some("req-1".to_string()),
             })
             .await
@@ -525,6 +527,7 @@ mod tests {
                 message: "hello-trace".to_string(),
                 timestamp: Some(1001),
                 node_id: Some(1),
+                level: None,
                 request_id: Some("req-trace".to_string()),
             })
             .await
@@ -564,6 +567,7 @@ mod tests {
                 message: "auto-request-id".to_string(),
                 timestamp: Some(2000),
                 node_id: None,
+                level: None,
                 request_id: None,
             })
             .await
@@ -590,6 +594,7 @@ mod tests {
                             timestamp: 123,
                             node_id: 1,
                             request_id: None,
+                            level: Default::default(),
                             message: "q-result".to_string(),
                         }],
                     },

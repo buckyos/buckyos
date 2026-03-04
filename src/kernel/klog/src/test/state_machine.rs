@@ -21,6 +21,7 @@ async fn test_prepare_append_entry_assigns_id_on_leader_only() -> anyhow::Result
         timestamp: 100,
         node_id: 1,
         request_id: Some("sm-prepare-1".to_string()),
+        level: Default::default(),
         message: "leader-alloc-id".to_string(),
     };
 
@@ -36,6 +37,7 @@ async fn test_prepare_append_entry_assigns_id_on_leader_only() -> anyhow::Result
         timestamp: 101,
         node_id: 1,
         request_id: Some("sm-prepare-2".to_string()),
+        level: Default::default(),
         message: "already-has-id".to_string(),
     };
     let prepared_fixed = manager.prepare_append_entry(fixed_id_entry.clone());
@@ -64,6 +66,7 @@ async fn test_state_machine_apply_keeps_prepared_id() -> anyhow::Result<()> {
                 timestamp: 200,
                 node_id: 1,
                 request_id: Some("sm-apply-1".to_string()),
+                level: Default::default(),
                 message: "already-prepared".to_string(),
             },
         }),
@@ -90,6 +93,7 @@ async fn test_state_store_manager_request_id_dedup() -> anyhow::Result<()> {
         timestamp: 300,
         node_id: 1,
         request_id: Some("idem-1".to_string()),
+        level: Default::default(),
         message: "first-write".to_string(),
     });
     let first_id = manager.append_prepared_entry(first).await?;
@@ -99,6 +103,7 @@ async fn test_state_store_manager_request_id_dedup() -> anyhow::Result<()> {
         timestamp: 301,
         node_id: 1,
         request_id: Some("idem-1".to_string()),
+        level: Default::default(),
         message: "retry-write-should-dedup".to_string(),
     });
     let retry_id = manager.append_prepared_entry(retry).await?;

@@ -180,6 +180,7 @@ pub(crate) fn sample_state_entries() -> Vec<KLogEntry> {
             timestamp: 100,
             node_id: 1,
             request_id: None,
+            level: Default::default(),
             message: "kernel-boot".to_string(),
         },
         KLogEntry {
@@ -187,6 +188,7 @@ pub(crate) fn sample_state_entries() -> Vec<KLogEntry> {
             timestamp: 101,
             node_id: 1,
             request_id: None,
+            level: Default::default(),
             message: "driver-online".to_string(),
         },
     ]

@@ -6,7 +6,7 @@ use crate::network::{
     KLogQueryRequest, KLogQueryResponse,
 };
 use crate::state_store::{KLogQuery, KLogQueryOrder, KLogStateStoreManagerRef};
-use crate::{KLogEntry, KLogMetaEntry, KLogRequest, KLogResponse, KNode, KRaftRef};
+use crate::{KLogEntry, KLogLevel, KLogMetaEntry, KLogRequest, KLogResponse, KNode, KRaftRef};
 use axum::http::{HeaderMap, StatusCode};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -146,10 +146,12 @@ impl KLogWriteService {
 
         let metrics = self.raft.metrics().borrow().clone();
         let local_node_id = metrics.id;
+        let level = req.level.unwrap_or(KLogLevel::Info);
         let req = KLogAppendRequest {
             message: req.message,
             timestamp: req.timestamp.or_else(|| Some(now_millis())),
             node_id: req.node_id.or(Some(local_node_id)),
+            level: Some(level),
             request_id: request_id.clone(),
         };
 
@@ -158,18 +160,20 @@ impl KLogWriteService {
             timestamp: req.timestamp.unwrap_or(0),
             node_id: req.node_id.unwrap_or(local_node_id),
             request_id,
+            level,
             message: req.message.clone(),
         });
         let requested_id = item.id;
 
         info!(
-            "{} data append request: trace_id={}, id={}, request_id={:?}, timestamp={}, node_id={}, msg_len={}, local_node_id={}, current_leader={:?}, forward_hops={}, forwarded_by={}",
+            "{} data append request: trace_id={}, id={}, request_id={:?}, timestamp={}, node_id={}, level={:?}, msg_len={}, local_node_id={}, current_leader={:?}, forward_hops={}, forwarded_by={}",
             self.service_name,
             trace_id,
             item.id,
             item.request_id.as_deref(),
             item.timestamp,
             item.node_id,
+            item.level,
             item.message.len(),
             local_node_id,
             metrics.current_leader,

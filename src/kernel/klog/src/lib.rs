@@ -27,6 +27,18 @@ pub enum KLogError {
 
 pub type KResult<T> = Result<T, KLogError>;
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum KLogLevel {
+    Trace,
+    Debug,
+    #[default]
+    Info,
+    Warn,
+    Error,
+    Fatal,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct KLogEntry {
     pub id: u64, // The unique ID of the log entry
@@ -34,6 +46,8 @@ pub struct KLogEntry {
     pub node_id: u64, // The ID of the node that created the log entry
     #[serde(default)]
     pub request_id: Option<String>, // Optional idempotency key for dedup.
+    #[serde(default)]
+    pub level: KLogLevel,
     pub message: String,
 }
 

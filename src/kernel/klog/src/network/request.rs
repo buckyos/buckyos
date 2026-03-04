@@ -1,4 +1,4 @@
-use crate::{KLogEntry, KLogError, KLogMetaEntry, KNode, KNodeId, KResult, KTypeConfig};
+use crate::{KLogEntry, KLogError, KLogLevel, KLogMetaEntry, KNode, KNodeId, KResult, KTypeConfig};
 use openraft::error::PayloadTooLarge;
 use openraft::error::{InstallSnapshotError, RaftError};
 use openraft::network::RPCTypes;
@@ -109,6 +109,8 @@ pub struct KLogAppendRequest {
     pub message: String,
     pub timestamp: Option<u64>,
     pub node_id: Option<KNodeId>,
+    #[serde(default)]
+    pub level: Option<KLogLevel>,
     pub request_id: Option<String>,
 }
 
