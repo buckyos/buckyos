@@ -5,8 +5,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use buckyos_api::msg_queue::Message;
 use buckyos_api::{
-    get_buckyos_api_runtime, MsgRecord, MsgRecordWithObject, OpenDanAgentSessionRecord,
-    OpenDanSessionLink,
+    get_buckyos_api_runtime, AccountBinding, Contact, MsgRecord, MsgRecordWithObject,
+    OpenDanAgentSessionRecord, OpenDanSessionLink,
 };
 use log::{debug, info, warn};
 use name_lib::DID;
@@ -22,9 +22,12 @@ use crate::behavior::SessionRuntimeContext;
 use crate::workspace::LocalWorkspaceManager;
 
 const DEFAULT_SESSION_FILE: &str = "session.json";
+const DEFAULT_SESSION_SUMMARY_FILE: &str = "summary.md";
 const DEFAULT_MSG_RECORD_FILE: &str = "msg_record.jsonl";
 const MAX_SESSION_ID_LEN: usize = 180;
 const WORK_SESSION_PREFIX: &str = "work-";
+const DEFAULT_UI_BEHAVIOR: &str = "resolve_router";
+const DEFAULT_WORK_BEHAVIOR: &str = "plan";
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -300,21 +303,27 @@ impl AgentSession {
 
     pub fn from_record(record: OpenDanAgentSessionRecord) -> Self {
         let runtime_meta = parse_runtime_meta(&record.meta);
-        let state = runtime_meta.state;
+        let mut state = runtime_meta.state;
+        if state == SessionState::Running {
+            // `RUNNING` is a volatile in-memory state. After process restart there is no
+            // active worker bound to this session anymore, so recover as `WAIT`.
+            warn!(
+                "agent.session_recover_running_state: session_id={} fallback=WAIT",
+                record.session_id
+            );
+            state = SessionState::Wait;
+        }
         let is_paused = runtime_meta.is_paused;
 
         let mut meta = record.meta.clone();
         if let Some(map) = meta.as_object_mut() {
             map.remove("runtime_state");
         }
-        let mut summary = record.summary;
+        let summary = record.summary.trim().to_string();
         let runtime_last_step_summary = runtime_meta
             .last_step_summary
             .as_ref()
             .and_then(extract_step_summary_text);
-        if summary.trim().is_empty() {
-            summary = runtime_last_step_summary.clone().unwrap_or_default();
-        }
 
         Self {
             session_id: record.session_id,
@@ -379,11 +388,7 @@ impl AgentSession {
             session_id: self.session_id.clone(),
             owner_agent: self.owner_agent.clone(),
             title: self.title.clone(),
-            summary: self
-                .summary
-                .trim()
-                .to_string()
-                .if_empty_then(|| self.last_step_summary.clone().unwrap_or_default()),
+            summary: self.summary.trim().to_string(),
             status: self.state.to_string(),
             created_at_ms: self.created_at_ms,
             updated_at_ms,
@@ -697,12 +702,74 @@ impl AgentSession {
         })?;
         Ok(())
     }
+
+    pub async fn resolve_msg_from_name(
+        from_did: &DID,
+        session_from_name: Option<&str>,
+        contact_mgr_owner: Option<&DID>,
+    ) -> Option<String> {
+        let session_from_name =
+            normalize_optional_string(session_from_name.map(str::to_string));
+        let from_did_text = from_did.to_string();
+
+        let runtime = match get_buckyos_api_runtime() {
+            Ok(runtime) => runtime,
+            Err(err) => {
+                debug!(
+                    "agent.resolve_msg_from_name runtime_unavailable: did={} err={}",
+                    from_did_text, err
+                );
+                return session_from_name;
+            }
+        };
+
+        let msg_center = match runtime.get_msg_center_client().await {
+            Ok(client) => client,
+            Err(err) => {
+                debug!(
+                    "agent.resolve_msg_from_name msg_center_unavailable: did={} err={}",
+                    from_did_text, err
+                );
+                return session_from_name;
+            }
+        };
+
+        let contact = match msg_center
+            .get_contact(from_did.clone(), contact_mgr_owner.cloned())
+            .await
+        {
+            Ok(contact) => contact,
+            Err(err) => {
+                warn!(
+                    "agent.resolve_msg_from_name get_contact_failed: did={} owner={:?} err={}",
+                    from_did_text, contact_mgr_owner, err
+                );
+                return session_from_name;
+            }
+        };
+
+        let Some(contact) = contact else {
+            return session_from_name;
+        };
+
+        let contact_name = normalize_optional_string(Some(contact.name.clone()))
+            .filter(|value| !value.eq_ignore_ascii_case(from_did_text.as_str()));
+        let nickname = resolve_contact_binding_name(&contact, &["nickname"]);
+        let full_name = resolve_contact_binding_name(&contact, &["full_name"]);
+
+        contact_name
+            .or(session_from_name)
+            .or(nickname)
+            .or(full_name)
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct AgentSessionMgr {
     owner_agent: String,
     sessions_root: PathBuf,
+    default_ui_behavior: String,
+    default_work_behavior: String,
     sessions: Arc<RwLock<HashMap<String, Arc<Mutex<AgentSession>>>>>,
     scheduler_lock: Arc<Mutex<()>>,
     ready_notify: Arc<Notify>,
@@ -734,6 +801,8 @@ impl AgentSessionMgr {
         let store = Self {
             owner_agent,
             sessions_root,
+            default_ui_behavior: DEFAULT_UI_BEHAVIOR.to_string(),
+            default_work_behavior: DEFAULT_WORK_BEHAVIOR.to_string(),
             sessions: Arc::new(RwLock::new(HashMap::new())),
             scheduler_lock: Arc::new(Mutex::new(())),
             ready_notify: Arc::new(Notify::new()),
@@ -786,7 +855,11 @@ impl AgentSessionMgr {
         if let Some(existing) = self.get_session(session_id.as_str()).await {
             let mut guard = existing.lock().await;
             self.hydrate_session_runtime_context(&mut guard);
+            let defaulted = self.ensure_default_behavior_if_empty(&mut guard);
             drop(guard);
+            if defaulted {
+                self.save_session(session_id.as_str()).await?;
+            }
             return Ok(existing);
         }
         info!(
@@ -794,10 +867,22 @@ impl AgentSessionMgr {
             self.owner_agent, session_id
         );
 
-        let behavior = behavior.map(str::trim).filter(|value| !value.is_empty());
+        let behavior = behavior
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                self.default_behavior_for_session_id(session_id.as_str())
+                    .to_string()
+            });
 
-        let mut session = AgentSession::new(session_id.clone(), self.owner_agent.clone(), behavior);
+        let mut session = AgentSession::new(
+            session_id.clone(),
+            self.owner_agent.clone(),
+            Some(behavior.as_str()),
+        );
         self.hydrate_session_runtime_context(&mut session);
+        self.ensure_default_behavior_if_empty(&mut session);
         if let Some(title) = normalize_optional_string(title) {
             session.title = title;
         }
@@ -833,10 +918,12 @@ impl AgentSessionMgr {
             .await?;
 
         let mut guard = session.lock().await;
+        self.ensure_default_behavior_if_empty(&mut guard);
+        let prev_state = guard.state;
         guard.update_state_on_input_arrived(input_item);
         info!(
-            "agent.session_try_wakeup: session_id={} state={:?}",
-            guard.session_id, guard.state
+            "agent.session_try_wakeup: session_id={} prev_state={:?} next_state={:?}",
+            guard.session_id, prev_state, guard.state
         );
 
         self.ready_notify.notify_one();
@@ -914,12 +1001,15 @@ impl AgentSessionMgr {
                 path.display()
             ))
         })?;
-        let record = serde_json::from_str::<OpenDanAgentSessionRecord>(&raw).map_err(|err| {
+        let mut record = serde_json::from_str::<OpenDanAgentSessionRecord>(&raw).map_err(|err| {
             AgentToolError::ExecFailed(format!(
                 "parse session file `{}` failed: {err}",
                 path.display()
             ))
         })?;
+        let session_dir = self.sessions_root.join(session_id.as_str());
+        self.load_session_summary_from_file(session_dir.as_path(), &mut record)
+            .await?;
 
         let Some(_session) = self.get_session(session_id.as_str()).await else {
             let mut runtime = AgentSession::from_record(record);
@@ -1063,12 +1153,19 @@ impl AgentSessionMgr {
                 );
                 record.owner_agent = self.owner_agent.clone();
             }
+            self.load_session_summary_from_file(path.as_path(), &mut record)
+                .await?;
 
-            self.sessions.write().await.insert(session_id, {
-                let mut runtime = AgentSession::from_record(record);
-                self.hydrate_session_runtime_context(&mut runtime);
-                Arc::new(Mutex::new(runtime))
-            });
+            let mut runtime = AgentSession::from_record(record);
+            self.hydrate_session_runtime_context(&mut runtime);
+            if self.ensure_default_behavior_if_empty(&mut runtime) {
+                let normalized = runtime.to_record(true);
+                self.write_session_record(&normalized).await?;
+            }
+            self.sessions
+                .write()
+                .await
+                .insert(session_id, Arc::new(Mutex::new(runtime)));
         }
 
         Ok(())
@@ -1110,13 +1207,84 @@ impl AgentSessionMgr {
                 "write session file `{}` failed: {err}",
                 session_file.display()
             ))
-        })
+        })?;
+        self.write_session_summary_file(session_dir.as_path(), record.summary.as_str())
+            .await
     }
 
     fn session_file_path(&self, session_id: &str) -> PathBuf {
         self.sessions_root
             .join(session_id)
             .join(DEFAULT_SESSION_FILE)
+    }
+
+    async fn load_session_summary_from_file(
+        &self,
+        session_dir: &Path,
+        record: &mut OpenDanAgentSessionRecord,
+    ) -> Result<(), AgentToolError> {
+        let summary_file = session_dir.join(DEFAULT_SESSION_SUMMARY_FILE);
+        match fs::read_to_string(&summary_file).await {
+            Ok(summary) => {
+                record.summary = summary.trim().to_string();
+                Ok(())
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                self.write_session_summary_file(session_dir, record.summary.as_str())
+                    .await?;
+                record.summary = record.summary.trim().to_string();
+                Ok(())
+            }
+            Err(err) => Err(AgentToolError::ExecFailed(format!(
+                "read session summary file `{}` failed: {err}",
+                summary_file.display()
+            ))),
+        }
+    }
+
+    async fn write_session_summary_file(
+        &self,
+        session_dir: &Path,
+        summary: &str,
+    ) -> Result<(), AgentToolError> {
+        let summary_file = session_dir.join(DEFAULT_SESSION_SUMMARY_FILE);
+        if !is_existing_file(&summary_file).await {
+            info!(
+                "agent.persist_entity_prepare: kind=session_summary_file path={}",
+                summary_file.display()
+            );
+        }
+        fs::write(&summary_file, summary.trim().as_bytes())
+            .await
+            .map_err(|err| {
+                AgentToolError::ExecFailed(format!(
+                    "write session summary file `{}` failed: {err}",
+                    summary_file.display()
+                ))
+            })
+    }
+
+    fn default_behavior_for_session_id(&self, session_id: &str) -> &str {
+        if Self::is_ui_session(session_id) {
+            self.default_ui_behavior.as_str()
+        } else {
+            self.default_work_behavior.as_str()
+        }
+    }
+
+    fn ensure_default_behavior_if_empty(&self, session: &mut AgentSession) -> bool {
+        if !session.current_behavior.trim().is_empty() {
+            return false;
+        }
+        let default_behavior = self
+            .default_behavior_for_session_id(session.session_id.as_str())
+            .to_string();
+        warn!(
+            "agent.session_default_behavior_applied: session_id={} behavior={}",
+            session.session_id, default_behavior
+        );
+        session.current_behavior = default_behavior;
+        true
     }
 }
 
@@ -1259,6 +1427,40 @@ fn normalize_optional_string(value: Option<String>) -> Option<String> {
         .filter(|item| !item.is_empty())
 }
 
+fn resolve_contact_binding_name(contact: &Contact, keys: &[&str]) -> Option<String> {
+    contact
+        .bindings
+        .iter()
+        .max_by_key(|binding| binding.last_active_at)
+        .and_then(|binding| resolve_binding_meta_name(binding, keys))
+        .or_else(|| {
+            contact
+                .bindings
+                .iter()
+                .find_map(|binding| resolve_binding_meta_name(binding, keys))
+        })
+}
+
+fn resolve_binding_meta_name(binding: &AccountBinding, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(value) = binding.meta.get(*key) {
+            if let Some(value) = normalize_optional_string(Some(value.clone())) {
+                return Some(value);
+            }
+        }
+    }
+
+    for (key, value) in &binding.meta {
+        if keys.iter().any(|expect| key.eq_ignore_ascii_case(expect)) {
+            if let Some(value) = normalize_optional_string(Some(value.clone())) {
+                return Some(value);
+            }
+        }
+    }
+
+    None
+}
+
 fn normalize_json_object(value: Json) -> Json {
     if value.is_object() {
         return value;
@@ -1294,25 +1496,6 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
-}
-
-trait EmptyFallback {
-    fn if_empty_then<F>(self, fallback: F) -> String
-    where
-        F: FnOnce() -> String;
-}
-
-impl EmptyFallback for String {
-    fn if_empty_then<F>(self, fallback: F) -> String
-    where
-        F: FnOnce() -> String,
-    {
-        if self.trim().is_empty() {
-            fallback()
-        } else {
-            self
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1466,5 +1649,86 @@ mod tests {
             .expect("skip ui worklog");
 
         assert!(session.worklog.is_empty());
+    }
+
+    #[test]
+    fn from_record_recovers_running_to_wait() {
+        let mut session = AgentSession::new("s-running", "did:opendan:test", Some("DO"));
+        session.state = SessionState::Running;
+
+        let record = session.to_record(true);
+        let restored = AgentSession::from_record(record);
+        assert_eq!(restored.state, SessionState::Wait);
+    }
+
+    #[test]
+    fn from_record_does_not_backfill_summary_from_last_step_summary() {
+        let mut session = AgentSession::new("s-summary", "did:opendan:test", Some("DO"));
+        session.summary.clear();
+        session.last_step_summary = Some("step summary".to_string());
+
+        let record = session.to_record(true);
+        let restored = AgentSession::from_record(record);
+        assert!(restored.summary.is_empty());
+        assert_eq!(restored.last_step_summary.as_deref(), Some("step summary"));
+    }
+
+    #[tokio::test]
+    async fn session_summary_file_is_persisted_and_preferred_over_session_json() {
+        let root = tempfile::tempdir().expect("create temp dir");
+        let sessions_root = root.path().join("session");
+        let store = AgentSessionMgr::new(
+            "did:opendan:test",
+            sessions_root.clone(),
+            "resolve_router".to_string(),
+        )
+        .await
+        .expect("create session manager");
+
+        let session = store
+            .ensure_session("work-summary", None, Some("plan"), None)
+            .await
+            .expect("ensure session");
+        {
+            let mut guard = session.lock().await;
+            guard.summary = "# Plan\n\n- finish task".to_string();
+        }
+        store
+            .save_session("work-summary")
+            .await
+            .expect("save session");
+
+        let session_dir = sessions_root.join("work-summary");
+        let summary_file = session_dir.join(DEFAULT_SESSION_SUMMARY_FILE);
+        let summary_text = fs::read_to_string(&summary_file)
+            .await
+            .expect("read summary file");
+        assert_eq!(summary_text, "# Plan\n\n- finish task");
+
+        let session_file = session_dir.join(DEFAULT_SESSION_FILE);
+        let raw = fs::read_to_string(&session_file)
+            .await
+            .expect("read session file");
+        let mut record: OpenDanAgentSessionRecord =
+            serde_json::from_str(&raw).expect("parse session json");
+        record.summary = "json summary should be ignored".to_string();
+        let bytes = serde_json::to_vec_pretty(&record).expect("encode session json");
+        fs::write(&session_file, bytes)
+            .await
+            .expect("rewrite session file");
+
+        let reloaded = AgentSessionMgr::new(
+            "did:opendan:test",
+            sessions_root.clone(),
+            "resolve_router".to_string(),
+        )
+        .await
+        .expect("reload session manager");
+        let restored = reloaded
+            .get_session("work-summary")
+            .await
+            .expect("session exists");
+        let restored_guard = restored.lock().await;
+        assert_eq!(restored_guard.summary, "# Plan\n\n- finish task");
     }
 }

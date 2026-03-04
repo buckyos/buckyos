@@ -965,9 +965,16 @@ impl<T: MsgQueueHandler> RPCHandler for MsgQueueServerHandler<T> {
 
 /// 计算确定性的 Queue URN (Deterministic Naming)
 /// 这是一个纯函数，不涉及 IO。
-/// 格式: `appid::owner::name`
+/// 规则:
+/// - 绝对路径对象 ID（`/xxx/...`）保持原样，作为最终 QueueUrn。
+/// - 兼容旧式 URN（`appid::owner::name`）透传，避免二次封装。
+/// - 其他名称按旧规则拼装为 `appid::owner::name`。
 pub fn calc_queue_urn(appid: &str, app_owner: &str, name: &str) -> String {
-    format!("{}::{}::{}", appid, app_owner, name)
+    let normalized = name.trim();
+    if normalized.starts_with('/') || normalized.contains("::") {
+        return normalized.to_string();
+    }
+    format!("{}::{}::{}", appid, app_owner, normalized)
 }
 
 /// 解析 URN 获取各个部分
@@ -986,6 +993,24 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU64, Ordering};
     use tokio::sync::Mutex;
+
+    #[test]
+    fn calc_queue_urn_keeps_absolute_path() {
+        let path = "/jarvis.test.buckyos.io/sessions/tg:lzc_jarvis:5397330802/msg";
+        assert_eq!(
+            calc_queue_urn("opendan", "jarvis.test.buckyos.io", path),
+            path
+        );
+    }
+
+    #[test]
+    fn calc_queue_urn_keeps_legacy_urn() {
+        let legacy = "opendan::jarvis.test.buckyos.io::legacy_queue";
+        assert_eq!(
+            calc_queue_urn("ignored", "ignored", legacy),
+            legacy.to_string()
+        );
+    }
 
     #[derive(Debug, Clone)]
     struct QueueState {
@@ -1442,5 +1467,43 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(removed, 1);
+    }
+
+    #[tokio::test]
+    async fn test_path_queue_name_roundtrip() {
+        let client = build_client();
+        let queue_path = "/jarvis.test.buckyos.io/sessions/tg:lzc_jarvis:5397330802/msg";
+        let sub_id = "/jarvis.test.buckyos.io/sessions/tg:lzc_jarvis:5397330802/msg_subscription";
+
+        let queue_urn = client
+            .create_queue(
+                Some(queue_path),
+                "opendan",
+                "jarvis.test.buckyos.io",
+                QueueConfig::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(queue_urn, queue_path);
+
+        client
+            .post_message(&queue_urn, Message::new(b"path-message".to_vec()))
+            .await
+            .unwrap();
+
+        client
+            .subscribe(
+                &queue_urn,
+                "jarvis.test.buckyos.io",
+                "opendan",
+                Some(sub_id.to_string()),
+                SubPosition::Earliest,
+            )
+            .await
+            .unwrap();
+
+        let messages = client.fetch_messages(sub_id, 1, true).await.unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].payload, b"path-message".to_vec());
     }
 }

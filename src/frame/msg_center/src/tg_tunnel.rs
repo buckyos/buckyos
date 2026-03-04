@@ -2976,6 +2976,7 @@ mod tests {
             msg_kind: msg.kind,
             state: MsgState::Wait,
             from: msg.from.clone(),
+            from_name: None,
             to: msg.to.first().cloned().unwrap_or_else(|| msg.from.clone()),
             created_at_ms: 1,
             updated_at_ms: 1,

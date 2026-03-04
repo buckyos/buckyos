@@ -30,6 +30,7 @@ pub mod features {
     pub const PLAN: &str = "plan";
     pub const TOOL_CALLING: &str = "tool_calling";
     pub const JSON_OUTPUT: &str = "json_output";
+    pub const WEB_SEARCH: &str = "web_search";
     pub const VISION: &str = "vision";
     pub const ASR: &str = "asr";
     pub const VIDEO_UNDERSTAND: &str = "video_understand";

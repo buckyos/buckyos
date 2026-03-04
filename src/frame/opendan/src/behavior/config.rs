@@ -592,97 +592,108 @@ fn default_output_protocol_text(mode: &str) -> String {
 }
 
 fn behavior_llm_no_action_result() -> String {
-    format!(
-        r#"Return ONLY one JSON object. No markdown fences, no extra text.
+    r#"The response MUST be valid JSON that can be parsed by JSON.parse().
 ```typescript
-type Response = {{
-  next_behavior?: String // follow process rules
+type Response = {
+  next_behavior?: string;    // MUST follow process rules
   thinking?: string;
-  reply?: string;           // only reply to current session default_remote
-  shell_commands?: string[]; // shorthand of actions.cmds with shell-command strings
-}}
+  reply?: string;            // reply to current session default_remote only
+  shell_commands?: string[]; // shell command strings, executed sequentially
+}
 ```
-All keys optional—omit unused ones.
+All keys are optional—NEVER include unused keys.
 
-## shell_commands 字段的填写说明
-- shell_commands中的每一行都是一个shell命令,在一个与当前session绑定的bash环境中顺序执行,行执行失败会导致执行中断
-- 执行的结果会保持在step_summary中，并在下一个step中使用。(所有的读操作都需要注意控制范围，防止context window溢出)
-- 该bash环境中除了已安装prcoess_rule中提到的命令外,也预装了常见的cli 工具，不用检查直接调用
-
+## shell_commands
+- Each entry is a shell command run sequentially in a session-bound bash environment; execution stops on first failure.
+- Results persist in step_summary for the next step. MUST limit read output size to avoid context overflow.
+- Common CLI tools and process_rule-declared tools are pre-installed. NEVER check availability before calling.
 "#
-    )
+    .to_string()
 }
 
 fn build_behavior_llm_result_protocol() -> String {
-    format!(
-        r#"Return ONLY one JSON object. No markdown fences, no extra text.
+    r#"The response MUST be valid JSON that can be parsed by JSON.parse().
 ```typescript
-type Response = {{
-  next_behavior?: String // follow process rules
-  thinking?: string;
-  reply?: string;             // only reply to current session default_remote
-  shell_commands?: string[];  // shorthand of actions.cmds with shell-command strings
-  actions?: {{
-    mode?: "failed_end" | "all";             // default: failed_end
-    cmds?: [];
-  }};
-}}
+type Response = {
+  next_behavior?: string;    // MUST follow process rules
+  thinking?: string;         // MUST follow process rules 
+  reply?: string;            // reply to current session default_remote only
+  shell_commands?: string[]; // shell command strings appended to actions.cmds
+  actions?: {
+    mode?: "failed_end" | "all"; // default: "failed_end"
+    cmds?: (string | [string, object])[];
+  };
+}
 ```
-All keys optional—omit unused ones.
-Do NOT include `session_id` or `new_session` in this mode.
+All keys are optional—NEVER include unused keys.
 
-## actions 字段的填写说明
-一个实际的例子如下:
+## actions.cmds
+Example:
 ```json
-{{
- "actions": {{
+{
+  "actions": {
     "mode": "all",
     "cmds": [
       "todo add T01 \"build login.html\"",
-      ["write_file",{{"path": "readme.txt","content": "login.html is a login page"}}]
+      ["write_file", {"path": "readme.txt", "content": "login page"}]
     ]
-  }}
-}}
+  }
+}
 ```
-
-- cmds中的命令会在一个与当前session绑定的bash环境中顺序执行,行执行失败会根据mode的值决定是中断执行(failed_end)还是继续执行(all)
-- 命令分两种：1. 字符串元素代表，shell命令，2.数组元素代表一个结构化的cmd_action对象，其结构为：[action_name, {{action_args}}]
-- `shell_commands` 等价于将命令字符串追加到 `actions.cmds`，仅用于 shell 命令，不支持结构化 action
-- 当要写入文本文件时，应使用write_file / edit_file cmd_action，而不是shell命令
-- 执行的结果会保持在step_summary中，并在下一个step中使用。(所有的读操作都需要注意控制范围，防止context window溢出)
-- 该bash环境中除了已安装prcoess_rule中提到的命令外,也预装了常见的cli 工具，不用检查直接调用
+- Commands run sequentially in a session-bound bash env. On failure: "failed_end" stops, "all" continues.
+- String element = shell command. Array element = structured cmd_action: `[action_name, {args}]`.
+- `shell_commands` is shorthand that appends strings to `actions.cmds`. NEVER put structured actions in `shell_commands`.
+- MUST use write_file / edit_file cmd_action for text files. NEVER use shell commands (echo/cat) to write files.
+- Results persist in step_summary for the next step. MUST limit read output size to avoid context overflow.
+- Common CLI tools and process_rule-declared tools are pre-installed. NEVER check availability before calling.
 
 ### write_file
-- 参数: path: string, content: string, mode:"new"|"append"|"write" 
-mode的默认值为"write",不管文件是否存在都会覆盖成content
-mode为new时，如果文件存在则写入失败,为append时，会在文件的末尾追加content
+`[action_name, {path, content, mode?}]`
+- mode: "write" (default, overwrites), "new" (fails if exists), "append" (appends to end).
 
-### edit_file: 
-- 参数: path: string, new_content: string,pos_chunk: string, mode:"replace"|"after"|"before"
-基于pos_chunk作为锚定点，根据mode设定，在文件的原内容的基础上进行 替换\插入\插入 new_content
-
+### edit_file
+`[action_name, {path, new_content, pos_chunk, mode?}]`
+- Anchors on `pos_chunk` in the file, then applies mode: "replace" (default), "after" (insert after), "before" (insert before).
 "#
-    )
+    .to_string()
 }
 
 fn build_route_result_protocol() -> String {
-    format!(
-        r#"Return ONLY one JSON object. No markdown fences, no extra text.
+    r#"The response MUST be valid JSON parseable by JSON.parse().
 ```typescript
-type Response = {{
-  next_behavior?: "END" | "WAIT" | string;  // END=finish, WAIT=pause, or behavior name to switch
-  thinking?: string;
-  reply?: string;                        // only reply to current session default_remote
-  set_memory?: Record<string, string>;       // key=memory path, value=content
-  toipc_tags?: string[];                     // 标记当前交流的话题tag,不超过3个
-  route_session_id?: string;                 // route to existing session
-  new_session?: [string, string];            // [title, summary], runtime generates session_id
-}}
+type Response = {
+  next_behavior?: string;
+  reply?: string;
+  set_memory?: Record;
+  topic_tags?: string[];
+  route_session_id?: string;
+  new_session?: [string, string];       // [title, summary]
+}
 ```
-All keys optional—omit unused ones.
-Session routing is first-class in this mode.
-Prefer exactly one of `route_session_id` or `new_session` when routing."#
-    )
+
+All keys are optional—NEVER include unused keys.
+
+**set_memory**: A persistent notebook organized by path keys.
+Write when the user reveals info worth remembering long-term.
+Paths use "/" hierarchy: `"user/name"` → `"Alice"`, `"project/stack"` → `"React + Go"`.
+Set value to `""` to delete.
+
+**topic_tags**: 0–5 short labels for this conversation (for later retrieval).
+Choose as if the user will search for this conversation by keyword.
+e.g. `["python", "debugging"]`, `["travel", "japan"]`
+
+**Routing**: When routing, provide exactly ONE of `route_session_id` or `new_session`. NEVER both. Both MUST follow process rules.
+
+Example — user says "I'm Alice, help me plan a Tokyo trip":
+```json
+{
+  "reply": "Hi Alice! I'd love to help...",
+  "set_memory": { "user/name": "Alice" },
+  "topic_tags": ["travel", "tokyo", "planning"],
+  "new_session": ["Tokyo Trip Planning", "Help Alice plan a Tokyo trip"]
+}
+```"#
+        .to_string()
 }
 
 fn candidate_paths_for_behavior(behaviors_dir: &Path, behavior_name: &str) -> Vec<PathBuf> {
@@ -826,18 +837,16 @@ llm:
     #[test]
     fn route_result_protocol_includes_session_routing_keys() {
         let protocol = build_route_result_protocol();
-        assert!(protocol.contains("session_id"));
+        assert!(protocol.contains("route_session_id"));
         assert!(protocol.contains("new_session"));
-        assert!(protocol.contains("Session routing is first-class in this mode"));
+        assert!(protocol.contains("MUST provide exactly one of"));
     }
 
     #[test]
     fn behavior_llm_result_protocol_disallows_session_routing_keys() {
         let protocol = build_behavior_llm_result_protocol();
-        assert!(
-            !protocol.contains("Allowed top-level keys only: next_behavior, thinking, reply, todo, set_memory, toipc_tags, actions, load_skills, enable_tools, session_id, new_session.")
-        );
-        assert!(protocol.contains("Do NOT include `session_id` or `new_session` in this mode."));
+        assert!(!protocol.contains("route_session_id"));
+        assert!(protocol.contains("NEVER include `session_id` or `new_session` in this mode."));
     }
 
     #[test]

@@ -1066,4 +1066,46 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_path_queue_name_roundtrip()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let (_tmp, queue) = setup_queue();
+        let queue_urn = "/jarvis.test.buckyos.io/sessions/tg:lzc_jarvis:5397330802/msg";
+        let sub_id = "/jarvis.test.buckyos.io/sessions/tg:lzc_jarvis:5397330802/msg_subscription";
+
+        let created = queue
+            .handle_create_queue(
+                Some(queue_urn),
+                "opendan",
+                "jarvis.test.buckyos.io",
+                QueueConfig::default(),
+                RPCContext::default(),
+            )
+            .await?;
+        assert_eq!(created, queue_urn);
+
+        queue
+            .handle_post_message(queue_urn, make_message("hello"), RPCContext::default())
+            .await?;
+
+        queue
+            .handle_subscribe(
+                queue_urn,
+                "jarvis.test.buckyos.io",
+                "opendan",
+                Some(sub_id.to_string()),
+                SubPosition::Earliest,
+                RPCContext::default(),
+            )
+            .await?;
+
+        let messages = queue
+            .handle_fetch_messages(sub_id, 1, true, RPCContext::default())
+            .await?;
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].payload, b"hello".to_vec());
+
+        Ok(())
+    }
 }

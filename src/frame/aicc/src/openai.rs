@@ -23,6 +23,7 @@ const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_OPENAI_TIMEOUT_MS: u64 = 60_000;
 const DEFAULT_OPENAI_MODELS: &str = "gpt-5,gpt-5-mini,gpt-5-nono,gpt-5-pro";
 const DEFAULT_OPENAI_IMAGE_MODELS: &str = "dall-e-3,dall-e-2";
+const OPENAI_TOOL_TYPE_WEB_SEARCH: &str = "web_search";
 const OPENAI_IMAGE_OPTION_ALLOWLIST: &[&str] = &[
     "background",
     "n",
@@ -564,6 +565,43 @@ impl OpenAIProvider {
         Ok(artifacts)
     }
 
+    fn merge_requirements_tools(
+        target: &mut Map<String, Value>,
+        req: &CompleteRequest,
+    ) -> Result<(), ProviderError> {
+        let web_search_required = req
+            .requirements
+            .must_features
+            .iter()
+            .any(|feature| feature == features::WEB_SEARCH);
+        if !web_search_required {
+            return Ok(());
+        }
+
+        let web_search_tool = json!({
+            "type": OPENAI_TOOL_TYPE_WEB_SEARCH
+        });
+        if let Some(tools_value) = target.get_mut("tools") {
+            let Some(tools) = tools_value.as_array_mut() else {
+                return Err(ProviderError::fatal(
+                    "tools must be an array when enabling web_search",
+                ));
+            };
+            if !tools.iter().any(|item| {
+                item.get("type")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value == OPENAI_TOOL_TYPE_WEB_SEARCH)
+                    .unwrap_or(false)
+            }) {
+                tools.push(web_search_tool);
+            }
+            return Ok(());
+        }
+
+        target.insert("tools".to_string(), Value::Array(vec![web_search_tool]));
+        Ok(())
+    }
+
     async fn post_json(
         &self,
         url: &str,
@@ -619,6 +657,7 @@ impl OpenAIProvider {
         }
         merge_requirements_response_format(&mut request_obj, req);
         merge_tool_calls(&mut request_obj, req.payload.tool_specs.as_slice())?;
+        Self::merge_requirements_tools(&mut request_obj, req)?;
         if !ignored_options.is_empty() {
             warn!(
                 "aicc.openai ignored unsupported llm options: instance_id={} model={} trace_id={:?} ignored={:?}",
@@ -994,6 +1033,7 @@ fn default_features() -> Vec<String> {
         features::PLAN.to_string(),
         features::JSON_OUTPUT.to_string(),
         features::TOOL_CALLING.to_string(),
+        features::WEB_SEARCH.to_string(),
     ]
 }
 
@@ -1329,6 +1369,60 @@ mod tests {
     }
 
     #[test]
+    fn merge_requirements_tools_adds_web_search_when_required() {
+        let mut target = Map::new();
+        let mut req = build_llm_request(None);
+        req.requirements.must_features = vec![features::WEB_SEARCH.to_string()];
+
+        OpenAIProvider::merge_requirements_tools(&mut target, &req)
+            .expect("merge requirements tools should work");
+
+        let value = Value::Object(target);
+        assert_eq!(
+            value
+                .pointer("/tools/0/type")
+                .and_then(|item| item.as_str()),
+            Some(OPENAI_TOOL_TYPE_WEB_SEARCH)
+        );
+    }
+
+    #[test]
+    fn merge_requirements_tools_dedupes_existing_web_search() {
+        let mut target = Map::new();
+        target.insert(
+            "tools".to_string(),
+            json!([
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "workshop_exec_bash",
+                        "parameters": {
+                            "type": "object"
+                        }
+                    }
+                },
+                {
+                    "type": OPENAI_TOOL_TYPE_WEB_SEARCH
+                }
+            ]),
+        );
+        let mut req = build_llm_request(None);
+        req.requirements.must_features = vec![features::WEB_SEARCH.to_string()];
+
+        OpenAIProvider::merge_requirements_tools(&mut target, &req)
+            .expect("merge requirements tools should work");
+
+        let value = Value::Object(target);
+        assert_eq!(
+            value
+                .pointer("/tools")
+                .and_then(|tools| tools.as_array())
+                .map(|tools| tools.len()),
+            Some(2)
+        );
+    }
+
+    #[test]
     fn extract_tool_choices_parses_openai_function_call() {
         let message = json!({
             "tool_calls": [{
@@ -1346,6 +1440,17 @@ mod tests {
         assert_eq!(tool_choices[0].name, "workshop_exec_bash");
         assert_eq!(tool_choices[0].call_id, "call_1");
         assert_eq!(tool_choices[0].args["command"], json!("ls -la"));
+    }
+
+    #[test]
+    fn default_features_include_web_search() {
+        let all_features = default_features();
+        assert!(
+            all_features
+                .iter()
+                .any(|feature| feature == features::WEB_SEARCH),
+            "openai default features should include web_search"
+        );
     }
 
     #[test]

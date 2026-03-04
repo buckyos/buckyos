@@ -534,6 +534,7 @@ fn row_to_record(owner: &DID, row: MsgRecordRow) -> std::result::Result<MsgRecor
         msg_kind,
         state,
         from: msg_from,
+        from_name: None,
         to: msg_to,
         created_at_ms,
         updated_at_ms,

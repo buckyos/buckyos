@@ -462,6 +462,7 @@ mod tests {
             msg_kind: msg.kind,
             state: MsgState::Wait,
             from: msg.from.clone(),
+            from_name: None,
             to: msg
                 .to
                 .first()

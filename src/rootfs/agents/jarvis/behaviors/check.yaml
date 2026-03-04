@@ -92,6 +92,7 @@ limits:
   max_tool_calls_per_round: 8
   deadline_ms: 120000
 
-llm_model:
-  name : llm.code # 让router机制决定llm.code目前具体是哪个
-  thinking_level : high
+llm:
+  model_policy:
+    preferred: llm.code
+

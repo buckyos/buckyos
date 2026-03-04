@@ -492,6 +492,7 @@ impl MessageCenter {
             msg_kind: msg.kind,
             state: initial_state,
             from: msg.from.clone(),
+            from_name: None,
             to: record_to,
             created_at_ms: now_ms,
             updated_at_ms: now_ms,

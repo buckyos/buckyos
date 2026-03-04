@@ -8,6 +8,7 @@ use buckyos_api::{
 };
 use chrono::{DateTime, Utc};
 use log::{debug, warn};
+use name_lib::DID;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value as Json};
 use tokio::fs;
@@ -1069,20 +1070,28 @@ fn resolve_history_msg_update_time(record: &MsgRecordWithObject) -> u64 {
 }
 
 fn render_history_msg_line(record: &MsgRecordWithObject, agent_did: Option<&str>) -> String {
-    let from = record
-        .msg
-        .as_ref()
-        .map(|msg| msg.from.to_raw_host_name())
-        .filter(|value| !value.trim().is_empty())
+    let from_name = record
+        .record
+        .from_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            record
+                .msg
+                .as_ref()
+                .map(|msg| msg.from.to_raw_host_name())
+                .filter(|value| !value.trim().is_empty())
+        })
         .unwrap_or_else(|| record.record.from.to_raw_host_name());
     let from_did = record
         .msg
         .as_ref()
-        .map(|msg| msg.from.to_string())
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| record.record.from.to_string());
+        .map(|msg| msg.from.clone())
+        .unwrap_or_else(|| record.record.from.clone());
     let update_time = resolve_history_msg_update_time(record);
-    let sender = render_history_sender(from.as_str(), from_did.as_str(), record, agent_did);
+    let sender = render_history_sender(from_name.as_str(), &from_did, record, agent_did);
     let timestamp = format_history_time(update_time);
     let content = record
         .msg
@@ -1127,14 +1136,14 @@ fn history_datetime_utc(timestamp_ms: u64) -> DateTime<Utc> {
 }
 
 fn render_history_sender(
-    from_host: &str,
-    from_did: &str,
+    from_name: &str,
+    from_did: &DID,
     record: &MsgRecordWithObject,
     agent_did: Option<&str>,
 ) -> String {
-    let from_did = from_did.trim();
+    let from_did = from_did.to_string();
     let agent_did = agent_did.unwrap_or_default().trim();
-    let from_short = compact_history_name(from_host);
+    let from_short = compact_history_name(from_name);
     let is_me = record.record.box_kind == BoxKind::Outbox
         || (!agent_did.is_empty() && from_did.eq_ignore_ascii_case(agent_did));
     if is_me {
@@ -1157,11 +1166,7 @@ fn render_history_sender(
         return format!("{}({})", name, from_did);
     }
     if from_short.is_empty() {
-        if from_did.is_empty() {
-            "unknown".to_string()
-        } else {
-            from_did.to_string()
-        }
+        from_did
     } else {
         from_short
     }

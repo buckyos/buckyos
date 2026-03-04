@@ -142,7 +142,7 @@ pub struct BehaviorLLMResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub toipc_tags: Vec<String>,
+    pub topic_tags: Vec<String>,
     #[serde(default, skip_serializing_if = "DoActions::is_empty")]
     pub actions: DoActions,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

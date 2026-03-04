@@ -50,6 +50,7 @@ const SESSION_QUEUE_APP_ID: &str = "opendan";
 const SESSION_QUEUE_RETENTION_SECONDS: u64 = 7 * 24 * 60 * 60;
 const SESSION_QUEUE_MAX_MESSAGES: u64 = 4096;
 const AGENT_BEHAVIOR_ROUTER_RESOLVE: &str = "resolve_router";
+const AGENT_BEHAVIOR_WORK_DEFAULT: &str = "plan";
 const SESSION_META_CREATOR_UI_SESSION_ID: &str = "creator_ui_session_id";
 
 #[derive(Debug)]
@@ -717,6 +718,14 @@ impl AIAgent {
         let started_at = now_ms();
         let deadline_ms = started_at.saturating_add(self.cfg.max_walltime_ms);
         let mut step_count = 0_u32;
+        let session_id_for_log = {
+            let guard = session.lock().await;
+            guard.session_id.clone()
+        };
+        info!(
+            "agent.session_loop_start: session_id={} wakeup_id={} started_at_ms={}",
+            session_id_for_log, wakeup_id, started_at
+        );
 
         loop {
             if step_count >= self.cfg.max_steps_per_wakeup {
@@ -729,7 +738,19 @@ impl AIAgent {
             }
 
             let (session_id, behavior_name, state) = {
-                let guard = session.lock().await;
+                let mut guard = session.lock().await;
+                if guard.current_behavior.trim().is_empty() {
+                    let fallback = if AgentSession::is_work_session_id(guard.session_id.as_str()) {
+                        AGENT_BEHAVIOR_WORK_DEFAULT
+                    } else {
+                        AGENT_BEHAVIOR_ROUTER_RESOLVE
+                    };
+                    warn!(
+                        "agent.session_empty_behavior_defaulted: session_id={} behavior={}",
+                        guard.session_id, fallback
+                    );
+                    guard.current_behavior = fallback.to_string();
+                }
                 (
                     guard.session_id.clone(),
                     guard.current_behavior.clone(),
@@ -787,6 +808,18 @@ impl AIAgent {
             if !report.keep_running {
                 break;
             }
+        }
+
+        let need_demote_running = {
+            let guard = session.lock().await;
+            guard.state == SessionState::Running
+        };
+        if need_demote_running {
+            warn!(
+                "agent.session_loop_finalize_running_to_wait: session_id={} wakeup_id={}",
+                session_id_for_log, wakeup_id
+            );
+            self.set_running_session_to_wait(&session).await?;
         }
 
         Ok(())
@@ -2607,13 +2640,29 @@ impl AIAgent {
                 }
             }
         };
+        let mut msg_record = record.record.clone();
+        if msg_record
+            .from_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+        {
+            let session_from_name = msg_obj.from.to_raw_host_name();
+            msg_record.from_name = AgentSession::resolve_msg_from_name(
+                &msg_record.from,
+                Some(session_from_name.as_str()),
+                Some(&self.owner_did),
+            )
+            .await;
+        }
 
         let session_dir = self.session_mgr.sessions_root().join(session_id.as_str());
         let session_dir_str = session_dir.to_string_lossy().to_string();
 
         if let Err(err) = AgentSession::append_msg_record(
             session_dir_str.as_str(),
-            record.record.clone(),
+            msg_record,
             msg_obj,
         )
         .await
@@ -2688,6 +2737,7 @@ impl AIAgent {
                     msg_kind: outbound.kind.clone(),
                     state: MsgState::Sent,
                     from: outbound.from.clone(),
+                    from_name: None,
                     to: delivery
                         .target_did
                         .as_ref()
@@ -2877,6 +2927,8 @@ async fn build_step_summary(
     session: Arc<Mutex<AgentSession>>,
 ) -> Option<String> {
     let mut env_context = HashMap::<String, Json>::new();
+    env_context.insert("step_index".to_string(), Json::from(trace.step_idx));
+    env_context.insert("step_limit".to_string(), Json::from(behavior_cfg.step_limit));
 
     if let Ok(mut llm_result_json) = serde_json::to_value(llm_result) {
         let json_action_result = serde_json::to_value(action_results);
@@ -3341,6 +3393,63 @@ mod tests {
         assert_eq!(
             AIAgent::creator_ui_session_id_from_meta(&empty_meta),
             Some("ui-owner".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn build_step_summary_uses_current_behavior_step_limit() {
+        let session = Arc::new(tokio::sync::Mutex::new(AgentSession::new(
+            "s1",
+            "did:test:agent",
+            Some("resolve_router"),
+        )));
+        session.lock().await.step_index = 99;
+
+        let trace = SessionRuntimeContext {
+            trace_id: "trace-1".to_string(),
+            agent_name: "agent-test".to_string(),
+            behavior: "plan".to_string(),
+            step_idx: 2,
+            wakeup_id: "wakeup-1".to_string(),
+            session_id: "s1".to_string(),
+        };
+        let mut behavior_cfg = BehaviorConfig::default();
+        behavior_cfg.step_limit = 16;
+        behavior_cfg.step_summary =
+            "idx={{step_index}} limit={{step_limit}} thinking={{llm_result.thinking}}"
+                .to_string();
+
+        let llm_result = BehaviorLLMResult {
+            thinking: Some("break down tasks".to_string()),
+            ..Default::default()
+        };
+        let tracking = crate::behavior::LLMTrackingInfo {
+            token_usage: crate::behavior::TokenUsage::default(),
+            track: crate::behavior::TrackInfo {
+                trace_id: "trace-1".to_string(),
+                model: "test-model".to_string(),
+                provider: "test-provider".to_string(),
+                latency_ms: 0,
+                llm_task_ids: vec![],
+                errors: vec![],
+            },
+            tool_trace: vec![],
+            raw_output: crate::behavior::LLMOutput::Text(String::new()),
+        };
+
+        let rendered = build_step_summary(
+            &trace,
+            &behavior_cfg,
+            &llm_result,
+            &tracking,
+            &DoActionResults::default(),
+            session,
+        )
+        .await;
+
+        assert_eq!(
+            rendered.as_deref(),
+            Some("idx=2 limit=16 thinking=break down tasks")
         );
     }
 
