@@ -1,0 +1,237 @@
+use crate::client::LogDaemonClient;
+use slog::{LogLevel, LogMeta, SystemLogRecord, SystemLogRecordLineFormatter};
+use slog_server::server::LogHttpServer;
+use slog_server::storage::{
+    LogQueryRequest, LogStorage, LogStorageType, create_log_storage_with_dir,
+};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::io::AsyncReadExt;
+use tokio::time::{Duration, Instant};
+
+fn new_temp_root(prefix: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "buckyos/slog_pipeline_tests/{}_{}_{}",
+        prefix,
+        std::process::id(),
+        nanos
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    root
+}
+
+fn allocate_bind_addr() -> Result<String, String> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| format!("failed to bind test listener on loopback: {}", e))?;
+    let addr = listener
+        .local_addr()
+        .map_err(|e| format!("failed to read local address: {}", e))?;
+    Ok(format!("127.0.0.1:{}", addr.port()))
+}
+
+fn make_record(service: &str, time: u64, content: &str) -> SystemLogRecord {
+    SystemLogRecord {
+        level: LogLevel::Info,
+        target: service.to_string(),
+        time,
+        file: Some("pipeline_server_interrupt_test.rs".to_string()),
+        line: Some(1),
+        content: content.to_string(),
+    }
+}
+
+fn prepare_service_logs(
+    log_root: &Path,
+    service: &str,
+    records: &[SystemLogRecord],
+) -> Result<(), String> {
+    let service_dir = log_root.join(service);
+    std::fs::create_dir_all(&service_dir).map_err(|e| {
+        format!(
+            "failed to create service log dir {}: {}",
+            service_dir.display(),
+            e
+        )
+    })?;
+
+    let meta = LogMeta::open(&service_dir)?;
+    let file_name = format!("{}.1.log", service);
+    meta.append_new_file(&file_name)
+        .map_err(|e| format!("append_new_file failed: {}", e))?;
+
+    let mut content = String::new();
+    for record in records {
+        content.push_str(&SystemLogRecordLineFormatter::format_record(record));
+    }
+    let log_file = service_dir.join(&file_name);
+    std::fs::write(&log_file, &content)
+        .map_err(|e| format!("failed to write log file {}: {}", log_file.display(), e))?;
+    meta.update_current_write_index(content.len() as u64)
+        .map_err(|e| format!("update_current_write_index failed: {}", e))?;
+    Ok(())
+}
+
+async fn wait_for_interrupt_accept(accepted: &AtomicBool, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if accepted.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err("timeout waiting interrupt server to accept request".to_string());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+async fn run_interrupt_server_once(addr: String, accepted: Arc<AtomicBool>) -> Result<(), String> {
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .map_err(|e| format!("failed to bind interrupt server {}: {}", addr, e))?;
+
+    let (mut stream, _) = listener
+        .accept()
+        .await
+        .map_err(|e| format!("interrupt server accept failed: {}", e))?;
+    accepted.store(true, Ordering::SeqCst);
+
+    let mut buf = [0u8; 1024];
+    let _ = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buf)).await;
+    drop(stream);
+    drop(listener);
+    Ok(())
+}
+
+async fn query_uploaded_contents(
+    storage: &dyn LogStorage,
+    node: &str,
+    service: &str,
+) -> Result<Vec<String>, String> {
+    let result = storage
+        .query_logs(LogQueryRequest {
+            node: Some(node.to_string()),
+            service: Some(service.to_string()),
+            level: None,
+            start_time: None,
+            end_time: None,
+            limit: Some(10_000),
+        })
+        .await?;
+    let mut contents = Vec::new();
+    for item in result {
+        for log in item.logs {
+            contents.push(log.content);
+        }
+    }
+    contents.sort();
+    Ok(contents)
+}
+
+async fn wait_for_uploaded_count(
+    storage: &dyn LogStorage,
+    node: &str,
+    service: &str,
+    expected_count: usize,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let count = query_uploaded_contents(storage, node, service).await?.len();
+        if count >= expected_count {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "timeout waiting uploaded count >= {}, current={}",
+                expected_count, count
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test]
+async fn test_pipeline_request_interrupted_then_server_recovers() {
+    let root = new_temp_root("server_request_interruption");
+    let storage_dir = root.join("server_storage");
+    let bind_addr = match allocate_bind_addr() {
+        Ok(addr) => addr,
+        Err(e) => {
+            eprintln!(
+                "skip pipeline_request_interrupted test due socket restriction: {}",
+                e
+            );
+            std::fs::remove_dir_all(&root).unwrap();
+            return;
+        }
+    };
+    let endpoint = format!("http://{}/logs", bind_addr);
+    let node = "node-interrupt";
+    let service = "svc_interrupt";
+
+    let records = vec![
+        make_record(service, 1722001500001, "interrupt-1"),
+        make_record(service, 1722001500002, "interrupt-2"),
+        make_record(service, 1722001500003, "interrupt-3"),
+    ];
+    prepare_service_logs(&root, service, &records).unwrap();
+
+    let accepted = Arc::new(AtomicBool::new(false));
+    let interrupt_handle = tokio::spawn(run_interrupt_server_once(
+        bind_addr.clone(),
+        accepted.clone(),
+    ));
+
+    let daemon = LogDaemonClient::new(
+        node.to_string(),
+        endpoint,
+        3,
+        &root,
+        vec!["slog_daemon".to_string(), "slog_server".to_string()],
+    )
+    .unwrap();
+
+    wait_for_interrupt_accept(accepted.as_ref(), Duration::from_secs(8))
+        .await
+        .unwrap();
+    interrupt_handle.await.unwrap().unwrap();
+
+    let storage = create_log_storage_with_dir(LogStorageType::Sqlite, &storage_dir).unwrap();
+    let server = LogHttpServer::new(storage.clone());
+    let server_handle = tokio::spawn({
+        let bind_addr = bind_addr.clone();
+        async move {
+            let _ = server.run(&bind_addr).await;
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    wait_for_uploaded_count(
+        storage.as_ref().as_ref(),
+        node,
+        service,
+        records.len(),
+        Duration::from_secs(16),
+    )
+    .await
+    .unwrap();
+
+    let mut uploaded = query_uploaded_contents(storage.as_ref().as_ref(), node, service)
+        .await
+        .unwrap();
+    let mut expected: Vec<String> = records.iter().map(|r| r.content.clone()).collect();
+    uploaded.sort();
+    expected.sort();
+    assert_eq!(uploaded, expected);
+
+    daemon.shutdown().await.unwrap();
+    server_handle.abort();
+    let _ = server_handle.await;
+    std::fs::remove_dir_all(&root).unwrap();
+}
