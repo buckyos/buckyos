@@ -857,7 +857,8 @@ impl AgentSessionMgr {
 
     fn hydrate_session_runtime_context(&self, session: &mut AgentSession) {
         if session.pwd.as_os_str().is_empty() {
-            session.pwd = self.workspace_root();
+            session.pwd = bound_workspace_root_from_info(session.workspace_info.as_ref())
+                .unwrap_or_else(|| self.workspace_root());
         }
         if session.session_root_dir.as_os_str().is_empty() {
             session.session_root_dir = self.sessions_root.clone();
@@ -1418,6 +1419,16 @@ fn extract_step_summary_text(summary: &Json) -> Option<String> {
     None
 }
 
+fn bound_workspace_root_from_info(workspace_info: Option<&Json>) -> Option<PathBuf> {
+    workspace_info
+        .and_then(|value| value.get("binding"))
+        .and_then(|value| value.get("workspace_path"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
 fn parse_runtime_meta(meta: &Json) -> SessionRuntimeState {
     meta.get("runtime_state")
         .cloned()
@@ -1764,5 +1775,52 @@ mod tests {
             .expect("session exists");
         let restored_guard = restored.lock().await;
         assert_eq!(restored_guard.summary, "# Plan\n\n- finish task");
+    }
+
+    #[tokio::test]
+    async fn hydrate_restores_pwd_from_bound_workspace_info() {
+        let root = tempfile::tempdir().expect("create temp dir");
+        let sessions_root = root.path().join("session");
+        let store = AgentSessionMgr::new(
+            "did:opendan:test",
+            sessions_root.clone(),
+            "resolve_router".to_string(),
+        )
+        .await
+        .expect("create session manager");
+
+        let session = store
+            .ensure_session("work-bound", None, Some("plan"), None)
+            .await
+            .expect("ensure session");
+        let bound_workspace_path = root.path().join("workspaces").join("demo");
+        {
+            let mut guard = session.lock().await;
+            guard.local_workspace_id = Some("ws-demo".to_string());
+            guard.workspace_info = Some(json!({
+                "local_workspace_id": "ws-demo",
+                "binding": {
+                    "workspace_path": bound_workspace_path.to_string_lossy().to_string()
+                }
+            }));
+        }
+        store
+            .save_session("work-bound")
+            .await
+            .expect("save session");
+
+        let reloaded = AgentSessionMgr::new(
+            "did:opendan:test",
+            sessions_root,
+            "resolve_router".to_string(),
+        )
+        .await
+        .expect("reload session manager");
+        let restored = reloaded
+            .get_session("work-bound")
+            .await
+            .expect("session exists");
+        let restored_guard = restored.lock().await;
+        assert_eq!(restored_guard.pwd, bound_workspace_path);
     }
 }
