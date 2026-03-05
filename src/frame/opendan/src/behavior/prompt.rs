@@ -21,7 +21,10 @@ use crate::agent_session::AgentSession;
 use crate::agent_tool::{normalize_tool_name, ToolSpec};
 use crate::behavior::config::BehaviorMemoryBucketConfig;
 use crate::behavior::BehaviorConfig;
-use crate::worklog::{WorklogListOptions, WorklogRecord, WorklogService, WorklogToolConfig};
+use crate::worklog::{
+    render_worklog_prompt_line, WorklogListOptions, WorklogRecord, WorklogRecordType,
+    WorklogService, WorklogToolConfig,
+};
 use crate::workspace::agent_skill::{
     load_skill_from_root, merge_skill_records_from_dir, AgentSkillRecord, SKILLS_REL_PATH,
 };
@@ -494,6 +497,9 @@ fn format_memory_timeline_record(record: &MemoryTimelineRecord) -> String {
     let line = record.text.trim();
     if line.is_empty() {
         return String::new();
+    }
+    if record.source_label == "worklog" {
+        return line.to_string();
     }
     format!("[{}][{}] {}", record.source_label, record.update_time, line)
 }
@@ -1115,10 +1121,6 @@ fn render_history_msg_line(record: &MsgRecordWithObject, agent_did: Option<&str>
     }
 }
 
-fn compact_one_line_text(input: &str) -> String {
-    input.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 fn format_history_date(timestamp_ms: u64) -> String {
     let dt = history_datetime_utc(timestamp_ms);
     dt.format("%Y-%m-%d").to_string()
@@ -1241,13 +1243,417 @@ fn normalize_history_multiline_text(input: &str) -> String {
     }
 }
 
-fn render_workspace_worklog_line(record: &WorklogRecord) -> String {
-    let record_type = record.record_type.to_string();
-    let digest = record
-        .prompt_view
-        .as_ref()
-        .map(|view| view.digest.as_str())
+fn sanitize_worklog_digest(value: &str, max_chars: usize) -> String {
+    let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.is_empty() {
+        return String::new();
+    }
+    let chars = compact.chars().collect::<Vec<_>>();
+    if chars.len() <= max_chars {
+        return compact;
+    }
+    let mut out = chars.into_iter().take(max_chars).collect::<String>();
+    out.push_str("...");
+    out
+}
+
+fn render_worklog_status_text(status: &str, reason_digest: Option<&str>) -> String {
+    if status.trim().eq_ignore_ascii_case("OK") {
+        return "OK".to_string();
+    }
+    reason_digest
         .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| sanitize_worklog_digest(value, 80))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| status.trim().to_string())
+}
+
+fn extract_worklog_target(payload: Option<&serde_json::Map<String, Json>>) -> Option<String> {
+    let payload = payload?;
+    for key in ["path", "file_path", "file", "target"] {
+        let Some(value) = payload.get(key).and_then(Json::as_str) else {
+            continue;
+        };
+        let value = sanitize_worklog_digest(value, 120);
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn render_nested_db_worklog_line(record: &WorklogRecord) -> Option<String> {
+    let status_text = render_worklog_status_text(
+        record.status.as_str(),
+        record
+            .error
+            .as_ref()
+            .and_then(|error| error.reason_digest.as_deref()),
+    );
+    match record.record_type {
+        WorklogRecordType::ReplyMessage => {
+            let said = record
+                .payload
+                .get("content_digest")
+                .or_else(|| record.payload.get("said"))
+                .and_then(Json::as_str)
+                .map(|value| sanitize_worklog_digest(value, 140))
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "-".to_string());
+            Some(format!("Reply: \"{}\"", said))
+        }
+        WorklogRecordType::FunctionRecord => {
+            let tool_name = record
+                .payload
+                .get("tool_name")
+                .and_then(Json::as_str)
+                .unwrap_or("function_call");
+            let target = extract_worklog_target(record.payload.as_object());
+            Some(format!(
+                "{}{} -> {}",
+                tool_name,
+                target.map(|value| format!(" {}", value)).unwrap_or_default(),
+                status_text
+            ))
+        }
+        WorklogRecordType::ActionRecord => {
+            let action_type = record
+                .payload
+                .get("action_type")
+                .and_then(Json::as_str)
+                .unwrap_or("action");
+            let target = record
+                .payload
+                .get("cmd_digest")
+                .or_else(|| record.payload.get("command"))
+                .and_then(Json::as_str)
+                .map(|value| sanitize_worklog_digest(value, 120))
+                .filter(|value| !value.is_empty())
+                .or_else(|| extract_worklog_target(record.payload.as_object()));
+            Some(format!(
+                "{}{} -> {}",
+                action_type,
+                target.map(|value| format!(" {}", value)).unwrap_or_default(),
+                status_text
+            ))
+        }
+        WorklogRecordType::CreateSubAgent => {
+            let name = record
+                .payload
+                .get("subagent_name")
+                .and_then(Json::as_str)
+                .or_else(|| record.payload.get("subagent_did").and_then(Json::as_str))
+                .unwrap_or("-");
+            Some(format!(
+                "create_sub_agent {} -> {}",
+                sanitize_worklog_digest(name, 80),
+                status_text
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn render_db_worklog_top_level_line(record: &WorklogRecord) -> Option<String> {
+    if let Some(nested) = render_nested_db_worklog_line(record) {
+        return Some(format!(
+            "- {} {}",
+            format_history_time(record.timestamp),
+            nested
+        ));
+    }
+    let legacy = render_worklog_prompt_line(record);
+    let legacy = legacy.trim();
+    if legacy.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "- {} {}",
+            format_history_time(record.timestamp),
+            legacy
+        ))
+    }
+}
+
+fn render_db_worklog_timeline_records(worklog_records: &[WorklogRecord]) -> Vec<MemoryTimelineRecord> {
+    let mut timeline = worklog_records
+        .iter()
+        .filter(|record| !record.commit_state.eq_ignore_ascii_case("PENDING"))
+        .cloned()
+        .collect::<Vec<_>>();
+    timeline.sort_by(|a, b| {
+        a.timestamp
+            .cmp(&b.timestamp)
+            .then_with(|| a.seq.cmp(&b.seq))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+
+    let by_id = timeline
+        .iter()
+        .map(|record| (record.id.clone(), record.clone()))
+        .collect::<HashMap<_, _>>();
+    let referenced_ids = timeline
+        .iter()
+        .filter(|record| record.record_type == WorklogRecordType::StepSummary)
+        .flat_map(|record| {
+            record
+                .payload
+                .get("refs")
+                .and_then(Json::as_array)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter_map(|value| value.as_str().map(str::trim).map(str::to_string))
+        .filter(|value| !value.is_empty())
+        .collect::<HashSet<_>>();
+
+    let mut output = Vec::<MemoryTimelineRecord>::new();
+    let mut current_day = String::new();
+    for record in &timeline {
+        match record.record_type {
+            WorklogRecordType::GetMessage => {
+                let day = format_history_date(record.timestamp);
+                if day != current_day {
+                    output.push(MemoryTimelineRecord {
+                        update_time: record.timestamp,
+                        text: format!("- {} started", day),
+                        source_label: "worklog",
+                        source_order: 30,
+                    });
+                    current_day = day;
+                }
+                let from = record
+                    .payload
+                    .get("from")
+                    .and_then(Json::as_str)
+                    .unwrap_or("Unknown");
+                let snippet = record
+                    .payload
+                    .get("snippet")
+                    .or_else(|| record.payload.get("content_digest"))
+                    .and_then(Json::as_str)
+                    .map(|value| sanitize_worklog_digest(value, 120))
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| "-".to_string());
+                output.push(MemoryTimelineRecord {
+                    update_time: record.timestamp,
+                    text: format!(
+                        "- {} received message from {}: \"{}\"",
+                        format_history_time(record.timestamp),
+                        from,
+                        snippet
+                    ),
+                    source_label: "worklog",
+                    source_order: 30,
+                });
+            }
+            WorklogRecordType::StepSummary => {
+                let day = format_history_date(record.timestamp);
+                if day != current_day {
+                    output.push(MemoryTimelineRecord {
+                        update_time: record.timestamp,
+                        text: format!("- {} started", day),
+                        source_label: "worklog",
+                        source_order: 30,
+                    });
+                    current_day = day;
+                }
+                let did_digest = record
+                    .payload
+                    .get("did_digest")
+                    .and_then(Json::as_str)
+                    .map(|value| sanitize_worklog_digest(value, 180))
+                    .filter(|value| !value.is_empty());
+                let result_digest = record
+                    .payload
+                    .get("result_digest")
+                    .and_then(Json::as_str)
+                    .map(|value| sanitize_worklog_digest(value, 180))
+                    .filter(|value| !value.is_empty());
+                let mut nested_records = record
+                    .payload
+                    .get("refs")
+                    .and_then(Json::as_array)
+                    .map(|refs| {
+                        refs.iter()
+                            .filter_map(Json::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .filter_map(|id| by_id.get(id).cloned())
+                            .filter(|item| item.record_type != WorklogRecordType::StepSummary)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                nested_records.sort_by(|a, b| {
+                        a.timestamp
+                            .cmp(&b.timestamp)
+                            .then_with(|| a.seq.cmp(&b.seq))
+                            .then_with(|| a.id.cmp(&b.id))
+                    });
+                let nested_lines = nested_records
+                    .iter()
+                    .filter_map(render_nested_db_worklog_line)
+                    .collect::<Vec<_>>();
+
+                if let Some(did_digest) = did_digest.as_ref() {
+                    output.push(MemoryTimelineRecord {
+                        update_time: record.timestamp,
+                        text: format!(
+                            "- {} Thought: {}",
+                            format_history_time(record.timestamp),
+                            did_digest
+                        ),
+                        source_label: "worklog",
+                        source_order: 30,
+                    });
+                }
+                if let Some(result_digest) = result_digest.as_ref() {
+                    output.push(MemoryTimelineRecord {
+                        update_time: record.timestamp,
+                        text: format!(
+                            "- {} Step completed: {}",
+                            format_history_time(record.timestamp),
+                            result_digest
+                        ),
+                        source_label: "worklog",
+                        source_order: 30,
+                    });
+                    for nested in nested_lines {
+                        output.push(MemoryTimelineRecord {
+                            update_time: record.timestamp,
+                            text: format!("  - {}", nested),
+                            source_label: "worklog",
+                            source_order: 30,
+                        });
+                    }
+                } else if did_digest.is_some() {
+                    for nested in nested_lines {
+                        output.push(MemoryTimelineRecord {
+                            update_time: record.timestamp,
+                            text: format!("  - {}", nested),
+                            source_label: "worklog",
+                            source_order: 30,
+                        });
+                    }
+                }
+            }
+            _ => {
+                if referenced_ids.contains(record.id.as_str()) {
+                    continue;
+                }
+                if let Some(line) = render_db_worklog_top_level_line(record) {
+                    let day = format_history_date(record.timestamp);
+                    if day != current_day {
+                        output.push(MemoryTimelineRecord {
+                            update_time: record.timestamp,
+                            text: format!("- {} started", day),
+                            source_label: "worklog",
+                            source_order: 30,
+                        });
+                        current_day = day;
+                    }
+                    output.push(MemoryTimelineRecord {
+                        update_time: record.timestamp,
+                        text: line,
+                        source_label: "worklog",
+                        source_order: 30,
+                    });
+                }
+            }
+        }
+    }
+    output
+}
+
+#[derive(Clone, Debug)]
+struct RuntimeWorklogRecord {
+    id: String,
+    timestamp: u64,
+    record_type: String,
+    status: String,
+    payload: Json,
+    summary: Option<String>,
+    prompt_digest: Option<String>,
+    error_reason: Option<String>,
+}
+
+fn runtime_worklog_is_type(record_type: &str, expected: &str) -> bool {
+    record_type.trim().eq_ignore_ascii_case(expected)
+}
+
+fn render_nested_runtime_worklog_line(record: &RuntimeWorklogRecord) -> Option<String> {
+    let status_text =
+        render_worklog_status_text(record.status.as_str(), record.error_reason.as_deref());
+    if runtime_worklog_is_type(record.record_type.as_str(), "ReplyMessage") {
+        let said = record
+            .payload
+            .get("content_digest")
+            .or_else(|| record.payload.get("said"))
+            .and_then(Json::as_str)
+            .map(|value| sanitize_worklog_digest(value, 140))
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "-".to_string());
+        return Some(format!("Reply: \"{}\"", said));
+    }
+    if runtime_worklog_is_type(record.record_type.as_str(), "FunctionRecord") {
+        let tool_name = record
+            .payload
+            .get("tool_name")
+            .and_then(Json::as_str)
+            .unwrap_or("function_call");
+        let target = extract_worklog_target(record.payload.as_object());
+        return Some(format!(
+            "{}{} -> {}",
+            tool_name,
+            target.map(|value| format!(" {}", value)).unwrap_or_default(),
+            status_text
+        ));
+    }
+    if runtime_worklog_is_type(record.record_type.as_str(), "ActionRecord") {
+        let action_type = record
+            .payload
+            .get("action_type")
+            .and_then(Json::as_str)
+            .unwrap_or("action");
+        let target = record
+            .payload
+            .get("cmd_digest")
+            .or_else(|| record.payload.get("command"))
+            .and_then(Json::as_str)
+            .map(|value| sanitize_worklog_digest(value, 120))
+            .filter(|value| !value.is_empty())
+            .or_else(|| extract_worklog_target(record.payload.as_object()));
+        return Some(format!(
+            "{}{} -> {}",
+            action_type,
+            target.map(|value| format!(" {}", value)).unwrap_or_default(),
+            status_text
+        ));
+    }
+    if runtime_worklog_is_type(record.record_type.as_str(), "CreateSubAgent") {
+        let name = record
+            .payload
+            .get("subagent_name")
+            .and_then(Json::as_str)
+            .or_else(|| record.payload.get("subagent_did").and_then(Json::as_str))
+            .unwrap_or("-");
+        return Some(format!(
+            "create_sub_agent {} -> {}",
+            sanitize_worklog_digest(name, 80),
+            status_text
+        ));
+    }
+    None
+}
+
+fn render_runtime_worklog_legacy_line(record: &RuntimeWorklogRecord) -> Option<String> {
+    let digest = record
+        .prompt_digest
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| sanitize_worklog_digest(value, 200))
         .filter(|value| !value.is_empty())
         .or_else(|| {
             record
@@ -1255,14 +1661,435 @@ fn render_workspace_worklog_line(record: &WorklogRecord) -> String {
                 .as_deref()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
+                .map(|value| sanitize_worklog_digest(value, 200))
+                .filter(|value| !value.is_empty())
         })
-        .map(compact_one_line_text)
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| compact_one_line_text(sanitize_json_compact(&record.payload).as_str()));
-    if digest.is_empty() {
-        return format!("{} status={}", record_type, record.status);
+        .or_else(|| {
+            let payload = sanitize_json_compact(&record.payload);
+            let compact = sanitize_worklog_digest(payload.as_str(), 200);
+            if compact.is_empty() {
+                None
+            } else {
+                Some(compact)
+            }
+        });
+
+    let line = if let Some(digest) = digest {
+        format!(
+            "{} status={} {}",
+            record.record_type.trim(),
+            record.status.trim(),
+            digest
+        )
+    } else {
+        format!("{} status={}", record.record_type.trim(), record.status.trim())
+    };
+    let line = line.trim();
+    if line.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "- {} {}",
+            format_history_time(record.timestamp),
+            line
+        ))
     }
-    format!("{} status={} {}", record_type, record.status, digest)
+}
+
+fn render_runtime_worklog_top_level_line(record: &RuntimeWorklogRecord) -> Option<String> {
+    if let Some(nested) = render_nested_runtime_worklog_line(record) {
+        return Some(format!(
+            "- {} {}",
+            format_history_time(record.timestamp),
+            nested
+        ));
+    }
+    render_runtime_worklog_legacy_line(record)
+}
+
+fn parse_timestamp_millis_text(value: &str) -> Option<u64> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Ok(parsed) = value.parse::<u64>() {
+        return Some(parsed);
+    }
+    if let Ok(parsed) = value.parse::<i64>() {
+        if parsed > 0 {
+            return Some(parsed as u64);
+        }
+    }
+    DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|dt| dt.timestamp_millis().max(0) as u64)
+}
+
+fn parse_timestamp_millis(value: &Json) -> Option<u64> {
+    if let Some(parsed) = value.as_u64() {
+        return Some(parsed);
+    }
+    if let Some(parsed) = value.as_i64() {
+        if parsed > 0 {
+            return Some(parsed as u64);
+        }
+    }
+    value.as_str().and_then(parse_timestamp_millis_text)
+}
+
+fn resolve_session_runtime_worklog_update_time(item: &Json, fallback: u64) -> u64 {
+    for key in ["timestamp", "updated_at_ms", "created_at_ms", "ts"] {
+        let Some(raw) = item.get(key) else {
+            continue;
+        };
+        if let Some(parsed) = parse_timestamp_millis(raw) {
+            return parsed;
+        }
+    }
+    fallback
+}
+
+fn is_pending_session_runtime_worklog(item: &Json) -> bool {
+    item.get("commit_state")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .map(|state| state.eq_ignore_ascii_case("PENDING"))
+        .unwrap_or(false)
+}
+
+fn parse_runtime_worklog_record(
+    item: Json,
+    index: usize,
+    fallback_update_time: u64,
+) -> RuntimeWorklogRecord {
+    let id = item
+        .get("id")
+        .or_else(|| item.get("log_id"))
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("runtime-{index}"));
+    let record_type = item
+        .get("type")
+        .or_else(|| item.get("log_type"))
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| "Worklog".to_string());
+    let status = item
+        .get("status")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| "UNKNOWN".to_string());
+    let payload = item.get("payload").cloned().unwrap_or(Json::Null);
+    let summary = item
+        .get("summary")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let prompt_digest = item
+        .get("prompt_view")
+        .and_then(Json::as_object)
+        .and_then(|view| view.get("digest"))
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let error_reason = item
+        .get("error")
+        .and_then(Json::as_object)
+        .and_then(|error| error.get("reason_digest"))
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    RuntimeWorklogRecord {
+        id,
+        timestamp: resolve_session_runtime_worklog_update_time(&item, fallback_update_time),
+        record_type,
+        status,
+        payload,
+        summary,
+        prompt_digest,
+        error_reason,
+    }
+}
+
+fn render_runtime_worklog_timeline_records(
+    runtime_records: &[RuntimeWorklogRecord],
+) -> Vec<MemoryTimelineRecord> {
+    let mut timeline = runtime_records.to_vec();
+    timeline.sort_by(|a, b| {
+        a.timestamp
+            .cmp(&b.timestamp)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+
+    let by_id = timeline
+        .iter()
+        .map(|record| (record.id.clone(), record.clone()))
+        .collect::<HashMap<_, _>>();
+    let referenced_ids = timeline
+        .iter()
+        .filter(|record| runtime_worklog_is_type(record.record_type.as_str(), "StepSummary"))
+        .flat_map(|record| {
+            record
+                .payload
+                .get("refs")
+                .and_then(Json::as_array)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter_map(|value| value.as_str().map(str::trim).map(str::to_string))
+        .filter(|value| !value.is_empty())
+        .collect::<HashSet<_>>();
+
+    let mut output = Vec::<MemoryTimelineRecord>::new();
+    let mut current_day = String::new();
+    for record in &timeline {
+        if runtime_worklog_is_type(record.record_type.as_str(), "GetMessage") {
+            let day = format_history_date(record.timestamp);
+            if day != current_day {
+                output.push(MemoryTimelineRecord {
+                    update_time: record.timestamp,
+                    text: format!("- {} started", day),
+                    source_label: "worklog",
+                    source_order: 30,
+                });
+                current_day = day;
+            }
+            let from = record
+                .payload
+                .get("from")
+                .and_then(Json::as_str)
+                .unwrap_or("Unknown");
+            let snippet = record
+                .payload
+                .get("snippet")
+                .or_else(|| record.payload.get("content_digest"))
+                .and_then(Json::as_str)
+                .map(|value| sanitize_worklog_digest(value, 120))
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "-".to_string());
+            output.push(MemoryTimelineRecord {
+                update_time: record.timestamp,
+                text: format!(
+                    "- {} received message from {}: \"{}\"",
+                    format_history_time(record.timestamp),
+                    from,
+                    snippet
+                ),
+                source_label: "worklog",
+                source_order: 30,
+            });
+            continue;
+        }
+        if runtime_worklog_is_type(record.record_type.as_str(), "StepSummary") {
+            let day = format_history_date(record.timestamp);
+            if day != current_day {
+                output.push(MemoryTimelineRecord {
+                    update_time: record.timestamp,
+                    text: format!("- {} started", day),
+                    source_label: "worklog",
+                    source_order: 30,
+                });
+                current_day = day;
+            }
+            let did_digest = record
+                .payload
+                .get("did_digest")
+                .and_then(Json::as_str)
+                .map(|value| sanitize_worklog_digest(value, 180))
+                .filter(|value| !value.is_empty());
+            let result_digest = record
+                .payload
+                .get("result_digest")
+                .and_then(Json::as_str)
+                .map(|value| sanitize_worklog_digest(value, 180))
+                .filter(|value| !value.is_empty());
+            let mut nested_records = record
+                .payload
+                .get("refs")
+                .and_then(Json::as_array)
+                .map(|refs| {
+                    refs.iter()
+                        .filter_map(Json::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .filter_map(|id| by_id.get(id).cloned())
+                        .filter(|item| !runtime_worklog_is_type(item.record_type.as_str(), "StepSummary"))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            nested_records.sort_by(|a, b| {
+                    a.timestamp
+                        .cmp(&b.timestamp)
+                        .then_with(|| a.id.cmp(&b.id))
+                });
+            let nested_lines = nested_records
+                .iter()
+                .filter_map(render_nested_runtime_worklog_line)
+                .collect::<Vec<_>>();
+
+            if let Some(did_digest) = did_digest.as_ref() {
+                output.push(MemoryTimelineRecord {
+                    update_time: record.timestamp,
+                    text: format!(
+                        "- {} Thought: {}",
+                        format_history_time(record.timestamp),
+                        did_digest
+                    ),
+                    source_label: "worklog",
+                    source_order: 30,
+                });
+            }
+            if let Some(result_digest) = result_digest.as_ref() {
+                output.push(MemoryTimelineRecord {
+                    update_time: record.timestamp,
+                    text: format!(
+                        "- {} Step completed: {}",
+                        format_history_time(record.timestamp),
+                        result_digest
+                    ),
+                    source_label: "worklog",
+                    source_order: 30,
+                });
+                for nested in nested_lines {
+                    output.push(MemoryTimelineRecord {
+                        update_time: record.timestamp,
+                        text: format!("  - {}", nested),
+                        source_label: "worklog",
+                        source_order: 30,
+                    });
+                }
+            } else if did_digest.is_some() {
+                for nested in nested_lines {
+                    output.push(MemoryTimelineRecord {
+                        update_time: record.timestamp,
+                        text: format!("  - {}", nested),
+                        source_label: "worklog",
+                        source_order: 30,
+                    });
+                }
+            }
+            continue;
+        }
+
+        if referenced_ids.contains(record.id.as_str()) {
+            continue;
+        }
+        if let Some(line) = render_runtime_worklog_top_level_line(record) {
+            let day = format_history_date(record.timestamp);
+            if day != current_day {
+                output.push(MemoryTimelineRecord {
+                    update_time: record.timestamp,
+                    text: format!("- {} started", day),
+                    source_label: "worklog",
+                    source_order: 30,
+                });
+                current_day = day;
+            }
+            output.push(MemoryTimelineRecord {
+                update_time: record.timestamp,
+                text: line,
+                source_label: "worklog",
+                source_order: 30,
+            });
+        }
+    }
+    output
+}
+
+fn fit_worklog_timeline_records_with_limit(
+    candidate_records: Vec<MemoryTimelineRecord>,
+    token_limit: u32,
+    tokenizer: &dyn Tokenizer,
+) -> Vec<MemoryTimelineRecord> {
+    if token_limit == 0 {
+        return vec![];
+    }
+
+    let mut records = Vec::<MemoryTimelineRecord>::new();
+    let mut used_tokens = 0_u32;
+    for mut item in candidate_records {
+        let mut text = item.text.trim().to_string();
+        if text.is_empty() {
+            continue;
+        }
+        text = fit_text_with_token_limit(text, token_limit.min(128).max(24), tokenizer);
+        if text.is_empty() {
+            continue;
+        }
+        item.text = text;
+
+        let mut line_tokens = tokenizer.count_tokens(format_memory_timeline_record(&item).as_str());
+        if records.is_empty() && line_tokens > token_limit {
+            item.text =
+                truncate_to_token_budget(item.text.as_str(), token_limit.saturating_div(2).max(1));
+            line_tokens = tokenizer.count_tokens(format_memory_timeline_record(&item).as_str());
+        }
+        if line_tokens == 0 {
+            continue;
+        }
+        if !records.is_empty() && used_tokens.saturating_add(line_tokens) > token_limit {
+            break;
+        }
+        if records.is_empty() && line_tokens > token_limit {
+            continue;
+        }
+
+        used_tokens = used_tokens.saturating_add(line_tokens);
+        records.push(item);
+        if used_tokens >= token_limit {
+            break;
+        }
+    }
+
+    records
+}
+
+async fn load_session_runtime_worklog_with_limit(
+    input: &BehaviorExecInput,
+    token_limit: u32,
+    tokenizer: &dyn Tokenizer,
+) -> Vec<MemoryTimelineRecord> {
+    if token_limit == 0 {
+        return vec![];
+    }
+    let Some(session) = input.session.as_ref() else {
+        return vec![];
+    };
+
+    let session_worklog = {
+        let guard = session.lock().await;
+        guard.worklog.clone()
+    };
+    if session_worklog.is_empty() {
+        return vec![];
+    }
+
+    let base_update_time = Utc::now().timestamp_millis().max(0) as u64;
+    let total = session_worklog.len();
+    let mut runtime_records = Vec::<RuntimeWorklogRecord>::new();
+    for (index, item) in session_worklog.into_iter().enumerate() {
+        if is_pending_session_runtime_worklog(&item) {
+            continue;
+        }
+        let fallback_update_time = base_update_time.saturating_sub((total - index) as u64);
+        runtime_records.push(parse_runtime_worklog_record(
+            item,
+            index,
+            fallback_update_time,
+        ));
+    }
+
+    let candidate_records = render_runtime_worklog_timeline_records(&runtime_records);
+    fit_worklog_timeline_records_with_limit(candidate_records, token_limit, tokenizer)
 }
 
 async fn load_workspace_worklog_with_limit(
@@ -1295,7 +2122,7 @@ async fn load_workspace_worklog_with_limit(
     let workspace_id = normalize_optional_text(local_workspace_id.as_deref())
         .or_else(|| extract_workspace_id_from_json(workspace_info.as_ref()));
     if session_id.is_none() && workspace_id.is_none() {
-        return vec![];
+        return load_session_runtime_worklog_with_limit(input, token_limit, tokenizer).await;
     }
 
     let Some(worklog_db_path) = resolve_worklog_db_path(
@@ -1303,7 +2130,7 @@ async fn load_workspace_worklog_with_limit(
         workspace_info.as_ref(),
         &session_cwd,
     ) else {
-        return vec![];
+        return load_session_runtime_worklog_with_limit(input, token_limit, tokenizer).await;
     };
 
     let query_limit = usize::try_from(token_limit.saturating_mul(2))
@@ -1318,7 +2145,8 @@ async fn load_workspace_worklog_with_limit(
                     worklog_db_path.display(),
                     err
                 );
-                return vec![];
+                return load_session_runtime_worklog_with_limit(input, token_limit, tokenizer)
+                    .await;
             }
         };
 
@@ -1338,60 +2166,21 @@ async fn load_workspace_worklog_with_limit(
                 worklog_db_path.display(),
                 err
             );
-            return vec![];
+            return load_session_runtime_worklog_with_limit(input, token_limit, tokenizer).await;
         }
     };
     if worklog_records.is_empty() {
-        return vec![];
+        return load_session_runtime_worklog_with_limit(input, token_limit, tokenizer).await;
     }
 
-    let mut records = Vec::<MemoryTimelineRecord>::new();
-    let mut used_tokens = 0_u32;
-    for worklog_record in worklog_records {
-        if worklog_record.commit_state.eq_ignore_ascii_case("PENDING") {
-            continue;
-        }
+    let candidate_records = render_db_worklog_timeline_records(&worklog_records);
+    let records = fit_worklog_timeline_records_with_limit(candidate_records, token_limit, tokenizer);
 
-        let mut text = render_workspace_worklog_line(&worklog_record);
-        if text.is_empty() {
-            continue;
-        }
-        text = fit_text_with_token_limit(text, token_limit.min(128).max(24), tokenizer);
-        if text.is_empty() {
-            continue;
-        }
-
-        let mut item = MemoryTimelineRecord {
-            update_time: worklog_record.timestamp,
-            text,
-            source_label: "worklog",
-            source_order: 30,
-        };
-        let mut line_tokens = tokenizer.count_tokens(format_memory_timeline_record(&item).as_str());
-
-        if records.is_empty() && line_tokens > token_limit {
-            item.text =
-                truncate_to_token_budget(item.text.as_str(), token_limit.saturating_div(2).max(1));
-            line_tokens = tokenizer.count_tokens(format_memory_timeline_record(&item).as_str());
-        }
-        if line_tokens == 0 {
-            continue;
-        }
-        if !records.is_empty() && used_tokens.saturating_add(line_tokens) > token_limit {
-            break;
-        }
-        if records.is_empty() && line_tokens > token_limit {
-            continue;
-        }
-
-        used_tokens = used_tokens.saturating_add(line_tokens);
-        records.push(item);
-        if used_tokens >= token_limit {
-            break;
-        }
+    if records.is_empty() {
+        load_session_runtime_worklog_with_limit(input, token_limit, tokenizer).await
+    } else {
+        records
     }
-
-    records
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -2564,15 +3353,13 @@ loaded_tools: [exec_bash]
                 json!({
                     "action": "append_worklog",
                     "record": {
-                        "type": "FunctionRecord",
+                        "type": "GetMessage",
                         "owner_session_id": "session-1",
                         "status": "OK",
-                        "prompt_view": {
-                            "digest": "digest_session_1",
-                            "detail": { "kind": "test" }
-                        },
                         "payload": {
-                            "tool_name": "read_file"
+                            "from": "alice",
+                            "channel": "inbox",
+                            "snippet": "please check workspace"
                         }
                     }
                 }),
@@ -2585,15 +3372,13 @@ loaded_tools: [exec_bash]
                 json!({
                     "action": "append_worklog",
                     "record": {
-                        "type": "FunctionRecord",
+                        "type": "GetMessage",
                         "owner_session_id": "session-2",
                         "status": "OK",
-                        "prompt_view": {
-                            "digest": "digest_session_2",
-                            "detail": { "kind": "test" }
-                        },
                         "payload": {
-                            "tool_name": "write_file"
+                            "from": "bob",
+                            "channel": "inbox",
+                            "snippet": "ignore me"
                         }
                     }
                 }),
@@ -2635,7 +3420,60 @@ loaded_tools: [exec_bash]
             .map(|item| item.text.as_str())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(merged.contains("digest_session_1"));
-        assert!(!merged.contains("digest_session_2"));
+        assert!(merged.contains("received message from alice"));
+        assert!(merged.contains("please check workspace"));
+        assert!(!merged.contains("received message from bob"));
+    }
+
+    #[tokio::test]
+    async fn load_workspace_worklog_with_limit_falls_back_to_session_runtime_memory() {
+        let mut session = AgentSession::new("session-1", "did:web:agent.example.com", None);
+        session
+            .append_worklog(
+                json!({
+                    "type": "GetMessage",
+                    "status": "OK",
+                    "payload": {
+                        "from": "alice",
+                        "channel": "inbox",
+                        "snippet": "runtime fallback message"
+                    }
+                }),
+                None,
+            )
+            .await
+            .expect("append runtime worklog");
+
+        let input = BehaviorExecInput {
+            session_id: "session-1".to_string(),
+            trace: SessionRuntimeContext {
+                trace_id: "trace-runtime-worklog".to_string(),
+                agent_name: "did:web:agent.example.com".to_string(),
+                behavior: "on_wakeup".to_string(),
+                step_idx: 1,
+                wakeup_id: "wakeup-runtime-worklog".to_string(),
+                session_id: "session-test".to_string(),
+            },
+            input_prompt: "user input".to_string(),
+            last_step_prompt: String::new(),
+            role_md: "You are a helpful assistant.".to_string(),
+            self_md: "Self description.".to_string(),
+            behavior_prompt: "rules".to_string(),
+            limits: StepLimits::default(),
+            behavior_cfg: BehaviorConfig::default(),
+            session: Some(Arc::new(Mutex::new(session))),
+        };
+
+        let records = load_workspace_worklog_with_limit(&input, 200, &MockTokenizer).await;
+        assert!(!records.is_empty(), "expected runtime worklog fallback records");
+        assert_eq!(records[0].source_label, "worklog");
+
+        let merged = records
+            .iter()
+            .map(|item| item.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(merged.contains("received message from alice"));
+        assert!(merged.contains("runtime fallback message"));
     }
 }

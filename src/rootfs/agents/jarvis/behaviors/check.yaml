@@ -153,7 +153,7 @@ memory:
   total_limt: 18000
   agent_memory: { limit: 3500, max_percent: 0.25 }
   session_summaries: { limit: 3000, max_percent: 0.25 }
-  session_worklog: { limit: 3000, max_percent: 0.2 }
+  workspace_worklog: { limit: 6000, max_percent: 0.5 }
 
 input: |
   # Continuity:
@@ -179,4 +179,4 @@ limits:
 
 llm:
   model_policy:
-    preferred: llm.code
+    preferred: llm.code.default

@@ -10,7 +10,7 @@ use buckyos_api::{
     SetGroupSubscribersResult,
 };
 use kRPC::{RPCContext, RPCErrors};
-use log::{debug, info, warn};
+use log::{info, warn};
 use name_lib::DID;
 use ndn_lib::{MsgObjKind, MsgObject, NamedObject, ObjId};
 use serde_json::{json, Value};
@@ -204,8 +204,8 @@ impl MessageCenter {
         let client = Self::get_kevent_client();
 
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            debug!(
-                "msg_center.publish_box_changed_event: operation={} event_id={} record_id={}",
+            info!(
+                "msg_center.publish_box_changed_event_begin: operation={} event_id={} record_id={}",
                 operation, event_id, record.record_id
             );
             handle.spawn(async move {
@@ -215,10 +215,7 @@ impl MessageCenter {
                         event_id, err
                     );
                 } else {
-                    debug!(
-                        "msg_center.box_changed_event_published: event_id={}",
-                        event_id
-                    );
+                    info!("msg_center.publish_box_changed_event_ok: event_id={}", event_id);
                 }
             });
         } else {

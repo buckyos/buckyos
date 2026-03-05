@@ -4,6 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(not(test))]
+use buckyos_api::get_buckyos_api_runtime;
 use buckyos_api::{
     value_to_object_map, AiToolCall, AiToolSpec, AiccClient, CompleteRequest, CompleteResponse,
     CompleteStatus, CompleteTaskOptions, CreateTaskOptions, TaskFilter, TaskManagerClient,
@@ -25,6 +27,7 @@ use crate::agent_tool::{AgentToolManager, ToolSpec};
 #[derive(Clone)]
 pub struct LLMBehaviorDeps {
     pub taskmgr: Arc<TaskManagerClient>,
+    #[cfg(test)]
     pub aicc: Arc<AiccClient>,
     pub tools: Arc<AgentToolManager>,
     pub memory: Option<AgentMemory>,
@@ -419,12 +422,28 @@ impl LLMBehavior {
         behavior_task_id: i64,
     ) -> Result<(TokenUsage, LLMRawResponse, String), LLMComputeError> {
         let req = AiccRequestBuilder::build(base_req, tool_ctx, Some(behavior_task_id));
-        let resp = self.deps.aicc.complete(req).await.map_err(map_aicc_error)?;
+        #[cfg(test)]
+        let aicc_client = self.deps.aicc.clone();
+        #[cfg(not(test))]
+        let aicc_client = Self::get_aicc_client().await?;
+        let resp = aicc_client.complete(req).await.map_err(map_aicc_error)?;
         let llm_task_id = resp.task_id.clone();
         let (usage, raw) = self
             .resolve_aicc_complete_response(resp, &self.cfg.model_policy.preferred)
             .await?;
         Ok((usage, raw, llm_task_id))
+    }
+
+    #[cfg(not(test))]
+    async fn get_aicc_client() -> Result<Arc<AiccClient>, LLMComputeError> {
+        let runtime = get_buckyos_api_runtime().map_err(|err| {
+            LLMComputeError::Internal(format!("load buckyos runtime failed: {err}"))
+        })?;
+        let client = runtime
+            .get_aicc_client()
+            .await
+            .map_err(|err| LLMComputeError::Provider(format!("init aicc client failed: {err}")))?;
+        Ok(Arc::new(client))
     }
 
     async fn resolve_aicc_complete_response(
@@ -672,23 +691,7 @@ fn parse_aicc_summary(
     let mut provider = "aicc".to_string();
     let mut latency_ms = 0_u64;
     let mut tool_calls = parse_tool_choices_from_summary(summary.tool_calls)?;
-    let mut content = summary.text.unwrap_or_default();
-
-    if let Some(json_value) = summary.json {
-        if tool_calls.is_empty() {
-            if let Some(tool_calls_value) = json_value.get("tool_calls") {
-                tool_calls = parse_tool_calls_from_aicc(tool_calls_value)?;
-            }
-        }
-
-        if content.is_empty() && tool_calls.is_empty() {
-            content = if let Some(text) = json_value.as_str() {
-                text.to_string()
-            } else {
-                serde_json::to_string(&json_value).unwrap_or_default()
-            };
-        }
-    }
+    let content = summary.text.unwrap_or_default();
 
     if let Some(extra) = summary.extra {
         if let Some(value) = extra.get("model").and_then(|v| v.as_str()) {

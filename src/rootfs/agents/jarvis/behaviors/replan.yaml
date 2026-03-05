@@ -61,14 +61,15 @@ policy: |
   - If success criteria are ambiguous, ask the user and remain in REPLAN.
 
 output_protocol:
-  mode: behavior_llm_result
+  mode: behavior_llm_no_action_result
 
-
+# TODO: memory应该加一个不会被裁剪的,用环境变量拼接的段落
 memory:
   total_limt: 18000
   agent_memory: { limit: 3500, max_percent: 0.25 }
   session_summaries: { limit: 3000, max_percent: 0.25 }
-  session_worklog: { limit: 3000, max_percent: 0.2 }
+  workspace_worklog: { limit: 3000, max_percent: 0.2 }
+
 
 input: |
   Behavior: REPLAN
@@ -110,4 +111,4 @@ limits:
 
 llm:
   model_policy:
-    preferred: llm.plan
+    preferred: llm.plan.default

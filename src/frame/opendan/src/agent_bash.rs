@@ -1227,10 +1227,7 @@ fn build_tool_prompt_render(
                 .and_then(Json::as_array)
                 .and_then(|items| items.first());
             if let Some(item) = created {
-                let todo_code = item
-                    .get("todo_code")
-                    .and_then(Json::as_str)
-                    .unwrap_or("-");
+                let todo_code = item.get("todo_code").and_then(Json::as_str).unwrap_or("-");
                 render.summary_override = Some(format!("added todo {}", todo_code));
             } else {
                 render.summary_override = Some("added todo item".to_string());

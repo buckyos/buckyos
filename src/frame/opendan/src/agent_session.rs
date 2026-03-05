@@ -19,6 +19,7 @@ use tokio::sync::{Mutex, Notify, RwLock};
 
 use crate::agent_tool::{AgentTool, AgentToolError, AgentToolResult, ToolSpec, TOOL_GET_SESSION};
 use crate::behavior::SessionRuntimeContext;
+use crate::worklog::{render_worklog_prompt_line, render_worklog_prompt_line_from_parts};
 use crate::workspace::LocalWorkspaceManager;
 
 const DEFAULT_SESSION_FILE: &str = "session.json";
@@ -435,6 +436,7 @@ impl AgentSession {
         local_workspace_mgr: Option<&LocalWorkspaceManager>,
     ) -> Result<(), AgentToolError> {
         let has_local_workspace = self.has_bound_local_workspace();
+        let mut prompt_line = Self::render_worklog_prompt_line_from_session_item(&item);
 
         if has_local_workspace {
             let Some(local_workspace_mgr) = local_workspace_mgr else {
@@ -455,7 +457,7 @@ impl AgentSession {
                     .await?;
             }
 
-            local_workspace_mgr
+            let appended = local_workspace_mgr
                 .append_worklog(
                     self.session_id.as_str(),
                     self.owner_agent.as_str(),
@@ -464,6 +466,7 @@ impl AgentSession {
                     item,
                 )
                 .await?;
+            prompt_line = render_worklog_prompt_line(&appended);
         } else {
             self.worklog.push(item);
             if self.worklog.len() > 256 {
@@ -474,7 +477,38 @@ impl AgentSession {
 
         self.updated_at_ms = now_ms();
         self.last_activity_ms = self.updated_at_ms;
+        info!("{}", prompt_line);
         Ok(())
+    }
+
+    fn render_worklog_prompt_line_from_session_item(item: &Json) -> String {
+        let record_type = item
+            .get("type")
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("Worklog");
+        let status = item
+            .get("status")
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("UNKNOWN");
+        let summary = item
+            .get("summary")
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let prompt_digest = item
+            .get("prompt_view")
+            .and_then(Json::as_object)
+            .and_then(|view| view.get("digest"))
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let payload = item.get("payload").cloned().unwrap_or(Json::Null);
+
+        render_worklog_prompt_line_from_parts(record_type, status, prompt_digest, summary, &payload)
     }
 
     async fn append_step_summary_worklog(
@@ -708,8 +742,7 @@ impl AgentSession {
         session_from_name: Option<&str>,
         contact_mgr_owner: Option<&DID>,
     ) -> Option<String> {
-        let session_from_name =
-            normalize_optional_string(session_from_name.map(str::to_string));
+        let session_from_name = normalize_optional_string(session_from_name.map(str::to_string));
         let from_did_text = from_did.to_string();
 
         let runtime = match get_buckyos_api_runtime() {
@@ -1001,12 +1034,13 @@ impl AgentSessionMgr {
                 path.display()
             ))
         })?;
-        let mut record = serde_json::from_str::<OpenDanAgentSessionRecord>(&raw).map_err(|err| {
-            AgentToolError::ExecFailed(format!(
-                "parse session file `{}` failed: {err}",
-                path.display()
-            ))
-        })?;
+        let mut record =
+            serde_json::from_str::<OpenDanAgentSessionRecord>(&raw).map_err(|err| {
+                AgentToolError::ExecFailed(format!(
+                    "parse session file `{}` failed: {err}",
+                    path.display()
+                ))
+            })?;
         let session_dir = self.sessions_root.join(session_id.as_str());
         self.load_session_summary_from_file(session_dir.as_path(), &mut record)
             .await?;

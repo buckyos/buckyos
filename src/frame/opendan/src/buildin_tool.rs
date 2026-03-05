@@ -639,10 +639,10 @@ impl AgentTool for ReadFileTool {
         let first_chunk = optional_string(&args, "first_chunk")?;
         let (selected_content, matched) = if let Some(first_chunk) = first_chunk.as_deref() {
             if let Some(pos) = full_content.find(first_chunk) {
-                    (full_content[pos..].to_string(), true)
-                } else {
-                    (String::new(), false)
-                }
+                (full_content[pos..].to_string(), true)
+            } else {
+                (String::new(), false)
+            }
         } else {
             (full_content.clone(), true)
         };

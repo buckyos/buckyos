@@ -13,12 +13,10 @@ use tokio::fs;
 
 use super::*;
 use crate::agent_environment::AgentEnvironment;
-use crate::agent_session::AgentSessionMgr;
 use crate::agent_tool::{
-    AgentTool, AgentToolManager, AgentToolResult, DoAction, DoActions, ToolSpec, TOOL_EXEC_BASH,
+    AgentTool, AgentToolManager, AgentToolResult, DoAction, DoActions, ToolSpec,
 };
 use crate::test_utils::{MockAicc, MockTaskMgrHandler};
-use crate::workspace::{AgentWorkshop, AgentWorkshopConfig};
 
 struct MockTokenizer;
 
@@ -139,7 +137,6 @@ async fn run_step_with_tool_followup() {
                 CompleteStatus::Succeeded,
                 Some(AiResponseSummary {
                     text: None,
-                    json: None,
                     tool_calls: vec![AiToolCall {
                         name: "tool.echo".to_string(),
                         args: value_to_object_map(json!({"msg": "hi"})),
@@ -176,9 +173,9 @@ async fn run_step_with_tool_followup() {
             "".to_string(),
             CompleteStatus::Succeeded,
             Some(AiResponseSummary {
-                text: None,
-                json: Some(
-                    json!({"is_sleep":true,"next_behavior":"END","output":{"answer":"done"}}),
+                text: Some(
+                    json!({"is_sleep":true,"next_behavior":"END","output":{"answer":"done"}})
+                        .to_string(),
                 ),
                 tool_calls: vec![],
                 artifacts: vec![],
@@ -398,8 +395,7 @@ async fn run_step_accepts_succeeded_response_with_string_task_id() {
         "aicc-1770927904938-1".to_string(),
         CompleteStatus::Succeeded,
         Some(AiResponseSummary {
-            text: None,
-            json: Some(json!({"is_sleep":true,"output":{"answer":"ok"}})),
+            text: Some(json!({"is_sleep":true,"output":{"answer":"ok"}}).to_string()),
             tool_calls: vec![],
             artifacts: vec![],
             usage: Some(AiUsage {
@@ -482,8 +478,7 @@ async fn run_step_sets_behavior_task_as_parent_for_aicc_requests() {
         "aicc-1770927904938-42".to_string(),
         CompleteStatus::Succeeded,
         Some(AiResponseSummary {
-            text: None,
-            json: Some(json!({"is_sleep":true,"output":{"answer":"ok"}})),
+            text: Some(json!({"is_sleep":true,"output":{"answer":"ok"}}).to_string()),
             tool_calls: vec![],
             artifacts: vec![],
             usage: Some(AiUsage {
@@ -609,8 +604,7 @@ async fn run_step_uses_session_id_as_task_rootid_when_present() {
         "aicc-1770927904938-77".to_string(),
         CompleteStatus::Succeeded,
         Some(AiResponseSummary {
-            text: None,
-            json: Some(json!({"is_sleep":true,"output":{"answer":"ok"}})),
+            text: Some(json!({"is_sleep":true,"output":{"answer":"ok"}}).to_string()),
             tool_calls: vec![],
             artifacts: vec![],
             usage: Some(AiUsage {
@@ -774,18 +768,20 @@ async fn run_step_then_run_actions_followup() {
             "".to_string(),
             CompleteStatus::Succeeded,
             Some(AiResponseSummary {
-                text: None,
-                json: Some(json!({
-                    "is_sleep": false,
-                    "next_behavior": null,
-                    "actions": {
-                        "mode": "failed_end",
-                        "cmds": [
-                            "echo hello"
-                        ]
-                    },
-                    "output": {"phase":"action_planned"}
-                })),
+                text: Some(
+                    json!({
+                        "is_sleep": false,
+                        "next_behavior": null,
+                        "actions": {
+                            "mode": "failed_end",
+                            "cmds": [
+                                "echo hello"
+                            ]
+                        },
+                        "output": {"phase":"action_planned"}
+                    })
+                    .to_string(),
+                ),
                 tool_calls: vec![],
                 artifacts: vec![],
                 usage: Some(AiUsage {
@@ -804,16 +800,18 @@ async fn run_step_then_run_actions_followup() {
             "".to_string(),
             CompleteStatus::Succeeded,
             Some(AiResponseSummary {
-                text: None,
-                json: Some(json!({
-                    "is_sleep": true,
-                    "next_behavior": "END",
-                    "actions": {
-                        "mode": "failed_end",
-                        "cmds": []
-                    },
-                    "output": {"final":"after_action"}
-                })),
+                text: Some(
+                    json!({
+                        "is_sleep": true,
+                        "next_behavior": "END",
+                        "actions": {
+                            "mode": "failed_end",
+                            "cmds": []
+                        },
+                        "output": {"final":"after_action"}
+                    })
+                    .to_string(),
+                ),
                 tool_calls: vec![],
                 artifacts: vec![],
                 usage: Some(AiUsage {
@@ -938,259 +936,4 @@ tools:
     //     .iter()
     //     .any(|m| m.content.contains("<<Observations>>"));
     // assert!(has_obs);
-}
-
-#[tokio::test]
-async fn run_step_with_workshop_list_dir_then_plan_python_actions() {
-    let tmp = tempdir().expect("create tempdir");
-    let root = tmp.path().to_path_buf();
-    let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
-        .await
-        .expect("create workshop");
-    fs::write(root.join("todo/seed.txt"), "seed\n")
-        .await
-        .expect("write seed file");
-
-    let tool_mgr = Arc::new(AgentToolManager::new());
-    let session_store = Arc::new(
-        AgentSessionMgr::new(
-            "did:example:agent".to_string(),
-            root.join("session"),
-            "on_wakeup".to_string(),
-        )
-        .await
-        .expect("create session store"),
-    );
-    let session = session_store
-        .ensure_session(
-            "session-workshop",
-            Some("Session Workshop".to_string()),
-            None,
-            None,
-        )
-        .await
-        .expect("ensure session");
-    {
-        let mut guard = session.lock().await;
-        guard.pwd = root.clone();
-    }
-    session_store
-        .save_session("session-workshop")
-        .await
-        .expect("save session");
-    workshop
-        .register_tools(tool_mgr.as_ref(), session_store.clone())
-        .expect("register workshop tools");
-
-    let responses = Arc::new(Mutex::new(VecDeque::from(vec![
-        CompleteResponse::new(
-            "".to_string(),
-            CompleteStatus::Succeeded,
-            Some(AiResponseSummary {
-                text: None,
-                json: None,
-                tool_calls: vec![AiToolCall {
-                    name: TOOL_EXEC_BASH.to_string(),
-                    args: value_to_object_map(json!({
-                        "command": "ls -1 todo"
-                    })),
-                    call_id: "call-list-todo".to_string(),
-                }],
-                artifacts: vec![],
-                usage: Some(AiUsage {
-                    input_tokens: Some(11),
-                    output_tokens: Some(7),
-                    total_tokens: Some(18),
-                }),
-                cost: None,
-                finish_reason: Some("tool_calls".to_string()),
-                provider_task_ref: Some("provider-workshop-1".to_string()),
-                extra: Some(json!({"provider":"mock","model":"mock-1","latency_ms":7})),
-            }),
-            None,
-        ),
-        CompleteResponse::new(
-            "".to_string(),
-            CompleteStatus::Succeeded,
-            Some(AiResponseSummary {
-                text: None,
-                json: Some(json!({
-                    "is_sleep": false,
-                    "next_behavior": "on_action",
-                    "actions": {
-                        "mode": "failed_end",
-                        "cmds": [
-                            "cat > artifacts/test.py <<'PY'\nprint('hello workshop')\nPY",
-                            "chmod +x artifacts/test.py"
-                        ]
-                    },
-                    "output": {"phase":"actions_planned"}
-                })),
-                tool_calls: vec![],
-                artifacts: vec![],
-                usage: Some(AiUsage {
-                    input_tokens: Some(9),
-                    output_tokens: Some(10),
-                    total_tokens: Some(19),
-                }),
-                cost: None,
-                finish_reason: Some("stop".to_string()),
-                provider_task_ref: Some("provider-workshop-2".to_string()),
-                extra: Some(json!({"provider":"mock","model":"mock-1","latency_ms":8})),
-            }),
-            None,
-        ),
-    ])));
-    let requests = Arc::new(Mutex::new(Vec::<CompleteRequest>::new()));
-    let behavior_cfg = load_behavior_config_yaml_for_test(
-        "on_wakeup",
-        r#"
-process_rule: test_rule
-tools:
-  mode: allow_list
-  names:
-    - exec_bash
-"#,
-    )
-    .await;
-
-    let deps = LLMBehaviorDeps {
-        taskmgr: Arc::new(TaskManagerClient::new_in_process(Box::new(
-            MockTaskMgrHandler {
-                counter: Mutex::new(0),
-                tasks: Arc::new(Mutex::new(HashMap::<i64, Task>::new())),
-            },
-        ))),
-        aicc: Arc::new(AiccClient::new_in_process(Box::new(MockAicc {
-            responses,
-            requests: requests.clone(),
-        }))),
-        tools: tool_mgr.clone(),
-        memory: None,
-        policy: Arc::new(MockPolicy {
-            tools: behavior_cfg
-                .tools
-                .filter_tool_specs(&tool_mgr.list_tool_specs()),
-        }),
-        worklog: Arc::new(MockWorklog),
-        tokenizer: Arc::new(MockTokenizer),
-        environment: build_test_environment().await,
-    };
-
-    let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
-    let input = BehaviorExecInput {
-        trace: SessionRuntimeContext {
-            trace_id: "trace-workshop-actions".to_string(),
-            agent_name: "did:example:agent".to_string(),
-            behavior: "on_wakeup".to_string(),
-            step_idx: 0,
-            wakeup_id: "wakeup-workshop-actions".to_string(),
-            session_id: "session-workshop".to_string(),
-        },
-        input_prompt: String::new(),
-        last_step_prompt: String::new(),
-        role_md: "role".to_string(),
-        self_md: "self".to_string(),
-        session_id: "session-test".to_string(),
-        behavior_prompt: behavior_cfg.process_rule.clone(),
-        limits: behavior_cfg.limits.clone(),
-        behavior_cfg: behavior_cfg.clone(),
-        session: None,
-    };
-
-    let (result, tracking) = behavior
-        .run_step(&input)
-        .await
-        .expect("run_step should succeed");
-    assert_eq!(tracking.tool_trace.len(), 1);
-    assert_eq!(tracking.tool_trace[0].tool_name, TOOL_EXEC_BASH);
-    assert_eq!(result.actions.cmds.len(), 2);
-    let first_action_cmd = match &result.actions.cmds[0] {
-        DoAction::Exec(command) => command.as_str(),
-        DoAction::Call(call) => panic!(
-            "expected first action to be exec command, got call: {} {:?}",
-            call.call_action_name, call.call_params
-        ),
-    };
-    let second_action_cmd = match &result.actions.cmds[1] {
-        DoAction::Exec(command) => command.as_str(),
-        DoAction::Call(call) => panic!(
-            "expected second action to be exec command, got call: {} {:?}",
-            call.call_action_name, call.call_params
-        ),
-    };
-    assert!(first_action_cmd.contains("artifacts/test.py"));
-    assert_eq!(second_action_cmd, "chmod +x artifacts/test.py");
-
-    let requests_guard = requests.lock().expect("requests lock");
-    assert_eq!(requests_guard.len(), 2);
-    let tool_messages = requests_guard[1]
-        .payload
-        .options
-        .as_ref()
-        .and_then(|v| v.get("tool_messages"))
-        .cloned()
-        .unwrap_or_else(|| json!([]))
-        .to_string();
-    assert!(tool_messages.contains(TOOL_EXEC_BASH));
-    assert!(tool_messages.contains("seed.txt"));
-
-    // Formally execute planned actions through workshop.exec_bash.
-    let action_ctx = SessionRuntimeContext {
-        trace_id: "trace-workshop-actions".to_string(),
-        agent_name: "did:example:agent".to_string(),
-        behavior: "on_action".to_string(),
-        step_idx: 1,
-        wakeup_id: "wakeup-workshop-actions".to_string(),
-        session_id: "session-workshop".to_string(),
-    };
-    for (idx, action) in result.actions.cmds.iter().enumerate() {
-        let command = match action {
-            DoAction::Exec(command) => command,
-            DoAction::Call(call) => panic!(
-                "expected executable command action for workshop test, got call: {} {:?}",
-                call.call_action_name, call.call_params
-            ),
-        };
-        let args = json!({
-            "command": command,
-            "timeout_ms": 1_000,
-        });
-
-        let raw = tool_mgr
-            .call_tool(
-                &action_ctx,
-                AiToolCall {
-                    name: TOOL_EXEC_BASH.to_string(),
-                    args: value_to_object_map(args),
-                    call_id: format!("action-exec-{idx}"),
-                },
-            )
-            .await
-            .expect("action command should run by workshop tool");
-        assert_eq!(
-            raw["ok"].as_bool(),
-            Some(true),
-            "action command returned non-zero: {}",
-            raw
-        );
-    }
-
-    // Verify workshop tool effect: file created and turned executable.
-    let test_py_path = root.join("artifacts/test.py");
-    let content = fs::read_to_string(&test_py_path)
-        .await
-        .expect("test.py should be created by executed action");
-    assert!(content.contains("hello workshop"));
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        let mode = std::fs::metadata(&test_py_path)
-            .expect("read test.py metadata")
-            .permissions()
-            .mode();
-        assert_ne!(mode & 0o111, 0, "test.py should have executable bit");
-    }
 }

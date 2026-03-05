@@ -845,14 +845,6 @@ impl GoogleGiminiProvider {
                 .and_then(|value| value.as_u64()),
         });
 
-        let parsed_json = if json_output_required {
-            content
-                .as_ref()
-                .and_then(|text| serde_json::from_str::<Value>(text).ok())
-        } else {
-            None
-        };
-
         let cost = usage
             .as_ref()
             .and_then(|usage| self.estimate_cost_for_usage(provider_model, usage));
@@ -877,7 +869,6 @@ impl GoogleGiminiProvider {
 
         let summary = AiResponseSummary {
             text: content,
-            json: parsed_json,
             tool_calls: vec![],
             artifacts: vec![],
             usage,
@@ -1018,7 +1009,6 @@ impl GoogleGiminiProvider {
 
         let summary = AiResponseSummary {
             text,
-            json: None,
             tool_calls: vec![],
             artifacts,
             usage: None,
@@ -1322,7 +1312,7 @@ fn register_default_aliases(
             "llm.default",
             "llm.chat.default",
             "llm.plan.default",
-            "llm.json.default",
+            "llm.code.default",
         ] {
             center.model_catalog().set_mapping(
                 Capability::LlmRouter,
@@ -1522,6 +1512,37 @@ mod tests {
             image.as_deref(),
             Some("gemini-2.0-flash-exp-image-generation")
         );
+    }
+
+    #[test]
+    fn register_default_aliases_exposes_code_default_not_json_default() {
+        let center = AIComputeCenter::new(Default::default(), ModelCatalog::default());
+        let models = vec!["gemini-2.5-flash".to_string()];
+        let image_models = Vec::<String>::new();
+        register_default_aliases(
+            &center,
+            "google-gimini",
+            &models,
+            Some("gemini-2.5-flash"),
+            &image_models,
+            None,
+        );
+
+        let code_alias = center.model_catalog().resolve(
+            "",
+            &Capability::LlmRouter,
+            "llm.code.default",
+            "google-gimini",
+        );
+        let removed_alias = center.model_catalog().resolve(
+            "",
+            &Capability::LlmRouter,
+            "llm.json.default",
+            "google-gimini",
+        );
+
+        assert_eq!(code_alias.as_deref(), Some("gemini-2.5-flash"));
+        assert!(removed_alias.is_none());
     }
 
     #[test]

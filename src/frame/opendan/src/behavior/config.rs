@@ -596,7 +596,7 @@ fn behavior_llm_no_action_result() -> String {
 ```typescript
 type Response = {
   next_behavior?: string;    // MUST follow process rules
-  thinking?: string;
+  thinking?: string;         // MUST follow process rules
   reply?: string;            // reply to current session default_remote only
   shell_commands?: string[]; // shell command strings, executed sequentially
 }

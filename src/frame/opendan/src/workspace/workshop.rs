@@ -457,13 +457,15 @@ impl CreateWorkspaceTool {
                 .await?;
             let summary_path = workspace_path.join("SUMMARY.md");
             let summary_content = format!("{summary}\n");
-            fs::write(&summary_path, summary_content).await.map_err(|err| {
-                AgentToolError::ExecFailed(format!(
-                    "write workspace summary failed: path={} err={}",
-                    summary_path.display(),
-                    err
-                ))
-            })?;
+            fs::write(&summary_path, summary_content)
+                .await
+                .map_err(|err| {
+                    AgentToolError::ExecFailed(format!(
+                        "write workspace summary failed: path={} err={}",
+                        summary_path.display(),
+                        err
+                    ))
+                })?;
 
             let bind_result = self
                 .local_workspace_mgr
@@ -1018,6 +1020,10 @@ async fn persist_session_workspace_binding(
 
     let mut guard = session.lock().await;
     guard.local_workspace_id = Some(workspace_id.to_string());
+    let workspace_root = binding.workspace_path.trim();
+    if !workspace_root.is_empty() {
+        guard.pwd = PathBuf::from(workspace_root);
+    }
 
     let mut workspace_info = guard.workspace_info.take().unwrap_or_else(|| json!({}));
     if !workspace_info.is_object() {
@@ -1937,8 +1943,8 @@ mod tests {
             &tool_mgr,
             "create_workspace demo-project \"Workspace structure: src/, docs/, scripts/\"",
         )
-            .await
-            .expect("create workspace should succeed");
+        .await
+        .expect("create workspace should succeed");
 
         assert_eq!(result["ok"], true);
         let workspace_id = result["workspace"]["workspace_id"]
@@ -1962,6 +1968,7 @@ mod tests {
             .expect("session should exist");
         let guard = session.lock().await;
         assert_eq!(guard.local_workspace_id.as_deref(), Some(workspace_id));
+        assert_eq!(guard.pwd, PathBuf::from(workspace_path));
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -2012,8 +2019,8 @@ mod tests {
             &tool_mgr,
             "create_workspace demo-project \"Workspace structure\" extra",
         )
-            .await
-            .expect_err("extra args should be rejected");
+        .await
+        .expect_err("extra args should be rejected");
         assert!(matches!(err, AgentToolError::InvalidArgs(_)));
         assert!(
             err.to_string().contains("<name> <summary>"),
@@ -2085,6 +2092,10 @@ mod tests {
         call_bash_tool(&tool_mgr, first_cmd.as_str())
             .await
             .expect("first bind should succeed");
+        let workspace_a_path = workshop
+            .get_local_workspace_path(&workspace_a.workspace_id)
+            .await
+            .expect("workspace a path");
 
         let workspace_b_path = workshop
             .get_local_workspace_path(&workspace_b.workspace_id)
@@ -2110,6 +2121,7 @@ mod tests {
             guard.local_workspace_id.as_deref(),
             Some(workspace_a.workspace_id.as_str())
         );
+        assert_eq!(guard.pwd, workspace_a_path);
 
         let _ = fs::remove_dir_all(root).await;
     }

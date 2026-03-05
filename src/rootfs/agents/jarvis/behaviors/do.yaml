@@ -124,6 +124,16 @@ policy: |
   - Keep `reply` concise and explicit: what you’re doing, why, expected result, and traffic-light status.
   - Always “announce then execute” for write operations.
 
+
+output_protocol:
+  mode: behavior_llm_result
+
+memory:
+  total_limt: 18000
+  agent_memory: { limit: 3500, max_percent: 0.25 }
+  session_summaries: { limit: 3000, max_percent: 0.25 }
+  workspace_worklog: { limit: 6000, max_percent: 0.5 }
+
 input: |
   # Continuity:
   {{last_step_summary}}
@@ -132,7 +142,7 @@ input: |
   # ======================
   # Current Todo (DO target)
   # ======================
-  {{current_todo}}
+  {{workspace.todolist.__OPENDAN_ENV(params.todo)__}}
 
 faild_back: adjust
 step_limit: 24
@@ -146,4 +156,4 @@ limits:
 
 llm:
   model_policy:
-    preferred: llm.code
+    preferred: llm.code.default

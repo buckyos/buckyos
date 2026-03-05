@@ -16,11 +16,10 @@ process_rule: |
   * If creating new_session, summary MUST be dynamically constructed from system context:
     - MUST describe current session characteristics.
     - SHOULD include a concise description of the remote user.
-    - MUST be editable later from a common control panel.
-  * If creating new_session, reply MUST include migrated history msg ids (msgid list).
 
   ## WorkSessionList
   {{session_list}}
+  -- end of work session list --
 
 policy: |
   * Session creation is expensive. MUST be used only for substantial tasks.
@@ -64,4 +63,4 @@ limits:
 
 llm:
   model_policy:
-    preferred: llm.chat
+    preferred: llm.chat.default

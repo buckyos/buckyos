@@ -8,6 +8,7 @@ use std::vec;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
+    get_buckyos_api_runtime,
     msg_queue::{Message, MsgQueueClient, QueueConfig, SubPosition},
     value_to_object_map, AiToolCall, AiccClient, BoxKind, Event, EventReader, KEventClient,
     KEventError, MsgCenterClient, MsgRecord, MsgRecordWithObject, MsgState, PostSendResult,
@@ -36,7 +37,8 @@ use crate::agent_tool::{
 };
 use crate::behavior::{
     AgentWorkEvent, BehaviorConfig, BehaviorExecInput, BehaviorLLMResult, LLMBehavior,
-    LLMBehaviorDeps, LLMTrackingInfo, SessionRuntimeContext, Tokenizer, WorklogSink,
+    LLMBehaviorDeps, LLMComputeError, LLMTrackingInfo, SessionRuntimeContext, Tokenizer,
+    WorklogSink,
 };
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
@@ -45,7 +47,17 @@ const MAX_MSG_PULL_PER_TICK: usize = 128;
 const MAX_EVENT_PULL_TIMEOUT_MS: u64 = 10_000;
 const MAX_SESSION_WORKER_IDLE_SLEEP_MS: u64 = 10_000;
 const MSG_ROUTED_REASON: &str = "routed_by_opendan_runtime";
-const MSG_CENTER_EVENT_BOX_NAMES: [&str; 3] = ["in", "group_in", "request"];
+const MSG_CENTER_EVENT_BOX_PATTERN_NAMES: [&str; 9] = [
+    "in",
+    "inbox",
+    "INBOX",
+    "group_in",
+    "group_inbox",
+    "GROUP_INBOX",
+    "request",
+    "request_box",
+    "REQUEST_BOX",
+];
 const SESSION_QUEUE_APP_ID: &str = "opendan";
 const SESSION_QUEUE_RETENTION_SECONDS: u64 = 7 * 24 * 60 * 60;
 const SESSION_QUEUE_MAX_MESSAGES: u64 = 4096;
@@ -155,9 +167,21 @@ impl WorklogSink for NoopWorklogSink {
 #[derive(Clone)]
 pub struct AIAgentDeps {
     pub taskmgr: Arc<TaskManagerClient>,
-    pub aicc: Arc<AiccClient>,
     pub msg_center: Option<Arc<MsgCenterClient>>,
     pub msg_queue: Option<Arc<MsgQueueClient>>,
+}
+
+impl AIAgentDeps {
+    pub async fn get_aicc_client(&self) -> Result<Arc<AiccClient>, LLMComputeError> {
+        let runtime = get_buckyos_api_runtime().map_err(|err| {
+            LLMComputeError::Internal(format!("load buckyos runtime failed: {err}"))
+        })?;
+        let client = runtime
+            .get_aicc_client()
+            .await
+            .map_err(|err| LLMComputeError::Provider(format!("init aicc client failed: {err}")))?;
+        Ok(Arc::new(client))
+    }
 }
 
 pub struct AIAgent {
@@ -458,6 +482,13 @@ impl AIAgent {
         let mut msg_pull_boxes = Vec::<BoxKind>::new();
         match event_reader.pull_event(Some(wait_timeout_ms)).await {
             Ok(Some(event)) => {
+                info!(
+                    "{}.event_pull_hit: event_id={} source_node={} ingress_node={}",
+                    self.agent_name,
+                    event.eventid,
+                    event.source_node,
+                    event.ingress_node.as_deref().unwrap_or("-")
+                );
                 Self::collect_event_pull_targets(event, &mut msg_pull_boxes, &mut pulled_events);
 
                 info!(
@@ -623,7 +654,31 @@ impl AIAgent {
         );
         for pulled in pulled_msgs {
             let record_id = pulled.record.record.record_id.clone();
-            let msg_record = pulled.record.record.clone();
+            let mut msg_record = pulled.record.record.clone();
+            if msg_record
+                .from_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_none()
+            {
+                let session_from_name = pulled
+                    .record
+                    .msg
+                    .as_ref()
+                    .map(|msg| msg.from.to_raw_host_name())
+                    .filter(|value| !value.trim().is_empty())
+                    .or_else(|| {
+                        let fallback = msg_record.from.to_raw_host_name();
+                        (!fallback.trim().is_empty()).then_some(fallback)
+                    });
+                msg_record.from_name = AgentSession::resolve_msg_from_name(
+                    &msg_record.from,
+                    session_from_name.as_deref(),
+                    Some(&self.owner_did),
+                )
+                .await;
+            }
             info!(
                 "{}.dispatch_msg_begin: record_id={} state={:?} ui_session_id={:?}",
                 self.agent_name, record_id, msg_record.state, msg_record.ui_session_id
@@ -854,6 +909,8 @@ impl AIAgent {
                 (session_id, current_step_index)
             };
 
+            info!("{}.run_behavior_loop: session_id={} behavior_name={} current_step_index={}", self.agent_name, session_id, behavior_name, current_step_index);
+
             let trace = SessionRuntimeContext {
                 trace_id: wakeup_id.to_string(),
                 agent_name: self.agent_name.clone(),
@@ -886,7 +943,12 @@ impl AIAgent {
                 behavior_cfg.to_llm_behavior_config(),
                 LLMBehaviorDeps {
                     taskmgr: self.deps.taskmgr.clone(),
-                    aicc: self.deps.aicc.clone(),
+                    #[cfg(test)]
+                    aicc: self
+                        .deps
+                        .get_aicc_client()
+                        .await
+                        .map_err(|err| anyhow!("load aicc client failed: {err}"))?,
                     tools: self.tools.clone(),
                     memory: Some(self.memory.clone()),
                     policy: self.policy.clone(),
@@ -1222,10 +1284,37 @@ impl AIAgent {
 
     fn build_msg_center_event_patterns(owner: &DID) -> Vec<String> {
         let owner_token = owner.to_raw_host_name();
-        MSG_CENTER_EVENT_BOX_NAMES
-            .iter()
-            .map(|box_name| format!("/msg_center/{owner_token}/box/{box_name}/**"))
-            .collect()
+        let mut owner_tokens = vec![owner_token.clone()];
+        let normalized_owner_token = owner_token.to_ascii_lowercase();
+        if normalized_owner_token != owner_token {
+            owner_tokens.push(normalized_owner_token);
+        }
+
+        let mut out = Vec::new();
+        let mut dedup = HashSet::<String>::new();
+        for owner_token in owner_tokens {
+            for box_name in MSG_CENTER_EVENT_BOX_PATTERN_NAMES {
+                for pattern in [
+                    format!("/msg_center/{owner_token}/box/{box_name}/**"),
+                    format!("/msg_center/{owner_token}/{box_name}/**"),
+                ] {
+                    if dedup.insert(pattern.clone()) {
+                        out.push(pattern);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn msg_center_event_name_to_box_kind(raw_name: &str) -> Option<BoxKind> {
+        let normalized = raw_name.trim().to_ascii_lowercase().replace('-', "_");
+        match normalized.as_str() {
+            "in" | "inbox" => Some(BoxKind::Inbox),
+            "group_in" | "group_inbox" => Some(BoxKind::GroupInbox),
+            "request" | "request_box" => Some(BoxKind::RequestBox),
+            _ => None,
+        }
     }
 
     async fn ensure_msg_center_event_reader(&self) -> Option<Arc<EventReader>> {
@@ -1243,7 +1332,7 @@ impl AIAgent {
             Ok(reader) => {
                 let reader = Arc::new(reader);
                 *guard = Some(reader.clone());
-                debug!(
+                info!(
                     "agent.event_reader_created: did={:?} owner_did={:?} patterns={:?} reader_id={}",
                     self.did,
                     self.owner_did.to_string(),
@@ -1286,19 +1375,19 @@ impl AIAgent {
             .split('/')
             .filter(|part| !part.is_empty())
             .collect();
-        if parts.len() < 4 {
+        if parts.len() < 3 {
             return None;
         }
-        if parts[0] != "msg_center" || parts[2] != "box" {
+        if parts[0] != "msg_center" {
             return None;
         }
 
-        match parts[3] {
-            "in" => Some(BoxKind::Inbox),
-            "group_in" => Some(BoxKind::GroupInbox),
-            "request" => Some(BoxKind::RequestBox),
-            _ => None,
+        if let Some(index) = parts.iter().position(|segment| *segment == "box") {
+            if let Some(box_name) = parts.get(index + 1) {
+                return Self::msg_center_event_name_to_box_kind(box_name);
+            }
         }
+        Self::msg_center_event_name_to_box_kind(parts[2])
     }
 
     fn append_all_msg_center_boxes_updated(target: &mut Vec<BoxKind>) {
@@ -2660,12 +2749,8 @@ impl AIAgent {
         let session_dir = self.session_mgr.sessions_root().join(session_id.as_str());
         let session_dir_str = session_dir.to_string_lossy().to_string();
 
-        if let Err(err) = AgentSession::append_msg_record(
-            session_dir_str.as_str(),
-            msg_record,
-            msg_obj,
-        )
-        .await
+        if let Err(err) =
+            AgentSession::append_msg_record(session_dir_str.as_str(), msg_record, msg_obj).await
         {
             warn!(
                 "agent.msg_history_append_failed: did={:?} session={} session_dir={} record_id={} err={}",
@@ -2859,7 +2944,7 @@ fn apply_session_behavior_transition(
                 session.state = SessionState::Wait;
             }
             keep_running = false;
-        } else if next_behavior.starts_with("WAIT_FOR_MSG") {
+        } else if starts_with_ignore_ascii_case(next_behavior, "WAIT_FOR_MSG") {
             session.state = SessionState::WaitForMsg;
             keep_running = false;
         } else if next_behavior.eq_ignore_ascii_case("END") {
@@ -2869,57 +2954,138 @@ fn apply_session_behavior_transition(
             keep_running = false;
         } else {
             let previous_behavior = session.current_behavior.clone();
-            behavior_switched = session.current_behavior != next_behavior;
-
-            session.current_behavior = next_behavior.to_string();
-            session.step_index = 0;
-            //这个实现需要仔细考虑
-            session.last_step_summary = None;
-            session.state = SessionState::Running;
+            behavior_switched = !session.current_behavior.eq_ignore_ascii_case(next_behavior);
+            //session.state = SessionState::Running;
             if behavior_switched {
+                session.current_behavior = next_behavior.to_string();
+                session.step_index = 0;
+                //这个实现需要仔细考虑
+                session.last_step_summary = None;
                 info!(
                     "agent.session_behavior_switch: session={} from={} to={} reason=next_behavior",
                     session.session_id, previous_behavior, session.current_behavior
                 );
+                keep_running = true;
+            } else {
+                keep_running = advance_session_step_or_apply_limit_fallback(
+                    session,
+                    default_behavior,
+                    step_limit,
+                    faild_back_behavior,
+                    &mut behavior_switched,
+                );
             }
-            keep_running = true;
         }
     } else {
-        if session.state != SessionState::Running {
-            keep_running = false;
-        } else {
-            session.step_index = session.step_index.saturating_add(1);
-            if step_limit > 0 && session.step_index >= step_limit {
-                let fallback_behavior = faild_back_behavior
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .unwrap_or(default_behavior);
-                let previous_behavior = session.current_behavior.clone();
-                behavior_switched = session.current_behavior != fallback_behavior;
-                session.current_behavior = fallback_behavior.to_string();
-                session.step_index = 0;
-                
-                if behavior_switched {
-                    info!(
-                        "agent.session_behavior_switch: session={} from={} to={} reason=step_limit_fallback step_limit={}",
-                        session.session_id, previous_behavior, session.current_behavior, step_limit
-                    );
-                    keep_running = true;
-                } else {
-                    session.state = SessionState::Wait;
-                    keep_running = false;
-                }
-                
-            } else {
-                keep_running = true;
-            }
-        }
+        keep_running = advance_session_step_or_apply_limit_fallback(
+            session,
+            default_behavior,
+            step_limit,
+            faild_back_behavior,
+            &mut behavior_switched,
+        );
     }
 
     StepTransition {
         keep_running,
         behavior_switched,
     }
+}
+
+fn advance_session_step_or_apply_limit_fallback(
+    session: &mut crate::agent_session::AgentSession,
+    default_behavior: &str,
+    step_limit: u32,
+    faild_back_behavior: Option<&str>,
+    behavior_switched: &mut bool,
+) -> bool {
+    if session.state != SessionState::Running {
+        return false;
+    }
+
+    session.step_index = session.step_index.saturating_add(1);
+    if step_limit > 0 && session.step_index >= step_limit {
+        let fallback_behavior = faild_back_behavior
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(default_behavior);
+        let previous_behavior = session.current_behavior.clone();
+        *behavior_switched = !session
+            .current_behavior
+            .eq_ignore_ascii_case(fallback_behavior);
+        session.current_behavior = fallback_behavior.to_string();
+        session.step_index = 0;
+
+        if *behavior_switched {
+            info!(
+                "agent.session_behavior_switch: session={} from={} to={} reason=step_limit_fallback step_limit={}",
+                session.session_id, previous_behavior, session.current_behavior, step_limit
+            );
+            true
+        } else {
+            session.state = SessionState::Wait;
+            false
+        }
+    } else {
+        true
+    }
+}
+
+fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
+    value
+        .get(..prefix.len())
+        .map(|head| head.eq_ignore_ascii_case(prefix))
+        .unwrap_or(false)
+}
+
+fn render_action_results_for_prompt(results: &DoActionResults) -> String {
+    let mut keys = results.details.keys().cloned().collect::<Vec<_>>();
+    keys.sort();
+
+    let mut lines = vec![format!("ActionResults: {}", results.summary)];
+    if let Some(pwd) = results
+        .pwd
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        lines.push(format!("pwd: {pwd}"));
+    }
+    for key in keys {
+        let detail = results.details.get(&key).cloned().unwrap_or(Json::Null);
+        if let Some(prompt) = detail
+            .get("prompt")
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            let mut prompt_lines = prompt.lines();
+            if let Some(first) = prompt_lines.next() {
+                lines.push(format!("- {}", first));
+                for line in prompt_lines {
+                    lines.push(line.to_string());
+                }
+            } else {
+                lines.push("-".to_string());
+            }
+            continue;
+        }
+        if let Some(error) = detail
+            .get("error")
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            lines.push(format!("- {} ERROR: {}", key, error));
+            continue;
+        }
+        lines.push(format!(
+            "- {} {}",
+            key,
+            serde_json::to_string(&detail).unwrap_or_else(|_| "{}".to_string())
+        ));
+    }
+    lines.join("\n")
 }
 
 async fn build_step_summary(
@@ -2932,14 +3098,14 @@ async fn build_step_summary(
 ) -> Option<String> {
     let mut env_context = HashMap::<String, Json>::new();
     env_context.insert("step_index".to_string(), Json::from(trace.step_idx));
-    env_context.insert("step_limit".to_string(), Json::from(behavior_cfg.step_limit));
+    env_context.insert(
+        "step_limit".to_string(),
+        Json::from(behavior_cfg.step_limit),
+    );
 
     if let Ok(mut llm_result_json) = serde_json::to_value(llm_result) {
-        let json_action_result = serde_json::to_value(action_results);
-        if json_action_result.is_ok() {
-            let json_action_result = json_action_result.unwrap();
-            llm_result_json["action_results"] = json_action_result;
-        }
+        llm_result_json["action_results"] =
+            Json::String(render_action_results_for_prompt(action_results));
         env_context.insert("llm_result".to_string(), llm_result_json);
     }
 
@@ -3205,64 +3371,14 @@ impl Tokenizer for SimpleTokenizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::{HashMap, VecDeque};
+    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     use serde_json::json;
     use tempfile::tempdir;
     use tokio::fs;
 
-    use crate::test_utils::{MockAicc, MockTaskMgrHandler};
-
-    fn render_action_results_for_prompt(results: &DoActionResults) -> String {
-        let mut keys = results.details.keys().cloned().collect::<Vec<_>>();
-        keys.sort();
-
-        let mut lines = vec![format!("ActionResults: {}", results.summary)];
-        if let Some(pwd) = results
-            .pwd
-            .as_deref()
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-        {
-            lines.push(format!("pwd: {pwd}"));
-        }
-        for key in keys {
-            let detail = results.details.get(&key).cloned().unwrap_or(Json::Null);
-            if let Some(prompt) = detail
-                .get("prompt")
-                .and_then(Json::as_str)
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-            {
-                let mut prompt_lines = prompt.lines();
-                if let Some(first) = prompt_lines.next() {
-                    lines.push(format!("- {}", first));
-                    for line in prompt_lines {
-                        lines.push(line.to_string());
-                    }
-                } else {
-                    lines.push("-".to_string());
-                }
-                continue;
-            }
-            if let Some(error) = detail
-                .get("error")
-                .and_then(Json::as_str)
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-            {
-                lines.push(format!("- {} ERROR: {}", key, error));
-                continue;
-            }
-            lines.push(format!(
-                "- {} {}",
-                key,
-                serde_json::to_string(&detail).unwrap_or_else(|_| "{}".to_string())
-            ));
-        }
-        lines.join("\n")
-    }
+    use crate::test_utils::MockTaskMgrHandler;
 
     fn make_event(eventid: &str) -> Event {
         Event {
@@ -3291,6 +3407,35 @@ mod tests {
             AIAgent::msg_center_event_box_kind(&event),
             Some(BoxKind::RequestBox)
         );
+    }
+
+    #[test]
+    fn msg_center_event_box_kind_accepts_legacy_box_name() {
+        let event = make_event("/msg_center/agent.example/box/INBOX/changed");
+        assert_eq!(
+            AIAgent::msg_center_event_box_kind(&event),
+            Some(BoxKind::Inbox)
+        );
+    }
+
+    #[test]
+    fn msg_center_event_box_kind_accepts_legacy_path_without_box_segment() {
+        let event = make_event("/msg_center/agent.example/inbox/changed");
+        assert_eq!(
+            AIAgent::msg_center_event_box_kind(&event),
+            Some(BoxKind::Inbox)
+        );
+    }
+
+    #[test]
+    fn build_msg_center_event_patterns_include_legacy_aliases() {
+        let owner = DID::new("bns", "Agent.Example");
+        let patterns = AIAgent::build_msg_center_event_patterns(&owner);
+
+        assert!(patterns.contains(&"/msg_center/Agent.Example.bns.did/box/in/**".to_string()));
+        assert!(patterns.contains(&"/msg_center/Agent.Example.bns.did/box/INBOX/**".to_string()));
+        assert!(patterns.contains(&"/msg_center/Agent.Example.bns.did/inbox/**".to_string()));
+        assert!(patterns.contains(&"/msg_center/agent.example.bns.did/box/in/**".to_string()));
     }
 
     #[test]
@@ -3332,6 +3477,65 @@ mod tests {
                 DoAction::Exec("echo from-shell-2".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn apply_behavior_transition_is_case_insensitive_for_same_behavior() {
+        let mut session = AgentSession::new("work-1", "did:test:agent", Some("plan"));
+        session.state = SessionState::Running;
+
+        let transition =
+            apply_session_behavior_transition(&mut session, "plan", 8, None, Some("PLAN"));
+
+        assert!(!transition.behavior_switched);
+        assert!(transition.keep_running);
+        assert_eq!(session.current_behavior, "plan");
+        assert_eq!(session.step_index, 1);
+    }
+
+    #[test]
+    fn apply_behavior_transition_same_behavior_honors_step_limit_fallback() {
+        let mut session = AgentSession::new("work-1", "did:test:agent", Some("plan"));
+        session.state = SessionState::Running;
+        session.step_index = 1;
+
+        let transition =
+            apply_session_behavior_transition(&mut session, "plan", 2, Some("PLAN"), Some("plan"));
+
+        assert!(!transition.behavior_switched);
+        assert!(!transition.keep_running);
+        assert_eq!(session.current_behavior, "PLAN");
+        assert_eq!(session.step_index, 0);
+        assert_eq!(session.state, SessionState::Wait);
+    }
+
+    #[test]
+    fn apply_behavior_transition_parses_wait_for_msg_case_insensitive() {
+        let mut session = AgentSession::new("work-1", "did:test:agent", Some("plan"));
+        session.state = SessionState::Running;
+
+        let transition =
+            apply_session_behavior_transition(&mut session, "plan", 8, None, Some("wait_for_msg"));
+
+        assert!(!transition.behavior_switched);
+        assert!(!transition.keep_running);
+        assert_eq!(session.state, SessionState::WaitForMsg);
+    }
+
+    #[test]
+    fn apply_behavior_transition_step_limit_fallback_is_case_insensitive() {
+        let mut session = AgentSession::new("work-1", "did:test:agent", Some("plan"));
+        session.state = SessionState::Running;
+        session.step_index = 1;
+
+        let transition =
+            apply_session_behavior_transition(&mut session, "plan", 2, Some("PLAN"), None);
+
+        assert!(!transition.behavior_switched);
+        assert!(!transition.keep_running);
+        assert_eq!(session.current_behavior, "PLAN");
+        assert_eq!(session.step_index, 0);
+        assert_eq!(session.state, SessionState::Wait);
     }
 
     fn build_step_input_payload(record_id: &str, ui_session_id: Option<&str>) -> Vec<u8> {
@@ -3420,8 +3624,7 @@ mod tests {
         let mut behavior_cfg = BehaviorConfig::default();
         behavior_cfg.step_limit = 16;
         behavior_cfg.step_summary =
-            "idx={{step_index}} limit={{step_limit}} thinking={{llm_result.thinking}}"
-                .to_string();
+            "idx={{step_index}} limit={{step_limit}} thinking={{llm_result.thinking}}".to_string();
 
         let llm_result = BehaviorLLMResult {
             thinking: Some("break down tasks".to_string()),
@@ -3458,6 +3661,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn build_step_summary_renders_action_results_prompt_preview() {
+        let session = Arc::new(tokio::sync::Mutex::new(AgentSession::new(
+            "s1",
+            "did:test:agent",
+            Some("resolve_router"),
+        )));
+
+        let trace = SessionRuntimeContext {
+            trace_id: "trace-1".to_string(),
+            agent_name: "agent-test".to_string(),
+            behavior: "plan".to_string(),
+            step_idx: 2,
+            wakeup_id: "wakeup-1".to_string(),
+            session_id: "s1".to_string(),
+        };
+        let mut behavior_cfg = BehaviorConfig::default();
+        behavior_cfg.step_summary = "### Run Results\n{{llm_result.action_results}}".to_string();
+
+        let llm_result = BehaviorLLMResult::default();
+        let tracking = crate::behavior::LLMTrackingInfo {
+            token_usage: crate::behavior::TokenUsage::default(),
+            track: crate::behavior::TrackInfo {
+                trace_id: "trace-1".to_string(),
+                model: "test-model".to_string(),
+                provider: "test-provider".to_string(),
+                latency_ms: 0,
+                llm_task_ids: vec![],
+                errors: vec![],
+            },
+            tool_trace: vec![],
+            raw_output: crate::behavior::LLMOutput::Text(String::new()),
+        };
+        let mut action_results = DoActionResults {
+            summary: "SUCCESS (1), FAILED (0)".to_string(),
+            pwd: Some("/tmp/demo".to_string()),
+            details: HashMap::new(),
+        };
+        action_results.details.insert(
+            "#0".to_string(),
+            json!({
+                "prompt": "read_file demo.txt range=1-2 => read 2 lines\nline-1\nline-2"
+            }),
+        );
+
+        let rendered = build_step_summary(
+            &trace,
+            &behavior_cfg,
+            &llm_result,
+            &tracking,
+            &action_results,
+            session,
+        )
+        .await
+        .expect("rendered summary");
+
+        assert!(rendered.contains("ActionResults: SUCCESS (1), FAILED (0)"));
+        assert!(rendered.contains("pwd: /tmp/demo"));
+        assert!(rendered.contains("- read_file demo.txt range=1-2 => read 2 lines"));
+        assert!(!rendered.contains("\"summary\""));
+        assert!(!rendered.contains("\"details\""));
+    }
+
+    #[tokio::test]
     async fn print_action_results_prompt_preview() {
         let temp = tempdir().expect("create tempdir");
         let agent_root = temp.path().join("agent");
@@ -3485,18 +3751,10 @@ process_rule: "test behavior for action rendering"
                 tasks: Arc::new(Mutex::new(HashMap::new())),
             },
         )));
-        let aicc = Arc::new(buckyos_api::AiccClient::new_in_process(Box::new(
-            MockAicc {
-                responses: Arc::new(Mutex::new(VecDeque::new())),
-                requests: Arc::new(Mutex::new(Vec::new())),
-            },
-        )));
-
         let agent = AIAgent::load(
             AIAgentConfig::new(agent_root.clone()),
             AIAgentDeps {
                 taskmgr,
-                aicc,
                 msg_center: None,
                 msg_queue: None,
             },
@@ -3674,15 +3932,15 @@ process_rule: "test behavior for action rendering"
         assert!(rendered.contains("step-summary-preview"));
         assert!(rendered.contains("cat missing_exec_preview.txt => FAILED (exit="));
         assert!(rendered.contains("missing_exec_preview.txt"));
-        assert!(rendered
-            .contains("create_workspace preview_ws \"Workspace structure preview for action rendering\" =>"));
+        assert!(rendered.contains(
+            "create_workspace preview_ws \"Workspace structure preview for action rendering\" =>"
+        ));
         assert!(!rendered.contains("\"session_updated\""));
         assert!(rendered.contains("todo clear => cleared 0 todo items"));
         assert!(rendered.contains("todo add \"Preview task\" --priority=3 => added todo T001"));
         assert!(rendered.contains("todo next => next todo T001: Preview task"));
-        assert!(
-            rendered.contains("todo start T999 \"missing preview\" => failed: todo `T999` not found")
-        );
+        assert!(rendered
+            .contains("todo start T999 \"missing preview\" => failed: todo `T999` not found"));
         assert!(rendered.contains("todo ls --all => listed 1 todo item"));
         assert!(rendered.contains("- T001 [COMPLETE]"));
         assert!(rendered.contains("read_file prompt_preview.txt range=1-2 => read"));
@@ -3696,7 +3954,9 @@ process_rule: "test behavior for action rendering"
         assert!(rendered
             .contains("... [TRUNCATED FOR ACTION PREVIEW: Showing first 100 lines only] ..."));
         assert!(rendered.contains("write_file write_preview.txt mode=new content=\""));
-        assert!(rendered.contains("write mode `new` requires target file not exist: write_preview.txt"));
+        assert!(
+            rendered.contains("write mode `new` requires target file not exist: write_preview.txt")
+        );
         assert!(rendered.contains("pwd: "));
         assert!(rendered.contains("tree_preview/dir-03"));
         assert!(rendered.contains("pos_chunk=\"line-beta\""));

@@ -2280,7 +2280,6 @@ mod tests {
             },
             vec![Ok(ProviderStartResult::Immediate(AiResponseSummary {
                 text: Some("ok".to_string()),
-                json: None,
                 tool_calls: vec![],
                 artifacts: vec![],
                 usage: None,

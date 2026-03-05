@@ -34,6 +34,9 @@ use crate::{
 };
 
 const DEFAULT_NODE_GATEWAY_PORT: u16 = 3180;
+const DEFAULT_AICC_KRPC_TIMEOUT_SECS: u64 = 120;
+const BUCKYOS_KRPC_TIMEOUT_SECS_ENV: &str = "BUCKYOS_KRPC_TIMEOUT_SECS";
+const BUCKYOS_KRPC_TIMEOUT_SECS_PREFIX: &str = "BUCKYOS_KRPC_TIMEOUT_SECS_";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuckyOSRuntimeType {
@@ -1314,7 +1317,10 @@ impl BuckyOSRuntime {
 
     pub async fn get_aicc_client(&self) -> Result<AiccClient> {
         let krpc_client = self
-            .get_zone_service_krpc_client(AICC_SERVICE_SERVICE_NAME)
+            .get_zone_service_krpc_client_with_default_timeout(
+                AICC_SERVICE_SERVICE_NAME,
+                Some(DEFAULT_AICC_KRPC_TIMEOUT_SECS),
+            )
             .await?;
         let client = AiccClient::new(krpc_client);
         Ok(client)
@@ -1504,11 +1510,72 @@ impl BuckyOSRuntime {
     }
 
     pub async fn get_zone_service_krpc_client(&self, service_name: &str) -> Result<kRPC> {
+        self.get_zone_service_krpc_client_with_default_timeout(service_name, None)
+            .await
+    }
+
+    pub async fn get_zone_service_krpc_client_with_default_timeout(
+        &self,
+        service_name: &str,
+        default_timeout_secs: Option<u64>,
+    ) -> Result<kRPC> {
         let url = self
             .get_zone_service_url(service_name, self.force_https)
             .await?;
         let session_token = self.session_token.read().await;
-        let client = kRPC::new(&url, Some(session_token.clone()));
+        let timeout_secs =
+            Self::resolve_krpc_timeout_secs(service_name, default_timeout_secs);
+        let client = if let Some(timeout_secs) = timeout_secs {
+            kRPC::new_with_timeout_secs(&url, Some(session_token.clone()), timeout_secs)
+        } else {
+            kRPC::new(&url, Some(session_token.clone()))
+        };
         Ok(client)
+    }
+
+    fn resolve_krpc_timeout_secs(
+        service_name: &str,
+        default_timeout_secs: Option<u64>,
+    ) -> Option<u64> {
+        let env_key = format!(
+            "{}{}",
+            BUCKYOS_KRPC_TIMEOUT_SECS_PREFIX,
+            Self::normalize_service_timeout_key(service_name)
+        );
+
+        Self::parse_timeout_secs_from_env(env_key.as_str())
+            .or_else(|| Self::parse_timeout_secs_from_env(BUCKYOS_KRPC_TIMEOUT_SECS_ENV))
+            .or(default_timeout_secs)
+    }
+
+    fn normalize_service_timeout_key(service_name: &str) -> String {
+        service_name
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() {
+                    ch.to_ascii_uppercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    }
+
+    fn parse_timeout_secs_from_env(env_key: &str) -> Option<u64> {
+        let raw = match env::var(env_key) {
+            Ok(raw) => raw,
+            Err(_) => return None,
+        };
+
+        match raw.trim().parse::<u64>() {
+            Ok(value) if value > 0 => Some(value),
+            _ => {
+                warn!(
+                    "ignore invalid {} value `{}`: expect positive integer seconds",
+                    env_key, raw
+                );
+                None
+            }
+        }
     }
 }

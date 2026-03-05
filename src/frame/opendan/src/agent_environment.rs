@@ -4,11 +4,11 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use buckyos_api::{get_buckyos_api_runtime, MsgRecord, OpenDanAgentSessionRecord};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Timelike, Utc};
 use log::{debug, warn};
 use ndn_lib::MsgObject;
 use rusqlite::Connection;
-use serde_json::{json, Map, Value as Json};
+use serde_json::{Map, Value as Json};
 use tokio::fs;
 use tokio::sync::Mutex;
 use tokio::task;
@@ -20,8 +20,9 @@ use crate::agent::{AIAgent, InputQueueKind};
 use crate::agent_session::{AgentSession, AgentSessionMgr, SessionInputItem};
 use crate::agent_tool::{AgentToolError, AgentToolManager};
 use crate::workspace::{
-    get_next_ready_todo_code, get_next_ready_todo_text, AgentWorkshop, AgentWorkshopConfig,
-    LocalWorkspaceManager, WorkshopIndex, WorkshopWorkspaceRecord, WorkspaceType,
+    get_next_ready_todo_code, get_next_ready_todo_text, get_session_todo_text_by_ref,
+    AgentWorkshop, AgentWorkshopConfig, LocalWorkspaceManager, WorkshopIndex,
+    WorkshopWorkspaceRecord, WorkspaceType,
 };
 
 const MAX_INCLUDE_BYTES: usize = 64 * 1024;
@@ -366,6 +367,53 @@ impl AgentEnvironment {
             }
             return Ok(None);
         }
+
+        if let Some(todo_ref_raw) = k.strip_prefix("workspace.todolist.") {
+            let todo_ref = todo_ref_raw.trim();
+            if !todo_ref.is_empty() && todo_ref != "next_ready_todo" {
+                let workspace_id = resolve_session_workspace_id(
+                    local_workspace_id.as_deref(),
+                    workspace_info.as_ref(),
+                );
+                let todo_db_path = resolve_todo_db_path(
+                    local_workspace_id.as_deref(),
+                    workspace_info.as_ref(),
+                    &session_cwd,
+                );
+
+                if let (Some(workspace_id), Some(todo_db_path)) = (workspace_id, todo_db_path) {
+                    if todo_db_path.is_file() {
+                        match load_session_todo_text_by_ref(
+                            todo_db_path.clone(),
+                            workspace_id.clone(),
+                            session_id.clone(),
+                            todo_ref.to_string(),
+                        )
+                        .await
+                        {
+                            Ok(Some(value)) => return Ok(Some(value)),
+                            Ok(None) => {}
+                            Err(err) => {
+                                warn!(
+                                    "agent_env.load_value_from_session todo_ref query failed: session={} workspace={} key={} db={} err={}",
+                                    session_id,
+                                    workspace_id,
+                                    k,
+                                    todo_db_path.display(),
+                                    err
+                                );
+                            }
+                        }
+                    }
+                }
+
+                if let Some(workspace_info) = workspace_info.as_ref() {
+                    return Ok(resolve_workspace_info_text(workspace_info, k));
+                }
+                return Ok(None);
+            }
+        }
+
         if k.starts_with("workspace.") {
             return Ok(workspace_info
                 .as_ref()
@@ -799,33 +847,27 @@ async fn render_recent_sessions_from_disk(
             .then_with(|| a.session_id.cmp(&b.session_id))
     });
 
-    let items = records
+    let lines = records
         .into_iter()
         .take(max_pull)
         .map(|record| {
             let title = clean_optional_text(Some(record.title.as_str()))
                 .unwrap_or_else(|| format!("Session {}", record.session_id));
-            let status = clean_optional_text(Some(record.status.as_str()))
-                .unwrap_or_else(|| "normal".to_string());
-            let summary = clean_optional_text(Some(record.summary.as_str()))
-                .map(|value| collapse_whitespace(value.as_str()))
-                .map(|value| truncate_chars(value.as_str(), 200))
-                .unwrap_or_default();
-
-            json!({
-                "session_id": record.session_id,
-                "title": title,
-                "summary": summary,
-                "status": status,
-                "last_activity_ms": record.last_activity_ms,
-                "updated_at_ms": record.updated_at_ms,
-            })
+            let activity_ms = record
+                .last_activity_ms
+                .max(record.updated_at_ms)
+                .max(record.created_at_ms);
+            format!(
+                "- {} : {}  {}",
+                record.session_id,
+                title,
+                format_compact_timestamp(activity_ms)
+            )
         })
         .collect::<Vec<_>>();
 
-    serde_json::to_string_pretty(&items)
-        .ok()
-        .and_then(|value| clean_optional_text(Some(value.as_str())))
+    let rendered = lines.join("\n");
+    clean_optional_text(Some(rendered.as_str()))
 }
 
 async fn render_recent_local_workspaces_from_disk(
@@ -1043,9 +1085,17 @@ async fn render_new_msgs_from_kmsgqueue(messages: &[Message]) -> Option<String> 
 }
 
 fn render_human_readable_msg_line(record: &MsgRecord, msg_obj: Option<&MsgObject>) -> String {
-    let from = msg_obj
-        .map(|msg| msg.from.to_raw_host_name())
-        .filter(|value| !value.trim().is_empty())
+    let from = record
+        .from_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            msg_obj
+                .map(|msg| msg.from.to_raw_host_name())
+                .filter(|value| !value.trim().is_empty())
+        })
         .unwrap_or_else(|| record.from.to_raw_host_name());
     let time_ms = msg_obj
         .map(|msg| msg.created_at_ms)
@@ -1064,6 +1114,21 @@ fn format_timestamp(timestamp_ms: u64) -> String {
     let nanos = ((timestamp_ms % 1000) * 1_000_000) as u32;
     let dt = DateTime::<Utc>::from_timestamp(secs, nanos).unwrap_or_else(Utc::now);
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+fn format_compact_timestamp(timestamp_ms: u64) -> String {
+    let secs = (timestamp_ms / 1000) as i64;
+    let nanos = ((timestamp_ms % 1000) * 1_000_000) as u32;
+    let dt = DateTime::<Utc>::from_timestamp(secs, nanos).unwrap_or_else(Utc::now);
+    format!(
+        "{}-{}-{} {:02}:{:02}:{:02}",
+        dt.year(),
+        dt.month(),
+        dt.day(),
+        dt.hour(),
+        dt.minute(),
+        dt.second()
+    )
 }
 
 fn normalize_multiline_text(input: &str) -> String {
@@ -1123,6 +1188,25 @@ async fn load_next_ready_todo_value(
     .map_err(|err| {
         AgentToolError::ExecFailed(format!("query next ready todo join failed: {err}"))
     })?
+}
+
+async fn load_session_todo_text_by_ref(
+    db_path: PathBuf,
+    workspace_id: String,
+    session_id: String,
+    todo_ref: String,
+) -> Result<Option<String>, AgentToolError> {
+    task::spawn_blocking(move || {
+        let conn = Connection::open(&db_path).map_err(|err| {
+            AgentToolError::ExecFailed(format!(
+                "open todo db `{}` failed: {err}",
+                db_path.display()
+            ))
+        })?;
+        get_session_todo_text_by_ref(&conn, &workspace_id, &session_id, &todo_ref)
+    })
+    .await
+    .map_err(|err| AgentToolError::ExecFailed(format!("query session todo join failed: {err}")))?
 }
 
 fn resolve_session_workspace_id(
@@ -1535,6 +1619,7 @@ fn truncate_utf8(text: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace::{TodoTool, TodoToolConfig};
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -1678,6 +1763,96 @@ mod tests {
         assert!(rendered.contains("m3"), "rendered={}", rendered);
         assert!(rendered.contains("m4"), "rendered={}", rendered);
         assert!(rendered.contains("["), "rendered={}", rendered);
+    }
+
+    #[test]
+    fn render_new_msg_prefers_from_name_as_sender() {
+        let record: MsgRecord = serde_json::from_value(json!({
+            "record_id": "rid-1",
+            "box_kind": "INBOX",
+            "msg_id": "msg:01",
+            "state": "UNREAD",
+            "from": "did:bns:alice",
+            "from_name": "Alice",
+            "to": "did:bns:jarvis",
+            "created_at_ms": 1_735_689_600_000u64,
+            "updated_at_ms": 1_735_689_600_000u64,
+            "sort_key": 1_735_689_600_000u64
+        }))
+        .expect("parse msg record");
+
+        let rendered = render_human_readable_msg_line(&record, None);
+        assert!(rendered.starts_with("Alice ["), "rendered={}", rendered);
+        assert!(!rendered.starts_with("alice ["), "rendered={}", rendered);
+    }
+
+    #[tokio::test]
+    async fn load_value_from_session_workspace_todolist_todo_ref_reads_db_with_session_scope() {
+        let root = tempdir().expect("create temp dir");
+        let workshop_root = root.path();
+        let local_workspace_id = "ws-demo";
+        let session_id = "s-work";
+        let todo_db_path = workshop_root.join("todo").join("todo.db");
+        let workspace_dir = workshop_root
+            .join("workspaces")
+            .join("local")
+            .join(local_workspace_id);
+        std::fs::create_dir_all(&workspace_dir).expect("create local workspace path");
+
+        // Ensure todo schema exists.
+        let _tool = TodoTool::new(TodoToolConfig::with_db_path(todo_db_path.clone()))
+            .expect("init todo tool");
+        let conn = Connection::open(&todo_db_path).expect("open todo db");
+
+        conn.execute(
+            "INSERT INTO todo_items(
+                id, workspace_id, session_id, todo_code, title, type, status,
+                assignee_did, created_at, updated_at, created_by_kind, created_by_did
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            rusqlite::params![
+                "todo-1",
+                local_workspace_id,
+                session_id,
+                "T001",
+                "Implement parser",
+                "Task",
+                "WAIT",
+                "did:test:agent",
+                1000_i64,
+                1000_i64,
+                "root_agent",
+                "did:test:agent"
+            ],
+        )
+        .expect("insert todo");
+
+        let mut s = AgentSession::new(session_id, "did:test:agent", Some("on_wakeup"));
+        s.local_workspace_id = Some(local_workspace_id.to_string());
+        s.pwd = workspace_dir;
+        let session = Arc::new(Mutex::new(s));
+
+        let rendered =
+            AgentEnvironment::load_value_from_session(session, "workspace.todolist.T001")
+                .await
+                .expect("load todo by ref")
+                .expect("todo text should exist");
+        assert!(
+            rendered.contains("Current Todo T001 [WAIT]"),
+            "rendered={rendered}"
+        );
+
+        let mut s_other = AgentSession::new("s-other", "did:test:agent", Some("on_wakeup"));
+        s_other.local_workspace_id = Some(local_workspace_id.to_string());
+        s_other.pwd = workshop_root
+            .join("workspaces")
+            .join("local")
+            .join(local_workspace_id);
+        let session_other = Arc::new(Mutex::new(s_other));
+        let hidden =
+            AgentEnvironment::load_value_from_session(session_other, "workspace.todolist.T001")
+                .await
+                .expect("query other session todo");
+        assert!(hidden.is_none(), "todo from other session should be hidden");
     }
 
     #[tokio::test]
@@ -2019,24 +2194,22 @@ mod tests {
             .expect("load session_list")
             .expect("session_list should be rendered");
 
-        let items: Vec<Json> = serde_json::from_str(&rendered).expect("parse rendered list");
-        assert_eq!(items.len(), 3);
-        assert_eq!(items[0]["session_id"], "work-s2");
-        assert_eq!(items[1]["session_id"], "work-s3");
-        assert_eq!(items[2]["session_id"], "work-s1");
-        assert!(items.iter().all(|item| item["session_id"] != "ui-chat-1"));
-        assert!(items
-            .iter()
-            .all(|item| item["session_id"] != "tg:lzc_jarvis:5397330802"));
+        let lines = rendered.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].starts_with("- work-s2 : Session 2  "));
+        assert!(lines[1].starts_with("- work-s3 : Session 3  "));
+        assert!(lines[2].starts_with("- work-s1 : Session 1  "));
+        assert!(!rendered.contains("ui-chat-1"));
+        assert!(!rendered.contains("tg:lzc_jarvis:5397330802"));
 
         let rendered_2 = AgentEnvironment::load_value_from_session(session, "session_list.$2")
             .await
             .expect("load session_list.$2")
             .expect("session_list.$2 should be rendered");
-        let items_2: Vec<Json> = serde_json::from_str(&rendered_2).expect("parse rendered list");
-        assert_eq!(items_2.len(), 2);
-        assert_eq!(items_2[0]["session_id"], "work-s2");
-        assert_eq!(items_2[1]["session_id"], "work-s3");
+        let lines_2 = rendered_2.lines().collect::<Vec<_>>();
+        assert_eq!(lines_2.len(), 2);
+        assert!(lines_2[0].starts_with("- work-s2 : Session 2  "));
+        assert!(lines_2[1].starts_with("- work-s3 : Session 3  "));
     }
 
     #[tokio::test]

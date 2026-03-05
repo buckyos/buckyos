@@ -247,12 +247,6 @@ async fn service_main() -> Result<()> {
             .await
             .context("init task-manager client failed")?,
     );
-    let aicc = Arc::new(
-        runtime
-            .get_aicc_client()
-            .await
-            .context("init aicc client failed")?,
-    );
     if let Ok(url) = runtime
         .get_zone_service_url(AICC_SERVICE_SERVICE_NAME, runtime.force_https)
         .await
@@ -293,7 +287,6 @@ async fn service_main() -> Result<()> {
 
     let deps = AIAgentDeps {
         taskmgr,
-        aicc,
         msg_center,
         msg_queue: msg_queue.map(Arc::new),
     };

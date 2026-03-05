@@ -621,6 +621,55 @@ pub struct WorklogRecord {
     pub task_id: Option<String>,
 }
 
+fn compact_one_line_text(input: &str) -> String {
+    input.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn compact_json_text(value: &Json) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string())
+}
+
+pub fn render_worklog_prompt_line_from_parts(
+    record_type: &str,
+    status: &str,
+    prompt_digest: Option<&str>,
+    summary: Option<&str>,
+    payload: &Json,
+) -> String {
+    let record_type = record_type.trim();
+    let record_type = if record_type.is_empty() {
+        "Worklog"
+    } else {
+        record_type
+    };
+    let status = status.trim();
+    let status = if status.is_empty() { "UNKNOWN" } else { status };
+
+    let payload_text = compact_json_text(payload);
+    let digest = prompt_digest
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| summary.map(str::trim).filter(|value| !value.is_empty()))
+        .map(compact_one_line_text)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| compact_one_line_text(payload_text.as_str()));
+
+    if digest.is_empty() {
+        return format!("{} status={}", record_type, status);
+    }
+    format!("{} status={} {}", record_type, status, digest)
+}
+
+pub fn render_worklog_prompt_line(record: &WorklogRecord) -> String {
+    render_worklog_prompt_line_from_parts(
+        record.record_type.as_str(),
+        record.status.as_str(),
+        record.prompt_view.as_ref().map(|view| view.digest.as_str()),
+        record.summary.as_deref(),
+        &record.payload,
+    )
+}
+
 #[derive(Clone, Debug)]
 struct AppendRecordInput {
     now_ms: u64,

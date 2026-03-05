@@ -228,8 +228,6 @@ pub struct AiToolCall {
 pub struct AiResponseSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub json: Option<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<AiToolCall>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -545,7 +543,6 @@ mod tests {
                 CompleteStatus::Succeeded,
                 Some(AiResponseSummary {
                     text: Some("mock result".to_string()),
-                    json: Some(json!({"ok": true})),
                     tool_calls: vec![],
                     artifacts: vec![],
                     usage: Some(AiUsage {

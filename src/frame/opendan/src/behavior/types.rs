@@ -43,8 +43,8 @@ pub struct StepLimits {
 impl Default for StepLimits {
     fn default() -> Self {
         Self {
-            max_prompt_tokens: 12_000,
-            max_completion_tokens: 2_000,
+            max_prompt_tokens: 128_000,
+            max_completion_tokens: 64_000,
             max_tool_rounds: 1,
             max_tool_calls_per_round: 8,
             max_observation_bytes: 32 * 1024,

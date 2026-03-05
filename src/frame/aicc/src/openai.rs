@@ -722,21 +722,6 @@ impl OpenAIProvider {
             total_tokens: usage.get("total_tokens").and_then(|value| value.as_u64()),
         });
 
-        let json_output_required = req
-            .requirements
-            .must_features
-            .iter()
-            .any(|feature| feature == features::JSON_OUTPUT)
-            || req.requirements.resp_foramt == buckyos_api::RespFormat::Json;
-
-        let parsed_json = if json_output_required {
-            content
-                .as_ref()
-                .and_then(|text| serde_json::from_str::<Value>(text).ok())
-        } else {
-            None
-        };
-
         let cost = usage
             .as_ref()
             .and_then(|usage| self.estimate_cost_for_usage(provider_model, usage));
@@ -758,7 +743,6 @@ impl OpenAIProvider {
 
         let summary = AiResponseSummary {
             text: content,
-            json: parsed_json,
             tool_calls: tool_choices,
             artifacts: vec![],
             usage,
@@ -893,7 +877,6 @@ impl OpenAIProvider {
 
         let summary = AiResponseSummary {
             text: revised_prompt,
-            json: None,
             tool_calls: vec![],
             artifacts,
             usage: None,
@@ -1192,7 +1175,7 @@ fn register_default_aliases(
             "llm.default",
             "llm.chat.default",
             "llm.plan.default",
-            "llm.json.default",
+            "llm.code.default",
         ] {
             center.model_catalog().set_mapping(
                 Capability::LlmRouter,
@@ -1515,6 +1498,37 @@ mod tests {
         );
         assert_eq!(llm.as_deref(), Some("gpt-4o-mini"));
         assert_eq!(image.as_deref(), Some("dall-e-3"));
+    }
+
+    #[test]
+    fn register_default_aliases_exposes_code_default_not_json_default() {
+        let center = AIComputeCenter::new(Default::default(), ModelCatalog::default());
+        let models = vec!["gpt-4o-mini".to_string()];
+        let image_models = Vec::<String>::new();
+        register_default_aliases(
+            &center,
+            "openai",
+            &models,
+            Some("gpt-4o-mini"),
+            &image_models,
+            None,
+        );
+
+        let code_alias = center.model_catalog().resolve(
+            "",
+            &Capability::LlmRouter,
+            "llm.code.default",
+            "openai",
+        );
+        let removed_alias = center.model_catalog().resolve(
+            "",
+            &Capability::LlmRouter,
+            "llm.json.default",
+            "openai",
+        );
+
+        assert_eq!(code_alias.as_deref(), Some("gpt-4o-mini"));
+        assert!(removed_alias.is_none());
     }
 
     #[test]
