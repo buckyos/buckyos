@@ -7,9 +7,8 @@ type ProgressRingProps = {
 const ProgressRing = ({ progressPercent, size = 68, strokeWidth = 6 }: ProgressRingProps) => {
   const radius = (size - strokeWidth) / 2
   const circumference = 2 * Math.PI * radius
-  const clampedPercent = progressPercent == null ? null : Math.max(0, Math.min(progressPercent, 100))
-  const dashOffset = clampedPercent == null ? circumference : circumference - (clampedPercent / 100) * circumference
-  const indeterminateDash = `${circumference * 0.26} ${circumference}`
+  const clampedPercent = Math.max(0, Math.min(progressPercent ?? 0, 100))
+  const dashOffset = circumference - (clampedPercent / 100) * circumference
 
   return (
     <div className="relative inline-flex items-center justify-center" style={{ width: size, height: size }}>
@@ -17,7 +16,7 @@ const ProgressRing = ({ progressPercent, size = 68, strokeWidth = 6 }: ProgressR
         width={size}
         height={size}
         viewBox={`0 0 ${size} ${size}`}
-        className={`${clampedPercent == null ? 'animate-spin' : ''} -rotate-90`}
+        className="-rotate-90"
         aria-hidden
       >
         <circle
@@ -36,13 +35,13 @@ const ProgressRing = ({ progressPercent, size = 68, strokeWidth = 6 }: ProgressR
           stroke="rgb(15 118 110)"
           strokeLinecap="round"
           strokeWidth={strokeWidth}
-          strokeDasharray={clampedPercent == null ? indeterminateDash : circumference}
+          strokeDasharray={circumference}
           strokeDashoffset={dashOffset}
-          style={{ transition: clampedPercent == null ? 'none' : 'stroke-dashoffset 180ms ease' }}
+          style={{ transition: 'stroke-dashoffset 180ms ease' }}
         />
       </svg>
       <span className="absolute text-[11px] font-semibold text-slate-700">
-        {clampedPercent == null ? '...' : `${clampedPercent}%`}
+        {`${clampedPercent}%`}
       </span>
     </div>
   )

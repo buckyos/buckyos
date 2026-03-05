@@ -68,7 +68,7 @@ export const downloadImageWithProgress = async (
   onProgress({
     loadedBytes,
     totalBytes,
-    progressPercent: totalBytes === 0 ? 100 : totalBytes ? 0 : null,
+    progressPercent: totalBytes === 0 ? 100 : 0,
   })
 
   while (true) {
@@ -86,7 +86,7 @@ export const downloadImageWithProgress = async (
     onProgress({
       loadedBytes,
       totalBytes,
-      progressPercent: totalBytes ? Math.min(100, Math.round((loadedBytes / totalBytes) * 100)) : null,
+      progressPercent: totalBytes ? Math.min(100, Math.round((loadedBytes / totalBytes) * 100)) : 0,
     })
   }
 
