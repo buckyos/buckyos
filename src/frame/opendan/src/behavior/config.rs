@@ -662,7 +662,6 @@ fn build_route_result_protocol() -> String {
     r#"The response MUST be valid JSON parseable by JSON.parse().
 ```typescript
 type Response = {
-  next_behavior?: string;
   reply?: string;
   set_memory?: Record;
   topic_tags?: string[];

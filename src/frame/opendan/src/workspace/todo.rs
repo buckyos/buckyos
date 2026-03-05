@@ -811,7 +811,29 @@ struct ApplyDeltaResponse {
     idempotent: bool,
     errors: Vec<ApplyDeltaError>,
     applied_count: usize,
+    cleared_count: usize,
+    created_items: Vec<ApplyDeltaCreatedItem>,
     status_events: Vec<TodoStatusChangedEvent>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ApplyDeltaCreatedItem {
+    id: String,
+    todo_code: String,
+    title: String,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ApplySingleOpEffect {
+    status_event: Option<TodoStatusChangedEvent>,
+    cleared_count: usize,
+    created_items: Vec<ApplyDeltaCreatedItem>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct InitApplyEffect {
+    cleared_count: usize,
+    created_items: Vec<ApplyDeltaCreatedItem>,
 }
 
 #[derive(Clone, Debug)]
@@ -997,6 +1019,8 @@ fn apply_todo_delta(
             idempotent: true,
             errors: Vec::new(),
             applied_count: 0,
+            cleared_count: 0,
+            created_items: Vec::new(),
             status_events: Vec::new(),
         });
     }
@@ -1006,6 +1030,8 @@ fn apply_todo_delta(
         .map_err(|err| AgentToolError::ExecFailed(format!("start todo tx failed: {err}")))?;
 
     let mut applied_count = 0usize;
+    let mut cleared_count = 0usize;
+    let mut created_items = Vec::<ApplyDeltaCreatedItem>::new();
     let mut status_events = Vec::new();
     for op in &input.ops {
         match apply_single_op(
@@ -1015,10 +1041,12 @@ fn apply_todo_delta(
             input.op_id.as_str(),
             op,
         ) {
-            Ok(event) => {
-                if let Some(event) = event {
+            Ok(effect) => {
+                if let Some(event) = effect.status_event {
                     status_events.push(event);
                 }
+                cleared_count = cleared_count.saturating_add(effect.cleared_count);
+                created_items.extend(effect.created_items);
                 applied_count = applied_count.saturating_add(1);
             }
             Err(err) => {
@@ -1045,6 +1073,8 @@ fn apply_todo_delta(
                     idempotent: false,
                     errors: vec![err_output],
                     applied_count,
+                    cleared_count: 0,
+                    created_items: Vec::new(),
                     status_events: Vec::new(),
                 });
             }
@@ -1098,6 +1128,8 @@ fn apply_todo_delta(
         idempotent: false,
         errors: Vec::new(),
         applied_count,
+        cleared_count,
+        created_items,
         status_events,
     })
 }
@@ -1108,11 +1140,15 @@ fn apply_single_op(
     actor: &ActorCtx,
     op_id: &str,
     op: &DeltaOp,
-) -> Result<Option<TodoStatusChangedEvent>, DomainError> {
+) -> Result<ApplySingleOpEffect, DomainError> {
     match op {
         DeltaOp::Init { mode, items, .. } => {
-            apply_init_op(tx, workspace_id, actor, mode, items, op)?;
-            Ok(None)
+            let init_effect = apply_init_op(tx, workspace_id, actor, mode, items, op)?;
+            Ok(ApplySingleOpEffect {
+                status_event: None,
+                cleared_count: init_effect.cleared_count,
+                created_items: init_effect.created_items,
+            })
         }
         DeltaOp::Update {
             todo_code,
@@ -1130,7 +1166,11 @@ fn apply_single_op(
             reason,
             last_error,
             op,
-        ),
+        )
+        .map(|status_event| ApplySingleOpEffect {
+            status_event,
+            ..Default::default()
+        }),
         DeltaOp::Note {
             todo_code,
             kind,
@@ -1138,7 +1178,7 @@ fn apply_single_op(
             ..
         } => {
             apply_note_op(tx, workspace_id, actor, todo_code, kind, content, op)?;
-            Ok(None)
+            Ok(ApplySingleOpEffect::default())
         }
     }
 }
@@ -1150,7 +1190,7 @@ fn apply_init_op(
     mode: &InitMode,
     items: &[InitTodoItem],
     op: &DeltaOp,
-) -> Result<(), DomainError> {
+) -> Result<InitApplyEffect, DomainError> {
     if actor.kind == ActorKind::SubAgent {
         return Err(DomainError::forbidden(
             "sub_agent cannot run init operation",
@@ -1158,7 +1198,22 @@ fn apply_init_op(
         ));
     }
 
+    let mut cleared_count = 0usize;
     if matches!(mode, InitMode::Replace) {
+        let existing_count: i64 = tx
+            .query_row(
+                "SELECT COUNT(1) FROM todo_items WHERE workspace_id = ?1",
+                params![workspace_id],
+                |row| row.get(0),
+            )
+            .map_err(|err| {
+                DomainError::invalid_args(
+                    format!("count items for replace mode failed: {err}"),
+                    Some(op),
+                )
+            })?;
+        cleared_count = existing_count.max(0) as usize;
+
         tx.execute(
             "DELETE FROM todo_deps WHERE workspace_id = ?1",
             params![workspace_id],
@@ -1242,6 +1297,7 @@ fn apply_init_op(
     };
 
     let mut previous_todo_id = existing.last().map(|v| v.id.clone());
+    let mut created_items = Vec::<ApplyDeltaCreatedItem>::new();
 
     for item in items {
         let todo_id = generate_id("todo");
@@ -1329,6 +1385,11 @@ fn apply_init_op(
             })?;
         }
 
+        created_items.push(ApplyDeltaCreatedItem {
+            id: todo_id.clone(),
+            todo_code: todo_code.clone(),
+            title: item.title.clone(),
+        });
         code_to_id.insert(todo_code, todo_id.clone());
         if item.todo_type == TodoType::Task {
             non_bench_before.push(todo_id.clone());
@@ -1336,7 +1397,10 @@ fn apply_init_op(
         previous_todo_id = Some(todo_id);
     }
 
-    Ok(())
+    Ok(InitApplyEffect {
+        cleared_count,
+        created_items,
+    })
 }
 
 fn resolve_init_deps(

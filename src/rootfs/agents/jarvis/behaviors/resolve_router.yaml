@@ -2,11 +2,6 @@ process_rule: |
 
   目标:识别输入消息的内容,并决定将消息分配到哪些session
 
-  0. **Step连续性规则**
-  * 若存在 `last_step_summary`,先继承上一步结论与未完成事项,避免重复路由判断
-  * 本步输出应可被下一步继续消费:在 `thinking` 中写清本步结论与剩余问题
-  * 仅在确实收敛时使用 `END`;若仍需下一步判断,保留继续推进机会
-
   1. **纯粹的闲聊 / 无实质内容的输入 / 可以直接回答的问题**（问候、确认、表情符号、无实质内容的闲聊）：
   * 立即给出一个简短、自然的回复。
   * 无需设置route_session_id和new_session
@@ -20,7 +15,7 @@ process_rule: |
   {{session_list}}
 
 policy: |
-  * 创建session是一个会消耗不少系统资源的操作,只有设计到复杂的大块任务才需要创建session. 创建session必须填写reply。
+  * 创建session是一个会消耗不少系统资源的操作,只有涉及到复杂的大块任务才需要创建session. 创建session必须填写reply。
   * route_session_id只能在`Work Session List`里选择,填写route_session_id后。一定不填写reply。
 
 output_protocol:
@@ -30,22 +25,17 @@ output_protocol:
 # toolbox: 
 #   skills: ["buildin"]
 
-#TODO：memory应该加一个不会被裁剪的，用环境变量拼接的段落
+#TODO：ui session summary还是应该有的，系统在首次创建ui session的时候，应该把联系人的摘要信息放到summary里
 memory:
   total_limt: 12000
-  agent_memory: { limit: 3000 }
-  history_messages: { limit: 6000, max_percent: 0.3 }
+  agent_memory: { limit: 6000 }
+  history_messages: { limit: 6000, max_percent: 0.5 }
   #session_summaries: { limit: 3000 }
 
 input: |
-  ## 刚刚收到用户发来的消息:
   {{new_msg}}
 
-step_summary: |
-  {{llm_result.thinking}}
-  {{llm_result.action_results}}
-
-
+step_limits: 1
 limits:
   max_tool_rounds: 1
   max_tool_calls_per_round: 4

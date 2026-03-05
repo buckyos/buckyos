@@ -861,6 +861,7 @@ impl TodoTool {
                 read_workspace_version(conn, &version_ws)
             })
             .await?;
+        let text = render_todo_list_for_prompt(&rows);
 
         Ok(json!({
             "ok": true,
@@ -868,7 +869,8 @@ impl TodoTool {
             "workspace_id": workspace_id,
             "items": rows,
             "total": rows.len(),
-            "version": version
+            "version": version,
+            "text": text
         }))
     }
 
@@ -933,6 +935,8 @@ impl TodoTool {
             "idempotent": rsp.idempotent,
             "errors": rsp.errors,
             "applied_count": rsp.applied_count,
+            "cleared_count": rsp.cleared_count,
+            "created_items": rsp.created_items,
         }))
     }
 
@@ -1301,6 +1305,25 @@ fn parse_i64_flag(name: &str, raw: &str) -> Result<i64, AgentToolError> {
     raw.trim().parse::<i64>().map_err(|err| {
         AgentToolError::InvalidArgs(format!("invalid --{name} value `{}`: {err}", raw.trim()))
     })
+}
+
+fn render_todo_list_for_prompt(items: &[TodoListItem]) -> String {
+    if items.is_empty() {
+        return "No todo items found.".to_string();
+    }
+    let mut lines = Vec::with_capacity(items.len());
+    for item in items {
+        let assignee = item.assignee.as_deref().unwrap_or("-");
+        let priority = item
+            .priority
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        lines.push(format!(
+            "- {} [{}] assignee={} p={} {}",
+            item.todo_code, item.status, assignee, priority, item.title
+        ));
+    }
+    lines.join("\n")
 }
 
 fn parse_csv_tokens(name: &str, raw: &str) -> Result<Vec<String>, AgentToolError> {

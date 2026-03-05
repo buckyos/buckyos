@@ -2889,7 +2889,7 @@ fn apply_session_behavior_transition(
             keep_running = false;
         } else {
             session.step_index = session.step_index.saturating_add(1);
-            if step_limit > 0 && session.step_index > step_limit {
+            if step_limit > 0 && session.step_index >= step_limit {
                 let fallback_behavior = faild_back_behavior
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
@@ -2898,14 +2898,18 @@ fn apply_session_behavior_transition(
                 behavior_switched = session.current_behavior != fallback_behavior;
                 session.current_behavior = fallback_behavior.to_string();
                 session.step_index = 0;
-                session.state = SessionState::Wait;
+                
                 if behavior_switched {
                     info!(
                         "agent.session_behavior_switch: session={} from={} to={} reason=step_limit_fallback step_limit={}",
                         session.session_id, previous_behavior, session.current_behavior, step_limit
                     );
+                    keep_running = true;
+                } else {
+                    session.state = SessionState::Wait;
+                    keep_running = false;
                 }
-                keep_running = true;
+                
             } else {
                 keep_running = true;
             }
@@ -3499,6 +3503,55 @@ process_rule: "test behavior for action rendering"
         )
         .await
         .expect("load agent");
+        let runtime = crate::ai_runtime::AiRuntime::new(crate::ai_runtime::AiRuntimeConfig::new(
+            agent_root.join("runtime_agents"),
+        ))
+        .await
+        .expect("create runtime");
+        runtime
+            .register_tools(&agent.tools)
+            .await
+            .expect("register runtime tools");
+
+        let llm_tools = agent.tools.list_tool_specs();
+        let bash_tools = agent.tools.list_bash_cmd_specs();
+        let action_tools = agent.tools.list_action_tool_specs();
+        let mut all_tool_names = std::collections::HashSet::<String>::new();
+        all_tool_names.extend(llm_tools.iter().map(|s| s.name.clone()));
+        all_tool_names.extend(bash_tools.iter().map(|s| s.name.clone()));
+        all_tool_names.extend(action_tools.iter().map(|s| s.name.clone()));
+
+        println!(
+            "registered tools => llm={} bash={} action={} all={:?}",
+            llm_tools.len(),
+            bash_tools.len(),
+            action_tools.len(),
+            {
+                let mut names = all_tool_names.iter().cloned().collect::<Vec<_>>();
+                names.sort();
+                names
+            }
+        );
+
+        for expected in [
+            "exec",
+            "edit_file",
+            "write_file",
+            "read_file",
+            "todo",
+            "create_workspace",
+            "bind_workspace",
+            "load_memory",
+            "get_session",
+            "create_sub_agent",
+            "bind_external_workspace",
+            "list_external_workspaces",
+        ] {
+            assert!(
+                all_tool_names.contains(expected),
+                "missing expected tool in catalog: {expected}"
+            );
+        }
 
         let session = agent
             .session_mgr
@@ -3576,8 +3629,20 @@ process_rule: "test behavior for action rendering"
             "mode": "all",
             "cmds": [
                 "echo step-summary-preview",
+                "cat missing_exec_preview.txt",
+                "create_workspace preview_ws \"Workspace structure preview for action rendering\"",
+                "todo clear",
+                "todo add \"Preview task\" --priority=3",
+                "todo next",
+                "todo start T001 \"start preview\"",
+                "todo done T001 \"done preview\"",
+                "todo start T999 \"missing preview\"",
+                "todo ls --all",
                 ["read_file", {"path":"prompt_preview.txt","range":"1-2"}],
+                ["read_file", {"path":"prompt_preview.txt","first_chunk":"line-2"}],
                 ["read_file", {"path":"large_preview.txt"}],
+                ["write_file", {"path":"write_preview.txt","content":"preview-write-line\n","mode":"new"}],
+                ["write_file", {"path":"write_preview.txt","content":"should-fail\n","mode":"new"}],
                 ["edit_file", {"path":"edit_preview.txt","pos_chunk":"line-beta","new_content":"line-beta-updated","mode":"replace"}],
                 ["edit_file", {"path":"edit_preview.txt","pos_chunk":"line-gamma","new_content":"\nline-gamma-after","mode":"after"}],
                 ["edit_file", {"path":"edit_preview.txt","pos_chunk":"line-alpha","new_content":"line-alpha-before\n","mode":"before"}],
@@ -3607,22 +3672,46 @@ process_rule: "test behavior for action rendering"
 
         assert!(rendered.contains("ActionResults:"));
         assert!(rendered.contains("step-summary-preview"));
-        assert!(rendered.contains("read_file prompt_preview.txt => read"));
+        assert!(rendered.contains("cat missing_exec_preview.txt => FAILED (exit="));
+        assert!(rendered.contains("missing_exec_preview.txt"));
+        assert!(rendered
+            .contains("create_workspace preview_ws \"Workspace structure preview for action rendering\" =>"));
+        assert!(!rendered.contains("\"session_updated\""));
+        assert!(rendered.contains("todo clear => cleared 0 todo items"));
+        assert!(rendered.contains("todo add \"Preview task\" --priority=3 => added todo T001"));
+        assert!(rendered.contains("todo next => next todo T001: Preview task"));
+        assert!(
+            rendered.contains("todo start T999 \"missing preview\" => failed: todo `T999` not found")
+        );
+        assert!(rendered.contains("todo ls --all => listed 1 todo item"));
+        assert!(rendered.contains("- T001 [COMPLETE]"));
+        assert!(rendered.contains("read_file prompt_preview.txt range=1-2 => read"));
+        assert!(rendered.contains("read_file prompt_preview.txt first_chunk=\"line-2\" => read"));
         assert!(rendered.contains("line-1"));
         assert!(rendered.contains("line-2"));
+        assert!(rendered.contains("line-3"));
+        assert!(rendered.contains("first_chunk=\"line-2\""));
         assert!(rendered.contains("read_file large_preview.txt => read"));
         assert!(rendered.contains(format!("read {large_bytes} bytes (truncated)").as_str()));
         assert!(rendered
             .contains("... [TRUNCATED FOR ACTION PREVIEW: Showing first 100 lines only] ..."));
+        assert!(rendered.contains("write_file write_preview.txt mode=new content=\""));
+        assert!(rendered.contains("write mode `new` requires target file not exist: write_preview.txt"));
         assert!(rendered.contains("pwd: "));
         assert!(rendered.contains("tree_preview/dir-03"));
-        assert!(rendered.contains("edit_preview.txt => replace"));
-        assert!(rendered.contains("edit_preview.txt => after"));
-        assert!(rendered.contains("edit_preview.txt => before"));
+        assert!(rendered.contains("pos_chunk=\"line-beta\""));
+        assert!(rendered.contains("pos_chunk=\"line-gamma\""));
+        assert!(rendered.contains("pos_chunk=\"line-alpha\""));
+        assert!(rendered.contains("=> replace "));
+        assert!(rendered.contains("=> after "));
+        assert!(rendered.contains("=> before "));
+        assert!(!rendered.contains("- edit_file /"));
+        assert!(!rendered.contains("unsupported worklog type"));
         assert!(rendered.contains("tree tree_preview"));
         assert!(rendered.contains("tree_preview"));
         assert!(rendered.contains("curl -fsSL"));
-        assert!(rendered.contains("read_file file-00.txt 1-1 => read"));
+        assert!(rendered.contains("read_file file-00.txt 1-1 => read 14 bytes"));
+        assert!(!rendered.contains("\"abs_path\""));
         assert!(rendered.contains("tree-file-3-0"));
         assert!(rendered.contains("curl_download_ok") || rendered.contains("curl_fallback_ok"));
         assert!(rendered.contains(
@@ -3635,6 +3724,10 @@ process_rule: "test behavior for action rendering"
         assert!(edited.contains("line-alpha-before\nline-alpha\n"));
         assert!(edited.contains("line-beta-updated"));
         assert!(edited.contains("line-gamma\nline-gamma-after\n"));
+        let write_preview = fs::read_to_string(agent.workspace_root.join("write_preview.txt"))
+            .await
+            .expect("read write preview file");
+        assert_eq!(write_preview, "preview-write-line\n");
 
         let downloaded = fs::read_to_string(agent.workspace_root.join("curl_download.txt"))
             .await

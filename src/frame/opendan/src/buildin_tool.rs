@@ -1,6 +1,7 @@
 use std::path::{Component, Path, PathBuf};
 
 use async_trait::async_trait;
+use log::warn;
 use serde_json::{json, Value as Json};
 use tokio::fs;
 
@@ -17,6 +18,7 @@ pub const TOOL_WRITE_FILE: &str = "write_file";
 pub const TOOL_READ_FILE: &str = "read_file";
 
 const DEFAULT_MAX_FILE_READ_BYTES: usize = 256 * 1024;
+const CMD_PARAM_PREVIEW_KEEP_CHARS: usize = 32;
 
 #[derive(Clone, Debug)]
 struct EditFilePolicy {
@@ -325,7 +327,8 @@ impl AgentTool for EditFileTool {
             self.policy.max_diff_lines,
         );
         if changed {
-            self.write_audit
+            if let Err(err) = self
+                .write_audit
                 .record_file_write(
                     ctx,
                     &args,
@@ -340,7 +343,13 @@ impl AgentTool for EditFileTool {
                         diff_truncated,
                     },
                 )
-                .await?;
+                .await
+            {
+                warn!(
+                    "buildin.edit_file_audit_failed: path={} operation={} err={}",
+                    file_path, operation, err
+                );
+            }
         }
 
         let details = json!({
@@ -369,7 +378,14 @@ impl AgentTool for EditFileTool {
             "no change".to_string()
         };
         Ok(AgentToolResult::from_details(details)
-            .with_cmd_line(format!("{} {}", TOOL_EDIT_FILE, abs_path.to_string_lossy()))
+            .with_cmd_line(format!(
+                "{} {} mode={} pos_chunk=\"{}\" new_content=\"{}\"",
+                TOOL_EDIT_FILE,
+                file_path,
+                operation,
+                compact_cmd_param_preview(&pos_chunk),
+                compact_cmd_param_preview(&new_content),
+            ))
             .with_result(summary))
     }
 }
@@ -470,7 +486,7 @@ impl AgentTool for WriteFileTool {
         let updated_content = if mode == "append" {
             format!("{original_content}{content}")
         } else {
-            content
+            content.clone()
         };
 
         if updated_content.len() > self.policy.max_write_bytes {
@@ -497,7 +513,8 @@ impl AgentTool for WriteFileTool {
             &updated_content,
             self.policy.max_diff_lines,
         );
-        self.write_audit
+        if let Err(err) = self
+            .write_audit
             .record_file_write(
                 ctx,
                 &args,
@@ -512,7 +529,13 @@ impl AgentTool for WriteFileTool {
                     diff_truncated,
                 },
             )
-            .await?;
+            .await
+        {
+            warn!(
+                "buildin.write_file_audit_failed: path={} operation={} err={}",
+                file_path, operation, err
+            );
+        }
 
         let details = json!({
             "ok": true,
@@ -535,9 +558,11 @@ impl AgentTool for WriteFileTool {
         );
         Ok(AgentToolResult::from_details(details)
             .with_cmd_line(format!(
-                "{} {}",
+                "{} {} mode={} content=\"{}\"",
                 TOOL_WRITE_FILE,
-                abs_path.to_string_lossy()
+                file_path,
+                mode,
+                compact_cmd_param_preview(&content),
             ))
             .with_result(summary))
     }
@@ -611,16 +636,16 @@ impl AgentTool for ReadFileTool {
         }
 
         let full_content = read_text_file_lossy(&abs_path).await?;
-        let (selected_content, matched) =
-            if let Some(first_chunk) = optional_string(&args, "first_chunk")? {
-                if let Some(pos) = full_content.find(&first_chunk) {
+        let first_chunk = optional_string(&args, "first_chunk")?;
+        let (selected_content, matched) = if let Some(first_chunk) = first_chunk.as_deref() {
+            if let Some(pos) = full_content.find(first_chunk) {
                     (full_content[pos..].to_string(), true)
                 } else {
                     (String::new(), false)
                 }
-            } else {
-                (full_content.clone(), true)
-            };
+        } else {
+            (full_content.clone(), true)
+        };
 
         let (selected_content, line_range_label) = {
             let lines = selected_content.lines().collect::<Vec<_>>();
@@ -659,7 +684,11 @@ impl AgentTool for ReadFileTool {
         );
         let stdout_payload = (!content.trim().is_empty()).then_some(content.clone());
         Ok(AgentToolResult::from_details(details)
-            .with_cmd_line(format!("{} {}", TOOL_READ_FILE, file_path))
+            .with_cmd_line(build_read_file_cmd_line(
+                &file_path,
+                args.get("range"),
+                first_chunk.as_deref(),
+            ))
             .with_result(summary)
             .with_stdout(stdout_payload))
     }
@@ -826,7 +855,7 @@ impl WorkshopWriteAudit {
                 ctx,
                 json!({
                     "action": "append",
-                    "type": "workspace_file_write",
+                    "type": "ActionRecord",
                     "status": "success",
                     "agent_id": ctx.agent_name,
                     "owner_session_id": owner_session_id,
@@ -836,6 +865,9 @@ impl WorkshopWriteAudit {
                     "summary": format!("edit_file {} {}", record.operation, record.file_path),
                     "tags": tags,
                     "payload": {
+                        "action_type": "workspace_file_write",
+                        "cmd_digest": format!("{} {}", record.operation, record.file_path),
+                        "exit_code": 0,
                         "path": record.file_path,
                         "operation": record.operation,
                         "created": record.created,
@@ -1356,6 +1388,57 @@ pub(crate) fn truncate_bytes(input: &[u8], max_bytes: usize) -> (String, bool) {
     )
 }
 
+fn compact_cmd_param_preview(raw: &str) -> String {
+    let escaped = raw
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\r', "\\r")
+        .replace('\n', "\\n");
+    let total_lines = if raw.is_empty() {
+        0
+    } else {
+        raw.lines().count().max(1)
+    };
+    let total_chars = escaped.chars().count();
+    if total_chars <= CMD_PARAM_PREVIEW_KEEP_CHARS * 2 {
+        return escaped;
+    }
+
+    let head: String = escaped.chars().take(CMD_PARAM_PREVIEW_KEEP_CHARS).collect();
+    let tail: String = escaped
+        .chars()
+        .rev()
+        .take(CMD_PARAM_PREVIEW_KEEP_CHARS)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{head}...(total {total_lines} lines)...{tail}")
+}
+
+fn build_read_file_cmd_line(path: &str, range: Option<&Json>, first_chunk: Option<&str>) -> String {
+    let mut cmd = format!("{TOOL_READ_FILE} {path}");
+    if let Some(range) = range {
+        let range_text = range
+            .as_str()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| serde_json::to_string(range).unwrap_or_else(|_| "null".to_string()));
+        if !range_text.trim().is_empty() {
+            cmd.push_str(format!(" range={range_text}").as_str());
+        }
+    }
+    if let Some(first_chunk) = first_chunk {
+        cmd.push_str(
+            format!(
+                " first_chunk=\"{}\"",
+                compact_cmd_param_preview(first_chunk)
+            )
+            .as_str(),
+        );
+    }
+    cmd
+}
+
 fn build_simple_diff(
     display_path: &str,
     before: &str,
@@ -1469,6 +1552,35 @@ mod tests {
             parse_line_range(&json!({"range": "-"}), 100).expect("parse"),
             None
         );
+    }
+
+    #[test]
+    fn compact_cmd_param_preview_truncates_with_line_hint() {
+        let mut raw = String::new();
+        for i in 0..120 {
+            raw.push_str(format!("line-{i:04}\n").as_str());
+        }
+        let preview = compact_cmd_param_preview(&raw);
+        assert!(preview.contains("...(total 120 lines)..."));
+        assert!(preview.contains("line-0000\\nline-0001\\n"));
+        assert!(preview.contains("line-0118\\nline-0119\\n"));
+    }
+
+    #[test]
+    fn compact_cmd_param_preview_keeps_short_text() {
+        let preview = compact_cmd_param_preview("hello\nworld");
+        assert_eq!(preview, "hello\\nworld");
+    }
+
+    #[test]
+    fn build_read_file_cmd_line_uses_compact_preview_for_first_chunk() {
+        let mut chunk = String::new();
+        for _ in 0..80 {
+            chunk.push_str("line-x\n");
+        }
+        let cmd = build_read_file_cmd_line("demo.txt", Some(&json!("1-5")), Some(&chunk));
+        assert!(cmd.contains("read_file demo.txt range=1-5 first_chunk=\""));
+        assert!(cmd.contains("...(total 80 lines)..."));
     }
 
     #[test]

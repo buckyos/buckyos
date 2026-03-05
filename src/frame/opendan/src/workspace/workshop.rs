@@ -424,12 +424,18 @@ impl CreateWorkspaceTool {
         &self,
         ctx: &SessionRuntimeContext,
         name: String,
-        template: Option<String>,
+        summary: String,
     ) -> Result<Json, AgentToolError> {
         let session_id = ctx.session_id.trim().to_string();
         if session_id.is_empty() {
             return Err(AgentToolError::InvalidArgs(
                 "session_id is required".to_string(),
+            ));
+        }
+        let summary = summary.trim().to_string();
+        if summary.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "workspace summary cannot be empty".to_string(),
             ));
         }
 
@@ -438,12 +444,26 @@ impl CreateWorkspaceTool {
                 .local_workspace_mgr
                 .create_local_workspace(CreateLocalWorkspaceRequest {
                     name,
-                    template,
+                    template: None,
                     owner: WorkspaceOwner::AgentCreated,
                     created_by_session: Some(session_id.clone()),
                     policy_profile_id: None,
                 })
                 .await?;
+
+            let workspace_path = self
+                .local_workspace_mgr
+                .get_local_workspace_path(&workspace.workspace_id)
+                .await?;
+            let summary_path = workspace_path.join("SUMMARY.md");
+            let summary_content = format!("{summary}\n");
+            fs::write(&summary_path, summary_content).await.map_err(|err| {
+                AgentToolError::ExecFailed(format!(
+                    "write workspace summary failed: path={} err={}",
+                    summary_path.display(),
+                    err
+                ))
+            })?;
 
             let bind_result = self
                 .local_workspace_mgr
@@ -462,6 +482,7 @@ impl CreateWorkspaceTool {
                 "ok": true,
                 "workspace": workspace,
                 "binding": bind_result,
+                "summary_path": summary_path.to_string_lossy().to_string(),
                 "session_id": session_id,
                 "session_updated": session_updated
             }))
@@ -497,9 +518,9 @@ impl AgentTool for CreateWorkspaceTool {
                 "type": "object",
                 "properties": {
                     "name": { "type": "string" },
-                    "template": { "type": "string" }
+                    "summary": { "type": "string" }
                 },
-                "required": ["name"],
+                "required": ["name", "summary"],
                 "additionalProperties": false
             }),
             output_schema: json!({
@@ -508,11 +529,12 @@ impl AgentTool for CreateWorkspaceTool {
                     "ok": { "type": "boolean" },
                     "workspace": { "type": "object" },
                     "binding": { "type": "object" },
+                    "summary_path": { "type": "string" },
                     "session_id": { "type": "string" },
                     "session_updated": { "type": "boolean" }
                 }
             }),
-            usage: Some("create_workspace <name> [template]".to_string()),
+            usage: Some("create_workspace <name> <summary>".to_string()),
         }
     }
 
@@ -543,14 +565,14 @@ impl AgentTool for CreateWorkspaceTool {
         _shell_cwd: Option<&Path>,
     ) -> Result<AgentToolResult, AgentToolError> {
         let tokens = tokenize_bash_command_line(line)?;
-        if tokens.len() < 2 {
+        if tokens.len() < 3 {
             return Err(AgentToolError::InvalidArgs(
-                "missing workspace name argument".to_string(),
+                "missing required arguments: <name> <summary>".to_string(),
             ));
         }
         if tokens.len() > 3 {
             return Err(AgentToolError::InvalidArgs(
-                "create_workspace only supports arguments: <name> [template]".to_string(),
+                "create_workspace only supports arguments: <name> <summary>".to_string(),
             ));
         }
 
@@ -560,12 +582,14 @@ impl AgentTool for CreateWorkspaceTool {
                 "workspace name cannot be empty".to_string(),
             ));
         }
-        let template = tokens
-            .get(2)
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
+        let summary = tokens[2].trim();
+        if summary.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "workspace summary cannot be empty".to_string(),
+            ));
+        }
 
-        self.create_workspace(ctx, name.to_string(), template)
+        self.create_workspace(ctx, name.to_string(), summary.to_string())
             .await
             .map(|details| {
                 AgentToolResult::from_details(details)
@@ -1909,7 +1933,10 @@ mod tests {
             .register_tools(&tool_mgr, session_store.clone())
             .expect("register workshop tools");
 
-        let result = call_bash_tool(&tool_mgr, "create_workspace demo-project")
+        let result = call_bash_tool(
+            &tool_mgr,
+            "create_workspace demo-project \"Workspace structure: src/, docs/, scripts/\"",
+        )
             .await
             .expect("create workspace should succeed");
 
@@ -1924,6 +1951,10 @@ mod tests {
         assert!(fs::try_exists(Path::new(workspace_path))
             .await
             .expect("workspace path should exist"));
+        let summary_text = fs::read_to_string(Path::new(workspace_path).join("SUMMARY.md"))
+            .await
+            .expect("summary file should exist");
+        assert!(summary_text.contains("Workspace structure: src/, docs/, scripts/"));
 
         let session = session_store
             .get_session("session-test")
@@ -1977,12 +2008,39 @@ mod tests {
             .register_tools(&tool_mgr, session_store)
             .expect("register workshop tools");
 
-        let err = call_bash_tool(&tool_mgr, "create_workspace demo-project template-a extra")
+        let err = call_bash_tool(
+            &tool_mgr,
+            "create_workspace demo-project \"Workspace structure\" extra",
+        )
             .await
             .expect_err("extra args should be rejected");
         assert!(matches!(err, AgentToolError::InvalidArgs(_)));
         assert!(
-            err.to_string().contains("<name> [template]"),
+            err.to_string().contains("<name> <summary>"),
+            "unexpected error: {err}"
+        );
+
+        let _ = fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn create_workspace_tool_requires_summary_argument() {
+        let root = unique_workspace_root("create-workspace-missing-summary");
+        let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
+            .await
+            .expect("create workshop");
+        let session_store = create_session_store(&root).await;
+        let tool_mgr = AgentToolManager::new();
+        workshop
+            .register_tools(&tool_mgr, session_store)
+            .expect("register workshop tools");
+
+        let err = call_bash_tool(&tool_mgr, "create_workspace demo-project")
+            .await
+            .expect_err("missing summary should be rejected");
+        assert!(matches!(err, AgentToolError::InvalidArgs(_)));
+        assert!(
+            err.to_string().contains("<name> <summary>"),
             "unexpected error: {err}"
         );
 

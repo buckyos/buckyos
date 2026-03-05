@@ -10,7 +10,10 @@ use tokio::process::Command;
 use tokio::time::{sleep, Duration, Instant};
 
 use crate::agent_session::AgentSessionMgr;
-use crate::agent_tool::{AgentTool, AgentToolError, AgentToolManager, AgentToolResult, ToolSpec};
+use crate::agent_tool::{
+    tokenize_bash_command_line, AgentTool, AgentToolError, AgentToolManager, AgentToolResult,
+    ToolSpec,
+};
 use crate::behavior::SessionRuntimeContext;
 use crate::buildin_tool::{
     is_path_under_any, normalize_abs_path, optional_u64, parse_workspace_relative_roots,
@@ -196,7 +199,8 @@ impl AgentTool for ExecBashTool {
             "line_results": run_result.line_results,
         });
         let summary = if ok {
-            format!("OK (exit=0, {}ms)", run_result.duration_ms)
+            extract_single_tool_prompt_summary(&run_result)
+                .unwrap_or_else(|| format!("OK (exit=0, {}ms)", run_result.duration_ms))
         } else {
             format!("FAILED (exit={})", run_result.exit_code)
         };
@@ -227,6 +231,25 @@ struct ExecBashTmuxRunResult {
     stderr: Vec<u8>,
     duration_ms: u64,
     tmux_session: String,
+}
+
+#[derive(Clone, Debug)]
+struct ToolPromptRender {
+    append_json_details: bool,
+    append_rendered_prompt: bool,
+    extra_stdout_text: Option<String>,
+    summary_override: Option<String>,
+}
+
+impl Default for ToolPromptRender {
+    fn default() -> Self {
+        Self {
+            append_json_details: true,
+            append_rendered_prompt: true,
+            extra_stdout_text: None,
+            summary_override: None,
+        }
+    }
 }
 
 impl ExecBashTool {
@@ -272,16 +295,28 @@ impl ExecBashTool {
                     match tool_result {
                         Ok(Some(result)) => {
                             used_tool = true;
-                            let json_line = serde_json::to_string(&result.details)
-                                .unwrap_or_else(|_| "{\"ok\":false}".to_string());
-                            aggregate_stdout.extend_from_slice(json_line.as_bytes());
-                            aggregate_stdout.push(b'\n');
-                            let rendered = result.render_prompt();
-                            if !rendered.trim().is_empty() {
-                                aggregate_stdout.extend_from_slice(rendered.as_bytes());
+                            let prompt_render =
+                                build_tool_prompt_render(line, tool_name.as_str(), &result);
+                            if prompt_render.append_json_details {
+                                let json_line = serde_json::to_string(&result.details)
+                                    .unwrap_or_else(|_| "{\"ok\":false}".to_string());
+                                aggregate_stdout.extend_from_slice(json_line.as_bytes());
                                 aggregate_stdout.push(b'\n');
                             }
-                            line_results.push(json!({
+                            if let Some(extra_text) = prompt_render.extra_stdout_text {
+                                if !extra_text.trim().is_empty() {
+                                    aggregate_stdout.extend_from_slice(extra_text.as_bytes());
+                                    aggregate_stdout.push(b'\n');
+                                }
+                            }
+                            if prompt_render.append_rendered_prompt {
+                                let rendered = result.render_prompt();
+                                if !rendered.trim().is_empty() {
+                                    aggregate_stdout.extend_from_slice(rendered.as_bytes());
+                                    aggregate_stdout.push(b'\n');
+                                }
+                            }
+                            let mut line_entry = json!({
                                 "line": idx + 1,
                                 "mode": "tool",
                                 "command": line,
@@ -289,7 +324,13 @@ impl ExecBashTool {
                                 "tool_name": tool_name,
                                 "cwd": pane_pwd.to_string_lossy().to_string(),
                                 "ok": true,
-                            }));
+                            });
+                            if let Some(summary) = prompt_render.summary_override {
+                                if let Some(map) = line_entry.as_object_mut() {
+                                    map.insert("prompt_summary".to_string(), Json::String(summary));
+                                }
+                            }
+                            line_results.push(line_entry);
                             continue;
                         }
                         Ok(None) => {}
@@ -1044,6 +1085,218 @@ async fn interrupt_tmux_target(target: &str) -> Result<(), AgentToolError> {
         "tmux interrupt `{target}` failed: {}",
         String::from_utf8_lossy(&output.stderr)
     )))
+}
+
+fn extract_single_tool_prompt_summary(run_result: &ExecBashRunResult) -> Option<String> {
+    if run_result.engine != "tool" || run_result.line_results.len() != 1 {
+        return None;
+    }
+    run_result
+        .line_results
+        .first()
+        .and_then(|item| item.get("prompt_summary"))
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+}
+
+fn build_tool_prompt_render(
+    line: &str,
+    tool_name: &str,
+    result: &AgentToolResult,
+) -> ToolPromptRender {
+    if tool_name == "read_file" {
+        let ok = result
+            .details
+            .get("ok")
+            .and_then(Json::as_bool)
+            .unwrap_or(false);
+        let mut render = ToolPromptRender {
+            append_json_details: false,
+            append_rendered_prompt: false,
+            extra_stdout_text: None,
+            summary_override: None,
+        };
+
+        if ok {
+            let summary = result
+                .result
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "ok".to_string());
+            render.summary_override = Some(summary);
+            render.extra_stdout_text = result
+                .details
+                .get("content")
+                .and_then(Json::as_str)
+                .map(str::trim_end)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string());
+        } else {
+            render.summary_override = Some(
+                todo_first_error_message(&result.details)
+                    .map(|message| format!("failed: {message}"))
+                    .unwrap_or_else(|| "failed".to_string()),
+            );
+        }
+        return render;
+    }
+
+    if tool_name == "create_workspace" {
+        let ok = result
+            .details
+            .get("ok")
+            .and_then(Json::as_bool)
+            .unwrap_or(false);
+        let mut render = ToolPromptRender {
+            append_json_details: false,
+            ..ToolPromptRender::default()
+        };
+        if ok {
+            render.append_rendered_prompt = false;
+            render.summary_override = result
+                .result
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string());
+        }
+        return render;
+    }
+
+    if tool_name != "todo" {
+        return ToolPromptRender::default();
+    }
+
+    let subcommand = tokenize_bash_command_line(line)
+        .ok()
+        .and_then(|tokens| tokens.get(1).cloned())
+        .map(|value| value.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    let action = result
+        .details
+        .get("action")
+        .and_then(Json::as_str)
+        .unwrap_or_default();
+    let ok = result
+        .details
+        .get("ok")
+        .and_then(Json::as_bool)
+        .unwrap_or(false);
+
+    let mut render = ToolPromptRender {
+        append_json_details: false,
+        ..ToolPromptRender::default()
+    };
+
+    if !ok {
+        render.append_rendered_prompt = false;
+        render.summary_override = todo_first_error_message(&result.details)
+            .map(|message| format!("failed: {message}"))
+            .or_else(|| Some("failed".to_string()));
+        return render;
+    }
+
+    if action == "apply_delta" {
+        // Successful PDCA mutation commands should not emit extra stdout blocks.
+        render.append_rendered_prompt = false;
+    }
+
+    match subcommand.as_str() {
+        "clear" => {
+            let cleared_count = result
+                .details
+                .get("cleared_count")
+                .and_then(Json::as_u64)
+                .unwrap_or(0);
+            render.append_rendered_prompt = false;
+            render.summary_override = Some(format!(
+                "cleared {} todo item{}",
+                cleared_count,
+                if cleared_count == 1 { "" } else { "s" }
+            ));
+        }
+        "add" => {
+            render.append_rendered_prompt = false;
+            let created = result
+                .details
+                .get("created_items")
+                .and_then(Json::as_array)
+                .and_then(|items| items.first());
+            if let Some(item) = created {
+                let todo_code = item
+                    .get("todo_code")
+                    .and_then(Json::as_str)
+                    .unwrap_or("-");
+                render.summary_override = Some(format!("added todo {}", todo_code));
+            } else {
+                render.summary_override = Some("added todo item".to_string());
+            }
+        }
+        "ls" | "list" => {
+            let total = result
+                .details
+                .get("total")
+                .and_then(Json::as_u64)
+                .unwrap_or(0);
+            render.append_rendered_prompt = false;
+            render.summary_override = Some(format!(
+                "listed {} todo item{}",
+                total,
+                if total == 1 { "" } else { "s" }
+            ));
+            render.extra_stdout_text = result
+                .details
+                .get("text")
+                .and_then(Json::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string());
+        }
+        "next" => {
+            render.append_rendered_prompt = false;
+            render.summary_override = Some(render_todo_next_summary(&result.details));
+        }
+        _ => {}
+    }
+
+    render
+}
+
+fn todo_first_error_message(details: &Json) -> Option<String> {
+    details
+        .get("errors")
+        .and_then(Json::as_array)
+        .and_then(|errors| errors.first())
+        .and_then(Json::as_object)
+        .and_then(|error| error.get("message"))
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+}
+
+fn render_todo_next_summary(details: &Json) -> String {
+    let item = details.get("item").and_then(Json::as_object);
+    let Some(item) = item else {
+        return "no ready todo".to_string();
+    };
+    let todo_code = item
+        .get("todo_code")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("-");
+    let title = item
+        .get("title")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("-");
+    format!("next todo {}: {}", todo_code, title)
 }
 
 fn tail_lines_limited(text: &str, max_lines: usize) -> String {
