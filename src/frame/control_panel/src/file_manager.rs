@@ -19,13 +19,15 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::io::SeekFrom;
+use std::io::{Read, SeekFrom, Write};
 use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use uuid::Uuid;
+use zip::write::FileOptions;
+use zip::CompressionMethod;
 
 const BUCKY_FILE_SERVICE_NAME: &str = "bucky-file";
 const CONTROL_PANEL_AUTH_APPID: &str = "control-panel";
@@ -1189,6 +1191,194 @@ impl BuckyFileServer {
         .map_err(|err| RPCErrors::ReasonError(format!("preview conversion task failed: {}", err)))?
     }
 
+    fn sanitize_archive_name(name: &str) -> String {
+        let sanitized = name
+            .trim()
+            .chars()
+            .map(|ch| {
+                if matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                    '_'
+                } else {
+                    ch
+                }
+            })
+            .collect::<String>();
+        if sanitized.is_empty() {
+            "download".to_string()
+        } else {
+            sanitized
+        }
+    }
+
+    fn archive_name_from_path(path: &Path, fallback: &str) -> String {
+        let raw = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or(fallback);
+        Self::sanitize_archive_name(raw)
+    }
+
+    fn zip_file_options() -> FileOptions<'static, ()> {
+        FileOptions::<()>::default().compression_method(CompressionMethod::Deflated)
+    }
+
+    fn normalize_archive_relative_path(relative_path: &Path) -> String {
+        relative_path
+            .components()
+            .filter_map(|component| match component {
+                Component::Normal(value) => Some(value.to_string_lossy().to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+
+    fn zip_directory_recursive<W: Write + std::io::Seek>(
+        zip: &mut zip::ZipWriter<W>,
+        source_root: &Path,
+        current_dir: &Path,
+        archive_root_name: &str,
+    ) -> Result<(), ServerError> {
+        let mut entries: Vec<std::fs::DirEntry> = std::fs::read_dir(current_dir)
+            .map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "read directory for archive failed: {}",
+                    err
+                )
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "read directory entry for archive failed: {}",
+                    err
+                )
+            })?;
+
+        entries.sort_by(|a, b| {
+            a.file_name()
+                .to_string_lossy()
+                .to_lowercase()
+                .cmp(&b.file_name().to_string_lossy().to_lowercase())
+        });
+
+        for entry in entries {
+            let entry_path = entry.path();
+            let metadata = entry.metadata().map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "read archive entry metadata failed: {}",
+                    err
+                )
+            })?;
+
+            let relative_path = entry_path.strip_prefix(source_root).map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "strip archive source prefix failed: {}",
+                    err
+                )
+            })?;
+            let relative_text = Self::normalize_archive_relative_path(relative_path);
+            if relative_text.is_empty() {
+                continue;
+            }
+            let archive_path = format!("{}/{}", archive_root_name, relative_text);
+
+            if metadata.is_dir() {
+                let dir_name = format!("{}/", archive_path);
+                zip.add_directory(dir_name, Self::zip_file_options())
+                    .map_err(|err| {
+                        server_err!(
+                            ServerErrorCode::InvalidData,
+                            "write archive directory failed: {}",
+                            err
+                        )
+                    })?;
+                Self::zip_directory_recursive(zip, source_root, &entry_path, archive_root_name)?;
+                continue;
+            }
+
+            if !metadata.is_file() {
+                continue;
+            }
+
+            zip.start_file(archive_path, Self::zip_file_options())
+                .map_err(|err| {
+                    server_err!(
+                        ServerErrorCode::InvalidData,
+                        "start archive file failed: {}",
+                        err
+                    )
+                })?;
+
+            let mut file_reader = std::fs::File::open(&entry_path).map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "open archive source file failed: {}",
+                    err
+                )
+            })?;
+            let mut buffer = Vec::new();
+            file_reader.read_to_end(&mut buffer).map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "read archive source file failed: {}",
+                    err
+                )
+            })?;
+            zip.write_all(&buffer).map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "write archive content failed: {}",
+                    err
+                )
+            })?;
+        }
+
+        Ok(())
+    }
+
+    async fn build_directory_archive(
+        source_dir: PathBuf,
+        archive_root_name: String,
+    ) -> Result<Vec<u8>, ServerError> {
+        tokio::task::spawn_blocking(move || -> Result<Vec<u8>, ServerError> {
+            let cursor = std::io::Cursor::new(Vec::<u8>::new());
+            let mut zip = zip::ZipWriter::new(cursor);
+
+            let root_dir_name = format!("{}/", archive_root_name);
+            zip.add_directory(root_dir_name, Self::zip_file_options())
+                .map_err(|err| {
+                    server_err!(
+                        ServerErrorCode::InvalidData,
+                        "initialize archive root failed: {}",
+                        err
+                    )
+                })?;
+
+            Self::zip_directory_recursive(&mut zip, &source_dir, &source_dir, &archive_root_name)?;
+
+            let cursor = zip.finish().map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "finalize archive failed: {}",
+                    err
+                )
+            })?;
+            Ok(cursor.into_inner())
+        })
+        .await
+        .map_err(|err| {
+            server_err!(
+                ServerErrorCode::InvalidData,
+                "directory archive task join failed: {}",
+                err
+            )
+        })?
+    }
+
     fn parse_raw_range_header(range_header: &str, file_size: u64) -> RawByteRange {
         if !range_header.starts_with("bytes=") {
             return RawByteRange::Full;
@@ -2143,11 +2333,11 @@ impl BuckyFileServer {
         req: http::Request<BoxBody<Bytes, ServerError>>,
         share_id: &str,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let (_share_item, _share_root, target) =
-            match self.resolve_public_share(&req, share_id).await {
-                Ok(value) => value,
-                Err(resp) => return Ok(resp),
-            };
+        let (share_item, share_root, target) = match self.resolve_public_share(&req, share_id).await
+        {
+            Ok(value) => value,
+            Err(resp) => return Ok(resp),
+        };
 
         let metadata = tokio::fs::metadata(&target).await.map_err(|err| {
             server_err!(
@@ -2157,10 +2347,31 @@ impl BuckyFileServer {
             )
         })?;
         if metadata.is_dir() {
-            return Self::json_response(
-                StatusCode::BAD_REQUEST,
-                json!({"error": "directory download is not supported yet"}),
-            );
+            let archive_base_name = if target == share_root {
+                Self::archive_name_from_path(Path::new(&share_item.path), "shared-folder")
+            } else {
+                Self::archive_name_from_path(&target, "shared-folder")
+            };
+            let archive_bytes =
+                Self::build_directory_archive(target.clone(), archive_base_name.clone()).await?;
+
+            return http::Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/zip")
+                .header(
+                    CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"{}.zip\"", archive_base_name),
+                )
+                .header(CONTENT_LENGTH, archive_bytes.len().to_string())
+                .header(CACHE_CONTROL, "no-store")
+                .body(Self::boxed_body(archive_bytes))
+                .map_err(|err| {
+                    server_err!(
+                        ServerErrorCode::InvalidData,
+                        "build public directory download response failed: {}",
+                        err
+                    )
+                });
         }
 
         let content = tokio::fs::read(&target).await.map_err(|err| {
@@ -3248,10 +3459,27 @@ impl BuckyFileServer {
             )
         })?;
         if metadata.is_dir() {
-            return Self::json_response(
-                StatusCode::BAD_REQUEST,
-                json!({"error": "target path is a directory"}),
-            );
+            let archive_base_name = Self::archive_name_from_path(&target, "folder");
+            let archive_bytes =
+                Self::build_directory_archive(target.clone(), archive_base_name.clone()).await?;
+
+            return http::Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/zip")
+                .header(
+                    CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"{}.zip\"", archive_base_name),
+                )
+                .header(CONTENT_LENGTH, archive_bytes.len().to_string())
+                .header(CACHE_CONTROL, "no-store")
+                .body(Self::boxed_body(archive_bytes))
+                .map_err(|err| {
+                    server_err!(
+                        ServerErrorCode::InvalidData,
+                        "build directory download response failed: {}",
+                        err
+                    )
+                });
         }
 
         if !Self::is_pdf_preview_supported(&target) {

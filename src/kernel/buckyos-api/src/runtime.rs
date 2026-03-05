@@ -1525,11 +1525,14 @@ impl BuckyOSRuntime {
         let session_token = self.session_token.read().await;
         let timeout_secs =
             Self::resolve_krpc_timeout_secs(service_name, default_timeout_secs);
-        let client = if let Some(timeout_secs) = timeout_secs {
-            kRPC::new_with_timeout_secs(&url, Some(session_token.clone()), timeout_secs)
-        } else {
-            kRPC::new(&url, Some(session_token.clone()))
-        };
+        if let Some(timeout_secs) = timeout_secs {
+            warn!(
+                "kRPC custom timeout ({}) for service `{}` is configured but current kRPC client API does not support per-client override; using default timeout",
+                timeout_secs,
+                service_name
+            );
+        }
+        let client = kRPC::new(&url, Some(session_token.clone()));
         Ok(client)
     }
 

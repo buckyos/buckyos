@@ -19,6 +19,8 @@ import {
   Folder,
   FolderPlus,
   Link,
+  List,
+  LayoutGrid,
   MoreHorizontal,
   Move,
   Pause,
@@ -190,6 +192,7 @@ const revokeBlobUrl = (url: string) => {
 }
 
 type MainTab = 'files' | 'shares' | 'editor'
+type FilesViewMode = 'icon' | 'list'
 
 const getMainTabPath = (tab: MainTab) => {
   if (tab === 'shares') {
@@ -344,8 +347,8 @@ const FileNameTooltip = ({ name, maxChars = 44, maxWidthClass = 'max-w-[420px]' 
   const hasOverflow = displayName !== name
 
   return (
-    <span className={`group/file-name relative inline-flex min-w-0 ${maxWidthClass} items-center`}>
-      <span className="truncate">{displayName}</span>
+    <span className={`group/file-name relative inline-flex min-w-0 ${maxWidthClass} items-center overflow-hidden`}>
+      <span className="block w-full truncate">{displayName}</span>
       {hasOverflow ? (
         <span className="pointer-events-none invisible absolute top-full left-0 z-[70] mt-1 w-max max-w-[min(80vw,560px)] break-all rounded-lg border border-slate-200 bg-slate-900/95 px-2.5 py-1.5 text-[11px] font-medium leading-relaxed text-white opacity-0 shadow-lg transition-opacity duration-150 group-hover/file-name:visible group-hover/file-name:opacity-100">
           {name}
@@ -469,6 +472,8 @@ type IconName =
   | 'file-archive'
   | 'file-music'
   | 'file-video'
+  | 'view-list'
+  | 'view-icon'
   | 'more'
 
 const Icon = ({ name, className = '' }: { name: IconName; className?: string }) => {
@@ -503,6 +508,8 @@ const Icon = ({ name, className = '' }: { name: IconName; className?: string }) 
     'file-archive': FileArchive,
     'file-music': FileMusic,
     'file-video': FileVideoCamera,
+    'view-list': List,
+    'view-icon': LayoutGrid,
   }
 
   const Lucide = icons[name]
@@ -528,6 +535,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
     return normalizeUrlPath(getSearchParam('path') || '/')
   })
   const [currentPathIsDir, setCurrentPathIsDir] = useState(true)
+  const [filesViewMode, setFilesViewMode] = useState<FilesViewMode>('icon')
   const [items, setItems] = useState<FileEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
@@ -1212,6 +1220,37 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   const toggleSelection = (path: string) => {
     setSelectedPaths((prev) => (prev.includes(path) ? prev.filter((item) => item !== path) : [...prev, path]))
   }
+
+  const onIconEntryClick = useCallback((event: ReactMouseEvent<HTMLElement>, entry: FileEntry) => {
+    const target = event.target as HTMLElement
+    if (target.closest('[data-row-actions="true"]')) {
+      return
+    }
+
+    if (event.metaKey || event.ctrlKey) {
+      setSelectedPaths((prev) => (prev.includes(entry.path) ? prev.filter((item) => item !== entry.path) : [...prev, entry.path]))
+      return
+    }
+
+    setSelectedPaths([entry.path])
+  }, [])
+
+  const onIconEntryDoubleClick = useCallback(
+    (event: ReactMouseEvent<HTMLElement>, entry: FileEntry) => {
+      const target = event.target as HTMLElement
+      if (target.closest('[data-row-actions="true"]')) {
+        return
+      }
+
+      if (entry.is_dir) {
+        openDirectory(entry.path)
+        return
+      }
+
+      window.open(buildFileDetailPath(entry.path), '_blank', 'noopener,noreferrer')
+    },
+    [openDirectory],
+  )
 
   const visibleItems = searchActive ? searchResults : items
 
@@ -2816,6 +2855,15 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                     </span>
                   </button>
                 ) : null}
+                <a
+                  href={buildPublicDownloadPathForTarget(publicShareId, publicSharePath, publicSharePassword)}
+                  className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
+                >
+                  <span className="inline-flex items-center gap-1.5">
+                    <Icon name="download" />
+                    Download current
+                  </span>
+                </a>
               </div>
 
               {publicShareData.is_dir ? (
@@ -2879,17 +2927,15 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                                     </span>
                                   </button>
                                 ) : null}
-                                {!item.is_dir ? (
-                                  <a
-                                    href={buildPublicDownloadPathForTarget(publicShareId, item.path, publicSharePassword)}
-                                    className="rounded border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
-                                  >
-                                    <span className="inline-flex items-center gap-1.5">
-                                      <Icon name="download" />
-                                      Download
-                                    </span>
-                                  </a>
-                                ) : null}
+                                <a
+                                  href={buildPublicDownloadPathForTarget(publicShareId, item.path, publicSharePassword)}
+                                  className="rounded border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
+                                >
+                                  <span className="inline-flex items-center gap-1.5">
+                                    <Icon name="download" />
+                                    Download
+                                  </span>
+                                </a>
                               </div>
                             </td>
                           </tr>
@@ -3197,6 +3243,36 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
 
                   {currentPathIsDir ? (
                     <div className="ml-3 flex shrink-0 items-center justify-end gap-2">
+                    <div className="inline-flex items-center overflow-hidden rounded-lg border border-slate-300">
+                      <button
+                        type="button"
+                        onClick={() => setFilesViewMode('icon')}
+                        className={`px-2.5 py-2 text-xs font-semibold transition ${
+                          filesViewMode === 'icon'
+                            ? 'bg-primary text-white'
+                            : 'bg-white text-slate-700 hover:bg-slate-50 hover:text-primary'
+                        }`}
+                      >
+                        <span className="inline-flex items-center gap-1.5">
+                          <Icon name="view-icon" />
+                          Icon
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFilesViewMode('list')}
+                        className={`border-l border-slate-300 px-2.5 py-2 text-xs font-semibold transition ${
+                          filesViewMode === 'list'
+                            ? 'bg-primary text-white'
+                            : 'bg-white text-slate-700 hover:bg-slate-50 hover:text-primary'
+                        }`}
+                      >
+                        <span className="inline-flex items-center gap-1.5">
+                          <Icon name="view-list" />
+                          List
+                        </span>
+                      </button>
+                    </div>
                     <button
                       type="button"
                       disabled={selectedEntries.length === 0}
@@ -3304,99 +3380,161 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                   </div>
                 ) : null}
 
-                <table className={`w-full min-w-[760px] border-separate border-spacing-0 text-sm ${dropzoneActive ? 'opacity-60' : ''}`}>
-                  <thead>
-                    <tr className="text-left text-xs uppercase tracking-wide text-slate-500">
-                      <th className="rounded-l-lg bg-slate-50 px-3 py-2">
-                        <input
-                          type="checkbox"
-                          checked={allSelected}
-                          onChange={toggleSelectAll}
-                          className="size-4 rounded border-slate-300 text-primary focus:ring-primary"
-                          aria-label="Select all"
-                        />
-                      </th>
-                      <th className="bg-slate-50 px-3 py-2">Name</th>
-                      {searchActive ? <th className="bg-slate-50 px-3 py-2">Path</th> : null}
-                      <th className="bg-slate-50 px-3 py-2">Type</th>
-                      <th className="bg-slate-50 px-3 py-2">Size</th>
-                      <th className="bg-slate-50 px-3 py-2">Modified</th>
-                      <th className="rounded-r-lg bg-slate-50 px-3 py-2">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {visibleItems.length === 0 ? (
-                      <tr>
-                        <td colSpan={searchActive ? 7 : 6} className="px-3 py-12 text-center text-sm text-slate-500">
-                          {searchActive ? 'No search result.' : 'Empty directory.'}
-                        </td>
+                {filesViewMode === 'list' ? (
+                  <table className={`w-full min-w-[760px] border-separate border-spacing-0 text-sm ${dropzoneActive ? 'opacity-60' : ''}`}>
+                    <thead>
+                      <tr className="text-left text-xs uppercase tracking-wide text-slate-500">
+                        <th className="rounded-l-lg bg-slate-50 px-3 py-2">
+                          <input
+                            type="checkbox"
+                            checked={allSelected}
+                            onChange={toggleSelectAll}
+                            className="size-4 rounded border-slate-300 text-primary focus:ring-primary"
+                            aria-label="Select all"
+                          />
+                        </th>
+                        <th className="bg-slate-50 px-3 py-2">Name</th>
+                        {searchActive ? <th className="bg-slate-50 px-3 py-2">Path</th> : null}
+                        <th className="bg-slate-50 px-3 py-2">Type</th>
+                        <th className="bg-slate-50 px-3 py-2">Size</th>
+                        <th className="bg-slate-50 px-3 py-2">Modified</th>
+                        <th className="rounded-r-lg bg-slate-50 px-3 py-2">Actions</th>
                       </tr>
-                    ) : (
-                      visibleItems.map((entry) => {
-                        const entryIcon = getEntryIconMeta(entry)
-                        return (
-                        <tr key={entry.path} className="text-slate-800">
-                          <td className="border-b border-slate-100 px-3 py-2">
-                            <input
-                              type="checkbox"
-                              checked={isSelected(entry.path)}
-                              onChange={() => toggleSelection(entry.path)}
-                              className="size-4 rounded border-slate-300 text-primary focus:ring-primary"
-                              aria-label={`Select ${entry.name}`}
-                            />
-                          </td>
-                          <td className="border-b border-slate-100 px-3 py-2 font-medium">
-                            {entry.is_dir ? (
-                              <button
-                                type="button"
-                                onClick={() => openDirectory(entry.path)}
-                                className="rounded px-1 py-0.5 text-left text-primary transition hover:bg-primary/10"
-                                aria-label={entry.name}
-                              >
-                                <span className="inline-flex items-center gap-1.5">
-                                  <Icon name="folder" className="shrink-0" />
-                                  <FileNameTooltip name={entry.name} />
-                                </span>
-                              </button>
-                            ) : (
-                              <a
-                                href={buildFileDetailPath(entry.path)}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="rounded px-1 py-0.5 text-left text-slate-800 transition hover:bg-slate-100"
-                                aria-label={entry.name}
-                              >
-                                <span className="inline-flex items-center gap-1.5">
-                                  <Icon name={entryIcon.iconName} className={`${entryIcon.iconClassName ?? ''} shrink-0`.trim()} />
-                                  <FileNameTooltip name={entry.name} />
-                                </span>
-                              </a>
-                            )}
-                          </td>
-                          {searchActive ? <td className="border-b border-slate-100 px-3 py-2 text-slate-600">{parentPath(entry.path)}</td> : null}
-                          <td className="border-b border-slate-100 px-3 py-2">{entry.is_dir ? 'Folder' : 'File'}</td>
-                          <td className="border-b border-slate-100 px-3 py-2">{entry.is_dir ? '-' : formatBytes(entry.size)}</td>
-                          <td className="border-b border-slate-100 px-3 py-2">{formatTimestamp(entry.modified)}</td>
-                          <td className="border-b border-slate-100 px-3 py-2">
-                            <div className="inline-flex" data-row-actions="true">
-                              <button
-                                type="button"
-                                onClick={(event) => toggleRowActionMenu(entry.path, event)}
-                                className="rounded border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
-                              >
-                                <span className="inline-flex items-center gap-1.5">
-                                  <Icon name="more" />
-                                  Actions
-                                </span>
-                              </button>
-                            </div>
+                    </thead>
+                    <tbody>
+                      {visibleItems.length === 0 ? (
+                        <tr>
+                          <td colSpan={searchActive ? 7 : 6} className="px-3 py-12 text-center text-sm text-slate-500">
+                            {searchActive ? 'No search result.' : 'Empty directory.'}
                           </td>
                         </tr>
-                        )
-                      })
+                      ) : (
+                        visibleItems.map((entry) => {
+                          const entryIcon = getEntryIconMeta(entry)
+                          return (
+                          <tr key={entry.path} className="text-slate-800">
+                            <td className="border-b border-slate-100 px-3 py-2">
+                              <input
+                                type="checkbox"
+                                checked={isSelected(entry.path)}
+                                onChange={() => toggleSelection(entry.path)}
+                                className="size-4 rounded border-slate-300 text-primary focus:ring-primary"
+                                aria-label={`Select ${entry.name}`}
+                              />
+                            </td>
+                            <td className="border-b border-slate-100 px-3 py-2 font-medium">
+                              {entry.is_dir ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openDirectory(entry.path)}
+                                  className="rounded px-1 py-0.5 text-left text-primary transition hover:bg-primary/10"
+                                  aria-label={entry.name}
+                                >
+                                  <span className="inline-flex items-center gap-1.5">
+                                    <Icon name="folder" className="shrink-0" />
+                                    <FileNameTooltip name={entry.name} />
+                                  </span>
+                                </button>
+                              ) : (
+                                <a
+                                  href={buildFileDetailPath(entry.path)}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="rounded px-1 py-0.5 text-left text-slate-800 transition hover:bg-slate-100"
+                                  aria-label={entry.name}
+                                >
+                                  <span className="inline-flex items-center gap-1.5">
+                                    <Icon name={entryIcon.iconName} className={`${entryIcon.iconClassName ?? ''} shrink-0`.trim()} />
+                                    <FileNameTooltip name={entry.name} />
+                                  </span>
+                                </a>
+                              )}
+                            </td>
+                            {searchActive ? <td className="border-b border-slate-100 px-3 py-2 text-slate-600">{parentPath(entry.path)}</td> : null}
+                            <td className="border-b border-slate-100 px-3 py-2">{entry.is_dir ? 'Folder' : 'File'}</td>
+                            <td className="border-b border-slate-100 px-3 py-2">{entry.is_dir ? '-' : formatBytes(entry.size)}</td>
+                            <td className="border-b border-slate-100 px-3 py-2">{formatTimestamp(entry.modified)}</td>
+                            <td className="border-b border-slate-100 px-3 py-2">
+                              <div className="inline-flex" data-row-actions="true">
+                                <button
+                                  type="button"
+                                  onClick={(event) => toggleRowActionMenu(entry.path, event)}
+                                  className="rounded border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
+                                >
+                                  <span className="inline-flex items-center gap-1.5">
+                                    <Icon name="more" />
+                                    Actions
+                                  </span>
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                          )
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                ) : (
+                  <>
+                    {visibleItems.length === 0 ? (
+                      <div className="rounded-xl border border-dashed border-slate-300 px-3 py-12 text-center text-sm text-slate-500">
+                        {searchActive ? 'No search result.' : 'Empty directory.'}
+                      </div>
+                    ) : (
+                      <div
+                        className={`grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 ${dropzoneActive ? 'opacity-60' : ''}`}
+                        onClick={(event) => {
+                          if (event.target === event.currentTarget) {
+                            setSelectedPaths([])
+                          }
+                        }}
+                      >
+                        {visibleItems.map((entry) => {
+                          const entryIcon = getEntryIconMeta(entry)
+                          return (
+                            <article
+                              key={entry.path}
+                              onClick={(event) => onIconEntryClick(event, entry)}
+                              onDoubleClick={(event) => onIconEntryDoubleClick(event, entry)}
+                              className={`relative cursor-pointer rounded-xl p-3 transition ${
+                                isSelected(entry.path)
+                                  ? 'bg-primary/10 shadow-sm ring-2 ring-primary/30'
+                                  : 'bg-white hover:bg-slate-50 hover:shadow-sm'
+                              }`}
+                            >
+                              <div className="absolute right-2 top-2" data-row-actions="true">
+                                <button
+                                  type="button"
+                                  onClick={(event) => toggleRowActionMenu(entry.path, event)}
+                                  className="rounded border border-slate-300 bg-white px-1.5 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
+                                >
+                                  <Icon name="more" />
+                                </button>
+                              </div>
+
+                              <div className="flex h-[126px] flex-col items-center justify-start pt-6 text-center">
+                                <div
+                                  className={`inline-flex size-14 items-center justify-center rounded-xl ${
+                                    entry.is_dir ? 'bg-amber-50 text-amber-600' : 'bg-slate-50'
+                                  }`}
+                                >
+                                  <Icon
+                                    name={entry.is_dir ? 'folder' : entryIcon.iconName}
+                                    className={`${entry.is_dir ? '' : entryIcon.iconClassName ?? ''} size-7`.trim()}
+                                  />
+                                </div>
+                                <div className={`mt-2 w-full font-medium ${entry.is_dir ? 'text-primary' : 'text-slate-800'}`}>
+                                  <FileNameTooltip name={entry.name} maxChars={28} maxWidthClass="max-w-full" />
+                                </div>
+                                {searchActive ? <p className="mt-1 w-full truncate text-[11px] text-slate-500">{parentPath(entry.path)}</p> : null}
+                              </div>
+                            </article>
+                          )
+                        })}
+                      </div>
                     )}
-                  </tbody>
-                </table>
+                  </>
+                )}
               </div>
           ) : null}
 
@@ -3420,16 +3558,14 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                       Open
                     </a>
                   ) : null}
-                  {!openActionEntry.is_dir ? (
-                    <a
-                      href={buildRawFileUrl(openActionEntry.path, true)}
-                      className={rowActionItemClass}
-                      onClick={closeRowActionMenu}
-                    >
-                      <Icon name="download" />
-                      Download
-                    </a>
-                  ) : null}
+                  <a
+                    href={buildRawFileUrl(openActionEntry.path, true)}
+                    className={rowActionItemClass}
+                    onClick={closeRowActionMenu}
+                  >
+                    <Icon name="download" />
+                    Download
+                  </a>
                   {!openActionEntry.is_dir ? (
                     <button
                       type="button"
