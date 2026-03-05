@@ -440,6 +440,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   const [items, setItems] = useState<FileEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
+  const [deleteToast, setDeleteToast] = useState('')
   const [selectedPaths, setSelectedPaths] = useState<string[]>([])
   const [shares, setShares] = useState<ShareItem[]>([])
   const [sharesLoading, setSharesLoading] = useState(false)
@@ -496,6 +497,33 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   const uploadSessionRef = useRef(new Map<string, string>())
   const uploadCancelledRef = useRef(new Set<string>())
   const rowActionMenuRef = useRef<HTMLDivElement | null>(null)
+  const deleteToastTimerRef = useRef<number | null>(null)
+
+  const showDeleteToast = useCallback((text: string) => {
+    setDeleteToast(text)
+  }, [])
+
+  useEffect(() => {
+    if (!deleteToast) {
+      return
+    }
+
+    if (deleteToastTimerRef.current != null) {
+      window.clearTimeout(deleteToastTimerRef.current)
+    }
+
+    deleteToastTimerRef.current = window.setTimeout(() => {
+      setDeleteToast('')
+      deleteToastTimerRef.current = null
+    }, 2600)
+
+    return () => {
+      if (deleteToastTimerRef.current != null) {
+        window.clearTimeout(deleteToastTimerRef.current)
+        deleteToastTimerRef.current = null
+      }
+    }
+  }, [deleteToast])
 
   const closeRowActionMenu = useCallback(() => {
     setOpenActionPath('')
@@ -1581,7 +1609,9 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
 
       clearSearchState()
       await loadDirectory(currentPath, effectiveToken)
-      setMessage('Item deleted.')
+      const successMessage = entry.is_dir ? `Folder deleted: ${entry.name}` : `File deleted: ${entry.name}`
+      setMessage(successMessage)
+      showDeleteToast(successMessage)
     } finally {
       setLoading(false)
     }
@@ -1769,7 +1799,9 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
       setSelectedPaths([])
       clearSearchState()
       await loadDirectory(currentPath, effectiveToken)
-      setMessage(`Deleted ${selectedEntries.length} item(s).`)
+      const successMessage = `Deleted ${selectedEntries.length} item(s).`
+      setMessage(successMessage)
+      showDeleteToast(successMessage)
     } finally {
       setLoading(false)
     }
@@ -2403,6 +2435,14 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
     }
   }, [previewDocPdfSrc, previewImageSrc, publicImageDisplaySrc])
 
+  const deleteToastNode = deleteToast ? (
+    <div className="pointer-events-none fixed inset-0 z-[80] flex items-center justify-center px-4">
+      <div className="max-w-[min(92vw,420px)] rounded-xl border border-emerald-200 bg-emerald-50/95 px-3 py-2 text-sm font-semibold text-emerald-800 shadow-lg shadow-emerald-900/10 backdrop-blur-sm">
+        {deleteToast}
+      </div>
+    </div>
+  ) : null
+
   if (publicShareId) {
     return (
       <main className="bucky-file-app min-h-screen bg-[radial-gradient(circle_at_top,#d7ece8,transparent_55%),#f4f8f7] px-4 py-6 md:px-8">
@@ -2718,6 +2758,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
             }
           }}
         />
+        {deleteToastNode}
       </main>
     )
   }
@@ -3502,6 +3543,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
             }
           }}
         />
+        {deleteToastNode}
       </div>
     </main>
   )
