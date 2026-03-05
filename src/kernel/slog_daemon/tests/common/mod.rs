@@ -2,6 +2,7 @@
 
 use slog::{LogLevel, LogMeta, SystemLogRecord, SystemLogRecordLineFormatter};
 use slog_server::storage::{LogQueryRequest, LogStorage};
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -568,4 +569,26 @@ pub async fn query_uploaded_contents(
         }
     }
     Ok(contents)
+}
+
+pub async fn query_uploaded_counts_by_service(
+    storage: &dyn LogStorage,
+    node: &str,
+) -> Result<HashMap<String, usize>, String> {
+    let result = storage
+        .query_logs(LogQueryRequest {
+            node: Some(node.to_string()),
+            service: None,
+            level: None,
+            start_time: None,
+            end_time: None,
+            limit: None,
+        })
+        .await?;
+
+    let mut counts = HashMap::new();
+    for row in result {
+        *counts.entry(row.service).or_insert(0) += row.logs.len();
+    }
+    Ok(counts)
 }
