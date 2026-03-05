@@ -5,7 +5,7 @@ pub const SLOG_SERVER_BIND_ENV_KEY: &str = "SLOG_SERVER_BIND";
 /// Environment key for overriding local storage directory.
 pub const SLOG_STORAGE_DIR_ENV_KEY: &str = "SLOG_STORAGE_DIR";
 /// Default bind address when no external config is provided.
-pub const DEFAULT_SERVER_BIND: &str = "127.0.0.1:8089";
+pub const DEFAULT_SERVER_BIND: &str = "127.0.0.1:22001";
 
 #[derive(Debug, Clone)]
 pub struct NetworkConfig {

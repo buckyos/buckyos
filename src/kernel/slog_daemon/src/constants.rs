@@ -9,7 +9,7 @@ pub const SERVICE_NAME: &str = "slog_daemon";
 /// Environment key for overriding the logical node id carried in upload payloads.
 pub const SLOG_NODE_ID_ENV_KEY: &str = "SLOG_NODE_ID";
 
-/// Environment key for overriding upload endpoint, e.g. `http://host:8089/logs`.
+/// Environment key for overriding upload endpoint, e.g. `http://host:22001/logs`.
 pub const SLOG_SERVER_ENDPOINT_ENV_KEY: &str = "SLOG_SERVER_ENDPOINT";
 
 /// Environment key for overriding daemon log root directory.
@@ -22,7 +22,7 @@ pub const SLOG_UPLOAD_TIMEOUT_SECS_ENV_KEY: &str = "SLOG_UPLOAD_TIMEOUT_SECS";
 pub const DEFAULT_NODE_ID: &str = "node-001";
 
 /// Default upload endpoint when no external config is provided.
-pub const DEFAULT_SERVER_ENDPOINT: &str = "http://127.0.0.1:8089/logs";
+pub const DEFAULT_SERVER_ENDPOINT: &str = "http://127.0.0.1:22001/logs";
 
 /// Default HTTP timeout for upload requests.
 pub const DEFAULT_UPLOAD_TIMEOUT_SECS: u64 = 10;

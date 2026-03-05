@@ -145,7 +145,7 @@ mod tests {
     async fn test_upload_processor_exits_after_shutdown_and_channel_close() {
         let uploader = LogUploader::new(
             "node-001".to_string(),
-            "http://127.0.0.1:8089/logs".to_string(),
+            "http://127.0.0.1:22001/logs".to_string(),
             1,
         );
         let (tx, rx) = mpsc::channel(1);

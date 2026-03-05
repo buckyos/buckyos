@@ -105,14 +105,14 @@ mod tests {
         let mut cfg = DaemonConfig::default();
         let overrides = DaemonEnvOverrides {
             node_id: Some("node-test-001".to_string()),
-            server_endpoint: Some("http://10.10.0.2:8089/logs".to_string()),
+            server_endpoint: Some("http://10.10.0.2:22001/logs".to_string()),
             log_dir: Some(PathBuf::from("/tmp/slog_log_root")),
             upload_timeout_secs: Some(33),
         };
         cfg.apply_env_overrides(overrides);
 
         assert_eq!(cfg.node.node_id, "node-test-001");
-        assert_eq!(cfg.server.endpoint, "http://10.10.0.2:8089/logs");
+        assert_eq!(cfg.server.endpoint, "http://10.10.0.2:22001/logs");
         assert_eq!(cfg.path.log_dir, PathBuf::from("/tmp/slog_log_root"));
         assert_eq!(cfg.upload.timeout_secs, 33);
     }
