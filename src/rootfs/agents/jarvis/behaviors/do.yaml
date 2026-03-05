@@ -125,21 +125,10 @@ policy: |
   - Always “announce then execute” for write operations.
 
 input: |
-  # ======================
-  # PDCA Runtime Context
-  # ======================
-  Behavior: DO
-  Session: {{session_id}}
-  Step index: {{step.index}}
-  Remaining budget: {{params.remaining_budget}}
-
-  # Previous step continuity (use what is available)
-  Last step summary:
+  # Continuity:
   {{last_step_summary}}
-
-  Current step summary / last_step_result:
-  {{step_summary}}
-
+  # New message:
+  {{new_msg}}
   # ======================
   # Current Todo (DO target)
   # ======================
