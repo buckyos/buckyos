@@ -224,6 +224,10 @@ const DesktopHomePage = () => {
   )
 
   useEffect(() => {
+    document.title = 'Buckyos Desktop'
+  }, [])
+
+  useEffect(() => {
     let cancelled = false
     const load = async () => {
       const { data, error } = await fetchLayout()

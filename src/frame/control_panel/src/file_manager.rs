@@ -22,6 +22,7 @@ use sha2::{Digest, Sha256};
 use std::io::SeekFrom;
 use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use uuid::Uuid;
@@ -32,6 +33,7 @@ const DEFAULT_SHARED_OWNER_DIR: &str = "admin";
 const SHARED_PUBLIC_DIR: &str = "Public";
 const SHARED_INBOX_DIR: &str = "Inbox";
 const INLINE_TEXT_CONTENT_MAX_BYTES: u64 = 2 * 1024 * 1024;
+const PDF_PREVIEW_EXTENSION_DOC: &str = "doc";
 
 #[derive(Debug, Clone)]
 pub(crate) struct BuckyFileServer {
@@ -1018,6 +1020,173 @@ impl BuckyFileServer {
             return false;
         }
         Self::is_inline_text_extension(path)
+    }
+
+    fn preview_cache_dir(&self) -> PathBuf {
+        self.data_folder.join("preview_cache")
+    }
+
+    fn is_pdf_preview_supported(path: &Path) -> bool {
+        let extension = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+            .unwrap_or_default();
+        extension == PDF_PREVIEW_EXTENSION_DOC
+    }
+
+    fn build_pdf_preview_cache_key(source_path: &Path, metadata: &std::fs::Metadata) -> String {
+        let modified_secs = metadata
+            .modified()
+            .ok()
+            .and_then(|ts| ts.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        let payload = format!(
+            "{}:{}:{}",
+            source_path.display(),
+            metadata.len(),
+            modified_secs
+        );
+        let digest = Sha256::digest(payload.as_bytes());
+        digest
+            .iter()
+            .map(|value| format!("{:02x}", value))
+            .collect()
+    }
+
+    fn locate_generated_pdf_path(
+        output_dir: &Path,
+        source_path: &Path,
+    ) -> Result<PathBuf, RPCErrors> {
+        if let Some(stem) = source_path.file_stem().and_then(|value| value.to_str()) {
+            let expected = output_dir.join(format!("{}.pdf", stem));
+            if expected.exists() {
+                return Ok(expected);
+            }
+        }
+
+        let mut first_pdf: Option<PathBuf> = None;
+        for entry in std::fs::read_dir(output_dir)
+            .map_err(|err| RPCErrors::ReasonError(format!("read preview output failed: {}", err)))?
+        {
+            let entry = entry.map_err(|err| {
+                RPCErrors::ReasonError(format!("read preview output entry failed: {}", err))
+            })?;
+            let path = entry.path();
+            let is_pdf = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("pdf"))
+                .unwrap_or(false);
+            if is_pdf {
+                first_pdf = Some(path);
+                break;
+            }
+        }
+
+        first_pdf.ok_or_else(|| {
+            RPCErrors::ReasonError(
+                "document conversion succeeded but no PDF output found".to_string(),
+            )
+        })
+    }
+
+    fn run_libreoffice_convert_to_pdf(
+        source_path: &Path,
+        output_dir: &Path,
+    ) -> Result<(), RPCErrors> {
+        let mut last_error: Option<String> = None;
+        for binary in ["libreoffice", "soffice"] {
+            let output = Command::new(binary)
+                .arg("--headless")
+                .arg("--nologo")
+                .arg("--nodefault")
+                .arg("--nolockcheck")
+                .arg("--nofirststartwizard")
+                .arg("--convert-to")
+                .arg("pdf")
+                .arg("--outdir")
+                .arg(output_dir)
+                .arg(source_path)
+                .output();
+
+            match output {
+                Ok(result) => {
+                    if result.status.success() {
+                        return Ok(());
+                    }
+                    let stderr = String::from_utf8_lossy(&result.stderr).trim().to_string();
+                    let stdout = String::from_utf8_lossy(&result.stdout).trim().to_string();
+                    let detail = if !stderr.is_empty() {
+                        stderr
+                    } else if !stdout.is_empty() {
+                        stdout
+                    } else {
+                        format!("exit code {:?}", result.status.code())
+                    };
+                    last_error = Some(format!("{}: {}", binary, detail));
+                }
+                Err(err) => {
+                    last_error = Some(format!("{}: {}", binary, err));
+                }
+            }
+        }
+
+        Err(RPCErrors::ReasonError(format!(
+            "failed to convert document to PDF: {}",
+            last_error.unwrap_or_else(|| "unknown converter error".to_string())
+        )))
+    }
+
+    async fn ensure_pdf_preview_cache(
+        &self,
+        source_path: &Path,
+        metadata: &std::fs::Metadata,
+    ) -> Result<PathBuf, RPCErrors> {
+        let cache_dir = self.preview_cache_dir();
+        tokio::fs::create_dir_all(&cache_dir).await.map_err(|err| {
+            RPCErrors::ReasonError(format!("prepare preview cache dir failed: {}", err))
+        })?;
+
+        let cache_key = Self::build_pdf_preview_cache_key(source_path, metadata);
+        let cache_pdf_path = cache_dir.join(format!("{}.pdf", cache_key));
+
+        if tokio::fs::metadata(&cache_pdf_path).await.is_ok() {
+            return Ok(cache_pdf_path);
+        }
+
+        let source = source_path.to_path_buf();
+        let cache_pdf = cache_pdf_path.clone();
+        let cache_dir_clone = cache_dir.clone();
+        tokio::task::spawn_blocking(move || -> Result<PathBuf, RPCErrors> {
+            let temp_dir = cache_dir_clone.join(format!("tmp-{}", Uuid::new_v4().simple()));
+            std::fs::create_dir_all(&temp_dir).map_err(|err| {
+                RPCErrors::ReasonError(format!("prepare temporary preview dir failed: {}", err))
+            })?;
+
+            let convert_result = Self::run_libreoffice_convert_to_pdf(&source, &temp_dir)
+                .and_then(|_| Self::locate_generated_pdf_path(&temp_dir, &source))
+                .and_then(|generated_pdf| {
+                    std::fs::copy(&generated_pdf, &cache_pdf).map_err(|err| {
+                        RPCErrors::ReasonError(format!("store converted PDF failed: {}", err))
+                    })?;
+                    Ok(())
+                });
+
+            let cleanup_result = std::fs::remove_dir_all(&temp_dir);
+            if let Err(err) = cleanup_result {
+                warn!(
+                    "cleanup temporary preview dir failed at {}: {}",
+                    temp_dir.display(),
+                    err
+                );
+            }
+
+            convert_result.map(|_| cache_pdf)
+        })
+        .await
+        .map_err(|err| RPCErrors::ReasonError(format!("preview conversion task failed: {}", err)))?
     }
 
     fn parse_raw_range_header(range_header: &str, file_size: u64) -> RawByteRange {
@@ -3035,6 +3204,103 @@ impl BuckyFileServer {
         )
     }
 
+    async fn handle_api_preview_pdf_get(
+        &self,
+        req: http::Request<BoxBody<Bytes, ServerError>>,
+        raw_path: &str,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        let principal = match self.auth_principal(&req).await {
+            Ok(v) => v,
+            Err(resp) => return Ok(resp),
+        };
+
+        let rel_path = match Self::parse_relative_path(raw_path) {
+            Ok(v) => v,
+            Err(err) => {
+                return Self::json_response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error": err.to_string()}),
+                )
+            }
+        };
+        if rel_path.as_os_str().is_empty() {
+            return Self::json_response(
+                StatusCode::BAD_REQUEST,
+                json!({"error": "file path is required"}),
+            );
+        }
+        if !Self::can_read_rel_path(&principal, &rel_path) {
+            return Self::forbidden_response(
+                "permission denied: read access to file path is required",
+            );
+        }
+
+        let target = self.user_root(&principal.username).join(&rel_path);
+        if !target.exists() {
+            return Self::json_response(StatusCode::NOT_FOUND, json!({"error": "file not found"}));
+        }
+
+        let metadata = tokio::fs::metadata(&target).await.map_err(|err| {
+            server_err!(
+                ServerErrorCode::InvalidData,
+                "read metadata failed: {}",
+                err
+            )
+        })?;
+        if metadata.is_dir() {
+            return Self::json_response(
+                StatusCode::BAD_REQUEST,
+                json!({"error": "target path is a directory"}),
+            );
+        }
+
+        if !Self::is_pdf_preview_supported(&target) {
+            return Self::json_response(
+                StatusCode::BAD_REQUEST,
+                json!({"error": "PDF preview conversion is only supported for .doc files"}),
+            );
+        }
+
+        let pdf_path = match self.ensure_pdf_preview_cache(&target, &metadata).await {
+            Ok(path) => path,
+            Err(err) => {
+                return Self::json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({"error": err.to_string()}),
+                )
+            }
+        };
+
+        let content = tokio::fs::read(&pdf_path).await.map_err(|err| {
+            server_err!(
+                ServerErrorCode::InvalidData,
+                "read converted PDF failed: {}",
+                err
+            )
+        })?;
+
+        let file_stem = rel_path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().to_string())
+            .unwrap_or_else(|| "preview".to_string());
+        let content_disposition = format!("inline; filename=\"{}.pdf\"", file_stem);
+
+        http::Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, "application/pdf")
+            .header(CONTENT_DISPOSITION, content_disposition)
+            .header(CONTENT_LENGTH, content.len().to_string())
+            .header(CACHE_CONTROL, "no-store")
+            .body(Self::boxed_body(content))
+            .map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "build PDF preview response failed: {}",
+                    err
+                )
+            })
+    }
+
     async fn handle_api_raw_get(
         &self,
         req: http::Request<BoxBody<Bytes, ServerError>>,
@@ -3297,6 +3563,11 @@ impl HttpServer for BuckyFileServer {
         if method == Method::GET && path.starts_with("/api/public/dl/") {
             let share_id = path.strip_prefix("/api/public/dl/").unwrap_or("");
             return self.handle_api_public_download_get(req, share_id).await;
+        }
+
+        if method == Method::GET && path.starts_with("/api/preview/pdf") {
+            let raw_file_path = path.strip_prefix("/api/preview/pdf").unwrap_or("");
+            return self.handle_api_preview_pdf_get(req, raw_file_path).await;
         }
 
         if path.starts_with("/api/resources") {

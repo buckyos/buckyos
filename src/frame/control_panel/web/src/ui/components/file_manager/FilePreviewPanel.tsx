@@ -16,10 +16,13 @@ type FilePreviewPanelProps = {
   previewLoading: boolean
   previewError: string
   previewTextContent: string
+  previewDocxHtml: string
   previewImageLoading: boolean
   previewImageProgressPercent: number | null
   previewImageLoadedBytes: number
   previewImageTotalBytes: number | null
+  previewLoadingLabel?: string
+  previewLoadingElapsedSeconds?: number
   officePreviewUrl: string
   onOpenImageViewer: (src: string, title: string) => void
   onPreviewImageLoad: () => void
@@ -37,10 +40,13 @@ const FilePreviewPanel = ({
   previewLoading,
   previewError,
   previewTextContent,
+  previewDocxHtml,
   previewImageLoading,
   previewImageProgressPercent,
   previewImageLoadedBytes,
   previewImageTotalBytes,
+  previewLoadingLabel,
+  previewLoadingElapsedSeconds,
   officePreviewUrl,
   onOpenImageViewer,
   onPreviewImageLoad,
@@ -69,7 +75,10 @@ const FilePreviewPanel = ({
 
       {previewLoading ? (
         <div className="rounded-xl border border-slate-200 bg-white px-3 py-8 text-center text-sm text-slate-500">
-          Loading preview...
+          <p>{previewLoadingLabel || 'Loading preview...'}</p>
+          {previewLoadingElapsedSeconds && previewLoadingElapsedSeconds > 0 ? (
+            <p className="mt-1 text-xs text-slate-400">{previewLoadingElapsedSeconds}s elapsed</p>
+          ) : null}
         </div>
       ) : previewError ? (
         <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-3 text-sm text-rose-700">{previewError}</div>
@@ -115,6 +124,17 @@ const FilePreviewPanel = ({
         <pre className="max-h-[520px] overflow-auto rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-800">
           {previewTextContent || '(empty file)'}
         </pre>
+      ) : previewKind === 'docx' ? (
+        <div className="max-h-[560px] overflow-auto rounded-xl border border-slate-200 bg-white p-4">
+          {previewDocxHtml ? (
+            <article
+              className="prose prose-sm max-w-none text-slate-800"
+              dangerouslySetInnerHTML={{ __html: previewDocxHtml }}
+            />
+          ) : (
+            <p className="text-sm text-slate-500">This DOCX file has no previewable content.</p>
+          )}
+        </div>
       ) : previewKind === 'audio' ? (
         <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
           <audio controls preload="metadata" className="w-full">

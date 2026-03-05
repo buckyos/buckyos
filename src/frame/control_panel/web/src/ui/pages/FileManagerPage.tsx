@@ -6,7 +6,16 @@ import {
   Copy,
   Download,
   ExternalLink,
+  File,
+  FileArchive,
+  FileCode,
+  FileImage,
+  FileMusic,
   FilePlus2,
+  FileSpreadsheet,
+  FileText,
+  FileType,
+  FileVideoCamera,
   Folder,
   FolderPlus,
   Link,
@@ -24,6 +33,7 @@ import {
   type LucideIcon,
   X,
 } from 'lucide-react'
+import mammoth from 'mammoth/mammoth.browser'
 
 import { ensureSessionToken } from '@/auth/authManager'
 import { getSessionTokenFromCookies, getStoredSessionToken } from '@/auth/session'
@@ -31,7 +41,7 @@ import FilePreviewPanel from '@/ui/components/file_manager/FilePreviewPanel'
 import { downloadImageWithProgress } from '@/ui/components/file_manager/imageDownload'
 import ProgressRing from '@/ui/components/file_manager/ProgressRing'
 import ImageViewerModal from '@/ui/components/file_manager/ImageViewerModal'
-import { getFilePreviewKind, type FilePreviewKind } from '@/ui/components/file_manager/filePreview'
+import { getFileExtension, getFilePreviewKind, isDocFileName, type FilePreviewKind } from '@/ui/components/file_manager/filePreview'
 
 type FileEntry = {
   name: string
@@ -271,6 +281,93 @@ const formatTimestamp = (value: number) => {
   return new Date(value * 1000).toLocaleString()
 }
 
+type FileBadgeTone = 'neutral' | 'image' | 'doc' | 'sheet' | 'code' | 'archive' | 'audio' | 'video' | 'pdf'
+
+const ARCHIVE_EXTENSIONS = new Set(['zip', 'tar', 'gz', 'tgz', 'bz2', 'xz', '7z', 'rar'])
+const CODE_EXTENSIONS = new Set([
+  'js',
+  'jsx',
+  'ts',
+  'tsx',
+  'mjs',
+  'cjs',
+  'rs',
+  'py',
+  'go',
+  'java',
+  'kt',
+  'swift',
+  'c',
+  'h',
+  'cpp',
+  'hpp',
+  'sh',
+  'bash',
+  'zsh',
+])
+const DOCUMENT_EXTENSIONS = new Set(['doc', 'docx', 'odt', 'rtf'])
+const SPREADSHEET_EXTENSIONS = new Set(['xls', 'xlsx', 'csv', 'ods'])
+const PRESENTATION_EXTENSIONS = new Set(['ppt', 'pptx', 'odp'])
+
+type EntryIconMeta = {
+  iconName: IconName
+  iconClassName?: string
+  badgeLabel?: string
+  badgeTone: FileBadgeTone
+}
+
+const getEntryIconMeta = (entry: { name: string; is_dir: boolean }): EntryIconMeta => {
+  if (entry.is_dir) {
+    return { iconName: 'folder', iconClassName: 'text-amber-500', badgeTone: 'neutral' }
+  }
+
+  const extension = getFileExtension(entry.name)
+  const badgeLabel = extension ? extension.toUpperCase() : undefined
+  const previewKind = getFilePreviewKind(entry)
+
+  if (previewKind === 'image') {
+    return { iconName: 'file-image', iconClassName: 'text-sky-600', badgeLabel, badgeTone: 'image' }
+  }
+  if (extension === 'pdf') {
+    return { iconName: 'file-text', iconClassName: 'text-rose-600', badgeLabel, badgeTone: 'pdf' }
+  }
+  if (previewKind === 'audio') {
+    return { iconName: 'file-music', iconClassName: 'text-violet-600', badgeLabel, badgeTone: 'audio' }
+  }
+  if (previewKind === 'video') {
+    return { iconName: 'file-video', iconClassName: 'text-fuchsia-600', badgeLabel, badgeTone: 'video' }
+  }
+  if (DOCUMENT_EXTENSIONS.has(extension) || PRESENTATION_EXTENSIONS.has(extension)) {
+    return { iconName: 'file-doc', iconClassName: 'text-blue-600', badgeLabel, badgeTone: 'doc' }
+  }
+  if (SPREADSHEET_EXTENSIONS.has(extension)) {
+    return { iconName: 'file-sheet', iconClassName: 'text-emerald-600', badgeLabel, badgeTone: 'sheet' }
+  }
+  if (ARCHIVE_EXTENSIONS.has(extension)) {
+    return { iconName: 'file-archive', iconClassName: 'text-orange-600', badgeLabel, badgeTone: 'archive' }
+  }
+  if (previewKind === 'text' || CODE_EXTENSIONS.has(extension)) {
+    return { iconName: 'file-code', iconClassName: 'text-cyan-700', badgeLabel, badgeTone: 'code' }
+  }
+
+  return { iconName: 'file', iconClassName: 'text-slate-500', badgeLabel, badgeTone: 'neutral' }
+}
+
+const fileTypeBadgeClassByTone: Record<FileBadgeTone, string> = {
+  neutral: 'border-slate-300 bg-slate-50 text-slate-600',
+  image: 'border-sky-200 bg-sky-50 text-sky-700',
+  doc: 'border-blue-200 bg-blue-50 text-blue-700',
+  sheet: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+  code: 'border-cyan-200 bg-cyan-50 text-cyan-700',
+  archive: 'border-orange-200 bg-orange-50 text-orange-700',
+  audio: 'border-violet-200 bg-violet-50 text-violet-700',
+  video: 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700',
+  pdf: 'border-rose-200 bg-rose-50 text-rose-700',
+}
+
+const fileTypeBadgeBaseClass =
+  'inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide'
+
 type IconName =
   | 'open'
   | 'up'
@@ -292,6 +389,15 @@ type IconName =
   | 'save'
   | 'close'
   | 'folder'
+  | 'file'
+  | 'file-text'
+  | 'file-image'
+  | 'file-doc'
+  | 'file-sheet'
+  | 'file-code'
+  | 'file-archive'
+  | 'file-music'
+  | 'file-video'
   | 'more'
 
 const Icon = ({ name, className = '' }: { name: IconName; className?: string }) => {
@@ -317,6 +423,15 @@ const Icon = ({ name, className = '' }: { name: IconName; className?: string }) 
     save: Save,
     close: X,
     folder: Folder,
+    file: File,
+    'file-text': FileText,
+    'file-image': FileImage,
+    'file-doc': FileType,
+    'file-sheet': FileSpreadsheet,
+    'file-code': FileCode,
+    'file-archive': FileArchive,
+    'file-music': FileMusic,
+    'file-video': FileVideoCamera,
   }
 
   const Lucide = icons[name]
@@ -370,7 +485,11 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   const [previewEntry, setPreviewEntry] = useState<FileEntry | null>(null)
   const [previewKind, setPreviewKind] = useState<FilePreviewKind>('unknown')
   const [previewTextContent, setPreviewTextContent] = useState('')
+  const [previewDocxHtml, setPreviewDocxHtml] = useState('')
+  const [previewDocPdfSrc, setPreviewDocPdfSrc] = useState('')
   const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewLoadingLabel, setPreviewLoadingLabel] = useState('Loading preview...')
+  const [previewLoadingElapsedSeconds, setPreviewLoadingElapsedSeconds] = useState(0)
   const [previewError, setPreviewError] = useState('')
   const [imageViewerOpen, setImageViewerOpen] = useState(false)
   const [imageViewerSrc, setImageViewerSrc] = useState('')
@@ -410,6 +529,10 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   }, [])
 
   const clearPreviewState = useCallback(() => {
+    setPreviewDocPdfSrc((prev) => {
+      revokeBlobUrl(prev)
+      return ''
+    })
     setPreviewImageSrc((prev) => {
       revokeBlobUrl(prev)
       return ''
@@ -420,8 +543,11 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
     setPreviewEntry(null)
     setPreviewKind('unknown')
     setPreviewTextContent('')
+    setPreviewDocxHtml('')
     setPreviewError('')
     setPreviewLoading(false)
+    setPreviewLoadingLabel('Loading preview...')
+    setPreviewLoadingElapsedSeconds(0)
     setPreviewImageLoading(false)
     setImageViewerOpen(false)
   }, [])
@@ -647,6 +773,13 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
         setPreviewKind(kind)
         setPreviewError('')
         setPreviewLoading(false)
+        setPreviewLoadingLabel('Loading preview...')
+        setPreviewLoadingElapsedSeconds(0)
+        setPreviewDocxHtml('')
+        setPreviewDocPdfSrc((prev) => {
+          revokeBlobUrl(prev)
+          return ''
+        })
         if (kind === 'text') {
           const text = (payload as FileResponse).content
           if (typeof text === 'string') {
@@ -1925,12 +2058,24 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   }, [openActionPath, actionMenuPosition])
 
   const uploadQueueCount = uploadProgress.filter((item) => item.status !== 'completed').length
+  const previewIsDocFile = useMemo(() => {
+    if (!previewEntry || previewKind !== 'office') {
+      return false
+    }
+    return isDocFileName(previewEntry.name)
+  }, [previewEntry, previewKind])
   const previewRawUrl = useMemo(() => {
     if (!previewEntry) {
       return ''
     }
     return buildRawFileUrl(previewEntry.path)
   }, [buildRawFileUrl, previewEntry])
+  const previewDocPdfUrl = useMemo(() => {
+    if (!previewEntry || !previewIsDocFile) {
+      return ''
+    }
+    return `/api/preview/pdf${encodePath(previewEntry.path)}?auth=${downloadQuery}`
+  }, [downloadQuery, previewEntry, previewIsDocFile])
   const publicImageRawUrl = useMemo(() => {
     if (!publicShareId) {
       return ''
@@ -1938,11 +2083,23 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
     return buildPublicDownloadPathForTarget(publicShareId, publicSharePath, publicSharePassword)
   }, [publicShareId, publicSharePassword, publicSharePath])
   const officePreviewUrl = useMemo(() => {
-    if (!previewEntry || previewKind !== 'office' || !previewRawUrl) {
+    if (!previewEntry || previewKind !== 'office' || !previewRawUrl || previewIsDocFile) {
       return ''
     }
     return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(`${window.location.origin}${previewRawUrl}`)}`
-  }, [previewEntry, previewKind, previewRawUrl])
+  }, [previewEntry, previewKind, previewRawUrl, previewIsDocFile])
+  const displayPreviewKind = useMemo<FilePreviewKind>(() => {
+    if (previewIsDocFile && previewDocPdfSrc) {
+      return 'pdf'
+    }
+    return previewKind
+  }, [previewDocPdfSrc, previewIsDocFile, previewKind])
+  const displayPreviewRawUrl = useMemo(() => {
+    if (previewIsDocFile) {
+      return previewDocPdfSrc
+    }
+    return previewRawUrl
+  }, [previewDocPdfSrc, previewIsDocFile, previewRawUrl])
   const publicTextContent = useMemo(() => {
     if (!publicShareData || publicShareData.is_dir || publicShareData.content == null) {
       return ''
@@ -1988,6 +2145,165 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   const currentPathSegments = useMemo(() => currentPath.split('/').filter(Boolean), [currentPath])
   const visibleFolderCount = useMemo(() => visibleItems.filter((item) => item.is_dir).length, [visibleItems])
   const visibleFileCount = useMemo(() => visibleItems.filter((item) => !item.is_dir).length, [visibleItems])
+
+  useEffect(() => {
+    let cancelled = false
+    const controller = new AbortController()
+    let tickTimer: number | null = null
+
+    setPreviewDocPdfSrc((prev) => {
+      revokeBlobUrl(prev)
+      return ''
+    })
+
+    if (!previewEntry || !previewIsDocFile || !previewDocPdfUrl) {
+      return () => {
+        cancelled = true
+        controller.abort()
+        if (tickTimer != null) {
+          window.clearInterval(tickTimer)
+        }
+      }
+    }
+
+    const startedAt = Date.now()
+    setPreviewError('')
+    setPreviewLoading(true)
+    setPreviewLoadingLabel('Converting document to PDF...')
+    setPreviewLoadingElapsedSeconds(0)
+    tickTimer = window.setInterval(() => {
+      const elapsedSeconds = Math.max(1, Math.floor((Date.now() - startedAt) / 1000))
+      setPreviewLoadingElapsedSeconds(elapsedSeconds)
+      if (elapsedSeconds >= 3) {
+        setPreviewLoadingLabel('Still converting, this may take a while...')
+      }
+    }, 1000)
+
+    void fetch(previewDocPdfUrl, {
+      signal: controller.signal,
+      headers: withAuthHeaders(effectiveToken),
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => ({}))) as { error?: string }
+          throw new Error(payload.error ?? `Document preview failed (${response.status})`)
+        }
+        return response.blob()
+      })
+      .then((blob) => {
+        if (cancelled) {
+          return
+        }
+        const objectUrl = URL.createObjectURL(blob)
+        setPreviewDocPdfSrc((prev) => {
+          revokeBlobUrl(prev)
+          return objectUrl
+        })
+      })
+      .catch((error) => {
+        if (cancelled || controller.signal.aborted) {
+          return
+        }
+        console.error('doc preview conversion failed', error)
+        const message = error instanceof Error ? error.message : String(error)
+        setPreviewError(message || 'Document conversion failed. Please download and open locally.')
+      })
+      .finally(() => {
+        if (cancelled) {
+          return
+        }
+        setPreviewLoading(false)
+        if (tickTimer != null) {
+          window.clearInterval(tickTimer)
+        }
+      })
+
+    return () => {
+      cancelled = true
+      controller.abort()
+      if (tickTimer != null) {
+        window.clearInterval(tickTimer)
+      }
+    }
+  }, [effectiveToken, previewDocPdfUrl, previewEntry, previewIsDocFile])
+
+  useEffect(() => {
+    let cancelled = false
+    const controller = new AbortController()
+    let tickTimer: number | null = null
+
+    setPreviewDocxHtml('')
+
+    if (!previewEntry || previewKind !== 'docx' || !previewRawUrl) {
+      return () => {
+        cancelled = true
+        controller.abort()
+        if (tickTimer != null) {
+          window.clearInterval(tickTimer)
+        }
+      }
+    }
+
+    const startedAt = Date.now()
+    setPreviewError('')
+    setPreviewLoading(true)
+    setPreviewLoadingLabel('Parsing DOCX preview...')
+    setPreviewLoadingElapsedSeconds(0)
+    tickTimer = window.setInterval(() => {
+      const elapsedSeconds = Math.max(1, Math.floor((Date.now() - startedAt) / 1000))
+      setPreviewLoadingElapsedSeconds(elapsedSeconds)
+      if (elapsedSeconds >= 3) {
+        setPreviewLoadingLabel('Still parsing DOCX content...')
+      }
+    }, 1000)
+
+    void fetch(previewRawUrl, {
+      signal: controller.signal,
+      headers: withAuthHeaders(effectiveToken),
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => ({}))) as { error?: string }
+          throw new Error(payload.error ?? `DOCX preview failed (${response.status})`)
+        }
+        return response.arrayBuffer()
+      })
+      .then(async (buffer) => {
+        const result = await mammoth.convertToHtml({ arrayBuffer: buffer })
+        if (cancelled) {
+          return
+        }
+        setPreviewDocxHtml(result.value || '')
+        if (!result.value?.trim()) {
+          setPreviewError('This DOCX file has no previewable content.')
+        }
+      })
+      .catch((error) => {
+        if (cancelled || controller.signal.aborted) {
+          return
+        }
+        console.error('docx preview render failed', error)
+        const message = error instanceof Error ? error.message : String(error)
+        setPreviewError(message || 'DOCX preview failed. Please download and open locally.')
+      })
+      .finally(() => {
+        if (cancelled) {
+          return
+        }
+        setPreviewLoading(false)
+        if (tickTimer != null) {
+          window.clearInterval(tickTimer)
+        }
+      })
+
+    return () => {
+      cancelled = true
+      controller.abort()
+      if (tickTimer != null) {
+        window.clearInterval(tickTimer)
+      }
+    }
+  }, [effectiveToken, previewEntry, previewKind, previewRawUrl])
 
   useEffect(() => {
     let cancelled = false
@@ -2102,9 +2418,10 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   useEffect(() => {
     return () => {
       revokeBlobUrl(previewImageSrc)
+      revokeBlobUrl(previewDocPdfSrc)
       revokeBlobUrl(publicImageDisplaySrc)
     }
-  }, [previewImageSrc, publicImageDisplaySrc])
+  }, [previewDocPdfSrc, previewImageSrc, publicImageDisplaySrc])
 
   if (publicShareId) {
     return (
@@ -2228,7 +2545,9 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                           </td>
                         </tr>
                       ) : (
-                        (publicShareData.items ?? []).map((item) => (
+                        (publicShareData.items ?? []).map((item) => {
+                          const itemIcon = getEntryIconMeta(item)
+                          return (
                           <tr key={item.path} className="border-t border-slate-100 text-slate-800">
                             <td className="px-3 py-2 font-medium">
                               {item.is_dir ? (
@@ -2243,7 +2562,15 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                                   </span>
                                 </button>
                               ) : (
-                                item.name
+                                <span className="inline-flex items-center gap-1.5">
+                                  <Icon name={itemIcon.iconName} className={itemIcon.iconClassName} />
+                                  <span>{item.name}</span>
+                                  {itemIcon.badgeLabel ? (
+                                    <span className={`${fileTypeBadgeBaseClass} ${fileTypeBadgeClassByTone[itemIcon.badgeTone]}`}>
+                                      {itemIcon.badgeLabel}
+                                    </span>
+                                  ) : null}
+                                </span>
                               )}
                             </td>
                             <td className="px-3 py-2">{item.is_dir ? 'Folder' : 'File'}</td>
@@ -2277,7 +2604,8 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                               </div>
                             </td>
                           </tr>
-                        ))
+                          )
+                        })
                       )}
                     </tbody>
                   </table>
@@ -2713,7 +3041,9 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                         </td>
                       </tr>
                     ) : (
-                      visibleItems.map((entry) => (
+                      visibleItems.map((entry) => {
+                        const entryIcon = getEntryIconMeta(entry)
+                        return (
                         <tr key={entry.path} className="text-slate-800">
                           <td className="border-b border-slate-100 px-3 py-2">
                             <input
@@ -2743,7 +3073,15 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                                 rel="noreferrer"
                                 className="rounded px-1 py-0.5 text-left text-slate-800 transition hover:bg-slate-100"
                               >
-                                {entry.name}
+                                <span className="inline-flex items-center gap-1.5">
+                                  <Icon name={entryIcon.iconName} className={entryIcon.iconClassName} />
+                                  <span>{entry.name}</span>
+                                  {entryIcon.badgeLabel ? (
+                                    <span className={`${fileTypeBadgeBaseClass} ${fileTypeBadgeClassByTone[entryIcon.badgeTone]}`}>
+                                      {entryIcon.badgeLabel}
+                                    </span>
+                                  ) : null}
+                                </span>
                               </a>
                             )}
                           </td>
@@ -2766,7 +3104,8 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                             </div>
                           </td>
                         </tr>
-                      ))
+                        )
+                      })
                     )}
                   </tbody>
                 </table>
@@ -2879,12 +3218,15 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
           <FilePreviewPanel
             embedded={embedded}
             previewEntry={previewEntry}
-            previewKind={previewKind}
-            previewRawUrl={previewRawUrl}
+            previewKind={displayPreviewKind}
+            previewRawUrl={displayPreviewRawUrl}
             previewImageSrc={previewImageSrc}
             previewLoading={previewLoading}
+            previewLoadingLabel={previewLoadingLabel}
+            previewLoadingElapsedSeconds={previewLoadingElapsedSeconds}
             previewError={previewError}
             previewTextContent={previewTextContent}
+            previewDocxHtml={previewDocxHtml}
             previewImageLoading={previewImageLoading}
             previewImageProgressPercent={previewImageProgressPercent}
             previewImageLoadedBytes={previewImageLoadedBytes}

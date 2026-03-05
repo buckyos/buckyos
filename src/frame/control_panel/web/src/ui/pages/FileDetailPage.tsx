@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ArrowLeft, Download } from 'lucide-react'
+import mammoth from 'mammoth/mammoth.browser'
 import { useLocation } from 'react-router-dom'
 
 import { ensureSessionToken } from '@/auth/authManager'
@@ -7,7 +8,7 @@ import { getSessionTokenFromCookies, getStoredSessionToken } from '@/auth/sessio
 import FilePreviewPanel from '@/ui/components/file_manager/FilePreviewPanel'
 import { downloadImageWithProgress } from '@/ui/components/file_manager/imageDownload'
 import ImageViewerModal from '@/ui/components/file_manager/ImageViewerModal'
-import { getFilePreviewKind, type FilePreviewKind } from '@/ui/components/file_manager/filePreview'
+import { getFilePreviewKind, isDocFileName, type FilePreviewKind } from '@/ui/components/file_manager/filePreview'
 
 type FileEntry = {
   name: string
@@ -90,6 +91,11 @@ const FileDetailPage = () => {
   const [previewEntry, setPreviewEntry] = useState<FileEntry | null>(null)
   const [previewKind, setPreviewKind] = useState<FilePreviewKind>('unknown')
   const [previewTextContent, setPreviewTextContent] = useState('')
+  const [previewDocxHtml, setPreviewDocxHtml] = useState('')
+  const [previewDocPdfSrc, setPreviewDocPdfSrc] = useState('')
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewLoadingLabel, setPreviewLoadingLabel] = useState('Loading preview...')
+  const [previewLoadingElapsedSeconds, setPreviewLoadingElapsedSeconds] = useState(0)
   const [previewError, setPreviewError] = useState('')
   const [pageLoading, setPageLoading] = useState(true)
   const [pageError, setPageError] = useState('')
@@ -122,12 +128,36 @@ const FileDetailPage = () => {
     }
     return buildRawFileUrl(previewEntry.path)
   }, [buildRawFileUrl, previewEntry])
+  const previewIsDocFile = useMemo(() => {
+    if (!previewEntry || previewKind !== 'office') {
+      return false
+    }
+    return isDocFileName(previewEntry.name)
+  }, [previewEntry, previewKind])
+  const previewDocPdfUrl = useMemo(() => {
+    if (!previewEntry || !previewIsDocFile) {
+      return ''
+    }
+    return `/api/preview/pdf${encodePath(previewEntry.path)}?auth=${downloadQuery}`
+  }, [downloadQuery, previewEntry, previewIsDocFile])
   const officePreviewUrl = useMemo(() => {
-    if (!previewEntry || previewKind !== 'office' || !previewRawUrl) {
+    if (!previewEntry || previewKind !== 'office' || !previewRawUrl || previewIsDocFile) {
       return ''
     }
     return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(`${window.location.origin}${previewRawUrl}`)}`
-  }, [previewEntry, previewKind, previewRawUrl])
+  }, [previewEntry, previewKind, previewRawUrl, previewIsDocFile])
+  const displayPreviewKind = useMemo<FilePreviewKind>(() => {
+    if (previewIsDocFile && previewDocPdfSrc) {
+      return 'pdf'
+    }
+    return previewKind
+  }, [previewDocPdfSrc, previewIsDocFile, previewKind])
+  const displayPreviewRawUrl = useMemo(() => {
+    if (previewIsDocFile) {
+      return previewDocPdfSrc
+    }
+    return previewRawUrl
+  }, [previewDocPdfSrc, previewIsDocFile, previewRawUrl])
 
   const setSessionToken = useCallback((next: string) => {
     setToken(next)
@@ -215,6 +245,14 @@ const FileDetailPage = () => {
       setPageError('')
       setPreviewError('')
       setPreviewTextContent('')
+      setPreviewDocxHtml('')
+      setPreviewDocPdfSrc((prev) => {
+        revokeBlobUrl(prev)
+        return ''
+      })
+      setPreviewLoading(false)
+      setPreviewLoadingLabel('Loading preview...')
+      setPreviewLoadingElapsedSeconds(0)
       setPreviewImageSrc((prev) => {
         revokeBlobUrl(prev)
         return ''
@@ -276,6 +314,9 @@ const FileDetailPage = () => {
 
         setPreviewEntry(entry)
         setPreviewKind(kind)
+        setPreviewLoading(false)
+        setPreviewLoadingLabel('Loading preview...')
+        setPreviewLoadingElapsedSeconds(0)
         if (kind === 'text') {
           if (typeof payload.content === 'string') {
             setPreviewTextContent(payload.content)
@@ -295,6 +336,165 @@ const FileDetailPage = () => {
       cancelled = true
     }
   }, [effectiveToken, requestedPath, setSessionToken])
+
+  useEffect(() => {
+    let cancelled = false
+    const controller = new AbortController()
+    let tickTimer: number | null = null
+
+    setPreviewDocPdfSrc((prev) => {
+      revokeBlobUrl(prev)
+      return ''
+    })
+
+    if (!previewEntry || !previewIsDocFile || !previewDocPdfUrl) {
+      return () => {
+        cancelled = true
+        controller.abort()
+        if (tickTimer != null) {
+          window.clearInterval(tickTimer)
+        }
+      }
+    }
+
+    const startedAt = Date.now()
+    setPreviewError('')
+    setPreviewLoading(true)
+    setPreviewLoadingLabel('Converting document to PDF...')
+    setPreviewLoadingElapsedSeconds(0)
+    tickTimer = window.setInterval(() => {
+      const elapsedSeconds = Math.max(1, Math.floor((Date.now() - startedAt) / 1000))
+      setPreviewLoadingElapsedSeconds(elapsedSeconds)
+      if (elapsedSeconds >= 3) {
+        setPreviewLoadingLabel('Still converting, this may take a while...')
+      }
+    }, 1000)
+
+    void fetch(previewDocPdfUrl, {
+      signal: controller.signal,
+      headers: withAuthHeaders(effectiveToken),
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => ({}))) as { error?: string }
+          throw new Error(payload.error ?? `Document preview failed (${response.status})`)
+        }
+        return response.blob()
+      })
+      .then((blob) => {
+        if (cancelled) {
+          return
+        }
+        const objectUrl = URL.createObjectURL(blob)
+        setPreviewDocPdfSrc((prev) => {
+          revokeBlobUrl(prev)
+          return objectUrl
+        })
+      })
+      .catch((error) => {
+        if (cancelled || controller.signal.aborted) {
+          return
+        }
+        console.error('doc preview conversion failed', error)
+        const message = error instanceof Error ? error.message : String(error)
+        setPreviewError(message || 'Document conversion failed. Please download and open locally.')
+      })
+      .finally(() => {
+        if (cancelled) {
+          return
+        }
+        setPreviewLoading(false)
+        if (tickTimer != null) {
+          window.clearInterval(tickTimer)
+        }
+      })
+
+    return () => {
+      cancelled = true
+      controller.abort()
+      if (tickTimer != null) {
+        window.clearInterval(tickTimer)
+      }
+    }
+  }, [effectiveToken, previewDocPdfUrl, previewEntry, previewIsDocFile])
+
+  useEffect(() => {
+    let cancelled = false
+    const controller = new AbortController()
+    let tickTimer: number | null = null
+
+    setPreviewDocxHtml('')
+
+    if (!previewEntry || previewKind !== 'docx' || !previewRawUrl) {
+      return () => {
+        cancelled = true
+        controller.abort()
+        if (tickTimer != null) {
+          window.clearInterval(tickTimer)
+        }
+      }
+    }
+
+    const startedAt = Date.now()
+    setPreviewError('')
+    setPreviewLoading(true)
+    setPreviewLoadingLabel('Parsing DOCX preview...')
+    setPreviewLoadingElapsedSeconds(0)
+    tickTimer = window.setInterval(() => {
+      const elapsedSeconds = Math.max(1, Math.floor((Date.now() - startedAt) / 1000))
+      setPreviewLoadingElapsedSeconds(elapsedSeconds)
+      if (elapsedSeconds >= 3) {
+        setPreviewLoadingLabel('Still parsing DOCX content...')
+      }
+    }, 1000)
+
+    void fetch(previewRawUrl, {
+      signal: controller.signal,
+      headers: withAuthHeaders(effectiveToken),
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => ({}))) as { error?: string }
+          throw new Error(payload.error ?? `DOCX preview failed (${response.status})`)
+        }
+        return response.arrayBuffer()
+      })
+      .then(async (buffer) => {
+        const result = await mammoth.convertToHtml({ arrayBuffer: buffer })
+        if (cancelled) {
+          return
+        }
+        setPreviewDocxHtml(result.value || '')
+        if (!result.value?.trim()) {
+          setPreviewError('This DOCX file has no previewable content.')
+        }
+      })
+      .catch((error) => {
+        if (cancelled || controller.signal.aborted) {
+          return
+        }
+        console.error('docx preview render failed', error)
+        const message = error instanceof Error ? error.message : String(error)
+        setPreviewError(message || 'DOCX preview failed. Please download and open locally.')
+      })
+      .finally(() => {
+        if (cancelled) {
+          return
+        }
+        setPreviewLoading(false)
+        if (tickTimer != null) {
+          window.clearInterval(tickTimer)
+        }
+      })
+
+    return () => {
+      cancelled = true
+      controller.abort()
+      if (tickTimer != null) {
+        window.clearInterval(tickTimer)
+      }
+    }
+  }, [effectiveToken, previewEntry, previewKind, previewRawUrl])
 
   useEffect(() => {
     let cancelled = false
@@ -356,6 +556,12 @@ const FileDetailPage = () => {
       revokeBlobUrl(previewImageSrc)
     }
   }, [previewImageSrc])
+
+  useEffect(() => {
+    return () => {
+      revokeBlobUrl(previewDocPdfSrc)
+    }
+  }, [previewDocPdfSrc])
 
   useEffect(() => {
     if (!imageViewerOpen) {
@@ -432,12 +638,15 @@ const FileDetailPage = () => {
           <FilePreviewPanel
             embedded={false}
             previewEntry={previewEntry}
-            previewKind={previewKind}
-            previewRawUrl={previewRawUrl}
+            previewKind={displayPreviewKind}
+            previewRawUrl={displayPreviewRawUrl}
             previewImageSrc={previewImageSrc}
-            previewLoading={false}
+            previewLoading={previewLoading}
+            previewLoadingLabel={previewLoadingLabel}
+            previewLoadingElapsedSeconds={previewLoadingElapsedSeconds}
             previewError={previewError}
             previewTextContent={previewTextContent}
+            previewDocxHtml={previewDocxHtml}
             previewImageLoading={previewImageLoading}
             previewImageProgressPercent={previewImageProgressPercent}
             previewImageLoadedBytes={previewImageLoadedBytes}
