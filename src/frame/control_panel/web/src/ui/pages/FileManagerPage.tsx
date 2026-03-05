@@ -281,8 +281,6 @@ const formatTimestamp = (value: number) => {
   return new Date(value * 1000).toLocaleString()
 }
 
-type FileBadgeTone = 'neutral' | 'image' | 'doc' | 'sheet' | 'code' | 'archive' | 'audio' | 'video' | 'pdf'
-
 const ARCHIVE_EXTENSIONS = new Set(['zip', 'tar', 'gz', 'tgz', 'bz2', 'xz', '7z', 'rar'])
 const CODE_EXTENSIONS = new Set([
   'js',
@@ -312,61 +310,43 @@ const PRESENTATION_EXTENSIONS = new Set(['ppt', 'pptx', 'odp'])
 type EntryIconMeta = {
   iconName: IconName
   iconClassName?: string
-  badgeLabel?: string
-  badgeTone: FileBadgeTone
 }
 
 const getEntryIconMeta = (entry: { name: string; is_dir: boolean }): EntryIconMeta => {
   if (entry.is_dir) {
-    return { iconName: 'folder', iconClassName: 'text-amber-500', badgeTone: 'neutral' }
+    return { iconName: 'folder', iconClassName: 'text-amber-500' }
   }
 
   const extension = getFileExtension(entry.name)
-  const badgeLabel = extension ? extension.toUpperCase() : undefined
   const previewKind = getFilePreviewKind(entry)
 
   if (previewKind === 'image') {
-    return { iconName: 'file-image', iconClassName: 'text-sky-600', badgeLabel, badgeTone: 'image' }
+    return { iconName: 'file-image', iconClassName: 'text-sky-600' }
   }
   if (extension === 'pdf') {
-    return { iconName: 'file-text', iconClassName: 'text-rose-600', badgeLabel, badgeTone: 'pdf' }
+    return { iconName: 'file-text', iconClassName: 'text-rose-600' }
   }
   if (previewKind === 'audio') {
-    return { iconName: 'file-music', iconClassName: 'text-violet-600', badgeLabel, badgeTone: 'audio' }
+    return { iconName: 'file-music', iconClassName: 'text-violet-600' }
   }
   if (previewKind === 'video') {
-    return { iconName: 'file-video', iconClassName: 'text-fuchsia-600', badgeLabel, badgeTone: 'video' }
+    return { iconName: 'file-video', iconClassName: 'text-fuchsia-600' }
   }
   if (DOCUMENT_EXTENSIONS.has(extension) || PRESENTATION_EXTENSIONS.has(extension)) {
-    return { iconName: 'file-doc', iconClassName: 'text-blue-600', badgeLabel, badgeTone: 'doc' }
+    return { iconName: 'file-doc', iconClassName: 'text-blue-600' }
   }
   if (SPREADSHEET_EXTENSIONS.has(extension)) {
-    return { iconName: 'file-sheet', iconClassName: 'text-emerald-600', badgeLabel, badgeTone: 'sheet' }
+    return { iconName: 'file-sheet', iconClassName: 'text-emerald-600' }
   }
   if (ARCHIVE_EXTENSIONS.has(extension)) {
-    return { iconName: 'file-archive', iconClassName: 'text-orange-600', badgeLabel, badgeTone: 'archive' }
+    return { iconName: 'file-archive', iconClassName: 'text-orange-600' }
   }
   if (previewKind === 'text' || CODE_EXTENSIONS.has(extension)) {
-    return { iconName: 'file-code', iconClassName: 'text-cyan-700', badgeLabel, badgeTone: 'code' }
+    return { iconName: 'file-code', iconClassName: 'text-cyan-700' }
   }
 
-  return { iconName: 'file', iconClassName: 'text-slate-500', badgeLabel, badgeTone: 'neutral' }
+  return { iconName: 'file', iconClassName: 'text-slate-500' }
 }
-
-const fileTypeBadgeClassByTone: Record<FileBadgeTone, string> = {
-  neutral: 'border-slate-300 bg-slate-50 text-slate-600',
-  image: 'border-sky-200 bg-sky-50 text-sky-700',
-  doc: 'border-blue-200 bg-blue-50 text-blue-700',
-  sheet: 'border-emerald-200 bg-emerald-50 text-emerald-700',
-  code: 'border-cyan-200 bg-cyan-50 text-cyan-700',
-  archive: 'border-orange-200 bg-orange-50 text-orange-700',
-  audio: 'border-violet-200 bg-violet-50 text-violet-700',
-  video: 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700',
-  pdf: 'border-rose-200 bg-rose-50 text-rose-700',
-}
-
-const fileTypeBadgeBaseClass =
-  'inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide'
 
 type IconName =
   | 'open'
@@ -2565,11 +2545,6 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                                 <span className="inline-flex items-center gap-1.5">
                                   <Icon name={itemIcon.iconName} className={itemIcon.iconClassName} />
                                   <span>{item.name}</span>
-                                  {itemIcon.badgeLabel ? (
-                                    <span className={`${fileTypeBadgeBaseClass} ${fileTypeBadgeClassByTone[itemIcon.badgeTone]}`}>
-                                      {itemIcon.badgeLabel}
-                                    </span>
-                                  ) : null}
                                 </span>
                               )}
                             </td>
@@ -3076,11 +3051,6 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                                 <span className="inline-flex items-center gap-1.5">
                                   <Icon name={entryIcon.iconName} className={entryIcon.iconClassName} />
                                   <span>{entry.name}</span>
-                                  {entryIcon.badgeLabel ? (
-                                    <span className={`${fileTypeBadgeBaseClass} ${fileTypeBadgeClassByTone[entryIcon.badgeTone]}`}>
-                                      {entryIcon.badgeLabel}
-                                    </span>
-                                  ) : null}
                                 </span>
                               </a>
                             )}
