@@ -264,6 +264,97 @@ const normalizeUrlPath = (path: string) => {
   return normalized || '/'
 }
 
+const ellipsizeMiddle = (value: string, maxChars: number) => {
+  if (value.length <= maxChars) {
+    return value
+  }
+
+  const safeMax = Math.max(8, maxChars)
+  const keepTotal = safeMax - 3
+  const headLen = Math.ceil(keepTotal / 2)
+  const tailLen = Math.floor(keepTotal / 2)
+
+  return `${value.slice(0, headLen)}...${value.slice(-tailLen)}`
+}
+
+const formatDisplayFileName = (name: string, maxChars = 44) => {
+  if (name.length <= maxChars) {
+    return name
+  }
+
+  const dotIndex = name.lastIndexOf('.')
+  const hasExtension = dotIndex > 0 && dotIndex < name.length - 1
+  if (!hasExtension) {
+    return ellipsizeMiddle(name, maxChars)
+  }
+
+  const extension = name.slice(dotIndex)
+  const stem = name.slice(0, dotIndex)
+  const keepTotal = Math.max(8, maxChars) - 3
+  const minHeadLen = 6
+  const preferredTailLen = Math.max(10, Math.floor(keepTotal * 0.45))
+  const tailLen = Math.min(keepTotal - minHeadLen, Math.max(extension.length + 2, preferredTailLen))
+
+  if (tailLen <= extension.length) {
+    return ellipsizeMiddle(name, maxChars)
+  }
+
+  const stemTailLen = tailLen - extension.length
+  const suffix = `${stem.slice(-stemTailLen)}${extension}`
+  const headLen = keepTotal - suffix.length
+  if (headLen < minHeadLen) {
+    return ellipsizeMiddle(name, maxChars)
+  }
+
+  return `${stem.slice(0, headLen)}...${suffix}`
+}
+
+const splitNameAndExtension = (name: string) => {
+  const lastDotIndex = name.lastIndexOf('.')
+  if (lastDotIndex <= 0 || lastDotIndex >= name.length - 1) {
+    return {
+      baseName: name,
+      extension: '',
+    }
+  }
+
+  return {
+    baseName: name.slice(0, lastDotIndex),
+    extension: name.slice(lastDotIndex + 1),
+  }
+}
+
+const buildNameFromParts = (baseName: string, extension: string) => {
+  const cleanedBaseName = baseName.trim()
+  const cleanedExtension = extension.trim().replace(/^\.+/, '')
+  if (!cleanedExtension) {
+    return cleanedBaseName
+  }
+  return `${cleanedBaseName}.${cleanedExtension}`
+}
+
+type FileNameTooltipProps = {
+  name: string
+  maxChars?: number
+  maxWidthClass?: string
+}
+
+const FileNameTooltip = ({ name, maxChars = 44, maxWidthClass = 'max-w-[420px]' }: FileNameTooltipProps) => {
+  const displayName = formatDisplayFileName(name, maxChars)
+  const hasOverflow = displayName !== name
+
+  return (
+    <span className={`group/file-name relative inline-flex min-w-0 ${maxWidthClass} items-center`}>
+      <span className="truncate">{displayName}</span>
+      {hasOverflow ? (
+        <span className="pointer-events-none invisible absolute top-full left-0 z-[70] mt-1 w-max max-w-[min(80vw,560px)] break-all rounded-lg border border-slate-200 bg-slate-900/95 px-2.5 py-1.5 text-[11px] font-medium leading-relaxed text-white opacity-0 shadow-lg transition-opacity duration-150 group-hover/file-name:visible group-hover/file-name:opacity-100">
+          {name}
+        </span>
+      ) : null}
+    </span>
+  )
+}
+
 const formatBytes = (value: number) => {
   if (!Number.isFinite(value) || value <= 0) {
     return '-'
@@ -448,6 +539,12 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   const [editorContent, setEditorContent] = useState('')
   const [editorDirty, setEditorDirty] = useState(false)
   const [editorSaving, setEditorSaving] = useState(false)
+  const [renameTarget, setRenameTarget] = useState<FileEntry | null>(null)
+  const [renameBaseName, setRenameBaseName] = useState('')
+  const [renameExtension, setRenameExtension] = useState('')
+  const [renameEditingExtension, setRenameEditingExtension] = useState(false)
+  const [renameSubmitting, setRenameSubmitting] = useState(false)
+  const [renameError, setRenameError] = useState('')
   const [searchKeyword, setSearchKeyword] = useState('')
   const [searchLoading, setSearchLoading] = useState(false)
   const [searchResults, setSearchResults] = useState<FileEntry[]>([])
@@ -497,6 +594,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   const uploadSessionRef = useRef(new Map<string, string>())
   const uploadCancelledRef = useRef(new Set<string>())
   const rowActionMenuRef = useRef<HTMLDivElement | null>(null)
+  const renameExtensionInputRef = useRef<HTMLInputElement | null>(null)
   const deleteToastTimerRef = useRef<number | null>(null)
 
   const showDeleteToast = useCallback((text: string) => {
@@ -528,6 +626,26 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   const closeRowActionMenu = useCallback(() => {
     setOpenActionPath('')
     setActionMenuPosition(null)
+  }, [])
+
+  const closeRenameModal = useCallback((force = false) => {
+    if (renameSubmitting && !force) {
+      return
+    }
+    setRenameTarget(null)
+    setRenameBaseName('')
+    setRenameExtension('')
+    setRenameEditingExtension(false)
+    setRenameError('')
+  }, [renameSubmitting])
+
+  const onRename = useCallback((entry: FileEntry) => {
+    const { baseName, extension } = splitNameAndExtension(entry.name)
+    setRenameTarget(entry)
+    setRenameBaseName(baseName)
+    setRenameExtension(extension)
+    setRenameEditingExtension(false)
+    setRenameError('')
   }, [])
 
   const clearSearchState = useCallback(() => {
@@ -1959,40 +2077,64 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
     }
   }
 
-  const onRename = async (entry: FileEntry) => {
-    const newName = window.prompt('New name', entry.name)?.trim()
-    if (!newName || newName === entry.name) {
+  const onSubmitRename = async () => {
+    if (!renameTarget) {
       return
     }
 
+    const currentEntry = renameTarget
+    const nextName = currentEntry.is_dir
+      ? renameBaseName.trim()
+      : buildNameFromParts(renameBaseName, renameExtension)
+
+    if (!nextName) {
+      setRenameError('Name cannot be empty.')
+      return
+    }
+
+    if (nextName.includes('/')) {
+      setRenameError('Name cannot include "/".')
+      return
+    }
+
+    if (nextName === currentEntry.name) {
+      closeRenameModal()
+      return
+    }
+
+    setRenameSubmitting(true)
     setLoading(true)
     try {
-      const response = await fetch(`/api/resources${encodePath(entry.path)}`, {
+      const response = await fetch(`/api/resources${encodePath(currentEntry.path)}`, {
         method: 'PATCH',
         headers: withAuthHeaders(effectiveToken, {
           'Content-Type': 'application/json',
         }),
         body: JSON.stringify({
           action: 'rename',
-          new_name: newName,
+          new_name: nextName,
         }),
       })
 
       if (!response.ok) {
         const payload = (await response.json().catch(() => ({}))) as { error?: string }
-        setMessage(payload.error ?? `Rename failed (${response.status})`)
+        const errorText = payload.error ?? `Rename failed (${response.status})`
+        setRenameError(errorText)
+        setMessage(errorText)
         return
       }
 
-      if (editorPath === entry.path) {
-        setEditorPath(renamePath(entry.path, newName))
+      if (editorPath === currentEntry.path) {
+        setEditorPath(renamePath(currentEntry.path, nextName))
       }
 
+      closeRenameModal(true)
       clearSearchState()
       await loadDirectory(currentPath, effectiveToken)
       setMessage('Item renamed.')
     } finally {
       setLoading(false)
+      setRenameSubmitting(false)
     }
   }
 
@@ -2068,6 +2210,33 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
       setActionMenuPosition({ top: nextTop, left: nextLeft })
     }
   }, [openActionPath, actionMenuPosition])
+
+  useEffect(() => {
+    if (!renameEditingExtension) {
+      return
+    }
+    renameExtensionInputRef.current?.focus()
+    renameExtensionInputRef.current?.select()
+  }, [renameEditingExtension])
+
+  useEffect(() => {
+    if (!renameTarget) {
+      return
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') {
+        return
+      }
+      event.preventDefault()
+      closeRenameModal()
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [closeRenameModal, renameTarget])
 
   const uploadQueueCount = uploadProgress.filter((item) => item.status !== 'completed').length
   const previewIsDocFile = useMemo(() => {
@@ -2443,6 +2612,110 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
     </div>
   ) : null
 
+  const renameModalNode = renameTarget ? (
+    <div
+      className="fixed inset-0 z-[85] flex items-center justify-center bg-slate-900/45 px-4 py-6 backdrop-blur-sm"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          closeRenameModal()
+        }
+      }}
+    >
+      <form
+        onSubmit={(event) => {
+          event.preventDefault()
+          void onSubmitRename()
+        }}
+        className="w-full max-w-lg rounded-3xl border border-slate-200 bg-white p-5 shadow-2xl"
+      >
+        <div className="mb-4">
+          <h3 className="text-lg font-semibold text-slate-900">Rename {renameTarget.is_dir ? 'Folder' : 'File'}</h3>
+          <p className="mt-1 text-xs text-slate-500">
+            <span className="font-medium text-slate-600">Current name:</span>{' '}
+            <span className="break-all">{renameTarget.name}</span>
+          </p>
+        </div>
+
+        <label className="block text-sm font-semibold text-slate-700" htmlFor="rename-base-input">
+          Name
+        </label>
+        <div className="mt-2 flex items-start gap-2">
+          <input
+            id="rename-base-input"
+            value={renameBaseName}
+            onChange={(event) => {
+              setRenameBaseName(event.target.value)
+              if (renameError) {
+                setRenameError('')
+              }
+            }}
+            autoFocus
+            disabled={renameSubmitting}
+            className="min-w-0 flex-1 rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-800 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:cursor-not-allowed disabled:bg-slate-100"
+            placeholder={renameTarget.is_dir ? 'Folder name' : 'File name'}
+          />
+          {!renameTarget.is_dir ? (
+            <div className="w-[168px] shrink-0">
+              {renameEditingExtension ? (
+                <input
+                  ref={renameExtensionInputRef}
+                  value={renameExtension}
+                  onChange={(event) => {
+                    setRenameExtension(event.target.value)
+                    if (renameError) {
+                      setRenameError('')
+                    }
+                  }}
+                  onBlur={() => setRenameEditingExtension(false)}
+                  disabled={renameSubmitting}
+                  className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-800 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:cursor-not-allowed disabled:bg-slate-100"
+                  placeholder="ext"
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setRenameEditingExtension(true)}
+                  disabled={renameSubmitting}
+                  className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2 text-left text-sm font-semibold text-slate-700 transition hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {renameExtension.trim() ? `.${renameExtension.trim().replace(/^\.+/, '')}` : '.(none)'}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setRenameEditingExtension((prev) => !prev)}
+                disabled={renameSubmitting}
+                className="mt-1 text-[11px] font-medium text-primary transition hover:text-teal-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {renameEditingExtension ? 'Finish extension edit' : 'Click to edit extension'}
+              </button>
+            </div>
+          ) : null}
+        </div>
+
+        {renameError ? <p className="mt-2 text-sm text-rose-600">{renameError}</p> : null}
+
+        <div className="mt-5 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => closeRenameModal()}
+            disabled={renameSubmitting}
+            className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={renameSubmitting}
+            className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {renameSubmitting ? 'Renaming...' : 'Rename'}
+          </button>
+        </div>
+      </form>
+    </div>
+  ) : null
+
   if (publicShareId) {
     return (
       <main className="bucky-file-app min-h-screen bg-[radial-gradient(circle_at_top,#d7ece8,transparent_55%),#f4f8f7] px-4 py-6 md:px-8">
@@ -2575,16 +2848,17 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                                   type="button"
                                   onClick={() => void loadPublicShare(publicShareId, publicSharePassword, item.path)}
                                   className="rounded px-1 py-0.5 text-left text-primary transition hover:bg-primary/10"
+                                  aria-label={item.name}
                                 >
                                   <span className="inline-flex items-center gap-1.5">
-                                    <Icon name="folder" />
-                                    {item.name}
+                                    <Icon name="folder" className="shrink-0" />
+                                    <FileNameTooltip name={item.name} maxChars={38} maxWidthClass="max-w-[360px]" />
                                   </span>
                                 </button>
                               ) : (
-                                <span className="inline-flex items-center gap-1.5">
-                                  <Icon name={itemIcon.iconName} className={itemIcon.iconClassName} />
-                                  <span>{item.name}</span>
+                                <span className="inline-flex items-center gap-1.5" aria-label={item.name}>
+                                  <Icon name={itemIcon.iconName} className={`${itemIcon.iconClassName ?? ''} shrink-0`.trim()} />
+                                  <FileNameTooltip name={item.name} maxChars={38} maxWidthClass="max-w-[360px]" />
                                 </span>
                               )}
                             </td>
@@ -2759,6 +3033,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
           }}
         />
         {deleteToastNode}
+        {renameModalNode}
       </main>
     )
   }
@@ -3076,10 +3351,11 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                                 type="button"
                                 onClick={() => openDirectory(entry.path)}
                                 className="rounded px-1 py-0.5 text-left text-primary transition hover:bg-primary/10"
+                                aria-label={entry.name}
                               >
                                 <span className="inline-flex items-center gap-1.5">
-                                  <Icon name="folder" />
-                                  {entry.name}
+                                  <Icon name="folder" className="shrink-0" />
+                                  <FileNameTooltip name={entry.name} />
                                 </span>
                               </button>
                             ) : (
@@ -3088,10 +3364,11 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                                 target="_blank"
                                 rel="noreferrer"
                                 className="rounded px-1 py-0.5 text-left text-slate-800 transition hover:bg-slate-100"
+                                aria-label={entry.name}
                               >
                                 <span className="inline-flex items-center gap-1.5">
-                                  <Icon name={entryIcon.iconName} className={entryIcon.iconClassName} />
-                                  <span>{entry.name}</span>
+                                  <Icon name={entryIcon.iconName} className={`${entryIcon.iconClassName ?? ''} shrink-0`.trim()} />
+                                  <FileNameTooltip name={entry.name} />
                                 </span>
                               </a>
                             )}
@@ -3544,6 +3821,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
           }}
         />
         {deleteToastNode}
+        {renameModalNode}
       </div>
     </main>
   )
