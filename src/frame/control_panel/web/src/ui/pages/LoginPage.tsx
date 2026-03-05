@@ -95,7 +95,7 @@ const LoginPage = () => {
   const loading = status === 'loading'
 
   useEffect(() => {
-    document.title = 'BuckyOS | Control Panel Login'
+    document.title = 'Buckyos Login'
     if (defaultUsername) {
       setUsername((prev) => prev || defaultUsername)
     }
