@@ -1,128 +1,126 @@
 /*
-这是一个平台无关的调度器基于一个确定性的系统状态（通常来自etcd上的信息），执行一次调度，得到一组新状态+OPTask，然后等待执行后（系统状态发生改变），
-再进入下一次调度。调度本身是幂等的（一个调度结果不会依赖某个隐藏的状态），但大部分时候，调度器通常会依赖“上一次调度行为的具体操作结果”
-这个调度器将易于构造海量的测试。在这个基础只上，另一个团队可以专注于执行器的开发，专心完成调度器给定的指令，并构建调度器所依赖的系统状态。
+NodeScheduler — 纯函数式、平台无关的服务调度器
+=================================================
 
-该设计最重要的一点就是定义参与调度的实体和可执行的调度动作，并坚持less is more，很多功能的添加只会让系统变的更复杂更不稳定。
-基于长期的工业DFS和CDN的开发经验，调度器绝对不应该去管理这两个设施。这两个设施作为系统可用性和可靠性的基石，有另外的分布式模式。
+## 设计理念
 
-通用调度器被称作NodeScheduler,其核心逻辑如下:
+这是一个平台无关的调度器，基于一个确定性的系统状态（来自 system_config KV 存储），
+执行一次调度，得到一组 SchedulerAction，然后等待执行后（系统状态发生改变），
+再进入下一次调度。调度本身是幂等的，但会依赖"上一次调度快照"来判断变更。
 
-定义被调度对象 (ServiceSpec)
-定义可使用的资源载体 (Node)
-定义用户
-定义树状的资源组
-定义调度任务(OPTask),实现一些必要的Node和ReplicaInstance的维护工作
-通过对上诉对象的修改，定义运维可以执行的”改变系统的操作“
-
-系统级管理
-    重启系统
-    暂停系统（通常保留OPTask的执行能力）
-    启动系统
-    关闭系统
-    系统备份（不停机）
-    系统恢复
-        新系统恢复
-        系统先暂停，再执行恢复（引导至恢复模式？）
-
-用户管理
-    添加用户
-    调整用户的资源池
-    删除用户：释放属于用户的所有服务（不会立刻执行）
-    停用用户：停止属于用户的所有服务
-    启用用户：恢复属于用户的所有服务
-
-实现Node管理调度算法
-    识别新添加的Node，加入系统资源池。
-        通过可扩展的OPTask，实现特定节点的初始化运维工作，减少集群维护负担（所有的Node只需要完成最最基本的初始化工作就可以接入集群，上架简单）
-    Node 日常体检
-        可以指定计划任务，在合适的时机执行深度的体检OPTask(一般是做数据健康检查或性能测试)。
-    Node需要维护（暂停）操作，Node上的数据不会丢失
-        排空Node，Instance有序迁移或直接释放，系统可用资源减少
-        下发运维任务，并等待完成（比如升级内核）
-        Node断电，进行物理维护
-        Node从维护状态恢复 （此时单Node的资源可能发生了改变）
-    删除(是否)Node，Node在系统中删除
-        在删除前会根据Node的能力提示是否会导致系统不可用
-    替换Node：
-        先临时将Node上的数据通过OPTask迁移到其他(1个或多个)Node上
-        再通过物理操作更换Node
-        更换后，通过OPTask将数据迁移回新Node
-    区域维护：
-        当Node有物理分区(lanid)时，可以基于区域对Node进行隔离维护
-
-实现ServiceSpec 管理调度管理
-    添加ServiceSpec，实例化调度算法：
-        分配资源：构造Instance，将未部署的ServiceSpec绑定到Node上更新ServiceSpec,调度器调整instance
-    删除ServiceSpec,调度器及时释放instance
-    暂停ServiceSpec，调度器及时停止instance的运行(释放资源)
-    允许导入Spec拓扑图，对Spec的实例化进行具体的指导。
-
-Instance管理 （自动负载均衡）
-    动态调整：根据运行情况，系统资源剩余情况，相对动态的调整ServiceSpec能用的资源
-    优先级管理：根据运行情况，临时暂停部分instance的运行，保证高优先级instance的运行
-    自动错误隔离：当系统发现大量错误时，能自动隔离错误节点，保证系统的稳定性
-
-运维event管理（异步调度）
-    允许调度器在某些情况下下发运维event，并等待完成人的决策
-    人的决策完成后，本次调度基于决策结果继续。
-    一些重要决策，默认是倒计时决策，当人没有在规定的时间里否决该决策时，该决策自动通过。
-
-
-状态管理：
-    调度器所依赖的数据保存在etcd上，调度器不需要管理etcd的可靠性
-    大部分Replica是无状态的，只在Node上保存Cache数据
-        LocalCache: 保存在Node上的缓存数据，可以在磁盘空间不足的时候释放
-    有状态的ReplicaInstance的主要
-        Data：保存在DFS上，起可靠性和热点迁移性不需要调度器考虑
-        LocalData: 保存在Node上的数据，当ReplicaInstance被迁移时，需要转移到新的Node上。但从原理上说，大部分ReplicaInstance的LocalData是可以从其他Instance恢复的，并不强依赖LocalData的迁移
-
-
-构建的是**纯函数式（Pure Functional）**的调度器核心。
-这种架构的核心优势在于：
-
+构建的是 **纯函数式（Pure Functional）** 的调度器核心：
 - 确定性（Determinism）：给定 Input (Snapshot)，必然得到 Output (Actions)。排查 Bug 只需要 Input 数据。
-- 极高的测试覆盖率：不需要 Mock ETCD，不需要 Mock 网络，只需要构造内存 Struct。
-- 开发解耦：调度器团队只关心逻辑，执行器团队只关心“如何把动作落地”。
+- 极高的测试覆盖率：不需要 Mock 网络或外部存储，只需要构造内存 Struct。
+- 开发解耦：调度器只关心逻辑（本文件），执行器只关心"如何把动作落地"（system_config_agent.rs / service.rs）。
 
-schedule loops:
-收集系统信息可以得到 系统当前状态（当前快照）
-执行一次调度（上一次调度成功的系统状态，当前系统状态，得到 Action + OPTaskList
-    Action是对系统状态的立刻改变（构造Action时，通常也会立刻修改调度器的内部状态）：在一个正常的系统里，这个改变会立刻成功
-        `完成后调度器的状态` 等于 `SystemConfig Apply Action后->重新构造调度的状态`
-    OPTask是一个需要时间的，可跟踪的Task,在调度器看来，其状态也是系统当前状态的一部分
-调度完成后，系统需要立刻用事务执行Action，并保存执行完成后的系统快照
+## 核心实体（已实现）
 
-调度器的工作核心基本是围绕Instance来的
-    - 按优先级ReviewInstance的资源占用
-    - 确保所有的，运行中的ServiceSpec都有合适的Instance在运行（至少1个）
-    - 及时发现Instance的负载变高，并反应到ServiceInfo的权重上去：是系统计算权重，还是给出原始信息让应用有机会自己算？
-    - 及时发现Instance的故障，并反应到ServiceInfo上去
+- `ServiceSpec`  — 被调度对象，描述一个服务的目标状态和资源需求
+    - `ServiceSpecType`: Kernel（内核服务, owner=root）| Service（系统服务）| App（用户应用, 有 owner_user_id）
+    - `ServiceSpecState`: New → Deployed | DeployFailed | Abnormal | Disable | Deleted
+- `NodeItem`      — 资源载体，描述一个物理/逻辑节点的能力和状态
+    - `NodeType`: OOD | Server | Desktop | Mobile | Sensor | IoTController
+    - `NodeState`: New → Prepare → Ready → Abnormal | Unavailable | Removing → Deleted
+    - 包含 CPU/Memory/GPU 资源、labels（用于亲和性匹配）、network_zone
+- `UserItem`      — 用户信息（userid, user_type: Admin/User/Limited, 可选 res_pool_id）
+- `ReplicaInstance` — ServiceSpec 在某个 Node 上的运行实例
+    - `InstanceState`: Prepare | Running | Suspended | Deleted
+    - 包含 last_update_time 用于存活检测（INSTANCE_ALIVE_TIME = 90s）
+- `ServiceInfo`   — 调度器基于存活的 Instance 计算出的服务访问信息
+    - SingleInstance（单实例）| RandomCluster（多实例集群，带权重）
+- `OPTask`        — 运维任务定义（将在未来版本中被 Function Instance 取代，
+    详见 doc/arch/使用function_instance实现分布式调度器.md）
+- `SchedulerAction` — 调度器输出的动作枚举
 
-一些工作原则：
-    - 最小改动原则，尽量不改动已有的Instance（可以增加，少删除或修改)
+## Schedule Loop（已实现，见 system_config_agent.rs::schedule_loop）
 
+每 5 秒执行一轮调度：
+1. 从 system_config 拉取全量系统状态（dump_configs_for_scheduler）
+2. 通过 create_scheduler_by_system_config() 构造 NodeScheduler 实例
+3. 从 system_config 加载上一次调度快照（system/scheduler/snapshot）
+4. 调用 scheduler.schedule(last_snapshot) 得到 Vec<SchedulerAction>
+5. 通过 schedule_action_to_tx_actions() 将 SchedulerAction 转换为 KV 事务操作
+6. 附加处理：更新 RBAC 策略、更新 Node 的 gateway_config（路由规则）
+7. 通过 exec_tx() 事务提交所有变更
+8. 保存本次调度快照到 system/scheduler/snapshot
 
-基于上述设计，对系统做控制的方法
-    - 绝对不要修改Instance和ServiceInfo,这个都是调度器来修改的
-    - 修改ServiceSpec: 在系统中调整服务的“目标状态“（注意不删除原则，只是修改状态）
-    - 修改Node：在系统中调整Node的“目标状态“（注意不删除原则，只是修改状态）
-        - 增加/减少 Node
-        - 调整Node和逻辑Device的关系
-        - 调整Node的目标状态
+支持两种运行模式：
+- Boot 模式（--boot）：仅执行一次调度，用于系统初始化
+- Loop 模式：持续循环调度
 
+## schedule() 四阶段流程（已实现）
 
-ServiceInfo:
-- 大型系统中的流量控制，通常都是由运维手工操作完成的，因此调度器不会去尝试构造流量控制的逻辑
-- 系统使用最短路径进行访问，因此调度器只需要说明“服务的EndPoint”在哪，非调度器逻辑就会为所有的访问者，按固定规则创建访问路径
-    - 调度器专注于基于 Instance(with Report Info) 来构造ServiceInfo
-    - 外部逻辑根据ServiceInfo来完成确定的访问控制
+Step1. resort_nodes() — 节点状态审查
+    - New 节点 → Prepare（等待外部初始化完成后标记为 Ready）
+    - Removing 节点 → Deleted
+    - 小系统优化（节点数 ≤ 7）：如果 Step1 产生了动作，跳过 Step2，降低复杂度
 
+Step2. schedule_spec_change() — ServiceSpec 实例化/反实例化（仅在 spec 发生变化时触发）
+    - New → 过滤+打分选择最优节点，创建 ReplicaInstance，标记为 Deployed
+    - Deleted → 回收所有关联的 ReplicaInstance
+    - 节点过滤（filter_node_for_instance）：检查节点状态(Ready)、类型(OOD/Server)、
+      容器支持、CPU/Memory/GPU 资源、node_affinity 标签匹配
+    - 节点打分（score_node）：资源充足度 + 负载均衡 + 网络亲和性
 
-基于调度器状态机的一些复杂场景思考
-- 用户反复的添加/删除 同一个id ,单有不同配置的ServiceSpec:
-在下一个调度器触发时，调度器只会按其触发的那一瞬间的状态 结合上一次调度时的状态 来进行处理，而无视中间状态
-UI在做操作后，可以看到的状态是“New”（等待部署） 和 “Deleted”（已删除）
+Step3. （TODO）优化 instance 的资源使用
+
+Step4. calc_service_infos() — 基于存活的 Instance 计算 ServiceInfo
+    - 只有 Running 状态且 last_update_time 在 INSTANCE_ALIVE_TIME 内的 Instance 才计入
+    - 启动期调度器会注入 bootstrap 假上报（创建 Instance 时设置当前时间戳），
+      避免内核服务之间的启动依赖环
+    - 仅在 ServiceInfo 发生变化时才产生 UpdateServiceInfo Action
+
+## 执行器层（system_config_agent.rs + service.rs，非本文件）
+
+SchedulerAction 的执行由外部模块负责：
+- ChangeNodeStatus     → 更新 nodes/{node_id}/config 中的 state
+- ChangeServiceStatus  → 更新 services/{spec_id}/spec 或 users/.../apps/.../spec 中的 state
+- InstanceReplica      → 写入 nodes/{node_id}/config 中的 kernel 或 app 配置
+- RemoveInstance       → 从 node config 中移除实例配置
+- UpdateServiceInfo    → 更新 services/{spec_id}/info，供其他服务发现使用
+- CreateOPTask         → 未来版本将重构为 Function Instance 调度
+    （详见 doc/arch/使用function_instance实现分布式调度器.md）
+- UpdateInstance       → （TODO: unimplemented for service type）
+
+附加处理（在 schedule_loop 中执行）：
+- 更新 RBAC 策略：根据 users/nodes/specs 的变化重新生成 system/rbac/policy
+- 更新 Gateway 路由：根据 ServiceInfo 生成各 Node 的 gateway_config（process chain 规则）
+    - Kernel/Service 服务 → 匹配 /kapi/{service_name} 路径
+    - App 服务 → 匹配 host 前缀（子域名），支持 shortcut 快捷方式
+    - 单实例本机 → 直接 forward 到 127.0.0.1:{port}
+    - 其他情况 → 通过 buckyos-select 路由
+
+## 工作原则
+
+- 最小改动原则：尽量不改动已有的 Instance（可以增加，少删除或修改）
+- 对系统做控制的方法：
+    - 绝对不要直接修改 Instance 和 ServiceInfo，这些由调度器管理
+    - 修改 ServiceSpec：调整服务的"目标状态"
+    - 修改 Node：调整节点的"目标状态"
+
+## 尚未实现的规划功能（仅供参考，不代表当前能力）
+
+以下功能在早期设计文档中提及，但尚未在代码中实现：
+- 系统级管理（重启/暂停/启动/关闭/备份/恢复）
+- 完整的用户管理（删除/停用/启用用户及其服务）
+- Node 日常体检、维护（排空/暂停）、替换、区域维护
+- ServiceSpec Disable 状态的处理逻辑
+- Instance 动态资源调整、优先级管理、自动错误隔离
+- 运维 event 管理（异步决策）
+- 树状资源组
+
+## Function Instance（未来版本）
+
+当前的 OPTask 原语将在未来版本中被 Function Instance（fun_instance）取代。
+fun_instance 将调度原语从命令式的"在某节点执行某脚本"降级为纯函数调用
+`exec(funid, params)`，使调度器保持纯函数式语义——只做函数求值分配，
+不理解业务语义。可变状态通过版本化 `node_state(id, version)` 消解，
+计算结果通过 Named Object 全局缓存实现跨任务复用。
+
+本调度器的纯函数式设计（确定性输入→确定性输出）与 fun_instance 模型天然契合，
+届时主要变化集中在调度原语和执行器层，调度核心逻辑保持不变。
+
+详细设计见：doc/arch/使用function_instance实现分布式调度器.md
 
 */
 #[warn(unused, unused_mut, dead_code)]
@@ -136,6 +134,9 @@ use std::fmt;
 use std::hash::Hash;
 
 const SMALL_SYSTEM_NODE_COUNT: usize = 7;
+// INSTANCE_ALIVE_TIME 不是“请求级”可用性 SLA，而是调度器层面的存活证明窗口。
+// 调度器只关心“实例第一次被判定掉线”的时刻，因此允许真实访问失败与被宣告下线之间存在误差。
+// 启动期调度器也会主动构造一次“假上报”来打破内核服务之间的启动依赖环。
 const INSTANCE_ALIVE_TIME: u64 = 90;
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
@@ -430,6 +431,9 @@ pub struct ReplicaInstance {
     pub spec_id: String, //service_name or app_id
     pub res_limits: HashMap<String, f64>,
     pub instance_id: String,
+    // last_update_time 表示“最近一次可接受的存活证明时间”。
+    // 它既可能来自真实 runtime 心跳，也可能来自启动期调度器注入的 bootstrap 假上报。
+    // 这里刻意不把它等同于“服务自行声明的心跳时间”。
     pub last_update_time: u64,
     pub state: InstanceState,
     pub service_ports: HashMap<String, u16>,
@@ -652,6 +656,10 @@ impl NodeScheduler {
             for instance in self.replica_instances.values() {
                 //info!("spec_id:{} instance:{:?}", spec_id, instance);
                 if instance.state == InstanceState::Running && instance.spec_id == *spec_id {
+                    // 调度器只基于“最近一次存活证明”决定是否继续对外发布 service_info。
+                    // 这里允许存在检测误差：实例真实失联与调度器宣告下线之间不要求严格同步。（也无法做到)
+                    // 对应用来说，调度器返回服务可用时，如果访问失败可以尝试重试
+                    // 如果调度器返回服务不可用，应用使用服务的接口应直接返回失败
                     if now - instance.last_update_time < INSTANCE_ALIVE_TIME {
                         info_map.insert(instance.instance_id.clone(), (100, instance.clone()));
                     } else {
@@ -730,7 +738,8 @@ impl NodeScheduler {
 
     pub fn schedule_spec_change(&mut self) -> Result<Vec<SchedulerAction>> {
         let mut scheduler_actions = Vec::new();
-        let valid_nodes: Vec<NodeItem> = self
+        // 影子资源账本：每次分配后扣减可用资源，防止同一轮调度中多个 spec 被分配到同一节点导致超卖
+        let mut shadow_nodes: Vec<NodeItem> = self
             .nodes
             .values()
             .filter(|node| node.state == NodeState::Ready)
@@ -747,7 +756,20 @@ impl NodeScheduler {
             match spec_snapshot.state {
                 ServiceSpecState::New => {
                     let new_instances =
-                        self.create_replica_instance(&spec_snapshot, &valid_nodes)?;
+                        self.create_replica_instance(&spec_snapshot, &shadow_nodes)?;
+                    for instance in &new_instances {
+                        if let Some(node) = shadow_nodes.iter_mut().find(|n| n.id == instance.node_id) {
+                            node.available_cpu_mhz = node
+                                .available_cpu_mhz
+                                .saturating_sub(spec_snapshot.required_cpu_mhz);
+                            node.available_memory = node
+                                .available_memory
+                                .saturating_sub(spec_snapshot.required_memory);
+                            node.available_gpu_memory = node
+                                .available_gpu_memory
+                                .saturating_sub(spec_snapshot.required_gpu_mem);
+                        }
+                    }
                     for instance in new_instances {
                         self.replica_instances
                             .insert(instance.instance_id.clone(), instance.clone());
@@ -944,6 +966,9 @@ impl NodeScheduler {
                 spec_id: service_spec.id.clone(),
                 res_limits: HashMap::new(),
                 instance_id: create_replica_instance_id(service_spec, node.id.as_str()),
+                // 启动期第一次调度时，很多服务还不能可靠依赖 service_info 上报链路。
+                // 为了避免循环依赖，调度器在实例化时先注入一次 bootstrap 存活证明，
+                // 让 service_info 能先被构造出来；后续再由真实心跳接管该时间戳。
                 last_update_time: buckyos_get_unix_timestamp(),
                 state: InstanceState::Running,
                 service_ports: service_ports.clone(),
@@ -967,12 +992,14 @@ impl NodeScheduler {
             return false;
         }
 
-        // 2. 检查资源是否充足
-        if node.total_cpu_mhz < spec.required_cpu_mhz || node.total_memory < spec.required_memory {
+        // 2. 检查可用资源是否充足（available 而非 total，配合影子账本防止同轮超卖）
+        if node.available_cpu_mhz < spec.required_cpu_mhz
+            || node.available_memory < spec.required_memory
+        {
             return false;
         }
 
-        if node.total_gpu_memory < spec.required_gpu_mem
+        if node.available_gpu_memory < spec.required_gpu_mem
             || node.gpu_tflops < spec.required_gpu_tflops as f32
         {
             return false;
@@ -988,18 +1015,23 @@ impl NodeScheduler {
         true
     }
 
-    //关键函数:根据service_spec的配置,对node进行打分
     fn score_node(&self, node: &NodeItem, spec: &ServiceSpec) -> f64 {
         let mut score = 0.0;
 
-        // 1. 资源充足度评分
-        let cpu_score = (node.available_cpu_mhz - spec.required_cpu_mhz) / node.total_cpu_mhz;
-        let memory_score = (node.available_memory - spec.required_memory) / node.total_memory;
-        score += (cpu_score as f64 + memory_score as f64) / 2.0 * 100.0;
+        // 1. 资源充足度评分 (分配后剩余比例越高，得分越高)
+        if node.total_cpu_mhz > 0 {
+            let cpu_ratio =
+                (node.available_cpu_mhz as f64 - spec.required_cpu_mhz as f64) / node.total_cpu_mhz as f64;
+            let mem_ratio =
+                (node.available_memory as f64 - spec.required_memory as f64) / node.total_memory.max(1) as f64;
+            score += (cpu_ratio + mem_ratio) / 2.0 * 100.0;
+        }
 
-        // 2. 节点负载均衡评分
-        let load_score = 1.0 - (node.available_cpu_mhz / node.total_cpu_mhz) as f64;
-        score += load_score * 50.0;
+        // 2. 负载均衡评分 (已用比例越低，得分越高——倾向 LeastAllocated / Spreading)
+        if node.total_cpu_mhz > 0 {
+            let idle_ratio = node.available_cpu_mhz as f64 / node.total_cpu_mhz as f64;
+            score += idle_ratio * 50.0;
+        }
 
         // 3. 网络亲和性评分
         if let Some(network_affinity) = &spec.network_affinity {
@@ -1007,14 +1039,6 @@ impl NodeScheduler {
                 score += 30.0;
             }
         }
-
-        // 4. 节点健康评分
-        //let health_score = if node.is_healthy { 20.0 } else { 0.0 };
-        //score += health_score;
-
-        // 可以添加更多评分规则
-        // - 节点存储评分 (关键设计!)
-        // - 节点地理位置评分 (异地机房)
 
         score
     }

@@ -1,231 +1,262 @@
-## 调度器核心逻辑
+# scheduler
 
-核心逻辑是“将系统里的服务实例化，确定在哪些节点(设备)上运行哪些服务"
-随着系统里的服务配置变化，系统里节点的变化，上述结果也会不断的改变。
+这份文档只写当前仓库里的 scheduler 实现细节，默认读者已经知道 BuckyOS 的基本概念。对外说明看编号文档；这里主要回答三个问题：
 
-通用调度器被称作PodScheduler,其核心逻辑如下:
+- 现在的代码到底怎么跑
+- 哪些行为是当前实现特有的，不要想当然
+- 改 scheduler 时哪些文件必须一起动
 
-- 定义被调度对象 (Pod)
-- 定义资源载体 (Node)
-- 定义Pod 实例化结果 (Instance)
-- 定义调度任务(OPTask)，实现Instance的迁移
-- 调度算法的主要部分
-  - 实例化调度算法：分配资源：构造PodInstance，将未部署的Pod绑定到Node上
-  - 反实例化：及时释放资源
-  - 动态调整：根据运行情况，系统资源剩余情况，相对动态的调整Pod能用的资源
-  - 动态调整也涉及到实例的迁移
-  - 识别新Node，并加入系统资源池
-  - 排空Node，系统可用资源减少
-  - 释放Node，Node在系统中删除
-- 产生一致性配置
-  - 根据系统里的用户/设备/应用 的情况，构造最终的rbac policy表
-  - 根据instance的运行情况，构造service_info和selector
+## 代码锚点
 
-## Instance化
-实例化是调度器最重要的行为，运行中的buckyos根本上一个instance的集合
-调度器只关心Instance的构造，并将Instance加入到node_config中，随后node_main_loop会根据instance的配置运行执行代码
-站在调度器的角度，实例化的主要工作有
-- 构造instance(PodInstance)
-- 将instance加入到node_config中
-- 将instance加入到node_gateway_config中，以让其可以被访问
+- 核心状态机：`src/kernel/scheduler/src/scheduler.rs`
+- 调度循环 / snapshot / KV 写回：`src/kernel/scheduler/src/system_config_agent.rs`
+- `services/<spec>/info` 写回：`src/kernel/scheduler/src/service.rs`
+- 测试：`src/kernel/scheduler/src/scheduler_test.rs`
 
-## service port分配
+## 当前实现的边界
 
-一个Node上的端口是一种典型的需要分配的资源。对于大部分服务来说，都可以通过
+当前 scheduler 的 contract 很简单：
 
-Instance端：
+- 输入：`create_scheduler_by_system_config()` 从 system_config dump 组装出的 `NodeScheduler`
+- 输出：`Vec<SchedulerAction>`
+- 落地：`schedule_action_to_tx_actions()` 把 action 翻译成 KV 事务
+- 快照：`system/scheduler/snapshot`
 
-- 根据node_config启动instance
-- 启动时基于启始port开始尝试bind,bind成功得到实际端口
-- instance定义上报instance_info,包含实际端口
+`scheduler.rs` 头部注释里那句“纯函数式调度核心”基本就是贡献者该遵守的边界：
 
-调度器：
+- 调度核心只负责“给定快照推导动作”
+- 不在核心逻辑里直接写 system_config
+- 不把执行细节、业务流程细节继续塞进 scheduler
 
-- 根据instance_info+service_settings构造service_info
+## schedule loop 现状
 
-客户端：
+实际 loop 在 `schedule_loop()`，当前是每 5 秒一轮，不是旧文档里的 10 秒。
 
-- 通过service_info选择可用的service url,其中包含实际端口。
+每轮做的事情：
 
-为了方便测试，端口号的启始分配尽量符合某种规律（比如app port和app index有关）
+1. dump system_config
+2. 组装 `NodeScheduler`
+3. 读取 `system/scheduler/snapshot`
+4. 调 `scheduler.schedule(last_snapshot)`
+5. action -> KVAction
+6. 视情况附加 RBAC / gateway_config 更新
+7. `exec_tx()`
+8. 保存新的 snapshot
 
-这两步来允许instance自由选择端口。
+支持 boot 单轮模式和常驻 loop 模式。
 
-### 不允许自由选择的端口
+## `NodeScheduler::schedule()` 的真实行为
 
-- system_config的端口（固定是3980）
-- 
+### Step1: `resort_nodes()`
 
-### 范式
+这里只做很窄的节点状态收敛：
 
-所以在Node上的强占式资源都可以通过上述“先到先得+上报+调度器整理+客户端选择”的逻辑来使用
+- `New -> Prepare`
+- `Removing -> Deleted`
 
-## 资源限制(分配)
+没有更复杂的 node maintenance / drain / replace 逻辑。
 
-传统的OS,调度器的核心是给特定进程分配时间片(CPU资源）。BuckyOS的调度器通过一致的设计，可以管理广义的系统资源。
-调度器的一个重要工作是对资源的使用继续管理，资源的分配有2种
+另一个要记住的行为：
 
-- 累积性限制的资源，常见的有 存储空间，总流量
-- 瞬时限制的资源，常见的有CPU/内存占用。
-  (可以把瞬时限制的资源，看做一个清空时间极短的 累计性限制资源来看)。
+- 小系统优化已经启用
+- 当节点数 `<= 7` 且 Step1 产生 action，本轮直接返回，不继续做 Step2/Step4
 
-调度器只对资源的限制进行分配，并不负责执行。由运行容器来执行资源的限制，调度器并不假设这些限制必定能正确执行。基本逻辑如下
+所以小系统里新节点刚加入时，spec 实例化可能天然延后一轮。
 
-- 调度器查看系统资源的实际使用情况
-- 调度器查看系统资源的分配情况
-- 调度器查查每个Instance的资源使用情况
-- 对Instance的资源限制进行调整
-- 减少Instance来释放资源
-- 迁移Instance来让资源使用更平衡
-- 准备下一步的资源分配池
+### Step2: `schedule_spec_change()`
 
-### 资源限制的两种方式
+这里只在 `is_spec_changed(last_snapshot)` 为真时执行。
 
-- 绝对限制，基于数值的限制
-- 峰值比例限制，在资源限制时相当于没有限制，只有当产生竞争的时候该限制才会有效。 最典型的时上传带宽限制
-  如果instance1的带宽限制权重为10，instance2的带宽限制权重为20，那么当系统总带宽为30MB时，理想的情况下instance1使用了10MB带宽，instance2使用了20MB带宽
+当前真正会触发 Step2 的只有这些差异：
 
-## OPTask
+- spec 数量变化
+- `state`
+- `required_cpu_mhz`
+- `required_memory`
+- `node_affinity`
+- `network_affinity`
 
-调度器对node进行管理的需求
+注意：下面这些字段现在**不会**触发 Step2：
 
-node只需要加入集群后，就可以完全零运维，后续的运维操作点
+- `best_instance_count`
+- `need_container`
+- `required_gpu_tflops`
+- `required_gpu_mem`
+- `service_ports_config`
 
-1. 无法启动的(硬件)故障（无法启动操作系统，无法启动node_daemon)
-2. 无法接入网络（连接到任意OOD），这通常是因为网络拓扑结构变化引起的
+也就是说，如果你改了这些字段并期望重新分配实例，必须先补 `is_spec_changed()`。
 
-定义OPTask：OPTask可以扩展，通常是一个python脚本。注意OPTask都是幂等的，并尽量是事务的
+Step2 当前只处理两种 spec 状态：
 
-常见会导致故障的OPTask
+- `New`
+- `Deleted`
 
-- 升级操作系统
-- 修改操作系统的驱动
-- 修改操作系统的关键数据（这个和升级操作系统很类似）
+对应行为：
 
-===> 需要一个定制的，hyper-2 层操作系统。总是可以有效的回滚操作状态到上一个有效的版本
+- `New`：选点、创建 `ReplicaInstance`、把 spec 改成 `Deployed`
+- `Deleted`：删除关联实例、把 spec 保持为 `Deleted`
 
-根据不同的常见操作系统发行版，实现一些通用的OPTask
+当前没有“Deployed steady-state reconcile”这层能力。几个直接后果：
 
-## zone-gateway的确定
-如果不特别说明，所有的ood都默认是zone-gateway
-用户可以手工将任意node设置为zone-gateway
-系统的zone-gateway列表保存在zone_config中（boot/config
-Zone-gateway列表的第一个，是默认zone-gateway
-SN转发流量到默认zone-gateway
-端口转发，用户需要将端口转发的目标配置为默认zone-gateway
-(什么时候确定是不是zone-gateway? 所有的ood都是zone-gateway有什么问题？zone-gateway的配置是不是都相同？)
+- `Deployed` 服务不会因为 `best_instance_count` 改变而自动扩缩
+- 实例掉线后，当前实现只会在 Step4 把它从 `service_info` 里摘掉，不会自动补新实例
+- 纯节点拓扑变化不会触发现有实例重排
 
+这是当前实现最容易被误判的地方。
 
-## 调度器的幂等性
+### 放置算法
 
-为了减少复杂度，调度器的各种算法都是幂等性的，也就是说基于相同的 Pod/Node/Instance 集合，调度器必然应该得到相同的结果.
-另一方面，这种幂等性也意味着没有局部调度算法：调度器不会基于某个集合的特定改变来构造算法。
+当前放置逻辑仍然很朴素：
 
-调度器循环
+- 过滤：`filter_node_for_instance()`
+- 打分：`score_node()`
 
-```
-loop:
-    等待10秒或唤醒
-    读取系统状态
-    如果状态没改变，则continue
-    创建调度器
-    调度结果 = 执行调度算法
-    如果调度结果与上次调度结果相同，则continue
-    执行调度结果（写入system_config)
-    保存系统状态
-    保存调度结果
-```
+过滤条件目前只有：
 
-上述循环有两个提前退出点，用来优化系统性能
+- `node.state == Ready`
+- `node_type` 必须是 `OOD` 或 `Server`
+- 需要容器时必须 `support_container`
+- CPU / 内存 / GPU 资源足够
+- `node_affinity` 命中
 
-- 如何判断系统的状态未发生变化(instance如果包含资源使用情况，那么未发生变化非常难)
-- 如何判断调度结果未发生变化（减少一次无效写入）
+打分只看三类因素：
 
+- 分配后剩余资源比例
+- 当前空闲比例
+- `network_affinity` 命中加分
 
-## 调度服务的接口
+当前已实现一个影子资源账本 `shadow_nodes`：
 
-### 强制调度
+- 同轮多个 spec 分配时，先在影子节点里扣减资源
+- 避免同一轮多个新服务把同一节点超卖
 
-唤醒loop即可。对大部分的添加用户/添加设备/添加应用 的用户操作，底层都可以出发一次强制调度来让修改立刻生效
+### Step3
 
-### control_panel的后端
+还没做。别把旧文档里的资源动态调整、迁移等内容当成现状。
 
-对system_config进行业务级修改有2种方法
+### Step4: `calc_service_infos()`
 
-- 在client使用system_config_client的事务，结合业务逻辑修改一组config（封装通常在control_panel里）
-- 由scheduler实现control_panel的后端来提供更强一致性的系统状态改变（通常涉及到某种计算）。
+这里只负责对外发布的 `ServiceInfo`，不负责补实例。
 
-### control_panel接口一览
+判定条件：
 
-首先要对各种userid/deviceid/appid 的命名合法性进行限制，去掉非法字符，不允许是保留id, 去重的时候是无视大小写的
+- 只认 `InstanceState::Running`
+- `now - last_update_time < 90`
 
-#### 应用管理
+如果实例不满足上面两个条件，就只会发生一件事：
 
-- 添加应用 
+- 不再进入 `service_info`
 
-- 删除应用
+不会自动触发新的实例化。
 
-- 启动应用
+启动期还有一个明确的 bootstrap 行为：
 
-- 停止应用
+- 创建实例时直接给 `last_update_time` 写当前时间
+- 用来打破早期服务发现依赖环
+- 后续真实心跳会接管这个值
 
-- 修改应用settings
+## `SchedulerAction` 到 KV 的映射
 
-settings的内容由应用服务读取
+主要看 `schedule_action_to_tx_actions()`：
 
-- 修改应用的install_config
+- `ChangeNodeStatus` -> `nodes/<node>/config.state`
+- `ChangeServiceStatus` -> `services/<spec>/spec` 或 `users/<uid>/apps/<app>/spec`
+- `InstanceReplica` -> 写目标节点 `node_config`
+- `RemoveInstance` -> 从目标节点 `node_config` 删除实例
+- `UpdateServiceInfo` -> 重写 `services/<spec>/info`
 
-install_config由系统读取，应用无法感知自己的install_config
+额外副作用不在 `SchedulerAction` 里，而是在 loop 里附加：
 
+- 刷新 `system/rbac/policy`
+- 刷新 `nodes/<node>/gateway_config`
 
-#### 用户管理
+所以如果你新增 action，除了 `scheduler.rs`，还要记得补写回层。
 
-- 添加用户
+## 现在不要碰的约定
 
-- 删除用户
+### 不要手改 `replica_instances` / `service_infos`
 
-- disable用户
+对外控制系统状态的入口仍然应该是：
 
-- enable用户
+- 改 spec
+- 改节点目标状态
 
-- 导出用户数据
+不要把 runtime 或 control_panel 的新逻辑做成“直接改 instance / service_info”。下一轮调度会把这类手改覆盖掉，或者让 snapshot 对比变得很难解释。
 
-- 导入用户数据
+### 端口事实以 `service_info` 为准
 
-#### 设备管理
+当前链路里：
 
-- 添加设备
-构建device_doc并由owner签名
-将device_doc加入到devices/$deviceid/doc 目录
-如果是node（将运行node_daemon），则创建 nodes/$deviceid/config, nodes/$deviceid/gateway_config目录（均有默认值）
+- 实例创建时写的是目标端口配置
+- 真实可访问端口以后续上报和 `service_info` 汇总结果为准
 
-等待node_daemon启动，会自动更新device_info
-等待scheduler工作，会根据device_info在增加新的NodeItem,并等待调度新的Instance上来
+如果你在 gateway / selector / runtime 侧接入服务发现，不要把 `node_config` 里的端口当最终事实。
 
+## 改代码时通常要一起改的地方
 
-- 删除设备
+### 改调度输入字段
 
-- 停用设备
+至少检查这几处：
 
-- 启用设备
+- `scheduler.rs` 里的核心结构
+- `create_scheduler_by_system_config()`
+- `is_spec_changed()`
+- 对应测试
 
-- 修改设备的能力配置 (DeviceConfig)
+如果少改了 `is_spec_changed()`，很容易出现“字段改了但 scheduler 没反应”。
 
-- 调整设备的Settings (影响调度器对设备的使用)
+### 改实例化行为
 
-#### 系统设置
+至少检查：
 
+- `schedule_spec_change()`
+- `filter_node_for_instance()`
+- `score_node()`
+- `instance_app_service()` / `instance_service()`
+- `RemoveInstance` 对应的 uninstance 路径
 
-#### 系统服务管理
-系统服务通常无法手工安装和删除
-部分系统服务允许手工启用/停用
+### 改服务发现或入口路由
 
+至少检查：
 
-- 修改服务配置
+- `calc_service_infos()`
+- `service.rs::update_service_info()`
+- `update_node_gateway_config()`
 
-- 重启服务
+## 当前缺失能力
 
-- 启用服务
+按现在代码，下面这些都还不是完整能力：
 
-- 停用服务
+- OPTask 调度闭环
+- `UpdateInstance` 的完整落地
+- `Deployed` 状态下的副本自愈 / 自动扩缩
+- 实例迁移
+- 资源动态调整
+- `Disable` / `Abnormal` 的完整收敛
+- 复杂节点运维流程
 
+如果你要做其中任何一项，最好先把“当前没有这层 reconcile”写清楚，再动实现。
+
+## 和 `function_instance` 文档的关系
+
+新的 `function_instance` 文档对这个文件最有用的地方，不是理论，而是给了一个明确约束：
+
+- 调度器应该继续做“确定性分配器”
+- 工作流依赖、业务语义、人机交互不该继续下沉到 scheduler
+- cache / memoization 也不该变成 scheduler 的内部状态
+
+对当前代码来说，可以直接落成两个贡献者约束：
+
+### 1. 把 `CreateOPTask` 当遗留占位，不要继续做重
+
+`SchedulerAction::CreateOPTask` 现在不是稳定主路径。新需求如果继续往 OPTask 里塞复杂流程，只会让后续迁移更难。
+
+### 2. 新的异步执行语义应尽量保持“显式输入 + 显式资源 + 幂等边界”
+
+这和 `function_instance` 的方向一致，也和当前 `NodeScheduler` 的纯推导结构兼容。未来真的切到 `fun_instance`，更可能替换的是执行原语和执行层，而不是把 scheduler 再做成一个懂业务编排的中心。
+
+## 相关文档
+
+- 对外架构说明：`doc/arch/04_scheduler.md`
+- 当前代码的最终真相：`src/kernel/scheduler/src/scheduler.rs`
+- 下一阶段方向：`doc/arch/使用function_instance实现分布式调度器.md`

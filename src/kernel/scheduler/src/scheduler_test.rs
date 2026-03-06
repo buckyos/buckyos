@@ -1,4 +1,16 @@
-use std::collections::HashMap;
+// Test scenarios in this file:
+// 1. Large cluster / multi-service placement:
+//    verify label, zone and container constraints can be combined and that
+//    service_info is built from the scheduled replicas.
+// 2. Incremental scale-out from 1 node to 7 nodes:
+//    under the current minimal-change policy, pure topology growth should not
+//    trigger eager replica migration, which avoids unnecessary churn.
+// 3. Distributed-system liveness cases:
+//    service discovery should only publish fresh running replicas and update
+//    cluster membership after heartbeat state changes.
+use std::collections::{HashMap, HashSet};
+
+use buckyos_kit::buckyos_get_unix_timestamp;
 
 use crate::scheduler::*;
 
@@ -27,6 +39,69 @@ fn create_test_node(
         support_container: true,
         resources: HashMap::new(),
         op_tasks: vec![],
+    }
+}
+
+fn create_test_service_spec(id: &str) -> ServiceSpec {
+    ServiceSpec {
+        id: id.to_string(),
+        app_id: id.to_string(),
+        owner_id: "root".to_string(),
+        spec_type: ServiceSpecType::Service,
+        state: ServiceSpecState::New,
+        best_instance_count: 1,
+        need_container: false,
+        required_cpu_mhz: 100,
+        required_memory: 1024 * 1024 * 128,
+        required_gpu_tflops: 0.0,
+        required_gpu_mem: 0,
+        node_affinity: None,
+        network_affinity: None,
+        app_index: 0,
+        service_ports_config: HashMap::new(),
+    }
+}
+
+fn create_test_replica_instance(
+    spec_id: &str,
+    node_id: &str,
+    state: InstanceState,
+    last_update_time: u64,
+) -> ReplicaInstance {
+    ReplicaInstance {
+        node_id: node_id.to_string(),
+        spec_id: spec_id.to_string(),
+        res_limits: HashMap::new(),
+        instance_id: format!("{}@{}", spec_id, node_id),
+        last_update_time,
+        state,
+        service_ports: HashMap::new(),
+    }
+}
+
+fn node_set(node_ids: &[&str]) -> HashSet<String> {
+    node_ids.iter().map(|node_id| node_id.to_string()).collect()
+}
+
+fn action_instance_nodes(actions: &[SchedulerAction], spec_id: &str) -> HashSet<String> {
+    actions
+        .iter()
+        .filter_map(|action| match action {
+            SchedulerAction::InstanceReplica(instance) if instance.spec_id == spec_id => {
+                Some(instance.node_id.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn service_info_nodes(service_info: &ServiceInfo) -> HashSet<String> {
+    match service_info {
+        ServiceInfo::SingleInstance(instance) => node_set(&[instance.node_id.as_str()]),
+        ServiceInfo::RandomCluster(cluster) => cluster
+            .values()
+            .map(|(_, instance)| instance.node_id.clone())
+            .collect(),
     }
 }
 
@@ -358,4 +433,328 @@ fn test_node_and_network_affinity() {
     } else {
         panic!("Unexpected action");
     }
+}
+
+#[test]
+fn test_large_cluster_multi_service_schedule() {
+    let mut scheduler = NodeScheduler::new_empty(1);
+
+    let mut node1 = create_test_node(
+        "node1",
+        4000,
+        1024 * 1024 * 2048,
+        vec!["gpu".to_string()],
+        0.0,
+        NodeState::Ready,
+        "zone-a",
+    );
+    node1.available_cpu_mhz = 3000;
+
+    let mut node2 = create_test_node(
+        "node2",
+        4000,
+        1024 * 1024 * 2048,
+        vec!["gpu".to_string()],
+        0.0,
+        NodeState::Ready,
+        "zone-b",
+    );
+    node2.available_cpu_mhz = 2800;
+
+    let node3 = create_test_node(
+        "node3",
+        4000,
+        1024 * 1024 * 2048,
+        vec!["db".to_string()],
+        0.0,
+        NodeState::Ready,
+        "zone-b",
+    );
+    let node4 = create_test_node(
+        "node4",
+        4000,
+        1024 * 1024 * 2048,
+        vec!["db".to_string()],
+        0.0,
+        NodeState::Ready,
+        "zone-c",
+    );
+    let mut node5 = create_test_node(
+        "node5",
+        4000,
+        1024 * 1024 * 2048,
+        vec!["edge".to_string()],
+        0.0,
+        NodeState::Ready,
+        "zone-a",
+    );
+    node5.support_container = false;
+    let node6 = create_test_node(
+        "node6",
+        4000,
+        1024 * 1024 * 2048,
+        vec!["edge".to_string()],
+        0.0,
+        NodeState::Ready,
+        "zone-b",
+    );
+    let node7 = create_test_node(
+        "node7",
+        4000,
+        1024 * 1024 * 2048,
+        vec!["frontend".to_string()],
+        0.0,
+        NodeState::Ready,
+        "zone-a",
+    );
+    let node8 = create_test_node(
+        "node8",
+        4000,
+        1024 * 1024 * 2048,
+        vec!["frontend".to_string()],
+        0.0,
+        NodeState::Ready,
+        "zone-c",
+    );
+
+    for node in [node1, node2, node3, node4, node5, node6, node7, node8] {
+        scheduler.add_node(node);
+    }
+
+    let mut gpu_service = create_test_service_spec("gpu-service");
+    gpu_service.best_instance_count = 2;
+    gpu_service.node_affinity = Some("gpu".to_string());
+
+    let mut db_service = create_test_service_spec("db-service");
+    db_service.node_affinity = Some("db".to_string());
+    db_service.network_affinity = Some("zone-c".to_string());
+
+    let mut edge_service = create_test_service_spec("edge-service");
+    edge_service.node_affinity = Some("edge".to_string());
+    edge_service.need_container = true;
+
+    let mut frontend_service = create_test_service_spec("frontend-service");
+    frontend_service.best_instance_count = 2;
+    frontend_service.node_affinity = Some("frontend".to_string());
+
+    for spec in [gpu_service, db_service, edge_service, frontend_service] {
+        scheduler.add_service_spec(spec);
+    }
+
+    let actions = scheduler.schedule(None).unwrap();
+    assert_eq!(actions.len(), 14);
+
+    assert_eq!(
+        action_instance_nodes(&actions, "gpu-service"),
+        node_set(&["node1", "node2"])
+    );
+    assert_eq!(
+        action_instance_nodes(&actions, "db-service"),
+        node_set(&["node4"])
+    );
+    assert_eq!(
+        action_instance_nodes(&actions, "edge-service"),
+        node_set(&["node6"])
+    );
+    assert_eq!(
+        action_instance_nodes(&actions, "frontend-service"),
+        node_set(&["node7", "node8"])
+    );
+
+    let deployed_specs: HashSet<String> = actions
+        .iter()
+        .filter_map(|action| match action {
+            SchedulerAction::ChangeServiceStatus(spec_id, ServiceSpecState::Deployed) => {
+                Some(spec_id.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        deployed_specs,
+        node_set(&[
+            "gpu-service",
+            "db-service",
+            "edge-service",
+            "frontend-service",
+        ])
+    );
+
+    assert_eq!(
+        service_info_nodes(scheduler.service_infos.get("gpu-service").unwrap()),
+        node_set(&["node1", "node2"])
+    );
+    assert_eq!(
+        service_info_nodes(scheduler.service_infos.get("db-service").unwrap()),
+        node_set(&["node4"])
+    );
+    assert_eq!(
+        service_info_nodes(scheduler.service_infos.get("edge-service").unwrap()),
+        node_set(&["node6"])
+    );
+    assert_eq!(
+        service_info_nodes(scheduler.service_infos.get("frontend-service").unwrap()),
+        node_set(&["node7", "node8"])
+    );
+}
+
+#[test]
+fn test_scale_out_to_seven_nodes_keeps_existing_replica_sticky() {
+    let mut scheduler = NodeScheduler::new_empty(1);
+    scheduler.add_node(create_test_node(
+        "node1",
+        4000,
+        1024 * 1024 * 2048,
+        vec!["core".to_string()],
+        0.0,
+        NodeState::Ready,
+        "zone-1",
+    ));
+
+    let api_service = create_test_service_spec("api-service");
+    scheduler.add_service_spec(api_service);
+
+    let first_round_actions = scheduler.schedule(None).unwrap();
+    assert_eq!(
+        action_instance_nodes(&first_round_actions, "api-service"),
+        node_set(&["node1"])
+    );
+    assert_eq!(scheduler.replica_instances.len(), 1);
+
+    for node_index in 2..=7 {
+        let new_node_id = format!("node{}", node_index);
+        let last_snapshot = scheduler.clone();
+
+        scheduler.add_node(create_test_node(
+            new_node_id.as_str(),
+            4000,
+            1024 * 1024 * 2048,
+            vec!["core".to_string()],
+            0.0,
+            NodeState::New,
+            format!("zone-{}", node_index).as_str(),
+        ));
+
+        let join_actions = scheduler.schedule(Some(&last_snapshot)).unwrap();
+        assert_eq!(join_actions.len(), 1);
+        assert!(matches!(
+            &join_actions[0],
+            SchedulerAction::ChangeNodeStatus(node_id, NodeState::Prepare)
+                if node_id == &new_node_id
+        ));
+        assert_eq!(scheduler.replica_instances.len(), 1);
+        assert_eq!(
+            scheduler
+                .replica_instances
+                .values()
+                .next()
+                .unwrap()
+                .node_id
+                .as_str(),
+            "node1"
+        );
+
+        scheduler.nodes.get_mut(&new_node_id).unwrap().state = NodeState::Ready;
+        let ready_snapshot = scheduler.clone();
+        let steady_actions = scheduler.schedule(Some(&ready_snapshot)).unwrap();
+        assert!(
+            steady_actions.is_empty(),
+            "unexpected actions after {} became ready: {:?}",
+            new_node_id,
+            steady_actions
+        );
+        assert_eq!(scheduler.replica_instances.len(), 1);
+        assert_eq!(
+            scheduler
+                .replica_instances
+                .values()
+                .next()
+                .unwrap()
+                .node_id
+                .as_str(),
+            "node1"
+        );
+    }
+}
+
+#[test]
+fn test_service_info_only_publishes_alive_running_replicas() {
+    let mut scheduler = NodeScheduler::new_empty(1);
+    for node_id in ["node1", "node2", "node3"] {
+        scheduler.add_node(create_test_node(
+            node_id,
+            4000,
+            1024 * 1024 * 2048,
+            vec!["search".to_string()],
+            0.0,
+            NodeState::Ready,
+            "zone-search",
+        ));
+    }
+
+    let mut search_service = create_test_service_spec("search-service");
+    search_service.state = ServiceSpecState::Deployed;
+    scheduler.add_service_spec(search_service);
+
+    let now = buckyos_get_unix_timestamp();
+    scheduler.add_replica_instance(create_test_replica_instance(
+        "search-service",
+        "node1",
+        InstanceState::Running,
+        now,
+    ));
+    scheduler.add_replica_instance(create_test_replica_instance(
+        "search-service",
+        "node2",
+        InstanceState::Running,
+        0,
+    ));
+    scheduler.add_replica_instance(create_test_replica_instance(
+        "search-service",
+        "node3",
+        InstanceState::Suspended,
+        now,
+    ));
+
+    let first_actions = scheduler.schedule(None).unwrap();
+    assert_eq!(first_actions.len(), 1);
+    match &first_actions[0] {
+        SchedulerAction::UpdateServiceInfo(spec_id, ServiceInfo::SingleInstance(instance)) => {
+            assert_eq!(spec_id, "search-service");
+            assert_eq!(instance.node_id, "node1");
+        }
+        other => panic!("unexpected action: {:?}", other),
+    }
+    assert_eq!(
+        service_info_nodes(scheduler.service_infos.get("search-service").unwrap()),
+        node_set(&["node1"])
+    );
+
+    let last_snapshot = scheduler.clone();
+    scheduler
+        .replica_instances
+        .get_mut("search-service@node2")
+        .unwrap()
+        .last_update_time = buckyos_get_unix_timestamp();
+
+    let second_actions = scheduler.schedule(Some(&last_snapshot)).unwrap();
+    assert_eq!(second_actions.len(), 1);
+    match &second_actions[0] {
+        SchedulerAction::UpdateServiceInfo(spec_id, ServiceInfo::RandomCluster(cluster)) => {
+            assert_eq!(spec_id, "search-service");
+            assert_eq!(cluster.len(), 2);
+            assert_eq!(
+                cluster
+                    .values()
+                    .map(|(_, instance)| instance.node_id.clone())
+                    .collect::<HashSet<_>>(),
+                node_set(&["node1", "node2"])
+            );
+        }
+        other => panic!("unexpected action: {:?}", other),
+    }
+    assert_eq!(
+        service_info_nodes(scheduler.service_infos.get("search-service").unwrap()),
+        node_set(&["node1", "node2"])
+    );
 }
