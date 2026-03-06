@@ -371,6 +371,16 @@ pub fn spawn_daemon_process(
     log_root: &Path,
     timeout_secs: u64,
 ) -> Result<ChildGuard, String> {
+    spawn_daemon_process_with_concurrency(node, endpoint, log_root, timeout_secs, None)
+}
+
+pub fn spawn_daemon_process_with_concurrency(
+    node: &str,
+    endpoint: &str,
+    log_root: &Path,
+    timeout_secs: u64,
+    global_concurrency: Option<usize>,
+) -> Result<ChildGuard, String> {
     let bin_path = target_debug_bin("slog_daemon");
     if !bin_path.exists() {
         return Err(format!(
@@ -382,14 +392,21 @@ pub fn spawn_daemon_process(
     let buckyos_root = log_root.parent().unwrap_or(log_root);
     let (stderr_stdio, stderr_path) = new_stderr_capture_file(buckyos_root, "slog_daemon")?;
 
-    let child = Command::new(&bin_path)
-        .env("SLOG_NODE_ID", node)
+    let mut cmd = Command::new(&bin_path);
+    cmd.env("SLOG_NODE_ID", node)
         .env("SLOG_SERVER_ENDPOINT", endpoint)
         .env("SLOG_LOG_DIR", log_root)
         .env("SLOG_UPLOAD_TIMEOUT_SECS", timeout_secs.to_string())
         .env("BUCKYOS_ROOT", buckyos_root)
         .stdout(Stdio::null())
-        .stderr(stderr_stdio)
+        .stderr(stderr_stdio);
+    if let Some(v) = global_concurrency
+        && v > 0
+    {
+        cmd.env("SLOG_UPLOAD_GLOBAL_CONCURRENCY", v.to_string());
+    }
+
+    let child = cmd
         .spawn()
         .map_err(|e| format!("failed to spawn slog_daemon process: {}", e))?;
 
