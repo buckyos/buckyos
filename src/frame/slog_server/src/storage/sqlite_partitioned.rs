@@ -1,7 +1,7 @@
 use super::storage::{LogQueryRequest, LogRecords, LogStorage};
 use rusqlite::{Connection, params};
 use slog::SystemLogRecord;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -61,6 +61,14 @@ struct PartitionMeta {
     bucket_key: String,
     part_seq: i64,
     file_name: String,
+    row_count: u64,
+    size_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+struct PartitionStats {
+    start_time: u64,
+    end_time: u64,
     row_count: u64,
     size_bytes: u64,
 }
@@ -180,6 +188,8 @@ impl SqlitePartitionedLogStorage {
                 msg
             })?;
 
+        Self::reconcile_manifest_with_partitions(&manifest_conn, &partitions_dir)?;
+
         info!(
             "Initialized sqlite partitioned storage at {}, bucket={}, max_rows_per_partition={}, max_partition_size_bytes={}",
             storage_dir.display(),
@@ -255,6 +265,286 @@ impl SqlitePartitionedLogStorage {
                 msg
             })?;
         Self::ensure_partition_schema(&conn)?;
+        Ok(())
+    }
+
+    fn parse_partition_file_name(file_name: &str) -> Option<(String, i64)> {
+        if !file_name.starts_with("logs_") || !file_name.ends_with(".db") {
+            return None;
+        }
+
+        let core = &file_name["logs_".len()..file_name.len().saturating_sub(".db".len())];
+        let split_idx = core.rfind("_p")?;
+        let bucket_key = core[..split_idx].to_string();
+        if bucket_key.is_empty() {
+            return None;
+        }
+
+        let part_seq = core[split_idx + 2..].parse::<i64>().ok()?;
+        Some((bucket_key, part_seq))
+    }
+
+    fn collect_partition_stats(partition_path: &Path) -> Result<PartitionStats, String> {
+        Self::ensure_partition_database(partition_path)?;
+
+        let conn = Connection::open(partition_path).map_err(|e| {
+            let msg = format!(
+                "Failed to open partition database {} for stats collection: {}",
+                partition_path.display(),
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        let (min_ts, max_ts, row_count): (Option<i64>, Option<i64>, i64) = conn
+            .query_row(
+                "SELECT MIN(timestamp), MAX(timestamp), COUNT(*) FROM logs",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query partition stats from {}: {}",
+                    partition_path.display(),
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let row_count = row_count.max(0) as u64;
+        let (start_time, end_time) = if row_count == 0 {
+            (0, 0)
+        } else {
+            (
+                min_ts.unwrap_or(0).max(0) as u64,
+                max_ts.unwrap_or(0).max(0) as u64,
+            )
+        };
+        let size_bytes = std::fs::metadata(partition_path)
+            .map(|m| m.len())
+            .unwrap_or_default();
+
+        Ok(PartitionStats {
+            start_time,
+            end_time,
+            row_count,
+            size_bytes,
+        })
+    }
+
+    fn update_manifest_partition_stats(
+        manifest: &Connection,
+        file_name: &str,
+        stats: &PartitionStats,
+    ) -> Result<(), String> {
+        let updated = manifest
+            .execute(
+                "UPDATE partitions
+                 SET start_time = ?1,
+                     end_time = ?2,
+                     row_count = ?3,
+                     size_bytes = ?4,
+                     updated_at = ?5
+                 WHERE file_name = ?6",
+                params![
+                    stats.start_time as i64,
+                    stats.end_time as i64,
+                    stats.row_count as i64,
+                    stats.size_bytes as i64,
+                    now_unix_secs(),
+                    file_name
+                ],
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to update manifest partition stats for {}: {}",
+                    file_name, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        if updated != 1 {
+            let msg = format!(
+                "Unexpected manifest partition stats update count={}, file_name={}",
+                updated, file_name
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        Ok(())
+    }
+
+    fn reconcile_manifest_with_partitions(
+        manifest: &Connection,
+        partitions_dir: &Path,
+    ) -> Result<(), String> {
+        let mut manifest_partitions: HashMap<String, (String, i64)> = HashMap::new();
+        let mut stmt = manifest
+            .prepare("SELECT file_name, bucket_key, part_seq FROM partitions")
+            .map_err(|e| {
+                let msg = format!("Failed to prepare manifest partition scan query: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(|e| {
+                let msg = format!("Failed to scan manifest partitions: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+
+        for row in rows {
+            let (file_name, bucket_key, part_seq) = row.map_err(|e| {
+                let msg = format!("Failed to map manifest partition row: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+            manifest_partitions.insert(file_name, (bucket_key, part_seq));
+        }
+        drop(stmt);
+
+        let dir_entries = std::fs::read_dir(partitions_dir).map_err(|e| {
+            let msg = format!(
+                "Failed to scan partition directory {}: {}",
+                partitions_dir.display(),
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        let mut partition_files = Vec::new();
+        for entry in dir_entries {
+            let entry = entry.map_err(|e| {
+                let msg = format!("Failed to read partition directory entry: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if path.extension().and_then(|v| v.to_str()) != Some("db") {
+                continue;
+            }
+            if let Some(file_name) = path.file_name().and_then(|v| v.to_str()) {
+                partition_files.push(file_name.to_string());
+            }
+        }
+
+        let partition_file_set: HashSet<String> = partition_files.iter().cloned().collect();
+        let mut removed_missing = 0usize;
+        let manifest_file_names: Vec<String> = manifest_partitions.keys().cloned().collect();
+        for file_name in manifest_file_names {
+            if partition_file_set.contains(&file_name) {
+                continue;
+            }
+
+            warn!(
+                "partition file missing on disk, remove stale manifest entry: {}",
+                file_name
+            );
+            manifest
+                .execute(
+                    "DELETE FROM partitions WHERE file_name = ?1",
+                    params![file_name.as_str()],
+                )
+                .map_err(|e| {
+                    let msg = format!(
+                        "Failed to delete stale partition manifest entry {}: {}",
+                        file_name, e
+                    );
+                    error!("{}", msg);
+                    msg
+                })?;
+            manifest
+                .execute(
+                    "DELETE FROM batch_partition_map WHERE file_name = ?1",
+                    params![file_name.as_str()],
+                )
+                .map_err(|e| {
+                    let msg = format!(
+                        "Failed to delete stale batch mapping for {}: {}",
+                        file_name, e
+                    );
+                    error!("{}", msg);
+                    msg
+                })?;
+            manifest_partitions.remove(&file_name);
+            removed_missing += 1;
+        }
+
+        let mut recovered_new = 0usize;
+        let mut refreshed_stats = 0usize;
+        for file_name in partition_files {
+            let partition_path = partitions_dir.join(&file_name);
+            let stats = Self::collect_partition_stats(&partition_path)?;
+
+            if manifest_partitions.contains_key(&file_name) {
+                Self::update_manifest_partition_stats(manifest, &file_name, &stats)?;
+                refreshed_stats += 1;
+                continue;
+            }
+
+            let Some((bucket_key, part_seq)) = Self::parse_partition_file_name(&file_name) else {
+                warn!(
+                    "skip unmanaged partition file (invalid name pattern): {}",
+                    file_name
+                );
+                continue;
+            };
+
+            manifest
+                .execute(
+                    "INSERT OR IGNORE INTO partitions (
+                        bucket_key, part_seq, file_name, start_time, end_time, row_count, size_bytes, created_at, updated_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+                    params![
+                        bucket_key,
+                        part_seq,
+                        &file_name,
+                        stats.start_time as i64,
+                        stats.end_time as i64,
+                        stats.row_count as i64,
+                        stats.size_bytes as i64,
+                        now_unix_secs()
+                    ],
+                )
+                .map_err(|e| {
+                    let msg = format!(
+                        "Failed to recover manifest entry for partition file {}: {}",
+                        file_name, e
+                    );
+                    error!("{}", msg);
+                    msg
+                })?;
+
+            Self::update_manifest_partition_stats(manifest, &file_name, &stats)?;
+            recovered_new += 1;
+        }
+
+        if removed_missing > 0 || recovered_new > 0 {
+            warn!(
+                "reconciled partition manifest: removed_missing={}, recovered_new={}, refreshed_stats={}",
+                removed_missing, recovered_new, refreshed_stats
+            );
+        } else {
+            info!(
+                "partition manifest reconciliation completed, refreshed_stats={}",
+                refreshed_stats
+            );
+        }
+
         Ok(())
     }
 
@@ -1076,6 +1366,19 @@ mod tests {
             .unwrap()
     }
 
+    fn query_first_partition_file_name(storage: &SqlitePartitionedLogStorage) -> String {
+        storage
+            .manifest_conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT file_name FROM partitions ORDER BY part_seq ASC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
     #[test]
     fn test_partitioned_storage_rollover_by_row_limit() {
         let storage_dir = temp_storage_dir("row_rollover");
@@ -1387,6 +1690,139 @@ mod tests {
         assert_eq!(node_b.len(), 1);
         assert_eq!(node_b[0].logs.len(), 1);
         assert_eq!(node_b[0].logs[0].content, "b-1");
+
+        cleanup_storage_dir(&storage_dir);
+    }
+
+    #[test]
+    fn test_partitioned_storage_reconciles_stale_manifest_time_range_on_reopen() {
+        let storage_dir = temp_storage_dir("reconcile_stale_time_range");
+        let first_time = 1_721_400_000_000_u64;
+        let second_time = first_time + 100;
+
+        let storage = SqlitePartitionedLogStorage::open(
+            &storage_dir,
+            SqlitePartitionedConfig {
+                bucket: PartitionBucket::Day,
+                max_rows_per_partition: 100,
+                max_partition_size_bytes: 1024 * 1024 * 1024,
+            },
+        )
+        .unwrap();
+        storage
+            .append(payload(
+                "node-1",
+                "svc-reconcile",
+                "batch-r-1",
+                vec![record(first_time, "r-first")],
+            ))
+            .unwrap();
+        storage
+            .append(payload(
+                "node-1",
+                "svc-reconcile",
+                "batch-r-2",
+                vec![record(second_time, "r-second")],
+            ))
+            .unwrap();
+
+        let file_name = query_first_partition_file_name(&storage);
+        storage
+            .manifest_conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE partitions
+                 SET start_time = ?1, end_time = ?2, row_count = 1
+                 WHERE file_name = ?3",
+                params![first_time as i64, first_time as i64, &file_name],
+            )
+            .unwrap();
+        drop(storage);
+
+        let storage_reopened =
+            SqlitePartitionedLogStorage::open(&storage_dir, SqlitePartitionedConfig::default())
+                .unwrap();
+        let queried = storage_reopened
+            .query(LogQueryRequest {
+                node: Some("node-1".to_string()),
+                service: Some("svc-reconcile".to_string()),
+                level: None,
+                start_time: Some(second_time),
+                end_time: Some(second_time),
+                limit: None,
+            })
+            .unwrap();
+        assert_eq!(queried.len(), 1);
+        assert_eq!(queried[0].logs.len(), 1);
+        assert_eq!(queried[0].logs[0].content, "r-second");
+
+        let repaired_end_time: i64 = storage_reopened
+            .manifest_conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT end_time FROM partitions WHERE file_name = ?1",
+                params![&file_name],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(repaired_end_time as u64 >= second_time);
+
+        cleanup_storage_dir(&storage_dir);
+    }
+
+    #[test]
+    fn test_partitioned_storage_recovers_missing_manifest_entry_on_reopen() {
+        let storage_dir = temp_storage_dir("reconcile_missing_manifest_entry");
+        let storage = SqlitePartitionedLogStorage::open(
+            &storage_dir,
+            SqlitePartitionedConfig {
+                bucket: PartitionBucket::Day,
+                max_rows_per_partition: 100,
+                max_partition_size_bytes: 1024 * 1024 * 1024,
+            },
+        )
+        .unwrap();
+        storage
+            .append(payload(
+                "node-1",
+                "svc-recover",
+                "batch-rm-1",
+                vec![record(1_721_500_000_000, "recover-me")],
+            ))
+            .unwrap();
+
+        let file_name = query_first_partition_file_name(&storage);
+        storage
+            .manifest_conn
+            .lock()
+            .unwrap()
+            .execute(
+                "DELETE FROM partitions WHERE file_name = ?1",
+                params![&file_name],
+            )
+            .unwrap();
+        drop(storage);
+
+        let storage_reopened =
+            SqlitePartitionedLogStorage::open(&storage_dir, SqlitePartitionedConfig::default())
+                .unwrap();
+        assert_eq!(query_partition_count(&storage_reopened), 1);
+
+        let queried = storage_reopened
+            .query(LogQueryRequest {
+                node: Some("node-1".to_string()),
+                service: Some("svc-recover".to_string()),
+                level: None,
+                start_time: None,
+                end_time: None,
+                limit: None,
+            })
+            .unwrap();
+        assert_eq!(queried.len(), 1);
+        assert_eq!(queried[0].logs.len(), 1);
+        assert_eq!(queried[0].logs[0].content, "recover-me");
 
         cleanup_storage_dir(&storage_dir);
     }
