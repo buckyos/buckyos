@@ -11,7 +11,7 @@
 
 - `slog`（日志库）：业务服务本地写日志文件与 `log_meta.db`
 - `slog_daemon`：扫描日志目录，读取并上传到 `slog_server`
-- `slog_server`：接收日志（`POST /logs`）并落库（SQLite）
+- `slog_server`：接收日志（`POST /logs`）并落库；提供查询（`GET/POST /query`）
 
 ## 2. 端口与转发边界（最重要）
 
@@ -20,7 +20,7 @@
 
 | 组件 | 默认监听 | 是否跨节点直连 | 是否需要 gateway 转发 | 说明 |
 |---|---:|---:|---:|---|
-| `slog_server` ingest | `127.0.0.1:22001` | 否（推荐） | 是 | 仅本机监听，通过 gateway 暴露路径到别的 node |
+| `slog_server` ingest/query | `127.0.0.1:22001` | 否（推荐） | 是 | 仅本机监听，通过 gateway 暴露 `/slog/logs` 与 `/slog/query` |
 | `slog_daemon` | 无入站监听 | 否 | 否 | daemon 仅主动发起 HTTP 上传 |
 | NodeGateway | 常见 `:3180` | 视部署 | 是（节点间） | 作为统一入口进行服务转发 |
 | ZoneGateway | 常见 `:80/:443` | 是 | 是（对外/跨节点） | 对外统一入口，建议走 HTTPS |
@@ -31,7 +31,9 @@
 
 1. 启动 `slog_server`
 2. 保持 `SLOG_SERVER_BIND=127.0.0.1:22001`
-3. 在本机 gateway 增加路由：`/slog/logs -> http://127.0.0.1:22001/logs`
+3. 在本机 gateway 增加路由：
+   - `/slog/logs -> http://127.0.0.1:22001/logs`
+   - `/slog/query -> http://127.0.0.1:22001/query`
 4. 通过 ZoneGateway/NodeGateway 对外暴露该路由（不是直接暴露 22001）
 
 ### 3.2 业务节点（Agent）
@@ -83,6 +85,10 @@ servers:
             block: |
               match REQ.path "^/slog/logs$" || pass
               return "forward 127.0.0.1:22001/logs"
+          - id: slog_query
+            block: |
+              match REQ.path "^/slog/query$" || pass
+              return "forward 127.0.0.1:22001/query"
 ```
 
 ### 5.2 ZoneGateway 对外暴露（可选）
@@ -100,6 +106,10 @@ stacks:
             block: |
               match REQ.path "^/slog/logs$" || pass
               return "server slog_ingest_local"
+          - id: slog_query
+            block: |
+              match REQ.path "^/slog/query$" || pass
+              return "server slog_ingest_local"
 ```
 
 ## 6. 运行规则（当前实现）
@@ -112,6 +122,90 @@ stacks:
 - 默认排除上传服务：`slog_daemon`、`slog_server`（避免自日志回环）
 - `Ctrl-C/SIGINT`：daemon 进入优雅退出（停止读新数据、尽量 drain 上传通道）
 
+## 6.1 对外查询 API（v1 设计）
+
+### 路径与方法
+
+- `GET /query`：适合简单过滤和调试
+- `POST /query`：适合平台/前端调用，参数放 JSON body
+
+两种方式使用同一套参数：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `node` | string | 否 | 节点 ID 精确匹配 |
+| `service` | string | 否 | 服务名精确匹配 |
+| `level` | string/number | 否 | `off/error/warn/info/debug/trace` 或 `0..5` |
+| `start_time` | u64 | 否 | 开始时间（毫秒时间戳，包含） |
+| `end_time` | u64 | 否 | 结束时间（毫秒时间戳，包含） |
+| `offset` | usize | 否 | 分页偏移，默认 `0` |
+| `limit` | usize | 否 | 分页大小，默认 `200`，最大 `2000` |
+
+约束：
+
+- `start_time <= end_time`
+- `limit > 0`
+- `offset + limit <= 20000`（防止一次查询过大）
+
+### 排序与分页规则
+
+- 稳定排序键：
+  `time DESC, node ASC, service ASC, level ASC, target ASC, file ASC, line ASC, content ASC`
+- 返回结构中包含：
+  - `page.offset`
+  - `page.limit`
+  - `page.returned`
+  - `page.has_more`
+  - `page.next_offset`
+
+### POST 示例
+
+```json
+POST /query
+{
+  "node": "node-a",
+  "service": "svc-order",
+  "level": "warn",
+  "start_time": 1735603200000,
+  "end_time": 1735689599000,
+  "offset": 0,
+  "limit": 100
+}
+```
+
+响应示例：
+
+```json
+{
+  "ret": 0,
+  "message": "Logs queried successfully",
+  "data": {
+    "records": [
+      {
+        "node": "node-a",
+        "service": "svc-order",
+        "log": {
+          "level": "Warn",
+          "target": "svc-order",
+          "time": 1735603200456,
+          "file": "order.rs",
+          "line": 120,
+          "content": "create order failed: timeout"
+        }
+      }
+    ],
+    "page": {
+      "offset": 0,
+      "limit": 100,
+      "returned": 1,
+      "has_more": false,
+      "next_offset": null,
+      "sort": "time_desc,node_asc,service_asc,level_asc,target_asc,file_asc,line_asc,content_asc"
+    }
+  }
+}
+```
+
 ## 7. 生产建议
 
 1. `slog_server` 只监听 loopback（`127.0.0.1:22001`），由 gateway 统一暴露。
@@ -123,6 +217,7 @@ stacks:
 ## 8. 快速检查清单
 
 - [ ] 汇聚节点上 `POST /logs` 可经 gateway 访问
+- [ ] 汇聚节点上 `GET/POST /query` 可经 gateway 访问
 - [ ] 非汇聚节点 daemon 的 `SLOG_SERVER_ENDPOINT` 指向 gateway URL
 - [ ] 所有节点 `SLOG_NODE_ID` 唯一
 - [ ] 没有对外放通 `22001` 直连（仅 gateway 入口对外）
