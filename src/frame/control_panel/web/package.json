@@ -14,12 +14,14 @@
     "@nivo/core": "^0.99.0",
     "@nivo/line": "^0.99.0",
     "@nivo/pie": "^0.99.0",
-    "mammoth": "^1.9.1",
+    "buckyos": "github:buckyos/buckyos-websdk",
+    "dompurify": "^3.3.2",
     "lucide-react": "^0.575.0",
+    "mammoth": "^1.9.1",
+    "marked": "^17.0.4",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "react-router-dom": "^7.9.5",
-    "buckyos": "github:buckyos/buckyos-websdk"
+    "react-router-dom": "^7.9.5"
   },
   "devDependencies": {
     "@eslint/js": "^9.36.0",

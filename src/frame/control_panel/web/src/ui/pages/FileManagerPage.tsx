@@ -46,9 +46,10 @@ import { getSessionTokenFromCookies, getStoredSessionToken } from '@/auth/sessio
 import ActionDialog from '@/ui/components/file_manager/ActionDialog'
 import FilePreviewPanel from '@/ui/components/file_manager/FilePreviewPanel'
 import { downloadImageWithProgress } from '@/ui/components/file_manager/imageDownload'
+import { renderMarkdownHtml } from '@/ui/components/file_manager/markdownPreview'
 import ProgressRing from '@/ui/components/file_manager/ProgressRing'
 import ImageViewerModal from '@/ui/components/file_manager/ImageViewerModal'
-import { getFileExtension, getFilePreviewKind, isDocFileName, type FilePreviewKind } from '@/ui/components/file_manager/filePreview'
+import { getFileExtension, getFilePreviewKind, getTextPreviewMode, isDocFileName, type FilePreviewKind } from '@/ui/components/file_manager/filePreview'
 
 type FileEntry = {
   name: string
@@ -132,6 +133,7 @@ type PublicShareResponse = {
   size?: number
   modified?: number
   content?: string | null
+  mime?: string
 }
 
 type UploadSessionRecord = {
@@ -211,8 +213,8 @@ const buildPublicSharePath = (shareId: string) => `/share/${encodeURIComponent(s
 
 const buildPublicDownloadPath = (shareId: string, password?: string) => {
   const query = password?.trim()
-    ? `?password=${encodeURIComponent(password.trim())}`
-    : ''
+    ? `?password=${encodeURIComponent(password.trim())}&download=1`
+    : '?download=1'
   return `/api/public/dl/${encodeURIComponent(shareId)}${query}`
 }
 
@@ -221,6 +223,20 @@ const buildPublicDownloadPathForTarget = (shareId: string, targetPath: string, p
   if (password?.trim()) {
     query.set('password', password.trim())
   }
+  query.set('download', '1')
+  if (targetPath && targetPath !== '/') {
+    query.set('path', targetPath)
+  }
+  const suffix = query.toString()
+  return `/api/public/dl/${encodeURIComponent(shareId)}${suffix ? `?${suffix}` : ''}`
+}
+
+const buildPublicInlinePathForTarget = (shareId: string, targetPath: string, password?: string) => {
+  const query = new URLSearchParams()
+  if (password?.trim()) {
+    query.set('password', password.trim())
+  }
+  query.set('inline', '1')
   if (targetPath && targetPath !== '/') {
     query.set('path', targetPath)
   }
@@ -2927,7 +2943,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
     if (!publicShareId) {
       return ''
     }
-    return buildPublicDownloadPathForTarget(publicShareId, publicSharePath, publicSharePassword)
+    return buildPublicInlinePathForTarget(publicShareId, publicSharePath, publicSharePassword)
   }, [publicShareId, publicSharePassword, publicSharePath])
   const officePreviewUrl = useMemo(() => {
     if (!previewEntry || previewKind !== 'office' || !previewRawUrl || previewIsDocFile) {
@@ -2953,26 +2969,45 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
     }
     return publicShareData.content
   }, [publicShareData])
-  const publicShareIsImage = useMemo(() => {
+  const publicSharePreviewKind = useMemo(() => {
     if (!publicShareData || publicShareData.is_dir) {
-      return false
+      return 'unknown' as FilePreviewKind
     }
-    const path = publicSharePath.toLowerCase()
-    return (
-      path.endsWith('.png') ||
-      path.endsWith('.jpg') ||
-      path.endsWith('.jpeg') ||
-      path.endsWith('.gif') ||
-      path.endsWith('.webp') ||
-      path.endsWith('.bmp') ||
-      path.endsWith('.svg')
-    )
+    return getFilePreviewKind({ name: fileNameFromPath(publicSharePath) })
   }, [publicShareData, publicSharePath])
+  const publicShareIsImage = publicSharePreviewKind === 'image'
+  const publicInlineRawUrl = useMemo(() => {
+    if (!publicShareId || !publicShareData || publicShareData.is_dir) {
+      return ''
+    }
+    return buildPublicInlinePathForTarget(publicShareId, publicSharePath, publicSharePassword)
+  }, [publicShareData, publicShareId, publicSharePassword, publicSharePath])
+  const publicOfficePreviewUrl = useMemo(() => {
+    if (
+      !publicInlineRawUrl ||
+      (publicSharePreviewKind !== 'office' && publicSharePreviewKind !== 'docx')
+    ) {
+      return ''
+    }
+    return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(`${window.location.origin}${publicInlineRawUrl}`)}`
+  }, [publicInlineRawUrl, publicSharePreviewKind])
   const publicPreviewIsTruncated = publicTextContent.length > PUBLIC_TEXT_PREVIEW_LIMIT
   const publicPreviewContent =
     publicPreviewIsTruncated && !publicPreviewExpanded
       ? `${publicTextContent.slice(0, PUBLIC_TEXT_PREVIEW_LIMIT)}\n\n... (preview truncated)`
       : publicTextContent
+  const publicTextMode = useMemo(() => {
+    if (!publicShareData || publicShareData.is_dir || publicShareData.content == null) {
+      return 'plain'
+    }
+    return getTextPreviewMode(fileNameFromPath(publicSharePath))
+  }, [publicShareData, publicSharePath])
+  const publicMarkdownHtml = useMemo(() => {
+    if (publicTextMode !== 'markdown') {
+      return ''
+    }
+    return renderMarkdownHtml(publicPreviewContent)
+  }, [publicPreviewContent, publicTextMode])
   const currentUserName = useMemo(() => {
     if (!effectiveToken) {
       return ''
@@ -3761,9 +3796,16 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
 
                   {publicShareData.content != null ? (
                     <>
-                      <pre className="max-h-[420px] overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-800">
-                        {publicPreviewContent}
-                      </pre>
+                      {publicTextMode === 'markdown' && publicMarkdownHtml.trim() ? (
+                        <article
+                          className="max-h-[560px] overflow-auto rounded-xl border border-slate-200 bg-white p-4 text-sm leading-7 text-slate-800 [&_a]:text-primary [&_a]:underline [&_a]:underline-offset-2 [&_blockquote]:my-3 [&_blockquote]:rounded-r-lg [&_blockquote]:border-l-4 [&_blockquote]:border-primary/40 [&_blockquote]:bg-teal-50/40 [&_blockquote]:px-3 [&_blockquote]:py-2 [&_blockquote_code]:rounded [&_blockquote_code]:bg-slate-100 [&_blockquote_code]:px-1 [&_blockquote_code]:py-0.5 [&_blockquote_code]:text-[0.85em] [&_h1]:mt-1 [&_h1]:text-2xl [&_h1]:font-semibold [&_h2]:mt-4 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:text-lg [&_h3]:font-semibold [&_hr]:my-4 [&_hr]:border-slate-200 [&_li]:my-1 [&_li_code]:rounded [&_li_code]:bg-slate-100 [&_li_code]:px-1 [&_li_code]:py-0.5 [&_li_code]:text-[0.85em] [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_p_code]:rounded [&_p_code]:bg-slate-100 [&_p_code]:px-1 [&_p_code]:py-0.5 [&_p_code]:text-[0.85em] [&_pre]:my-3 [&_pre]:overflow-auto [&_pre]:rounded-lg [&_pre]:bg-slate-950 [&_pre]:p-3 [&_pre]:text-xs [&_pre]:text-slate-100 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_pre_code]:text-slate-100 [&_strong]:font-semibold [&_table]:my-3 [&_table]:w-full [&_table]:border-collapse [&_tbody_td]:border [&_tbody_td]:border-slate-200 [&_tbody_td]:px-2 [&_tbody_td]:py-1.5 [&_tbody_tr:nth-child(even)]:bg-slate-50 [&_thead_th]:border [&_thead_th]:border-slate-200 [&_thead_th]:bg-slate-100 [&_thead_th]:px-2 [&_thead_th]:py-1.5 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5"
+                          dangerouslySetInnerHTML={{ __html: publicMarkdownHtml }}
+                        />
+                      ) : (
+                        <pre className="max-h-[420px] overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-800">
+                          {publicPreviewContent}
+                        </pre>
+                      )}
                       {publicPreviewIsTruncated ? (
                         <div className="flex items-center justify-between gap-2 text-xs text-slate-600">
                           <span>
@@ -3831,6 +3873,32 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                           </p>
                         </div>
                       ) : null}
+                    </div>
+                  ) : publicSharePreviewKind === 'pdf' && publicInlineRawUrl ? (
+                    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                      <iframe src={publicInlineRawUrl} title={publicSharePath} className="h-[560px] w-full" />
+                    </div>
+                  ) : publicSharePreviewKind === 'audio' && publicInlineRawUrl ? (
+                    <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
+                      <audio controls preload="metadata" className="w-full">
+                        <source src={publicInlineRawUrl} />
+                        Your browser does not support audio preview.
+                      </audio>
+                      <p className="text-xs text-slate-500">Audio preview</p>
+                    </div>
+                  ) : publicSharePreviewKind === 'video' && publicInlineRawUrl ? (
+                    <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
+                      <video controls playsInline preload="metadata" className="max-h-[560px] w-full rounded-lg bg-black" src={publicInlineRawUrl}>
+                        Your browser does not support video preview.
+                      </video>
+                      <p className="text-xs text-slate-500">Video preview</p>
+                    </div>
+                  ) : publicOfficePreviewUrl ? (
+                    <div className="space-y-2">
+                      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                        <iframe src={publicOfficePreviewUrl} title={`${publicSharePath} (office preview)`} className="h-[560px] w-full" />
+                      </div>
+                      <p className="text-xs text-slate-500">If office preview fails, download and open locally.</p>
                     </div>
                   ) : (
                     <p className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-600">

@@ -39,7 +39,7 @@ const SHARED_PUBLIC_DIR: &str = "Public";
 const SHARED_INBOX_DIR: &str = "Inbox";
 const INTERNAL_RECYCLE_BIN_DIR: &str = ".bucky_recycle_bin";
 const INLINE_TEXT_CONTENT_MAX_BYTES: u64 = 2 * 1024 * 1024;
-const PDF_PREVIEW_EXTENSION_DOC: &str = "doc";
+const PDF_PREVIEW_SUPPORTED_EXTENSIONS: &[&str] = &["doc", "docx", "odt", "rtf"];
 const FILE_META_STATE_KEY_ROOT_SEEDED: &str = "root_seeded";
 const THUMBNAIL_VARIANT_DEFAULT: &str = "s160";
 const THUMBNAIL_SIZE_DEFAULT: u32 = 160;
@@ -2675,10 +2675,31 @@ impl BuckyFileServer {
                 | "xml"
                 | "js"
                 | "mjs"
+                | "cjs"
                 | "css"
                 | "html"
                 | "htm"
                 | "rs"
+                | "py"
+                | "go"
+                | "java"
+                | "kt"
+                | "swift"
+                | "c"
+                | "h"
+                | "cpp"
+                | "hpp"
+                | "sh"
+                | "bash"
+                | "zsh"
+                | "sql"
+                | "rb"
+                | "php"
+                | "scala"
+                | "lua"
+                | "dart"
+                | "vue"
+                | "svelte"
                 | "ts"
                 | "tsx"
                 | "jsx"
@@ -2709,7 +2730,9 @@ impl BuckyFileServer {
             .and_then(|ext| ext.to_str())
             .map(|ext| ext.to_ascii_lowercase())
             .unwrap_or_default();
-        extension == PDF_PREVIEW_EXTENSION_DOC
+        PDF_PREVIEW_SUPPORTED_EXTENSIONS
+            .iter()
+            .any(|item| *item == extension)
     }
 
     fn build_pdf_preview_cache_key(source_path: &Path, metadata: &std::fs::Metadata) -> String {
@@ -3987,14 +4010,19 @@ impl BuckyFileServer {
             );
         }
 
-        let file_data = tokio::fs::read(&target).await.map_err(|err| {
-            server_err!(
-                ServerErrorCode::InvalidData,
-                "read shared file failed: {}",
-                err
-            )
-        })?;
-        let content = String::from_utf8(file_data).ok();
+        let content =
+            if Self::should_include_inline_file_content(&target_rel_path, metadata.len(), false) {
+                let file_data = tokio::fs::read(&target).await.map_err(|err| {
+                    server_err!(
+                        ServerErrorCode::InvalidData,
+                        "read shared file failed: {}",
+                        err
+                    )
+                })?;
+                String::from_utf8(file_data).ok()
+            } else {
+                None
+            };
         Self::json_response(
             StatusCode::OK,
             json!({
@@ -4004,6 +4032,7 @@ impl BuckyFileServer {
                 "parent_path": parent_display_path,
                 "size": metadata.len(),
                 "modified": Self::unix_mtime(&metadata),
+                "mime": Self::content_type_for_path(&target),
                 "content": content,
             }),
         )
@@ -4055,6 +4084,13 @@ impl BuckyFileServer {
                 });
         }
 
+        let force_download = Self::get_query_param(&req, "download")
+            .map(|value| Self::parse_query_bool(&value))
+            .unwrap_or(true);
+        let force_inline = Self::get_query_param(&req, "inline")
+            .map(|value| Self::parse_query_bool(&value))
+            .unwrap_or(false);
+
         let content = tokio::fs::read(&target).await.map_err(|err| {
             server_err!(
                 ServerErrorCode::InvalidData,
@@ -4062,19 +4098,26 @@ impl BuckyFileServer {
                 err
             )
         })?;
+        let content_type = Self::content_type_for_path(&target);
         let filename = target
             .file_name()
             .map(|v| v.to_string_lossy().to_string())
             .unwrap_or_else(|| "download.bin".to_string());
+        let disposition_type = if force_inline || !force_download {
+            "inline"
+        } else {
+            "attachment"
+        };
 
         http::Response::builder()
             .status(StatusCode::OK)
-            .header(CONTENT_TYPE, "application/octet-stream")
+            .header(CONTENT_TYPE, content_type)
             .header(
                 CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{}\"", filename),
+                format!("{}; filename=\"{}\"", disposition_type, filename),
             )
             .header(CACHE_CONTROL, "no-store")
+            .header(CONTENT_LENGTH, content.len().to_string())
             .body(Self::boxed_body(content))
             .map_err(|err| {
                 server_err!(
@@ -6157,7 +6200,7 @@ impl BuckyFileServer {
         if !Self::is_pdf_preview_supported(&target) {
             return Self::json_response(
                 StatusCode::BAD_REQUEST,
-                json!({"error": "PDF preview conversion is only supported for .doc files"}),
+                json!({"error": "PDF preview conversion supports: .doc, .docx, .odt, .rtf"}),
             );
         }
 

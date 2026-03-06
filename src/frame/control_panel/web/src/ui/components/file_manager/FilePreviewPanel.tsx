@@ -1,5 +1,69 @@
-import type { FilePreviewKind } from './filePreview'
+import { useEffect, useMemo, useState } from 'react'
+
+import { getTextPreviewMode, type FilePreviewKind } from './filePreview'
+import { renderMarkdownHtml } from './markdownPreview'
 import ProgressRing from './ProgressRing'
+
+const TEXT_PREVIEW_LIMIT = 200_000
+const CSV_PREVIEW_MAX_ROWS = 80
+const CSV_PREVIEW_MAX_COLS = 20
+
+const parseCsvRows = (content: string, maxRows = CSV_PREVIEW_MAX_ROWS, maxCols = CSV_PREVIEW_MAX_COLS) => {
+  const rows: string[][] = []
+  let row: string[] = []
+  let cell = ''
+  let inQuotes = false
+
+  const pushCell = () => {
+    row.push(cell)
+    cell = ''
+  }
+
+  const pushRow = () => {
+    pushCell()
+    rows.push(row.slice(0, maxCols))
+    row = []
+  }
+
+  for (let index = 0; index < content.length; index += 1) {
+    const char = content[index]
+    const next = content[index + 1]
+
+    if (char === '"') {
+      if (inQuotes && next === '"') {
+        cell += '"'
+        index += 1
+      } else {
+        inQuotes = !inQuotes
+      }
+      continue
+    }
+
+    if (!inQuotes && char === ',') {
+      pushCell()
+      continue
+    }
+
+    if (!inQuotes && (char === '\n' || char === '\r')) {
+      if (char === '\r' && next === '\n') {
+        index += 1
+      }
+      pushRow()
+      if (rows.length >= maxRows) {
+        return rows
+      }
+      continue
+    }
+
+    cell += char
+  }
+
+  if (cell.length > 0 || row.length > 0) {
+    pushRow()
+  }
+
+  return rows.slice(0, maxRows)
+}
 
 type PreviewFileEntry = {
   name: string
@@ -54,6 +118,53 @@ const FilePreviewPanel = ({
   formatBytes,
   formatTimestamp,
 }: FilePreviewPanelProps) => {
+  const [textExpanded, setTextExpanded] = useState(false)
+
+  const textMode = useMemo(() => {
+    if (!previewEntry || previewKind !== 'text') {
+      return 'plain'
+    }
+    return getTextPreviewMode(previewEntry.name)
+  }, [previewEntry, previewKind])
+
+  const textIsTruncated = previewTextContent.length > TEXT_PREVIEW_LIMIT
+
+  const activeTextContent = useMemo(() => {
+    if (!textIsTruncated || textExpanded) {
+      return previewTextContent
+    }
+    return `${previewTextContent.slice(0, TEXT_PREVIEW_LIMIT)}\n\n... (preview truncated)`
+  }, [previewTextContent, textExpanded, textIsTruncated])
+
+  const jsonPreviewContent = useMemo(() => {
+    if (textMode !== 'json' || !activeTextContent.trim()) {
+      return activeTextContent
+    }
+    try {
+      return JSON.stringify(JSON.parse(activeTextContent), null, 2)
+    } catch {
+      return activeTextContent
+    }
+  }, [activeTextContent, textMode])
+
+  const csvRows = useMemo(() => {
+    if (textMode !== 'csv') {
+      return []
+    }
+    return parseCsvRows(activeTextContent)
+  }, [activeTextContent, textMode])
+
+  const markdownHtml = useMemo(() => {
+    if (textMode !== 'markdown') {
+      return ''
+    }
+    return renderMarkdownHtml(activeTextContent)
+  }, [activeTextContent, textMode])
+
+  useEffect(() => {
+    setTextExpanded(false)
+  }, [previewEntry?.modified, previewEntry?.name, previewEntry?.size])
+
   if (!previewEntry) {
     return null
   }
@@ -121,9 +232,62 @@ const FilePreviewPanel = ({
           <iframe src={previewRawUrl} title={previewEntry.name} className="h-[560px] w-full" />
         </div>
       ) : previewKind === 'text' ? (
-        <pre className="max-h-[520px] overflow-auto rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-800">
-          {previewTextContent || '(empty file)'}
-        </pre>
+        <div className="space-y-2">
+          {textMode === 'csv' && csvRows.length > 0 ? (
+            <div className="overflow-auto rounded-xl border border-slate-200 bg-white">
+              <table className="w-full min-w-[480px] text-xs text-slate-700">
+                <tbody>
+                  {csvRows.map((row, rowIndex) => (
+                    <tr key={`csv-${rowIndex}`} className="border-t border-slate-100 first:border-t-0">
+                      {row.map((cell, cellIndex) => (
+                        <td
+                          key={`csv-${rowIndex}-${cellIndex}`}
+                          className={`px-2 py-1.5 align-top ${rowIndex === 0 ? 'bg-slate-50 font-semibold text-slate-800' : ''}`}
+                        >
+                          {cell || (rowIndex === 0 ? `Column ${cellIndex + 1}` : '')}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : textMode === 'markdown' ? (
+            markdownHtml.trim() ? (
+              <article
+                className="max-h-[560px] overflow-auto rounded-xl border border-slate-200 bg-white p-4 text-sm leading-7 text-slate-800 [&_a]:text-primary [&_a]:underline [&_a]:underline-offset-2 [&_blockquote]:my-3 [&_blockquote]:rounded-r-lg [&_blockquote]:border-l-4 [&_blockquote]:border-primary/40 [&_blockquote]:bg-teal-50/40 [&_blockquote]:px-3 [&_blockquote]:py-2 [&_blockquote_code]:rounded [&_blockquote_code]:bg-slate-100 [&_blockquote_code]:px-1 [&_blockquote_code]:py-0.5 [&_blockquote_code]:text-[0.85em] [&_h1]:mt-1 [&_h1]:text-2xl [&_h1]:font-semibold [&_h2]:mt-4 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:text-lg [&_h3]:font-semibold [&_hr]:my-4 [&_hr]:border-slate-200 [&_li]:my-1 [&_li_code]:rounded [&_li_code]:bg-slate-100 [&_li_code]:px-1 [&_li_code]:py-0.5 [&_li_code]:text-[0.85em] [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_p_code]:rounded [&_p_code]:bg-slate-100 [&_p_code]:px-1 [&_p_code]:py-0.5 [&_p_code]:text-[0.85em] [&_pre]:my-3 [&_pre]:overflow-auto [&_pre]:rounded-lg [&_pre]:bg-slate-950 [&_pre]:p-3 [&_pre]:text-xs [&_pre]:text-slate-100 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_pre_code]:text-slate-100 [&_strong]:font-semibold [&_table]:my-3 [&_table]:w-full [&_table]:border-collapse [&_tbody_td]:border [&_tbody_td]:border-slate-200 [&_tbody_td]:px-2 [&_tbody_td]:py-1.5 [&_tbody_tr:nth-child(even)]:bg-slate-50 [&_thead_th]:border [&_thead_th]:border-slate-200 [&_thead_th]:bg-slate-100 [&_thead_th]:px-2 [&_thead_th]:py-1.5 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5"
+                dangerouslySetInnerHTML={{ __html: markdownHtml }}
+              />
+            ) : (
+              <pre className="max-h-[520px] overflow-auto rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-800">
+                (empty file)
+              </pre>
+            )
+          ) : (
+            <pre
+              className={`max-h-[520px] overflow-auto rounded-xl border border-slate-200 p-3 text-xs ${
+                textMode === 'code' ? 'bg-slate-950 text-slate-100' : 'bg-white text-slate-800'
+              }`}
+            >
+              {jsonPreviewContent || '(empty file)'}
+            </pre>
+          )}
+
+          {textIsTruncated ? (
+            <div className="flex items-center justify-between gap-2 text-xs text-slate-500">
+              <span>
+                Preview shows {formatBytes(activeTextContent.length)} of {formatBytes(previewTextContent.length)} text.
+              </span>
+              <button
+                type="button"
+                onClick={() => setTextExpanded((prev) => !prev)}
+                className="rounded-lg border border-slate-300 px-2 py-1 font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
+              >
+                {textExpanded ? 'Show truncated preview' : 'Show full text'}
+              </button>
+            </div>
+          ) : null}
+        </div>
       ) : previewKind === 'docx' ? (
         <div className="max-h-[560px] overflow-auto rounded-xl border border-slate-200 bg-white p-4">
           {previewDocxHtml ? (
