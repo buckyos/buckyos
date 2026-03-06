@@ -307,7 +307,7 @@ pub struct AgentToolResult {
     pub details: Json,
 }
 
-const PROMPT_STDIO_MAX_LINES: usize = 100;
+const PROMPT_STDIO_MAX_LINES: usize = 3000;
 
 fn truncate_prompt_stream_lines(content: &str, max_lines: usize) -> String {
     if max_lines == 0 {
@@ -1469,8 +1469,8 @@ mod tests {
 
     #[test]
     fn agent_tool_result_render_prompt_truncates_stdout_by_lines() {
-        let stdout = (0..120)
-            .map(|idx| format!("line-{idx:03}"))
+        let stdout = (0..(PROMPT_STDIO_MAX_LINES + 20))
+            .map(|idx| format!("line-{idx:04}"))
             .collect::<Vec<_>>()
             .join("\n");
         let rendered = AgentToolResult::from_details(json!({"ok": true}))
@@ -1478,20 +1478,25 @@ mod tests {
             .with_result("read 12345 bytes (truncated)")
             .with_stdout(Some(stdout))
             .render_prompt();
+        let last_kept = format!("line-{:04}", PROMPT_STDIO_MAX_LINES - 1);
+        let first_dropped = format!("line-{:04}", PROMPT_STDIO_MAX_LINES);
+        let truncated_hint = format!(
+            "... [TRUNCATED FOR ACTION PREVIEW: Showing first {} lines only] ...",
+            PROMPT_STDIO_MAX_LINES
+        );
 
         assert!(rendered.contains("```stdout"));
-        assert!(rendered.contains("line-000"));
-        assert!(rendered.contains("line-099"));
-        assert!(!rendered.contains("line-100"));
-        assert!(rendered
-            .contains("... [TRUNCATED FOR ACTION PREVIEW: Showing first 100 lines only] ..."));
+        assert!(rendered.contains("line-0000"));
+        assert!(rendered.contains(last_kept.as_str()));
+        assert!(!rendered.contains(first_dropped.as_str()));
+        assert!(rendered.contains(truncated_hint.as_str()));
         assert!(rendered.ends_with("```"));
     }
 
     #[test]
     fn agent_tool_result_render_prompt_truncates_stderr_by_lines_when_failed() {
-        let stderr = (0..130)
-            .map(|idx| format!("err-{idx:03}"))
+        let stderr = (0..(PROMPT_STDIO_MAX_LINES + 20))
+            .map(|idx| format!("err-{idx:04}"))
             .collect::<Vec<_>>()
             .join("\n");
         let rendered = AgentToolResult::from_details(json!({"ok": false}))
@@ -1499,13 +1504,18 @@ mod tests {
             .with_result("FAILED (exit=1)")
             .with_stderr(Some(stderr))
             .render_prompt();
+        let last_kept = format!("err-{:04}", PROMPT_STDIO_MAX_LINES - 1);
+        let first_dropped = format!("err-{:04}", PROMPT_STDIO_MAX_LINES);
+        let truncated_hint = format!(
+            "... [TRUNCATED FOR ACTION PREVIEW: Showing first {} lines only] ...",
+            PROMPT_STDIO_MAX_LINES
+        );
 
         assert!(rendered.contains("```stderr"));
-        assert!(rendered.contains("err-000"));
-        assert!(rendered.contains("err-099"));
-        assert!(!rendered.contains("err-100"));
-        assert!(rendered
-            .contains("... [TRUNCATED FOR ACTION PREVIEW: Showing first 100 lines only] ..."));
+        assert!(rendered.contains("err-0000"));
+        assert!(rendered.contains(last_kept.as_str()));
+        assert!(!rendered.contains(first_dropped.as_str()));
+        assert!(rendered.contains(truncated_hint.as_str()));
         assert!(rendered.ends_with("```"));
     }
 

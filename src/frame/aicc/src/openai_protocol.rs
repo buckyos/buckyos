@@ -137,7 +137,10 @@ fn normalize_openai_function_tool(
                     .get("parameters")
                     .cloned()
                     .unwrap_or_else(default_tool_parameters),
-                function_obj.get("strict").cloned().or_else(|| tool.get("strict").cloned()),
+                function_obj
+                    .get("strict")
+                    .cloned()
+                    .or_else(|| tool.get("strict").cloned()),
             )
         } else {
             let Some(raw_name) = tool.get("name").and_then(|value| value.as_str()) else {
@@ -187,7 +190,11 @@ fn normalize_openai_function_tool(
     Ok(Value::Object(normalized))
 }
 
-fn normalize_builtin_tool(tool: &Map<String, Value>, idx: usize, tool_type: &str) -> Result<Value, ProviderError> {
+fn normalize_builtin_tool(
+    tool: &Map<String, Value>,
+    idx: usize,
+    tool_type: &str,
+) -> Result<Value, ProviderError> {
     let normalized_tool_type = if tool_type == OPENAI_TOOL_TYPE_WEB_SEARCH {
         OPENAI_TOOL_TYPE_WEB_SEARCH_PREVIEW
     } else {
@@ -299,10 +306,9 @@ fn convert_response_format_option(response_format: &Value) -> Result<Value, Prov
             .get("json_schema")
             .and_then(|value| value.as_object())
         {
-            let schema = json_schema_obj
-                .get("schema")
-                .cloned()
-                .ok_or_else(|| ProviderError::fatal("response_format.json_schema.schema is required"))?;
+            let schema = json_schema_obj.get("schema").cloned().ok_or_else(|| {
+                ProviderError::fatal("response_format.json_schema.schema is required")
+            })?;
             if !schema.is_object() {
                 return Err(ProviderError::fatal(
                     "response_format.json_schema.schema must be an object",
@@ -326,10 +332,9 @@ fn convert_response_format_option(response_format: &Value) -> Result<Value, Prov
             }));
         }
 
-        let schema = response_format_obj
-            .get("schema")
-            .cloned()
-            .ok_or_else(|| ProviderError::fatal("response_format.schema is required for json_schema"))?;
+        let schema = response_format_obj.get("schema").cloned().ok_or_else(|| {
+            ProviderError::fatal("response_format.schema is required for json_schema")
+        })?;
         if !schema.is_object() {
             return Err(ProviderError::fatal(
                 "response_format.schema must be an object for json_schema",
@@ -359,7 +364,10 @@ fn convert_response_format_option(response_format: &Value) -> Result<Value, Prov
     Ok(response_format.clone())
 }
 
-fn merge_reasoning_effort(target: &mut Map<String, Value>, effort: &Value) -> Result<(), ProviderError> {
+fn merge_reasoning_effort(
+    target: &mut Map<String, Value>,
+    effort: &Value,
+) -> Result<(), ProviderError> {
     let Some(effort_str) = effort.as_str() else {
         return Err(ProviderError::fatal("reasoning_effort must be a string"));
     };
@@ -473,9 +481,8 @@ pub(crate) fn strip_incompatible_sampling_options(
         .and_then(|value| value.get("effort"))
         .and_then(|value| value.as_str())
         .map(|value| value.to_ascii_lowercase());
-    let supports_sampling = !is_old_gpt5
-        && !is_codex
-        && reasoning_effort.as_deref() == Some("none");
+    let supports_sampling =
+        !is_old_gpt5 && !is_codex && reasoning_effort.as_deref() == Some("none");
     if supports_sampling {
         return vec![];
     }

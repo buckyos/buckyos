@@ -182,8 +182,8 @@ step_summary: |
 step_limit: 16
 
 limits:
-  max_prompt_tokens: 16000
-  max_completion_tokens: 2400
+  max_prompt_tokens: 64000
+  max_completion_tokens: 200000
   max_tool_rounds: 1
   max_tool_calls_per_round: 4
   deadline_ms: 300000

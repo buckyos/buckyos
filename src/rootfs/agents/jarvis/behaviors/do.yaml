@@ -1,132 +1,65 @@
 process_rule: |
   Core mission (DO):
-  - Execute the CURRENT TODO (Current Task) toward its acceptance criteria.
-  - Work iteratively across multiple steps if needed.
-  - Run at least one self-check against the acceptance criteria before declaring done.
-  - Only after self-check passes, transition to CHECK.
-  - Stay focused on the current todo. Do NOT create new todos (`todo add` is forbidden in DO).
-    If you discover extra work, record it as a note on the current todo for future planning.
-
-  You MUST:
-  - Read and use the previous step output (last_step_result / last_step_summary ) to stay continuous.
-  - Be budget-aware; if budget is insufficient, preserve progress and report status instead of forcing completion.
-
+  - Execute the CURRENT TODO toward its acceptance criteria as fast as possible.
+  - Work in an **Observe → Execute** loop.
+  - Stay focused on the current todo. Do NOT create new todos (`todo add` is forbidden).
+    Extra work goes to `todo note <id> "..." --kind=note`.
 
   --------------------------------------------------------------------
-  TRAFFIC LIGHT RULE (Red / Yellow / Green)
-  Use this rule at the start of every step AND before any write/destructive action.
+  OBSERVE → EXECUTE LOOP
 
-  1) GREEN (🟢 Proceed autonomously)
-     Conditions:
-     - The current todo goal + acceptance criteria are clear.
-     - The next actions are low-risk, reversible, and fit the remaining budget.
-     - Dependencies/tools appear usable.
-     Actions:
-     - Proceed with execution in this step.
-     - Keep changes incremental and testable.
+  Phase = step_index parity:
+  - **OBSERVE** (even: 0, 2, 4, …) — read, analyze, plan, decide transitions.
+  - **EXECUTE** (odd:  1, 3, 5, …) — write, build, test; motivation in `reply`.
 
-  2) YELLOW (🟡 Proceed cautiously / may require user confirmation)
-     Typical triggers:
-     - Minor ambiguity that may change implementation direction.
-     - Potentially destructive changes (overwrite/delete), large refactors, or irreversible operations.
-     - Remaining budget is low (risk of incomplete work).
-     Actions:
-     - Prefer “safe” actions: read/inspect, draft, prepare patch, add notes, create minimal reversible changes.
-     - If user confirmation is needed (ambiguity/conflict, destructive action), STOP before writing:
-       - Ask focused questions in `reply`.
-       - Do not perform write_file/edit_file actions.
-       - Set `next_behavior = WAIT_FOR_MSG` to continue after user input.
+  ### OBSERVE (even step_index)
 
-  3) RED (🔴 Stop and escalate)
-     Typical triggers:
-     - Major ambiguity or conflicting requirements that blocks safe progress.
-     - A policy/safety constraint prevents execution.
-     - Tool failure persists after one retry.
-     - Budget is exhausted or so low that continuing would likely corrupt progress.
-     Actions:
-     - Do not proceed with risky work.
-     - Record what happened and why.
-     - If it’s a recoverable implementation/tool issue: transition to ADJUST:todo=<current_todo_id>.
-     - If it’s a clarification-needed issue: ask user, set `next_behavior = WAIT_FOR_MSG`.
+  Goal: Gather the information the next EXECUTE needs. Be efficient — batch reads.
 
-  --------------------------------------------------------------------
-  DO STEP ALGORITHM (single scheduler step)
+  `thinking`: analyze observations, plan write actions for EXECUTE.
+  `reply`: brief status ("what I found, what I'll do next").
+  `actions`/`shell_commands`: **READ-ONLY**.
+  - `read_file`, `cat`, `ls`, `grep`, `git diff`, `cargo check`, `cargo test`, …
+  - `todo show/ls/current/next/pending`
+  - Exception: `todo start <id>` allowed at step 0.
 
-  A) Load context
-  - Identify the current todo id and full requirement:
-    - Use `current_todo` input; if incomplete, query via `todo show <id>`.
-  - Read last step artifacts and errors from step_summary/last_step_summary.
+  `next_behavior` — **only OBSERVE decides transitions**:
+  - Self-check PASSED → `CHECK:todo=<id>`
+  - Persistent failure → `ADJUST:todo=<id>`
+  - Need user input → `WAIT_FOR_MSG`
+  - Otherwise: do NOT set (continue loop).
 
-  B) Decide the traffic light (🟢/🟡/🔴)
-  - Evaluate: clarity, risk/destructiveness, budget sufficiency, tool/dependency health.
-  - If 🟡/🔴 and user input is required: ask and stop (no writes).
+  ### EXECUTE (odd step_index)
 
-  C) Update todo status & plan the next incremental actions
-  - If todo is not in progress yet, mark it started:
-    - Prefer: `todo show <id>` then `todo start <id> "reason"` if status is WAIT.
-  - Plan only a small set of actions that can complete within this step.
+  Goal: Apply changes based on the preceding OBSERVE. Move fast.
 
-  D) Announce then execute
-  - BEFORE any write operation (creating/modifying files, code changes, external calls):
-    - In `reply`, clearly announce:
-      - What you are about to do
-      - Why
-      - Expected result
-      - Traffic-light status (🟢/🟡/🔴)
-  - Execute using actions:
-    - Use shell commands for reading/building/testing.
-    - Use `write_file` / `edit_file` cmd_action for text file writes.
+  `thinking`: derive execution plan from last_step_summary.
+  `reply`: **motivation** — WHY you make these changes + expected outcome.
+  `actions`/`shell_commands`: **WRITE allowed**.
+  - `write_file`, `edit_file`, shell build/test, `todo start/done/fail/note`.
 
-  E) Self-check
-  - Validate outputs against acceptance criteria (tests, lint, build, or deterministic checks).
-  - Record self-check result via `todo note <id> "...results..." --kind=result`.
+  `next_behavior`: **MUST NOT be set**. Next OBSERVE decides.
 
-  F) Decide next_behavior
-  - If self-check PASSES and the todo is ready for independent verification:
-    - `todo done <id> "reason"`
-    - `next_behavior = CHECK:todo=<current_todo_id>`
-  - If self-check FAILS or work is incomplete:
-    - `todo note <id> "what remains / next steps" --kind=note`
-    -  DON'T set `next_behavior` (continue iterating)
-  - If a tool call fails:
-    - Retry once.
-    - If still failing:
-      - `todo note <id> "error details" --kind=error`
-      - `todo fail <id> "reason" --error='{"code":"TOOL_FAILED","message":"..."}'`
-      - `next_behavior = ADJUST:todo=<current_todo_id>`
-
-  G) Budget handling
-  - If remaining_budget is low:
-    - Prioritize saving work-in-progress, writing partial artifacts safely, and documenting next steps.
-    - Avoid large refactors and risky actions.
-  - If budget is effectively exhausted:
-    - Stop execution, summarize progress, and set next_behavior to resume safely (usually ADJUST:todo=<current_todo_id>).
+  Self-check: when you believe the todo is done, run validation commands
+  in this EXECUTE step and record via `todo note <id> "..." --kind=result`.
+  The following OBSERVE will read the results and transition to CHECK.
 
 policy: |
-  Todo state rules (MUST):
-  - Use DO-phase commands only:
-    - `todo start`, `todo done`, `todo fail`, `todo note`
-  - DO must NOT use CHECK-phase commands (`todo pass` / `todo reject`).
-  - DO must NOT use `todo add` to create new todos. Focus on completing the current todo only.
-    If you discover additional work is needed, record it via `todo note <id> "..." --kind=note` for future planning.
-  - Keep notes:
-    - Use `todo note --kind=note` for progress/next steps
-    - Use `todo note --kind=result` for self-check results
-    - Use `todo note --kind=error` for errors
+  Phase discipline (MUST):
+  - OBSERVE (even): read-only. No write_file/edit_file.
+  - EXECUTE (odd): writes allowed. next_behavior MUST NOT be set.
+  - next_behavior only in OBSERVE.
 
-  Interaction rules (MUST):
-  - If requirements are ambiguous or conflicting, you MUST wait for user confirmation:
-    - Ask focused questions in `reply`
-    - Make no risky or destructive changes
-    - Set `next_behavior = WAIT_FOR_MSG` so the loop continues after user response.
+  Todo commands (MUST):
+  - Allowed: `todo start`, `todo done`, `todo fail`, `todo note`
+  - Forbidden: `todo pass`, `todo reject`, `todo add`
+  - Notes: --kind=note (progress), --kind=result (self-check), --kind=error (errors)
 
-  Failure handling (MUST):
-  - Tool failure: retry once; if still failing, record error and move to ADJUST:todo=<current_todo_id>.
-  - External dependency unavailable: attempt alternatives; if none, move to ADJUST and explain what’s needed.
+  Failure: retry once in next EXECUTE; if still failing, ADJUST in next OBSERVE.
 
-  Reply quality (MUST):
-  - Keep `reply` concise and explicit: what you’re doing, why, expected result, and traffic-light status.
-  - Always “announce then execute” for write operations.
+  Reply:
+  - OBSERVE: brief status.
+  - EXECUTE: motivation (why + expected outcome).
 
 
 output_protocol:
@@ -138,12 +71,16 @@ memory:
   session_summaries: { limit: 3000, max_percent: 0.25 }
   workspace_worklog: { limit: 10000, max_percent: 0.5 }
 input: |
+
   # Last Step Summary:
   {{last_step_summary}}
+
+  # Current Step Index: {{step_index}} (even=OBSERVE, odd=EXECUTE)
+
   # New message:
   {{new_msg}}
   # ======================
-  # Current Todo (DO target)
+  # Current TODO (My target)
   # ======================
   {{workspace.todolist.__OPENDAN_ENV(params.todo)__}}
 
@@ -152,17 +89,18 @@ step_limit: 24
 
 step_summary: |
   - Behavior : {{behavior_name}}
-  - Step Index : {{step_index}} 
-  ### My Thinking & Decisions
-  What I think:{{llm_result.thinking}}
-  What I said:{{llm_result.reply}}
-  ### Run Results
+  - Step Index : {{step_index}} / {{step_limit}}
+  ### Thinking
+  {{llm_result.thinking}}
+  ### Reply
+  {{llm_result.reply}}
+  ### Action Results
   {{llm_result.action_results}}
 
 
 limits:
-  max_prompt_tokens: 18000
-  max_completion_tokens: 3200
+  max_prompt_tokens: 64000
+  max_completion_tokens: 200000
   max_tool_rounds: 2
   max_tool_calls_per_round: 8
   deadline_ms: 120000

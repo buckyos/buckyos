@@ -588,107 +588,123 @@ fn default_output_protocol_text(mode: &str) -> String {
 }
 
 fn behavior_llm_no_action_result() -> String {
-    r#"The response MUST be valid JSON that can be parsed by JSON.parse().
-```typescript
-type Response = {
-  next_behavior?: string;    // MUST follow process rules
-  thinking?: string;         // MUST follow process rules
-  reply?: string;            // reply to current session default_remote only
-  shell_commands?: string[]; // shell command strings, executed sequentially
-}
+    r#"The response MUST be valid XML only. Do not output JSON.
+Use this schema (omit unused nodes):
+```xml
+<response>
+  <next_behavior>...</next_behavior>
+  <thinking>...</thinking>
+  <reply>...</reply>
+  <shell_commands>
+    <![CDATA[
+      ls -l
+      cat readme.txt
+      echo "Hello, world!" > readme.txt
+    ]]>
+  </shell_commands>
+</response>
 ```
-All keys are optional—NEVER include unused keys.
 
 ## shell_commands
-- Each entry is a shell command run sequentially in a session-bound bash environment; execution stops on first failure.
+- Put one shell command per line inside `shell_commands` CDATA.
+- Commands run sequentially in a session-bound bash environment; execution stops on first failure.
 - Results persist in step_summary for the next step. MUST limit read output size to avoid context overflow.
-- Common CLI tools and process_rule-declared tools are pre-installed. NEVER check availability before calling.
-"#
-    .to_string()
+- Common CLI tools and process_rule-declared tools are pre-installed. NEVER check availability before calling."#
+        .to_string()
 }
 
 fn build_behavior_llm_result_protocol() -> String {
-    r#"The response MUST be valid JSON that can be parsed by JSON.parse().
-```typescript
-type Response = {
-  next_behavior?: string;    // MUST follow process rules
-  thinking?: string;         // MUST follow process rules 
-  reply?: string;            // reply to current session default_remote only
-  shell_commands?: string[]; // shell command strings appended to actions.cmds
-  actions?: {
-    mode?: "failed_end" | "all"; // default: "failed_end"
-    cmds?: (string | [string, object])[];
-  };
-}
+    r#"The response MUST be valid XML only. Do not output JSON.
+Use this schema (omit unused nodes):
+```xml
+<response>
+  <next_behavior>...</next_behavior>
+  <thinking>...</thinking>
+  <reply>...</reply>
+  <shell_commands>
+    <![CDATA[
+        ls -l
+        cat readme.txt
+        echo "Hello, world!" > readme.txt
+    ]]>
+  </shell_commands>
+  <actions mode="failed_end|all">
+    <command>...</command>
+    <exec name="write_file" path="readme.txt" mode="write">
+    <![CDATA[
+        file content
+    ]]>
+    </exec>
+  </actions>
+</response>
 ```
-All keys are optional—NEVER include unused keys.
+All nodes are optional—NEVER include unused nodes.
 
-## actions.cmds
-Example:
-```json
-{
-  "actions": {
-    "mode": "all",
-    "cmds": [
-      "todo add T01 \"build login.html\"",
-      ["write_file", {"path": "readme.txt", "content": "login page"}]
-    ]
-  }
-}
-```
-- Commands run sequentially in a session-bound bash env. On failure: "failed_end" stops, "all" continues.
-- String element = shell command. Array element = structured cmd_action: `[action_name, {args}]`.
-- `shell_commands` is shorthand that appends strings to `actions.cmds`. NEVER put structured actions in `shell_commands`.
-- MUST use write_file / edit_file cmd_action for write text files. NEVER use shell commands (echo/cat) to write files.
+## actions
+- Commands run sequentially in a session-bound bash env. On failure: `failed_end` stops, `all` continues.
+- `<command>` means shell command.
+- `<exec name="...">` means structured cmd_action; XML attributes are action args.
+- `shell_commands` runs before `actions` commands (shell first, then actions). NEVER put structured actions in `shell_commands`.
+- MUST use write_file / edit_file cmd_action for writing text files. NEVER use shell commands (echo/cat) to write files.
 - Results persist in step_summary for the next step. MUST limit read output size to avoid context overflow.
 - Common CLI tools and process_rule-declared tools are pre-installed. NEVER check availability before calling.
 
 ### write_file
-`[action_name, {path, content, mode?}]`
-- mode: "write" (default, overwrites), "new" (fails if exists), "append" (appends to end).
+```xml
+<exec name="write_file" path="notes.txt" mode="write">
+<![CDATA[
+hello
+]]>
+</exec>
+```
 
 ### edit_file
-`[action_name, {path, new_content, pos_chunk, mode?}]`
-- Anchors on `pos_chunk` in the file, then applies mode: "replace" (default), "after" (insert after), "before" (insert before).
-"#
-    .to_string()
+```xml
+<exec name="edit_file" path="notes.txt" pos_chunk="hello" mode="replace">
+<![CDATA[
+hello world
+]]>
+</exec>
+```
+
+NEVER include `session_id` or `new_session` in this mode."#
+        .to_string()
 }
 
 fn build_route_result_protocol() -> String {
-    r#"The response MUST be valid JSON parseable by JSON.parse().
-```typescript
-type Response = {
-  reply?: string;
-  set_memory?: Record;
-  topic_tags?: string[];
-  route_session_id?: string;
-  new_session?: [string, string];       // [title, summary]
-}
+    r#"The response MUST be valid XML only. Do not output JSON.
+Use this schema (omit unused nodes):
+```xml
+<response>
+  <reply>...</reply>
+  <set_memory>
+    <item key="user/name">Alice</item>
+    <item key="project/stack">React + Go</item>
+  </set_memory>
+  <topic_tags>
+    <tag>travel</tag>
+    <tag>tokyo</tag>
+  </topic_tags>
+  <route_session_id>...</route_session_id>
+  <new_session>
+    <title>...</title>
+    <summary>...</summary>
+  </new_session>
+</response>
 ```
 
-All keys are optional—NEVER include unused keys.
+All nodes are optional—NEVER include unused nodes.
+If `<reply>` content is long or contains special characters (e.g. `<`, `>`, `&`), wrap it in a CDATA section: `<reply><![CDATA[...long content...]]></reply>`.
 
 **set_memory**: A persistent notebook organized by path keys.
 Write when the user reveals info worth remembering long-term.
-Paths use "/" hierarchy: `"user/name"` → `"Alice"`, `"project/stack"` → `"React + Go"`.
-Set value to `""` to delete.
+Paths use "/" hierarchy, e.g. `user/name`, `project/stack`.
+Set value to empty string to delete.
 
-**topic_tags**: 0–5 short labels for this conversation (for later retrieval).
-Choose as if the user will search for this conversation by keyword.
-e.g. `["python", "debugging"]`, `["travel", "japan"]`
+**topic_tags**: 0-5 short labels for this conversation (for later retrieval).
 
-**Routing**: When routing, provide exactly ONE of `route_session_id` or `new_session`. NEVER both. Both MUST follow process rules.
-
-Example — user says "I'm Alice, help me plan a Tokyo trip":
-```json
-{
-  "reply": "Hi Alice! I'd love to help...",
-  "set_memory": { "user/name": "Alice" },
-  "topic_tags": ["travel", "tokyo", "planning"],
-  "new_session": ["Tokyo Trip Planning", "Help Alice plan a Tokyo trip"]
-}
-```"#
-        .to_string()
+**Routing**: MUST provide exactly one of `route_session_id` or `new_session`. NEVER both. Both MUST follow process rules."#
+            .to_string()
 }
 
 fn candidate_paths_for_behavior(behaviors_dir: &Path, behavior_name: &str) -> Vec<PathBuf> {

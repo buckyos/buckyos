@@ -1493,7 +1493,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_update_supports_pdca_and_bench_special() {
+    async fn apply_update_allows_direct_status_switch() {
         let tool = tool_for_test();
         let ctx = test_ctx("did:od:jarvis");
 
@@ -1518,7 +1518,7 @@ mod tests {
         .await
         .expect("init");
 
-        let invalid = call(
+        let task_done = call(
             &tool,
             &ctx,
             json!({
@@ -1534,9 +1534,8 @@ mod tests {
             }),
         )
         .await
-        .expect("apply should return domain error payload");
-        assert_eq!(invalid["ok"], false);
-        assert_eq!(invalid["errors"][0]["code"], "INVALID_TRANSITION");
+        .expect("task update");
+        assert_eq!(task_done["ok"], true);
 
         let bench_done = call(
             &tool,
@@ -1556,6 +1555,19 @@ mod tests {
         .await
         .expect("bench update");
         assert_eq!(bench_done["ok"], true);
+
+        let got_task = call(
+            &tool,
+            &ctx,
+            json!({
+                "action": "get",
+                "workspace_id": "ws-beta",
+                "todo_ref": "T001"
+            }),
+        )
+        .await
+        .expect("get task todo");
+        assert_eq!(got_task["item"]["status"], "DONE");
 
         let got = call(
             &tool,

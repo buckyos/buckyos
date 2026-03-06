@@ -174,7 +174,7 @@ async fn run_step_with_tool_followup() {
             CompleteStatus::Succeeded,
             Some(AiResponseSummary {
                 text: Some(
-                    json!({"is_sleep":true,"next_behavior":"END","output":{"answer":"done"}})
+                    "<response><next_behavior>END</next_behavior><reply>done</reply></response>"
                         .to_string(),
                 ),
                 tool_calls: vec![],
@@ -312,7 +312,7 @@ async fn run_step_resolves_prefixed_running_aicc_task_id_from_task_data() {
                     "external_task_id": external_aicc_task_id
                 },
                 "result": {
-                    "json": {"is_sleep":true,"output":{"answer":"mapped"}},
+                    "text": "<response><next_behavior>END</next_behavior><reply>mapped</reply></response>",
                     "usage": {"input_tokens": 5, "output_tokens": 4, "total_tokens": 9},
                     "extra": {"provider":"mock","model":"mock-1","latency_ms":6}
                 }
@@ -395,7 +395,7 @@ async fn run_step_accepts_succeeded_response_with_string_task_id() {
         "aicc-1770927904938-1".to_string(),
         CompleteStatus::Succeeded,
         Some(AiResponseSummary {
-            text: Some(json!({"is_sleep":true,"output":{"answer":"ok"}}).to_string()),
+            text: Some("<response><next_behavior>END</next_behavior></response>".to_string()),
             tool_calls: vec![],
             artifacts: vec![],
             usage: Some(AiUsage {
@@ -478,7 +478,7 @@ async fn run_step_sets_behavior_task_as_parent_for_aicc_requests() {
         "aicc-1770927904938-42".to_string(),
         CompleteStatus::Succeeded,
         Some(AiResponseSummary {
-            text: Some(json!({"is_sleep":true,"output":{"answer":"ok"}}).to_string()),
+            text: Some("<response><next_behavior>END</next_behavior></response>".to_string()),
             tool_calls: vec![],
             artifacts: vec![],
             usage: Some(AiUsage {
@@ -604,7 +604,7 @@ async fn run_step_uses_session_id_as_task_rootid_when_present() {
         "aicc-1770927904938-77".to_string(),
         CompleteStatus::Succeeded,
         Some(AiResponseSummary {
-            text: Some(json!({"is_sleep":true,"output":{"answer":"ok"}}).to_string()),
+            text: Some("<response><next_behavior>END</next_behavior></response>".to_string()),
             tool_calls: vec![],
             artifacts: vec![],
             usage: Some(AiUsage {
@@ -722,6 +722,95 @@ process_rule: test_rule
     );
 }
 
+#[tokio::test]
+async fn run_step_returns_provider_error_when_summary_has_no_text_and_no_tools() {
+    let responses = Arc::new(Mutex::new(VecDeque::from(vec![CompleteResponse::new(
+        "aicc-1770927904938-88".to_string(),
+        CompleteStatus::Succeeded,
+        Some(AiResponseSummary {
+            text: None,
+            tool_calls: vec![],
+            artifacts: vec![],
+            usage: Some(AiUsage {
+                input_tokens: Some(7),
+                output_tokens: Some(3200),
+                total_tokens: Some(3207),
+            }),
+            cost: None,
+            finish_reason: Some("incomplete".to_string()),
+            provider_task_ref: Some("provider-task-88".to_string()),
+            extra: Some(
+                json!({"provider":"openai","model":"gpt-5.2-codex","latency_ms":2000,"provider_io":{"output":{"incomplete_details":{"reason":"max_output_tokens"}}}}),
+            ),
+        }),
+        None,
+    )])));
+    let requests = Arc::new(Mutex::new(Vec::<CompleteRequest>::new()));
+    let tasks = Arc::new(Mutex::new(HashMap::<i64, Task>::new()));
+
+    let aicc = Arc::new(AiccClient::new_in_process(Box::new(MockAicc {
+        responses: responses.clone(),
+        requests: requests.clone(),
+    })));
+    let behavior_cfg = load_behavior_config_yaml_for_test(
+        "on_wakeup",
+        r#"
+process_rule: test_rule
+"#,
+    )
+    .await;
+    let deps = LLMBehaviorDeps {
+        taskmgr: Arc::new(TaskManagerClient::new_in_process(Box::new(
+            MockTaskMgrHandler {
+                counter: Mutex::new(0),
+                tasks: tasks.clone(),
+            },
+        ))),
+        aicc,
+        tools: Arc::new(AgentToolManager::new()),
+        memory: None,
+        policy: Arc::new(MockPolicy { tools: vec![] }),
+        worklog: Arc::new(MockWorklog),
+        tokenizer: Arc::new(MockTokenizer),
+        environment: build_test_environment().await,
+    };
+    let behavior = LLMBehavior::new(behavior_cfg.to_llm_behavior_config(), deps);
+    let input = BehaviorExecInput {
+        trace: SessionRuntimeContext {
+            trace_id: "trace-empty-1".to_string(),
+            agent_name: "did:example:agent".to_string(),
+            behavior: "on_wakeup".to_string(),
+            step_idx: 0,
+            wakeup_id: "wakeup-empty-1".to_string(),
+            session_id: "session-test".to_string(),
+        },
+        input_prompt: String::new(),
+        last_step_prompt: String::new(),
+        role_md: "role".to_string(),
+        self_md: "self".to_string(),
+        session_id: "session-user-1".to_string(),
+        behavior_prompt: behavior_cfg.process_rule.clone(),
+        limits: behavior_cfg.limits.clone(),
+        behavior_cfg: behavior_cfg.clone(),
+        session: None,
+    };
+
+    let err = behavior
+        .run_step(&input)
+        .await
+        .expect_err("run_step should fail on empty response");
+    assert!(
+        err.to_string().contains("TOKEN_LIMIT_EXCEEDED"),
+        "unexpected error: {}",
+        err
+    );
+    assert!(
+        err.to_string().contains("max_output_tokens"),
+        "unexpected error: {}",
+        err
+    );
+}
+
 fn run_actions_for_test(actions: &DoActions) -> Vec<Observation> {
     actions
         .cmds
@@ -769,18 +858,8 @@ async fn run_step_then_run_actions_followup() {
             CompleteStatus::Succeeded,
             Some(AiResponseSummary {
                 text: Some(
-                    json!({
-                        "is_sleep": false,
-                        "next_behavior": null,
-                        "actions": {
-                            "mode": "failed_end",
-                            "cmds": [
-                                "echo hello"
-                            ]
-                        },
-                        "output": {"phase":"action_planned"}
-                    })
-                    .to_string(),
+                    r#"<response><actions mode="failed_end"><command>echo hello</command></actions></response>"#
+                        .to_string(),
                 ),
                 tool_calls: vec![],
                 artifacts: vec![],
@@ -801,16 +880,8 @@ async fn run_step_then_run_actions_followup() {
             CompleteStatus::Succeeded,
             Some(AiResponseSummary {
                 text: Some(
-                    json!({
-                        "is_sleep": true,
-                        "next_behavior": "END",
-                        "actions": {
-                            "mode": "failed_end",
-                            "cmds": []
-                        },
-                        "output": {"final":"after_action"}
-                    })
-                    .to_string(),
+                    r#"<response><next_behavior>END</next_behavior><actions mode="failed_end"></actions></response>"#
+                        .to_string(),
                 ),
                 tool_calls: vec![],
                 artifacts: vec![],

@@ -136,7 +136,7 @@ impl PromptBuilder {
             ),
         ];
 
-        let mut must_features = vec![features::JSON_OUTPUT.to_string()];
+        let mut must_features = Vec::new();
         if !loaded_tools.is_empty() {
             must_features.push(features::TOOL_CALLING.to_string());
         }

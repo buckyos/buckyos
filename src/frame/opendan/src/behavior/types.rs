@@ -5,9 +5,10 @@ use log::warn;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use tokio::sync::Mutex;
+use xmltree::{Element, XMLNode};
 
 use crate::agent_session::AgentSession;
-use crate::agent_tool::DoActions;
+use crate::agent_tool::{ActionCall, DoAction, DoActions};
 use crate::behavior::{BehaviorConfig, LLMComputeError};
 
 pub type InboxPack = Json;
@@ -43,8 +44,8 @@ pub struct StepLimits {
 impl Default for StepLimits {
     fn default() -> Self {
         Self {
-            max_prompt_tokens: 128_000,
-            max_completion_tokens: 64_000,
+            max_prompt_tokens: 200_000,
+            max_completion_tokens: 200_000,
             max_tool_rounds: 1,
             max_tool_calls_per_round: 8,
             max_observation_bytes: 32 * 1024,
@@ -166,43 +167,56 @@ impl BehaviorLLMResult {
         self.next_behavior.as_deref() == Some("END")
     }
 
-    pub fn from_json_str(input: &str) -> Result<Self, LLMComputeError> {
+    pub fn from_xml_str(input: &str) -> Result<Self, LLMComputeError> {
         let normalized = input.trim();
-        if let Ok(wrapper) = serde_json::from_str::<Json>(normalized) {
-            if let Some(content) = extract_openai_wrapped_content(&wrapper) {
-                if let Ok(parsed) = Self::from_json_str(content) {
+        let direct_err = match parse_behavior_llm_result_xml(normalized) {
+            Ok(parsed) => return Ok(parsed),
+            Err(err) => err,
+        };
+
+        if let Some(xml_block) = extract_xml_from_markdown_fence(normalized) {
+            if let Ok(parsed) = parse_behavior_llm_result_xml(xml_block.as_str()) {
+                return Ok(parsed);
+            }
+        }
+
+        if let Some(xml_doc) = extract_embedded_xml(normalized) {
+            if xml_doc != normalized {
+                if let Ok(parsed) = parse_behavior_llm_result_xml(xml_doc.as_str()) {
                     return Ok(parsed);
                 }
             }
         }
 
-        let direct = serde_json::from_str::<Self>(normalized);
-        if let Ok(parsed) = direct {
-            return Ok(parsed);
-        }
-
-        if let Some(json_block) = extract_json_from_markdown_fence(normalized) {
-            if let Ok(parsed) = serde_json::from_str::<Self>(json_block.as_str()) {
-                return Ok(parsed);
-            }
-        }
-
-        if let Some(merged) = parse_concatenated_json_objects(normalized) {
-            if let Ok(parsed) = serde_json::from_value::<Self>(merged) {
-                return Ok(parsed);
-            }
-        }
-
-        let err = direct
-            .err()
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "invalid behavior llm result".to_string());
+        let err = format!("invalid behavior llm xml: {direct_err}");
         warn!("failed to parse BehaviorLLMResult output: {}", err);
         Err(LLMComputeError::Internal(err))
     }
 }
 
-fn extract_json_from_markdown_fence(input: &str) -> Option<String> {
+fn parse_behavior_llm_result_xml(input: &str) -> Result<BehaviorLLMResult, String> {
+    let root = Element::parse(input.as_bytes()).map_err(|err| err.to_string())?;
+    if !root.name.eq_ignore_ascii_case("response") {
+        return Err("root tag must be <response>".to_string());
+    }
+    let mut result = BehaviorLLMResult::default();
+
+    result.next_behavior = child_text(&root, "next_behavior");
+    result.thinking = child_text(&root, "thinking");
+    result.reply = child_text(&root, "reply");
+    result.route_session_id = child_text(&root, "route_session_id");
+    result.new_session = parse_new_session(&root)?;
+    result.topic_tags = parse_text_list(&root, "topic_tags", &["tag"]);
+    result.shell_commands = parse_shell_commands(&root);
+    result.set_memory = parse_set_memory(&root)?;
+    if let Some(actions_node) = first_child_named(&root, "actions") {
+        result.actions = parse_actions(actions_node)?;
+    }
+
+    Ok(result)
+}
+
+fn extract_xml_from_markdown_fence(input: &str) -> Option<String> {
     if !input.contains("```") {
         return None;
     }
@@ -214,47 +228,258 @@ fn extract_json_from_markdown_fence(input: &str) -> Option<String> {
             continue;
         }
 
-        if let Some(stripped) = candidate.strip_prefix("json") {
+        if let Some(stripped) = candidate.strip_prefix("xml") {
             candidate = stripped.trim_start();
-        } else if let Some(stripped) = candidate.strip_prefix("JSON") {
+        } else if let Some(stripped) = candidate.strip_prefix("XML") {
             candidate = stripped.trim_start();
         }
 
-        if candidate.starts_with('{') || candidate.starts_with('[') {
+        if candidate.starts_with('<') {
             return Some(candidate.to_string());
         }
     }
     None
 }
 
-fn parse_concatenated_json_objects(input: &str) -> Option<Json> {
-    let mut stream = serde_json::Deserializer::from_str(input).into_iter::<Json>();
-    let mut merged = serde_json::Map::new();
-    let mut count = 0usize;
-
-    while let Some(item) = stream.next() {
-        let Json::Object(object) = item.ok()? else {
-            return None;
-        };
-        count = count.saturating_add(1);
-        for (key, value) in object {
-            merged.insert(key, value);
-        }
+fn extract_embedded_xml(input: &str) -> Option<String> {
+    let start = input.find('<')?;
+    let end = input.rfind('>')?;
+    if end < start {
+        return None;
     }
+    let candidate = input[start..=end].trim();
+    if candidate.is_empty() {
+        return None;
+    }
+    Some(candidate.to_string())
+}
 
-    if count > 1 {
-        Some(Json::Object(merged))
-    } else {
-        None
+fn first_child_named<'a>(element: &'a Element, name: &str) -> Option<&'a Element> {
+    element.children.iter().find_map(|node| match node {
+        XMLNode::Element(child) if child.name.eq_ignore_ascii_case(name) => Some(child),
+        _ => None,
+    })
+}
+
+fn child_text(element: &Element, name: &str) -> Option<String> {
+    first_child_named(element, name).and_then(element_text)
+}
+
+fn parse_new_session(root: &Element) -> Result<Option<(String, String)>, String> {
+    let Some(node) = first_child_named(root, "new_session") else {
+        return Ok(None);
+    };
+    let title = child_text(node, "title");
+    let summary = child_text(node, "summary");
+    match (title, summary) {
+        (Some(title), Some(summary)) => Ok(Some((title, summary))),
+        (None, None) => Ok(None),
+        _ => Err("new_session requires both <title> and <summary>".to_string()),
     }
 }
 
-fn extract_openai_wrapped_content(wrapper: &Json) -> Option<&str> {
-    wrapper
-        .pointer("/choices/0/message/content")
-        .and_then(Json::as_str)
+fn parse_text_list(root: &Element, field_name: &str, item_names: &[&str]) -> Vec<String> {
+    let Some(list_node) = first_child_named(root, field_name) else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for node in &list_node.children {
+        let XMLNode::Element(item) = node else {
+            continue;
+        };
+        if !item_names
+            .iter()
+            .any(|name| item.name.eq_ignore_ascii_case(name))
+        {
+            continue;
+        }
+        if let Some(value) = element_text(item) {
+            out.push(value);
+        }
+    }
+
+    if out.is_empty() {
+        if let Some(value) = element_direct_text(list_node) {
+            out.push(value);
+        }
+    }
+    out
+}
+
+fn parse_shell_commands(root: &Element) -> Vec<String> {
+    let Some(shell_node) = first_child_named(root, "shell_commands") else {
+        return Vec::new();
+    };
+
+    element_direct_text(shell_node)
+        .map(|block| split_shell_command_lines(block.as_str()))
+        .unwrap_or_default()
+}
+
+fn split_shell_command_lines(raw: &str) -> Vec<String> {
+    raw.lines()
         .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn parse_set_memory(root: &Element) -> Result<HashMap<String, String>, String> {
+    let mut out = HashMap::new();
+    let Some(set_memory_node) = first_child_named(root, "set_memory") else {
+        return Ok(out);
+    };
+
+    for node in &set_memory_node.children {
+        let XMLNode::Element(item) = node else {
+            continue;
+        };
+        if !item.name.eq_ignore_ascii_case("item") {
+            continue;
+        }
+
+        let key = item
+            .attributes
+            .get("key")
+            .cloned()
+            .ok_or_else(|| "set_memory item missing key".to_string())?;
+
+        let value = element_direct_text(item).unwrap_or_default();
+
+        out.insert(key, value);
+    }
+    Ok(out)
+}
+
+fn parse_actions(actions_node: &Element) -> Result<DoActions, String> {
+    let mut actions = DoActions::default();
+    if let Some(mode) = actions_node
+        .attributes
+        .get("mode")
+        .map(|value| value.trim())
         .filter(|value| !value.is_empty())
+    {
+        actions.mode = mode.to_string();
+    }
+
+    for node in &actions_node.children {
+        let XMLNode::Element(child) = node else {
+            continue;
+        };
+        if child.name.eq_ignore_ascii_case("command") {
+            if let Some(command) = element_text(child) {
+                actions.cmds.push(DoAction::Exec(command));
+            }
+            continue;
+        }
+        if child.name.eq_ignore_ascii_case("exec") {
+            actions
+                .cmds
+                .push(DoAction::Call(parse_action_exec_as_call(child)?));
+            continue;
+        }
+        return Err(format!(
+            "unsupported actions child tag `<{}>`, only <command> and <exec> are allowed",
+            child.name
+        ));
+    }
+
+    Ok(actions)
+}
+
+fn parse_action_exec_as_call(exec_node: &Element) -> Result<ActionCall, String> {
+    let action_name = exec_node
+        .attributes
+        .get("name")
+        .cloned()
+        .or_else(|| child_text(exec_node, "name"))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "actions.exec missing name".to_string())?;
+
+    let mut params = serde_json::Map::new();
+    for (key, value) in &exec_node.attributes {
+        if key.eq_ignore_ascii_case("name") {
+            continue;
+        }
+        params.insert(key.to_string(), parse_xml_value(value));
+    }
+
+    if let Some(body) = element_direct_text(exec_node).filter(|value| !value.trim().is_empty()) {
+        if action_name.eq_ignore_ascii_case("edit_file") {
+            if !params.contains_key("new_content") {
+                params.insert("new_content".to_string(), Json::String(body));
+            }
+        } else if !params.contains_key("content") {
+            params.insert("content".to_string(), Json::String(body));
+        }
+    }
+
+    Ok(ActionCall {
+        call_action_name: action_name,
+        call_params: Json::Object(params),
+    })
+}
+
+fn parse_xml_value(raw: &str) -> Json {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Json::String(String::new());
+    }
+    if looks_like_json_literal(trimmed) {
+        if let Ok(value) = serde_json::from_str::<Json>(trimmed) {
+            return value;
+        }
+    }
+    Json::String(trimmed.to_string())
+}
+
+fn looks_like_json_literal(raw: &str) -> bool {
+    raw.starts_with('{')
+        || raw.starts_with('[')
+        || raw.starts_with('"')
+        || raw.eq_ignore_ascii_case("true")
+        || raw.eq_ignore_ascii_case("false")
+        || raw.eq_ignore_ascii_case("null")
+        || raw.parse::<f64>().is_ok()
+}
+
+fn element_text(element: &Element) -> Option<String> {
+    let mut out = String::new();
+    collect_text_recursive(element, &mut out);
+    let trimmed = out.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn element_direct_text(element: &Element) -> Option<String> {
+    let mut out = String::new();
+    for node in &element.children {
+        match node {
+            XMLNode::Text(value) | XMLNode::CData(value) => out.push_str(value),
+            _ => {}
+        }
+    }
+    let trimmed = out.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn collect_text_recursive(element: &Element, out: &mut String) {
+    for node in &element.children {
+        match node {
+            XMLNode::Text(value) | XMLNode::CData(value) => out.push_str(value),
+            XMLNode::Element(child) => collect_text_recursive(child, out),
+            _ => {}
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -347,46 +572,93 @@ impl Default for ModelPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_tool::DoAction;
 
     #[test]
-    fn behavior_result_accepts_concatenated_json_objects() {
-        let raw = r#"{"actions":{"mode":"all","cmds":[["create_local_workspace",{"name":"small_toy_web"}]]}}{"next_behavior":"DO:1","thinking":"done"}"#;
-        let parsed =
-            BehaviorLLMResult::from_json_str(raw).expect("concatenated json should be parsed");
+    fn behavior_result_accepts_basic_xml() {
+        let raw = r#"<response>
+  <actions mode="all"></actions>
+  <next_behavior>DO:1</next_behavior>
+  <thinking>done</thinking>
+</response>"#;
+        let parsed = BehaviorLLMResult::from_xml_str(raw).expect("xml should be parsed");
 
         assert_eq!(parsed.actions.mode, "all");
-        assert_eq!(parsed.actions.cmds.len(), 1);
+        assert_eq!(parsed.actions.cmds.len(), 0);
         assert_eq!(parsed.next_behavior.as_deref(), Some("DO:1"));
         assert_eq!(parsed.thinking.as_deref(), Some("done"));
     }
 
     #[test]
-    fn behavior_result_accepts_markdown_wrapped_json() {
-        let raw = r#"```json
-{"next_behavior":"END","thinking":"ok"}
+    fn behavior_result_accepts_markdown_wrapped_xml() {
+        let raw = r#"```xml
+<response>
+  <next_behavior>END</next_behavior>
+  <thinking>ok</thinking>
+</response>
 ```"#;
-        let parsed = BehaviorLLMResult::from_json_str(raw).expect("markdown wrapped json");
+        let parsed = BehaviorLLMResult::from_xml_str(raw).expect("markdown wrapped xml");
         assert_eq!(parsed.next_behavior.as_deref(), Some("END"));
         assert_eq!(parsed.thinking.as_deref(), Some("ok"));
     }
 
     #[test]
-    fn behavior_result_accepts_openai_wrapped_content_payload() {
-        let raw = r#"{
-  "id":"chatcmpl-test",
-  "object":"chat.completion",
-  "choices":[
-    {
-      "message":{
-        "role":"assistant",
-        "content":"{\"thinking\":\"switch\",\"next_behavior\":\"DO:todo=T01\"}"
-      }
-    }
-  ]
-}"#;
-        let parsed =
-            BehaviorLLMResult::from_json_str(raw).expect("openai wrapped content should parse");
+    fn behavior_result_accepts_embedded_xml_payload() {
+        let raw = r#"model output:
+<response>
+  <thinking>switch</thinking>
+  <next_behavior>DO:todo=T01</next_behavior>
+</response>
+end"#;
+        let parsed = BehaviorLLMResult::from_xml_str(raw).expect("embedded xml should parse");
         assert_eq!(parsed.next_behavior.as_deref(), Some("DO:todo=T01"));
         assert_eq!(parsed.thinking.as_deref(), Some("switch"));
+    }
+
+    #[test]
+    fn behavior_result_accepts_shell_commands_and_structured_actions() {
+        let raw = r#"<response>
+  <thinking>Need to inspect scripts and then patch index.html.</thinking>
+  <reply>先执行检查命令，再执行结构化编辑动作。</reply>
+  <shell_commands>
+    <![CDATA[
+      sed -n '1,240p' workspaces/local-llk-frontend-game-1772767149633-0/index.html
+      sed -n '240,520p' workspaces/local-llk-frontend-game-1772767149633-0/index.html
+    ]]>
+  </shell_commands>
+  <actions mode="all">
+    <command>echo hello</command>
+    <exec name="write_file" path="workspaces/local-llk-frontend-game-1772767149633-0/index.html" mode="write">
+      <![CDATA[
+        hello from cdata
+      ]]>
+    </exec>
+  </actions>
+</response>"#;
+        let parsed =
+            BehaviorLLMResult::from_xml_str(raw).expect("shell_commands + structured xml actions");
+        assert_eq!(parsed.shell_commands.len(), 2);
+        assert_eq!(parsed.actions.mode, "all");
+        assert_eq!(parsed.actions.cmds.len(), 2);
+        match &parsed.actions.cmds[1] {
+            DoAction::Call(call) => {
+                assert_eq!(call.call_action_name, "write_file");
+                assert_eq!(
+                    call.call_params
+                        .get("path")
+                        .and_then(Json::as_str)
+                        .unwrap_or_default(),
+                    "workspaces/local-llk-frontend-game-1772767149633-0/index.html"
+                );
+                assert_eq!(
+                    call.call_params
+                        .get("content")
+                        .and_then(Json::as_str)
+                        .unwrap_or_default(),
+                    "hello from cdata"
+                );
+            }
+            other => panic!("expected structured call action, got {other:?}"),
+        }
     }
 }

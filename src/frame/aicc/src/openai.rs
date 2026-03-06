@@ -381,7 +381,8 @@ impl OpenAIProvider {
                     continue;
                 }
 
-                let Some(content_items) = item_obj.get("content").and_then(|value| value.as_array())
+                let Some(content_items) =
+                    item_obj.get("content").and_then(|value| value.as_array())
                 else {
                     continue;
                 };
@@ -429,8 +430,7 @@ impl OpenAIProvider {
                 let Some(item_obj) = item.as_object() else {
                     continue;
                 };
-                if item_obj.get("type").and_then(|value| value.as_str()) != Some("function_call")
-                {
+                if item_obj.get("type").and_then(|value| value.as_str()) != Some("function_call") {
                     continue;
                 }
 
@@ -442,7 +442,10 @@ impl OpenAIProvider {
                     .filter(|value| !value.is_empty())
                     .map(|value| value.to_string());
                 let Some(call_id) = call_id else {
-                    warn!("aicc.openai output[{}] function_call is missing call_id/id", idx);
+                    warn!(
+                        "aicc.openai output[{}] function_call is missing call_id/id",
+                        idx
+                    );
                     continue;
                 };
 
@@ -592,6 +595,63 @@ impl OpenAIProvider {
         }
     }
 
+    fn incomplete_output_error(
+        body: &Value,
+        content: Option<&str>,
+        tool_choices: &[AiToolCall],
+    ) -> Option<ProviderError> {
+        let status = body
+            .get("status")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        if status != "incomplete" {
+            return None;
+        }
+
+        let reason = body
+            .pointer("/incomplete_details/reason")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown");
+        let response_id = body
+            .get("id")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if reason == "max_output_tokens" {
+            let message = if response_id.is_empty() {
+                "TOKEN_LIMIT_EXCEEDED: openai max_output_tokens exhausted before response completed"
+                    .to_string()
+            } else {
+                format!(
+                    "TOKEN_LIMIT_EXCEEDED: openai max_output_tokens exhausted before response completed (response_id={})",
+                    response_id
+                )
+            };
+            return Some(ProviderError::fatal(message));
+        }
+
+        let has_text = content
+            .map(str::trim)
+            .map(|value| !value.is_empty())
+            .unwrap_or(false);
+        if has_text || !tool_choices.is_empty() {
+            return None;
+        }
+
+        let message = if response_id.is_empty() {
+            format!(
+                "openai response incomplete before output text/tool calls (reason={})",
+                reason
+            )
+        } else {
+            format!(
+                "openai response incomplete before output text/tool calls (reason={}, response_id={})",
+                reason, response_id
+            )
+        };
+
+        Some(ProviderError::fatal(message))
+    }
+
     fn extract_unsupported_request_param(body: &Value) -> Option<String> {
         let param = body
             .pointer("/error/param")
@@ -612,8 +672,12 @@ impl OpenAIProvider {
         Some(param)
     }
 
-    fn remove_retryable_unsupported_option(request_obj: &mut Map<String, Value>, param: &str) -> bool {
-        const RETRYABLE_OPTION_KEYS: &[&str] = &["temperature", "top_p", "top_logprobs", "logprobs"];
+    fn remove_retryable_unsupported_option(
+        request_obj: &mut Map<String, Value>,
+        param: &str,
+    ) -> bool {
+        const RETRYABLE_OPTION_KEYS: &[&str] =
+            &["temperature", "top_p", "top_logprobs", "logprobs"];
         if !RETRYABLE_OPTION_KEYS.contains(&param) {
             return false;
         }
@@ -922,6 +986,15 @@ impl OpenAIProvider {
 
         let content = Self::extract_text_content(&body);
         let tool_choices = Self::extract_tool_choices(&body);
+        if let Some(err) =
+            Self::incomplete_output_error(&body, content.as_deref(), tool_choices.as_slice())
+        {
+            warn!(
+                "aicc.openai.llm.incomplete_output instance_id={} model={} trace_id={:?} err={}",
+                self.instance.instance_id, provider_model, ctx.trace_id, err
+            );
+            return Err(err);
+        }
 
         let usage = body.get("usage").map(|usage| AiUsage {
             input_tokens: usage
@@ -1700,7 +1773,10 @@ mod tests {
 
         let text = OpenAIProvider::extract_text_content(&body).expect("text should exist");
         let parsed: Value = serde_json::from_str(&text).expect("text should stay valid json");
-        assert_eq!(parsed.pointer("/reply").and_then(Value::as_str), Some("hello"));
+        assert_eq!(
+            parsed.pointer("/reply").and_then(Value::as_str),
+            Some("hello")
+        );
     }
 
     #[test]
@@ -1719,6 +1795,64 @@ mod tests {
 
         let text = OpenAIProvider::extract_text_content(&body).expect("text should exist");
         assert_eq!(text, "{\"next_behavior\":\"END\"}");
+    }
+
+    #[test]
+    fn incomplete_output_error_reports_token_limit_as_fatal() {
+        let body = json!({
+            "id": "resp_test",
+            "status": "incomplete",
+            "incomplete_details": {
+                "reason": "max_output_tokens"
+            },
+            "output": [
+                { "type": "reasoning" }
+            ]
+        });
+
+        let err = OpenAIProvider::incomplete_output_error(&body, None, &[])
+            .expect("incomplete response without text should return an error");
+        assert!(!err.is_retryable());
+        let message = err.to_string();
+        assert!(message.contains("TOKEN_LIMIT_EXCEEDED"));
+        assert!(message.contains("resp_test"));
+    }
+
+    #[test]
+    fn incomplete_output_error_reports_token_limit_even_when_text_exists() {
+        let body = json!({
+            "status": "incomplete",
+            "incomplete_details": {
+                "reason": "max_output_tokens"
+            }
+        });
+
+        let err = OpenAIProvider::incomplete_output_error(
+            &body,
+            Some("{\"next_behavior\":\"END\"}"),
+            &[],
+        );
+        assert!(err.is_some());
+        let err = err.expect("token limit should still be reported");
+        assert!(!err.is_retryable());
+        assert!(err.to_string().contains("TOKEN_LIMIT_EXCEEDED"));
+    }
+
+    #[test]
+    fn incomplete_output_error_skips_non_token_incomplete_when_text_exists() {
+        let body = json!({
+            "status": "incomplete",
+            "incomplete_details": {
+                "reason": "content_filter"
+            }
+        });
+
+        let err = OpenAIProvider::incomplete_output_error(
+            &body,
+            Some("{\"next_behavior\":\"END\"}"),
+            &[],
+        );
+        assert!(err.is_none());
     }
 
     #[test]

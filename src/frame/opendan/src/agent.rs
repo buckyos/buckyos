@@ -784,11 +784,24 @@ impl AIAgent {
 
         loop {
             if step_count >= self.cfg.max_steps_per_wakeup {
-                self.set_running_session_to_wait(&session).await?;
+                warn!(
+                    "agent.session_loop_yield: session_id={} wakeup_id={} reason=step_budget_reached step_count={} max_steps_per_wakeup={}",
+                    session_id_for_log,
+                    wakeup_id,
+                    step_count,
+                    self.cfg.max_steps_per_wakeup
+                );
+                self.set_running_session_to_ready(&session).await?;
                 break;
             }
             if now_ms() >= deadline_ms {
-                self.set_running_session_to_wait(&session).await?;
+                warn!(
+                    "agent.session_loop_yield: session_id={} wakeup_id={} reason=walltime_reached deadline_ms={}",
+                    session_id_for_log,
+                    wakeup_id,
+                    deadline_ms
+                );
+                self.set_running_session_to_ready(&session).await?;
                 break;
             }
 
@@ -1747,6 +1760,21 @@ impl AIAgent {
             let mut guard = session.lock().await;
             if guard.state == SessionState::Running {
                 guard.state = SessionState::Wait;
+            }
+            guard.session_id.clone()
+        };
+        self.session_mgr.save_session(&session_id).await?;
+        Ok(())
+    }
+
+    async fn set_running_session_to_ready(
+        &self,
+        session: &Arc<Mutex<crate::agent_session::AgentSession>>,
+    ) -> Result<()> {
+        let session_id = {
+            let mut guard = session.lock().await;
+            if guard.state == SessionState::Running {
+                guard.state = SessionState::Ready;
             }
             guard.session_id.clone()
         };
@@ -3134,7 +3162,10 @@ async fn build_step_summary(
 }
 
 fn merged_actions_from_llm_result(llm_result: &BehaviorLLMResult) -> DoActions {
-    let mut merged = llm_result.actions.clone();
+    let mut merged = DoActions {
+        mode: llm_result.actions.mode.clone(),
+        cmds: Vec::new(),
+    };
     for command in &llm_result.shell_commands {
         let command = command.trim();
         if command.is_empty() {
@@ -3142,6 +3173,7 @@ fn merged_actions_from_llm_result(llm_result: &BehaviorLLMResult) -> DoActions {
         }
         merged.cmds.push(DoAction::Exec(command.to_string()));
     }
+    merged.cmds.extend(llm_result.actions.cmds.clone());
     merged
 }
 
@@ -3467,7 +3499,7 @@ mod tests {
     }
 
     #[test]
-    fn merged_actions_appends_shell_commands() {
+    fn merged_actions_executes_shell_commands_before_actions() {
         let mut llm_result = BehaviorLLMResult::default();
         llm_result.actions.mode = "all".to_string();
         llm_result
@@ -3486,9 +3518,9 @@ mod tests {
         assert_eq!(
             merged.cmds,
             vec![
-                DoAction::Exec("echo from-actions".to_string()),
                 DoAction::Exec("echo from-shell-1".to_string()),
                 DoAction::Exec("echo from-shell-2".to_string()),
+                DoAction::Exec("echo from-actions".to_string()),
             ]
         );
     }
@@ -3966,7 +3998,7 @@ process_rule: "test behavior for action rendering"
         assert!(rendered.contains("read_file large_preview.txt => read"));
         assert!(rendered.contains(format!("read {large_bytes} bytes (truncated)").as_str()));
         assert!(rendered
-            .contains("... [TRUNCATED FOR ACTION PREVIEW: Showing first 100 lines only] ..."));
+            .contains("... [TRUNCATED FOR ACTION PREVIEW: Showing first 3000 lines only] ..."));
         assert!(rendered.contains("write_file write_preview.txt mode=new content=\""));
         assert!(
             rendered.contains("write mode `new` requires target file not exist: write_preview.txt")

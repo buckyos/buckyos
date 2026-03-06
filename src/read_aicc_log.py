@@ -225,8 +225,27 @@ def print_separator(char="─", width=88):
     print(f"{C_DIM}{char * width}{C_RESET}")
 
 
+def _try_format_xml(text: str) -> str | None:
+    """Try to pretty-print XML. Returns formatted string or None."""
+    stripped = text.strip()
+    if not stripped.startswith("<"):
+        return None
+    try:
+        import xml.dom.minidom as minidom
+        dom = minidom.parseString(stripped)
+        pretty = dom.toprettyxml(indent="  ")
+        # Remove the xml declaration line
+        lines = pretty.splitlines()
+        if lines and lines[0].startswith("<?xml"):
+            lines = lines[1:]
+        # Remove blank lines
+        return "\n".join(l for l in lines if l.strip())
+    except Exception:
+        return None
+
+
 def print_message_content(content: str, role: str, indent: int = 4):
-    """Pretty-print a message's content, attempting to parse inner JSON."""
+    """Pretty-print a message's content, attempting to parse inner JSON or XML."""
     color = ROLE_COLORS.get(role, C_WHITE)
     prefix = " " * indent
 
@@ -239,6 +258,13 @@ def print_message_content(content: str, role: str, indent: int = 4):
         return
     except (json.JSONDecodeError, TypeError):
         pass
+
+    # Try to parse as XML
+    xml_formatted = _try_format_xml(content)
+    if xml_formatted:
+        for line in xml_formatted.splitlines():
+            print(f"{prefix}{color}{line}{C_RESET}")
+        return
 
     # Otherwise print as text, respecting newlines
     for line in content.splitlines():

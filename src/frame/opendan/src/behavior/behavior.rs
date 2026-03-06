@@ -208,7 +208,7 @@ impl LLMBehavior {
 
         track.latency_ms = now_ms().saturating_sub(started);
 
-        let behavior_result = BehaviorLLMResult::from_json_str(&llm_resp.content)?;
+        let behavior_result = BehaviorLLMResult::from_xml_str(&llm_resp.content)?;
 
         let tracking = LLMTrackingInfo {
             token_usage: usage,
@@ -692,8 +692,10 @@ fn parse_aicc_summary(
     let mut latency_ms = 0_u64;
     let mut tool_calls = parse_tool_choices_from_summary(summary.tool_calls)?;
     let content = summary.text.unwrap_or_default();
+    let finish_reason = summary.finish_reason.unwrap_or_default();
+    let mut incomplete_reason = String::new();
 
-    if let Some(extra) = summary.extra {
+    if let Some(extra) = summary.extra.as_ref() {
         if let Some(value) = extra.get("model").and_then(|v| v.as_str()) {
             model = value.to_string();
         }
@@ -708,6 +710,44 @@ fn parse_aicc_summary(
                 tool_calls = parse_tool_calls_from_aicc(tool_calls_value)?;
             }
         }
+        if let Some(value) = extra
+            .pointer("/provider_io/output/incomplete_details/reason")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            incomplete_reason = value.to_string();
+        }
+    }
+
+    if content.trim().is_empty() && tool_calls.is_empty() {
+        if incomplete_reason == "max_output_tokens" {
+            let suffix = if finish_reason.trim().is_empty() {
+                String::new()
+            } else {
+                format!(" (finish_reason={})", finish_reason)
+            };
+            return Err(LLMComputeError::Provider(format!(
+                "TOKEN_LIMIT_EXCEEDED: llm token limit reached: max_output_tokens{}",
+                suffix
+            )));
+        }
+        let mut hints = Vec::new();
+        if !finish_reason.trim().is_empty() {
+            hints.push(format!("finish_reason={}", finish_reason));
+        }
+        if !incomplete_reason.is_empty() {
+            hints.push(format!("incomplete_reason={}", incomplete_reason));
+        }
+        let hint_suffix = if hints.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", hints.join(", "))
+        };
+        return Err(LLMComputeError::Provider(format!(
+            "llm response is empty (no text and no tool_calls){}",
+            hint_suffix
+        )));
     }
 
     Ok((

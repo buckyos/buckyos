@@ -780,7 +780,6 @@ struct TodoDetail {
 struct TodoRowForUpdate {
     id: String,
     todo_code: String,
-    todo_type: TodoType,
     status: TodoStatus,
     assignee: Option<String>,
     attempts: i64,
@@ -862,14 +861,6 @@ impl DomainError {
     fn not_found(message: impl Into<String>, op: Option<&DeltaOp>) -> Self {
         Self {
             code: "NOT_FOUND",
-            message: message.into(),
-            op: op.map(|v| v.raw().clone()),
-        }
-    }
-
-    fn invalid_transition(message: impl Into<String>, op: Option<&DeltaOp>) -> Self {
-        Self {
-            code: "INVALID_TRANSITION",
             message: message.into(),
             op: op.map(|v| v.raw().clone()),
         }
@@ -1468,12 +1459,6 @@ fn apply_update_op(
     })?;
 
     assert_subagent_permission(actor, &todo, op)?;
-    validate_transition(
-        todo.todo_type.clone(),
-        todo.status.clone(),
-        to_status.clone(),
-        op,
-    )?;
 
     let now = now_ms();
     let mut attempts = todo.attempts;
@@ -1615,54 +1600,6 @@ fn assert_subagent_permission(
     Ok(())
 }
 
-fn validate_transition(
-    todo_type: TodoType,
-    from: TodoStatus,
-    to: TodoStatus,
-    op: &DeltaOp,
-) -> Result<(), DomainError> {
-    if from == to {
-        return Ok(());
-    }
-
-    let ok = match from {
-        TodoStatus::Wait => match to {
-            TodoStatus::InProgress | TodoStatus::Complete | TodoStatus::Failed => true,
-            TodoStatus::Done | TodoStatus::CheckFailed => todo_type == TodoType::Bench,
-            TodoStatus::Wait => true,
-        },
-        TodoStatus::InProgress => matches!(to, TodoStatus::Complete | TodoStatus::Failed),
-        TodoStatus::Complete => {
-            matches!(
-                to,
-                TodoStatus::Done | TodoStatus::CheckFailed | TodoStatus::InProgress
-            )
-        }
-        TodoStatus::Failed => matches!(to, TodoStatus::InProgress | TodoStatus::Complete),
-        TodoStatus::Done => false,
-        TodoStatus::CheckFailed => {
-            matches!(
-                to,
-                TodoStatus::InProgress | TodoStatus::Complete | TodoStatus::Failed
-            )
-        }
-    };
-
-    if ok {
-        return Ok(());
-    }
-
-    Err(DomainError::invalid_transition(
-        format!(
-            "invalid transition for {:?}: {} -> {}",
-            todo_type,
-            from.as_str(),
-            to.as_str()
-        ),
-        Some(op),
-    ))
-}
-
 fn load_ordered_todos(
     tx: &rusqlite::Transaction<'_>,
     workspace_id: &str,
@@ -1775,21 +1712,19 @@ fn load_todo_for_update(
     todo_code: &str,
 ) -> Result<TodoRowForUpdate, DomainError> {
     tx.query_row(
-        "SELECT id, todo_code, type, status, assignee_did, attempts
+        "SELECT id, todo_code, status, assignee_did, attempts
          FROM todo_items
          WHERE workspace_id = ?1 AND todo_code = ?2
          LIMIT 1",
         params![workspace_id, todo_code],
         |row| {
-            let raw_type: String = row.get(2)?;
-            let raw_status: String = row.get(3)?;
+            let raw_status: String = row.get(2)?;
             Ok(TodoRowForUpdate {
                 id: row.get(0)?,
                 todo_code: row.get(1)?,
-                todo_type: TodoType::from_db(&raw_type).map_err(to_sql_err)?,
                 status: TodoStatus::from_db(&raw_status).map_err(to_sql_err)?,
-                assignee: row.get(4)?,
-                attempts: row.get(5)?,
+                assignee: row.get(3)?,
+                attempts: row.get(4)?,
             })
         },
     )
