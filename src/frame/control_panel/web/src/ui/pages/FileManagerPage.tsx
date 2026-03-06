@@ -43,6 +43,7 @@ import mammoth from 'mammoth/mammoth.browser'
 
 import { ensureSessionToken } from '@/auth/authManager'
 import { getSessionTokenFromCookies, getStoredSessionToken } from '@/auth/session'
+import ActionDialog from '@/ui/components/file_manager/ActionDialog'
 import FilePreviewPanel from '@/ui/components/file_manager/FilePreviewPanel'
 import { downloadImageWithProgress } from '@/ui/components/file_manager/imageDownload'
 import ProgressRing from '@/ui/components/file_manager/ProgressRing'
@@ -152,6 +153,30 @@ type UploadProgressItem = {
   total: number
   status: 'uploading' | 'paused' | 'completed' | 'error' | 'cancelled'
   error?: string
+}
+
+type ConfirmDialogState = {
+  title: string
+  description: ReactNode
+  confirmLabel: string
+  confirmTone?: 'primary' | 'danger'
+  onConfirm: () => Promise<void> | void
+}
+
+type MoveCopyDialogState = {
+  mode: 'single' | 'batch'
+  action: 'move' | 'copy'
+  sourceEntry: FileEntry | null
+  destination: string
+  overrideExisting: boolean
+  error: string
+}
+
+type ShareDialogState = {
+  entry: FileEntry
+  expiresInSeconds: string
+  password: string
+  error: string
 }
 
 const DEFAULT_UPLOAD_CHUNK_SIZE = 2 * 1024 * 1024
@@ -622,6 +647,16 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   const [renameEditingExtension, setRenameEditingExtension] = useState(false)
   const [renameSubmitting, setRenameSubmitting] = useState(false)
   const [renameError, setRenameError] = useState('')
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null)
+  const [confirmDialogBusy, setConfirmDialogBusy] = useState(false)
+  const [moveCopyDialog, setMoveCopyDialog] = useState<MoveCopyDialogState | null>(null)
+  const [moveCopyDialogBusy, setMoveCopyDialogBusy] = useState(false)
+  const [folderDialogOpen, setFolderDialogOpen] = useState(false)
+  const [folderNameInput, setFolderNameInput] = useState('')
+  const [folderDialogError, setFolderDialogError] = useState('')
+  const [folderDialogBusy, setFolderDialogBusy] = useState(false)
+  const [shareDialog, setShareDialog] = useState<ShareDialogState | null>(null)
+  const [shareDialogBusy, setShareDialogBusy] = useState(false)
   const [searchKeyword, setSearchKeyword] = useState('')
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false)
   const [filterKind, setFilterKind] = useState<'all' | 'file' | 'dir'>('all')
@@ -725,6 +760,50 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
     setRenameEditingExtension(false)
     setRenameError('')
   }, [renameSubmitting])
+
+  const closeConfirmDialog = useCallback(() => {
+    if (confirmDialogBusy) {
+      return
+    }
+    setConfirmDialog(null)
+  }, [confirmDialogBusy])
+
+  const closeMoveCopyDialog = useCallback(() => {
+    if (moveCopyDialogBusy) {
+      return
+    }
+    setMoveCopyDialog(null)
+  }, [moveCopyDialogBusy])
+
+  const closeFolderDialog = useCallback((force = false) => {
+    if (folderDialogBusy && !force) {
+      return
+    }
+    setFolderDialogOpen(false)
+    setFolderNameInput('')
+    setFolderDialogError('')
+  }, [folderDialogBusy])
+
+  const closeShareDialog = useCallback(() => {
+    if (shareDialogBusy) {
+      return
+    }
+    setShareDialog(null)
+  }, [shareDialogBusy])
+
+  const submitConfirmDialog = useCallback(async () => {
+    if (!confirmDialog) {
+      return
+    }
+
+    setConfirmDialogBusy(true)
+    try {
+      await confirmDialog.onConfirm()
+      setConfirmDialog(null)
+    } finally {
+      setConfirmDialogBusy(false)
+    }
+  }, [confirmDialog])
 
   const onRename = useCallback((entry: FileEntry) => {
     const { baseName, extension } = splitNameAndExtension(entry.name)
@@ -1170,25 +1249,33 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   )
 
   const deleteTrashItemForever = useCallback(
-    async (item: RecycleBinEntry) => {
-      const confirmed = window.confirm(`Permanently delete ${item.name} from recycle bin?`)
-      if (!confirmed) {
-        return
-      }
+    (item: RecycleBinEntry) => {
+      setConfirmDialog({
+        title: 'Delete forever?',
+        description: (
+          <p>
+            Permanently remove <span className="font-semibold text-slate-800">{item.name}</span> from recycle bin.
+            This cannot be undone.
+          </p>
+        ),
+        confirmLabel: 'Delete forever',
+        confirmTone: 'danger',
+        onConfirm: async () => {
+          const response = await fetch(`/api/recycle-bin/item/${encodeURIComponent(item.item_id)}`, {
+            method: 'DELETE',
+            headers: withAuthHeaders(effectiveToken),
+          })
+          if (!response.ok) {
+            const payload = (await response.json().catch(() => ({}))) as { error?: string }
+            setMessage(payload.error ?? `Permanent delete failed (${response.status})`)
+            return
+          }
 
-      const response = await fetch(`/api/recycle-bin/item/${encodeURIComponent(item.item_id)}`, {
-        method: 'DELETE',
-        headers: withAuthHeaders(effectiveToken),
+          await loadTrash(effectiveToken)
+          setSelectedPaths((prev) => prev.filter((value) => value !== item.path))
+          setMessage(`Deleted permanently: ${item.name}`)
+        },
       })
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => ({}))) as { error?: string }
-        setMessage(payload.error ?? `Permanent delete failed (${response.status})`)
-        return
-      }
-
-      await loadTrash(effectiveToken)
-      setSelectedPaths((prev) => prev.filter((value) => value !== item.path))
-      setMessage(`Deleted permanently: ${item.name}`)
     },
     [effectiveToken, loadTrash],
   )
@@ -2155,125 +2242,98 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
     }
   }
 
-  const onDelete = async (entry: FileEntry) => {
-    const confirmed = window.confirm(`Delete ${entry.name}?`)
-    if (!confirmed) {
-      return
-    }
+  const onDelete = (entry: FileEntry) => {
+    setConfirmDialog({
+      title: `Delete ${entry.is_dir ? 'folder' : 'file'}?`,
+      description: (
+        <p>
+          <span className="font-semibold text-slate-800">{entry.name}</span> will be moved to recycle bin.
+        </p>
+      ),
+      confirmLabel: 'Move to trash',
+      confirmTone: 'danger',
+      onConfirm: async () => {
+        setLoading(true)
+        try {
+          const response = await fetch(`/api/resources${encodePath(entry.path)}`, {
+            method: 'DELETE',
+            headers: withAuthHeaders(effectiveToken),
+          })
 
-    setLoading(true)
-    try {
-      const response = await fetch(`/api/resources${encodePath(entry.path)}`, {
-        method: 'DELETE',
-        headers: withAuthHeaders(effectiveToken),
-      })
+          if (!response.ok) {
+            const payload = (await response.json().catch(() => ({}))) as { error?: string }
+            setMessage(payload.error ?? `Delete failed (${response.status})`)
+            return
+          }
 
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => ({}))) as { error?: string }
-        setMessage(payload.error ?? `Delete failed (${response.status})`)
-        return
-      }
+          setSelectedPaths((prev) => prev.filter((item) => item !== entry.path))
+          if (editorPath === entry.path) {
+            setEditorPath('')
+            setEditorContent('')
+            setEditorDirty(false)
+          }
 
-      setSelectedPaths((prev) => prev.filter((item) => item !== entry.path))
-      if (editorPath === entry.path) {
-        setEditorPath('')
-        setEditorContent('')
-        setEditorDirty(false)
-      }
-
-      clearSearchState()
-      if (filesScope === 'browse') {
-        await loadDirectory(currentPath, effectiveToken)
-      } else if (filesScope === 'recent') {
-        await loadRecent(effectiveToken)
-      } else if (filesScope === 'starred') {
-        await loadFavorites(effectiveToken)
-      }
-      await loadTrash(effectiveToken)
-      const successMessage = entry.is_dir ? `Moved folder to trash: ${entry.name}` : `Moved file to trash: ${entry.name}`
-      setMessage(successMessage)
-      showDeleteToast(successMessage)
-    } finally {
-      setLoading(false)
-    }
+          clearSearchState()
+          if (filesScope === 'browse') {
+            await loadDirectory(currentPath, effectiveToken)
+          } else if (filesScope === 'recent') {
+            await loadRecent(effectiveToken)
+          } else if (filesScope === 'starred') {
+            await loadFavorites(effectiveToken)
+          }
+          await loadTrash(effectiveToken)
+          const successMessage = entry.is_dir ? `Moved folder to trash: ${entry.name}` : `Moved file to trash: ${entry.name}`
+          setMessage(successMessage)
+          showDeleteToast(successMessage)
+        } finally {
+          setLoading(false)
+        }
+      },
+    })
   }
 
-  const onCreateShare = async (entry: FileEntry) => {
-    const expiresInput = window.prompt('Share expiration in seconds (empty for no expiration)', '86400')
-    if (expiresInput === null) {
-      return
-    }
-    const expiresRaw = expiresInput.trim()
-
-    let expiresInSeconds: number | undefined
-    if (expiresRaw) {
-      const parsed = Number(expiresRaw)
-      if (!Number.isFinite(parsed) || parsed <= 0) {
-        setMessage('Invalid expiration value.')
-        return
-      }
-      expiresInSeconds = Math.floor(parsed)
-    }
-
-    const password = window.prompt('Share password (optional)')?.trim() ?? ''
-
-    setLoading(true)
-    try {
-      const response = await fetch('/api/share', {
-        method: 'POST',
-        headers: withAuthHeaders(effectiveToken, {
-          'Content-Type': 'application/json',
-        }),
-        body: JSON.stringify({
-          path: entry.path,
-          password: password || undefined,
-          expires_in_seconds: expiresInSeconds,
-        }),
-      })
-
-      if (response.status === 401) {
-        setSessionToken('')
-        setMessage('会话已失效，请在 Control Panel 重新登录。')
-        return
-      }
-
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => ({}))) as { error?: string }
-        setMessage(payload.error ?? `Create share failed (${response.status})`)
-        return
-      }
-
-      await loadShares(effectiveToken)
-      setMessage(`Share created for ${entry.name}`)
-    } finally {
-      setLoading(false)
-    }
+  const onCreateShare = (entry: FileEntry) => {
+    setShareDialog({
+      entry,
+      expiresInSeconds: '86400',
+      password: '',
+      error: '',
+    })
   }
 
-  const onDeleteShare = async (shareId: string) => {
-    const confirmed = window.confirm('Delete this share link?')
-    if (!confirmed) {
-      return
-    }
+  const onDeleteShare = (shareId: string) => {
+    const targetShare = shares.find((item) => item.id === shareId)
+    const label = targetShare?.path ?? 'this share link'
+    setConfirmDialog({
+      title: 'Remove share link?',
+      description: (
+        <p>
+          Remove share link for <span className="font-semibold text-slate-800">{label}</span>.
+        </p>
+      ),
+      confirmLabel: 'Remove',
+      confirmTone: 'danger',
+      onConfirm: async () => {
+        setLoading(true)
+        try {
+          const response = await fetch(`/api/share/${encodeURIComponent(shareId)}`, {
+            method: 'DELETE',
+            headers: withAuthHeaders(effectiveToken),
+          })
 
-    setLoading(true)
-    try {
-      const response = await fetch(`/api/share/${encodeURIComponent(shareId)}`, {
-        method: 'DELETE',
-        headers: withAuthHeaders(effectiveToken),
-      })
+          if (!response.ok) {
+            const payload = (await response.json().catch(() => ({}))) as { error?: string }
+            setMessage(payload.error ?? `Delete share failed (${response.status})`)
+            return
+          }
 
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => ({}))) as { error?: string }
-        setMessage(payload.error ?? `Delete share failed (${response.status})`)
-        return
-      }
-
-      await loadShares(effectiveToken)
-      setMessage('Share removed.')
-    } finally {
-      setLoading(false)
-    }
+          await loadShares(effectiveToken)
+          setMessage('Share removed.')
+        } finally {
+          setLoading(false)
+        }
+      },
+    })
   }
 
   const onCopyShareLink = async (shareId: string, type: 'view' | 'download') => {
@@ -2303,130 +2363,218 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
       body: JSON.stringify(payload),
     })
 
-  const onMoveOrCopy = async (entry: FileEntry, action: 'move' | 'copy') => {
+  const onMoveOrCopy = (entry: FileEntry, action: 'move' | 'copy') => {
     const suggested = action === 'copy' ? `${entry.path}.copy` : entry.path
-    const destination = window.prompt(`${action === 'move' ? 'Move' : 'Copy'} destination path`, suggested)?.trim()
-    if (!destination || destination === entry.path) {
+    setMoveCopyDialog({
+      mode: 'single',
+      action,
+      sourceEntry: entry,
+      destination: suggested,
+      overrideExisting: false,
+      error: '',
+    })
+  }
+
+  const onBatchDelete = () => {
+    if (selectedEntries.length === 0) {
       return
     }
 
-    const submit = async (overrideExisting: boolean) =>
-      patchResource(entry.path, {
-        action,
-        destination,
-        override_existing: overrideExisting,
-      })
+    const total = selectedEntries.length
+    setConfirmDialog({
+      title: 'Delete selected items?',
+      description: <p>{`Move ${total} selected item(s) to recycle bin.`}</p>,
+      confirmLabel: 'Move to trash',
+      confirmTone: 'danger',
+      onConfirm: async () => {
+        setLoading(true)
+        try {
+          for (const entry of selectedEntries) {
+            const response = await fetch(`/api/resources${encodePath(entry.path)}`, {
+              method: 'DELETE',
+              headers: withAuthHeaders(effectiveToken),
+            })
+            if (!response.ok) {
+              const payload = (await response.json().catch(() => ({}))) as { error?: string }
+              setMessage(payload.error ?? `Batch delete failed at ${entry.name}`)
+              return
+            }
+          }
 
+          if (selectedPaths.includes(editorPath)) {
+            setEditorPath('')
+            setEditorContent('')
+            setEditorDirty(false)
+          }
+          setSelectedPaths([])
+          clearSearchState()
+          await loadDirectory(currentPath, effectiveToken)
+          const successMessage = `Moved ${total} item(s) to trash.`
+          setMessage(successMessage)
+          showDeleteToast(successMessage)
+        } finally {
+          setLoading(false)
+        }
+      },
+    })
+  }
+
+  const onBatchMoveOrCopy = (action: 'move' | 'copy') => {
+    if (selectedEntries.length === 0) {
+      return
+    }
+
+    setMoveCopyDialog({
+      mode: 'batch',
+      action,
+      sourceEntry: null,
+      destination: currentPath,
+      overrideExisting: false,
+      error: '',
+    })
+  }
+
+  const submitMoveCopyDialog = async () => {
+    if (!moveCopyDialog) {
+      return
+    }
+
+    const destination = moveCopyDialog.destination.trim()
+    if (!destination) {
+      setMoveCopyDialog((prev) => (prev ? { ...prev, error: 'Destination is required.' } : prev))
+      return
+    }
+
+    if (moveCopyDialog.mode === 'single' && moveCopyDialog.sourceEntry && destination === moveCopyDialog.sourceEntry.path) {
+      setMoveCopyDialog((prev) => (prev ? { ...prev, error: 'Destination must be different from source path.' } : prev))
+      return
+    }
+
+    setMoveCopyDialogBusy(true)
     setLoading(true)
     try {
-      let response = await submit(false)
-      if (response.status === 409) {
-        const shouldOverride = window.confirm('Target exists. Override it?')
-        if (!shouldOverride) {
-          setMessage('Operation cancelled.')
+      if (moveCopyDialog.mode === 'single' && moveCopyDialog.sourceEntry) {
+        const sourceEntry = moveCopyDialog.sourceEntry
+        const response = await patchResource(sourceEntry.path, {
+          action: moveCopyDialog.action,
+          destination,
+          override_existing: moveCopyDialog.overrideExisting,
+        })
+
+        if (response.status === 409 && !moveCopyDialog.overrideExisting) {
+          setMoveCopyDialog((prev) =>
+            prev ? { ...prev, error: 'Target already exists. Enable override and retry.' } : prev,
+          )
           return
         }
-        response = await submit(true)
+
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => ({}))) as { error?: string }
+          setMessage(payload.error ?? `${moveCopyDialog.action} failed (${response.status})`)
+          return
+        }
+
+        if (moveCopyDialog.action === 'move' && editorPath === sourceEntry.path) {
+          setEditorPath(destination)
+        }
+        setSelectedPaths((prev) => prev.filter((item) => item !== sourceEntry.path))
+
+        clearSearchState()
+        await loadDirectory(currentPath, effectiveToken)
+        setMessage(moveCopyDialog.action === 'move' ? 'Item moved.' : 'Item copied.')
+        setMoveCopyDialog(null)
+        return
+      }
+
+      for (const entry of selectedEntries) {
+        const entryDestination = joinPath(destination, fileNameFromPath(entry.path))
+        const response = await patchResource(entry.path, {
+          action: moveCopyDialog.action,
+          destination: entryDestination,
+          override_existing: moveCopyDialog.overrideExisting,
+        })
+
+        if (response.status === 409 && !moveCopyDialog.overrideExisting) {
+          setMoveCopyDialog((prev) =>
+            prev ? { ...prev, error: `Target exists for ${entry.name}. Enable override and retry.` } : prev,
+          )
+          return
+        }
+
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => ({}))) as { error?: string }
+          setMessage(payload.error ?? `Batch ${moveCopyDialog.action} failed at ${entry.name}`)
+          return
+        }
+
+        if (moveCopyDialog.action === 'move' && editorPath === entry.path) {
+          setEditorPath(entryDestination)
+        }
+      }
+
+      const total = selectedEntries.length
+      setSelectedPaths([])
+      clearSearchState()
+      await loadDirectory(currentPath, effectiveToken)
+      setMessage(`${moveCopyDialog.action === 'move' ? 'Moved' : 'Copied'} ${total} item(s).`)
+      setMoveCopyDialog(null)
+    } finally {
+      setLoading(false)
+      setMoveCopyDialogBusy(false)
+    }
+  }
+
+  const submitShareDialog = async () => {
+    if (!shareDialog) {
+      return
+    }
+
+    const expiresRaw = shareDialog.expiresInSeconds.trim()
+    let expiresInSeconds: number | undefined
+    if (expiresRaw) {
+      const parsed = Number(expiresRaw)
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        setShareDialog((prev) => (prev ? { ...prev, error: 'Expiration must be a positive number.' } : prev))
+        return
+      }
+      expiresInSeconds = Math.floor(parsed)
+    }
+
+    setShareDialogBusy(true)
+    setLoading(true)
+    try {
+      const response = await fetch('/api/share', {
+        method: 'POST',
+        headers: withAuthHeaders(effectiveToken, {
+          'Content-Type': 'application/json',
+        }),
+        body: JSON.stringify({
+          path: shareDialog.entry.path,
+          password: shareDialog.password.trim() || undefined,
+          expires_in_seconds: expiresInSeconds,
+        }),
+      })
+
+      if (response.status === 401) {
+        setSessionToken('')
+        setMessage('会话已失效，请在 Control Panel 重新登录。')
+        return
       }
 
       if (!response.ok) {
         const payload = (await response.json().catch(() => ({}))) as { error?: string }
-        setMessage(payload.error ?? `${action} failed (${response.status})`)
+        const messageText = payload.error ?? `Create share failed (${response.status})`
+        setShareDialog((prev) => (prev ? { ...prev, error: messageText } : prev))
+        setMessage(messageText)
         return
       }
 
-      if (action === 'move' && editorPath === entry.path) {
-        setEditorPath(destination)
-      }
-      setSelectedPaths((prev) => prev.filter((item) => item !== entry.path))
-
-      clearSearchState()
-      await loadDirectory(currentPath, effectiveToken)
-      setMessage(action === 'move' ? 'Item moved.' : 'Item copied.')
+      await loadShares(effectiveToken)
+      setShareDialog(null)
+      setMessage(`Share created for ${shareDialog.entry.name}`)
     } finally {
       setLoading(false)
-    }
-  }
-
-  const onBatchDelete = async () => {
-    if (selectedEntries.length === 0) {
-      return
-    }
-
-    const confirmed = window.confirm(`Delete ${selectedEntries.length} selected item(s)?`)
-    if (!confirmed) {
-      return
-    }
-
-    setLoading(true)
-    try {
-      for (const entry of selectedEntries) {
-        const response = await fetch(`/api/resources${encodePath(entry.path)}`, {
-          method: 'DELETE',
-          headers: withAuthHeaders(effectiveToken),
-        })
-        if (!response.ok) {
-          const payload = (await response.json().catch(() => ({}))) as { error?: string }
-          setMessage(payload.error ?? `Batch delete failed at ${entry.name}`)
-          return
-        }
-      }
-
-      if (selectedPaths.includes(editorPath)) {
-        setEditorPath('')
-        setEditorContent('')
-        setEditorDirty(false)
-      }
-      setSelectedPaths([])
-      clearSearchState()
-      await loadDirectory(currentPath, effectiveToken)
-      const successMessage = `Moved ${selectedEntries.length} item(s) to trash.`
-      setMessage(successMessage)
-      showDeleteToast(successMessage)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const onBatchMoveOrCopy = async (action: 'move' | 'copy') => {
-    if (selectedEntries.length === 0) {
-      return
-    }
-
-    const destinationDir = window
-      .prompt(`${action === 'move' ? 'Move' : 'Copy'} destination directory`, currentPath)
-      ?.trim()
-    if (!destinationDir) {
-      return
-    }
-
-    const overrideExisting = window.confirm('Override existing targets if conflicts occur?')
-    setLoading(true)
-    try {
-      for (const entry of selectedEntries) {
-        const destination = joinPath(destinationDir, fileNameFromPath(entry.path))
-        const response = await patchResource(entry.path, {
-          action,
-          destination,
-          override_existing: overrideExisting,
-        })
-        if (!response.ok) {
-          const payload = (await response.json().catch(() => ({}))) as { error?: string }
-          setMessage(payload.error ?? `Batch ${action} failed at ${entry.name}`)
-          return
-        }
-
-        if (action === 'move' && editorPath === entry.path) {
-          setEditorPath(destination)
-        }
-      }
-
-      setSelectedPaths([])
-      clearSearchState()
-      await loadDirectory(currentPath, effectiveToken)
-      setMessage(`${action === 'move' ? 'Moved' : 'Copied'} ${selectedEntries.length} item(s).`)
-    } finally {
-      setLoading(false)
+      setShareDialogBusy(false)
     }
   }
 
@@ -2499,25 +2647,47 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
     }
   }
 
-  const onCloseEditor = () => {
-    if (editorDirty) {
-      const confirmed = window.confirm('Discard unsaved changes?')
-      if (!confirmed) {
-        return
-      }
-    }
+  const closeEditorNow = useCallback(() => {
     setEditorPath('')
     setEditorContent('')
     setEditorDirty(false)
     navigateToMainTab('files')
+  }, [navigateToMainTab])
+
+  const onCloseEditor = () => {
+    if (editorDirty) {
+      setConfirmDialog({
+        title: 'Discard unsaved changes?',
+        description: <p>Editor changes have not been saved.</p>,
+        confirmLabel: 'Discard changes',
+        confirmTone: 'danger',
+        onConfirm: () => {
+          closeEditorNow()
+        },
+      })
+      return
+    }
+    closeEditorNow()
   }
 
-  const onCreateFolder = async () => {
-    const folderName = window.prompt('Folder name')?.trim()
+  const onCreateFolder = () => {
+    setFolderDialogOpen(true)
+    setFolderNameInput('')
+    setFolderDialogError('')
+  }
+
+  const submitCreateFolderDialog = async () => {
+    const folderName = folderNameInput.trim()
     if (!folderName) {
+      setFolderDialogError('Folder name is required.')
+      return
+    }
+    if (folderName.includes('/')) {
+      setFolderDialogError('Folder name cannot include "/".')
       return
     }
 
+    setFolderDialogBusy(true)
     setLoading(true)
     try {
       const targetPath = `${joinPath(currentPath, folderName)}/`
@@ -2528,15 +2698,19 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
 
       if (!response.ok) {
         const payload = (await response.json().catch(() => ({}))) as { error?: string }
-        setMessage(payload.error ?? `Create folder failed (${response.status})`)
+        const messageText = payload.error ?? `Create folder failed (${response.status})`
+        setFolderDialogError(messageText)
+        setMessage(messageText)
         return
       }
 
+      closeFolderDialog(true)
       clearSearchState()
       await loadDirectory(currentPath, effectiveToken)
       setMessage('Folder created.')
     } finally {
       setLoading(false)
+      setFolderDialogBusy(false)
     }
   }
 
@@ -3207,6 +3381,166 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
     </div>
   ) : null
 
+  const confirmDialogNode = confirmDialog ? (
+    <ActionDialog
+      open
+      title={confirmDialog.title}
+      description={confirmDialog.description}
+      confirmLabel={confirmDialogBusy ? 'Working...' : confirmDialog.confirmLabel}
+      confirmTone={confirmDialog.confirmTone}
+      busy={confirmDialogBusy}
+      onCancel={closeConfirmDialog}
+      onConfirm={() => {
+        void submitConfirmDialog()
+      }}
+    />
+  ) : null
+
+  const folderDialogNode = (
+    <ActionDialog
+      open={folderDialogOpen}
+      title="Create folder"
+      description={<p>Create a new folder under <span className="font-semibold text-slate-800">{currentPath}</span>.</p>}
+      confirmLabel={folderDialogBusy ? 'Creating...' : 'Create'}
+      confirmDisabled={!folderNameInput.trim()}
+      busy={folderDialogBusy}
+      onCancel={closeFolderDialog}
+      onSubmit={(event) => {
+        event.preventDefault()
+        void submitCreateFolderDialog()
+      }}
+    >
+      <label className="block text-sm font-semibold text-slate-700" htmlFor="create-folder-name">
+        Folder name
+      </label>
+      <input
+        id="create-folder-name"
+        value={folderNameInput}
+        onChange={(event) => {
+          setFolderNameInput(event.target.value)
+          if (folderDialogError) {
+            setFolderDialogError('')
+          }
+        }}
+        autoFocus
+        disabled={folderDialogBusy}
+        className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-800 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:cursor-not-allowed disabled:bg-slate-100"
+        placeholder="Folder name"
+      />
+      {folderDialogError ? <p className="text-sm text-rose-600">{folderDialogError}</p> : null}
+    </ActionDialog>
+  )
+
+  const shareDialogNode = shareDialog ? (
+    <ActionDialog
+      open
+      title="Create share link"
+      description={
+        <p>
+          Create link for <span className="font-semibold text-slate-800">{shareDialog.entry.path}</span>.
+        </p>
+      }
+      confirmLabel={shareDialogBusy ? 'Creating...' : 'Create share'}
+      busy={shareDialogBusy}
+      onCancel={closeShareDialog}
+      onSubmit={(event) => {
+        event.preventDefault()
+        void submitShareDialog()
+      }}
+    >
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="block text-sm font-semibold text-slate-700" htmlFor="share-expire-input">
+          Expiration (seconds)
+          <input
+            id="share-expire-input"
+            value={shareDialog.expiresInSeconds}
+            onChange={(event) => {
+              const nextValue = event.target.value
+              setShareDialog((prev) => (prev ? { ...prev, expiresInSeconds: nextValue, error: '' } : prev))
+            }}
+            autoFocus
+            disabled={shareDialogBusy}
+            className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-800 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:cursor-not-allowed disabled:bg-slate-100"
+            placeholder="empty for no expiration"
+            inputMode="numeric"
+          />
+        </label>
+        <label className="block text-sm font-semibold text-slate-700" htmlFor="share-password-input">
+          Password (optional)
+          <input
+            id="share-password-input"
+            type="password"
+            value={shareDialog.password}
+            onChange={(event) => {
+              const nextValue = event.target.value
+              setShareDialog((prev) => (prev ? { ...prev, password: nextValue, error: '' } : prev))
+            }}
+            disabled={shareDialogBusy}
+            className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-800 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:cursor-not-allowed disabled:bg-slate-100"
+            placeholder="No password"
+          />
+        </label>
+      </div>
+      {shareDialog.error ? <p className="text-sm text-rose-600">{shareDialog.error}</p> : null}
+    </ActionDialog>
+  ) : null
+
+  const moveCopyDialogNode = moveCopyDialog ? (
+    <ActionDialog
+      open
+      title={moveCopyDialog.mode === 'single'
+        ? `${moveCopyDialog.action === 'move' ? 'Move' : 'Copy'} item`
+        : `${moveCopyDialog.action === 'move' ? 'Move' : 'Copy'} selected items`}
+      description={
+        moveCopyDialog.mode === 'single' && moveCopyDialog.sourceEntry ? (
+          <p>
+            {`${moveCopyDialog.action === 'move' ? 'Move' : 'Copy'} `}
+            <span className="font-semibold text-slate-800">{moveCopyDialog.sourceEntry.path}</span>
+          </p>
+        ) : (
+          <p>{`${moveCopyDialog.action === 'move' ? 'Move' : 'Copy'} ${selectedEntries.length} selected item(s).`}</p>
+        )
+      }
+      confirmLabel={moveCopyDialogBusy ? 'Applying...' : moveCopyDialog.action === 'move' ? 'Move' : 'Copy'}
+      busy={moveCopyDialogBusy}
+      onCancel={closeMoveCopyDialog}
+      onSubmit={(event) => {
+        event.preventDefault()
+        void submitMoveCopyDialog()
+      }}
+    >
+      <label className="block text-sm font-semibold text-slate-700" htmlFor="move-copy-destination-input">
+        Destination {moveCopyDialog.mode === 'single' ? 'path' : 'directory'}
+        <input
+          id="move-copy-destination-input"
+          value={moveCopyDialog.destination}
+          onChange={(event) => {
+            const nextValue = event.target.value
+            setMoveCopyDialog((prev) => (prev ? { ...prev, destination: nextValue, error: '' } : prev))
+          }}
+          autoFocus
+          disabled={moveCopyDialogBusy}
+          className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-800 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:cursor-not-allowed disabled:bg-slate-100"
+          placeholder={moveCopyDialog.mode === 'single' ? '/target/path' : '/target/directory'}
+        />
+      </label>
+      <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+        <input
+          type="checkbox"
+          checked={moveCopyDialog.overrideExisting}
+          onChange={(event) => {
+            const checked = event.target.checked
+            setMoveCopyDialog((prev) => (prev ? { ...prev, overrideExisting: checked, error: '' } : prev))
+          }}
+          disabled={moveCopyDialogBusy}
+          className="size-4 rounded border-slate-300 text-primary focus:ring-primary/30"
+        />
+        Override existing targets if conflicts occur
+      </label>
+      {moveCopyDialog.error ? <p className="text-sm text-rose-600">{moveCopyDialog.error}</p> : null}
+    </ActionDialog>
+  ) : null
+
   if (publicShareId) {
     return (
       <main className="bucky-file-app min-h-screen bg-[radial-gradient(circle_at_top,#d7ece8,transparent_55%),#f4f8f7] px-4 py-6 md:px-8">
@@ -3532,6 +3866,10 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
         />
         {deleteToastNode}
         {renameModalNode}
+        {confirmDialogNode}
+        {folderDialogNode}
+        {shareDialogNode}
+        {moveCopyDialogNode}
       </main>
     )
   }
@@ -4673,6 +5011,10 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
         />
         {deleteToastNode}
         {renameModalNode}
+        {confirmDialogNode}
+        {folderDialogNode}
+        {shareDialogNode}
+        {moveCopyDialogNode}
       </div>
     </main>
   )
