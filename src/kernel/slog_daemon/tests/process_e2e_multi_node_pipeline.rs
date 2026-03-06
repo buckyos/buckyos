@@ -1,11 +1,10 @@
 mod common;
 
 use common::{
-    allocate_bind_addr, build_binaries_for_e2e, make_record, new_temp_root, prepare_service_logs,
-    spawn_daemon_process, spawn_server_process, wait_for_tcp_ready_or_process_exit,
-    wait_for_uploaded_count,
+    allocate_bind_addr, build_binaries_for_e2e, make_record, new_temp_root,
+    open_process_e2e_storage, prepare_service_logs, spawn_daemon_process, spawn_server_process,
+    wait_for_tcp_ready_or_process_exit, wait_for_uploaded_count,
 };
-use slog_server::storage::{LogStorageType, create_log_storage_with_dir};
 use tokio::time::Duration;
 
 #[cfg(unix)]
@@ -47,7 +46,7 @@ async fn test_process_multi_node_pipeline_skeleton() {
     let mut daemon_a = spawn_daemon_process(node_a, &endpoint, &node_a_root, 3).unwrap();
     let mut daemon_b = spawn_daemon_process(node_b, &endpoint, &node_b_root, 3).unwrap();
 
-    let storage = create_log_storage_with_dir(LogStorageType::Sqlite, &storage_dir).unwrap();
+    let storage = open_process_e2e_storage(&storage_dir).unwrap();
 
     wait_for_uploaded_count(
         storage.as_ref().as_ref(),

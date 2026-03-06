@@ -1,7 +1,10 @@
 #![allow(dead_code)]
 
 use slog::{LogLevel, LogMeta, SystemLogRecord, SystemLogRecordLineFormatter};
-use slog_server::storage::{LogQueryRequest, LogStorage};
+use slog_server::storage::{
+    LogQueryRequest, LogStorage, LogStorageRef, LogStorageType, SqlitePartitionedConfig,
+    create_log_storage_with_dir,
+};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -165,6 +168,13 @@ pub fn allocate_bind_addr() -> Result<String, String> {
         .local_addr()
         .map_err(|e| format!("failed to read local addr: {}", e))?;
     Ok(format!("127.0.0.1:{}", addr.port()))
+}
+
+pub fn open_process_e2e_storage(storage_dir: &Path) -> Result<LogStorageRef, String> {
+    create_log_storage_with_dir(
+        LogStorageType::SqlitePartitioned(SqlitePartitionedConfig::default()),
+        storage_dir,
+    )
 }
 
 pub fn make_record(service: &str, time: u64, content: &str) -> SystemLogRecord {
@@ -334,12 +344,13 @@ fn new_stderr_capture_file(root: &Path, process_name: &str) -> Result<(Stdio, Pa
 pub fn spawn_server_process(bind_addr: &str, storage_dir: &Path) -> Result<ChildGuard, String> {
     let bin_path = target_debug_bin("slog_server");
     if !bin_path.exists() {
-        return Err(format!("slog_server binary not found: {}", bin_path.display()));
+        return Err(format!(
+            "slog_server binary not found: {}",
+            bin_path.display()
+        ));
     }
 
-    let buckyos_root = storage_dir
-        .parent()
-        .unwrap_or(storage_dir);
+    let buckyos_root = storage_dir.parent().unwrap_or(storage_dir);
     let (stderr_stdio, stderr_path) = new_stderr_capture_file(buckyos_root, "slog_server")?;
 
     let child = Command::new(&bin_path)
@@ -362,12 +373,13 @@ pub fn spawn_daemon_process(
 ) -> Result<ChildGuard, String> {
     let bin_path = target_debug_bin("slog_daemon");
     if !bin_path.exists() {
-        return Err(format!("slog_daemon binary not found: {}", bin_path.display()));
+        return Err(format!(
+            "slog_daemon binary not found: {}",
+            bin_path.display()
+        ));
     }
 
-    let buckyos_root = log_root
-        .parent()
-        .unwrap_or(log_root);
+    let buckyos_root = log_root.parent().unwrap_or(log_root);
     let (stderr_stdio, stderr_path) = new_stderr_capture_file(buckyos_root, "slog_daemon")?;
 
     let child = Command::new(&bin_path)
@@ -414,9 +426,7 @@ pub async fn wait_for_tcp_ready_or_process_exit(
             let stderr_tail = process.read_stderr_tail(8192);
             return Err(format!(
                 "child process exited before TCP ready at {}: status={}, stderr_tail={}",
-                addr,
-                status,
-                stderr_tail
+                addr, status, stderr_tail
             ));
         }
 

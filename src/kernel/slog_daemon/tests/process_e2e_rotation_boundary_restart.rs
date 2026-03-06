@@ -1,12 +1,12 @@
 mod common;
 
 use common::{
-    allocate_bind_addr, build_binaries_for_e2e, make_record, new_temp_root, query_uploaded_contents,
-    query_uploaded_count, spawn_daemon_process, spawn_server_process, wait_for_tcp_not_ready,
-    wait_for_tcp_ready_or_process_exit, wait_for_uploaded_count,
+    allocate_bind_addr, build_binaries_for_e2e, make_record, new_temp_root,
+    open_process_e2e_storage, query_uploaded_contents, query_uploaded_count, spawn_daemon_process,
+    spawn_server_process, wait_for_tcp_not_ready, wait_for_tcp_ready_or_process_exit,
+    wait_for_uploaded_count,
 };
 use slog::{FileLogTarget, LogMeta, SystemLogTarget};
-use slog_server::storage::{LogStorageType, create_log_storage_with_dir};
 use std::collections::HashSet;
 use tokio::time::{Duration, Instant};
 
@@ -71,7 +71,10 @@ async fn wait_for_meta_caught_up(
             return Ok(stats);
         }
         if Instant::now() >= deadline {
-            return Err(format!("timeout waiting meta caught up, last_stats={:?}", stats));
+            return Err(format!(
+                "timeout waiting meta caught up, last_stats={:?}",
+                stats
+            ));
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
@@ -104,7 +107,7 @@ async fn test_process_rotation_boundary_restart() {
         .unwrap();
 
     let mut daemon = spawn_daemon_process(node, &endpoint, &log_root, 3).unwrap();
-    let storage = create_log_storage_with_dir(LogStorageType::Sqlite, &storage_dir).unwrap();
+    let storage = open_process_e2e_storage(&storage_dir).unwrap();
 
     let mut expected_contents = HashSet::new();
     let total_records = 180usize;

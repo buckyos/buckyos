@@ -2,10 +2,10 @@ mod common;
 
 use common::{
     allocate_bind_addr, append_service_logs, build_binaries_for_e2e, make_record, new_temp_root,
-    prepare_service_logs, query_uploaded_contents, spawn_daemon_process, spawn_server_process,
-    wait_for_tcp_ready_or_process_exit, wait_for_uploaded_count,
+    open_process_e2e_storage, prepare_service_logs, query_uploaded_contents, spawn_daemon_process,
+    spawn_server_process, wait_for_tcp_ready_or_process_exit, wait_for_uploaded_count,
 };
-use slog_server::storage::{LogQueryRequest, LogStorageType, create_log_storage_with_dir};
+use slog_server::storage::LogQueryRequest;
 use std::collections::{HashMap, HashSet};
 use tokio::time::Duration;
 
@@ -45,10 +45,22 @@ async fn test_process_multi_node_same_service_name() {
     let node_b = "node-same-service-b";
 
     let phase1_a: Vec<_> = (0..6usize)
-        .map(|i| make_record(service, 1723090000000 + i as u64, &format!("A-phase1-{}", i + 1)))
+        .map(|i| {
+            make_record(
+                service,
+                1723090000000 + i as u64,
+                &format!("A-phase1-{}", i + 1),
+            )
+        })
         .collect();
     let phase1_b: Vec<_> = (0..9usize)
-        .map(|i| make_record(service, 1723090001000 + i as u64, &format!("B-phase1-{}", i + 1)))
+        .map(|i| {
+            make_record(
+                service,
+                1723090001000 + i as u64,
+                &format!("B-phase1-{}", i + 1),
+            )
+        })
         .collect();
 
     let mut expected_a: HashSet<String> = phase1_a.iter().map(|r| r.content.clone()).collect();
@@ -64,7 +76,7 @@ async fn test_process_multi_node_same_service_name() {
 
     let mut daemon_a = spawn_daemon_process(node_a, &endpoint, &node_a_root, 3).unwrap();
     let mut daemon_b = spawn_daemon_process(node_b, &endpoint, &node_b_root, 3).unwrap();
-    let storage = create_log_storage_with_dir(LogStorageType::Sqlite, &storage_dir).unwrap();
+    let storage = open_process_e2e_storage(&storage_dir).unwrap();
 
     wait_for_uploaded_count(
         storage.as_ref().as_ref(),
@@ -86,10 +98,22 @@ async fn test_process_multi_node_same_service_name() {
     .unwrap();
 
     let phase2_a: Vec<_> = (0..5usize)
-        .map(|i| make_record(service, 1723090002000 + i as u64, &format!("A-phase2-{}", i + 1)))
+        .map(|i| {
+            make_record(
+                service,
+                1723090002000 + i as u64,
+                &format!("A-phase2-{}", i + 1),
+            )
+        })
         .collect();
     let phase2_b: Vec<_> = (0..4usize)
-        .map(|i| make_record(service, 1723090003000 + i as u64, &format!("B-phase2-{}", i + 1)))
+        .map(|i| {
+            make_record(
+                service,
+                1723090003000 + i as u64,
+                &format!("B-phase2-{}", i + 1),
+            )
+        })
         .collect();
     for rec in &phase2_a {
         expected_a.insert(rec.content.clone());

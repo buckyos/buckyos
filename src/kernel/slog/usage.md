@@ -57,6 +57,13 @@
 |---|---|---|
 | `SLOG_SERVER_BIND` | `127.0.0.1:22001` | server 监听地址（推荐保持 loopback） |
 | `SLOG_STORAGE_DIR` | `${BUCKYOS_ROOT}/slog_server` | SQLite 存储目录 |
+| `SLOG_STORAGE_TYPE` | `sqlite_partitioned` | 存储后端类型：`sqlite` / `sqlite_partitioned` |
+| `SLOG_STORAGE_PARTITION_BUCKET` | `day` | 分区粒度（当前支持 `day`） |
+| `SLOG_STORAGE_PARTITION_MAX_ROWS` | `5000000` | 单个分区库最大行数，超过后滚动到新分区 |
+| `SLOG_STORAGE_PARTITION_MAX_SIZE_MB` | `2048` | 单个分区库最大体积（MB），超过后滚动到新分区 |
+
+> 启用 `sqlite_partitioned` 后，数据会存储在 `${SLOG_STORAGE_DIR}/partitions/` 下的多个 SQLite 文件，  
+> 并在 `${SLOG_STORAGE_DIR}/manifest.db` 维护分区元数据与 batch 到分区的映射（用于重试幂等）。
 
 ## 5. Gateway 转发示例
 

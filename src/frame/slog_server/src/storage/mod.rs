@@ -1,15 +1,18 @@
 mod sqlite;
+mod sqlite_partitioned;
 mod storage;
 
+pub use sqlite_partitioned::{PartitionBucket, SqlitePartitionedConfig};
 pub use storage::*;
 // pub use sqlite::*;
 
 use std::path::Path;
 use std::sync::Arc;
 
-#[derive(Clone, Debug, Copy, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LogStorageType {
     Sqlite,
+    SqlitePartitioned(SqlitePartitionedConfig),
 }
 
 pub fn create_log_storage(storage_type: LogStorageType) -> Result<LogStorageRef, String> {
@@ -35,6 +38,11 @@ pub fn create_log_storage_with_dir(
             let logs_file = storage_dir.join("logs.db");
 
             let storage = sqlite::SqliteLogStorage::open(&logs_file)?;
+            Ok(Arc::new(Box::new(storage)))
+        }
+        LogStorageType::SqlitePartitioned(config) => {
+            let storage =
+                sqlite_partitioned::SqlitePartitionedLogStorage::open(storage_dir, config)?;
             Ok(Arc::new(Box::new(storage)))
         }
     }

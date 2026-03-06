@@ -2,10 +2,10 @@ mod common;
 
 use common::{
     allocate_bind_addr, append_service_logs, build_binaries_for_e2e, make_record, new_temp_root,
-    prepare_service_logs, query_uploaded_counts_by_service, spawn_daemon_process,
-    spawn_server_process, wait_for_process_exit, wait_for_tcp_ready_or_process_exit,
+    open_process_e2e_storage, prepare_service_logs, query_uploaded_counts_by_service,
+    spawn_daemon_process, spawn_server_process, wait_for_process_exit,
+    wait_for_tcp_ready_or_process_exit,
 };
-use slog_server::storage::{LogStorageType, create_log_storage_with_dir};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -121,7 +121,7 @@ async fn test_process_many_services_fairness() {
         .await
         .unwrap();
     let mut daemon = spawn_daemon_process(node, &endpoint, &log_root, 3).unwrap();
-    let storage = create_log_storage_with_dir(LogStorageType::Sqlite, &storage_dir).unwrap();
+    let storage = open_process_e2e_storage(&storage_dir).unwrap();
 
     wait_all_services_uploaded_min_count(
         storage.as_ref().as_ref(),

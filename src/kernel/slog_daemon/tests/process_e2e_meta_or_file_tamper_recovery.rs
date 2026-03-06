@@ -2,11 +2,11 @@ mod common;
 
 use common::{
     allocate_bind_addr, append_service_logs, build_binaries_for_e2e, make_record, new_temp_root,
-    query_uploaded_contents, query_uploaded_count, spawn_daemon_process, spawn_server_process,
-    wait_for_tcp_not_ready, wait_for_tcp_ready_or_process_exit,
+    open_process_e2e_storage, query_uploaded_contents, query_uploaded_count, spawn_daemon_process,
+    spawn_server_process, wait_for_tcp_not_ready, wait_for_tcp_ready_or_process_exit,
 };
 use slog::{LogMeta, SystemLogRecord, SystemLogRecordLineFormatter};
-use slog_server::storage::{LogStorage, LogStorageType, create_log_storage_with_dir};
+use slog_server::storage::LogStorage;
 use std::collections::HashSet;
 use std::path::Path;
 use tokio::time::{Duration, Instant};
@@ -29,7 +29,11 @@ fn write_new_file_with_records(
             .map_err(|e| format!("failed to get active write file: {}", e))?
             .map(|f| f.id)
             .unwrap_or(0);
-        format!("{}.{}.log", service, std::cmp::max(last_sealed_id, active_id) + 1)
+        format!(
+            "{}.{}.log",
+            service,
+            std::cmp::max(last_sealed_id, active_id) + 1
+        )
     };
 
     meta.append_new_file(&file_name)
@@ -54,10 +58,7 @@ fn write_new_file_with_records(
     Ok(file_name)
 }
 
-fn ensure_process_alive(
-    process: &mut common::ChildGuard,
-    name: &str,
-) -> Result<(), String> {
+fn ensure_process_alive(process: &mut common::ChildGuard, name: &str) -> Result<(), String> {
     match process
         .child
         .try_wait()
@@ -143,7 +144,11 @@ async fn test_process_meta_or_file_tamper_recovery() {
     let baseline_3: Vec<SystemLogRecord> = (20..25usize)
         .map(|i| make_record(service, base_ts + i as u64, &format!("baseline-{}", i + 1)))
         .collect();
-    for rec in baseline_1.iter().chain(baseline_2.iter()).chain(baseline_3.iter()) {
+    for rec in baseline_1
+        .iter()
+        .chain(baseline_2.iter())
+        .chain(baseline_3.iter())
+    {
         expected_contents.insert(rec.content.clone());
     }
 
@@ -156,7 +161,7 @@ async fn test_process_meta_or_file_tamper_recovery() {
         .await
         .unwrap();
     let mut daemon = spawn_daemon_process(node, &endpoint, &log_root, 3).unwrap();
-    let storage = create_log_storage_with_dir(LogStorageType::Sqlite, &storage_dir).unwrap();
+    let storage = open_process_e2e_storage(&storage_dir).unwrap();
 
     wait_for_contents_include(
         storage.as_ref().as_ref(),
@@ -185,8 +190,8 @@ async fn test_process_meta_or_file_tamper_recovery() {
         .map(|i| make_record(service, base_ts + i as u64, &format!("kept-{}", i + 1)))
         .collect();
 
-    let lost_file_name = write_new_file_with_records(&service_dir, service, &lost_records, true)
-        .unwrap();
+    let lost_file_name =
+        write_new_file_with_records(&service_dir, service, &lost_records, true).unwrap();
     write_new_file_with_records(&service_dir, service, &kept_records, false).unwrap();
 
     std::fs::remove_file(service_dir.join(&lost_file_name)).unwrap();
@@ -224,7 +229,13 @@ async fn test_process_meta_or_file_tamper_recovery() {
     std::fs::create_dir_all(&service_dir).unwrap();
     reserve_file_ids(&service_dir, service, 32).unwrap();
     let recovered_from_meta_corruption: Vec<SystemLogRecord> = (200..206usize)
-        .map(|i| make_record(service, base_ts + i as u64, &format!("meta-recover-{}", i + 1)))
+        .map(|i| {
+            make_record(
+                service,
+                base_ts + i as u64,
+                &format!("meta-recover-{}", i + 1),
+            )
+        })
         .collect();
     write_new_file_with_records(
         &service_dir,
@@ -262,7 +273,13 @@ async fn test_process_meta_or_file_tamper_recovery() {
         .unwrap();
 
     let fail_batch: Vec<SystemLogRecord> = (300..306usize)
-        .map(|i| make_record(service, base_ts + i as u64, &format!("fail-batch-{}", i + 1)))
+        .map(|i| {
+            make_record(
+                service,
+                base_ts + i as u64,
+                &format!("fail-batch-{}", i + 1),
+            )
+        })
         .collect();
     append_service_logs(&log_root, service, &fail_batch).unwrap();
 
@@ -277,7 +294,13 @@ async fn test_process_meta_or_file_tamper_recovery() {
     std::fs::create_dir_all(&service_dir).unwrap();
     reserve_file_ids(&service_dir, service, 64).unwrap();
     let recreated_after_delete: Vec<SystemLogRecord> = (400..405usize)
-        .map(|i| make_record(service, base_ts + i as u64, &format!("dir-recover-{}", i + 1)))
+        .map(|i| {
+            make_record(
+                service,
+                base_ts + i as u64,
+                &format!("dir-recover-{}", i + 1),
+            )
+        })
         .collect();
     write_new_file_with_records(&service_dir, service, &recreated_after_delete, false).unwrap();
     for rec in &recreated_after_delete {
