@@ -10,6 +10,7 @@ use crate::agent_tool::{
     tokenize_bash_command_line, AgentTool, AgentToolError, AgentToolResult, ToolSpec,
 };
 use crate::behavior::SessionRuntimeContext;
+use crate::workspace::local_workspace::SESSION_BINDINGS_REL_PATH;
 
 use super::*;
 
@@ -75,7 +76,7 @@ impl TodoTool {
             return None;
         }
         let workshop_root = self.cfg.db_path.parent()?.parent()?;
-        let bindings_path = workshop_root.join("sessions/local_workspace_bindings.json");
+        let bindings_path = workshop_root.join(SESSION_BINDINGS_REL_PATH);
         let raw = std::fs::read_to_string(bindings_path).ok()?;
         let parsed = serde_json::from_str::<TodoSessionBindingsFile>(&raw).ok()?;
         parsed
@@ -1421,7 +1422,7 @@ mod tests {
             .parent()
             .and_then(|parent| parent.parent())
             .expect("workshop root from db path");
-        let bindings_path = workshop_root.join("sessions/local_workspace_bindings.json");
+        let bindings_path = workshop_root.join(SESSION_BINDINGS_REL_PATH);
         std::fs::create_dir_all(bindings_path.parent().expect("bindings parent"))
             .expect("create sessions dir");
         let payload = json!({

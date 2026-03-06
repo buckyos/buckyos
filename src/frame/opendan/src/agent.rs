@@ -909,7 +909,10 @@ impl AIAgent {
                 (session_id, current_step_index)
             };
 
-            info!("{}.run_behavior_loop: session_id={} behavior_name={} current_step_index={}", self.agent_name, session_id, behavior_name, current_step_index);
+            info!(
+                "{}.run_behavior_loop: session_id={} behavior_name={} current_step_index={}",
+                self.agent_name, session_id, behavior_name, current_step_index
+            );
 
             let trace = SessionRuntimeContext {
                 trace_id: wakeup_id.to_string(),
@@ -2381,13 +2384,25 @@ impl AIAgent {
             let Some(msg) = Self::parse_step_input_msg_record(raw.as_slice()) else {
                 continue;
             };
+            let snippet = MsgRecordWithObject {
+                record: msg.clone(),
+                msg: None,
+            }
+            .get_msg()
+            .await
+            .ok()
+            .map(|msg_obj| msg_obj.content.content.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(|value| compact_text_for_log(value.as_str(), 220))
+            .unwrap_or_else(|| format!("kind={:?}", msg.msg_kind));
             let payload = json!({
                 "msg_id": msg.msg_id,
                 "record_id": msg.record_id,
                 "from": msg.from.to_string(),
                 "to": msg.to.to_string(),
                 "channel": format!("{:?}", msg.box_kind),
-                "snippet": format!("kind={:?}", msg.msg_kind),
+                "snippet": snippet.clone(),
+                "content_digest": snippet,
             });
             let mut guard = session.lock().await;
             if let Err(err) = guard
@@ -2959,8 +2974,7 @@ fn apply_session_behavior_transition(
             if behavior_switched {
                 session.current_behavior = next_behavior.to_string();
                 session.step_index = 0;
-                //这个实现需要仔细考虑
-                session.last_step_summary = None;
+                // Keep last_step_summary: session still running, next behavior may use it for continuity
                 info!(
                     "agent.session_behavior_switch: session={} from={} to={} reason=next_behavior",
                     session.session_id, previous_behavior, session.current_behavior

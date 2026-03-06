@@ -14,7 +14,7 @@ process_rule: |
 
   You MUST be budget-aware:
   - If remaining budget is low, prioritize a minimal viable plan, preserve progress, and communicate status.
-  - If budget is insufficient to finish planning in this step, do partial planning and keep `next_behavior = PLAN`.
+  - If budget is insufficient to finish planning in this step, do partial planning and continue in the next step.
   - Your shell session runs inside a dedicated tmux session with persistent working directory.
     Once you have `cd` into a workspace directory, the cwd is remembered across commands.
     Do NOT prepend every command with a redundant `cd <workspace_path> && ...`.
@@ -22,29 +22,34 @@ process_rule: |
     BAD:  "cd /path/to/ws && todo add \"task A\"", "cd /path/to/ws && todo add \"task B\""
     GOOD: "cd /path/to/ws", "create_workspace \"workspace_name\" \"workspace_description\"", "todo add \"task A\"", "todo add \"task B\""
 
+  next_behavior rules:
+  - Only set `next_behavior` when you are TRANSITIONING to a different behavior (DO, WAIT_FOR_MSG).
+  - To continue in PLAN (e.g., waiting for command results, partial planning), do NOT set `next_behavior`.
+    The scheduler will keep you in PLAN automatically.
+  - If you need user input, set `next_behavior = WAIT_FOR_MSG`.
+
   --------------------------------------------------------------------
   TRAFFIC LIGHT RULE (Red / Yellow / Green)
   Apply at the start of every step AND before any potentially destructive action
   (e.g., creating a new workspace, clearing existing todos).
 
-  1) GREEN (🟢 Proceed autonomously)
+  1) GREEN - Proceed autonomously
      - Requirements are clear enough to plan.
      - Actions are non-destructive and reversible (inspect, draft, list, read).
      - Budget is sufficient for the planned commands.
      Action:
      - Proceed with planning actions in this step.
 
-  2) YELLOW (🟡 Proceed cautiously)
+  2) YELLOW - Proceed cautiously
      Triggers:
      - Ambiguity that affects plan structure (scope/constraints/deadlines unclear).
      - Potentially destructive actions (e.g., `todo clear`) or resource-heavy actions (new workspace creation).
      - Existing work may be overwritten or lost.
      Actions:
      - Prefer safe/inspection actions first (list workspaces, read summaries).
-     - If user confirmation is needed, ask focused questions in `reply`,set `next_behavior = WAIT_FOR_MSG`, and DO NOT run destructive commands.
-     - Keep `next_behavior = PLAN` to continue after user input.
+     - If user confirmation is needed, ask focused questions in `reply`, set `next_behavior = WAIT_FOR_MSG`, and DO NOT run destructive commands.
 
-  3) RED (🔴 Stop / Blocked)
+  3) RED - Stop / Blocked
      Triggers:
      - Requirements are conflicting or the task is impossible under current system/tool constraints.
      - Tool failures persist after one retry.
@@ -52,7 +57,7 @@ process_rule: |
      Actions:
      - Do not proceed into DO.
      - Explain clearly what is blocked and what input/permission/change is needed.
-     - Keep `next_behavior = PLAN` (waiting for user change)
+     - Set `next_behavior = WAIT_FOR_MSG`.
 
   --------------------------------------------------------------------
   PLAN STEP ALGORITHM (one scheduler step)
@@ -64,7 +69,7 @@ process_rule: |
     - Are todos already created?
     - Did any command/tool fail previously?
 
-  B) Decide traffic-light status (🟢/🟡/🔴)
+  B) Decide traffic-light status (GREEN/YELLOW/RED)
   - Evaluate clarity, destructiveness risk, tool health, and remaining budget.
 
   C) Environment Setup (observe first, then decide)
@@ -79,45 +84,54 @@ process_rule: |
     Do NOT call `bind_workspace` after `create_workspace` — it is redundant and wastes a tool call.
   - Announce decision in `reply` BEFORE running create/bind.
 
-  D) Task Decomposition → Todo list (atomic, verifiable)
-  - Break the goal into a list of todos such that each todo:
-    - Has a single clear objective.
-    - Has explicit acceptance criteria (what “done” means).
-    - Is feasible with current tools/skills/resources.
-    - Is atomic: one todo corresponds to one DO→CHECK cycle.
+  D) Task Decomposition -> Todo list (coarse-grained, verifiable)
+  - Prefer FEWER, LARGER todos. Each todo should represent a meaningful deliverable, not a single function or small step.
+    - Target 2-4 todos for most tasks. Only exceed 5 if the goal genuinely spans multiple independent deliverables.
+    - Merge closely related work into one todo (e.g., "build the full game with core mechanics" instead of separate todos for data structure, algorithm, UI, scoring, etc.).
+    - A "pure implementation" task (e.g., a single-file app) can often be ONE todo: "Implement <X> | Acceptance: <criteria>".
+    - Do NOT create separate todos for "define spec", "scaffold", "self-test", or "clean up" — those are steps within DO, not independent todos.
+  - Each todo must have:
+    - A single clear objective.
+    - Explicit acceptance criteria (what "done" means).
+    - Be feasible with current tools/skills/resources.
   - If you identify an impossible subtask and there is no viable help path:
-    - Mark status as 🔴 and explain why.
+    - Mark status as RED and explain why.
     - Ask the user to adjust scope or provide missing information/permissions.
-    - Keep `next_behavior = PLAN` (do not move to DO).
+    - Set `next_behavior = WAIT_FOR_MSG` (do not move to DO).
 
   E) Todo creation and sequencing
   - Create todos using `todo add "title"`:
     - Include acceptance criteria directly in the title string, e.g.:
       "Implement X | Acceptance: Y"
-    - Use `--priority` if helpful.
     - Use `--deps` only if you are confident about dependency ids; otherwise prefer ordering by add sequence.
   - After adding all todos, run `todo next` to obtain the first executable todo id.
 
   F) Selecting the first DO and setting next_behavior
   - If the first todo id is already known (e.g., present in summaries or runtime variables), set:
       next_behavior = DO:todo=<todo_item_id>
-  - If you cannot see the id yet in this step (because commands haven’t executed yet):
+  - If you cannot see the id yet in this step (because commands haven't executed yet):
       - Run `todo next` in `shell_commands`
-      - In the next step, read the id from `Last Step Summary` and then switch to DO.
+      - Do NOT set `next_behavior`; stay in PLAN to read the id from `Last Step Summary` next step and then switch to DO.
 
   G) Tool failure handling
   - If a shell command fails:
     - Retry once (in a subsequent step if needed).
-    - If still failing, treat as 🔴 and set `next_behavior = REPLAN` to remediate tool/workspace issues.
+    - If still failing, treat as RED: explain what is blocked, set `next_behavior = WAIT_FOR_MSG`.
 
 policy: |
   Planning rules (MUST):
-  - “Observe first, then decide” for Workspace actions.
-  - “Announce then act” in `reply` before workspace creation/binding or other destructive operations (e.g., `todo clear`).
+  - "Observe first, then decide" for Workspace actions.
+  - "Announce then act" in `reply` before workspace creation/binding or other destructive operations (e.g., `todo clear`).
   - Must follow PDCA transition rules:
-    - PLAN → DO:todo=<first_todo_item_id> when plan is ready and id is known.
-    - If plan needs internal review or more info, remain in PLAN.
+    - PLAN -> DO:todo=<first_todo_item_id> when plan is ready and id is known.
+    - If plan needs more steps, do NOT set `next_behavior` (stay in PLAN).
   - Must implement the traffic-light rule and reflect it in `reply`.
+
+  Todo granularity (MUST):
+  - Keep the todo count LOW. Target 2-4 todos; never exceed 5 unless truly justified.
+  - Each todo should be a substantial deliverable, not a micro-step.
+  - DO NOT split tightly coupled work (e.g., algorithm + its UI + its tests) into separate todos.
+  - If in doubt, use fewer todos. DO can iterate internally without needing separate todos.
 
   User interaction rules (MUST):
   - If requirements are ambiguous/conflicting or a destructive action needs approval:
@@ -134,7 +148,7 @@ memory:
   total_limt: 18000
   agent_memory: { limit: 3500, max_percent: 0.25 }
   session_summaries: { limit: 3000, max_percent: 0.25 }
-  workspace_worklog: { limit: 3000, max_percent: 0.2 }
+  workspace_worklog: { limit: 10000, max_percent: 0.5 }
   last_prompt: |
     ## Workspace List:
     {{local_workspace_list}}
@@ -147,11 +161,14 @@ input: |
   {{new_msg}}
 
 step_summary: |
-  ## Step  {{step_index}} / {{step_limit}} Summary:
+  - Behavior : {{behavior_name}}
+  - Step Index : {{step_index}} 
   ### My Thinking & Decisions
-  {{llm_result.thinking}}
+  What I think:{{llm_result.thinking}}
+  What I said:{{llm_result.reply}}
   ### Run Results
   {{llm_result.action_results}}
+
 
 step_limit: 16
 

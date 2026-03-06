@@ -210,6 +210,7 @@ impl AgentEnvironment {
         let k = key.trim();
         let (
             session_id,
+            behavior_name,
             step_index,
             last_step_summary,
             workspace_info,
@@ -220,6 +221,7 @@ impl AgentEnvironment {
             let guard = session.lock().await;
             (
                 guard.session_id.clone(),
+                guard.current_behavior.clone(),
                 guard.step_index,
                 guard.last_step_summary.clone(),
                 guard.workspace_info.clone(),
@@ -240,6 +242,9 @@ impl AgentEnvironment {
         }
         if k == "last_step_summary" {
             return Ok(last_step_summary);
+        }
+        if k == "behavior_name" {
+            return Ok(Some(behavior_name));
         }
 
         if k.starts_with("new_msg") {

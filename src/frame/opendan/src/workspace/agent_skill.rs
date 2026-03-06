@@ -235,7 +235,6 @@ mod tests {
     use std::sync::Arc;
 
     use buckyos_api::{value_to_object_map, AiToolSpec};
-    use serde_json::{json, Value as Json};
     use tokio::sync::Mutex;
 
     use crate::agent_environment::AgentEnvironment;
@@ -253,15 +252,6 @@ mod tests {
         fn count_tokens(&self, text: &str) -> u32 {
             text.split_whitespace().count() as u32
         }
-    }
-
-    fn extract_prompt_section<'a>(prompt: &'a str, section_name: &str) -> Option<&'a str> {
-        let start_marker = format!("<<{section_name}>>");
-        let end_marker = format!("<</{section_name}>>");
-        let start = prompt.find(start_marker.as_str())? + start_marker.len();
-        let section = &prompt[start..];
-        let end = section.find(end_marker.as_str())?;
-        Some(section[..end].trim())
     }
 
     async fn load_runtime_tool_specs(workspace_root: &Path) -> (Vec<AiToolSpec>, Vec<ToolSpec>) {

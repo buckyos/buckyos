@@ -13,12 +13,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value as Json};
 use tokio::fs;
 use tokio::sync::Mutex;
-use tokio::task;
 
 use crate::agent_environment::AgentEnvironment;
 use crate::agent_memory::AgentMemory;
 use crate::agent_session::AgentSession;
-use crate::agent_tool::{normalize_tool_name, ToolSpec};
+use crate::agent_tool::ToolSpec;
 use crate::behavior::config::BehaviorMemoryBucketConfig;
 use crate::behavior::BehaviorConfig;
 use crate::worklog::{
@@ -26,16 +25,14 @@ use crate::worklog::{
     WorklogService, WorklogToolConfig,
 };
 use crate::workspace::agent_skill::{
-    load_skill_from_root, merge_skill_records_from_dir, AgentSkillRecord, SKILLS_REL_PATH,
+    load_skill_from_root, merge_skill_records_from_dir, AgentSkillRecord,
 };
-use crate::workspace::todo::render_workspace_todo_prompt_from_db;
 
 use super::sanitize::{sanitize_json_compact, sanitize_text};
 use super::types::BehaviorExecInput;
 use super::Tokenizer;
 
 const SESSION_MSG_RECORD_FILES: [&str; 2] = ["msg_record.jsonl", "message_record.jsonl"];
-const SKILL_SPEC_EXTENSIONS: [&str; 3] = ["yaml", "yml", "json"];
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -59,15 +56,15 @@ impl PromptBuilder {
     //通过理解下面实现，可以理解OpenDAN Agent的整体设计
     pub async fn build(
         input: &BehaviorExecInput,
-        tools: &[AiToolSpec],
-        action_specs: &[ToolSpec],
+        _tools: &[AiToolSpec],
+        _action_specs: &[ToolSpec],
         cfg: &BehaviorConfig,
         tokenizer: &dyn Tokenizer,
         session: Option<Arc<Mutex<AgentSession>>>,
         memory: Option<AgentMemory>,
     ) -> Result<CompleteRequest, String> {
         let env_context = build_env_context(input);
-        let mut loaded_tools = Vec::new();
+        let loaded_tools = Vec::new();
 
         let process_rules =
             render_section(cfg.process_rule.as_str(), &env_context, session.clone()).await?;
@@ -101,24 +98,19 @@ impl PromptBuilder {
             ));
         }
 
-        //根据当前session加载的skills,构造<<skills>> section
+        // 根据当前session加载的skills，空内容时跳过<<skills>> section
         let skills_text = render_skills_text(session.clone()).await?;
-        system_parts.push(format!(
-            "<<skills>>\n{}\n<</skills>>",
-            sanitize_text(skills_text.as_str())
-        ));
+        if !skills_text.trim().is_empty() {
+            system_parts.push(format!(
+                "<<skills>>\n{}\n<</skills>>",
+                sanitize_text(skills_text.as_str())
+            ));
+        }
 
         system_parts.push(format!(
             "<<output_protocol>>\n{}\n<</output_protocol>>",
             sanitize_text(output_protocol_text.as_str())
         ));
-
-        // if let Some((toolbox, tools)) =
-        //     build_toolbox(tools, action_specs, cfg, session.clone()).await
-        // {
-        //     system_parts.push(format!("<<toolbox>>\n{}\n<</toolbox>>", toolbox));
-        //     loaded_tools = tools;
-        // }
 
         let system_role_prompt_text = system_parts.join("\n\n");
         let tool_define_used = 1024;
@@ -264,6 +256,21 @@ async fn render_skills_text(session: Option<Arc<Mutex<AgentSession>>>) -> Result
     Ok(loaded_rules.join("\n\n"))
 }
 
+fn normalize_unique_string_list(values: Vec<String>) -> Vec<String> {
+    let mut out = Vec::<String>::new();
+    let mut seen = HashSet::<String>::new();
+    for value in values {
+        let normalized = value.trim();
+        if normalized.is_empty() {
+            continue;
+        }
+        if seen.insert(normalized.to_string()) {
+            out.push(normalized.to_string());
+        }
+    }
+    out
+}
+
 /// Build memory prompt with dynamic compression skeleton.
 async fn build_memory_prompt_text(
     input: &BehaviorExecInput,
@@ -308,8 +315,6 @@ async fn build_memory_prompt_text(
         calc_memory_bucket_budget(dynamic_budget, &cfg.memory.workspace_worklog);
     let session_summaries_budget =
         calc_memory_bucket_budget(dynamic_budget, &cfg.memory.session_summaries);
-    let workspace_todo_budget =
-        calc_memory_bucket_budget(dynamic_budget, &cfg.memory.workspace_todo);
 
     let mut memory_sections = Vec::<String>::new();
 
@@ -324,19 +329,24 @@ async fn build_memory_prompt_text(
         }
     }
 
-    let mut timeline_records = Vec::<MemoryTimelineRecord>::new();
     if agent_memory_budget > 0 {
-        timeline_records.extend(
-            load_agent_memory_with_limit(
-                input,
-                topic_tags.as_slice(),
-                agent_memory_budget,
-                tokenizer,
-                memory.clone(),
-            )
-            .await,
-        );
+        let remembered_things = load_agent_memory_with_limit(
+            input,
+            topic_tags.as_slice(),
+            agent_memory_budget,
+            tokenizer,
+            memory.clone(),
+        )
+        .await;
+        if !remembered_things.trim().is_empty() {
+            memory_sections.push(format!(
+                "## What you remember:\n{}\n",
+                sanitize_text(remembered_things.trim())
+            ));
+        }
     }
+
+    let mut timeline_records = Vec::<MemoryTimelineRecord>::new();
     if history_messages_budget > 0 {
         timeline_records.extend(
             load_history_messages_with_limit(input, history_messages_budget, tokenizer).await,
@@ -355,7 +365,7 @@ async fn build_memory_prompt_text(
     if !timeline_records.is_empty() {
         let timeline_text = render_memory_timeline_text(&timeline_records);
         memory_sections.push(format!(
-            "## Timeline\n{}\n",
+            "## Timeline Logs\n```log\n{}\n```\n",
             sanitize_text(timeline_text.trim())
         ));
     }
@@ -372,16 +382,6 @@ async fn build_memory_prompt_text(
         }
     }
 
-    if workspace_todo_budget > 0 {
-        let workspace_todo =
-            load_workspace_todo_with_limit(input, workspace_todo_budget, tokenizer).await;
-        if !workspace_todo.trim().is_empty() {
-            session_summary_parts.push(format!(
-                "## TODO List\n{}\n",
-                sanitize_text(workspace_todo.trim())
-            ));
-        }
-    }
     if !session_summary_parts.is_empty() {
         memory_sections.push(session_summary_parts.join("\n"));
     }
@@ -498,10 +498,8 @@ fn format_memory_timeline_record(record: &MemoryTimelineRecord) -> String {
     if line.is_empty() {
         return String::new();
     }
-    if record.source_label == "worklog" {
-        return line.to_string();
-    }
-    format!("[{}][{}] {}", record.source_label, record.update_time, line)
+
+    line.to_string()
 }
 
 fn render_memory_timeline_text(records: &[MemoryTimelineRecord]) -> String {
@@ -564,12 +562,12 @@ async fn load_agent_memory_with_limit(
     token_limit: u32,
     tokenizer: &dyn Tokenizer,
     memory: Option<AgentMemory>,
-) -> Vec<MemoryTimelineRecord> {
+) -> String {
     if token_limit == 0 {
-        return vec![];
+        return String::new();
     }
     let Some(memory) = memory else {
-        return vec![];
+        return String::new();
     };
 
     let tags = topic_tags
@@ -585,27 +583,11 @@ async fn load_agent_memory_with_limit(
         Ok(value) => value,
         Err(err) => {
             warn!("prompt.load_agent_memory load_memory failed: {}", err);
-            return vec![];
+            return String::new();
         }
     };
     let raw_text = AgentMemory::render_memory_items(&items);
-    let fitted = fit_text_with_token_limit(raw_text, token_limit, tokenizer);
-    if fitted.trim().is_empty() {
-        return vec![];
-    }
-
-    let update_time = current_time.timestamp_millis().max(0) as u64;
-    fitted
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(|line| MemoryTimelineRecord {
-            update_time,
-            text: line.to_string(),
-            source_label: "memory",
-            source_order: 10,
-        })
-        .collect()
+    fit_text_with_token_limit(raw_text, token_limit, tokenizer)
 }
 
 async fn load_session_summaries_with_limit(
@@ -640,74 +622,6 @@ async fn load_session_summaries_with_limit(
     fit_text_with_token_limit(lines.join("\n"), token_limit, tokenizer)
 }
 
-async fn load_workspace_todo_with_limit(
-    input: &BehaviorExecInput,
-    token_limit: u32,
-    tokenizer: &dyn Tokenizer,
-) -> String {
-    if token_limit == 0 {
-        return String::new();
-    }
-    let Some(session) = input.session.as_ref() else {
-        return String::new();
-    };
-
-    let (local_workspace_id, workspace_info, session_cwd) = {
-        let guard = session.lock().await;
-        (
-            guard.local_workspace_id.clone(),
-            guard.workspace_info.clone(),
-            guard.pwd.clone(),
-        )
-    };
-
-    let workspace_id = normalize_optional_text(local_workspace_id.as_deref())
-        .or_else(|| extract_workspace_id_from_json(workspace_info.as_ref()));
-    let mut lines = Vec::<String>::new();
-    if let (Some(workspace_id), Some(todo_db_path)) = (
-        workspace_id,
-        resolve_todo_db_path(
-            local_workspace_id.as_deref(),
-            workspace_info.as_ref(),
-            &session_cwd,
-        ),
-    ) {
-        match render_workspace_todo_for_prompt(todo_db_path, workspace_id.clone(), token_limit)
-            .await
-        {
-            Ok(text) if !text.trim().is_empty() => {
-                lines.push(text.trim().to_string());
-            }
-            Ok(_) => {}
-            Err(err) => {
-                warn!(
-                    "prompt.load_workspace_todo render failed: workspace_id={} err={}",
-                    workspace_id, err
-                );
-            }
-        }
-    }
-
-    if lines.is_empty() {
-        return String::new();
-    }
-    fit_text_with_token_limit(lines.join("\n"), token_limit, tokenizer)
-}
-
-async fn render_workspace_todo_for_prompt(
-    db_path: PathBuf,
-    workspace_id: String,
-    token_limit: u32,
-) -> Result<String, String> {
-    let token_budget = usize::try_from(token_limit).unwrap_or(usize::MAX);
-    task::spawn_blocking(move || {
-        render_workspace_todo_prompt_from_db(&db_path, workspace_id.as_str(), token_budget)
-            .map_err(|err| err.to_string())
-    })
-    .await
-    .map_err(|err| format!("render todo join error: {err}"))?
-}
-
 fn fit_text_with_token_limit(
     content: String,
     token_limit: u32,
@@ -723,62 +637,6 @@ fn fit_text_with_token_limit(
     truncate_to_token_budget(trimmed, token_limit)
 }
 
-fn extract_workspace_id_from_json(value: Option<&Json>) -> Option<String> {
-    // FIXME(opendan-strong-typing): Weakly-typed compatibility lookup from Json is forbidden.
-    // Replace with strongly-typed structs + serde deserialization.
-    let value = value?;
-    for pointer in [
-        "/workspace_id",
-        "/local_workspace_id",
-        "/id",
-        "/workspace/id",
-        "/workspace/workspace_id",
-        "/workspace/local_workspace_id",
-        "/binding/workspace_id",
-        "/binding/local_workspace_id",
-    ] {
-        let parsed = value
-            .pointer(pointer)
-            .and_then(|item| item.as_str())
-            .map(str::trim)
-            .filter(|item| !item.is_empty());
-        if let Some(workspace_id) = parsed {
-            return Some(workspace_id.to_string());
-        }
-    }
-    None
-}
-
-fn resolve_todo_db_path(
-    local_workspace_id: Option<&str>,
-    workspace_info: Option<&Json>,
-    session_cwd: &Path,
-) -> Option<PathBuf> {
-    let candidates = collect_workspace_path_candidates(workspace_info, session_cwd);
-    let roots = collect_candidate_ancestors(&candidates);
-
-    if let Some(local_workspace_id) = normalize_optional_text(local_workspace_id) {
-        for root in &roots {
-            let local_workspace_path = root
-                .join("workspaces")
-                .join("local")
-                .join(local_workspace_id.as_str());
-            let todo_db_path = root.join("todo").join("todo.db");
-            if local_workspace_path.is_dir() && todo_db_path.is_file() {
-                return Some(todo_db_path);
-            }
-        }
-    }
-
-    for root in &roots {
-        let todo_db_path = root.join("todo").join("todo.db");
-        if todo_db_path.is_file() {
-            return Some(todo_db_path);
-        }
-    }
-    None
-}
-
 fn resolve_worklog_db_path(
     local_workspace_id: Option<&str>,
     workspace_info: Option<&Json>,
@@ -787,16 +645,12 @@ fn resolve_worklog_db_path(
     let candidates = collect_workspace_path_candidates(workspace_info, session_cwd);
     let roots = collect_candidate_ancestors(&candidates);
 
-    if let Some(local_workspace_id) = normalize_optional_text(local_workspace_id) {
-        for root in &roots {
-            let local_workspace_path = root
-                .join("workspaces")
-                .join("local")
-                .join(local_workspace_id.as_str());
-            let worklog_db_path = root.join("worklog").join("worklog.db");
-            if local_workspace_path.is_dir() && worklog_db_path.is_file() {
-                return Some(worklog_db_path);
-            }
+    if let Some(local_workspace_path) =
+        resolve_default_local_workspace_path(local_workspace_id, workspace_info, session_cwd)
+    {
+        let worklog_db_path = local_workspace_path.join("worklog").join("worklog.db");
+        if worklog_db_path.is_file() {
+            return Some(worklog_db_path);
         }
     }
 
@@ -851,6 +705,26 @@ fn collect_workspace_path_candidates(
         }
     }
     out
+}
+
+fn resolve_default_local_workspace_path(
+    local_workspace_id: Option<&str>,
+    workspace_info: Option<&Json>,
+    session_cwd: &Path,
+) -> Option<PathBuf> {
+    let local_workspace_id = normalize_optional_text(local_workspace_id)?;
+    let candidates = collect_workspace_path_candidates(workspace_info, session_cwd);
+    let roots = collect_candidate_ancestors(&candidates);
+    for root in roots {
+        let path = root
+            .join("workspaces")
+            .join("local")
+            .join(local_workspace_id.as_str());
+        if path.is_dir() {
+            return Some(path);
+        }
+    }
+    None
 }
 
 fn collect_candidate_ancestors(paths: &[PathBuf]) -> Vec<PathBuf> {
@@ -1257,6 +1131,197 @@ fn sanitize_worklog_digest(value: &str, max_chars: usize) -> String {
     out
 }
 
+fn parse_step_index_limit_from_text(value: &str) -> Option<(u32, u32)> {
+    let lower = value.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    let mut i = 0usize;
+    while i + 4 <= bytes.len() {
+        if &bytes[i..i + 4] != b"step" {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 4;
+        while j < bytes.len() && !bytes[j].is_ascii_digit() {
+            j += 1;
+        }
+        let start_step = j;
+        while j < bytes.len() && bytes[j].is_ascii_digit() {
+            j += 1;
+        }
+        if start_step == j {
+            i += 1;
+            continue;
+        }
+        let step_index = lower[start_step..j].parse::<u32>().ok();
+        while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+            j += 1;
+        }
+        if j >= bytes.len() || bytes[j] != b'/' {
+            i += 1;
+            continue;
+        }
+        j += 1;
+        while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+            j += 1;
+        }
+        let start_limit = j;
+        while j < bytes.len() && bytes[j].is_ascii_digit() {
+            j += 1;
+        }
+        if start_limit == j {
+            i += 1;
+            continue;
+        }
+        let step_limit = lower[start_limit..j].parse::<u32>().ok();
+        if let (Some(step_index), Some(step_limit)) = (step_index, step_limit) {
+            return Some((step_index, step_limit));
+        }
+        i += 1;
+    }
+    None
+}
+
+fn resolve_step_limit_from_text_candidates(values: &[Option<&str>]) -> Option<u32> {
+    for value in values {
+        let Some(value) = value.as_deref() else {
+            continue;
+        };
+        if let Some((_, limit)) = parse_step_index_limit_from_text(value) {
+            return Some(limit);
+        }
+    }
+    None
+}
+
+fn format_step_header_line(
+    timestamp_ms: u64,
+    behavior: Option<&str>,
+    step_index: Option<u32>,
+    success_count: u32,
+    failed_count: u32,
+) -> String {
+    let behavior = behavior
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("-");
+    let step_index_text = step_index
+        .map(|value| value.to_string())
+        .unwrap_or("-".to_string());
+
+    format!(
+        "#### {} Behavior {} Step {} : SUCCESS ({}), FAILED ({})",
+        format_history_time(timestamp_ms),
+        behavior,
+        step_index_text,
+        success_count,
+        failed_count
+    )
+}
+
+fn count_success_failed_db(records: &[WorklogRecord]) -> (u32, u32) {
+    let mut success = 0_u32;
+    let mut failed = 0_u32;
+    for record in records {
+        if record.status.trim().eq_ignore_ascii_case("OK") {
+            success = success.saturating_add(1);
+        } else if record.status.trim().eq_ignore_ascii_case("FAILED") {
+            failed = failed.saturating_add(1);
+        }
+    }
+    (success, failed)
+}
+
+fn count_success_failed_runtime(records: &[RuntimeWorklogRecord]) -> (u32, u32) {
+    let mut success = 0_u32;
+    let mut failed = 0_u32;
+    for record in records {
+        if record.status.trim().eq_ignore_ascii_case("OK") {
+            success = success.saturating_add(1);
+        } else if record.status.trim().eq_ignore_ascii_case("FAILED") {
+            failed = failed.saturating_add(1);
+        }
+    }
+    (success, failed)
+}
+
+fn render_worklog_message_sender(raw: &str) -> String {
+    let value = raw.trim();
+    if value.is_empty() {
+        return "unknown".to_string();
+    }
+    if value.starts_with("did:bns:") {
+        let name = compact_history_name(extract_name_from_did(value).as_str());
+        if name.is_empty() {
+            return value.to_string();
+        }
+        return format!("{}({})", name, value);
+    }
+    if value.starts_with("did:") {
+        let name = compact_history_name(extract_name_from_did(value).as_str());
+        if !name.is_empty() {
+            return name;
+        }
+        return value.to_string();
+    }
+    let name = compact_history_name(value);
+    if name.is_empty() {
+        value.to_string()
+    } else {
+        name
+    }
+}
+
+fn sanitize_worklog_message_text(value: &str, max_chars: usize) -> String {
+    let sanitized = value
+        .replace("```", "'''")
+        .replace("<</WorkspaceWorklog:OBSERVATION>>", "")
+        .replace("<<WorkspaceWorklog:OBSERVATION>>", "");
+    let normalized = normalize_history_multiline_text(sanitized.as_str());
+    if normalized.is_empty() {
+        return String::new();
+    }
+    let chars = normalized.chars().collect::<Vec<_>>();
+    if chars.len() <= max_chars {
+        return normalized;
+    }
+    let mut out = chars.into_iter().take(max_chars).collect::<String>();
+    out.push_str("...");
+    out
+}
+
+fn render_worklog_get_message_line(timestamp: u64, payload: &Json) -> String {
+    let from = payload
+        .get("from")
+        .and_then(Json::as_str)
+        .unwrap_or("Unknown");
+    let sender = render_worklog_message_sender(from);
+    let content = payload
+        .get("content_digest")
+        .or_else(|| payload.get("snippet"))
+        .or_else(|| payload.get("content"))
+        .or_else(|| payload.get("message"))
+        .and_then(Json::as_str)
+        .map(|value| sanitize_worklog_message_text(value, 220))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "-".to_string());
+    if content.contains('\n') {
+        let indented = indent_history_message_content(content.as_str());
+        format!(
+            "- {} {}:\n{}",
+            format_history_time(timestamp),
+            sender,
+            indented
+        )
+    } else {
+        format!(
+            "- {} {}: {}",
+            format_history_time(timestamp),
+            sender,
+            content
+        )
+    }
+}
+
 fn render_worklog_status_text(status: &str, reason_digest: Option<&str>) -> String {
     if status.trim().eq_ignore_ascii_case("OK") {
         return "OK".to_string();
@@ -1281,6 +1346,15 @@ fn extract_worklog_target(payload: Option<&serde_json::Map<String, Json>>) -> Op
         }
     }
     None
+}
+
+fn is_tool_call_action_payload(payload: &Json) -> bool {
+    payload
+        .get("action_type")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .map(|value| value.eq_ignore_ascii_case("tool_call"))
+        .unwrap_or(false)
 }
 
 fn render_nested_db_worklog_line(record: &WorklogRecord) -> Option<String> {
@@ -1313,11 +1387,16 @@ fn render_nested_db_worklog_line(record: &WorklogRecord) -> Option<String> {
             Some(format!(
                 "{}{} -> {}",
                 tool_name,
-                target.map(|value| format!(" {}", value)).unwrap_or_default(),
+                target
+                    .map(|value| format!(" {}", value))
+                    .unwrap_or_default(),
                 status_text
             ))
         }
         WorklogRecordType::ActionRecord => {
+            if is_tool_call_action_payload(&record.payload) {
+                return None;
+            }
             let action_type = record
                 .payload
                 .get("action_type")
@@ -1331,11 +1410,24 @@ fn render_nested_db_worklog_line(record: &WorklogRecord) -> Option<String> {
                 .map(|value| sanitize_worklog_digest(value, 120))
                 .filter(|value| !value.is_empty())
                 .or_else(|| extract_worklog_target(record.payload.as_object()));
+            let result_digest = record
+                .payload
+                .get("result_digest")
+                .and_then(Json::as_str)
+                .map(|value| sanitize_worklog_digest(value, 180))
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| status_text.clone());
+            if action_type.eq_ignore_ascii_case("bash") {
+                let cmd = target.unwrap_or_else(|| "bash".to_string());
+                return Some(format!("Run {} => {}", cmd, result_digest));
+            }
             Some(format!(
                 "{}{} -> {}",
                 action_type,
-                target.map(|value| format!(" {}", value)).unwrap_or_default(),
-                status_text
+                target
+                    .map(|value| format!(" {}", value))
+                    .unwrap_or_default(),
+                result_digest
             ))
         }
         WorklogRecordType::CreateSubAgent => {
@@ -1376,7 +1468,9 @@ fn render_db_worklog_top_level_line(record: &WorklogRecord) -> Option<String> {
     }
 }
 
-fn render_db_worklog_timeline_records(worklog_records: &[WorklogRecord]) -> Vec<MemoryTimelineRecord> {
+fn render_db_worklog_timeline_records(
+    worklog_records: &[WorklogRecord],
+) -> Vec<MemoryTimelineRecord> {
     let mut timeline = worklog_records
         .iter()
         .filter(|record| !record.commit_state.eq_ignore_ascii_case("PENDING"))
@@ -1411,39 +1505,26 @@ fn render_db_worklog_timeline_records(worklog_records: &[WorklogRecord]) -> Vec<
     let mut output = Vec::<MemoryTimelineRecord>::new();
     let mut current_day = String::new();
     for record in &timeline {
+        if record.record_type == WorklogRecordType::ActionRecord
+            && is_tool_call_action_payload(&record.payload)
+        {
+            continue;
+        }
         match record.record_type {
             WorklogRecordType::GetMessage => {
                 let day = format_history_date(record.timestamp);
                 if day != current_day {
                     output.push(MemoryTimelineRecord {
                         update_time: record.timestamp,
-                        text: format!("- {} started", day),
+                        text: format!("### {}", day),
                         source_label: "worklog",
                         source_order: 30,
                     });
                     current_day = day;
                 }
-                let from = record
-                    .payload
-                    .get("from")
-                    .and_then(Json::as_str)
-                    .unwrap_or("Unknown");
-                let snippet = record
-                    .payload
-                    .get("snippet")
-                    .or_else(|| record.payload.get("content_digest"))
-                    .and_then(Json::as_str)
-                    .map(|value| sanitize_worklog_digest(value, 120))
-                    .filter(|value| !value.is_empty())
-                    .unwrap_or_else(|| "-".to_string());
                 output.push(MemoryTimelineRecord {
                     update_time: record.timestamp,
-                    text: format!(
-                        "- {} received message from {}: \"{}\"",
-                        format_history_time(record.timestamp),
-                        from,
-                        snippet
-                    ),
+                    text: render_worklog_get_message_line(record.timestamp, &record.payload),
                     source_label: "worklog",
                     source_order: 30,
                 });
@@ -1453,24 +1534,12 @@ fn render_db_worklog_timeline_records(worklog_records: &[WorklogRecord]) -> Vec<
                 if day != current_day {
                     output.push(MemoryTimelineRecord {
                         update_time: record.timestamp,
-                        text: format!("- {} started", day),
+                        text: format!("### {}", day),
                         source_label: "worklog",
                         source_order: 30,
                     });
                     current_day = day;
                 }
-                let did_digest = record
-                    .payload
-                    .get("did_digest")
-                    .and_then(Json::as_str)
-                    .map(|value| sanitize_worklog_digest(value, 180))
-                    .filter(|value| !value.is_empty());
-                let result_digest = record
-                    .payload
-                    .get("result_digest")
-                    .and_then(Json::as_str)
-                    .map(|value| sanitize_worklog_digest(value, 180))
-                    .filter(|value| !value.is_empty());
                 let mut nested_records = record
                     .payload
                     .get("refs")
@@ -1486,56 +1555,71 @@ fn render_db_worklog_timeline_records(worklog_records: &[WorklogRecord]) -> Vec<
                     })
                     .unwrap_or_default();
                 nested_records.sort_by(|a, b| {
-                        a.timestamp
-                            .cmp(&b.timestamp)
-                            .then_with(|| a.seq.cmp(&b.seq))
-                            .then_with(|| a.id.cmp(&b.id))
-                    });
+                    a.timestamp
+                        .cmp(&b.timestamp)
+                        .then_with(|| a.seq.cmp(&b.seq))
+                        .then_with(|| a.id.cmp(&b.id))
+                });
                 let nested_lines = nested_records
                     .iter()
                     .filter_map(render_nested_db_worklog_line)
                     .collect::<Vec<_>>();
 
-                if let Some(did_digest) = did_digest.as_ref() {
+                let (success_count, failed_count) = count_success_failed_db(&nested_records);
+                let parsed_index_limit = record
+                    .summary
+                    .as_deref()
+                    .and_then(parse_step_index_limit_from_text)
+                    .or_else(|| {
+                        record
+                            .payload
+                            .get("result_digest")
+                            .and_then(Json::as_str)
+                            .and_then(parse_step_index_limit_from_text)
+                    })
+                    .or_else(|| {
+                        record
+                            .payload
+                            .get("did_digest")
+                            .and_then(Json::as_str)
+                            .and_then(parse_step_index_limit_from_text)
+                    });
+                let step_index = record
+                    .step_index
+                    .or_else(|| {
+                        record
+                            .step_id
+                            .as_deref()
+                            .and_then(parse_step_index_from_step_id)
+                    })
+                    .or_else(|| parsed_index_limit.map(|value| value.0));
+                let step_limit = parsed_index_limit.map(|value| value.1).or_else(|| {
+                    resolve_step_limit_from_text_candidates(&[
+                        record.summary.as_deref(),
+                        record.payload.get("result_digest").and_then(Json::as_str),
+                        record.payload.get("did_digest").and_then(Json::as_str),
+                    ])
+                });
+                output.push(MemoryTimelineRecord {
+                    update_time: record.timestamp,
+                    text: format_step_header_line(
+                        record.timestamp,
+                        record.behavior.as_deref(),
+                        step_index,
+                        success_count,
+                        failed_count,
+                    ),
+                    source_label: "worklog",
+                    source_order: 30,
+                });
+
+                for nested in nested_lines {
                     output.push(MemoryTimelineRecord {
                         update_time: record.timestamp,
-                        text: format!(
-                            "- {} Thought: {}",
-                            format_history_time(record.timestamp),
-                            did_digest
-                        ),
+                        text: format!("- {}", nested),
                         source_label: "worklog",
                         source_order: 30,
                     });
-                }
-                if let Some(result_digest) = result_digest.as_ref() {
-                    output.push(MemoryTimelineRecord {
-                        update_time: record.timestamp,
-                        text: format!(
-                            "- {} Step completed: {}",
-                            format_history_time(record.timestamp),
-                            result_digest
-                        ),
-                        source_label: "worklog",
-                        source_order: 30,
-                    });
-                    for nested in nested_lines {
-                        output.push(MemoryTimelineRecord {
-                            update_time: record.timestamp,
-                            text: format!("  - {}", nested),
-                            source_label: "worklog",
-                            source_order: 30,
-                        });
-                    }
-                } else if did_digest.is_some() {
-                    for nested in nested_lines {
-                        output.push(MemoryTimelineRecord {
-                            update_time: record.timestamp,
-                            text: format!("  - {}", nested),
-                            source_label: "worklog",
-                            source_order: 30,
-                        });
-                    }
                 }
             }
             _ => {
@@ -1547,7 +1631,7 @@ fn render_db_worklog_timeline_records(worklog_records: &[WorklogRecord]) -> Vec<
                     if day != current_day {
                         output.push(MemoryTimelineRecord {
                             update_time: record.timestamp,
-                            text: format!("- {} started", day),
+                            text: format!("### {}", day),
                             source_label: "worklog",
                             source_order: 30,
                         });
@@ -1572,6 +1656,8 @@ struct RuntimeWorklogRecord {
     timestamp: u64,
     record_type: String,
     status: String,
+    behavior: Option<String>,
+    step_index: Option<u32>,
     payload: Json,
     summary: Option<String>,
     prompt_digest: Option<String>,
@@ -1606,11 +1692,16 @@ fn render_nested_runtime_worklog_line(record: &RuntimeWorklogRecord) -> Option<S
         return Some(format!(
             "{}{} -> {}",
             tool_name,
-            target.map(|value| format!(" {}", value)).unwrap_or_default(),
+            target
+                .map(|value| format!(" {}", value))
+                .unwrap_or_default(),
             status_text
         ));
     }
     if runtime_worklog_is_type(record.record_type.as_str(), "ActionRecord") {
+        if is_tool_call_action_payload(&record.payload) {
+            return None;
+        }
         let action_type = record
             .payload
             .get("action_type")
@@ -1624,11 +1715,24 @@ fn render_nested_runtime_worklog_line(record: &RuntimeWorklogRecord) -> Option<S
             .map(|value| sanitize_worklog_digest(value, 120))
             .filter(|value| !value.is_empty())
             .or_else(|| extract_worklog_target(record.payload.as_object()));
+        let result_digest = record
+            .payload
+            .get("result_digest")
+            .and_then(Json::as_str)
+            .map(|value| sanitize_worklog_digest(value, 180))
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| status_text.clone());
+        if action_type.eq_ignore_ascii_case("bash") {
+            let cmd = target.unwrap_or_else(|| "bash".to_string());
+            return Some(format!("Run {} => {}", cmd, result_digest));
+        }
         return Some(format!(
             "{}{} -> {}",
             action_type,
-            target.map(|value| format!(" {}", value)).unwrap_or_default(),
-            status_text
+            target
+                .map(|value| format!(" {}", value))
+                .unwrap_or_default(),
+            result_digest
         ));
     }
     if runtime_worklog_is_type(record.record_type.as_str(), "CreateSubAgent") {
@@ -1682,7 +1786,11 @@ fn render_runtime_worklog_legacy_line(record: &RuntimeWorklogRecord) -> Option<S
             digest
         )
     } else {
-        format!("{} status={}", record.record_type.trim(), record.status.trim())
+        format!(
+            "{} status={}",
+            record.record_type.trim(),
+            record.status.trim()
+        )
     };
     let line = line.trim();
     if line.is_empty() {
@@ -1749,6 +1857,47 @@ fn resolve_session_runtime_worklog_update_time(item: &Json, fallback: u64) -> u6
     fallback
 }
 
+fn parse_step_index_from_step_id(step_id: &str) -> Option<u32> {
+    let digits = step_id
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse::<u32>().ok()
+}
+
+fn dedup_last_step_index(current_step_index: u32) -> Option<u32> {
+    current_step_index.checked_sub(1)
+}
+
+fn extract_runtime_worklog_step_index(item: &Json) -> Option<u32> {
+    item.get("step_index")
+        .and_then(Json::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .or_else(|| {
+            item.get("step_index")
+                .and_then(Json::as_i64)
+                .and_then(|value| {
+                    if value < 0 {
+                        None
+                    } else {
+                        u32::try_from(value as u64).ok()
+                    }
+                })
+        })
+        .or_else(|| {
+            item.get("step_id")
+                .and_then(Json::as_str)
+                .and_then(parse_step_index_from_step_id)
+        })
+}
+
 fn is_pending_session_runtime_worklog(item: &Json) -> bool {
     item.get("commit_state")
         .and_then(Json::as_str)
@@ -1762,6 +1911,7 @@ fn parse_runtime_worklog_record(
     index: usize,
     fallback_update_time: u64,
 ) -> RuntimeWorklogRecord {
+    let step_index = extract_runtime_worklog_step_index(&item);
     let id = item
         .get("id")
         .or_else(|| item.get("log_id"))
@@ -1785,6 +1935,12 @@ fn parse_runtime_worklog_record(
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| "UNKNOWN".to_string());
+    let behavior = item
+        .get("behavior")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     let payload = item.get("payload").cloned().unwrap_or(Json::Null);
     let summary = item
         .get("summary")
@@ -1813,6 +1969,8 @@ fn parse_runtime_worklog_record(
         timestamp: resolve_session_runtime_worklog_update_time(&item, fallback_update_time),
         record_type,
         status,
+        behavior,
+        step_index,
         payload,
         summary,
         prompt_digest,
@@ -1824,11 +1982,7 @@ fn render_runtime_worklog_timeline_records(
     runtime_records: &[RuntimeWorklogRecord],
 ) -> Vec<MemoryTimelineRecord> {
     let mut timeline = runtime_records.to_vec();
-    timeline.sort_by(|a, b| {
-        a.timestamp
-            .cmp(&b.timestamp)
-            .then_with(|| a.id.cmp(&b.id))
-    });
+    timeline.sort_by(|a, b| a.timestamp.cmp(&b.timestamp).then_with(|| a.id.cmp(&b.id)));
 
     let by_id = timeline
         .iter()
@@ -1852,38 +2006,25 @@ fn render_runtime_worklog_timeline_records(
     let mut output = Vec::<MemoryTimelineRecord>::new();
     let mut current_day = String::new();
     for record in &timeline {
+        if runtime_worklog_is_type(record.record_type.as_str(), "ActionRecord")
+            && is_tool_call_action_payload(&record.payload)
+        {
+            continue;
+        }
         if runtime_worklog_is_type(record.record_type.as_str(), "GetMessage") {
             let day = format_history_date(record.timestamp);
             if day != current_day {
                 output.push(MemoryTimelineRecord {
                     update_time: record.timestamp,
-                    text: format!("- {} started", day),
+                    text: format!("### {}", day),
                     source_label: "worklog",
                     source_order: 30,
                 });
                 current_day = day;
             }
-            let from = record
-                .payload
-                .get("from")
-                .and_then(Json::as_str)
-                .unwrap_or("Unknown");
-            let snippet = record
-                .payload
-                .get("snippet")
-                .or_else(|| record.payload.get("content_digest"))
-                .and_then(Json::as_str)
-                .map(|value| sanitize_worklog_digest(value, 120))
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "-".to_string());
             output.push(MemoryTimelineRecord {
                 update_time: record.timestamp,
-                text: format!(
-                    "- {} received message from {}: \"{}\"",
-                    format_history_time(record.timestamp),
-                    from,
-                    snippet
-                ),
+                text: render_worklog_get_message_line(record.timestamp, &record.payload),
                 source_label: "worklog",
                 source_order: 30,
             });
@@ -1894,24 +2035,12 @@ fn render_runtime_worklog_timeline_records(
             if day != current_day {
                 output.push(MemoryTimelineRecord {
                     update_time: record.timestamp,
-                    text: format!("- {} started", day),
+                    text: format!("### {}", day),
                     source_label: "worklog",
                     source_order: 30,
                 });
                 current_day = day;
             }
-            let did_digest = record
-                .payload
-                .get("did_digest")
-                .and_then(Json::as_str)
-                .map(|value| sanitize_worklog_digest(value, 180))
-                .filter(|value| !value.is_empty());
-            let result_digest = record
-                .payload
-                .get("result_digest")
-                .and_then(Json::as_str)
-                .map(|value| sanitize_worklog_digest(value, 180))
-                .filter(|value| !value.is_empty());
             let mut nested_records = record
                 .payload
                 .get("refs")
@@ -1922,60 +2051,66 @@ fn render_runtime_worklog_timeline_records(
                         .map(str::trim)
                         .filter(|value| !value.is_empty())
                         .filter_map(|id| by_id.get(id).cloned())
-                        .filter(|item| !runtime_worklog_is_type(item.record_type.as_str(), "StepSummary"))
+                        .filter(|item| {
+                            !runtime_worklog_is_type(item.record_type.as_str(), "StepSummary")
+                        })
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            nested_records.sort_by(|a, b| {
-                    a.timestamp
-                        .cmp(&b.timestamp)
-                        .then_with(|| a.id.cmp(&b.id))
-                });
+            nested_records
+                .sort_by(|a, b| a.timestamp.cmp(&b.timestamp).then_with(|| a.id.cmp(&b.id)));
             let nested_lines = nested_records
                 .iter()
                 .filter_map(render_nested_runtime_worklog_line)
                 .collect::<Vec<_>>();
-
-            if let Some(did_digest) = did_digest.as_ref() {
+            let (success_count, failed_count) = count_success_failed_runtime(&nested_records);
+            let parsed_index_limit = record
+                .summary
+                .as_deref()
+                .and_then(parse_step_index_limit_from_text)
+                .or_else(|| {
+                    record
+                        .payload
+                        .get("result_digest")
+                        .and_then(Json::as_str)
+                        .and_then(parse_step_index_limit_from_text)
+                })
+                .or_else(|| {
+                    record
+                        .payload
+                        .get("did_digest")
+                        .and_then(Json::as_str)
+                        .and_then(parse_step_index_limit_from_text)
+                });
+            let step_index = record
+                .step_index
+                .or_else(|| parsed_index_limit.map(|value| value.0));
+            let step_limit = parsed_index_limit.map(|value| value.1).or_else(|| {
+                resolve_step_limit_from_text_candidates(&[
+                    record.summary.as_deref(),
+                    record.payload.get("result_digest").and_then(Json::as_str),
+                    record.payload.get("did_digest").and_then(Json::as_str),
+                ])
+            });
+            output.push(MemoryTimelineRecord {
+                update_time: record.timestamp,
+                text: format_step_header_line(
+                    record.timestamp,
+                    record.behavior.as_deref(),
+                    step_index,
+                    success_count,
+                    failed_count,
+                ),
+                source_label: "worklog",
+                source_order: 30,
+            });
+            for nested in nested_lines {
                 output.push(MemoryTimelineRecord {
                     update_time: record.timestamp,
-                    text: format!(
-                        "- {} Thought: {}",
-                        format_history_time(record.timestamp),
-                        did_digest
-                    ),
+                    text: format!("- {}", nested),
                     source_label: "worklog",
                     source_order: 30,
                 });
-            }
-            if let Some(result_digest) = result_digest.as_ref() {
-                output.push(MemoryTimelineRecord {
-                    update_time: record.timestamp,
-                    text: format!(
-                        "- {} Step completed: {}",
-                        format_history_time(record.timestamp),
-                        result_digest
-                    ),
-                    source_label: "worklog",
-                    source_order: 30,
-                });
-                for nested in nested_lines {
-                    output.push(MemoryTimelineRecord {
-                        update_time: record.timestamp,
-                        text: format!("  - {}", nested),
-                        source_label: "worklog",
-                        source_order: 30,
-                    });
-                }
-            } else if did_digest.is_some() {
-                for nested in nested_lines {
-                    output.push(MemoryTimelineRecord {
-                        update_time: record.timestamp,
-                        text: format!("  - {}", nested),
-                        source_label: "worklog",
-                        source_order: 30,
-                    });
-                }
             }
             continue;
         }
@@ -1988,7 +2123,7 @@ fn render_runtime_worklog_timeline_records(
             if day != current_day {
                 output.push(MemoryTimelineRecord {
                     update_time: record.timestamp,
-                    text: format!("- {} started", day),
+                    text: format!("### {}", day),
                     source_label: "worklog",
                     source_order: 30,
                 });
@@ -2075,9 +2210,15 @@ async fn load_session_runtime_worklog_with_limit(
 
     let base_update_time = Utc::now().timestamp_millis().max(0) as u64;
     let total = session_worklog.len();
+    let exclude_step_index = dedup_last_step_index(input.trace.step_idx);
     let mut runtime_records = Vec::<RuntimeWorklogRecord>::new();
     for (index, item) in session_worklog.into_iter().enumerate() {
         if is_pending_session_runtime_worklog(&item) {
+            continue;
+        }
+        if exclude_step_index.is_some()
+            && extract_runtime_worklog_step_index(&item) == exclude_step_index
+        {
             continue;
         }
         let fallback_update_time = base_update_time.saturating_sub((total - index) as u64);
@@ -2101,7 +2242,7 @@ async fn load_workspace_worklog_with_limit(
         return vec![];
     }
 
-    let (session_id, local_workspace_id, workspace_info, session_cwd) =
+    let (session_id, workspace_id, workspace_info, session_cwd, session_worklog_db_path) =
         if let Some(session) = input.session.as_ref() {
             let guard = session.lock().await;
             (
@@ -2110,6 +2251,7 @@ async fn load_workspace_worklog_with_limit(
                 guard.local_workspace_id.clone(),
                 guard.workspace_info.clone(),
                 guard.pwd.clone(),
+                guard.resolve_workspace_worklog_db_path(),
             )
         } else {
             (
@@ -2117,19 +2259,21 @@ async fn load_workspace_worklog_with_limit(
                 None,
                 None,
                 PathBuf::new(),
+                None,
             )
         };
-    let workspace_id = normalize_optional_text(local_workspace_id.as_deref())
-        .or_else(|| extract_workspace_id_from_json(workspace_info.as_ref()));
-    if session_id.is_none() && workspace_id.is_none() {
+
+    if workspace_id.is_none() {
         return load_session_runtime_worklog_with_limit(input, token_limit, tokenizer).await;
     }
 
-    let Some(worklog_db_path) = resolve_worklog_db_path(
-        local_workspace_id.as_deref(),
-        workspace_info.as_ref(),
-        &session_cwd,
-    ) else {
+    let Some(worklog_db_path) = session_worklog_db_path.or_else(|| {
+        resolve_worklog_db_path(
+            workspace_id.as_deref(),
+            workspace_info.as_ref(),
+            &session_cwd,
+        )
+    }) else {
         return load_session_runtime_worklog_with_limit(input, token_limit, tokenizer).await;
     };
 
@@ -2150,10 +2294,10 @@ async fn load_workspace_worklog_with_limit(
             }
         };
 
-    let worklog_records = match worklog_service
+    let mut worklog_records = match worklog_service
         .list_worklog_records(WorklogListOptions {
-            owner_session_id: session_id,
-            workspace_id,
+            owner_session_id: session_id.clone(),
+            workspace_id: workspace_id.clone(),
             limit: Some(query_limit),
             ..Default::default()
         })
@@ -2169,244 +2313,46 @@ async fn load_workspace_worklog_with_limit(
             return load_session_runtime_worklog_with_limit(input, token_limit, tokenizer).await;
         }
     };
+    if worklog_records.is_empty() && workspace_id.is_some() {
+        worklog_records = match worklog_service
+            .list_worklog_records(WorklogListOptions {
+                owner_session_id: session_id,
+                workspace_id: None,
+                limit: Some(query_limit),
+                ..Default::default()
+            })
+            .await
+        {
+            Ok(records) => records,
+            Err(err) => {
+                warn!(
+                    "prompt.load_workspace_worklog fallback list(session-only) failed: path={} err={}",
+                    worklog_db_path.display(),
+                    err
+                );
+                vec![]
+            }
+        };
+    }
+    if let Some(exclude_step_index) = dedup_last_step_index(input.trace.step_idx) {
+        worklog_records.retain(|record| {
+            let record_step_index = record.step_index.or_else(|| {
+                record
+                    .step_id
+                    .as_deref()
+                    .and_then(parse_step_index_from_step_id)
+            });
+            record_step_index != Some(exclude_step_index)
+        });
+    }
     if worklog_records.is_empty() {
         return load_session_runtime_worklog_with_limit(input, token_limit, tokenizer).await;
     }
 
     let candidate_records = render_db_worklog_timeline_records(&worklog_records);
-    let records = fit_worklog_timeline_records_with_limit(candidate_records, token_limit, tokenizer);
-
-    if records.is_empty() {
-        load_session_runtime_worklog_with_limit(input, token_limit, tokenizer).await
-    } else {
-        records
-    }
-}
-
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-struct ToolboxSkillRecord {
-    name: String,
-    introduce: String,
-}
-
-#[derive(Clone, Debug, Default)]
-struct ToolboxSkillSpec {
-    introduce: String,
-    actions: Vec<String>,
-    loaded_tools: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Default)]
-#[serde(default)]
-struct RawToolboxSkillSpec {
-    name: String,
-    introduce: String,
-    actions: Vec<String>,
-    loaded_tools: Vec<String>,
-}
-
-impl RawToolboxSkillSpec {
-    fn normalize(&mut self) {
-        self.name = self.name.trim().to_string();
-        self.introduce = self.introduce.trim().to_string();
-        self.actions = normalize_unique_string_list(std::mem::take(&mut self.actions));
-        self.loaded_tools = normalize_unique_string_list(std::mem::take(&mut self.loaded_tools));
-    }
-
-    fn to_toolbox_skill_spec(self) -> ToolboxSkillSpec {
-        ToolboxSkillSpec {
-            introduce: self.introduce,
-            actions: self.actions,
-            loaded_tools: self.loaded_tools,
-        }
-    }
-}
-
-//构成的提示词为
-// 列出的workspace的skill Record列表
-// session里得到当前加载的skills（提示词注入)
-// 所有可用的action定义（通过加载的所有skills的actions查找）
-//生成的Vec<AiToolSpec>:
-// 当前加载的tools的定义 （合并所有已经加载的skills的tool定义)
-async fn build_toolbox(
-    tools: &[AiToolSpec],
-    action_specs: &[ToolSpec],
-    cfg: &BehaviorConfig,
-    session: Option<Arc<Mutex<AgentSession>>>,
-) -> Option<(String, Vec<AiToolSpec>)> {
-    if cfg.toolbox.is_none_mode() {
-        return None;
-    }
-
-    let mut session_loaded_skills = Vec::<String>::new();
-    let mut local_workspace_id: Option<String> = None;
-    let mut workspace_info: Option<Json> = None;
-    let mut session_cwd = PathBuf::new();
-    if let Some(session) = session.as_ref() {
-        let guard = session.lock().await;
-        session_loaded_skills = normalize_unique_string_list(guard.loaded_skills.clone());
-        local_workspace_id = normalize_optional_text(guard.local_workspace_id.as_deref());
-        workspace_info = guard.workspace_info.clone();
-        session_cwd = guard.pwd.clone();
-    }
-
-    let (workspace_skill_records, workspace_skill_specs) = load_workspace_skill_catalog(
-        local_workspace_id.as_deref(),
-        workspace_info.as_ref(),
-        &session_cwd,
-    )
-    .await;
-
-    let behavior_skills = cfg.toolbox.effective_skills();
-    let loaded_skills = merge_unique_string_slices(&behavior_skills, &session_loaded_skills);
-
-    let mut requested_actions =
-        normalize_unique_string_list(cfg.toolbox.default_load_actions.clone());
-    let mut loaded_tool_names = Vec::<String>::new();
-    for skill_name in &loaded_skills {
-        let Some(spec) = workspace_skill_specs.get(skill_name.as_str()) else {
-            continue;
-        };
-        requested_actions = merge_unique_string_slices(&requested_actions, &spec.actions);
-        loaded_tool_names = merge_unique_string_slices(&loaded_tool_names, &spec.loaded_tools);
-    }
-
-    let filtered_tools = cfg.toolbox.tools.filter_ai_tool_specs(tools);
-    let merged_tools = merge_tool_specs_with_skill_tools(filtered_tools, &loaded_tool_names, tools);
-
-    if merged_tools.is_empty()
-        && loaded_skills.is_empty()
-        && workspace_skill_records.is_empty()
-        && requested_actions.is_empty()
-    {
-        return None;
-    }
-
-    let selected_action_specs = select_action_specs(action_specs, &requested_actions);
-    let selected_actions = selected_action_specs
-        .iter()
-        .map(|spec| normalize_tool_name(spec.name.as_str()))
-        .filter(|name| !name.is_empty())
-        .collect::<Vec<_>>();
-    let selected_action_set = selected_actions
-        .iter()
-        .cloned()
-        .collect::<HashSet<String>>();
-    let unresolved_actions = requested_actions
-        .iter()
-        .map(|name| normalize_tool_name(name.as_str()))
-        .filter(|name| !name.is_empty() && !selected_action_set.contains(name))
-        .collect::<Vec<_>>();
-    if !unresolved_actions.is_empty() {
-        warn!(
-            "prompt.build_toolbox unresolved_actions_ignored={}",
-            unresolved_actions.join(",")
-        );
-    }
-    let selected_action_prompts = selected_action_specs
-        .iter()
-        .map(|spec| spec.render_action_prompt())
-        .collect::<Vec<_>>();
-    let value = json!({
-        "workspace_skill_records": workspace_skill_records,
-        "loaded_skills": loaded_skills,
-        "requested_actions": requested_actions,
-        "allow_actions": selected_actions,
-        "actions": selected_actions,
-        "unresolved_actions": unresolved_actions,
-        "action_specs": selected_action_specs,
-        "action_prompts": selected_action_prompts,
-    });
-    Some((sanitize_json_compact(&value), merged_tools))
-}
-
-fn select_action_specs(action_specs: &[ToolSpec], action_names: &[String]) -> Vec<ToolSpec> {
-    if action_specs.is_empty() || action_names.is_empty() {
-        return vec![];
-    }
-    let mut by_name = HashMap::<String, ToolSpec>::new();
-    for spec in action_specs {
-        let normalized = normalize_tool_name(spec.name.as_str());
-        if normalized.is_empty() {
-            continue;
-        }
-        by_name.insert(normalized, spec.clone());
-    }
-
-    let mut selected = Vec::<ToolSpec>::new();
-    for action_name in action_names {
-        let normalized = normalize_tool_name(action_name.as_str());
-        if normalized.is_empty() {
-            continue;
-        }
-        if let Some(spec) = by_name.get(normalized.as_str()) {
-            selected.push(spec.clone());
-        }
-    }
-    selected
-}
-
-fn merge_tool_specs_with_skill_tools(
-    mut base: Vec<AiToolSpec>,
-    loaded_tool_names: &[String],
-    all_tools: &[AiToolSpec],
-) -> Vec<AiToolSpec> {
-    let mut seen = base
-        .iter()
-        .map(|item| item.name.clone())
-        .collect::<HashSet<_>>();
-
-    for tool_name in loaded_tool_names {
-        let normalized = tool_name.trim();
-        if normalized.is_empty() || !seen.insert(normalized.to_string()) {
-            continue;
-        }
-        if let Some(spec) = all_tools.iter().find(|item| item.name == normalized) {
-            base.push(spec.clone());
-        }
-    }
-    base
-}
-
-fn merge_unique_string_slices(primary: &[String], secondary: &[String]) -> Vec<String> {
-    let mut out = Vec::<String>::new();
-    let mut uniq = HashSet::<String>::new();
-    for value in primary.iter().chain(secondary.iter()) {
-        let normalized = value.trim();
-        if normalized.is_empty() {
-            continue;
-        }
-        if uniq.insert(normalized.to_string()) {
-            out.push(normalized.to_string());
-        }
-    }
-    out
-}
-
-fn normalize_unique_string_list(values: Vec<String>) -> Vec<String> {
-    merge_unique_string_slices(&values, &[])
-}
-
-async fn load_workspace_skill_catalog(
-    local_workspace_id: Option<&str>,
-    workspace_info: Option<&Json>,
-    session_cwd: &Path,
-) -> (Vec<ToolboxSkillRecord>, HashMap<String, ToolboxSkillSpec>) {
-    let skill_roots =
-        collect_workspace_skill_roots(local_workspace_id, workspace_info, session_cwd).await;
-    if skill_roots.is_empty() {
-        return (vec![], HashMap::new());
-    }
-
-    let mut records = HashMap::<String, ToolboxSkillRecord>::new();
-    let mut specs = HashMap::<String, ToolboxSkillSpec>::new();
-    for skills_root in skill_roots {
-        merge_skill_catalog_from_root(skills_root.as_path(), &mut records, &mut specs).await;
-    }
-
-    let mut workspace_records = records.into_values().collect::<Vec<_>>();
-    workspace_records.sort_by(|left, right| left.name.cmp(&right.name));
-    (workspace_records, specs)
+    let records =
+        fit_worklog_timeline_records_with_limit(candidate_records, token_limit, tokenizer);
+    return records;
 }
 
 async fn collect_workspace_skill_roots(
@@ -2449,17 +2395,13 @@ async fn collect_workspace_skill_roots(
 
     let roots = collect_candidate_ancestors(&candidates);
     let mut skill_roots = Vec::<PathBuf>::new();
+    if let Some(local_workspace_path) =
+        resolve_default_local_workspace_path(local_workspace_id, workspace_info, session_cwd)
+    {
+        push_unique_pathbuf(&mut skill_roots, local_workspace_path.join("skills"));
+    }
     for root in roots {
         push_unique_pathbuf(&mut skill_roots, root.join("skills"));
-        if let Some(local_workspace_id) = normalize_optional_text(local_workspace_id) {
-            push_unique_pathbuf(
-                &mut skill_roots,
-                root.join("workspaces")
-                    .join("local")
-                    .join(local_workspace_id)
-                    .join("skills"),
-            );
-        }
     }
 
     let mut existing = Vec::<PathBuf>::new();
@@ -2473,151 +2415,6 @@ async fn collect_workspace_skill_roots(
         }
     }
     existing
-}
-
-async fn merge_skill_catalog_from_root(
-    skills_root: &Path,
-    records: &mut HashMap<String, ToolboxSkillRecord>,
-    specs: &mut HashMap<String, ToolboxSkillSpec>,
-) {
-    let mut entries = match fs::read_dir(skills_root).await {
-        Ok(value) => value,
-        Err(err) => {
-            warn!(
-                "prompt.load_workspace_skills read_dir failed: path={} err={}",
-                skills_root.display(),
-                err
-            );
-            return;
-        }
-    };
-
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let is_dir = entry
-            .file_type()
-            .await
-            .map(|file_type| file_type.is_dir())
-            .unwrap_or(false);
-        if !is_dir {
-            continue;
-        }
-
-        let Some(skill_key) = entry
-            .file_name()
-            .to_str()
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .map(|name| name.to_string())
-        else {
-            continue;
-        };
-
-        let Some(skill_file_path) = find_skill_spec_file(skills_root, skill_key.as_str()).await
-        else {
-            continue;
-        };
-
-        let Some((raw_name, spec)) = read_skill_spec(skill_file_path.as_path()).await else {
-            continue;
-        };
-        let display_name = normalize_optional_text(Some(raw_name.as_str())).unwrap_or(skill_key);
-        records
-            .entry(display_name.clone())
-            .or_insert(ToolboxSkillRecord {
-                name: display_name.clone(),
-                introduce: spec.introduce.clone(),
-            });
-
-        specs
-            .entry(display_name.clone())
-            .or_insert_with(|| spec.clone());
-        specs.entry(raw_name).or_insert(spec);
-    }
-}
-
-async fn find_skill_spec_file(skills_root: &Path, skill_name: &str) -> Option<PathBuf> {
-    let skill_name = skill_name.trim();
-    if skill_name.is_empty() {
-        return None;
-    }
-    let skill_dir = skills_root.join(skill_name);
-    if !fs::metadata(&skill_dir)
-        .await
-        .map(|meta| meta.is_dir())
-        .unwrap_or(false)
-    {
-        return None;
-    }
-
-    for ext in SKILL_SPEC_EXTENSIONS {
-        let file_path = skill_dir.join(format!("{skill_name}.{ext}"));
-        if fs::metadata(&file_path)
-            .await
-            .map(|meta| meta.is_file())
-            .unwrap_or(false)
-        {
-            return Some(file_path);
-        }
-    }
-    None
-}
-
-async fn read_skill_spec(path: &Path) -> Option<(String, ToolboxSkillSpec)> {
-    let raw_content = match fs::read_to_string(path).await {
-        Ok(content) => content,
-        Err(err) => {
-            warn!(
-                "prompt.load_workspace_skills read failed: path={} err={}",
-                path.display(),
-                err
-            );
-            return None;
-        }
-    };
-
-    let ext = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| value.to_ascii_lowercase());
-    let mut spec =
-        match ext.as_deref() {
-            Some("json") => serde_json::from_str::<RawToolboxSkillSpec>(&raw_content)
-                .map_err(|err| err.to_string()),
-            Some("yaml") | Some("yml") => serde_yaml::from_str::<RawToolboxSkillSpec>(&raw_content)
-                .map_err(|err| err.to_string()),
-            _ => {
-                let json_try = serde_json::from_str::<RawToolboxSkillSpec>(&raw_content)
-                    .map_err(|err| err.to_string());
-                match json_try {
-                    Ok(spec) => Ok(spec),
-                    Err(json_err) => serde_yaml::from_str::<RawToolboxSkillSpec>(&raw_content)
-                        .map_err(|yaml_err| format!("json={json_err}; yaml={yaml_err}")),
-                }
-            }
-        }
-        .map_err(|err| {
-            warn!(
-                "prompt.load_workspace_skills parse failed: path={} err={}",
-                path.display(),
-                err
-            );
-            err
-        })
-        .ok()?;
-
-    spec.normalize();
-    let display_name = if spec.name.is_empty() {
-        path.parent()
-            .and_then(|parent| parent.file_name())
-            .and_then(|name| name.to_str())
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .map(|name| name.to_string())
-            .unwrap_or_default()
-    } else {
-        spec.name.clone()
-    };
-    Some((display_name, spec.to_toolbox_skill_spec()))
 }
 
 fn contains_any_marker(content: &str, markers: &[&str]) -> bool {
@@ -2735,7 +2532,6 @@ fn message_tokens(messages: &[ChatMessage], tokenizer: &dyn Tokenizer) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::sync::Arc;
 
     use super::*;
@@ -2754,130 +2550,6 @@ mod tests {
         fn count_tokens(&self, text: &str) -> u32 {
             text.split_whitespace().count() as u32
         }
-    }
-
-    #[tokio::test]
-    async fn build_toolbox_loads_workspace_skills_and_merges_action_tool_defs() {
-        let temp = tempdir().expect("create tempdir");
-        let workspace_root = temp.path().join("workspace");
-        let skills_root = workspace_root.join("skills").join("coding");
-        tokio::fs::create_dir_all(&skills_root)
-            .await
-            .expect("create skills dir");
-        tokio::fs::write(
-            skills_root.join("coding.yaml"),
-            r#"
-name: coding
-introduce: coding skill
-actions: [build, test]
-loaded_tools: [exec_bash]
-"#,
-        )
-        .await
-        .expect("write skill spec");
-
-        let mut session = AgentSession::new("session-1", "did:web:agent.example.com", None);
-        session.pwd = workspace_root;
-        session.loaded_skills = vec!["coding".to_string()];
-        let session = Arc::new(Mutex::new(session));
-
-        let mut cfg = BehaviorConfig::default();
-        cfg.toolbox.tools.mode = crate::behavior::config::BehaviorToolMode::AllowList;
-        cfg.toolbox.tools.names = vec!["read_file".to_string()];
-        cfg.toolbox.default_load_actions = vec!["lint".to_string()];
-
-        let tools = vec![
-            AiToolSpec {
-                name: "read_file".to_string(),
-                description: "read file".to_string(),
-                args_schema: HashMap::new(),
-                output_schema: json!({"type":"object"}),
-            },
-            AiToolSpec {
-                name: "exec_bash".to_string(),
-                description: "exec bash".to_string(),
-                args_schema: HashMap::new(),
-                output_schema: json!({"type":"object"}),
-            },
-        ];
-        let action_specs = vec![
-            ToolSpec {
-                name: "build".to_string(),
-                description: "run build workflow".to_string(),
-                args_schema: json!({"type":"object"}),
-                output_schema: json!({"type":"object"}),
-                usage: None,
-            },
-            ToolSpec {
-                name: "test".to_string(),
-                description: "run test workflow".to_string(),
-                args_schema: json!({"type":"object"}),
-                output_schema: json!({"type":"object"}),
-                usage: None,
-            },
-        ];
-
-        let (toolbox_text, loaded_tools) =
-            build_toolbox(&tools, &action_specs, &cfg, Some(session))
-                .await
-                .expect("toolbox should be available");
-        let toolbox_json: Json =
-            serde_json::from_str(&toolbox_text).expect("toolbox should be valid json");
-
-        let record_names = toolbox_json["workspace_skill_records"]
-            .as_array()
-            .expect("workspace_skill_records should be array")
-            .iter()
-            .filter_map(|item| item.get("name"))
-            .filter_map(|item| item.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(record_names, vec!["coding"]);
-
-        let loaded_skills = toolbox_json["loaded_skills"]
-            .as_array()
-            .expect("loaded_skills should be array")
-            .iter()
-            .filter_map(|item| item.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(loaded_skills, vec!["coding"]);
-
-        let requested_actions = toolbox_json["requested_actions"]
-            .as_array()
-            .expect("requested_actions should be array")
-            .iter()
-            .filter_map(|item| item.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(requested_actions, vec!["lint", "build", "test"]);
-
-        let actions = toolbox_json["actions"]
-            .as_array()
-            .expect("actions should be array")
-            .iter()
-            .filter_map(|item| item.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(actions, vec!["build", "test"]);
-
-        let unresolved_actions = toolbox_json["unresolved_actions"]
-            .as_array()
-            .expect("unresolved_actions should be array")
-            .iter()
-            .filter_map(|item| item.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(unresolved_actions, vec!["lint"]);
-
-        let action_prompts = toolbox_json["action_prompts"]
-            .as_array()
-            .expect("action_prompts should be array")
-            .iter()
-            .filter_map(|item| item.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(action_prompts.len(), 2);
-
-        let tool_names = loaded_tools
-            .iter()
-            .map(|tool| tool.name.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(tool_names, vec!["read_file", "exec_bash"]);
     }
 
     #[tokio::test]
@@ -2929,6 +2601,7 @@ loaded_tools: [exec_bash]
         assert!(system.contains("<<process_rules>>"));
         assert!(system.contains("<<policy>>"));
         assert!(system.contains("<<output_protocol>>"));
+        assert!(!system.contains("<<skills>>"));
         assert!(system.contains("You are a helpful assistant."));
         assert!(system.contains("Process rules."));
     }
@@ -2997,6 +2670,7 @@ loaded_tools: [exec_bash]
         assert!(prompt.contains("HEAD_FIXED alpha beta gamma"));
         assert!(prompt.contains("TAIL_FIXED one two three"));
         assert!(!prompt.contains("DYNAMIC_MEMORY_SHOULD_NOT_APPEAR"));
+        println!("\n[memory_text prompt preview]\n{prompt}\n");
         assert!(tokenizer.count_tokens(prompt.as_str()) > cfg.memory.total_limit);
     }
 
@@ -3040,7 +2714,7 @@ loaded_tools: [exec_bash]
             session: None,
         };
 
-        let records = load_agent_memory_with_limit(
+        let memory_text = load_agent_memory_with_limit(
             &input,
             &["style".to_string()],
             200,
@@ -3049,14 +2723,13 @@ loaded_tools: [exec_bash]
         )
         .await;
 
-        assert!(!records.is_empty(), "expected memory timeline records");
-        let merged = records
-            .iter()
-            .map(|item| item.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(merged.contains("user/preference/style"));
-        assert!(merged.contains("用户偏好简洁回复"));
+        assert!(
+            !memory_text.trim().is_empty(),
+            "expected remembered things content"
+        );
+        assert!(memory_text.contains("user/preference/style"));
+        assert!(memory_text.contains("用户偏好简洁回复"));
+        println!("\n[memory_text prompt preview]\n{memory_text}\n");
     }
 
     #[tokio::test]
@@ -3335,7 +3008,12 @@ loaded_tools: [exec_bash]
     async fn load_workspace_worklog_with_limit_reads_from_worklog_db() {
         let temp = tempdir().expect("create tempdir");
         let workspace_root = temp.path().join("workspace");
-        let worklog_db = workspace_root.join("worklog").join("worklog.db");
+        let local_workspace_id = "ws-demo";
+        let local_workspace_path = workspace_root
+            .join("workspaces")
+            .join("local")
+            .join(local_workspace_id);
+        let worklog_db = local_workspace_path.join("worklog").join("worklog.db");
 
         let worklog_tool =
             WorklogTool::new(WorklogToolConfig::with_db_path(worklog_db)).expect("create tool");
@@ -3387,7 +3065,8 @@ loaded_tools: [exec_bash]
             .expect("append worklog for session-2");
 
         let mut session = AgentSession::new("session-1", "did:web:agent.example.com", None);
-        session.pwd = workspace_root;
+        session.pwd = local_workspace_path;
+        session.local_workspace_id = Some(local_workspace_id.to_string());
         let input = BehaviorExecInput {
             session_id: "session-1".to_string(),
             trace: SessionRuntimeContext {
@@ -3420,9 +3099,398 @@ loaded_tools: [exec_bash]
             .map(|item| item.text.as_str())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(merged.contains("received message from alice"));
+        assert!(merged.contains("alice: please check workspace"));
         assert!(merged.contains("please check workspace"));
-        assert!(!merged.contains("received message from bob"));
+        assert!(!merged.contains("bob: ignore me"));
+    }
+
+    #[tokio::test]
+    async fn load_workspace_worklog_with_limit_falls_back_when_workspace_id_missing_in_record() {
+        let temp = tempdir().expect("create tempdir");
+        let workspace_root = temp.path().join("workspace");
+        let local_workspace_id = "ws-demo";
+        let local_workspace_path = workspace_root
+            .join("workspaces")
+            .join("local")
+            .join(local_workspace_id);
+        let worklog_db = local_workspace_path.join("worklog").join("worklog.db");
+
+        let worklog_tool =
+            WorklogTool::new(WorklogToolConfig::with_db_path(worklog_db)).expect("create tool");
+        let trace_ctx = SessionRuntimeContext {
+            trace_id: "trace-worklog".to_string(),
+            agent_name: "did:web:agent.example.com".to_string(),
+            behavior: "on_wakeup".to_string(),
+            step_idx: 1,
+            wakeup_id: "wakeup-worklog".to_string(),
+            session_id: "session-test".to_string(),
+        };
+        let _ = worklog_tool
+            .call(
+                &trace_ctx,
+                json!({
+                    "action": "append_worklog",
+                    "record": {
+                        "type": "GetMessage",
+                        "owner_session_id": "session-1",
+                        "status": "OK",
+                        "payload": {
+                            "from": "alice",
+                            "channel": "inbox",
+                            "snippet": "workspace id missing in record"
+                        }
+                    }
+                }),
+            )
+            .await
+            .expect("append worklog");
+
+        let mut session = AgentSession::new("session-1", "did:web:agent.example.com", None);
+        session.pwd = local_workspace_path;
+        session.local_workspace_id = Some(local_workspace_id.to_string());
+        let input = BehaviorExecInput {
+            session_id: "session-1".to_string(),
+            trace: SessionRuntimeContext {
+                trace_id: "trace-1".to_string(),
+                agent_name: "did:web:agent.example.com".to_string(),
+                behavior: "on_wakeup".to_string(),
+                step_idx: 1,
+                wakeup_id: "wakeup-1".to_string(),
+                session_id: "session-test".to_string(),
+            },
+            input_prompt: "user input".to_string(),
+            last_step_prompt: String::new(),
+            role_md: "You are a helpful assistant.".to_string(),
+            self_md: "Self description.".to_string(),
+            behavior_prompt: "rules".to_string(),
+            limits: StepLimits::default(),
+            behavior_cfg: BehaviorConfig::default(),
+            session: Some(Arc::new(Mutex::new(session))),
+        };
+
+        let records = load_workspace_worklog_with_limit(&input, 200, &MockTokenizer).await;
+        assert!(
+            !records.is_empty(),
+            "expected workspace worklog records through session-only fallback"
+        );
+        let merged = records
+            .iter()
+            .map(|item| item.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(merged.contains("workspace id missing in record"));
+    }
+
+    #[tokio::test]
+    async fn load_workspace_worklog_with_limit_filters_last_step_records() {
+        let temp = tempdir().expect("create tempdir");
+        let workspace_root = temp.path().join("workspace");
+        let local_workspace_id = "ws-demo";
+        let local_workspace_path = workspace_root
+            .join("workspaces")
+            .join("local")
+            .join(local_workspace_id);
+        let worklog_db = local_workspace_path.join("worklog").join("worklog.db");
+
+        let worklog_tool =
+            WorklogTool::new(WorklogToolConfig::with_db_path(worklog_db)).expect("create tool");
+        let trace_ctx = SessionRuntimeContext {
+            trace_id: "trace-worklog".to_string(),
+            agent_name: "did:web:agent.example.com".to_string(),
+            behavior: "on_wakeup".to_string(),
+            step_idx: 2,
+            wakeup_id: "wakeup-worklog".to_string(),
+            session_id: "session-test".to_string(),
+        };
+        let _ = worklog_tool
+            .call(
+                &trace_ctx,
+                json!({
+                    "action": "append_worklog",
+                    "record": {
+                        "type": "GetMessage",
+                        "owner_session_id": "session-1",
+                        "step_id": "step-0",
+                        "step_index": 0,
+                        "status": "OK",
+                        "payload": {
+                            "from": "alice",
+                            "channel": "inbox",
+                            "snippet": "old step record"
+                        }
+                    }
+                }),
+            )
+            .await
+            .expect("append old-step worklog");
+        let _ = worklog_tool
+            .call(
+                &trace_ctx,
+                json!({
+                    "action": "append_worklog",
+                    "record": {
+                        "type": "GetMessage",
+                        "owner_session_id": "session-1",
+                        "step_id": "step-1",
+                        "step_index": 1,
+                        "status": "OK",
+                        "payload": {
+                            "from": "alice",
+                            "channel": "inbox",
+                            "snippet": "last step record"
+                        }
+                    }
+                }),
+            )
+            .await
+            .expect("append last-step worklog");
+
+        let mut session = AgentSession::new("session-1", "did:web:agent.example.com", None);
+        session.pwd = local_workspace_path;
+        session.local_workspace_id = Some(local_workspace_id.to_string());
+        let input = BehaviorExecInput {
+            session_id: "session-1".to_string(),
+            trace: SessionRuntimeContext {
+                trace_id: "trace-1".to_string(),
+                agent_name: "did:web:agent.example.com".to_string(),
+                behavior: "on_wakeup".to_string(),
+                step_idx: 2,
+                wakeup_id: "wakeup-1".to_string(),
+                session_id: "session-test".to_string(),
+            },
+            input_prompt: "user input".to_string(),
+            last_step_prompt: String::new(),
+            role_md: "You are a helpful assistant.".to_string(),
+            self_md: "Self description.".to_string(),
+            behavior_prompt: "rules".to_string(),
+            limits: StepLimits::default(),
+            behavior_cfg: BehaviorConfig::default(),
+            session: Some(Arc::new(Mutex::new(session))),
+        };
+
+        let records = load_workspace_worklog_with_limit(&input, 200, &MockTokenizer).await;
+        let merged = records
+            .iter()
+            .map(|item| item.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(merged.contains("old step record"));
+        assert!(!merged.contains("last step record"));
+    }
+
+    #[tokio::test]
+    async fn load_workspace_worklog_with_limit_ignores_tool_call_action_noise() {
+        let temp = tempdir().expect("create tempdir");
+        let workspace_root = temp.path().join("workspace");
+        let local_workspace_id = "ws-demo";
+        let local_workspace_path = workspace_root
+            .join("workspaces")
+            .join("local")
+            .join(local_workspace_id);
+        let worklog_db = local_workspace_path.join("worklog").join("worklog.db");
+
+        let worklog_tool =
+            WorklogTool::new(WorklogToolConfig::with_db_path(worklog_db)).expect("create tool");
+        let trace_ctx = SessionRuntimeContext {
+            trace_id: "trace-worklog".to_string(),
+            agent_name: "did:web:agent.example.com".to_string(),
+            behavior: "on_wakeup".to_string(),
+            step_idx: 1,
+            wakeup_id: "wakeup-worklog".to_string(),
+            session_id: "session-test".to_string(),
+        };
+        let _ = worklog_tool
+            .call(
+                &trace_ctx,
+                json!({
+                    "action": "append_worklog",
+                    "record": {
+                        "type": "GetMessage",
+                        "owner_session_id": "session-1",
+                        "status": "OK",
+                        "payload": {
+                            "from": "alice",
+                            "channel": "inbox",
+                            "snippet": "keep this message"
+                        }
+                    }
+                }),
+            )
+            .await
+            .expect("append get message");
+        let _ = worklog_tool
+            .call(
+                &trace_ctx,
+                json!({
+                    "action": "append_worklog",
+                    "record": {
+                        "type": "ActionRecord",
+                        "owner_session_id": "session-1",
+                        "status": "OK",
+                        "payload": {
+                            "action_type": "tool_call",
+                            "cmd_digest": "write_file workspaces/demo/index.html"
+                        }
+                    }
+                }),
+            )
+            .await
+            .expect("append tool_call action");
+
+        let mut session = AgentSession::new("session-1", "did:web:agent.example.com", None);
+        session.pwd = local_workspace_path;
+        session.local_workspace_id = Some(local_workspace_id.to_string());
+        let input = BehaviorExecInput {
+            session_id: "session-1".to_string(),
+            trace: SessionRuntimeContext {
+                trace_id: "trace-1".to_string(),
+                agent_name: "did:web:agent.example.com".to_string(),
+                behavior: "on_wakeup".to_string(),
+                step_idx: 1,
+                wakeup_id: "wakeup-1".to_string(),
+                session_id: "session-test".to_string(),
+            },
+            input_prompt: "user input".to_string(),
+            last_step_prompt: String::new(),
+            role_md: "You are a helpful assistant.".to_string(),
+            self_md: "Self description.".to_string(),
+            behavior_prompt: "rules".to_string(),
+            limits: StepLimits::default(),
+            behavior_cfg: BehaviorConfig::default(),
+            session: Some(Arc::new(Mutex::new(session))),
+        };
+
+        let records = load_workspace_worklog_with_limit(&input, 200, &MockTokenizer).await;
+        let merged = records
+            .iter()
+            .map(|item| item.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(merged.contains("keep this message"));
+        assert!(!merged.contains("tool_call"));
+        assert!(!merged.contains("write_file workspaces/demo/index.html"));
+    }
+
+    #[tokio::test]
+    async fn load_workspace_worklog_with_limit_formats_step_header_and_nested_lines() {
+        let temp = tempdir().expect("create tempdir");
+        let workspace_root = temp.path().join("workspace");
+        let local_workspace_id = "ws-demo";
+        let local_workspace_path = workspace_root
+            .join("workspaces")
+            .join("local")
+            .join(local_workspace_id);
+        let worklog_db = local_workspace_path.join("worklog").join("worklog.db");
+
+        let worklog_tool =
+            WorklogTool::new(WorklogToolConfig::with_db_path(worklog_db)).expect("create tool");
+        let trace_ctx = SessionRuntimeContext {
+            trace_id: "trace-worklog".to_string(),
+            agent_name: "did:web:agent.example.com".to_string(),
+            behavior: "do".to_string(),
+            step_idx: 1,
+            wakeup_id: "wakeup-worklog".to_string(),
+            session_id: "session-test".to_string(),
+        };
+        let _ = worklog_tool
+            .call(
+                &trace_ctx,
+                json!({
+                    "action": "append_worklog",
+                    "record": {
+                        "type": "ActionRecord",
+                        "owner_session_id": "session-1",
+                        "step_id": "step-1",
+                        "step_index": 1,
+                        "status": "OK",
+                        "behavior": "do",
+                        "payload": {
+                            "action_type": "bash",
+                            "cmd_digest": "cargo test"
+                        }
+                    }
+                }),
+            )
+            .await
+            .expect("append ok action");
+        let _ = worklog_tool
+            .call(
+                &trace_ctx,
+                json!({
+                    "action": "append_worklog",
+                    "record": {
+                        "type": "ActionRecord",
+                        "owner_session_id": "session-1",
+                        "step_id": "step-1",
+                        "step_index": 1,
+                        "status": "FAILED",
+                        "behavior": "do",
+                        "payload": {
+                            "action_type": "bash",
+                            "cmd_digest": "cargo clippy"
+                        }
+                    }
+                }),
+            )
+            .await
+            .expect("append failed action");
+        let _ = worklog_tool
+            .call(
+                &trace_ctx,
+                json!({
+                    "action": "append_step_summary",
+                    "record": {
+                        "type": "StepSummary",
+                        "owner_session_id": "session-1",
+                        "step_id": "step-1",
+                        "step_index": 1,
+                        "behavior": "do",
+                        "payload": {
+                            "did_digest": "plan",
+                            "result_digest": "## Step 1 / 16 Summary: done"
+                        }
+                    }
+                }),
+            )
+            .await
+            .expect("append step summary");
+
+        let mut session = AgentSession::new("session-1", "did:web:agent.example.com", None);
+        session.pwd = local_workspace_path;
+        session.local_workspace_id = Some(local_workspace_id.to_string());
+        let input = BehaviorExecInput {
+            session_id: "session-1".to_string(),
+            trace: SessionRuntimeContext {
+                trace_id: "trace-1".to_string(),
+                agent_name: "did:web:agent.example.com".to_string(),
+                behavior: "on_wakeup".to_string(),
+                step_idx: 3,
+                wakeup_id: "wakeup-1".to_string(),
+                session_id: "session-test".to_string(),
+            },
+            input_prompt: "user input".to_string(),
+            last_step_prompt: String::new(),
+            role_md: "You are a helpful assistant.".to_string(),
+            self_md: "Self description.".to_string(),
+            behavior_prompt: "rules".to_string(),
+            limits: StepLimits::default(),
+            behavior_cfg: BehaviorConfig::default(),
+            session: Some(Arc::new(Mutex::new(session))),
+        };
+
+        let records = load_workspace_worklog_with_limit(&input, 400, &MockTokenizer).await;
+        let merged = records
+            .iter()
+            .map(|item| item.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        println!("merged:\n{}", merged);
+        assert!(merged.contains("### "));
+        assert!(merged.contains("SUCCESS (1), FAILED (1)"));
+        assert!(merged.contains(" do 1 / 16, SUCCESS (1), FAILED (1)"));
+        assert!(merged.contains("- Run cargo test => OK"));
+        assert!(merged.contains("- Run cargo clippy => FAILED"));
+        assert!(!merged.contains("Step completed:"));
     }
 
     #[tokio::test]
@@ -3465,7 +3533,10 @@ loaded_tools: [exec_bash]
         };
 
         let records = load_workspace_worklog_with_limit(&input, 200, &MockTokenizer).await;
-        assert!(!records.is_empty(), "expected runtime worklog fallback records");
+        assert!(
+            !records.is_empty(),
+            "expected runtime worklog fallback records"
+        );
         assert_eq!(records[0].source_label, "worklog");
 
         let merged = records
@@ -3473,7 +3544,7 @@ loaded_tools: [exec_bash]
             .map(|item| item.text.as_str())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(merged.contains("received message from alice"));
+        assert!(merged.contains("alice: runtime fallback message"));
         assert!(merged.contains("runtime fallback message"));
     }
 }

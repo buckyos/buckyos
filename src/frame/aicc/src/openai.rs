@@ -2,7 +2,10 @@ use crate::aicc::{
     AIComputeCenter, CostEstimate, Provider, ProviderError, ProviderInstance, ProviderStartResult,
     ResolvedRequest, TaskEventSink,
 };
-use crate::openai_protocol::{merge_options, merge_requirements_response_format, merge_tool_calls};
+use crate::openai_protocol::{
+    merge_options, merge_requirements_response_format, merge_tool_calls,
+    strip_incompatible_sampling_options,
+};
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use base64::engine::general_purpose;
@@ -23,7 +26,7 @@ const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_OPENAI_TIMEOUT_MS: u64 = 60_000;
 const DEFAULT_OPENAI_MODELS: &str = "gpt-5,gpt-5-mini,gpt-5-nono,gpt-5-pro";
 const DEFAULT_OPENAI_IMAGE_MODELS: &str = "dall-e-3,dall-e-2";
-const OPENAI_TOOL_TYPE_WEB_SEARCH: &str = "web_search";
+const OPENAI_TOOL_TYPE_WEB_SEARCH: &str = "web_search_preview";
 const OPENAI_IMAGE_OPTION_ALLOWLIST: &[&str] = &[
     "background",
     "n",
@@ -148,8 +151,9 @@ impl OpenAIProvider {
             .as_ref()
             .and_then(|value| {
                 value
-                    .get("max_tokens")
+                    .get("max_output_tokens")
                     .and_then(|value| value.as_u64())
+                    .or_else(|| value.get("max_tokens").and_then(|value| value.as_u64()))
                     .or_else(|| {
                         value
                             .get("max_completion_tokens")
@@ -231,7 +235,12 @@ impl OpenAIProvider {
             }
             messages.push(json!({
                 "role": msg.role,
-                "content": msg.content,
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": msg.content
+                    }
+                ],
             }));
         }
 
@@ -269,7 +278,12 @@ impl OpenAIProvider {
             if !content.trim().is_empty() {
                 messages.push(json!({
                     "role": "user",
-                    "content": content,
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": content
+                        }
+                    ],
                 }));
             }
         }
@@ -283,7 +297,7 @@ impl OpenAIProvider {
         Ok(messages)
     }
 
-    fn extract_text_content(choice_message: &Value) -> Option<String> {
+    fn extract_legacy_message_text(choice_message: &Value) -> Option<String> {
         let content = choice_message.get("content")?;
         if let Some(text) = content.as_str() {
             return Some(text.to_string());
@@ -312,9 +326,171 @@ impl OpenAIProvider {
         }
     }
 
-    fn extract_tool_choices(choice_message: &Value) -> Vec<AiToolCall> {
+    fn parse_tool_arguments(raw: Value, field_path: &str) -> Option<Value> {
+        match raw {
+            Value::String(raw) => {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    return Some(Value::Object(Map::new()));
+                }
+                match serde_json::from_str::<Value>(trimmed) {
+                    Ok(parsed) => Some(parsed),
+                    Err(err) => {
+                        warn!(
+                            "aicc.openai {} is invalid json arguments: {}",
+                            field_path, err
+                        );
+                        None
+                    }
+                }
+            }
+            Value::Null => Some(Value::Object(Map::new())),
+            other => Some(other),
+        }
+    }
+
+    fn extract_text_content(payload: &Value) -> Option<String> {
+        if let Some(text) = payload.get("output_text").and_then(|value| value.as_str()) {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+
+        if let Some(output_items) = payload.get("output").and_then(|value| value.as_array()) {
+            let mut parts = Vec::new();
+            for item in output_items.iter() {
+                let Some(item_obj) = item.as_object() else {
+                    continue;
+                };
+                let item_type = item_obj
+                    .get("type")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default();
+                if item_type == "output_text" {
+                    if let Some(text) = item_obj.get("text").and_then(|value| value.as_str()) {
+                        if text.trim().is_empty() {
+                            continue;
+                        }
+                        parts.push(text.to_string());
+                    }
+                    continue;
+                }
+
+                if item_type != "message" {
+                    continue;
+                }
+
+                let Some(content_items) = item_obj.get("content").and_then(|value| value.as_array())
+                else {
+                    continue;
+                };
+                for content_item in content_items.iter() {
+                    let Some(content_obj) = content_item.as_object() else {
+                        continue;
+                    };
+                    let content_type = content_obj
+                        .get("type")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default();
+                    if content_type != "output_text" && content_type != "text" {
+                        continue;
+                    }
+                    if let Some(text) = content_obj.get("text").and_then(|value| value.as_str()) {
+                        if text.trim().is_empty() {
+                            continue;
+                        }
+                        parts.push(text.to_string());
+                    }
+                }
+            }
+            if !parts.is_empty() {
+                let merged = parts.concat();
+                let trimmed = merged.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+
+        if let Some(text) = Self::extract_legacy_message_text(payload) {
+            return Some(text);
+        }
+
+        payload
+            .pointer("/choices/0/message")
+            .and_then(Self::extract_legacy_message_text)
+    }
+
+    fn extract_tool_choices(payload: &Value) -> Vec<AiToolCall> {
         let mut tool_choices = Vec::new();
-        let Some(items) = choice_message
+        if let Some(items) = payload.get("output").and_then(|value| value.as_array()) {
+            for (idx, item) in items.iter().enumerate() {
+                let Some(item_obj) = item.as_object() else {
+                    continue;
+                };
+                if item_obj.get("type").and_then(|value| value.as_str()) != Some("function_call")
+                {
+                    continue;
+                }
+
+                let call_id = item_obj
+                    .get("call_id")
+                    .or_else(|| item_obj.get("id"))
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| value.to_string());
+                let Some(call_id) = call_id else {
+                    warn!("aicc.openai output[{}] function_call is missing call_id/id", idx);
+                    continue;
+                };
+
+                let Some(name) = item_obj
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                else {
+                    warn!("aicc.openai output[{}] function_call is missing name", idx);
+                    continue;
+                };
+
+                let args_raw = item_obj
+                    .get("arguments")
+                    .or_else(|| item_obj.get("args"))
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let Some(args) = Self::parse_tool_arguments(
+                    args_raw,
+                    format!("output[{}].arguments", idx).as_str(),
+                ) else {
+                    continue;
+                };
+                if !args.is_object() {
+                    warn!(
+                        "aicc.openai output[{}].arguments must decode to an object",
+                        idx
+                    );
+                    continue;
+                }
+
+                tool_choices.push(AiToolCall {
+                    name: name.to_string(),
+                    args: value_to_object_map(args),
+                    call_id,
+                });
+            }
+            if !tool_choices.is_empty() {
+                return tool_choices;
+            }
+        }
+
+        let fallback_source = payload
+            .pointer("/choices/0/message")
+            .filter(|value| !value.is_null())
+            .unwrap_or(payload);
+        let Some(items) = fallback_source
             .get("tool_calls")
             .and_then(|value| value.as_array())
         else {
@@ -384,25 +560,11 @@ impl OpenAIProvider {
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            let args = match args_raw {
-                Value::String(raw) => {
-                    let trimmed = raw.trim();
-                    if trimmed.is_empty() {
-                        Value::Object(Map::new())
-                    } else {
-                        match serde_json::from_str::<Value>(trimmed) {
-                            Ok(parsed) => parsed,
-                            Err(err) => {
-                                warn!(
-                                    "aicc.openai tool_calls[{}].function.arguments is invalid json: {}",
-                                    idx, err
-                                );
-                                continue;
-                            }
-                        }
-                    }
-                }
-                other => other,
+            let Some(args) = Self::parse_tool_arguments(
+                args_raw,
+                format!("tool_calls[{}].function.arguments", idx).as_str(),
+            ) else {
+                continue;
             };
             if !args.is_object() {
                 warn!(
@@ -428,6 +590,34 @@ impl OpenAIProvider {
         } else {
             ProviderError::fatal(message)
         }
+    }
+
+    fn extract_unsupported_request_param(body: &Value) -> Option<String> {
+        let param = body
+            .pointer("/error/param")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.trim_matches('\'').trim_matches('"').to_string())?;
+
+        let message = body
+            .pointer("/error/message")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_ascii_lowercase())
+            .unwrap_or_default();
+        if !message.contains("unsupported parameter") && !message.contains("not supported") {
+            return None;
+        }
+
+        Some(param)
+    }
+
+    fn remove_retryable_unsupported_option(request_obj: &mut Map<String, Value>, param: &str) -> bool {
+        const RETRYABLE_OPTION_KEYS: &[&str] = &["temperature", "top_p", "top_logprobs", "logprobs"];
+        if !RETRYABLE_OPTION_KEYS.contains(&param) {
+            return false;
+        }
+        request_obj.remove(param).is_some()
     }
 
     fn extract_text2image_prompt(req: &CompleteRequest) -> Option<String> {
@@ -590,7 +780,7 @@ impl OpenAIProvider {
             if !tools.iter().any(|item| {
                 item.get("type")
                     .and_then(|value| value.as_str())
-                    .map(|value| value == OPENAI_TOOL_TYPE_WEB_SEARCH)
+                    .map(|value| value == OPENAI_TOOL_TYPE_WEB_SEARCH || value == "web_search")
                     .unwrap_or(false)
             }) {
                 tools.push(web_search_tool);
@@ -649,12 +839,15 @@ impl OpenAIProvider {
             "model".to_string(),
             Value::String(provider_model.to_string()),
         );
-        request_obj.insert("messages".to_string(), Value::Array(messages));
+        request_obj.insert("input".to_string(), Value::Array(messages));
 
         let mut ignored_options = vec![];
         if let Some(options) = req.payload.options.as_ref() {
             ignored_options = merge_options(&mut request_obj, options)?;
         }
+        let stripped_options =
+            strip_incompatible_sampling_options(&mut request_obj, provider_model);
+        ignored_options.extend(stripped_options);
         merge_requirements_response_format(&mut request_obj, req);
         merge_tool_calls(&mut request_obj, req.payload.tool_specs.as_slice())?;
         Self::merge_requirements_tools(&mut request_obj, req)?;
@@ -671,8 +864,28 @@ impl OpenAIProvider {
             self.instance.instance_id, provider_model, ctx.trace_id, request_log
         );
 
-        let url = format!("{}/chat/completions", self.base_url);
-        let (status, body, latency_ms) = self.post_json(url.as_str(), &request_obj).await?;
+        let url = format!("{}/responses", self.base_url);
+        let mut retried_without_option = false;
+        let (status, body, latency_ms) = loop {
+            let (status, body, latency_ms) = self.post_json(url.as_str(), &request_obj).await?;
+            if status == StatusCode::BAD_REQUEST && !retried_without_option {
+                if let Some(param) = Self::extract_unsupported_request_param(&body) {
+                    if Self::remove_retryable_unsupported_option(&mut request_obj, param.as_str()) {
+                        warn!(
+                            "aicc.openai.llm.retry_without_option instance_id={} model={} trace_id={:?} param={} response={}",
+                            self.instance.instance_id,
+                            provider_model,
+                            ctx.trace_id,
+                            param,
+                            body
+                        );
+                        retried_without_option = true;
+                        continue;
+                    }
+                }
+            }
+            break (status, body, latency_ms);
+        };
         let response_log = body.to_string();
 
         if !status.is_success() {
@@ -707,18 +920,22 @@ impl OpenAIProvider {
             response_log
         );
 
-        let message = body
-            .pointer("/choices/0/message")
-            .cloned()
-            .unwrap_or(Value::Null);
-        let content = Self::extract_text_content(&message);
-        let tool_choices = Self::extract_tool_choices(&message);
+        let content = Self::extract_text_content(&body);
+        let tool_choices = Self::extract_tool_choices(&body);
 
         let usage = body.get("usage").map(|usage| AiUsage {
-            input_tokens: usage.get("prompt_tokens").and_then(|value| value.as_u64()),
+            input_tokens: usage
+                .get("input_tokens")
+                .and_then(|value| value.as_u64())
+                .or_else(|| usage.get("prompt_tokens").and_then(|value| value.as_u64())),
             output_tokens: usage
-                .get("completion_tokens")
-                .and_then(|value| value.as_u64()),
+                .get("output_tokens")
+                .and_then(|value| value.as_u64())
+                .or_else(|| {
+                    usage
+                        .get("completion_tokens")
+                        .and_then(|value| value.as_u64())
+                }),
             total_tokens: usage.get("total_tokens").and_then(|value| value.as_u64()),
         });
 
@@ -748,9 +965,19 @@ impl OpenAIProvider {
             usage,
             cost,
             finish_reason: body
-                .pointer("/choices/0/finish_reason")
+                .get("status")
                 .and_then(|value| value.as_str())
-                .map(|value| value.to_string()),
+                .map(|value| value.to_string())
+                .or_else(|| {
+                    body.pointer("/output/0/status")
+                        .and_then(|value| value.as_str())
+                        .map(|value| value.to_string())
+                })
+                .or_else(|| {
+                    body.pointer("/choices/0/finish_reason")
+                        .and_then(|value| value.as_str())
+                        .map(|value| value.to_string())
+                }),
             provider_task_ref: body
                 .get("id")
                 .and_then(|value| value.as_str())
@@ -1334,6 +1561,18 @@ mod tests {
     }
 
     #[test]
+    fn estimate_tokens_prefers_max_output_tokens() {
+        let request = build_llm_request(Some(json!({
+            "max_output_tokens": 90,
+            "max_tokens": 120,
+            "max_completion_tokens": 456
+        })));
+
+        let (_input_tokens, output_tokens) = OpenAIProvider::estimate_tokens(&request);
+        assert_eq!(output_tokens, 90);
+    }
+
+    #[test]
     fn estimate_tokens_falls_back_to_max_completion_tokens() {
         let request = build_llm_request(Some(json!({
             "max_completion_tokens": 333
@@ -1423,6 +1662,89 @@ mod tests {
         assert_eq!(tool_choices[0].name, "workshop_exec_bash");
         assert_eq!(tool_choices[0].call_id, "call_1");
         assert_eq!(tool_choices[0].args["command"], json!("ls -la"));
+    }
+
+    #[test]
+    fn extract_tool_choices_parses_responses_function_call() {
+        let body = json!({
+            "output": [
+                {
+                    "type": "function_call",
+                    "call_id": "call_2",
+                    "name": "workshop_exec_bash",
+                    "arguments": "{\"command\":\"pwd\"}"
+                }
+            ]
+        });
+
+        let tool_choices = OpenAIProvider::extract_tool_choices(&body);
+        assert_eq!(tool_choices.len(), 1);
+        assert_eq!(tool_choices[0].name, "workshop_exec_bash");
+        assert_eq!(tool_choices[0].call_id, "call_2");
+        assert_eq!(tool_choices[0].args["command"], json!("pwd"));
+    }
+
+    #[test]
+    fn extract_text_content_concatenates_responses_blocks_without_newline_injection() {
+        let body = json!({
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        { "type": "output_text", "text": "{\"reply\":\"hel" },
+                        { "type": "output_text", "text": "lo\",\"actions\":{\"mode\":\"all\",\"cmds\":[]}}" }
+                    ]
+                }
+            ]
+        });
+
+        let text = OpenAIProvider::extract_text_content(&body).expect("text should exist");
+        let parsed: Value = serde_json::from_str(&text).expect("text should stay valid json");
+        assert_eq!(parsed.pointer("/reply").and_then(Value::as_str), Some("hello"));
+    }
+
+    #[test]
+    fn extract_text_content_trims_final_result_once() {
+        let body = json!({
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        { "type": "output_text", "text": "  {\"next_behavior\":\"END\"}" },
+                        { "type": "output_text", "text": "  " }
+                    ]
+                }
+            ]
+        });
+
+        let text = OpenAIProvider::extract_text_content(&body).expect("text should exist");
+        assert_eq!(text, "{\"next_behavior\":\"END\"}");
+    }
+
+    #[test]
+    fn extract_unsupported_request_param_recognizes_not_supported_error() {
+        let body = json!({
+            "error": {
+                "param": "temperature",
+                "message": "Unsupported parameter: 'temperature' is not supported with this model."
+            }
+        });
+
+        let param = OpenAIProvider::extract_unsupported_request_param(&body);
+        assert_eq!(param.as_deref(), Some("temperature"));
+    }
+
+    #[test]
+    fn remove_retryable_unsupported_option_removes_temperature() {
+        let mut request_obj = Map::new();
+        request_obj.insert("temperature".to_string(), json!(0.2));
+        request_obj.insert("model".to_string(), json!("gpt-5.2-codex"));
+
+        let removed =
+            OpenAIProvider::remove_retryable_unsupported_option(&mut request_obj, "temperature");
+        assert!(removed);
+        assert!(!request_obj.contains_key("temperature"));
+        assert_eq!(request_obj.get("model"), Some(&json!("gpt-5.2-codex")));
     }
 
     #[test]

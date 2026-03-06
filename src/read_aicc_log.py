@@ -89,20 +89,53 @@ def _try_repair_json(raw: str) -> dict:
     return {"_raw": raw}
 
 
+def _extract_message_content(msg: dict) -> str:
+    """Extract text content from a message in either API format.
+
+    Chat Completions API: {"role": "user", "content": "hello"}
+    Responses API:        {"role": "user", "content": [{"type": "input_text", "text": "hello"}]}
+    """
+    content = msg.get("content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        # Responses API: content is a list of typed blocks
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                # input_text / output_text / text
+                text = block.get("text", "")
+                if text:
+                    parts.append(text)
+                # Handle image/audio/other types gracefully
+                elif block.get("type"):
+                    parts.append(f"[{block['type']}]")
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(parts)
+    return str(content)
+
+
 def extract_clean_input(payload: dict) -> dict:
-    """Extract readable content from an llm.input request payload."""
+    """Extract readable content from an llm.input request payload.
+
+    Supports both:
+    - Chat Completions API: payload has "messages" key
+    - Responses API: payload has "input" key
+    """
     result = {}
 
     model = payload.get("model")
     if model:
         result["model"] = model
 
-    # Extract messages — the core prompt content
-    messages = payload.get("messages", [])
+    # Detect API format: "messages" (Chat Completions) vs "input" (Responses API)
+    raw_messages = payload.get("messages") or payload.get("input") or []
+
     clean_messages = []
-    for msg in messages:
+    for msg in raw_messages:
         role = msg.get("role", "unknown")
-        content = msg.get("content", "")
+        content = _extract_message_content(msg)
         clean_messages.append({"role": role, "content": content})
 
     if clean_messages:
@@ -117,24 +150,33 @@ def extract_clean_input(payload: dict) -> dict:
 
 
 def extract_clean_output(payload: dict) -> dict:
-    """Extract readable content from an llm.output response payload."""
+    """Extract readable content from an llm.output response payload.
+
+    Supports both:
+    - Chat Completions API: payload has "choices" with "message"
+    - Responses API: payload has "output" with "content"
+    """
     result = {}
 
     model = payload.get("model")
     if model:
         result["model"] = model
 
+    # Normalize usage across both API formats
     usage = payload.get("usage")
     if usage:
         result["usage"] = {
-            "prompt_tokens": usage.get("prompt_tokens"),
-            "completion_tokens": usage.get("completion_tokens"),
+            # Chat Completions uses prompt_tokens/completion_tokens
+            # Responses API uses input_tokens/output_tokens
+            "prompt_tokens": usage.get("prompt_tokens") or usage.get("input_tokens"),
+            "completion_tokens": usage.get("completion_tokens") or usage.get("output_tokens"),
             "total_tokens": usage.get("total_tokens"),
         }
 
-    choices = payload.get("choices", [])
-    clean_choices = []
-    for choice in choices:
+    replies = []
+
+    # --- Chat Completions API format ---
+    for choice in payload.get("choices", []):
         msg = choice.get("message", {})
         content = msg.get("content", "")
         role = msg.get("role", "assistant")
@@ -143,10 +185,38 @@ def extract_clean_output(payload: dict) -> dict:
             entry["tool_calls"] = msg["tool_calls"]
         if choice.get("finish_reason"):
             entry["finish_reason"] = choice["finish_reason"]
-        clean_choices.append(entry)
+        replies.append(entry)
 
-    if clean_choices:
-        result["replies"] = clean_choices
+    # --- Responses API format ---
+    for item in payload.get("output", []):
+        if item.get("type") == "message":
+            role = item.get("role", "assistant")
+            status = item.get("status", "")
+            # Extract text from content blocks
+            content_parts = []
+            for block in item.get("content", []):
+                text = block.get("text", "")
+                if text:
+                    content_parts.append(text)
+                elif block.get("type"):
+                    content_parts.append(f"[{block['type']}]")
+            content = "\n".join(content_parts)
+            entry = {"role": role, "content": content}
+            if status:
+                entry["finish_reason"] = status
+            replies.append(entry)
+
+        elif item.get("type") == "function_call":
+            # Tool call in Responses API
+            entry = {
+                "role": "tool_call",
+                "content": f"→ {item.get('name', '?')}({json.dumps(item.get('arguments', ''), ensure_ascii=False)})",
+                "finish_reason": item.get("status", ""),
+            }
+            replies.append(entry)
+
+    if replies:
+        result["replies"] = replies
 
     return result
 

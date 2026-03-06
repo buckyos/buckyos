@@ -200,7 +200,6 @@ pub struct BehaviorMemoryConfig {
     pub workspace_worklog: BehaviorMemoryBucketConfig,
 
     pub session_summaries: BehaviorMemoryBucketConfig,
-    pub workspace_todo: BehaviorMemoryBucketConfig,
 
     pub first_prompt: Option<String>,
     pub last_prompt: Option<String>,
@@ -215,7 +214,6 @@ impl Default for BehaviorMemoryConfig {
             history_messages: BehaviorMemoryBucketConfig::default(),
             workspace_summary: BehaviorMemoryBucketConfig::default(),
             workspace_worklog: BehaviorMemoryBucketConfig::default(),
-            workspace_todo: BehaviorMemoryBucketConfig::default(),
             first_prompt: None,
             last_prompt: None,
         }
@@ -229,7 +227,6 @@ impl BehaviorMemoryConfig {
         self.history_messages.normalize();
         self.workspace_summary.normalize();
         self.workspace_worklog.normalize();
-        self.workspace_todo.normalize();
         self.first_prompt = Self::normalize_optional_text(self.first_prompt.take());
         self.last_prompt = Self::normalize_optional_text(self.last_prompt.take());
     }
@@ -241,7 +238,6 @@ impl BehaviorMemoryConfig {
             && self.history_messages.is_empty()
             && self.workspace_summary.is_empty()
             && self.workspace_worklog.is_empty()
-            && self.workspace_todo.is_empty()
             && self
                 .first_prompt
                 .as_ref()
@@ -643,7 +639,7 @@ Example:
 - Commands run sequentially in a session-bound bash env. On failure: "failed_end" stops, "all" continues.
 - String element = shell command. Array element = structured cmd_action: `[action_name, {args}]`.
 - `shell_commands` is shorthand that appends strings to `actions.cmds`. NEVER put structured actions in `shell_commands`.
-- MUST use write_file / edit_file cmd_action for text files. NEVER use shell commands (echo/cat) to write files.
+- MUST use write_file / edit_file cmd_action for write text files. NEVER use shell commands (echo/cat) to write files.
 - Results persist in step_summary for the next step. MUST limit read output size to avoid context overflow.
 - Common CLI tools and process_rule-declared tools are pre-installed. NEVER check availability before calling.
 

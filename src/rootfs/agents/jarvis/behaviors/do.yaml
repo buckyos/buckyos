@@ -4,11 +4,13 @@ process_rule: |
   - Work iteratively across multiple steps if needed.
   - Run at least one self-check against the acceptance criteria before declaring done.
   - Only after self-check passes, transition to CHECK.
+  - Stay focused on the current todo. Do NOT create new todos (`todo add` is forbidden in DO).
+    If you discover extra work, record it as a note on the current todo for future planning.
 
   You MUST:
-  - Read and use the previous step output (last_step_result / last_step_summary / step_summary) to stay continuous.
+  - Read and use the previous step output (last_step_result / last_step_summary ) to stay continuous.
   - Be budget-aware; if budget is insufficient, preserve progress and report status instead of forcing completion.
-  - End every step by setting `next_behavior`.
+
 
   --------------------------------------------------------------------
   TRAFFIC LIGHT RULE (Red / Yellow / Green)
@@ -33,7 +35,7 @@ process_rule: |
      - If user confirmation is needed (ambiguity/conflict, destructive action), STOP before writing:
        - Ask focused questions in `reply`.
        - Do not perform write_file/edit_file actions.
-       - Set `next_behavior = DO:<current_todo_id>` to continue after user input.
+       - Set `next_behavior = WAIT_FOR_MSG` to continue after user input.
 
   3) RED (🔴 Stop and escalate)
      Typical triggers:
@@ -44,8 +46,8 @@ process_rule: |
      Actions:
      - Do not proceed with risky work.
      - Record what happened and why.
-     - If it’s a recoverable implementation/tool issue: transition to ADJUST:<current_todo_id>.
-     - If it’s a clarification-needed issue: ask user, keep next_behavior as DO:<current_todo_id>.
+     - If it’s a recoverable implementation/tool issue: transition to ADJUST:todo=<current_todo_id>.
+     - If it’s a clarification-needed issue: ask user, set `next_behavior = WAIT_FOR_MSG`.
 
   --------------------------------------------------------------------
   DO STEP ALGORITHM (single scheduler step)
@@ -82,29 +84,31 @@ process_rule: |
   F) Decide next_behavior
   - If self-check PASSES and the todo is ready for independent verification:
     - `todo done <id> "reason"`
-    - `next_behavior = CHECK`
+    - `next_behavior = CHECK:todo=<current_todo_id>`
   - If self-check FAILS or work is incomplete:
     - `todo note <id> "what remains / next steps" --kind=note`
-    - `next_behavior = DO:<current_todo_id>` (continue iterating)
+    -  DON'T set `next_behavior` (continue iterating)
   - If a tool call fails:
     - Retry once.
     - If still failing:
       - `todo note <id> "error details" --kind=error`
       - `todo fail <id> "reason" --error='{"code":"TOOL_FAILED","message":"..."}'`
-      - `next_behavior = ADJUST:<current_todo_id>`
+      - `next_behavior = ADJUST:todo=<current_todo_id>`
 
   G) Budget handling
   - If remaining_budget is low:
     - Prioritize saving work-in-progress, writing partial artifacts safely, and documenting next steps.
     - Avoid large refactors and risky actions.
   - If budget is effectively exhausted:
-    - Stop execution, summarize progress, and set next_behavior to resume safely (usually DO:<current_todo_id>).
+    - Stop execution, summarize progress, and set next_behavior to resume safely (usually ADJUST:todo=<current_todo_id>).
 
 policy: |
   Todo state rules (MUST):
   - Use DO-phase commands only:
     - `todo start`, `todo done`, `todo fail`, `todo note`
   - DO must NOT use CHECK-phase commands (`todo pass` / `todo reject`).
+  - DO must NOT use `todo add` to create new todos. Focus on completing the current todo only.
+    If you discover additional work is needed, record it via `todo note <id> "..." --kind=note` for future planning.
   - Keep notes:
     - Use `todo note --kind=note` for progress/next steps
     - Use `todo note --kind=result` for self-check results
@@ -114,10 +118,10 @@ policy: |
   - If requirements are ambiguous or conflicting, you MUST wait for user confirmation:
     - Ask focused questions in `reply`
     - Make no risky or destructive changes
-    - Keep `next_behavior = DO:<current_todo_id>` so the loop continues after user response.
+    - Set `next_behavior = WAIT_FOR_MSG` so the loop continues after user response.
 
   Failure handling (MUST):
-  - Tool failure: retry once; if still failing, record error and move to ADJUST:<current_todo_id>.
+  - Tool failure: retry once; if still failing, record error and move to ADJUST:todo=<current_todo_id>.
   - External dependency unavailable: attempt alternatives; if none, move to ADJUST and explain what’s needed.
 
   Reply quality (MUST):
@@ -132,10 +136,9 @@ memory:
   total_limt: 18000
   agent_memory: { limit: 3500, max_percent: 0.25 }
   session_summaries: { limit: 3000, max_percent: 0.25 }
-  workspace_worklog: { limit: 6000, max_percent: 0.5 }
-
+  workspace_worklog: { limit: 10000, max_percent: 0.5 }
 input: |
-  # Continuity:
+  # Last Step Summary:
   {{last_step_summary}}
   # New message:
   {{new_msg}}
@@ -146,6 +149,16 @@ input: |
 
 faild_back: adjust
 step_limit: 24
+
+step_summary: |
+  - Behavior : {{behavior_name}}
+  - Step Index : {{step_index}} 
+  ### My Thinking & Decisions
+  What I think:{{llm_result.thinking}}
+  What I said:{{llm_result.reply}}
+  ### Run Results
+  {{llm_result.action_results}}
+
 
 limits:
   max_prompt_tokens: 18000

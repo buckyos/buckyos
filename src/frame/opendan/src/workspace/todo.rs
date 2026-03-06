@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2539,28 +2539,6 @@ fn render_workspace_todo_text(
     out
 }
 
-pub(crate) fn render_workspace_todo_prompt_from_db(
-    db_path: &Path,
-    workspace_id: &str,
-    token_budget: usize,
-) -> Result<String, AgentToolError> {
-    let conn = Connection::open(db_path).map_err(|err| {
-        AgentToolError::ExecFailed(format!(
-            "open todo db `{}` failed: {err}",
-            db_path.display()
-        ))
-    })?;
-    ensure_todo_schema(&conn)?;
-    let items = list_for_prompt(&conn, workspace_id, RENDER_ITEM_LIMIT)?;
-    let version = read_workspace_version(&conn, workspace_id)?;
-    Ok(render_workspace_todo_text(
-        workspace_id,
-        version,
-        &items,
-        token_budget,
-    ))
-}
-
 fn render_current_todo_text(detail: &TodoDetail) -> String {
     let item = &detail.item;
     let mut lines = Vec::new();
@@ -3078,53 +3056,5 @@ mod tests {
             .expect("third todo");
         assert_eq!(third.item.todo_code, "T002");
         assert_eq!(third.dep_codes, vec!["T001".to_string()]);
-    }
-
-    #[test]
-    fn get_session_todo_text_by_ref_enforces_session_scope() {
-        let conn = Connection::open_in_memory().expect("open in-memory db");
-        ensure_todo_schema(&conn).expect("ensure schema");
-
-        let workspace_id = "ws-session-scope";
-        let owner_session = "sess-owner";
-        let other_session = "sess-other";
-
-        conn.execute(
-            "INSERT INTO todo_items(
-                id, workspace_id, session_id, todo_code, title, type, status,
-                assignee_did, created_at, updated_at, created_by_kind, created_by_did
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            rusqlite::params![
-                "todo-own-1",
-                workspace_id,
-                owner_session,
-                "T005",
-                "owner session task",
-                "Task",
-                "WAIT",
-                "did:od:alice",
-                5000_i64,
-                5000_i64,
-                "root_agent",
-                "did:od:jarvis"
-            ],
-        )
-        .expect("insert T005");
-
-        let own_text = get_session_todo_text_by_ref(&conn, workspace_id, owner_session, "T005")
-            .expect("query owner session todo");
-        assert!(
-            own_text
-                .unwrap_or_default()
-                .contains("Current Todo T005 [WAIT]"),
-            "owner session todo should render"
-        );
-
-        let hidden_text = get_session_todo_text_by_ref(&conn, workspace_id, other_session, "T005")
-            .expect("query other session todo");
-        assert!(
-            hidden_text.is_none(),
-            "todo from another session should not be exposed"
-        );
     }
 }

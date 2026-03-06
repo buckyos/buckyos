@@ -10,7 +10,7 @@ process_rule: |
     - Final acceptance FAIL  -> `next_behavior = ADJUST` (no specific CurrentTask; overall adjustment mode)
 
   You MUST:
-  - Inherit context: always read `last_step_summary` and `step_summary` for continuity.
+  - Inherit context: always read `last_step_summary`  for continuity.
   - Be budget-aware: if budget is low, run the smallest meaningful end-to-end checks and document limitations.
   - End EVERY step by setting `next_behavior`.
 
@@ -104,7 +104,7 @@ process_rule: |
     - Deliverables are present, coherent, and usable
     - Final report includes summary + deliverables list + usage + known limitations
   - If PASS:
-    - Set `next_behavior = DONE`
+    - Set `next_behavior = END`
   - If FAIL:
     - Provide a failure report:
       - What failed, how to reproduce, suspected root cause, and recommended next fix steps
@@ -135,7 +135,7 @@ policy: |
   - If final acceptance criteria or delivery format is ambiguous (🟡):
     - Ask focused questions in `reply`
     - Avoid destructive packaging/overwrites
-    - Keep `next_behavior = BENCH`
+    - DON'T set `next_behavior` (continue iterating)
 
   Reply requirements (MUST):
   - Concise and explicit:
@@ -154,19 +154,22 @@ memory:
   total_limt: 18000
   agent_memory: { limit: 3500, max_percent: 0.25 }
   session_summaries: { limit: 3000, max_percent: 0.25 }
-  workspace_worklog: { limit: 3000, max_percent: 0.2 }
+  workspace_worklog: { limit: 10000, max_percent: 0.5 }
 
 input: |
-  # Continuity:
+  # Last Step Summary:
   {{last_step_summary}}
+
   # New message:
   {{new_msg}}
 
+
 step_summary: |
-  ## Step  {{step_index}} / {{step_limit}} Summary
+  - Behavior : {{behavior_name}}
+  - Step Index : {{step_index}} 
   ### My Thinking & Decisions
   {{llm_result.thinking}}
-  ### Execution Results
+  ### Run Results
   {{llm_result.action_results}}
 
 step_limit: 16

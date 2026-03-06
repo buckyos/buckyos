@@ -17,8 +17,8 @@ const DEFAULT_LOCK_TTL_MS: u64 = 120_000;
 const MAX_WORKSPACE_NAME_LEN: usize = 96;
 const MAX_POLICY_PROFILE_ID_LEN: usize = 128;
 const WORKSHOP_INDEX_FILE_NAME: &str = "index.json";
-const SESSION_BINDINGS_REL_PATH: &str = "sessions/local_workspace_bindings.json";
-const LOCAL_WORKSPACES_REL_PATH: &str = "workspaces/local";
+pub(crate) const SESSION_BINDINGS_REL_PATH: &str = "workspaces/session_workspace_bindings.json";
+const LOCAL_WORKSPACES_REL_PATH: &str = "workspaces/";
 
 static LOCAL_WORKSPACE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -222,6 +222,29 @@ struct LocalWorkspaceState {
 }
 
 impl LocalWorkspaceManager {
+    fn ensure_workspace_id_in_worklog_record(mut record: Json, workspace_id: &str) -> Json {
+        let workspace_id = workspace_id.trim();
+        if workspace_id.is_empty() {
+            return record;
+        }
+        let Some(map) = record.as_object_mut() else {
+            return record;
+        };
+        let has_workspace_id = map
+            .get("workspace_id")
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some();
+        if !has_workspace_id {
+            map.insert(
+                "workspace_id".to_string(),
+                Json::String(workspace_id.to_string()),
+            );
+        }
+        record
+    }
+
     pub async fn create_workshop(
         agent_did: impl Into<String>,
         mut cfg: LocalWorkspaceManagerConfig,
@@ -516,6 +539,10 @@ impl LocalWorkspaceManager {
             .await?;
         let worklog_db = workspace_path.join("worklog").join("worklog.db");
         let service = WorklogService::new(WorklogToolConfig::with_db_path(worklog_db))?;
+        let record = Self::ensure_workspace_id_in_worklog_record(
+            record,
+            binding.local_workspace_id.as_str(),
+        );
         service
             .append_record_for_session(session_id, agent_name, behavior, step_idx, record)
             .await
@@ -541,6 +568,10 @@ impl LocalWorkspaceManager {
             .await?;
         let worklog_db = workspace_path.join("worklog").join("worklog.db");
         let service = WorklogService::new(WorklogToolConfig::with_db_path(worklog_db))?;
+        let record = Self::ensure_workspace_id_in_worklog_record(
+            record,
+            binding.local_workspace_id.as_str(),
+        );
         service
             .append_step_summary_for_session(session_id, agent_name, behavior, step_idx, record)
             .await
@@ -1143,10 +1174,42 @@ fn scan_directory_metadata(path: &Path) -> Result<DirStats, AgentToolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn unique_root(test_name: &str) -> PathBuf {
         let ts = now_ms();
         std::env::temp_dir().join(format!("opendan-local-ws-{test_name}-{ts}"))
+    }
+
+    #[test]
+    fn ensure_workspace_id_in_worklog_record_backfills_when_missing() {
+        let record = json!({
+            "type": "GetMessage",
+            "status": "OK",
+            "payload": {"snippet": "hello"}
+        });
+        let patched =
+            LocalWorkspaceManager::ensure_workspace_id_in_worklog_record(record, "ws-demo");
+        assert_eq!(
+            patched
+                .get("workspace_id")
+                .and_then(Json::as_str)
+                .map(str::to_string),
+            Some("ws-demo".to_string())
+        );
+
+        let existing = json!({
+            "type": "GetMessage",
+            "workspace_id": "ws-existing"
+        });
+        let kept =
+            LocalWorkspaceManager::ensure_workspace_id_in_worklog_record(existing, "ws-demo");
+        assert_eq!(
+            kept.get("workspace_id")
+                .and_then(Json::as_str)
+                .map(str::to_string),
+            Some("ws-existing".to_string())
+        );
     }
 
     #[tokio::test]

@@ -35,6 +35,7 @@ use crate::{
 
 const DEFAULT_NODE_GATEWAY_PORT: u16 = 3180;
 const DEFAULT_AICC_KRPC_TIMEOUT_SECS: u64 = 120;
+const DEFAULT_KRPC_TIMEOUT_SECS: u64 = 15;
 const BUCKYOS_KRPC_TIMEOUT_SECS_ENV: &str = "BUCKYOS_KRPC_TIMEOUT_SECS";
 const BUCKYOS_KRPC_TIMEOUT_SECS_PREFIX: &str = "BUCKYOS_KRPC_TIMEOUT_SECS_";
 
@@ -1523,62 +1524,9 @@ impl BuckyOSRuntime {
             .get_zone_service_url(service_name, self.force_https)
             .await?;
         let session_token = self.session_token.read().await;
-        let timeout_secs =
-            Self::resolve_krpc_timeout_secs(service_name, default_timeout_secs);
-        if let Some(timeout_secs) = timeout_secs {
-            warn!(
-                "kRPC custom timeout ({}) for service `{}` is configured but current kRPC client API does not support per-client override; using default timeout",
-                timeout_secs,
-                service_name
-            );
-        }
-        let client = kRPC::new(&url, Some(session_token.clone()));
+        let timeout_secs = default_timeout_secs.unwrap_or(DEFAULT_KRPC_TIMEOUT_SECS);
+
+        let client = kRPC::new_with_timeout_secs(&url, Some(session_token.clone()), timeout_secs);
         Ok(client)
-    }
-
-    fn resolve_krpc_timeout_secs(
-        service_name: &str,
-        default_timeout_secs: Option<u64>,
-    ) -> Option<u64> {
-        let env_key = format!(
-            "{}{}",
-            BUCKYOS_KRPC_TIMEOUT_SECS_PREFIX,
-            Self::normalize_service_timeout_key(service_name)
-        );
-
-        Self::parse_timeout_secs_from_env(env_key.as_str())
-            .or_else(|| Self::parse_timeout_secs_from_env(BUCKYOS_KRPC_TIMEOUT_SECS_ENV))
-            .or(default_timeout_secs)
-    }
-
-    fn normalize_service_timeout_key(service_name: &str) -> String {
-        service_name
-            .chars()
-            .map(|ch| {
-                if ch.is_ascii_alphanumeric() {
-                    ch.to_ascii_uppercase()
-                } else {
-                    '_'
-                }
-            })
-            .collect()
-    }
-
-    fn parse_timeout_secs_from_env(env_key: &str) -> Option<u64> {
-        let raw = match env::var(env_key) {
-            Ok(raw) => raw,
-            Err(_) => return None,
-        };
-
-        match raw.trim().parse::<u64>() {
-            Ok(value) if value > 0 => Some(value),
-            _ => {
-                warn!(
-                    "ignore invalid {} value `{}`: expect positive integer seconds",
-                    env_key, raw
-                );
-                None
-            }
-        }
     }
 }

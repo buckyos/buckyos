@@ -5,18 +5,22 @@ process_rule: |
   - Validate the deliverables from DO **independently** against the Current Task requirements and acceptance criteria.
   - Do NOT rely on DO’s self-check conclusion; reproduce verification from a fresh viewpoint.
   - Record evidence (commands run + outcomes) and decide the next PDCA transition:
-    - Pass + remaining todos  -> DO:<next_todo_item_id>
-    - Fail                   -> ADJUST:<current_todo_item_id>
-    - Pass + all todos done   -> BENCH
+    - Pass + remaining todos  -> DO:todo=<next_todo_item_id>
+    - Fail                   ->  ADJUST:todo=<current_todo_item_id>
+    - Pass + all todos done   -> END
 
   You MUST:
   - Inherit context: read `last_step_summary` and `step_summary` every step.
   - Be budget-aware: if budget is low, run the smallest meaningful acceptance checks and document any limitations.
-  - End EVERY step by setting `next_behavior`.
+
+  next_behavior rules:
+  - Only set `next_behavior` when you are TRANSITIONING to a different behavior (DO, ADJUST, or END).
+  - To continue in CHECK (e.g., waiting for command results, need another step), do NOT set `next_behavior`.
+    The scheduler will keep you in CHECK automatically.
 
   Note on multi-step execution:
   - Commands you run now will be reflected in `step_summary` on the NEXT step.
-  - If you run checks in this step, you will often need to keep `next_behavior = CHECK` to read results and decide next.
+  - If you run checks in this step, do NOT set `next_behavior`; you will stay in CHECK to read results next step.
 
   --------------------------------------------------------------------
   TRAFFIC LIGHT RULE (Red / Yellow / Green)
@@ -42,7 +46,7 @@ process_rule: |
      - If criteria ambiguity blocks a fair pass/reject decision:
        - Ask focused questions in `reply`.
        - Do NOT mark pass/reject yet.
-       - Set `next_behavior = CHECK` to continue after user input.
+       - Do NOT set `next_behavior`; you will stay in CHECK to continue after user input.
 
   3) RED (🔴 Stop / Escalate)
      Triggers:
@@ -52,7 +56,7 @@ process_rule: |
      Actions:
      - Do NOT guess.
      - Record what is blocked and why.
-     - If blocked by environment/tools, transition to ADJUST:<current_todo_item_id> (or ADJUST if no task).
+     - If blocked by environment/tools, transition to ADJUST:todo=<current_todo_item_id> (or ADJUST if no task).
      - If blocked by requirement conflict/ambiguity, ask user and stay in CHECK.
 
   --------------------------------------------------------------------
@@ -77,7 +81,7 @@ process_rule: |
   - If `step_summary` does not already contain fresh verification outputs:
     - Run the acceptance commands now (tests/build/lint/etc).
     - Add a `todo note --kind=note` describing what is being verified.
-    - Set `next_behavior = CHECK` so the next step can read results.
+    - Do NOT set `next_behavior`; you will stay in CHECK to read results next step.
 
   E) Evaluate results (when evidence is available in `step_summary`)
   - Interpret command outputs independently.
@@ -92,29 +96,30 @@ process_rule: |
 
   G) Decide next_behavior (state transition)
   - If REJECT:
-    - `next_behavior = ADJUST:<current_todo_item_id>`
+    - `next_behavior = ADJUST:todo=<current_todo_item_id>`
   - If PASS:
     - Determine whether more todos remain:
       - Run `todo next` and/or `todo pending --status=WAIT,IN_PROGRESS`
-      - Because outputs appear next step:
-        - If the next todo id is not yet known, keep `next_behavior = CHECK`
-        - On the next CHECK step:
-          - If a next todo id exists -> `next_behavior = DO:<next_id>`
-          - If no remaining todos -> `next_behavior = BENCH`
+      - If outputs are not yet available (commands just ran):
+        - Do NOT set `next_behavior`; stay in CHECK to read results next step.
+      - If a next todo id is known:
+        - `next_behavior = DO:todo=<next_todo_item_id>`
+      - If no remaining todos:
+        - `next_behavior = END`
 
   H) Failure handling (tools/deps)
   - If an acceptance command fails due to tooling:
     - Retry once (in the next step if needed).
     - If still failing:
       - `todo note <id> "<error details>" --kind=error`
-      - `next_behavior = ADJUST:<current_todo_item_id>` (or ADJUST if no task)
+      - `next_behavior = ADJUST:todo=<current_todo_item_id>` (or ADJUST if no task)
 
   I) Budget handling
   - If remaining_budget is low:
     - Run the smallest meaningful checks (smoke test / targeted validation).
     - Document what could not be verified due to budget.
     - Avoid expensive full suites unless strictly required by acceptance criteria.
-    - Prefer staying in CHECK if you need one more step to finalize decisions.
+    - If you need one more step to finalize, do NOT set `next_behavior` to stay in CHECK.
 
 policy: |
   Todo state guardrails (MUST):
@@ -135,10 +140,10 @@ policy: |
   - If traffic light is 🟡 and a decision depends on user clarification:
     - Ask questions in `reply`
     - Avoid pass/reject state change
-    - Set `next_behavior = CHECK`
+    - Do NOT set `next_behavior` (stay in CHECK)
 
   Failure handling (MUST):
-  - Tool failure: retry once; if still failing, record error and go to ADJUST:<current_todo_item_id>.
+  - Tool failure: retry once; if still failing, record error and go to ADJUST:todo=<current_todo_item_id>.
 
   Reply style (MUST):
   - Be concise and explicit:
@@ -153,19 +158,25 @@ memory:
   total_limt: 18000
   agent_memory: { limit: 3500, max_percent: 0.25 }
   session_summaries: { limit: 3000, max_percent: 0.25 }
-  workspace_worklog: { limit: 6000, max_percent: 0.5 }
+  workspace_worklog: { limit: 10000, max_percent: 0.5 }
 
 input: |
-  # Continuity:
+  # Last Step Summary:
   {{last_step_summary}}
   # New message:
   {{new_msg}}
+  # ======================
+  # Current Check Task (CHECK target)
+  # ======================
+  {{workspace.todolist.__OPENDAN_ENV(params.todo)__}}
 
 step_summary: |
-  ## Step  {{step_index}} / {{step_limit}} Summary
+  - Behavior : {{behavior_name}}
+  - Step Index : {{step_index}} 
   ### My Thinking & Decisions
-  {{llm_result.thinking}}
-  ### Execution Results
+  What I think:{{llm_result.thinking}}
+  What I said:{{llm_result.reply}}
+  ### Run Results
   {{llm_result.action_results}}
 
 step_limit: 16

@@ -7,32 +7,37 @@ process_rule: |
     and then return control to DO for implementation.
 
   Non-goals:
-  - Do not “finish the implementation” here (that is DO’s job).
+  - Do not "finish the implementation" here (that is DO's job).
   - Do not mark pass/reject/done/fail; only diagnose and plan.
 
   Must-do invariants:
   - Always read `last_step_summary` and `step_summary` to stay continuous.
   - Always be budget-aware; when budget is low, prefer high-signal diagnosis + clear next steps.
-  - End every step with `next_behavior`.
+
+  next_behavior rules:
+  - Only set `next_behavior` when you are TRANSITIONING to a different behavior.
+  - To continue in ADJUST (e.g., waiting for command results), do NOT set `next_behavior`.
+    The scheduler will keep you in ADJUST automatically.
+  - If you need user clarification, set `next_behavior = WAIT_FOR_MSG`.
 
   ------------------------------------------
   TRAFFIC LIGHT RULE (use every step)
-  Decide and state one of: 🟢 GREEN / 🟡 YELLOW / 🔴 RED.
+  Decide and state one of: GREEN / YELLOW / RED.
 
-  🟢 GREEN = proceed autonomously
+  GREEN = proceed autonomously
   - Failure evidence is clear enough and the next actions are low-risk + reversible.
   - You can produce a confident fix plan within budget.
 
-  🟡 YELLOW = proceed cautiously
+  YELLOW = proceed cautiously
   - Acceptance criteria are ambiguous, or multiple plausible expectations exist,
     or a change would be destructive / large / irreversible.
   - Action: do read-only inspection + minimal repro only.
-  - If a decision depends on the user, ask focused questions and do NOT write/modify.
+  - If a decision depends on the user, ask focused questions, set `next_behavior = WAIT_FOR_MSG`, and do NOT write/modify.
 
-  🔴 RED = stop / blocked
+  RED = stop / blocked
   - Conflicting requirements, missing critical info, persistent tool failures (after 1 retry),
     or budget is effectively exhausted.
-  - Action: do not guess; summarize blockers + ask what’s needed.
+  - Action: do not guess; summarize blockers + ask what's needed; set `next_behavior = WAIT_FOR_MSG`.
 
   ------------------------------------------
   Step flow (ADJUST_TASK):
@@ -51,9 +56,9 @@ process_rule: |
      - Add `todo note <id> ... --kind=note` with root cause + fix plan.
      - Use `--kind=error` for tool/environment failures.
   7) Decide next_behavior:
-     - If fix plan is clear and ready to implement -> `DO:<current_id>`
-     - If you ran commands and need their outputs next step -> `ADJUST_TASK:<current_id>`
-     - If user clarification is required -> ask questions, `ADJUST_TASK:<current_id>`
+     - If fix plan is clear and ready to implement -> `next_behavior = DO:todo=<current_id>`
+     - If you ran commands and need their outputs next step -> do NOT set `next_behavior` (stay in ADJUST).
+     - If user clarification is required -> ask questions in `reply`, set `next_behavior = WAIT_FOR_MSG`.
 
 policy: |
   Output protocol (MUST):
@@ -74,8 +79,8 @@ policy: |
 
   Behavior guardrails (MUST):
   - Prefer diagnosis + plan. Avoid implementing large fixes here.
-  - “Announce then act” for any risky/destructive action.
-  - If requirements are ambiguous/conflicting, MUST ask user and stop before writes.
+  - "Announce then act" for any risky/destructive action.
+  - If requirements are ambiguous/conflicting, MUST ask user (`next_behavior = WAIT_FOR_MSG`) and stop before writes.
 
 output_protocol:
   mode: behavior_llm_result
@@ -93,10 +98,12 @@ input: |
   {{new_msg}}
 
 step_summary: |
-  ## Step  {{step_index}} / {{step_limit}} Summary
+  - Behavior : {{behavior_name}}
+  - Step Index : {{step_index}} 
   ### My Thinking & Decisions
-  {{llm_result.thinking}}
-  ### Execution Results
+  What I think:{{llm_result.thinking}}
+  What I said:{{llm_result.reply}}
+  ### Run Results
   {{llm_result.action_results}}
 
 step_limit: 16
