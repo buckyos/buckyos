@@ -40,6 +40,7 @@ import {
   X,
 } from 'lucide-react'
 import mammoth from 'mammoth/mammoth.browser'
+import useSWR from 'swr'
 
 import { ensureSessionToken } from '@/auth/authManager'
 import { getSessionTokenFromCookies, getStoredSessionToken } from '@/auth/session'
@@ -207,6 +208,25 @@ const withAuthHeaders = (authToken: string, extraHeaders?: Record<string, string
     headers['X-Auth'] = authToken.trim()
   }
   return headers
+}
+
+type ApiRequestError = Error & {
+  status: number
+}
+
+const fetchAuthedJson = async <T,>(url: string, authToken: string): Promise<T> => {
+  const response = await fetch(url, {
+    headers: withAuthHeaders(authToken),
+  })
+
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => ({}))) as { error?: string }
+    const error = new Error(payload.error ?? `Request failed (${response.status})`) as ApiRequestError
+    error.status = response.status
+    throw error
+  }
+
+  return (await response.json()) as T
 }
 
 const buildPublicSharePath = (shareId: string) => `/share/${encodeURIComponent(shareId)}`
@@ -643,16 +663,11 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   const [filesViewMode, setFilesViewMode] = useState<FilesViewMode>('icon')
   const [filesScope, setFilesScope] = useState<FilesScope>('browse')
   const [items, setItems] = useState<FileEntry[]>([])
-  const [favoriteItems, setFavoriteItems] = useState<FileEntry[]>([])
-  const [recentItems, setRecentItems] = useState<RecentFileEntry[]>([])
-  const [trashItems, setTrashItems] = useState<RecycleBinEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
   const [deleteToast, setDeleteToast] = useState('')
   const [selectedPaths, setSelectedPaths] = useState<string[]>([])
   const [thumbLoadFailed, setThumbLoadFailed] = useState<Record<string, boolean>>({})
-  const [shares, setShares] = useState<ShareItem[]>([])
-  const [sharesLoading, setSharesLoading] = useState(false)
   const [editorPath, setEditorPath] = useState('')
   const [editorContent, setEditorContent] = useState('')
   const [editorDirty, setEditorDirty] = useState(false)
@@ -734,6 +749,73 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   const rowActionMenuRef = useRef<HTMLDivElement | null>(null)
   const renameExtensionInputRef = useRef<HTMLInputElement | null>(null)
   const deleteToastTimerRef = useRef<number | null>(null)
+
+  const enableListRequests = Boolean(effectiveToken && !publicShareId)
+  const listToken = effectiveToken.trim()
+
+  const {
+    data: sharesPayload,
+    error: sharesRequestError,
+    isLoading: sharesLoading,
+    mutate: mutateShares,
+  } = useSWR(
+    enableListRequests ? ['/api/share', listToken] : null,
+    ([url, authToken]) => fetchAuthedJson<{ items?: ShareItem[] }>(url, authToken),
+    {
+      revalidateOnFocus: false,
+      dedupingInterval: 4000,
+    },
+  )
+
+  const {
+    data: favoritesPayload,
+    error: favoritesRequestError,
+    mutate: mutateFavorites,
+  } = useSWR(
+    enableListRequests ? ['/api/favorites?limit=500', listToken] : null,
+    ([url, authToken]) => fetchAuthedJson<FavoriteListResponse>(url, authToken),
+    {
+      revalidateOnFocus: false,
+      dedupingInterval: 4000,
+    },
+  )
+
+  const {
+    data: recentPayload,
+    error: recentRequestError,
+    mutate: mutateRecent,
+  } = useSWR(
+    enableListRequests ? ['/api/recent?limit=500', listToken] : null,
+    ([url, authToken]) => fetchAuthedJson<RecentListResponse>(url, authToken),
+    {
+      revalidateOnFocus: false,
+      dedupingInterval: 4000,
+    },
+  )
+
+  const {
+    data: trashPayload,
+    error: trashRequestError,
+    mutate: mutateTrash,
+  } = useSWR(
+    enableListRequests ? ['/api/recycle-bin?limit=500', listToken] : null,
+    ([url, authToken]) => fetchAuthedJson<RecycleBinListResponse>(url, authToken),
+    {
+      revalidateOnFocus: false,
+      dedupingInterval: 4000,
+    },
+  )
+
+  const shares = useMemo(() => (Array.isArray(sharesPayload?.items) ? sharesPayload.items : []), [sharesPayload])
+  const favoriteItems = useMemo(
+    () => (Array.isArray(favoritesPayload?.items) ? favoritesPayload.items : []),
+    [favoritesPayload],
+  )
+  const recentItems = useMemo(
+    () => (Array.isArray(recentPayload?.items) ? recentPayload.items : []),
+    [recentPayload],
+  )
+  const trashItems = useMemo(() => (Array.isArray(trashPayload?.items) ? trashPayload.items : []), [trashPayload])
 
   const showDeleteToast = useCallback((text: string) => {
     setDeleteToast(text)
@@ -1005,6 +1087,19 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
     setToken(next)
   }, [])
 
+  const handleListRequestError = useCallback((error: unknown, fallbackMessage: string) => {
+    if (!error) {
+      return
+    }
+    const requestError = error as ApiRequestError
+    if (requestError.status === 401) {
+      setSessionToken('')
+      setMessage('会话已失效，请在 Control Panel 重新登录。')
+      return
+    }
+    setMessage(requestError.message || fallbackMessage)
+  }, [setSessionToken])
+
   useEffect(() => {
     let cancelled = false
 
@@ -1038,6 +1133,22 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
       cancelled = true
     }
   }, [embedded, publicShareId, token, setSessionToken])
+
+  useEffect(() => {
+    handleListRequestError(sharesRequestError, 'Failed to load shares.')
+  }, [handleListRequestError, sharesRequestError])
+
+  useEffect(() => {
+    handleListRequestError(favoritesRequestError, 'Load favorites failed.')
+  }, [favoritesRequestError, handleListRequestError])
+
+  useEffect(() => {
+    handleListRequestError(recentRequestError, 'Load recent files failed.')
+  }, [handleListRequestError, recentRequestError])
+
+  useEffect(() => {
+    handleListRequestError(trashRequestError, 'Load recycle bin failed.')
+  }, [handleListRequestError, trashRequestError])
 
   const loadDirectory = useCallback(
     async (path: string, authToken: string) => {
@@ -1117,104 +1228,34 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
 
   const loadShares = useCallback(
     async (authToken: string) => {
-      setSharesLoading(true)
-      try {
-        const response = await fetch('/api/share', {
-          headers: withAuthHeaders(authToken),
-        })
-
-        if (response.status === 401) {
-          setSessionToken('')
-          setShares([])
-          setMessage('会话已失效，请在 Control Panel 重新登录。')
-          return
-        }
-
-        if (!response.ok) {
-          const payload = (await response.json().catch(() => ({}))) as { error?: string }
-          setMessage(payload.error ?? `Failed to load shares (${response.status})`)
-          return
-        }
-
-        const payload = (await response.json()) as { items?: ShareItem[] }
-        setShares(Array.isArray(payload.items) ? payload.items : [])
-      } finally {
-        setSharesLoading(false)
-      }
+      void authToken
+      await mutateShares()
     },
-    [setSessionToken],
+    [mutateShares],
   )
 
   const loadFavorites = useCallback(
     async (authToken: string) => {
-      const response = await fetch('/api/favorites?limit=500', {
-        headers: withAuthHeaders(authToken),
-      })
-
-      if (response.status === 401) {
-        setSessionToken('')
-        setMessage('会话已失效，请在 Control Panel 重新登录。')
-        return
-      }
-
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => ({}))) as { error?: string }
-        setMessage(payload.error ?? `Load favorites failed (${response.status})`)
-        return
-      }
-
-      const payload = (await response.json()) as FavoriteListResponse
-      setFavoriteItems(Array.isArray(payload.items) ? payload.items : [])
+      void authToken
+      await mutateFavorites()
     },
-    [setSessionToken],
+    [mutateFavorites],
   )
 
   const loadRecent = useCallback(
     async (authToken: string) => {
-      const response = await fetch('/api/recent?limit=500', {
-        headers: withAuthHeaders(authToken),
-      })
-
-      if (response.status === 401) {
-        setSessionToken('')
-        setMessage('会话已失效，请在 Control Panel 重新登录。')
-        return
-      }
-
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => ({}))) as { error?: string }
-        setMessage(payload.error ?? `Load recent files failed (${response.status})`)
-        return
-      }
-
-      const payload = (await response.json()) as RecentListResponse
-      setRecentItems(Array.isArray(payload.items) ? payload.items : [])
+      void authToken
+      await mutateRecent()
     },
-    [setSessionToken],
+    [mutateRecent],
   )
 
   const loadTrash = useCallback(
     async (authToken: string) => {
-      const response = await fetch('/api/recycle-bin?limit=500', {
-        headers: withAuthHeaders(authToken),
-      })
-
-      if (response.status === 401) {
-        setSessionToken('')
-        setMessage('会话已失效，请在 Control Panel 重新登录。')
-        return
-      }
-
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => ({}))) as { error?: string }
-        setMessage(payload.error ?? `Load recycle bin failed (${response.status})`)
-        return
-      }
-
-      const payload = (await response.json()) as RecycleBinListResponse
-      setTrashItems(Array.isArray(payload.items) ? payload.items : [])
+      void authToken
+      await mutateTrash()
     },
-    [setSessionToken],
+    [mutateTrash],
   )
 
   const toggleFavorite = useCallback(
@@ -1346,6 +1387,42 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
     }
   }, [syncPublicSharePathToUrl])
 
+  const canNavigateUpByMouseBack = useCallback(() => {
+    if (publicShareId) {
+      return normalizeUrlPath(publicSharePath) !== '/'
+    }
+
+    if (mainTab !== 'files' || filesScope !== 'browse') {
+      return false
+    }
+
+    return normalizeUrlPath(currentPath) !== '/'
+  }, [currentPath, filesScope, mainTab, publicShareId, publicSharePath])
+
+  const navigateUpByMouseBack = useCallback(() => {
+    if (!canNavigateUpByMouseBack()) {
+      return false
+    }
+
+    if (publicShareId) {
+      const normalized = normalizeUrlPath(publicSharePath)
+      void loadPublicShare(publicShareId, publicSharePassword, parentPath(normalized))
+      return true
+    }
+
+    const normalized = normalizeUrlPath(currentPath)
+    openDirectoryInBrowse(parentPath(normalized))
+    return true
+  }, [
+    canNavigateUpByMouseBack,
+    currentPath,
+    loadPublicShare,
+    openDirectoryInBrowse,
+    publicShareId,
+    publicSharePassword,
+    publicSharePath,
+  ])
+
   useEffect(() => {
     if (!effectiveToken || publicShareId || mainTab !== 'files' || filesScope !== 'browse') {
       return
@@ -1371,32 +1448,6 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
       setMainTab(getMainTabFromPathname(locationPathname))
     }
   }, [embedded, locationPathname, mainTab, publicShareId])
-
-  useEffect(() => {
-    if (!effectiveToken) {
-      return
-    }
-    void loadShares(effectiveToken)
-    void loadFavorites(effectiveToken)
-  }, [effectiveToken, loadFavorites, loadShares, clearPreviewState, clearSearchState])
-
-  useEffect(() => {
-    if (!effectiveToken || publicShareId || mainTab !== 'files') {
-      return
-    }
-
-    if (filesScope === 'recent') {
-      void loadRecent(effectiveToken)
-      return
-    }
-    if (filesScope === 'trash') {
-      void loadTrash(effectiveToken)
-      return
-    }
-    if (filesScope === 'starred') {
-      void loadFavorites(effectiveToken)
-    }
-  }, [effectiveToken, filesScope, loadFavorites, loadRecent, loadTrash, mainTab, publicShareId])
 
   useEffect(() => {
     setSelectedPaths([])
@@ -1483,6 +1534,50 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
       window.removeEventListener('popstate', onPopState)
     }
   }, [clearSearchState, embedded, loadPublicShare])
+
+  useEffect(() => {
+    const onMouseDown = (event: MouseEvent) => {
+      if (event.button !== 3) {
+        return
+      }
+      if (!canNavigateUpByMouseBack()) {
+        return
+      }
+      event.preventDefault()
+      event.stopPropagation()
+    }
+
+    const onMouseUp = (event: MouseEvent) => {
+      if (event.button !== 3) {
+        return
+      }
+      if (!navigateUpByMouseBack()) {
+        return
+      }
+      event.preventDefault()
+      event.stopPropagation()
+    }
+
+    const onAuxClick = (event: MouseEvent) => {
+      if (event.button !== 3) {
+        return
+      }
+      if (!navigateUpByMouseBack()) {
+        return
+      }
+      event.preventDefault()
+      event.stopPropagation()
+    }
+
+    window.addEventListener('mousedown', onMouseDown, true)
+    window.addEventListener('mouseup', onMouseUp, true)
+    window.addEventListener('auxclick', onAuxClick, true)
+    return () => {
+      window.removeEventListener('mousedown', onMouseDown, true)
+      window.removeEventListener('mouseup', onMouseUp, true)
+      window.removeEventListener('auxclick', onAuxClick, true)
+    }
+  }, [canNavigateUpByMouseBack, navigateUpByMouseBack])
 
   useEffect(() => {
     uploadPausedRef.current = uploadPaused
