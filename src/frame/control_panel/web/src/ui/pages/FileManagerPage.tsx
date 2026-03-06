@@ -1,4 +1,4 @@
-import type { ChangeEventHandler, DragEvent, MouseEvent as ReactMouseEvent, ReactNode } from 'react'
+import type { ChangeEventHandler, DragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
@@ -23,7 +23,6 @@ import {
   LayoutGrid,
   Clock3,
   Filter,
-  MoreHorizontal,
   Move,
   Pause,
   PencilLine,
@@ -191,6 +190,9 @@ const ROW_ACTION_MENU_WIDTH = 176
 const ROW_ACTION_MENU_ESTIMATED_HEIGHT = 292
 const ROW_ACTION_MENU_GAP = 6
 const ROW_ACTION_MENU_VIEWPORT_PADDING = 8
+const TOUCH_LONG_PRESS_DELAY_MS = 450
+const TOUCH_LONG_PRESS_MOVE_TOLERANCE = 10
+const LONG_PRESS_CLICK_SUPPRESS_MS = 700
 
 const getPublicShareIdFromPath = (path: string) => {
   const normalizedPath = path.endsWith('/') && path !== '/' ? path.slice(0, -1) : path
@@ -593,7 +595,6 @@ type IconName =
   | 'filter'
   | 'restore'
   | 'star'
-  | 'more'
 
 const Icon = ({ name, className = '' }: { name: IconName; className?: string }) => {
   const icons: Record<IconName, LucideIcon> = {
@@ -614,7 +615,6 @@ const Icon = ({ name, className = '' }: { name: IconName; className?: string }) 
     rename: PencilLine,
     share: Share2,
     link: Link,
-    more: MoreHorizontal,
     save: Save,
     close: X,
     folder: Folder,
@@ -749,6 +749,14 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   const rowActionMenuRef = useRef<HTMLDivElement | null>(null)
   const renameExtensionInputRef = useRef<HTMLInputElement | null>(null)
   const deleteToastTimerRef = useRef<number | null>(null)
+  const touchLongPressTimerRef = useRef<number | null>(null)
+  const touchLongPressStateRef = useRef<{
+    pointerId: number
+    entryPath: string
+    startX: number
+    startY: number
+  } | null>(null)
+  const suppressClickUntilRef = useRef(0)
 
   const enableListRequests = Boolean(effectiveToken && !publicShareId)
   const listToken = effectiveToken.trim()
@@ -2929,40 +2937,127 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
     [openActionPath, trashItems],
   )
 
-  const toggleRowActionMenu = useCallback(
-    (entryPath: string, event: ReactMouseEvent<HTMLButtonElement>) => {
-      if (openActionPath === entryPath) {
-        closeRowActionMenu()
-        return
-      }
+  const openActionMenuAt = useCallback((entryPath: string, clientX: number, clientY: number) => {
+    if (typeof window === 'undefined') {
+      return
+    }
 
-      if (typeof window === 'undefined') {
-        return
-      }
+    const viewportWidth = window.innerWidth
+    const viewportHeight = window.innerHeight
 
-      const triggerRect = event.currentTarget.getBoundingClientRect()
-      const viewportWidth = window.innerWidth
-      const viewportHeight = window.innerHeight
+    let left = clientX
+    left = Math.max(
+      ROW_ACTION_MENU_VIEWPORT_PADDING,
+      Math.min(left, viewportWidth - ROW_ACTION_MENU_WIDTH - ROW_ACTION_MENU_VIEWPORT_PADDING),
+    )
 
-      let left = triggerRect.right - ROW_ACTION_MENU_WIDTH
-      left = Math.max(
+    let top = clientY + ROW_ACTION_MENU_GAP
+    if (top + ROW_ACTION_MENU_ESTIMATED_HEIGHT > viewportHeight - ROW_ACTION_MENU_VIEWPORT_PADDING) {
+      top = Math.max(
         ROW_ACTION_MENU_VIEWPORT_PADDING,
-        Math.min(left, viewportWidth - ROW_ACTION_MENU_WIDTH - ROW_ACTION_MENU_VIEWPORT_PADDING),
+        clientY - ROW_ACTION_MENU_ESTIMATED_HEIGHT - ROW_ACTION_MENU_GAP,
       )
+    }
 
-      let top = triggerRect.bottom + ROW_ACTION_MENU_GAP
-      if (top + ROW_ACTION_MENU_ESTIMATED_HEIGHT > viewportHeight - ROW_ACTION_MENU_VIEWPORT_PADDING) {
-        top = Math.max(
-          ROW_ACTION_MENU_VIEWPORT_PADDING,
-          triggerRect.top - ROW_ACTION_MENU_ESTIMATED_HEIGHT - ROW_ACTION_MENU_GAP,
-        )
+    setActionMenuPosition({ top, left })
+    setOpenActionPath(entryPath)
+  }, [])
+
+  const ensureEntrySelectedForActionMenu = useCallback((entryPath: string) => {
+    setSelectedPaths((prev) => (prev.includes(entryPath) ? prev : [entryPath]))
+  }, [])
+
+  const openEntryActionMenu = useCallback(
+    (entry: FileEntry, clientX: number, clientY: number) => {
+      ensureEntrySelectedForActionMenu(entry.path)
+      openActionMenuAt(entry.path, clientX, clientY)
+    },
+    [ensureEntrySelectedForActionMenu, openActionMenuAt],
+  )
+
+  const clearTouchLongPress = useCallback(() => {
+    if (touchLongPressTimerRef.current != null) {
+      window.clearTimeout(touchLongPressTimerRef.current)
+      touchLongPressTimerRef.current = null
+    }
+    touchLongPressStateRef.current = null
+  }, [])
+
+  const onEntryContextMenu = useCallback(
+    (event: ReactMouseEvent<HTMLElement>, entry: FileEntry) => {
+      event.preventDefault()
+      event.stopPropagation()
+      openEntryActionMenu(entry, event.clientX, event.clientY)
+    },
+    [openEntryActionMenu],
+  )
+
+  const onEntryPointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLElement>, entry: FileEntry) => {
+      if (event.pointerType !== 'touch') {
+        return
+      }
+      const target = event.target as HTMLElement | null
+      if (target?.closest('input[type="checkbox"]')) {
+        return
       }
 
-      setActionMenuPosition({ top, left })
-      setOpenActionPath(entryPath)
+      clearTouchLongPress()
+      touchLongPressStateRef.current = {
+        pointerId: event.pointerId,
+        entryPath: entry.path,
+        startX: event.clientX,
+        startY: event.clientY,
+      }
+
+      touchLongPressTimerRef.current = window.setTimeout(() => {
+        const state = touchLongPressStateRef.current
+        if (!state || state.entryPath !== entry.path) {
+          return
+        }
+
+        suppressClickUntilRef.current = Date.now() + LONG_PRESS_CLICK_SUPPRESS_MS
+        openEntryActionMenu(entry, state.startX, state.startY)
+        clearTouchLongPress()
+      }, TOUCH_LONG_PRESS_DELAY_MS)
     },
-    [openActionPath, closeRowActionMenu],
+    [clearTouchLongPress, openEntryActionMenu],
   )
+
+  const onEntryPointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLElement>) => {
+      const state = touchLongPressStateRef.current
+      if (!state || state.pointerId !== event.pointerId) {
+        return
+      }
+
+      if (
+        Math.abs(event.clientX - state.startX) > TOUCH_LONG_PRESS_MOVE_TOLERANCE ||
+        Math.abs(event.clientY - state.startY) > TOUCH_LONG_PRESS_MOVE_TOLERANCE
+      ) {
+        clearTouchLongPress()
+      }
+    },
+    [clearTouchLongPress],
+  )
+
+  const onEntryPointerEnd = useCallback(
+    (event: ReactPointerEvent<HTMLElement>) => {
+      const state = touchLongPressStateRef.current
+      if (!state || state.pointerId !== event.pointerId) {
+        return
+      }
+      clearTouchLongPress()
+    },
+    [clearTouchLongPress],
+  )
+
+  const onEntryClickCapture = useCallback((event: ReactMouseEvent<HTMLElement>) => {
+    if (Date.now() <= suppressClickUntilRef.current) {
+      event.preventDefault()
+      event.stopPropagation()
+    }
+  }, [])
 
   useEffect(() => {
     if (!openActionPath || !actionMenuPosition || typeof window === 'undefined') {
@@ -2983,6 +3078,10 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
       setActionMenuPosition({ top: nextTop, left: nextLeft })
     }
   }, [openActionPath, actionMenuPosition])
+
+  useEffect(() => () => {
+    clearTouchLongPress()
+  }, [clearTouchLongPress])
 
   useEffect(() => {
     setThumbLoadFailed({})
@@ -4537,14 +4636,13 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                         {searchActive || filesScope !== 'browse' ? <th className="bg-slate-50 px-3 py-2">Path</th> : null}
                         <th className="bg-slate-50 px-3 py-2">Type</th>
                         <th className="bg-slate-50 px-3 py-2">Size</th>
-                        <th className="bg-slate-50 px-3 py-2">Modified</th>
-                        <th className="rounded-r-lg bg-slate-50 px-3 py-2">Actions</th>
+                        <th className="rounded-r-lg bg-slate-50 px-3 py-2">Modified</th>
                       </tr>
                     </thead>
                     <tbody>
                       {visibleItems.length === 0 ? (
                         <tr>
-                          <td colSpan={searchActive || filesScope !== 'browse' ? 7 : 6} className="px-3 py-12 text-center text-sm text-slate-500">
+                          <td colSpan={searchActive || filesScope !== 'browse' ? 6 : 5} className="px-3 py-12 text-center text-sm text-slate-500">
                             {searchActive ? 'No search result.' : filesScope === 'browse' ? 'Empty directory.' : 'No items in this view.'}
                           </td>
                         </tr>
@@ -4552,7 +4650,16 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                         visibleItems.map((entry) => {
                           const entryIcon = getEntryIconMeta(entry)
                           return (
-                          <tr key={entry.path} className="text-slate-800">
+                          <tr
+                            key={entry.path}
+                            className="text-slate-800"
+                            onContextMenu={(event) => onEntryContextMenu(event, entry)}
+                            onPointerDown={(event) => onEntryPointerDown(event, entry)}
+                            onPointerMove={onEntryPointerMove}
+                            onPointerUp={onEntryPointerEnd}
+                            onPointerCancel={onEntryPointerEnd}
+                            onClickCapture={onEntryClickCapture}
+                          >
                             <td className="border-b border-slate-100 px-3 py-2">
                               <input
                                 type="checkbox"
@@ -4609,20 +4716,6 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                             <td className="border-b border-slate-100 px-3 py-2">{entry.is_dir ? 'Folder' : 'File'}</td>
                             <td className="border-b border-slate-100 px-3 py-2">{entry.is_dir ? '-' : formatBytes(entry.size)}</td>
                             <td className="border-b border-slate-100 px-3 py-2">{formatTimestamp(entry.modified)}</td>
-                            <td className="border-b border-slate-100 px-3 py-2">
-                              <div className="inline-flex" data-row-actions="true">
-                                <button
-                                  type="button"
-                                  onClick={(event) => toggleRowActionMenu(entry.path, event)}
-                                  className="rounded border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
-                                >
-                                  <span className="inline-flex items-center gap-1.5">
-                                    <Icon name="more" />
-                                    Actions
-                                  </span>
-                                </button>
-                              </div>
-                            </td>
                           </tr>
                           )
                         })
@@ -4651,22 +4744,18 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                               key={entry.path}
                               onClick={(event) => onIconEntryClick(event, entry)}
                               onDoubleClick={(event) => onIconEntryDoubleClick(event, entry)}
+                              onContextMenu={(event) => onEntryContextMenu(event, entry)}
+                              onPointerDown={(event) => onEntryPointerDown(event, entry)}
+                              onPointerMove={onEntryPointerMove}
+                              onPointerUp={onEntryPointerEnd}
+                              onPointerCancel={onEntryPointerEnd}
+                              onClickCapture={onEntryClickCapture}
                               className={`relative cursor-pointer rounded-xl p-3 transition ${
                                 isSelected(entry.path)
                                   ? 'bg-primary/10 shadow-sm ring-2 ring-primary/30'
                                   : 'bg-white hover:bg-slate-50 hover:shadow-sm'
                               }`}
                             >
-                              <div className="absolute right-2 top-2" data-row-actions="true">
-                                <button
-                                  type="button"
-                                  onClick={(event) => toggleRowActionMenu(entry.path, event)}
-                                  className="rounded border border-slate-300 bg-white px-1.5 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
-                                >
-                                  <Icon name="more" />
-                                </button>
-                              </div>
-
                               <div className="flex h-[126px] flex-col items-center justify-start pt-6 text-center">
                                 {entry.is_dir ? (
                                   <div className="inline-flex size-14 items-center justify-center rounded-xl bg-amber-50 text-amber-600">
