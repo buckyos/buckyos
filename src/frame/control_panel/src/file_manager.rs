@@ -13,9 +13,11 @@ use http::header::{
 };
 use http::{Method, StatusCode, Version};
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
+use image::codecs::jpeg::JpegEncoder;
+use image::imageops::FilterType;
 use kRPC::{RPCErrors, RPCHandler, RPCRequest, RPCResponse, RPCResult, RPCSessionToken};
 use log::warn;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -23,6 +25,7 @@ use std::io::{Read, SeekFrom, Write};
 use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::sync::Once;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use uuid::Uuid;
@@ -34,8 +37,16 @@ const CONTROL_PANEL_AUTH_APPID: &str = "control-panel";
 const DEFAULT_SHARED_OWNER_DIR: &str = "admin";
 const SHARED_PUBLIC_DIR: &str = "Public";
 const SHARED_INBOX_DIR: &str = "Inbox";
+const INTERNAL_RECYCLE_BIN_DIR: &str = ".bucky_recycle_bin";
 const INLINE_TEXT_CONTENT_MAX_BYTES: u64 = 2 * 1024 * 1024;
 const PDF_PREVIEW_EXTENSION_DOC: &str = "doc";
+const FILE_META_STATE_KEY_ROOT_SEEDED: &str = "root_seeded";
+const THUMBNAIL_VARIANT_DEFAULT: &str = "s160";
+const THUMBNAIL_SIZE_DEFAULT: u32 = 160;
+const THUMBNAIL_SIZE_MIN: u32 = 48;
+const THUMBNAIL_SIZE_MAX: u32 = 512;
+
+static THUMBNAIL_WORKER_ONCE: Once = Once::new();
 
 #[derive(Debug, Clone)]
 pub(crate) struct BuckyFileServer {
@@ -49,7 +60,7 @@ struct FileAuthPrincipal {
     user_type: UserType,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct FileEntry {
     name: String,
     path: String,
@@ -84,9 +95,89 @@ struct SearchResponse {
     items: Vec<FileEntry>,
 }
 
+#[derive(Debug, Serialize, Default, Clone)]
+struct FileMetadataSyncStats {
+    scanned: u64,
+    upserted: u64,
+    removed: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct FileNavResponse {
+    path: String,
+    previous: Option<FileEntry>,
+    next: Option<FileEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct FavoriteListResponse {
+    items: Vec<FileEntry>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct RecentFileEntry {
+    #[serde(flatten)]
+    entry: FileEntry,
+    last_accessed_at: u64,
+    access_count: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct RecentListResponse {
+    items: Vec<RecentFileEntry>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct RecycleBinItem {
+    item_id: String,
+    #[serde(flatten)]
+    entry: FileEntry,
+    original_path: String,
+    deleted_at: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct RecycleBinListResponse {
+    items: Vec<RecycleBinItem>,
+}
+
+#[derive(Debug, Clone)]
+struct ThumbnailTask {
+    owner: String,
+    rel_path: String,
+    variant: String,
+    source_size: i64,
+    source_modified: i64,
+    attempts: i64,
+}
+
 #[derive(Debug, Deserialize)]
 struct PutFileRequest {
     content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FavoriteRequest {
+    path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RecycleRestoreRequest {
+    item_id: String,
+    override_existing: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+struct FileListFilters {
+    kind: String,
+    exts: Vec<String>,
+    modified_from: Option<u64>,
+    modified_to: Option<u64>,
+    size_min: Option<u64>,
+    size_max: Option<u64>,
+    sort_by: Option<String>,
+    order: String,
+    limit: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -180,6 +271,8 @@ impl BuckyFileServer {
     pub(crate) async fn init_share_db(&self) -> Result<(), RPCErrors> {
         let db_path = self.db_path();
         let upload_tmp_dir = self.upload_tmp_dir();
+        let thumbnail_cache_dir = self.thumbnail_cache_dir();
+        let recycle_bin_dir = self.recycle_bin_dir();
         tokio::task::spawn_blocking(move || -> Result<(), RPCErrors> {
             let conn = Connection::open(db_path).map_err(|err| {
                 RPCErrors::ReasonError(format!("open share database failed: {}", err))
@@ -208,6 +301,84 @@ impl BuckyFileServer {
                     updated_at INTEGER NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_upload_sessions_owner ON upload_sessions(owner);
+
+                CREATE TABLE IF NOT EXISTS file_entries (
+                    owner TEXT NOT NULL,
+                    rel_path TEXT NOT NULL,
+                    parent_rel_path TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    lower_name TEXT NOT NULL,
+                    ext TEXT NOT NULL,
+                    is_dir INTEGER NOT NULL,
+                    size INTEGER NOT NULL,
+                    modified INTEGER NOT NULL,
+                    mime TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    deleted_at INTEGER,
+                    PRIMARY KEY (owner, rel_path)
+                );
+                CREATE INDEX IF NOT EXISTS idx_file_entries_parent ON file_entries(owner, parent_rel_path, is_dir, lower_name, name);
+                CREATE INDEX IF NOT EXISTS idx_file_entries_modified ON file_entries(owner, modified DESC);
+                CREATE INDEX IF NOT EXISTS idx_file_entries_ext ON file_entries(owner, ext);
+
+                CREATE TABLE IF NOT EXISTS file_meta_state (
+                    owner TEXT NOT NULL,
+                    state_key TEXT NOT NULL,
+                    state_value TEXT,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (owner, state_key)
+                );
+
+                CREATE TABLE IF NOT EXISTS file_thumbnails (
+                    owner TEXT NOT NULL,
+                    rel_path TEXT NOT NULL,
+                    variant TEXT NOT NULL,
+                    source_size INTEGER NOT NULL,
+                    source_modified INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    thumb_rel_path TEXT,
+                    width INTEGER,
+                    height INTEGER,
+                    attempts INTEGER NOT NULL,
+                    last_error TEXT,
+                    updated_at INTEGER NOT NULL,
+                    next_retry_at INTEGER NOT NULL,
+                    PRIMARY KEY (owner, rel_path, variant)
+                );
+                CREATE INDEX IF NOT EXISTS idx_file_thumbnails_status_retry ON file_thumbnails(status, next_retry_at, updated_at);
+                CREATE INDEX IF NOT EXISTS idx_file_thumbnails_owner_path ON file_thumbnails(owner, rel_path, variant);
+
+                CREATE TABLE IF NOT EXISTS file_favorites (
+                    owner TEXT NOT NULL,
+                    rel_path TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (owner, rel_path)
+                );
+                CREATE INDEX IF NOT EXISTS idx_file_favorites_owner_updated ON file_favorites(owner, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS file_recent (
+                    owner TEXT NOT NULL,
+                    rel_path TEXT NOT NULL,
+                    last_accessed_at INTEGER NOT NULL,
+                    access_count INTEGER NOT NULL,
+                    PRIMARY KEY (owner, rel_path)
+                );
+                CREATE INDEX IF NOT EXISTS idx_file_recent_owner_accessed ON file_recent(owner, last_accessed_at DESC);
+
+                CREATE TABLE IF NOT EXISTS recycle_bin_items (
+                    item_id TEXT PRIMARY KEY,
+                    owner TEXT NOT NULL,
+                    original_rel_path TEXT NOT NULL,
+                    trashed_rel_path TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    is_dir INTEGER NOT NULL,
+                    size INTEGER NOT NULL,
+                    modified INTEGER NOT NULL,
+                    deleted_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_recycle_bin_owner_deleted ON recycle_bin_items(owner, deleted_at DESC);
                 ",
             )
             .map_err(|err| {
@@ -217,10 +388,1514 @@ impl BuckyFileServer {
             std::fs::create_dir_all(&upload_tmp_dir).map_err(|err| {
                 RPCErrors::ReasonError(format!("prepare upload tmp dir failed: {}", err))
             })?;
+            std::fs::create_dir_all(&thumbnail_cache_dir).map_err(|err| {
+                RPCErrors::ReasonError(format!("prepare thumbnail cache dir failed: {}", err))
+            })?;
+            std::fs::create_dir_all(&recycle_bin_dir).map_err(|err| {
+                RPCErrors::ReasonError(format!("prepare recycle bin dir failed: {}", err))
+            })?;
             Ok(())
         })
         .await
-        .map_err(|err| RPCErrors::ReasonError(format!("init share database join error: {}", err)))?
+        .map_err(|err| RPCErrors::ReasonError(format!("init share database join error: {}", err)))??;
+
+        THUMBNAIL_WORKER_ONCE.call_once(|| {
+            let worker = self.clone();
+            tokio::spawn(async move {
+                worker.run_thumbnail_worker().await;
+            });
+        });
+
+        Ok(())
+    }
+
+    fn normalize_file_ext(name: &str) -> String {
+        Path::new(name)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+            .unwrap_or_default()
+    }
+
+    fn normalize_file_mime(path: &Path, is_dir: bool) -> String {
+        if is_dir {
+            return "inode/directory".to_string();
+        }
+        Self::content_type_for_path(path)
+            .split(';')
+            .next()
+            .unwrap_or("application/octet-stream")
+            .trim()
+            .to_string()
+    }
+
+    fn rel_path_scope_like(scope_display_path: &str) -> Option<String> {
+        if scope_display_path == "/" {
+            return None;
+        }
+        Some(format!("{}/%", scope_display_path.trim_end_matches('/')))
+    }
+
+    async fn mark_owner_root_seeded(&self, owner: &str) -> Result<(), RPCErrors> {
+        let db_path = self.db_path();
+        let owner = owner.to_string();
+        tokio::task::spawn_blocking(move || -> Result<(), RPCErrors> {
+            let conn = Connection::open(db_path).map_err(|err| {
+                RPCErrors::ReasonError(format!("open metadata database failed: {}", err))
+            })?;
+            let now = BuckyFileServer::now_unix() as i64;
+            conn.execute(
+                "INSERT INTO file_meta_state(owner, state_key, state_value, updated_at)
+                 VALUES(?1, ?2, ?3, ?4)
+                 ON CONFLICT(owner, state_key) DO UPDATE SET
+                   state_value=excluded.state_value,
+                   updated_at=excluded.updated_at",
+                params![owner, FILE_META_STATE_KEY_ROOT_SEEDED, "1", now],
+            )
+            .map_err(|err| {
+                RPCErrors::ReasonError(format!("update metadata state failed: {}", err))
+            })?;
+            Ok(())
+        })
+        .await
+        .map_err(|err| {
+            RPCErrors::ReasonError(format!("update metadata state join error: {}", err))
+        })?
+    }
+
+    async fn owner_root_seeded(&self, owner: &str) -> Result<bool, RPCErrors> {
+        let db_path = self.db_path();
+        let owner = owner.to_string();
+        tokio::task::spawn_blocking(move || -> Result<bool, RPCErrors> {
+            let conn = Connection::open(db_path).map_err(|err| {
+                RPCErrors::ReasonError(format!("open metadata database failed: {}", err))
+            })?;
+            let seeded = conn
+                .query_row(
+                    "SELECT 1 FROM file_meta_state WHERE owner = ?1 AND state_key = ?2 LIMIT 1",
+                    params![owner, FILE_META_STATE_KEY_ROOT_SEEDED],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(|err| {
+                    RPCErrors::ReasonError(format!("query metadata state failed: {}", err))
+                })?
+                .is_some();
+            Ok(seeded)
+        })
+        .await
+        .map_err(|err| {
+            RPCErrors::ReasonError(format!("query metadata state join error: {}", err))
+        })?
+    }
+
+    async fn sync_file_metadata_subtree(
+        &self,
+        owner: &str,
+        rel_scope_path: &Path,
+    ) -> Result<FileMetadataSyncStats, RPCErrors> {
+        #[derive(Clone)]
+        struct IndexedFsEntry {
+            rel_path: String,
+            parent_rel_path: String,
+            name: String,
+            lower_name: String,
+            ext: String,
+            is_dir: i64,
+            size: i64,
+            modified: i64,
+            mime: String,
+        }
+
+        fn collect_entries_under_scope(
+            root_abs_path: &Path,
+            rel_scope_path: &Path,
+        ) -> Result<Vec<IndexedFsEntry>, RPCErrors> {
+            let mut entries: Vec<IndexedFsEntry> = Vec::new();
+            if !root_abs_path.exists() {
+                return Ok(entries);
+            }
+
+            let mut stack: Vec<(PathBuf, PathBuf)> = Vec::new();
+
+            if rel_scope_path.as_os_str().is_empty() {
+                let root_reader = std::fs::read_dir(root_abs_path).map_err(|err| {
+                    RPCErrors::ReasonError(format!(
+                        "read root directory for metadata sync failed ({}): {}",
+                        root_abs_path.display(),
+                        err
+                    ))
+                })?;
+                for child in root_reader {
+                    let child = child.map_err(|err| {
+                        RPCErrors::ReasonError(format!(
+                            "read root directory entry for metadata sync failed: {}",
+                            err
+                        ))
+                    })?;
+                    let child_path = child.path();
+                    let file_name = child.file_name().to_string_lossy().to_string();
+                    if file_name.is_empty() {
+                        continue;
+                    }
+                    if file_name == INTERNAL_RECYCLE_BIN_DIR {
+                        continue;
+                    }
+                    let child_rel_path = PathBuf::from(&file_name);
+                    stack.push((child_path, child_rel_path));
+                }
+            } else {
+                if BuckyFileServer::is_internal_rel_path(rel_scope_path) {
+                    return Ok(entries);
+                }
+                stack.push((root_abs_path.to_path_buf(), rel_scope_path.to_path_buf()));
+            }
+
+            while let Some((entry_abs_path, entry_rel_path)) = stack.pop() {
+                if BuckyFileServer::is_internal_rel_path(&entry_rel_path) {
+                    continue;
+                }
+                let metadata = std::fs::metadata(&entry_abs_path).map_err(|err| {
+                    RPCErrors::ReasonError(format!(
+                        "read metadata during metadata sync failed ({}): {}",
+                        entry_abs_path.display(),
+                        err
+                    ))
+                })?;
+                let is_dir = metadata.is_dir();
+                let name = entry_rel_path
+                    .file_name()
+                    .map(|value| value.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if name.is_empty() {
+                    continue;
+                }
+
+                let rel_path_display = BuckyFileServer::to_display_path(&entry_rel_path);
+                let parent_display = entry_rel_path
+                    .parent()
+                    .map(BuckyFileServer::to_display_path)
+                    .unwrap_or_else(|| "/".to_string());
+
+                entries.push(IndexedFsEntry {
+                    rel_path: rel_path_display,
+                    parent_rel_path: parent_display,
+                    name: name.clone(),
+                    lower_name: name.to_ascii_lowercase(),
+                    ext: BuckyFileServer::normalize_file_ext(&name),
+                    is_dir: if is_dir { 1 } else { 0 },
+                    size: if metadata.is_file() {
+                        metadata.len().min(i64::MAX as u64) as i64
+                    } else {
+                        0
+                    },
+                    modified: BuckyFileServer::unix_mtime(&metadata).min(i64::MAX as u64) as i64,
+                    mime: BuckyFileServer::normalize_file_mime(&entry_abs_path, is_dir),
+                });
+
+                if !is_dir {
+                    continue;
+                }
+
+                let reader = std::fs::read_dir(&entry_abs_path).map_err(|err| {
+                    RPCErrors::ReasonError(format!(
+                        "read directory during metadata sync failed ({}): {}",
+                        entry_abs_path.display(),
+                        err
+                    ))
+                })?;
+
+                for child in reader {
+                    let child = child.map_err(|err| {
+                        RPCErrors::ReasonError(format!(
+                            "read directory entry during metadata sync failed: {}",
+                            err
+                        ))
+                    })?;
+                    let file_type = child.file_type().map_err(|err| {
+                        RPCErrors::ReasonError(format!(
+                            "read file type during metadata sync failed: {}",
+                            err
+                        ))
+                    })?;
+                    if file_type.is_symlink() {
+                        continue;
+                    }
+                    let child_name = child.file_name().to_string_lossy().to_string();
+                    if child_name.is_empty() {
+                        continue;
+                    }
+                    if child_name == INTERNAL_RECYCLE_BIN_DIR {
+                        continue;
+                    }
+
+                    let child_rel_path = entry_rel_path.join(&child_name);
+                    stack.push((child.path(), child_rel_path));
+                }
+            }
+
+            Ok(entries)
+        }
+
+        let db_path = self.db_path();
+        let owner = owner.to_string();
+        let rel_scope_path = rel_scope_path.to_path_buf();
+        let root_abs_path = self.user_root(&owner).join(&rel_scope_path);
+        let scope_display_path = Self::to_display_path(&rel_scope_path);
+
+        tokio::task::spawn_blocking(move || -> Result<FileMetadataSyncStats, RPCErrors> {
+            let conn = Connection::open(db_path).map_err(|err| {
+                RPCErrors::ReasonError(format!("open metadata database failed: {}", err))
+            })?;
+            let tx = conn.unchecked_transaction().map_err(|err| {
+                RPCErrors::ReasonError(format!("start metadata transaction failed: {}", err))
+            })?;
+
+            let entries = collect_entries_under_scope(&root_abs_path, &rel_scope_path)?;
+            let mut stats = FileMetadataSyncStats {
+                scanned: entries.len() as u64,
+                upserted: 0,
+                removed: 0,
+            };
+
+            tx.execute(
+                "CREATE TEMP TABLE IF NOT EXISTS temp_file_meta_paths(rel_path TEXT PRIMARY KEY)",
+                [],
+            )
+            .map_err(|err| {
+                RPCErrors::ReasonError(format!("prepare metadata temp table failed: {}", err))
+            })?;
+            tx.execute("DELETE FROM temp_file_meta_paths", [])
+                .map_err(|err| {
+                    RPCErrors::ReasonError(format!("clear metadata temp table failed: {}", err))
+                })?;
+
+            let now = BuckyFileServer::now_unix().min(i64::MAX as u64) as i64;
+            for entry in entries {
+                tx.execute(
+                    "INSERT INTO temp_file_meta_paths(rel_path) VALUES(?1)",
+                    params![entry.rel_path],
+                )
+                .map_err(|err| {
+                    RPCErrors::ReasonError(format!("insert metadata temp path failed: {}", err))
+                })?;
+
+                tx.execute(
+                    "INSERT INTO file_entries(
+                        owner, rel_path, parent_rel_path, name, lower_name, ext,
+                        is_dir, size, modified, mime, created_at, updated_at, deleted_at
+                    ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL)
+                     ON CONFLICT(owner, rel_path) DO UPDATE SET
+                        parent_rel_path=excluded.parent_rel_path,
+                        name=excluded.name,
+                        lower_name=excluded.lower_name,
+                        ext=excluded.ext,
+                        is_dir=excluded.is_dir,
+                        size=excluded.size,
+                        modified=excluded.modified,
+                        mime=excluded.mime,
+                        updated_at=excluded.updated_at,
+                        deleted_at=NULL",
+                    params![
+                        owner.as_str(),
+                        entry.rel_path,
+                        entry.parent_rel_path,
+                        entry.name,
+                        entry.lower_name,
+                        entry.ext,
+                        entry.is_dir,
+                        entry.size,
+                        entry.modified,
+                        entry.mime,
+                        now,
+                        now,
+                    ],
+                )
+                .map_err(|err| {
+                    RPCErrors::ReasonError(format!("upsert file metadata failed: {}", err))
+                })?;
+                stats.upserted += 1;
+            }
+
+            let removed_rows = if scope_display_path == "/" {
+                tx.execute(
+                    "DELETE FROM file_entries
+                     WHERE owner = ?1
+                       AND rel_path NOT IN (SELECT rel_path FROM temp_file_meta_paths)",
+                    params![owner.as_str()],
+                )
+                .map_err(|err| {
+                    RPCErrors::ReasonError(format!("remove stale metadata failed: {}", err))
+                })?
+            } else {
+                let like_scope = BuckyFileServer::rel_path_scope_like(&scope_display_path)
+                    .unwrap_or_else(|| "".to_string());
+                tx.execute(
+                    "DELETE FROM file_entries
+                     WHERE owner = ?1
+                       AND (rel_path = ?2 OR rel_path LIKE ?3)
+                       AND rel_path NOT IN (SELECT rel_path FROM temp_file_meta_paths)",
+                    params![owner.as_str(), scope_display_path, like_scope],
+                )
+                .map_err(|err| {
+                    RPCErrors::ReasonError(format!("remove stale metadata failed: {}", err))
+                })?
+            };
+            stats.removed = removed_rows.max(0) as u64;
+
+            tx.execute("DELETE FROM temp_file_meta_paths", [])
+                .map_err(|err| {
+                    RPCErrors::ReasonError(format!("clear metadata temp table failed: {}", err))
+                })?;
+
+            tx.commit().map_err(|err| {
+                RPCErrors::ReasonError(format!("commit metadata transaction failed: {}", err))
+            })?;
+
+            Ok(stats)
+        })
+        .await
+        .map_err(|err| RPCErrors::ReasonError(format!("sync metadata join error: {}", err)))?
+    }
+
+    async fn ensure_owner_metadata_seeded(&self, owner: &str) -> Result<(), RPCErrors> {
+        if self.owner_root_seeded(owner).await? {
+            return Ok(());
+        }
+
+        let _ = self
+            .sync_file_metadata_subtree(owner, Path::new(""))
+            .await?;
+        self.sync_thumbnail_tasks_for_scope(owner, Path::new(""))
+            .await?;
+        self.mark_owner_root_seeded(owner).await
+    }
+
+    fn recycle_bin_dir(&self) -> PathBuf {
+        self.files_root().join(INTERNAL_RECYCLE_BIN_DIR)
+    }
+
+    fn recycle_bin_item_rel_path(owner: &str, item_id: &str, name: &str) -> PathBuf {
+        PathBuf::from(INTERNAL_RECYCLE_BIN_DIR)
+            .join(owner)
+            .join(item_id)
+            .join(name)
+    }
+
+    fn is_internal_rel_path(rel_path: &Path) -> bool {
+        rel_path.components().any(|component| match component {
+            Component::Normal(part) => part.to_string_lossy() == INTERNAL_RECYCLE_BIN_DIR,
+            _ => false,
+        })
+    }
+
+    fn thumbnail_cache_dir(&self) -> PathBuf {
+        self.data_folder.join("thumb_cache")
+    }
+
+    fn thumbnail_variant_for_size(size: u32) -> String {
+        format!("s{}", size)
+    }
+
+    fn parse_thumbnail_size(raw_size: Option<String>) -> u32 {
+        raw_size
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            .unwrap_or(THUMBNAIL_SIZE_DEFAULT)
+            .clamp(THUMBNAIL_SIZE_MIN, THUMBNAIL_SIZE_MAX)
+    }
+
+    fn is_thumbnail_supported_ext(ext: &str) -> bool {
+        matches!(ext, "jpg" | "jpeg" | "png" | "webp")
+    }
+
+    fn build_thumbnail_rel_path(
+        owner: &str,
+        rel_path: &str,
+        variant: &str,
+        source_size: i64,
+        source_modified: i64,
+    ) -> String {
+        let payload = format!(
+            "{}|{}|{}|{}|{}",
+            owner, rel_path, variant, source_size, source_modified
+        );
+        let digest = Sha256::digest(payload.as_bytes());
+        let digest_hex = digest
+            .iter()
+            .map(|value| format!("{:02x}", value))
+            .collect::<String>();
+        format!("{}/{}.jpg", &digest_hex[..2], digest_hex)
+    }
+
+    async fn sync_thumbnail_tasks_for_scope(
+        &self,
+        owner: &str,
+        rel_scope_path: &Path,
+    ) -> Result<(), RPCErrors> {
+        let db_path = self.db_path();
+        let owner = owner.to_string();
+        let scope_display_path = Self::to_display_path(rel_scope_path);
+        tokio::task::spawn_blocking(move || -> Result<(), RPCErrors> {
+            let conn = Connection::open(db_path).map_err(|err| {
+                RPCErrors::ReasonError(format!("open thumbnail database failed: {}", err))
+            })?;
+            let tx = conn.unchecked_transaction().map_err(|err| {
+                RPCErrors::ReasonError(format!("start thumbnail transaction failed: {}", err))
+            })?;
+
+            let now = BuckyFileServer::now_unix().min(i64::MAX as u64) as i64;
+            let scope_like = BuckyFileServer::rel_path_scope_like(&scope_display_path)
+                .unwrap_or_else(|| "".to_string());
+
+            let select_sql = if scope_display_path == "/" {
+                "SELECT rel_path, ext, size, modified FROM file_entries WHERE owner = ?1 AND is_dir = 0"
+            } else {
+                "SELECT rel_path, ext, size, modified FROM file_entries
+                 WHERE owner = ?1 AND is_dir = 0 AND (rel_path = ?2 OR rel_path LIKE ?3)"
+            };
+
+            {
+                let mut stmt = tx.prepare(select_sql).map_err(|err| {
+                    RPCErrors::ReasonError(format!("prepare thumbnail source query failed: {}", err))
+                })?;
+                let mut rows = if scope_display_path == "/" {
+                    stmt.query(params![owner.as_str()])
+                } else {
+                    stmt.query(params![owner.as_str(), scope_display_path, scope_like])
+                }
+                .map_err(|err| {
+                    RPCErrors::ReasonError(format!("query thumbnail source failed: {}", err))
+                })?;
+
+                while let Some(row) = rows.next().map_err(|err| {
+                    RPCErrors::ReasonError(format!("iterate thumbnail source failed: {}", err))
+                })? {
+                    let rel_path: String = row.get(0).map_err(|err| {
+                        RPCErrors::ReasonError(format!("read thumbnail source rel_path failed: {}", err))
+                    })?;
+                    let ext: String = row.get(1).map_err(|err| {
+                        RPCErrors::ReasonError(format!("read thumbnail source ext failed: {}", err))
+                    })?;
+                    let size: i64 = row.get(2).map_err(|err| {
+                        RPCErrors::ReasonError(format!("read thumbnail source size failed: {}", err))
+                    })?;
+                    let modified: i64 = row.get(3).map_err(|err| {
+                        RPCErrors::ReasonError(format!("read thumbnail source modified failed: {}", err))
+                    })?;
+
+                    if !BuckyFileServer::is_thumbnail_supported_ext(ext.as_str()) {
+                        continue;
+                    }
+
+                    let variant = THUMBNAIL_VARIANT_DEFAULT;
+                    tx.execute(
+                    "INSERT INTO file_thumbnails(
+                        owner, rel_path, variant, source_size, source_modified,
+                        status, thumb_rel_path, width, height, attempts,
+                        last_error, updated_at, next_retry_at
+                    ) VALUES(?1, ?2, ?3, ?4, ?5, 'pending', NULL, NULL, NULL, 0, NULL, ?6, 0)
+                     ON CONFLICT(owner, rel_path, variant) DO UPDATE SET
+                        source_size=excluded.source_size,
+                        source_modified=excluded.source_modified,
+                        updated_at=excluded.updated_at,
+                        status=CASE
+                            WHEN file_thumbnails.source_size != excluded.source_size
+                              OR file_thumbnails.source_modified != excluded.source_modified
+                            THEN 'pending'
+                            ELSE file_thumbnails.status
+                        END,
+                        thumb_rel_path=CASE
+                            WHEN file_thumbnails.source_size != excluded.source_size
+                              OR file_thumbnails.source_modified != excluded.source_modified
+                            THEN NULL
+                            ELSE file_thumbnails.thumb_rel_path
+                        END,
+                        width=CASE
+                            WHEN file_thumbnails.source_size != excluded.source_size
+                              OR file_thumbnails.source_modified != excluded.source_modified
+                            THEN NULL
+                            ELSE file_thumbnails.width
+                        END,
+                        height=CASE
+                            WHEN file_thumbnails.source_size != excluded.source_size
+                              OR file_thumbnails.source_modified != excluded.source_modified
+                            THEN NULL
+                            ELSE file_thumbnails.height
+                        END,
+                        attempts=CASE
+                            WHEN file_thumbnails.source_size != excluded.source_size
+                              OR file_thumbnails.source_modified != excluded.source_modified
+                            THEN 0
+                            ELSE file_thumbnails.attempts
+                        END,
+                        last_error=CASE
+                            WHEN file_thumbnails.source_size != excluded.source_size
+                              OR file_thumbnails.source_modified != excluded.source_modified
+                            THEN NULL
+                            ELSE file_thumbnails.last_error
+                        END,
+                        next_retry_at=CASE
+                            WHEN file_thumbnails.source_size != excluded.source_size
+                              OR file_thumbnails.source_modified != excluded.source_modified
+                            THEN 0
+                            ELSE file_thumbnails.next_retry_at
+                        END",
+                        params![owner.as_str(), rel_path, variant, size, modified, now],
+                    )
+                    .map_err(|err| {
+                        RPCErrors::ReasonError(format!("upsert thumbnail task failed: {}", err))
+                    })?;
+                }
+            }
+
+            let cleanup_sql = if scope_display_path == "/" {
+                "DELETE FROM file_thumbnails
+                 WHERE owner = ?1 AND variant = ?2
+                   AND NOT EXISTS(
+                       SELECT 1 FROM file_entries
+                       WHERE file_entries.owner = file_thumbnails.owner
+                         AND file_entries.rel_path = file_thumbnails.rel_path
+                         AND file_entries.is_dir = 0
+                         AND file_entries.ext IN ('jpg', 'jpeg', 'png', 'webp')
+                   )"
+            } else {
+                "DELETE FROM file_thumbnails
+                 WHERE owner = ?1 AND variant = ?2
+                   AND (rel_path = ?3 OR rel_path LIKE ?4)
+                   AND NOT EXISTS(
+                       SELECT 1 FROM file_entries
+                       WHERE file_entries.owner = file_thumbnails.owner
+                         AND file_entries.rel_path = file_thumbnails.rel_path
+                         AND file_entries.is_dir = 0
+                         AND file_entries.ext IN ('jpg', 'jpeg', 'png', 'webp')
+                   )"
+            };
+            if scope_display_path == "/" {
+                tx.execute(cleanup_sql, params![owner.as_str(), THUMBNAIL_VARIANT_DEFAULT])
+            } else {
+                tx.execute(
+                    cleanup_sql,
+                    params![
+                        owner.as_str(),
+                        THUMBNAIL_VARIANT_DEFAULT,
+                        scope_display_path,
+                        BuckyFileServer::rel_path_scope_like(&scope_display_path)
+                            .unwrap_or_else(|| "".to_string()),
+                    ],
+                )
+            }
+            .map_err(|err| {
+                RPCErrors::ReasonError(format!("cleanup thumbnail task failed: {}", err))
+            })?;
+
+            tx.commit().map_err(|err| {
+                RPCErrors::ReasonError(format!("commit thumbnail transaction failed: {}", err))
+            })?;
+            Ok(())
+        })
+        .await
+        .map_err(|err| RPCErrors::ReasonError(format!("sync thumbnail join error: {}", err)))?
+    }
+
+    fn generate_thumbnail_bytes(
+        source_abs_path: &Path,
+        size: u32,
+    ) -> Result<(Vec<u8>, i64, i64), RPCErrors> {
+        let image = image::open(source_abs_path).map_err(|err| {
+            RPCErrors::ReasonError(format!(
+                "decode image for thumbnail failed ({}): {}",
+                source_abs_path.display(),
+                err
+            ))
+        })?;
+        let resized = image.resize(size, size, FilterType::Lanczos3);
+        let width = resized.width().min(i64::MAX as u32) as i64;
+        let height = resized.height().min(i64::MAX as u32) as i64;
+        let mut output = Vec::new();
+        let mut encoder = JpegEncoder::new_with_quality(&mut output, 82);
+        encoder.encode_image(&resized).map_err(|err| {
+            RPCErrors::ReasonError(format!("encode thumbnail jpeg failed: {}", err))
+        })?;
+        Ok((output, width, height))
+    }
+
+    async fn process_thumbnail_task(
+        &self,
+        owner: &str,
+        rel_path: &str,
+        variant: &str,
+        source_size: i64,
+        source_modified: i64,
+        attempts: i64,
+    ) -> Result<(), RPCErrors> {
+        let rel_path_parsed = Self::parse_relative_path(rel_path)?;
+        let source_abs_path = self.user_root(owner).join(&rel_path_parsed);
+        let metadata = tokio::fs::metadata(&source_abs_path).await.map_err(|err| {
+            RPCErrors::ReasonError(format!(
+                "read source metadata for thumbnail failed ({}): {}",
+                source_abs_path.display(),
+                err
+            ))
+        })?;
+        if !metadata.is_file() {
+            return Err(RPCErrors::ReasonError(
+                "thumbnail source is not a regular file".to_string(),
+            ));
+        }
+
+        let current_size = metadata.len().min(i64::MAX as u64) as i64;
+        let current_modified = Self::unix_mtime(&metadata).min(i64::MAX as u64) as i64;
+        let thumb_size = variant
+            .trim_start_matches('s')
+            .parse::<u32>()
+            .ok()
+            .unwrap_or(THUMBNAIL_SIZE_DEFAULT)
+            .clamp(THUMBNAIL_SIZE_MIN, THUMBNAIL_SIZE_MAX);
+
+        let (bytes, width, height) = tokio::task::spawn_blocking({
+            let source_abs_path = source_abs_path.clone();
+            move || Self::generate_thumbnail_bytes(&source_abs_path, thumb_size)
+        })
+        .await
+        .map_err(|err| RPCErrors::ReasonError(format!("thumbnail task join failed: {}", err)))??;
+
+        let thumb_rel_path = Self::build_thumbnail_rel_path(
+            owner,
+            rel_path,
+            variant,
+            current_size,
+            current_modified,
+        );
+        let thumb_abs_path = self.thumbnail_cache_dir().join(&thumb_rel_path);
+        if let Some(parent) = thumb_abs_path.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|err| {
+                RPCErrors::ReasonError(format!(
+                    "create thumbnail cache directory failed ({}): {}",
+                    parent.display(),
+                    err
+                ))
+            })?;
+        }
+        tokio::fs::write(&thumb_abs_path, bytes)
+            .await
+            .map_err(|err| {
+                RPCErrors::ReasonError(format!(
+                    "write thumbnail file failed ({}): {}",
+                    thumb_abs_path.display(),
+                    err
+                ))
+            })?;
+
+        let db_path = self.db_path();
+        let owner_db = owner.to_string();
+        let rel_path_db = rel_path.to_string();
+        let variant_db = variant.to_string();
+        tokio::task::spawn_blocking(move || -> Result<(), RPCErrors> {
+            let conn = Connection::open(db_path).map_err(|err| {
+                RPCErrors::ReasonError(format!("open thumbnail database failed: {}", err))
+            })?;
+            let now = BuckyFileServer::now_unix().min(i64::MAX as u64) as i64;
+            conn.execute(
+                "UPDATE file_thumbnails SET
+                    source_size = ?1,
+                    source_modified = ?2,
+                    status = 'ready',
+                    thumb_rel_path = ?3,
+                    width = ?4,
+                    height = ?5,
+                    attempts = ?6,
+                    last_error = NULL,
+                    next_retry_at = 0,
+                    updated_at = ?7
+                 WHERE owner = ?8 AND rel_path = ?9 AND variant = ?10",
+                params![
+                    current_size,
+                    current_modified,
+                    thumb_rel_path,
+                    width,
+                    height,
+                    attempts,
+                    now,
+                    owner_db,
+                    rel_path_db,
+                    variant_db,
+                ],
+            )
+            .map_err(|err| {
+                RPCErrors::ReasonError(format!("update thumbnail ready status failed: {}", err))
+            })?;
+            Ok(())
+        })
+        .await
+        .map_err(|err| RPCErrors::ReasonError(format!("thumbnail update join error: {}", err)))??;
+
+        if current_size != source_size || current_modified != source_modified {
+            warn!(
+                "thumbnail source changed during processing owner={}, path={}, variant={}",
+                owner, rel_path, variant
+            );
+        }
+
+        Ok(())
+    }
+
+    async fn mark_thumbnail_task_failed(
+        &self,
+        owner: &str,
+        rel_path: &str,
+        variant: &str,
+        attempts: i64,
+        error_text: &str,
+    ) {
+        let next_attempts = attempts.saturating_add(1);
+        let backoff_secs = (15_i64 * (1_i64 << next_attempts.min(6))).clamp(15, 1800);
+        let next_retry_at = Self::now_unix().saturating_add(backoff_secs as u64) as i64;
+        let db_path = self.db_path();
+        let owner = owner.to_string();
+        let rel_path = rel_path.to_string();
+        let variant = variant.to_string();
+        let error_text = error_text.to_string();
+        let _ = tokio::task::spawn_blocking(move || -> Result<(), RPCErrors> {
+            let conn = Connection::open(db_path).map_err(|err| {
+                RPCErrors::ReasonError(format!("open thumbnail database failed: {}", err))
+            })?;
+            let now = BuckyFileServer::now_unix().min(i64::MAX as u64) as i64;
+            conn.execute(
+                "UPDATE file_thumbnails SET
+                    status = 'failed',
+                    attempts = ?1,
+                    last_error = ?2,
+                    next_retry_at = ?3,
+                    updated_at = ?4
+                 WHERE owner = ?5 AND rel_path = ?6 AND variant = ?7",
+                params![
+                    next_attempts,
+                    error_text,
+                    next_retry_at,
+                    now,
+                    owner,
+                    rel_path,
+                    variant,
+                ],
+            )
+            .map_err(|err| {
+                RPCErrors::ReasonError(format!("update thumbnail failed status failed: {}", err))
+            })?;
+            Ok(())
+        })
+        .await;
+    }
+
+    async fn take_next_thumbnail_task(&self) -> Result<Option<ThumbnailTask>, RPCErrors> {
+        let db_path = self.db_path();
+        tokio::task::spawn_blocking(move || -> Result<Option<ThumbnailTask>, RPCErrors> {
+            let conn = Connection::open(db_path).map_err(|err| {
+                RPCErrors::ReasonError(format!("open thumbnail database failed: {}", err))
+            })?;
+            let tx = conn.unchecked_transaction().map_err(|err| {
+                RPCErrors::ReasonError(format!(
+                    "start thumbnail dequeue transaction failed: {}",
+                    err
+                ))
+            })?;
+            let now = BuckyFileServer::now_unix().min(i64::MAX as u64) as i64;
+
+            let task = tx
+                .query_row(
+                    "SELECT owner, rel_path, variant, source_size, source_modified, attempts
+                     FROM file_thumbnails
+                     WHERE (status = 'pending' OR status = 'failed')
+                       AND next_retry_at <= ?1
+                     ORDER BY updated_at ASC
+                     LIMIT 1",
+                    params![now],
+                    |row| {
+                        Ok(ThumbnailTask {
+                            owner: row.get(0)?,
+                            rel_path: row.get(1)?,
+                            variant: row.get(2)?,
+                            source_size: row.get(3)?,
+                            source_modified: row.get(4)?,
+                            attempts: row.get(5)?,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(|err| {
+                    RPCErrors::ReasonError(format!("query thumbnail dequeue failed: {}", err))
+                })?;
+
+            if let Some(task) = task.clone() {
+                tx.execute(
+                    "UPDATE file_thumbnails SET status='running', updated_at=?1
+                     WHERE owner=?2 AND rel_path=?3 AND variant=?4",
+                    params![now, task.owner, task.rel_path, task.variant],
+                )
+                .map_err(|err| {
+                    RPCErrors::ReasonError(format!("mark thumbnail running failed: {}", err))
+                })?;
+            }
+
+            tx.commit().map_err(|err| {
+                RPCErrors::ReasonError(format!(
+                    "commit thumbnail dequeue transaction failed: {}",
+                    err
+                ))
+            })?;
+            Ok(task)
+        })
+        .await
+        .map_err(|err| RPCErrors::ReasonError(format!("dequeue thumbnail join error: {}", err)))?
+    }
+
+    async fn run_thumbnail_worker(&self) {
+        loop {
+            let task = match self.take_next_thumbnail_task().await {
+                Ok(value) => value,
+                Err(err) => {
+                    warn!("thumbnail worker dequeue failed: {}", err);
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    continue;
+                }
+            };
+
+            let Some(task) = task else {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            };
+
+            if let Err(err) = self
+                .process_thumbnail_task(
+                    &task.owner,
+                    &task.rel_path,
+                    &task.variant,
+                    task.source_size,
+                    task.source_modified,
+                    task.attempts,
+                )
+                .await
+            {
+                warn!(
+                    "thumbnail worker task failed owner={}, path={}, variant={}: {}",
+                    task.owner, task.rel_path, task.variant, err
+                );
+                self.mark_thumbnail_task_failed(
+                    &task.owner,
+                    &task.rel_path,
+                    &task.variant,
+                    task.attempts,
+                    err.to_string().as_str(),
+                )
+                .await;
+            }
+        }
+    }
+
+    async fn get_ready_thumbnail_rel_path(
+        &self,
+        owner: &str,
+        rel_path_display: &str,
+        variant: &str,
+        source_size: i64,
+        source_modified: i64,
+    ) -> Result<Option<String>, RPCErrors> {
+        let db_path = self.db_path();
+        let owner = owner.to_string();
+        let rel_path_display = rel_path_display.to_string();
+        let variant = variant.to_string();
+        tokio::task::spawn_blocking(move || -> Result<Option<String>, RPCErrors> {
+            let conn = Connection::open(db_path).map_err(|err| {
+                RPCErrors::ReasonError(format!("open thumbnail database failed: {}", err))
+            })?;
+            conn.query_row(
+                "SELECT thumb_rel_path
+                 FROM file_thumbnails
+                 WHERE owner = ?1 AND rel_path = ?2 AND variant = ?3
+                   AND status = 'ready'
+                   AND source_size = ?4
+                   AND source_modified = ?5
+                   AND thumb_rel_path IS NOT NULL
+                 LIMIT 1",
+                params![
+                    owner.as_str(),
+                    rel_path_display,
+                    variant.as_str(),
+                    source_size,
+                    source_modified,
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|err| RPCErrors::ReasonError(format!("query ready thumbnail failed: {}", err)))
+        })
+        .await
+        .map_err(|err| {
+            RPCErrors::ReasonError(format!("query ready thumbnail join error: {}", err))
+        })?
+    }
+
+    async fn sync_metadata_after_write_best_effort(&self, owner: &str, rel_path: &Path) {
+        if Self::is_internal_rel_path(rel_path) {
+            return;
+        }
+
+        if let Err(err) = self.sync_file_metadata_subtree(owner, rel_path).await {
+            warn!(
+                "sync file metadata failed for owner={}, path={}: {}",
+                owner,
+                Self::to_display_path(rel_path),
+                err
+            );
+            return;
+        }
+
+        if let Err(err) = self.sync_thumbnail_tasks_for_scope(owner, rel_path).await {
+            warn!(
+                "sync thumbnail tasks failed for owner={}, path={}: {}",
+                owner,
+                Self::to_display_path(rel_path),
+                err
+            );
+        }
+    }
+
+    async fn get_file_nav_neighbors(
+        &self,
+        owner: &str,
+        rel_path: &Path,
+    ) -> Result<(Option<FileEntry>, Option<FileEntry>), RPCErrors> {
+        fn parse_row_to_file_entry(row: &rusqlite::Row<'_>) -> Result<FileEntry, rusqlite::Error> {
+            let is_dir: i64 = row.get(2)?;
+            let size: i64 = row.get(3)?;
+            let modified: i64 = row.get(4)?;
+            Ok(FileEntry {
+                name: row.get(0)?,
+                path: row.get(1)?,
+                is_dir: is_dir != 0,
+                size: size.max(0) as u64,
+                modified: modified.max(0) as u64,
+            })
+        }
+
+        let db_path = self.db_path();
+        let owner = owner.to_string();
+        let rel_display_path = Self::to_display_path(rel_path);
+        tokio::task::spawn_blocking(
+            move || -> Result<(Option<FileEntry>, Option<FileEntry>), RPCErrors> {
+                let conn = Connection::open(db_path).map_err(|err| {
+                    RPCErrors::ReasonError(format!("open metadata database failed: {}", err))
+                })?;
+
+                let current = conn
+                    .query_row(
+                        "SELECT parent_rel_path, lower_name, name, rel_path
+                     FROM file_entries
+                     WHERE owner = ?1 AND rel_path = ?2 AND is_dir = 0
+                     LIMIT 1",
+                        params![owner.as_str(), rel_display_path],
+                        |row| {
+                            let parent_rel_path: String = row.get(0)?;
+                            let lower_name: String = row.get(1)?;
+                            let name: String = row.get(2)?;
+                            let rel_path: String = row.get(3)?;
+                            Ok((parent_rel_path, lower_name, name, rel_path))
+                        },
+                    )
+                    .optional()
+                    .map_err(|err| {
+                        RPCErrors::ReasonError(format!(
+                            "query current metadata record failed: {}",
+                            err
+                        ))
+                    })?;
+
+                let Some((parent_rel_path, lower_name, name, rel_path)) = current else {
+                    return Ok((None, None));
+                };
+
+                let previous = conn
+                    .query_row(
+                        "SELECT name, rel_path, is_dir, size, modified
+                     FROM file_entries
+                     WHERE owner = ?1
+                       AND parent_rel_path = ?2
+                       AND is_dir = 0
+                       AND (
+                         lower_name < ?3
+                         OR (lower_name = ?3 AND name < ?4)
+                         OR (lower_name = ?3 AND name = ?4 AND rel_path < ?5)
+                       )
+                     ORDER BY lower_name DESC, name DESC, rel_path DESC
+                     LIMIT 1",
+                        params![owner.as_str(), parent_rel_path, lower_name, name, rel_path],
+                        parse_row_to_file_entry,
+                    )
+                    .optional()
+                    .map_err(|err| {
+                        RPCErrors::ReasonError(format!(
+                            "query previous metadata record failed: {}",
+                            err
+                        ))
+                    })?;
+
+                let next = conn
+                    .query_row(
+                        "SELECT name, rel_path, is_dir, size, modified
+                     FROM file_entries
+                     WHERE owner = ?1
+                       AND parent_rel_path = ?2
+                       AND is_dir = 0
+                       AND (
+                         lower_name > ?3
+                         OR (lower_name = ?3 AND name > ?4)
+                         OR (lower_name = ?3 AND name = ?4 AND rel_path > ?5)
+                       )
+                     ORDER BY lower_name ASC, name ASC, rel_path ASC
+                     LIMIT 1",
+                        params![owner.as_str(), parent_rel_path, lower_name, name, rel_path],
+                        parse_row_to_file_entry,
+                    )
+                    .optional()
+                    .map_err(|err| {
+                        RPCErrors::ReasonError(format!(
+                            "query next metadata record failed: {}",
+                            err
+                        ))
+                    })?;
+
+                Ok((previous, next))
+            },
+        )
+        .await
+        .map_err(|err| RPCErrors::ReasonError(format!("query metadata nav join error: {}", err)))?
+    }
+
+    async fn upsert_favorite_record(&self, owner: &str, rel_path: &str) -> Result<(), RPCErrors> {
+        let db_path = self.db_path();
+        let owner = owner.to_string();
+        let rel_path = rel_path.to_string();
+        tokio::task::spawn_blocking(move || -> Result<(), RPCErrors> {
+            let conn = Connection::open(db_path).map_err(|err| {
+                RPCErrors::ReasonError(format!("open favorites database failed: {}", err))
+            })?;
+            let now = BuckyFileServer::now_unix().min(i64::MAX as u64) as i64;
+            conn.execute(
+                "INSERT INTO file_favorites(owner, rel_path, created_at, updated_at)
+                 VALUES(?1, ?2, ?3, ?3)
+                 ON CONFLICT(owner, rel_path) DO UPDATE SET updated_at = excluded.updated_at",
+                params![owner, rel_path, now],
+            )
+            .map_err(|err| RPCErrors::ReasonError(format!("upsert favorite failed: {}", err)))?;
+            Ok(())
+        })
+        .await
+        .map_err(|err| RPCErrors::ReasonError(format!("upsert favorite join error: {}", err)))?
+    }
+
+    async fn delete_favorite_record(&self, owner: &str, rel_path: &str) -> Result<(), RPCErrors> {
+        let db_path = self.db_path();
+        let owner = owner.to_string();
+        let rel_path = rel_path.to_string();
+        tokio::task::spawn_blocking(move || -> Result<(), RPCErrors> {
+            let conn = Connection::open(db_path).map_err(|err| {
+                RPCErrors::ReasonError(format!("open favorites database failed: {}", err))
+            })?;
+            conn.execute(
+                "DELETE FROM file_favorites WHERE owner = ?1 AND rel_path = ?2",
+                params![owner, rel_path],
+            )
+            .map_err(|err| RPCErrors::ReasonError(format!("delete favorite failed: {}", err)))?;
+            Ok(())
+        })
+        .await
+        .map_err(|err| RPCErrors::ReasonError(format!("delete favorite join error: {}", err)))?
+    }
+
+    async fn list_favorite_entries(
+        &self,
+        owner: &str,
+        filters: &FileListFilters,
+    ) -> Result<Vec<FileEntry>, RPCErrors> {
+        let db_path = self.db_path();
+        let owner = owner.to_string();
+        let mut items =
+            tokio::task::spawn_blocking(move || -> Result<Vec<FileEntry>, RPCErrors> {
+                let conn = Connection::open(db_path).map_err(|err| {
+                    RPCErrors::ReasonError(format!("open favorites database failed: {}", err))
+                })?;
+
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT fe.name, fe.rel_path, fe.is_dir, fe.size, fe.modified
+                     FROM file_favorites ff
+                     JOIN file_entries fe
+                       ON fe.owner = ff.owner
+                      AND fe.rel_path = ff.rel_path
+                     WHERE ff.owner = ?1
+                     ORDER BY ff.updated_at DESC",
+                    )
+                    .map_err(|err| {
+                        RPCErrors::ReasonError(format!(
+                            "prepare favorites list query failed: {}",
+                            err
+                        ))
+                    })?;
+
+                let mut rows = stmt.query(params![owner.as_str()]).map_err(|err| {
+                    RPCErrors::ReasonError(format!("query favorites list failed: {}", err))
+                })?;
+
+                let mut result = Vec::new();
+                while let Some(row) = rows.next().map_err(|err| {
+                    RPCErrors::ReasonError(format!("iterate favorites list failed: {}", err))
+                })? {
+                    let is_dir: i64 = row.get(2).map_err(|err| {
+                        RPCErrors::ReasonError(format!("read favorites is_dir failed: {}", err))
+                    })?;
+                    let size: i64 = row.get(3).map_err(|err| {
+                        RPCErrors::ReasonError(format!("read favorites size failed: {}", err))
+                    })?;
+                    let modified: i64 = row.get(4).map_err(|err| {
+                        RPCErrors::ReasonError(format!("read favorites modified failed: {}", err))
+                    })?;
+                    result.push(FileEntry {
+                        name: row.get(0).map_err(|err| {
+                            RPCErrors::ReasonError(format!("read favorites name failed: {}", err))
+                        })?,
+                        path: row.get(1).map_err(|err| {
+                            RPCErrors::ReasonError(format!("read favorites path failed: {}", err))
+                        })?,
+                        is_dir: is_dir != 0,
+                        size: size.max(0) as u64,
+                        modified: modified.max(0) as u64,
+                    });
+                }
+
+                Ok(result)
+            })
+            .await
+            .map_err(|err| {
+                RPCErrors::ReasonError(format!("list favorites join error: {}", err))
+            })??;
+
+        items = Self::apply_file_list_filters(items, filters);
+        Ok(items)
+    }
+
+    async fn touch_recent_record(&self, owner: &str, rel_path: &Path) -> Result<(), RPCErrors> {
+        if rel_path.as_os_str().is_empty() || Self::is_internal_rel_path(rel_path) {
+            return Ok(());
+        }
+
+        let db_path = self.db_path();
+        let owner = owner.to_string();
+        let rel_path = Self::to_display_path(rel_path);
+        tokio::task::spawn_blocking(move || -> Result<(), RPCErrors> {
+            let conn = Connection::open(db_path).map_err(|err| {
+                RPCErrors::ReasonError(format!("open recent database failed: {}", err))
+            })?;
+            let now = BuckyFileServer::now_unix().min(i64::MAX as u64) as i64;
+            conn.execute(
+                "INSERT INTO file_recent(owner, rel_path, last_accessed_at, access_count)
+                 VALUES(?1, ?2, ?3, 1)
+                 ON CONFLICT(owner, rel_path) DO UPDATE SET
+                    last_accessed_at = excluded.last_accessed_at,
+                    access_count = file_recent.access_count + 1",
+                params![owner, rel_path, now],
+            )
+            .map_err(|err| RPCErrors::ReasonError(format!("touch recent failed: {}", err)))?;
+            Ok(())
+        })
+        .await
+        .map_err(|err| RPCErrors::ReasonError(format!("touch recent join error: {}", err)))?
+    }
+
+    async fn list_recent_entries(
+        &self,
+        owner: &str,
+        filters: &FileListFilters,
+    ) -> Result<Vec<RecentFileEntry>, RPCErrors> {
+        let db_path = self.db_path();
+        let owner = owner.to_string();
+        let mut items =
+            tokio::task::spawn_blocking(move || -> Result<Vec<RecentFileEntry>, RPCErrors> {
+                let conn = Connection::open(db_path).map_err(|err| {
+                    RPCErrors::ReasonError(format!("open recent database failed: {}", err))
+                })?;
+
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT fe.name, fe.rel_path, fe.is_dir, fe.size, fe.modified,
+                            fr.last_accessed_at, fr.access_count
+                     FROM file_recent fr
+                     JOIN file_entries fe
+                       ON fe.owner = fr.owner
+                      AND fe.rel_path = fr.rel_path
+                     WHERE fr.owner = ?1
+                     ORDER BY fr.last_accessed_at DESC",
+                    )
+                    .map_err(|err| {
+                        RPCErrors::ReasonError(format!("prepare recent list query failed: {}", err))
+                    })?;
+
+                let mut rows = stmt.query(params![owner.as_str()]).map_err(|err| {
+                    RPCErrors::ReasonError(format!("query recent list failed: {}", err))
+                })?;
+
+                let mut result = Vec::new();
+                while let Some(row) = rows.next().map_err(|err| {
+                    RPCErrors::ReasonError(format!("iterate recent list failed: {}", err))
+                })? {
+                    let is_dir: i64 = row.get(2).map_err(|err| {
+                        RPCErrors::ReasonError(format!("read recent is_dir failed: {}", err))
+                    })?;
+                    let size: i64 = row.get(3).map_err(|err| {
+                        RPCErrors::ReasonError(format!("read recent size failed: {}", err))
+                    })?;
+                    let modified: i64 = row.get(4).map_err(|err| {
+                        RPCErrors::ReasonError(format!("read recent modified failed: {}", err))
+                    })?;
+                    let last_accessed_at: i64 = row.get(5).map_err(|err| {
+                        RPCErrors::ReasonError(format!(
+                            "read recent last_accessed_at failed: {}",
+                            err
+                        ))
+                    })?;
+                    let access_count: i64 = row.get(6).map_err(|err| {
+                        RPCErrors::ReasonError(format!("read recent access_count failed: {}", err))
+                    })?;
+
+                    result.push(RecentFileEntry {
+                        entry: FileEntry {
+                            name: row.get(0).map_err(|err| {
+                                RPCErrors::ReasonError(format!("read recent name failed: {}", err))
+                            })?,
+                            path: row.get(1).map_err(|err| {
+                                RPCErrors::ReasonError(format!("read recent path failed: {}", err))
+                            })?,
+                            is_dir: is_dir != 0,
+                            size: size.max(0) as u64,
+                            modified: modified.max(0) as u64,
+                        },
+                        last_accessed_at: last_accessed_at.max(0) as u64,
+                        access_count: access_count.max(0) as u64,
+                    });
+                }
+
+                Ok(result)
+            })
+            .await
+            .map_err(|err| RPCErrors::ReasonError(format!("list recent join error: {}", err)))??;
+
+        let filtered = Self::apply_file_list_filters(
+            items.iter().map(|entry| entry.entry.clone()).collect(),
+            filters,
+        );
+        let keep_paths = filtered
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect::<std::collections::HashSet<_>>();
+        items.retain(|entry| keep_paths.contains(&entry.entry.path));
+
+        if items.len() > filters.limit {
+            items.truncate(filters.limit);
+        }
+        Ok(items)
+    }
+
+    async fn create_recycle_bin_item_record(
+        &self,
+        owner: &str,
+        item_id: &str,
+        original_rel_path: &str,
+        trashed_rel_path: &str,
+        name: &str,
+        is_dir: bool,
+        size: u64,
+        modified: u64,
+        deleted_at: u64,
+    ) -> Result<(), RPCErrors> {
+        let db_path = self.db_path();
+        let owner = owner.to_string();
+        let item_id = item_id.to_string();
+        let original_rel_path = original_rel_path.to_string();
+        let trashed_rel_path = trashed_rel_path.to_string();
+        let name = name.to_string();
+        tokio::task::spawn_blocking(move || -> Result<(), RPCErrors> {
+            let conn = Connection::open(db_path).map_err(|err| {
+                RPCErrors::ReasonError(format!("open recycle database failed: {}", err))
+            })?;
+            conn.execute(
+                "INSERT INTO recycle_bin_items(
+                    item_id, owner, original_rel_path, trashed_rel_path,
+                    name, is_dir, size, modified, deleted_at
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    item_id,
+                    owner,
+                    original_rel_path,
+                    trashed_rel_path,
+                    name,
+                    if is_dir { 1i64 } else { 0i64 },
+                    size.min(i64::MAX as u64) as i64,
+                    modified.min(i64::MAX as u64) as i64,
+                    deleted_at.min(i64::MAX as u64) as i64,
+                ],
+            )
+            .map_err(|err| {
+                RPCErrors::ReasonError(format!("insert recycle bin item failed: {}", err))
+            })?;
+            Ok(())
+        })
+        .await
+        .map_err(|err| {
+            RPCErrors::ReasonError(format!("insert recycle bin item join error: {}", err))
+        })?
+    }
+
+    async fn list_recycle_bin_items(
+        &self,
+        owner: &str,
+        filters: &FileListFilters,
+    ) -> Result<Vec<RecycleBinItem>, RPCErrors> {
+        let db_path = self.db_path();
+        let owner = owner.to_string();
+        let mut items =
+            tokio::task::spawn_blocking(move || -> Result<Vec<RecycleBinItem>, RPCErrors> {
+                let conn = Connection::open(db_path).map_err(|err| {
+                    RPCErrors::ReasonError(format!("open recycle database failed: {}", err))
+                })?;
+
+                let mut stmt = conn
+                .prepare(
+                    "SELECT item_id, original_rel_path, name, is_dir, size, modified, deleted_at
+                     FROM recycle_bin_items
+                     WHERE owner = ?1
+                     ORDER BY deleted_at DESC",
+                )
+                .map_err(|err| {
+                    RPCErrors::ReasonError(format!("prepare recycle list query failed: {}", err))
+                })?;
+
+                let mut rows = stmt.query(params![owner.as_str()]).map_err(|err| {
+                    RPCErrors::ReasonError(format!("query recycle list failed: {}", err))
+                })?;
+
+                let mut result = Vec::new();
+                while let Some(row) = rows.next().map_err(|err| {
+                    RPCErrors::ReasonError(format!("iterate recycle list failed: {}", err))
+                })? {
+                    let is_dir: i64 = row.get(3).map_err(|err| {
+                        RPCErrors::ReasonError(format!("read recycle is_dir failed: {}", err))
+                    })?;
+                    let size: i64 = row.get(4).map_err(|err| {
+                        RPCErrors::ReasonError(format!("read recycle size failed: {}", err))
+                    })?;
+                    let modified: i64 = row.get(5).map_err(|err| {
+                        RPCErrors::ReasonError(format!("read recycle modified failed: {}", err))
+                    })?;
+                    let deleted_at: i64 = row.get(6).map_err(|err| {
+                        RPCErrors::ReasonError(format!("read recycle deleted_at failed: {}", err))
+                    })?;
+                    let original_path: String = row.get(1).map_err(|err| {
+                        RPCErrors::ReasonError(format!(
+                            "read recycle original path failed: {}",
+                            err
+                        ))
+                    })?;
+
+                    result.push(RecycleBinItem {
+                        item_id: row.get(0).map_err(|err| {
+                            RPCErrors::ReasonError(format!("read recycle item id failed: {}", err))
+                        })?,
+                        entry: FileEntry {
+                            name: row.get(2).map_err(|err| {
+                                RPCErrors::ReasonError(format!("read recycle name failed: {}", err))
+                            })?,
+                            path: original_path.clone(),
+                            is_dir: is_dir != 0,
+                            size: size.max(0) as u64,
+                            modified: modified.max(0) as u64,
+                        },
+                        original_path,
+                        deleted_at: deleted_at.max(0) as u64,
+                    });
+                }
+
+                Ok(result)
+            })
+            .await
+            .map_err(|err| RPCErrors::ReasonError(format!("list recycle join error: {}", err)))??;
+
+        let filtered = Self::apply_file_list_filters(
+            items.iter().map(|entry| entry.entry.clone()).collect(),
+            filters,
+        );
+        let keep_paths = filtered
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect::<std::collections::HashSet<_>>();
+        items.retain(|entry| keep_paths.contains(&entry.entry.path));
+        if items.len() > filters.limit {
+            items.truncate(filters.limit);
+        }
+        Ok(items)
+    }
+
+    async fn get_recycle_bin_item(
+        &self,
+        owner: &str,
+        item_id: &str,
+    ) -> Result<Option<(String, String)>, RPCErrors> {
+        let db_path = self.db_path();
+        let owner = owner.to_string();
+        let item_id = item_id.to_string();
+        tokio::task::spawn_blocking(move || -> Result<Option<(String, String)>, RPCErrors> {
+            let conn = Connection::open(db_path).map_err(|err| {
+                RPCErrors::ReasonError(format!("open recycle database failed: {}", err))
+            })?;
+
+            conn.query_row(
+                "SELECT original_rel_path, trashed_rel_path
+                 FROM recycle_bin_items
+                 WHERE owner = ?1 AND item_id = ?2
+                 LIMIT 1",
+                params![owner, item_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(|err| RPCErrors::ReasonError(format!("query recycle item failed: {}", err)))
+        })
+        .await
+        .map_err(|err| RPCErrors::ReasonError(format!("query recycle item join error: {}", err)))?
+    }
+
+    async fn delete_recycle_bin_item_record(
+        &self,
+        owner: &str,
+        item_id: &str,
+    ) -> Result<bool, RPCErrors> {
+        let db_path = self.db_path();
+        let owner = owner.to_string();
+        let item_id = item_id.to_string();
+        tokio::task::spawn_blocking(move || -> Result<bool, RPCErrors> {
+            let conn = Connection::open(db_path).map_err(|err| {
+                RPCErrors::ReasonError(format!("open recycle database failed: {}", err))
+            })?;
+            let rows = conn
+                .execute(
+                    "DELETE FROM recycle_bin_items WHERE owner = ?1 AND item_id = ?2",
+                    params![owner, item_id],
+                )
+                .map_err(|err| {
+                    RPCErrors::ReasonError(format!("delete recycle item record failed: {}", err))
+                })?;
+            Ok(rows > 0)
+        })
+        .await
+        .map_err(|err| {
+            RPCErrors::ReasonError(format!("delete recycle item record join error: {}", err))
+        })?
     }
 
     async fn create_share_record(
@@ -1906,6 +3581,9 @@ impl BuckyFileServer {
                 )
             })?;
 
+        self.sync_metadata_after_write_best_effort(&principal.username, &rel_path)
+            .await;
+
         Self::json_response(
             StatusCode::OK,
             json!({
@@ -1999,6 +3677,9 @@ impl BuckyFileServer {
                 )
             }
         };
+        if Self::is_internal_rel_path(&rel_path) {
+            return Self::forbidden_response("permission denied: internal path is restricted");
+        }
         if rel_path.as_os_str().is_empty() {
             return Self::json_response(
                 StatusCode::BAD_REQUEST,
@@ -2414,6 +4095,13 @@ impl BuckyFileServer {
             Err(resp) => return Ok(resp),
         };
 
+        if let Err(err) = self.ensure_owner_metadata_seeded(&principal.username).await {
+            warn!(
+                "ensure metadata seeded failed for owner={}: {}",
+                principal.username, err
+            );
+        }
+
         let rel_path = match Self::parse_relative_path(raw_path) {
             Ok(v) => v,
             Err(err) => {
@@ -2423,6 +4111,9 @@ impl BuckyFileServer {
                 )
             }
         };
+        if Self::is_internal_rel_path(&rel_path) {
+            return Self::forbidden_response("permission denied: internal path is restricted");
+        }
         if !Self::can_read_rel_path(&principal, &rel_path) {
             return Self::forbidden_response("permission denied: read access to path is required");
         }
@@ -2441,6 +4132,9 @@ impl BuckyFileServer {
         })?;
 
         if metadata.is_dir() {
+            self.sync_metadata_after_write_best_effort(&principal.username, &rel_path)
+                .await;
+
             let mut items: Vec<FileEntry> = Vec::new();
             let mut reader = tokio::fs::read_dir(&target).await.map_err(|err| {
                 server_err!(ServerErrorCode::InvalidData, "read dir failed: {}", err)
@@ -2454,6 +4148,9 @@ impl BuckyFileServer {
                 )
             })? {
                 let file_name = entry.file_name().to_string_lossy().to_string();
+                if file_name == INTERNAL_RECYCLE_BIN_DIR {
+                    continue;
+                }
                 let entry_meta = entry.metadata().await.map_err(|err| {
                     server_err!(
                         ServerErrorCode::InvalidData,
@@ -2467,6 +4164,9 @@ impl BuckyFileServer {
                 } else {
                     rel_path.join(&file_name)
                 };
+                if Self::is_internal_rel_path(&item_rel_path) {
+                    continue;
+                }
                 if !Self::can_read_rel_path(&principal, &item_rel_path) {
                     continue;
                 }
@@ -2516,6 +4216,18 @@ impl BuckyFileServer {
                 None
             };
 
+        if let Err(err) = self
+            .touch_recent_record(&principal.username, &rel_path)
+            .await
+        {
+            warn!(
+                "touch recent for file detail failed owner={}, path={}: {}",
+                principal.username,
+                Self::to_display_path(&rel_path),
+                err
+            );
+        }
+
         Self::json_response(
             StatusCode::OK,
             json!(FileResponse {
@@ -2548,6 +4260,9 @@ impl BuckyFileServer {
                 )
             }
         };
+        if Self::is_internal_rel_path(&rel_path) {
+            return Self::forbidden_response("permission denied: internal path is restricted");
+        }
         if rel_path.as_os_str().is_empty() {
             return Self::json_response(
                 StatusCode::BAD_REQUEST,
@@ -2579,6 +4294,8 @@ impl BuckyFileServer {
                     err
                 )
             })?;
+            self.sync_metadata_after_write_best_effort(&principal.username, &rel_path)
+                .await;
             return Self::json_response(
                 StatusCode::CREATED,
                 json!({"ok": true, "path": Self::to_display_path(&rel_path)}),
@@ -2614,6 +4331,9 @@ impl BuckyFileServer {
             server_err!(ServerErrorCode::InvalidData, "write file failed: {}", err)
         })?;
 
+        self.sync_metadata_after_write_best_effort(&principal.username, &rel_path)
+            .await;
+
         Self::json_response(
             StatusCode::OK,
             json!({"ok": true, "path": Self::to_display_path(&rel_path)}),
@@ -2639,6 +4359,9 @@ impl BuckyFileServer {
                 )
             }
         };
+        if Self::is_internal_rel_path(&rel_path) {
+            return Self::forbidden_response("permission denied: internal path is restricted");
+        }
         if rel_path.as_os_str().is_empty() {
             return Self::json_response(
                 StatusCode::BAD_REQUEST,
@@ -2713,6 +4436,9 @@ impl BuckyFileServer {
                 server_err!(ServerErrorCode::InvalidData, "write file failed: {}", err)
             })?;
 
+        self.sync_metadata_after_write_best_effort(&principal.username, &rel_path)
+            .await;
+
         Self::json_response(
             StatusCode::OK,
             json!({
@@ -2761,6 +4487,159 @@ impl BuckyFileServer {
             .and_then(|value| value.trim().parse::<usize>().ok())
             .unwrap_or(DEFAULT_LIMIT);
         parsed.clamp(1, MAX_LIMIT)
+    }
+
+    fn parse_list_limit(input: Option<String>, default_limit: usize, max_limit: usize) -> usize {
+        let parsed = input
+            .as_deref()
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(default_limit);
+        parsed.clamp(1, max_limit)
+    }
+
+    fn parse_u64_param(input: Option<String>) -> Option<u64> {
+        input.and_then(|value| value.trim().parse::<u64>().ok())
+    }
+
+    fn parse_file_list_filters(
+        req: &http::Request<BoxBody<Bytes, ServerError>>,
+        default_limit: usize,
+        max_limit: usize,
+    ) -> Result<FileListFilters, RPCErrors> {
+        let kind = Self::get_query_param(req, "kind")
+            .unwrap_or_else(|| "all".to_string())
+            .trim()
+            .to_ascii_lowercase();
+        if kind != "all" && kind != "file" && kind != "dir" {
+            return Err(RPCErrors::ReasonError(
+                "kind must be one of: all, file, dir".to_string(),
+            ));
+        }
+
+        let exts = Self::get_query_param(req, "ext")
+            .unwrap_or_default()
+            .split(',')
+            .map(|ext| ext.trim().trim_start_matches('.').to_ascii_lowercase())
+            .filter(|ext| !ext.is_empty())
+            .collect::<Vec<_>>();
+
+        let sort_by = Self::get_query_param(req, "sort")
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty());
+        if let Some(value) = sort_by.as_deref() {
+            if value != "name" && value != "modified" && value != "size" {
+                return Err(RPCErrors::ReasonError(
+                    "sort must be one of: name, modified, size".to_string(),
+                ));
+            }
+        }
+
+        let order = Self::get_query_param(req, "order")
+            .unwrap_or_else(|| "desc".to_string())
+            .trim()
+            .to_ascii_lowercase();
+        if order != "asc" && order != "desc" {
+            return Err(RPCErrors::ReasonError(
+                "order must be one of: asc, desc".to_string(),
+            ));
+        }
+
+        let limit = Self::parse_list_limit(
+            Self::get_query_param(req, "limit"),
+            default_limit,
+            max_limit,
+        );
+
+        Ok(FileListFilters {
+            kind,
+            exts,
+            modified_from: Self::parse_u64_param(Self::get_query_param(req, "from")),
+            modified_to: Self::parse_u64_param(Self::get_query_param(req, "to")),
+            size_min: Self::parse_u64_param(Self::get_query_param(req, "size_min")),
+            size_max: Self::parse_u64_param(Self::get_query_param(req, "size_max")),
+            sort_by,
+            order,
+            limit,
+        })
+    }
+
+    fn apply_file_list_filters(
+        mut items: Vec<FileEntry>,
+        filters: &FileListFilters,
+    ) -> Vec<FileEntry> {
+        items.retain(|entry| {
+            if filters.kind == "file" && entry.is_dir {
+                return false;
+            }
+            if filters.kind == "dir" && !entry.is_dir {
+                return false;
+            }
+
+            if !filters.exts.is_empty() {
+                if entry.is_dir {
+                    return false;
+                }
+                let ext = Self::normalize_file_ext(entry.name.as_str());
+                if !filters.exts.iter().any(|value| value == &ext) {
+                    return false;
+                }
+            }
+
+            if let Some(from) = filters.modified_from {
+                if entry.modified < from {
+                    return false;
+                }
+            }
+            if let Some(to) = filters.modified_to {
+                if entry.modified > to {
+                    return false;
+                }
+            }
+
+            if !entry.is_dir {
+                if let Some(min_size) = filters.size_min {
+                    if entry.size < min_size {
+                        return false;
+                    }
+                }
+                if let Some(max_size) = filters.size_max {
+                    if entry.size > max_size {
+                        return false;
+                    }
+                }
+            }
+
+            true
+        });
+
+        if let Some(sort_by) = filters.sort_by.as_deref() {
+            items.sort_by(|a, b| {
+                let ordering = match sort_by {
+                    "modified" => a.modified.cmp(&b.modified),
+                    "size" => a.size.cmp(&b.size),
+                    _ => a
+                        .name
+                        .to_ascii_lowercase()
+                        .cmp(&b.name.to_ascii_lowercase()),
+                };
+
+                if ordering == std::cmp::Ordering::Equal {
+                    a.path
+                        .to_ascii_lowercase()
+                        .cmp(&b.path.to_ascii_lowercase())
+                } else {
+                    ordering
+                }
+            });
+            if filters.order == "desc" {
+                items.reverse();
+            }
+        }
+
+        if items.len() > filters.limit {
+            items.truncate(filters.limit);
+        }
+        items
     }
 
     async fn search_resources(
@@ -2831,6 +4710,9 @@ impl BuckyFileServer {
                     } else {
                         current_rel_path.join(&file_name)
                     };
+                    if BuckyFileServer::is_internal_rel_path(&item_rel_path) {
+                        continue;
+                    }
 
                     let item_meta = match item.metadata() {
                         Ok(v) => v,
@@ -2885,6 +4767,11 @@ impl BuckyFileServer {
             let search_root_abs = user_root.join(&base_rel_path);
             if !search_root_abs.exists() {
                 return Err(RPCErrors::ReasonError("search path not found".to_string()));
+            }
+            if BuckyFileServer::is_internal_rel_path(&base_rel_path) {
+                return Err(RPCErrors::ReasonError(
+                    "permission denied: internal path is restricted".to_string(),
+                ));
             }
 
             let mut results = Vec::new();
@@ -2971,6 +4858,9 @@ impl BuckyFileServer {
                 )
             }
         };
+        if Self::is_internal_rel_path(&rel_path) {
+            return Self::forbidden_response("permission denied: internal path is restricted");
+        }
         if !Self::can_read_rel_path(&principal, &rel_path) {
             return Self::forbidden_response(
                 "permission denied: read access to search path is required",
@@ -3033,6 +4923,733 @@ impl BuckyFileServer {
                 items,
             }),
         )
+    }
+
+    async fn handle_api_resources_recent_get(
+        &self,
+        req: http::Request<BoxBody<Bytes, ServerError>>,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        let principal = match self.auth_principal(&req).await {
+            Ok(v) => v,
+            Err(resp) => return Ok(resp),
+        };
+
+        self.ensure_owner_metadata_seeded(&principal.username)
+            .await
+            .map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "ensure metadata seed failed: {}",
+                    err
+                )
+            })?;
+
+        let filters = match Self::parse_file_list_filters(&req, 200, 1000) {
+            Ok(value) => value,
+            Err(err) => {
+                return Self::json_response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error": err.to_string()}),
+                )
+            }
+        };
+
+        let items = self
+            .list_recent_entries(&principal.username, &filters)
+            .await
+            .map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "query recent entries failed: {}",
+                    err
+                )
+            })?;
+
+        Self::json_response(StatusCode::OK, json!(RecentListResponse { items }))
+    }
+
+    async fn handle_api_resources_favorites_get(
+        &self,
+        req: http::Request<BoxBody<Bytes, ServerError>>,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        let principal = match self.auth_principal(&req).await {
+            Ok(v) => v,
+            Err(resp) => return Ok(resp),
+        };
+
+        self.ensure_owner_metadata_seeded(&principal.username)
+            .await
+            .map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "ensure metadata seed failed: {}",
+                    err
+                )
+            })?;
+
+        let filters = match Self::parse_file_list_filters(&req, 200, 1000) {
+            Ok(value) => value,
+            Err(err) => {
+                return Self::json_response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error": err.to_string()}),
+                )
+            }
+        };
+
+        let items = self
+            .list_favorite_entries(&principal.username, &filters)
+            .await
+            .map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "query favorite entries failed: {}",
+                    err
+                )
+            })?;
+
+        Self::json_response(StatusCode::OK, json!(FavoriteListResponse { items }))
+    }
+
+    async fn handle_api_resources_favorites_post(
+        &self,
+        req: http::Request<BoxBody<Bytes, ServerError>>,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        let principal = match self.auth_principal(&req).await {
+            Ok(v) => v,
+            Err(resp) => return Ok(resp),
+        };
+
+        let body = Self::read_body_bytes(req).await?;
+        let payload: FavoriteRequest = serde_json::from_slice(&body).map_err(|err| {
+            server_err!(
+                ServerErrorCode::InvalidData,
+                "invalid favorites payload: {}",
+                err
+            )
+        })?;
+
+        let rel_path = match Self::parse_relative_path(payload.path.as_str()) {
+            Ok(v) => v,
+            Err(err) => {
+                return Self::json_response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error": err.to_string()}),
+                )
+            }
+        };
+        if rel_path.as_os_str().is_empty() {
+            return Self::json_response(
+                StatusCode::BAD_REQUEST,
+                json!({"error": "path is required"}),
+            );
+        }
+        if Self::is_internal_rel_path(&rel_path) {
+            return Self::forbidden_response("permission denied: internal path is restricted");
+        }
+        if !Self::can_read_rel_path(&principal, &rel_path) {
+            return Self::forbidden_response(
+                "permission denied: read access to target path is required",
+            );
+        }
+
+        let abs_path = self.user_root(&principal.username).join(&rel_path);
+        if !abs_path.exists() {
+            return Self::json_response(StatusCode::NOT_FOUND, json!({"error": "path not found"}));
+        }
+
+        let display_path = Self::to_display_path(&rel_path);
+        self.upsert_favorite_record(&principal.username, display_path.as_str())
+            .await
+            .map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "upsert favorite failed: {}",
+                    err
+                )
+            })?;
+
+        Self::json_response(
+            StatusCode::OK,
+            json!({"ok": true, "path": display_path, "starred": true}),
+        )
+    }
+
+    async fn handle_api_resources_favorites_delete(
+        &self,
+        req: http::Request<BoxBody<Bytes, ServerError>>,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        let principal = match self.auth_principal(&req).await {
+            Ok(v) => v,
+            Err(resp) => return Ok(resp),
+        };
+
+        let mut target_path = Self::get_query_param(&req, "path").unwrap_or_default();
+        if target_path.trim().is_empty() {
+            let body = Self::read_body_bytes(req).await?;
+            if !body.is_empty() {
+                if let Ok(payload) = serde_json::from_slice::<FavoriteRequest>(&body) {
+                    target_path = payload.path;
+                }
+            }
+        }
+
+        let rel_path = match Self::parse_relative_path(target_path.as_str()) {
+            Ok(v) => v,
+            Err(err) => {
+                return Self::json_response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error": err.to_string()}),
+                )
+            }
+        };
+        if rel_path.as_os_str().is_empty() {
+            return Self::json_response(
+                StatusCode::BAD_REQUEST,
+                json!({"error": "path is required"}),
+            );
+        }
+        if Self::is_internal_rel_path(&rel_path) {
+            return Self::forbidden_response("permission denied: internal path is restricted");
+        }
+        if !Self::can_read_rel_path(&principal, &rel_path) {
+            return Self::forbidden_response(
+                "permission denied: read access to target path is required",
+            );
+        }
+
+        let display_path = Self::to_display_path(&rel_path);
+        self.delete_favorite_record(&principal.username, display_path.as_str())
+            .await
+            .map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "delete favorite failed: {}",
+                    err
+                )
+            })?;
+
+        Self::json_response(
+            StatusCode::OK,
+            json!({"ok": true, "path": display_path, "starred": false}),
+        )
+    }
+
+    async fn handle_api_resources_trash_get(
+        &self,
+        req: http::Request<BoxBody<Bytes, ServerError>>,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        let principal = match self.auth_principal(&req).await {
+            Ok(v) => v,
+            Err(resp) => return Ok(resp),
+        };
+
+        let filters = match Self::parse_file_list_filters(&req, 200, 1000) {
+            Ok(value) => value,
+            Err(err) => {
+                return Self::json_response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error": err.to_string()}),
+                )
+            }
+        };
+
+        let items = self
+            .list_recycle_bin_items(&principal.username, &filters)
+            .await
+            .map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "query recycle bin items failed: {}",
+                    err
+                )
+            })?;
+
+        Self::json_response(StatusCode::OK, json!(RecycleBinListResponse { items }))
+    }
+
+    async fn handle_api_resources_trash_restore_post(
+        &self,
+        req: http::Request<BoxBody<Bytes, ServerError>>,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        let principal = match self.auth_principal(&req).await {
+            Ok(v) => v,
+            Err(resp) => return Ok(resp),
+        };
+
+        let body = Self::read_body_bytes(req).await?;
+        let payload: RecycleRestoreRequest = serde_json::from_slice(&body).map_err(|err| {
+            server_err!(
+                ServerErrorCode::InvalidData,
+                "invalid recycle restore payload: {}",
+                err
+            )
+        })?;
+
+        let Some((original_path, _)) = self
+            .get_recycle_bin_item(&principal.username, payload.item_id.as_str())
+            .await
+            .map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "query recycle bin item failed: {}",
+                    err
+                )
+            })?
+        else {
+            return Self::json_response(
+                StatusCode::NOT_FOUND,
+                json!({"error": "recycle bin item not found"}),
+            );
+        };
+
+        let original_rel_path = match Self::parse_relative_path(original_path.as_str()) {
+            Ok(value) => value,
+            Err(err) => {
+                return Self::json_response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error": err.to_string()}),
+                )
+            }
+        };
+        if !Self::can_write_rel_path(&principal, &original_rel_path) {
+            return Self::forbidden_response(
+                "permission denied: write access to restore target path is required",
+            );
+        }
+
+        let restored_path = match self
+            .restore_recycle_bin_item(
+                &principal.username,
+                payload.item_id.as_str(),
+                payload.override_existing.unwrap_or(false),
+            )
+            .await
+        {
+            Ok(path) => path,
+            Err(err) => {
+                let text = err.to_string();
+                if text.contains("not found") {
+                    return Self::json_response(StatusCode::NOT_FOUND, json!({"error": text}));
+                }
+                if text.contains("already exists") {
+                    return Self::json_response(StatusCode::CONFLICT, json!({"error": text}));
+                }
+                return Self::json_response(StatusCode::BAD_REQUEST, json!({"error": text}));
+            }
+        };
+
+        Self::json_response(StatusCode::OK, json!({"ok": true, "path": restored_path}))
+    }
+
+    async fn handle_api_resources_trash_item_delete(
+        &self,
+        req: http::Request<BoxBody<Bytes, ServerError>>,
+        item_id: &str,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        let principal = match self.auth_principal(&req).await {
+            Ok(v) => v,
+            Err(resp) => return Ok(resp),
+        };
+
+        let Some((original_path, trashed_path)) = self
+            .get_recycle_bin_item(&principal.username, item_id)
+            .await
+            .map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "query recycle bin item failed: {}",
+                    err
+                )
+            })?
+        else {
+            return Self::json_response(
+                StatusCode::NOT_FOUND,
+                json!({"error": "recycle bin item not found"}),
+            );
+        };
+
+        let original_rel_path = match Self::parse_relative_path(original_path.as_str()) {
+            Ok(value) => value,
+            Err(err) => {
+                return Self::json_response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error": err.to_string()}),
+                )
+            }
+        };
+        if !Self::can_write_rel_path(&principal, &original_rel_path) {
+            return Self::forbidden_response(
+                "permission denied: write access to recycle bin item is required",
+            );
+        }
+
+        let trashed_rel_path = match Self::parse_relative_path(trashed_path.as_str()) {
+            Ok(value) => value,
+            Err(err) => {
+                return Self::json_response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error": err.to_string()}),
+                )
+            }
+        };
+        if !Self::is_internal_rel_path(&trashed_rel_path) {
+            return Self::json_response(
+                StatusCode::BAD_REQUEST,
+                json!({"error": "invalid recycle bin item path"}),
+            );
+        }
+
+        let trashed_abs_path = self.user_root(&principal.username).join(&trashed_rel_path);
+        if trashed_abs_path.exists() {
+            let metadata = tokio::fs::metadata(&trashed_abs_path)
+                .await
+                .map_err(|err| {
+                    server_err!(
+                        ServerErrorCode::InvalidData,
+                        "read recycle item metadata failed: {}",
+                        err
+                    )
+                })?;
+            if metadata.is_dir() {
+                tokio::fs::remove_dir_all(&trashed_abs_path)
+                    .await
+                    .map_err(|err| {
+                        server_err!(
+                            ServerErrorCode::InvalidData,
+                            "delete recycle directory failed: {}",
+                            err
+                        )
+                    })?;
+            } else {
+                tokio::fs::remove_file(&trashed_abs_path)
+                    .await
+                    .map_err(|err| {
+                        server_err!(
+                            ServerErrorCode::InvalidData,
+                            "delete recycle file failed: {}",
+                            err
+                        )
+                    })?;
+            }
+        }
+
+        self.delete_recycle_bin_item_record(&principal.username, item_id)
+            .await
+            .map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "delete recycle item record failed: {}",
+                    err
+                )
+            })?;
+
+        Self::json_response(StatusCode::OK, json!({"ok": true, "item_id": item_id}))
+    }
+
+    async fn handle_api_resources_reindex_post(
+        &self,
+        req: http::Request<BoxBody<Bytes, ServerError>>,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        let principal = match self.auth_principal(&req).await {
+            Ok(v) => v,
+            Err(resp) => return Ok(resp),
+        };
+
+        let raw_path = Self::get_query_param(&req, "path").unwrap_or_else(|| "/".to_string());
+        let rel_path = match Self::parse_relative_path(&raw_path) {
+            Ok(v) => v,
+            Err(err) => {
+                return Self::json_response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error": err.to_string()}),
+                )
+            }
+        };
+        if Self::is_internal_rel_path(&rel_path) {
+            return Self::forbidden_response("permission denied: internal path is restricted");
+        }
+
+        if !Self::can_read_rel_path(&principal, &rel_path) {
+            return Self::forbidden_response(
+                "permission denied: read access to reindex path is required",
+            );
+        }
+
+        let stats = self
+            .sync_file_metadata_subtree(&principal.username, &rel_path)
+            .await
+            .map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "reindex file metadata failed: {}",
+                    err
+                )
+            })?;
+
+        self.sync_thumbnail_tasks_for_scope(&principal.username, &rel_path)
+            .await
+            .map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "reindex thumbnail tasks failed: {}",
+                    err
+                )
+            })?;
+
+        if rel_path.as_os_str().is_empty() {
+            let _ = self.mark_owner_root_seeded(&principal.username).await;
+        }
+
+        Self::json_response(
+            StatusCode::OK,
+            json!({
+                "ok": true,
+                "path": Self::to_display_path(&rel_path),
+                "stats": stats,
+            }),
+        )
+    }
+
+    async fn handle_api_resources_nav_get(
+        &self,
+        req: http::Request<BoxBody<Bytes, ServerError>>,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        let principal = match self.auth_principal(&req).await {
+            Ok(v) => v,
+            Err(resp) => return Ok(resp),
+        };
+
+        let raw_path = Self::get_query_param(&req, "path").unwrap_or_default();
+        if raw_path.trim().is_empty() {
+            return Self::json_response(
+                StatusCode::BAD_REQUEST,
+                json!({"error": "path query is required"}),
+            );
+        }
+
+        let rel_path = match Self::parse_relative_path(&raw_path) {
+            Ok(v) => v,
+            Err(err) => {
+                return Self::json_response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error": err.to_string()}),
+                )
+            }
+        };
+        if Self::is_internal_rel_path(&rel_path) {
+            return Self::forbidden_response("permission denied: internal path is restricted");
+        }
+        if rel_path.as_os_str().is_empty() {
+            return Self::json_response(
+                StatusCode::BAD_REQUEST,
+                json!({"error": "file path is required"}),
+            );
+        }
+        if !Self::can_read_rel_path(&principal, &rel_path) {
+            return Self::forbidden_response(
+                "permission denied: read access to file path is required",
+            );
+        }
+
+        self.ensure_owner_metadata_seeded(&principal.username)
+            .await
+            .map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "ensure metadata seed failed: {}",
+                    err
+                )
+            })?;
+
+        let (previous, next) = self
+            .get_file_nav_neighbors(&principal.username, &rel_path)
+            .await
+            .map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "query metadata neighbors failed: {}",
+                    err
+                )
+            })?;
+
+        Self::json_response(
+            StatusCode::OK,
+            json!(FileNavResponse {
+                path: Self::to_display_path(&rel_path),
+                previous,
+                next,
+            }),
+        )
+    }
+
+    async fn move_path_with_fallback(
+        source_abs_path: &Path,
+        target_abs_path: &Path,
+        is_dir: bool,
+    ) -> Result<(), ServerError> {
+        if let Err(err) = tokio::fs::rename(source_abs_path, target_abs_path).await {
+            warn!(
+                "rename failed, fallback to copy+delete. source={}, target={}, err={}",
+                source_abs_path.display(),
+                target_abs_path.display(),
+                err
+            );
+            Self::copy_path(source_abs_path, target_abs_path).await?;
+            if is_dir {
+                tokio::fs::remove_dir_all(source_abs_path)
+                    .await
+                    .map_err(|remove_err| {
+                        server_err!(
+                            ServerErrorCode::InvalidData,
+                            "remove source directory after move failed: {}",
+                            remove_err
+                        )
+                    })?;
+            } else {
+                tokio::fs::remove_file(source_abs_path)
+                    .await
+                    .map_err(|remove_err| {
+                        server_err!(
+                            ServerErrorCode::InvalidData,
+                            "remove source file after move failed: {}",
+                            remove_err
+                        )
+                    })?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn move_resource_to_recycle_bin(
+        &self,
+        owner: &str,
+        rel_path: &Path,
+        source_abs_path: &Path,
+        source_metadata: &std::fs::Metadata,
+    ) -> ServerResult<String> {
+        let name = rel_path
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                server_err!(
+                    ServerErrorCode::BadRequest,
+                    "invalid source path for recycle bin move"
+                )
+            })?;
+
+        let item_id = Uuid::new_v4().simple().to_string();
+        let recycle_rel_path = Self::recycle_bin_item_rel_path(owner, &item_id, &name);
+        let recycle_abs_path = self.user_root(owner).join(&recycle_rel_path);
+        if let Some(parent) = recycle_abs_path.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "create recycle bin parent failed: {}",
+                    err
+                )
+            })?;
+        }
+
+        Self::move_path_with_fallback(source_abs_path, &recycle_abs_path, source_metadata.is_dir())
+            .await?;
+
+        let original_display_path = Self::to_display_path(rel_path);
+        let recycle_display_path = Self::to_display_path(&recycle_rel_path);
+        let deleted_at = Self::now_unix();
+        self.create_recycle_bin_item_record(
+            owner,
+            &item_id,
+            original_display_path.as_str(),
+            recycle_display_path.as_str(),
+            &name,
+            source_metadata.is_dir(),
+            if source_metadata.is_file() {
+                source_metadata.len()
+            } else {
+                0
+            },
+            Self::unix_mtime(source_metadata),
+            deleted_at,
+        )
+        .await
+        .map_err(|err| {
+            server_err!(
+                ServerErrorCode::InvalidData,
+                "create recycle bin record failed: {}",
+                err
+            )
+        })?;
+
+        Ok(item_id)
+    }
+
+    async fn restore_recycle_bin_item(
+        &self,
+        owner: &str,
+        item_id: &str,
+        override_existing: bool,
+    ) -> Result<String, RPCErrors> {
+        let Some((original_rel_path, trashed_rel_path)) =
+            self.get_recycle_bin_item(owner, item_id).await?
+        else {
+            return Err(RPCErrors::ReasonError(
+                "recycle bin item not found".to_string(),
+            ));
+        };
+
+        let original_rel = Self::parse_relative_path(original_rel_path.as_str())?;
+        let trashed_rel = Self::parse_relative_path(trashed_rel_path.as_str())?;
+        if !Self::is_internal_rel_path(&trashed_rel) {
+            return Err(RPCErrors::ReasonError(
+                "invalid recycle bin source path".to_string(),
+            ));
+        }
+
+        let source_abs_path = self.user_root(owner).join(&trashed_rel);
+        if !source_abs_path.exists() {
+            let _ = self.delete_recycle_bin_item_record(owner, item_id).await;
+            return Err(RPCErrors::ReasonError(
+                "recycle bin source is missing".to_string(),
+            ));
+        }
+
+        let source_metadata = tokio::fs::metadata(&source_abs_path).await.map_err(|err| {
+            RPCErrors::ReasonError(format!("read recycle source metadata failed: {}", err))
+        })?;
+        let target_abs_path = self.user_root(owner).join(&original_rel);
+
+        if target_abs_path.exists() {
+            if !override_existing {
+                return Err(RPCErrors::ReasonError(
+                    "restore target already exists".to_string(),
+                ));
+            }
+            Self::remove_existing_target(&target_abs_path)
+                .await
+                .map_err(|err| {
+                    RPCErrors::ReasonError(format!("remove restore target failed: {}", err))
+                })?;
+        }
+
+        if let Some(parent) = target_abs_path.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|err| {
+                RPCErrors::ReasonError(format!("create restore target parent failed: {}", err))
+            })?;
+        }
+
+        Self::move_path_with_fallback(&source_abs_path, &target_abs_path, source_metadata.is_dir())
+            .await
+            .map_err(|err| {
+                RPCErrors::ReasonError(format!("restore recycle item failed: {}", err))
+            })?;
+
+        self.delete_recycle_bin_item_record(owner, item_id).await?;
+        self.sync_metadata_after_write_best_effort(owner, &original_rel)
+            .await;
+
+        Ok(Self::to_display_path(&original_rel))
     }
 
     async fn remove_existing_target(target: &Path) -> Result<(), ServerError> {
@@ -3147,6 +5764,9 @@ impl BuckyFileServer {
                 )
             }
         };
+        if Self::is_internal_rel_path(&source_rel_path) {
+            return Self::forbidden_response("permission denied: internal path is restricted");
+        }
         if source_rel_path.as_os_str().is_empty() {
             return Self::json_response(
                 StatusCode::BAD_REQUEST,
@@ -3232,6 +5852,9 @@ impl BuckyFileServer {
                 StatusCode::BAD_REQUEST,
                 json!({"error": "target path is required"}),
             );
+        }
+        if Self::is_internal_rel_path(&target_rel_path) {
+            return Self::forbidden_response("permission denied: internal path is restricted");
         }
 
         if source_rel_path == target_rel_path {
@@ -3339,6 +5962,20 @@ impl BuckyFileServer {
             _ => unreachable!(),
         }
 
+        match action.as_str() {
+            "copy" => {
+                self.sync_metadata_after_write_best_effort(&principal.username, &target_rel_path)
+                    .await;
+            }
+            "move" | "rename" => {
+                self.sync_metadata_after_write_best_effort(&principal.username, &target_rel_path)
+                    .await;
+                self.sync_metadata_after_write_best_effort(&principal.username, &source_rel_path)
+                    .await;
+            }
+            _ => {}
+        }
+
         Self::json_response(
             StatusCode::OK,
             json!({
@@ -3369,6 +6006,9 @@ impl BuckyFileServer {
                 )
             }
         };
+        if Self::is_internal_rel_path(&rel_path) {
+            return Self::forbidden_response("permission denied: internal path is restricted");
+        }
 
         if rel_path.as_os_str().is_empty() {
             return Self::json_response(
@@ -3395,6 +6035,32 @@ impl BuckyFileServer {
             )
         })?;
 
+        let recycle_delete = Self::get_query_param(&req, "recycle")
+            .map(|value| Self::parse_query_bool(&value))
+            .unwrap_or(true);
+        let force_permanent = Self::get_query_param(&req, "permanent")
+            .map(|value| Self::parse_query_bool(&value))
+            .unwrap_or(false);
+
+        if recycle_delete && !force_permanent {
+            let item_id = self
+                .move_resource_to_recycle_bin(&principal.username, &rel_path, &target, &metadata)
+                .await?;
+
+            self.sync_metadata_after_write_best_effort(&principal.username, &rel_path)
+                .await;
+
+            return Self::json_response(
+                StatusCode::OK,
+                json!({
+                    "ok": true,
+                    "path": Self::to_display_path(&rel_path),
+                    "recycled": true,
+                    "item_id": item_id,
+                }),
+            );
+        }
+
         if metadata.is_dir() {
             tokio::fs::remove_dir_all(&target).await.map_err(|err| {
                 server_err!(
@@ -3408,6 +6074,9 @@ impl BuckyFileServer {
                 server_err!(ServerErrorCode::InvalidData, "delete file failed: {}", err)
             })?;
         }
+
+        self.sync_metadata_after_write_best_effort(&principal.username, &rel_path)
+            .await;
 
         Self::json_response(
             StatusCode::OK,
@@ -3434,6 +6103,9 @@ impl BuckyFileServer {
                 )
             }
         };
+        if Self::is_internal_rel_path(&rel_path) {
+            return Self::forbidden_response("permission denied: internal path is restricted");
+        }
         if rel_path.as_os_str().is_empty() {
             return Self::json_response(
                 StatusCode::BAD_REQUEST,
@@ -3476,7 +6148,7 @@ impl BuckyFileServer {
                 .map_err(|err| {
                     server_err!(
                         ServerErrorCode::InvalidData,
-                        "build directory download response failed: {}",
+                        "build directory raw download response failed: {}",
                         err
                     )
                 });
@@ -3548,6 +6220,9 @@ impl BuckyFileServer {
                 )
             }
         };
+        if Self::is_internal_rel_path(&rel_path) {
+            return Self::forbidden_response("permission denied: internal path is restricted");
+        }
         if rel_path.as_os_str().is_empty() {
             return Self::json_response(
                 StatusCode::BAD_REQUEST,
@@ -3593,6 +6268,18 @@ impl BuckyFileServer {
         };
         let content_disposition = format!("{}; filename=\"{}\"", disposition_type, filename);
         let file_size = metadata.len();
+
+        if let Err(err) = self
+            .touch_recent_record(&principal.username, &rel_path)
+            .await
+        {
+            warn!(
+                "touch recent for raw file failed owner={}, path={}: {}",
+                principal.username,
+                Self::to_display_path(&rel_path),
+                err
+            );
+        }
 
         let range = req
             .headers()
@@ -3684,6 +6371,211 @@ impl BuckyFileServer {
                 )
             })
     }
+
+    async fn handle_api_thumb_get(
+        &self,
+        req: http::Request<BoxBody<Bytes, ServerError>>,
+        raw_path: &str,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        let principal = match self.auth_principal(&req).await {
+            Ok(v) => v,
+            Err(resp) => return Ok(resp),
+        };
+
+        let rel_path = match Self::parse_relative_path(raw_path) {
+            Ok(v) => v,
+            Err(err) => {
+                return Self::json_response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error": err.to_string()}),
+                )
+            }
+        };
+        if Self::is_internal_rel_path(&rel_path) {
+            return Self::forbidden_response("permission denied: internal path is restricted");
+        }
+        if rel_path.as_os_str().is_empty() {
+            return Self::json_response(
+                StatusCode::BAD_REQUEST,
+                json!({"error": "file path is required"}),
+            );
+        }
+        if !Self::can_read_rel_path(&principal, &rel_path) {
+            return Self::forbidden_response(
+                "permission denied: read access to file path is required",
+            );
+        }
+
+        if let Err(err) = self.ensure_owner_metadata_seeded(&principal.username).await {
+            warn!(
+                "ensure metadata seeded failed for thumbnail owner={}: {}",
+                principal.username, err
+            );
+        }
+
+        let target = self.user_root(&principal.username).join(&rel_path);
+        if !target.exists() {
+            return http::Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .header(CACHE_CONTROL, "no-store")
+                .body(Self::boxed_body(Vec::new()))
+                .map_err(|err| {
+                    server_err!(
+                        ServerErrorCode::InvalidData,
+                        "build thumbnail not found response failed: {}",
+                        err
+                    )
+                });
+        }
+
+        let metadata = tokio::fs::metadata(&target).await.map_err(|err| {
+            server_err!(
+                ServerErrorCode::InvalidData,
+                "read thumbnail source metadata failed: {}",
+                err
+            )
+        })?;
+        if !metadata.is_file() {
+            return http::Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header(CACHE_CONTROL, "no-store")
+                .body(Self::boxed_body(Vec::new()))
+                .map_err(|err| {
+                    server_err!(
+                        ServerErrorCode::InvalidData,
+                        "build thumbnail bad request response failed: {}",
+                        err
+                    )
+                });
+        }
+
+        let ext = target
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_ascii_lowercase())
+            .unwrap_or_default();
+        if !Self::is_thumbnail_supported_ext(ext.as_str()) {
+            return http::Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .header(CACHE_CONTROL, "no-store")
+                .body(Self::boxed_body(Vec::new()))
+                .map_err(|err| {
+                    server_err!(
+                        ServerErrorCode::InvalidData,
+                        "build unsupported thumbnail response failed: {}",
+                        err
+                    )
+                });
+        }
+
+        let thumb_size = Self::parse_thumbnail_size(Self::get_query_param(&req, "size"));
+        let variant = Self::thumbnail_variant_for_size(thumb_size);
+        if let Err(err) = self
+            .sync_thumbnail_tasks_for_scope(&principal.username, &rel_path)
+            .await
+        {
+            warn!(
+                "sync thumbnail task before read failed owner={}, path={}: {}",
+                principal.username,
+                Self::to_display_path(&rel_path),
+                err
+            );
+        }
+
+        let source_size = metadata.len().min(i64::MAX as u64) as i64;
+        let source_modified = Self::unix_mtime(&metadata).min(i64::MAX as u64) as i64;
+        let rel_path_display = Self::to_display_path(&rel_path);
+
+        let mut ready_thumb_rel_path = self
+            .get_ready_thumbnail_rel_path(
+                &principal.username,
+                rel_path_display.as_str(),
+                variant.as_str(),
+                source_size,
+                source_modified,
+            )
+            .await
+            .map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "query ready thumbnail failed: {}",
+                    err
+                )
+            })?;
+
+        if ready_thumb_rel_path.is_none() {
+            if let Err(err) = self
+                .process_thumbnail_task(
+                    &principal.username,
+                    rel_path_display.as_str(),
+                    variant.as_str(),
+                    source_size,
+                    source_modified,
+                    0,
+                )
+                .await
+            {
+                warn!(
+                    "on-demand thumbnail generation failed owner={}, path={}: {}",
+                    principal.username, rel_path_display, err
+                );
+            }
+
+            ready_thumb_rel_path = self
+                .get_ready_thumbnail_rel_path(
+                    &principal.username,
+                    rel_path_display.as_str(),
+                    variant.as_str(),
+                    source_size,
+                    source_modified,
+                )
+                .await
+                .map_err(|err| {
+                    server_err!(
+                        ServerErrorCode::InvalidData,
+                        "query ready thumbnail failed: {}",
+                        err
+                    )
+                })?;
+        }
+
+        let Some(thumb_rel_path) = ready_thumb_rel_path else {
+            return http::Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .header(CACHE_CONTROL, "no-store")
+                .body(Self::boxed_body(Vec::new()))
+                .map_err(|err| {
+                    server_err!(
+                        ServerErrorCode::InvalidData,
+                        "build thumbnail pending response failed: {}",
+                        err
+                    )
+                });
+        };
+
+        let thumb_abs_path = self.thumbnail_cache_dir().join(thumb_rel_path);
+        let bytes = tokio::fs::read(&thumb_abs_path).await.map_err(|err| {
+            server_err!(
+                ServerErrorCode::InvalidData,
+                "read thumbnail cache file failed: {}",
+                err
+            )
+        })?;
+
+        http::Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, "image/jpeg")
+            .header(CONTENT_LENGTH, bytes.len().to_string())
+            .header(CACHE_CONTROL, "no-store")
+            .body(Self::boxed_body(bytes))
+            .map_err(|err| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "build thumbnail response failed: {}",
+                    err
+                )
+            })
+    }
 }
 
 #[async_trait]
@@ -3723,6 +6615,64 @@ impl HttpServer for BuckyFileServer {
 
         if method == Method::GET && path == "/api/search" {
             return self.handle_api_search_get(req).await;
+        }
+
+        if path == "/api/resources/reindex" {
+            return match method {
+                Method::POST => self.handle_api_resources_reindex_post(req).await,
+                _ => Self::json_response(
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    json!({"error": "method not allowed"}),
+                ),
+            };
+        }
+
+        if method == Method::GET && path == "/api/resources/nav" {
+            return self.handle_api_resources_nav_get(req).await;
+        }
+
+        if method == Method::GET && path == "/api/recent" {
+            return self.handle_api_resources_recent_get(req).await;
+        }
+
+        if path == "/api/favorites" {
+            return match method {
+                Method::GET => self.handle_api_resources_favorites_get(req).await,
+                Method::POST => self.handle_api_resources_favorites_post(req).await,
+                Method::DELETE => self.handle_api_resources_favorites_delete(req).await,
+                _ => Self::json_response(
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    json!({"error": "method not allowed"}),
+                ),
+            };
+        }
+
+        if method == Method::GET && path == "/api/recycle-bin" {
+            return self.handle_api_resources_trash_get(req).await;
+        }
+
+        if path == "/api/recycle-bin/restore" {
+            return match method {
+                Method::POST => self.handle_api_resources_trash_restore_post(req).await,
+                _ => Self::json_response(
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    json!({"error": "method not allowed"}),
+                ),
+            };
+        }
+
+        if path.starts_with("/api/recycle-bin/item/") {
+            let item_id = path.strip_prefix("/api/recycle-bin/item/").unwrap_or("");
+            return match method {
+                Method::DELETE => {
+                    self.handle_api_resources_trash_item_delete(req, item_id)
+                        .await
+                }
+                _ => Self::json_response(
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    json!({"error": "method not allowed"}),
+                ),
+            };
         }
 
         if path == "/api/upload/session" {
@@ -3796,6 +6746,11 @@ impl HttpServer for BuckyFileServer {
         if method == Method::GET && path.starts_with("/api/preview/pdf") {
             let raw_file_path = path.strip_prefix("/api/preview/pdf").unwrap_or("");
             return self.handle_api_preview_pdf_get(req, raw_file_path).await;
+        }
+
+        if method == Method::GET && path.starts_with("/api/thumb") {
+            let raw_file_path = path.strip_prefix("/api/thumb").unwrap_or("");
+            return self.handle_api_thumb_get(req, raw_file_path).await;
         }
 
         if path.starts_with("/api/resources") {

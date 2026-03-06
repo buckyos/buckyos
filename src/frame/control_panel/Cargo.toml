@@ -39,6 +39,7 @@ http = { workspace = true }
 http-body-util = { workspace = true }
 bytes = { workspace = true }
 zip = { workspace = true }
+image = { version = "0.25.5", default-features = false, features = ["jpeg", "png", "webp"] }
 base64 = { workspace = true }
 uuid = { workspace = true }
 rusqlite = { workspace = true }

@@ -107,7 +107,7 @@ const WINDOW_MARGIN = 24
 const WINDOW_TOP_MARGIN = 80
 const MIN_WINDOW_WIDTH = 420
 const MIN_WINDOW_HEIGHT = 280
-const DESKTOP_HEADER_HEIGHT = 56
+const DESKTOP_HEADER_HEIGHT = 40
 const DESKTOP_DOCK_RESERVED_HEIGHT = 92
 const MAXIMIZED_SIDE_MARGIN = 10
 
@@ -1171,7 +1171,6 @@ const DesktopHomePage = () => {
       <DesktopHeader
         layoutError={layoutError}
         profileName={layout.profile.name}
-        profileEmail={layout.profile.email}
         systemPill={systemPill}
         accessModePill={accessModePill}
         prefersReducedMotion={prefersReducedMotion}
@@ -1229,7 +1228,6 @@ const DesktopHomePage = () => {
 type DesktopHeaderProps = {
   layoutError: string | null
   profileName: string
-  profileEmail: string
   systemPill: { label: string; tone: string; dot: string }
   accessModePill: AccessModePill
   prefersReducedMotion: boolean
@@ -1245,7 +1243,6 @@ const DesktopHeader = memo((props: DesktopHeaderProps) => {
   const {
     layoutError,
     profileName,
-    profileEmail,
     systemPill,
     accessModePill,
     prefersReducedMotion,
@@ -1260,20 +1257,19 @@ const DesktopHeader = memo((props: DesktopHeaderProps) => {
 
   return (
     <header className="fixed inset-x-0 top-0 z-50 border-b border-white/10 bg-white/10 backdrop-blur-md">
-      <div className="flex h-14 items-center justify-between px-4 sm:px-5 md:px-6">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="inline-flex size-10 items-center justify-center rounded-2xl bg-white/15 ring-1 ring-white/15">
-            <span className="font-semibold">B</span>
+      <div className="flex h-10 items-center justify-between px-3 sm:px-4 md:px-5">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <div className="inline-flex size-7 items-center justify-center rounded-xl bg-white/15 ring-1 ring-white/15">
+            <span className="text-sm font-semibold">B</span>
           </div>
-          <div className="min-w-0 leading-tight">
-            <p className="truncate font-semibold tracking-tight">BuckyOS</p>
-            <p className="truncate text-xs text-white/70">Control Desktop</p>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold tracking-tight">BuckyOS Desktop</p>
           </div>
           <div
-            className={`ml-2 hidden items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ring-1 md:inline-flex ${systemPill.tone}`}
+            className={`ml-1.5 hidden items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-semibold ring-1 md:inline-flex ${systemPill.tone}`}
           >
             <span
-              className={`inline-flex size-2 rounded-full ${systemPill.dot} ${
+              className={`inline-flex size-1.5 rounded-full ${systemPill.dot} ${
                 prefersReducedMotion ? '' : 'animate-pulse'
               }`}
               aria-hidden
@@ -1283,10 +1279,10 @@ const DesktopHeader = memo((props: DesktopHeaderProps) => {
           <button
             type="button"
             onClick={snModeClickable ? onSnModeClick : undefined}
-            className={`group relative hidden items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ring-1 lg:inline-flex ${accessModePill.tone} ${snModeClickable ? 'cursor-pointer' : 'cursor-default'}`}
+            className={`group relative hidden items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-semibold ring-1 lg:inline-flex ${accessModePill.tone} ${snModeClickable ? 'cursor-pointer' : 'cursor-default'}`}
             title={accessModePill.description}
           >
-            <span className={`inline-flex size-2 rounded-full ${accessModePill.dot}`} aria-hidden />
+            <span className={`inline-flex size-1.5 rounded-full ${accessModePill.dot}`} aria-hidden />
             {accessModePill.label}
             <div className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-20 w-80 -translate-x-1/2 rounded-xl border border-white/20 bg-slate-900/90 px-3 py-2 text-left text-[11px] font-normal text-white/90 opacity-0 shadow-2xl transition-opacity duration-150 group-hover:opacity-100">
               <p>{accessModePill.description}</p>
@@ -1295,33 +1291,33 @@ const DesktopHeader = memo((props: DesktopHeaderProps) => {
           </button>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           {layoutError ? (
-            <div className="hidden items-center gap-2 rounded-full border border-amber-200/25 bg-amber-500/15 px-3 py-1 text-xs text-amber-100 md:flex">
-              <Icon name="alert" className="size-4" />
+            <div className="hidden items-center gap-1.5 rounded-full border border-amber-200/25 bg-amber-500/15 px-2.5 py-1 text-[10px] text-amber-100 md:flex">
+              <Icon name="alert" className="size-3.5" />
               Mock layout
             </div>
           ) : null}
 
           <button
             type="button"
-            className="group relative inline-flex size-10 items-center justify-center rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+            className="group relative inline-flex size-8 items-center justify-center rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
             aria-label="Open notifications"
             onClick={onNotificationsClick}
           >
-            <span className="inline-flex size-8 items-center justify-center rounded-xl bg-white/10 ring-1 ring-white/15 transition group-hover:bg-white/15">
-              <Icon name="bell" className="size-5" />
+            <span className="inline-flex size-6.5 items-center justify-center rounded-lg bg-white/10 ring-1 ring-white/15 transition group-hover:bg-white/15">
+              <Icon name="bell" className="size-4" />
             </span>
-            <span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-[var(--cp-accent)]" />
+            <span className="absolute right-1 top-1 size-1.5 rounded-full bg-[var(--cp-accent)]" />
           </button>
 
           <button
             type="button"
             onClick={onNetworkClick}
-            className="hidden items-center gap-2 rounded-xl bg-white/10 px-2.5 py-1.5 ring-1 ring-white/15 transition hover:bg-white/15 md:flex"
+            className="hidden items-center gap-1.5 rounded-lg bg-white/10 px-2 py-1 ring-1 ring-white/15 transition hover:bg-white/15 md:flex"
           >
-            <Icon name="network" className="size-4 text-white/80" />
-            <p className="text-[11px] font-semibold text-white">
+            <Icon name="network" className="size-3.5 text-white/80" />
+            <p className="text-[10px] font-semibold text-white">
               Down {formatRate(rxRate)}
               <span className="mx-2 text-white/40" aria-hidden>
                 |
@@ -1330,17 +1326,20 @@ const DesktopHeader = memo((props: DesktopHeaderProps) => {
             </p>
           </button>
 
-          <div tabIndex={0} className="group relative flex items-center gap-3 rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30">
-            <UserPatternAvatar name={profileName} className="size-8 ring-1 ring-white/25" />
-            <div className="hidden min-w-0 leading-tight sm:block">
-              <p className="truncate text-sm font-semibold">{profileName}</p>
-              <p className="truncate text-xs text-white/70">{profileEmail}</p>
+          <div tabIndex={0} className="group relative flex items-center gap-2 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30">
+            <UserPatternAvatar name={profileName} className="size-7 ring-1 ring-white/25" />
+            <div className="hidden min-w-0 items-center gap-1.5 sm:inline-flex">
+              <p className="truncate text-xs font-semibold">{profileName}</p>
+              <span className="text-[10px] text-white/55">@</span>
+              <span className="rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] font-semibold text-white/75 ring-1 ring-white/10">
+                ood1
+              </span>
             </div>
             <div className="pointer-events-none absolute right-0 top-[calc(100%+8px)] z-20 min-w-32 rounded-xl border border-white/20 bg-slate-900/90 p-1.5 opacity-0 shadow-2xl transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
               <button
                 type="button"
                 onClick={onSignOutClick}
-                className="pointer-events-auto inline-flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-white/90 transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+                className="pointer-events-auto inline-flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[11px] font-semibold text-white/90 transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
               >
                 <Icon name="signout" className="size-4" />
                 Sign out
@@ -1362,31 +1361,74 @@ type DesktopDockProps = {
 
 const DesktopDock = memo((props: DesktopDockProps) => {
   const { mode, onDesktopClick, onJarvisClick } = props
+
+  const hideTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
+  const [dockVisible, setDockVisible] = useState(true)
+
+  const clearHideTimer = useCallback(() => {
+    if (hideTimerRef.current != null) {
+      window.clearTimeout(hideTimerRef.current)
+      hideTimerRef.current = null
+    }
+  }, [])
+
+  const scheduleHide = useCallback(() => {
+    clearHideTimer()
+    hideTimerRef.current = window.setTimeout(() => {
+      setDockVisible(false)
+      hideTimerRef.current = null
+    }, 2000)
+  }, [clearHideTimer])
+
+  useEffect(() => {
+    scheduleHide()
+    return () => {
+      clearHideTimer()
+    }
+  }, [clearHideTimer, scheduleHide])
+
   return (
-    <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 px-4">
-      <div className="flex items-center gap-2 rounded-full border border-white/10 bg-black/55 p-2 backdrop-blur-xl shadow-[0_18px_60px_-40px_rgba(0,0,0,0.85)]">
-        <button
-          type="button"
-          onClick={onDesktopClick}
-          className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold transition ${
-            mode === 'desktop' ? 'bg-white text-slate-900 shadow' : 'text-white/85 hover:bg-white/10'
-          }`}
-        >
-          <Icon name="desktop" className="size-4" />
-          Desktop
-        </button>
-        <button
-          type="button"
-          onClick={onJarvisClick}
-          className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold transition ${
-            mode === 'jarvis'
-              ? 'bg-gradient-to-r from-sky-400 to-emerald-300 text-slate-900 shadow'
-              : 'text-white/85 hover:bg-white/10'
-          }`}
-        >
-          <Icon name="spark" className="size-4" />
-          Jarvis
-        </button>
+    <div
+      className="fixed bottom-3 left-1/2 z-50 h-20 w-[260px] -translate-x-1/2"
+      onMouseEnter={() => {
+        clearHideTimer()
+        setDockVisible(true)
+      }}
+      onMouseLeave={() => {
+        scheduleHide()
+      }}
+    >
+      <div
+        className={`absolute inset-x-0 bottom-0 px-4 transition-all duration-300 ${
+          dockVisible
+            ? 'translate-y-0 opacity-100'
+            : 'translate-y-[calc(100%-10px)] opacity-0'
+        }`}
+      >
+        <div className="flex items-center gap-1.5 rounded-full border border-white/10 bg-black/55 p-1.5 backdrop-blur-xl shadow-[0_18px_60px_-40px_rgba(0,0,0,0.85)]">
+          <button
+            type="button"
+            onClick={onDesktopClick}
+            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+              mode === 'desktop' ? 'bg-white text-slate-900 shadow' : 'text-white/85 hover:bg-white/10'
+            }`}
+          >
+            <Icon name="desktop" className="size-3.5" />
+            Desktop
+          </button>
+          <button
+            type="button"
+            onClick={onJarvisClick}
+            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+              mode === 'jarvis'
+                ? 'bg-gradient-to-r from-sky-400 to-emerald-300 text-slate-900 shadow'
+                : 'text-white/85 hover:bg-white/10'
+            }`}
+          >
+            <Icon name="spark" className="size-3.5" />
+            Jarvis
+          </button>
+        </div>
       </div>
     </div>
   )

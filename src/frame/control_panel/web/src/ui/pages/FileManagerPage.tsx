@@ -1,4 +1,4 @@
-import type { ChangeEventHandler, DragEvent, MouseEvent as ReactMouseEvent } from 'react'
+import type { ChangeEventHandler, DragEvent, MouseEvent as ReactMouseEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
@@ -21,11 +21,15 @@ import {
   Link,
   List,
   LayoutGrid,
+  Clock3,
+  Filter,
   MoreHorizontal,
   Move,
   Pause,
   PencilLine,
   Play,
+  Star,
+  Undo2,
   RotateCw,
   Save,
   Search,
@@ -67,6 +71,27 @@ type FileResponse = {
   content?: string | null
 }
 
+type RecentFileEntry = {
+  name: string
+  path: string
+  is_dir: boolean
+  size: number
+  modified: number
+  last_accessed_at: number
+  access_count: number
+}
+
+type RecycleBinEntry = {
+  item_id: string
+  name: string
+  path: string
+  is_dir: boolean
+  size: number
+  modified: number
+  original_path: string
+  deleted_at: number
+}
+
 type SearchResponse = {
   query: string
   path: string
@@ -74,6 +99,18 @@ type SearchResponse = {
   limit: number
   truncated: boolean
   items: FileEntry[]
+}
+
+type FavoriteListResponse = {
+  items: FileEntry[]
+}
+
+type RecentListResponse = {
+  items: RecentFileEntry[]
+}
+
+type RecycleBinListResponse = {
+  items: RecycleBinEntry[]
 }
 
 type ShareItem = {
@@ -193,6 +230,7 @@ const revokeBlobUrl = (url: string) => {
 
 type MainTab = 'files' | 'shares' | 'editor'
 type FilesViewMode = 'icon' | 'list'
+type FilesScope = 'browse' | 'recent' | 'starred' | 'trash'
 
 const getMainTabPath = (tab: MainTab) => {
   if (tab === 'shares') {
@@ -342,6 +380,20 @@ type FileNameTooltipProps = {
   maxWidthClass?: string
 }
 
+type HoverTooltipProps = {
+  label: string
+  children: ReactNode
+}
+
+const HoverTooltip = ({ label, children }: HoverTooltipProps) => (
+  <span className="group/hover-tooltip relative inline-flex">
+    {children}
+    <span className="pointer-events-none invisible absolute left-1/2 top-full z-[80] mt-2 -translate-x-1/2 whitespace-nowrap rounded-md bg-slate-950 px-2 py-1 text-[11px] font-semibold text-white opacity-0 shadow-lg transition-opacity duration-150 group-hover/hover-tooltip:visible group-hover/hover-tooltip:opacity-100 group-focus-within/hover-tooltip:visible group-focus-within/hover-tooltip:opacity-100">
+      {label}
+    </span>
+  </span>
+)
+
 const FileNameTooltip = ({ name, maxChars = 44, maxWidthClass = 'max-w-[420px]' }: FileNameTooltipProps) => {
   const displayName = formatDisplayFileName(name, maxChars)
   const hasOverflow = displayName !== name
@@ -474,6 +526,12 @@ type IconName =
   | 'file-video'
   | 'view-list'
   | 'view-icon'
+  | 'scope-recent'
+  | 'scope-starred'
+  | 'scope-trash'
+  | 'filter'
+  | 'restore'
+  | 'star'
   | 'more'
 
 const Icon = ({ name, className = '' }: { name: IconName; className?: string }) => {
@@ -510,6 +568,12 @@ const Icon = ({ name, className = '' }: { name: IconName; className?: string }) 
     'file-video': FileVideoCamera,
     'view-list': List,
     'view-icon': LayoutGrid,
+    'scope-recent': Clock3,
+    'scope-starred': Star,
+    'scope-trash': Trash2,
+    filter: Filter,
+    restore: Undo2,
+    star: Star,
   }
 
   const Lucide = icons[name]
@@ -536,11 +600,16 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   })
   const [currentPathIsDir, setCurrentPathIsDir] = useState(true)
   const [filesViewMode, setFilesViewMode] = useState<FilesViewMode>('icon')
+  const [filesScope, setFilesScope] = useState<FilesScope>('browse')
   const [items, setItems] = useState<FileEntry[]>([])
+  const [favoriteItems, setFavoriteItems] = useState<FileEntry[]>([])
+  const [recentItems, setRecentItems] = useState<RecentFileEntry[]>([])
+  const [trashItems, setTrashItems] = useState<RecycleBinEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
   const [deleteToast, setDeleteToast] = useState('')
   const [selectedPaths, setSelectedPaths] = useState<string[]>([])
+  const [thumbLoadFailed, setThumbLoadFailed] = useState<Record<string, boolean>>({})
   const [shares, setShares] = useState<ShareItem[]>([])
   const [sharesLoading, setSharesLoading] = useState(false)
   const [editorPath, setEditorPath] = useState('')
@@ -554,6 +623,16 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   const [renameSubmitting, setRenameSubmitting] = useState(false)
   const [renameError, setRenameError] = useState('')
   const [searchKeyword, setSearchKeyword] = useState('')
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false)
+  const [filterKind, setFilterKind] = useState<'all' | 'file' | 'dir'>('all')
+  const [filterExtInput, setFilterExtInput] = useState('')
+  const [filterDatePreset, setFilterDatePreset] = useState<'all' | '7d' | '30d' | 'custom'>('all')
+  const [filterDateFrom, setFilterDateFrom] = useState('')
+  const [filterDateTo, setFilterDateTo] = useState('')
+  const [filterSizeMin, setFilterSizeMin] = useState('')
+  const [filterSizeMax, setFilterSizeMax] = useState('')
+  const [filterSortBy, setFilterSortBy] = useState<'name' | 'modified' | 'size'>('name')
+  const [filterSortOrder, setFilterSortOrder] = useState<'asc' | 'desc'>('asc')
   const [searchLoading, setSearchLoading] = useState(false)
   const [searchResults, setSearchResults] = useState<FileEntry[]>([])
   const [searchTruncated, setSearchTruncated] = useState(false)
@@ -721,6 +800,14 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
       setCurrentPath(normalizeUrlPath(path))
     },
     [clearPreviewState, clearSearchState],
+  )
+
+  const openDirectoryInBrowse = useCallback(
+    (path: string) => {
+      setFilesScope('browse')
+      openDirectory(path)
+    },
+    [openDirectory],
   )
 
   const syncMainPathToUrl = useCallback(
@@ -963,6 +1050,149 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
     [setSessionToken],
   )
 
+  const loadFavorites = useCallback(
+    async (authToken: string) => {
+      const response = await fetch('/api/favorites?limit=500', {
+        headers: withAuthHeaders(authToken),
+      })
+
+      if (response.status === 401) {
+        setSessionToken('')
+        setMessage('会话已失效，请在 Control Panel 重新登录。')
+        return
+      }
+
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { error?: string }
+        setMessage(payload.error ?? `Load favorites failed (${response.status})`)
+        return
+      }
+
+      const payload = (await response.json()) as FavoriteListResponse
+      setFavoriteItems(Array.isArray(payload.items) ? payload.items : [])
+    },
+    [setSessionToken],
+  )
+
+  const loadRecent = useCallback(
+    async (authToken: string) => {
+      const response = await fetch('/api/recent?limit=500', {
+        headers: withAuthHeaders(authToken),
+      })
+
+      if (response.status === 401) {
+        setSessionToken('')
+        setMessage('会话已失效，请在 Control Panel 重新登录。')
+        return
+      }
+
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { error?: string }
+        setMessage(payload.error ?? `Load recent files failed (${response.status})`)
+        return
+      }
+
+      const payload = (await response.json()) as RecentListResponse
+      setRecentItems(Array.isArray(payload.items) ? payload.items : [])
+    },
+    [setSessionToken],
+  )
+
+  const loadTrash = useCallback(
+    async (authToken: string) => {
+      const response = await fetch('/api/recycle-bin?limit=500', {
+        headers: withAuthHeaders(authToken),
+      })
+
+      if (response.status === 401) {
+        setSessionToken('')
+        setMessage('会话已失效，请在 Control Panel 重新登录。')
+        return
+      }
+
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { error?: string }
+        setMessage(payload.error ?? `Load recycle bin failed (${response.status})`)
+        return
+      }
+
+      const payload = (await response.json()) as RecycleBinListResponse
+      setTrashItems(Array.isArray(payload.items) ? payload.items : [])
+    },
+    [setSessionToken],
+  )
+
+  const toggleFavorite = useCallback(
+    async (entry: FileEntry) => {
+      const currentlyStarred = favoriteItems.some((item) => item.path === entry.path)
+      const response = await fetch(`/api/favorites${currentlyStarred ? `?path=${encodeURIComponent(entry.path)}` : ''}`, {
+        method: currentlyStarred ? 'DELETE' : 'POST',
+        headers: withAuthHeaders(effectiveToken, {
+          'Content-Type': 'application/json',
+        }),
+        body: currentlyStarred ? undefined : JSON.stringify({ path: entry.path }),
+      })
+
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { error?: string }
+        setMessage(payload.error ?? `${currentlyStarred ? 'Unstar' : 'Star'} failed (${response.status})`)
+        return
+      }
+
+      await loadFavorites(effectiveToken)
+      setMessage(currentlyStarred ? `Removed star: ${entry.name}` : `Starred: ${entry.name}`)
+    },
+    [effectiveToken, favoriteItems, loadFavorites],
+  )
+
+  const restoreTrashItem = useCallback(
+    async (item: RecycleBinEntry) => {
+      const response = await fetch('/api/recycle-bin/restore', {
+        method: 'POST',
+        headers: withAuthHeaders(effectiveToken, {
+          'Content-Type': 'application/json',
+        }),
+        body: JSON.stringify({ item_id: item.item_id }),
+      })
+
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { error?: string }
+        setMessage(payload.error ?? `Restore failed (${response.status})`)
+        return
+      }
+
+      await loadTrash(effectiveToken)
+      await loadDirectory(currentPath, effectiveToken)
+      setSelectedPaths((prev) => prev.filter((value) => value !== item.path))
+      setMessage(`Restored: ${item.name}`)
+    },
+    [currentPath, effectiveToken, loadDirectory, loadTrash],
+  )
+
+  const deleteTrashItemForever = useCallback(
+    async (item: RecycleBinEntry) => {
+      const confirmed = window.confirm(`Permanently delete ${item.name} from recycle bin?`)
+      if (!confirmed) {
+        return
+      }
+
+      const response = await fetch(`/api/recycle-bin/item/${encodeURIComponent(item.item_id)}`, {
+        method: 'DELETE',
+        headers: withAuthHeaders(effectiveToken),
+      })
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { error?: string }
+        setMessage(payload.error ?? `Permanent delete failed (${response.status})`)
+        return
+      }
+
+      await loadTrash(effectiveToken)
+      setSelectedPaths((prev) => prev.filter((value) => value !== item.path))
+      setMessage(`Deleted permanently: ${item.name}`)
+    },
+    [effectiveToken, loadTrash],
+  )
+
   const updateUploadProgress = useCallback(
     (next: UploadProgressItem) => {
       setUploadProgress((prev) => {
@@ -1014,11 +1244,11 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   }, [syncPublicSharePathToUrl])
 
   useEffect(() => {
-    if (!effectiveToken || publicShareId || mainTab !== 'files') {
+    if (!effectiveToken || publicShareId || mainTab !== 'files' || filesScope !== 'browse') {
       return
     }
     void loadDirectory(currentPath, effectiveToken)
-  }, [effectiveToken, currentPath, loadDirectory, mainTab, publicShareId])
+  }, [currentPath, effectiveToken, filesScope, loadDirectory, mainTab, publicShareId])
 
   useEffect(() => {
     if (!publicShareId && mainTab === 'files') {
@@ -1044,7 +1274,34 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
       return
     }
     void loadShares(effectiveToken)
-  }, [effectiveToken, loadShares, clearPreviewState, clearSearchState])
+    void loadFavorites(effectiveToken)
+  }, [effectiveToken, loadFavorites, loadShares, clearPreviewState, clearSearchState])
+
+  useEffect(() => {
+    if (!effectiveToken || publicShareId || mainTab !== 'files') {
+      return
+    }
+
+    if (filesScope === 'recent') {
+      void loadRecent(effectiveToken)
+      return
+    }
+    if (filesScope === 'trash') {
+      void loadTrash(effectiveToken)
+      return
+    }
+    if (filesScope === 'starred') {
+      void loadFavorites(effectiveToken)
+    }
+  }, [effectiveToken, filesScope, loadFavorites, loadRecent, loadTrash, mainTab, publicShareId])
+
+  useEffect(() => {
+    setSelectedPaths([])
+    clearSearchState()
+    setMessage('')
+    setDropzoneActive(false)
+    dropDragDepthRef.current = 0
+  }, [clearSearchState, filesScope])
 
   useEffect(() => {
     if (!publicShareId) {
@@ -1161,6 +1418,42 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
       return
     }
 
+    if (filesScope !== 'browse') {
+      const lowered = keyword.toLowerCase()
+      const localBase =
+        filesScope === 'recent'
+          ? recentItems.map((item) => ({
+              name: item.name,
+              path: item.path,
+              is_dir: item.is_dir,
+              size: item.size,
+              modified: item.modified,
+            }))
+          : filesScope === 'starred'
+            ? favoriteItems
+            : filesScope === 'trash'
+              ? trashItems.map((item) => ({
+                  name: item.name,
+                  path: item.path,
+                  is_dir: item.is_dir,
+                  size: item.size,
+                  modified: item.modified,
+                }))
+              : items
+
+      const resultItems = localBase.filter((item) => {
+        const hitName = item.name.toLowerCase().includes(lowered)
+        const hitPath = item.path.toLowerCase().includes(lowered)
+        return hitName || hitPath
+      })
+      setSearchResults(resultItems)
+      setSearchTruncated(false)
+      setSearchActive(true)
+      setSelectedPaths([])
+      setMessage(`Found ${resultItems.length} result(s).`)
+      return
+    }
+
     setSearchLoading(true)
     try {
       const query = new URLSearchParams({
@@ -1242,17 +1535,141 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
         return
       }
 
+      if (filesScope === 'trash') {
+        return
+      }
+
       if (entry.is_dir) {
-        openDirectory(entry.path)
+        openDirectoryInBrowse(entry.path)
         return
       }
 
       window.open(buildFileDetailPath(entry.path), '_blank', 'noopener,noreferrer')
     },
-    [openDirectory],
+    [filesScope, openDirectoryInBrowse],
   )
 
-  const visibleItems = searchActive ? searchResults : items
+  const scopeItems = useMemo<FileEntry[]>(() => {
+    if (searchActive) {
+      return searchResults
+    }
+    if (filesScope === 'recent') {
+      return recentItems.map((item) => ({
+        name: item.name,
+        path: item.path,
+        is_dir: item.is_dir,
+        size: item.size,
+        modified: item.modified,
+      }))
+    }
+    if (filesScope === 'starred') {
+      return favoriteItems
+    }
+    if (filesScope === 'trash') {
+      return trashItems.map((item) => ({
+        name: item.name,
+        path: item.path,
+        is_dir: item.is_dir,
+        size: item.size,
+        modified: item.modified,
+      }))
+    }
+    return items
+  }, [favoriteItems, filesScope, items, recentItems, searchActive, searchResults, trashItems])
+
+  const visibleItems = useMemo(() => {
+    const extensions = filterExtInput
+      .split(',')
+      .map((value) => value.trim().replace(/^\./, '').toLowerCase())
+      .filter(Boolean)
+
+    const nowSec = Math.floor(Date.now() / 1000)
+    const presetFrom =
+      filterDatePreset === '7d'
+        ? nowSec - 7 * 24 * 3600
+        : filterDatePreset === '30d'
+          ? nowSec - 30 * 24 * 3600
+          : null
+    const customFrom = filterDateFrom ? Math.floor(new Date(filterDateFrom).getTime() / 1000) : null
+    const customTo = filterDateTo ? Math.floor(new Date(filterDateTo).getTime() / 1000) : null
+    const effectiveFrom = filterDatePreset === 'custom' ? customFrom : presetFrom
+    const effectiveTo = filterDatePreset === 'custom' ? customTo : null
+
+    const sizeMinMb = Number(filterSizeMin)
+    const sizeMaxMb = Number(filterSizeMax)
+    const sizeMin = Number.isFinite(sizeMinMb) && sizeMinMb > 0 ? Math.floor(sizeMinMb * 1024 * 1024) : null
+    const sizeMax = Number.isFinite(sizeMaxMb) && sizeMaxMb > 0 ? Math.floor(sizeMaxMb * 1024 * 1024) : null
+
+    const filtered = scopeItems.filter((entry) => {
+      if (filterKind === 'file' && entry.is_dir) {
+        return false
+      }
+      if (filterKind === 'dir' && !entry.is_dir) {
+        return false
+      }
+
+      if (extensions.length > 0) {
+        if (entry.is_dir) {
+          return false
+        }
+        const ext = getFileExtension(entry.name).toLowerCase()
+        if (!extensions.includes(ext)) {
+          return false
+        }
+      }
+
+      if (effectiveFrom != null && Number.isFinite(effectiveFrom) && entry.modified < effectiveFrom) {
+        return false
+      }
+      if (effectiveTo != null && Number.isFinite(effectiveTo) && entry.modified > effectiveTo) {
+        return false
+      }
+
+      if (!entry.is_dir) {
+        if (sizeMin != null && entry.size < sizeMin) {
+          return false
+        }
+        if (sizeMax != null && entry.size > sizeMax) {
+          return false
+        }
+      }
+
+      return true
+    })
+
+    filtered.sort((a, b) => {
+      if (a.is_dir !== b.is_dir) {
+        return a.is_dir ? -1 : 1
+      }
+
+      const base =
+        filterSortBy === 'modified'
+          ? a.modified - b.modified
+          : filterSortBy === 'size'
+            ? a.size - b.size
+            : a.name.toLowerCase().localeCompare(b.name.toLowerCase())
+      if (base === 0) {
+        return a.path.toLowerCase().localeCompare(b.path.toLowerCase())
+      }
+      return base
+    })
+
+    if (filterSortOrder === 'desc') {
+      filtered.reverse()
+    }
+    return filtered
+  }, [
+    filterDateFrom,
+    filterDatePreset,
+    filterDateTo,
+    filterExtInput,
+    filterKind,
+    filterSizeMax,
+    filterSizeMin,
+    filterSortBy,
+    filterSortOrder,
+    scopeItems,
+  ])
 
   useEffect(() => {
     if (!openActionPath) {
@@ -1765,8 +2182,15 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
       }
 
       clearSearchState()
-      await loadDirectory(currentPath, effectiveToken)
-      const successMessage = entry.is_dir ? `Folder deleted: ${entry.name}` : `File deleted: ${entry.name}`
+      if (filesScope === 'browse') {
+        await loadDirectory(currentPath, effectiveToken)
+      } else if (filesScope === 'recent') {
+        await loadRecent(effectiveToken)
+      } else if (filesScope === 'starred') {
+        await loadFavorites(effectiveToken)
+      }
+      await loadTrash(effectiveToken)
+      const successMessage = entry.is_dir ? `Moved folder to trash: ${entry.name}` : `Moved file to trash: ${entry.name}`
       setMessage(successMessage)
       showDeleteToast(successMessage)
     } finally {
@@ -1956,7 +2380,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
       setSelectedPaths([])
       clearSearchState()
       await loadDirectory(currentPath, effectiveToken)
-      const successMessage = `Deleted ${selectedEntries.length} item(s).`
+      const successMessage = `Moved ${selectedEntries.length} item(s) to trash.`
       setMessage(successMessage)
       showDeleteToast(successMessage)
     } finally {
@@ -2183,16 +2607,41 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
       `/api/raw${encodePath(path)}?auth=${downloadQuery}${forceDownload ? '&download=1' : ''}`,
     [downloadQuery],
   )
+  const buildThumbnailUrl = useCallback(
+    (path: string, size = 160) => `/api/thumb${encodePath(path)}?auth=${downloadQuery}&size=${size}`,
+    [downloadQuery],
+  )
+  const buildThumbnailFailureKey = useCallback((path: string, size: number) => `${path}::${size}`, [])
+  const canUseThumbnail = useCallback(
+    (entry: FileEntry, size = 160) =>
+      filesScope !== 'trash' &&
+      !entry.is_dir &&
+      getFilePreviewKind(entry) === 'image' &&
+      !thumbLoadFailed[buildThumbnailFailureKey(entry.path, size)],
+    [buildThumbnailFailureKey, filesScope, thumbLoadFailed],
+  )
   const publicPathSegments = useMemo(() => publicSharePath.split('/').filter(Boolean), [publicSharePath])
+  const currentPathSegments = useMemo(() => currentPath.split('/').filter(Boolean), [currentPath])
   const activeUploadCount = useMemo(
     () => uploadProgress.filter((item) => item.status === 'uploading' || item.status === 'paused').length,
     [uploadProgress],
   )
   const rowActionItemClass =
     'flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-semibold text-slate-700 transition hover:bg-slate-50 hover:text-primary'
+  const compactToolbarButtonClass =
+    'inline-flex size-8 items-center justify-center rounded-lg text-slate-700 transition hover:bg-slate-100 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-slate-700'
+  const compactPrimaryToolbarButtonClass =
+    'inline-flex size-8 items-center justify-center rounded-lg text-slate-800 transition hover:bg-slate-100 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent'
+  const compactSecondaryToolbarButtonClass =
+    'inline-flex size-8 items-center justify-center rounded-lg text-slate-700 transition hover:bg-slate-100 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-slate-700'
   const openActionEntry = useMemo(
     () => visibleItems.find((entry) => entry.path === openActionPath) ?? null,
     [visibleItems, openActionPath],
+  )
+  const favoritePathSet = useMemo(() => new Set(favoriteItems.map((item) => item.path)), [favoriteItems])
+  const openActionTrashItem = useMemo(
+    () => trashItems.find((item) => item.path === openActionPath) ?? null,
+    [openActionPath, trashItems],
   )
 
   const toggleRowActionMenu = useCallback(
@@ -2249,6 +2698,10 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
       setActionMenuPosition({ top: nextTop, left: nextLeft })
     }
   }, [openActionPath, actionMenuPosition])
+
+  useEffect(() => {
+    setThumbLoadFailed({})
+  }, [visibleItems])
 
   useEffect(() => {
     if (!renameEditingExtension) {
@@ -2362,7 +2815,6 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
       return ''
     }
   }, [effectiveToken])
-  const currentPathSegments = useMemo(() => currentPath.split('/').filter(Boolean), [currentPath])
   const visibleFolderCount = useMemo(() => visibleItems.filter((item) => item.is_dir).length, [visibleItems])
   const visibleFileCount = useMemo(() => visibleItems.filter((item) => !item.is_dir).length, [visibleItems])
 
@@ -3117,66 +3569,197 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
           }`}
         >
           <div className="border-b border-slate-200 bg-white px-5">
-            <div className="-mb-px flex items-center gap-6">
-              <button
-                type="button"
-                onClick={() => navigateToMainTab('files')}
-                className={`border-b-2 px-1 py-3 text-sm font-semibold transition ${
-                  mainTab === 'files'
-                    ? 'border-primary text-primary'
-                    : 'border-transparent text-slate-500 hover:text-primary'
-                }`}
-              >
-                Files
-              </button>
-              <button
-                type="button"
-                onClick={() => navigateToMainTab('shares')}
-                className={`border-b-2 px-1 py-3 text-sm font-semibold transition ${
-                  mainTab === 'shares'
-                    ? 'border-primary text-primary'
-                    : 'border-transparent text-slate-500 hover:text-primary'
-                }`}
-              >
-                Shares
-              </button>
+            <div className="-mb-px flex flex-wrap items-center justify-between gap-2 py-1.5">
+              <div className="flex items-center gap-4">
+                <button
+                  type="button"
+                  onClick={() => navigateToMainTab('files')}
+                  className={`border-b-2 px-1 py-2 text-sm font-semibold transition ${
+                    mainTab === 'files'
+                      ? 'border-primary text-primary'
+                      : 'border-transparent text-slate-500 hover:text-primary'
+                  }`}
+                >
+                  <span className="inline-flex items-center gap-1.5">
+                    <Icon name="folder" className="size-3.5" />
+                    Files
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => navigateToMainTab('shares')}
+                  className={`border-b-2 px-1 py-2 text-sm font-semibold transition ${
+                    mainTab === 'shares'
+                      ? 'border-primary text-primary'
+                      : 'border-transparent text-slate-500 hover:text-primary'
+                  }`}
+                >
+                  <span className="inline-flex items-center gap-1.5">
+                    <Icon name="share" className="size-3.5" />
+                    Shares
+                  </span>
+                </button>
+              </div>
+
+              {mainTab === 'files' ? (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {([
+                    { key: 'browse', label: 'Browse', icon: 'folder' as const },
+                    { key: 'recent', label: 'Recent', icon: 'scope-recent' as const },
+                    { key: 'starred', label: 'Starred', icon: 'scope-starred' as const },
+                    { key: 'trash', label: 'Trash', icon: 'scope-trash' as const },
+                  ] as const).map((scope) => (
+                    <button
+                      key={scope.key}
+                      type="button"
+                      onClick={() => setFilesScope(scope.key)}
+                      className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold transition ${
+                        filesScope === scope.key
+                          ? 'border-primary bg-primary text-white'
+                          : 'border-slate-300 bg-white text-slate-700 hover:border-primary hover:text-primary'
+                      }`}
+                    >
+                      <span className="inline-flex items-center gap-1.5">
+                        <Icon name={scope.icon} className="size-3.5" />
+                        {scope.label}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </div>
           </div>
 
           {mainTab === 'files' ? (
             <div className={embedded ? 'flex min-h-0 flex-1 flex-col' : ''}>
-              <header className="border-b border-slate-200 px-5 py-4">
-                <div className="flex flex-wrap items-center gap-2">
-                  <label className="inline-flex cursor-pointer items-center rounded-xl bg-primary px-3 py-2 text-sm font-semibold text-white transition hover:bg-teal-700">
-                    <span className="inline-flex items-center gap-1.5">
-                      <Icon name="upload" />
-                      Upload
-                    </span>
-                    <input type="file" multiple onChange={onUpload} className="hidden" />
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => void onCreateFolder()}
-                    className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-primary hover:text-primary"
-                  >
-                    <span className="inline-flex items-center gap-1.5">
-                      <Icon name="new-folder" />
-                      Add folder
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      clearSearchState()
-                      void loadDirectory(currentPath, effectiveToken)
-                    }}
-                    className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-primary hover:text-primary"
-                  >
-                    <span className="inline-flex items-center gap-1.5">
-                      <Icon name="retry" />
-                      Refresh
-                    </span>
-                  </button>
+              <header className="border-b border-slate-200 px-5 py-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {filesScope === 'browse' ? (
+                    <>
+                      <HoverTooltip label="Upload">
+                        <label className={`${compactPrimaryToolbarButtonClass} cursor-pointer`}>
+                          <Icon name="upload" className="size-3.5" />
+                          <input type="file" multiple onChange={onUpload} className="hidden" />
+                        </label>
+                      </HoverTooltip>
+                      <HoverTooltip label="Add folder">
+                        <button
+                          type="button"
+                          onClick={() => void onCreateFolder()}
+                          className={compactSecondaryToolbarButtonClass}
+                          aria-label="Add folder"
+                        >
+                          <Icon name="new-folder" className="size-3.5" />
+                        </button>
+                      </HoverTooltip>
+                    </>
+                  ) : null}
+                  <HoverTooltip label={showAdvancedFilters ? 'Hide filters' : 'Advanced filters'}>
+                    <button
+                      type="button"
+                      onClick={() => setShowAdvancedFilters((prev) => !prev)}
+                      className={compactSecondaryToolbarButtonClass}
+                      aria-label={showAdvancedFilters ? 'Hide filters' : 'Advanced filters'}
+                    >
+                      <Icon name="filter" className="size-3.5" />
+                    </button>
+                  </HoverTooltip>
+                  {filesScope === 'browse' && currentPathIsDir ? (
+                    <div className="inline-flex items-center overflow-hidden rounded-lg border border-primary">
+                      <HoverTooltip label="Icon view">
+                        <button
+                          type="button"
+                          onClick={() => setFilesViewMode('icon')}
+                          className={`px-2.5 py-1.5 text-xs font-semibold transition ${
+                            filesViewMode === 'icon'
+                              ? 'bg-primary text-white'
+                              : 'bg-white text-slate-700 hover:bg-slate-50 hover:text-primary'
+                          }`}
+                          aria-label="Icon view"
+                        >
+                          <span className="inline-flex items-center">
+                            <Icon name="view-icon" />
+                          </span>
+                        </button>
+                      </HoverTooltip>
+                      <HoverTooltip label="List view">
+                        <button
+                          type="button"
+                          onClick={() => setFilesViewMode('list')}
+                          className={`border-l border-primary px-2.5 py-1.5 text-xs font-semibold transition ${
+                            filesViewMode === 'list'
+                              ? 'bg-primary text-white'
+                              : 'bg-white text-slate-700 hover:bg-slate-50 hover:text-primary'
+                          }`}
+                          aria-label="List view"
+                        >
+                          <span className="inline-flex items-center">
+                            <Icon name="view-list" />
+                          </span>
+                        </button>
+                      </HoverTooltip>
+                    </div>
+                  ) : null}
+                  <HoverTooltip label="Move selected">
+                    <button
+                      type="button"
+                      disabled={selectedEntries.length === 0}
+                      onClick={() => void onBatchMoveOrCopy('move')}
+                      className={compactToolbarButtonClass}
+                      aria-label="Move selected"
+                    >
+                      <span className="inline-flex items-center justify-center">
+                        <Icon name="move" className="size-4" />
+                      </span>
+                    </button>
+                  </HoverTooltip>
+                  <HoverTooltip label="Copy selected">
+                    <button
+                      type="button"
+                      disabled={selectedEntries.length === 0}
+                      onClick={() => void onBatchMoveOrCopy('copy')}
+                      className={compactToolbarButtonClass}
+                      aria-label="Copy selected"
+                    >
+                      <span className="inline-flex items-center justify-center">
+                        <Icon name="copy" className="size-4" />
+                      </span>
+                    </button>
+                  </HoverTooltip>
+                  <HoverTooltip label="Delete selected">
+                    <button
+                      type="button"
+                      disabled={selectedEntries.length === 0}
+                      onClick={() => void onBatchDelete()}
+                      className={`${compactToolbarButtonClass} text-rose-600 hover:bg-rose-50 hover:text-rose-700 disabled:hover:bg-transparent disabled:hover:text-rose-600`}
+                      aria-label="Delete selected"
+                    >
+                      <span className="inline-flex items-center justify-center">
+                        <Icon name="delete" className="size-4" />
+                      </span>
+                    </button>
+                  </HoverTooltip>
+                  <HoverTooltip label="Refresh">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        clearSearchState()
+                        if (filesScope === 'browse') {
+                          void loadDirectory(currentPath, effectiveToken)
+                        } else if (filesScope === 'recent') {
+                          void loadRecent(effectiveToken)
+                        } else if (filesScope === 'starred') {
+                          void loadFavorites(effectiveToken)
+                        } else {
+                          void loadTrash(effectiveToken)
+                        }
+                      }}
+                      className={compactSecondaryToolbarButtonClass}
+                      aria-label="Refresh"
+                    >
+                      <Icon name="retry" className="size-3.5" />
+                    </button>
+                  </HoverTooltip>
                   <input
                     value={searchKeyword}
                     onChange={(event) => setSearchKeyword(event.target.value)}
@@ -3186,128 +3769,228 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                         void onSearch()
                       }
                     }}
-                    placeholder="Search by file name or path"
-                    className="min-w-[240px] flex-1 rounded-xl border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                    placeholder={filesScope === 'browse' ? 'Search by file name or path' : 'Search in current view'}
+                    className="w-full min-w-[220px] max-w-[720px] flex-1 rounded-lg border border-slate-300 bg-slate-50 px-3 py-1 text-sm text-slate-700 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
                   />
-                  <button
-                    type="button"
-                    onClick={() => void onSearch()}
-                    disabled={searchLoading}
-                    className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <span className="inline-flex items-center gap-1.5">
-                      <Icon name="search" />
-                      {searchLoading ? 'Searching...' : 'Search'}
-                    </span>
-                  </button>
-                  {searchActive ? (
+                  <HoverTooltip label={searchLoading && filesScope === 'browse' ? 'Searching...' : 'Search'}>
                     <button
                       type="button"
-                      onClick={onClearSearch}
-                      className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-primary hover:text-primary"
+                      onClick={() => void onSearch()}
+                      disabled={searchLoading && filesScope === 'browse'}
+                      className={compactPrimaryToolbarButtonClass}
+                      aria-label={searchLoading && filesScope === 'browse' ? 'Searching...' : 'Search'}
                     >
-                      <span className="inline-flex items-center gap-1.5">
-                        <Icon name="clear" />
-                        Clear
-                      </span>
+                      <Icon name="search" className="size-3.5" />
                     </button>
+                  </HoverTooltip>
+                  {searchActive ? (
+                    <HoverTooltip label="Clear search">
+                      <button
+                        type="button"
+                        onClick={onClearSearch}
+                        className={compactSecondaryToolbarButtonClass}
+                        aria-label="Clear search"
+                      >
+                        <Icon name="clear" className="size-3.5" />
+                      </button>
+                    </HoverTooltip>
                   ) : null}
                 </div>
+
+                {showAdvancedFilters ? (
+                  <div className="mt-2 grid gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 md:grid-cols-4">
+                    <label className="text-xs font-semibold text-slate-600">
+                      Kind
+                      <select
+                        value={filterKind}
+                        onChange={(event) => setFilterKind(event.target.value as 'all' | 'file' | 'dir')}
+                        className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-700"
+                      >
+                        <option value="all">All</option>
+                        <option value="file">Files</option>
+                        <option value="dir">Folders</option>
+                      </select>
+                    </label>
+                    <label className="text-xs font-semibold text-slate-600">
+                      Extension (csv)
+                      <input
+                        value={filterExtInput}
+                        onChange={(event) => setFilterExtInput(event.target.value)}
+                        placeholder="jpg,png,pdf"
+                        className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-700"
+                      />
+                    </label>
+                    <label className="text-xs font-semibold text-slate-600">
+                      Modified
+                      <select
+                        value={filterDatePreset}
+                        onChange={(event) => setFilterDatePreset(event.target.value as 'all' | '7d' | '30d' | 'custom')}
+                        className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-700"
+                      >
+                        <option value="all">Any time</option>
+                        <option value="7d">Last 7 days</option>
+                        <option value="30d">Last 30 days</option>
+                        <option value="custom">Custom range</option>
+                      </select>
+                    </label>
+                    <label className="text-xs font-semibold text-slate-600">
+                      Sort
+                      <div className="mt-1 flex gap-2">
+                        <select
+                          value={filterSortBy}
+                          onChange={(event) => setFilterSortBy(event.target.value as 'name' | 'modified' | 'size')}
+                          className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-700"
+                        >
+                          <option value="name">Name</option>
+                          <option value="modified">Modified</option>
+                          <option value="size">Size</option>
+                        </select>
+                        <select
+                          value={filterSortOrder}
+                          onChange={(event) => setFilterSortOrder(event.target.value as 'asc' | 'desc')}
+                          className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-700"
+                        >
+                          <option value="asc">Asc</option>
+                          <option value="desc">Desc</option>
+                        </select>
+                      </div>
+                    </label>
+
+                    {filterDatePreset === 'custom' ? (
+                      <>
+                        <label className="text-xs font-semibold text-slate-600">
+                          From
+                          <input
+                            type="datetime-local"
+                            value={filterDateFrom}
+                            onChange={(event) => setFilterDateFrom(event.target.value)}
+                            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-700"
+                          />
+                        </label>
+                        <label className="text-xs font-semibold text-slate-600">
+                          To
+                          <input
+                            type="datetime-local"
+                            value={filterDateTo}
+                            onChange={(event) => setFilterDateTo(event.target.value)}
+                            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-700"
+                          />
+                        </label>
+                      </>
+                    ) : null}
+
+                    <label className="text-xs font-semibold text-slate-600">
+                      Size min (MB)
+                      <input
+                        type="number"
+                        min="0"
+                        value={filterSizeMin}
+                        onChange={(event) => setFilterSizeMin(event.target.value)}
+                        className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-700"
+                      />
+                    </label>
+                    <label className="text-xs font-semibold text-slate-600">
+                      Size max (MB)
+                      <input
+                        type="number"
+                        min="0"
+                        value={filterSizeMax}
+                        onChange={(event) => setFilterSizeMax(event.target.value)}
+                        className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-700"
+                      />
+                    </label>
+                    <div className="flex items-end">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFilterKind('all')
+                          setFilterExtInput('')
+                          setFilterDatePreset('all')
+                          setFilterDateFrom('')
+                          setFilterDateTo('')
+                          setFilterSizeMin('')
+                          setFilterSizeMax('')
+                          setFilterSortBy('name')
+                          setFilterSortOrder('asc')
+                        }}
+                        className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
+                      >
+                        Reset filters
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
               </header>
 
-              <div className="border-b border-slate-200 px-5 py-3">
-                <div className="flex items-center justify-between gap-3">
+              <div className="border-b border-slate-200 px-5 py-2">
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="min-w-0 flex flex-wrap items-center gap-2">
-                    <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
-                      Path: {currentPath}
-                    </span>
-                    {currentPathIsDir ? (
-                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
-                        {visibleFolderCount} folders · {visibleFileCount} files
-                      </span>
+                    {filesScope === 'browse' ? (
+                      <div className="inline-flex min-w-0 max-w-full items-center overflow-hidden rounded-full bg-slate-100 px-1 py-0.5 text-[11px] font-semibold text-slate-600">
+                        <button
+                          type="button"
+                          onClick={() => openDirectory('/')}
+                          className="rounded-full px-2 py-0.5 text-slate-700 transition hover:bg-white hover:text-primary"
+                        >
+                          Root
+                        </button>
+                        {currentPathSegments.map((segment, index) => {
+                          const partialPath = `/${currentPathSegments.slice(0, index + 1).join('/')}`
+                          const isLast = index === currentPathSegments.length - 1
+
+                          return (
+                            <span key={partialPath} className="inline-flex min-w-0 items-center">
+                              <span className="px-1 text-slate-400">/</span>
+                              <button
+                                type="button"
+                                onClick={() => openDirectory(partialPath)}
+                                disabled={isLast}
+                                className={`max-w-[120px] truncate rounded-full px-2 py-0.5 transition ${
+                                  isLast
+                                    ? 'cursor-default text-slate-500'
+                                    : 'text-slate-700 hover:bg-white hover:text-primary'
+                                }`}
+                                title={segment}
+                              >
+                                {segment}
+                              </button>
+                            </span>
+                          )
+                        })}
+                      </div>
                     ) : (
-                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">File preview mode</span>
+                      <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold text-slate-600">
+                        View: {filesScope}
+                      </span>
                     )}
-                    {loading ? <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">Working...</span> : null}
+                  </div>
+
+                  <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+                    {filesScope === 'browse' ? (
+                      currentPathIsDir ? (
+                        <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold text-slate-600">
+                          {visibleFolderCount} folders · {visibleFileCount} files
+                        </span>
+                      ) : (
+                        <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold text-slate-600">File preview mode</span>
+                      )
+                    ) : (
+                      <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold text-slate-600">
+                        {visibleItems.length} items
+                      </span>
+                    )}
+                    {loading ? <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold text-slate-600">Working...</span> : null}
                     {searchActive ? (
-                      <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700">
+                      <span className="rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-semibold text-amber-700">
                         {searchResults.length} result(s){searchTruncated ? ' · truncated' : ''}
                       </span>
                     ) : null}
-                    {currentPathIsDir && selectedEntries.length > 0 ? (
-                      <span className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">
+                    {selectedEntries.length > 0 ? (
+                      <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-[11px] font-semibold text-primary">
                         {selectedEntries.length} selected
                       </span>
                     ) : null}
                   </div>
-
-                  {currentPathIsDir ? (
-                    <div className="ml-3 flex shrink-0 items-center justify-end gap-2">
-                    <div className="inline-flex items-center overflow-hidden rounded-lg border border-slate-300">
-                      <button
-                        type="button"
-                        onClick={() => setFilesViewMode('icon')}
-                        className={`px-2.5 py-2 text-xs font-semibold transition ${
-                          filesViewMode === 'icon'
-                            ? 'bg-primary text-white'
-                            : 'bg-white text-slate-700 hover:bg-slate-50 hover:text-primary'
-                        }`}
-                      >
-                        <span className="inline-flex items-center gap-1.5">
-                          <Icon name="view-icon" />
-                          Icon
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setFilesViewMode('list')}
-                        className={`border-l border-slate-300 px-2.5 py-2 text-xs font-semibold transition ${
-                          filesViewMode === 'list'
-                            ? 'bg-primary text-white'
-                            : 'bg-white text-slate-700 hover:bg-slate-50 hover:text-primary'
-                        }`}
-                      >
-                        <span className="inline-flex items-center gap-1.5">
-                          <Icon name="view-list" />
-                          List
-                        </span>
-                      </button>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={selectedEntries.length === 0}
-                      onClick={() => void onBatchMoveOrCopy('move')}
-                      className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:border-slate-300 disabled:hover:text-slate-700"
-                    >
-                      <span className="inline-flex items-center gap-1.5">
-                        <Icon name="move" />
-                        Move selected
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      disabled={selectedEntries.length === 0}
-                      onClick={() => void onBatchMoveOrCopy('copy')}
-                      className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:border-slate-300 disabled:hover:text-slate-700"
-                    >
-                      <span className="inline-flex items-center gap-1.5">
-                        <Icon name="copy" />
-                        Copy selected
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      disabled={selectedEntries.length === 0}
-                      onClick={() => void onBatchDelete()}
-                      className="rounded-lg border border-rose-300 px-3 py-2 text-sm font-medium text-rose-600 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent"
-                    >
-                      <span className="inline-flex items-center gap-1.5">
-                        <Icon name="delete" />
-                        Delete selected
-                      </span>
-                    </button>
-                  </div>
-                ) : null}
                 </div>
               </div>
 
@@ -3315,63 +3998,19 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
             <p className="border-b border-slate-200 bg-slate-50 px-5 py-3 text-sm font-medium text-slate-700">{message}</p>
           ) : null}
 
-          <div className="border-b border-slate-200 bg-white px-5 py-2">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => openDirectory('/')}
-                  className="rounded-md border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
-                >
-                  <span className="inline-flex items-center gap-1.5">
-                    <Icon name="folder" />
-                    Root
-                  </span>
-                </button>
-                {currentPathSegments.map((segment, index) => {
-                  const partialPath = `/${currentPathSegments.slice(0, index + 1).join('/')}`
-                  return (
-                    <button
-                      key={partialPath}
-                      type="button"
-                      onClick={() => openDirectory(partialPath)}
-                      className="rounded-md border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
-                    >
-                      <span className="inline-flex items-center gap-1.5">
-                        <Icon name="folder" />
-                        {segment}
-                      </span>
-                    </button>
-                  )
-                })}
-              </div>
-
-              <button
-                type="button"
-                onClick={() => openDirectory(parentPath(currentPath))}
-                className="rounded-md border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
-              >
-                <span className="inline-flex items-center gap-1.5">
-                  <Icon name="up" />
-                  Up
-                </span>
-              </button>
-            </div>
-          </div>
-
           {currentPathIsDir ? (
               <div
                 className={`relative px-3 py-3 transition md:px-4 ${
                   embedded ? 'min-h-0 flex-1 overflow-auto' : 'overflow-x-auto'
                 } ${
-                  dropzoneActive ? 'bg-teal-50/70 ring-2 ring-primary/25 ring-inset' : ''
+                  filesScope === 'browse' && dropzoneActive ? 'bg-teal-50/70 ring-2 ring-primary/25 ring-inset' : ''
                 }`}
-                onDragEnter={onListDragEnter}
-                onDragOver={onListDragOver}
-                onDragLeave={onListDragLeave}
-                onDrop={(event) => void onListDrop(event)}
+                onDragEnter={filesScope === 'browse' ? onListDragEnter : undefined}
+                onDragOver={filesScope === 'browse' ? onListDragOver : undefined}
+                onDragLeave={filesScope === 'browse' ? onListDragLeave : undefined}
+                onDrop={filesScope === 'browse' ? (event) => void onListDrop(event) : undefined}
               >
-                {dropzoneActive ? (
+                {filesScope === 'browse' && dropzoneActive ? (
                   <div className="pointer-events-none absolute inset-3 z-20 flex items-center justify-center rounded-2xl border-2 border-dashed border-primary/60 bg-white/85">
                     <div className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm font-semibold text-primary shadow-sm">
                       <Icon name="upload" />
@@ -3394,7 +4033,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                           />
                         </th>
                         <th className="bg-slate-50 px-3 py-2">Name</th>
-                        {searchActive ? <th className="bg-slate-50 px-3 py-2">Path</th> : null}
+                        {searchActive || filesScope !== 'browse' ? <th className="bg-slate-50 px-3 py-2">Path</th> : null}
                         <th className="bg-slate-50 px-3 py-2">Type</th>
                         <th className="bg-slate-50 px-3 py-2">Size</th>
                         <th className="bg-slate-50 px-3 py-2">Modified</th>
@@ -3404,8 +4043,8 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                     <tbody>
                       {visibleItems.length === 0 ? (
                         <tr>
-                          <td colSpan={searchActive ? 7 : 6} className="px-3 py-12 text-center text-sm text-slate-500">
-                            {searchActive ? 'No search result.' : 'Empty directory.'}
+                          <td colSpan={searchActive || filesScope !== 'browse' ? 7 : 6} className="px-3 py-12 text-center text-sm text-slate-500">
+                            {searchActive ? 'No search result.' : filesScope === 'browse' ? 'Empty directory.' : 'No items in this view.'}
                           </td>
                         </tr>
                       ) : (
@@ -3426,7 +4065,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                               {entry.is_dir ? (
                                 <button
                                   type="button"
-                                  onClick={() => openDirectory(entry.path)}
+                                  onClick={() => openDirectoryInBrowse(entry.path)}
                                   className="rounded px-1 py-0.5 text-left text-primary transition hover:bg-primary/10"
                                   aria-label={entry.name}
                                 >
@@ -3444,13 +4083,28 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                                   aria-label={entry.name}
                                 >
                                   <span className="inline-flex items-center gap-1.5">
-                                    <Icon name={entryIcon.iconName} className={`${entryIcon.iconClassName ?? ''} shrink-0`.trim()} />
+                                    {canUseThumbnail(entry, 48) ? (
+                                      <img
+                                        src={buildThumbnailUrl(entry.path, 48)}
+                                        alt=""
+                                        className="size-6 shrink-0 rounded-[2px] border border-slate-200 object-cover"
+                                        loading="lazy"
+                                        onError={() => {
+                                          setThumbLoadFailed((prev) => ({
+                                            ...prev,
+                                            [buildThumbnailFailureKey(entry.path, 48)]: true,
+                                          }))
+                                        }}
+                                      />
+                                    ) : (
+                                      <Icon name={entryIcon.iconName} className={`${entryIcon.iconClassName ?? ''} shrink-0`.trim()} />
+                                    )}
                                     <FileNameTooltip name={entry.name} />
                                   </span>
                                 </a>
                               )}
                             </td>
-                            {searchActive ? <td className="border-b border-slate-100 px-3 py-2 text-slate-600">{parentPath(entry.path)}</td> : null}
+                            {searchActive || filesScope !== 'browse' ? <td className="border-b border-slate-100 px-3 py-2 text-slate-600">{parentPath(entry.path)}</td> : null}
                             <td className="border-b border-slate-100 px-3 py-2">{entry.is_dir ? 'Folder' : 'File'}</td>
                             <td className="border-b border-slate-100 px-3 py-2">{entry.is_dir ? '-' : formatBytes(entry.size)}</td>
                             <td className="border-b border-slate-100 px-3 py-2">{formatTimestamp(entry.modified)}</td>
@@ -3478,11 +4132,11 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                   <>
                     {visibleItems.length === 0 ? (
                       <div className="rounded-xl border border-dashed border-slate-300 px-3 py-12 text-center text-sm text-slate-500">
-                        {searchActive ? 'No search result.' : 'Empty directory.'}
+                        {searchActive ? 'No search result.' : filesScope === 'browse' ? 'Empty directory.' : 'No items in this view.'}
                       </div>
                     ) : (
                       <div
-                        className={`grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 ${dropzoneActive ? 'opacity-60' : ''}`}
+                        className={`grid grid-cols-[repeat(auto-fill,minmax(136px,1fr))] gap-3 ${dropzoneActive ? 'opacity-60' : ''}`}
                         onClick={(event) => {
                           if (event.target === event.currentTarget) {
                             setSelectedPaths([])
@@ -3513,20 +4167,35 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                               </div>
 
                               <div className="flex h-[126px] flex-col items-center justify-start pt-6 text-center">
-                                <div
-                                  className={`inline-flex size-14 items-center justify-center rounded-xl ${
-                                    entry.is_dir ? 'bg-amber-50 text-amber-600' : 'bg-slate-50'
-                                  }`}
-                                >
-                                  <Icon
-                                    name={entry.is_dir ? 'folder' : entryIcon.iconName}
-                                    className={`${entry.is_dir ? '' : entryIcon.iconClassName ?? ''} size-7`.trim()}
+                                {entry.is_dir ? (
+                                  <div className="inline-flex size-14 items-center justify-center rounded-xl bg-amber-50 text-amber-600">
+                                    <Icon name="folder" className="size-7" />
+                                  </div>
+                                ) : canUseThumbnail(entry, 160) ? (
+                                  <img
+                                    src={buildThumbnailUrl(entry.path, 160)}
+                                    alt=""
+                                    className="size-14 rounded-md border border-slate-200 object-cover"
+                                    loading="lazy"
+                                    onError={() => {
+                                      setThumbLoadFailed((prev) => ({
+                                        ...prev,
+                                        [buildThumbnailFailureKey(entry.path, 160)]: true,
+                                      }))
+                                    }}
                                   />
-                                </div>
+                                ) : (
+                                  <div className="inline-flex size-14 items-center justify-center rounded-xl bg-slate-50">
+                                    <Icon
+                                      name={entryIcon.iconName}
+                                      className={`${entryIcon.iconClassName ?? ''} size-7`.trim()}
+                                    />
+                                  </div>
+                                )}
                                 <div className={`mt-2 w-full font-medium ${entry.is_dir ? 'text-primary' : 'text-slate-800'}`}>
                                   <FileNameTooltip name={entry.name} maxChars={28} maxWidthClass="max-w-full" />
                                 </div>
-                                {searchActive ? <p className="mt-1 w-full truncate text-[11px] text-slate-500">{parentPath(entry.path)}</p> : null}
+                                {searchActive || filesScope !== 'browse' ? <p className="mt-1 w-full truncate text-[11px] text-slate-500">{parentPath(entry.path)}</p> : null}
                               </div>
                             </article>
                           )
@@ -3546,125 +4215,171 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                   style={{ top: actionMenuPosition.top, left: actionMenuPosition.left }}
                   data-row-actions="true"
                 >
-                  {!openActionEntry.is_dir ? (
-                    <a
-                      href={buildFileDetailPath(openActionEntry.path)}
-                      target="_blank"
-                      rel="noreferrer"
-                      className={rowActionItemClass}
-                      onClick={closeRowActionMenu}
-                    >
-                      <Icon name="open" />
-                      Open
-                    </a>
-                  ) : null}
-                  <a
-                    href={buildRawFileUrl(openActionEntry.path, true)}
-                    className={rowActionItemClass}
-                    onClick={closeRowActionMenu}
-                  >
-                    <Icon name="download" />
-                    Download
-                  </a>
-                  {!openActionEntry.is_dir ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        closeRowActionMenu()
-                        void onOpenEditor(openActionEntry)
-                      }}
-                      className={rowActionItemClass}
-                    >
-                      <Icon name="open" />
-                      Edit
-                    </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      closeRowActionMenu()
-                      void onRename(openActionEntry)
-                    }}
-                    className={rowActionItemClass}
-                  >
-                    <Icon name="rename" />
-                    Rename
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      closeRowActionMenu()
-                      void onMoveOrCopy(openActionEntry, 'move')
-                    }}
-                    className={rowActionItemClass}
-                  >
-                    <Icon name="move" />
-                    Move
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      closeRowActionMenu()
-                      void onMoveOrCopy(openActionEntry, 'copy')
-                    }}
-                    className={rowActionItemClass}
-                  >
-                    <Icon name="copy" />
-                    Copy
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      closeRowActionMenu()
-                      void onCreateShare(openActionEntry)
-                    }}
-                    className={`${rowActionItemClass} text-amber-700 hover:bg-amber-50 hover:text-amber-700`}
-                  >
-                    <Icon name="share" />
-                    Share
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      closeRowActionMenu()
-                      void onDelete(openActionEntry)
-                    }}
-                    className={`${rowActionItemClass} text-rose-600 hover:bg-rose-50 hover:text-rose-700`}
-                  >
-                    <Icon name="delete" />
-                    Delete
-                  </button>
+                  {filesScope === 'trash' ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          closeRowActionMenu()
+                          if (openActionTrashItem) {
+                            void restoreTrashItem(openActionTrashItem)
+                          }
+                        }}
+                        className={rowActionItemClass}
+                      >
+                        <Icon name="restore" />
+                        Restore
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          closeRowActionMenu()
+                          if (openActionTrashItem) {
+                            void deleteTrashItemForever(openActionTrashItem)
+                          }
+                        }}
+                        className={`${rowActionItemClass} text-rose-600 hover:bg-rose-50 hover:text-rose-700`}
+                      >
+                        <Icon name="delete" />
+                        Delete forever
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      {!openActionEntry.is_dir ? (
+                        <a
+                          href={buildFileDetailPath(openActionEntry.path)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className={rowActionItemClass}
+                          onClick={closeRowActionMenu}
+                        >
+                          <Icon name="open" />
+                          Open
+                        </a>
+                      ) : null}
+                      <a
+                        href={buildRawFileUrl(openActionEntry.path, true)}
+                        className={rowActionItemClass}
+                        onClick={closeRowActionMenu}
+                      >
+                        <Icon name="download" />
+                        Download
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          closeRowActionMenu()
+                          void toggleFavorite(openActionEntry)
+                        }}
+                        className={rowActionItemClass}
+                      >
+                        <Icon name="star" />
+                        {favoritePathSet.has(openActionEntry.path) ? 'Unstar' : 'Star'}
+                      </button>
+                      {!openActionEntry.is_dir ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            closeRowActionMenu()
+                            void onOpenEditor(openActionEntry)
+                          }}
+                          className={rowActionItemClass}
+                        >
+                          <Icon name="open" />
+                          Edit
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          closeRowActionMenu()
+                          void onRename(openActionEntry)
+                        }}
+                        className={rowActionItemClass}
+                      >
+                        <Icon name="rename" />
+                        Rename
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          closeRowActionMenu()
+                          void onMoveOrCopy(openActionEntry, 'move')
+                        }}
+                        className={rowActionItemClass}
+                      >
+                        <Icon name="move" />
+                        Move
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          closeRowActionMenu()
+                          void onMoveOrCopy(openActionEntry, 'copy')
+                        }}
+                        className={rowActionItemClass}
+                      >
+                        <Icon name="copy" />
+                        Copy
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          closeRowActionMenu()
+                          void onCreateShare(openActionEntry)
+                        }}
+                        className={`${rowActionItemClass} text-amber-700 hover:bg-amber-50 hover:text-amber-700`}
+                      >
+                        <Icon name="share" />
+                        Share
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          closeRowActionMenu()
+                          void onDelete(openActionEntry)
+                        }}
+                        className={`${rowActionItemClass} text-rose-600 hover:bg-rose-50 hover:text-rose-700`}
+                      >
+                        <Icon name="delete" />
+                        Delete
+                      </button>
+                    </>
+                  )}
                 </div>,
                 document.body,
               )
             : null}
 
-          <FilePreviewPanel
-            embedded={embedded}
-            previewEntry={previewEntry}
-            previewKind={displayPreviewKind}
-            previewRawUrl={displayPreviewRawUrl}
-            previewImageSrc={previewImageSrc}
-            previewLoading={previewLoading}
-            previewLoadingLabel={previewLoadingLabel}
-            previewLoadingElapsedSeconds={previewLoadingElapsedSeconds}
-            previewError={previewError}
-            previewTextContent={previewTextContent}
-            previewDocxHtml={previewDocxHtml}
-            previewImageLoading={previewImageLoading}
-            previewImageProgressPercent={previewImageProgressPercent}
-            previewImageLoadedBytes={previewImageLoadedBytes}
-            previewImageTotalBytes={previewImageTotalBytes}
-            officePreviewUrl={officePreviewUrl}
-            onOpenImageViewer={openImageViewer}
-            onPreviewImageLoad={() => setPreviewImageLoading(false)}
-            onPreviewImageError={() => {
-              setPreviewImageLoading(false)
-              setPreviewError('Image preview failed to render. Please retry.')
-            }}
-            formatBytes={formatBytes}
-            formatTimestamp={formatTimestamp}
-          />
+          {filesScope === 'browse' ? (
+            <FilePreviewPanel
+              embedded={embedded}
+              previewEntry={previewEntry}
+              previewKind={displayPreviewKind}
+              previewRawUrl={displayPreviewRawUrl}
+              previewImageSrc={previewImageSrc}
+              previewLoading={previewLoading}
+              previewLoadingLabel={previewLoadingLabel}
+              previewLoadingElapsedSeconds={previewLoadingElapsedSeconds}
+              previewError={previewError}
+              previewTextContent={previewTextContent}
+              previewDocxHtml={previewDocxHtml}
+              previewImageLoading={previewImageLoading}
+              previewImageProgressPercent={previewImageProgressPercent}
+              previewImageLoadedBytes={previewImageLoadedBytes}
+              previewImageTotalBytes={previewImageTotalBytes}
+              officePreviewUrl={officePreviewUrl}
+              onOpenImageViewer={openImageViewer}
+              onPreviewImageLoad={() => setPreviewImageLoading(false)}
+              onPreviewImageError={() => {
+                setPreviewImageLoading(false)
+                setPreviewError('Image preview failed to render. Please retry.')
+              }}
+              formatBytes={formatBytes}
+              formatTimestamp={formatTimestamp}
+            />
+          ) : null}
 
             </div>
           ) : null}

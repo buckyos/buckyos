@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ArrowLeft, Download } from 'lucide-react'
+import { ArrowLeft, ChevronLeft, ChevronRight, Download } from 'lucide-react'
 import mammoth from 'mammoth/mammoth.browser'
-import { useLocation } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 
 import { ensureSessionToken } from '@/auth/authManager'
 import { getSessionTokenFromCookies, getStoredSessionToken } from '@/auth/session'
@@ -24,6 +24,12 @@ type FileResponse = {
   size: number
   modified: number
   content?: string | null
+}
+
+type FileNavResponse = {
+  path: string
+  previous?: FileEntry | null
+  next?: FileEntry | null
 }
 
 const withAuthHeaders = (authToken: string) => {
@@ -86,6 +92,7 @@ const formatTimestamp = (value: number) => {
 }
 
 const FileDetailPage = () => {
+  const navigate = useNavigate()
   const location = useLocation()
   const [token, setToken] = useState(() => getStoredSessionToken() || getSessionTokenFromCookies() || '')
   const [previewEntry, setPreviewEntry] = useState<FileEntry | null>(null)
@@ -109,6 +116,9 @@ const FileDetailPage = () => {
   const [previewImageTotalBytes, setPreviewImageTotalBytes] = useState<number | null>(null)
   const [previewImageProgressPercent, setPreviewImageProgressPercent] = useState<number | null>(null)
   const [viewerImageLoading, setViewerImageLoading] = useState(false)
+  const [navLoading, setNavLoading] = useState(false)
+  const [previousEntry, setPreviousEntry] = useState<FileEntry | null>(null)
+  const [nextEntry, setNextEntry] = useState<FileEntry | null>(null)
 
   const effectiveToken = token || getStoredSessionToken() || getSessionTokenFromCookies() || ''
   const requestedPath = useMemo(() => {
@@ -208,6 +218,13 @@ const FileDetailPage = () => {
 
     window.location.assign('/')
   }, [])
+
+  const openDetailPath = useCallback(
+    (path: string) => {
+      navigate(`/files/detail?path=${encodeURIComponent(normalizeUrlPath(path))}`)
+    },
+    [navigate],
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -332,6 +349,52 @@ const FileDetailPage = () => {
     }
 
     void loadFileDetail()
+    return () => {
+      cancelled = true
+    }
+  }, [effectiveToken, requestedPath, setSessionToken])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const loadFileNav = async () => {
+      setPreviousEntry(null)
+      setNextEntry(null)
+
+      if (!effectiveToken || requestedPath === '/') {
+        return
+      }
+
+      setNavLoading(true)
+      try {
+        const response = await fetch(`/api/resources/nav?path=${encodeURIComponent(requestedPath)}`, {
+          headers: withAuthHeaders(effectiveToken),
+        })
+
+        if (cancelled) {
+          return
+        }
+
+        if (response.status === 401) {
+          setSessionToken('')
+          return
+        }
+
+        if (!response.ok) {
+          return
+        }
+
+        const payload = (await response.json().catch(() => ({}))) as FileNavResponse
+        setPreviousEntry(payload.previous ?? null)
+        setNextEntry(payload.next ?? null)
+      } finally {
+        if (!cancelled) {
+          setNavLoading(false)
+        }
+      }
+    }
+
+    void loadFileNav()
     return () => {
       cancelled = true
     }
@@ -616,6 +679,32 @@ const FileDetailPage = () => {
               <ArrowLeft className="size-4 shrink-0" aria-hidden />
               Back
             </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (previousEntry) {
+                  openDetailPath(previousEntry.path)
+                }
+              }}
+              disabled={!previousEntry}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <ChevronLeft className="size-4 shrink-0" aria-hidden />
+              Prev
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (nextEntry) {
+                  openDetailPath(nextEntry.path)
+                }
+              }}
+              disabled={!nextEntry}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Next
+              <ChevronRight className="size-4 shrink-0" aria-hidden />
+            </button>
             {previewEntry ? (
               <a
                 href={buildRawFileUrl(previewEntry.path, true)}
@@ -625,6 +714,7 @@ const FileDetailPage = () => {
                 Download
               </a>
             ) : null}
+            {navLoading ? <span className="text-xs text-slate-400">Loading nav...</span> : null}
           </div>
         </header>
 
