@@ -215,10 +215,11 @@ async fn test_pipeline_restart_resume_many_services_eventual_consistency() {
     });
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let daemon = LogDaemonClient::new(
+    let daemon = LogDaemonClient::new_with_upload_concurrency(
         node.to_string(),
         endpoint.clone(),
         5,
+        1,
         &root,
         vec!["slog_daemon".to_string(), "slog_server".to_string()],
     )
@@ -246,10 +247,11 @@ async fn test_pipeline_restart_resume_many_services_eventual_consistency() {
         expected_total
     );
 
-    let daemon_resumed = LogDaemonClient::new(
+    let daemon_resumed = LogDaemonClient::new_with_upload_concurrency(
         node.to_string(),
         endpoint,
         5,
+        1,
         &root,
         vec!["slog_daemon".to_string(), "slog_server".to_string()],
     )

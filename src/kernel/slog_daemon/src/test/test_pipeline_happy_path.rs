@@ -112,6 +112,35 @@ async fn wait_for_uploaded_logs(
     }
 }
 
+async fn wait_for_read_index_catch_up(service_dir: &Path, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        let meta = LogMeta::open(service_dir)?;
+        let write_info = meta
+            .get_active_write_file()
+            .map_err(|e| format!("get_active_write_file failed: {}", e))?
+            .ok_or_else(|| "missing active write file".to_string())?;
+        let file_info = meta
+            .get_file_info(write_info.id)
+            .map_err(|e| format!("get_file_info failed: {}", e))?
+            .ok_or_else(|| "missing file info".to_string())?;
+
+        if file_info.read_index == file_info.write_index {
+            return Ok(());
+        }
+
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "timeout waiting read_index catch up, read_index={}, write_index={}",
+                file_info.read_index, file_info.write_index
+            ));
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 #[tokio::test]
 async fn test_pipeline_happy_path_service_to_daemon_to_server() {
     let root = new_temp_root("happy_path");
@@ -186,10 +215,9 @@ async fn test_pipeline_happy_path_service_to_daemon_to_server() {
     assert_eq!(uploaded_contents, expected_contents);
 
     // Verify read position has been flushed to meta after successful upload.
-    let meta = LogMeta::open(&service_dir).unwrap();
-    let write_info = meta.get_active_write_file().unwrap().unwrap();
-    let file_info = meta.get_file_info(write_info.id).unwrap().unwrap();
-    assert_eq!(file_info.read_index, file_info.write_index);
+    wait_for_read_index_catch_up(&service_dir, Duration::from_secs(8))
+        .await
+        .unwrap();
 
     daemon.shutdown().await.unwrap();
     server_handle.abort();

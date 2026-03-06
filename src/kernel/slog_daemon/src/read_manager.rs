@@ -30,6 +30,12 @@ struct RetryState {
     next_retry_at: Instant,
 }
 
+#[derive(Debug)]
+struct PendingUpload {
+    ack_rx: oneshot::Receiver<bool>,
+    record_count: usize,
+}
+
 impl LogReaderManager {
     pub fn open(
         log_dir: &Path,
@@ -77,27 +83,40 @@ impl LogReaderManager {
         let mut last_update_dir_tick = std::time::Instant::now();
         let mut upload_retry_states: HashMap<String, RetryState> = HashMap::new();
         let mut flush_retry_states: HashMap<String, RetryState> = HashMap::new();
+        let mut inflight_uploads: HashMap<String, PendingUpload> = HashMap::new();
+        let mut draining = false;
 
         loop {
-            if shutdown.is_cancelled() {
-                info!("log reader manager received shutdown signal, exiting read loop");
-                break;
+            if shutdown.is_cancelled() && !draining {
+                draining = true;
+                info!("log reader manager received shutdown signal, entering drain mode");
+            }
+
+            Self::drain_upload_acks(
+                &dir_reader,
+                &mut inflight_uploads,
+                &mut upload_retry_states,
+                &mut flush_retry_states,
+            );
+
+            if draining {
+                if inflight_uploads.is_empty() {
+                    info!("log reader manager drained all inflight uploads, exiting read loop");
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
             }
 
             Self::retry_pending_flush_read_pos(&dir_reader, &mut flush_retry_states);
 
-            let mut read_count = 0;
+            let mut scheduled_count = 0;
+            let mut blocked_ids: HashSet<String> = inflight_uploads.keys().cloned().collect();
+            blocked_ids.extend(flush_retry_states.keys().cloned());
 
-            match dir_reader.try_read_records(READ_RECORD_BATCH_SIZE) {
+            match dir_reader.try_read_records_with_blocked(READ_RECORD_BATCH_SIZE, &blocked_ids) {
                 Ok(items) => {
                     for item in items {
-                        if shutdown.is_cancelled() {
-                            info!(
-                                "stop reading new records due to shutdown signal, pending items stay on disk"
-                            );
-                            break;
-                        }
-
                         if flush_retry_states.contains_key(&item.id) {
                             debug!(
                                 "skip upload for item {} due pending read-pos flush retry",
@@ -121,38 +140,38 @@ impl LogReaderManager {
                             continue;
                         }
 
+                        if inflight_uploads.contains_key(&item.id) {
+                            debug!(
+                                "skip upload for item {} due inflight upload not acked yet",
+                                item.id
+                            );
+                            continue;
+                        }
+
                         if !Self::should_attempt_action(&upload_retry_states, &item.id, "upload") {
                             continue;
                         }
 
-                        let upload_ok = match Self::process_record_item(&data_tx, item.clone()) {
-                            Ok(ret) => ret,
+                        let item_id = item.id.clone();
+                        let record_count = item.records.len();
+                        let ack_rx = match Self::process_record_item(&data_tx, item) {
+                            Ok(ack_rx) => ack_rx,
                             Err(e) => {
                                 let msg = format!("failed to process record item: {}", e);
                                 error!("{}", msg);
-                                false
+                                Self::record_upload_failure(&mut upload_retry_states, &item_id);
+                                continue;
                             }
                         };
 
-                        if upload_ok {
-                            upload_retry_states.remove(&item.id);
-
-                            // Update last read pos
-                            if let Err(e) = dir_reader.flush_read_pos(&item.id) {
-                                Self::handle_flush_read_pos_error(
-                                    &mut flush_retry_states,
-                                    &item.id,
-                                    e,
-                                    false,
-                                );
-                                continue;
-                            }
-
-                            flush_retry_states.remove(&item.id);
-                            read_count += item.records.len();
-                        } else {
-                            Self::record_upload_failure(&mut upload_retry_states, &item.id);
-                        }
+                        inflight_uploads.insert(
+                            item_id.clone(),
+                            PendingUpload {
+                                ack_rx,
+                                record_count,
+                            },
+                        );
+                        scheduled_count += record_count;
                     }
                 }
                 Err(e) => {
@@ -162,7 +181,7 @@ impl LogReaderManager {
             }
 
             // If we exactly read the batch size, try read more immediately
-            if read_count == READ_RECORD_BATCH_SIZE {
+            if scheduled_count == READ_RECORD_BATCH_SIZE {
                 continue;
             }
 
@@ -189,13 +208,64 @@ impl LogReaderManager {
                 last_update_dir_tick = std::time::Instant::now();
             }
 
-            // Sleep a while before next read
-            if Self::sleep_with_cancellation(
-                &shutdown,
-                std::time::Duration::from_millis(READ_RECORD_INTERVAL_MILLIS),
-            ) {
-                info!("log reader manager interrupted during sleep by shutdown signal");
-                break;
+            let idle_sleep = if inflight_uploads.is_empty() {
+                Duration::from_millis(READ_RECORD_INTERVAL_MILLIS)
+            } else {
+                Duration::from_millis(10)
+            };
+
+            // Keep polling ack quickly when there are inflight uploads, otherwise use normal idle interval.
+            if Self::sleep_with_cancellation(&shutdown, idle_sleep) {
+                continue;
+            }
+        }
+    }
+
+    fn drain_upload_acks(
+        dir_reader: &LogDirReader,
+        inflight_uploads: &mut HashMap<String, PendingUpload>,
+        upload_retry_states: &mut HashMap<String, RetryState>,
+        flush_retry_states: &mut HashMap<String, RetryState>,
+    ) {
+        let ids: Vec<String> = inflight_uploads.keys().cloned().collect();
+        for id in ids {
+            let recv_result = match inflight_uploads.get_mut(&id) {
+                Some(pending) => pending.ack_rx.try_recv(),
+                None => continue,
+            };
+
+            match recv_result {
+                Ok(upload_ok) => {
+                    let record_count = inflight_uploads
+                        .remove(&id)
+                        .map(|pending| pending.record_count)
+                        .unwrap_or(0);
+
+                    if upload_ok {
+                        upload_retry_states.remove(&id);
+                        if let Err(e) = dir_reader.flush_read_pos(&id) {
+                            Self::handle_flush_read_pos_error(flush_retry_states, &id, e, false);
+                            continue;
+                        }
+                        flush_retry_states.remove(&id);
+                        debug!(
+                            "upload ack succeeded for {}, flushed read index, record_count={}",
+                            id, record_count
+                        );
+                    } else {
+                        warn!(
+                            "upload ack failed for {}, record_count={}",
+                            id, record_count
+                        );
+                        Self::record_upload_failure(upload_retry_states, &id);
+                    }
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    inflight_uploads.remove(&id);
+                    error!("upload ack channel closed unexpectedly for {}", id);
+                    Self::record_upload_failure(upload_retry_states, &id);
+                }
             }
         }
     }
@@ -352,7 +422,7 @@ impl LogReaderManager {
     fn process_record_item(
         data_tx: &mpsc::Sender<LogRecordLoad>,
         item: LogRecordItem,
-    ) -> Result<bool, String> {
+    ) -> Result<oneshot::Receiver<bool>, String> {
         info!(
             "Sending {} log records for id {}",
             item.records.len(),
@@ -373,15 +443,7 @@ impl LogReaderManager {
             return Err(msg);
         }
 
-        // Wait for ack
-        match ack_rx.blocking_recv() {
-            Ok(ret) => Ok(ret),
-            Err(e) => {
-                let msg = format!("failed to receive ack from processor: {}", e);
-                error!("{}", msg);
-                Err(msg)
-            }
-        }
+        Ok(ack_rx)
     }
 }
 

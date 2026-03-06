@@ -139,6 +139,35 @@ async fn wait_for_append_calls(
     }
 }
 
+async fn wait_for_read_index_catch_up(service_dir: &Path, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        let meta = LogMeta::open(service_dir)?;
+        let write_info = meta
+            .get_active_write_file()
+            .map_err(|e| format!("get_active_write_file failed: {}", e))?
+            .ok_or_else(|| "missing active write file".to_string())?;
+        let file_info = meta
+            .get_file_info(write_info.id)
+            .map_err(|e| format!("get_file_info failed: {}", e))?
+            .ok_or_else(|| "missing file info".to_string())?;
+
+        if file_info.read_index == file_info.write_index {
+            return Ok(());
+        }
+
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "timeout waiting read_index catch up, read_index={}, write_index={}",
+                file_info.read_index, file_info.write_index
+            ));
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 struct FalseNegativeOnceStorage {
     inner: LogStorageRef,
     injected_failure: AtomicBool,
@@ -249,10 +278,9 @@ async fn test_pipeline_retry_and_idempotency_no_duplicate_records() {
     assert_eq!(uploaded_contents, expected_contents);
 
     // Validate read position eventually flushed to end after retry success.
-    let meta = LogMeta::open(&service_dir).unwrap();
-    let write_info = meta.get_active_write_file().unwrap().unwrap();
-    let file_info = meta.get_file_info(write_info.id).unwrap().unwrap();
-    assert_eq!(file_info.read_index, file_info.write_index);
+    wait_for_read_index_catch_up(&service_dir, Duration::from_secs(8))
+        .await
+        .unwrap();
 
     daemon.shutdown().await.unwrap();
     server_handle.abort();

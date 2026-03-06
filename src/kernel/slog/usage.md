@@ -52,6 +52,7 @@
 | `SLOG_SERVER_ENDPOINT` | `http://127.0.0.1:22001/logs` | 上传目标 URL（gateway 模式应改为 gateway URL） |
 | `SLOG_LOG_DIR` | `${BUCKYOS_ROOT}/logs` | 扫描日志根目录 |
 | `SLOG_UPLOAD_TIMEOUT_SECS` | `10` | 上传请求超时时间（秒） |
+| `SLOG_UPLOAD_GLOBAL_CONCURRENCY` | `4` | 全局上传并发上限（同一 service 始终单并发） |
 
 ## 4.2 slog_server
 

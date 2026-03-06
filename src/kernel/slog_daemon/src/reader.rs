@@ -97,6 +97,15 @@ impl LogDirReader {
     }
 
     pub fn try_read_records(&self, batch_size: usize) -> Result<Vec<LogRecordItem>, String> {
+        let blocked_ids = HashSet::new();
+        self.try_read_records_with_blocked(batch_size, &blocked_ids)
+    }
+
+    pub fn try_read_records_with_blocked(
+        &self,
+        batch_size: usize,
+        blocked_ids: &HashSet<String>,
+    ) -> Result<Vec<LogRecordItem>, String> {
         let mut result = Vec::new();
         if batch_size == 0 {
             return Ok(result);
@@ -128,6 +137,9 @@ impl LogDirReader {
             last_processed_idx = Some(idx);
 
             let item = &mut list_lock[idx];
+            if blocked_ids.contains(&item.id) {
+                continue;
+            }
             let service_batch_size = remain_size.min(READ_RECORD_PER_SERVICE_QUOTA);
             match item.reader.try_read_next_records(service_batch_size) {
                 Ok(records) => {
@@ -432,6 +444,31 @@ mod tests {
 
         let unique: HashSet<String> = first_service_ids.into_iter().collect();
         assert_eq!(unique.len(), 3);
+
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn test_try_read_records_with_blocked_skips_inflight_service() {
+        let base = new_temp_root("blocked_service");
+        create_service_dir_with_logs(&base, "service_a", 30);
+        create_service_dir_with_logs(&base, "service_b", 30);
+
+        let reader = LogDirReader::open(&base, vec![]).unwrap();
+        let blocked = HashSet::from([String::from("service_a")]);
+
+        let items = reader
+            .try_read_records_with_blocked(READ_RECORD_PER_SERVICE_QUOTA * 2, &blocked)
+            .unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "service_b");
+        assert!(!items[0].flush_only);
+
+        let unblocked_items = reader
+            .try_read_records(READ_RECORD_PER_SERVICE_QUOTA)
+            .unwrap();
+        assert_eq!(unblocked_items.len(), 1);
+        assert_eq!(unblocked_items[0].id, "service_a");
 
         std::fs::remove_dir_all(&base).unwrap();
     }

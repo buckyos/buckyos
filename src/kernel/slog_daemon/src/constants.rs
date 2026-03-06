@@ -18,6 +18,9 @@ pub const SLOG_LOG_DIR_ENV_KEY: &str = "SLOG_LOG_DIR";
 /// Environment key for upload HTTP timeout (seconds).
 pub const SLOG_UPLOAD_TIMEOUT_SECS_ENV_KEY: &str = "SLOG_UPLOAD_TIMEOUT_SECS";
 
+/// Environment key for global upload concurrency.
+pub const SLOG_UPLOAD_GLOBAL_CONCURRENCY_ENV_KEY: &str = "SLOG_UPLOAD_GLOBAL_CONCURRENCY";
+
 /// Default node id when no external config is provided.
 pub const DEFAULT_NODE_ID: &str = "node-001";
 
@@ -26,6 +29,9 @@ pub const DEFAULT_SERVER_ENDPOINT: &str = "http://127.0.0.1:22001/logs";
 
 /// Default HTTP timeout for upload requests.
 pub const DEFAULT_UPLOAD_TIMEOUT_SECS: u64 = 10;
+
+/// Default max number of concurrent upload requests across all services.
+pub const DEFAULT_UPLOAD_GLOBAL_CONCURRENCY: usize = 4;
 
 /// How often daemon rescans log root for service directories.
 pub const UPDATE_DIR_INTERVAL_SECS: u64 = 60;

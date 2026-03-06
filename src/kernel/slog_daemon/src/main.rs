@@ -47,6 +47,22 @@ fn parse_env_positive_u64(env_key: &str, default_value: u64) -> Option<u64> {
     }
 }
 
+fn parse_env_positive_usize(env_key: &str, default_value: usize) -> Option<usize> {
+    match std::env::var(env_key) {
+        Ok(v) if !v.trim().is_empty() => match v.trim().parse::<usize>() {
+            Ok(v) if v > 0 => Some(v),
+            _ => {
+                warn!(
+                    "invalid {} value '{}', fallback to default {}",
+                    env_key, v, default_value
+                );
+                None
+            }
+        },
+        _ => None,
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let mut cfg = DaemonConfig::default();
@@ -58,12 +74,17 @@ async fn main() {
             SLOG_UPLOAD_TIMEOUT_SECS_ENV_KEY,
             DEFAULT_UPLOAD_TIMEOUT_SECS,
         ),
+        upload_global_concurrency: parse_env_positive_usize(
+            SLOG_UPLOAD_GLOBAL_CONCURRENCY_ENV_KEY,
+            DEFAULT_UPLOAD_GLOBAL_CONCURRENCY,
+        ),
     };
     cfg.apply_env_overrides(env_overrides);
 
     let node_id = cfg.node.node_id;
     let service_endpoint = cfg.server.endpoint;
     let upload_timeout_secs = cfg.upload.timeout_secs;
+    let upload_global_concurrency = cfg.upload.global_concurrency;
     let log_dir = cfg.path.log_dir;
 
     // Init slog daemon own logs, output to file and console
@@ -86,20 +107,22 @@ async fn main() {
     }
 
     info!(
-        "slog_daemon config: node_id={}, endpoint={}, log_dir={}, upload_timeout_secs={}",
+        "slog_daemon config: node_id={}, endpoint={}, log_dir={}, upload_timeout_secs={}, upload_global_concurrency={}",
         node_id,
         service_endpoint,
         log_dir.display(),
-        upload_timeout_secs
+        upload_timeout_secs,
+        upload_global_concurrency
     );
 
     // Specify excluded services
     // We should not upload logs from slog_daemon itself and slog_server
     let excluded = vec![SERVICE_NAME.to_string(), "slog_server".to_string()];
-    let client = match LogDaemonClient::new(
+    let client = match LogDaemonClient::new_with_upload_concurrency(
         node_id,
         service_endpoint,
         upload_timeout_secs,
+        upload_global_concurrency,
         &log_dir,
         excluded,
     ) {

@@ -8,6 +8,7 @@ struct UploadResponse {
     message: String,
 }
 
+#[derive(Clone)]
 pub struct LogUploader {
     node: String,
     service_endpoint: String,
