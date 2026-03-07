@@ -267,6 +267,7 @@ class AppDoc:
     name: str
     version: str
     show_name: str
+    sdk_version: Optional[str] = None
     author: Optional[str] = None
     owner: Optional[str] = None
     tag: Optional[str] = None
@@ -296,6 +297,7 @@ class AppDoc:
             name=name,
             version=version,
             show_name=show_name,
+            sdk_version=_as_str(dd.get("sdk_version")),
             author=_as_str(dd.get("author")),
             owner=_as_str(dd.get("owner")),
             tag=_as_str(dd.get("tag")) or _as_str(dd.get("version_tag")),
@@ -322,4 +324,3 @@ class AppDoc:
         if not desc.docker_image_name:
             raise AppDocError("docker_image_name missing in selected docker image sub-package")
         return desc.docker_image_name, desc.pkg_id
-

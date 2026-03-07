@@ -261,7 +261,7 @@ async fn test() -> std::result::Result<(), String> {
         })?;
     println!("<== test GET users/devtest/apps/sys-test/settings via admin + sys-test, pass");
 
-    //p, app, kv://users/*/apps/{app}/config,read,allow
+    //p, app, /config/users/*/apps/{app}/config,read,allow
     println!("==> test SET users/devtest/apps/sys-test/config via admin + sys-test, should failed");
     let result = client
         .call(
@@ -278,7 +278,7 @@ async fn test() -> std::result::Result<(), String> {
     }
     println!("<== test SET users/devtest/apps/sys-test/config via admin + sys-test, pass");
 
-    //p, app, kv://users/*/apps/{app}/info,read,allow
+    //p, app, /config/users/*/apps/{app}/info,read,allow
     println!("==> test SET users/devtest/apps/sys-test/info via admin + sys-test, should failed");
     let result = client
         .call(

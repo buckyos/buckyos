@@ -277,8 +277,8 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
 
         let user_home = get_buckyos_root_dir()
             .join("data")
-            .join(buckyos_user_settings.username.as_str())
-            .join("home");
+            .join("home")
+            .join(buckyos_user_settings.username.as_str());
         if !user_home.exists() {
             //create user home
             std::fs::create_dir_all(user_home.clone()).map_err(into_smb_err!(

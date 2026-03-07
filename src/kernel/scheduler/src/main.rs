@@ -427,47 +427,47 @@ mod test {
 }
 """
 "system/rbac/base_policy" = """
-p, kernel, kv://*, read|write,allow
+p, kernel, /config/*, read|write,allow
 p, kernel, dfs://*, read|write,allow
 p, kernel, ndn://*, read|write,allow
 
-p, root, kv://*, read|write,allow
+p, root, /config/*, read|write,allow
 p, root, dfs://*, read|write,allow
 p, root, ndn://*, read|write,allow
 
-p, ood,kv://*,read,allow
-p, ood,kv://users/*/apps/*,read|write,allow
-p, ood,kv://nodes/{device}/*,read|write,allow
-p, ood,kv://services/*,read|write,allow
-p, ood,kv://system/rbac/policy,read|write,allow
+p, ood,/config/*,read,allow
+p, ood,/config/users/*/apps/*,read|write,allow
+p, ood,/config/nodes/{device}/*,read|write,allow
+p, ood,/config/services/*,read|write,allow
+p, ood,/config/system/rbac/policy,read|write,allow
 
-p, client, kv://boot/*, read,allow
-p, client,kv://devices/{device}/*,read,allow
-p, client,kv://devices/{device}/info,read|write,allow
+p, client, /config/boot/*, read,allow
+p, client,/config/devices/{device}/*,read,allow
+p, client,/config/devices/{device}/info,read|write,allow
 
-p, service, kv://boot/*, read,allow
-p, service,kv://services/{service}/*,read|write,allow
-p, service,kv://services/*/info,read,allow
-p, service,kv://users*,read,allow
-p, service,kv://users/*/*,read,allow
-p, service,kv://system/*,read,allow
+p, service, /config/boot/*, read,allow
+p, service,/config/services/{service}/*,read|write,allow
+p, service,/config/services/*/info,read,allow
+p, service,/config/users*,read,allow
+p, service,/config/users/*/*,read,allow
+p, service,/config/system/*,read,allow
 p, service,dfs://system/data/{service}/*,read|write,allow
 p, service,dfs://system/cache/{service}/*,read|write,allow
 
-p, app, kv://boot/*, read,allow
-p, app, kv://users/*/apps/{app}/settings,read|write,allow
-p, app, kv://users/*/apps/{app}/config,read,allow
-p, app, kv://users/*/apps/{app}/info,read,allow
+p, app, /config/boot/*, read,allow
+p, app, /config/users/*/apps/{app}/settings,read|write,allow
+p, app, /config/users/*/apps/{app}/config,read,allow
+p, app, /config/users/*/apps/{app}/info,read,allow
 p, app, dfs://users/*/appdata/{app}/*, read|write,allow
 p, app, dfs://users/*/cache/{app}/*, read|write,allow
-p, admin, kv://boot/*, read,allow
-p, admin,kv://users/{user}/*,read|write,allow
+p, admin, /config/boot/*, read,allow
+p, admin,/config/users/{user}/*,read|write,allow
 p, admin,dfs://users/{user}/*,read|write,allow
-p, admin,kv://services/*,read|write,allow
+p, admin,/config/services/*,read|write,allow
 p, admin,dfs://library/*,read|write,allow
-p, user, kv://boot/*, read,allow
-p, user,kv://users/{user}/*,read,allow
-p, user,kv://users/{user}/apps/*/*,read|write,allow
+p, user, /config/boot/*, read,allow
+p, user,/config/users/{user}/*,read,allow
+p, user,/config/users/{user}/apps/*/*,read|write,allow
 p, user,dfs://users/{user}/*,read|write,allow
 p, user,dfs://users/{user}/home/*,read|write,allow
 p, user,dfs://library/*,read,allow

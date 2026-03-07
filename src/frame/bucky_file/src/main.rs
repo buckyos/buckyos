@@ -814,7 +814,7 @@ impl BuckyFileServer {
         if let Ok(root) = std::env::var("BUCKY_FILE_ROOT") {
             return PathBuf::from(root).join(username);
         }
-        get_buckyos_root_dir().join("home").join(username)
+        get_buckyos_root_dir().join("data").join("home").join(username)
     }
 
     fn parse_relative_path(raw: &str) -> Result<PathBuf, RPCErrors> {
@@ -3036,7 +3036,7 @@ async fn start_bucky_file_service() -> anyhow::Result<()> {
     let data_folder = if standalone_mode {
         std::env::temp_dir().join("bucky-file-data")
     } else {
-        get_buckyos_root_dir().join("data").join(BUCKY_FILE_SERVICE_NAME)
+        get_buckyos_root_dir().join("data").join("var").join(BUCKY_FILE_SERVICE_NAME)
     };
     if !data_folder.exists() {
         tokio::fs::create_dir_all(&data_folder).await?;

@@ -88,7 +88,7 @@ apps:
       stop.py: bin/stop.py
 
 
-    # 数据路径，install_data 的时候如果目标存在，则不会复制，否则从rootfs复制到目标
+    # 数据路径，install_data 的时候如果目标存在，则不会复制，否则从rootfs复制到目标(覆盖安装逻辑)
     data_paths: 
     - bin/applist.json
     - bin/cyfs-gateway/
@@ -96,23 +96,20 @@ apps:
     - etc/post_gateway.yaml
     - etc/node_gateway.json
     - etc/cyfs_gateway.yaml
-    - cache/
+    - data/               # cyfs://$zone_id/ 映射根: home/, srv/, var/, cache/ 均在此下
+    - storage/            # 内核基础设施持久化存储 (chunks, named_store, dRDB)
+    - local/              # host-node-local 服务数据
     - logs/
-    - tmp/
-    - local/
-    - home/
-    - library/
-    - data/
     - agents/jarvis
-    - var/ # 传统的本地用户数据区
 
-    # 清理路径，uninstall的时候会删除（所有的modules item都会删除)
+    # 清理路径，uninstall的时候会删除（无需配置:上面所有的modules item都会自动删除)
+    # 卸载时不删除: data/home/ (用户数据), data/srv/ (服务持久数据), storage/ (内核存储)
     clean_paths: 
-    - cache/
+    - data/var/           # 服务运行数据
+    - data/cache/         # 服务缓存数据
+    - local/              # 服务本地数据
     - logs/
-    - tmp/
-    - local/
-    - etc/
+    - etc/                # 系统配置 (删除前自动执行身份备份)
 
   buckycli:
     name: buckycli

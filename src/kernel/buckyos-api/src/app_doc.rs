@@ -270,6 +270,10 @@ pub struct AppDoc {
     pub app_icon_url: Option<String>,
 
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sdk_version: Option<String>, //依赖的buckyos sdk版本，如果未设置则为兼容App,AppLoader要使用兼容模式启动
+
+    #[serde(default)]
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub req_capbilities: HashMap<String, i64>, //key: capability_name, value: required capability_value
     #[serde(default)]
@@ -360,6 +364,7 @@ pub struct AppDocBuilder {
     meta: PackageMeta,
     show_name: Option<String>,
     app_icon_url: Option<String>,
+    sdk_version: Option<String>,
     req_capbilities: HashMap<String, i64>,
     permissions: Vec<PermissionRequest>,
     selector_type: Option<SelectorType>,
@@ -409,6 +414,7 @@ impl AppDocBuilder {
             meta,
             show_name: None,
             app_icon_url: None,
+            sdk_version: None,
             req_capbilities: HashMap::new(),
             permissions: vec![],
             selector_type: None,
@@ -425,6 +431,11 @@ impl AppDocBuilder {
 
     pub fn app_icon_url(mut self, app_icon_url: impl Into<String>) -> Self {
         self.app_icon_url = Some(app_icon_url.into());
+        self
+    }
+
+    pub fn sdk_version(mut self, sdk_version: impl Into<String>) -> Self {
+        self.sdk_version = Some(sdk_version.into());
         self
     }
 
@@ -703,6 +714,7 @@ impl AppDocBuilder {
             _base: self.meta,
             show_name,
             app_icon_url: self.app_icon_url,
+            sdk_version: self.sdk_version,
             req_capbilities: self.req_capbilities,
             permissions: self.permissions,
             selector_type: self.selector_type.unwrap_or_default(),
@@ -869,6 +881,7 @@ mod tests {
             &owner,
         )
         .show_name("Demo Service")
+        .sdk_version("0.5.1")
         .build()
         .unwrap();
         println!(
@@ -876,6 +889,7 @@ mod tests {
             serde_json::to_string_pretty(&doc).unwrap()
         );
         assert_eq!(doc.get_app_type(), AppType::Service);
+        assert_eq!(doc.sdk_version.as_deref(), Some("0.5.1"));
 
         // Service must reject docker image.
         let err = AppDoc::builder(

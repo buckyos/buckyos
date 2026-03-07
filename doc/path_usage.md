@@ -54,11 +54,13 @@ $buckyos_service_local_data => /opt/buckyos/local/$service_name
 ## 内核服务视角
 
 内核服务基本只和node-host-fs打交道
+内核服务也可以使用buckyos_service_local_cache，buckyos_service_local_data
 
 ### 内核服务目录，这些目录通常只被内核服务访问,是System级别(Zone级别的)
 $buckyos_root/data/srv/library/ => cyfs://$zone_id/srv/library/ : zone内共享的资料库
 $buckyos_root/data/srv/publish/ => cyfs://$zone_id/srv/publish/ : zone级别的分享数据
 $buckyos_root/storage : 内核基础设施在本机的持久化存储(dcfs chunks、named_store,未来可能包含dRDB数据),卸载不会删除
+$buckyos_root/etc : 内核配置区,覆盖安装和卸载时的操作是逐个文件定义的
 
 
 ## 安装卸载整理
@@ -66,6 +68,8 @@ $buckyos_root/storage : 内核基础设施在本机的持久化存储(dcfs chunk
 - 更新：二进制目录 $buckyos_root/bin/apps and service
 - 更新时不删除： 默认都不删除
 - 软重置: 通过control panel实现，这个是强业务逻辑
+- 覆盖安装：覆盖安装的特点是 “如果不存在就复制“
+  - 减少rootfs/bin/ 目录外的文件，这意味着应用本身还依赖"必须存在的外部数据" (rootfs是buckyos_root模版) 
 - 卸载时不删除 
   - $buckyos_root/data/home/ (用户个人数据)
   - $buckyos_root/data/srv/ (服务持久数据 + zone共享数据)

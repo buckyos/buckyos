@@ -47,8 +47,8 @@ lazy_static! {
 
 fn get_full_res_path(key_path: &str) -> Result<(String, String)> {
     let mut real_key_path = key_path;
-    if key_path.starts_with("kv://") {
-        real_key_path = &key_path[6..];
+    if key_path.starts_with("/config/") {
+        real_key_path = &key_path[8..];
     }
 
     let key = real_key_path
@@ -57,7 +57,7 @@ fn get_full_res_path(key_path: &str) -> Result<(String, String)> {
     let normalized_path = normalize_path(key);
 
     return Ok((
-        format!("kv://{}", normalized_path.as_str()),
+        format!("/config/{}", normalized_path.as_str()),
         normalized_path,
     ));
 }

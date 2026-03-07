@@ -1,0 +1,9 @@
+# cyfs://$zone_id/home/
+
+User personal data directory. Each user has their own sub-directory:
+
+- $username/                   : user home, usually read-only or inaccessible to apps
+- $username/.local/share/$appid/ : app persistent data, deleted on app uninstall (user can opt to keep)
+- $username/shared/            : user-level shared data, typically read-only
+
+This data is NOT deleted on system uninstall.

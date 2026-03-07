@@ -123,11 +123,144 @@ def start_app_without_docker():
         exit(1)
     os.system(f"python3 {start_script} {appid} {username}")
 
-def ensure_directory_accessible(directory_path):
-    if not os.path.exists(directory_path):
-        os.makedirs(directory_path, exist_ok=True)
-    os.system(f"chmod -R 777 {directory_path}")
-    return directory_path
+def prepare_mount_directory(host_path, permission):
+    """
+    Prepare host directory for Docker volume mount.
+    Uses shell mkdir -p for better compatibility with Docker Desktop
+    filesystem sharing (VirtioFS / gRPC-FUSE).
+    """
+    if not os.path.exists(host_path):
+        ret = os.system(f'mkdir -p "{host_path}"')
+        if ret != 0:
+            try:
+                os.makedirs(host_path, exist_ok=True)
+            except Exception as e:
+                print(f"Error: failed to create mount directory {host_path}: {e}")
+                return host_path
+
+    if not os.path.exists(host_path):
+        print(f"Error: mount directory {host_path} does not exist after creation")
+        return host_path
+
+    if permission == "rw":
+        os.system(f'chmod 777 "{host_path}"')
+    return host_path
+
+
+def get_mount_permission(container_path, appid, username):
+    """
+    Determine default Docker volume permission (ro/rw) based on
+    container path semantics per path_usage.md.
+
+    Well-known read-only paths:
+      /srv/publish/              - zone published data
+      /home/$username/shared/    - user shared data
+      /home/$username/ (generic) - user home (excluding app data)
+
+    Well-known read-write paths:
+      /home/$username/.local/share/$appid - app persistent data
+      /srv/library/                       - zone library data
+      /tmp/                               - temp data
+
+    Everything else (app-specific paths like /database/, /config/, /srv/)
+    defaults to rw.
+    """
+    p = container_path.rstrip("/")
+
+    if username:
+        app_data = f"/home/{username}/.local/share/{appid}"
+        if p == app_data or p.startswith(app_data + "/"):
+            return "rw"
+
+    if p == "/srv/publish" or p.startswith("/srv/publish/"):
+        return "ro"
+
+    if username:
+        shared = f"/home/{username}/shared"
+        if p == shared or p.startswith(shared + "/"):
+            return "ro"
+
+    if username:
+        home = f"/home/{username}"
+        if p == home or p.startswith(home + "/"):
+            return "ro"
+
+    return "rw"
+
+
+def parse_mount_value(value):
+    """
+    Parse a data_mount_point value which may include a permission suffix.
+    Supports:  "host_path"  |  "host_path:ro"  |  "host_path:rw"
+    Returns (host_relative_path, permission_override_or_None).
+    """
+    if value.endswith(":ro"):
+        return value[:-3], "ro"
+    if value.endswith(":rw"):
+        return value[:-3], "rw"
+    return value, None
+
+
+def build_volume_mounts(appid, full_appid, username, install_config):
+    """
+    Build Docker -v volume mapping string.
+
+    Mount categories (per path_usage.md):
+      1. Standard system mounts (always applied)
+         - /tmp/  => /tmp/buckyos/$full_appid   (rw)
+         - /home/$user/.local/share/$appid       (rw)
+      2. data_mount_point from install_config
+         - permission inferred from container path, overridable via ":ro"/":rw" suffix
+      3. cache_mount_point  => $buckyos_root/data/cache/$full_appid (rw)
+      4. local_cache_mount_point => /tmp/buckyos/$full_appid (rw)
+    """
+    mounts = {}  # container_path -> (host_path, permission)
+    buckyos_root = util.get_buckyos_root()
+
+    # --- 1. Standard system mounts ---
+    tmp_host = os.path.join("/tmp", "buckyos", full_appid)
+    mounts["/tmp"] = (tmp_host, "rw")
+
+    app_data_host = util.get_app_data_dir(appid, username)
+    app_data_container = f"/home/{username}/.local/share/{appid}"
+    mounts[app_data_container] = (app_data_host, "rw")
+
+    # --- 2. Data mounts from install_config (may override standards) ---
+    data_mount_point = install_config.get("data_mount_point", {})
+    for container_path, raw_value in data_mount_point.items():
+        host_relative, perm_override = parse_mount_value(raw_value)
+        host_path = os.path.join(buckyos_root, host_relative.lstrip("/"))
+        permission = perm_override or get_mount_permission(container_path, appid, username)
+        mounts[container_path] = (host_path, permission)
+
+    # --- 3. Cache mounts (rw) ---
+    cache_mount_point = install_config.get("cache_mount_point", [])
+    if cache_mount_point:
+        base_cache = util.get_app_cache_dir(appid, username)
+        for mp in cache_mount_point:
+            cache_host = os.path.join(base_cache, mp.lstrip("/"))
+            mounts[mp] = (cache_host, "rw")
+
+    # --- 4. Local cache mounts (rw) ---
+    local_cache_mount_point = install_config.get("local_cache_mount_point", [])
+    if local_cache_mount_point:
+        base_local = util.get_app_local_cache_dir(appid, username)
+        for mp in local_cache_mount_point:
+            local_host = os.path.join(base_local, mp.lstrip("/"))
+            mounts[mp] = (local_host, "rw")
+
+    # --- Build volume flag string ---
+    volume_mapping = ""
+    for container_path, (host_path, permission) in mounts.items():
+        # Resolve symlinks (e.g. macOS /opt -> /private/opt) so Docker
+        # Desktop VirtioFS can locate the directory consistently.
+        host_path = os.path.realpath(host_path.rstrip("/"))
+        prepare_mount_directory(host_path, permission)
+        container_path = container_path.rstrip("/")
+        volume_mapping += f" -v {host_path}:{container_path}:{permission}"
+
+    return volume_mapping
+
 
 def start_app_with_docker():
     # 如果镜像已经在运行，则先停止再启动
@@ -212,29 +345,9 @@ def start_app_with_docker():
     
     print(f"Image {image_name} exists, now start container ...")
 
-    volume_mapping = ""
     instance_install_config = app_instance_config.get("app_spec").get("install_config")
-    data_mount_point = instance_install_config.get("data_mount_point",{})
-    if data_mount_point:
-        for (folder_in_docker,real_folder_in_host) in data_mount_point.items():
-            real_folder_in_host = util.get_buckyos_root() + real_folder_in_host
-            #print(f"mount {folder_in_docker} -> {real_folder_in_host}")
-            ensure_directory_accessible(real_folder_in_host)
-            volume_mapping += f" -v {real_folder_in_host}:{folder_in_docker}"
-
-    cache_mount_point = instance_install_config.get("cache_mount_point", [])
-    if cache_mount_point:
-        base_cache_dir = util.get_app_cache_dir(appid,username)
-        base_cache_dir = ensure_directory_accessible(base_cache_dir)
-        for mount_point in cache_mount_point:
-            volume_mapping += f" -v {base_cache_dir}/{mount_point}:{mount_point}"
-
-    local_cache_mount_point = instance_install_config.get("local_cache_mount_point", [])
-    if local_cache_mount_point:
-        base_cache_dir = util.get_app_local_cache_dir(appid,username)
-        base_cache_dir = ensure_directory_accessible(base_cache_dir)
-        for mount_point in local_cache_mount_point:
-            volume_mapping += f" -v {base_cache_dir}/{mount_point}:{mount_point}"
+    volume_mapping = build_volume_mounts(appid, full_appid, username, instance_install_config)
+    print(f"Volume mounts: {volume_mapping}")
 
     # 端口映射
     port_cmd = ""
