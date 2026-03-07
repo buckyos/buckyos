@@ -128,7 +128,7 @@ impl BuckyOSRuntime {
         let store_mgr: &NamedStoreMgr = self
             .named_store_mgr
             .get_or_try_init(|| async {
-                let config_path = self.buckyos_root_dir.join("var").join("named_store.json");
+                let config_path = get_buckyos_storage_dir().join("named_store.json");
                 NamedStoreMgr::get_store_mgr(config_path.as_path())
                     .await
                     .map_err(|e| {
@@ -1155,7 +1155,7 @@ impl BuckyOSRuntime {
     }
 
     pub fn get_root_pkg_env_path() -> PathBuf {
-        get_buckyos_service_local_data_dir("node_daemon", None).join("root_pkg_env")
+        get_buckyos_service_local_data_dir("node_daemon").join("root_pkg_env")
     }
 
     fn get_my_settings_path(&self) -> String {

@@ -1,10 +1,8 @@
-# fs://cache
+# cyfs://$zone_id/cache/
 
-storeage local cache files for system.
+当前设计里，`cache/` 主要用于服务缓存，而不是旧的 `fs://cache` 应用目录模型。
 
-/cache/service_id
+- `cyfs://$zone_id/cache/$service_name/`：服务缓存数据，对应本地 `data/cache/$service_name`
+- 这类数据主要用于提升性能，系统会尽量保留，但在重新安装服务或空间紧张时可以被清理
 
-/cache/username/app_name
-
-有时也cache app front end files.
-一些简单的app只有前端代码，没有后端逻辑，此时cyfs_gateway会加载app并挂到 appname.$zoneid下
+应用自己的临时数据请使用 `/tmp/buckyos/$appid`，不要再把应用缓存写到旧的 `cache/$username/app_name` 目录模型中。

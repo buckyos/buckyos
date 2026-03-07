@@ -67,10 +67,18 @@ $buckyos_root/storage : 内核基础设施在本机的持久化存储(dcfs chunk
 - 更新时不删除： 默认都不删除
 - 软重置: 通过control panel实现，这个是强业务逻辑
 - 卸载时不删除 
-  - 根据 $buckyos_root/bin/ 下的applist.json 决定保留哪些host-node-local-app
-  - cyfs://$zone_id/home/ => $buckyos_root/data/home/ 
-  - cyfs://$zone_id/srv/ => $buckyos_root/data/srv/
-  - $buckyos_root/storage  (内核基础设施在各host-node上的持久化存储)
+  - $buckyos_root/data/home/ (用户个人数据)
+  - $buckyos_root/data/srv/ (服务持久数据 + zone共享数据)
+  - $buckyos_root/storage (内核基础设施在各host-node上的持久化存储)
+  - 根据 $buckyos_root/bin/applist.json 决定保留哪些host-node-local-app的数据
+- 卸载时删除
+  - $buckyos_root/bin/ (二进制文件,删除前先读取applist.json)
+  - $buckyos_root/data/var/ (服务运行数据)
+  - $buckyos_root/data/cache/ (服务缓存数据)
+  - $buckyos_root/local/ (服务本地数据)
+  - $buckyos_root/etc/ (系统配置,删除前自动执行身份备份)
+  - $buckyos_root/logs/ (日志)
+  - /tmp/buckyos/ (应用和服务的临时数据,在$buckyos_root外)
 
 ## 软重置
 - 重新安装所有服务（更新二进制文件+重置服务）

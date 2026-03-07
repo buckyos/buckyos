@@ -105,7 +105,7 @@ pub struct SledMsgQueue {
 
 impl SledMsgQueue {
     pub fn new() -> std::result::Result<Self, Box<dyn std::error::Error>> {
-        let data_path = get_buckyos_service_local_data_dir("kmsg", None);
+        let data_path = get_buckyos_service_local_data_dir("kmsg");
         Self::new_in_dir(data_path)
     }
 
