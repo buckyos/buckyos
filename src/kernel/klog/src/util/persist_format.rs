@@ -14,6 +14,10 @@ pub(crate) enum PersistPayloadType {
     SqliteVote = 11,
     SqliteCommittedLogId = 12,
     SqliteLastPurgedLogId = 13,
+    RocksDbLogEntry = 20,
+    RocksDbVote = 21,
+    RocksDbCommittedLogId = 22,
+    RocksDbLastPurgedLogId = 23,
 }
 
 impl PersistPayloadType {
@@ -24,6 +28,10 @@ impl PersistPayloadType {
             11 => Some(Self::SqliteVote),
             12 => Some(Self::SqliteCommittedLogId),
             13 => Some(Self::SqliteLastPurgedLogId),
+            20 => Some(Self::RocksDbLogEntry),
+            21 => Some(Self::RocksDbVote),
+            22 => Some(Self::RocksDbCommittedLogId),
+            23 => Some(Self::RocksDbLastPurgedLogId),
             _ => None,
         }
     }
@@ -37,6 +45,10 @@ impl std::fmt::Display for PersistPayloadType {
             Self::SqliteVote => "sqlite_vote",
             Self::SqliteCommittedLogId => "sqlite_committed_log_id",
             Self::SqliteLastPurgedLogId => "sqlite_last_purged_log_id",
+            Self::RocksDbLogEntry => "rocksdb_log_entry",
+            Self::RocksDbVote => "rocksdb_vote",
+            Self::RocksDbCommittedLogId => "rocksdb_committed_log_id",
+            Self::RocksDbLastPurgedLogId => "rocksdb_last_purged_log_id",
         };
         write!(f, "{}", name)
     }

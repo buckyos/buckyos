@@ -1,4 +1,4 @@
-use crate::logs::{MemoryLogStorage, SqliteLogStorage};
+use crate::logs::{MemoryLogStorage, RocksDbLogStorage, SqliteLogStorage};
 use crate::state_machine::{KLogStateMachine, SnapshotManager};
 use crate::state_store::{
     KLogStateSnapshot, KLogStateSnapshotData, KLogStateStore, KLogStateStoreManager,
@@ -113,6 +113,61 @@ impl TestSqliteStoreBuilder {
 impl StoreBuilder<KTypeConfig, SqliteLogStorage, KLogStateMachine, ()> for TestSqliteStoreBuilder {
     async fn build(&self) -> StorageResult<((), SqliteLogStorage, KLogStateMachine)> {
         let context = TestSqliteContext::new().await?;
+        Ok(((), context.log_storage, context.state_machine))
+    }
+}
+
+pub(crate) struct TestRocksDbContext {
+    pub(crate) log_storage: RocksDbLogStorage,
+    pub(crate) state_machine: KLogStateMachine,
+}
+
+impl TestRocksDbContext {
+    pub(crate) async fn new() -> StorageResult<Self> {
+        let log_storage = RocksDbLogStorage::open(unique_test_path("rocksdb_log_store"))
+            .map_err(to_storage_error)?;
+
+        let state_store = MemoryStateStore::new();
+        let state_store = Arc::new(Box::new(state_store) as Box<dyn KLogStateStore>);
+
+        let state_store_manager = KLogStateStoreManager::new(state_store.clone())
+            .await
+            .map_err(to_storage_error)?;
+        let state_store_manager = Arc::new(state_store_manager);
+
+        let data_dir = unique_test_path("rocksdb_log_snapshot");
+        std::fs::create_dir_all(&data_dir).map_err(to_storage_error)?;
+        info!(
+            "Using data dir for rocksdb log snapshot manager: {:?}",
+            data_dir
+        );
+
+        let snapshot_manager = SnapshotManager::new(data_dir);
+        let snapshot_manager = Arc::new(snapshot_manager);
+        snapshot_manager.clean_all_snapshots().await?;
+
+        let state_machine = KLogStateMachine::new(state_store_manager, snapshot_manager).await?;
+
+        Ok(Self {
+            log_storage,
+            state_machine,
+        })
+    }
+}
+
+pub(crate) struct TestRocksDbStoreBuilder;
+
+impl TestRocksDbStoreBuilder {
+    pub(crate) fn new() -> Self {
+        Self
+    }
+}
+
+impl StoreBuilder<KTypeConfig, RocksDbLogStorage, KLogStateMachine, ()>
+    for TestRocksDbStoreBuilder
+{
+    async fn build(&self) -> StorageResult<((), RocksDbLogStorage, KLogStateMachine)> {
+        let context = TestRocksDbContext::new().await?;
         Ok(((), context.log_storage, context.state_machine))
     }
 }

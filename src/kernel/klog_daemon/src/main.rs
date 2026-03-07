@@ -6,7 +6,7 @@ mod logging;
 
 use cluster::{initialize_cluster_if_needed, spawn_auto_join_task};
 use config::KLogRuntimeConfig;
-use klog::logs::SqliteLogStorage;
+use klog::logs::RocksDbLogStorage;
 use klog::network::{KNetworkFactory, KNetworkServer};
 use klog::rpc::KRpcServer;
 use klog::state_machine::{KLogStateMachine, SnapshotManager};
@@ -103,15 +103,20 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
         );
     }
 
-    let raft_log_path = cfg.data_dir.join("raft_log.sqlite");
-    let log_storage = SqliteLogStorage::open(&raft_log_path).map_err(|e| {
-        format!(
-            "Failed to open raft log storage at {}: {}",
-            raft_log_path.display(),
-            e
-        )
-    })?;
-    info!("Raft log storage ready: {}", raft_log_path.display());
+    let raft_log_path = cfg.data_dir.join("raft_log.rocks");
+    let log_storage = RocksDbLogStorage::open_with_sync(&raft_log_path, cfg.state_store_sync_write)
+        .map_err(|e| {
+            format!(
+                "Failed to open rocksdb raft log storage at {}: {}",
+                raft_log_path.display(),
+                e
+            )
+        })?;
+    info!(
+        "Raft log storage ready: path={}, engine=rocksdb, sync_write={}",
+        raft_log_path.display(),
+        cfg.state_store_sync_write
+    );
 
     let state_store_path = cfg.data_dir.join("state_store.rocks");
     let state_store = RocksDbStateStore::open_with_mode_and_sync(
