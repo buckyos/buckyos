@@ -102,3 +102,52 @@ rpc_advertise_port = 21101
 3. `join.targets` 是否使用了远端节点 admin 可达地址，而不是 localhost。
 4. `network.rpc_listen_addr` 是否只本机暴露（默认建议）。
 5. gateway 是否对 admin 接口实施了鉴权/访问控制。
+
+## 8. 压测工具（klog_bench）
+
+为了验证吞吐和延迟，`klog_daemon` 新增了本地压测二进制：
+
+- 路径：`kernel/klog_daemon/src/bin/klog_bench.rs`
+- 能力：自动拉起本地集群（默认 3 节点），并发发起 append，输出 TPS 和延迟分位数（P50/P95/P99）。
+
+### 8.1 快速开始
+
+先构建 daemon 可执行文件：
+
+```bash
+cd src
+cargo build -p klog_daemon --bin klog_daemon
+```
+
+执行 3 节点 30 秒压测：
+
+```bash
+cd src
+cargo run -p klog_daemon --bin klog_bench -- \
+  --nodes 3 \
+  --concurrency 64 \
+  --duration-sec 30 \
+  --warmup-sec 5 \
+  --payload-bytes 256 \
+  --write-target round-robin \
+  --report-json /tmp/klog_bench_report.json
+```
+
+### 8.2 常用参数
+
+1. `--nodes`：本地拉起节点数（默认 `3`）。
+2. `--concurrency`：并发 worker 数（默认 `32`）。
+3. `--duration-sec`：正式压测时长秒数（默认 `30`）。
+4. `--warmup-sec`：预热时长秒数（默认 `3`）。
+5. `--payload-bytes`：日志消息体大小（默认 `256`）。
+6. `--write-target`：写入目标策略（`leader` / `round-robin` / `random`）。
+7. `--sync-write`：state-store 是否启用同步写（默认 `true`）。
+8. `--report-json`：输出 JSON 报告路径（可选）。
+9. `--keep-data`：保留临时数据目录（用于问题排查）。
+
+### 8.3 指标含义
+
+- `throughput`：成功请求的平均吞吐（req/s）。
+- `success_rate`：成功请求占比。
+- `latency(avg/p50/p95/p99/max)`：单请求端到端延迟（ms）。
+- `error_code_counts`：失败请求按业务错误码聚合统计。
