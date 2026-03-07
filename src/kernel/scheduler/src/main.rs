@@ -28,9 +28,7 @@ use scheduler_server::*;
 use server_runner::*;
 use service::*;
 use std::sync::Arc;
-use system_config_agent::{
-    schedule_action_to_tx_actions, schedule_loop, update_node_gateway_config,
-};
+use system_config_agent::schedule_loop;
 use system_config_builder::{StartConfigSummary, SystemConfigBuilder};
 
 async fn create_init_list_by_template(
@@ -317,7 +315,7 @@ mod test {
     };
     use package_lib::PackageId;
     use serde_json::json;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
     use std::fs;
     use std::net::IpAddr;
     use std::path::Path;
@@ -376,7 +374,6 @@ mod test {
         assert!(init_map.contains_key("services/scheduler/spec"));
         assert!(init_map.contains_key("services/task-manager/spec"));
         assert!(init_map.contains_key("services/kmsg/spec"));
-        assert!(init_map.contains_key("services/repo-service/spec"));
         assert!(init_map.contains_key("services/aicc/spec"));
         assert!(init_map.contains_key("services/msg-center/spec"));
         //assert!(init_map.contains_key("services/smb-service/spec"));
@@ -386,45 +383,19 @@ mod test {
         }
 
         println!("start test boot scheduler...");
-        let (mut scheduler_ctx, device_list) =
-            create_scheduler_by_system_config(&init_map).unwrap();
-        let action_list = scheduler_ctx
-            .schedule(None)
-            .expect("schedule should succeed");
+        let schedule_plan = build_schedule_plan(&init_map, true)
+            .await
+            .expect("boot schedule should succeed");
 
-        let this_snapshot = serde_json::to_string_pretty(&scheduler_ctx).unwrap();
+        let this_snapshot = serde_json::to_string_pretty(&schedule_plan.schedule_snapshot).unwrap();
         println!("this_snapshot: {}", this_snapshot);
 
-        let mut tx_actions = HashMap::new();
-        let mut need_update_gateway_node_list: HashSet<String> = HashSet::new();
-        let mut need_update_rbac = false;
-        for action in action_list {
-            let new_tx_actions = schedule_action_to_tx_actions(
-                &action,
-                &scheduler_ctx,
-                &device_list,
-                &init_map,
-                &mut need_update_gateway_node_list,
-                &mut need_update_rbac,
-            )
-            .unwrap();
-            extend_kv_action_map(&mut tx_actions, &new_tx_actions);
-        }
-
-        need_update_rbac = true;
-        need_update_gateway_node_list = scheduler_ctx.nodes.keys().cloned().collect();
-
-        if need_update_gateway_node_list.len() > 0 {
-            // 重新生成node_gateway_config
-            let update_gateway_node_list_actions = update_node_gateway_config(
-                &need_update_gateway_node_list,
-                &scheduler_ctx,
-                &init_map,
-            )
-            .await
-            .unwrap();
-            extend_kv_action_map(&mut tx_actions, &update_gateway_node_list_actions);
-        }
+        assert!(!schedule_plan.tx_actions.is_empty());
+        assert_eq!(schedule_plan.schedule_snapshot.nodes.len(), 1);
+        assert!(schedule_plan
+            .schedule_snapshot
+            .service_infos
+            .contains_key("scheduler"));
         unsafe {
             std::env::remove_var("BUCKYOS_ROOT");
         }
@@ -592,7 +563,16 @@ g, cyfs-gateway, kernel
             DecodingKey::from_jwk(owner_key).map_err(|e| format!("invalid owner jwk: {}", e))?;
         let device_config = DeviceConfig::decode(&encoded_doc, Some(&decoding_key))
             .map_err(|e| format!("failed to decode device document: {}", e))?;
-        let device_info = DeviceInfo::from_device_doc(&device_config);
+        let mut device_info = serde_json::to_value(DeviceInfo::from_device_doc(&device_config))
+            .map_err(|e| format!("serialize device info: {}", e))?;
+        let device_info_obj = device_info
+            .as_object_mut()
+            .ok_or_else(|| "device info is not a json object".to_string())?;
+        device_info_obj.insert("support_container".to_string(), json!(true));
+        device_info_obj.insert("cpu_mhz".to_string(), json!(16000));
+        device_info_obj.insert("total_mem".to_string(), json!(8_u64 * 1024 * 1024 * 1024));
+        device_info_obj.insert("mem_usage".to_string(), json!(0));
+        device_info_obj.insert("net_id".to_string(), json!(TEST_NET_ID));
         let device_info_json = serde_json::to_string(&device_info)
             .map_err(|e| format!("serialize device info: {}", e))?;
 

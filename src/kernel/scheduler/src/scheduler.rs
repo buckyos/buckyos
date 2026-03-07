@@ -646,27 +646,35 @@ impl NodeScheduler {
         let now = buckyos_get_unix_timestamp();
         let mut actions = Vec::new();
         let last_service_infos = last_snapshot.map(|snapshot| &snapshot.service_infos);
-        for (spec_id, spec) in self.specs.iter() {
-            let mut info_map = HashMap::new();
-            // if spec.spec_type == ServiceSpecType::App {
-            //     self.service_infos.remove(spec_id);
-            //     continue;
-            // }
 
-            for instance in self.replica_instances.values() {
-                //info!("spec_id:{} instance:{:?}", spec_id, instance);
-                if instance.state == InstanceState::Running && instance.spec_id == *spec_id {
-                    // 调度器只基于“最近一次存活证明”决定是否继续对外发布 service_info。
-                    // 这里允许存在检测误差：实例真实失联与调度器宣告下线之间不要求严格同步。（也无法做到)
-                    // 对应用来说，调度器返回服务可用时，如果访问失败可以尝试重试
-                    // 如果调度器返回服务不可用，应用使用服务的接口应直接返回失败
-                    if now - instance.last_update_time < INSTANCE_ALIVE_TIME {
-                        info_map.insert(instance.instance_id.clone(), (100, instance.clone()));
-                    } else {
-                        warn!(
-                            "spec_id:{} instance:{} is not alive",
-                            spec_id, instance.instance_id
-                        );
+        // spec_id → instances 倒排索引，将 O(S×I) 降为 O(S+I)
+        let mut spec_instances: HashMap<&str, Vec<&ReplicaInstance>> = HashMap::new();
+        for instance in self.replica_instances.values() {
+            spec_instances
+                .entry(instance.spec_id.as_str())
+                .or_default()
+                .push(instance);
+        }
+
+        for (spec_id, _spec) in self.specs.iter() {
+            let mut info_map = HashMap::new();
+
+            if let Some(instances) = spec_instances.get(spec_id.as_str()) {
+                for instance in instances {
+                    if instance.state == InstanceState::Running {
+                        // 调度器只基于“最近一次存活证明”决定是否继续对外发布 service_info。
+                        // 这里允许存在检测误差：实例真实失联与调度器宣告下线之间不要求严格同步。（也无法做到)
+                        // 对应用来说，调度器返回服务可用时，如果访问失败可以尝试重试
+                        // 如果调度器返回服务不可用，应用使用服务的接口应直接返回失败
+                        if now - instance.last_update_time < INSTANCE_ALIVE_TIME {
+                            info_map
+                                .insert(instance.instance_id.clone(), (100, (*instance).clone()));
+                        } else {
+                            warn!(
+                                "spec_id:{} instance:{} is not alive",
+                                spec_id, instance.instance_id
+                            );
+                        }
                     }
                 }
             }
@@ -758,7 +766,9 @@ impl NodeScheduler {
                     let new_instances =
                         self.create_replica_instance(&spec_snapshot, &shadow_nodes)?;
                     for instance in &new_instances {
-                        if let Some(node) = shadow_nodes.iter_mut().find(|n| n.id == instance.node_id) {
+                        if let Some(node) =
+                            shadow_nodes.iter_mut().find(|n| n.id == instance.node_id)
+                        {
                             node.available_cpu_mhz = node
                                 .available_cpu_mhz
                                 .saturating_sub(spec_snapshot.required_cpu_mhz);
@@ -1020,10 +1030,10 @@ impl NodeScheduler {
 
         // 1. 资源充足度评分 (分配后剩余比例越高，得分越高)
         if node.total_cpu_mhz > 0 {
-            let cpu_ratio =
-                (node.available_cpu_mhz as f64 - spec.required_cpu_mhz as f64) / node.total_cpu_mhz as f64;
-            let mem_ratio =
-                (node.available_memory as f64 - spec.required_memory as f64) / node.total_memory.max(1) as f64;
+            let cpu_ratio = (node.available_cpu_mhz as f64 - spec.required_cpu_mhz as f64)
+                / node.total_cpu_mhz as f64;
+            let mem_ratio = (node.available_memory as f64 - spec.required_memory as f64)
+                / node.total_memory.max(1) as f64;
             score += (cpu_ratio + mem_ratio) / 2.0 * 100.0;
         }
 
