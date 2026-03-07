@@ -141,13 +141,33 @@ cargo run -p klog_daemon --bin klog_bench -- \
 4. `--warmup-sec`：预热时长秒数（默认 `3`）。
 5. `--payload-bytes`：日志消息体大小（默认 `256`）。
 6. `--write-target`：写入目标策略（`leader` / `round-robin` / `random`）。
-7. `--sync-write`：state-store 是否启用同步写（默认 `true`）。
-8. `--report-json`：输出 JSON 报告路径（可选）。
-9. `--keep-data`：保留临时数据目录（用于问题排查）。
+7. `--config`：从 TOML 文件加载压测配置（支持 CLI 覆盖）。
+8. `--append-weight/--query-weight/--meta-put-weight/--meta-query-weight`：混合负载权重。
+9. `--query-limit/--query-strong-read/--meta-query-strong-read`：读请求参数。
+10. `--meta-key-space`：meta 压测随机 key 空间。
+11. `--sync-write`：state-store 是否启用同步写（默认 `true`）。
+12. `--report-json`：输出 JSON 报告路径（可选）。
+13. `--keep-data`：保留临时数据目录（用于问题排查）。
 
-### 8.3 指标含义
+### 8.3 配置文件模式
+
+仓库提供示例：
+
+- `src/kernel/klog_daemon/bench.example.toml`
+
+使用方式：
+
+```bash
+cd src
+cargo run -p klog_daemon --bin klog_bench -- \
+  --config kernel/klog_daemon/bench.example.toml \
+  --report-json /tmp/klog_bench_report.json
+```
+
+### 8.4 指标含义
 
 - `throughput`：成功请求的平均吞吐（req/s）。
 - `success_rate`：成功请求占比。
 - `latency(avg/p50/p95/p99/max)`：单请求端到端延迟（ms）。
 - `error_code_counts`：失败请求按业务错误码聚合统计。
+- `operation_stats`：按 `append/query/meta-put/meta-query` 维度拆分统计。

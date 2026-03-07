@@ -1,7 +1,10 @@
 use klog::KLogLevel;
-use klog::network::{KLogAppendRequest, KLogClusterStateResponse, KLogDataRequestType};
+use klog::network::{
+    KLogAppendRequest, KLogClusterStateResponse, KLogDataRequestType, KLogMetaPutRequest,
+    KLogMetaQueryRequest, KLogQueryRequest,
+};
 use klog::rpc::KLogClient;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -41,6 +44,160 @@ impl WriteTarget {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum BenchOperation {
+    Append,
+    Query,
+    MetaPut,
+    MetaQuery,
+}
+
+impl BenchOperation {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Append => "append",
+            Self::Query => "query",
+            Self::MetaPut => "meta-put",
+            Self::MetaQuery => "meta-query",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WorkloadMix {
+    append_weight: u32,
+    query_weight: u32,
+    meta_put_weight: u32,
+    meta_query_weight: u32,
+    query_limit: usize,
+    query_strong_read: bool,
+    meta_query_strong_read: bool,
+    meta_key_space: u64,
+}
+
+impl Default for WorkloadMix {
+    fn default() -> Self {
+        Self {
+            append_weight: 100,
+            query_weight: 0,
+            meta_put_weight: 0,
+            meta_query_weight: 0,
+            query_limit: 20,
+            query_strong_read: false,
+            meta_query_strong_read: false,
+            meta_key_space: 1024,
+        }
+    }
+}
+
+impl WorkloadMix {
+    fn total_weight(&self) -> u32 {
+        self.append_weight
+            .saturating_add(self.query_weight)
+            .saturating_add(self.meta_put_weight)
+            .saturating_add(self.meta_query_weight)
+    }
+
+    fn choose_operation(&self) -> BenchOperation {
+        let total = self.total_weight();
+        let pick = rand::random::<u32>() % total;
+
+        let mut cursor = self.append_weight;
+        if pick < cursor {
+            return BenchOperation::Append;
+        }
+
+        cursor = cursor.saturating_add(self.query_weight);
+        if pick < cursor {
+            return BenchOperation::Query;
+        }
+
+        cursor = cursor.saturating_add(self.meta_put_weight);
+        if pick < cursor {
+            return BenchOperation::MetaPut;
+        }
+
+        BenchOperation::MetaQuery
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.total_weight() == 0 {
+            return Err(
+                "invalid workload: append/query/meta-put/meta-query weights sum must be > 0"
+                    .to_string(),
+            );
+        }
+        if self.query_limit == 0 {
+            return Err("invalid workload: query_limit must be > 0".to_string());
+        }
+        if self.meta_key_space == 0 {
+            return Err("invalid workload: meta_key_space must be > 0".to_string());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkloadMixPatch {
+    append_weight: Option<u32>,
+    query_weight: Option<u32>,
+    meta_put_weight: Option<u32>,
+    meta_query_weight: Option<u32>,
+    query_limit: Option<usize>,
+    query_strong_read: Option<bool>,
+    meta_query_strong_read: Option<bool>,
+    meta_key_space: Option<u64>,
+}
+
+impl WorkloadMix {
+    fn apply_patch(&mut self, patch: WorkloadMixPatch) {
+        if let Some(v) = patch.append_weight {
+            self.append_weight = v;
+        }
+        if let Some(v) = patch.query_weight {
+            self.query_weight = v;
+        }
+        if let Some(v) = patch.meta_put_weight {
+            self.meta_put_weight = v;
+        }
+        if let Some(v) = patch.meta_query_weight {
+            self.meta_query_weight = v;
+        }
+        if let Some(v) = patch.query_limit {
+            self.query_limit = v;
+        }
+        if let Some(v) = patch.query_strong_read {
+            self.query_strong_read = v;
+        }
+        if let Some(v) = patch.meta_query_strong_read {
+            self.meta_query_strong_read = v;
+        }
+        if let Some(v) = patch.meta_key_space {
+            self.meta_key_space = v;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BenchConfigFile {
+    nodes: Option<usize>,
+    concurrency: Option<usize>,
+    duration_sec: Option<u64>,
+    warmup_sec: Option<u64>,
+    payload_bytes: Option<usize>,
+    write_target: Option<String>,
+    daemon_bin: Option<PathBuf>,
+    cluster_name: Option<String>,
+    request_node_id: Option<u64>,
+    sync_write: Option<bool>,
+    report_json: Option<PathBuf>,
+    keep_data: Option<bool>,
+    workload: Option<WorkloadMixPatch>,
+}
+
 #[derive(Debug, Clone)]
 struct BenchConfig {
     nodes: usize,
@@ -55,6 +212,7 @@ struct BenchConfig {
     sync_write: bool,
     report_json: Option<PathBuf>,
     keep_data: bool,
+    workload: WorkloadMix,
 }
 
 impl Default for BenchConfig {
@@ -72,6 +230,7 @@ impl Default for BenchConfig {
             sync_write: true,
             report_json: None,
             keep_data: false,
+            workload: WorkloadMix::default(),
         }
     }
 }
@@ -93,6 +252,56 @@ impl BenchConfig {
         if self.request_node_id == 0 {
             return Err("--request-node-id must be > 0".to_string());
         }
+        self.workload.validate()?;
+        Ok(())
+    }
+
+    fn apply_file_patch(&mut self, path: &Path) -> Result<(), String> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("failed to read config file {}: {}", path.display(), e))?;
+        let patch: BenchConfigFile = toml::from_str(&content)
+            .map_err(|e| format!("failed to parse config file {}: {}", path.display(), e))?;
+
+        if let Some(v) = patch.nodes {
+            self.nodes = v;
+        }
+        if let Some(v) = patch.concurrency {
+            self.concurrency = v;
+        }
+        if let Some(v) = patch.duration_sec {
+            self.duration_sec = v;
+        }
+        if let Some(v) = patch.warmup_sec {
+            self.warmup_sec = v;
+        }
+        if let Some(v) = patch.payload_bytes {
+            self.payload_bytes = v;
+        }
+        if let Some(v) = patch.write_target {
+            self.write_target = WriteTarget::parse(&v)?;
+        }
+        if let Some(v) = patch.daemon_bin {
+            self.daemon_bin = Some(v);
+        }
+        if let Some(v) = patch.cluster_name {
+            self.cluster_name = Some(v);
+        }
+        if let Some(v) = patch.request_node_id {
+            self.request_node_id = v;
+        }
+        if let Some(v) = patch.sync_write {
+            self.sync_write = v;
+        }
+        if let Some(v) = patch.report_json {
+            self.report_json = Some(v);
+        }
+        if let Some(v) = patch.keep_data {
+            self.keep_data = v;
+        }
+        if let Some(v) = patch.workload {
+            self.workload.apply_patch(v);
+        }
+
         Ok(())
     }
 }
@@ -124,6 +333,14 @@ struct WorkerStats {
     fail: u64,
     latency_us: Vec<u64>,
     error_code_counts: HashMap<String, u64>,
+    operation_stats: HashMap<String, RawOperationStats>,
+}
+
+#[derive(Debug, Default)]
+struct RawOperationStats {
+    success: u64,
+    fail: u64,
+    latency_us: Vec<u64>,
 }
 
 impl WorkerStats {
@@ -134,7 +351,48 @@ impl WorkerStats {
         for (k, v) in other.error_code_counts {
             *self.error_code_counts.entry(k).or_insert(0) += v;
         }
+        for (k, v) in other.operation_stats {
+            let op = self.operation_stats.entry(k).or_default();
+            op.success += v.success;
+            op.fail += v.fail;
+            op.latency_us.extend(v.latency_us);
+        }
     }
+
+    fn record_success(&mut self, operation: BenchOperation, latency_us: u64) {
+        self.success += 1;
+        self.latency_us.push(latency_us);
+        let op = self
+            .operation_stats
+            .entry(operation.as_str().to_string())
+            .or_default();
+        op.success += 1;
+        op.latency_us.push(latency_us);
+    }
+
+    fn record_failure(&mut self, operation: BenchOperation, error_code: String) {
+        self.fail += 1;
+        *self.error_code_counts.entry(error_code).or_insert(0) += 1;
+        let op = self
+            .operation_stats
+            .entry(operation.as_str().to_string())
+            .or_default();
+        op.fail += 1;
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct OperationStats {
+    total_requests: u64,
+    success_requests: u64,
+    failed_requests: u64,
+    success_rate: f64,
+    throughput_tps: f64,
+    latency_avg_ms: f64,
+    latency_p50_ms: f64,
+    latency_p95_ms: f64,
+    latency_p99_ms: f64,
+    latency_max_ms: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -146,6 +404,7 @@ struct BenchReport {
     warmup_sec: u64,
     payload_bytes: usize,
     concurrency: usize,
+    workload: WorkloadMix,
     started_at_unix_ms: u64,
     finished_at_unix_ms: u64,
     total_requests: u64,
@@ -159,6 +418,7 @@ struct BenchReport {
     latency_p99_ms: f64,
     latency_max_ms: f64,
     error_code_counts: BTreeMap<String, u64>,
+    operation_stats: BTreeMap<String, OperationStats>,
     node_rpc_ports: BTreeMap<u64, u16>,
     leader_node_id: u64,
 }
@@ -169,12 +429,21 @@ Usage:
   cargo run -p klog_daemon --bin klog_bench -- [options]
 
 Options:
+  --config <PATH>            Load benchmark config from TOML file
   --nodes <N>                Number of managed nodes (default: 3)
-  --concurrency <N>          Concurrent append workers (default: 32)
+  --concurrency <N>          Concurrent workers (default: 32)
   --duration-sec <N>         Measure duration seconds (default: 30)
   --warmup-sec <N>           Warmup duration seconds (default: 3)
-  --payload-bytes <N>        message payload bytes (default: 256)
+  --payload-bytes <N>        append/meta value payload bytes (default: 256)
   --write-target <MODE>      leader|round-robin|random (default: round-robin)
+  --append-weight <N>        Workload weight for append (default: 100)
+  --query-weight <N>         Workload weight for query (default: 0)
+  --meta-put-weight <N>      Workload weight for meta put (default: 0)
+  --meta-query-weight <N>    Workload weight for meta query (default: 0)
+  --query-limit <N>          Query request limit parameter (default: 20)
+  --query-strong-read <BOOL> Query strong_read mode (default: false)
+  --meta-query-strong-read <BOOL>  Meta query strong_read mode (default: false)
+  --meta-key-space <N>       Number of meta keys for random access (default: 1024)
   --request-node-id <ID>     request node id for generated request_id (default: 9001)
   --sync-write <true|false>  state store sync write mode (default: true)
   --cluster-name <NAME>      optional explicit cluster name
@@ -203,7 +472,7 @@ async fn run_main() -> Result<(), String> {
         .unwrap_or_else(|| format!("klog_bench_{}_{}", std::process::id(), now_unix_ms()));
 
     println!(
-        "klog_bench starting: cluster_name={}, nodes={}, concurrency={}, duration_sec={}, warmup_sec={}, payload_bytes={}, write_target={}, daemon_bin={}",
+        "klog_bench starting: cluster_name={}, nodes={}, concurrency={}, duration_sec={}, warmup_sec={}, payload_bytes={}, write_target={}, daemon_bin={}, workload(append={}, query={}, meta_put={}, meta_query={}, query_limit={}, query_strong_read={}, meta_query_strong_read={}, meta_key_space={})",
         cluster_name,
         cfg.nodes,
         cfg.concurrency,
@@ -211,7 +480,15 @@ async fn run_main() -> Result<(), String> {
         cfg.warmup_sec,
         cfg.payload_bytes,
         cfg.write_target.as_str(),
-        daemon_bin.display()
+        daemon_bin.display(),
+        cfg.workload.append_weight,
+        cfg.workload.query_weight,
+        cfg.workload.meta_put_weight,
+        cfg.workload.meta_query_weight,
+        cfg.workload.query_limit,
+        cfg.workload.query_strong_read,
+        cfg.workload.meta_query_strong_read,
+        cfg.workload.meta_key_space
     );
 
     let mut nodes = spawn_managed_cluster(&cfg, &cluster_name, &daemon_bin).await?;
@@ -234,7 +511,7 @@ async fn run_main() -> Result<(), String> {
         if cfg.warmup_sec > 0 {
             println!("warmup start: {}s", cfg.warmup_sec);
             let warmup_deadline = Instant::now() + Duration::from_secs(cfg.warmup_sec);
-            run_append_phase(&cfg, &rpc_ports, leader_rpc_port, warmup_deadline, false).await?;
+            run_workload_phase(&cfg, &rpc_ports, leader_rpc_port, warmup_deadline, false).await?;
             println!("warmup done");
         }
 
@@ -242,7 +519,7 @@ async fn run_main() -> Result<(), String> {
         let started_at = now_unix_ms();
         let started = Instant::now();
         let deadline = Instant::now() + Duration::from_secs(cfg.duration_sec);
-        let stats = run_append_phase(&cfg, &rpc_ports, leader_rpc_port, deadline, true).await?;
+        let stats = run_workload_phase(&cfg, &rpc_ports, leader_rpc_port, deadline, true).await?;
         let elapsed = started.elapsed();
         let finished_at = now_unix_ms();
 
@@ -365,7 +642,7 @@ async fn spawn_managed_cluster(
     Ok(nodes)
 }
 
-async fn run_append_phase(
+async fn run_workload_phase(
     cfg: &BenchConfig,
     rpc_ports: &BTreeMap<u64, u16>,
     leader_rpc_port: u16,
@@ -425,6 +702,8 @@ async fn run_append_phase(
         let write_target = cfg.write_target;
         let request_node_id = cfg.request_node_id;
 
+        let workload = cfg.workload.clone();
+
         tasks.push(tokio::spawn(async move {
             let mut stats = WorkerStats::default();
             let mut rr = worker_id;
@@ -439,7 +718,7 @@ async fn run_append_phase(
                         .with_timeout(timeout)
                 })
                 .collect::<Vec<_>>();
-            let base_req = KLogAppendRequest {
+            let base_append_req = KLogAppendRequest {
                 message: payload.clone(),
                 timestamp: None,
                 node_id: None,
@@ -447,6 +726,17 @@ async fn run_append_phase(
                 source: Some("klog_bench".to_string()),
                 attrs: None,
                 request_id: None,
+            };
+            let base_query_req = KLogQueryRequest {
+                start_id: None,
+                end_id: None,
+                limit: Some(workload.query_limit),
+                desc: Some(true),
+                level: None,
+                source: None,
+                attr_key: None,
+                attr_value: None,
+                strong_read: Some(workload.query_strong_read),
             };
 
             while Instant::now() < deadline {
@@ -463,19 +753,45 @@ async fn run_append_phase(
                     }
                 };
 
+                let operation = workload.choose_operation();
                 req_total.fetch_add(1, Ordering::Relaxed);
                 let begin = Instant::now();
-                match client.append_log(base_req.clone()).await {
+                let result = match operation {
+                    BenchOperation::Append => {
+                        client.append_log(base_append_req.clone()).await.map(|_| ())
+                    }
+                    BenchOperation::Query => {
+                        client.query_log(base_query_req.clone()).await.map(|_| ())
+                    }
+                    BenchOperation::MetaPut => {
+                        let key_idx = rand::random::<u64>() % workload.meta_key_space;
+                        let req = KLogMetaPutRequest {
+                            key: format!("bench/meta/{}", key_idx),
+                            value: payload.clone(),
+                            expected_revision: None,
+                        };
+                        client.put_meta(req).await.map(|_| ())
+                    }
+                    BenchOperation::MetaQuery => {
+                        let key_idx = rand::random::<u64>() % workload.meta_key_space;
+                        let req = KLogMetaQueryRequest {
+                            key: Some(format!("bench/meta/{}", key_idx)),
+                            prefix: None,
+                            limit: Some(1),
+                            strong_read: Some(workload.meta_query_strong_read),
+                        };
+                        client.query_meta(req).await.map(|_| ())
+                    }
+                };
+
+                match result {
                     Ok(_) => {
                         req_success.fetch_add(1, Ordering::Relaxed);
-                        stats.success += 1;
-                        stats.latency_us.push(begin.elapsed().as_micros() as u64);
+                        stats.record_success(operation, begin.elapsed().as_micros() as u64);
                     }
                     Err(e) => {
                         req_fail.fetch_add(1, Ordering::Relaxed);
-                        stats.fail += 1;
-                        let key = format!("{:?}", e.error_code);
-                        *stats.error_code_counts.entry(key).or_insert(0) += 1;
+                        stats.record_failure(operation, format!("{:?}", e.error_code));
                     }
                 }
             }
@@ -488,7 +804,7 @@ async fn run_append_phase(
     for t in tasks {
         let stats = t
             .await
-            .map_err(|e| format!("append worker join failed: {}", e))?;
+            .map_err(|e| format!("workload worker join failed: {}", e))?;
         merged.merge(stats);
     }
 
@@ -534,6 +850,11 @@ fn build_report(
     let p95_ms = percentile_ms(&lat, 95.0);
     let p99_ms = percentile_ms(&lat, 99.0);
     let max_ms = lat.last().copied().unwrap_or(0) as f64 / 1000.0;
+    let operation_stats = stats
+        .operation_stats
+        .into_iter()
+        .map(|(op, raw)| (op, build_operation_stats(raw, elapsed)))
+        .collect::<BTreeMap<_, _>>();
 
     BenchReport {
         cluster_name: cluster_name.to_string(),
@@ -543,6 +864,7 @@ fn build_report(
         warmup_sec: cfg.warmup_sec,
         payload_bytes: cfg.payload_bytes,
         concurrency: cfg.concurrency,
+        workload: cfg.workload.clone(),
         started_at_unix_ms,
         finished_at_unix_ms,
         total_requests: total,
@@ -556,8 +878,44 @@ fn build_report(
         latency_p99_ms: p99_ms,
         latency_max_ms: max_ms,
         error_code_counts: stats.error_code_counts.into_iter().collect(),
+        operation_stats,
         node_rpc_ports: node_rpc_ports.clone(),
         leader_node_id,
+    }
+}
+
+fn build_operation_stats(raw: RawOperationStats, elapsed: Duration) -> OperationStats {
+    let total = raw.success + raw.fail;
+    let success_rate = if total == 0 {
+        0.0
+    } else {
+        raw.success as f64 / total as f64
+    };
+    let throughput = if elapsed.as_secs_f64() == 0.0 {
+        0.0
+    } else {
+        raw.success as f64 / elapsed.as_secs_f64()
+    };
+
+    let mut lat = raw.latency_us;
+    lat.sort_unstable();
+    let latency_avg_ms = if lat.is_empty() {
+        0.0
+    } else {
+        (lat.iter().sum::<u64>() as f64 / lat.len() as f64) / 1000.0
+    };
+
+    OperationStats {
+        total_requests: total,
+        success_requests: raw.success,
+        failed_requests: raw.fail,
+        success_rate,
+        throughput_tps: throughput,
+        latency_avg_ms,
+        latency_p50_ms: percentile_ms(&lat, 50.0),
+        latency_p95_ms: percentile_ms(&lat, 95.0),
+        latency_p99_ms: percentile_ms(&lat, 99.0),
+        latency_max_ms: lat.last().copied().unwrap_or(0) as f64 / 1000.0,
     }
 }
 
@@ -578,6 +936,17 @@ fn print_report(report: &BenchReport) {
     println!(
         "duration={}s (warmup={}s), concurrency={}, payload={}B",
         report.duration_sec, report.warmup_sec, report.concurrency, report.payload_bytes
+    );
+    println!(
+        "workload: append={}, query={}, meta_put={}, meta_query={}, query_limit={}, query_strong_read={}, meta_query_strong_read={}, meta_key_space={}",
+        report.workload.append_weight,
+        report.workload.query_weight,
+        report.workload.meta_put_weight,
+        report.workload.meta_query_weight,
+        report.workload.query_limit,
+        report.workload.query_strong_read,
+        report.workload.meta_query_strong_read,
+        report.workload.meta_key_space
     );
     println!(
         "requests: total={}, success={}, fail={}, success_rate={:.2}%",
@@ -601,6 +970,22 @@ fn print_report(report: &BenchReport) {
             println!("  {} => {}", k, v);
         }
     }
+    if !report.operation_stats.is_empty() {
+        println!("operation_stats:");
+        for (op, stat) in &report.operation_stats {
+            println!(
+                "  {}: total={}, success={}, fail={}, success_rate={:.2}%, tps={:.2}, p95={:.3}ms, p99={:.3}ms",
+                op,
+                stat.total_requests,
+                stat.success_requests,
+                stat.failed_requests,
+                stat.success_rate * 100.0,
+                stat.throughput_tps,
+                stat.latency_p95_ms,
+                stat.latency_p99_ms
+            );
+        }
+    }
     println!("node_rpc_ports: {:?}", report.node_rpc_ports);
 }
 
@@ -621,6 +1006,10 @@ fn write_report_json(path: &Path, report: &BenchReport) -> Result<(), String> {
 
 fn parse_args(args: Vec<String>) -> Result<BenchConfig, String> {
     let mut cfg = BenchConfig::default();
+    if let Some(config_path) = extract_config_path(&args)? {
+        cfg.apply_file_patch(&config_path)?;
+    }
+
     let mut i = 0usize;
 
     while i < args.len() {
@@ -633,6 +1022,10 @@ fn parse_args(args: Vec<String>) -> Result<BenchConfig, String> {
             "--keep-data" => {
                 cfg.keep_data = true;
                 i += 1;
+            }
+            "--config" => {
+                let _ = next_value(&args, i, "--config")?;
+                i += 2;
             }
             "--nodes" => {
                 cfg.nodes = parse_next::<usize>(&args, i, "--nodes")?;
@@ -657,6 +1050,41 @@ fn parse_args(args: Vec<String>) -> Result<BenchConfig, String> {
             "--write-target" => {
                 let v = next_value(&args, i, "--write-target")?;
                 cfg.write_target = WriteTarget::parse(v)?;
+                i += 2;
+            }
+            "--append-weight" => {
+                cfg.workload.append_weight = parse_next::<u32>(&args, i, "--append-weight")?;
+                i += 2;
+            }
+            "--query-weight" => {
+                cfg.workload.query_weight = parse_next::<u32>(&args, i, "--query-weight")?;
+                i += 2;
+            }
+            "--meta-put-weight" => {
+                cfg.workload.meta_put_weight = parse_next::<u32>(&args, i, "--meta-put-weight")?;
+                i += 2;
+            }
+            "--meta-query-weight" => {
+                cfg.workload.meta_query_weight =
+                    parse_next::<u32>(&args, i, "--meta-query-weight")?;
+                i += 2;
+            }
+            "--query-limit" => {
+                cfg.workload.query_limit = parse_next::<usize>(&args, i, "--query-limit")?;
+                i += 2;
+            }
+            "--query-strong-read" => {
+                let v = next_value(&args, i, "--query-strong-read")?;
+                cfg.workload.query_strong_read = parse_bool(v, "--query-strong-read")?;
+                i += 2;
+            }
+            "--meta-query-strong-read" => {
+                let v = next_value(&args, i, "--meta-query-strong-read")?;
+                cfg.workload.meta_query_strong_read = parse_bool(v, "--meta-query-strong-read")?;
+                i += 2;
+            }
+            "--meta-key-space" => {
+                cfg.workload.meta_key_space = parse_next::<u64>(&args, i, "--meta-key-space")?;
                 i += 2;
             }
             "--request-node-id" => {
@@ -687,6 +1115,24 @@ fn parse_args(args: Vec<String>) -> Result<BenchConfig, String> {
     }
 
     Ok(cfg)
+}
+
+fn extract_config_path(args: &[String]) -> Result<Option<PathBuf>, String> {
+    let mut path = None;
+    let mut i = 0usize;
+    while i < args.len() {
+        let key = args[i].as_str();
+        if key == "--config" {
+            let value = args
+                .get(i + 1)
+                .ok_or_else(|| "missing value for --config".to_string())?;
+            path = Some(PathBuf::from(value));
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    Ok(path)
 }
 
 fn parse_next<T: std::str::FromStr>(args: &[String], i: usize, flag: &str) -> Result<T, String>

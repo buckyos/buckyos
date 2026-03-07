@@ -1,0 +1,27 @@
+# klog_bench example config
+
+nodes = 3
+concurrency = 64
+duration_sec = 30
+warmup_sec = 5
+payload_bytes = 256
+write_target = "round-robin"
+request_node_id = 9001
+sync_write = true
+# report_json = "/tmp/klog_bench_report.json"
+# keep_data = false
+
+[workload]
+# Weighted mixed workload. Sum must be > 0.
+append_weight = 80
+query_weight = 15
+meta_put_weight = 3
+meta_query_weight = 2
+
+# Query request shape.
+query_limit = 20
+query_strong_read = false
+meta_query_strong_read = false
+
+# Number of keys for random meta put/query.
+meta_key_space = 1024
