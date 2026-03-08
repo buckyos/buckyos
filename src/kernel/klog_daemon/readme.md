@@ -145,9 +145,11 @@ cargo run -p klog_daemon --bin klog_bench -- \
 8. `--append-weight/--query-weight/--meta-put-weight/--meta-query-weight`：混合负载权重。
 9. `--query-limit/--query-strong-read/--meta-query-strong-read`：读请求参数。
 10. `--meta-key-space`：meta 压测随机 key 空间。
-11. `--sync-write`：state-store 是否启用同步写（默认 `true`）。
-12. `--report-json`：输出 JSON 报告路径（可选）。
-13. `--keep-data`：保留临时数据目录（用于问题排查）。
+11. `--fault-kill-leader-at-sec`：在测量阶段第 N 秒 kill 当前 leader（故障注入）。
+12. `--fault-wait-new-leader-timeout-sec`：故障后等待新 leader 超时（秒）。
+13. `--sync-write`：state-store 是否启用同步写（默认 `true`）。
+14. `--report-json`：输出 JSON 报告路径（可选）。
+15. `--keep-data`：保留临时数据目录（用于问题排查）。
 
 ### 8.3 配置文件模式
 
@@ -171,3 +173,5 @@ cargo run -p klog_daemon --bin klog_bench -- \
 - `latency(avg/p50/p95/p99/max)`：单请求端到端延迟（ms）。
 - `error_code_counts`：失败请求按业务错误码聚合统计。
 - `operation_stats`：按 `append/query/meta-put/meta-query` 维度拆分统计。
+- `correctness`：append 返回 ID 去重统计、各节点最大日志 ID 一致性。
+- `fault`：故障注入是否触发、切主耗时、故障后首个成功请求恢复耗时。

@@ -196,6 +196,66 @@ struct BenchConfigFile {
     report_json: Option<PathBuf>,
     keep_data: Option<bool>,
     workload: Option<WorkloadMixPatch>,
+    fault: Option<FaultInjectConfigPatch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FaultInjectConfig {
+    enabled: bool,
+    kill_leader_at_sec: Option<u64>,
+    wait_new_leader_timeout_sec: u64,
+}
+
+impl Default for FaultInjectConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            kill_leader_at_sec: None,
+            wait_new_leader_timeout_sec: 20,
+        }
+    }
+}
+
+impl FaultInjectConfig {
+    fn validate(&self) -> Result<(), String> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if self.kill_leader_at_sec.is_none() {
+            return Err(
+                "invalid fault config: enabled=true but kill_leader_at_sec is not set".to_string(),
+            );
+        }
+        if self.wait_new_leader_timeout_sec == 0 {
+            return Err(
+                "invalid fault config: wait_new_leader_timeout_sec must be > 0".to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FaultInjectConfigPatch {
+    enabled: Option<bool>,
+    kill_leader_at_sec: Option<u64>,
+    wait_new_leader_timeout_sec: Option<u64>,
+}
+
+impl FaultInjectConfig {
+    fn apply_patch(&mut self, patch: FaultInjectConfigPatch) {
+        if let Some(v) = patch.enabled {
+            self.enabled = v;
+        }
+        if let Some(v) = patch.kill_leader_at_sec {
+            self.kill_leader_at_sec = Some(v);
+            self.enabled = true;
+        }
+        if let Some(v) = patch.wait_new_leader_timeout_sec {
+            self.wait_new_leader_timeout_sec = v;
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -213,6 +273,7 @@ struct BenchConfig {
     report_json: Option<PathBuf>,
     keep_data: bool,
     workload: WorkloadMix,
+    fault: FaultInjectConfig,
 }
 
 impl Default for BenchConfig {
@@ -231,6 +292,7 @@ impl Default for BenchConfig {
             report_json: None,
             keep_data: false,
             workload: WorkloadMix::default(),
+            fault: FaultInjectConfig::default(),
         }
     }
 }
@@ -253,6 +315,7 @@ impl BenchConfig {
             return Err("--request-node-id must be > 0".to_string());
         }
         self.workload.validate()?;
+        self.fault.validate()?;
         Ok(())
     }
 
@@ -301,6 +364,9 @@ impl BenchConfig {
         if let Some(v) = patch.workload {
             self.workload.apply_patch(v);
         }
+        if let Some(v) = patch.fault {
+            self.fault.apply_patch(v);
+        }
 
         Ok(())
     }
@@ -314,6 +380,13 @@ struct ManagedNode {
     data_dir: PathBuf,
     config_path: PathBuf,
     child: Child,
+}
+
+#[derive(Debug, Clone)]
+struct NodeSnapshot {
+    node_id: u64,
+    admin_port: u16,
+    pid: u32,
 }
 
 impl ManagedNode {
@@ -334,6 +407,7 @@ struct WorkerStats {
     latency_us: Vec<u64>,
     error_code_counts: HashMap<String, u64>,
     operation_stats: HashMap<String, RawOperationStats>,
+    append_ids: Vec<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -357,6 +431,7 @@ impl WorkerStats {
             op.fail += v.fail;
             op.latency_us.extend(v.latency_us);
         }
+        self.append_ids.extend(other.append_ids);
     }
 
     fn record_success(&mut self, operation: BenchOperation, latency_us: u64) {
@@ -368,6 +443,10 @@ impl WorkerStats {
             .or_default();
         op.success += 1;
         op.latency_us.push(latency_us);
+    }
+
+    fn record_append_id(&mut self, id: u64) {
+        self.append_ids.push(id);
     }
 
     fn record_failure(&mut self, operation: BenchOperation, error_code: String) {
@@ -405,6 +484,7 @@ struct BenchReport {
     payload_bytes: usize,
     concurrency: usize,
     workload: WorkloadMix,
+    fault: FaultInjectReport,
     started_at_unix_ms: u64,
     finished_at_unix_ms: u64,
     total_requests: u64,
@@ -419,8 +499,43 @@ struct BenchReport {
     latency_max_ms: f64,
     error_code_counts: BTreeMap<String, u64>,
     operation_stats: BTreeMap<String, OperationStats>,
+    append_unique_id_count: usize,
+    append_duplicate_id_count: usize,
+    node_max_log_ids: BTreeMap<u64, u64>,
+    node_max_log_id_consistent: bool,
     node_rpc_ports: BTreeMap<u64, u16>,
     leader_node_id: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct FaultInjectReport {
+    enabled: bool,
+    kill_leader_at_sec: Option<u64>,
+    injected: bool,
+    old_leader_node_id: Option<u64>,
+    new_leader_node_id: Option<u64>,
+    injected_at_unix_ms: Option<u64>,
+    new_leader_observed_at_unix_ms: Option<u64>,
+    first_success_after_fault_unix_ms: Option<u64>,
+    leader_failover_ms: Option<u64>,
+    first_success_recovery_ms: Option<u64>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct FaultInjectTaskResult {
+    injected: bool,
+    old_leader_node_id: Option<u64>,
+    new_leader_node_id: Option<u64>,
+    injected_at_unix_ms: Option<u64>,
+    new_leader_observed_at_unix_ms: Option<u64>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct FaultRuntimeShared {
+    injected_at_unix_ms: AtomicU64,
+    first_success_after_fault_unix_ms: AtomicU64,
 }
 
 const HELP: &str = r#"klog_bench: local stress benchmark for klog_daemon
@@ -444,6 +559,8 @@ Options:
   --query-strong-read <BOOL> Query strong_read mode (default: false)
   --meta-query-strong-read <BOOL>  Meta query strong_read mode (default: false)
   --meta-key-space <N>       Number of meta keys for random access (default: 1024)
+  --fault-kill-leader-at-sec <N>  Inject fault by killing current leader at N seconds
+  --fault-wait-new-leader-timeout-sec <N>  Timeout waiting new leader after fault (default: 20)
   --request-node-id <ID>     request node id for generated request_id (default: 9001)
   --sync-write <true|false>  state store sync write mode (default: true)
   --cluster-name <NAME>      optional explicit cluster name
@@ -472,7 +589,7 @@ async fn run_main() -> Result<(), String> {
         .unwrap_or_else(|| format!("klog_bench_{}_{}", std::process::id(), now_unix_ms()));
 
     println!(
-        "klog_bench starting: cluster_name={}, nodes={}, concurrency={}, duration_sec={}, warmup_sec={}, payload_bytes={}, write_target={}, daemon_bin={}, workload(append={}, query={}, meta_put={}, meta_query={}, query_limit={}, query_strong_read={}, meta_query_strong_read={}, meta_key_space={})",
+        "klog_bench starting: cluster_name={}, nodes={}, concurrency={}, duration_sec={}, warmup_sec={}, payload_bytes={}, write_target={}, daemon_bin={}, workload(append={}, query={}, meta_put={}, meta_query={}, query_limit={}, query_strong_read={}, meta_query_strong_read={}, meta_key_space={}), fault(enabled={}, kill_leader_at_sec={:?}, wait_new_leader_timeout_sec={})",
         cluster_name,
         cfg.nodes,
         cfg.concurrency,
@@ -488,10 +605,29 @@ async fn run_main() -> Result<(), String> {
         cfg.workload.query_limit,
         cfg.workload.query_strong_read,
         cfg.workload.meta_query_strong_read,
-        cfg.workload.meta_key_space
+        cfg.workload.meta_key_space,
+        cfg.fault.enabled,
+        cfg.fault.kill_leader_at_sec,
+        cfg.fault.wait_new_leader_timeout_sec
     );
 
     let mut nodes = spawn_managed_cluster(&cfg, &cluster_name, &daemon_bin).await?;
+    let node_snapshots = nodes
+        .iter()
+        .map(|n| {
+            let pid = n.child.id().ok_or_else(|| {
+                format!(
+                    "failed to get process id for node_id={}, admin_port={}",
+                    n.node_id, n.admin_port
+                )
+            })?;
+            Ok(NodeSnapshot {
+                node_id: n.node_id,
+                admin_port: n.admin_port,
+                pid,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
 
     let run_res = async {
         let leader_id =
@@ -511,7 +647,15 @@ async fn run_main() -> Result<(), String> {
         if cfg.warmup_sec > 0 {
             println!("warmup start: {}s", cfg.warmup_sec);
             let warmup_deadline = Instant::now() + Duration::from_secs(cfg.warmup_sec);
-            run_workload_phase(&cfg, &rpc_ports, leader_rpc_port, warmup_deadline, false).await?;
+            run_workload_phase(
+                &cfg,
+                &rpc_ports,
+                leader_rpc_port,
+                warmup_deadline,
+                false,
+                None,
+            )
+            .await?;
             println!("warmup done");
         }
 
@@ -519,15 +663,60 @@ async fn run_main() -> Result<(), String> {
         let started_at = now_unix_ms();
         let started = Instant::now();
         let deadline = Instant::now() + Duration::from_secs(cfg.duration_sec);
-        let stats = run_workload_phase(&cfg, &rpc_ports, leader_rpc_port, deadline, true).await?;
+        let fault_shared = Arc::new(FaultRuntimeShared::default());
+        let mut fault_task_result = FaultInjectTaskResult::default();
+        let fault_task = if cfg.fault.enabled {
+            if let Some(kill_at_sec) = cfg.fault.kill_leader_at_sec {
+                if kill_at_sec < cfg.duration_sec {
+                    let snapshots = node_snapshots.clone();
+                    let shared = Arc::clone(&fault_shared);
+                    let wait_timeout = cfg.fault.wait_new_leader_timeout_sec;
+                    Some(tokio::spawn(async move {
+                        run_fault_injector_task(snapshots, kill_at_sec, wait_timeout, shared).await
+                    }))
+                } else {
+                    fault_task_result.error = Some(format!(
+                        "fault kill_leader_at_sec={} >= duration_sec={}, skip injection",
+                        kill_at_sec, cfg.duration_sec
+                    ));
+                    None
+                }
+            } else {
+                fault_task_result.error =
+                    Some("fault.enabled=true but kill_leader_at_sec is not set".to_string());
+                None
+            }
+        } else {
+            None
+        };
+
+        let stats = run_workload_phase(
+            &cfg,
+            &rpc_ports,
+            leader_rpc_port,
+            deadline,
+            true,
+            Some(Arc::clone(&fault_shared)),
+        )
+        .await?;
+
+        if let Some(handle) = fault_task {
+            fault_task_result = handle
+                .await
+                .map_err(|e| format!("fault injector task join failed: {}", e))?;
+        }
         let elapsed = started.elapsed();
         let finished_at = now_unix_ms();
+        let node_max_log_ids = collect_node_max_log_ids(&rpc_ports, cfg.request_node_id).await;
+        let fault_report = build_fault_report(&cfg, &fault_shared, fault_task_result);
 
         let report = build_report(
             &cfg,
             &cluster_name,
             &rpc_ports,
             leader_id,
+            fault_report,
+            node_max_log_ids,
             started_at,
             finished_at,
             elapsed,
@@ -648,6 +837,7 @@ async fn run_workload_phase(
     leader_rpc_port: u16,
     deadline: Instant,
     show_progress: bool,
+    fault_shared: Option<Arc<FaultRuntimeShared>>,
 ) -> Result<WorkerStats, String> {
     let ports = rpc_ports.values().copied().collect::<Vec<_>>();
     if ports.is_empty() {
@@ -701,12 +891,14 @@ async fn run_workload_phase(
         let req_fail = Arc::clone(&req_fail);
         let write_target = cfg.write_target;
         let request_node_id = cfg.request_node_id;
+        let fault_shared = fault_shared.clone();
 
         let workload = cfg.workload.clone();
 
         tasks.push(tokio::spawn(async move {
             let mut stats = WorkerStats::default();
             let mut rr = worker_id;
+            let mut append_seq = 0_u64;
             let timeout = Duration::from_secs(4);
             let leader_client =
                 KLogClient::from_daemon_addr(leader_endpoint.as_str(), request_node_id)
@@ -756,12 +948,18 @@ async fn run_workload_phase(
                 let operation = workload.choose_operation();
                 req_total.fetch_add(1, Ordering::Relaxed);
                 let begin = Instant::now();
-                let result = match operation {
+                let result: Result<Option<u64>, _> = match operation {
                     BenchOperation::Append => {
-                        client.append_log(base_append_req.clone()).await.map(|_| ())
+                        append_seq = append_seq.wrapping_add(1);
+                        let mut req = base_append_req.clone();
+                        req.request_id = Some(format!(
+                            "bench-{}-{}-{}",
+                            request_node_id, worker_id, append_seq
+                        ));
+                        client.append_log(req).await.map(|resp| Some(resp.id))
                     }
                     BenchOperation::Query => {
-                        client.query_log(base_query_req.clone()).await.map(|_| ())
+                        client.query_log(base_query_req.clone()).await.map(|_| None)
                     }
                     BenchOperation::MetaPut => {
                         let key_idx = rand::random::<u64>() % workload.meta_key_space;
@@ -770,7 +968,7 @@ async fn run_workload_phase(
                             value: payload.clone(),
                             expected_revision: None,
                         };
-                        client.put_meta(req).await.map(|_| ())
+                        client.put_meta(req).await.map(|_| None)
                     }
                     BenchOperation::MetaQuery => {
                         let key_idx = rand::random::<u64>() % workload.meta_key_space;
@@ -780,14 +978,28 @@ async fn run_workload_phase(
                             limit: Some(1),
                             strong_read: Some(workload.meta_query_strong_read),
                         };
-                        client.query_meta(req).await.map(|_| ())
+                        client.query_meta(req).await.map(|_| None)
                     }
                 };
 
                 match result {
-                    Ok(_) => {
+                    Ok(maybe_append_id) => {
                         req_success.fetch_add(1, Ordering::Relaxed);
                         stats.record_success(operation, begin.elapsed().as_micros() as u64);
+                        if let Some(id) = maybe_append_id {
+                            stats.record_append_id(id);
+                        }
+                        if let Some(shared) = fault_shared.as_ref() {
+                            let injected_at = shared.injected_at_unix_ms.load(Ordering::Relaxed);
+                            if injected_at != 0 {
+                                let _ = shared.first_success_after_fault_unix_ms.compare_exchange(
+                                    0,
+                                    now_unix_ms(),
+                                    Ordering::Relaxed,
+                                    Ordering::Relaxed,
+                                );
+                            }
+                        }
                     }
                     Err(e) => {
                         req_fail.fetch_add(1, Ordering::Relaxed);
@@ -820,6 +1032,8 @@ fn build_report(
     cluster_name: &str,
     node_rpc_ports: &BTreeMap<u64, u16>,
     leader_node_id: u64,
+    fault: FaultInjectReport,
+    node_max_log_ids: BTreeMap<u64, u64>,
     started_at_unix_ms: u64,
     finished_at_unix_ms: u64,
     elapsed: Duration,
@@ -855,6 +1069,24 @@ fn build_report(
         .into_iter()
         .map(|(op, raw)| (op, build_operation_stats(raw, elapsed)))
         .collect::<BTreeMap<_, _>>();
+    let append_unique_id_count = stats
+        .append_ids
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>()
+        .len();
+    let append_duplicate_id_count = stats
+        .append_ids
+        .len()
+        .saturating_sub(append_unique_id_count);
+    let node_max_log_id_consistent = {
+        let uniq = node_max_log_ids.values().copied().collect::<HashSet<_>>();
+        if uniq.is_empty() {
+            false
+        } else {
+            uniq.len() == 1
+        }
+    };
 
     BenchReport {
         cluster_name: cluster_name.to_string(),
@@ -865,6 +1097,7 @@ fn build_report(
         payload_bytes: cfg.payload_bytes,
         concurrency: cfg.concurrency,
         workload: cfg.workload.clone(),
+        fault,
         started_at_unix_ms,
         finished_at_unix_ms,
         total_requests: total,
@@ -879,6 +1112,10 @@ fn build_report(
         latency_max_ms: max_ms,
         error_code_counts: stats.error_code_counts.into_iter().collect(),
         operation_stats,
+        append_unique_id_count,
+        append_duplicate_id_count,
+        node_max_log_ids,
+        node_max_log_id_consistent,
         node_rpc_ports: node_rpc_ports.clone(),
         leader_node_id,
     }
@@ -916,6 +1153,230 @@ fn build_operation_stats(raw: RawOperationStats, elapsed: Duration) -> Operation
         latency_p95_ms: percentile_ms(&lat, 95.0),
         latency_p99_ms: percentile_ms(&lat, 99.0),
         latency_max_ms: lat.last().copied().unwrap_or(0) as f64 / 1000.0,
+    }
+}
+
+fn build_fault_report(
+    cfg: &BenchConfig,
+    shared: &FaultRuntimeShared,
+    mut task: FaultInjectTaskResult,
+) -> FaultInjectReport {
+    let injected_at_raw = shared.injected_at_unix_ms.load(Ordering::Relaxed);
+    let first_success_raw = shared
+        .first_success_after_fault_unix_ms
+        .load(Ordering::Relaxed);
+
+    let injected_at = if injected_at_raw == 0 {
+        task.injected_at_unix_ms
+    } else {
+        Some(injected_at_raw)
+    };
+    if injected_at.is_none() && task.injected {
+        task.error
+            .get_or_insert_with(|| "fault injected but injected_at timestamp missing".to_string());
+    }
+
+    let first_success_after_fault = if first_success_raw == 0 {
+        None
+    } else {
+        Some(first_success_raw)
+    };
+    let leader_failover_ms = match (injected_at, task.new_leader_observed_at_unix_ms) {
+        (Some(start), Some(end)) if end >= start => Some(end - start),
+        _ => None,
+    };
+    let first_success_recovery_ms = match (injected_at, first_success_after_fault) {
+        (Some(start), Some(end)) if end >= start => Some(end - start),
+        _ => None,
+    };
+
+    FaultInjectReport {
+        enabled: cfg.fault.enabled,
+        kill_leader_at_sec: cfg.fault.kill_leader_at_sec,
+        injected: task.injected,
+        old_leader_node_id: task.old_leader_node_id,
+        new_leader_node_id: task.new_leader_node_id,
+        injected_at_unix_ms: injected_at,
+        new_leader_observed_at_unix_ms: task.new_leader_observed_at_unix_ms,
+        first_success_after_fault_unix_ms: first_success_after_fault,
+        leader_failover_ms,
+        first_success_recovery_ms,
+        error: task.error,
+    }
+}
+
+async fn collect_node_max_log_ids(
+    rpc_ports: &BTreeMap<u64, u16>,
+    request_node_id: u64,
+) -> BTreeMap<u64, u64> {
+    let mut out = BTreeMap::new();
+    for (node_id, rpc_port) in rpc_ports {
+        let client =
+            KLogClient::from_daemon_addr(&format!("127.0.0.1:{}", rpc_port), request_node_id)
+                .with_timeout(Duration::from_secs(3));
+        let req = KLogQueryRequest {
+            start_id: None,
+            end_id: None,
+            limit: Some(1),
+            desc: Some(true),
+            level: None,
+            source: None,
+            attr_key: None,
+            attr_value: None,
+            strong_read: Some(true),
+        };
+        if let Ok(resp) = client.query_log(req).await {
+            let max_id = resp.items.first().map(|e| e.id).unwrap_or(0);
+            out.insert(*node_id, max_id);
+        }
+    }
+    out
+}
+
+async fn run_fault_injector_task(
+    snapshots: Vec<NodeSnapshot>,
+    kill_leader_at_sec: u64,
+    wait_new_leader_timeout_sec: u64,
+    shared: Arc<FaultRuntimeShared>,
+) -> FaultInjectTaskResult {
+    let mut out = FaultInjectTaskResult::default();
+    let admin_ports = snapshots.iter().map(|n| n.admin_port).collect::<Vec<_>>();
+    let by_node = snapshots
+        .iter()
+        .map(|n| (n.node_id, n.clone()))
+        .collect::<HashMap<_, _>>();
+
+    sleep(Duration::from_secs(kill_leader_at_sec)).await;
+
+    let old_leader = match wait_consistent_leader(&admin_ports, Duration::from_secs(15)).await {
+        Ok(v) => v,
+        Err(e) => {
+            out.error = Some(format!(
+                "fault inject failed before kill: unable to determine current leader: {}",
+                e
+            ));
+            return out;
+        }
+    };
+    out.old_leader_node_id = Some(old_leader);
+
+    let leader_node = match by_node.get(&old_leader) {
+        Some(v) => v,
+        None => {
+            out.error = Some(format!(
+                "fault inject failed: leader node {} not found in snapshots",
+                old_leader
+            ));
+            return out;
+        }
+    };
+
+    if let Err(e) = kill_process_pid(leader_node.pid) {
+        out.error = Some(format!(
+            "fault inject failed: kill leader node_id={}, pid={} error={}",
+            old_leader, leader_node.pid, e
+        ));
+        return out;
+    }
+
+    out.injected = true;
+    out.injected_at_unix_ms = Some(now_unix_ms());
+    if let Some(ts) = out.injected_at_unix_ms {
+        shared.injected_at_unix_ms.store(ts, Ordering::Relaxed);
+    }
+
+    match wait_new_leader_with_tolerance(
+        &admin_ports,
+        old_leader,
+        Duration::from_secs(wait_new_leader_timeout_sec),
+    )
+    .await
+    {
+        Ok(new_leader) => {
+            out.new_leader_node_id = Some(new_leader);
+            out.new_leader_observed_at_unix_ms = Some(now_unix_ms());
+        }
+        Err(e) => {
+            out.error = Some(format!(
+                "fault inject observe new leader failed after old_leader={}: {}",
+                old_leader, e
+            ));
+        }
+    }
+
+    out
+}
+
+fn kill_process_pid(pid: u32) -> Result<(), String> {
+    let output = std::process::Command::new("kill")
+        .arg("-9")
+        .arg(pid.to_string())
+        .output()
+        .map_err(|e| format!("spawn kill command failed: {}", e))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Err(format!(
+        "kill command failed: status={}, stdout={}, stderr={}",
+        output.status, stdout, stderr
+    ))
+}
+
+async fn wait_new_leader_with_tolerance(
+    admin_ports: &[u16],
+    old_leader: u64,
+    timeout: Duration,
+) -> Result<u64, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(800))
+        .build()
+        .map_err(|e| format!("failed to build new-leader client: {}", e))?;
+
+    let quorum = admin_ports.len() / 2 + 1;
+    let deadline = Instant::now() + timeout;
+    let mut last_observation = String::new();
+
+    loop {
+        if Instant::now() > deadline {
+            return Err(format!(
+                "timeout waiting new leader with tolerance: old_leader={}, quorum={}, last_observation={}",
+                old_leader, quorum, last_observation
+            ));
+        }
+
+        let mut leader_count = HashMap::<u64, usize>::new();
+        let mut observations = Vec::new();
+        for port in admin_ports {
+            match fetch_cluster_state(&client, *port).await {
+                Ok(state) => {
+                    observations.push(format!(
+                        "port={}, node_id={}, leader={:?}, voters={:?}",
+                        port, state.node_id, state.current_leader, state.voters
+                    ));
+                    if let Some(leader) = state.current_leader
+                        && leader != old_leader
+                    {
+                        *leader_count.entry(leader).or_insert(0) += 1;
+                    }
+                }
+                Err(e) => {
+                    observations.push(format!("port={}, err={}", port, e));
+                }
+            }
+        }
+
+        last_observation = observations.join(" | ");
+        for (leader, cnt) in leader_count {
+            if cnt >= quorum {
+                return Ok(leader);
+            }
+        }
+
+        sleep(Duration::from_millis(200)).await;
     }
 }
 
@@ -986,6 +1447,23 @@ fn print_report(report: &BenchReport) {
             );
         }
     }
+    println!(
+        "correctness: append_unique_id_count={}, append_duplicate_id_count={}, node_max_log_id_consistent={}, node_max_log_ids={:?}",
+        report.append_unique_id_count,
+        report.append_duplicate_id_count,
+        report.node_max_log_id_consistent,
+        report.node_max_log_ids
+    );
+    println!(
+        "fault: enabled={}, injected={}, old_leader={:?}, new_leader={:?}, leader_failover_ms={:?}, first_success_recovery_ms={:?}, error={:?}",
+        report.fault.enabled,
+        report.fault.injected,
+        report.fault.old_leader_node_id,
+        report.fault.new_leader_node_id,
+        report.fault.leader_failover_ms,
+        report.fault.first_success_recovery_ms,
+        report.fault.error
+    );
     println!("node_rpc_ports: {:?}", report.node_rpc_ports);
 }
 
@@ -1085,6 +1563,17 @@ fn parse_args(args: Vec<String>) -> Result<BenchConfig, String> {
             }
             "--meta-key-space" => {
                 cfg.workload.meta_key_space = parse_next::<u64>(&args, i, "--meta-key-space")?;
+                i += 2;
+            }
+            "--fault-kill-leader-at-sec" => {
+                cfg.fault.kill_leader_at_sec =
+                    Some(parse_next::<u64>(&args, i, "--fault-kill-leader-at-sec")?);
+                cfg.fault.enabled = true;
+                i += 2;
+            }
+            "--fault-wait-new-leader-timeout-sec" => {
+                cfg.fault.wait_new_leader_timeout_sec =
+                    parse_next::<u64>(&args, i, "--fault-wait-new-leader-timeout-sec")?;
                 i += 2;
             }
             "--request-node-id" => {

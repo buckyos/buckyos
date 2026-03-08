@@ -25,3 +25,10 @@ meta_query_strong_read = false
 
 # Number of keys for random meta put/query.
 meta_key_space = 1024
+
+[fault]
+# Optional P0 fault injection:
+# set enabled=true and kill_leader_at_sec=<N> to kill current leader once during measure phase.
+enabled = false
+# kill_leader_at_sec = 10
+wait_new_leader_timeout_sec = 20
