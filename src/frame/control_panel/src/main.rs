@@ -628,7 +628,9 @@ impl ControlPanelServer {
 
         let runtime = get_buckyos_api_runtime()?;
         let verify_hub_client = runtime.get_verify_hub_client().await?;
-        let token_pair = verify_hub_client.refresh_token(refresh_token.as_str()).await?;
+        let token_pair = verify_hub_client
+            .refresh_token(refresh_token.as_str())
+            .await?;
 
         Ok(RPCResponse::new(
             RPCResult::Success(json!(token_pair)),
@@ -647,11 +649,17 @@ impl ControlPanelServer {
             .verify_token(session_token.as_str(), appid.as_deref())
             .await?;
 
-        Ok(RPCResponse::new(RPCResult::Success(json!(verified)), req.seq))
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!(verified)),
+            req.seq,
+        ))
     }
 
     async fn handle_auth_logout(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
-        Ok(RPCResponse::new(RPCResult::Success(json!({ "ok": true })), req.seq))
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({ "ok": true })),
+            req.seq,
+        ))
     }
 
     fn param_str(req: &RPCRequest, key: &str) -> Option<String> {
@@ -3181,7 +3189,10 @@ impl ControlPanelServer {
         let mut cmd = Command::new("dig");
         cmd.arg("+short");
 
-        if let Some(server) = server.map(|item| item.trim()).filter(|item| !item.is_empty()) {
+        if let Some(server) = server
+            .map(|item| item.trim())
+            .filter(|item| !item.is_empty())
+        {
             cmd.arg(format!("@{}", server));
         }
 
@@ -3230,7 +3241,9 @@ impl ControlPanelServer {
 
         cert_domain
             .strip_prefix("*.")
-            .map(|suffix| zone_domain == suffix || zone_domain.ends_with(format!(".{}", suffix).as_str()))
+            .map(|suffix| {
+                zone_domain == suffix || zone_domain.ends_with(format!(".{}", suffix).as_str())
+            })
             .unwrap_or(false)
     }
 
@@ -3258,7 +3271,8 @@ impl ControlPanelServer {
                 return Ok(Some(state));
             }
 
-            if wildcard_state.is_none() && Self::self_cert_state_matches_domain(domain, zone_domain) {
+            if wildcard_state.is_none() && Self::self_cert_state_matches_domain(domain, zone_domain)
+            {
                 wildcard_state = Some(state);
             }
         }
@@ -3482,7 +3496,9 @@ impl ControlPanelServer {
                     self_cert_state = state;
                 }
                 Ok(None) => {
-                    notes.push("Self cert state entry not found for current zone domain".to_string());
+                    notes.push(
+                        "Self cert state entry not found for current zone domain".to_string(),
+                    );
                 }
                 Err(err) => {
                     notes.push(format!("Self cert state read failed: {}", err));

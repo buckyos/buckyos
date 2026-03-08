@@ -1068,8 +1068,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn test_path_queue_name_roundtrip()
-    -> std::result::Result<(), Box<dyn std::error::Error>> {
+    async fn test_path_queue_name_roundtrip() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
         let (_tmp, queue) = setup_queue();
         let queue_urn = "/jarvis.test.buckyos.io/sessions/tg:lzc_jarvis:5397330802/msg";
         let sub_id = "/jarvis.test.buckyos.io/sessions/tg:lzc_jarvis:5397330802/msg_subscription";

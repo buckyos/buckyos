@@ -1417,11 +1417,10 @@ impl BuckyOSRuntime {
             false,
         ));
 
-
         //下面的实现其实永远不会进入，因为cyfs-gateway并不加载buckyos-sdk,而是通过process-chain规则完成下面逻辑
         //  得到service的provider node列表，并随机选择一个
         //  根据选择的deivce_id,查表得到forward url
-    
+
         // let mut total_weight = 0;
         // for (_node_name, node_info) in service_info.node_list.iter() {
         //     if node_info.state == ServiceInstanceState::Started {
@@ -1495,11 +1494,14 @@ impl BuckyOSRuntime {
                 //TODO：如果约束为有SDK的环境，必然有node_gateway,那么这个分支就不必要存在
                 let host_name = self.zone_id.to_host_name();
                 if self.app_host_perfix.len() > 0 {
-                    return Ok(format!("{}://{}.{}/kapi/{}",schema, self.app_host_perfix,host_name, service_name));
+                    return Ok(format!(
+                        "{}://{}.{}/kapi/{}",
+                        schema, self.app_host_perfix, host_name, service_name
+                    ));
                 } else {
-                    return Ok(format!("{}://{}/kapi/{}",schema, host_name, service_name));
+                    return Ok(format!("{}://{}/kapi/{}", schema, host_name, service_name));
                 }
-            } 
+            }
             BuckyOSRuntimeType::AppService | BuckyOSRuntimeType::FrameService => {
                 let (result_url, _is_local) = self.get_kernel_service_url(service_name).await?;
                 return Ok(result_url);

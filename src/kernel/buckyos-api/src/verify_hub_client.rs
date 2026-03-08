@@ -99,7 +99,12 @@ pub struct LoginByPasswordRequest {
 }
 
 impl LoginByPasswordRequest {
-    pub fn new(username: String, password: String, appid: String, login_nonce: Option<u64>) -> Self {
+    pub fn new(
+        username: String,
+        password: String,
+        appid: String,
+        login_nonce: Option<u64>,
+    ) -> Self {
         Self {
             username,
             password,
@@ -284,8 +289,8 @@ impl VerifyHubClient {
             }
             Self::KRPC(client) => {
                 client.reset_session_token().await;
-                let params =
-                    LoginByPasswordRequest::new(username, password, appid, login_nonce).to_json()?;
+                let params = LoginByPasswordRequest::new(username, password, appid, login_nonce)
+                    .to_json()?;
                 let result = client.call("login_by_password", params).await?;
                 let login_by_password_response: LoginByPasswordResponse =
                     serde_json::from_value(result)
