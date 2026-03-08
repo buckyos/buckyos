@@ -1398,6 +1398,7 @@ impl BuckyOSRuntime {
             if local_node.node_did == self.device_config.as_ref().unwrap().id {
                 if local_node.state == ServiceInstanceState::Started {
                     if let Some(port) = Self::resolve_service_port(local_node, "www") {
+                        //短路：直接连在本机的Service 服务的 实际端口，绕过node-gateway转发
                         return Ok((
                             format!("http://127.0.0.1:{}/kapi/{}", port, service_name),
                             true,
@@ -1407,64 +1408,68 @@ impl BuckyOSRuntime {
             }
         }
 
-        if self.runtime_type != BuckyOSRuntimeType::Kernel {
-            return Ok((
-                format!(
-                    "http://127.0.0.1:{}/kapi/{}",
-                    DEFAULT_NODE_GATEWAY_PORT, service_name
-                ),
-                false,
-            ));
-        }
-
-        let mut total_weight = 0;
-        for (_node_name, node_info) in service_info.node_list.iter() {
-            if node_info.state == ServiceInstanceState::Started {
-                total_weight += node_info.weight;
-            }
-        }
-
-        let mut rng = rand::thread_rng();
-        let random_num = rng.gen_range(0..total_weight);
-        let mut current_weight = 0;
-        let mut last_best_same_lan_node_url = String::new();
-        let mut last_best_wan_node_url = String::new();
-        for (_node_name, node_info) in service_info.node_list.iter() {
-            if node_info.state == ServiceInstanceState::Started {
-                let maybe_port = Self::resolve_service_port(node_info, service_name);
-                if maybe_port.is_none() {
-                    continue;
-                }
-                let port = maybe_port.unwrap();
-                if node_info.node_net_id == self.device_config.as_ref().unwrap().net_id {
-                    last_best_same_lan_node_url = format!(
-                        "rtcp://{}/127.0.0.1:{}",
-                        node_info.node_did.to_string(),
-                        port
-                    );
-                }
-                if node_info.node_net_id == Some("wan".to_string()) {
-                    last_best_wan_node_url = format!(
-                        "rtcp://{}/127.0.0.1:{}",
-                        node_info.node_did.to_string(),
-                        port
-                    );
-                }
-                current_weight += node_info.weight;
-                if current_weight >= random_num {
-                    if last_best_same_lan_node_url.len() > 0 {
-                        return Ok((last_best_same_lan_node_url, false));
-                    }
-                    if last_best_wan_node_url.len() > 0 {
-                        return Ok((last_best_wan_node_url, false));
-                    }
-                }
-            }
-        }
-        //todo: use wan_node to get the
-        return Err(RPCErrors::ReasonError(
-            "no running instance found".to_string(),
+        //通过本机的node-gatewa 转发，局域网的即使可以直连也要通过rtcp,局域网的明文流量也并不安全。
+        return Ok((
+            format!(
+                "http://127.0.0.1:{}/kapi/{}",
+                DEFAULT_NODE_GATEWAY_PORT, service_name
+            ),
+            false,
         ));
+
+
+        //下面的实现其实永远不会进入，因为cyfs-gateway并不加载buckyos-sdk,而是通过process-chain规则完成下面逻辑
+        //  得到service的provider node列表，并随机选择一个
+        //  根据选择的deivce_id,查表得到forward url
+    
+        // let mut total_weight = 0;
+        // for (_node_name, node_info) in service_info.node_list.iter() {
+        //     if node_info.state == ServiceInstanceState::Started {
+        //         total_weight += node_info.weight;
+        //     }
+        // }
+
+        // let mut rng = rand::thread_rng();
+        // let random_num = rng.gen_range(0..total_weight);
+        // let mut current_weight = 0;
+        // let mut last_best_same_lan_node_url = String::new();
+        // let mut last_best_wan_node_url = String::new();
+        // for (_node_name, node_info) in service_info.node_list.iter() {
+        //     if node_info.state == ServiceInstanceState::Started {
+        //         let maybe_port = Self::resolve_service_port(node_info, service_name);
+        //         if maybe_port.is_none() {
+        //             continue;
+        //         }
+        //         let port = maybe_port.unwrap();
+        //         if node_info.node_net_id == self.device_config.as_ref().unwrap().net_id {
+        //             last_best_same_lan_node_url = format!(
+        //                 "rtcp://{}/127.0.0.1:{}",
+        //                 node_info.node_did.to_string(),
+        //                 port
+        //             );
+        //         }
+        //         if node_info.node_net_id == Some("wan".to_string()) {
+        //             last_best_wan_node_url = format!(
+        //                 "rtcp://{}/127.0.0.1:{}",
+        //                 node_info.node_did.to_string(),
+        //                 port
+        //             );
+        //         }
+        //         current_weight += node_info.weight;
+        //         if current_weight >= random_num {
+        //             if last_best_same_lan_node_url.len() > 0 {
+        //                 return Ok((last_best_same_lan_node_url, false));
+        //             }
+        //             if last_best_wan_node_url.len() > 0 {
+        //                 return Ok((last_best_wan_node_url, false));
+        //             }
+        //         }
+        //     }
+        // }
+        // //todo: use wan_node to get the
+        // return Err(RPCErrors::ReasonError(
+        //     "no running instance found".to_string(),
+        // ));
     }
 
     fn resolve_service_port(_node_info: &ServiceNode, _service_name: &str) -> Option<u16> {
@@ -1472,6 +1477,8 @@ impl BuckyOSRuntime {
     }
 
     //if http_only is false, return the url with tunnel protocol
+    //这里有一个隐含的假设：所有的Service通过http path就能区分
+    //因为调整了hostname,所以通过二级域名区分appid在这里就看不到了
     pub async fn get_zone_service_url(
         &self,
         service_name: &str,
@@ -1484,20 +1491,26 @@ impl BuckyOSRuntime {
 
         match self.runtime_type {
             BuckyOSRuntimeType::AppClient => {
-                //TODO: 基于appid对system service的访问进行控制，以消除对跨域的依赖，需要依赖新版本的cyfs-gateway
-                //let host_name = format!("{}.{}",self.app_host_perfix,self.zone_id.to_host_name());
+                //通过Zone Host Name 访问Service总是可以成功的，理论上有SDK的环境不应该使用这种方式。
+                //TODO：如果约束为有SDK的环境，必然有node_gateway,那么这个分支就不必要存在
                 let host_name = self.zone_id.to_host_name();
-                return Ok(format!("{}://{}/kapi/{}", schema, host_name, service_name));
-            }
-            BuckyOSRuntimeType::AppService | BuckyOSRuntimeType::FrameService => {
-                let (result_url, is_local) = self.get_kernel_service_url(service_name).await?;
-                if is_local {
-                    return Ok(result_url);
+                if self.app_host_perfix.len() > 0 {
+                    return Ok(format!("{}://{}.{}/kapi/{}",schema, self.app_host_perfix,host_name, service_name));
+                } else {
+                    return Ok(format!("{}://{}/kapi/{}",schema, host_name, service_name));
                 }
-                return Ok(format!(
-                    "http://127.0.0.1:{}/kapi/{}",
-                    self.node_gateway_port, service_name
-                ));
+            } 
+            BuckyOSRuntimeType::AppService | BuckyOSRuntimeType::FrameService => {
+                let (result_url, _is_local) = self.get_kernel_service_url(service_name).await?;
+                return Ok(result_url);
+
+                // if is_local {
+                //     return Ok(result_url);
+                // }
+                // return Ok(format!(
+                //     "http://127.0.0.1:{}/kapi/{}",
+                //     self.node_gateway_port, service_name
+                // ));
             }
             BuckyOSRuntimeType::KernelService => {
                 let (result_url, _is_local) = self.get_kernel_service_url(service_name).await?;

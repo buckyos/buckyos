@@ -46,10 +46,10 @@ rbac = { git = "https://github.com/buckyos/buckyos-base.git", package = "rbac", 
 ndn-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-lib", branch = "beta2" }
 named_store = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "named_store", branch = "beta2" }
 ndn-toolkit = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-toolkit", branch = "beta2" }
-cyfs-gateway = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs_gateway", branch = "main" }
-cyfs-gateway-lib = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-gateway-lib", branch = "main" }
-cyfs-sn = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-sn", branch = "main" }
-server-runner =  { git = "https://github.com/buckyos/cyfs-gateway.git", package = "server-runner", branch = "main" }
+cyfs-gateway = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs_gateway", branch = "beta2" }
+cyfs-gateway-lib = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-gateway-lib", branch = "beta2" }
+cyfs-sn = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-sn", branch = "beta2" }
+server-runner =  { git = "https://github.com/buckyos/cyfs-gateway.git", package = "server-runner", branch = "beta2" }
 
 # Common async runtime and utilities
 tokio = { version = "1.49.0", features = ["full"] }
