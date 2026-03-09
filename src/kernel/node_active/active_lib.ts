@@ -6,6 +6,9 @@ export let SN_BASE_HOST:string = "buckyos.ai";
 export let SN_HOST:string = "sn." + SN_BASE_HOST;
 export let SN_API_URL:string = "https://sn." + SN_BASE_HOST + "/kapi/sn";
 export let WEB3_BASE_HOST:string = "web3." + SN_BASE_HOST;
+export let AI_PROVIDER_TUTORIAL_URL:string = "https://buckyos.ai";
+export let TELEGRAM_BOT_API_TOKEN_TUTORIAL_URL:string = "https://core.telegram.org/bots/tutorial";
+export let TELEGRAM_ACCOUNT_ID_TUTORIAL_URL:string = "https://core.telegram.org/api/bots/ids";
 
 /*
 激活的流程说明
@@ -30,6 +33,14 @@ export async function init_active_lib(config: ActiveConfig) {
     SN_HOST = "sn." + SN_BASE_HOST;
     SN_API_URL = config.http_schema + "://sn." + SN_BASE_HOST + "/kapi/sn";
     WEB3_BASE_HOST = "web3." + SN_BASE_HOST;
+    AI_PROVIDER_TUTORIAL_URL =
+        config.ai_provider_tutorial_url || AI_PROVIDER_TUTORIAL_URL;
+    TELEGRAM_BOT_API_TOKEN_TUTORIAL_URL =
+        config.telegram_bot_api_token_tutorial_url ||
+        TELEGRAM_BOT_API_TOKEN_TUTORIAL_URL;
+    TELEGRAM_ACCOUNT_ID_TUTORIAL_URL =
+        config.telegram_account_id_tutorial_url ||
+        TELEGRAM_ACCOUNT_ID_TUTORIAL_URL;
 }
 
 export async function createInitialWizardData (initial?: Partial<ActiveWizzardData>): Promise<ActiveWizzardData> {

@@ -6,11 +6,28 @@ import { createInitialWizardData, WEB3_BASE_HOST } from "../../active_lib";
 import GatewayStep from "./steps/GatewayStep";
 import DomainStep from "./steps/DomainStep";
 import SecurityStep from "./steps/SecurityStep";
+import AIProviderStep from "./steps/AIProviderStep";
+import JarvisMsgTunnelStep from "./steps/JarvisMsgTunnelStep";
 import ReviewStep from "./steps/ReviewStep";
 import SuccessStep from "./steps/SuccessStep";
 
-const stepOrder: StepKey[] = ["gateway", "domain", "security", "review", "success"];
-const visibleSteps: StepKey[] = ["gateway", "domain", "security", "review"];
+const stepOrder: StepKey[] = [
+  "gateway",
+  "domain",
+  "security",
+  "ai_provider",
+  "jarvis_msg_tunnel",
+  "review",
+  "success",
+];
+const visibleSteps: StepKey[] = [
+  "gateway",
+  "domain",
+  "security",
+  "ai_provider",
+  "jarvis_msg_tunnel",
+  "review",
+];
 
 type Props = {
   isWalletRuntime: boolean;
@@ -66,7 +83,9 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
       gateway: t("title_step_1"),
       domain: t("title_step_2"),
       security: t("title_step_3"),
-      review: t("title_step_4"),
+      ai_provider: t("title_step_4"),
+      jarvis_msg_tunnel: t("title_step_5"),
+      review: t("title_step_6"),
       success: t("activation_success"),
     }),
     [t]
@@ -129,6 +148,24 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
         );
       case "security":
         return <SecurityStep wizardData={wizardData} onUpdate={handleUpdate} onNext={goNext} onBack={goBack} />;
+      case "ai_provider":
+        return (
+          <AIProviderStep
+            wizardData={wizardData}
+            onUpdate={handleUpdate}
+            onNext={goNext}
+            onBack={goBack}
+          />
+        );
+      case "jarvis_msg_tunnel":
+        return (
+          <JarvisMsgTunnelStep
+            wizardData={wizardData}
+            onUpdate={handleUpdate}
+            onNext={goNext}
+            onBack={goBack}
+          />
+        );
       case "review":
         return (
           <ReviewStep

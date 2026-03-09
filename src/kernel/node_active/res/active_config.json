@@ -1,4 +1,7 @@
 {
     "sn_base_host": "buckyos.ai",
-    "http_schema": "http"
+    "http_schema": "http",
+    "ai_provider_tutorial_url": "https://buckyos.ai",
+    "telegram_bot_api_token_tutorial_url": "https://core.telegram.org/bots/tutorial",
+    "telegram_account_id_tutorial_url": "https://core.telegram.org/api/bots/ids"
 }

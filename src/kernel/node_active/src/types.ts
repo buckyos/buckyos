@@ -8,7 +8,14 @@ export type WalletUser = {
 };
 
 
-export type StepKey = "gateway" | "domain" | "security" | "review" | "success";
+export type StepKey =
+  | "gateway"
+  | "domain"
+  | "security"
+  | "ai_provider"
+  | "jarvis_msg_tunnel"
+  | "review"
+  | "success";
 
 export enum GatewayType {
   BuckyForward = "BuckyForward",//nat  (none)
@@ -22,6 +29,9 @@ export type JsonValue = Record<string, any>;
 export type ActiveConfig = {
 sn_base_host: string;
 http_schema: "http" | "https";
+ai_provider_tutorial_url?: string;
+telegram_bot_api_token_tutorial_url?: string;
+telegram_account_id_tutorial_url?: string;
 };
 
 export type AIProviderConfig = {
@@ -68,4 +78,3 @@ export type ActiveWizzardData = {
 
 // 类型别名：用于组件中的向导数据，与 ActiveWizzardData 相同
 export type WizardData = ActiveWizzardData;
-
