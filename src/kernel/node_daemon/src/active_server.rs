@@ -15,7 +15,7 @@ use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::*;
 use name_client::*;
 use name_lib::*;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use server_runner::*;
 use std::collections::HashMap;
 use std::result::Result;
@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::{net::IpAddr, process::exit};
 
 const ACTIVE_SERVICE_MAIN_PORT: u16 = 3182;
+const START_CONFIG_OPTIONAL_FIELDS: &[&str] = &["ai_provider_config", "jarvis_msg_tunnel_config"];
 
 #[derive(Clone)]
 struct ActiveServer {
@@ -42,6 +43,17 @@ impl ActiveServer {
             .await
             .unwrap();
         self.device_mini_info.active_url = Some("./index.html".to_string());
+    }
+
+    fn append_optional_start_config_fields(
+        req_params: &Value,
+        start_params: &mut Map<String, Value>,
+    ) {
+        for field in START_CONFIG_OPTIONAL_FIELDS {
+            if let Some(value) = req_params.get(*field) {
+                start_params.insert((*field).to_string(), value.clone());
+            }
+        }
     }
 
     async fn handle_active_by_wallet(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
@@ -300,6 +312,7 @@ impl ActiveServer {
             "ood_jwt".to_string(),
             Value::String(device_doc_jwt.to_string()),
         );
+        Self::append_optional_start_config_fields(&req.params, real_start_params);
         let start_params_str = serde_json::to_string(&real_start_params).map_err(|e| {
             RPCErrors::ReasonError(format!("Failed to serialize start params: {}", e))
         })?;
@@ -670,6 +683,7 @@ impl ActiveServer {
             "ood_jwt".to_string(),
             Value::String(device_doc_jwt.to_string()),
         );
+        Self::append_optional_start_config_fields(&req.params, real_start_params);
         let start_params_str = serde_json::to_string(&real_start_params).unwrap();
         let start_params_file = write_dir.join("start_config.json");
         tokio::fs::write(start_params_file, start_params_str.as_bytes())

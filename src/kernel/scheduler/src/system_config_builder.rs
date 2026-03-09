@@ -34,6 +34,28 @@ use std::convert::TryFrom;
 
 const DEFAULT_OOD_ID: &str = "ood1";
 
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct AIProviderConfigSummary {
+    #[serde(default)]
+    pub openai_api_token: String,
+    #[serde(default)]
+    pub claude_api_token: String,
+    #[serde(default)]
+    pub google_api_token: String,
+    #[serde(default)]
+    pub openrouter_api_token: String,
+    #[serde(default)]
+    pub glm_api_token: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct JarvisMsgTunnelConfigSummary {
+    #[serde(default)]
+    pub telegram_bot_api_token: String,
+    #[serde(default)]
+    pub telegram_account_id: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct StartConfigSummary {
     pub user_name: String,
@@ -42,6 +64,10 @@ pub struct StartConfigSummary {
     pub zone_name: String, //zone hostname
     #[serde(default)]
     pub ood_jwt: Option<String>,
+    #[serde(default)]
+    pub ai_provider_config: AIProviderConfigSummary,
+    #[serde(default)]
+    pub jarvis_msg_tunnel_config: JarvisMsgTunnelConfigSummary,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -598,6 +624,20 @@ impl TryFrom<&Value> for StartConfigSummary {
                 .get("ood_jwt")
                 .and_then(Value::as_str)
                 .map(|s| s.to_string()),
+            ai_provider_config: serde_json::from_value(
+                value
+                    .get("ai_provider_config")
+                    .cloned()
+                    .unwrap_or_else(|| json!({})),
+            )
+            .map_err(|e| anyhow!("Failed to parse ai_provider_config: {}", e))?,
+            jarvis_msg_tunnel_config: serde_json::from_value(
+                value
+                    .get("jarvis_msg_tunnel_config")
+                    .cloned()
+                    .unwrap_or_else(|| json!({})),
+            )
+            .map_err(|e| anyhow!("Failed to parse jarvis_msg_tunnel_config: {}", e))?,
         })
     }
 }
@@ -605,5 +645,46 @@ impl TryFrom<&Value> for StartConfigSummary {
 impl StartConfigSummary {
     pub fn from_value(value: &Value) -> Result<Self> {
         Self::try_from(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StartConfigSummary;
+    use serde_json::json;
+
+    #[test]
+    fn start_config_summary_parses_optional_bootstrap_configs() {
+        let value = json!({
+            "user_name": "alice",
+            "admin_password_hash": "hashed",
+            "public_key": {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
+            },
+            "zone_name": "did:web:alice.example.com",
+            "ai_provider_config": {
+                "openai_api_token": "sk-openai",
+                "google_api_token": "google-token"
+            },
+            "jarvis_msg_tunnel_config": {
+                "telegram_bot_api_token": "123:bot",
+                "telegram_account_id": "@alice"
+            }
+        });
+
+        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
+
+        assert_eq!(summary.ai_provider_config.openai_api_token, "sk-openai");
+        assert_eq!(summary.ai_provider_config.google_api_token, "google-token");
+        assert_eq!(
+            summary.jarvis_msg_tunnel_config.telegram_bot_api_token,
+            "123:bot"
+        );
+        assert_eq!(
+            summary.jarvis_msg_tunnel_config.telegram_account_id,
+            "@alice"
+        );
     }
 }

@@ -24,6 +24,19 @@ sn_base_host: string;
 http_schema: "http" | "https";
 };
 
+export type AIProviderConfig = {
+  openai_api_token: string;
+  claude_api_token: string;
+  google_api_token: string;
+  openrouter_api_token: string;
+  glm_api_token: string;
+}
+
+export type JarvisMsgTunnelConfig = {
+  telegram_bot_api_token: string;
+  telegram_account_id: string;
+}
+
 export type ActiveWizzardData = {
   gatewy_type: GatewayType;
   // is_direct_connect: boolean;
@@ -49,9 +62,10 @@ export type ActiveWizzardData = {
 
   is_wallet_runtime: boolean;
   owner_user_name: string;//did:bns:$owner_user_name
+  ai_provider_config: AIProviderConfig;
+  jarvis_msg_tunnel_config: JarvisMsgTunnelConfig;
 }
 
 // 类型别名：用于组件中的向导数据，与 ActiveWizzardData 相同
 export type WizardData = ActiveWizzardData;
-
 

@@ -66,6 +66,17 @@ export async function createInitialWizardData (initial?: Partial<ActiveWizzardDa
         rtcp_port: 2980,
         is_wallet_runtime: false,
         owner_user_name: "",
+        ai_provider_config: {
+            openai_api_token: "",
+            claude_api_token: "",
+            google_api_token: "",
+            openrouter_api_token: "",
+            glm_api_token: "",
+        },
+        jarvis_msg_tunnel_config: {
+            telegram_bot_api_token: "",
+            telegram_account_id: "",
+        },
         ...initial,
     };
     console.log("createInitialWizardData result",result);
@@ -360,6 +371,8 @@ export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolea
         admin_password_hash: data.admin_password_hash,
         guest_access: data.enable_guest_access,
         friend_passcode: data.friend_passcode,
+        ai_provider_config: data.ai_provider_config,
+        jarvis_msg_tunnel_config: data.jarvis_msg_tunnel_config,
 
         sn_url: SN_API_URL,
         sn_username: data.sn_user_name,
@@ -446,6 +459,8 @@ export async function do_active(data:ActiveWizzardData):Promise<boolean> {
         guest_access:data.enable_guest_access,
         friend_passcode:data.friend_passcode,
         device_rtcp_port:data.rtcp_port,
+        ai_provider_config:data.ai_provider_config,
+        jarvis_msg_tunnel_config:data.jarvis_msg_tunnel_config,
         sn_username:data.sn_user_name,
         sn_url:sn_url
     });
