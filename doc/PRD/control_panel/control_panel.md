@@ -1,4 +1,10 @@
 # 需求清单（类NAS）
+
+> Migration note:
+> - Canonical control panel docs now live under `doc/control_panel/`.
+> - Start with `doc/control_panel/README.context.md`, then read `doc/control_panel/ARCHITECTURE.context.md`, `doc/control_panel/SPEC.context.md`, and `doc/control_panel/CONTEXT.context.md`.
+> - This file is retained as the main historical PRD source during migration and still contains planned material not yet normalized.
+
 以下为控制面板的 NAS 视角功能需求，按模块划分，优先覆盖管理/可观测/安全/可扩展能力。
 
 ## 系统与运维
@@ -39,321 +45,232 @@
 
 ## PRD 拓展（控制面板）
 
+> Canonical mapping:
+> - 产品目标、边界、核心概念、用户旅程、非功能要求，迁移到 `doc/control_panel/README.context.md`
+> - 运行结构、依赖、真实数据流，迁移到 `doc/control_panel/ARCHITECTURE.context.md`
+> - 路由、RPC、HTTP API、状态模型，迁移到 `doc/control_panel/SPEC.context.md`
+> - 命名约定、技术债、实现偏差、迁移策略，迁移到 `doc/control_panel/CONTEXT.context.md`
+
 ### 目标与边界
-- 面向个人/家庭/小团队的“Zero-OPS”分布式系统，提供 Zone 级别的统一管理与应用交付。
-- 覆盖系统交付与运行主链路：引导/激活、启动、调度、安装升级、访问与权限。
-- 不展开业务应用内部逻辑与具体 UI 交互细节。
+
+历史摘要：
+
+- control panel 被定位为面向个人/家庭/小团队的 Zone 级统一管理入口。
+- 它原本被设想覆盖引导、激活、启动、调度、安装升级、访问与权限等系统主链路。
+- 这些高层目标已迁移到 `doc/control_panel/README.context.md`，这里不再作为主定义位置展开。
 
 ### 核心概念（快速索引）
-- Zone: 用户拥有的逻辑云/集群，包含多个设备。
-- OOD: Zone 内的核心节点形态（可以是 1 个，也可以是 2n+1 个的集合），承载 system-config 等关键能力。
-- Node: 普通设备节点，可运行应用或系统服务。
-- ZoneGateway: 对外访问入口（通常由 OOD 承担，也可为独立节点）。
-- NodeGateway: 每台节点的本地网关能力（基于 cyfs-gateway），提供 127.0.0.1:3180 的一致入口。
+
+历史摘要：
+
+- Zone / OOD / Node / ZoneGateway / NodeGateway 是早期 control panel PRD 的核心概念骨架。
+- 当前 canonical 定义已迁移到 `doc/control_panel/README.context.md` 和 `doc/control_panel/ARCHITECTURE.context.md`。
 
 ### 角色与权限模型
-- 角色: root 管理员 / 运维管理员 / 只读观察者 / 应用管理员。
-- 权限维度: 系统运维、存储、应用、网络、安全、审计、设备管理。
-- RBAC 支持按模块与资源粒度授权；所有写操作需记录审计事件。
+
+历史摘要：
+
+- 早期 PRD 设想过 root 管理员、运维管理员、只读观察者、应用管理员等角色分层。
+- 权限维度覆盖系统、存储、应用、网络、安全、审计、设备管理。
+- “写操作需要审计”这一原则已应被视为长期保留约束。
 
 ### 典型用户旅程
-- 初次接入: 引导/激活 → 创建或加入 Zone → OOD 选举/就绪 → 基础网络配置 → 存储池/共享创建 → 备份策略。
-- 日常运维: Dashboard 查看 Zone 健康 → 任务中心处理失败任务 → 日志与审计追踪。
-- 扩容与更新: 新 Node 接入 → 资源分配/应用调度 → 版本升级 → 服务健康检查与回滚策略。
-- 外部访问: ZoneGateway/NodeGateway 配置 → DDNS/证书/反代 → 访问策略 → 连接状态监控。
+
+历史摘要：
+
+- 典型旅程包括首次接入、日常运维、扩容升级、外部访问四类主线。
+- 这些旅程已迁移到 `doc/control_panel/README.context.md` 的产品语义层，不再在旧 PRD 中细写。
 
 ### 信息架构与导航
-- 一级: Dashboard / Zone 与节点 / 系统 / 存储 / 应用 / 用户与安全 / 网络与网关 / 通知 / 日志与审计 / 设置。
-- 二级: 以“对象管理 + 任务/日志/告警”形成闭环；关键操作入口在列表与详情页。
+
+> Migrated-to: `doc/control_panel/README.context.md` for product IA, and `doc/control_panel/SPEC.context.md` for implemented route surface.
+
+
+历史摘要：
+
+- 早期 IA 以 Dashboard / Zone 与节点 / 系统 / 存储 / 应用 / 用户与安全 / 网络与网关 / 通知 / 日志与审计 / 设置 为一级骨架。
+- “对象管理 + 任务/日志/告警闭环”是当时的导航组织原则。
 
 ### 关键功能细化
-- Dashboard
-- 展示 Zone 健康度、资源趋势、近期事件、关键任务与节点状态。
-- 提供常用快捷操作：更新检查、备份运行、磁盘健康检查、应用重启、节点接入引导。
-- Zone 与节点
-  - Zone 状态与成员节点列表，展示 OOD 角色、Node 状态与版本分布。
-  - 节点接入/移除、角色调整、心跳与故障节点诊断。
-  - 调度视图: 任务分配、资源占用、应用落点。
-- 系统与运维
-  - 运行时指标: 1m/5m/1h 视图；支持阈值与告警等级（info/warn/critical）。
-  - 更新管理: 支持检查/下载/应用/回滚；版本说明与变更影响提示。
-  - 任务中心: 异步任务队列、进度、重试、取消、失败原因与日志。
-- 存储与数据
-  - 存储池/卷: 创建向导（RAID/磁盘选择/容量），扩容与性能/健康状态。
-  - 磁盘管理: SMART 详情、温度/坏道阈值、替换流程与数据保护提示。
-  - 共享与权限: ACL 可视化、访问审计、链接分享与有效期。
-  - 快照/备份: 周期策略、保留规则、多目标（本地/远端/云）。
-- 应用与服务
-  - 应用生命周期: 安装/升级/卸载/启动/停止；依赖与端口冲突提示。
-  - 配置管理: sys_config 视图映射与差异对比；支持导出/回滚。
-- 用户与安全
-  - 会话管理: 多端登录与失效策略、强制下线。
-  - 2FA 与 API Key: 创建、撤销、过期与使用范围。
-  - 审计与合规: 关键操作可追溯，支持导出。
-- 网络与网关
-  - 网络接口配置: DHCP/静态，连通性检测与故障引导。
-  - ZoneGateway/NodeGateway 入口配置与状态监控。
-  - 外网访问: DDNS、证书、反代规则一站式配置；安全策略提示。
-- 连接与 SN
-  - 当前连接的 SN 状态: 入口地址、连接数、延迟/抖动、丢包、带宽与健康度。
-  - SN 列表与画像: 区域/运营商/版本、在线率、可用性与历史评分。
-  - 测速与稳定性管理:
-    - 定时/按需测速（可配置频率与时段），记录延迟/抖动/丢包/吞吐。
-    - 质量评分模型与趋势图，支持阈值告警与分级（info/warn/critical）。
-  - SN 切换:
-    - 自动切换策略: 连续失败、延迟/丢包超阈值、带宽下降等触发条件。
-    - 稳定性机制: 冷却时间、粘性策略、黑白名单、优先级与回退。
-    - 手动切换: 从候选列表选择并展示预估影响；可锁定/解除自动切换。
-    - 切换记录: 记录前后 SN、原因、耗时与效果。
-- 通知与事件
-  - 规则与通道管理: 事件级别、静默期、聚合策略、频率限制。
-  - 统一收敛系统/应用/存储事件，支持已读/确认/导出。
+
+历史摘要：
+
+- 本节曾详细枚举 Dashboard、Zone 与节点、系统运维、存储与数据、应用与服务、用户与安全、网络与网关、SN、通知事件等完整 NAS 风格能力矩阵。
+- 这些内容已分流到 canonical 文档：产品语义进 `README.context.md`，运行边界进 `ARCHITECTURE.context.md`，接口与 planned surface 进 `SPEC.context.md`。
+- 尚未实现的能力仍以本文件后半部 RPC 规划清单作为历史来源保留。
 
 ### 数据与状态模型（概念）
-- Zone: id、name、status、ood_set、nodes、created_at。
-- OOD: id、role、status、quorum、last_seen。
-- Node: id、name、role、status、version、metrics、last_seen。
-- Gateway: id、type (zone/node)、status、endpoint、cert。
-- SN: id、endpoint、status、region、isp、latency_ms、jitter_ms、packet_loss、bandwidth_mbps、score、last_switch_at。
-- SN 切换事件: id、from_sn、to_sn、mode (auto/manual)、reason、duration_ms、created_at。
-- 事件: id、source、level、title、detail、created_at、ack_at、actor。
-- 任务: id、type、status、progress、created_at、finished_at、error。
-- 存储: pool/volume/disk（容量、健康、温度、告警）。
-- 用户: id、name、roles、status、last_login。
+
+> Migrated-to: `doc/control_panel/SPEC.context.md` as canonical state models. This section remains historical until all models are normalized.
+
+
+历史摘要：
+
+- 早期状态模型覆盖 Zone、OOD、Node、Gateway、SN、事件、任务、存储、用户等对象。
+- 当前 canonical model 正在 `doc/control_panel/SPEC.context.md` 中按“代码已实现 + planned 规范化字段”重建。
 
 ### 体验与交互要求
-- 所有破坏性操作需二次确认，并显示影响范围与可回滚说明。
-- 空状态提供引导（创建存储池/添加用户/配置备份）。
-- 列表页支持过滤、搜索、批量操作；详情页集中展示状态 + 操作。
-- Zone/节点级操作需提示影响范围（如调度迁移、服务中断窗口）。
-- SN 切换需提示当前连接状态、预估影响与回退选项。
+
+> Migrated-to: `doc/control_panel/README.context.md` for product principles, with implementation-specific caveats in `doc/control_panel/CONTEXT.context.md`.
+
+
+历史摘要：
+
+- 破坏性操作二次确认、空状态引导、列表过滤搜索批量操作、影响范围提示，是早期明确提出的 UX 要求。
+- 当前 UI 风格与视觉一致性约束已迁移到 `doc/control_panel/README.context.md` 与 `doc/control_panel/CONTEXT.context.md`。
 
 ### 非功能性要求
-- 性能: Dashboard 3 秒内完成首屏数据；关键列表 1 秒内响应。
-- 稳定性: 控制面板故障不影响核心服务运行；支持降级与重试。
-- 安全: 全链路认证授权；默认最小权限；审计不可篡改。
-- 兼容性: 响应式布局，支持主流桌面与移动浏览器。
+
+> Migrated-to: `doc/control_panel/README.context.md`.
+
+
+历史摘要：
+
+- 本节保留的核心非功能性意图包括性能、稳定性、安全、响应式兼容。
+- 这些要求已迁移到 canonical 入口文档，不再在旧 PRD 中展开。
 
 ### 指标与验收
-- 关键任务成功率、平均修复时间（MTTR）、升级失败率、告警确认率。
-- 新用户完成首个备份/共享创建的成功率与时长。
-- 新节点接入到可调度的平均时长、Zone 可用性与节点心跳稳定率。
-- SN 可用性、自动切换成功率、测速成功率与切换后质量提升幅度。
+
+> Historical note: these acceptance targets are not yet normalized into the canonical spec set.
+
+
+历史摘要：
+
+- 这里记录过任务成功率、MTTR、升级失败率、备份/共享成功率、节点接入时长、SN 可用性等验收指标。
+- 目前这些指标尚未在 canonical 文档中完全结构化，因此保留为历史验收方向提示。
 
 ### 依赖与风险
-- 依赖: sys_config/verify-hub/scheduler/gateway/slog 等基础服务。
-- 风险: 多节点状态一致性、网络异常导致的配置漂移、存储操作不可逆。
-- 风险: 频繁切换导致抖动、测速任务放大网络压力。
+
+> Migrated-to: `doc/control_panel/ARCHITECTURE.context.md` for dependency structure, and `doc/control_panel/CONTEXT.context.md` for risk and debt notes.
+
+
+历史摘要：
+
+- control panel 早期就明确依赖 sys_config、verify-hub、scheduler、gateway、slog 等基础服务。
+- 多节点一致性、网络漂移、存储不可逆、SN 频繁切换抖动是长期风险主题。
 
 ## 事件通知模块方案（不新增 KernelService）
+
+> Migrated-to: `doc/control_panel/SPEC.context.md` for contract ownership. This section remains historical/planned until the notification family is normalized there.
+
 目标: 在不增加新内核服务的前提下, 由现有 control_panel 统一收敛事件并对外提供通知能力。
 
-### 服务划分
-- control_panel: 事件聚合 + 存储 + RPC, 作为唯一入口.
-- 其他服务: 通过 control_panel RPC 写入事件, 无需改为独立通知服务.
+历史摘要：
 
-### 事件来源
-- node_daemon / scheduler / gateway / repo-service / sys_config_service 通过 RPC 推送事件.
-- control_panel 也可从 sys_config 读取部分配置变更记录, 作为补充来源.
-
-### 数据与存储
-- 事件落地到 control_panel 本地 DB (sled/rocksdb), 支持时间/级别/来源索引与保留期.
-- sys_config 仅存规则/通道配置, 避免大数据膨胀.
-
-### 权限与审计
-- 使用 verify-hub session_token + RBAC 过滤可见范围.
-- 关键操作写入审计事件, 由 control_panel 统一持久化.
-
-### 通知通道
-- 先实现 webhook / email, 其他通道后续扩展.
-- 支持: 静默时间、频率限制、聚合通知.
-
-### RPC 设计（control_panel 内部实现）
-- notification.emit
-- notification.list
-- notification.get
-- notification.ack
-- notification.unread.count
-- notification.rule.list / create / update / delete
-- notification.channel.list / create / update / delete
-
-### UI 对接
-- Dashboard Recent Events: notification.list (top N, last 24h).
-- Notifications 页: 全量列表 + 过滤/标记已读.
+- 这套方案曾设想 notification 不新增独立 kernel service，而由 `control_panel` 统一聚合、存储并提供 RPC。
+- 事件来源包括 node_daemon、scheduler、gateway、repo-service、sys_config_service 等。
+- 核心规划点是：本地事件存储、RBAC 过滤、webhook/email 通道、notification.* RPC、Dashboard/Notifications UI 对接。
+- 详细实现尚未 canonicalize，当前仅保留为历史设计来源。
 
 # Control Panel RPC 文档
+
+> Canonical mapping:
+> - 当前 route/RPC/HTTP contract 以 `doc/control_panel/SPEC.context.md` 为准
+> - 当前真实运行结构以 `doc/control_panel/ARCHITECTURE.context.md` 为准
+> - 本节保留为历史来源与待迁移详细清单
 
 本文件集中记录 control_panel 的 RPC 规划与约定，供前后端协作实现使用。
 
 ## 接入方式
-- HTTP: POST /kapi/control-panel
-- Body: kRPC 请求结构 (method/params/id)
+
+历史摘要：
+
+- control panel RPC 历史上统一走 `POST /kapi/control-panel`。
+- 请求体采用标准 kRPC 结构：`method / params / id`。
+- 当前 canonical 接入定义请以 `doc/control_panel/SPEC.context.md` 为准。
 
 ## Files/Share 当前实现状态（2026-03）
-- Files 能力已并入 `control_panel` 进程，不再要求单独启动 `bucky-file` 独立服务。
-- `control_panel` 在 HTTP 层统一承载 `/api`，并将 `/api/*` 请求转发给内嵌文件模块（`file_manager`）。
-- 当前 Files 前端主链路使用 HTTP API，而非 `files.*`/`share.*` kRPC。
-- Files HTTP 鉴权已统一使用 control_panel/verify-hub session token，不再保留 `file_manager` 独立登录。
-- 已下线旧接口：`POST /api/login`、`POST /api/renew`。
-- Files HTTP token 来源：`X-Auth`、查询参数 `auth`、Cookie(`control-panel_token`/`control_panel_token`/`auth`)。
-- Files 存储默认采用共享 base 目录（优先 `BUCKY_FILE_ROOT`，否则 `/opt/buckyos/home/admin`，回退 `/opt/buckyos/home`），不再按用户名切物理根目录。
-- 默认子账号 ACL：`root/admin` 可读写全目录；`user/limited/guest` 可读 `Public` + `Inbox/<username>`，可写 `Inbox/<username>`。
-- 当前已上线 API（HTTP）:
-  - `GET/POST /api/resources...`、`PUT/PATCH/DELETE /api/resources...`
-  - `POST /api/upload/session`、`GET/PUT/DELETE /api/upload/session/:id`、`POST /api/upload/session/:id/complete`
-  - `GET/POST /api/share`、`DELETE /api/share/:id`
-  - `GET /api/public/share/:id`、`GET /api/public/dl/:id`
-- 说明：本文中的 `share.*`、`files.*` 仍保留为控制面板统一 RPC 目标接口，当前大部分处于规划状态。
 
-示例请求:
+> Migrated-to: `doc/control_panel/SPEC.context.md` and `doc/control_panel/ARCHITECTURE.context.md`.
+
+
+历史摘要：
+
+- Files 已并入 `control_panel` 进程，并通过 `/api/*` 暴露 HTTP surface。
+- 当前 Files 主链路是 HTTP-first，而不是 `files.*` / `share.*` kRPC-first。
+- Files 与 control panel 共享 verify-hub session 语义，旧独立登录接口已下线。
+- Files 使用共享存储根目录与默认子账号 ACL 模型。
+- 更完整的当前定义已迁移到 `doc/control_panel/ARCHITECTURE.context.md` 和 `doc/control_panel/SPEC.context.md`。
+
+历史示例:
+
 ```json
 { "id": 1, "method": "ui.dashboard", "params": { "session_token": "..." } }
 ```
 
-示例响应:
 ```json
-{ "id": 1, "result": { "status": "success", "data": { } } }
+{ "id": 1, "result": { "status": "success", "data": {} } }
 ```
 
 ## 命名约定
-- 统一采用 <module>.<action>，如 `storage.volume.create`
-- UI 相关采用 `ui.*`，旧的 `main/layout/dashboard` 仍保留别名
+
+> Migrated-to: `doc/control_panel/CONTEXT.context.md` and `doc/control_panel/SPEC.context.md`.
+
+
+历史摘要：
+
+- RPC 命名统一采用 `<module>.<action>`。
+- UI 历史上采用 `ui.*`，并保留 `main/layout/dashboard` 兼容别名。
+- 当前 canonical 命名规则请以 `doc/control_panel/SPEC.context.md` 和 `doc/control_panel/CONTEXT.context.md` 为准。
 
 ## 通用字段约定
-- 鉴权: 除 auth.* 外，接口要求 verify-hub `session_token`（可走 kRPC token，兼容 `params.session_token`）
-- 授权: 后端按用户类型执行方法级授权（`root/admin` 可写；`user/limited/guest` 默认只读）
-- 分页: list 类接口支持 `page`/`page_size` 或 `cursor`/`limit`
-- 排序: `sort` + `order` (asc/desc)
-- 过滤: `query` 用于搜索关键词
+
+> Migrated-to: `doc/control_panel/SPEC.context.md`.
+
+
+历史摘要：
+
+- 这里曾定义统一的鉴权、授权、分页、排序、过滤规则。
+- 这些规则已经迁移到 `doc/control_panel/SPEC.context.md`，旧 PRD 不再作为主定义位置。
 
 ## login: 管理员密码来源
-- active_lib的激活流程只保存 `admin_password_hash`，不存明文。
-- 写入路径: `/opt/buckyos/etc/start_config.json` (active 服务写入)。
-- 启动后由 scheduler 写入 sys_config:
-  - `users/root/settings.password`
-  - `users/<username>/settings.password`
-- 哈希生成: 激活阶段使用 `buckyos.hashPassword(username, password)` 生成 `admin_password_hash`。
-- 校验应通过 verify-hub 的登录流程（读取 sys_config 的 password 字段），客户端推荐走 `buckyos.doLogin`/`AuthClient.hash_password`。
+
+> Migrated-to: `doc/control_panel/CONTEXT.context.md` as an implementation caveat once auth notes are expanded further.
+
+
+历史摘要：
+
+- 激活流程只保存 `admin_password_hash`，不保存明文密码。
+- 密码最终通过 scheduler 写入 sys_config，再由 verify-hub 登录流程读取与校验。
+- 这是实现侧 caveat，canonical 约束应看 `doc/control_panel/CONTEXT.context.md`。
 
 ## 版本策略
-- 新增字段向后兼容
-- 破坏性变更使用新 method 名称
+
+> Migrated-to: `doc/control_panel/SPEC.context.md`.
+
+
+历史摘要：
+
+- 新增字段向后兼容。
+- 破坏性变更使用新 method 名称。
+- 当前 canonical 版本策略已迁移到 `doc/control_panel/SPEC.context.md`。
 
 ## 模块与接口
 
+> Migrated-to: `doc/control_panel/SPEC.context.md`. This section remains the historical detailed source list during migration.
+
 ### UI (ui.*)
 
-#### ui.main (legacy: main)
-用途: 页面入口/健康检查占位。
+> Migrated-to: `doc/control_panel/SPEC.context.md`.
 
-请求参数:
-- session_token: string, optional
+历史摘要：
 
-响应字段:
-- test: string (当前占位，后续可替换为版本/能力信息)
-
-#### ui.layout (legacy: layout)
-用途: 左侧布局与头部用户信息。
-
-请求参数:
-- session_token: string
-
-响应字段:
-- profile: object
-  - name: string
-  - email: string
-  - avatar: string (URL)
-- systemStatus: object
-  - label: string
-  - state: string (online/offline/warning)
-  - networkPeers: number
-  - activeSessions: number
-
-#### ui.dashboard (legacy: dashboard)
-用途: 仪表盘数据聚合。
-
-请求参数:
-- session_token: string
-
-响应字段:
-- recentEvents: array
-  - title: string
-  - subtitle: string
-  - tone: string (success/warning/info)
-- dapps: array
-  - name: string
-  - icon: string (emoji or URL)
-  - status: string (running/stopped)
-- resourceTimeline: array
-  - time: string (HH:MM)
-  - cpu: number (0-100)
-  - memory: number (0-100)
-- storageSlices: array
-  - label: string
-  - value: number (0-100)
-  - color: string (hex)
-- storageCapacityGb: number
-- storageUsedGb: number
-- devices: array
-  - name: string
-  - role: string
-  - status: string
-  - uptimeHours: number
-  - cpu: number
-  - memory: number
-- memory: object
-  - totalGb: number
-  - usedGb: number
-  - usagePercent: number
-- cpu: object
-  - usagePercent: number
-  - model: string
-  - cores: number
-- disks: array
-  - label: string
-  - totalGb: number
-  - usedGb: number
-  - fs: string
-  - mount: string
-
-备注:
-- 当前实现使用 sysinfo 实时采样，CPU 有 200ms 采样窗口。
+- `ui.main`、`ui.layout`、`ui.dashboard` 是 control panel 最早的 UI 引导接口族。
+- `main` / `layout` / `dashboard` 是对应保留的 legacy alias。
+- 这组接口主要负责入口占位、布局数据、仪表盘聚合数据。
+- 当前请求/响应契约、字段形态、兼容策略请以 `doc/control_panel/SPEC.context.md` 为准。
+- 历史实现中，dashboard 一度强调 sysinfo 实时采样和轻量资源趋势聚合。
 
 ### 认证 (auth.*)
 
-#### auth.login
-用途: 登录并获取会话令牌。
+> Migrated-to: `doc/control_panel/SPEC.context.md` and `doc/control_panel/CONTEXT.context.md`.
 
-请求参数:
-- username: string
-- password: string
-- otp: string, optional
+历史摘要：
 
-响应字段:
-- session_token: string
-- refresh_token: string
-- expires_at: number (unix seconds)
-- user: object { id, name, roles }
-
-#### auth.logout
-用途: 注销会话。
-
-请求参数:
-- session_token: string
-
-响应字段:
-- ok: boolean
-
-#### auth.refresh
-用途: 刷新令牌。
-
-请求参数:
-- refresh_token: string
-
-响应字段:
-- session_token: string
-- refresh_token: string
-- expires_at: number
+- `auth.login`、`auth.logout`、`auth.refresh` 构成了 control panel 早期定义的认证主链路。
+- 核心历史模型是 `session_token` + `refresh_token` 双 token 机制。
+- `otp`、更高权限授权、兼容应用登录等扩展语义曾在不同 PRD 中出现，但当前 canonical 规则已迁移到新文档。
+- 当前浏览器登录、刷新、校验与共享 session 语义请以 `doc/control_panel/SPEC.context.md` 为准。
 
 ### 用户 (user.*)
 
@@ -420,63 +337,14 @@
 
 ### 系统 (system.*)
 
-#### system.overview
-用途: 系统概览。
+> Migrated-to: `doc/control_panel/SPEC.context.md`.
 
-响应字段:
-- name: string
-- model: string
-- os: string
-- version: string
-- uptime_seconds: number
+历史摘要：
 
-#### system.status
-用途: 健康状态。
-
-响应字段:
-- state: string (online/warning/critical)
-- warnings: array
-- services: array
-
-#### system.metrics
-用途: 指标汇总。
-
-响应字段:
-- cpu: object
-- memory: object
-- disk: object
-- network: object
-
-#### system.update.check
-用途: 检查更新。
-
-响应字段:
-- has_update: boolean
-- latest_version: string
-- notes: string
-
-#### system.update.apply
-用途: 应用更新。
-
-请求参数:
-- version: string
-
-响应字段:
-- task_id: string
-
-#### system.config.test
-用途: 测试 system_config 连接与读取逻辑。
-
-请求参数:
-- key: string, optional (默认: boot/config)
-- service_url: string, optional (默认: http://127.0.0.1:3200/kapi/system_config)
-- session_token: string, optional (也可走 RPC token)
-
-响应字段:
-- key: string
-- value: string
-- version: number
-- isChanged: boolean
+- `system.overview`、`system.status`、`system.metrics` 是 system 族的核心观测接口。
+- `system.update.check`、`system.update.apply` 代表了早期对升级流程的规划接口。
+- `system.config.test` 是偏诊断性的 system_config 连通性与读取测试接口。
+- 当前哪些方法已实现、哪些仍是 planned，以及它们对应的数据模型，请以 `doc/control_panel/SPEC.context.md` 为准。
 
 ### 存储 (storage.*)
 

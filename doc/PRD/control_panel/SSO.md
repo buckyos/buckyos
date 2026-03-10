@@ -1,44 +1,64 @@
 # BuckyOS 中的SSO 
-SSO是BuckyOS为Web类应用提供的认证安全整体解决方案
+
+> Migration note:
+> - Canonical auth and session docs now live in `doc/control_panel/SPEC.context.md` and `doc/control_panel/CONTEXT.context.md`.
+> - This file is retained as historical PRD input during migration.
+
+SSO是 BuckyOS 为 Web 类应用提供的认证安全整体解决方案。
+
+本文件现已降级为 historical stub，保留少量兼容背景和未定稿设想。
 
 ## Control Panel 路由约定（2026-03）
+
+> Migrated-to: `doc/control_panel/SPEC.context.md` for current route surface.
+
 - `/login`: control_panel 自身登录页面（登录后进入 desktop）
 - `/sso/login`: SSO 授权弹窗页面（供其他应用获取授权）
 
-## 基本原理
+## Historical Core Model
 
-SSO的核心，是Web页面在向node-gateway发起http请求时，能携带一个正确的session-token. session-token中包含了正确的appid和当前登录用户信息。
+> Migrated-to: `doc/control_panel/SPEC.context.md` for contract-level auth rules, and `doc/control_panel/ARCHITECTURE.context.md` for session flow.
 
-POST类请求，在构成kRPC Client的时候填入session-token（使用 buckyos-web-sdk 发起kRPC请求，会自动处理)
-
-GET类请求，通常将session-token保存在cookie里
-
-BuckyOS的系统服务通常只处理kRPC, 使用下面通用流程判断请求是否合法
+- Web 页面访问系统能力时，需要携带正确的 `session-token`。
+- `session-token` 表示当前登录用户与 `appid` 绑定后的授权上下文。
+- POST/kRPC 场景倾向走 client token 传递，GET 场景历史上常走 cookie。
+- 当前 control panel 的 canonical auth surface 请以 `doc/control_panel/SPEC.context.md` 为准。
 
 ## 对兼容应用的支持
 
-在系统冷启动期，会有不少移植的兼容应用：开发者将已有的web app打包到docker里，然后让buckyos安装。这类没有集成buckyos-web-sdk的应用被称作兼容应用。
+> Historical/planned note: this remains a compatibility model reference. Canonical current control-panel auth behavior is documented in `doc/control_panel/SPEC.context.md`.
 
-此时node-gateway在处理这类app请求时，根据app配置，会自动将首个http请求跳转到 login_index.html（非弹出窗口),看起来url是https://app1.$zonehost/login_index.html, 在该页面完成登录后，会写入cookie。后续重定向会原请求后，就能在http req里带上正确的cookie
-
-随后node-gateway检查发往app的http header有了正确的授权，把流量upstream到app service
+- 兼容应用指未接入 `buckyos-web-sdk` 的历史 Web app。
+- 历史兼容模型中，node-gateway 可把首个请求导向 `login_index.html` 完成 cookie 写入。
+- 这是兼容迁移路径，不代表当前 control panel 主认证体验。
 
 ## 不要混用 app_service自己的 seession_token和来自页面的session_token
 
-我们鼓励app在web page里直接用kRPC访问必要的BuckyOS系统服务。
+> Migrated-to: `doc/control_panel/CONTEXT.context.md` as a non-obvious architectural invariant.
 
-但有时，需要走 app-web-page --> app-service --> kRPC 这样的流程时，千万记住要用来自app-web-page的session-token,而不是自己的。
-- session token 来自web-page: 有可能是另一个用户（架构上允许用户A安装的app给zone内所有用户使用)
-- session token 来自app-service:必然是app的owner user
+- 历史兼容模型里，`app-web-page -> app-service -> kRPC` 链路必须继续使用来自页面的 token。
+- 原因是页面 token 代表当前操作者，而 app service 自己的 token 往往只代表 app owner。
+- 这个原则已经迁移为 canonical 的架构不变量，不应再只存在于旧 PRD 中。
 
 ## 更多实现细节
 
+> Canonical split:
+> - token contract -> `doc/control_panel/SPEC.context.md`
+> - implementation caveats and security invariants -> `doc/control_panel/CONTEXT.context.md`
+
 ### session token
-session-token是一个由verify-hub-private-key签名的JWT.
-一次verify-hub login返回两个token。 一个是长exp的refresh token,一个是标准的的session token(时间短），每次session token快过期了，client就用refresh token去verify-hub refresh,得到新的refresh token和session token.旧的refresh token会立刻失效
+
+> Migrated-to: `doc/control_panel/SPEC.context.md`.
+
+- 历史模型中，`session-token` 是由 verify-hub 私钥签名的 JWT。
+- 一次 login 返回短期 `session token` 和长期 `refresh token`。
+- 当 session 即将过期时，client 使用 refresh 流程换取新 token，旧 refresh token 立即失效。
 
 
 ### 超级用户
-某些页面需要超级用户授权(sudo),本质上，是需要一个session-token,该session-token用用户的私钥签名。因为buckyos不存储任何普通用户的私钥，所以：
-- 在buckyos-app中，直接拉起buckyos-app的授权签名页面
-- 否则，弹出一个签名页，要求用户输入私钥后签名
+
+> Historical/planned note: retain here until sudo/superuser UX is formalized in canonical docs.
+
+- 某些高权限页面曾规划为需要 sudo / 私钥签名授权。
+- 因为系统不保存普通用户私钥，这类授权需要由 app 或签名页触发。
+- 这部分仍属于未完全 canonicalize 的历史规划。

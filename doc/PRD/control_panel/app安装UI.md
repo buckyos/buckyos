@@ -1,6 +1,31 @@
 # buckyos 与app安装相关的页面
 
-## 1) 第三方网页侧（Web / JS SDK）
+> Migration note:
+> - Canonical control panel docs now live under `doc/control_panel/`.
+> - Install-related product intent will be progressively merged into `doc/control_panel/README.context.md` and `doc/control_panel/SPEC.context.md` as `Planned` or `Implemented` sections.
+> - This file is retained as historical PRD input during migration.
+
+本文件现已降级为 historical stub，详细 `Planned` 规格已迁移到 `doc/control_panel/SPEC.context.md`。
+
+## Canonical Destination
+
+- 产品目标与体验方向：`doc/control_panel/README.context.md`
+- 安装/分享安装/发布相关 planned spec：`doc/control_panel/SPEC.context.md`
+- 约束与边界：`doc/control_panel/CONTEXT.context.md`
+
+## Historical Summary
+
+- control panel 曾被规划为统一承载外部网页拉起安装、桌面内安装、分享安装、扫码安装、内置商店、信任解释、支付、发布等完整 app 分发生命周期。
+- 当前这些 surface 大多仍属于 `Planned`，不应与已实现的 Files 分享、主控制面板路由混淆。
+
+## Preserved Historical Buckets
+
+### 1) 第三方网页侧（Web / JS SDK）
+
+> Canonical split:
+> - 产品入口与目标迁移到 `doc/control_panel/README.context.md`
+> - route/spec-level behavior迁移到 `doc/control_panel/SPEC.context.md`
+> - 本节暂保留为 planned historical source
 
 ### A. “安装 $APP_NAME”按钮（任意第三方网页嵌入）
 
@@ -13,172 +38,80 @@
 
 ### B. BuckyOS App安装引导页
 
+> Planned: to be normalized into `doc/control_panel/SPEC.context.md` when install surface becomes canonical.
+
 * 清晰判断用户平台（mac/windows/linux/mobile）并引导安装
 * 安装完成后，支持“返回继续安装 app”（最好能继续带回原 app 的 meta url）
 
 ---
 
-## 2) App Install.html（核心安装流程 UI）
+### 2) App Install.html（核心安装流程 UI）
 
-### A. 安装确认弹窗（“第一个界面”）
+> Migrated-to: future `Planned` install flow sections in `doc/control_panel/SPEC.context.md`, with product rationale in `doc/control_panel/README.context.md`.
 
-* 展示 App 关键信息：
+核心历史意图：
 
-  * 图标、名称、简介、版本、作者
-  * 来源信息（从哪来：好友分享/第三方网站推荐/某应用源收录/手工粘贴）
-  * 安全信息（作者信任等级、源信任等级、分享来源信任等级、综合风险提示）
-* 展示技术要点（用户能理解的版本）：
-
-  * 将安装的 docker 镜像/来源（可折叠）
-  * 暴露的服务（www 子域名、端口服务、是否独占端口）
-  * 将使用的数据目录（`/tmp`、`/config/*`、`/home/$userid/.local/share/$appid`、额外授权目录；以及卸载时哪些数据会保留）
-* 用户操作：
-
-  * **安装** / **取消**
-  * “查看详情”（展开 meta-json 原文、签名/证明信息、镜像 digest 等）
-  * “高级配置”（可选，见下一项）
-
-### B. 安装配置页（可选/高级）
-
-* 允许用户调整（基于 install_config_tips）：
-
-  * 额外目录授权（默认使用系统固定路径模型；只对额外授权 mount 提供开关或选择，不再暴露旧的 data/config/cache 宿主路径自定义）
-  * www 路由：子域名/path（默认值来自 meta）
-  * 端口服务：是否启用、冲突提示（尤其是 port_router 独占的服务）
-  * bind 策略（默认 127.0.0.1，仅 rtcp；或允许公网绑定）
-* 显示权限请求（文件权限、网络权限、特权容器需求等），并允许用户拒绝导致安装失败/降级
-
-### C. 安装进度页
-
-* 拉取 meta-json -> 校验/解析 -> 执行安装，包括 拉取镜像,等待调度，启动 -> 访问检查
-* 调用control_panel的kapi进入安装流程后，会得到一个Taskid,可以通过查询taskid得到进度信息
-* 每一步有明确状态、失败原因、重试按钮
-* 执行安装部分由OOD执行，通过TaskMgr 系统跟踪状态(taskid在创建时返回)
-* 安装完成后提供：
-
-  * **在新窗口中打开应用**
-  * **复制访问地址**（例如 [https://file.$zone/）](https://file.$zone/）)
-  * **分享**（生成分享链接/二维码/文本）
-  * **上报安装证明** 发送安装证明给应用源/分享来源/作者，领取BDT奖励
-
-### D. 安装失败页
-
-* 给“人能看懂”的失败原因分类：
-
-  * meta-json 无效 / schema 不支持
-  * 来源不可达（开发者 OOD 不可用 / source 不可用）
-  * 镜像拉取失败（网络/权限/不存在）
-  * 端口冲突（独占端口被占用）
-  * 用户权限不够或资源不足
-* 提供可执行的下一步操作（重试、编辑配置、改用 mirror/source、复制错误报告）
+- 安装流程应包含确认、可选高级配置、进度、成功、失败五个阶段。
+- 安装确认页要同时解释 app 信息、来源、信任、权限与技术影响。
+- 安装进度应基于 `task_id` 追踪，而不是黑盒 loading。
+- 失败页要给出人类可理解的错误分类与下一步动作。
 
 ---
 
-## 3) 分享安装相关 UI
+### 3) 分享安装相关 UI
+
+> Canonical split:
+> - app-install related sharing remains planned in `doc/control_panel/SPEC.context.md`
+> - generic files/share behavior lives in `doc/control_panel/SPEC.context.md` and `doc/control_panel/ARCHITECTURE.context.md`
 
 > 注:分享APP是分享一个自己已经安装的App，不是发布App。
 
-### A. 生成分享内容（已安装 app 的“分享”入口）
+核心历史意图：
 
-* 生成并展示四种分享载体：
-
-  1. 分享链接（指向用户 OOD 内置 share_app.html）
-  2. 分享链接二维码
-  3. App 文本（包含 APP_META_JSON 或其可解析等价形式）
-  4. App 文本二维码
-* 每种载体附带“可用性提示”：
-
-  * 依赖分享者 OOD 可访问 / 依赖官方 source / 依赖开发者 OOD 等
-
-### B. share_app.html（OOD 内置分享页面）
-
-* 展示 app 必要信息 + “点击安装”按钮（复用同一安装逻辑）
-* 展示来源说明：这是某用户分享的、该用户身份/信任等级（如果可得）
-* 需要处理 OOD 不可达/证书错误等异常提示
-
-### C. Desktop “添加 App”页（粘贴文本安装）
-
-* 点击按钮进入手工添加App，也可通过监视剪贴板自动拉起。
-* 输入框支持粘贴 APP_META_JSON（或压缩编码形式）
-* 解析成功后进入同一套安装确认 UI
-* 解析失败时给出定位错误（字段缺失/版本不支持/签名不合法）
-
-### D. Mobile 扫码安装入口
-
-* 扫描二维码 -> 解析 meta-json（或 meta-url） -> 拉起安装流程
+- 已安装 app 可生成多种分享载体：链接、二维码、文本、文本二维码。
+- `share_app.html` 曾被设想为安装分享的统一入口页。
+- desktop 粘贴安装与 mobile 扫码安装，本质上都是“把分发载体重新导回同一安装流程”。
 
 ---
 
-## 4) 内置应用商店 UI（未来需求）
+### 4) 内置应用商店 UI（未来需求）
 
-### A. 商店首页/列表页
+> Historical/planned only. Out of current control_panel implemented scope.
 
-* 内容来源融合展示：`用户自管理 APP_META_JSON + source list`（去重）
-* 去重后的同一 app：能看到它来自哪些源/哪些分享记录（可折叠）
-* 登录态要求（你文档里说默认只有登录用户能访问）
-* 支持按分类/关键词/信任等级筛选
+核心历史意图：
 
-### B. 应用详情页
-
-* 复用安装确认页展示的信息（展示 + 信任 + 权限 + 服务/挂载）
-* 展示“被哪些源收录 / 每个源的评级 / 源本身信任等级”
-* 安装/更新/卸载入口
-
-### C. 应用源管理页
-
-* 添加应用源 URL
-* 展示源的简介、信任等级、最近同步时间、收录 app 数
-* 调整源信任等级、禁用/删除源
-
-### D. 用户自管理 APP_META_JSON 列表
-
-* 规则：**任何可信 meta 触发过安装流程（不论成功与否）都记录**
-* 每条记录展示：来源、首次出现时间、最后一次安装尝试结果、是否已安装
-* 支持：删除记录、重新安装、标记为不信任/拉黑来源
+- 内置商店不只是 app 列表，还包括 source 管理、用户自管理 meta 记录、信任等级与去重逻辑。
+- 同一 app 的多个来源应可见，而不是被简单覆盖。
 
 ---
 
-## 5) 信任机制相关 UI（系统面板）
+### 5) 信任机制相关 UI（系统面板）
 
-### A. 作者/联系人信任管理
+> Planned system capability. Security/trust UI should later be normalized with auth and policy sections in canonical docs.
 
-* 搜索/添加作者（DID/名称）
-* 设置信任等级（分级 + 文案解释）
-* 通过“联系人组/社交网络”提升等级的展示与开关
+核心历史意图：
 
-### B. 应用源信任管理
-
-* 同上：添加/编辑/评级/禁用
-* 展示源对某 app 的评级以及证据（签名/收录证明）
-
-### C. 分享来源信任管理
-
-* 能对“分享来源”（某好友/某网站/某渠道）设置信任等级
-* 有“上限限制”的 UI 表达（文档里提到上限有限制）
-
-### D. 安装弹窗中的“为什么信任/为什么风险”解释页
-
-* 把综合信任分拆解释（作者、源、分享、网站推荐分别贡献多少）
-* 让用户能一键跳转到对应的信任设置页去调整
+- 信任至少分为作者/联系人、应用源、分享来源三类。
+- 安装弹窗应能解释“为什么信任/为什么风险”，而不是只给一个结论分数。
 
 ---
 
-## 6) 经济/付费相关 UI（未来需求）
+### 6) 经济/付费相关 UI（未来需求）
 
-### A. 安装时支付（若定价非 free）
+> Historical/planned only. Not part of current canonical implemented surface.
 
-* USDB 支付页（合约支付，钱包内页）
-* 统一支付网关页（传统支付，Web，由应用源支持）
-* HTTP 402 扩展支付：提示“将跳转到作者的专属支付流程”，并展示风险提示
+核心历史意图：
 
-### B. 安装成功证明/奖励信息（可选展示）
-
-* 安装奖励记录：
-
-  * 已发送安装成功证明给：作者/源/分享来源（发送状态）
-  * 获得的BDT奖励列表
-* 钱包里的收入记录
+- 付费安装可能包含链上支付、传统支付、作者自定义支付流程。
+- 安装成功证明与奖励信息曾被规划为分发经济系统的一部分。
 
 ---
 
-## 7) 发布App（未来需求)
+### 7) 发布 App（未来需求)
+
+> Historical/planned only. Keep as intent archive until a canonical publish surface is defined.
+
+核心历史意图：
+
+- control panel 长期被设想为 app 分发闭环的一部分，不仅安装，也包括分享、信任、支付、发布。
+- 真正进入 canonical spec 时，应拆成 install/share-app/store/trust/payment/publish 多个 planned 子章节，而不是继续保存在一个旧 PRD 长文里。
