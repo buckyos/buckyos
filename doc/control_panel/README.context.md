@@ -102,6 +102,13 @@
 - 窗口、dock、面板、快捷入口这些元素说明 control panel 的理想体验更接近 OS shell，而不是单页 BI 面板。
 - 后续新增页面即便不使用窗口式布局，也应保持“系统工作台”语义，不要突然退化为模板化 CRUD 后台。
 
+### Desktop As Product Core
+
+- `/` 对应的 desktop 不是普通首页，而是 control panel 的核心产品表面。
+- 它承载的是“全集成系统工作台”模型：monitor、network、containers、files、storage、logs、apps、settings、users 等模块不是靠一级路由切页组织，而是在同一个 desktop 容器里以窗口方式被打开、切换、最小化、最大化和聚焦。
+- 这意味着 control panel 的首页语义更接近 window manager / workspace shell，而不是传统 dashboard landing page。
+- 文档、设计、实现都应承认这一点：desktop 是主交互框架，路由只是进入 desktop 的入口，而不是 desktop 内部模块分割的唯一组织方式。
+
 ## Visual Consistency Direction
 
 - 标题使用更有结构感的几何无衬线，正文使用高可读的人文无衬线；当前约定为 `Space Grotesk` + `Work Sans`。

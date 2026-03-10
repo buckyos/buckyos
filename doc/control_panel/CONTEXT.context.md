@@ -38,6 +38,7 @@
 - `workspace` 和主控制面板共享前端壳，但后台不是一个系统。
 - `src/frame/control_panel/web/src/api/index.ts` 有 mock fallback 逻辑，开发时“页面能显示”不等于后端真的通了。
 - 旧 PRD 中大量 RPC/页面设想比当前代码宽得多；迁移时优先保真，不优先求全。
+- desktop 首页 `/` 不是普通 route page，而是 integrated desktop shell；其中大量模块是在单页内部按 window 方式组织的。
 
 ## Known Gaps And Technical Debt
 
@@ -45,6 +46,7 @@
 - Files/Share 真实表面是 HTTP，但历史文档里长期以 RPC 规划形式存在。
 - `doc/PRD/control_panel/control_panel.md` 混合了产品愿景、接口规格、现状说明、路线图。
 - `src/frame/control_panel/src/share_content_mgr.rs` 的定位仍需进一步澄清。
+- `src/frame/control_panel/web/src/ui/pages/DesktopHomePage.tsx` 过大，desktop shell、window manager、window content 耦合在同一文件中。
 
 ## Safe Change Guidelines
 
@@ -52,6 +54,7 @@
 - 改 auth 前，同时看前端 authManager、backend `auth.*`、Files token 接收规则。
 - 改 Files 前，同时看 `FileManagerPage.tsx`、`file_manager.rs`、公开分享页面行为。
 - 改文档前，先决定某个事实应归属 README、ARCHITECTURE、SPEC 还是 CONTEXT，避免重复定义。
+- 改 desktop 首页前，不要把 window-based integrated model 误改成若干彼此独立的普通 route page。
 
 ## Safe Refactoring Boundaries
 
@@ -96,6 +99,7 @@
 - 改一个主容器样式时，至少同步检查 `RootLayout`、Desktop、Files、弹窗。
 - 新增状态色或尺寸 token 前，应先判断能否复用现有 token。
 - 任何声称“视觉统一”的改动都应覆盖桌面端与移动端，而不是只修一个断点。
+- 改 Desktop 时，优先把代码按 `window` 语义拆分，而不是把 desktop 的 integrated experience 打散成互相不一致的碎页面。
 
 ## Migration Classification From doc/PRD/control_panel
 

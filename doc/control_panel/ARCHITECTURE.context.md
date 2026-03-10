@@ -51,6 +51,13 @@
 - 普通控制面板页面主要通过 `src/frame/control_panel/web/src/api/index.ts:4` 的 kRPC client 访问 `/kapi/control-panel`。
 - Files 页面是特例，直接对 `/api/*` 发 HTTP 请求。
 
+### Desktop Experience Core
+
+- `/` 入口对应 `src/frame/control_panel/web/src/ui/pages/DesktopHomePage.tsx`，它不是单一 dashboard page，而是一个全集成 desktop 容器。
+- 这个 desktop 容器在一个页面内部管理多个 window module，包括 `monitor`、`network`、`containers`、`files`、`storage`、`logs`、`apps`、`settings`、`users`。
+- 这些模块当前不是按一级路由拆开的，而是由 desktop 内部 window state、z-index、drag/resize/minimize/maximize 等机制统一调度。
+- 因此，desktop 是 control panel 的 primary shell，其他模块更准确地说是“desktop windows”而不是“homepage widgets”。
+
 ### Frontend Composition Table
 
 | Layer | Primary file | Responsibility |
@@ -58,9 +65,24 @@
 | app shell bootstrap | `src/frame/control_panel/web/src/App.tsx:1` | wrap router with auth provider |
 | auth state | `src/frame/control_panel/web/src/auth/AuthProvider.tsx:11` | initialize runtime, resolve login state, expose auth actions |
 | route graph | `src/frame/control_panel/web/src/routes/router.tsx:22` | public, protected, Files, workspace route topology |
+| desktop shell | `src/frame/control_panel/web/src/ui/pages/DesktopHomePage.tsx:148` | integrated desktop container, window manager, core homepage experience |
 | main RPC API layer | `src/frame/control_panel/web/src/api/index.ts:4` | kRPC wrapper and mock fallback behavior |
 | workspace API layer | `src/frame/control_panel/web/src/api/workspace.ts:783` | OpenDan and TaskManager clients |
 | Files UI surface | `src/frame/control_panel/web/src/ui/pages/FileManagerPage.tsx:54` | direct HTTP contract consumer |
+
+### Desktop Window Map
+
+| Window id | Current title | Current role |
+| --- | --- | --- |
+| `monitor` | `System Monitor` | system overview and metrics |
+| `network` | `Network Monitor` | network state and trends |
+| `containers` | `Container Manager` | container runtime overview |
+| `files` | `Files` | embedded file manager surface |
+| `storage` | `Storage Center` | storage health and capacity |
+| `logs` | `System Logs` | log query and inspection |
+| `apps` | `Applications` | installed app and version view |
+| `settings` | `Settings` | system and policy settings |
+| `users` | `Users` | user and role-related management |
 
 ## Files Subsystem
 
@@ -112,6 +134,10 @@
 
 ## Primary Data Flows
 
+### Desktop Window Flow
+
+- Browser enters `/` -> `DesktopHomePage` bootstraps layout and shared desktop state -> user opens or focuses desktop windows -> each window reads from shared state and/or its own fetch path -> desktop shell handles focus order, drag, resize, minimize, maximize.
+
 ### Admin Page Flow
 
 - Browser UI -> `src/api/index.ts` -> `/kapi/control-panel` -> `ControlPanelServer` dispatch -> runtime/system integrations -> response.
@@ -128,6 +154,7 @@
 
 | Flow | Transport | Frontend entry | Backend owner | Key risk |
 | --- | --- | --- | --- | --- |
+| desktop windows | mixed kRPC + HTTP inside one shell | `DesktopHomePage.tsx` | mixed: Rust `control_panel` plus embedded Files | monolithic page code can blur boundaries |
 | admin pages | kRPC | `src/api/index.ts` | Rust `control_panel` | mock fallback can hide failures |
 | Files | HTTP | `FileManagerPage.tsx` | embedded `file_manager` | easy to mistakenly document as RPC |
 | workspace | kRPC | `src/api/workspace.ts` | external services | ownership confusion during changes |
@@ -168,6 +195,7 @@
 
 - `Implemented`
   - 主控制面板 SPA
+  - desktop shell with integrated window model on `/`
   - `auth.*`、`ui.*`、部分 `system.*`、`apps.*`、`network.overview`、`zone.overview`、`gateway.overview`、`container.overview`
   - 内嵌 Files HTTP surface
 - `Planned`
@@ -175,6 +203,23 @@
   - 安装页、分享安装页、更多通知/审计/备份/ACL UI 的完整统一实现
 - `Needs clarification`
   - `src/frame/control_panel/src/share_content_mgr.rs` 在当前结构中看起来更像预留或旁路能力，需要后续明确其运行地位。
+
+## Frontend Refactoring Direction
+
+- `src/frame/control_panel/web/src/ui/pages/DesktopHomePage.tsx` 当前承担了 desktop shell、window manager、多个 window 的渲染与状态逻辑，文件体量已经偏大。
+- 推荐未来在 `src/frame/control_panel/web/src/ui/pages/desktop/` 下按 window 拆分代码，以“desktop shell + per-window modules”的结构组织：
+  - `DesktopShell.tsx` 或保留 `DesktopHomePage.tsx` 作为容器
+  - `desktop/MonitorWindow.tsx`
+  - `desktop/NetworkWindow.tsx`
+  - `desktop/ContainersWindow.tsx`
+  - `desktop/FilesWindow.tsx`
+  - `desktop/StorageWindow.tsx`
+  - `desktop/LogsWindow.tsx`
+  - `desktop/AppsWindow.tsx`
+  - `desktop/SettingsWindow.tsx`
+  - `desktop/UsersWindow.tsx`
+- 这样拆分的目标不是把 desktop 变回路由式页面，而是在保留 integrated desktop model 的前提下改善代码边界。
+- desktop 内模块的组织单位应优先是 `window`，而不是重新强行回到“每个功能一条首页路由”的思路。
 
 ## Verification Anchors In Code
 
