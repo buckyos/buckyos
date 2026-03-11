@@ -114,9 +114,9 @@ async fn create_init_list_by_template(
         .add_kmsg()
         .await?
         //.add_repo_service().await?
-        .add_aicc()
+        .add_aicc(&start_config)
         .await?
-        .add_msg_center()
+        .add_msg_center(&start_config)
         .await?
         .add_control_panel()
         .await?

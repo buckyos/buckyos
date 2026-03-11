@@ -8,8 +8,9 @@ use buckyos_api::{
     generate_smb_service_doc, generate_task_manager_service_doc, generate_verify_hub_service_doc,
     AppDoc, AppServiceSpec, AppType, GatewaySettings, GatewayShortcut, KernelServiceSpec,
     NodeConfig, NodeState, SelectorType, ServiceExposeConfig, ServiceInfo, ServiceInstallConfig,
-    ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, UserSettings,
-    UserState, UserType, OPENDAN_SERVICE_PORT, OPENDAN_SERVICE_UNIQUE_ID,
+    ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState,
+    UserContactSettings, UserSettings, UserState, UserTunnelBinding, UserType,
+    OPENDAN_SERVICE_PORT, OPENDAN_SERVICE_UNIQUE_ID,
     SCHEDULER_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID,
 };
 use buckyos_api::{
@@ -85,6 +86,7 @@ impl SystemConfigBuilder {
     }
 
     pub fn add_default_accounts(&mut self, config: &StartConfigSummary) -> Result<&mut Self> {
+        let admin_contact = build_zone_user_contact_settings(config)?;
         let root_settings = UserSettings {
             user_type: UserType::Root,
             user_id: config.user_name.clone(),
@@ -104,7 +106,7 @@ impl SystemConfigBuilder {
             password: config.admin_password_hash.clone(),
             state: UserState::Active,
             res_pool_id: "default".to_string(),
-            contact: None,
+            contact: admin_contact,
         };
         self.insert_json_if_absent(&admin_key, &admin_settings)?;
         self.append_policy(&format!("g, {}, admin", config.user_name));
@@ -304,50 +306,32 @@ impl SystemConfigBuilder {
         Ok(self)
     }
 
-    pub async fn add_aicc(&mut self) -> Result<&mut Self> {
+    pub async fn add_aicc(&mut self, config: &StartConfigSummary) -> Result<&mut Self> {
         let service_doc = generate_aicc_service_doc();
-        let config = build_kernel_service_spec(
+        let service_spec = build_kernel_service_spec(
             AICC_SERVICE_UNIQUE_ID,
             AICC_SERVICE_SERVICE_PORT,
             1,
             service_doc,
         )
         .await?;
-        self.insert_json("services/aicc/spec", &config)?;
-        let settings = json!({
-            "openai": {
-                "enabled": false,
-                "api_token": "",
-                "alias_map": {},
-                "instances": []
-            }
-        });
+        self.insert_json("services/aicc/spec", &service_spec)?;
+        let settings = build_aicc_settings(config);
         self.insert_json_if_absent("services/aicc/settings", &settings)?;
         Ok(self)
     }
 
-    pub async fn add_msg_center(&mut self) -> Result<&mut Self> {
+    pub async fn add_msg_center(&mut self, config: &StartConfigSummary) -> Result<&mut Self> {
         let service_doc = generate_msg_center_service_doc();
-        let config = build_kernel_service_spec(
+        let service_spec = build_kernel_service_spec(
             MSG_CENTER_SERVICE_UNIQUE_ID,
             MSG_CENTER_SERVICE_PORT,
             1,
             service_doc,
         )
         .await?;
-        self.insert_json("services/msg-center/spec", &config)?;
-        let settings = json!({
-            "telegram_tunnel": {
-                "enabled": true,
-                "tunnel_did": "did:bns:msg-center-default-tunnel",
-                "supports_ingress": true,
-                "supports_egress": true,
-                "gateway": {
-                    "mode": "dry_run"
-                },
-                "bindings": []
-            }
-        });
+        self.insert_json("services/msg-center/spec", &service_spec)?;
+        let settings = build_msg_center_settings(config)?;
         self.insert_json_if_absent("services/msg-center/settings", &settings)?;
         Ok(self)
     }
@@ -555,6 +539,171 @@ fn default_jarvis_agent_doc(config: &StartConfigSummary) -> Value {
     })
 }
 
+fn trim_to_option(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn resolve_jarvis_agent_did(config: &StartConfigSummary) -> Result<DID> {
+    let zone_did = DID::from_str(&config.zone_name)?;
+    Ok(DID::new(
+        zone_did.method.as_str(),
+        format!("jarvis.{}", zone_did.id.as_str()).as_str(),
+    ))
+}
+
+fn resolve_telegram_tunnel_did(config: &StartConfigSummary) -> String {
+    config
+        .zone_name
+        .strip_prefix("did:web:")
+        .map(|zone_host| format!("did:web:tg-tunnel.{}", zone_host))
+        .unwrap_or_else(|| "did:bns:msg-center-default-tunnel".to_string())
+}
+
+fn normalize_telegram_contact_account_id(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.starts_with("user:")
+        || trimmed.starts_with("group:")
+        || trimmed.starts_with("channel:")
+    {
+        trimmed.to_string()
+    } else if trimmed.parse::<i64>().is_ok() {
+        format!("user:{}", trimmed)
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn normalize_telegram_default_chat_id(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if let Some((kind, value)) = trimmed.split_once(':') {
+        if matches!(kind, "user" | "group" | "channel") {
+            return value.trim().to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn build_zone_user_contact_settings(
+    config: &StartConfigSummary,
+) -> Result<Option<UserContactSettings>> {
+    let Some(account_id) =
+        trim_to_option(config.jarvis_msg_tunnel_config.telegram_account_id.as_str())
+    else {
+        return Ok(None);
+    };
+
+    let tunnel_id = resolve_telegram_tunnel_did(config);
+    let normalized_account_id = normalize_telegram_contact_account_id(&account_id);
+    if normalized_account_id.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(UserContactSettings {
+        did: Some(DID::new("bns", &config.user_name).to_string()),
+        note: None,
+        groups: vec!["zone_user".to_string()],
+        tags: vec!["zone_user".to_string()],
+        bindings: vec![UserTunnelBinding {
+            platform: "telegram".to_string(),
+            account_id: normalized_account_id,
+            display_id: Some(account_id),
+            tunnel_id: Some(tunnel_id),
+            meta: HashMap::new(),
+        }],
+    }))
+}
+
+fn build_aicc_settings(config: &StartConfigSummary) -> Value {
+    let mut settings = serde_json::Map::new();
+
+    if let Some(api_token) = trim_to_option(config.ai_provider_config.openai_api_token.as_str()) {
+        settings.insert(
+            "openai".to_string(),
+            json!({
+                "enabled": true,
+                "api_token": api_token
+            }),
+        );
+    }
+
+    if let Some(api_token) = trim_to_option(config.ai_provider_config.google_api_token.as_str()) {
+        settings.insert(
+            "google".to_string(),
+            json!({
+                "enabled": true,
+                "api_token": api_token
+            }),
+        );
+    }
+
+    if settings.is_empty() {
+        json!({
+            "openai": {
+                "enabled": false,
+                "api_token": "",
+                "alias_map": {},
+                "instances": []
+            }
+        })
+    } else {
+        Value::Object(settings)
+    }
+}
+
+fn build_msg_center_settings(config: &StartConfigSummary) -> Result<Value> {
+    let tunnel_did = resolve_telegram_tunnel_did(config);
+    let bot_token = trim_to_option(
+        config
+            .jarvis_msg_tunnel_config
+            .telegram_bot_api_token
+            .as_str(),
+    );
+    let telegram_account_id = trim_to_option(
+        config
+            .jarvis_msg_tunnel_config
+            .telegram_account_id
+            .as_str(),
+    );
+
+    let (gateway_mode, bindings) = if let (Some(bot_token), Some(account_id)) =
+        (bot_token, telegram_account_id)
+    {
+        let jarvis_did = resolve_jarvis_agent_did(config)?;
+        let default_chat_id = normalize_telegram_default_chat_id(&account_id);
+        (
+            "bot_api",
+            vec![json!({
+                "owner_did": jarvis_did.to_string(),
+                "bot_token": bot_token,
+                "default_chat_id": default_chat_id
+            })],
+        )
+    } else {
+        ("dry_run", Vec::new())
+    };
+
+    Ok(json!({
+        "telegram_tunnel": {
+            "enabled": true,
+            "tunnel_did": tunnel_did,
+            "supports_ingress": true,
+            "supports_egress": true,
+            "gateway": {
+                "mode": gateway_mode
+            },
+            "bindings": bindings
+        }
+    }))
+}
+
 async fn build_kernel_service_spec(
     pkg_name: &str,
     port: u16,
@@ -653,7 +802,10 @@ impl StartConfigSummary {
 
 #[cfg(test)]
 mod tests {
-    use super::StartConfigSummary;
+    use super::{
+        build_aicc_settings, build_msg_center_settings, build_zone_user_contact_settings,
+        StartConfigSummary,
+    };
     use serde_json::json;
 
     #[test]
@@ -688,6 +840,99 @@ mod tests {
         assert_eq!(
             summary.jarvis_msg_tunnel_config.telegram_account_id,
             "@alice"
+        );
+    }
+
+    #[test]
+    fn build_aicc_settings_uses_supported_boot_tokens() {
+        let value = json!({
+            "user_name": "alice",
+            "admin_password_hash": "hashed",
+            "public_key": {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
+            },
+            "zone_name": "did:web:alice.example.com",
+            "ai_provider_config": {
+                "openai_api_token": "sk-openai",
+                "google_api_token": "google-token",
+                "claude_api_token": "claude-token"
+            }
+        });
+        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
+
+        let settings = build_aicc_settings(&summary);
+
+        assert_eq!(settings["openai"]["api_token"], "sk-openai");
+        assert_eq!(settings["google"]["api_token"], "google-token");
+        assert!(settings.get("claude").is_none());
+    }
+
+    #[test]
+    fn build_msg_center_settings_maps_jarvis_tunnel_to_bot_api() {
+        let value = json!({
+            "user_name": "alice",
+            "admin_password_hash": "hashed",
+            "public_key": {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
+            },
+            "zone_name": "did:web:alice.example.com",
+            "jarvis_msg_tunnel_config": {
+                "telegram_bot_api_token": "123:bot",
+                "telegram_account_id": "5397330802"
+            }
+        });
+        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
+
+        let settings = build_msg_center_settings(&summary).expect("build msg-center settings");
+
+        assert_eq!(settings["telegram_tunnel"]["gateway"]["mode"], "bot_api");
+        assert_eq!(
+            settings["telegram_tunnel"]["tunnel_did"],
+            "did:web:tg-tunnel.alice.example.com"
+        );
+        assert_eq!(
+            settings["telegram_tunnel"]["bindings"][0]["owner_did"],
+            "did:web:jarvis.alice.example.com"
+        );
+        assert_eq!(
+            settings["telegram_tunnel"]["bindings"][0]["default_chat_id"],
+            "5397330802"
+        );
+    }
+
+    #[test]
+    fn build_zone_user_contact_settings_maps_telegram_user_binding() {
+        let value = json!({
+            "user_name": "alice",
+            "admin_password_hash": "hashed",
+            "public_key": {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
+            },
+            "zone_name": "did:web:alice.example.com",
+            "jarvis_msg_tunnel_config": {
+                "telegram_bot_api_token": "123:bot",
+                "telegram_account_id": "5397330802"
+            }
+        });
+        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
+
+        let contact =
+            build_zone_user_contact_settings(&summary).expect("build zone user contact settings");
+        let contact = contact.expect("contact should exist");
+
+        assert_eq!(contact.did.as_deref(), Some("did:bns:alice"));
+        assert_eq!(contact.bindings.len(), 1);
+        assert_eq!(contact.bindings[0].platform, "telegram");
+        assert_eq!(contact.bindings[0].account_id, "user:5397330802");
+        assert_eq!(
+            contact.bindings[0].tunnel_id.as_deref(),
+            Some("did:web:tg-tunnel.alice.example.com")
         );
     }
 }
