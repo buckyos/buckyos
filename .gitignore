@@ -2,6 +2,7 @@
 **/.idea
 .VSCodeCounter
 AGENT.md
+agents.local.md
 context.md
 *.bkp
 *.exe
