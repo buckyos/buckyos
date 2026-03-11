@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { buckyos } from 'buckyos'
 
+import { saveSsoSessionCookie } from '@/auth/session'
+
 import Icon from '../icons'
 
 type SsoAccountInfo = {
@@ -128,6 +130,8 @@ const SsoLoginPage = () => {
       })
       const accountInfo = normalizeSsoLoginResponse(response, trimmedUsername)
       const payload = JSON.stringify(accountInfo)
+
+      saveSsoSessionCookie(accountInfo.session_token)
 
       if (window.opener) {
         window.opener.postMessage({ token: payload, client_id: clientId }, '*')

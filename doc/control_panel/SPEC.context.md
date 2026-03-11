@@ -64,11 +64,37 @@
 - `auth.verify`
   - 用于 session 合法性检查。
 
+### Login Surface Split
+
+- `/login`
+  - 面向 control panel 自身的登录入口。
+  - 当前主职责是建立 control panel web 的本地会话状态。
+  - 当前实现以 localStorage 中的 account/session 信息为主。
+- `/sso/login`
+  - 面向目标 app 的 SSO 登录入口。
+  - 当前页面会读取 `client_id`，并以该 `client_id` 作为 `auth.login` 的 `appid` 发起登录。
+  - 当前实现中，它还会把返回的 app-specific `session_token` 写入 cookie `buckyos_session_token`。
+  - 从职责上，它比 `/login` 更适合承载 gateway OAuth 场景下的 app-specific token 发放。
+
 ### Session Transport Rules
 
 - kRPC 主链路通过 client 侧 session token 发送。
 - Files HTTP 支持 `X-Auth`、query `auth`、cookie(`control-panel_token` / `control_panel_token` / `auth`)。
 - 兼容应用与页面代理流程中的 token 规则仍保留为重要约束，但当前 control panel 主实现以前端 authManager 为准。
+
+### SSO Cookie Requirement For Gateway OAuth
+
+- 对于普通 control panel SPA 登录，localStorage 会话足以驱动前端自身状态。
+- 对于 gateway 的 app OAuth 检查，当前规则并不读取 localStorage，而是读取 cookie `buckyos_session_token`。
+- 因此，如果要让 app 页面经由 gateway `check_oauth` 放行，登录链路最终必须写入 `buckyos_session_token` cookie。
+- 当前实现已经由 `/sso/login` 完成这件事，而不是让 `/login` 同时承担 control panel 本地登录和 app-specific SSO cookie 发放两种角色。
+- 当前仓库中的 gateway 规则见 `src/rootfs/etc/boot_gateway.yaml:160`；相关背景说明见 `doc/arch/boot_gateay的配置生成.md`。
+
+### Documented Follow-Up
+
+- 当前 `boot_gateway.yaml` 在 OAuth 失败后仍跳转到 `/login`，而不是 `/sso/login`。
+- 这会造成 control panel 本地登录入口与 app-specific SSO 入口的职责混用风险。
+- 目前先在文档中记录该问题与推荐方向，不在本次文档更新中直接修改 gateway 配置代码。
 
 ### Planned
 

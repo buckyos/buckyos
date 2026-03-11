@@ -31,6 +31,7 @@
 - session 语义在主控制面板和 Files 之间共享。
 - 路由、后端 payload、前端 types 需要联动变更。
 - 文档中所有 `Implemented` 断言必须可被代码或运行行为支撑。
+- `/login` 的 control-panel 本地登录职责，与 `/sso/login` 的 app-specific SSO 职责，不应长期混写。
 
 ## Non-Obvious Implementation Facts
 
@@ -39,6 +40,8 @@
 - `src/frame/control_panel/web/src/api/index.ts` 有 mock fallback 逻辑，开发时“页面能显示”不等于后端真的通了。
 - 旧 PRD 中大量 RPC/页面设想比当前代码宽得多；迁移时优先保真，不优先求全。
 - desktop 首页 `/` 不是普通 route page，而是 integrated desktop shell；其中大量模块是在单页内部按 window 方式组织的。
+- gateway app OAuth 当前检查的是 cookie `buckyos_session_token`，而不是 control panel localStorage。
+- `SsoLoginPage` 已经具备 `client_id` -> `auth.login(appid=client_id)` 的 app-aware 登录语义，并负责把返回 token 落到 `buckyos_session_token` cookie。
 
 ## Known Gaps And Technical Debt
 
@@ -55,6 +58,7 @@
 - 改 Files 前，同时看 `FileManagerPage.tsx`、`file_manager.rs`、公开分享页面行为。
 - 改文档前，先决定某个事实应归属 README、ARCHITECTURE、SPEC 还是 CONTEXT，避免重复定义。
 - 改 desktop 首页前，不要把 window-based integrated model 误改成若干彼此独立的普通 route page。
+- 改 SSO 前，同时看 `src/frame/control_panel/web/src/ui/pages/SsoLoginPage.tsx`、`src/rootfs/etc/boot_gateway.yaml` 和 `doc/arch/boot_gateay的配置生成.md`。
 
 ## Safe Refactoring Boundaries
 
@@ -62,6 +66,7 @@
 - 可以重构前端组件，但不要默默改变 kRPC payload 字段名。
 - 可以优化 Files 交互，但不要破坏共享 session 和 ACL 假设。
 - 如果要把 HTTP Files 契约迁回 kRPC，需要先在规格中声明迁移路径。
+- 可以把 SSO cookie 写入职责收敛到 `/sso/login`，但不要在未理清 gateway 跳转链路前误以为 `/login` 与 `/sso/login` 完全等价。
 
 ## UI And Visual Guardrails
 

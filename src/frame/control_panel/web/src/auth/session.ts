@@ -1,6 +1,7 @@
 const ACCOUNT_STORAGE_KEY = 'buckyos.control_panel.account_info'
 const LEGACY_ACCOUNT_STORAGE_KEY = 'buckyos.account_info'
 const SESSION_COOKIE_NAMES = ['control-panel_token', 'control_panel_token', 'auth']
+const SSO_SESSION_COOKIE_NAME = 'buckyos_session_token'
 
 export type StoredAccountInfo = {
   user_name?: string
@@ -103,12 +104,62 @@ export const getSessionTokenFromCookies = () => {
 
 export const hasStoredSession = () => Boolean(getStoredSessionToken())
 
+const resolveCookieDomain = () => {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  const hostname = window.location.hostname.trim().toLowerCase()
+  if (!hostname) {
+    return null
+  }
+
+  const isIpv4Host = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname)
+  const isIpv6Host = hostname.includes(':')
+  if (hostname === 'localhost' || isIpv4Host || isIpv6Host) {
+    return null
+  }
+
+  if (hostname.startsWith('sys.')) {
+    return hostname.slice(4) || null
+  }
+
+  return hostname
+}
+
+export const saveSsoSessionCookie = (sessionToken: string) => {
+  if (typeof document === 'undefined') {
+    return
+  }
+
+  const normalized = sessionToken.trim()
+  if (!normalized) {
+    return
+  }
+
+  const parts = [`${SSO_SESSION_COOKIE_NAME}=${encodeURIComponent(normalized)}`, 'path=/', 'SameSite=Lax']
+  const domain = resolveCookieDomain()
+  if (domain) {
+    parts.push(`Domain=${domain}`)
+  }
+  if (typeof window !== 'undefined' && window.location.protocol === 'https:') {
+    parts.push('Secure')
+  }
+
+  document.cookie = parts.join('; ')
+}
+
 const expireCookie = (name: string) => {
   if (typeof document === 'undefined') {
     return
   }
-  document.cookie = `${name}=; path=/; expires=${new Date(0).toUTCString()}; SameSite=Lax`
-  document.cookie = `${name}=; path=/; max-age=0; SameSite=Lax`
+
+  const baseParts = ['path=/', 'SameSite=Lax']
+  const domain = resolveCookieDomain()
+  const secure = typeof window !== 'undefined' && window.location.protocol === 'https:' ? '; Secure' : ''
+
+  document.cookie = `${name}=; ${baseParts.join('; ')}; expires=${new Date(0).toUTCString()}${domain ? `; Domain=${domain}` : ''}${secure}`
+  document.cookie = `${name}=; ${baseParts.join('; ')}; max-age=0${domain ? `; Domain=${domain}` : ''}${secure}`
 }
 
 export const clearStoredSession = () => {
@@ -118,6 +169,7 @@ export const clearStoredSession = () => {
 
   expireCookie('control-panel_token')
   expireCookie('control_panel_token')
+  expireCookie(SSO_SESSION_COOKIE_NAME)
 }
 
 export const sanitizeRedirectPath = (candidate: string | null | undefined, fallback = '/') => {

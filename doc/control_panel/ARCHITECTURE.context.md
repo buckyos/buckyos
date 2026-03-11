@@ -129,8 +129,17 @@
 | runtime init | `AuthProvider` calls `ensureAuthRuntime()` | control-panel auth client setup | auth runtime becomes usable |
 | session check | `ensureSessionToken()` | `auth.verify` and possibly `auth.refresh` | browser decides authenticated vs unauthenticated |
 | login | `loginWithPassword()` | `auth.login` | returns session and refresh tokens |
+| SSO login | `SsoLoginPage` calls `auth.login` with `client_id` as `appid` | `/kapi/control-panel` | returns app-scoped token payload for SSO use |
 | main page request | `api/index.ts` kRPC call | `/kapi/control-panel` | authenticated RPC response |
 | Files request | direct `fetch('/api/...')` | embedded `file_manager` | authenticated HTTP response using shared token semantics |
+
+### Gateway OAuth Flow
+
+- 浏览器访问 app host -> gateway 在 `src/rootfs/etc/boot_gateway.yaml:160` 执行 `check_oauth`。
+- 对 private app，gateway 当前检查 cookie `buckyos_session_token`，并验证 JWT 与 `payload.appid == $APP_ID`。
+- 这说明 gateway OAuth 的认证介质是 cookie，而不是 control panel SPA 使用的 localStorage。
+- 当前实现中，`/sso/login` 会把登录返回的 app-specific token 写入 `buckyos_session_token` cookie；相关架构背景见 `doc/arch/boot_gateay的配置生成.md`。
+- 当前 gateway 失败跳转仍指向 `/login`，文档已记录该实现现状与建议方向，但本次未改动代码。
 
 ## Primary Data Flows
 
@@ -226,7 +235,9 @@
 - `src/frame/control_panel/src/main.rs:4371`
 - `src/frame/control_panel/src/main.rs:4413`
 - `src/frame/control_panel/src/file_manager.rs`
+- `src/rootfs/etc/boot_gateway.yaml:160`
 - `src/frame/control_panel/web/src/routes/router.tsx:22`
+- `src/frame/control_panel/web/src/ui/pages/SsoLoginPage.tsx:122`
 - `src/frame/control_panel/web/src/api/index.ts:4`
 - `src/frame/control_panel/web/src/api/workspace.ts:783`
 - `src/frame/control_panel/web/src/auth/authManager.ts:11`
