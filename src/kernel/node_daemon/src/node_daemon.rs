@@ -38,6 +38,8 @@ use crate::service_pkg::*;
 use buckyos_api::*;
 use thiserror::Error;
 
+
+
 #[derive(Error, Debug)]
 enum NodeDaemonErrors {
     #[error("Failed due to reason: {0}")]
@@ -242,6 +244,47 @@ async fn load_node_gateway_config(
     })?;
 
     Ok(gateway_config)
+}
+
+async fn load_node_gateway_info(
+    node_host_name: &str,
+    buckyos_api_client: &SystemConfigClient,
+) -> Result<Value> {
+    let json_config_path = format!("{}_node_gateway_info.json", node_host_name);
+    let json_config = std::fs::read_to_string(json_config_path);
+    if json_config.is_ok() {
+        let json_config = json_config.unwrap();
+        let gateway_info = serde_json::from_str(json_config.as_str()).map_err(|err| {
+            error!("parse DEBUG node gateway_info failed! {}", err);
+            NodeDaemonErrors::SystemConfigError(
+                "parse DEBUG node gateway_info failed!".to_string(),
+            )
+        })?;
+
+        warn!(
+            "Debug load node gateway_info from ./{}_node_gateway_info.json success!",
+            node_host_name
+        );
+        return Ok(gateway_info);
+    }
+
+    let node_key = format!("nodes/{}/gateway_info", node_host_name);
+    let get_result = buckyos_api_client.get(node_key.as_str()).await.map_err(|error| {
+        error!(
+            "get node gateway_info failed from system_config_service! {}",
+            error
+        );
+        NodeDaemonErrors::SystemConfigError(
+            "get node gateway_info failed from system_config_service!".to_string(),
+        )
+    })?;
+
+    let gateway_info = serde_json::from_str(&get_result.value).map_err(|err| {
+        error!("parse node gateway_info failed! {}", err);
+        NodeDaemonErrors::SystemConfigError("parse gateway_info failed!".to_string())
+    })?;
+
+    Ok(gateway_info)
 }
 
 async fn load_node_config(
@@ -867,6 +910,7 @@ async fn node_daemon_main_loop(
     let mut is_running = true;
     let mut last_register_time = 0;
     let mut node_gateway_config_id: Option<ObjId> = None;
+    let mut node_gateway_info_id: Option<ObjId> = None;
 
     loop {
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
@@ -945,6 +989,27 @@ async fn node_daemon_main_loop(
             if !is_running {
                 break;
             }
+            let new_node_gateway_info =
+                load_node_gateway_info(node_host_name, &system_config_client).await;
+            if let Ok(new_node_gateway_info) = new_node_gateway_info {
+                let (new_node_gateway_info_id_value, new_node_gateway_info_str) =
+                    build_named_object_by_json("node_gateway_info", &new_node_gateway_info);
+                let need_write = match node_gateway_info_id.as_ref() {
+                    None => true,
+                    Some(old_id) => old_id != &new_node_gateway_info_id_value,
+                };
+                if need_write {
+                    node_gateway_info_id = Some(new_node_gateway_info_id_value);
+                    info!("node gateway_info changed, will write to node_gateway_info.json");
+                    let gateway_info_path =
+                        buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway_info.json");
+                    std::fs::write(gateway_info_path, new_node_gateway_info_str.as_bytes())
+                        .unwrap();
+                }
+            } else {
+                error!("load node gateway_info from system_config failed!");
+            }
+
             info!("node_main OK, load node gateway config ...");
             let new_node_gateway_config =
                 load_node_gateway_config(node_host_name, &system_config_client).await;

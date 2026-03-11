@@ -1,13 +1,12 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::collections::VecDeque;
 
 use anyhow::Result;
 use buckyos_api::SelectorType;
 use log::*;
-use package_lib::PackageId;
 use rbac::DEFAULT_POLICY;
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::app::*;
 use crate::scheduler::*;
@@ -15,11 +14,14 @@ use crate::service::*;
 use buckyos_api::{
     get_buckyos_api_runtime, AppServiceSpec, KernelServiceSpec, NodeConfig,
     ServiceInstanceReportInfo, UserSettings, UserType as ApiUserType, ZoneGatewaySettings,
-    BASE_APP_PORT, MAX_APP_INDEX,
+    CONTROL_PANEL_SERVICE_PORT,
 };
 use buckyos_kit::*;
 use name_client::*;
-use name_lib::{DeviceInfo, ZoneConfig};
+use name_lib::{get_x_from_jwk, DeviceInfo, ZoneConfig};
+
+const SYSTEM_CONFIG_SERVICE_PORT: u16 = 3200;
+const FIXED_SERVICE_WEIGHT: u32 = 100;
 
 fn map_api_user_type(user_type: &ApiUserType) -> UserType {
     match user_type {
@@ -522,227 +524,415 @@ pub fn get_web_app_list(
     Ok(web_app_list)
 }
 
-pub(crate) async fn update_node_gateway_config(
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum NodeGatewayAccessMode {
+    Public,
+    Private,
+}
+
+impl Default for NodeGatewayAccessMode {
+    fn default() -> Self {
+        Self::Private
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct NodeGatewayNodeInfo {
+    this_node_id: String,
+    this_zone_host: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct NodeGatewaySelectorTarget {
+    port: u16,
+    weight: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct NodeGatewayServiceInfoEntry {
+    selector: HashMap<String, NodeGatewaySelectorTarget>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct NodeGatewayAppInfoEntry {
+    app_id: String,
+    sdk_version: u32,
+    access_mode: NodeGatewayAccessMode,
+    node_id: String,
+    port: u16,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    block_services: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct NodeGatewayAppServiceInfoEntry {
+    service_id: String,
+    selector: HashMap<String, NodeGatewaySelectorTarget>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+enum NodeGatewayAppEntry {
+    App(NodeGatewayAppInfoEntry),
+    Service(NodeGatewayAppServiceInfoEntry),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct NodeGatewayInfo {
+    node_info: NodeGatewayNodeInfo,
+    app_info: HashMap<String, NodeGatewayAppEntry>,
+    service_info: HashMap<String, NodeGatewayServiceInfoEntry>,
+    node_route_map: HashMap<String, String>,
+    trust_key: HashMap<String, String>,
+}
+
+fn get_device_list(input_system_config: &HashMap<String, String>) -> Result<HashMap<String, DeviceInfo>> {
+    let mut device_list = HashMap::new();
+    for (key, value) in input_system_config.iter() {
+        if key.starts_with("devices/") && key.ends_with("/info") {
+            let node_id = key.split('/').nth(1).unwrap_or_default();
+            let device_info: DeviceInfo = serde_json::from_str(value).map_err(|e| {
+                error!("DeviceInfo serde_json::from_str failed: {:?}", e);
+                e
+            })?;
+            device_list.insert(node_id.to_string(), device_info);
+        }
+    }
+    Ok(device_list)
+}
+
+fn select_gateway_port(service_ports: &HashMap<String, u16>, service_name: &str) -> Option<u16> {
+    if let Some(port) = service_ports.get(service_name) {
+        return Some(*port);
+    }
+
+    for fallback_name in ["www", "http", "https", "main"] {
+        if let Some(port) = service_ports.get(fallback_name) {
+            return Some(*port);
+        }
+    }
+
+    if service_ports.len() == 1 {
+        return service_ports.values().next().copied();
+    }
+
+    let mut ports = service_ports.iter().collect::<Vec<_>>();
+    ports.sort_by(|left, right| left.0.cmp(right.0));
+    ports.first().map(|(_, port)| **port)
+}
+
+fn build_service_selector(
+    service_info: &ServiceInfo,
+    service_name: &str,
+) -> Option<HashMap<String, NodeGatewaySelectorTarget>> {
+    let mut selector = HashMap::new();
+
+    match service_info {
+        ServiceInfo::SingleInstance(instance) => {
+            if let Some(port) = select_gateway_port(&instance.service_ports, service_name) {
+                selector.insert(
+                    instance.node_id.clone(),
+                    NodeGatewaySelectorTarget {
+                        port,
+                        weight: FIXED_SERVICE_WEIGHT,
+                    },
+                );
+            }
+        }
+        ServiceInfo::RandomCluster(cluster) => {
+            for (_, (weight, instance)) in cluster.iter() {
+                if let Some(port) = select_gateway_port(&instance.service_ports, service_name) {
+                    selector.insert(
+                        instance.node_id.clone(),
+                        NodeGatewaySelectorTarget {
+                            port,
+                            weight: *weight,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    if selector.is_empty() {
+        None
+    } else {
+        Some(selector)
+    }
+}
+
+fn parse_sdk_version(app_spec: &AppServiceSpec) -> u32 {
+    app_spec
+        .app_doc
+        .sdk_version
+        .as_deref()
+        .and_then(|version| {
+            version
+                .split(['.', '-'])
+                .next()
+                .and_then(|major| major.parse::<u32>().ok())
+        })
+        .unwrap_or(0)
+}
+
+fn build_app_host_entry(
+    app_spec: &AppServiceSpec,
+    service_info: &ServiceInfo,
+    service_name: &str,
+) -> Option<NodeGatewayAppInfoEntry> {
+    let pick_instance = match service_info {
+        ServiceInfo::SingleInstance(instance) => Some(instance),
+        ServiceInfo::RandomCluster(cluster) => cluster
+            .values()
+            .map(|(_, instance)| instance)
+            .filter(|instance| select_gateway_port(&instance.service_ports, service_name).is_some())
+            .min_by(|left, right| left.instance_id.cmp(&right.instance_id)),
+    }?;
+
+    let port = select_gateway_port(&pick_instance.service_ports, service_name)?;
+    Some(NodeGatewayAppInfoEntry {
+        app_id: app_spec.app_id().to_string(),
+        sdk_version: parse_sdk_version(app_spec),
+        access_mode: NodeGatewayAccessMode::Private,
+        node_id: pick_instance.node_id.clone(),
+        port,
+        block_services: vec![],
+    })
+}
+
+fn build_node_route_map(
+    this_node_id: &str,
+    zone_host: &str,
+    device_list: &HashMap<String, DeviceInfo>,
+) -> HashMap<String, String> {
+    let mut node_route_map = HashMap::new();
+
+    for (node_id, device_info) in device_list.iter() {
+        if node_id == this_node_id {
+            continue;
+        }
+
+        let route = match device_info.device_doc.rtcp_port {
+            Some(port) if port != 2980 => format!("rtcp://{}.{}:{}/", node_id, zone_host, port),
+            _ => format!("rtcp://{}.{}/", node_id, zone_host),
+        };
+        node_route_map.insert(node_id.clone(), route);
+    }
+
+    node_route_map
+}
+
+fn insert_trust_key(trust_key: &mut HashMap<String, String>, key_id: &str, jwk: &jsonwebtoken::jwk::Jwk) {
+    match get_x_from_jwk(jwk) {
+        Ok(x) => {
+            trust_key.insert(key_id.to_string(), x);
+        }
+        Err(err) => {
+            warn!("parse trust key {} failed: {:?}", key_id, err);
+        }
+    }
+}
+
+fn build_trust_keys(
+    node_id: &str,
+    zone_config: &ZoneConfig,
+    device_list: &HashMap<String, DeviceInfo>,
+) -> HashMap<String, String> {
+    let mut trust_key = HashMap::new();
+
+    if let Some(verify_hub_info) = zone_config.verify_hub_info.as_ref() {
+        insert_trust_key(&mut trust_key, "verify-hub", &verify_hub_info.public_key);
+    }
+
+    if let Some(owner_key) = zone_config.get_default_key() {
+        insert_trust_key(&mut trust_key, "root", &owner_key);
+        insert_trust_key(&mut trust_key, "$default", &owner_key);
+        insert_trust_key(&mut trust_key, zone_config.owner.to_string().as_str(), &owner_key);
+        insert_trust_key(&mut trust_key, zone_config.owner.id.as_str(), &owner_key);
+    }
+
+    if let Some(device_info) = device_list.get(node_id) {
+        if let Some(node_key) = device_info.get_default_key() {
+            insert_trust_key(&mut trust_key, node_id, &node_key);
+        }
+    }
+
+    trust_key
+}
+
+fn build_fixed_selector_from_oods(
+    zone_config: &ZoneConfig,
+    port: u16,
+) -> HashMap<String, NodeGatewaySelectorTarget> {
+    let mut selector = HashMap::new();
+    for ood in zone_config.oods.iter() {
+        selector.insert(
+            ood.name.clone(),
+            NodeGatewaySelectorTarget {
+                port,
+                weight: FIXED_SERVICE_WEIGHT,
+            },
+        );
+    }
+    selector
+}
+
+pub(crate) async fn update_node_gateway_info(
+    node_id: &str,
+    scheduler_ctx: &NodeScheduler,
+    input_system_config: &HashMap<String, String>,
+) -> Result<HashMap<String, KVAction>> {
+    let zone_config = get_zone_config(input_system_config)?;
+    let zone_gateway_settings = get_zone_gateway_settings(input_system_config)?;
+    let device_list = get_device_list(input_system_config)?;
+    let zone_host = zone_config.id.to_host_name();
+
+    let mut node_gateway_info = NodeGatewayInfo {
+        node_info: NodeGatewayNodeInfo {
+            this_node_id: node_id.to_string(),
+            this_zone_host: zone_host.clone(),
+        },
+        app_info: HashMap::new(),
+        service_info: HashMap::new(),
+        node_route_map: build_node_route_map(node_id, &zone_host, &device_list),
+        trust_key: build_trust_keys(node_id, &zone_config, &device_list),
+    };
+
+    for (service_info_id, service_info) in scheduler_ctx.service_infos.iter() {
+        let (spec_id, service_name) = get_spec_id_from_service_info_id(service_info_id);
+
+        if let Some(selector) = build_service_selector(service_info, service_name.as_str()) {
+            if !spec_id.contains('@') {
+                node_gateway_info.service_info.insert(
+                    spec_id.clone(),
+                    NodeGatewayServiceInfoEntry {
+                        selector: selector.clone(),
+                    },
+                );
+            }
+
+            if service_name == "www" {
+                if spec_id.contains('@') {
+                    if let Ok(app_spec) = get_app_spec_by_spec_id(spec_id.as_str(), input_system_config)
+                    {
+                        if let Some(expose_config) = app_spec.install_config.expose_config.get("www")
+                        {
+                            if let Some(app_entry) =
+                                build_app_host_entry(&app_spec, service_info, service_name.as_str())
+                            {
+                                for host in zone_gateway_settings.get_shortcut(spec_id.as_str()) {
+                                    node_gateway_info
+                                        .app_info
+                                        .insert(host, NodeGatewayAppEntry::App(app_entry.clone()));
+                                }
+                                for host in expose_config.sub_hostname.iter() {
+                                    node_gateway_info.app_info.insert(
+                                        host.clone(),
+                                        NodeGatewayAppEntry::App(app_entry.clone()),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                } else if spec_id == "control-panel" {
+                    let service_entry = NodeGatewayAppEntry::Service(
+                        NodeGatewayAppServiceInfoEntry {
+                            service_id: spec_id.clone(),
+                            selector,
+                        },
+                    );
+                    for host in ["_", "www", "sys"] {
+                        node_gateway_info
+                            .app_info
+                            .entry(host.to_string())
+                            .or_insert_with(|| service_entry.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    let system_config_selector = build_fixed_selector_from_oods(&zone_config, SYSTEM_CONFIG_SERVICE_PORT);
+    if !system_config_selector.is_empty() {
+        node_gateway_info.service_info.insert(
+            "system_config".to_string(),
+            NodeGatewayServiceInfoEntry {
+                selector: system_config_selector,
+            },
+        );
+    }
+
+    let control_panel_selector = node_gateway_info
+        .service_info
+        .get("control-panel")
+        .map(|entry| entry.selector.clone())
+        .filter(|selector| !selector.is_empty())
+        .unwrap_or_else(|| build_fixed_selector_from_oods(&zone_config, CONTROL_PANEL_SERVICE_PORT));
+    if !control_panel_selector.is_empty() {
+        node_gateway_info.service_info.insert(
+            "control-panel".to_string(),
+            NodeGatewayServiceInfoEntry {
+                selector: control_panel_selector.clone(),
+            },
+        );
+
+        let control_panel_entry = NodeGatewayAppEntry::Service(NodeGatewayAppServiceInfoEntry {
+            service_id: "control-panel".to_string(),
+            selector: control_panel_selector,
+        });
+        node_gateway_info
+            .app_info
+            .insert("sys".to_string(), control_panel_entry.clone());
+        node_gateway_info
+            .app_info
+            .entry("_".to_string())
+            .or_insert_with(|| control_panel_entry.clone());
+        node_gateway_info
+            .app_info
+            .entry("www".to_string())
+            .or_insert(control_panel_entry);
+    }
+
+    let key = format!("nodes/{}/gateway_info", node_id);
+    let value = serde_json::to_string_pretty(&node_gateway_info)?;
+    info!("will update node {} gateway info: {}", node_id, value);
+
+    let mut result = HashMap::new();
+    result.insert(key, KVAction::Update(value));
+    Ok(result)
+}
+
+pub(crate) async fn update_node_gateway_infos(
     need_update_gateway_node_list: &HashSet<String>,
     scheduler_ctx: &NodeScheduler,
     input_system_config: &HashMap<String, String>,
 ) -> Result<HashMap<String, KVAction>> {
     let mut result = HashMap::new();
+    for node_id in need_update_gateway_node_list.iter() {
+        let actions = update_node_gateway_info(node_id, scheduler_ctx, input_system_config).await?;
+        extend_kv_action_map(&mut result, &actions);
+    }
+
+    Ok(result)
+}
+
+pub(crate) async fn update_node_gateway_config(
+    need_update_gateway_node_list: &HashSet<String>,
+    input_system_config: &HashMap<String, String>,
+) -> Result<HashMap<String, KVAction>> {
     let zone_config = get_zone_config(input_system_config)?;
-    let zone_gateway_settings = get_zone_gateway_settings(input_system_config)?;
+    let mut result = HashMap::new();
 
     for node_id in need_update_gateway_node_list.iter() {
-        let mut default_target: Option<String> = None;
-        let mut process_chain_lines: VecDeque<String> = VecDeque::new();
-        //遍历所有的Service_info,创建访问规则
-        // 生成规则：
-        // Service匹配url， app匹配host前缀
-        // 单实例，且在本机,直接forward，否则调用bukcyos select来得到 forwarding地址
-        for (servcie_info_id, service_info) in scheduler_ctx.service_infos.iter() {
-            let (spec_id, service_name) =
-                get_spec_id_from_service_info_id(servcie_info_id.as_str());
-            let mut target_str = String::new();
-            if service_name == "www" {
-                match service_info {
-                    ServiceInfo::SingleInstance(instance) => {
-                        if instance.node_id == *node_id {
-                            let instance_service_port = instance.service_ports.get("www");
-                            if instance_service_port.is_none() {
-                                continue;
-                            }
-                            let instance_service_port = instance_service_port.unwrap();
-                            target_str = format!(
-                                "return \"forward http://127.0.0.1:{}\"",
-                                instance_service_port
-                            );
-                        } else {
-                            target_str =
-                                format!("buckyos-select && forward \"$${{ANSWER.target}}/\"");
-                        }
-                    }
-                    ServiceInfo::RandomCluster(cluster) => {
-                        if cluster.len() > 0 {
-                            let (_, instance) = cluster.values().next().unwrap();
-                            target_str =
-                                format!("buckyos-select && forward \"$${{ANSWER.target}}/\"");
-                        } else {
-                            info!(
-                                "service {} has no instance no gateway rule need to be updated",
-                                spec_id
-                            );
-                            continue;
-                        }
-                    }
-                }
+        let mut node_gateway_json = json!({});
 
-                let is_app = spec_id.contains("@");
-                if is_app {
-                    let app_spec = get_app_spec_by_spec_id(spec_id.as_str(), input_system_config)?;
-                    let expose_config = app_spec.install_config.expose_config.get("www");
-                    if expose_config.is_some() {
-                        let shortcut_hosts = zone_gateway_settings.get_shortcut(spec_id.as_str());
-                        for shortcut_host in shortcut_hosts.iter() {
-                            let shortcut_host = shortcut_host;
-                            if shortcut_host.as_str() == "_" {
-                                default_target = Some(target_str.clone());
-                            } else {
-                                let line_rule = format!(
-                                    "match ${{REQ.host}} \"{}.*\" && {}",
-                                    shortcut_host, target_str
-                                );
-                                process_chain_lines.push_back(line_rule);
-                                let line_rule = format!(
-                                    "match ${{REQ.host}} \"{}-*.\" && {}",
-                                    shortcut_host, target_str
-                                );
-                                process_chain_lines.push_back(line_rule);
-                            }
-                        }
-
-                        let expose_config = expose_config.unwrap();
-                        for sub_hostname in expose_config.sub_hostname.iter() {
-                            let line_rule = format!(
-                                "match ${{REQ.host}} \"{}.*\" && {}",
-                                sub_hostname, target_str
-                            );
-                            process_chain_lines.push_back(line_rule);
-                            let line_rule = format!(
-                                "match ${{REQ.host}} \"{}-*.\" && {}",
-                                sub_hostname, target_str
-                            );
-                            process_chain_lines.push_back(line_rule);
-                        }
-                    }
-
-                    // if user_id == scheduler_ctx.default_user_id {
-                    //     let line_rule = format!("match ${{REQ.host}} \"{}*\" && {}", app_id, target_str);
-                    //     process_chain_lines.push_back(line_rule);
-                    // }
-                    // let line_rule = format!("match ${{REQ.host}} \"{}-{}*\" && {}", app_id, user_id, target_str);
-                    // process_chain_lines.push_back(line_rule);
-                    //TODO：处理zone-gateway中的快捷方式
-                } else {
-                    let line_rule = format!(
-                        "match ${{REQ.path}} \"/kapi/{}\" && {}",
-                        spec_id, target_str
-                    );
-                    process_chain_lines.push_front(line_rule);
-                    let line_rule = format!(
-                        "match ${{REQ.path}} \"/kapi/{}/*\" && {}",
-                        spec_id, target_str
-                    );
-                    process_chain_lines.push_front(line_rule);
-                }
-            } else {
-                //在node_gateway上设置必要的tcp/udp stack,并转发到对应的instance port
-            }
-        }
-        //特化处理 control-panel的访问
-        process_chain_lines.push_back(
-            r#"match ${REQ.host} "sys.*" && return "forward http://127.0.0.1:4020/";"#.to_string(),
-        );
-        process_chain_lines.push_back(
-            r#"match ${REQ.host} "sys-*" && return "forward http://127.0.0.1:4020/";"#.to_string(),
-        );
-        //特化处理 kapi/system_config
-
-        process_chain_lines.push_front(
-            r#"match ${REQ.path} "/1.0/identifiers/*" && return "forward http://127.0.0.1:3200/";"#
-                .to_string(),
-        );
-        process_chain_lines.push_front(
-            r#"match ${REQ.path} "/.well-known/*" && return "forward http://127.0.0.1:3200/";"#
-                .to_string(),
-        );
-        process_chain_lines.push_front(r#"match ${REQ.path} "/kapi/system_config" && return "forward http://127.0.0.1:3200/";"#.to_string());
-        process_chain_lines.push_front(r#"match ${REQ.path} "/kapi/system_config/*" && return "forward http://127.0.0.1:3200/";"#.to_string());
-
-        let web_app_list = get_web_app_list(input_system_config)?;
-        let mut web_app_servers: HashMap<String, Value> = HashMap::new();
-        for web_app in web_app_list.iter() {
-            let expose_config = web_app.install_config.expose_config.get("www");
-            if expose_config.is_some() && web_app.app_doc.pkg_list.web.is_some() {
-                let webpkg_str = web_app
-                    .app_doc
-                    .pkg_list
-                    .web
-                    .as_ref()
-                    .unwrap()
-                    .pkg_id
-                    .clone();
-                let webpkg_id = PackageId::get_pkg_id_unique_name(webpkg_str.as_str());
-                let target_str = format!("return \"server {}\";", webpkg_id);
-                web_app_servers.insert(
-                    webpkg_id.clone(),
-                    json!({
-                        "type": "dir",
-                        "root_path":format!("../bin/{}/", webpkg_id),
-                    }),
-                );
-                // let shortcut_hosts = zone_gateway_settings.get_shortcut(spec_id.as_str());
-                // for shortcut_host in shortcut_hosts.iter() {
-                //     let shortcut_host = shortcut_host;
-                //     if shortcut_host.as_str() == "_" {
-                //         default_target = Some(target_str.clone());
-                //     } else {
-                //         let line_rule = format!("match ${{REQ.host}} \"{}.*\" && {}", shortcut_host, target_str);
-                //         process_chain_lines.push_back(line_rule);
-                //         let line_rule = format!("match ${{REQ.host}} \"{}-*.\" && {}", shortcut_host, target_str);
-                //         process_chain_lines.push_back(line_rule);
-                //     }
-                // }
-
-                let expose_config = expose_config.unwrap();
-                for sub_hostname in expose_config.sub_hostname.iter() {
-                    let line_rule = format!(
-                        "match ${{REQ.host}} \"{}.*\" && {}",
-                        sub_hostname, target_str
-                    );
-                    process_chain_lines.push_back(line_rule);
-                    // let line_rule = format!("match ${{REQ.host}} \"{}-*.\" && {}", sub_hostname, target_str);
-                    // process_chain_lines.push_back(line_rule);
-                }
-            }
-        }
-
-        if default_target.is_some() {
-            let default_target = default_target.unwrap();
-            process_chain_lines.push_back(default_target);
-        }
-
-        let process_chain_lines_str = process_chain_lines
-            .iter()
-            .cloned()
-            .collect::<Vec<String>>()
-            .join("\n");
-
-        let mut node_gateway_json = json!({
-            "servers": {
-                "node_gateway": {
-                    "type": "http",
-                    "hook_point": {
-                        "main": {
-                            "blocks": {
-                                "default": {
-                                    "block": process_chain_lines_str
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        });
-
-        for (server_name, server_config) in web_app_servers.iter() {
-            node_gateway_json["servers"][server_name] = server_config.clone();
-        }
-
-        if zone_config.sn.is_some() {
-            info!("SN enabled,add  acme functions. ");
-            let sn_url = format!("https://{}/kapi/sn", zone_config.sn.as_ref().unwrap());
+        if let Some(sn_host) = zone_config.sn.as_ref() {
+            info!("SN enabled, add acme/tls stack for node {}", node_id);
+            let sn_url = format!("https://{}/kapi/sn", sn_host);
             let zone_hostname = zone_config.id.to_host_name();
             let wildcard_zone_domain = format!("*.{}", zone_hostname);
-            let acme_functions = json!({
+            node_gateway_json = json!({
                 "acme": {
                     "dns_providers": {
                         "sn-dns": {
@@ -781,20 +971,18 @@ pub(crate) async fn update_node_gateway_config(
                     }
                 }
             });
-            node_gateway_json["acme"] = acme_functions["acme"].clone();
-            node_gateway_json["stacks"] = acme_functions["stacks"].clone();
         }
 
-        let node_gatway_config_str = serde_json::to_string_pretty(&node_gateway_json)?;
+        let node_gateway_config_str = serde_json::to_string_pretty(&node_gateway_json)?;
         info!(
             "will update node {} gateway config: {}",
-            node_id, node_gatway_config_str
+            node_id, node_gateway_config_str
         );
         let key = format!("nodes/{}/gateway_config", node_id);
-        result.insert(key, KVAction::Update(node_gatway_config_str));
+        result.insert(key, KVAction::Update(node_gateway_config_str));
     }
 
-    return Ok(result);
+    Ok(result)
 }
 
 async fn update_rbac(
@@ -940,13 +1128,17 @@ pub(crate) async fn build_schedule_plan(
     }
 
     if !need_update_gateway_node_list.is_empty() {
-        let update_gateway_node_list_actions = update_node_gateway_config(
+        let update_gateway_node_list_actions = update_node_gateway_infos(
             &need_update_gateway_node_list,
             &scheduler_ctx,
             input_system_config,
         )
         .await?;
         extend_kv_action_map(&mut tx_actions, &update_gateway_node_list_actions);
+
+        let update_gateway_config_actions =
+            update_node_gateway_config(&need_update_gateway_node_list, input_system_config).await?;
+        extend_kv_action_map(&mut tx_actions, &update_gateway_config_actions);
     }
 
     Ok(SchedulePlan {
@@ -1015,4 +1207,228 @@ pub async fn schedule_loop(is_boot: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use buckyos_api::{
+        AppDocBuilder, AppServiceSpec, AppType, ServiceExposeConfig, ServiceInstallConfig,
+        ServiceState,
+    };
+    use jsonwebtoken::jwk::Jwk;
+    use name_lib::generate_ed25519_key_pair;
+    use name_lib::{DeviceConfig, DID, DeviceNodeType, OODDescriptionString, VerifyHubInfo};
+
+    fn create_test_replica_instance(
+        spec_id: &str,
+        instance_id: &str,
+        node_id: &str,
+        ports: &[(&str, u16)],
+    ) -> ReplicaInstance {
+        ReplicaInstance {
+            spec_id: spec_id.to_string(),
+            node_id: node_id.to_string(),
+            res_limits: HashMap::new(),
+            instance_id: instance_id.to_string(),
+            last_update_time: buckyos_get_unix_timestamp(),
+            state: InstanceState::Running,
+            service_ports: ports
+                .iter()
+                .map(|(name, port)| ((*name).to_string(), *port))
+                .collect(),
+        }
+    }
+
+    fn create_test_device_info(name: &str, rtcp_port: Option<u32>) -> DeviceInfo {
+        let (_, public_key_jwk) = generate_ed25519_key_pair();
+        let public_key_jwk: Jwk = serde_json::from_value(public_key_jwk).unwrap();
+        let pkx = get_x_from_jwk(&public_key_jwk).unwrap();
+        let mut device = DeviceConfig::new(name, pkx);
+        device.rtcp_port = rtcp_port;
+        device.owner = DID::new("bns", "owner");
+        DeviceInfo::from_device_doc(&device)
+    }
+
+    fn create_test_zone_config() -> ZoneConfig {
+        let (_, owner_key_jwk) = generate_ed25519_key_pair();
+        let owner_key_jwk: Jwk = serde_json::from_value(owner_key_jwk).unwrap();
+        let (_, verify_hub_key_jwk) = generate_ed25519_key_pair();
+        let verify_hub_key_jwk: Jwk = serde_json::from_value(verify_hub_key_jwk).unwrap();
+
+        let mut zone_config = ZoneConfig::new(
+            DID::new("web", "test.buckyos.io"),
+            DID::new("bns", "owner"),
+            owner_key_jwk,
+        );
+        zone_config.oods = vec![
+            OODDescriptionString::new("ood1".to_string(), DeviceNodeType::OOD, None, None),
+            OODDescriptionString::new("ood2".to_string(), DeviceNodeType::OOD, None, None),
+        ];
+        zone_config.verify_hub_info = Some(VerifyHubInfo {
+            public_key: verify_hub_key_jwk,
+        });
+        zone_config
+    }
+
+    fn create_test_app_spec() -> AppServiceSpec {
+        let owner = DID::new("bns", "owner");
+        let app_doc = AppDocBuilder::new(
+            AppType::Service,
+            "files",
+            "0.1.0",
+            "did:web:buckyos.ai",
+            &owner,
+        )
+        .sdk_version("10")
+        .selector_type(SelectorType::Single)
+        .build()
+        .unwrap();
+
+        let mut install_config = ServiceInstallConfig::default();
+        install_config.expose_config.insert(
+            "www".to_string(),
+            ServiceExposeConfig {
+                sub_hostname: vec!["files".to_string()],
+                ..Default::default()
+            },
+        );
+
+        AppServiceSpec {
+            app_doc,
+            app_index: 1,
+            user_id: "alice".to_string(),
+            enable: true,
+            expected_instance_count: 1,
+            state: ServiceState::Running,
+            install_config,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_update_node_gateway_info_builds_expected_payload() {
+        let zone_config = create_test_zone_config();
+        let app_spec = create_test_app_spec();
+        let device_ood1 = create_test_device_info("ood1", None);
+        let device_ood2 = create_test_device_info("ood2", Some(2981));
+
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "boot/config".to_string(),
+            serde_json::to_string(&zone_config).unwrap(),
+        );
+        input_system_config.insert(
+            "devices/ood1/info".to_string(),
+            serde_json::to_string(&device_ood1).unwrap(),
+        );
+        input_system_config.insert(
+            "devices/ood2/info".to_string(),
+            serde_json::to_string(&device_ood2).unwrap(),
+        );
+        input_system_config.insert(
+            "users/alice/apps/files/spec".to_string(),
+            serde_json::to_string(&app_spec).unwrap(),
+        );
+
+        let mut scheduler_ctx = NodeScheduler::new_empty(1);
+        scheduler_ctx.service_infos.insert(
+            "control-panel".to_string(),
+            ServiceInfo::SingleInstance(create_test_replica_instance(
+                "control-panel",
+                "control-panel@ood1",
+                "ood1",
+                &[("www", 4020)],
+            )),
+        );
+        scheduler_ctx.service_infos.insert(
+            "system_config".to_string(),
+            ServiceInfo::SingleInstance(create_test_replica_instance(
+                "system_config",
+                "system_config@ood1",
+                "ood1",
+                &[("http", 3200)],
+            )),
+        );
+        scheduler_ctx.service_infos.insert(
+            "files@alice".to_string(),
+            ServiceInfo::SingleInstance(create_test_replica_instance(
+                "files@alice",
+                "files@alice@ood2",
+                "ood2",
+                &[("www", 10160)],
+            )),
+        );
+
+        let actions =
+            update_node_gateway_info("ood1", &scheduler_ctx, &input_system_config).await.unwrap();
+        let gateway_info_str = match actions.get("nodes/ood1/gateway_info").unwrap() {
+            KVAction::Update(value) => value,
+            other => panic!("unexpected kv action: {:?}", other),
+        };
+        println!("gateway_info_str: {}", gateway_info_str);
+        let gateway_info: NodeGatewayInfo = serde_json::from_str(gateway_info_str).unwrap();
+
+        assert_eq!(gateway_info.node_info.this_node_id, "ood1");
+        assert_eq!(gateway_info.node_info.this_zone_host, "test.buckyos.io");
+        assert_eq!(
+            gateway_info.node_route_map.get("ood2").unwrap(),
+            "rtcp://ood2.test.buckyos.io:2981/"
+        );
+        assert!(gateway_info.trust_key.contains_key("verify-hub"));
+        assert!(gateway_info.trust_key.contains_key("ood1"));
+
+        let system_config = gateway_info.service_info.get("system_config").unwrap();
+        assert_eq!(system_config.selector.get("ood1").unwrap().port, 3200);
+        assert_eq!(system_config.selector.get("ood2").unwrap().port, 3200);
+
+        let files = match gateway_info.app_info.get("files").unwrap() {
+            NodeGatewayAppEntry::App(entry) => entry,
+            _ => panic!("files should resolve to an app entry"),
+        };
+        assert_eq!(files.app_id, "files");
+        assert_eq!(files.node_id, "ood2");
+        assert_eq!(files.port, 10160);
+        assert_eq!(files.sdk_version, 10);
+
+        let sys = match gateway_info.app_info.get("sys").unwrap() {
+            NodeGatewayAppEntry::Service(entry) => entry,
+            _ => panic!("sys should resolve to a service entry"),
+        };
+        assert_eq!(sys.service_id, "control-panel");
+        assert_eq!(sys.selector.get("ood1").unwrap().port, 4020);
+    }
+
+    #[tokio::test]
+    async fn test_update_node_gateway_config_keeps_acme_and_zone_tls() {
+        let mut input_system_config = HashMap::new();
+        let mut zone_config = create_test_zone_config();
+        zone_config.sn = Some("sn.test.buckyos.io".to_string());
+        input_system_config.insert(
+            "boot/config".to_string(),
+            serde_json::to_string(&zone_config).unwrap(),
+        );
+
+        let mut nodes = HashSet::new();
+        nodes.insert("ood1".to_string());
+
+        let actions = update_node_gateway_config(&nodes, &input_system_config)
+            .await
+            .unwrap();
+        let gateway_config_str = match actions.get("nodes/ood1/gateway_config").unwrap() {
+            KVAction::Update(value) => value,
+            other => panic!("unexpected kv action: {:?}", other),
+        };
+        let gateway_config: serde_json::Value = serde_json::from_str(gateway_config_str).unwrap();
+
+        assert_eq!(
+            gateway_config["acme"]["dns_providers"]["sn-dns"]["sn"],
+            "https://sn.test.buckyos.io/kapi/sn"
+        );
+        assert_eq!(gateway_config["stacks"]["zone_tls"]["bind"], "0.0.0.0:443");
+        assert_eq!(
+            gateway_config["stacks"]["zone_tls"]["hook_point"]["main"]["blocks"]["default"]
+                ["block"],
+            "return \"server node_gateway\";\n"
+        );
+    }
 }

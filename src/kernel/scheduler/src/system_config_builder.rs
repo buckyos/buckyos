@@ -483,6 +483,9 @@ impl SystemConfigBuilder {
             &gateway_config,
         )?;
 
+        let gateway_info = json!({});
+        self.insert_json(&format!("nodes/{}/gateway_info", ood_name), &gateway_info)?;
+
         self.append_policy(&format!("g, {ood_name}, ood"))?;
         Ok(self)
     }

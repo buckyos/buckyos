@@ -92,6 +92,7 @@ apps:
     data_paths: 
     - bin/applist.json
     - bin/cyfs-gateway/
+    - etc/node_gateway_info.json
     - etc/user_gateway.yaml
     - etc/post_gateway.yaml
     - etc/node_gateway.json
