@@ -1,7 +1,4 @@
-use ndn_lib::*;
-use std::path::PathBuf;
-
-pub async fn create_ndn_chunk(filepath: &str, target: &str) {
+pub async fn create_ndn_chunk(_filepath: &str, _target: &str) {
     // let ndn_mgr_root_path = PathBuf::from(target);
     // let file_path = PathBuf::from(filepath);
     // let ndn_mgr = NamedDataMgr::get_named_data_mgr_by_path(ndn_mgr_root_path).await;

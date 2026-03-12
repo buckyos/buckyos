@@ -1,9 +1,7 @@
-use buckyos_api::*;
 #[allow(dead_code, unused)]
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use jsonwebtoken::EncodingKey;
-use name_lib::decode_jwt_claim_without_verify;
 use ndn_lib::*;
 use package_lib::*;
 use serde::{Deserialize, Serialize};
@@ -181,8 +179,13 @@ pub async fn pack_raw_pkg(
 }
 
 // Based on pack raw pkg output, publish pkg to current zone (call repo_server.pub_pkg)
-pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), String> {
-    unimplemented!()
+pub async fn publish_raw_pkg(_pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), String> {
+    // Old repo publish pipeline depended on repo_service v1 methods that no longer exist.
+    // Keep the command surface for now, but fail explicitly until the CLI is redesigned.
+    Err(
+        "publish_raw_pkg is temporarily disabled: the old repo publish protocol was removed and buckycli publish flow needs refactor"
+            .to_string(),
+    )
     // // 1) First push_chunk
     // let mut pkg_meta_jwt_map = HashMap::new();
     // let runtime = get_buckyos_api_runtime().unwrap();
@@ -265,84 +268,20 @@ pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), St
 }
 
 // Prepare dapp_meta for publishing, this dapp_meta can be used for the next step of publishing
-pub async fn publish_app_pkg(dapp_dir_path: &str, is_pub_sub_pkg: bool) -> Result<(), String> {
-    // Before publishing dapp_pkg, users need to ensure sub_pkgs
-    let runtime = get_buckyos_api_runtime().unwrap();
-    if runtime.user_private_key.is_none() {
-        return Err("No developer private key provided, skipping dapp_pkg publishing".to_string());
-    }
-    let app_doc_file_name = format!("app.doc.json");
-    let app_meta_path = Path::new(dapp_dir_path).join(app_doc_file_name);
-    if !app_meta_path.exists() {
-        return Err(format!("{} file does not exist", app_meta_path.display()));
-    }
-
-    let app_meta_str = fs::read_to_string(app_meta_path)
-        .map_err(|e| format!("Failed to read app doc.json: {}", e.to_string()))?;
-    let mut app_meta: AppDoc = serde_json::from_str(&app_meta_str)
-        .map_err(|e| format!("Failed to parse app doc.json: {}", e.to_string()))?;
-    //info!("app_meta:{} {}",app_meta.name.as_str(), serde_json::to_string_pretty(&app_meta).unwrap());
-    let mut pkg_path_list = Vec::new();
-
-    for (sub_pkg_section, pkg_desc) in app_meta.pkg_list.iter() {
-        let sub_pkg_id = pkg_desc.pkg_id.clone();
-        let sub_pkg_id: PackageId = PackageId::parse(sub_pkg_id.as_str())
-            .map_err(|e| format!("Failed to parse sub_pkg_id: {}", e.to_string()))?;
-
-        let pkg_path = Path::new(dapp_dir_path).join(sub_pkg_id.name.as_str());
-        if !pkg_path.exists() {
-            return Err(format!(
-                "sub pkg {} directory does not exist",
-                pkg_path.display()
-            ));
-        }
-        let pkg_meta_path = pkg_path.join("pkg_meta.jwt");
-        if !pkg_meta_path.exists() {
-            return Err(format!(
-                "sub pkg {} pkg_meta.jwt does not exist",
-                pkg_path.display()
-            ));
-        }
-
-        println!("app sub pkg {} => {}", sub_pkg_section, pkg_path.display());
-        pkg_path_list.push(pkg_path);
-    }
-
-    let repo_client = runtime.get_repo_client().await.unwrap();
-    let mut app_meta_jwt_map = HashMap::new();
-    let app_doc_json = serde_json::to_value(&app_meta)
-        .map_err(|e| format!("Failed to serialize app_doc: {}", e.to_string()))?;
-
-    let (app_doc_obj_id, _) = build_named_object_by_json("app", &app_doc_json);
-    let app_doc_jwt = named_obj_to_jwt(
-        &app_doc_json,
-        runtime.user_private_key.as_ref().unwrap(),
-        runtime.user_id.clone(),
+pub async fn publish_app_pkg(_dapp_dir_path: &str, _is_pub_sub_pkg: bool) -> Result<(), String> {
+    // Old publish flow depended on repo_service v1-only methods such as `pub_pkg`.
+    Err(
+        "publish_app_pkg is temporarily disabled: repo publish commands are being refactored for repo_service v2"
+            .to_string(),
     )
-    .map_err(|e| format!("Failed to generate app_doc.jwt: {}", e.to_string()))?;
-    app_meta_jwt_map.insert(app_doc_obj_id.to_string(), app_doc_jwt);
-
-    repo_client
-        .pub_pkg(app_meta_jwt_map)
-        .await
-        .map_err(|e| format!("Failed to publish app doc: {}", e.to_string()))?;
-
-    let pub_result = publish_raw_pkg(&pkg_path_list).await?;
-
-    println!("Successfully published App {}", app_meta.name);
-    Ok(())
 }
 
 // call repo_server.pub_index, which will trigger automatic upgrades of related components in the zone
 pub async fn publish_repo_index() -> Result<(), String> {
-    let api_runtime = get_buckyos_api_runtime().unwrap();
-    let repo_client = api_runtime.get_repo_client().await.unwrap();
-    repo_client
-        .pub_index()
-        .await
-        .map_err(|e| format!("Failed to publish repo index: {}", e.to_string()))?;
-    println!("Successfully published repo index");
-    Ok(())
+    Err(
+        "publish_repo_index is temporarily disabled: repo index publishing must be redesigned for repo_service v2"
+            .to_string(),
+    )
 }
 
 pub async fn publish_app_to_remote_repo(
@@ -353,16 +292,10 @@ pub async fn publish_app_to_remote_repo(
 }
 
 pub async fn sync_from_remote_source() -> Result<(), String> {
-    let api_runtime = get_buckyos_api_runtime().unwrap();
-    let repo_client = api_runtime.get_repo_client().await.unwrap();
-    repo_client.sync_from_remote_source().await.map_err(|e| {
-        format!(
-            "Failed to sync zone repo service's meta-index-db from remote source: {}",
-            e.to_string()
-        )
-    })?;
-    println!("Successfully synced zone repo service's meta-index-db from remote source, new default meta-index-db is ready");
-    Ok(())
+    Err(
+        "sync_from_remote_source is temporarily disabled: the old repo sync API was removed and buckycli sync flow needs refactor"
+            .to_string(),
+    )
 }
 
 #[derive(Debug)]

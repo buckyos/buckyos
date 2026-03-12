@@ -29,6 +29,7 @@ bytes = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
 ndn-lib = { workspace = true }
+ndn-toolkit = { workspace = true }
 package-lib = { workspace = true }
 name-lib = { workspace = true }
 name-client = { workspace = true }
@@ -39,4 +40,5 @@ buckyos-api = { path = "../../kernel/buckyos-api" }
 server-runner = { workspace = true }
 cyfs-gateway-lib = { workspace = true }
 
-
+[dev-dependencies]
+tempfile = { workspace = true }
