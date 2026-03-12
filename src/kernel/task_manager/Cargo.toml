@@ -25,6 +25,8 @@ http = { workspace = true }
 http-body-util = { workspace = true }
 buckyos-api = { path = "../buckyos-api" }
 ndn-lib = { workspace = true }
+ndn-toolkit = { workspace = true }
+named_store = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

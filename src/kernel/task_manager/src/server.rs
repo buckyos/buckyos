@@ -1,3 +1,8 @@
+use crate::download_executor::{
+    build_download_task_data, build_download_task_name, infer_objid_from_url,
+    merge_download_source_patch, shared_download_executor, should_enqueue_download_task,
+    spec_from_task, task_has_download_url, task_has_objid, DownloadTaskStore, DOWNLOAD_TASK_TYPE,
+};
 use crate::task::{new_task, Task, TaskScope, TaskStatus};
 use crate::task_db::DB_MANAGER;
 use ::kRPC::*;
@@ -87,6 +92,14 @@ fn parse_root_id_from_task_data(data: &Value) -> Option<String> {
     None
 }
 
+fn unique_task_name_conflict(err: &RPCErrors) -> bool {
+    matches!(
+        err,
+        RPCErrors::ReasonError(message)
+            if message.contains("UNIQUE constraint failed")
+                || message.contains("idx_task_name_scope")
+    )
+}
 
 #[derive(Clone)]
 struct TaskManagerService {
@@ -184,6 +197,106 @@ impl TaskManagerService {
             .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
         task.ok_or_else(|| RPCErrors::ReasonError(format!("Task {} not found", id)))
     }
+
+    async fn list_download_tasks_for_request(
+        &self,
+        request_ctx: &RequestContext,
+    ) -> Result<Vec<Task>> {
+        let user_id =
+            (!request_ctx.user_id.trim().is_empty()).then_some(request_ctx.user_id.as_str());
+        let app_id = (!request_ctx.app_id.trim().is_empty()).then_some(request_ctx.app_id.as_str());
+        let db_manager = DB_MANAGER.lock().await;
+        db_manager
+            .list_tasks_filtered(app_id, Some(DOWNLOAD_TASK_TYPE), None, None, None, user_id)
+            .await
+            .map_err(|e| RPCErrors::ReasonError(e.to_string()))
+    }
+
+    async fn update_task_and_publish(
+        &self,
+        id: i64,
+        status: Option<TaskStatus>,
+        progress: Option<f32>,
+        message: Option<String>,
+        data_patch: Option<Value>,
+        source_method: &'static str,
+    ) -> std::result::Result<Task, String> {
+        let before_task = self.load_task(id).await.map_err(|err| err.to_string())?;
+        {
+            let db_manager = DB_MANAGER.lock().await;
+            db_manager
+                .update_task(id, status, progress, message, data_patch)
+                .await
+                .map_err(|err| err.to_string())?;
+        }
+
+        let after_task = self.load_task(id).await.map_err(|err| err.to_string())?;
+        if before_task.status != after_task.status {
+            self.publish_task_status_changed_event(&before_task, &after_task, source_method)
+                .await;
+        }
+        Ok(after_task)
+    }
+
+    async fn update_task_error_and_publish(
+        &self,
+        id: i64,
+        error_message: &str,
+        source_method: &'static str,
+    ) -> std::result::Result<Task, String> {
+        let before_task = self.load_task(id).await.map_err(|err| err.to_string())?;
+        {
+            let db_manager = DB_MANAGER.lock().await;
+            db_manager
+                .update_task_error(id, error_message)
+                .await
+                .map_err(|err| err.to_string())?;
+        }
+
+        let after_task = self.load_task(id).await.map_err(|err| err.to_string())?;
+        self.publish_task_status_changed_event(&before_task, &after_task, source_method)
+            .await;
+        Ok(after_task)
+    }
+}
+
+#[async_trait]
+impl DownloadTaskStore for TaskManagerService {
+    async fn load_task(&self, task_id: i64) -> std::result::Result<Task, String> {
+        TaskManagerService::load_task(self, task_id)
+            .await
+            .map_err(|err| err.to_string())
+    }
+
+    async fn update_task(
+        &self,
+        task_id: i64,
+        status: Option<TaskStatus>,
+        progress: Option<f32>,
+        message: Option<String>,
+        data_patch: Option<Value>,
+        source_method: &'static str,
+    ) -> std::result::Result<Task, String> {
+        self.update_task_and_publish(
+            task_id,
+            status,
+            progress,
+            message,
+            data_patch,
+            source_method,
+        )
+        .await
+    }
+
+    async fn mark_failed(
+        &self,
+        task_id: i64,
+        error_message: String,
+        source_method: &'static str,
+    ) -> std::result::Result<Task, String> {
+        self.update_task_error_and_publish(task_id, error_message.as_str(), source_method)
+            .await
+    }
 }
 
 #[async_trait]
@@ -257,15 +370,104 @@ impl TaskManagerHandler for TaskManagerService {
         objid: Option<ObjId>,
         download_options: Option<Value>,
         parent_id: Option<i64>,
-        _opts: CreateTaskOptions,
-        _user_id: &str,
-        _app_id: &str,
-        _ctx: RPCContext,
+        mut opts: CreateTaskOptions,
+        user_id: &str,
+        app_id: &str,
+        ctx: RPCContext,
     ) -> Result<TaskId> {
-        let _ = (download_url, objid, download_options, parent_id);
-        Err(RPCErrors::ReasonError(
-            "create_download_task not implemented".to_string(),
-        ))
+        let download_url = download_url.trim();
+        if download_url.is_empty() {
+            return Err(RPCErrors::ParseRequestError(
+                "download_url is required".to_string(),
+            ));
+        }
+
+        if opts.parent_id.is_none() {
+            opts.parent_id = parent_id;
+        }
+
+        let request_ctx = request_context_from_source_or_rpc(Some(user_id), Some(app_id), &ctx);
+        let resolved_objid = objid.or_else(|| infer_objid_from_url(download_url));
+        let scoped_tasks = self.list_download_tasks_for_request(&request_ctx).await?;
+
+        let existing_task = resolved_objid
+            .as_ref()
+            .and_then(|objid| {
+                scoped_tasks
+                    .iter()
+                    .find(|task| task_has_objid(task, objid))
+                    .cloned()
+            })
+            .or_else(|| {
+                scoped_tasks
+                    .iter()
+                    .find(|task| task_has_download_url(task, download_url))
+                    .cloned()
+            });
+
+        if let Some(existing_task) = existing_task {
+            let mut task = existing_task;
+            if let Some(data_patch) = merge_download_source_patch(
+                &task.data,
+                download_url,
+                resolved_objid.as_ref(),
+                download_options.as_ref(),
+            ) {
+                {
+                    let db_manager = DB_MANAGER.lock().await;
+                    db_manager
+                        .update_task(task.id, None, None, None, Some(data_patch))
+                        .await
+                        .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+                }
+                task = self.load_task(task.id).await?;
+            }
+
+            if should_enqueue_download_task(&task) {
+                if let Some(spec) = spec_from_task(&task) {
+                    let _ = shared_download_executor()
+                        .enqueue(Arc::new(self.clone()), spec)
+                        .await;
+                }
+            }
+            return Ok(task.id);
+        }
+
+        let task_name = build_download_task_name(download_url, resolved_objid.as_ref());
+        let task_data =
+            build_download_task_data(download_url, resolved_objid.as_ref(), download_options);
+
+        let task = match self
+            .handle_create_task(
+                task_name.as_str(),
+                DOWNLOAD_TASK_TYPE,
+                Some(task_data),
+                opts,
+                user_id,
+                app_id,
+                ctx.clone(),
+            )
+            .await
+        {
+            Ok(task) => task,
+            Err(err) if unique_task_name_conflict(&err) => {
+                let scoped_tasks = self.list_download_tasks_for_request(&request_ctx).await?;
+                let existing_task = scoped_tasks
+                    .into_iter()
+                    .find(|task| task.name == task_name)
+                    .ok_or(err)?;
+                existing_task
+            }
+            Err(err) => return Err(err),
+        };
+
+        if let Some(spec) = spec_from_task(&task) {
+            let _ = shared_download_executor()
+                .enqueue(Arc::new(self.clone()), spec)
+                .await;
+        }
+
+        Ok(task.id)
     }
 
     async fn handle_get_task(&self, id: i64, _ctx: RPCContext) -> Result<Task> {
@@ -1175,7 +1377,10 @@ mod tests {
 
             let get_req = create_rpc_request("get_task", get_params);
             let get_result = server.handle_rpc_call(get_req, ip).await;
-            assert!(get_result.is_err(), "Unexpected success when getting deleted task");
+            assert!(
+                get_result.is_err(),
+                "Unexpected success when getting deleted task"
+            );
         } else {
             panic!("Failed to delete task");
         }
