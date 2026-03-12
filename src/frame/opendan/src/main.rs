@@ -14,13 +14,14 @@ pub mod test_utils;
 pub mod worklog;
 pub mod workspace;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use buckyos_api::msg_queue::MsgQueueClient;
 use buckyos_api::{
-    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType,
+    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AppDoc,
+    AppServiceInstanceConfig, AppServiceSpec, BuckyOSRuntimeType, ServiceInstallConfig,
     AICC_SERVICE_SERVICE_NAME, OPENDAN_SERVICE_NAME, OPENDAN_SERVICE_PORT,
 };
 use buckyos_kit::{get_buckyos_root_dir, init_logging};
@@ -32,9 +33,10 @@ use cyfs_gateway_lib::{
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use log::{error, info, warn};
+use name_lib::{AgentDocument, DIDDocumentTrait, EncodedDocument};
 use server_runner::Runner;
+use serde_json::Value as Json;
 use tokio::fs;
-use tokio::task::JoinSet;
 use tokio::time::{sleep, Duration};
 
 use crate::agent::{AIAgent, AIAgentDeps};
@@ -93,60 +95,484 @@ impl HttpServer for OpenDanHttpServer {
     }
 }
 
-const OPENDAN_AGENTS_ROOT_ENV: &str = "OPENDAN_AGENTS_ROOT";
+const OPENDAN_AGENT_ID_ENV: [&str; 3] = ["OPENDAN_AGENT_ID", "AGENT_ID", "AGENT_INSTANCE_ID"];
+const OPENDAN_AGENT_ENV_ENV: [&str; 3] = ["OPENDAN_AGENT_ENV", "AGENT_ENV", "AGENT_ROOT"];
+const OPENDAN_AGENT_BIN_ENV: [&str; 3] = ["OPENDAN_AGENT_BIN", "AGENT_BIN", "AGENT_PACKAGE_ROOT"];
 const OPENDAN_SESSION_WORKER_THREADS_ENV: &str = "OPENDAN_SESSION_WORKER_THREADS";
 const OPENDAN_STARTUP_DEP_READY_WAIT_SECS: u64 = 10;
 
-fn resolve_agents_root() -> Result<PathBuf> {
-    if let Ok(path) = std::env::var(OPENDAN_AGENTS_ROOT_ENV) {
-        let path = path.trim();
-        if !path.is_empty() {
-            let root = PathBuf::from(path);
-            return if root.is_absolute() {
-                Ok(root)
-            } else {
-                Ok(std::env::current_dir()
-                    .context("read current_dir failed")?
-                    .join(root))
-            };
-        }
-    }
-
-    Ok(get_buckyos_root_dir().join("agents"))
+#[derive(Clone, Debug, Default)]
+struct StartupArgs {
+    agent_id: Option<String>,
+    agent_env: Option<PathBuf>,
+    agent_bin: Option<PathBuf>,
 }
 
-async fn discover_agent_roots(agents_root: &Path) -> Result<Vec<PathBuf>> {
-    fs::create_dir_all(agents_root).await.map_err(|err| {
+#[derive(Clone, Debug)]
+struct AgentInstanceDoc {
+    doc: AgentDocument,
+    json: Json,
+}
+
+#[derive(Clone)]
+struct AgentAppSpec {
+    key: String,
+    json: Json,
+    app_doc: AppDoc,
+    install_config: ServiceInstallConfig,
+    user_id: Option<String>,
+}
+
+#[derive(Clone)]
+struct LaunchConfig {
+    agent_id: String,
+    agent_env_root: PathBuf,
+    agent_package_root: Option<PathBuf>,
+    agent_did: Option<String>,
+    agent_owner_did: Option<String>,
+    agent_doc: Option<AgentInstanceDoc>,
+    agent_spec: Option<AgentAppSpec>,
+}
+
+fn parse_startup_args() -> Result<StartupArgs> {
+    let mut parsed = StartupArgs::default();
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--agent-id" => {
+                parsed.agent_id = Some(
+                    args.next()
+                        .ok_or_else(|| anyhow!("missing value for --agent-id"))?,
+                );
+            }
+            "--agent-env" => {
+                parsed.agent_env = Some(PathBuf::from(
+                    args.next()
+                        .ok_or_else(|| anyhow!("missing value for --agent-env"))?,
+                ));
+            }
+            "--agent-bin" => {
+                parsed.agent_bin = Some(PathBuf::from(
+                    args.next()
+                        .ok_or_else(|| anyhow!("missing value for --agent-bin"))?,
+                ));
+            }
+            other if other.starts_with("--agent-id=") => {
+                parsed.agent_id = Some(other["--agent-id=".len()..].to_string());
+            }
+            other if other.starts_with("--agent-env=") => {
+                parsed.agent_env = Some(PathBuf::from(&other["--agent-env=".len()..]));
+            }
+            other if other.starts_with("--agent-bin=") => {
+                parsed.agent_bin = Some(PathBuf::from(&other["--agent-bin=".len()..]));
+            }
+            _ => {}
+        }
+    }
+    Ok(parsed)
+}
+
+fn get_first_env_var(keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .map(|value| value.trim().to_string())
+        .find(|value| !value.is_empty())
+}
+
+fn resolve_requested_agent_id(startup: &StartupArgs) -> Result<String> {
+    startup
+        .agent_id
+        .clone()
+        .or_else(|| get_first_env_var(&OPENDAN_AGENT_ID_ENV))
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            anyhow!(
+                "agent instance id is required; pass --agent-id or set one of {:?}",
+                OPENDAN_AGENT_ID_ENV
+            )
+        })
+}
+
+async fn load_agent_instance_doc(agent_id: &str) -> Result<Option<AgentInstanceDoc>> {
+    let runtime = get_buckyos_api_runtime().context("load runtime failed before sys_config")?;
+    let client = runtime
+        .get_system_config_client()
+        .await
+        .context("init system_config client for opendan failed")?;
+    let key = format!("agents/{agent_id}/doc");
+    let value = match client.get(&key).await {
+        Ok(value) => value.value,
+        Err(err) => {
+            warn!("load agent instance doc failed: key={} err={}", key, err);
+            return Ok(None);
+        }
+    };
+    let encoded = EncodedDocument::from_str(value.clone())
+        .map_err(|err| anyhow!("decode agent instance doc failed: key={} err={}", key, err))?;
+    let doc = AgentDocument::decode(&encoded, None).map_err(|err| {
         anyhow!(
-            "create agents root failed: path={}, err={}",
-            agents_root.display(),
+            "decode agent instance AgentDocument failed: key={} err={}",
+            key,
             err
         )
     })?;
+    let json = encoded
+        .to_json_value()
+        .map_err(|err| anyhow!("convert agent instance doc to json failed: key={} err={}", key, err))?;
+    Ok(Some(AgentInstanceDoc { doc, json }))
+}
 
-    let mut roots = Vec::<PathBuf>::new();
-    let mut read_dir = fs::read_dir(agents_root).await.map_err(|err| {
-        anyhow!(
-            "read agents root failed: path={}, err={}",
-            agents_root.display(),
-            err
-        )
-    })?;
+fn owner_key_candidates(owner: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+    let trimmed = owner.trim();
+    if trimmed.is_empty() {
+        return candidates;
+    }
 
-    while let Some(entry) = read_dir.next_entry().await.map_err(|err| {
-        anyhow!(
-            "iterate agents root failed: path={}, err={}",
-            agents_root.display(),
-            err
-        )
-    })? {
-        if entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
-            roots.push(entry.path());
+    candidates.push(trimmed.to_string());
+
+    if let Some(value) = trimmed.rsplit(':').next() {
+        let value = value.trim();
+        if !value.is_empty() && !candidates.iter().any(|item| item == value) {
+            candidates.push(value.to_string());
         }
     }
 
-    roots.sort_by_key(|path| path.to_string_lossy().to_string());
-    Ok(roots)
+    candidates
+}
+
+fn parse_agent_app_spec(key: &str, raw: &str) -> Result<AgentAppSpec> {
+    let json: Json = serde_json::from_str(raw)
+        .map_err(|err| anyhow!("parse agent spec json failed: key={} err={}", key, err))?;
+
+    if let Ok(spec) = serde_json::from_str::<AppServiceInstanceConfig>(raw) {
+        return Ok(AgentAppSpec {
+            key: key.to_string(),
+            json,
+            app_doc: spec.app_spec.app_doc,
+            install_config: spec.app_spec.install_config,
+            user_id: Some(spec.app_spec.user_id),
+        });
+    }
+
+    if let Ok(spec) = serde_json::from_str::<AppServiceSpec>(raw) {
+        return Ok(AgentAppSpec {
+            key: key.to_string(),
+            json,
+            app_doc: spec.app_doc,
+            install_config: spec.install_config,
+            user_id: Some(spec.user_id),
+        });
+    }
+
+    if let Ok(app_doc) = serde_json::from_str::<AppDoc>(raw) {
+        return Ok(AgentAppSpec {
+            key: key.to_string(),
+            json,
+            app_doc,
+            install_config: ServiceInstallConfig::default(),
+            user_id: None,
+        });
+    }
+
+    Err(anyhow!(
+        "unsupported agent spec payload: key={} expected AppServiceInstanceConfig/AppServiceSpec/AppDoc",
+        key
+    ))
+}
+
+async fn load_agent_app_spec(agent_id: &str, owner: Option<&str>) -> Result<Option<AgentAppSpec>> {
+    let Some(owner) = owner.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+
+    let runtime = get_buckyos_api_runtime().context("load runtime failed before agent spec")?;
+    let client = runtime
+        .get_system_config_client()
+        .await
+        .context("init system_config client for opendan agent spec failed")?;
+
+    let mut last_err: Option<anyhow::Error> = None;
+    for owner_key in owner_key_candidates(owner) {
+        let key = format!("users/{owner_key}/agents/{agent_id}/spec");
+        match client.get(&key).await {
+            Ok(value) => {
+                return parse_agent_app_spec(&key, &value.value).map(Some);
+            }
+            Err(err) => {
+                last_err = Some(anyhow!("key={} err={}", key, err));
+            }
+        }
+    }
+
+    if let Some(err) = last_err {
+        warn!(
+            "load agent spec skipped: agent_id={} owner={} detail={}",
+            agent_id, owner, err
+        );
+    }
+
+    Ok(None)
+}
+
+fn json_string_pointer<'a>(json: &'a Json, pointers: &[&str]) -> Option<&'a str> {
+    pointers.iter().find_map(|pointer| {
+        json.pointer(pointer)
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn resolve_optional_path(
+    cli_value: Option<&PathBuf>,
+    env_keys: &[&str],
+    spec: Option<&AgentAppSpec>,
+    spec_pointers: &[&str],
+    doc: Option<&AgentInstanceDoc>,
+    doc_pointers: &[&str],
+) -> Option<PathBuf> {
+    cli_value
+        .cloned()
+        .or_else(|| get_first_env_var(env_keys).map(PathBuf::from))
+        .or_else(|| {
+            spec.and_then(|spec| json_string_pointer(&spec.json, spec_pointers).map(PathBuf::from))
+        })
+        .or_else(|| {
+            doc.and_then(|doc| json_string_pointer(&doc.json, doc_pointers).map(PathBuf::from))
+        })
+}
+
+fn resolve_agent_env_root(
+    startup: &StartupArgs,
+    spec: Option<&AgentAppSpec>,
+    doc: Option<&AgentInstanceDoc>,
+    agent_id: &str,
+) -> PathBuf {
+    let direct = resolve_optional_path(
+        startup.agent_env.as_ref(),
+        &OPENDAN_AGENT_ENV_ENV,
+        spec,
+        &[
+            "/agent_env",
+            "/agent_env_root",
+            "/environment_root",
+            "/runtime/agent_env",
+            "/runtime/environment_root",
+            "/app_spec/install_config/custom_config/agent_env",
+            "/app_spec/install_config/custom_config/agent_env_root",
+            "/app_spec/app_doc/install_config_tips/custom_config/agent_env",
+            "/app_spec/app_doc/install_config_tips/custom_config/agent_env_root",
+            "/install_config/custom_config/agent_env",
+            "/install_config/custom_config/agent_env_root",
+            "/app_doc/install_config_tips/custom_config/agent_env",
+            "/app_doc/install_config_tips/custom_config/agent_env_root",
+        ],
+        doc,
+        &[
+            "/agent_env",
+            "/agent_env_root",
+            "/environment_root",
+            "/environment/root",
+            "/paths/agent_env",
+            "/paths/environment",
+            "/runtime/agent_env",
+            "/runtime/environment_root",
+        ],
+    );
+    if direct.is_some() {
+        return direct.unwrap();
+    }
+
+    if let Some(path) = spec.and_then(resolve_agent_env_root_from_spec_mounts) {
+        return path;
+    }
+
+    get_buckyos_root_dir().join("agents").join(agent_id)
+}
+
+fn resolve_agent_package_root(
+    startup: &StartupArgs,
+    spec: Option<&AgentAppSpec>,
+    doc: Option<&AgentInstanceDoc>,
+) -> Option<PathBuf> {
+    let direct = resolve_optional_path(
+        startup.agent_bin.as_ref(),
+        &OPENDAN_AGENT_BIN_ENV,
+        spec,
+        &[
+            "/agent_bin",
+            "/agent_package_root",
+            "/package_root",
+            "/runtime/agent_bin",
+            "/runtime/package_root",
+            "/app_spec/install_config/custom_config/agent_bin",
+            "/app_spec/install_config/custom_config/agent_package_root",
+            "/app_spec/app_doc/install_config_tips/custom_config/agent_bin",
+            "/app_spec/app_doc/install_config_tips/custom_config/agent_package_root",
+            "/install_config/custom_config/agent_bin",
+            "/install_config/custom_config/agent_package_root",
+            "/app_doc/install_config_tips/custom_config/agent_bin",
+            "/app_doc/install_config_tips/custom_config/agent_package_root",
+        ],
+        doc,
+        &[
+            "/agent_bin",
+            "/agent_package_root",
+            "/package_root",
+            "/package/root",
+            "/paths/agent_bin",
+            "/paths/package",
+            "/runtime/agent_bin",
+            "/runtime/package_root",
+        ],
+    );
+    if direct.is_some() {
+        return direct;
+    }
+
+    if let Some(pkg_name) = spec.and_then(resolve_agent_pkg_name_from_spec) {
+        return Some(resolve_package_root_candidates(&pkg_name));
+    }
+
+    let pkg_name = doc.and_then(|doc| {
+        json_string_pointer(
+            &doc.json,
+            &[
+                "/pkg_name",
+                "/package/pkg_name",
+                "/package/pkg_id",
+                "/agent_pkg_name",
+                "/app/pkg_name",
+            ],
+        )
+        .map(pkg_unique_name)
+        .map(str::to_string)
+    })?;
+
+    Some(resolve_package_root_candidates(&pkg_name))
+}
+
+fn pkg_unique_name(pkg_id_or_name: &str) -> &str {
+    pkg_id_or_name
+        .split('#')
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(pkg_id_or_name)
+}
+
+fn resolve_agent_env_root_from_spec_mounts(spec: &AgentAppSpec) -> Option<PathBuf> {
+    for key in [
+        "root",
+        "agent_root",
+        "agent_env",
+        "environment",
+        "workspace",
+    ] {
+        if let Some(path) = spec.install_config.data_mount_point.get(key) {
+            let path = path.trim();
+            if !path.is_empty() {
+                return Some(PathBuf::from(path));
+            }
+        }
+    }
+
+    None
+}
+
+fn resolve_agent_pkg_name_from_spec(spec: &AgentAppSpec) -> Option<String> {
+    if let Some(agent_pkg) = spec.app_doc.pkg_list.agent.as_ref() {
+        return Some(pkg_unique_name(agent_pkg.pkg_id.as_str()).to_string());
+    }
+
+    let app_name = spec.app_doc.name.trim();
+    if !app_name.is_empty() {
+        return Some(app_name.to_string());
+    }
+
+    None
+}
+
+fn resolve_package_root_candidates(pkg_name: &str) -> PathBuf {
+    let installed = get_buckyos_root_dir().join("bin").join(pkg_name);
+    if installed.exists() {
+        return installed;
+    }
+
+    let Some(current_dir) = std::env::current_dir().ok() else {
+        return installed;
+    };
+    for candidate in [
+        current_dir.join("src/rootfs/bin").join(pkg_name),
+        current_dir.join("../rootfs/bin").join(pkg_name),
+        current_dir.join("rootfs/bin").join(pkg_name),
+    ] {
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+
+    installed
+}
+
+fn resolve_agent_did(doc: Option<&AgentInstanceDoc>) -> Option<String> {
+    doc.map(|doc| doc.doc.get_id().to_string())
+}
+
+fn resolve_agent_owner_did(doc: Option<&AgentInstanceDoc>) -> Option<String> {
+    doc.map(|doc| doc.doc.owner.to_string())
+}
+
+fn absolutize_path(path: PathBuf) -> Result<PathBuf> {
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    Ok(std::env::current_dir()
+        .context("read current_dir failed")?
+        .join(path))
+}
+
+async fn write_cached_agent_doc(agent_env_root: &PathBuf, doc: &AgentInstanceDoc) -> Result<()> {
+    fs::create_dir_all(agent_env_root).await.map_err(|err| {
+        anyhow!(
+            "create agent env root failed: path={} err={}",
+            agent_env_root.display(),
+            err
+        )
+    })?;
+    let path = agent_env_root.join("agent.json.doc");
+    let pretty = serde_json::to_string_pretty(&doc.json)
+        .context("serialize cached agent instance doc failed")?;
+    fs::write(&path, pretty).await.map_err(|err| {
+        anyhow!(
+            "write cached agent instance doc failed: path={} err={}",
+            path.display(),
+            err
+        )
+    })?;
+    Ok(())
+}
+
+async fn write_cached_agent_spec(agent_env_root: &PathBuf, spec: &AgentAppSpec) -> Result<()> {
+    fs::create_dir_all(agent_env_root).await.map_err(|err| {
+        anyhow!(
+            "create agent env root failed before spec cache: path={} err={}",
+            agent_env_root.display(),
+            err
+        )
+    })?;
+    let path = agent_env_root.join("agent.app.json");
+    let pretty =
+        serde_json::to_string_pretty(&spec.json).context("serialize cached agent spec failed")?;
+    fs::write(&path, pretty).await.map_err(|err| {
+        anyhow!(
+            "write cached agent spec failed: path={} err={}",
+            path.display(),
+            err
+        )
+    })?;
+    Ok(())
 }
 
 fn resolve_session_worker_threads(default_value: usize) -> usize {
@@ -166,67 +592,56 @@ fn resolve_session_worker_threads(default_value: usize) -> usize {
     }
 }
 
-async fn run_agent(agent_root: PathBuf, deps: AIAgentDeps) -> Result<()> {
-    let mut cfg = AIAgentConfig::new(&agent_root);
+async fn run_agent(launch: &LaunchConfig, deps: AIAgentDeps) -> Result<()> {
+    let mut cfg = AIAgentConfig::new(&launch.agent_env_root);
+    cfg.agent_instance_id = launch.agent_id.clone();
+    cfg.agent_package_root = launch.agent_package_root.clone();
+    cfg.agent_did = launch.agent_did.clone();
+    cfg.agent_owner_did = launch.agent_owner_did.clone();
     cfg.session_worker_threads = resolve_session_worker_threads(cfg.session_worker_threads);
     let session_worker_threads = cfg.session_worker_threads;
 
     let agent = Arc::new(AIAgent::load(cfg, deps).await.map_err(|err| {
         anyhow!(
-            "load agent failed: root={}, err={}",
-            agent_root.display(),
+            "load agent failed: instance={} root={}, err={}",
+            launch.agent_id,
+            launch.agent_env_root.display(),
             err
         )
     })?);
     info!(
-        "opendan agent loaded: did={} root={} session_workers={}",
+        "opendan agent loaded: instance={} did={} root={} package_root={} session_workers={}",
+        launch.agent_id,
         agent.did(),
-        agent_root.display(),
+        launch.agent_env_root.display(),
+        launch
+            .agent_package_root
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<none>".to_string()),
         session_worker_threads
     );
     agent.clone().run_agent_loop(None).await.map_err(|err| {
         anyhow!(
-            "agent loop failed: did={} root={}, err={}",
+            "agent loop failed: instance={} did={} root={}, err={}",
+            launch.agent_id,
             agent.did(),
-            agent_root.display(),
+            launch.agent_env_root.display(),
             err
         )
     })?;
     Ok(())
 }
 
-async fn run_agents_supervisor(agent_roots: Vec<PathBuf>, deps: AIAgentDeps) -> Result<()> {
-    let mut join_set = JoinSet::new();
-    for agent_root in agent_roots {
-        let deps = deps.clone();
-        let root_for_log = agent_root.display().to_string();
-        join_set.spawn(async move { (root_for_log, run_agent(agent_root, deps).await) });
-    }
-
-    while let Some(joined) = join_set.join_next().await {
-        match joined {
-            Ok((agent_root, Ok(()))) => warn!("agent loop exited: root={agent_root}"),
-            Ok((agent_root, Err(err))) => {
-                error!("agent loop failed: root={agent_root}, err={err}");
-            }
-            Err(err) => {
-                error!("agent task join failed: {err}");
-            }
-        }
-    }
-
-    Err(anyhow!("all opendan agents exited"))
-    //TODO:是否需要保留服务进程等待扫描到新的Agent?
-}
-
 async fn service_main() -> Result<()> {
     init_logging("opendan", true);
     info!("starting opendan service...");
+    let startup = parse_startup_args().context("parse opendan startup args failed")?;
+    let agent_id = resolve_requested_agent_id(&startup)?;
 
-    let mut runtime =
-        init_buckyos_api_runtime(OPENDAN_SERVICE_NAME, None, BuckyOSRuntimeType::FrameService)
-            .await
-            .context("init buckyos runtime for opendan failed")?;
+    let mut runtime = init_buckyos_api_runtime(&agent_id, None, BuckyOSRuntimeType::FrameService)
+        .await
+        .context("init buckyos runtime for opendan failed")?;
     runtime
         .login()
         .await
@@ -238,6 +653,56 @@ async fn service_main() -> Result<()> {
     sleep(Duration::from_secs(OPENDAN_STARTUP_DEP_READY_WAIT_SECS)).await;
     runtime.set_main_service_port(OPENDAN_SERVICE_PORT).await;
     set_buckyos_api_runtime(runtime);
+
+    let agent_doc = load_agent_instance_doc(&agent_id).await?;
+    let agent_owner_did = resolve_agent_owner_did(agent_doc.as_ref());
+    let agent_spec = load_agent_app_spec(&agent_id, agent_owner_did.as_deref()).await?;
+    let agent_env_root = absolutize_path(resolve_agent_env_root(
+        &startup,
+        agent_spec.as_ref(),
+        agent_doc.as_ref(),
+        &agent_id,
+    ))?;
+    let agent_package_root = resolve_agent_package_root(&startup, agent_spec.as_ref(), agent_doc.as_ref())
+        .map(absolutize_path)
+        .transpose()?;
+    let launch = LaunchConfig {
+        agent_id: agent_id.clone(),
+        agent_env_root,
+        agent_package_root,
+        agent_did: resolve_agent_did(agent_doc.as_ref()),
+        agent_owner_did,
+        agent_doc,
+        agent_spec,
+    };
+    if let Some(doc) = &launch.agent_doc {
+        write_cached_agent_doc(&launch.agent_env_root, doc).await?;
+    }
+    if let Some(spec) = &launch.agent_spec {
+        write_cached_agent_spec(&launch.agent_env_root, spec).await?;
+    }
+    info!(
+        "opendan launch resolved: instance={} env_root={} package_root={} did={} owner={} spec_key={} spec_user={}",
+        launch.agent_id,
+        launch.agent_env_root.display(),
+        launch
+            .agent_package_root
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<none>".to_string()),
+        launch.agent_did.as_deref().unwrap_or("<auto>"),
+        launch.agent_owner_did.as_deref().unwrap_or("<none>"),
+        launch
+            .agent_spec
+            .as_ref()
+            .map(|spec| spec.key.as_str())
+            .unwrap_or("<none>"),
+        launch
+            .agent_spec
+            .as_ref()
+            .and_then(|spec| spec.user_id.as_deref())
+            .unwrap_or("<none>")
+    );
 
     let runtime = get_buckyos_api_runtime().context("load runtime failed after init")?;
 
@@ -269,22 +734,6 @@ async fn service_main() -> Result<()> {
         }
     };
 
-    let agents_root = resolve_agents_root()?;
-    let agent_roots = discover_agent_roots(&agents_root).await?;
-    if agent_roots.is_empty() {
-        return Err(anyhow!(
-            "no agent found in {}, set {} to override",
-            agents_root.display(),
-            OPENDAN_AGENTS_ROOT_ENV
-        ));
-    }
-
-    info!(
-        "opendan discovered {} agent(s) in {}",
-        agent_roots.len(),
-        agents_root.display()
-    );
-
     let deps = AIAgentDeps {
         taskmgr,
         msg_center,
@@ -292,10 +741,16 @@ async fn service_main() -> Result<()> {
     };
 
     let ai_runtime = Arc::new(
-        AiRuntime::new(AiRuntimeConfig::new(&agents_root))
+        AiRuntime::new(AiRuntimeConfig::new(&launch.agent_env_root))
             .await
             .context("init opendan ai runtime for rpc failed")?,
     );
+    if let Some(agent_did) = launch.agent_did.as_deref() {
+        ai_runtime
+            .register_agent(agent_did, &launch.agent_env_root)
+            .await
+            .context("register root agent into opendan rpc runtime failed")?;
+    }
     let server = Arc::new(OpenDanHttpServer::new(ai_runtime));
     let runner = Runner::new(OPENDAN_SERVICE_PORT);
     runner
@@ -308,8 +763,8 @@ async fn service_main() -> Result<()> {
                 .map_err(|err| anyhow!("opendan runner exited with error: {err:?}"))?;
             Err(anyhow!("opendan runner exited unexpectedly"))
         }
-        agents_result = run_agents_supervisor(agent_roots, deps) => {
-            agents_result
+        agent_result = run_agent(&launch, deps) => {
+            agent_result
         }
     }
 }

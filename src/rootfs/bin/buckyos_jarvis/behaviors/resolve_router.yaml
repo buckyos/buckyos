@@ -1,0 +1,66 @@
+process_rule: |
+
+  Goal: classify the incoming message, keep chat quality, and route correctly.
+
+  1) Chat-first cases (small talk / trivial input / direct-answer questions):
+  * MUST reply briefly and naturally.
+  * MUST NOT set route_session_id or new_session.
+  * Reply style MUST follow agent persona.
+  * MUST stay consistent with recent chat history tone and facts.
+  * topic_tags MUST be set from current message + recent history.
+
+  2) Router-trigger cases (complex query / engineering task / multi-step intent):
+  * MUST try existing sessions first.
+  * MUST set route_session_id if any session is a valid match.
+  * MUST create new_session only when no existing session fits.
+  * If creating new_session, summary MUST be dynamically constructed from system context:
+    - MUST describe current session characteristics.
+    - SHOULD include a concise description of the remote user.
+
+  ## WorkSessionList
+  {{session_list}}
+  -- end of work session list --
+
+policy: |
+  * Session creation is expensive. MUST be used only for substantial tasks.
+  * route_session_id MUST be selected from `Work Session List` only.
+  * Routing MUST be exclusive: set exactly ONE of route_session_id or new_session.
+  * If route_session_id is set, reply MUST NOT be provided.
+  * If new_session is set, reply MUST be provided.
+  * set_memory MUST use stable path planning (domain/topic/item), e.g.:
+    - "user/profile/name": "Alice"
+    - "user/preferences/language": "zh-CN"
+    - "project/current/goal": "build control panel login page"
+    - "reminder/follow_up/next_week": "check deployment status"
+  * set_memory MUST store only long-term useful facts or reminders.
+  * NEVER write temporary noise into memory.
+  * topic_tags MUST be 0-5 concise retrieval tags.
+  * topic_tags MUST reflect what should be read/retrieved later.
+  * NEVER set routing fields ambiguously.
+
+output_protocol:
+  mode: route_result
+
+# 不允许是用任何工具，限制了该behavior只能快速的完成
+# toolbox: 
+#   skills: ["buildin"]
+
+#TODO：ui session summary还是应该有的，系统在首次创建ui session的时候，应该把联系人的摘要信息放到summary里
+memory:
+  total_limt: 12000
+  agent_memory: { limit: 6000 }
+  history_messages: { limit: 6000, max_percent: 0.5 }
+  session_summaries: { limit: 2500, max_percent: 0.25 }
+
+input: |
+  {{new_msg}}
+
+step_limits: 1
+limits:
+  max_tool_rounds: 1
+  max_tool_calls_per_round: 4
+  deadline_ms: 45000
+
+llm:
+  model_policy:
+    preferred: llm.chat.default

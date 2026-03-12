@@ -179,6 +179,17 @@ impl SystemConfigBuilder {
         self.entries
             .insert("agents/jarvis/key".to_string(), jarvis_private_key_pem);
 
+        //agents/jarvis/spec -> agent spec 
+        let jarvis_spec = AppServiceSpec {
+            app_doc: app_doc,
+            app_index: 10,
+            user_id: config.user_name.clone(),
+            enable: true,
+            expected_instance_count: 1,
+            state: ServiceState::default(),
+            install_config: app_install_config.clone(),
+        };
+
         // agents/jarvis/settings -> agent settings,
         let jarvis_settings = json!({
             "enabled": true,

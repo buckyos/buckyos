@@ -9,7 +9,11 @@ const DEFAULT_MEMORY_TOKEN_LIMIT: u32 = 1_500;
 
 #[derive(Clone, Debug)]
 pub struct AIAgentConfig {
+    pub agent_instance_id: String,
     pub agent_root: PathBuf,
+    pub agent_package_root: Option<PathBuf>,
+    pub agent_did: Option<String>,
+    pub agent_owner_did: Option<String>,
     pub behaviors_dir_name: String,
     pub environment_dir_name: String,
     pub role_file_name: String,
@@ -31,7 +35,11 @@ pub struct AIAgentConfig {
 impl AIAgentConfig {
     pub fn new(agent_root: impl Into<PathBuf>) -> Self {
         Self {
+            agent_instance_id: String::new(),
             agent_root: agent_root.into(),
+            agent_package_root: None,
+            agent_did: None,
+            agent_owner_did: None,
             behaviors_dir_name: DEFAULT_BEHAVIORS_DIR.to_string(),
             environment_dir_name: DEFAULT_ENVIRONMENT_DIR.to_string(),
             role_file_name: DEFAULT_ROLE_MD.to_string(),

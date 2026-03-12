@@ -1,0 +1,110 @@
+process_rule: |
+  Core mission (DO):
+  - Execute the CURRENT TODO toward its acceptance criteria as fast as possible.
+  - Work in an **Observe → Execute** loop.
+  - Stay focused on the current todo. Do NOT create new todos (`todo add` is forbidden).
+    Extra work goes to `todo note <id> "..." --kind=note`.
+
+  --------------------------------------------------------------------
+  OBSERVE → EXECUTE LOOP
+
+  Phase = step_index parity:
+  - **OBSERVE** (even: 0, 2, 4, …) — read, analyze, plan, decide transitions.
+  - **EXECUTE** (odd:  1, 3, 5, …) — write, build, test; motivation in `reply`.
+
+  ### OBSERVE (even step_index)
+
+  Goal: Gather the information the next EXECUTE needs. Be efficient — batch reads.
+
+  `thinking`: analyze observations, plan write actions for EXECUTE.
+  `reply`: brief status ("what I found, what I'll do next").
+  `actions`/`shell_commands`: **READ-ONLY**.
+  - `read_file`, `cat`, `ls`, `grep`, `git diff`, `cargo check`, `cargo test`, …
+  - `todo show/ls/current/next/pending`
+  - Exception: `todo start <id>` allowed at step 0.
+
+  `next_behavior` — **only OBSERVE decides transitions**:
+  - Self-check PASSED → `CHECK:todo=<id>`
+  - Persistent failure → `ADJUST:todo=<id>`
+  - Need user input → `WAIT_FOR_MSG`
+  - Otherwise: do NOT set (continue loop).
+
+  ### EXECUTE (odd step_index)
+
+  Goal: Apply changes based on the preceding OBSERVE. Move fast.
+
+  `thinking`: derive execution plan from last_step_summary.
+  `reply`: **motivation** — WHY you make these changes + expected outcome.
+  `actions`/`shell_commands`: **WRITE allowed**.
+  - `write_file`, `edit_file`, shell build/test, `todo start/done/fail/note`.
+
+  `next_behavior`: **MUST NOT be set**. Next OBSERVE decides.
+
+  Self-check: when you believe the todo is done, run validation commands
+  in this EXECUTE step and record via `todo note <id> "..." --kind=result`.
+  The following OBSERVE will read the results and transition to CHECK.
+
+policy: |
+  Phase discipline (MUST):
+  - OBSERVE (even): read-only. No write_file/edit_file.
+  - EXECUTE (odd): writes allowed. next_behavior MUST NOT be set.
+  - next_behavior only in OBSERVE.
+
+  Todo commands (MUST):
+  - Allowed: `todo start`, `todo done`, `todo fail`, `todo note`
+  - Forbidden: `todo pass`, `todo reject`, `todo add`
+  - Notes: --kind=note (progress), --kind=result (self-check), --kind=error (errors)
+
+  Failure: retry once in next EXECUTE; if still failing, ADJUST in next OBSERVE.
+
+  Reply:
+  - OBSERVE: brief status.
+  - EXECUTE: motivation (why + expected outcome).
+
+
+output_protocol:
+  mode: behavior_llm_result
+
+memory:
+  total_limt: 18000
+  agent_memory: { limit: 3500, max_percent: 0.25 }
+  session_summaries: { limit: 3000, max_percent: 0.25 }
+  workspace_worklog: { limit: 10000, max_percent: 0.5 }
+input: |
+
+  # Last Step Summary:
+  {{last_step_summary}}
+
+  # Current Step Index: {{step_index}} (even=OBSERVE, odd=EXECUTE)
+
+  # New message:
+  {{new_msg}}
+  # ======================
+  # Current TODO (My target)
+  # ======================
+  {{workspace.todolist.__OPENDAN_ENV(params.todo)__}}
+
+faild_back: adjust
+step_limit: 24
+
+step_summary: |
+  - Behavior : {{behavior_name}}
+  - Step Index : {{step_index}} / {{step_limit}}
+  ### Thinking
+  {{llm_result.thinking}}
+  ### Reply
+  {{llm_result.reply}}
+  ### Action Results
+  {{llm_result.action_results}}
+
+
+limits:
+  max_prompt_tokens: 64000
+  max_completion_tokens: 200000
+  max_tool_rounds: 2
+  max_tool_calls_per_round: 8
+  deadline_ms: 120000
+
+llm:
+  model_policy:
+    preferred: llm.code.default

@@ -2,9 +2,11 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use buckyos_api::AiToolSpec;
+use buckyos_kit::ConfigMerger;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use tokio::fs;
+use uuid::Uuid;
 
 use crate::agent_tool::ToolSpec;
 
@@ -77,6 +79,51 @@ impl Default for BehaviorConfig {
 }
 
 impl BehaviorConfig {
+    pub async fn load_from_roots(
+        behavior_roots: &[PathBuf],
+        behavior_name: &str,
+    ) -> Result<Self, BehaviorConfigError> {
+        let behavior_name = behavior_name.trim();
+        if behavior_name.is_empty() {
+            return Err(BehaviorConfigError::EmptyBehaviorName);
+        }
+
+        let mut tried_paths = Vec::new();
+        let mut sources = Vec::new();
+        for root in behavior_roots.iter().rev() {
+            let mut selected = None::<PathBuf>;
+            for path in candidate_paths_for_behavior(root, behavior_name) {
+                tried_paths.push(path.display().to_string());
+                if is_file(&path).await || is_dir(&path).await {
+                    selected = Some(path);
+                    break;
+                }
+            }
+
+            if let Some(path) = selected {
+                sources.push(path);
+            }
+        }
+
+        if sources.is_empty() {
+            let dir = behavior_roots
+                .first()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default();
+            return Err(BehaviorConfigError::NotFound {
+                behavior: behavior_name.to_string(),
+                dir,
+                tried_paths,
+            });
+        }
+
+        if sources.len() == 1 && is_file(&sources[0]).await {
+            return Self::load_from_path(&sources[0]).await;
+        }
+
+        Self::load_from_sources(behavior_name, &sources).await
+    }
+
     pub async fn load_from_dir(
         behaviors_dir: impl AsRef<Path>,
         behavior_name: &str,
@@ -91,10 +138,13 @@ impl BehaviorConfig {
         let candidate_paths = candidate_paths_for_behavior(behaviors_dir, behavior_name);
         for path in candidate_paths {
             tried_paths.push(path.display().to_string());
-            if !is_file(&path).await {
+            if is_file(&path).await {
+                return Self::load_from_path(path).await;
+            }
+            if !is_dir(&path).await {
                 continue;
             }
-            return Self::load_from_path(path).await;
+            return Self::load_from_sources(behavior_name, &[path]).await;
         }
 
         Err(BehaviorConfigError::NotFound {
@@ -147,6 +197,27 @@ impl BehaviorConfig {
                 })?,
             };
 
+        Self::normalize_loaded_config(path, &mut cfg)?;
+        Ok(cfg)
+    }
+
+    pub fn parse_from_value(path: &Path, value: Json) -> Result<Self, BehaviorConfigError> {
+        let mut cfg =
+            serde_json::from_value::<BehaviorConfig>(value).map_err(|err| {
+                BehaviorConfigError::Invalid {
+                    path: path.display().to_string(),
+                    message: err.to_string(),
+                }
+            })?;
+
+        Self::normalize_loaded_config(path, &mut cfg)?;
+        Ok(cfg)
+    }
+
+    fn normalize_loaded_config(
+        path: &Path,
+        cfg: &mut BehaviorConfig,
+    ) -> Result<(), BehaviorConfigError> {
         if cfg.name.trim().is_empty() {
             cfg.name = path
                 .file_stem()
@@ -170,13 +241,62 @@ impl BehaviorConfig {
         cfg.input = cfg.input.trim().to_string();
         cfg.faild_back = cfg
             .faild_back
+            .take()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
         cfg.memory.normalize();
         cfg.llm.output_protocol = cfg.output_protocol.to_prompt_text();
         cfg.llm.output_mode = cfg.output_protocol.mode_name();
 
-        Ok(cfg)
+        Ok(())
+    }
+
+    async fn load_from_sources(
+        behavior_name: &str,
+        sources: &[PathBuf],
+    ) -> Result<Self, BehaviorConfigError> {
+        let merge_root = std::env::temp_dir().join(format!(
+            "opendan-behavior-merge-{}-{}",
+            sanitize_merge_name(behavior_name),
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&merge_root)
+            .await
+            .map_err(|source| BehaviorConfigError::ReadFailed {
+                path: merge_root.display().to_string(),
+                source,
+            })?;
+
+        let merge_result = async {
+            let mut root_toml = String::new();
+            for (idx, source) in sources.iter().enumerate() {
+                let item_name = source_item_name(idx, source);
+                let target = merge_root.join(&item_name);
+                copy_merge_source(source, &target).await?;
+                root_toml.push_str("[[includes]]\n");
+                root_toml.push_str(&format!("path = \"{}\"\n\n", item_name));
+            }
+
+            let root_file = merge_root.join("root.toml");
+            fs::write(&root_file, root_toml)
+                .await
+                .map_err(|source| BehaviorConfigError::ReadFailed {
+                    path: root_file.display().to_string(),
+                    source,
+                })?;
+
+            let merged = ConfigMerger::load_dir(&merge_root).await.map_err(|err| {
+                BehaviorConfigError::Invalid {
+                    path: merge_root.display().to_string(),
+                    message: err.to_string(),
+                }
+            })?;
+            Self::parse_from_value(&merge_root.join(format!("{behavior_name}.merged.json")), merged)
+        }
+        .await;
+
+        let _ = fs::remove_dir_all(&merge_root).await;
+        merge_result
     }
 
     pub fn to_llm_behavior_config(&self) -> LLMBehaviorConfig {
@@ -727,9 +847,87 @@ async fn is_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+async fn is_dir(path: &Path) -> bool {
+    fs::metadata(path)
+        .await
+        .map(|meta| meta.is_dir())
+        .unwrap_or(false)
+}
+
+async fn copy_merge_source(source: &Path, target: &Path) -> Result<(), BehaviorConfigError> {
+    if is_file(source).await {
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|source_err| BehaviorConfigError::ReadFailed {
+                    path: parent.display().to_string(),
+                    source: source_err,
+                })?;
+        }
+        fs::copy(source, target)
+            .await
+            .map_err(|source_err| BehaviorConfigError::ReadFailed {
+                path: source.display().to_string(),
+                source: source_err,
+            })?;
+        return Ok(());
+    }
+
+    fs::create_dir_all(target)
+        .await
+        .map_err(|source_err| BehaviorConfigError::ReadFailed {
+            path: target.display().to_string(),
+            source: source_err,
+        })?;
+
+    let mut read_dir = fs::read_dir(source)
+        .await
+        .map_err(|source_err| BehaviorConfigError::ReadFailed {
+            path: source.display().to_string(),
+            source: source_err,
+        })?;
+    while let Some(entry) = read_dir
+        .next_entry()
+        .await
+        .map_err(|source_err| BehaviorConfigError::ReadFailed {
+            path: source.display().to_string(),
+            source: source_err,
+        })?
+    {
+        let child_source = entry.path();
+        let child_target = target.join(entry.file_name());
+        Box::pin(copy_merge_source(&child_source, &child_target)).await?;
+    }
+
+    Ok(())
+}
+
+fn source_item_name(idx: usize, source: &Path) -> String {
+    let suffix = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| format!(".{value}"))
+        .unwrap_or_default();
+    format!("source.{}{}", idx + 1, suffix)
+}
+
+fn sanitize_merge_name(raw: &str) -> String {
+    raw.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
+    use tokio::fs;
 
     #[test]
     fn behavior_config_yaml_requires_process_rule() {
@@ -1031,5 +1229,55 @@ toolbox:
             cfg.toolbox.effective_skills(),
             vec!["buildin".to_string(), "coding/rust".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn behavior_config_load_from_roots_merges_package_and_env_sources() {
+        let temp = tempdir().expect("create temp dir");
+        let package_root = temp.path().join("package");
+        let env_root = temp.path().join("env");
+        fs::create_dir_all(&package_root)
+            .await
+            .expect("create package dir");
+        fs::create_dir_all(&env_root).await.expect("create env dir");
+
+        fs::write(
+            package_root.join("plan.yaml"),
+            r#"
+process_rule: package_rule
+tools:
+  mode: allow_list
+  names:
+    - exec_bash
+toolbox:
+  default_load_skills:
+    - buildin
+"#,
+        )
+        .await
+        .expect("write package behavior");
+        fs::write(
+            env_root.join("plan.yaml"),
+            r#"
+process_rule: env_rule
+toolbox:
+  skills:
+    - coding/rust
+"#,
+        )
+        .await
+        .expect("write env behavior");
+
+        let cfg = BehaviorConfig::load_from_roots(
+            &[env_root.clone(), package_root.clone()],
+            "plan",
+        )
+        .await
+        .expect("merge behavior config");
+
+        assert_eq!(cfg.process_rule, "env_rule");
+        assert_eq!(cfg.tools.mode, BehaviorToolMode::AllowList);
+        assert_eq!(cfg.tools.names, vec!["exec_bash".to_string()]);
+        assert_eq!(cfg.toolbox.skills, vec!["coding/rust".to_string()]);
     }
 }

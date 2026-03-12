@@ -125,6 +125,13 @@ struct ReplyHistoryRecord {
 }
 
 #[derive(Clone, Debug)]
+struct ResourceOverlayStatus {
+    selected_path: Option<PathBuf>,
+    env_path: Option<PathBuf>,
+    package_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug)]
 struct SessionQueueBinding {
     msg_queue_urn: String,
     event_queue_urn: String,
@@ -195,7 +202,7 @@ pub struct AIAgent {
 
     policy: Arc<AgentPolicy>,
     behavior_cfg_cache: Arc<RwLock<HashMap<String, BehaviorConfig>>>,
-    behaviors_dir: PathBuf,
+    behavior_roots: Vec<PathBuf>,
     default_behavior: String,
     default_worker_behavior: String,
     tools: Arc<AgentToolManager>,
@@ -220,8 +227,14 @@ impl AIAgent {
             .map_err(|err| anyhow!("invalid agent config: {err}"))?;
 
         let agent_root = to_abs_path(&cfg.agent_root)?;
+        let package_root = cfg
+            .agent_package_root
+            .as_ref()
+            .map(|path| to_abs_path(path))
+            .transpose()?;
         info!(
-            "agent.persist_entity_prepare: kind=agent_root path={}",
+            "agent.persist_entity_prepare: kind=agent_root instance={} path={}",
+            cfg.agent_instance_id,
             agent_root.display()
         );
         fs::create_dir_all(&agent_root).await.map_err(|err| {
@@ -231,8 +244,15 @@ impl AIAgent {
                 err
             )
         })?;
+        if let Some(package_root) = &package_root {
+            info!(
+                "agent.loader.package_root: instance={} path={}",
+                cfg.agent_instance_id,
+                package_root.display()
+            );
+        }
 
-        let did_raw = load_agent_did(&agent_root).await?;
+        let did_raw = load_agent_did(&cfg, &agent_root, package_root.as_deref()).await?;
         let did = DID::from_str(did_raw.as_str()).map_err(|err| {
             anyhow!(
                 "invalid owner did in agent doc: did={:?} err={}",
@@ -240,29 +260,41 @@ impl AIAgent {
                 err
             )
         })?;
-        let owner_did = did.clone();
+        let owner_did = if let Some(owner_did) = cfg
+            .agent_owner_did
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        {
+            DID::from_str(owner_did).map_err(|err| {
+                anyhow!(
+                    "invalid owner did in agent config: did={:?} err={}",
+                    owner_did,
+                    err
+                )
+            })?
+        } else {
+            did.clone()
+        };
         let agent_name = did.to_raw_host_name();
-        let role_path = agent_root.join(&cfg.role_file_name);
-        let self_path = agent_root.join(&cfg.self_file_name);
-        let role_md = read_text_if_exists(&role_path)
-            .await?
-            .unwrap_or_else(|| "# Role\nYou are an OpenDAN agent.".to_string());
-        let self_md = read_text_if_exists(&self_path)
-            .await?
-            .unwrap_or_else(|| "# Self\n- Keep tasks traceable\n".to_string());
+        let (role_md, role_status) = load_overlay_text_resource(
+            &agent_root,
+            package_root.as_deref(),
+            &[cfg.role_file_name.as_str(), "prompts/role.md"],
+            "# Role\nYou are an OpenDAN agent.",
+        )
+        .await?;
+        let (self_md, self_status) = load_overlay_text_resource(
+            &agent_root,
+            package_root.as_deref(),
+            &[cfg.self_file_name.as_str(), "prompts/self.md"],
+            "# Self\n- Keep tasks traceable\n",
+        )
+        .await?;
 
-        let behaviors_dir = agent_root.join(&cfg.behaviors_dir_name);
-        info!(
-            "agent.persist_entity_prepare: kind=behaviors_dir path={}",
-            behaviors_dir.display()
-        );
-        fs::create_dir_all(&behaviors_dir).await.map_err(|err| {
-            anyhow!(
-                "create behaviors dir failed: path={} err={}",
-                behaviors_dir.display(),
-                err
-            )
-        })?;
+        let behavior_roots =
+            build_behavior_roots(&agent_root, package_root.as_deref(), &cfg.behaviors_dir_name)
+                .await?;
 
         let workspace_root = resolve_workspace_root(&agent_root, &cfg.environment_dir_name).await?;
         let session_root = workspace_root.join("session");
@@ -275,11 +307,14 @@ impl AIAgent {
                 .map_err(|err| anyhow!("init agent environment failed: {err}"))?,
         );
 
-        let default_behavior = resolve_default_behavior_name(&behaviors_dir)
+        let default_behavior = resolve_default_behavior_name(&behavior_roots)
             .await
             .unwrap_or_else(|| AGENT_BEHAVIOR_ROUTER_RESOLVE.to_string());
-        let default_worker_behavior =
-            resolve_default_worker_behavior_name(&behaviors_dir, default_behavior.as_str()).await;
+        let default_worker_behavior = resolve_default_worker_behavior_name(
+            &behavior_roots,
+            default_behavior.as_str(),
+        )
+        .await;
 
         let session_store = Arc::new(
             AgentSessionMgr::new(agent_name.clone(), session_root, default_behavior.clone())
@@ -305,6 +340,12 @@ impl AIAgent {
         let behavior_cfg_cache = Arc::new(RwLock::new(HashMap::new()));
         let policy = Arc::new(AgentPolicy::new(tools.clone(), behavior_cfg_cache.clone()));
         let kevent_source_node = owner_did.to_raw_host_name();
+        log_overlay_status("role", &cfg.agent_instance_id, &role_status);
+        log_overlay_status("self", &cfg.agent_instance_id, &self_status);
+        info!(
+            "agent.loader.behaviors: instance={} roots={:?}",
+            cfg.agent_instance_id, behavior_roots
+        );
 
         let agent = Self {
             cfg,
@@ -313,7 +354,7 @@ impl AIAgent {
             owner_did,
             role_md,
             self_md,
-            behaviors_dir,
+            behavior_roots,
             workspace_root,
             tools,
             memory,
@@ -2898,7 +2939,7 @@ impl AIAgent {
 
         let mut last_err: Option<anyhow::Error> = None;
         for lookup_name in &lookup_names {
-            match BehaviorConfig::load_from_dir(&self.behaviors_dir, lookup_name).await {
+            match BehaviorConfig::load_from_roots(&self.behavior_roots, lookup_name).await {
                 Ok(loaded) => {
                     let mut cache = self.behavior_cfg_cache.write().await;
                     for alias in &lookup_names {
@@ -3259,6 +3300,8 @@ async fn resolve_workspace_root(agent_root: &Path, env_name: &str) -> Result<Pat
         normal
     } else if is_existing_dir(&legacy).await {
         legacy
+    } else if looks_like_workspace_root(agent_root).await {
+        agent_root.to_path_buf()
     } else {
         normal
     };
@@ -3277,25 +3320,37 @@ async fn resolve_workspace_root(agent_root: &Path, env_name: &str) -> Result<Pat
     Ok(root)
 }
 
-async fn resolve_default_behavior_name(behaviors_dir: &Path) -> Option<String> {
+async fn resolve_default_behavior_name(behavior_roots: &[PathBuf]) -> Option<String> {
     for candidate in [AGENT_BEHAVIOR_ROUTER_RESOLVE] {
-        if behavior_exists(behaviors_dir, candidate).await {
+        if behavior_exists(behavior_roots, candidate).await {
             return Some(candidate.to_string());
         }
     }
 
-    let mut read_dir = fs::read_dir(behaviors_dir).await.ok()?;
-    while let Some(entry) = read_dir.next_entry().await.ok()? {
-        let path = entry.path();
-        let ext = path
-            .extension()
-            .and_then(|v| v.to_str())
-            .map(|v| v.to_ascii_lowercase());
-        if matches!(ext.as_deref(), Some("yaml") | Some("yml") | Some("json")) {
-            if let Some(stem) = path.file_stem().and_then(|v| v.to_str()) {
-                let trimmed = stem.trim();
-                if !trimmed.is_empty() {
-                    return Some(trimmed.to_string());
+    for behavior_root in behavior_roots {
+        let mut read_dir = match fs::read_dir(behavior_root).await {
+            Ok(read_dir) => read_dir,
+            Err(_) => continue,
+        };
+        while let Some(entry) = read_dir.next_entry().await.ok()? {
+            let path = entry.path();
+            let ext = path
+                .extension()
+                .and_then(|v| v.to_str())
+                .map(|v| v.to_ascii_lowercase());
+            if matches!(ext.as_deref(), Some("yaml") | Some("yml") | Some("json")) {
+                if let Some(stem) = path.file_stem().and_then(|v| v.to_str()) {
+                    let trimmed = stem.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
+                    }
+                }
+            } else if path.is_dir() {
+                if let Some(name) = path.file_name().and_then(|v| v.to_str()) {
+                    let trimmed = name.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
+                    }
                 }
             }
         }
@@ -3304,11 +3359,11 @@ async fn resolve_default_behavior_name(behaviors_dir: &Path) -> Option<String> {
 }
 
 async fn resolve_default_worker_behavior_name(
-    behaviors_dir: &Path,
+    behavior_roots: &[PathBuf],
     default_behavior: &str,
 ) -> String {
     for candidate in ["plan", "do", AGENT_BEHAVIOR_ROUTER_RESOLVE] {
-        if behavior_exists(behaviors_dir, candidate).await {
+        if behavior_exists(behavior_roots, candidate).await {
             return candidate.to_string();
         }
     }
@@ -3316,38 +3371,69 @@ async fn resolve_default_worker_behavior_name(
     default_behavior.to_string()
 }
 
-async fn behavior_exists(behaviors_dir: &Path, behavior_name: &str) -> bool {
-    for ext in ["yaml", "yml", "json"] {
-        let path = behaviors_dir.join(format!("{behavior_name}.{ext}"));
-        if fs::metadata(&path)
+async fn behavior_exists(behavior_roots: &[PathBuf], behavior_name: &str) -> bool {
+    for behavior_root in behavior_roots {
+        let dir_path = behavior_root.join(behavior_name);
+        if fs::metadata(&dir_path)
             .await
-            .map(|meta| meta.is_file())
+            .map(|meta| meta.is_dir())
             .unwrap_or(false)
         {
             return true;
+        }
+
+        for ext in ["yaml", "yml", "json"] {
+            let path = behavior_root.join(format!("{behavior_name}.{ext}"));
+            if fs::metadata(&path)
+                .await
+                .map(|meta| meta.is_file())
+                .unwrap_or(false)
+            {
+                return true;
+            }
         }
     }
     false
 }
 
-//TODO 要改成从system config 获取
-async fn load_agent_did(agent_root: &Path) -> Result<String> {
-    for name in AGENT_DOC_CANDIDATES {
-        let path = agent_root.join(name);
-        let Some(raw) = read_text_if_exists(&path).await? else {
-            continue;
-        };
-        let parsed: Json = serde_json::from_str(&raw)
-            .with_context(|| format!("parse agent document failed: path={}", path.display()))?;
-        if let Some(did) = parsed
-            .get("id")
-            .or_else(|| parsed.get("did"))
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            return Ok(did.to_string());
+async fn load_agent_did(
+    cfg: &AIAgentConfig,
+    agent_root: &Path,
+    package_root: Option<&Path>,
+) -> Result<String> {
+    if let Some(did) = cfg
+        .agent_did
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(did.to_string());
+    }
+
+    for root in [Some(agent_root), package_root].into_iter().flatten() {
+        for name in AGENT_DOC_CANDIDATES {
+            let path = root.join(name);
+            let Some(raw) = read_text_if_exists(&path).await? else {
+                continue;
+            };
+            let parsed: Json = serde_json::from_str(&raw).with_context(|| {
+                format!("parse agent document failed: path={}", path.display())
+            })?;
+            if let Some(did) = parsed
+                .get("id")
+                .or_else(|| parsed.get("did"))
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                return Ok(did.to_string());
+            }
         }
+    }
+
+    let instance_name = cfg.agent_instance_id.trim();
+    if !instance_name.is_empty() {
+        return Ok(format!("did:opendan:{instance_name}"));
     }
 
     let dir_name = agent_root
@@ -3357,6 +3443,101 @@ async fn load_agent_did(agent_root: &Path) -> Result<String> {
         .filter(|value| !value.is_empty())
         .unwrap_or("agent");
     Ok(format!("did:opendan:{dir_name}"))
+}
+
+async fn build_behavior_roots(
+    agent_root: &Path,
+    package_root: Option<&Path>,
+    dir_name: &str,
+) -> Result<Vec<PathBuf>> {
+    let mut roots = Vec::new();
+    let env_behaviors_dir = agent_root.join(dir_name);
+    if is_existing_dir(&env_behaviors_dir).await {
+        roots.push(env_behaviors_dir);
+    }
+
+    if let Some(package_root) = package_root {
+        let package_behaviors_dir = package_root.join(dir_name);
+        if is_existing_dir(&package_behaviors_dir).await {
+            roots.push(package_behaviors_dir);
+        }
+    }
+
+    if roots.is_empty() {
+        let fallback = agent_root.join(dir_name);
+        info!(
+            "agent.persist_entity_prepare: kind=behaviors_dir path={}",
+            fallback.display()
+        );
+        fs::create_dir_all(&fallback).await.map_err(|err| {
+            anyhow!(
+                "create behaviors dir failed: path={} err={}",
+                fallback.display(),
+                err
+            )
+        })?;
+        roots.push(fallback);
+    }
+
+    Ok(roots)
+}
+
+async fn load_overlay_text_resource(
+    agent_root: &Path,
+    package_root: Option<&Path>,
+    candidate_rel_paths: &[&str],
+    default_text: &str,
+) -> Result<(String, ResourceOverlayStatus)> {
+    let mut status = ResourceOverlayStatus {
+        selected_path: None,
+        env_path: None,
+        package_path: None,
+    };
+    let mut selected_content = None::<String>;
+
+    for rel_path in candidate_rel_paths {
+        let path = agent_root.join(rel_path);
+        if let Some(content) = read_text_if_exists(&path).await? {
+            status.env_path = Some(path);
+            selected_content = Some(content);
+            break;
+        }
+    }
+
+    if let Some(package_root) = package_root {
+        for rel_path in candidate_rel_paths {
+            let path = package_root.join(rel_path);
+            if let Some(content) = read_text_if_exists(&path).await? {
+                status.package_path = Some(path);
+                if selected_content.is_none() {
+                    selected_content = Some(content);
+                }
+                break;
+            }
+        }
+    }
+
+    status.selected_path = status
+        .env_path
+        .clone()
+        .or_else(|| status.package_path.clone());
+
+    Ok((selected_content.unwrap_or_else(|| default_text.to_string()), status))
+}
+
+fn log_overlay_status(resource: &str, instance_id: &str, status: &ResourceOverlayStatus) {
+    info!(
+        "agent.loader.resource: instance={} resource={} selected={} env_override={} package_default={}",
+        instance_id,
+        resource,
+        status
+            .selected_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<builtin-default>".to_string()),
+        status.env_path.is_some(),
+        status.package_path.is_some()
+    );
 }
 
 async fn read_text_if_exists(path: &Path) -> Result<Option<String>> {
@@ -3385,6 +3566,29 @@ async fn is_existing_dir(path: &Path) -> bool {
         .await
         .map(|meta| meta.is_dir())
         .unwrap_or(false)
+}
+
+async fn looks_like_workspace_root(path: &Path) -> bool {
+    for dir_name in [
+        "config",
+        "prompts",
+        "behaviors",
+        "session",
+        "workspace",
+        "state",
+        "logs",
+        "memory",
+        "cache",
+        "todo",
+        "tools",
+        "artifacts",
+        "worklog",
+    ] {
+        if is_existing_dir(&path.join(dir_name)).await {
+            return true;
+        }
+    }
+    false
 }
 
 fn compact_text_for_log(value: &str, max_chars: usize) -> String {
