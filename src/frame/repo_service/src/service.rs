@@ -1,17 +1,20 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::repo_db::{
+    RepoDb, RepoDbStat, RepoObjectRecord as DbRecord, RepoProofRecord,
+    RepoReceiptRecord as ReceiptRecord, SqliteRepoDb,
+};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
-    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime,
-    BuckyOSRuntimeType, RepoActionProof, RepoContentRef, RepoHandler,
-    RepoListFilter, RepoProof, RepoProofFilter, RepoRecord, RepoServeRequestContext,
-    RepoServeResult, RepoServerHandler, RepoStat, REPO_ACCESS_POLICY_FREE,
-    REPO_ACCESS_POLICY_PAID, REPO_ORIGIN_LOCAL, REPO_ORIGIN_REMOTE,
+    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType,
+    RepoActionProof, RepoContentRef, RepoHandler, RepoListFilter, RepoProof, RepoProofFilter,
+    RepoRecord, RepoServeRequestContext, RepoServeResult, RepoServerHandler, RepoStat,
+    REPO_ACCESS_POLICY_FREE, REPO_ACCESS_POLICY_PAID, REPO_ORIGIN_LOCAL, REPO_ORIGIN_REMOTE,
     REPO_PROOF_TYPE_COLLECTION, REPO_PROOF_TYPE_DOWNLOAD, REPO_PROOF_TYPE_INSTALL,
-    REPO_PROOF_TYPE_REFERRAL, REPO_SERVICE_SERVICE_NAME, REPO_SERVICE_SERVICE_PORT,
-    REPO_SERVE_REJECT_NOT_FOUND, REPO_SERVE_REJECT_NO_RECEIPT, REPO_STATUS_COLLECTED,
+    REPO_PROOF_TYPE_REFERRAL, REPO_SERVE_REJECT_NOT_FOUND, REPO_SERVE_REJECT_NO_RECEIPT,
+    REPO_SERVICE_SERVICE_NAME, REPO_SERVICE_SERVICE_PORT, REPO_STATUS_COLLECTED,
     REPO_STATUS_PINNED,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, init_logging};
@@ -22,7 +25,7 @@ use cyfs_gateway_lib::{
 };
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
-use kRPC::{RPCErrors, RPCContext, RPCHandler, RPCRequest, RPCResponse};
+use kRPC::{RPCContext, RPCErrors, RPCHandler, RPCRequest, RPCResponse};
 use log::{info, warn};
 use name_lib::decode_jwt_claim_without_verify;
 use named_store::{NamedLocalStore, NamedStoreMgr, StoreLayout, StoreTarget};
@@ -31,10 +34,6 @@ use ndn_lib::{
     ObjId, StoreMode, ACTION_TYPE_DOWNLOAD, ACTION_TYPE_INSTALLED, ACTION_TYPE_SHARED,
 };
 use ndn_toolkit::{cacl_file_object, check_file_object_content_ready, CheckMode};
-use crate::repo_db::{
-    RepoDb, RepoDbStat, RepoObjectRecord as DbRecord, RepoProofRecord, RepoReceiptRecord as ReceiptRecord,
-    SqliteRepoDb,
-};
 use serde_json::{json, Value};
 use server_runner::Runner;
 use tokio::fs;
@@ -77,12 +76,14 @@ impl RepoService {
         fs::create_dir_all(&announces_dir)
             .await
             .with_context(|| format!("create announce dir failed: {}", announces_dir.display()))?;
-        fs::create_dir_all(&ready_check_store_dir).await.with_context(|| {
-            format!(
-                "create ready check store dir failed: {}",
-                ready_check_store_dir.display()
-            )
-        })?;
+        fs::create_dir_all(&ready_check_store_dir)
+            .await
+            .with_context(|| {
+                format!(
+                    "create ready check store dir failed: {}",
+                    ready_check_store_dir.display()
+                )
+            })?;
 
         let state = Arc::new(RepoState {
             objects_dir,
@@ -140,16 +141,21 @@ impl RepoService {
     ) -> std::result::Result<(PathBuf, u64), RPCErrors> {
         let target_path = self.object_path(content_id);
         if target_path.exists() {
-            let size = verify_content_ready(&self.state.ready_check_store_dir, &target_path, content_id).await?;
+            let size =
+                verify_content_ready(&self.state.ready_check_store_dir, &target_path, content_id)
+                    .await?;
             return Ok((target_path, size));
         }
 
         if let Some(local_path) = record.local_path.as_ref() {
             let local_path = PathBuf::from(local_path);
             if local_path.exists() {
-                let size =
-                    verify_content_ready(&self.state.ready_check_store_dir, &local_path, content_id)
-                        .await?;
+                let size = verify_content_ready(
+                    &self.state.ready_check_store_dir,
+                    &local_path,
+                    content_id,
+                )
+                .await?;
                 if local_path != target_path {
                     fs::copy(&local_path, &target_path).await.map_err(|err| {
                         RPCErrors::ReasonError(format!(
@@ -165,16 +171,21 @@ impl RepoService {
 
         let incoming_path = self.incoming_path(content_id);
         if incoming_path.exists() {
-            let size =
-                verify_content_ready(&self.state.ready_check_store_dir, &incoming_path, content_id)
-                    .await?;
-            fs::rename(&incoming_path, &target_path).await.map_err(|err| {
-                RPCErrors::ReasonError(format!(
-                    "move downloaded content into repo failed: {} -> {} ({err})",
-                    incoming_path.display(),
-                    target_path.display()
-                ))
-            })?;
+            let size = verify_content_ready(
+                &self.state.ready_check_store_dir,
+                &incoming_path,
+                content_id,
+            )
+            .await?;
+            fs::rename(&incoming_path, &target_path)
+                .await
+                .map_err(|err| {
+                    RPCErrors::ReasonError(format!(
+                        "move downloaded content into repo failed: {} -> {} ({err})",
+                        incoming_path.display(),
+                        target_path.display()
+                    ))
+                })?;
             return Ok((target_path, size));
         }
 
@@ -221,7 +232,10 @@ impl RepoService {
         self.db.upsert_object(record).await.map_err(to_rpc_error)
     }
 
-    async fn load_record(&self, content_id: String) -> std::result::Result<Option<DbRecord>, RPCErrors> {
+    async fn load_record(
+        &self,
+        content_id: String,
+    ) -> std::result::Result<Option<DbRecord>, RPCErrors> {
         self.db.get_object(&content_id).await.map_err(to_rpc_error)
     }
 
@@ -247,7 +261,11 @@ impl RepoService {
         self.db.upsert_receipt(receipt).await.map_err(to_rpc_error)
     }
 
-    async fn cache_announce_request(&self, content_id: &str, meta: &Value) -> std::result::Result<(), RPCErrors> {
+    async fn cache_announce_request(
+        &self,
+        content_id: &str,
+        meta: &Value,
+    ) -> std::result::Result<(), RPCErrors> {
         let file_name = format!(
             "{}-{}.json",
             buckyos_get_unix_timestamp(),
@@ -368,7 +386,9 @@ impl RepoHandler for RepoService {
         let record = self
             .load_record(content_id.to_string())
             .await?
-            .ok_or_else(|| RPCErrors::ReasonError(format!("content {} not collected", content_id)))?;
+            .ok_or_else(|| {
+                RPCErrors::ReasonError(format!("content {} not collected", content_id))
+            })?;
         let (local_path, content_size) = self.ensure_local_content(&content_id, &record).await?;
         self.save_proof(RepoProof::action(download_proof)).await?;
 
@@ -525,22 +545,24 @@ impl RepoHandler for RepoService {
                     .map(|filter| record_matches_filter(record, filter))
                     .unwrap_or(true)
             })
-            .map(|record| RepoRecord::new(
-                record.content_id,
-                record.content_name,
-                record.status,
-                record.origin,
-                record.meta,
-                record.owner_did,
-                record.author,
-                record.access_policy,
-                record.price,
-                record.local_path,
-                record.content_size,
-                record.collected_at,
-                record.pinned_at,
-                record.updated_at,
-            ))
+            .map(|record| {
+                RepoRecord::new(
+                    record.content_id,
+                    record.content_name,
+                    record.status,
+                    record.origin,
+                    record.meta,
+                    record.owner_did,
+                    record.author,
+                    record.access_policy,
+                    record.price,
+                    record.local_path,
+                    record.content_size,
+                    record.collected_at,
+                    record.pinned_at,
+                    record.updated_at,
+                )
+            })
             .collect())
     }
 
@@ -614,7 +636,8 @@ impl RepoHandler for RepoService {
             iat: buckyos_get_unix_timestamp(),
             exp: buckyos_get_unix_timestamp() + 3600 * 24 * 30,
         };
-        self.save_proof(RepoProof::action(download_proof.clone())).await?;
+        self.save_proof(RepoProof::action(download_proof.clone()))
+            .await?;
 
         Ok(RepoServeResult::accepted(
             RepoContentRef::new(
@@ -648,7 +671,8 @@ impl RepoHandler for RepoService {
                 content_id
             )));
         }
-        self.cache_announce_request(content_id, &record.meta).await?;
+        self.cache_announce_request(content_id, &record.meta)
+            .await?;
         warn!(
             "repo announce request queued locally for {}; external BNS publishing is not wired in this repository yet",
             content_id
@@ -718,10 +742,7 @@ pub async fn run_service() -> Result<()> {
     )
     .await
     .context("init repo-service runtime failed")?;
-    runtime
-        .login()
-        .await
-        .context("repo-service login failed")?;
+    runtime.login().await.context("repo-service login failed")?;
     runtime
         .set_main_service_port(REPO_SERVICE_SERVICE_PORT)
         .await;
@@ -753,8 +774,7 @@ fn to_rpc_error(err: anyhow::Error) -> RPCErrors {
 }
 
 fn parse_obj_id(raw: &str) -> std::result::Result<ObjId, RPCErrors> {
-    ObjId::new(raw)
-        .map_err(|err| RPCErrors::ReasonError(format!("invalid obj id `{raw}`: {err}")))
+    ObjId::new(raw).map_err(|err| RPCErrors::ReasonError(format!("invalid obj id `{raw}`: {err}")))
 }
 
 fn build_actor_obj_id(raw: &str) -> ObjId {
@@ -822,7 +842,12 @@ fn normalize_meta_input(value: Value) -> std::result::Result<Value, RPCErrors> {
     }
 }
 
-fn normalize_store_meta(meta: Value, content_path: &Path, content_id: &str, content_size: u64) -> Value {
+fn normalize_store_meta(
+    meta: Value,
+    content_path: &Path,
+    content_id: &str,
+    content_size: u64,
+) -> Value {
     let mut meta = match meta {
         Value::Object(map) => Value::Object(map),
         _ => fallback_meta_for_store(content_path, content_id, content_size),
@@ -943,10 +968,7 @@ fn proof_from_row(row: &RepoProofRecord) -> std::result::Result<RepoProof, RPCEr
         "action" => serde_json::from_str::<ActionObject>(&row.proof_data)
             .map(RepoProof::action)
             .map_err(|err| {
-                RPCErrors::ReasonError(format!(
-                    "parse action proof {} failed: {err}",
-                    row.proof_id
-                ))
+                RPCErrors::ReasonError(format!("parse action proof {} failed: {err}", row.proof_id))
             }),
         "collection" => serde_json::from_str::<InclusionProof>(&row.proof_data)
             .map(RepoProof::collection)
@@ -1067,7 +1089,10 @@ fn record_matches_filter(record: &DbRecord, filter: &RepoListFilter) -> bool {
     true
 }
 
-fn validate_receipt(record: &DbRecord, receipt_value: Value) -> std::result::Result<ReceiptRecord, RPCErrors> {
+fn validate_receipt(
+    record: &DbRecord,
+    receipt_value: Value,
+) -> std::result::Result<ReceiptRecord, RPCErrors> {
     let receipt_id = receipt_value
         .get("receipt_id")
         .or_else(|| receipt_value.get("id"))
@@ -1342,7 +1367,9 @@ mod tests {
 
         let staged_path = service.incoming_path(&content_id);
         if let Some(parent) = staged_path.parent() {
-            fs::create_dir_all(parent).await.expect("create incoming dir");
+            fs::create_dir_all(parent)
+                .await
+                .expect("create incoming dir");
         }
         fs::copy(&content_path, &staged_path)
             .await

@@ -5,19 +5,19 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use buckyos_api::msg_queue::Message;
 use buckyos_api::{
-    get_buckyos_api_runtime, AccountBinding, Contact, MsgRecord, MsgRecordWithObject,
-    OpenDanAgentSessionRecord, OpenDanSessionLink,
+    AccountBinding, Contact, MsgRecord, MsgRecordWithObject, OpenDanAgentSessionRecord,
+    OpenDanSessionLink, get_buckyos_api_runtime,
 };
 use log::{debug, info, warn};
 use name_lib::DID;
 use ndn_lib::MsgObject;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value as Json};
+use serde_json::{Map, Value as Json, json};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, Notify, RwLock};
 
-use crate::agent_tool::{AgentTool, AgentToolError, AgentToolResult, ToolSpec, TOOL_GET_SESSION};
+use crate::agent_tool::{AgentTool, AgentToolError, AgentToolResult, TOOL_GET_SESSION, ToolSpec};
 use crate::behavior::SessionRuntimeContext;
 use crate::worklog::{render_worklog_prompt_line, render_worklog_prompt_line_from_parts};
 use crate::workspace::LocalWorkspaceManager;

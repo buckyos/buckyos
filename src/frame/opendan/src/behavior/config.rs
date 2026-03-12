@@ -202,13 +202,12 @@ impl BehaviorConfig {
     }
 
     pub fn parse_from_value(path: &Path, value: Json) -> Result<Self, BehaviorConfigError> {
-        let mut cfg =
-            serde_json::from_value::<BehaviorConfig>(value).map_err(|err| {
-                BehaviorConfigError::Invalid {
-                    path: path.display().to_string(),
-                    message: err.to_string(),
-                }
-            })?;
+        let mut cfg = serde_json::from_value::<BehaviorConfig>(value).map_err(|err| {
+            BehaviorConfigError::Invalid {
+                path: path.display().to_string(),
+                message: err.to_string(),
+            }
+        })?;
 
         Self::normalize_loaded_config(path, &mut cfg)?;
         Ok(cfg)
@@ -260,12 +259,12 @@ impl BehaviorConfig {
             sanitize_merge_name(behavior_name),
             Uuid::new_v4()
         ));
-        fs::create_dir_all(&merge_root)
-            .await
-            .map_err(|source| BehaviorConfigError::ReadFailed {
+        fs::create_dir_all(&merge_root).await.map_err(|source| {
+            BehaviorConfigError::ReadFailed {
                 path: merge_root.display().to_string(),
                 source,
-            })?;
+            }
+        })?;
 
         let merge_result = async {
             let mut root_toml = String::new();
@@ -278,12 +277,12 @@ impl BehaviorConfig {
             }
 
             let root_file = merge_root.join("root.toml");
-            fs::write(&root_file, root_toml)
-                .await
-                .map_err(|source| BehaviorConfigError::ReadFailed {
+            fs::write(&root_file, root_toml).await.map_err(|source| {
+                BehaviorConfigError::ReadFailed {
                     path: root_file.display().to_string(),
                     source,
-                })?;
+                }
+            })?;
 
             let merged = ConfigMerger::load_dir(&merge_root).await.map_err(|err| {
                 BehaviorConfigError::Invalid {
@@ -291,7 +290,10 @@ impl BehaviorConfig {
                     message: err.to_string(),
                 }
             })?;
-            Self::parse_from_value(&merge_root.join(format!("{behavior_name}.merged.json")), merged)
+            Self::parse_from_value(
+                &merge_root.join(format!("{behavior_name}.merged.json")),
+                merged,
+            )
         }
         .await;
 
@@ -857,12 +859,12 @@ async fn is_dir(path: &Path) -> bool {
 async fn copy_merge_source(source: &Path, target: &Path) -> Result<(), BehaviorConfigError> {
     if is_file(source).await {
         if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)
-                .await
-                .map_err(|source_err| BehaviorConfigError::ReadFailed {
+            fs::create_dir_all(parent).await.map_err(|source_err| {
+                BehaviorConfigError::ReadFailed {
                     path: parent.display().to_string(),
                     source: source_err,
-                })?;
+                }
+            })?;
         }
         fs::copy(source, target)
             .await
@@ -880,19 +882,21 @@ async fn copy_merge_source(source: &Path, target: &Path) -> Result<(), BehaviorC
             source: source_err,
         })?;
 
-    let mut read_dir = fs::read_dir(source)
-        .await
-        .map_err(|source_err| BehaviorConfigError::ReadFailed {
-            path: source.display().to_string(),
-            source: source_err,
-        })?;
-    while let Some(entry) = read_dir
-        .next_entry()
-        .await
-        .map_err(|source_err| BehaviorConfigError::ReadFailed {
-            path: source.display().to_string(),
-            source: source_err,
-        })?
+    let mut read_dir =
+        fs::read_dir(source)
+            .await
+            .map_err(|source_err| BehaviorConfigError::ReadFailed {
+                path: source.display().to_string(),
+                source: source_err,
+            })?;
+    while let Some(entry) =
+        read_dir
+            .next_entry()
+            .await
+            .map_err(|source_err| BehaviorConfigError::ReadFailed {
+                path: source.display().to_string(),
+                source: source_err,
+            })?
     {
         let child_source = entry.path();
         let child_target = target.join(entry.file_name());
@@ -1268,12 +1272,10 @@ toolbox:
         .await
         .expect("write env behavior");
 
-        let cfg = BehaviorConfig::load_from_roots(
-            &[env_root.clone(), package_root.clone()],
-            "plan",
-        )
-        .await
-        .expect("merge behavior config");
+        let cfg =
+            BehaviorConfig::load_from_roots(&[env_root.clone(), package_root.clone()], "plan")
+                .await
+                .expect("merge behavior config");
 
         assert_eq!(cfg.process_rule, "env_rule");
         assert_eq!(cfg.tools.mode, BehaviorToolMode::AllowList);

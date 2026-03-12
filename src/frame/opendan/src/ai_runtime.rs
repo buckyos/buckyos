@@ -14,14 +14,14 @@ use buckyos_api::{
     OpenDanWorkspaceWorklogsResult,
 };
 use log::info;
-use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection};
+use rusqlite::{Connection, params, params_from_iter, types::Value as SqlValue};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value as Json};
+use serde_json::{Value as Json, json};
 use tokio::{fs, task};
 
 use crate::agent_tool::{
-    AgentTool, AgentToolError, AgentToolManager, AgentToolResult, ToolSpec,
-    TOOL_BIND_EXTERNAL_WORKSPACE, TOOL_CREATE_SUB_AGENT, TOOL_LIST_EXTERNAL_WORKSPACES,
+    AgentTool, AgentToolError, AgentToolManager, AgentToolResult, TOOL_BIND_EXTERNAL_WORKSPACE,
+    TOOL_CREATE_SUB_AGENT, TOOL_LIST_EXTERNAL_WORKSPACES, ToolSpec,
 };
 use crate::behavior::SessionRuntimeContext;
 
@@ -2305,7 +2305,7 @@ fn optional_string(args: &Json, key: &str) -> Result<Option<String>, AgentToolEr
 mod tests {
     use std::sync::Arc;
 
-    use buckyos_api::{value_to_object_map, AiToolCall};
+    use buckyos_api::{AiToolCall, value_to_object_map};
     use tempfile::tempdir;
 
     use super::*;
@@ -2514,9 +2514,11 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
         assert_eq!(sub_did, "did:test:jarvis:web-agent");
 
         let sub_root = parent_root.join("sub-agents").join("web-agent");
-        assert!(fs::try_exists(sub_root.join("agent.json.doc"))
-            .await
-            .expect("check sub agent doc"));
+        assert!(
+            fs::try_exists(sub_root.join("agent.json.doc"))
+                .await
+                .expect("check sub agent doc")
+        );
 
         let bind_result = tool_mgr
             .call_tool(
@@ -2536,9 +2538,11 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
         let mount_path = bind_result["binding"]["mount"]
             .as_str()
             .expect("read mount path");
-        assert!(fs::try_exists(mount_path)
-            .await
-            .expect("check mount path exists"));
+        assert!(
+            fs::try_exists(mount_path)
+                .await
+                .expect("check mount path exists")
+        );
 
         let list_result = tool_mgr
             .call_tool(

@@ -8,9 +8,9 @@ use buckyos_api::AiToolCall;
 use log::{debug, info, warn};
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::{json, Value as Json};
+use serde_json::{Value as Json, json};
 use tokio::sync::RwLock;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 use crate::behavior::{BehaviorConfig, BehaviorExecInput, PolicyEngine, SessionRuntimeContext};
 
@@ -1331,8 +1331,8 @@ mod tests {
         }
     }
 
-    async fn build_real_tool_catalog_for_review(
-    ) -> (Vec<ToolSpec>, Vec<ToolSpec>, Vec<ToolSpec>, Vec<ToolSpec>) {
+    async fn build_real_tool_catalog_for_review()
+    -> (Vec<ToolSpec>, Vec<ToolSpec>, Vec<ToolSpec>, Vec<ToolSpec>) {
         let temp = tempdir().expect("create tempdir for tool catalog");
         let workspace_root = temp.path().join("workspace");
         let sessions_root = workspace_root.join("session");
@@ -1781,9 +1781,11 @@ mod tests {
         let action_specs = mgr.list_action_specs();
         assert_eq!(action_specs.len(), 1);
         assert_eq!(action_specs[0].name, "exec_bash");
-        assert!(action_specs[0]
-            .render_action_introduce_prompt()
-            .contains("dummy"));
+        assert!(
+            action_specs[0]
+                .render_action_introduce_prompt()
+                .contains("dummy")
+        );
 
         let err = mgr
             .call_tool(
@@ -1840,10 +1842,11 @@ mod tests {
         assert!(mgr.get_bash_cmd("namespaced_tool").is_none());
         assert!(mgr.get_action("namespaced_tool").is_some());
         assert!(mgr.get_action_spec("namespaced_tool").is_some());
-        assert!(mgr
-            .list_tool_specs()
-            .iter()
-            .all(|item| item.name != "namespaced_tool"));
+        assert!(
+            mgr.list_tool_specs()
+                .iter()
+                .all(|item| item.name != "namespaced_tool")
+        );
 
         let result = mgr
             .call_tool(
@@ -1878,9 +1881,10 @@ mod tests {
             })
             .expect_err("tool with no namespace exposure should fail");
         assert!(matches!(err, AgentToolError::InvalidArgs(_)));
-        assert!(err
-            .to_string()
-            .contains("must support at least one namespace"));
+        assert!(
+            err.to_string()
+                .contains("must support at least one namespace")
+        );
     }
 
     #[tokio::test]

@@ -7,9 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use buckyos_api::KEventClient;
 use log::info;
-use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection};
+use rusqlite::{Connection, params, params_from_iter, types::Value as SqlValue};
 use serde::Serialize;
-use serde_json::{json, Value as Json};
+use serde_json::{Value as Json, json};
 use tokio::task;
 
 use crate::agent_tool::AgentToolError;
@@ -2785,11 +2785,7 @@ fn u64_to_i64(v: u64) -> i64 {
 }
 
 fn i64_to_u64(v: i64) -> Option<u64> {
-    if v < 0 {
-        None
-    } else {
-        Some(v as u64)
-    }
+    if v < 0 { None } else { Some(v as u64) }
 }
 
 fn usize_to_i64(v: usize, field: &str) -> Result<i64, AgentToolError> {

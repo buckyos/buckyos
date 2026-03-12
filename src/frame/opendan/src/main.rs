@@ -17,27 +17,28 @@ pub mod workspace;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use buckyos_api::msg_queue::MsgQueueClient;
 use buckyos_api::{
-    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AppDoc,
-    AppServiceInstanceConfig, AppServiceSpec, BuckyOSRuntimeType, ServiceInstallConfig,
-    AICC_SERVICE_SERVICE_NAME, OPENDAN_SERVICE_NAME, OPENDAN_SERVICE_PORT,
+    AICC_SERVICE_SERVICE_NAME, AppDoc, AppServiceInstanceConfig, AppServiceSpec,
+    BuckyOSRuntimeType, OPENDAN_SERVICE_NAME, OPENDAN_SERVICE_PORT as DEFAULT_OPENDAN_SERVICE_PORT,
+    ServiceInstallConfig, get_buckyos_api_runtime, init_buckyos_api_runtime,
+    set_buckyos_api_runtime,
 };
 use buckyos_kit::{get_buckyos_root_dir, init_logging};
 use bytes::Bytes;
 use cyfs_gateway_lib::{
-    serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
-    StreamInfo,
+    HttpServer, ServerError, ServerErrorCode, ServerResult, StreamInfo, serve_http_by_rpc_handler,
+    server_err,
 };
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use log::{error, info, warn};
 use name_lib::{AgentDocument, DIDDocumentTrait, EncodedDocument};
-use server_runner::Runner;
 use serde_json::Value as Json;
+use server_runner::Runner;
 use tokio::fs;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 use crate::agent::{AIAgent, AIAgentDeps};
 use crate::agent_config::AIAgentConfig;
@@ -98,6 +99,7 @@ impl HttpServer for OpenDanHttpServer {
 const OPENDAN_AGENT_ID_ENV: [&str; 3] = ["OPENDAN_AGENT_ID", "AGENT_ID", "AGENT_INSTANCE_ID"];
 const OPENDAN_AGENT_ENV_ENV: [&str; 3] = ["OPENDAN_AGENT_ENV", "AGENT_ENV", "AGENT_ROOT"];
 const OPENDAN_AGENT_BIN_ENV: [&str; 3] = ["OPENDAN_AGENT_BIN", "AGENT_BIN", "AGENT_PACKAGE_ROOT"];
+const OPENDAN_SERVICE_PORT_ENV: [&str; 3] = ["OPENDAN_SERVICE_PORT", "SERVICE_PORT", "LISTEN_PORT"];
 const OPENDAN_SESSION_WORKER_THREADS_ENV: &str = "OPENDAN_SESSION_WORKER_THREADS";
 const OPENDAN_STARTUP_DEP_READY_WAIT_SECS: u64 = 10;
 
@@ -106,6 +108,7 @@ struct StartupArgs {
     agent_id: Option<String>,
     agent_env: Option<PathBuf>,
     agent_bin: Option<PathBuf>,
+    service_port: Option<u16>,
 }
 
 #[derive(Clone, Debug)]
@@ -134,28 +137,49 @@ struct LaunchConfig {
     agent_spec: Option<AgentAppSpec>,
 }
 
-fn parse_startup_args() -> Result<StartupArgs> {
+fn parse_u16_arg(value: &str, arg_name: &str) -> Result<u16> {
+    value
+        .parse::<u16>()
+        .map_err(|err| anyhow!("invalid value for {}: {} ({})", arg_name, value, err))
+}
+
+fn parse_startup_args_from_iter<I, S>(args: I) -> Result<StartupArgs>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
     let mut parsed = StartupArgs::default();
-    let mut args = std::env::args().skip(1);
+    let mut args = args.into_iter();
     while let Some(arg) = args.next() {
-        match arg.as_str() {
+        let arg = arg.as_ref();
+        match arg {
             "--agent-id" => {
                 parsed.agent_id = Some(
                     args.next()
+                        .map(|value| value.as_ref().to_string())
                         .ok_or_else(|| anyhow!("missing value for --agent-id"))?,
                 );
             }
             "--agent-env" => {
                 parsed.agent_env = Some(PathBuf::from(
                     args.next()
+                        .map(|value| value.as_ref().to_string())
                         .ok_or_else(|| anyhow!("missing value for --agent-env"))?,
                 ));
             }
             "--agent-bin" => {
                 parsed.agent_bin = Some(PathBuf::from(
                     args.next()
+                        .map(|value| value.as_ref().to_string())
                         .ok_or_else(|| anyhow!("missing value for --agent-bin"))?,
                 ));
+            }
+            "--service-port" => {
+                let value = args
+                    .next()
+                    .map(|value| value.as_ref().to_string())
+                    .ok_or_else(|| anyhow!("missing value for --service-port"))?;
+                parsed.service_port = Some(parse_u16_arg(&value, "--service-port")?);
             }
             other if other.starts_with("--agent-id=") => {
                 parsed.agent_id = Some(other["--agent-id=".len()..].to_string());
@@ -166,10 +190,20 @@ fn parse_startup_args() -> Result<StartupArgs> {
             other if other.starts_with("--agent-bin=") => {
                 parsed.agent_bin = Some(PathBuf::from(&other["--agent-bin=".len()..]));
             }
+            other if other.starts_with("--service-port=") => {
+                parsed.service_port = Some(parse_u16_arg(
+                    &other["--service-port=".len()..],
+                    "--service-port",
+                )?);
+            }
             _ => {}
         }
     }
     Ok(parsed)
+}
+
+fn parse_startup_args() -> Result<StartupArgs> {
+    parse_startup_args_from_iter(std::env::args().skip(1))
 }
 
 fn get_first_env_var(keys: &[&str]) -> Option<String> {
@@ -177,6 +211,18 @@ fn get_first_env_var(keys: &[&str]) -> Option<String> {
         .filter_map(|key| std::env::var(key).ok())
         .map(|value| value.trim().to_string())
         .find(|value| !value.is_empty())
+}
+
+fn resolve_requested_service_port(startup: &StartupArgs) -> Result<u16> {
+    if let Some(service_port) = startup.service_port {
+        return Ok(service_port);
+    }
+
+    if let Some(value) = get_first_env_var(&OPENDAN_SERVICE_PORT_ENV) {
+        return parse_u16_arg(&value, "OPENDAN_SERVICE_PORT");
+    }
+
+    Ok(DEFAULT_OPENDAN_SERVICE_PORT)
 }
 
 fn resolve_requested_agent_id(startup: &StartupArgs) -> Result<String> {
@@ -216,9 +262,13 @@ async fn load_agent_instance_doc(agent_id: &str) -> Result<Option<AgentInstanceD
             err
         )
     })?;
-    let json = encoded
-        .to_json_value()
-        .map_err(|err| anyhow!("convert agent instance doc to json failed: key={} err={}", key, err))?;
+    let json = encoded.to_json_value().map_err(|err| {
+        anyhow!(
+            "convert agent instance doc to json failed: key={} err={}",
+            key,
+            err
+        )
+    })?;
     Ok(Some(AgentInstanceDoc { doc, json }))
 }
 
@@ -239,6 +289,15 @@ fn owner_key_candidates(owner: &str) -> Vec<String> {
     }
 
     candidates
+}
+
+fn agent_spec_key_candidates(agent_id: &str, owner: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    for owner_key in owner_key_candidates(owner) {
+        keys.push(format!("users/{owner_key}/agents/{agent_id}/spec"));
+        keys.push(format!("users/{owner_key}/apps/{agent_id}/spec"));
+    }
+    keys
 }
 
 fn parse_agent_app_spec(key: &str, raw: &str) -> Result<AgentAppSpec> {
@@ -293,8 +352,7 @@ async fn load_agent_app_spec(agent_id: &str, owner: Option<&str>) -> Result<Opti
         .context("init system_config client for opendan agent spec failed")?;
 
     let mut last_err: Option<anyhow::Error> = None;
-    for owner_key in owner_key_candidates(owner) {
-        let key = format!("users/{owner_key}/agents/{agent_id}/spec");
+    for key in agent_spec_key_candidates(agent_id, owner) {
         match client.get(&key).await {
             Ok(value) => {
                 return parse_agent_app_spec(&key, &value.value).map(Some);
@@ -638,6 +696,7 @@ async fn service_main() -> Result<()> {
     info!("starting opendan service...");
     let startup = parse_startup_args().context("parse opendan startup args failed")?;
     let agent_id = resolve_requested_agent_id(&startup)?;
+    let service_port = resolve_requested_service_port(&startup)?;
 
     let mut runtime = init_buckyos_api_runtime(&agent_id, None, BuckyOSRuntimeType::FrameService)
         .await
@@ -651,7 +710,7 @@ async fn service_main() -> Result<()> {
         OPENDAN_STARTUP_DEP_READY_WAIT_SECS
     );
     sleep(Duration::from_secs(OPENDAN_STARTUP_DEP_READY_WAIT_SECS)).await;
-    runtime.set_main_service_port(OPENDAN_SERVICE_PORT).await;
+    runtime.set_main_service_port(service_port).await;
     set_buckyos_api_runtime(runtime);
 
     let agent_doc = load_agent_instance_doc(&agent_id).await?;
@@ -663,9 +722,10 @@ async fn service_main() -> Result<()> {
         agent_doc.as_ref(),
         &agent_id,
     ))?;
-    let agent_package_root = resolve_agent_package_root(&startup, agent_spec.as_ref(), agent_doc.as_ref())
-        .map(absolutize_path)
-        .transpose()?;
+    let agent_package_root =
+        resolve_agent_package_root(&startup, agent_spec.as_ref(), agent_doc.as_ref())
+            .map(absolutize_path)
+            .transpose()?;
     let launch = LaunchConfig {
         agent_id: agent_id.clone(),
         agent_env_root,
@@ -682,8 +742,9 @@ async fn service_main() -> Result<()> {
         write_cached_agent_spec(&launch.agent_env_root, spec).await?;
     }
     info!(
-        "opendan launch resolved: instance={} env_root={} package_root={} did={} owner={} spec_key={} spec_user={}",
+        "opendan launch resolved: instance={} service_port={} env_root={} package_root={} did={} owner={} spec_key={} spec_user={}",
         launch.agent_id,
+        service_port,
         launch.agent_env_root.display(),
         launch
             .agent_package_root
@@ -752,7 +813,7 @@ async fn service_main() -> Result<()> {
             .context("register root agent into opendan rpc runtime failed")?;
     }
     let server = Arc::new(OpenDanHttpServer::new(ai_runtime));
-    let runner = Runner::new(OPENDAN_SERVICE_PORT);
+    let runner = Runner::new(service_port);
     runner
         .add_http_server("/kapi/opendan".to_string(), server)
         .map_err(|err| anyhow!("failed to add opendan http server: {err:?}"))?;
@@ -774,5 +835,51 @@ async fn main() {
     if let Err(err) = service_main().await {
         error!("opendan service exited with error: {err}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        DEFAULT_OPENDAN_SERVICE_PORT, StartupArgs, agent_spec_key_candidates,
+        parse_startup_args_from_iter, resolve_requested_service_port,
+    };
+
+    #[test]
+    fn agent_spec_key_candidates_include_agents_and_apps_paths() {
+        let keys = agent_spec_key_candidates("jarvis", "did:bns:alice");
+        assert_eq!(
+            keys,
+            vec![
+                "users/did:bns:alice/agents/jarvis/spec".to_string(),
+                "users/did:bns:alice/apps/jarvis/spec".to_string(),
+                "users/alice/agents/jarvis/spec".to_string(),
+                "users/alice/apps/jarvis/spec".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_startup_args_accepts_service_port_override() {
+        let parsed =
+            parse_startup_args_from_iter(["--agent-id", "jarvis", "--service-port", "12016"])
+                .expect("parse startup args");
+
+        assert_eq!(parsed.agent_id.as_deref(), Some("jarvis"));
+        assert_eq!(parsed.service_port, Some(12016));
+    }
+
+    #[test]
+    fn resolve_requested_service_port_prefers_cli_value() {
+        let startup = StartupArgs {
+            service_port: Some(12016),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            resolve_requested_service_port(&startup).expect("resolve service port"),
+            12016
+        );
+        assert_ne!(DEFAULT_OPENDAN_SERVICE_PORT, 12016);
     }
 }

@@ -234,7 +234,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use buckyos_api::{value_to_object_map, AiToolSpec};
+    use buckyos_api::{AiToolSpec, value_to_object_map};
     use tokio::sync::Mutex;
 
     use crate::agent_environment::AgentEnvironment;

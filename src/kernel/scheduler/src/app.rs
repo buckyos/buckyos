@@ -10,6 +10,34 @@ use crate::*;
 use anyhow::Result;
 use buckyos_api::{BASE_APP_PORT, MAX_APP_INDEX};
 
+fn app_service_spec_key_candidates(user_id: &str, app_id: &str) -> Vec<String> {
+    vec![
+        format!("users/{}/apps/{}/spec", user_id, app_id),
+        format!("users/{}/agents/{}/spec", user_id, app_id),
+    ]
+}
+
+fn load_app_service_spec(
+    user_id: &str,
+    app_id: &str,
+    input_config: &HashMap<String, String>,
+) -> Result<(String, AppServiceSpec)> {
+    for key in app_service_spec_key_candidates(user_id, app_id) {
+        if let Some(raw) = input_config.get(&key) {
+            let spec: AppServiceSpec = serde_json::from_str(raw.as_str()).map_err(|err| {
+                anyhow::anyhow!("app_config {} is not a valid json: {}", key, err)
+            })?;
+            return Ok((key, spec));
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "app_config not found for app_id={} user_id={}",
+        app_id,
+        user_id
+    ))
+}
+
 fn build_app_service_config(
     node_id: &str,
     app_config: &AppServiceSpec,
@@ -20,9 +48,15 @@ fn build_app_service_config(
     if node_info.support_container {
         let docker_pkg_name = format!("{}_docker_image", node_info.arch.as_str());
         let docker_pkg_info = app_config.app_doc.pkg_list.get(&docker_pkg_name);
-        if docker_pkg_info.is_none() {
+        if docker_pkg_info.is_none() && app_config.app_doc.get_app_type() != AppType::Agent {
             return Err(anyhow::anyhow!(
                 "docker_pkg_name: {} not found",
+                docker_pkg_name
+            ));
+        }
+        if docker_pkg_info.is_none() && app_config.app_doc.pkg_list.agent.is_none() {
+            return Err(anyhow::anyhow!(
+                "docker_pkg_name: {} or agent pkg not found",
                 docker_pkg_name
             ));
         }
@@ -60,26 +94,8 @@ pub fn instance_app_service(
     let mut result = HashMap::new();
 
     let (app_id, user_id, node_id) = parse_instance_id(new_instance.instance_id.as_str())?;
-    //debug!("instance_app_service app_id: {}, user_id: {}, node_id: {},instance_id: {}", app_id, user_id, node_id,new_instance.instance_id);
-    let app_config_path = format!("users/{}/apps/{}/spec", user_id, app_id);
+    let (app_config_path, app_config) = load_app_service_spec(&user_id, &app_id, input_config)?;
     info!("instance_app_service app_config_path: {}", app_config_path);
-    let app_config = input_config.get(&app_config_path);
-    if app_config.is_none() {
-        warn!("app_config: {} not found", app_config_path);
-        return Err(anyhow::anyhow!("app_config: {} not found", app_config_path));
-    }
-    let app_config = app_config.unwrap();
-    debug!("will instance_app_service app_config: {}", app_config);
-    let app_config = serde_json::from_str(&app_config);
-    if app_config.is_err() {
-        warn!("app_config: {} is not a valid json", app_config_path);
-        return Err(anyhow::anyhow!(
-            "app_config: {} is not a valid json",
-            app_config_path
-        ));
-    }
-
-    let app_config: AppServiceSpec = app_config.unwrap();
     if app_config.app_index > MAX_APP_INDEX {
         warn!("app_index: {} is too large,skip", app_config.app_index);
         return Err(anyhow::anyhow!(
@@ -231,10 +247,14 @@ pub fn update_app_service_instance(
 pub fn set_app_service_state(
     spec_id: &str,
     state: &ServiceSpecState,
+    input_config: &HashMap<String, String>,
 ) -> Result<HashMap<String, KVAction>> {
     //spec_id 是app_id@user_id
     let (app_id, user_id) = parse_spec_id(spec_id)?;
-    let key = format!("users/{}/apps/{}/spec", user_id, app_id);
+    let key = app_service_spec_key_candidates(&user_id, &app_id)
+        .into_iter()
+        .find(|key| input_config.contains_key(key))
+        .unwrap_or_else(|| format!("users/{}/apps/{}/spec", user_id, app_id));
     debug!("update_app_service sepc key: {}", key);
     let mut set_paths = HashMap::new();
     set_paths.insert("state".to_string(), Some(json!(state.to_string())));

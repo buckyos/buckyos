@@ -4,10 +4,10 @@ use std::path::Path;
 use async_trait::async_trait;
 use log::{info, warn};
 use serde::Deserialize;
-use serde_json::{json, Value as Json};
+use serde_json::{Value as Json, json};
 
 use crate::agent_tool::{
-    tokenize_bash_command_line, AgentTool, AgentToolError, AgentToolResult, ToolSpec,
+    AgentTool, AgentToolError, AgentToolResult, ToolSpec, tokenize_bash_command_line,
 };
 use crate::behavior::SessionRuntimeContext;
 use crate::workspace::local_workspace::SESSION_BINDINGS_REL_PATH;

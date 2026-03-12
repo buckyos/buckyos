@@ -8,9 +8,47 @@ sys.path.append(current_dir)
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 import util
-from app_doc import AppDoc, AppDocError
+from app_doc import AppDoc, AppDocError, AppType
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
+
+
+def get_agent_pid_file(appid, username):
+    return os.path.join(util.get_app_data_dir(appid, username), ".opendan.pid")
+
+
+def read_agent_pid(appid, username):
+    pid_file = get_agent_pid_file(appid, username)
+    if not os.path.exists(pid_file):
+        return None
+    try:
+        with open(pid_file, "r", encoding="utf-8") as f:
+            return int(f.read().strip())
+    except Exception:
+        return None
+
+
+def is_pid_running(pid):
+    if pid is None or pid <= 0:
+        return False
+    if platform.system() == "Windows":
+        cmd = f'tasklist /FI "PID eq {pid}" /FO CSV'
+        output = os.popen(cmd).read().strip()
+        lines = [line for line in output.splitlines() if line.strip()]
+        return len(lines) > 1
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def is_agent_running(appid, username):
+    pid = read_agent_pid(appid, username)
+    if is_pid_running(pid):
+        print(f"Agent '{appid}' is running with pid {pid}.")
+        return True
+    return False
 
 def is_container_running(container_name,docker_image_name):
     try:
@@ -56,6 +94,11 @@ if __name__ == "__main__":
         print(f"No configuration found for appid: {full_appid}")
         exit(1)
     app_instance_config = json.loads(app_instance_config_str)
+    try:
+        app_doc = AppDoc.from_dict(app_instance_config.get("app_spec", {}).get("app_doc", {}))
+    except AppDocError as e:
+        print(f"Invalid app_doc in app_instance_config: {e}")
+        exit(255)
 
     if device_info_str:
         try:
@@ -63,10 +106,11 @@ if __name__ == "__main__":
         except Exception:
             device_info = {}
 
-    if app_instance_config_str is None:
-        print(f"No configuration found for appid: {full_appid}")
+    if app_doc.get_app_type() == AppType.AGENT:
+        if is_agent_running(appid, username):
+            exit(0)
+        print(f"agent {full_appid} is not running")
         exit(1)
-    app_instance_config = json.loads(app_instance_config_str)
 
     #container_hash = app_meta_info.get("image_hash")
     is_support_docker = bool(device_info.get("support_container", True))
@@ -75,7 +119,6 @@ if __name__ == "__main__":
         # check docker container status
 
         try:
-            app_doc = AppDoc.from_dict(app_instance_config.get("app_spec", {}).get("app_doc", {}))
             docker_image_name, _pkg_id = app_doc.get_docker_image_for_host(platform.machine())
         except AppDocError as e:
             print(f"Invalid app_doc in app_instance_config: {e}")
@@ -113,5 +156,4 @@ if __name__ == "__main__":
         else:
             print(f"app {full_appid} is not running")
             exit(1)
-
 

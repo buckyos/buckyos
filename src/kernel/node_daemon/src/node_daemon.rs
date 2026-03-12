@@ -38,8 +38,6 @@ use crate::service_pkg::*;
 use buckyos_api::*;
 use thiserror::Error;
 
-
-
 #[derive(Error, Debug)]
 enum NodeDaemonErrors {
     #[error("Failed due to reason: {0}")]
@@ -256,9 +254,7 @@ async fn load_node_gateway_info(
         let json_config = json_config.unwrap();
         let gateway_info = serde_json::from_str(json_config.as_str()).map_err(|err| {
             error!("parse DEBUG node gateway_info failed! {}", err);
-            NodeDaemonErrors::SystemConfigError(
-                "parse DEBUG node gateway_info failed!".to_string(),
-            )
+            NodeDaemonErrors::SystemConfigError("parse DEBUG node gateway_info failed!".to_string())
         })?;
 
         warn!(
@@ -269,15 +265,18 @@ async fn load_node_gateway_info(
     }
 
     let node_key = format!("nodes/{}/gateway_info", node_host_name);
-    let get_result = buckyos_api_client.get(node_key.as_str()).await.map_err(|error| {
-        error!(
-            "get node gateway_info failed from system_config_service! {}",
-            error
-        );
-        NodeDaemonErrors::SystemConfigError(
-            "get node gateway_info failed from system_config_service!".to_string(),
-        )
-    })?;
+    let get_result = buckyos_api_client
+        .get(node_key.as_str())
+        .await
+        .map_err(|error| {
+            error!(
+                "get node gateway_info failed from system_config_service! {}",
+                error
+            );
+            NodeDaemonErrors::SystemConfigError(
+                "get node gateway_info failed from system_config_service!".to_string(),
+            )
+        })?;
 
     let gateway_info = serde_json::from_str(&get_result.value).map_err(|err| {
         error!("parse node gateway_info failed! {}", err);
@@ -388,9 +387,13 @@ async fn make_sure_system_pkgs_ready(
     let store_mgr = current_runtime.get_named_store().await.unwrap();
     for pkg_id in system_pkgs {
         let pkg_id = format!("{}.{}", prefix, pkg_id);
-        let check_result =
-            PackageEnv::check_pkg_ready(meta_db_path, pkg_id.as_str(), &store_mgr, &mut miss_chunk_list)
-                .await;
+        let check_result = PackageEnv::check_pkg_ready(
+            meta_db_path,
+            pkg_id.as_str(),
+            &store_mgr,
+            &mut miss_chunk_list,
+        )
+        .await;
         if check_result.is_err() {
             error!(
                 "make_sure_system_pkgs_ready: pkg {} is not ready! {}",

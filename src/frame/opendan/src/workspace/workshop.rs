@@ -5,7 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value as Json};
+use serde_json::{Value as Json, json};
 use tokio::fs;
 
 use super::agent_skill::{AgentSkillRecord, AgentSkillSpec};
@@ -18,9 +18,9 @@ use super::todo::{TodoTool, TodoToolConfig};
 use crate::agent_bash::ExecBashTool as BuiltinExecBashTool;
 use crate::agent_session::AgentSessionMgr;
 use crate::agent_tool::{
-    tokenize_bash_command_line, AgentTool, AgentToolError, AgentToolManager, AgentToolResult,
-    MCPToolConfig, ToolSpec, TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE,
-    TOOL_EXEC_BASH, TOOL_READ_FILE, TOOL_TODO_MANAGE, TOOL_WORKLOG_MANAGE, TOOL_WRITE_FILE,
+    AgentTool, AgentToolError, AgentToolManager, AgentToolResult, MCPToolConfig,
+    TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE, TOOL_EXEC_BASH, TOOL_READ_FILE,
+    TOOL_TODO_MANAGE, TOOL_WORKLOG_MANAGE, TOOL_WRITE_FILE, ToolSpec, tokenize_bash_command_line,
 };
 use crate::behavior::SessionRuntimeContext;
 use crate::buildin_tool::{
@@ -757,20 +757,13 @@ impl BindWorkspaceTool {
             Ok(_) => {
                 info!(
                     "opendan.tool_call: tool={} status=success trace_id={} session_id={} workspace_id={}",
-                    TOOL_BIND_WORKSPACE,
-                    ctx.trace_id,
-                    session_id,
-                    workspace_id
+                    TOOL_BIND_WORKSPACE, ctx.trace_id, session_id, workspace_id
                 );
             }
             Err(err) => {
                 warn!(
                     "opendan.tool_call: tool={} status=failed trace_id={} session_id={} workspace_id={} err={}",
-                    TOOL_BIND_WORKSPACE,
-                    ctx.trace_id,
-                    session_id,
-                    workspace_id,
-                    err
+                    TOOL_BIND_WORKSPACE, ctx.trace_id, session_id, workspace_id, err
                 );
             }
         }
@@ -1243,7 +1236,7 @@ mod tests {
     use crate::agent_session::AgentSessionMgr;
     use crate::agent_tool::{DoAction, DoActions};
     use crate::behavior::SessionRuntimeContext;
-    use buckyos_api::{value_to_object_map, AiToolCall};
+    use buckyos_api::{AiToolCall, value_to_object_map};
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::process::Command;
 
@@ -1425,10 +1418,12 @@ mod tests {
         let first_line = stdout.lines().next().unwrap_or_default();
         let forwarded: Json = serde_json::from_str(first_line).expect("stdout json line");
         assert_eq!(forwarded["ok"], true);
-        assert!(forwarded["path"]
-            .as_str()
-            .unwrap_or_default()
-            .ends_with("/notes/forward.txt"));
+        assert!(
+            forwarded["path"]
+                .as_str()
+                .unwrap_or_default()
+                .ends_with("/notes/forward.txt")
+        );
         assert_eq!(forwarded["content"], "L1");
 
         let _ = fs::remove_dir_all(root).await;
@@ -1546,10 +1541,12 @@ mod tests {
         assert_eq!(result["line_results"][0]["mode"], "bash");
         assert_eq!(result["line_results"][1]["mode"], "tool");
         assert_eq!(result["line_results"][0]["command"], "cd subdir");
-        assert!(result["pwd"]
-            .as_str()
-            .unwrap_or_default()
-            .ends_with("/subdir"));
+        assert!(
+            result["pwd"]
+                .as_str()
+                .unwrap_or_default()
+                .ends_with("/subdir")
+        );
 
         let stdout = result["stdout"].as_str().unwrap_or_default();
         let json_line = stdout
@@ -1559,10 +1556,12 @@ mod tests {
         let forwarded: Json = serde_json::from_str(json_line).expect("parse tool json line");
         assert_eq!(forwarded["ok"], true);
         assert_eq!(forwarded["content"], "cd-pane-line");
-        assert!(forwarded["pwd"]
-            .as_str()
-            .unwrap_or_default()
-            .ends_with("/subdir"));
+        assert!(
+            forwarded["pwd"]
+                .as_str()
+                .unwrap_or_default()
+                .ends_with("/subdir")
+        );
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -1954,9 +1953,11 @@ mod tests {
         let workspace_path = result["binding"]["workspace_path"]
             .as_str()
             .expect("workspace path");
-        assert!(fs::try_exists(Path::new(workspace_path))
-            .await
-            .expect("workspace path should exist"));
+        assert!(
+            fs::try_exists(Path::new(workspace_path))
+                .await
+                .expect("workspace path should exist")
+        );
         let summary_text = fs::read_to_string(Path::new(workspace_path).join("SUMMARY.md"))
             .await
             .expect("summary file should exist");

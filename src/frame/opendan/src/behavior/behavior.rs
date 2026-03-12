@@ -1,17 +1,17 @@
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(not(test))]
 use buckyos_api::get_buckyos_api_runtime;
 use buckyos_api::{
-    value_to_object_map, AiToolCall, AiToolSpec, AiccClient, CompleteRequest, CompleteResponse,
-    CompleteStatus, CompleteTaskOptions, CreateTaskOptions, TaskFilter, TaskManagerClient,
-    TaskStatus, AICC_SERVICE_SERVICE_NAME,
+    AICC_SERVICE_SERVICE_NAME, AiToolCall, AiToolSpec, AiccClient, CompleteRequest,
+    CompleteResponse, CompleteStatus, CompleteTaskOptions, CreateTaskOptions, TaskFilter,
+    TaskManagerClient, TaskStatus, value_to_object_map,
 };
-use serde_json::{json, Map, Value as Json};
+use serde_json::{Map, Value as Json, json};
 
 use super::config::{BehaviorConfig, BehaviorConfigError};
 use super::observability::{AgentWorkEvent, WorklogSink};

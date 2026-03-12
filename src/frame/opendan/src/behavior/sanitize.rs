@@ -1,4 +1,4 @@
-use serde_json::{json, Value as Json};
+use serde_json::{Value as Json, json};
 
 use super::types::{Observation, ObservationSource};
 

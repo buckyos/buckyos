@@ -7,14 +7,14 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value as Json};
+use serde_json::{Value as Json, json};
 use sha2::{Digest, Sha256};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 use crate::agent_tool::{
-    AgentTool, AgentToolError, AgentToolManager, AgentToolResult, ToolSpec, TOOL_LOAD_MEMORY,
+    AgentTool, AgentToolError, AgentToolManager, AgentToolResult, TOOL_LOAD_MEMORY, ToolSpec,
 };
 use crate::behavior::SessionRuntimeContext;
 
@@ -433,7 +433,7 @@ impl AgentMemory {
                 return Err(AgentToolError::ExecFailed(format!(
                     "read memory file failed: path={}, err={err}",
                     file_path.display()
-                )))
+                )));
             }
         };
 
@@ -985,7 +985,7 @@ async fn write_atomic_text(path: &Path, body: &str) -> Result<(), AgentToolError
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buckyos_api::{value_to_object_map, AiToolCall};
+    use buckyos_api::{AiToolCall, value_to_object_map};
     use tempfile::tempdir;
 
     fn test_trace_ctx() -> SessionRuntimeContext {

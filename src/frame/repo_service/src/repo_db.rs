@@ -82,9 +82,9 @@ pub struct SqliteRepoDb {
 impl SqliteRepoDb {
     pub async fn open(db_path: PathBuf) -> Result<Self> {
         if let Some(parent) = db_path.parent() {
-            tokio::fs::create_dir_all(parent).await.with_context(|| {
-                format!("create repo db dir failed: {}", parent.display())
-            })?;
+            tokio::fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("create repo db dir failed: {}", parent.display()))?;
         }
 
         let db = Self { db_path };
@@ -219,7 +219,8 @@ impl RepoDb for SqliteRepoDb {
 
     async fn get_object(&self, content_id: &str) -> Result<Option<RepoObjectRecord>> {
         let content_id = content_id.to_string();
-        self.run_db(move |conn| load_record_by_id(conn, &content_id)).await
+        self.run_db(move |conn| load_record_by_id(conn, &content_id))
+            .await
     }
 
     async fn list_objects(&self) -> Result<Vec<RepoObjectRecord>> {
@@ -229,7 +230,10 @@ impl RepoDb for SqliteRepoDb {
     async fn delete_object(&self, content_id: &str) -> Result<()> {
         let content_id = content_id.to_string();
         self.run_db(move |conn| {
-            conn.execute("DELETE FROM objects WHERE content_id = ?1", params![content_id])?;
+            conn.execute(
+                "DELETE FROM objects WHERE content_id = ?1",
+                params![content_id],
+            )?;
             Ok(())
         })
         .await
@@ -264,7 +268,8 @@ impl RepoDb for SqliteRepoDb {
 
     async fn list_proofs(&self, content_id: &str) -> Result<Vec<RepoProofRecord>> {
         let content_id = content_id.to_string();
-        self.run_db(move |conn| load_proof_rows(conn, &content_id)).await
+        self.run_db(move |conn| load_proof_rows(conn, &content_id))
+            .await
     }
 
     async fn upsert_receipt(&self, receipt: RepoReceiptRecord) -> Result<()> {
@@ -302,7 +307,10 @@ impl RepoDb for SqliteRepoDb {
                     conn,
                     "SELECT COUNT(*) FROM objects WHERE status = 'pinned'",
                 )?,
-                local_objects: scalar_u64(conn, "SELECT COUNT(*) FROM objects WHERE origin = 'local'")?,
+                local_objects: scalar_u64(
+                    conn,
+                    "SELECT COUNT(*) FROM objects WHERE origin = 'local'",
+                )?,
                 remote_objects: scalar_u64(
                     conn,
                     "SELECT COUNT(*) FROM objects WHERE origin = 'remote'",
@@ -367,11 +375,7 @@ fn load_all_records(conn: &Connection) -> Result<Vec<RepoObjectRecord>> {
 fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<RepoObjectRecord> {
     let meta_str: String = row.get(4)?;
     let meta = serde_json::from_str::<Value>(&meta_str).map_err(|err| {
-        rusqlite::Error::FromSqlConversionFailure(
-            4,
-            rusqlite::types::Type::Text,
-            Box::new(err),
-        )
+        rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(err))
     })?;
     Ok(RepoObjectRecord {
         content_id: row.get(0)?,
@@ -384,10 +388,18 @@ fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<RepoObjectRecord> 
         access_policy: row.get(7)?,
         price: row.get(8)?,
         local_path: row.get(9)?,
-        content_size: row.get::<_, Option<i64>>(10)?.map(|value| value.max(0) as u64),
-        collected_at: row.get::<_, Option<i64>>(11)?.map(|value| value.max(0) as u64),
-        pinned_at: row.get::<_, Option<i64>>(12)?.map(|value| value.max(0) as u64),
-        updated_at: row.get::<_, Option<i64>>(13)?.map(|value| value.max(0) as u64),
+        content_size: row
+            .get::<_, Option<i64>>(10)?
+            .map(|value| value.max(0) as u64),
+        collected_at: row
+            .get::<_, Option<i64>>(11)?
+            .map(|value| value.max(0) as u64),
+        pinned_at: row
+            .get::<_, Option<i64>>(12)?
+            .map(|value| value.max(0) as u64),
+        updated_at: row
+            .get::<_, Option<i64>>(13)?
+            .map(|value| value.max(0) as u64),
     })
 }
 
@@ -474,10 +486,7 @@ mod tests {
             .expect("object exists");
         assert_eq!(object.content_name.as_deref(), Some("demo"));
 
-        let proofs = db
-            .list_proofs("mix256:test")
-            .await
-            .expect("load proofs");
+        let proofs = db.list_proofs("mix256:test").await.expect("load proofs");
         assert_eq!(proofs.len(), 1);
 
         let stat = db.stat().await.expect("load stat");

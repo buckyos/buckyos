@@ -4,13 +4,14 @@ import os
 import sys
 import json
 import platform
+import signal
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 import util
-from app_doc import AppDoc, AppDocError
+from app_doc import AppDoc, AppDocError, AppType
 
 appid = None
 full_appid = None
@@ -24,6 +25,8 @@ device_info = None
 
 is_support_docker = True
 current_dir = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_OPENDAN_SERVICE_PORT = 4060
+OPENDAN_SERVICE_PORT_FALLBACK_KEYS = ("www", "http", "https", "main")
 
 def _normalize_digest(digest):
     if not digest:
@@ -122,6 +125,199 @@ def start_app_without_docker():
         print(f"No start script found for appid: {appid}")
         exit(1)
     os.system(f"python3 {start_script} {appid} {username}")
+
+
+def get_agent_pid_file(appid, username):
+    return os.path.join(util.get_app_data_dir(appid, username), ".opendan.pid")
+
+
+def read_agent_pid(appid, username):
+    pid_file = get_agent_pid_file(appid, username)
+    if not os.path.exists(pid_file):
+        return None
+    try:
+        with open(pid_file, "r", encoding="utf-8") as f:
+            return int(f.read().strip())
+    except Exception:
+        return None
+
+
+def write_agent_pid(appid, username, pid):
+    pid_file = get_agent_pid_file(appid, username)
+    os.makedirs(os.path.dirname(pid_file), exist_ok=True)
+    with open(pid_file, "w", encoding="utf-8") as f:
+        f.write(str(pid))
+
+
+def is_pid_running(pid):
+    if pid is None or pid <= 0:
+        return False
+    if platform.system() == "Windows":
+        cmd = f'tasklist /FI "PID eq {pid}" /FO CSV'
+        output = os.popen(cmd).read().strip()
+        lines = [line for line in output.splitlines() if line.strip()]
+        return len(lines) > 1
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def stop_agent_process(appid, username):
+    pid = read_agent_pid(appid, username)
+    pid_file = get_agent_pid_file(appid, username)
+    if not is_pid_running(pid):
+        if os.path.exists(pid_file):
+            os.remove(pid_file)
+        return
+
+    if platform.system() == "Windows":
+        os.system(f"taskkill /F /T /PID {pid}")
+    else:
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except Exception:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except Exception:
+                pass
+    if os.path.exists(pid_file):
+        os.remove(pid_file)
+
+
+def pkg_unique_name(pkg_id):
+    if not pkg_id:
+        return ""
+    return str(pkg_id).split("#", 1)[0].strip()
+
+
+def resolve_agent_package_root(app_doc, media_info):
+    if media_info:
+        full_path = media_info.get("full_path")
+        if full_path:
+            return full_path
+
+    agent_pkg = app_doc.pkg_list.agent
+    if agent_pkg is None or not agent_pkg.pkg_id:
+        raise AppDocError("Agent app missing pkg_list.agent.pkg_id")
+
+    pkg_name = pkg_unique_name(agent_pkg.pkg_id)
+    if not pkg_name:
+        raise AppDocError("Agent pkg id is invalid")
+
+    return os.path.join(util.get_buckyos_root(), "bin", pkg_name)
+
+
+def resolve_opendan_binary():
+    candidates = [
+        os.path.join(util.get_buckyos_root(), "bin", "opendan", "opendan"),
+        os.path.join(current_dir, "..", "opendan", "opendan"),
+    ]
+    for candidate in candidates:
+        candidate = os.path.realpath(candidate)
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def normalize_service_port(port_value):
+    try:
+        port = int(port_value)
+    except (TypeError, ValueError):
+        return None
+
+    if port <= 0 or port > 65535:
+        return None
+    return port
+
+
+def select_agent_service_port(app_doc, instance_config):
+    service_ports = instance_config.get("service_ports_config", {})
+    if not isinstance(service_ports, dict) or not service_ports:
+        print(
+            f"No service_ports_config found for agent {appid}, fallback to {DEFAULT_OPENDAN_SERVICE_PORT}"
+        )
+        return DEFAULT_OPENDAN_SERVICE_PORT
+
+    preferred_names = []
+    preferred_names.extend(app_doc.install_config_tips.service_ports.keys())
+    preferred_names.extend(OPENDAN_SERVICE_PORT_FALLBACK_KEYS)
+
+    seen_names = set()
+    for service_name in preferred_names:
+        if service_name in seen_names:
+            continue
+        seen_names.add(service_name)
+        port = normalize_service_port(service_ports.get(service_name))
+        if port is not None:
+            print(f"Selected agent service port {service_name} -> {port}")
+            return port
+
+    normalized_ports = []
+    for service_name, port_value in service_ports.items():
+        port = normalize_service_port(port_value)
+        if port is not None:
+            normalized_ports.append((str(service_name), port))
+
+    if len(normalized_ports) == 1:
+        service_name, port = normalized_ports[0]
+        print(f"Selected sole agent service port {service_name} -> {port}")
+        return port
+
+    if normalized_ports:
+        normalized_ports.sort(key=lambda item: item[0])
+        service_name, port = normalized_ports[0]
+        print(f"Selected first sorted agent service port {service_name} -> {port}")
+        return port
+
+    print(
+        f"Invalid service_ports_config for agent {appid}, fallback to {DEFAULT_OPENDAN_SERVICE_PORT}"
+    )
+    return DEFAULT_OPENDAN_SERVICE_PORT
+
+
+def start_agent(app_doc):
+    global app_media_info
+
+    opendan_bin = resolve_opendan_binary()
+    if not opendan_bin:
+        print("No opendan binary found for agent startup")
+        exit(1)
+
+    if media_info_str is not None:
+        app_media_info = json.loads(media_info_str)
+    else:
+        app_media_info = None
+
+    agent_package_root = resolve_agent_package_root(app_doc, app_media_info)
+    if not os.path.exists(agent_package_root):
+        print(f"Agent package root not found: {agent_package_root}")
+        exit(1)
+
+    agent_env_root = util.get_app_data_dir(appid, username)
+    os.makedirs(agent_env_root, exist_ok=True)
+    agent_service_port = select_agent_service_port(app_doc, app_instance_config)
+
+    stop_agent_process(appid, username)
+
+    run_cmd = [
+        opendan_bin,
+        "--agent-id",
+        appid,
+        "--agent-env",
+        agent_env_root,
+        "--agent-bin",
+        agent_package_root,
+        "--service-port",
+        str(agent_service_port),
+    ]
+    pid = util.nohup_start(run_cmd)
+    if pid is None:
+        print("Failed to start agent process")
+        exit(1)
+    write_agent_pid(appid, username, pid)
+    print(f"Agent {full_appid} started by opendan pid={pid} port={agent_service_port}")
 
 def prepare_mount_directory(host_path, permission):
     """
@@ -430,8 +626,17 @@ def start_app():
         print(f"No configuration found for appid: {full_appid}")
         exit(1)
     app_instance_config = json.loads(app_instance_config_str)
+    try:
+        app_doc = AppDoc.from_dict(app_instance_config.get("app_spec", {}).get("app_doc", {}))
+    except AppDocError as e:
+        print(f"Invalid app_doc in app_instance_config: {e}")
+        exit(1)
 
-    #container_hash = app_meta_info.get("image_hash")
+    if app_doc.get_app_type() == AppType.AGENT:
+        print(f"Start agent {full_appid} with opendan")
+        start_agent(app_doc)
+        return
+
     is_support_docker = bool(device_info.get("support_container", True))
 
     if is_support_docker:
@@ -448,4 +653,3 @@ def start_app():
 
 if __name__ == "__main__":
     start_app()
-

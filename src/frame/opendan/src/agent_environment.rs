@@ -3,7 +3,7 @@ use std::future::Future;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use buckyos_api::{get_buckyos_api_runtime, MsgRecord, OpenDanAgentSessionRecord};
+use buckyos_api::{MsgRecord, OpenDanAgentSessionRecord, get_buckyos_api_runtime};
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use log::{debug, warn};
 use ndn_lib::MsgObject;
@@ -20,9 +20,9 @@ use crate::agent::{AIAgent, InputQueueKind};
 use crate::agent_session::{AgentSession, AgentSessionMgr, SessionInputItem};
 use crate::agent_tool::{AgentToolError, AgentToolManager};
 use crate::workspace::{
-    get_next_ready_todo_code, get_next_ready_todo_text, get_session_todo_text_by_ref,
     AgentWorkshop, AgentWorkshopConfig, LocalWorkspaceManager, WorkshopIndex,
-    WorkshopWorkspaceRecord, WorkspaceType,
+    WorkshopWorkspaceRecord, WorkspaceType, get_next_ready_todo_code, get_next_ready_todo_text,
+    get_session_todo_text_by_ref,
 };
 
 const MAX_INCLUDE_BYTES: usize = 64 * 1024;
@@ -1056,7 +1056,9 @@ async fn render_new_msgs_from_kmsgqueue(messages: &[Message]) -> Option<String> 
                     continue;
                 }
             }
-            warn!("agent_env.render_new_msgs invalid payload: expected SessionInputItem.msg or MsgRecord");
+            warn!(
+                "agent_env.render_new_msgs invalid payload: expected SessionInputItem.msg or MsgRecord"
+            );
             continue;
         };
 

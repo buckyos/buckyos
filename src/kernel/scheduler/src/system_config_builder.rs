@@ -1,17 +1,6 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use buckyos_api::msg_queue::{
-    generate_kmsg_service_doc, KMSG_SERVICE_MAIN_PORT, KMSG_SERVICE_UNIQUE_ID,
-};
-use buckyos_api::{
-    generate_aicc_service_doc, generate_control_panel_service_doc, generate_msg_center_service_doc,
-    generate_opendan_service_doc, generate_repo_service_doc, generate_scheduler_service_doc,
-    generate_smb_service_doc, generate_task_manager_service_doc, generate_verify_hub_service_doc,
-    AppDoc, AppServiceSpec, AppType, GatewaySettings, GatewayShortcut, KernelServiceSpec,
-    NodeConfig, NodeState, SelectorType, ServiceExposeConfig, ServiceInfo, ServiceInstallConfig,
-    ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState,
-    UserContactSettings, UserSettings, UserState, UserTunnelBinding, UserType,
-    OPENDAN_SERVICE_PORT, OPENDAN_SERVICE_UNIQUE_ID,
-    SCHEDULER_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID,
+    KMSG_SERVICE_MAIN_PORT, KMSG_SERVICE_UNIQUE_ID, generate_kmsg_service_doc,
 };
 use buckyos_api::{
     AICC_SERVICE_SERVICE_PORT, AICC_SERVICE_UNIQUE_ID, CONTROL_PANEL_SERVICE_PORT,
@@ -19,17 +8,28 @@ use buckyos_api::{
     REPO_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, TASK_MANAGER_SERVICE_PORT,
     TASK_MANAGER_SERVICE_UNIQUE_ID,
 };
+use buckyos_api::{
+    AppDoc, AppServiceSpec, AppType, GatewaySettings, GatewayShortcut, KernelServiceSpec,
+    NodeConfig, NodeState, OPENDAN_SERVICE_PORT, OPENDAN_SERVICE_UNIQUE_ID,
+    SCHEDULER_SERVICE_UNIQUE_ID, SelectorType, ServiceExposeConfig, ServiceInfo,
+    ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode,
+    ServiceState, SubPkgDesc, UserContactSettings, UserSettings, UserState, UserTunnelBinding,
+    UserType, VERIFY_HUB_UNIQUE_ID, generate_aicc_service_doc, generate_control_panel_service_doc,
+    generate_msg_center_service_doc, generate_opendan_service_doc, generate_repo_service_doc,
+    generate_scheduler_service_doc, generate_smb_service_doc, generate_task_manager_service_doc,
+    generate_verify_hub_service_doc,
+};
 use buckyos_kit::get_buckyos_root_dir;
 use jsonwebtoken::jwk::Jwk;
 use log::{debug, info, warn};
 use name_client::resolve_did;
 use name_lib::{
-    generate_ed25519_key_pair, AgentDocument, OwnerConfig, VerifyHubInfo, ZoneBootConfig,
-    ZoneConfig, DID,
+    AgentDocument, DID, OwnerConfig, VerifyHubInfo, ZoneBootConfig, ZoneConfig,
+    generate_ed25519_key_pair,
 };
 use package_lib::PackageId;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 
@@ -179,16 +179,9 @@ impl SystemConfigBuilder {
         self.entries
             .insert("agents/jarvis/key".to_string(), jarvis_private_key_pem);
 
-        //agents/jarvis/spec -> agent spec 
-        let jarvis_spec = AppServiceSpec {
-            app_doc: app_doc,
-            app_index: 10,
-            user_id: config.user_name.clone(),
-            enable: true,
-            expected_instance_count: 1,
-            state: ServiceState::default(),
-            install_config: app_install_config.clone(),
-        };
+        let jarvis_spec_key = format!("users/{}/agents/jarvis/spec", config.user_name);
+        let jarvis_spec = build_default_jarvis_agent_spec(config)?;
+        self.insert_json(&jarvis_spec_key, &jarvis_spec)?;
 
         // agents/jarvis/settings -> agent settings,
         let jarvis_settings = json!({
@@ -550,6 +543,43 @@ fn default_jarvis_agent_doc(config: &StartConfigSummary) -> Value {
     })
 }
 
+fn build_default_jarvis_agent_spec(config: &StartConfigSummary) -> Result<AppServiceSpec> {
+    const VERSION: &str = env!("CARGO_PKG_VERSION");
+    const JARVIS_APP_ID: &str = "jarvis";
+    const JARVIS_PKG_NAME: &str = "buckyos_jarvis";
+
+    let owner_did = DID::from_str("did:bns:buckyos")?;
+    let app_doc = AppDoc::builder(
+        AppType::Agent,
+        JARVIS_APP_ID,
+        VERSION,
+        "did:bns:buckyos",
+        &owner_did,
+    )
+    .show_name("Jarvis")
+    .description_detail("Default built-in OpenDAN agent for BuckyOS")
+    .selector_type(SelectorType::Single)
+    .service_port("www", OPENDAN_SERVICE_PORT)
+    .agent_pkg(SubPkgDesc::new(format!("{JARVIS_PKG_NAME}#{VERSION}")))
+    .build()
+    .map_err(|err| anyhow!("build default jarvis app doc failed: {err}"))?;
+
+    let mut install_config = ServiceInstallConfig::default();
+    install_config
+        .expose_config
+        .insert("www".to_string(), ServiceExposeConfig::default());
+
+    Ok(AppServiceSpec {
+        app_doc,
+        app_index: 1,
+        user_id: config.user_name.clone(),
+        enable: true,
+        expected_instance_count: 1,
+        state: ServiceState::default(),
+        install_config,
+    })
+}
+
 fn trim_to_option(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -677,29 +707,24 @@ fn build_msg_center_settings(config: &StartConfigSummary) -> Result<Value> {
             .telegram_bot_api_token
             .as_str(),
     );
-    let telegram_account_id = trim_to_option(
-        config
-            .jarvis_msg_tunnel_config
-            .telegram_account_id
-            .as_str(),
-    );
+    let telegram_account_id =
+        trim_to_option(config.jarvis_msg_tunnel_config.telegram_account_id.as_str());
 
-    let (gateway_mode, bindings) = if let (Some(bot_token), Some(account_id)) =
-        (bot_token, telegram_account_id)
-    {
-        let jarvis_did = resolve_jarvis_agent_did(config)?;
-        let default_chat_id = normalize_telegram_default_chat_id(&account_id);
-        (
-            "bot_api",
-            vec![json!({
-                "owner_did": jarvis_did.to_string(),
-                "bot_token": bot_token,
-                "default_chat_id": default_chat_id
-            })],
-        )
-    } else {
-        ("dry_run", Vec::new())
-    };
+    let (gateway_mode, bindings) =
+        if let (Some(bot_token), Some(account_id)) = (bot_token, telegram_account_id) {
+            let jarvis_did = resolve_jarvis_agent_did(config)?;
+            let default_chat_id = normalize_telegram_default_chat_id(&account_id);
+            (
+                "bot_api",
+                vec![json!({
+                    "owner_did": jarvis_did.to_string(),
+                    "bot_token": bot_token,
+                    "default_chat_id": default_chat_id
+                })],
+            )
+        } else {
+            ("dry_run", Vec::new())
+        };
 
     Ok(json!({
         "telegram_tunnel": {
@@ -814,10 +839,13 @@ impl StartConfigSummary {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_aicc_settings, build_msg_center_settings, build_zone_user_contact_settings,
-        StartConfigSummary,
+        StartConfigSummary, SystemConfigBuilder, build_aicc_settings,
+        build_default_jarvis_agent_spec, build_msg_center_settings,
+        build_zone_user_contact_settings,
     };
+    use buckyos_api::OPENDAN_SERVICE_PORT;
     use serde_json::json;
+    use std::collections::HashMap;
 
     #[test]
     fn start_config_summary_parses_optional_bootstrap_configs() {
@@ -944,6 +972,85 @@ mod tests {
         assert_eq!(
             contact.bindings[0].tunnel_id.as_deref(),
             Some("did:web:tg-tunnel.alice.example.com")
+        );
+    }
+
+    #[test]
+    fn build_default_jarvis_agent_spec_uses_agent_pkg() {
+        let expected_pkg_id = format!("buckyos_jarvis#{}", env!("CARGO_PKG_VERSION"));
+        let value = json!({
+            "user_name": "alice",
+            "admin_password_hash": "hashed",
+            "public_key": {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
+            },
+            "zone_name": "did:web:alice.example.com"
+        });
+        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
+
+        let spec = build_default_jarvis_agent_spec(&summary).expect("build jarvis spec");
+        assert_eq!(spec.user_id, "alice");
+        assert_eq!(spec.app_doc.get_app_type(), buckyos_api::AppType::Agent);
+        assert_eq!(spec.app_doc.show_name, "Jarvis");
+        assert_eq!(spec.app_doc.name, "jarvis");
+        assert_eq!(
+            spec.app_doc.install_config_tips.service_ports.get("www"),
+            Some(&OPENDAN_SERVICE_PORT)
+        );
+        assert!(spec.install_config.expose_config.contains_key("www"));
+        assert_eq!(
+            spec.app_doc
+                .pkg_list
+                .agent
+                .as_ref()
+                .map(|pkg| pkg.pkg_id.as_str()),
+            Some(expected_pkg_id.as_str())
+        );
+    }
+
+    #[test]
+    fn add_default_agents_writes_user_scoped_agent_spec() {
+        let expected_pkg_id = format!("buckyos_jarvis#{}", env!("CARGO_PKG_VERSION"));
+        let value = json!({
+            "user_name": "alice",
+            "admin_password_hash": "hashed",
+            "public_key": {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
+            },
+            "zone_name": "did:web:alice.example.com"
+        });
+        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
+
+        let mut builder = SystemConfigBuilder::new(HashMap::new());
+        let rt = tokio::runtime::Runtime::new().expect("create runtime");
+        rt.block_on(builder.add_default_agents(&summary))
+            .expect("add default agents");
+
+        let entries = builder.build();
+        let spec = entries
+            .get("users/alice/agents/jarvis/spec")
+            .expect("jarvis spec should exist");
+        let spec: buckyos_api::AppServiceSpec =
+            serde_json::from_str(spec).expect("parse jarvis spec");
+
+        assert_eq!(spec.user_id, "alice");
+        assert_eq!(spec.app_doc.name, "jarvis");
+        assert_eq!(
+            spec.app_doc.install_config_tips.service_ports.get("www"),
+            Some(&OPENDAN_SERVICE_PORT)
+        );
+        assert!(spec.install_config.expose_config.contains_key("www"));
+        assert_eq!(
+            spec.app_doc
+                .pkg_list
+                .agent
+                .as_ref()
+                .map(|pkg| pkg.pkg_id.as_str()),
+            Some(expected_pkg_id.as_str())
         );
     }
 }
