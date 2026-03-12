@@ -1,6 +1,7 @@
 use ::kRPC::*;
 use async_trait::async_trait;
 use name_lib::DID;
+use ndn_lib::ObjId;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fmt;
@@ -14,6 +15,8 @@ use crate::{AppDoc, AppType, SelectorType};
 pub const TASK_MANAGER_SERVICE_UNIQUE_ID: &str = "task-manager";
 pub const TASK_MANAGER_SERVICE_NAME: &str = "task-manager";
 pub const TASK_MANAGER_SERVICE_PORT: u16 = 3380;
+
+pub type TaskId = i64;
 
 pub fn generate_task_manager_service_doc() -> AppDoc {
     const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -162,8 +165,13 @@ pub struct TaskUpdatePayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateTaskResult {
-    pub task_id: i64,
+    pub task_id: TaskId,
     pub task: Task,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateDownloadTaskResult {
+    pub task_id: TaskId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,6 +240,70 @@ impl TaskManagerCreateTaskReq {
     pub fn from_json(value: Value) -> Result<Self> {
         serde_json::from_value(value).map_err(|e| {
             RPCErrors::ParseRequestError(format!("Failed to parse TaskManagerCreateTaskReq: {}", e))
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskManagerCreateDownloadTaskReq {
+    pub download_url: String,
+    #[serde(default)]
+    pub objid: Option<ObjId>,
+    #[serde(default)]
+    pub download_options: Option<Value>,
+    #[serde(default)]
+    pub parent_id: Option<i64>,
+    #[serde(default)]
+    pub permissions: Option<TaskPermissions>,
+    #[serde(default)]
+    pub root_id: Option<String>,
+    #[serde(default)]
+    pub priority: Option<u8>,
+    #[serde(default)]
+    pub user_id: String,
+    #[serde(default)]
+    pub app_id: String,
+    #[serde(default)]
+    pub app_name: Option<String>,
+}
+
+impl TaskManagerCreateDownloadTaskReq {
+    pub fn new(
+        download_url: String,
+        objid: Option<ObjId>,
+        download_options: Option<Value>,
+        parent_id: Option<i64>,
+        permissions: Option<TaskPermissions>,
+        root_id: Option<String>,
+        priority: Option<u8>,
+        user_id: String,
+        app_id: String,
+    ) -> Self {
+        let app_name = if app_id.is_empty() {
+            None
+        } else {
+            Some(app_id.clone())
+        };
+        Self {
+            download_url,
+            objid,
+            download_options,
+            parent_id,
+            permissions,
+            root_id,
+            priority,
+            user_id,
+            app_id,
+            app_name,
+        }
+    }
+
+    pub fn from_json(value: Value) -> Result<Self> {
+        serde_json::from_value(value).map_err(|e| {
+            RPCErrors::ParseRequestError(format!(
+                "Failed to parse TaskManagerCreateDownloadTaskReq: {}",
+                e
+            ))
         })
     }
 }
@@ -586,6 +658,60 @@ impl TaskManagerClient {
                 Err(RPCErrors::ParserResponseError(
                     "Expected CreateTaskResult response".to_string(),
                 ))
+            }
+        }
+    }
+
+    pub async fn create_download_task(
+        &self,
+        download_url: &str,
+        objid: Option<ObjId>,
+        download_options: Option<Value>,
+        user_id: &str,
+        app_id: &str,
+        opts: Option<CreateTaskOptions>,
+    ) -> Result<TaskId> {
+        let opts = opts.unwrap_or_default();
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler
+                    .handle_create_download_task(
+                        download_url,
+                        objid,
+                        download_options,
+                        opts.parent_id,
+                        opts,
+                        user_id,
+                        app_id,
+                        ctx,
+                    )
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req = TaskManagerCreateDownloadTaskReq::new(
+                    download_url.to_string(),
+                    objid,
+                    download_options,
+                    opts.parent_id,
+                    opts.permissions,
+                    opts.root_id,
+                    opts.priority,
+                    user_id.to_string(),
+                    app_id.to_string(),
+                );
+                let req_json = serde_json::to_value(&req).map_err(|e| {
+                    RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
+                })?;
+                let result = client.call("create_download_task", req_json).await?;
+                let response = serde_json::from_value::<CreateDownloadTaskResult>(result)
+                    .map_err(|e| {
+                        RPCErrors::ParserResponseError(format!(
+                            "Expected CreateDownloadTaskResult response: {}",
+                            e
+                        ))
+                    })?;
+                Ok(response.task_id)
             }
         }
     }
@@ -996,7 +1122,26 @@ pub trait TaskManagerHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<Task>;
 
+  
+    async fn handle_create_download_task(
+        &self,
+        download_url: &str,
+        objid: Option<ObjId>,
+        download_options: Option<Value>,
+        parent_id: Option<i64>,
+        _opts: CreateTaskOptions,
+        _user_id: &str,
+        _app_id: &str,
+        _ctx: RPCContext,
+    ) -> Result<TaskId> {
+        let _ = (download_url, objid, parent_id, download_options);
+        Err(RPCErrors::ReasonError(
+            "create_download_task not implemented".to_string(),
+        ))
+    }
+
     async fn handle_get_task(&self, id: i64, ctx: RPCContext) -> Result<Task>;
+
 
     async fn handle_list_tasks(
         &self,
@@ -1110,6 +1255,29 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
                     task_id: task.id,
                     task
                 }))
+            }
+            "create_download_task" => {
+                let create_req = TaskManagerCreateDownloadTaskReq::from_json(req.params)?;
+                let opts = CreateTaskOptions {
+                    permissions: create_req.permissions,
+                    parent_id: create_req.parent_id,
+                    root_id: create_req.root_id,
+                    priority: create_req.priority,
+                };
+                let task_id = self
+                    .0
+                    .handle_create_download_task(
+                        create_req.download_url.as_str(),
+                        create_req.objid,
+                        create_req.download_options,
+                        create_req.parent_id,
+                        opts,
+                        create_req.user_id.as_str(),
+                        create_req.app_id.as_str(),
+                        ctx,
+                    )
+                    .await?;
+                RPCResult::Success(json!(CreateDownloadTaskResult { task_id }))
             }
             "get_task" => {
                 let get_req = TaskManagerGetTaskReq::from_json(req.params)?;

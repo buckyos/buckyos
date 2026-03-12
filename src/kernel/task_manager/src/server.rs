@@ -1,4 +1,4 @@
-use crate::task::{Task, TaskPermissions, TaskScope, TaskStatus};
+use crate::task::{new_task, Task, TaskScope, TaskStatus};
 use crate::task_db::DB_MANAGER;
 use ::kRPC::*;
 use async_trait::async_trait;
@@ -11,395 +11,13 @@ use cyfs_gateway_lib::{
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use log::*;
-use serde::{Deserialize, Serialize};
+use ndn_lib::ObjId;
+use serde::Serialize;
 use serde_json::{json, Value};
 use server_runner::*;
 use std::net::IpAddr;
 use std::ops::Range;
 use std::sync::Arc;
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct CreateTaskOptions {
-    pub permissions: Option<TaskPermissions>,
-    pub parent_id: Option<i64>,
-    pub root_id: Option<String>,
-    pub priority: Option<u8>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct TaskFilter {
-    pub app_id: Option<String>,
-    pub task_type: Option<String>,
-    pub status: Option<TaskStatus>,
-    pub parent_id: Option<i64>,
-    pub root_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct TaskUpdatePayload {
-    pub id: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<TaskStatus>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub progress: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreateTaskResult {
-    pub task_id: i64,
-    pub task: Task,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GetTaskResult {
-    pub task: Task,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ListTasksResult {
-    pub tasks: Vec<Task>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskManagerCreateTaskReq {
-    pub name: String,
-    pub task_type: String,
-    #[serde(default)]
-    pub data: Option<Value>,
-    #[serde(default)]
-    pub permissions: Option<TaskPermissions>,
-    #[serde(default)]
-    pub parent_id: Option<i64>,
-    #[serde(default)]
-    pub root_id: Option<String>,
-    #[serde(default)]
-    pub priority: Option<u8>,
-    #[serde(default)]
-    pub user_id: String,
-    #[serde(default)]
-    pub app_id: String,
-    #[serde(default)]
-    pub app_name: Option<String>,
-}
-
-impl TaskManagerCreateTaskReq {
-    pub fn new(
-        name: String,
-        task_type: String,
-        data: Option<Value>,
-        permissions: Option<TaskPermissions>,
-        parent_id: Option<i64>,
-        root_id: Option<String>,
-        priority: Option<u8>,
-        user_id: String,
-        app_id: String,
-    ) -> Self {
-        let app_name = if app_id.is_empty() {
-            None
-        } else {
-            Some(app_id.clone())
-        };
-        Self {
-            name,
-            task_type,
-            data,
-            permissions,
-            parent_id,
-            root_id,
-            priority,
-            user_id,
-            app_id,
-            app_name,
-        }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!("Failed to parse TaskManagerCreateTaskReq: {}", e))
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskManagerGetTaskReq {
-    pub id: i64,
-}
-
-impl TaskManagerGetTaskReq {
-    pub fn new(id: i64) -> Self {
-        Self { id }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!("Failed to parse TaskManagerGetTaskReq: {}", e))
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskManagerListTasksReq {
-    #[serde(default)]
-    pub app_id: Option<String>,
-    #[serde(default)]
-    pub task_type: Option<String>,
-    #[serde(default)]
-    pub status: Option<TaskStatus>,
-    #[serde(default)]
-    pub parent_id: Option<i64>,
-    #[serde(default)]
-    pub root_id: Option<String>,
-    #[serde(default)]
-    pub source_user_id: Option<String>,
-    #[serde(default)]
-    pub source_app_id: Option<String>,
-}
-
-impl TaskManagerListTasksReq {
-    pub fn new(
-        filter: TaskFilter,
-        source_user_id: Option<String>,
-        source_app_id: Option<String>,
-    ) -> Self {
-        Self {
-            app_id: filter.app_id,
-            task_type: filter.task_type,
-            status: filter.status,
-            parent_id: filter.parent_id,
-            root_id: filter.root_id,
-            source_user_id,
-            source_app_id,
-        }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!("Failed to parse TaskManagerListTasksReq: {}", e))
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskManagerListTasksByTimeRangeReq {
-    #[serde(default)]
-    pub app_id: Option<String>,
-    #[serde(default)]
-    pub task_type: Option<String>,
-    #[serde(default)]
-    pub source_user_id: Option<String>,
-    #[serde(default)]
-    pub source_app_id: Option<String>,
-    pub start_time: u64,
-    pub end_time: u64,
-}
-
-impl TaskManagerListTasksByTimeRangeReq {
-    pub fn new(
-        app_id: Option<String>,
-        task_type: Option<String>,
-        source_user_id: Option<String>,
-        source_app_id: Option<String>,
-        time_range: Range<u64>,
-    ) -> Self {
-        Self {
-            app_id,
-            task_type,
-            source_user_id,
-            source_app_id,
-            start_time: time_range.start,
-            end_time: time_range.end,
-        }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerListTasksByTimeRangeReq: {}",
-                e
-            ))
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskManagerUpdateTaskReq {
-    pub id: i64,
-    #[serde(default)]
-    pub status: Option<TaskStatus>,
-    #[serde(default)]
-    pub progress: Option<f32>,
-    #[serde(default)]
-    pub message: Option<String>,
-    #[serde(default)]
-    pub data: Option<Value>,
-}
-
-impl TaskManagerUpdateTaskReq {
-    pub fn new(payload: TaskUpdatePayload) -> Self {
-        Self {
-            id: payload.id,
-            status: payload.status,
-            progress: payload.progress,
-            message: payload.message,
-            data: payload.data,
-        }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!("Failed to parse TaskManagerUpdateTaskReq: {}", e))
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskManagerCancelTaskReq {
-    pub id: i64,
-    #[serde(default)]
-    pub recursive: bool,
-}
-
-impl TaskManagerCancelTaskReq {
-    pub fn new(id: i64, recursive: bool) -> Self {
-        Self { id, recursive }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!("Failed to parse TaskManagerCancelTaskReq: {}", e))
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskManagerGetSubtasksReq {
-    pub parent_id: i64,
-}
-
-impl TaskManagerGetSubtasksReq {
-    pub fn new(parent_id: i64) -> Self {
-        Self { parent_id }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerGetSubtasksReq: {}",
-                e
-            ))
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskManagerUpdateTaskStatusReq {
-    pub id: i64,
-    pub status: TaskStatus,
-}
-
-impl TaskManagerUpdateTaskStatusReq {
-    pub fn new(id: i64, status: TaskStatus) -> Self {
-        Self { id, status }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerUpdateTaskStatusReq: {}",
-                e
-            ))
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskManagerUpdateTaskProgressReq {
-    pub id: i64,
-    pub completed_items: u64,
-    pub total_items: u64,
-}
-
-impl TaskManagerUpdateTaskProgressReq {
-    pub fn new(id: i64, completed_items: u64, total_items: u64) -> Self {
-        Self {
-            id,
-            completed_items,
-            total_items,
-        }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerUpdateTaskProgressReq: {}",
-                e
-            ))
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskManagerUpdateTaskErrorReq {
-    pub id: i64,
-    pub error_message: String,
-}
-
-impl TaskManagerUpdateTaskErrorReq {
-    pub fn new(id: i64, error_message: String) -> Self {
-        Self { id, error_message }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerUpdateTaskErrorReq: {}",
-                e
-            ))
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskManagerUpdateTaskDataReq {
-    pub id: i64,
-    pub data: Value,
-}
-
-impl TaskManagerUpdateTaskDataReq {
-    pub fn new(id: i64, data: Value) -> Self {
-        Self { id, data }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerUpdateTaskDataReq: {}",
-                e
-            ))
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskManagerDeleteTaskReq {
-    pub id: i64,
-}
-
-impl TaskManagerDeleteTaskReq {
-    pub fn new(id: i64) -> Self {
-        Self { id }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!("Failed to parse TaskManagerDeleteTaskReq: {}", e))
-        })
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct RequestContext {
@@ -471,79 +89,6 @@ fn parse_root_id_from_task_data(data: &Value) -> Option<String> {
     None
 }
 
-#[async_trait]
-pub trait TaskManagerHandler: Send + Sync {
-    async fn handle_create_task(
-        &self,
-        name: &str,
-        task_type: &str,
-        data: Option<Value>,
-        opts: CreateTaskOptions,
-        user_id: &str,
-        app_id: &str,
-        ctx: RPCContext,
-    ) -> Result<Task>;
-
-    async fn handle_get_task(&self, id: i64, ctx: RPCContext) -> Result<Task>;
-
-    async fn handle_list_tasks(
-        &self,
-        filter: TaskFilter,
-        source_user_id: Option<&str>,
-        source_app_id: Option<&str>,
-        ctx: RPCContext,
-    ) -> Result<Vec<Task>>;
-
-    async fn handle_list_tasks_by_time_range(
-        &self,
-        app_id: Option<&str>,
-        task_type: Option<&str>,
-        source_user_id: Option<&str>,
-        source_app_id: Option<&str>,
-        time_range: Range<u64>,
-        ctx: RPCContext,
-    ) -> Result<Vec<Task>>;
-
-    async fn handle_update_task(
-        &self,
-        id: i64,
-        status: Option<TaskStatus>,
-        progress: Option<f32>,
-        message: Option<String>,
-        data: Option<Value>,
-        ctx: RPCContext,
-    ) -> Result<()>;
-
-    async fn handle_cancel_task(&self, id: i64, recursive: bool, ctx: RPCContext) -> Result<()>;
-
-    async fn handle_get_subtasks(&self, parent_id: i64, ctx: RPCContext) -> Result<Vec<Task>>;
-
-    async fn handle_update_task_status(
-        &self,
-        id: i64,
-        status: TaskStatus,
-        ctx: RPCContext,
-    ) -> Result<()>;
-
-    async fn handle_update_task_progress(
-        &self,
-        id: i64,
-        completed_items: u64,
-        total_items: u64,
-        ctx: RPCContext,
-    ) -> Result<()>;
-
-    async fn handle_update_task_error(
-        &self,
-        id: i64,
-        error_message: &str,
-        ctx: RPCContext,
-    ) -> Result<()>;
-
-    async fn handle_update_task_data(&self, id: i64, data: Value, ctx: RPCContext) -> Result<()>;
-
-    async fn handle_delete_task(&self, id: i64, ctx: RPCContext) -> Result<()>;
-}
 
 #[derive(Clone)]
 struct TaskManagerService {
@@ -659,7 +204,7 @@ impl TaskManagerHandler for TaskManagerService {
         let permissions = opts.permissions.unwrap_or_default();
         let data = data.unwrap_or_else(|| json!({}));
 
-        let mut task = Task::new(
+        let mut task = new_task(
             name.to_string(),
             task_type.to_string(),
             request_ctx.user_id.clone(),
@@ -706,6 +251,23 @@ impl TaskManagerHandler for TaskManagerService {
 
         task.id = task_id;
         Ok(task)
+    }
+
+    async fn handle_create_download_task(
+        &self,
+        download_url: &str,
+        objid: Option<ObjId>,
+        download_options: Option<Value>,
+        parent_id: Option<i64>,
+        _opts: CreateTaskOptions,
+        _user_id: &str,
+        _app_id: &str,
+        _ctx: RPCContext,
+    ) -> Result<TaskId> {
+        let _ = (download_url, objid, download_options, parent_id);
+        Err(RPCErrors::ReasonError(
+            "create_download_task not implemented".to_string(),
+        ))
     }
 
     async fn handle_get_task(&self, id: i64, _ctx: RPCContext) -> Result<Task> {

@@ -24,6 +24,7 @@ bytes = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
 buckyos-api = { path = "../buckyos-api" }
+ndn-lib = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
