@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use crate::{
     AppDoc, LocalAppInstanceConfig, ServiceInstallConfig, ServiceInstanceState,
-    MSG_CENTER_SERVICE_UNIQUE_ID, OPENDAN_SERVICE_UNIQUE_ID, REPO_SERVICE_UNIQUE_ID,
+    MSG_CENTER_SERVICE_UNIQUE_ID, OPENDAN_SERVICE_UNIQUE_ID,
     SCHEDULER_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID,
 };
 
@@ -319,9 +319,9 @@ pub fn gen_kernel_service_docs() -> HashMap<DID, EncodedDocument> {
     let scheduler_json = serde_json::to_string(&scheduler_doc).unwrap();
     let scheduler_did = PackageId::unique_name_to_did(SCHEDULER_SERVICE_UNIQUE_ID);
 
-    let repo_doc = crate::generate_repo_service_doc();
-    let repo_did = PackageId::unique_name_to_did(REPO_SERVICE_UNIQUE_ID);
-    let repo_json = serde_json::to_string(&repo_doc).unwrap();
+    // let repo_doc = crate::generate_repo_service_doc();
+    // let repo_did = PackageId::unique_name_to_did(REPO_SERVICE_UNIQUE_ID);
+    // let repo_json = serde_json::to_string(&repo_doc).unwrap();
 
     let smb_doc = crate::generate_smb_service_doc();
     let smb_json = serde_json::to_string(&smb_doc).unwrap();
@@ -342,7 +342,7 @@ pub fn gen_kernel_service_docs() -> HashMap<DID, EncodedDocument> {
         scheduler_did,
         EncodedDocument::from_str(scheduler_json).unwrap(),
     );
-    docs.insert(repo_did, EncodedDocument::from_str(repo_json).unwrap());
+    //docs.insert(repo_did, EncodedDocument::from_str(repo_json).unwrap());
     docs.insert(smb_did, EncodedDocument::from_str(smb_json).unwrap());
     docs.insert(
         msg_center_did,

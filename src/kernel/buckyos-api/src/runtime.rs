@@ -1359,9 +1359,10 @@ impl BuckyOSRuntime {
     }
 
     pub async fn get_repo_client(&self) -> Result<RepoClient> {
-        let krpc_client = self.get_zone_service_krpc_client("repo-service").await?;
-        let client = RepoClient::new(krpc_client);
-        Ok(client)
+        let krpc_client = self
+            .get_zone_service_krpc_client(REPO_SERVICE_SERVICE_NAME)
+            .await?;
+        Ok(RepoClient::new(krpc_client))
     }
 
     pub async fn get_opendan_client(&self) -> Result<OpenDanClient> {

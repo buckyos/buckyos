@@ -384,10 +384,12 @@ async fn make_sure_system_pkgs_ready(
         "verify-hub".to_string(),
     ];
     let mut miss_chunk_list = vec![];
+    let current_runtime = get_buckyos_api_runtime().unwrap();
+    let store_mgr = current_runtime.get_named_store().await.unwrap();
     for pkg_id in system_pkgs {
         let pkg_id = format!("{}.{}", prefix, pkg_id);
         let check_result =
-            PackageEnv::check_pkg_ready(meta_db_path, pkg_id.as_str(), None, &mut miss_chunk_list)
+            PackageEnv::check_pkg_ready(meta_db_path, pkg_id.as_str(), &store_mgr, &mut miss_chunk_list)
                 .await;
         if check_result.is_err() {
             error!(
