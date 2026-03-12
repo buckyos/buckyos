@@ -49,6 +49,172 @@ const callRpc = async <T>(
   }
 }
 
+type ChatStreamDoneReason = 'closed' | 'aborted' | 'error' | 'fatal'
+
+type ChatStreamStartOptions = {
+  peerDid: string
+  threadId?: string
+  keepaliveMs?: number
+  signal?: AbortSignal
+  onEvent: (event: ChatStreamEvent) => void
+  onError?: (error: unknown) => void
+  onDone?: (reason: ChatStreamDoneReason) => void
+}
+
+const CHAT_STREAM_ENDPOINT = '/kapi/control-panel/chat/stream'
+
+const isAbortError = (error: unknown) => error instanceof DOMException && error.name === 'AbortError'
+
+const readResponseText = async (response: Response) => {
+  try {
+    const text = await response.text()
+    if (!text) return ''
+
+    try {
+      const parsed = JSON.parse(text) as { error?: string }
+      if (typeof parsed.error === 'string' && parsed.error.trim()) {
+        return parsed.error
+      }
+    } catch {
+      // ignore JSON parse failure and return raw text
+    }
+
+    return text
+  } catch {
+    return ''
+  }
+}
+
+const fetchChatStreamResponse = async (
+  peerDid: string,
+  threadId: string | undefined,
+  keepaliveMs: number | undefined,
+  signal: AbortSignal,
+) => {
+  let sessionToken = await ensureSessionToken()
+  if (!sessionToken) {
+    throw new Error('Missing control-panel session token')
+  }
+
+  let retried = false
+  while (true) {
+    const response = await fetch(CHAT_STREAM_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        session_token: sessionToken,
+        peer_did: peerDid,
+        thread_id: threadId,
+        keepalive_ms: keepaliveMs,
+      }),
+      signal,
+    })
+
+    if ((response.status === 401 || response.status === 403) && !retried) {
+      retried = true
+      sessionToken = await ensureSessionToken({ forceRefresh: true })
+      if (sessionToken) {
+        continue
+      }
+    }
+
+    return response
+  }
+}
+
+export const startChatStream = ({
+  peerDid,
+  threadId,
+  keepaliveMs,
+  signal,
+  onEvent,
+  onError,
+  onDone,
+}: ChatStreamStartOptions) => {
+  const controller = new AbortController()
+  let settled = false
+
+  const handleExternalAbort = () => {
+    controller.abort()
+  }
+
+  signal?.addEventListener('abort', handleExternalAbort)
+
+  const finalize = (reason: ChatStreamDoneReason) => {
+    if (settled) return
+    settled = true
+    signal?.removeEventListener('abort', handleExternalAbort)
+    onDone?.(reason)
+  }
+
+  void (async () => {
+    try {
+      const response = await fetchChatStreamResponse(
+        peerDid,
+        threadId,
+        keepaliveMs,
+        controller.signal,
+      )
+      if (!response.ok) {
+        const detail = await readResponseText(response)
+        const error = new Error(detail || `Chat stream failed (${response.status})`) as Error & {
+          fatal?: boolean
+        }
+        error.fatal = response.status < 500
+        throw error
+      }
+
+      const reader = response.body?.getReader()
+      if (!reader) {
+        throw new Error('Chat stream body is unavailable')
+      }
+
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      const flushLines = (chunk: string) => {
+        buffer += chunk
+        const parts = buffer.split('\n')
+        buffer = parts.pop() ?? ''
+        for (const part of parts) {
+          const line = part.trim()
+          if (!line) continue
+          onEvent(JSON.parse(line) as ChatStreamEvent)
+        }
+      }
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) {
+          flushLines(decoder.decode())
+          const trailing = buffer.trim()
+          if (trailing) {
+            onEvent(JSON.parse(trailing) as ChatStreamEvent)
+          }
+          finalize('closed')
+          return
+        }
+
+        flushLines(decoder.decode(value, { stream: true }))
+      }
+    } catch (error) {
+      if (isAbortError(error)) {
+        finalize('aborted')
+        return
+      }
+
+      onError?.(error)
+      finalize((error as { fatal?: boolean }).fatal ? 'fatal' : 'error')
+    }
+  })()
+
+  return () => {
+    controller.abort()
+  }
+}
+
 const mockLayoutData: RootLayoutData = {
   primaryNav: [
     { label: 'Desktop', icon: 'desktop', path: '/' },
@@ -773,6 +939,33 @@ export const fetchSysConfigTree = async (
   depth = 2,
 ): Promise<{ data: SysConfigTreeResponse | null; error: unknown }> =>
   callRpc<SysConfigTreeResponse>('sys_config.tree', { key, depth })
+
+export const fetchChatBootstrap = async (): Promise<{
+  data: ChatBootstrapResponse | null
+  error: unknown
+}> => callRpc<ChatBootstrapResponse>('chat.bootstrap', {})
+
+export const fetchChatContacts = async (
+  params: { keyword?: string; limit?: number; offset?: number } = {},
+): Promise<{ data: ChatContactListResponse | null; error: unknown }> =>
+  callRpc<ChatContactListResponse>('chat.contact.list', params)
+
+export const fetchChatMessages = async (
+  peerDid: string,
+  limit = 60,
+): Promise<{ data: ChatMessageListResponse | null; error: unknown }> =>
+  callRpc<ChatMessageListResponse>('chat.message.list', { peer_did: peerDid, limit })
+
+export const sendChatMessage = async (
+  targetDid: string,
+  content: string,
+  threadId?: string,
+): Promise<{ data: ChatSendMessageResponse | null; error: unknown }> =>
+  callRpc<ChatSendMessageResponse>('chat.message.send', {
+    target_did: targetDid,
+    content,
+    thread_id: threadId,
+  })
 
 export {
   mockLayoutData,

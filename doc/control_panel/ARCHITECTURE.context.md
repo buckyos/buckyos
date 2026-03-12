@@ -10,6 +10,8 @@
 
 - `Static SPA`: 由 `control_panel` 服务直接在 `/` 下提供前端静态资源。
 - `Control Panel kRPC`: 由 `control_panel` 服务在 `/kapi/control-panel` 暴露。
+- `Chat adapter`: 作为 `control_panel` kRPC 的一个命名空间存在，用于把浏览器侧 `chat.*` 请求转接到 `msg-center`。
+- `Chat streaming helper`: 同样挂在 `control_panel` service 的 `/kapi/control-panel/chat/stream`，把 `msg-center` kevent 变成浏览器可消费的 NDJSON stream。
 - `Embedded Files HTTP API`: 由 `control_panel` 内嵌 `file_manager` 在 `/api/*` 暴露。
 - `Workspace external backends`: workspace 在前端里可见，但开发态还会通过 `/kapi/opendan`、`/kapi/task-manager` 访问其他服务，这部分不属于 Rust `control_panel` 自身能力。
 
@@ -19,6 +21,8 @@
 | --- | --- | --- | --- |
 | `/` | Rust `control_panel` service | browser | static asset hosting only |
 | `/kapi/control-panel` | Rust `control_panel` service | main admin UI | canonical RPC surface for control panel |
+| `chat.*` on `/kapi/control-panel` | Rust `control_panel` service | control panel chat UI | auth and owner mapping live here; backend data comes from `msg-center` |
+| `POST /kapi/control-panel/chat/stream` | Rust `control_panel` service | control panel chat UI | same service, same domain, NDJSON stream built from msg-center events |
 | `/api/*` | embedded `file_manager` inside `control_panel` | Files UI and public share flows | HTTP-first contract, not kRPC-first |
 | `/kapi/opendan` | external service via gateway/proxy | workspace UI | not owned by Rust `control_panel` |
 | `/kapi/task-manager` | external service via gateway/proxy | workspace UI | not owned by Rust `control_panel` |
@@ -54,7 +58,7 @@
 ### Desktop Experience Core
 
 - `/` 入口对应 `src/frame/control_panel/web/src/ui/pages/DesktopHomePage.tsx`，它不是单一 dashboard page，而是一个全集成 desktop 容器。
-- 这个 desktop 容器在一个页面内部管理多个 window module，包括 `monitor`、`network`、`containers`、`files`、`storage`、`logs`、`apps`、`settings`、`users`。
+- 这个 desktop 容器在一个页面内部管理多个 window module，包括 `chat`、`monitor`、`network`、`containers`、`files`、`storage`、`logs`、`apps`、`settings`、`users`。
 - 这些模块当前不是按一级路由拆开的，而是由 desktop 内部 window state、z-index、drag/resize/minimize/maximize 等机制统一调度。
 - 因此，desktop 是 control panel 的 primary shell，其他模块更准确地说是“desktop windows”而不是“homepage widgets”。
 
@@ -75,6 +79,7 @@
 | Window id | Current title | Current role |
 | --- | --- | --- |
 | `monitor` | `System Monitor` | system overview and metrics |
+| `chat` | `Bucky Chat` | embedded chat control surface over `msg-center` |
 | `network` | `Network Monitor` | network state and trends |
 | `containers` | `Container Manager` | container runtime overview |
 | `files` | `Files` | embedded file manager surface |
@@ -83,6 +88,17 @@
 | `apps` | `Applications` | installed app and version view |
 | `settings` | `Settings` | system and policy settings |
 | `users` | `Users` | user and role-related management |
+
+## Chat Subsystem
+
+- `chat` 当前作为 control panel 内的一等功能入口，对浏览器公开的接口统一走 `/kapi/control-panel` 的 `chat.*`。
+- 其真实消息数据和联系人能力来自 `msg-center`，但前端不直接访问 `/kapi/msg-center`。
+- 这样做的目的有两个：
+  - 复用 control panel 现有 session 校验和方法级授权。
+  - 复用 control panel 已经挂在 `sys` / `www` / zone host 上的域名与 gateway 转发路径，而不是为 `msg-center` 单独暴露浏览器入口。
+- 当前实现把 chat read flows 放在 authenticated wrapper 下：control panel backend 先验证用户，再把 owner scope 映射到 `msg-center` 所需的 DID 视角；写能力仍可单独受限。
+- 实时更新也走同一个 service：control panel 订阅 `/msg_center/$owner/box/{in,out}/**`，再把相关 record 规范化为 chat stream event 回传浏览器。
+- 未来如果引入独立 chat app，它可以与本地 `chat` 共享消息模型或线程标识，但不应反向要求 control panel 前端直接耦合 `msg-center` 原始 RPC。
 
 ## Files Subsystem
 
@@ -112,6 +128,7 @@
 | --- | --- | --- | --- |
 | login and session bootstrap | control panel web | Rust `control_panel` + verify-hub semantics | shared across main UI and Files |
 | dashboard/monitor/network/settings pages | control panel web | Rust `control_panel` | kRPC-first |
+| chat | control panel web | Rust `control_panel` adapter + `msg-center` | browser enters through control panel; data plane is msg-center |
 | Files page and public share page | control panel web | embedded `file_manager` | HTTP-first |
 | workspace | control panel web | external OpenDan/TaskManager services | same shell, different backend boundary |
 
@@ -151,6 +168,11 @@
 
 - Browser UI -> `src/api/index.ts` -> `/kapi/control-panel` -> `ControlPanelServer` dispatch -> runtime/system integrations -> response.
 
+### Chat Flow
+
+- Browser UI -> `src/api/index.ts` `chat.*` -> `/kapi/control-panel` -> control panel auth + owner DID resolution -> `MsgCenterClient` -> `msg-center` -> normalized chat response.
+- Browser UI -> `fetch('/kapi/control-panel/chat/stream')` -> control panel auth + owner DID resolution -> kevent subscribe `/msg_center/$owner/box/{in,out}/**` -> `MsgCenterClient.get_record(...)` -> normalized NDJSON chat events.
+
 ### Files Flow
 
 - Browser UI -> `FileManagerPage.tsx` direct `fetch('/api/...')` -> embedded `file_manager` -> file/share/ACL logic -> response.
@@ -165,12 +187,14 @@
 | --- | --- | --- | --- | --- |
 | desktop windows | mixed kRPC + HTTP inside one shell | `DesktopHomePage.tsx` | mixed: Rust `control_panel` plus embedded Files | monolithic page code can blur boundaries |
 | admin pages | kRPC | `src/api/index.ts` | Rust `control_panel` | mock fallback can hide failures |
+| chat | kRPC + HTTP stream via control-panel wrapper | `DesktopHomePage.tsx` + desktop chat window | Rust `control_panel` + `msg-center` | easy to leak msg-center owner semantics into browser if wrapper is bypassed |
 | Files | HTTP | `FileManagerPage.tsx` | embedded `file_manager` | easy to mistakenly document as RPC |
 | workspace | kRPC | `src/api/workspace.ts` | external services | ownership confusion during changes |
 
 ## Module Dependency Map
 
 - Backend 依赖 verify-hub 风格 session 体系、system config、系统状态采集、网关/容器/应用等底层服务。
+- Chat adapter 额外依赖 `MsgCenterClient`、`KEventClient`，以及 authenticated user -> owner DID 的映射规则。
 - Frontend 依赖路由、认证状态、UI 页面、kRPC API wrapper。
 - Files 依赖共享会话语义与自身 HTTP 契约。
 - Workspace 依赖 OpenDan/TaskManager 客户端，而不是 `control_panel` backend 的同名 handler。
@@ -181,16 +205,18 @@
 | --- | --- |
 | control panel web shell | auth provider, router, route-level pages |
 | main page components | `api/index.ts`, shared global types, auth state |
+| chat UI | `api/index.ts`, chat route/page, auth state, streamed fetch reader |
 | Files UI | shared auth token state, `/api/*` contract, file preview components |
-| Rust `control_panel` service | runtime init, session verification model, system integrations |
+| Rust `control_panel` service | runtime init, session verification model, system integrations, msg-center adapter |
 | embedded `file_manager` | filesystem root policy, token extraction, ACL policy, share/public delivery logic |
 
 ## Request Routing Map
 
 - `/` -> 静态前端资源，由 `runner.add_dir_handler_with_options` 挂载。
 - `/kapi/control-panel` -> `serve_http_by_rpc_handler`。
+- `/kapi/control-panel/chat/stream` -> chat HTTP streaming helper。
 - `/api` 与 `/api/*` -> `self.file_manager.serve_request(...)`。
-- 这 3 条路径是理解系统行为和部署方式的最小架构切面。
+- 这 4 条路径是理解系统行为和部署方式的最小架构切面。
 
 ### Request Routing Table
 
@@ -198,6 +224,7 @@
 | --- | --- | --- |
 | `/` | static directory handler with SPA fallback | `src/frame/control_panel/src/main.rs:4453` |
 | `/kapi/control-panel` | RPC adapter into `ControlPanelServer` | `src/frame/control_panel/src/main.rs:4384` |
+| `/kapi/control-panel/chat/stream` | chat streaming helper inside `ControlPanelServer` | `src/frame/control_panel/src/main.rs` |
 | `/api` and `/api/*` | embedded files server request handler | `src/frame/control_panel/src/main.rs:4380` |
 
 ## Implemented vs Planned Architecture

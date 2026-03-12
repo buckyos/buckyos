@@ -23,10 +23,13 @@
 - kRPC 命名统一用 `<module>.<action>`。
 - `Files` 是产品表面；`file_manager` 是当前后端实现模块。
 - `workspace` 是 control panel web 中的一个体验，不等同于 Rust `control_panel` backend 功能域。
+- `chat` 是 control panel 内的产品短名；底层消息服务仍叫 `msg-center`。
+- 当前 `chat` 入口是 desktop subwindow，不是独立 `/chat` route。
 
 ## Architectural Invariants
 
 - `control_panel` 统一承载静态 web、control-panel kRPC、embedded Files HTTP 这 3 个入口面。
+- chat 浏览器入口必须走 `control_panel` 的 `chat.*` wrapper，而不是让 control panel web 直连 `/kapi/msg-center`。
 - Files 内嵌是当前架构事实；如果重新引入独立登录、独立部署假设，需要明确说明是架构变更。
 - session 语义在主控制面板和 Files 之间共享。
 - 路由、后端 payload、前端 types 需要联动变更。
@@ -37,11 +40,14 @@
 
 - Files 主链路是 direct HTTP，不是 `files.*`/`share.*` kRPC。
 - `workspace` 和主控制面板共享前端壳，但后台不是一个系统。
+- `msg-center` 原生接口主要是 owner DID / contact-manager scope 视角，不是 control-panel session 视角。
+- chat realtime 当前应该优先走 control panel service 内的 HTTP streaming helper，而不是为浏览器额外暴露 msg-center 或新开 WebSocket 端口。
 - `src/frame/control_panel/web/src/api/index.ts` 有 mock fallback 逻辑，开发时“页面能显示”不等于后端真的通了。
 - 旧 PRD 中大量 RPC/页面设想比当前代码宽得多；迁移时优先保真，不优先求全。
 - desktop 首页 `/` 不是普通 route page，而是 integrated desktop shell；其中大量模块是在单页内部按 window 方式组织的。
 - gateway app OAuth 当前检查的是 cookie `buckyos_session_token`，而不是 control panel localStorage。
 - `SsoLoginPage` 已经具备 `client_id` -> `auth.login(appid=client_id)` 的 app-aware 登录语义，并负责把返回 token 落到 `buckyos_session_token` cookie。
+- chat wrapper 的 owner scope 应由 authenticated user 反推，优先取 user contact DID，缺省回退到 `did:bns:<username>`。
 
 ## Known Gaps And Technical Debt
 
@@ -50,12 +56,15 @@
 - `doc/PRD/control_panel/control_panel.md` 混合了产品愿景、接口规格、现状说明、路线图。
 - `src/frame/control_panel/src/share_content_mgr.rs` 的定位仍需进一步澄清。
 - `src/frame/control_panel/web/src/ui/pages/DesktopHomePage.tsx` 过大，desktop shell、window manager、window content 耦合在同一文件中。
+- chat 当前仍是 control panel 内的最小 desktop entry；message-level realtime 已在 control panel service 内实现，读能力已对登录用户开放，但 token-level agent stream、独立 chat app 对接、agent control channel 仍在后续范围。
 
 ## Safe Change Guidelines
 
 - 改路由前，同时看 router、导航、历史入口名、受保护路由约束。
 - 改 auth 前，同时看前端 authManager、backend `auth.*`、Files token 接收规则。
 - 改 Files 前，同时看 `FileManagerPage.tsx`、`file_manager.rs`、公开分享页面行为。
+- 改 chat 前，同时看 `control_panel` 的 auth/permission、`MsgCenterClient` 合同，以及 owner DID 的映射规则。
+- 改 chat realtime 前，同时看 `msg-center` 的 box changed kevent 语义；该事件只表示 record changed，不天然等同于 token-level text delta。
 - 改文档前，先决定某个事实应归属 README、ARCHITECTURE、SPEC 还是 CONTEXT，避免重复定义。
 - 改 desktop 首页前，不要把 window-based integrated model 误改成若干彼此独立的普通 route page。
 - 改 SSO 前，同时看 `src/frame/control_panel/web/src/ui/pages/SsoLoginPage.tsx`、`src/rootfs/etc/boot_gateway.yaml` 和 `doc/arch/boot_gateay的配置生成.md`。
@@ -64,6 +73,7 @@
 
 - 可以安全重构文档组织，但不要改变 `Implemented`/`Planned` 的语义边界。
 - 可以重构前端组件，但不要默默改变 kRPC payload 字段名。
+- 可以演进 chat UI，但不要把 `msg-center` 的 owner / contact_mgr_owner 参数直接暴露成浏览器可任意指定的控制面。
 - 可以优化 Files 交互，但不要破坏共享 session 和 ACL 假设。
 - 如果要把 HTTP Files 契约迁回 kRPC，需要先在规格中声明迁移路径。
 - 可以把 SSO cookie 写入职责收敛到 `/sso/login`，但不要在未理清 gateway 跳转链路前误以为 `/login` 与 `/sso/login` 完全等价。

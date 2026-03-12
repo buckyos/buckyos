@@ -644,4 +644,128 @@ declare global {
     stepId?: string
     status?: WsTaskStatus
   }
+
+  type ChatScopeInfo = {
+    username: string
+    owner_did: string
+    access_mode: 'admin_only' | string
+  }
+
+  type ChatCapabilityInfo = {
+    contact_list: boolean
+    message_list: boolean
+    message_send: boolean
+    thread_id_send: boolean
+    realtime_events: boolean
+    standalone_chat_app_link: boolean
+    opendan_channel_ready: boolean
+  }
+
+  type ChatBootstrapResponse = {
+    scope: ChatScopeInfo
+    capabilities: ChatCapabilityInfo
+    notes: string[]
+  }
+
+  type ChatBinding = {
+    platform: string
+    account_id: string
+    display_id: string
+    tunnel_id: string
+    last_active_at: number
+    meta: Record<string, string>
+  }
+
+  type ChatContact = {
+    did: string
+    name: string
+    avatar?: string | null
+    note?: string | null
+    access_level: string
+    is_verified: boolean
+    groups: string[]
+    tags: string[]
+    created_at: number
+    updated_at: number
+    bindings: ChatBinding[]
+  }
+
+  type ChatContactListResponse = {
+    scope: ChatScopeInfo
+    items: ChatContact[]
+  }
+
+  type ChatMessage = {
+    record_id: string
+    msg_id: string
+    direction: 'inbound' | 'outbound'
+    peer_did: string
+    peer_name?: string | null
+    state: string
+    created_at_ms: number
+    updated_at_ms: number
+    sort_key: number
+    thread_id?: string | null
+    content: string
+    content_format?: string | null
+  }
+
+  type ChatMessageListResponse = {
+    scope: ChatScopeInfo
+    peer_did: string
+    peer_name?: string | null
+    items: ChatMessage[]
+  }
+
+  type ChatSendMessageResponse = {
+    scope: ChatScopeInfo
+    target_did: string
+    delivery_count: number
+    message: ChatMessage
+  }
+
+  type ChatStreamAckEvent = {
+    type: 'ack'
+    connection_id: string
+    scope: ChatScopeInfo
+    peer_did: string
+    thread_id?: string | null
+    keepalive_ms: number
+    at_ms: number
+  }
+
+  type ChatStreamMessageEvent = {
+    type: 'message'
+    operation: string
+    record_id: string
+    message: ChatMessage
+    at_ms: number
+  }
+
+  type ChatStreamResyncEvent = {
+    type: 'resync'
+    reason: string
+    record_id?: string | null
+    peer_did: string
+    thread_id?: string | null
+    at_ms: number
+  }
+
+  type ChatStreamKeepaliveEvent = {
+    type: 'keepalive'
+    at_ms: number
+  }
+
+  type ChatStreamErrorEvent = {
+    type: 'error'
+    message: string
+    at_ms: number
+  }
+
+  type ChatStreamEvent =
+    | ChatStreamAckEvent
+    | ChatStreamMessageEvent
+    | ChatStreamResyncEvent
+    | ChatStreamKeepaliveEvent
+    | ChatStreamErrorEvent
 }

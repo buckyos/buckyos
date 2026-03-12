@@ -437,6 +437,68 @@ const buildNameFromParts = (baseName: string, extension: string) => {
   return `${cleanedBaseName}.${cleanedExtension}`
 }
 
+const CLIPBOARD_FILE_EXTENSION_BY_MIME: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/svg+xml': 'svg',
+  'application/pdf': 'pdf',
+  'text/plain': 'txt',
+}
+
+const inferClipboardFileExtension = (file: File) => {
+  const byMime = CLIPBOARD_FILE_EXTENSION_BY_MIME[file.type]
+  if (byMime) {
+    return byMime
+  }
+
+  const fallbackName = file.name?.trim() ?? ''
+  const extension = getFileExtension(fallbackName)
+  return extension || ''
+}
+
+const normalizeClipboardUploadFile = (file: File, index: number) => {
+  if (file.name.trim()) {
+    return file
+  }
+
+  const extension = inferClipboardFileExtension(file)
+  const suffix = extension ? `.${extension}` : ''
+  return new globalThis.File([file], `pasted-file-${Date.now()}-${index + 1}${suffix}`, {
+    type: file.type,
+    lastModified: file.lastModified || Date.now(),
+  })
+}
+
+const getClipboardFiles = (clipboardData: DataTransfer | null) => {
+  if (!clipboardData) {
+    return []
+  }
+
+  const directFiles = Array.from(clipboardData.files ?? [])
+  if (directFiles.length > 0) {
+    return directFiles.map(normalizeClipboardUploadFile)
+  }
+
+  return Array.from(clipboardData.items ?? [])
+    .filter((item) => item.kind === 'file')
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file))
+    .map(normalizeClipboardUploadFile)
+}
+
+const isEditablePasteTarget = (target: EventTarget | null) => {
+  if (!(target instanceof HTMLElement)) {
+    return false
+  }
+
+  return Boolean(
+    target.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""]') ||
+      target.isContentEditable,
+  )
+}
+
 type FileNameTooltipProps = {
   name: string
   maxChars?: number
@@ -2306,6 +2368,35 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
 
     await uploadFilesToCurrentPath(droppedFiles)
   }
+
+  useEffect(() => {
+    if (publicShareId || mainTab !== 'files' || filesScope !== 'browse' || !currentPathIsDir) {
+      return
+    }
+
+    const onWindowPaste = (event: ClipboardEvent) => {
+      if (isEditablePasteTarget(event.target)) {
+        return
+      }
+
+      const pastedFiles = getClipboardFiles(event.clipboardData)
+      if (pastedFiles.length === 0) {
+        return
+      }
+
+      event.preventDefault()
+      event.stopPropagation()
+      setMessage(
+        `Uploading ${pastedFiles.length} pasted file${pastedFiles.length > 1 ? 's' : ''}...`,
+      )
+      void uploadFilesToCurrentPath(pastedFiles)
+    }
+
+    window.addEventListener('paste', onWindowPaste)
+    return () => {
+      window.removeEventListener('paste', onWindowPaste)
+    }
+  }, [currentPathIsDir, filesScope, mainTab, publicShareId, uploadFilesToCurrentPath])
 
   const onCancelUpload = async (key: string) => {
     uploadCancelledRef.current.add(key)
@@ -4236,7 +4327,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                 <div className="flex flex-wrap items-center gap-1.5">
                   {filesScope === 'browse' ? (
                     <>
-                      <HoverTooltip label="Upload">
+                      <HoverTooltip label="Upload or paste">
                         <label className={`${compactPrimaryToolbarButtonClass} cursor-pointer`}>
                           <Icon name="upload" className="size-3.5" />
                           <input type="file" multiple onChange={onUpload} className="hidden" />

@@ -68,6 +68,7 @@
 - `Control Panel`: 面向系统管理的统一 UI 和 API hub。
 - `Files`: 当前实现中嵌入在 `control_panel` 内的文件与分享子系统。
 - `Workspace`: 同属 control panel web 前端的一部分，但其主数据源并不是 Rust `control_panel` backend。
+- `Chat`: `control_panel` 内的一等消息入口，前端经由 `chat.*` 调 `control_panel`，再由其转接 `msg-center`；未来可以和独立 chat app、OpenDan agent channel 关联。
 
 ## Design Philosophy
 

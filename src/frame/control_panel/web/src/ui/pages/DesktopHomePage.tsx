@@ -29,12 +29,14 @@ import StorageHealthSignalsPanel from '../components/StorageHealthSignalsPanel'
 import SystemConfigTreeViewer from '../components/SystemConfigTreeViewer'
 import UserPatternAvatar from '../components/UserPatternAvatar'
 import FileManagerPage from './FileManagerPage'
+import ChatWindow from './desktop/ChatWindow'
+import { DESKTOP_SHORTCUTS, type DesktopWindowId } from './desktop/desktopShortcuts'
 import usePrefersReducedMotion from '../charts/usePrefersReducedMotion'
 import Icon from '../icons'
 
 type DesktopMode = 'desktop' | 'jarvis'
 
-type WindowId = 'monitor' | 'network' | 'containers' | 'files' | 'storage' | 'logs' | 'apps' | 'settings' | 'users'
+type WindowId = DesktopWindowId
 
 type DesktopWindow = {
   id: WindowId
@@ -53,6 +55,14 @@ type DesktopWindow = {
     width: number
     height: number
   }
+}
+
+type DesktopShortcut = {
+  id: string
+  label: string
+  icon: IconName
+  tile: string
+  onClick: () => void
 }
 
 type AccessModePill = {
@@ -108,7 +118,7 @@ const WINDOW_TOP_MARGIN = 80
 const MIN_WINDOW_WIDTH = 420
 const MIN_WINDOW_HEIGHT = 280
 const DESKTOP_HEADER_HEIGHT = 40
-const DESKTOP_DOCK_RESERVED_HEIGHT = 92
+const DESKTOP_DOCK_RESERVED_HEIGHT = 28
 const MAXIMIZED_SIDE_MARGIN = 10
 
 const getMaximizedRect = () => {
@@ -211,6 +221,7 @@ const DesktopHomePage = () => {
     () =>
       ({
         monitor: { title: 'System Monitor', icon: 'dashboard' as const, width: 896, height: 616 },
+        chat: { title: 'Bucky Chat', icon: 'message' as const, width: 1180, height: 760 },
         network: { title: 'Network Monitor', icon: 'network' as const, width: 980, height: 700 },
         containers: { title: 'Container Manager', icon: 'container' as const, width: 980, height: 700 },
         files: { title: 'Files', icon: 'drive' as const, width: 920, height: 680 },
@@ -985,63 +996,14 @@ const DesktopHomePage = () => {
 
   const desktopApps = useMemo(
     () =>
-      [
-        {
-          id: 'monitor' as const,
-          label: 'Monitor',
-          icon: 'dashboard' as const,
-          tile: 'bg-blue-500',
-        },
-        {
-          id: 'network' as const,
-          label: 'Network',
-          icon: 'network' as const,
-          tile: 'bg-indigo-500',
-        },
-        {
-          id: 'containers' as const,
-          label: 'Containers',
-          icon: 'container' as const,
-          tile: 'bg-cyan-600',
-        },
-        {
-          id: 'files' as const,
-          label: 'Files',
-          icon: 'drive' as const,
-          tile: 'bg-emerald-500',
-        },
-        {
-          id: 'storage' as const,
-          label: 'Storage',
-          icon: 'storage' as const,
-          tile: 'bg-teal-500',
-        },
-        {
-          id: 'logs' as const,
-          label: 'System Logs',
-          icon: 'chart' as const,
-          tile: 'bg-orange-500',
-        },
-        {
-          id: 'apps' as const,
-          label: 'Apps',
-          icon: 'apps' as const,
-          tile: 'bg-sky-500',
-        },
-        {
-          id: 'settings' as const,
-          label: 'Settings',
-          icon: 'settings' as const,
-          tile: 'bg-gray-600',
-        },
-        {
-          id: 'users' as const,
-          label: 'Users',
-          icon: 'users' as const,
-          tile: 'bg-green-500',
-        },
-      ],
-    [],
+      DESKTOP_SHORTCUTS.map((shortcut) => ({
+        id: shortcut.id,
+        label: shortcut.label,
+        icon: shortcut.icon,
+        tile: shortcut.tile,
+        onClick: () => openWindow(shortcut.windowId),
+      })),
+    [openWindow],
   )
 
   const wallpaperStyle = useMemo(
@@ -1194,7 +1156,6 @@ const DesktopHomePage = () => {
           <DesktopView
             desktopApps={desktopApps}
             prefersReducedMotion={prefersReducedMotion}
-            openWindow={openWindow}
             statusState={status.state}
             cpuPercent={cpuPercent}
             memoryPercent={memoryPercent}
@@ -1359,79 +1320,8 @@ type DesktopDockProps = {
   onJarvisClick: () => void
 }
 
-const DesktopDock = memo((props: DesktopDockProps) => {
-  const { mode, onDesktopClick, onJarvisClick } = props
-
-  const hideTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
-  const [dockVisible, setDockVisible] = useState(true)
-
-  const clearHideTimer = useCallback(() => {
-    if (hideTimerRef.current != null) {
-      window.clearTimeout(hideTimerRef.current)
-      hideTimerRef.current = null
-    }
-  }, [])
-
-  const scheduleHide = useCallback(() => {
-    clearHideTimer()
-    hideTimerRef.current = window.setTimeout(() => {
-      setDockVisible(false)
-      hideTimerRef.current = null
-    }, 2000)
-  }, [clearHideTimer])
-
-  useEffect(() => {
-    scheduleHide()
-    return () => {
-      clearHideTimer()
-    }
-  }, [clearHideTimer, scheduleHide])
-
-  return (
-    <div
-      className="fixed bottom-3 left-1/2 z-50 h-20 w-[260px] -translate-x-1/2"
-      onMouseEnter={() => {
-        clearHideTimer()
-        setDockVisible(true)
-      }}
-      onMouseLeave={() => {
-        scheduleHide()
-      }}
-    >
-      <div
-        className={`absolute inset-x-0 bottom-0 px-4 transition-all duration-300 ${
-          dockVisible
-            ? 'translate-y-0 opacity-100'
-            : 'translate-y-[calc(100%-10px)] opacity-0'
-        }`}
-      >
-        <div className="flex items-center gap-1.5 rounded-full border border-white/10 bg-black/55 p-1.5 backdrop-blur-xl shadow-[0_18px_60px_-40px_rgba(0,0,0,0.85)]">
-          <button
-            type="button"
-            onClick={onDesktopClick}
-            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition ${
-              mode === 'desktop' ? 'bg-white text-slate-900 shadow' : 'text-white/85 hover:bg-white/10'
-            }`}
-          >
-            <Icon name="desktop" className="size-3.5" />
-            Desktop
-          </button>
-          <button
-            type="button"
-            onClick={onJarvisClick}
-            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition ${
-              mode === 'jarvis'
-                ? 'bg-gradient-to-r from-sky-400 to-emerald-300 text-slate-900 shadow'
-                : 'text-white/85 hover:bg-white/10'
-            }`}
-          >
-            <Icon name="spark" className="size-3.5" />
-            Jarvis
-          </button>
-        </div>
-      </div>
-    </div>
-  )
+const DesktopDock = memo((_props: DesktopDockProps) => {
+  return null
 })
 DesktopDock.displayName = 'DesktopDock'
 
@@ -1513,9 +1403,8 @@ const JarvisView = memo((props: JarvisViewProps) => {
 JarvisView.displayName = 'JarvisView'
 
 type DesktopViewProps = {
-  desktopApps: { id: WindowId; label: string; icon: IconName; tile: string }[]
+  desktopApps: DesktopShortcut[]
   prefersReducedMotion: boolean
-  openWindow: (id: WindowId) => void
   statusState: SystemStatusResponse['state']
   cpuPercent: number
   memoryPercent: number
@@ -1527,7 +1416,6 @@ const DesktopView = memo((props: DesktopViewProps) => {
   const {
     desktopApps,
     prefersReducedMotion,
-    openWindow,
     statusState,
     cpuPercent,
     memoryPercent,
@@ -1536,14 +1424,14 @@ const DesktopView = memo((props: DesktopViewProps) => {
   } = props
 
   return (
-    <section className="relative min-h-screen px-5 pb-28 pt-28 sm:px-6 md:px-8">
+    <section className="relative min-h-screen px-5 pb-16 pt-28 sm:px-6 md:px-8">
       <div className="mx-auto grid max-w-7xl grid-cols-1 gap-10 md:grid-cols-[1fr_320px]">
         <div className="grid grid-cols-3 content-start justify-items-center gap-x-16 gap-y-5 sm:grid-cols-4 md:ml-[100px] md:w-fit md:grid-cols-5 md:justify-items-start md:gap-x-16 md:gap-y-6 lg:ml-[120px]">
           {desktopApps.map((app) => (
             <button
               key={app.id}
               type="button"
-              onClick={() => openWindow(app.id)}
+              onClick={app.onClick}
               className="group flex w-[86px] flex-col items-center gap-2 rounded-xl p-2 transition-colors hover:bg-white/10 focus-visible:bg-white/15 focus-visible:outline-none"
             >
               <div
@@ -1947,7 +1835,7 @@ const WindowFrame = memo((props: WindowFrameProps) => {
 
         <div
           className={`min-h-0 flex-1 bg-[var(--cp-surface-muted)] ${
-            win.id === 'files' ? 'overflow-hidden p-0' : 'overflow-auto p-4'
+            win.id === 'files' || win.id === 'chat' ? 'overflow-hidden p-0' : 'overflow-auto p-4'
           }`}
         >
           <WindowBody id={win.id} data={windowData} />
@@ -2184,6 +2072,10 @@ const WindowBody = memo((props: WindowBodyProps) => {
         </div>
       </div>
     )
+  }
+
+  if (id === 'chat') {
+    return <ChatWindow />
   }
 
   if (id === 'network') {

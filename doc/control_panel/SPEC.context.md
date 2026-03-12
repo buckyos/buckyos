@@ -32,6 +32,7 @@
   - 受保护的 workspace 体验。
 - `/`
   - desktop 首页。
+  - Bucky Chat 当前作为 desktop subwindow 打开，而不是独立 route page。
 - `/share/:shareId`
   - 公开分享查看页，由 `FileManagerPage` 承载。
 - `/files/detail`
@@ -82,6 +83,25 @@
 - Files HTTP 支持 `X-Auth`、query `auth`、cookie(`control-panel_token` / `control_panel_token` / `auth`)。
 - 兼容应用与页面代理流程中的 token 规则仍保留为重要约束，但当前 control panel 主实现以前端 authManager 为准。
 
+### Chat Wrapper Rules
+
+- 浏览器侧 `chat.*` 必须经由 `/kapi/control-panel`，而不是直接访问 `/kapi/msg-center`。
+- 这样做是为了复用 control panel 既有的 session 校验、方法级授权、以及 `sys` / zone host 的统一转发入口。
+- `chat.bootstrap`、`chat.contact.list`、`chat.message.list`、chat stream 当前对已登录用户开放。
+- `chat.message.send` 当前仍保留更高权限要求；普通只读账户不会获得发送能力。
+- 前端不应提交 `owner` 或 `contact_mgr_owner` 这类底层 scope 参数；这些值由 control panel backend 从 authenticated user 推导。
+- 当前 owner DID 的推导规则是：优先使用用户 contact 配置中的 DID，缺省回退到 `did:bns:<username>`。
+
+### Chat Streaming Rules
+
+- 实时聊天更新不新增端口，也不新增独立 chat service 对外入口。
+- 当前实时链路使用 `control_panel` service 内的 HTTP streaming endpoint：`POST /kapi/control-panel/chat/stream`。
+- 该 endpoint 不是 kRPC method，而是 control panel 内部额外暴露的 chat transport helper。
+- transport 当前采用 `fetch` + streamed NDJSON；不使用 WebSocket。
+- 浏览器发送 `session_token` 与 `peer_did` 建立流；control panel 完成鉴权、owner DID 推导、`msg-center` 事件订阅，再把规范化后的 chat event 持续写回浏览器。
+- 当前 streaming 的语义是 message-level realtime：当 `msg-center` inbox/outbox 记录发生变化时，浏览器收到增量消息或重同步提示。
+- 当前 streaming 不是 token-level LLM delta；如果未来要支持 agent token stream，需要在 OpenDan/AICC 层先提供可流化上游。
+
 ### SSO Cookie Requirement For Gateway OAuth
 
 - 对于普通 control panel SPA 登录，localStorage 会话足以驱动前端自身状态。
@@ -131,6 +151,7 @@
 | `zone.overview` / `zone.config` | Implemented | route naming differs from older PRD wording |
 | `gateway.overview` / `gateway.config` / `gateway.file.get` | Implemented | route/rpc aliases exist for overview/config |
 | `container.overview` / `container.action` | Implemented | aliases for `containers.*` and `docker.*` also exist |
+| `chat.*` | Implemented | control-panel wrapper over `msg-center`; read flows are authenticated, send remains restricted |
 | `notification.list` | Implemented | broader notification management is planned |
 | `files.browse` | Partially implemented | current UI still prefers HTTP `/api/resources*` |
 | `user.*` | Planned | dispatch exists but current handlers are placeholders |
@@ -202,6 +223,43 @@
 | `apps.uninstall` | Planned | `app_id` | `task_id` | |
 | `apps.start` | Planned | `app_id` | `ok` | |
 | `apps.stop` | Planned | `app_id` | `ok` | |
+
+#### `chat.*`
+
+| Method | Status | Request | Response | Notes |
+| --- | --- | --- | --- | --- |
+| `chat.bootstrap` | Implemented | session | `ChatBootstrapResponse` | returns current owner scope and capability flags |
+| `chat.contact.list` | Implemented | `keyword?`, `limit?`, `offset?` | `ChatContactListResponse` | wraps msg-center contact query in current owner scope |
+| `chat.message.list` | Implemented | `peer_did`, `limit?` | `ChatMessageListResponse` | current minimal version merges latest inbox/outbox direct messages; no cursor contract yet |
+| `chat.message.send` | Implemented | `target_did`, `content`, `thread_id?` | `ChatSendMessageResponse` | sends text chat through msg-center `post_send`; write permission is more restrictive than read flows |
+
+#### Chat Streaming HTTP Surface
+
+| Path | Status | Request | Response | Notes |
+| --- | --- | --- | --- | --- |
+| `POST /kapi/control-panel/chat/stream` | Implemented | `session_token`, `peer_did` | `application/x-ndjson` event stream | keeps chat live without new port or WebSocket |
+
+##### `POST /kapi/control-panel/chat/stream`
+
+- Request body
+  - `session_token`: control panel session token.
+  - `peer_did`: target DID whose direct-chat updates should be observed.
+- Stream event types
+  - `ack`: stream accepted, includes current owner scope and keepalive interval.
+  - `message`: normalized `ChatMessage` update derived from `msg-center` record change.
+  - `resync`: frontend should reload the current message list because a record changed but could not be normalized incrementally.
+  - `keepalive`: no-op event to keep the HTTP stream alive during idle periods.
+- Transport notes
+  - Same origin and same control-panel service as the rest of the admin UI.
+  - Streamed events are scoped by authenticated user -> owner DID mapping plus the requested peer DID.
+  - No extra gateway host, no extra service port, no WebSocket handshake.
+
+### Chat Status Notes
+
+- 当前 `chat` 的目标是先把 control panel 内的一等消息入口建起来，而不是在第一版里替代未来独立 chat app。
+- 当前 chat UI 入口位于 desktop shell 内部，由 chat 图标打开 subwindow，而不是通过独立 `/chat` route 进入。
+- 当前实现只覆盖最小 direct chat 能力：owner scope bootstrap、联系人列表、单目标消息查看、文本发送。
+- 当前已补上基于 `msg-center` box event 的 message-level realtime；群组控制、临时授权流、独立 chat app 互联、token-level agent stream、以及 OpenDan agent control channel 仍保留为后续扩展。
 
 #### `network.*`, `zone.*`, `gateway.*`
 
