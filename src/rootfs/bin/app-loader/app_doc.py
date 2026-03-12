@@ -125,6 +125,8 @@ class SubPkgList:
     aarch64_apple_app: Optional[SubPkgDesc] = None
     amd64_apple_app: Optional[SubPkgDesc] = None
     web: Optional[SubPkgDesc] = None
+    agent: Optional[SubPkgDesc] = None
+    agent_skills: Optional[SubPkgDesc] = None
     others: Dict[str, SubPkgDesc] = field(default_factory=dict)
     raw: Dict[str, Any] = field(default_factory=dict)
 
@@ -149,6 +151,8 @@ class SubPkgList:
             "aarch64_apple_app",
             "amd64_apple_app",
             "web",
+            "agent",
+            "agent_skills",
         }
 
         others: Dict[str, SubPkgDesc] = {}
@@ -170,6 +174,8 @@ class SubPkgList:
             aarch64_apple_app=parse_optional("aarch64_apple_app"),
             amd64_apple_app=parse_optional("amd64_apple_app"),
             web=parse_optional("web"),
+            agent=parse_optional("agent"),
+            agent_skills=parse_optional("agent_skills"),
             others=others,
             raw=dd,
         )
@@ -189,6 +195,10 @@ class SubPkgList:
             return self.amd64_apple_app
         if key == "web":
             return self.web
+        if key == "agent":
+            return self.agent
+        if key == "agent_skills":
+            return self.agent_skills
         return self.others.get(key)
 
     def get_docker_image_for_host(self, machine: Optional[str] = None) -> SubPkgDesc:

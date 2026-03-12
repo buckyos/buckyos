@@ -211,12 +211,12 @@ store 完成后，开发者节点的 RepoService 即可通过 serve 响应其他
   构造 Install Spec (UI 决策)
         │  权限、端口、数据挂载等
         ▼
-  app.create_instance(install_spec)
+  control_panel.create_instance(install_spec)
         │  写入调度器目标状态
         │  ✎ proof 落盘：install action（记录"用户真实安装"）
         │      → 通过 repo.add_proof() 写入
         ▼
-  app.start_instance(instance_id)
+  node_daemon.start_app_instance(instance_id)
         │  容器启动，应用运行
         ▼
       应用运行
