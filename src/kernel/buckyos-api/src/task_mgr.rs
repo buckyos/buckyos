@@ -1231,8 +1231,13 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
                     priority,
                     user_id,
                     app_id,
-                    ..
+                    app_name,
                 } = create_req;
+                let resolved_app_id = if app_id.is_empty() {
+                    app_name.unwrap_or_default()
+                } else {
+                    app_id
+                };
                 let opts = CreateTaskOptions {
                     permissions,
                     parent_id,
@@ -1247,7 +1252,7 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
                         data,
                         opts,
                         user_id.as_str(),
-                        app_id.as_str(),
+                        resolved_app_id.as_str(),
                         ctx,
                     )
                     .await?;

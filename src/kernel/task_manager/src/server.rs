@@ -12,10 +12,8 @@ use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use log::*;
 use ndn_lib::ObjId;
-use serde::Serialize;
 use serde_json::{json, Value};
 use server_runner::*;
-use std::net::IpAddr;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -642,234 +640,27 @@ impl TaskManagerHandler for TaskManagerService {
         Ok(())
     }
 }
+pub struct TaskManagerHttpServer<T: TaskManagerHandler> {
+    rpc_handler: buckyos_api::TaskManagerServerHandler<T>,
+}
 
-pub struct TaskManagerServerHandler<T: TaskManagerHandler>(pub T);
-
-impl<T: TaskManagerHandler> TaskManagerServerHandler<T> {
+impl<T: TaskManagerHandler> TaskManagerHttpServer<T> {
     pub fn new(handler: T) -> Self {
-        Self(handler)
-    }
-
-    fn to_rpc_result<R: Serialize>(res: Result<R>) -> RPCResult {
-        match res {
-            Ok(value) => RPCResult::Success(json!(value)),
-            Err(err) => RPCResult::Failed(err.to_string()),
+        Self {
+            rpc_handler: buckyos_api::TaskManagerServerHandler::new(handler),
         }
     }
 }
 
 #[async_trait]
-impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
-    async fn handle_rpc_call(&self, req: RPCRequest, ip_from: IpAddr) -> Result<RPCResponse> {
-        let seq = req.seq;
-        let trace_id = req.trace_id.clone();
-        let ctx = RPCContext::from_request(&req, ip_from);
-
-        let result = match req.method.as_str() {
-            "create_task" => {
-                let create_req = TaskManagerCreateTaskReq::from_json(req.params)?;
-                let TaskManagerCreateTaskReq {
-                    name,
-                    task_type,
-                    data,
-                    permissions,
-                    parent_id,
-                    root_id,
-                    priority,
-                    user_id,
-                    app_id,
-                    app_name,
-                } = create_req;
-                let resolved_app_id = if app_id.is_empty() {
-                    app_name.unwrap_or_default()
-                } else {
-                    app_id
-                };
-                let opts = CreateTaskOptions {
-                    permissions,
-                    parent_id,
-                    root_id,
-                    priority,
-                };
-                let result = self
-                    .0
-                    .handle_create_task(
-                        &name,
-                        &task_type,
-                        data,
-                        opts,
-                        user_id.as_str(),
-                        resolved_app_id.as_str(),
-                        ctx,
-                    )
-                    .await
-                    .map(|task| CreateTaskResult {
-                        task_id: task.id,
-                        task,
-                    });
-                Self::to_rpc_result(result)
-            }
-            "get_task" => {
-                let get_req = TaskManagerGetTaskReq::from_json(req.params)?;
-                let result = self
-                    .0
-                    .handle_get_task(get_req.id, ctx)
-                    .await
-                    .map(|task| GetTaskResult { task });
-                Self::to_rpc_result(result)
-            }
-            "list_tasks" => {
-                let list_req = TaskManagerListTasksReq::from_json(req.params)?;
-                let TaskManagerListTasksReq {
-                    app_id,
-                    task_type,
-                    status,
-                    parent_id,
-                    root_id,
-                    source_user_id,
-                    source_app_id,
-                } = list_req;
-                let filter = TaskFilter {
-                    app_id,
-                    task_type,
-                    status,
-                    parent_id,
-                    root_id,
-                };
-                let result = self
-                    .0
-                    .handle_list_tasks(
-                        filter,
-                        source_user_id.as_deref(),
-                        source_app_id.as_deref(),
-                        ctx,
-                    )
-                    .await
-                    .map(|tasks| ListTasksResult { tasks });
-                Self::to_rpc_result(result)
-            }
-            "list_tasks_by_time_range" => {
-                let list_req = TaskManagerListTasksByTimeRangeReq::from_json(req.params)?;
-                let TaskManagerListTasksByTimeRangeReq {
-                    app_id,
-                    task_type,
-                    source_user_id,
-                    source_app_id,
-                    start_time,
-                    end_time,
-                } = list_req;
-                let time_range = start_time..end_time;
-                let result = self
-                    .0
-                    .handle_list_tasks_by_time_range(
-                        app_id.as_deref(),
-                        task_type.as_deref(),
-                        source_user_id.as_deref(),
-                        source_app_id.as_deref(),
-                        time_range,
-                        ctx,
-                    )
-                    .await
-                    .map(|tasks| ListTasksResult { tasks });
-                Self::to_rpc_result(result)
-            }
-            "update_task" => {
-                let update_req = TaskManagerUpdateTaskReq::from_json(req.params)?;
-                Self::to_rpc_result(
-                    self.0
-                        .handle_update_task(
-                            update_req.id,
-                            update_req.status,
-                            update_req.progress,
-                            update_req.message,
-                            update_req.data,
-                            ctx,
-                        )
-                        .await,
-                )
-            }
-            "cancel_task" => {
-                let cancel_req = TaskManagerCancelTaskReq::from_json(req.params)?;
-                Self::to_rpc_result(
-                    self.0
-                        .handle_cancel_task(cancel_req.id, cancel_req.recursive, ctx)
-                        .await,
-                )
-            }
-            "get_subtasks" => {
-                let sub_req = TaskManagerGetSubtasksReq::from_json(req.params)?;
-                let result = self
-                    .0
-                    .handle_get_subtasks(sub_req.parent_id, ctx)
-                    .await
-                    .map(|tasks| ListTasksResult { tasks });
-                Self::to_rpc_result(result)
-            }
-            "update_task_status" => {
-                let update_req = TaskManagerUpdateTaskStatusReq::from_json(req.params)?;
-                Self::to_rpc_result(
-                    self.0
-                        .handle_update_task_status(update_req.id, update_req.status, ctx)
-                        .await,
-                )
-            }
-            "update_task_progress" => {
-                let update_req = TaskManagerUpdateTaskProgressReq::from_json(req.params)?;
-                Self::to_rpc_result(
-                    self.0
-                        .handle_update_task_progress(
-                            update_req.id,
-                            update_req.completed_items,
-                            update_req.total_items,
-                            ctx,
-                        )
-                        .await,
-                )
-            }
-            "update_task_error" => {
-                let update_req = TaskManagerUpdateTaskErrorReq::from_json(req.params)?;
-                Self::to_rpc_result(
-                    self.0
-                        .handle_update_task_error(
-                            update_req.id,
-                            update_req.error_message.as_str(),
-                            ctx,
-                        )
-                        .await,
-                )
-            }
-            "update_task_data" => {
-                let update_req = TaskManagerUpdateTaskDataReq::from_json(req.params)?;
-                Self::to_rpc_result(
-                    self.0
-                        .handle_update_task_data(update_req.id, update_req.data, ctx)
-                        .await,
-                )
-            }
-            "delete_task" => {
-                let delete_req = TaskManagerDeleteTaskReq::from_json(req.params)?;
-                Self::to_rpc_result(self.0.handle_delete_task(delete_req.id, ctx).await)
-            }
-            _ => return Err(RPCErrors::UnknownMethod(req.method.clone())),
-        };
-
-        Ok(RPCResponse {
-            result,
-            seq,
-            trace_id,
-        })
-    }
-}
-
-#[async_trait]
-impl<T: TaskManagerHandler + 'static> HttpServer for TaskManagerServerHandler<T> {
+impl<T: TaskManagerHandler + 'static> HttpServer for TaskManagerHttpServer<T> {
     async fn serve_request(
         &self,
         req: http::Request<BoxBody<Bytes, ServerError>>,
         info: StreamInfo,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
         if *req.method() == Method::POST {
-            return serve_http_by_rpc_handler(req, info, self).await;
+            return serve_http_by_rpc_handler(req, info, &self.rpc_handler).await;
         }
         Err(server_err!(
             ServerErrorCode::BadRequest,
@@ -910,7 +701,7 @@ pub async fn start_task_manager_service() -> Result<()> {
     set_buckyos_api_runtime(runtime);
 
     let handler = TaskManagerService::new();
-    let server = TaskManagerServerHandler::new(handler);
+    let server = TaskManagerHttpServer::new(handler);
 
     info!("start node task manager service...");
     const TASK_MANAGER_SERVICE_MAIN_PORT: u16 = 3380;
@@ -951,7 +742,7 @@ mod tests {
     }
 
     async fn setup_test_environment() -> (
-        TaskManagerServerHandler<TaskManagerService>,
+        buckyos_api::TaskManagerServerHandler<TaskManagerService>,
         tempfile::TempDir,
         MutexGuard<'static, ()>,
     ) {
@@ -968,7 +759,7 @@ mod tests {
         db.init_db().await.unwrap();
         *crate::task_db::DB_MANAGER.lock().await = db;
 
-        let server = TaskManagerServerHandler::new(TaskManagerService::new());
+        let server = buckyos_api::TaskManagerServerHandler::new(TaskManagerService::new());
         (server, temp_dir, guard)
     }
 
@@ -1383,11 +1174,8 @@ mod tests {
             });
 
             let get_req = create_rpc_request("get_task", get_params);
-            let get_resp = server.handle_rpc_call(get_req, ip).await.unwrap();
-
-            if let RPCResult::Success(_) = get_resp.result {
-                panic!("Unexpected success when getting deleted task");
-            }
+            let get_result = server.handle_rpc_call(get_req, ip).await;
+            assert!(get_result.is_err(), "Unexpected success when getting deleted task");
         } else {
             panic!("Failed to delete task");
         }
