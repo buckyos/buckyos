@@ -51,6 +51,8 @@ rootfs/_buckycli_tmp/
 src/rootfs/bin/node_active/
 src/rootfs/bin/sys_test/
 publish/*
+!publish/aios/
+!publish/aios/Dockerfile
 src/rootfs/bin/buckyos_systest/
 src/rootfs/bin/aicc/aicc
 src/rootfs/bin/kmsg/kmsg

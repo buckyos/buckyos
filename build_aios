@@ -1,0 +1,322 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC_DIR="$ROOT_DIR/src"
+PROJECT_CONFIG_PATH="$SRC_DIR/bucky_project.yaml"
+DOCKERFILE_PATH="$ROOT_DIR/publish/aios/Dockerfile"
+IMAGE_NAME="${IMAGE_NAME:-paios/aios}"
+VERSION_TAG="${VERSION_TAG:-$(sed -nE 's/^version = "([^"]+)"/\1/p' "$SRC_DIR/frame/opendan/Cargo.toml" | head -n 1)}"
+PLATFORMS=("amd64" "aarch64")
+PUSH=0
+
+usage() {
+  cat <<'EOF'
+Usage: ./build_aios [--push] [--image <name>] [--tag <tag>]
+
+Builds the OpenDAN binary with cargo for:
+  - amd64   -> x86_64-unknown-linux-musl
+  - aarch64 -> aarch64-unknown-linux-musl
+
+Then packages each binary into an Ubuntu-based Docker image:
+  - <image>:<tag>-amd64
+  - <image>:latest-amd64
+  - <image>:<tag>-aarch64
+  - <image>:latest-aarch64
+
+Options:
+  --push          Push arch-specific images and create multi-arch manifests
+  --image <name>  Override image name, default: paios/aios
+  --tag <tag>     Override version tag, default: opendan Cargo.toml version
+  -h, --help      Show this help
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --push)
+      PUSH=1
+      shift
+      ;;
+    --image)
+      IMAGE_NAME="$2"
+      shift 2
+      ;;
+    --tag)
+      VERSION_TAG="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+log() {
+  printf '[build_aios] %s\n' "$*"
+}
+
+resolve_python() {
+  if [[ -x "$ROOT_DIR/venv/bin/python" ]]; then
+    echo "$ROOT_DIR/venv/bin/python"
+    return
+  fi
+
+  if [[ -x "$ROOT_DIR/venv/bin/python3" ]]; then
+    echo "$ROOT_DIR/venv/bin/python3"
+    return
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    command -v python3
+    return
+  fi
+
+  echo "python3 not found" >&2
+  exit 1
+}
+
+load_build_context() {
+  local python_bin="$1"
+  local arch="$2"
+
+  "$python_bin" - "$PROJECT_CONFIG_PATH" "$arch" <<'PY'
+import contextlib
+import io
+import sys
+
+config_path = sys.argv[1]
+arch = sys.argv[2]
+
+if arch == "amd64":
+    target = "x86_64-unknown-linux-musl"
+elif arch == "aarch64":
+    target = "aarch64-unknown-linux-musl"
+else:
+    raise SystemExit(f"Unsupported arch: {arch}")
+
+with contextlib.redirect_stdout(io.StringIO()):
+    from buckyos_devkit.build_rust import get_cross_compile_env_vars_by_target, get_env_vars_by_target
+    from buckyos_devkit.project import BuckyProject
+
+    project = BuckyProject.from_file(config_path)
+
+    env = {}
+    env.update(project.rust_env)
+    env.update(get_env_vars_by_target(target))
+
+    cross_env = get_cross_compile_env_vars_by_target(target)
+    if cross_env:
+        env.update(cross_env)
+
+print(f"RUST_TARGET={target}")
+for key, value in env.items():
+    print(f"{key}={value}")
+PY
+}
+
+rewrite_env_line() {
+  local line="$1"
+
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    printf '%s\n' "$line"
+    return
+  fi
+
+  if [[ "$line" == "CC_x86_64_unknown_linux_musl=musl-gcc" ]] && ! command -v musl-gcc >/dev/null 2>&1; then
+    if command -v x86_64-linux-musl-gcc >/dev/null 2>&1; then
+      printf '%s\n' "CC_x86_64_unknown_linux_musl=$(command -v x86_64-linux-musl-gcc)"
+      return
+    fi
+  fi
+
+  if [[ "$line" == "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc" ]] && ! command -v musl-gcc >/dev/null 2>&1; then
+    if command -v x86_64-linux-musl-gcc >/dev/null 2>&1; then
+      printf '%s\n' "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=$(command -v x86_64-linux-musl-gcc)"
+      return
+    fi
+  fi
+
+  printf '%s\n' "$line"
+}
+
+build_binary() {
+  local arch="$1"
+  local output_path="$2"
+  local cargo_target_dir="$3"
+  local python_bin="$4"
+  local rust_target
+  local source_bin
+  local -a cargo_cmd
+  local -a env_cmd
+  local -a env_lines
+  local raw_line
+
+  env_lines=()
+  while IFS= read -r raw_line; do
+    if [[ "$raw_line" == RUST_TARGET=* ]]; then
+      rust_target="${raw_line#RUST_TARGET=}"
+    elif [[ -n "$raw_line" ]]; then
+      env_lines+=("$raw_line")
+    fi
+  done < <(load_build_context "$python_bin" "$arch")
+
+  if [[ -z "${rust_target:-}" ]]; then
+    echo "Failed to resolve rust target for arch: $arch" >&2
+    exit 1
+  fi
+
+  source_bin="$cargo_target_dir/$rust_target/release/opendan"
+
+  cargo_cmd=(
+    cargo
+    build
+    -p
+    opendan
+    --release
+    --target
+    "$rust_target"
+    --target-dir
+    "$cargo_target_dir"
+  )
+
+  env_cmd=(env)
+  if [[ ${#env_lines[@]} -gt 0 ]]; then
+    local normalized_line
+    local -a normalized_env_lines=()
+    for line in "${env_lines[@]}"; do
+      normalized_line="$(rewrite_env_line "$line")"
+      normalized_env_lines+=("$normalized_line")
+    done
+    env_cmd+=("${normalized_env_lines[@]}")
+  fi
+
+  log "Building opendan for $arch via ${cargo_cmd[*]}"
+  (
+    cd "$SRC_DIR"
+    "${env_cmd[@]}" "${cargo_cmd[@]}"
+  )
+
+  if [[ ! -f "$source_bin" ]]; then
+    echo "Expected build output not found: $source_bin" >&2
+    exit 1
+  fi
+
+  mkdir -p "$(dirname "$output_path")"
+  cp "$source_bin" "$output_path"
+  chmod 755 "$output_path"
+}
+
+docker_platform_for_arch() {
+  case "$1" in
+    amd64)
+      echo "linux/amd64"
+      ;;
+    aarch64)
+      echo "linux/arm64"
+      ;;
+    *)
+      echo "Unsupported arch: $1" >&2
+      exit 1
+      ;;
+  esac
+}
+
+build_image() {
+  local arch="$1"
+  local context_dir="$2"
+  local platform="$3"
+  local version_arch_tag="$IMAGE_NAME:$VERSION_TAG-$arch"
+  local latest_arch_tag="$IMAGE_NAME:latest-$arch"
+
+  log "Building Docker image $version_arch_tag"
+
+  if [[ "$PUSH" -eq 1 ]]; then
+    docker buildx build \
+      --platform "$platform" \
+      --build-arg TARGET_ARCH="$arch" \
+      --tag "$version_arch_tag" \
+      --tag "$latest_arch_tag" \
+      --push \
+      -f "$DOCKERFILE_PATH" \
+      "$context_dir"
+  else
+    docker buildx build \
+      --platform "$platform" \
+      --build-arg TARGET_ARCH="$arch" \
+      --tag "$version_arch_tag" \
+      --tag "$latest_arch_tag" \
+      --load \
+      -f "$DOCKERFILE_PATH" \
+      "$context_dir"
+  fi
+}
+
+publish_manifests() {
+  log "Publishing multi-arch manifests for $IMAGE_NAME"
+  docker buildx imagetools create \
+    --tag "$IMAGE_NAME:$VERSION_TAG" \
+    "$IMAGE_NAME:$VERSION_TAG-amd64" \
+    "$IMAGE_NAME:$VERSION_TAG-aarch64"
+
+  docker buildx imagetools create \
+    --tag "$IMAGE_NAME:latest" \
+    "$IMAGE_NAME:latest-amd64" \
+    "$IMAGE_NAME:latest-aarch64"
+}
+
+main() {
+  local tmp_root
+  local python_bin
+
+  if [[ ! -f "$DOCKERFILE_PATH" ]]; then
+    echo "Missing Dockerfile: $DOCKERFILE_PATH" >&2
+    exit 1
+  fi
+
+  if [[ ! -f "$PROJECT_CONFIG_PATH" ]]; then
+    echo "Missing project config: $PROJECT_CONFIG_PATH" >&2
+    exit 1
+  fi
+
+  python_bin="$(resolve_python)"
+
+  tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/build_aios.XXXXXX")"
+  trap 'rm -rf "$tmp_root"' EXIT
+
+  for arch in "${PLATFORMS[@]}"; do
+    local context_dir="$tmp_root/$arch"
+    local cargo_target_dir="$tmp_root/cargo-$arch"
+    local platform
+
+    platform="$(docker_platform_for_arch "$arch")"
+    mkdir -p "$context_dir"
+
+    build_binary "$arch" "$context_dir/opendan" "$cargo_target_dir" "$python_bin"
+    build_image "$arch" "$context_dir" "$platform"
+  done
+
+  if [[ "$PUSH" -eq 1 ]]; then
+    publish_manifests
+  fi
+
+  log "Completed"
+  if [[ "$PUSH" -eq 1 ]]; then
+    log "Pushed: $IMAGE_NAME:$VERSION_TAG and $IMAGE_NAME:latest"
+  else
+    log "Loaded local images:"
+    log "  $IMAGE_NAME:$VERSION_TAG-amd64"
+    log "  $IMAGE_NAME:latest-amd64"
+    log "  $IMAGE_NAME:$VERSION_TAG-aarch64"
+    log "  $IMAGE_NAME:latest-aarch64"
+  fi
+}
+
+main
