@@ -1,25 +1,25 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use std::vec;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
-    AiToolCall, AiccClient, BoxKind, Event, EventReader, KEventClient, KEventError,
-    MsgCenterClient, MsgRecord, MsgRecordWithObject, MsgState, PostSendResult, SendContext,
-    TaskManagerClient, get_buckyos_api_runtime,
+    get_buckyos_api_runtime,
     msg_queue::{Message, MsgQueueClient, QueueConfig, SubPosition},
-    value_to_object_map,
+    value_to_object_map, AiToolCall, AiccClient, BoxKind, Event, EventReader, KEventClient,
+    KEventError, MsgCenterClient, MsgRecord, MsgRecordWithObject, MsgState, PostSendResult,
+    SendContext, TaskManagerClient,
 };
 use chrono::Utc;
 use log::{debug, info, warn};
 use name_lib::DID;
 use ndn_lib::{MsgContent, MsgContentFormat, MsgObjKind, MsgObject};
 
-use serde_json::{Value as Json, json};
+use serde_json::{json, Value as Json};
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::sleep;
 use tokio::{fs, task};
@@ -32,8 +32,8 @@ use crate::agent_session::{
     AgentSession, AgentSessionMgr, GetSessionTool, SessionInputItem, SessionState,
 };
 use crate::agent_tool::{
-    AgentPolicy, AgentToolManager, DoAction, DoActionResults, DoActions, TOOL_EXEC_BASH,
-    normalize_tool_name,
+    normalize_tool_name, AgentPolicy, AgentToolManager, DoAction, DoActionResults, DoActions,
+    TOOL_EXEC_BASH,
 };
 use crate::behavior::{
     AgentWorkEvent, BehaviorConfig, BehaviorExecInput, BehaviorLLMResult, LLMBehavior,
@@ -4180,10 +4180,8 @@ process_rule: "test behavior for action rendering"
         assert!(rendered.contains("todo clear => cleared 0 todo items"));
         assert!(rendered.contains("todo add \"Preview task\" --priority=3 => added todo T001"));
         assert!(rendered.contains("todo next => next todo T001: Preview task"));
-        assert!(
-            rendered
-                .contains("todo start T999 \"missing preview\" => failed: todo `T999` not found")
-        );
+        assert!(rendered
+            .contains("todo start T999 \"missing preview\" => failed: todo `T999` not found"));
         assert!(rendered.contains("todo ls --all => listed 1 todo item"));
         assert!(rendered.contains("- T001 [COMPLETE]"));
         assert!(rendered.contains("read_file prompt_preview.txt range=1-2 => read"));
@@ -4194,10 +4192,8 @@ process_rule: "test behavior for action rendering"
         assert!(rendered.contains("first_chunk=\"line-2\""));
         assert!(rendered.contains("read_file large_preview.txt => read"));
         assert!(rendered.contains(format!("read {large_bytes} bytes (truncated)").as_str()));
-        assert!(
-            rendered
-                .contains("... [TRUNCATED FOR ACTION PREVIEW: Showing first 3000 lines only] ...")
-        );
+        assert!(rendered
+            .contains("... [TRUNCATED FOR ACTION PREVIEW: Showing first 3000 lines only] ..."));
         assert!(rendered.contains("write_file write_preview.txt mode=new content=\""));
         assert!(
             rendered.contains("write mode `new` requires target file not exist: write_preview.txt")

@@ -17,19 +17,19 @@ pub mod workspace;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use buckyos_api::msg_queue::MsgQueueClient;
 use buckyos_api::{
-    AICC_SERVICE_SERVICE_NAME, AppDoc, AppServiceInstanceConfig, AppServiceSpec,
-    BuckyOSRuntimeType, OPENDAN_SERVICE_NAME, OPENDAN_SERVICE_PORT as DEFAULT_OPENDAN_SERVICE_PORT,
-    ServiceInstallConfig, get_buckyos_api_runtime, init_buckyos_api_runtime,
-    set_buckyos_api_runtime,
+    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AppDoc,
+    AppServiceInstanceConfig, AppServiceSpec, BuckyOSRuntimeType, ServiceInstallConfig,
+    AICC_SERVICE_SERVICE_NAME, OPENDAN_SERVICE_NAME,
+    OPENDAN_SERVICE_PORT as DEFAULT_OPENDAN_SERVICE_PORT,
 };
 use buckyos_kit::{get_buckyos_root_dir, init_logging};
 use bytes::Bytes;
 use cyfs_gateway_lib::{
-    HttpServer, ServerError, ServerErrorCode, ServerResult, StreamInfo, serve_http_by_rpc_handler,
-    server_err,
+    serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
+    StreamInfo,
 };
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
@@ -38,7 +38,7 @@ use name_lib::{AgentDocument, DIDDocumentTrait, EncodedDocument};
 use serde_json::Value as Json;
 use server_runner::Runner;
 use tokio::fs;
-use tokio::time::{Duration, sleep};
+use tokio::time::{sleep, Duration};
 
 use crate::agent::{AIAgent, AIAgentDeps};
 use crate::agent_config::AIAgentConfig;
@@ -841,8 +841,8 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_OPENDAN_SERVICE_PORT, StartupArgs, agent_spec_key_candidates,
-        parse_startup_args_from_iter, resolve_requested_service_port,
+        agent_spec_key_candidates, parse_startup_args_from_iter, resolve_requested_service_port,
+        StartupArgs, DEFAULT_OPENDAN_SERVICE_PORT,
     };
 
     #[test]

@@ -4,21 +4,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use log::warn;
-use serde_json::{Value as Json, json};
+use serde_json::{json, Value as Json};
 use tokio::fs;
 use tokio::process::Command;
-use tokio::time::{Duration, Instant, sleep};
+use tokio::time::{sleep, Duration, Instant};
 
 use crate::agent_session::AgentSessionMgr;
 use crate::agent_tool::{
-    AgentTool, AgentToolError, AgentToolManager, AgentToolResult, ToolSpec,
-    tokenize_bash_command_line,
+    tokenize_bash_command_line, AgentTool, AgentToolError, AgentToolManager, AgentToolResult,
+    ToolSpec,
 };
 use crate::behavior::SessionRuntimeContext;
 use crate::buildin_tool::{
-    TOOL_EXEC_BASH, is_path_under_any, normalize_abs_path, optional_u64,
-    parse_workspace_relative_roots, read_bool_from_map, read_u64_from_map, require_string,
-    truncate_bytes,
+    is_path_under_any, normalize_abs_path, optional_u64, parse_workspace_relative_roots,
+    read_bool_from_map, read_u64_from_map, require_string, truncate_bytes, TOOL_EXEC_BASH,
 };
 use crate::workspace::workshop::{AgentWorkshopConfig, WorkshopToolConfig};
 

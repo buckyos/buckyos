@@ -8,13 +8,13 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use log::info;
-use rusqlite::{Connection, params, params_from_iter, types::Value as SqlValue};
+use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value as Json, json};
+use serde_json::{json, Value as Json};
 use tokio::task;
 
 use crate::agent_tool::{
-    AgentTool, AgentToolError, AgentToolResult, TOOL_WORKLOG_MANAGE, ToolSpec,
+    AgentTool, AgentToolError, AgentToolResult, ToolSpec, TOOL_WORKLOG_MANAGE,
 };
 use crate::behavior::SessionRuntimeContext;
 
@@ -2777,36 +2777,24 @@ mod tests {
             .await
             .expect("list mixed records");
         assert_eq!(records.len(), 7);
-        assert!(
-            records
-                .iter()
-                .any(|r| r.record_type == WorklogRecordType::GetMessage)
-        );
-        assert!(
-            records
-                .iter()
-                .any(|r| r.record_type == WorklogRecordType::FunctionRecord)
-        );
-        assert!(
-            records
-                .iter()
-                .any(|r| r.record_type == WorklogRecordType::ActionRecord)
-        );
-        assert!(
-            records
-                .iter()
-                .any(|r| r.record_type == WorklogRecordType::CreateSubAgent)
-        );
-        assert!(
-            records
-                .iter()
-                .any(|r| r.record_type == WorklogRecordType::ReplyMessage)
-        );
-        assert!(
-            records
-                .iter()
-                .any(|r| r.record_type == WorklogRecordType::StepSummary)
-        );
+        assert!(records
+            .iter()
+            .any(|r| r.record_type == WorklogRecordType::GetMessage));
+        assert!(records
+            .iter()
+            .any(|r| r.record_type == WorklogRecordType::FunctionRecord));
+        assert!(records
+            .iter()
+            .any(|r| r.record_type == WorklogRecordType::ActionRecord));
+        assert!(records
+            .iter()
+            .any(|r| r.record_type == WorklogRecordType::CreateSubAgent));
+        assert!(records
+            .iter()
+            .any(|r| r.record_type == WorklogRecordType::ReplyMessage));
+        assert!(records
+            .iter()
+            .any(|r| r.record_type == WorklogRecordType::StepSummary));
 
         let prompt = tool
             .call(

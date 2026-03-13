@@ -4,10 +4,10 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use buckyos_api::{
-    AiResponseSummary, AiToolCall, AiUsage, AiccClient, CompleteRequest, CompleteResponse,
-    CompleteStatus, Task, TaskManagerClient, TaskPermissions, TaskStatus, value_to_object_map,
+    value_to_object_map, AiResponseSummary, AiToolCall, AiUsage, AiccClient, CompleteRequest,
+    CompleteResponse, CompleteStatus, Task, TaskManagerClient, TaskPermissions, TaskStatus,
 };
-use serde_json::{Value as Json, json};
+use serde_json::{json, Value as Json};
 use tempfile::tempdir;
 use tokio::fs;
 
@@ -564,14 +564,12 @@ process_rule: test_rule
             .and_then(|value| value.as_str()),
         Some("agent#default")
     );
-    assert!(
-        requests_guard[0]
-            .payload
-            .options
-            .as_ref()
-            .and_then(|value| value.get("session_id"))
-            .is_none()
-    );
+    assert!(requests_guard[0]
+        .payload
+        .options
+        .as_ref()
+        .and_then(|value| value.get("session_id"))
+        .is_none());
     drop(requests_guard);
 
     let tasks_guard = tasks.lock().expect("tasks lock");
@@ -595,11 +593,9 @@ process_rule: test_rule
             .and_then(|value| value.as_str()),
         None
     );
-    assert!(
-        !tasks_guard
-            .values()
-            .any(|task| task.task_type == "llm_infer")
-    );
+    assert!(!tasks_guard
+        .values()
+        .any(|task| task.task_type == "llm_infer"));
 }
 
 #[tokio::test]

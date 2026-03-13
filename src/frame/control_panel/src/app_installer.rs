@@ -1,21 +1,31 @@
 use buckyos_api::{
-    get_buckyos_api_runtime, AppServiceSpec, AppType, CreateTaskOptions, RepoClient,
+    get_buckyos_api_runtime, AppDoc, AppServiceSpec, AppType, CreateTaskOptions, RepoClient,
     RepoProof, RepoProofFilter, ServiceInstanceReportInfo, ServiceInstanceState, ServiceState,
-    SystemConfigClient, SystemConfigError, TaskManagerClient, TaskStatus, REPO_PROOF_TYPE_DOWNLOAD,
-    REPO_PROOF_TYPE_REFERRAL, REPO_STATUS_COLLECTED, REPO_STATUS_PINNED,
+    SubPkgDesc, SystemConfigClient, SystemConfigError, TaskManagerClient, TaskStatus,
+    REPO_PROOF_TYPE_DOWNLOAD, REPO_PROOF_TYPE_REFERRAL, REPO_STATUS_COLLECTED, REPO_STATUS_PINNED,
 };
 use buckyos_kit::buckyos_get_unix_timestamp;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use kRPC::RPCErrors;
 use log::warn;
+use named_store::NamedStoreMgr;
 use ndn_lib::{
-    build_obj_id, ActionObject, NamedObject, ObjId, ACTION_TYPE_DOWNLOAD, ACTION_TYPE_INSTALLED,
+    build_named_object_by_json, build_obj_id, ActionObject, FileObject, NamedObject, ObjId,
+    StoreMode, ACTION_TYPE_DOWNLOAD, ACTION_TYPE_INSTALLED,
 };
+use ndn_toolkit::{cacl_file_object, CheckMode};
+use package_lib::{PackageId, PackageMeta};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
+use std::fs::File as StdFile;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tar::Builder;
 use tokio::fs;
 use tokio::time::sleep;
+use uuid::Uuid;
 
 // 主要流程（AppInstaller 视角）：
 // - install_app: 写 users/{uid}/apps|agents/{app}/spec (state=New) -> 等待 scheduler 调度
@@ -34,6 +44,41 @@ const START_TASK_TYPE: &str = "app_start";
 const WAIT_INTERVAL_MS: u64 = 1_000;
 const WAIT_TIMEOUT_SECS: u64 = 45;
 const PROOF_EXPIRE_SECS: u64 = 365 * 24 * 60 * 60;
+
+#[derive(Clone)]
+enum PackageSource {
+    Directory(PathBuf),
+    File {
+        path: PathBuf,
+        packaged_name: Option<String>,
+    },
+}
+
+struct ScannedSubPkg {
+    key: String,
+    desc: SubPkgDesc,
+    source: PackageSource,
+}
+
+struct PublishScanPlan {
+    app_bundle: Option<PackageSource>,
+    sub_pkgs: Vec<ScannedSubPkg>,
+}
+
+struct PreparedPayload {
+    file_object: Option<FileObject>,
+}
+
+struct PreparedSubPkg {
+    key: String,
+    desc: SubPkgDesc,
+    meta: PackageMeta,
+}
+
+struct PreparedPublishPlan {
+    app_bundle: Option<PreparedPayload>,
+    sub_pkgs: Vec<PreparedSubPkg>,
+}
 
 #[derive(Clone)]
 pub struct AppInstaller {
@@ -326,13 +371,18 @@ impl AppInstaller {
         let obj_id = Self::parse_obj_id(content_id)?;
         let runtime = get_buckyos_api_runtime()?;
         let named_store = runtime.get_named_store().await.map_err(|error| {
-            RPCErrors::ReasonError(format!("Open named store for download verification failed: {error}"))
-        })?;
-        let _ = named_store.open_reader(&obj_id, None).await.map_err(|error| {
             RPCErrors::ReasonError(format!(
-                "Downloaded object `{content_id}` is not ready in named-store: {error}"
+                "Open named store for download verification failed: {error}"
             ))
         })?;
+        let _ = named_store
+            .open_reader(&obj_id, None)
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "Downloaded object `{content_id}` is not ready in named-store: {error}"
+                ))
+            })?;
         Ok(())
     }
 
@@ -354,7 +404,12 @@ impl AppInstaller {
             let base_on = self
                 .latest_action_proof_id(&content_id, REPO_PROOF_TYPE_DOWNLOAD)
                 .await?;
-            return self.build_download_proof(spec.user_id.as_str(), &content_id, base_on, parent_task_id);
+            return self.build_download_proof(
+                spec.user_id.as_str(),
+                &content_id,
+                base_on,
+                parent_task_id,
+            );
         }
 
         if status != REPO_STATUS_COLLECTED {
@@ -402,7 +457,8 @@ impl AppInstaller {
                 .await;
         }
 
-        self.wait_for_download_task(&task_mgr, download_task_id).await?;
+        self.wait_for_download_task(&task_mgr, download_task_id)
+            .await?;
         self.verify_named_store_ready(&content_id).await?;
 
         let referral_base = self
@@ -502,14 +558,7 @@ impl AppInstaller {
     ) -> Result<(TaskManagerClient, i64, String), RPCErrors> {
         let task_mgr = self.task_mgr_client().await?;
         let task = task_mgr
-            .create_task(
-                name.as_str(),
-                task_type,
-                Some(data),
-                user_id,
-                app_id,
-                None,
-            )
+            .create_task(name.as_str(), task_type, Some(data), user_id, app_id, None)
             .await?;
         Ok((task_mgr, task.id, task.root_id))
     }
@@ -569,11 +618,8 @@ impl AppInstaller {
         Self::set_spec_at(&client, &spec_path, &next_spec).await?;
 
         let repo = self.repo_client().await?;
-        let install_proof = self.build_install_proof(
-            &next_spec,
-            &content_id,
-            Some(download_proof.gen_obj_id().0),
-        )?;
+        let install_proof =
+            self.build_install_proof(&next_spec, &content_id, Some(download_proof.gen_obj_id().0))?;
         repo.add_proof(RepoProof::action(install_proof)).await?;
 
         let mut data = json!({
@@ -601,11 +647,7 @@ impl AppInstaller {
         Ok(())
     }
 
-    async fn run_start_task(
-        &self,
-        app_id: String,
-        task_id: i64,
-    ) -> Result<(), RPCErrors> {
+    async fn run_start_task(&self, app_id: String, task_id: i64) -> Result<(), RPCErrors> {
         let task_mgr = self.task_mgr_client().await?;
         let client = self.system_config_client().await?;
         let (spec_key, mut spec) = self.get_single_matching_spec(&app_id, None).await?;
@@ -759,7 +801,9 @@ impl AppInstaller {
         tokio::spawn(async move {
             if let Err(error) = installer.run_install_task(spec, task_id, root_id).await {
                 warn!("install app task {} failed: {}", task_id, error);
-                let _ = task_mgr.mark_task_as_failed(task_id, &error.to_string()).await;
+                let _ = task_mgr
+                    .mark_task_as_failed(task_id, &error.to_string())
+                    .await;
             }
         });
 
@@ -774,11 +818,7 @@ impl AppInstaller {
     /// 3. spec.state → Deleted，写回 system_config
     /// 4. 等待调度器 RemoveInstance（删除 nodes/{node}/config 中的实例配置）
     /// 5. 若 is_remove_data：清理应用数据目录
-    pub async fn uninstall_app(
-        &self,
-        app_id: &str,
-        is_remove_data: bool,
-    ) -> Result<(), RPCErrors> {
+    pub async fn uninstall_app(&self, app_id: &str, is_remove_data: bool) -> Result<(), RPCErrors> {
         let client = self.system_config_client().await?;
         let (spec_key, mut spec) = self.get_single_matching_spec(app_id, None).await?;
 
@@ -847,7 +887,9 @@ impl AppInstaller {
         tokio::spawn(async move {
             if let Err(error) = installer.run_start_task(app_id, task_id).await {
                 warn!("start app task {} failed: {}", task_id, error);
-                let _ = task_mgr.mark_task_as_failed(task_id, &error.to_string()).await;
+                let _ = task_mgr
+                    .mark_task_as_failed(task_id, &error.to_string())
+                    .await;
             }
         });
 
@@ -884,9 +926,7 @@ impl AppInstaller {
             self.latest_action_proof_id(&content_id, REPO_PROOF_TYPE_DOWNLOAD)
                 .await?
         } else {
-            let proof = self
-                .ensure_content_pinned(&next_spec, 0, "upgrade")
-                .await?;
+            let proof = self.ensure_content_pinned(&next_spec, 0, "upgrade").await?;
             Some(proof.gen_obj_id().0)
         };
 
@@ -946,4 +986,786 @@ impl AppInstaller {
         })
     }
 
+    fn scan_publish_sources(
+        &self,
+        app_type: AppType,
+        local_dir: &Path,
+        app_doc_template: &AppDoc,
+    ) -> Result<PublishScanPlan, RPCErrors> {
+        if !local_dir.exists() || !local_dir.is_dir() {
+            return Err(RPCErrors::ReasonError(format!(
+                "Publish source directory not found: {}",
+                local_dir.display()
+            )));
+        }
+
+        if app_type == AppType::Service {
+            return Err(RPCErrors::ReasonError(
+                "publish_app_to_repo does not support Service app".to_string(),
+            ));
+        }
+
+        let template_type = app_doc_template.get_app_type();
+        if template_type != app_type {
+            return Err(RPCErrors::ReasonError(format!(
+                "App type mismatch: template is `{}`, request is `{}`",
+                template_type.to_string(),
+                app_type.to_string()
+            )));
+        }
+
+        match app_type {
+            AppType::Web => {
+                let web_desc = app_doc_template.pkg_list.web.clone().ok_or_else(|| {
+                    RPCErrors::ReasonError("Web app template missing `pkg_list.web`".to_string())
+                })?;
+                Ok(PublishScanPlan {
+                    app_bundle: None,
+                    sub_pkgs: vec![ScannedSubPkg {
+                        key: "web".to_string(),
+                        desc: web_desc,
+                        source: PackageSource::Directory(local_dir.to_path_buf()),
+                    }],
+                })
+            }
+            AppType::Agent => {
+                let agent_desc = app_doc_template.pkg_list.agent.clone().ok_or_else(|| {
+                    RPCErrors::ReasonError(
+                        "Agent app template missing `pkg_list.agent`".to_string(),
+                    )
+                })?;
+                if app_doc_template.pkg_list.agent_skills.is_some() {
+                    return Err(RPCErrors::ReasonError(
+                        "Agent publish does not support `pkg_list.agent_skills` yet".to_string(),
+                    ));
+                }
+                let sub_pkgs = vec![ScannedSubPkg {
+                    key: "agent".to_string(),
+                    desc: agent_desc,
+                    source: PackageSource::Directory(local_dir.to_path_buf()),
+                }];
+
+                Ok(PublishScanPlan {
+                    app_bundle: None,
+                    sub_pkgs,
+                })
+            }
+            AppType::AppService => {
+                let has_unsupported_subpkg = app_doc_template
+                    .pkg_list
+                    .iter()
+                    .into_iter()
+                    .any(|(key, _)| key != "amd64_docker_image" && key != "aarch64_docker_image");
+                if has_unsupported_subpkg {
+                    return Err(RPCErrors::ReasonError(
+                        "AppService publish currently only supports `amd64_docker_image` and `aarch64_docker_image`"
+                            .to_string(),
+                    ));
+                }
+
+                let mut sub_pkgs = Vec::new();
+                for key in ["amd64_docker_image", "aarch64_docker_image"] {
+                    let Some(desc) = app_doc_template.pkg_list.get(key).cloned() else {
+                        continue;
+                    };
+                    let tar_path = local_dir.join(format!("{key}.tar"));
+                    if tar_path.exists() {
+                        sub_pkgs.push(ScannedSubPkg {
+                            key: key.to_string(),
+                            desc: desc.clone(),
+                            source: PackageSource::File {
+                                path: tar_path,
+                                packaged_name: Self::canonical_packaged_name(
+                                    key,
+                                    &desc,
+                                    app_doc_template.name.as_str(),
+                                ),
+                            },
+                        });
+                    }
+                }
+
+                if sub_pkgs.is_empty()
+                    && app_doc_template.pkg_list.amd64_docker_image.is_none()
+                    && app_doc_template.pkg_list.aarch64_docker_image.is_none()
+                {
+                    return Err(RPCErrors::ReasonError(
+                        "AppService template must define at least one docker image entry"
+                            .to_string(),
+                    ));
+                }
+
+                Ok(PublishScanPlan {
+                    app_bundle: None,
+                    sub_pkgs,
+                })
+            }
+            AppType::Service => unreachable!(),
+        }
+    }
+
+    async fn package_publish_sources(
+        &self,
+        app_doc_template: &AppDoc,
+        plan: PublishScanPlan,
+    ) -> Result<PreparedPublishPlan, RPCErrors> {
+        let runtime = get_buckyos_api_runtime()?;
+        let named_store = runtime.get_named_store().await.map_err(|error| {
+            RPCErrors::ReasonError(format!("Open named store for publish failed: {error}"))
+        })?;
+        let temp_root = std::env::temp_dir().join(format!("buckyos-publish-{}", Uuid::new_v4()));
+        fs::create_dir_all(&temp_root).await.map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "Create publish temp directory `{}` failed: {error}",
+                temp_root.display()
+            ))
+        })?;
+
+        let app_bundle = match plan.app_bundle.as_ref() {
+            Some(app_bundle_source) => Some(
+                self.package_source_to_payload(
+                    &named_store,
+                    &temp_root,
+                    app_bundle_source,
+                    format!("{}-app", app_doc_template.name).as_str(),
+                )
+                .await?,
+            ),
+            None => None,
+        };
+
+        let mut prepared_sub_pkgs = Vec::new();
+        for scanned in plan.sub_pkgs {
+            let payload = self
+                .package_source_to_payload(
+                    &named_store,
+                    &temp_root,
+                    &scanned.source,
+                    format!("{}-{}", app_doc_template.name, scanned.key).as_str(),
+                )
+                .await?;
+            let file_object = payload.file_object.ok_or_else(|| {
+                RPCErrors::ReasonError(format!(
+                    "Packaged sub package `{}` unexpectedly has no file object",
+                    scanned.key
+                ))
+            })?;
+            let meta = self.build_sub_pkg_meta(app_doc_template, &scanned.desc, file_object)?;
+            prepared_sub_pkgs.push(PreparedSubPkg {
+                key: scanned.key,
+                desc: scanned.desc,
+                meta,
+            });
+        }
+
+        let _ = fs::remove_dir_all(&temp_root).await;
+
+        Ok(PreparedPublishPlan {
+            app_bundle,
+            sub_pkgs: prepared_sub_pkgs,
+        })
+    }
+
+    async fn store_publish_pkg_metas(
+        &self,
+        app_doc_template: &AppDoc,
+        prepared: PreparedPublishPlan,
+    ) -> Result<ObjId, RPCErrors> {
+        let runtime = get_buckyos_api_runtime()?;
+        let named_store = runtime.get_named_store().await.map_err(|error| {
+            RPCErrors::ReasonError(format!("Open named store for publish failed: {error}"))
+        })?;
+        let repo = self.repo_client().await?;
+        let publisher = app_doc_template.owner.to_string();
+        let mut resolved_sub_pkgs = Vec::new();
+
+        for prepared_sub_pkg in prepared.sub_pkgs {
+            let meta_value = serde_json::to_value(&prepared_sub_pkg.meta).map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "Serialize sub package `{}` metadata failed: {error}",
+                    prepared_sub_pkg.key
+                ))
+            })?;
+            let (meta_obj_id, meta_obj_str) = prepared_sub_pkg.meta.gen_obj_id();
+            named_store
+                .put_object(&meta_obj_id, meta_obj_str.as_str())
+                .await
+                .map_err(|error| {
+                    RPCErrors::ReasonError(format!(
+                        "Write sub package `{}` metadata object into named store failed: {error}",
+                        prepared_sub_pkg.key
+                    ))
+                })?;
+            self.pin_meta_object_in_repo(&repo, publisher.as_str(), &meta_obj_id, meta_value)
+                .await?;
+
+            resolved_sub_pkgs.push((prepared_sub_pkg.key, prepared_sub_pkg.desc, meta_obj_id));
+        }
+
+        let final_doc = Self::build_final_app_doc_for_publish(
+            app_doc_template,
+            prepared
+                .app_bundle
+                .as_ref()
+                .and_then(|payload| payload.file_object.as_ref()),
+            resolved_sub_pkgs.as_slice(),
+        )?;
+
+        let final_value = serde_json::to_value(&final_doc).map_err(|error| {
+            RPCErrors::ReasonError(format!("Serialize final AppDoc failed: {error}"))
+        })?;
+        let (final_obj_id, final_obj_str) = build_named_object_by_json("pkg", &final_value);
+        named_store
+            .put_object(&final_obj_id, final_obj_str.as_str())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "Write final AppDoc object into named store failed: {error}"
+                ))
+            })?;
+        self.pin_meta_object_in_repo(&repo, publisher.as_str(), &final_obj_id, final_value)
+            .await?;
+
+        Ok(final_obj_id)
+    }
+
+    pub async fn publish_app_to_repo(
+        &self,
+        app_type: AppType,
+        local_dir: &Path,
+        app_doc_template: &AppDoc,
+    ) -> Result<ObjId, RPCErrors> {
+        let plan = self.scan_publish_sources(app_type, local_dir, app_doc_template)?;
+        let prepared = self.package_publish_sources(app_doc_template, plan).await?;
+        self.store_publish_pkg_metas(app_doc_template, prepared)
+            .await
+    }
+
+    fn canonical_packaged_name(key: &str, desc: &SubPkgDesc, app_id: &str) -> Option<String> {
+        if key.ends_with("docker_image") || desc.docker_image_name.is_some() {
+            return Some(format!("{app_id}.tar"));
+        }
+        None
+    }
+
+    fn sanitize_publish_name(name: &str) -> String {
+        let mut result = String::with_capacity(name.len());
+        for ch in name.chars() {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
+                result.push(ch);
+            } else {
+                result.push('_');
+            }
+        }
+        if result.is_empty() {
+            "pkg".to_string()
+        } else {
+            result
+        }
+    }
+
+    async fn create_tar_gz(&self, src_dir: &Path, tarball_path: &Path) -> Result<(), RPCErrors> {
+        let src_dir = src_dir.to_path_buf();
+        let tarball_path = tarball_path.to_path_buf();
+
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let tar_gz = StdFile::create(&tarball_path).map_err(|error| {
+                format!(
+                    "Create archive `{}` failed: {error}",
+                    tarball_path.display()
+                )
+            })?;
+            let encoder = GzEncoder::new(tar_gz, Compression::default());
+            let mut tar = Builder::new(encoder);
+
+            fn append_dir_all(
+                tar: &mut Builder<GzEncoder<StdFile>>,
+                path: &Path,
+                base: &Path,
+            ) -> io::Result<()> {
+                for entry in std::fs::read_dir(path)? {
+                    let entry = entry?;
+                    let path = entry.path();
+                    let skip = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .map(|name| name.starts_with('.'))
+                        .unwrap_or(false);
+                    if skip {
+                        continue;
+                    }
+
+                    let relative = path.strip_prefix(base).unwrap();
+                    if path.is_dir() {
+                        tar.append_dir(relative, &path)?;
+                        append_dir_all(tar, &path, base)?;
+                    } else {
+                        tar.append_file(relative, &mut StdFile::open(&path)?)?;
+                    }
+                }
+                Ok(())
+            }
+
+            append_dir_all(&mut tar, &src_dir, &src_dir).map_err(|error| {
+                format!(
+                    "Append files from `{}` into archive failed: {error}",
+                    src_dir.display()
+                )
+            })?;
+            tar.finish().map_err(|error| {
+                format!(
+                    "Finalize archive `{}` failed: {error}",
+                    tarball_path.display()
+                )
+            })?;
+            Ok(())
+        })
+        .await
+        .map_err(|error| RPCErrors::ReasonError(format!("Create tar.gz join failed: {error}")))?
+        .map_err(RPCErrors::ReasonError)
+    }
+
+    async fn stage_package_source(
+        &self,
+        temp_root: &Path,
+        source: &PackageSource,
+    ) -> Result<PathBuf, RPCErrors> {
+        match source {
+            PackageSource::Directory(path) => Ok(path.clone()),
+            PackageSource::File {
+                path,
+                packaged_name,
+            } => {
+                let staging_dir = temp_root.join(format!("stage-{}", Uuid::new_v4()));
+                fs::create_dir_all(&staging_dir).await.map_err(|error| {
+                    RPCErrors::ReasonError(format!(
+                        "Create staging directory `{}` failed: {error}",
+                        staging_dir.display()
+                    ))
+                })?;
+                let file_name = packaged_name.clone().unwrap_or_else(|| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("payload.bin")
+                        .to_string()
+                });
+                fs::copy(path, staging_dir.join(file_name))
+                    .await
+                    .map_err(|error| {
+                        RPCErrors::ReasonError(format!(
+                            "Copy `{}` into staging directory failed: {error}",
+                            path.display()
+                        ))
+                    })?;
+                Ok(staging_dir)
+            }
+        }
+    }
+
+    async fn package_source_to_payload(
+        &self,
+        named_store: &NamedStoreMgr,
+        temp_root: &Path,
+        source: &PackageSource,
+        archive_base_name: &str,
+    ) -> Result<PreparedPayload, RPCErrors> {
+        let staged_dir = self.stage_package_source(temp_root, source).await?;
+        let tarball_path = temp_root.join(format!(
+            "{}.tar.gz",
+            Self::sanitize_publish_name(archive_base_name)
+        ));
+        self.create_tar_gz(&staged_dir, &tarball_path).await?;
+
+        let file_template = FileObject::default();
+        let (file_object, _file_obj_id, _file_obj_str) = cacl_file_object(
+            Some(named_store),
+            &tarball_path,
+            &file_template,
+            true,
+            &CheckMode::ByFullHash,
+            StoreMode::StoreInNamedMgr,
+            None,
+        )
+        .await
+        .map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "Write packaged archive `{}` into named store failed: {error}",
+                tarball_path.display()
+            ))
+        })?;
+
+        match source {
+            PackageSource::Directory(_) => {}
+            PackageSource::File { .. } => {
+                let _ = fs::remove_dir_all(&staged_dir).await;
+            }
+        }
+
+        Ok(PreparedPayload {
+            file_object: Some(file_object),
+        })
+    }
+
+    fn build_sub_pkg_meta(
+        &self,
+        app_doc_template: &AppDoc,
+        desc: &SubPkgDesc,
+        file_object: FileObject,
+    ) -> Result<PackageMeta, RPCErrors> {
+        let package_id = PackageId::parse(desc.pkg_id.as_str()).map_err(|error| {
+            RPCErrors::ReasonError(format!("Invalid sub package id `{}`: {error}", desc.pkg_id))
+        })?;
+
+        let version = match package_id.version_exp.as_ref() {
+            Some(version_exp) if version_exp.is_version() => version_exp.version_exp.to_string(),
+            Some(_) => {
+                return Err(RPCErrors::ReasonError(format!(
+                    "Sub package `{}` must use an exact version for publish",
+                    desc.pkg_id
+                )))
+            }
+            None => app_doc_template.version.clone(),
+        };
+
+        let mut meta = PackageMeta::new(
+            package_id.name.as_str(),
+            version.as_str(),
+            app_doc_template.author.as_str(),
+            &app_doc_template.owner,
+            None,
+        );
+        meta.size = file_object.size;
+        meta.content = file_object.content.clone();
+        meta.exp = app_doc_template.exp;
+        meta.last_update_time = buckyos_get_unix_timestamp();
+        if let Some(tag) = package_id
+            .version_exp
+            .as_ref()
+            .and_then(|version_exp| version_exp.tag.clone())
+        {
+            meta.version_tag = Some(tag);
+        }
+
+        Ok(meta)
+    }
+
+    fn build_final_app_doc_for_publish(
+        app_doc_template: &AppDoc,
+        _app_bundle: Option<&FileObject>,
+        resolved_sub_pkgs: &[(String, SubPkgDesc, ObjId)],
+    ) -> Result<AppDoc, RPCErrors> {
+        let mut final_doc = app_doc_template.clone();
+
+        for (key, desc, meta_obj_id) in resolved_sub_pkgs {
+            let mut updated_desc = desc.clone();
+            updated_desc.pkg_objid = Some(meta_obj_id.clone());
+            updated_desc.source_url = None;
+            Self::set_sub_pkg_desc(&mut final_doc, key.as_str(), updated_desc)?;
+        }
+
+        final_doc._base.content.clear();
+        final_doc._base.size = 0;
+        final_doc._base.last_update_time = buckyos_get_unix_timestamp();
+
+        Ok(final_doc)
+    }
+
+    async fn pin_meta_object_in_repo(
+        &self,
+        repo: &RepoClient,
+        publisher: &str,
+        meta_obj_id: &ObjId,
+        meta_value: Value,
+    ) -> Result<(), RPCErrors> {
+        let mut repo_meta = meta_value;
+        let Some(object) = repo_meta.as_object_mut() else {
+            return Err(RPCErrors::ReasonError(
+                "Published metadata must serialize to a JSON object".to_string(),
+            ));
+        };
+        object.insert(
+            "content_id".to_string(),
+            Value::String(meta_obj_id.to_string()),
+        );
+
+        repo.collect(repo_meta, None).await?;
+        let proof = self.build_download_proof(publisher, &meta_obj_id.to_string(), None, 0)?;
+        repo.pin(&meta_obj_id.to_string(), proof).await?;
+        Ok(())
+    }
+
+    fn set_sub_pkg_desc(
+        app_doc: &mut AppDoc,
+        key: &str,
+        desc: SubPkgDesc,
+    ) -> Result<(), RPCErrors> {
+        match key {
+            "amd64_docker_image" => app_doc.pkg_list.amd64_docker_image = Some(desc),
+            "aarch64_docker_image" => app_doc.pkg_list.aarch64_docker_image = Some(desc),
+            "amd64_win_app" => app_doc.pkg_list.amd64_win_app = Some(desc),
+            "aarch64_win_app" => app_doc.pkg_list.aarch64_win_app = Some(desc),
+            "aarch64_apple_app" => app_doc.pkg_list.aarch64_apple_app = Some(desc),
+            "amd64_apple_app" => app_doc.pkg_list.amd64_apple_app = Some(desc),
+            "web" => app_doc.pkg_list.web = Some(desc),
+            "agent" => app_doc.pkg_list.agent = Some(desc),
+            "agent_skills" => app_doc.pkg_list.agent_skills = Some(desc),
+            other => {
+                app_doc.pkg_list.others.insert(other.to_string(), desc);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use name_lib::DID;
+
+    fn test_installer() -> AppInstaller {
+        AppInstaller::new()
+    }
+
+    fn test_owner() -> DID {
+        DID::from_str("did:bns:tester").expect("parse test did")
+    }
+
+    fn build_web_template() -> AppDoc {
+        AppDoc::builder(AppType::Web, "demo_web", "0.1.0", "tester", &test_owner())
+            .web_pkg(SubPkgDesc::new("demo_web-web#0.1.0"))
+            .build()
+            .expect("build web template")
+    }
+
+    fn build_agent_template() -> AppDoc {
+        AppDoc::builder(
+            AppType::Agent,
+            "demo_agent",
+            "0.1.0",
+            "tester",
+            &test_owner(),
+        )
+        .agent_pkg(SubPkgDesc::new("demo_agent-agent#0.1.0"))
+        .build()
+        .expect("build agent template")
+    }
+
+    fn build_appservice_template() -> AppDoc {
+        AppDoc::builder(
+            AppType::AppService,
+            "demo_service",
+            "0.1.0",
+            "tester",
+            &test_owner(),
+        )
+        .amd64_docker_image(
+            SubPkgDesc::new("demo_service-img-amd64#0.1.0")
+                .docker_image_name("buckyos/demo_service:0.1.0-amd64"),
+        )
+        .aarch64_docker_image(
+            SubPkgDesc::new("demo_service-img-aarch64#0.1.0")
+                .docker_image_name("buckyos/demo_service:0.1.0-aarch64"),
+        )
+        .build()
+        .expect("build appservice template")
+    }
+
+    fn temp_test_dir(prefix: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("{}-{}", prefix, Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    fn publish_example_builds_web_sub_pkg_meta_and_final_app_doc() {
+        let installer = test_installer();
+        let template = build_web_template();
+        let web_desc = template.pkg_list.web.clone().expect("web pkg");
+        let web_file = FileObject::new(
+            "demo_web-web.tar.gz".to_string(),
+            321,
+            "chunk:demo-web-content".to_string(),
+        );
+
+        let sub_pkg_meta = installer
+            .build_sub_pkg_meta(&template, &web_desc, web_file.clone())
+            .expect("build sub pkg meta");
+        let sub_pkg_objid = sub_pkg_meta.gen_obj_id().0;
+        let final_doc = AppInstaller::build_final_app_doc_for_publish(
+            &template,
+            None,
+            &[("web".to_string(), web_desc.clone(), sub_pkg_objid.clone())],
+        )
+        .expect("build final app doc");
+
+        println!(
+            "web_sub_pkg_meta = {}",
+            serde_json::to_string_pretty(&sub_pkg_meta).expect("serialize sub pkg meta")
+        );
+        println!(
+            "web_final_app_doc = {}",
+            serde_json::to_string_pretty(&final_doc).expect("serialize final app doc")
+        );
+
+        assert_eq!(sub_pkg_meta.name, "demo_web-web");
+        assert_eq!(sub_pkg_meta.version, "0.1.0");
+        assert_eq!(sub_pkg_meta.size, 321);
+        assert_eq!(sub_pkg_meta.content, "chunk:demo-web-content");
+
+        assert_eq!(final_doc._base.size, 0);
+        assert!(final_doc._base.content.is_empty());
+        assert_eq!(
+            final_doc
+                .pkg_list
+                .web
+                .as_ref()
+                .and_then(|desc| desc.pkg_objid.clone()),
+            Some(sub_pkg_objid)
+        );
+        assert_eq!(
+            final_doc
+                .pkg_list
+                .web
+                .as_ref()
+                .and_then(|desc| desc.source_url.clone()),
+            None
+        );
+    }
+
+    #[test]
+    fn publish_example_appservice_can_degenerate_to_pure_meta() {
+        let installer = test_installer();
+        let template = build_appservice_template();
+        let empty_dir = temp_test_dir("appservice-pure-meta");
+
+        let scan_plan = installer
+            .scan_publish_sources(AppType::AppService, &empty_dir, &template)
+            .expect("scan pure meta appservice");
+        assert!(scan_plan.app_bundle.is_none());
+        assert!(scan_plan.sub_pkgs.is_empty());
+
+        let final_doc =
+            AppInstaller::build_final_app_doc_for_publish(&template, None, &[]).expect("final doc");
+
+        println!(
+            "appservice_pure_meta_app_doc = {}",
+            serde_json::to_string_pretty(&final_doc).expect("serialize pure meta appdoc")
+        );
+
+        assert!(final_doc._base.content.is_empty());
+        assert_eq!(final_doc._base.size, 0);
+        assert_eq!(
+            final_doc
+                .pkg_list
+                .amd64_docker_image
+                .as_ref()
+                .and_then(|desc| desc.docker_image_name.clone()),
+            Some("buckyos/demo_service:0.1.0-amd64".to_string())
+        );
+        assert_eq!(
+            final_doc
+                .pkg_list
+                .amd64_docker_image
+                .as_ref()
+                .and_then(|desc| desc.pkg_objid.clone()),
+            None
+        );
+
+        let _ = std::fs::remove_dir_all(empty_dir);
+    }
+
+    #[test]
+    fn publish_example_appservice_fixed_tar_layout_is_detected() {
+        let installer = test_installer();
+        let template = build_appservice_template();
+        let dir = temp_test_dir("appservice-fixed-layout");
+        std::fs::write(dir.join("amd64_docker_image.tar"), b"fake docker tar")
+            .expect("write amd64 tar");
+
+        let scan_plan = installer
+            .scan_publish_sources(AppType::AppService, &dir, &template)
+            .expect("scan appservice");
+
+        println!(
+            "appservice_scanned_sub_pkg_count = {}",
+            scan_plan.sub_pkgs.len()
+        );
+
+        assert!(scan_plan.app_bundle.is_none());
+        assert_eq!(scan_plan.sub_pkgs.len(), 1);
+        assert_eq!(scan_plan.sub_pkgs[0].key, "amd64_docker_image");
+        match &scan_plan.sub_pkgs[0].source {
+            PackageSource::File {
+                path,
+                packaged_name,
+            } => {
+                assert_eq!(path, &dir.join("amd64_docker_image.tar"));
+                assert_eq!(packaged_name.as_deref(), Some("demo_service.tar"));
+            }
+            other => panic!("unexpected source: {:?}", std::mem::discriminant(other)),
+        }
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn publish_example_agent_skills_is_rejected() {
+        let installer = test_installer();
+        let template = AppDoc::builder(
+            AppType::Agent,
+            "demo_agent_skills",
+            "0.1.0",
+            "tester",
+            &test_owner(),
+        )
+        .agent_pkg(SubPkgDesc::new("demo_agent_skills-agent#0.1.0"))
+        .agent_skills_pkg(SubPkgDesc::new("demo_agent_skills-skills#0.1.0"))
+        .build()
+        .expect("build agent template with skills");
+        let dir = temp_test_dir("agent-skills-rejected");
+        std::fs::write(dir.join("prompt.md"), "hello").expect("write prompt");
+
+        let error = match installer.scan_publish_sources(AppType::Agent, &dir, &template) {
+            Ok(_) => panic!("agent skills should be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("agent_skills"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn publish_example_agent_sub_pkg_meta_can_be_viewed_locally() {
+        let installer = test_installer();
+        let template = build_agent_template();
+        let agent_desc = template.pkg_list.agent.clone().expect("agent pkg");
+        let agent_file = FileObject::new(
+            "demo_agent-agent.tar.gz".to_string(),
+            512,
+            "chunk:demo-agent-content".to_string(),
+        );
+
+        let sub_pkg_meta = installer
+            .build_sub_pkg_meta(&template, &agent_desc, agent_file.clone())
+            .expect("build agent sub pkg meta");
+        let final_doc = AppInstaller::build_final_app_doc_for_publish(
+            &template,
+            None,
+            &[("agent".to_string(), agent_desc, sub_pkg_meta.gen_obj_id().0)],
+        )
+        .expect("build agent final doc");
+
+        println!(
+            "agent_sub_pkg_meta = {}",
+            serde_json::to_string_pretty(&sub_pkg_meta).expect("serialize agent sub meta")
+        );
+        println!(
+            "agent_final_app_doc = {}",
+            serde_json::to_string_pretty(&final_doc).expect("serialize agent final doc")
+        );
+
+        assert_eq!(sub_pkg_meta.name, "demo_agent-agent");
+        assert!(final_doc._base.content.is_empty());
+        assert_eq!(final_doc._base.size, 0);
+    }
 }

@@ -45,4 +45,8 @@ base64 = { workspace = true }
 uuid = { workspace = true }
 rusqlite = { workspace = true }
 sha2 = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
+named_store = { workspace = true }
+ndn-toolkit = { workspace = true }
 buckyos-api = { path = "../../kernel/buckyos-api" }

@@ -3,14 +3,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use buckyos_api::{
-    AiMessage, AiPayload, AiToolSpec, BoxKind, Capability, CompleteRequest, ModelSpec,
-    MsgRecordWithObject, Requirements, features,
+    features, AiMessage, AiPayload, AiToolSpec, BoxKind, Capability, CompleteRequest, ModelSpec,
+    MsgRecordWithObject, Requirements,
 };
 use chrono::{DateTime, Utc};
 use log::{debug, warn};
 use name_lib::DID;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value as Json, json};
+use serde_json::{json, Map, Value as Json};
 use tokio::fs;
 use tokio::sync::Mutex;
 
@@ -18,19 +18,19 @@ use crate::agent_environment::AgentEnvironment;
 use crate::agent_memory::AgentMemory;
 use crate::agent_session::AgentSession;
 use crate::agent_tool::ToolSpec;
-use crate::behavior::BehaviorConfig;
 use crate::behavior::config::BehaviorMemoryBucketConfig;
+use crate::behavior::BehaviorConfig;
 use crate::worklog::{
-    WorklogListOptions, WorklogRecord, WorklogRecordType, WorklogService, WorklogToolConfig,
-    render_worklog_prompt_line,
+    render_worklog_prompt_line, WorklogListOptions, WorklogRecord, WorklogRecordType,
+    WorklogService, WorklogToolConfig,
 };
 use crate::workspace::agent_skill::{
-    AgentSkillRecord, load_skill_from_root, merge_skill_records_from_dir,
+    load_skill_from_root, merge_skill_records_from_dir, AgentSkillRecord,
 };
 
-use super::Tokenizer;
 use super::sanitize::{sanitize_json_compact, sanitize_text};
 use super::types::BehaviorExecInput;
+use super::Tokenizer;
 
 const SESSION_MSG_RECORD_FILES: [&str; 2] = ["msg_record.jsonl", "message_record.jsonl"];
 

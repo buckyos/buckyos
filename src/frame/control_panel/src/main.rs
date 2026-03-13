@@ -1,5 +1,5 @@
-mod file_manager;
 mod app_installer;
+mod file_manager;
 
 use ::kRPC::*;
 use anyhow::Result;

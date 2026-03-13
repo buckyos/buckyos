@@ -1,6 +1,17 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use buckyos_api::msg_queue::{
-    KMSG_SERVICE_MAIN_PORT, KMSG_SERVICE_UNIQUE_ID, generate_kmsg_service_doc,
+    generate_kmsg_service_doc, KMSG_SERVICE_MAIN_PORT, KMSG_SERVICE_UNIQUE_ID,
+};
+use buckyos_api::{
+    generate_aicc_service_doc, generate_control_panel_service_doc, generate_msg_center_service_doc,
+    generate_opendan_service_doc, generate_repo_service_doc, generate_scheduler_service_doc,
+    generate_smb_service_doc, generate_task_manager_service_doc, generate_verify_hub_service_doc,
+    AppDoc, AppServiceSpec, AppType, GatewaySettings, GatewayShortcut, KernelServiceSpec,
+    NodeConfig, NodeState, SelectorType, ServiceExposeConfig, ServiceInfo, ServiceInstallConfig,
+    ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, SubPkgDesc,
+    UserContactSettings, UserSettings, UserState, UserTunnelBinding, UserType,
+    OPENDAN_SERVICE_PORT, OPENDAN_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID,
+    VERIFY_HUB_UNIQUE_ID,
 };
 use buckyos_api::{
     AICC_SERVICE_SERVICE_PORT, AICC_SERVICE_UNIQUE_ID, CONTROL_PANEL_SERVICE_PORT,
@@ -8,28 +19,17 @@ use buckyos_api::{
     REPO_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, TASK_MANAGER_SERVICE_PORT,
     TASK_MANAGER_SERVICE_UNIQUE_ID,
 };
-use buckyos_api::{
-    AppDoc, AppServiceSpec, AppType, GatewaySettings, GatewayShortcut, KernelServiceSpec,
-    NodeConfig, NodeState, OPENDAN_SERVICE_PORT, OPENDAN_SERVICE_UNIQUE_ID,
-    SCHEDULER_SERVICE_UNIQUE_ID, SelectorType, ServiceExposeConfig, ServiceInfo,
-    ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode,
-    ServiceState, SubPkgDesc, UserContactSettings, UserSettings, UserState, UserTunnelBinding,
-    UserType, VERIFY_HUB_UNIQUE_ID, generate_aicc_service_doc, generate_control_panel_service_doc,
-    generate_msg_center_service_doc, generate_opendan_service_doc, generate_repo_service_doc,
-    generate_scheduler_service_doc, generate_smb_service_doc, generate_task_manager_service_doc,
-    generate_verify_hub_service_doc,
-};
 use buckyos_kit::get_buckyos_root_dir;
 use jsonwebtoken::jwk::Jwk;
 use log::{debug, info, warn};
 use name_client::resolve_did;
 use name_lib::{
-    AgentDocument, DID, OwnerConfig, VerifyHubInfo, ZoneBootConfig, ZoneConfig,
-    generate_ed25519_key_pair,
+    generate_ed25519_key_pair, AgentDocument, OwnerConfig, VerifyHubInfo, ZoneBootConfig,
+    ZoneConfig, DID,
 };
 use package_lib::PackageId;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 
@@ -839,9 +839,8 @@ impl StartConfigSummary {
 #[cfg(test)]
 mod tests {
     use super::{
-        StartConfigSummary, SystemConfigBuilder, build_aicc_settings,
-        build_default_jarvis_agent_spec, build_msg_center_settings,
-        build_zone_user_contact_settings,
+        build_aicc_settings, build_default_jarvis_agent_spec, build_msg_center_settings,
+        build_zone_user_contact_settings, StartConfigSummary, SystemConfigBuilder,
     };
     use buckyos_api::OPENDAN_SERVICE_PORT;
     use serde_json::json;

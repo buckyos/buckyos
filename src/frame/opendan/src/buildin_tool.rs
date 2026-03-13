@@ -2,11 +2,11 @@ use std::path::{Component, Path, PathBuf};
 
 use async_trait::async_trait;
 use log::warn;
-use serde_json::{Value as Json, json};
+use serde_json::{json, Value as Json};
 use tokio::fs;
 
 use crate::agent_tool::{
-    AgentTool, AgentToolError, AgentToolResult, ToolSpec, tokenize_bash_command_line,
+    tokenize_bash_command_line, AgentTool, AgentToolError, AgentToolResult, ToolSpec,
 };
 use crate::behavior::SessionRuntimeContext;
 use crate::worklog::{WorklogService, WorklogToolConfig};
