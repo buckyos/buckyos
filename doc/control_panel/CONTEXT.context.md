@@ -23,13 +23,16 @@
 - kRPC 命名统一用 `<module>.<action>`。
 - `Files` 是产品表面；`file_manager` 是当前后端实现模块。
 - `workspace` 是 control panel web 中的一个体验，不等同于 Rust `control_panel` backend 功能域。
-- `chat` 是 control panel 内的产品短名；底层消息服务仍叫 `msg-center`。
-- 当前 `chat` 入口是 desktop subwindow，不是独立 `/chat` route。
+- `Message Hub` 是独立消息产品表面；底层消息服务仍叫 `msg-center`。
+- 当前 desktop 中的 chat/message 图标是 Message Hub 启动入口，目标路由是 `/message-hub/chat`。
+- `AI Models` 是 control panel desktop 内的管理窗口，不是独立 app；它的职责是管理 AI provider/model/policy，而不是承载聊天或 agent 对话本身。
+- `MiniMax` 在当前系统里的目标语义是两个别名模式：`minimax-code-plan` 与 `minimax-api`；它们应当由 `AI Models` 管理面配置，但实际执行由 AICC provider runtime 承担。
 
 ## Architectural Invariants
 
 - `control_panel` 统一承载静态 web、control-panel kRPC、embedded Files HTTP 这 3 个入口面。
-- chat 浏览器入口必须走 `control_panel` 的 `chat.*` wrapper，而不是让 control panel web 直连 `/kapi/msg-center`。
+- Message Hub 浏览器入口必须走 browser-safe wrapper，而不是让前端直连 `/kapi/msg-center`。
+- AI Models 当前已经跨到 `src/frame/aicc/`：provider 管理仍由 `control_panel` facade 承担，但真正的 MiniMax runtime、provider registration 和 reload 生效路径在 `AICC`。
 - Files 内嵌是当前架构事实；如果重新引入独立登录、独立部署假设，需要明确说明是架构变更。
 - session 语义在主控制面板和 Files 之间共享。
 - 路由、后端 payload、前端 types 需要联动变更。
@@ -56,7 +59,9 @@
 - `doc/PRD/control_panel/control_panel.md` 混合了产品愿景、接口规格、现状说明、路线图。
 - `src/frame/control_panel/src/share_content_mgr.rs` 的定位仍需进一步澄清。
 - `src/frame/control_panel/web/src/ui/pages/DesktopHomePage.tsx` 过大，desktop shell、window manager、window content 耦合在同一文件中。
-- chat 当前仍是 control panel 内的最小 desktop entry；message-level realtime 已在 control panel service 内实现，读能力已对登录用户开放，但 token-level agent stream、独立 chat app 对接、agent control channel 仍在后续范围。
+- Message Hub 当前已从 desktop subwindow 迁到独立 route surface；message-level realtime 仍由现有 control-panel-hosted wrapper 提供，后续再迁到 `msg-center` 自身边界。
+- AI Models 现在不是纯 management shell：provider 保存会落到 system config，测试会经由 `control_panel` 调 `AICC`，reload 也会触发 `service.reload_settings`。
+- `MiniMax` 的推荐接入方式不是 OpenAI-compatible `/v1/chat/completions`，而是 Anthropic-compatible endpoint；不要在后续实现里误接成完全不同的 provider contract。
 
 ## Safe Change Guidelines
 
@@ -66,7 +71,7 @@
 - 改 chat 前，同时看 `control_panel` 的 auth/permission、`MsgCenterClient` 合同，以及 owner DID 的映射规则。
 - 改 chat realtime 前，同时看 `msg-center` 的 box changed kevent 语义；该事件只表示 record changed，不天然等同于 token-level text delta。
 - 改文档前，先决定某个事实应归属 README、ARCHITECTURE、SPEC 还是 CONTEXT，避免重复定义。
-- 改 desktop 首页前，不要把 window-based integrated model 误改成若干彼此独立的普通 route page。
+- 改 desktop 首页前，不要把 window-based integrated model 误改成若干彼此独立的普通 route page；但 Message Hub 已是明确的外部启动目标，不再属于 desktop 内嵌窗口。
 - 改 SSO 前，同时看 `src/frame/control_panel/web/src/ui/pages/SsoLoginPage.tsx`、`src/rootfs/etc/boot_gateway.yaml` 和 `doc/arch/boot_gateay的配置生成.md`。
 
 ## Safe Refactoring Boundaries

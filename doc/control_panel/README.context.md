@@ -68,7 +68,8 @@
 - `Control Panel`: 面向系统管理的统一 UI 和 API hub。
 - `Files`: 当前实现中嵌入在 `control_panel` 内的文件与分享子系统。
 - `Workspace`: 同属 control panel web 前端的一部分，但其主数据源并不是 Rust `control_panel` backend。
-- `Chat`: `control_panel` 内的一等消息入口，前端经由 `chat.*` 调 `control_panel`，再由其转接 `msg-center`；未来可以和独立 chat app、OpenDan agent channel 关联。
+- `Message Hub`: 当前由 control panel desktop 提供启动入口的独立消息产品表面，主入口位于 `/message-hub/chat`；当前迁移阶段的 browser-safe chat adapter 仍暂时复用 `control_panel` service。
+- `AI Models`: 当前作为 desktop 内的一等管理窗口，用于统一查看和管理 AI provider、模型别名、场景策略与诊断状态；现已通过 `control_panel` facade 对接 `AICC` 的 provider 配置、测试与 reload 流程。
 
 ## Design Philosophy
 

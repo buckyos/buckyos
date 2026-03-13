@@ -32,7 +32,13 @@
   - 受保护的 workspace 体验。
 - `/`
   - desktop 首页。
-  - Bucky Chat 当前作为 desktop subwindow 打开，而不是独立 route page。
+  - Desktop 中的 Message Hub 图标当前会以 `_blank` 方式打开 `/message-hub/chat`。
+  - Desktop 中的 Workspace 图标当前会以 `_blank` 方式打开 `/workspace`。
+  - Desktop 中新增 `AI Models` 图标，并在 desktop 内打开 AI 管理窗口。
+- `/message-hub`
+  - 独立 Message Hub route 前缀。
+- `/message-hub/chat`
+  - 当前的 Message Hub 主页面。
 - `/share/:shareId`
   - 公开分享查看页，由 `FileManagerPage` 承载。
 - `/files/detail`
@@ -85,8 +91,9 @@
 
 ### Chat Wrapper Rules
 
-- 浏览器侧 `chat.*` 必须经由 `/kapi/control-panel`，而不是直接访问 `/kapi/msg-center`。
+- 浏览器侧 `chat.*` 必须经由 browser-safe wrapper，而不是直接访问 `/kapi/msg-center`。
 - 这样做是为了复用 control panel 既有的 session 校验、方法级授权、以及 `sys` / zone host 的统一转发入口。
+- 当前 Message Hub route 默认走 `/kapi/message-hub`；旧 `/kapi/control-panel` chat surface 仍作为迁移期兼容入口存在。
 - `chat.bootstrap`、`chat.contact.list`、`chat.message.list`、chat stream 当前对已登录用户开放。
 - `chat.message.send` 当前仍保留更高权限要求；普通只读账户不会获得发送能力。
 - 前端不应提交 `owner` 或 `contact_mgr_owner` 这类底层 scope 参数；这些值由 control panel backend 从 authenticated user 推导。
@@ -95,7 +102,7 @@
 ### Chat Streaming Rules
 
 - 实时聊天更新不新增端口，也不新增独立 chat service 对外入口。
-- 当前实时链路使用 `control_panel` service 内的 HTTP streaming endpoint：`POST /kapi/control-panel/chat/stream`。
+- 当前实时链路使用 HTTP streaming endpoint：`POST /kapi/message-hub/chat/stream`。
 - 该 endpoint 不是 kRPC method，而是 control panel 内部额外暴露的 chat transport helper。
 - transport 当前采用 `fetch` + streamed NDJSON；不使用 WebSocket。
 - 浏览器发送 `session_token` 与 `peer_did` 建立流；control panel 完成鉴权、owner DID 推导、`msg-center` 事件订阅，再把规范化后的 chat event 持续写回浏览器。
@@ -151,7 +158,30 @@
 | `zone.overview` / `zone.config` | Implemented | route naming differs from older PRD wording |
 | `gateway.overview` / `gateway.config` / `gateway.file.get` | Implemented | route/rpc aliases exist for overview/config |
 | `container.overview` / `container.action` | Implemented | aliases for `containers.*` and `docker.*` also exist |
-| `chat.*` | Implemented | control-panel wrapper over `msg-center`; read flows are authenticated, send remains restricted |
+| `chat.*` | Implemented | Message Hub wrapper over `msg-center`; current implementation is still hosted by the control-panel service during migration |
+| `ai.overview` / `ai.provider.list` / `ai.model.list` / `ai.policy.list` / `ai.diagnostics.list` | Implemented | control_panel facade over AI model management state for the desktop AI Models window |
+| `ai.provider.test` | Implemented | control_panel calls `/kapi/aicc` on behalf of the desktop AI Models window for lightweight provider diagnostics |
+| `ai.reload` | Implemented | control_panel requests `service.reload_settings` on the AICC service after config changes |
+| `ai.provider.set` / `ai.model.set` / `ai.policy.set` | Implemented | control_panel persists provider/model/policy edits into system config owned by the AI Models facade |
+| `ai.message_hub.thread_summary` | Implemented | control_panel gathers the current direct thread, picks the Message Hub summary model policy, and asks AICC for a compact thread summary |
+
+#### MiniMax Notes
+
+- `MiniMax` is managed from the `AI Models` desktop window as provider id `minimax-main`.
+- The preferred runtime endpoint is Anthropic-compatible rather than OpenAI-compatible.
+- Current expected endpoints are:
+  - `https://api.minimax.io/anthropic/v1`
+  - `https://api.minimaxi.com/anthropic/v1`
+- `control_panel` stores the provider management state and API key, then writes runnable MiniMax config into AICC-facing settings.
+- Current MiniMax aliases are:
+  - `minimax-code-plan`
+  - `minimax-api`
+- Current curated MiniMax model list in the provider editor is:
+  - `MiniMax-M2.5`
+  - `MiniMax-M2.5-highspeed`
+  - `MiniMax-M2.1`
+  - `MiniMax-M2.1-highspeed`
+  - `MiniMax-M2`
 | `notification.list` | Implemented | broader notification management is planned |
 | `files.browse` | Partially implemented | current UI still prefers HTTP `/api/resources*` |
 | `user.*` | Planned | dispatch exists but current handlers are placeholders |
@@ -237,9 +267,10 @@
 
 | Path | Status | Request | Response | Notes |
 | --- | --- | --- | --- | --- |
-| `POST /kapi/control-panel/chat/stream` | Implemented | `session_token`, `peer_did` | `application/x-ndjson` event stream | keeps chat live without new port or WebSocket |
+| `POST /kapi/message-hub/chat/stream` | Implemented | `session_token`, `peer_did` | `application/x-ndjson` event stream | primary Message Hub stream surface |
+| `POST /kapi/control-panel/chat/stream` | Implemented | `session_token`, `peer_did` | `application/x-ndjson` event stream | legacy compatibility surface during migration |
 
-##### `POST /kapi/control-panel/chat/stream`
+##### `POST /kapi/message-hub/chat/stream`
 
 - Request body
   - `session_token`: control panel session token.
@@ -257,7 +288,7 @@
 ### Chat Status Notes
 
 - 当前 `chat` 的目标是先把 control panel 内的一等消息入口建起来，而不是在第一版里替代未来独立 chat app。
-- 当前 chat UI 入口位于 desktop shell 内部，由 chat 图标打开 subwindow，而不是通过独立 `/chat` route 进入。
+- 当前 Message Hub 主入口位于 `/message-hub/chat`，desktop 图标只负责以 `_blank` 方式打开该页面。
 - 当前实现只覆盖最小 direct chat 能力：owner scope bootstrap、联系人列表、单目标消息查看、文本发送。
 - 当前已补上基于 `msg-center` box event 的 message-level realtime；群组控制、临时授权流、独立 chat app 互联、token-level agent stream、以及 OpenDan agent control channel 仍保留为后续扩展。
 

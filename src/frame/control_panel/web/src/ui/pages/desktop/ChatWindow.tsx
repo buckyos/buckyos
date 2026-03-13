@@ -6,6 +6,7 @@ import {
   fetchChatMessages,
   sendChatMessage,
   startChatStream,
+  summarizeMessageHubThread,
 } from '@/api'
 
 import Icon from '../../icons'
@@ -92,6 +93,9 @@ const ChatWindow = () => {
   const [draft, setDraft] = useState('')
   const [threadId, setThreadId] = useState('')
   const [reloadKey, setReloadKey] = useState(0)
+  const [threadSummary, setThreadSummary] = useState<MessageHubThreadSummaryResponse | null>(null)
+  const [threadSummaryLoading, setThreadSummaryLoading] = useState(false)
+  const [threadSummaryError, setThreadSummaryError] = useState<string | null>(null)
 
   const loadShell = useCallback(async () => {
     setContactsLoading(true)
@@ -109,7 +113,7 @@ const ChatWindow = () => {
       setPageError(
         readErrorMessage(
           bootstrapError ?? contactsError,
-          'Unable to load chat through control panel wrapper.',
+          'Unable to load Message Hub chat.',
         ),
       )
     } else {
@@ -155,6 +159,8 @@ const ChatWindow = () => {
 
   useEffect(() => {
     void loadMessages(selectedPeerDid)
+    setThreadSummary(null)
+    setThreadSummaryError(null)
   }, [loadMessages, selectedPeerDid])
 
   useEffect(() => {
@@ -318,6 +324,24 @@ const ChatWindow = () => {
     setSending(false)
   }
 
+  const handleSummarizeThread = async () => {
+    const peerDid = selectedPeerDid.trim()
+    if (!peerDid) return
+
+    setThreadSummaryLoading(true)
+    setThreadSummaryError(null)
+    const { data, error } = await summarizeMessageHubThread(peerDid)
+    if (!data) {
+      setThreadSummary(null)
+      setThreadSummaryError(readErrorMessage(error, 'Unable to summarize this thread.'))
+      setThreadSummaryLoading(false)
+      return
+    }
+
+    setThreadSummary(data)
+    setThreadSummaryLoading(false)
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 p-4">
       <section className="cp-panel px-6 py-5">
@@ -328,7 +352,7 @@ const ChatWindow = () => {
                 <Icon name="message" className="size-4" />
               </span>
               <div>
-                <h2 className="text-xl font-semibold text-[var(--cp-ink)]">Bucky Chat</h2>
+                <h2 className="text-xl font-semibold text-[var(--cp-ink)]">Message Hub Chat</h2>
               </div>
             </div>
           </div>
@@ -337,6 +361,14 @@ const ChatWindow = () => {
             <span className={`cp-pill border ${streamPillStyles[streamStatus]}`}>
               {streamLabels[streamStatus]}
             </span>
+            <button
+              type="button"
+              onClick={handleSummarizeThread}
+              disabled={!selectedPeerDid.trim() || messagesLoading || threadSummaryLoading}
+              className="inline-flex min-h-11 items-center gap-2 rounded-full border border-[var(--cp-border)] bg-white px-5 py-2 text-sm font-semibold text-[var(--cp-ink)] transition hover:border-[var(--cp-primary)] hover:text-[var(--cp-primary-strong)] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {threadSummaryLoading ? 'Summarizing...' : 'Summarize Thread'}
+            </button>
             <button
               type="button"
               onClick={handleRefresh}
@@ -382,6 +414,36 @@ const ChatWindow = () => {
             {streamError}
           </div>
         ) : null}
+
+        {threadSummaryError ? (
+          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+            {threadSummaryError}
+          </div>
+        ) : null}
+
+        {threadSummary ? (
+          <div className="mt-4 rounded-3xl border border-[var(--cp-border)] bg-white p-4 shadow-sm">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-primary-strong)]">AI Summary</p>
+                <h3 className="mt-2 text-base font-semibold text-[var(--cp-ink)]">
+                  {threadSummary.peer_name || threadSummary.peer_did}
+                </h3>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <span className="cp-pill bg-[var(--cp-primary-soft)] text-[var(--cp-primary-strong)]">
+                  {threadSummary.model_alias}
+                </span>
+                <span className="cp-pill border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] text-[var(--cp-muted)]">
+                  {threadSummary.source_message_count} messages
+                </span>
+              </div>
+            </div>
+            <div className="mt-3 whitespace-pre-wrap text-sm leading-6 text-[var(--cp-muted)]">
+              {threadSummary.summary}
+            </div>
+          </div>
+        ) : null}
       </section>
 
       <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[300px_minmax(0,1fr)]">
@@ -390,7 +452,7 @@ const ChatWindow = () => {
             <div>
               <h3 className="text-lg font-semibold text-[var(--cp-ink)]">Targets</h3>
               <p className="mt-1 text-sm text-[var(--cp-muted)]">
-                Open a contact thread or enter any DID manually.
+                  Open a contact thread or enter any DID manually.
               </p>
             </div>
             <span className="cp-pill border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] text-[var(--cp-muted)]">
@@ -528,10 +590,10 @@ const ChatWindow = () => {
                 />
               </div>
               <div className="rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-4 py-3 text-sm text-[var(--cp-muted)]">
-                <p className="font-semibold text-[var(--cp-ink)]">Wrapper mode</p>
+                <p className="font-semibold text-[var(--cp-ink)]">Current transport</p>
                 <p className="mt-2">
-                  Uses `chat.*` plus streamed NDJSON from control panel, not direct browser
-                  calls to `msg-center` and not WebSocket.
+                  Uses the browser-safe Message Hub wrapper plus streamed NDJSON, without raw
+                  browser calls to `msg-center` and without WebSocket.
                 </p>
               </div>
             </div>
@@ -550,8 +612,8 @@ const ChatWindow = () => {
                   <div>
                     <p className="text-base font-semibold text-[var(--cp-ink)]">No active target</p>
                     <p className="mt-2">
-                      Select a contact on the left or enter a DID manually to start using the
-                      control-panel chat wrapper.
+                       Select a contact on the left or enter a DID manually to start using
+                       Message Hub.
                     </p>
                   </div>
                 </div>
@@ -608,8 +670,8 @@ const ChatWindow = () => {
                   <div>
                     <p className="text-base font-semibold text-[var(--cp-ink)]">No recent messages</p>
                     <p className="mt-2">
-                      This minimal wrapper currently scans recent inbox and outbox messages for the
-                      selected peer.
+                       This first Message Hub slice currently scans recent inbox and outbox
+                       messages for the selected peer.
                     </p>
                   </div>
                 </div>
@@ -625,7 +687,7 @@ const ChatWindow = () => {
                     !canSend
                       ? 'Messaging is unavailable for this account.'
                       : selectedPeerDid
-                        ? 'Send a text message through msg-center...'
+                        ? 'Send a text message through Message Hub...'
                         : 'Select a target to send'
                   }
                   rows={4}

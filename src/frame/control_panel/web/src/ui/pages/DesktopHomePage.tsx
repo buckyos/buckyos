@@ -29,7 +29,7 @@ import StorageHealthSignalsPanel from '../components/StorageHealthSignalsPanel'
 import SystemConfigTreeViewer from '../components/SystemConfigTreeViewer'
 import UserPatternAvatar from '../components/UserPatternAvatar'
 import FileManagerPage from './FileManagerPage'
-import ChatWindow from './desktop/ChatWindow'
+import AiModelsWindow from './desktop/AiModelsWindow'
 import { DESKTOP_SHORTCUTS, type DesktopWindowId } from './desktop/desktopShortcuts'
 import usePrefersReducedMotion from '../charts/usePrefersReducedMotion'
 import Icon from '../icons'
@@ -221,13 +221,15 @@ const DesktopHomePage = () => {
     () =>
       ({
         monitor: { title: 'System Monitor', icon: 'dashboard' as const, width: 896, height: 616 },
-        chat: { title: 'Bucky Chat', icon: 'message' as const, width: 1180, height: 760 },
+        chat: { title: 'Message Hub', icon: 'message' as const, width: 1180, height: 760 },
+        workspace: { title: 'Workspace', icon: 'apps' as const, width: 1180, height: 760 },
         network: { title: 'Network Monitor', icon: 'network' as const, width: 980, height: 700 },
         containers: { title: 'Container Manager', icon: 'container' as const, width: 980, height: 700 },
         files: { title: 'Files', icon: 'drive' as const, width: 920, height: 680 },
         storage: { title: 'Storage Center', icon: 'storage' as const, width: 896, height: 648 },
         logs: { title: 'System Logs', icon: 'chart' as const, width: 1008, height: 728 },
         apps: { title: 'Applications', icon: 'apps' as const, width: 896, height: 648 },
+        'ai-models': { title: 'AI Models', icon: 'spark' as const, width: 1040, height: 760 },
         settings: { title: 'Settings', icon: 'settings' as const, width: 1008, height: 728 },
         users: { title: 'Users', icon: 'users' as const, width: 872, height: 616 },
       }) satisfies Record<WindowId, { title: string; icon: IconName; width: number; height: number }>,
@@ -525,6 +527,16 @@ const DesktopHomePage = () => {
   }, [])
 
   const openWindow = useCallback((id: WindowId) => {
+    if (id === 'chat') {
+      window.open('/message-hub/chat', '_blank', 'noopener,noreferrer')
+      return
+    }
+
+    if (id === 'workspace') {
+      window.open('/workspace', '_blank', 'noopener,noreferrer')
+      return
+    }
+
     setMode('desktop')
     setWindows((prev) => {
       const existing = prev.find((win) => win.id === id)
@@ -1432,7 +1444,7 @@ const DesktopView = memo((props: DesktopViewProps) => {
               key={app.id}
               type="button"
               onClick={app.onClick}
-              className="group flex w-[86px] flex-col items-center gap-2 rounded-xl p-2 transition-colors hover:bg-white/10 focus-visible:bg-white/15 focus-visible:outline-none"
+              className="group flex w-[104px] flex-col items-center gap-2 rounded-xl p-2 transition-colors hover:bg-white/10 focus-visible:bg-white/15 focus-visible:outline-none"
             >
               <div
                 className={`flex h-16 w-16 items-center justify-center rounded-2xl text-white shadow-lg ${app.tile} ${
@@ -1441,15 +1453,7 @@ const DesktopView = memo((props: DesktopViewProps) => {
               >
                 <Icon name={app.icon} className="size-7" />
               </div>
-              <span
-                className="w-full text-center text-xs font-medium text-white drop-shadow-md"
-                style={{
-                  display: '-webkit-box',
-                  WebkitBoxOrient: 'vertical',
-                  WebkitLineClamp: 2,
-                  overflow: 'hidden',
-                }}
-              >
+              <span className="w-full whitespace-nowrap text-center text-xs font-medium text-white drop-shadow-md">
                 {app.label}
               </span>
             </button>
@@ -1835,7 +1839,7 @@ const WindowFrame = memo((props: WindowFrameProps) => {
 
         <div
           className={`min-h-0 flex-1 bg-[var(--cp-surface-muted)] ${
-            win.id === 'files' || win.id === 'chat' ? 'overflow-hidden p-0' : 'overflow-auto p-4'
+            win.id === 'files' ? 'overflow-hidden p-0' : 'overflow-auto p-4'
           }`}
         >
           <WindowBody id={win.id} data={windowData} />
@@ -2075,7 +2079,27 @@ const WindowBody = memo((props: WindowBodyProps) => {
   }
 
   if (id === 'chat') {
-    return <ChatWindow />
+    return (
+      <div className="flex h-full items-center justify-center p-6">
+        <div className="max-w-lg rounded-3xl border border-[var(--cp-border)] bg-white p-6 text-center shadow-sm">
+          <div className="mx-auto flex size-14 items-center justify-center rounded-3xl bg-[var(--cp-primary-soft)] text-[var(--cp-primary-strong)]">
+            <Icon name="message" className="size-6" />
+          </div>
+          <h3 className="mt-4 text-xl font-semibold text-[var(--cp-ink)]">Message Hub opens in its own page</h3>
+          <p className="mt-2 text-sm leading-6 text-[var(--cp-muted)]">
+            This desktop entry now launches the standalone Message Hub route at `/message-hub/chat`
+            so the communication center can evolve outside the desktop shell.
+          </p>
+          <button
+            type="button"
+            onClick={() => window.open('/message-hub/chat', '_blank', 'noopener,noreferrer')}
+            className="mt-5 inline-flex min-h-11 items-center justify-center rounded-full bg-[var(--cp-primary)] px-5 py-2 text-sm font-semibold text-white transition hover:bg-[var(--cp-primary-strong)]"
+          >
+            Open Message Hub
+          </button>
+        </div>
+      </div>
+    )
   }
 
   if (id === 'network') {
@@ -2203,6 +2227,10 @@ const WindowBody = memo((props: WindowBodyProps) => {
         ) : null}
       </div>
     )
+  }
+
+  if (id === 'ai-models') {
+    return <AiModelsWindow />
   }
 
   if (id === 'files') {

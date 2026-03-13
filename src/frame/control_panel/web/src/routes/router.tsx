@@ -17,6 +17,7 @@ import SettingsPage from '../ui/pages/SettingsPage'
 import RecentEventsPage from '../ui/pages/RecentEventsPage'
 import SystemLogsPage from '../ui/pages/SystemLogsPage'
 import StoragePage from '../ui/pages/StoragePage'
+import MessageHubPage from '../ui/pages/MessageHubPage'
 import WorkspaceLayout from '../ui/workspace/WorkspaceLayout'
 
 const router = createBrowserRouter([
@@ -44,6 +45,12 @@ const router = createBrowserRouter([
         element: <RequireAuth />,
         children: [
           { index: true, element: <DesktopHomePage /> },
+          { path: 'message-hub', element: <Navigate to="/message-hub/today" replace /> },
+          { path: 'message-hub/today', element: <MessageHubPage /> },
+          { path: 'message-hub/chat', element: <MessageHubPage /> },
+          { path: 'message-hub/people', element: <MessageHubPage /> },
+          { path: 'message-hub/tasks', element: <MessageHubPage /> },
+          { path: 'message-hub/agents', element: <MessageHubPage /> },
           { path: 'files/detail', element: <FileDetailPage /> },
           { path: 'index', element: <Navigate to="/monitor" replace /> },
           { path: 'index.html', element: <Navigate to="/monitor" replace /> },

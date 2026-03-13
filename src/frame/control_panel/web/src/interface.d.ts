@@ -724,6 +724,14 @@ declare global {
     message: ChatMessage
   }
 
+  type MessageHubThreadSummaryResponse = {
+    peer_did: string
+    peer_name?: string | null
+    model_alias: string
+    summary: string
+    source_message_count: number
+  }
+
   type ChatStreamAckEvent = {
     type: 'ack'
     connection_id: string
