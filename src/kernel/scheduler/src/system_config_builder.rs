@@ -340,41 +340,28 @@ impl SystemConfigBuilder {
         Ok(self)
     }
 
-    pub async fn add_opendan(&mut self) -> Result<&mut Self> {
-        let service_doc = generate_opendan_service_doc();
-        let config = build_kernel_service_spec(
-            OPENDAN_SERVICE_UNIQUE_ID,
-            OPENDAN_SERVICE_PORT,
-            1,
-            service_doc,
-        )
-        .await?;
-        self.insert_json("services/opendan/spec", &config)?;
-        Ok(self)
-    }
-
     pub fn add_gateway_settings(&mut self, config: &StartConfigSummary) -> Result<&mut Self> {
-        // let settings = GatewaySettings {
-        //     shortcuts: HashMap::from([
-        //         (
-        //             "www".to_string(),
-        //             GatewayShortcut {
-        //                 target_type: "app".to_string(),
-        //                 user_id: Some(config.user_name.clone()),
-        //                 app_id: "buckyos_filebrowser".to_string(),
-        //             },
-        //         ),
-        //         (
-        //             "_".to_string(),
-        //             GatewayShortcut {
-        //                 target_type: "app".to_string(),
-        //                 user_id: Some(config.user_name.clone()),
-        //                 app_id: "buckyos_filebrowser".to_string(),
-        //             },
-        //         )
-        //     ]),
-        // };
-        // self.insert_json("services/gateway/settings", &settings)?;
+        let settings = GatewaySettings {
+            shortcuts: HashMap::from([
+                // (
+                //     "www".to_string(),
+                //     GatewayShortcut {
+                //         target_type: "app".to_string(),
+                //         user_id: Some(config.user_name.clone()),
+                //         app_id: "buckyos_filebrowser".to_string(),
+                //     },
+                // ),
+                (
+                    "_".to_string(),
+                    GatewayShortcut {
+                        target_type: "service".to_string(),
+                        user_id: None,
+                        app_id: "control-panel".to_string(),
+                    },
+                )
+            ]),
+        };
+        self.insert_json("services/gateway/settings", &settings)?;
         Ok(self)
     }
 

@@ -97,11 +97,10 @@ impl RepoService {
         create_ready_check_store_mgr(&self.state.ready_check_store_dir).await
     }
 
-    async fn ensure_local_content(
+    async fn inspect_local_content(
         &self,
         content_id: &ObjId,
-        record: &DbRecord,
-    ) -> std::result::Result<Option<u64>, RPCErrors> {
+    ) -> std::result::Result<(Option<u64>, Option<Value>), RPCErrors> {
         let store_mgr = self.get_named_store_mgr().await?;
         if content_id.is_chunk() {
             let chunk_id = ChunkId::from_obj_id(content_id);
@@ -111,7 +110,7 @@ impl RepoService {
                     content_id
                 )));
             }
-            return Ok(chunk_id.get_length());
+            return Ok((chunk_id.get_length(), None));
         }
 
         let object_str = store_mgr.get_object(content_id).await.map_err(|err| {
@@ -154,62 +153,35 @@ impl RepoService {
             }
         }
 
-        if let Some(content_size) = record
-            .content_size
-            .or_else(|| extract_content_size(&record.meta))
-        {
-            return Ok(Some(content_size));
-        }
-
-        if chunk_ids.is_empty() {
-            return Ok(Some(0));
-        }
-
-        let mut content_size = 0u64;
-        for chunk_id in &chunk_ids {
-            let chunk_len = chunk_id.get_length().ok_or_else(|| {
-                RPCErrors::ReasonError(format!(
-                    "content {} has chunk {} without encoded length",
-                    content_id,
-                    chunk_id.to_string()
-                ))
-            })?;
-            content_size += chunk_len;
-        }
-
-        Ok(Some(content_size))
-    }
-
-    async fn load_metadata_from_sidecar(
-        &self,
-        content_path: &Path,
-        content_id: &str,
-        content_size: u64,
-    ) -> Value {
-        let parent = match content_path.parent() {
-            Some(parent) => parent,
-            None => return fallback_meta_for_store(content_path, content_id, content_size),
+        let content_size = if chunk_ids.is_empty() {
+            Some(0)
+        } else {
+            let mut total_size = 0u64;
+            for chunk_id in &chunk_ids {
+                let chunk_len = chunk_id.get_length().ok_or_else(|| {
+                    RPCErrors::ReasonError(format!(
+                        "content {} has chunk {} without encoded length",
+                        content_id,
+                        chunk_id.to_string()
+                    ))
+                })?;
+                total_size += chunk_len;
+            }
+            Some(total_size)
         };
 
-        let jwt_path = parent.join("pkg_meta.jwt");
-        if jwt_path.exists() {
-            if let Ok(raw) = fs::read_to_string(&jwt_path).await {
-                if let Ok(value) = decode_jwt_claim_without_verify(raw.trim()) {
-                    return normalize_store_meta(value, content_path, content_id, content_size);
-                }
-            }
-        }
+        Ok((content_size, Some(object_json)))
+    }
 
-        let json_path = parent.join("pkg_meta.json");
-        if json_path.exists() {
-            if let Ok(raw) = fs::read_to_string(&json_path).await {
-                if let Ok(value) = serde_json::from_str::<Value>(&raw) {
-                    return normalize_store_meta(value, content_path, content_id, content_size);
-                }
-            }
-        }
-
-        fallback_meta_for_store(content_path, content_id, content_size)
+    async fn ensure_local_content(
+        &self,
+        content_id: &ObjId,
+        record: &DbRecord,
+    ) -> std::result::Result<Option<u64>, RPCErrors> {
+        let (content_size, _) = self.inspect_local_content(content_id).await?;
+        Ok(content_size
+            .or(record.content_size)
+            .or_else(|| extract_content_size(&record.meta)))
     }
 
     async fn write_object_record(&self, record: DbRecord) -> std::result::Result<(), RPCErrors> {
@@ -269,64 +241,69 @@ impl RepoService {
         .await
         .map_err(|err| RPCErrors::ReasonError(format!("write announce request failed: {err}")))
     }
+
+    async fn pin_record(
+        &self,
+        mut record: DbRecord,
+        content_id: &ObjId,
+        content_size: Option<u64>,
+        download_proof: Option<RepoActionProof>,
+    ) -> std::result::Result<(), RPCErrors> {
+        if let Some(download_proof) = download_proof {
+            validate_action_target(&download_proof, content_id, ACTION_TYPE_DOWNLOAD)?;
+            self.save_proof(RepoProof::action(download_proof)).await?;
+        }
+
+        let now = buckyos_get_unix_timestamp();
+        record.status = REPO_STATUS_PINNED.to_string();
+        record.content_size = content_size.or(record.content_size);
+        record.pinned_at = Some(now);
+        record.updated_at = Some(now);
+        record.collected_at = record.collected_at.or(Some(now));
+        self.write_object_record(record).await
+    }
 }
 
 #[async_trait]
 impl RepoHandler for RepoService {
     async fn handle_store(
         &self,
-        content_path: &str,
+        content_id: &str,
         _ctx: RPCContext,
     ) -> std::result::Result<ObjId, RPCErrors> {
-        let source_path = PathBuf::from(content_path);
-        if !source_path.exists() {
-            return Err(RPCErrors::ReasonError(format!(
-                "content path not found: {}",
-                source_path.display()
-            )));
-        }
-
-        let store_mgr = self.get_named_store_mgr().await?;
-        let file_template = FileObject::default();
-        let (file_object, _file_obj_id, _file_obj_str) = cacl_file_object(
-            Some(&store_mgr),
-            &source_path,
-            &file_template,
-            true,
-            &CheckMode::ByFullHash,
-            StoreMode::StoreInNamedMgr,
-            None,
-        )
-        .await
-        .map_err(|err| {
-            RPCErrors::ReasonError(format!(
-                "store content into named store failed for {}: {err}",
-                source_path.display()
-            ))
-        })?;
-        let content_id = parse_obj_id(&file_object.content)?;
-        let content_size = file_object.size;
-        let meta = self
-            .load_metadata_from_sidecar(&source_path, &content_id.to_string(), content_size)
-            .await;
-
-        let now = buckyos_get_unix_timestamp();
+        let content_id = parse_obj_id(content_id)?;
+        let existing = self.load_record(content_id.to_string()).await?;
+        let (inspected_size, inspected_meta) = self.inspect_local_content(&content_id).await?;
+        let content_size = inspected_size
+            .or_else(|| existing.as_ref().and_then(|row| row.content_size))
+            .or_else(|| existing.as_ref().and_then(|row| extract_content_size(&row.meta)))
+            .unwrap_or(0);
+        let meta = existing
+            .as_ref()
+            .map(|row| row.meta.clone())
+            .or(inspected_meta)
+            .map(|meta| normalize_store_meta(meta, &content_id.to_string(), content_size))
+            .unwrap_or_else(|| fallback_meta_for_store(&content_id.to_string(), content_size));
         let record = DbRecord {
             content_id: content_id.to_string(),
             content_name: extract_content_name(&meta),
-            status: REPO_STATUS_PINNED.to_string(),
             origin: REPO_ORIGIN_LOCAL.to_string(),
             meta: meta.clone(),
             owner_did: extract_owner_did(&meta),
             author: extract_author(&meta),
             access_policy: extract_access_policy(&meta),
             price: extract_price(&meta),
+            status: existing
+                .as_ref()
+                .map(|row| row.status.clone())
+                .unwrap_or_else(|| REPO_STATUS_COLLECTED.to_string()),
             content_size: Some(content_size),
-            collected_at: Some(now),
-            pinned_at: Some(now),
-            updated_at: Some(now),
+            collected_at: existing.as_ref().and_then(|row| row.collected_at),
+            pinned_at: existing.as_ref().and_then(|row| row.pinned_at),
+            updated_at: existing.as_ref().and_then(|row| row.updated_at),
         };
-        self.write_object_record(record).await?;
+        self.pin_record(record, &content_id, Some(content_size), None)
+            .await?;
         Ok(content_id)
     }
 
@@ -383,7 +360,6 @@ impl RepoHandler for RepoService {
         _ctx: RPCContext,
     ) -> std::result::Result<bool, RPCErrors> {
         let content_id = parse_obj_id(content_id)?;
-        validate_action_target(&download_proof, &content_id, ACTION_TYPE_DOWNLOAD)?;
         let record = self
             .load_record(content_id.to_string())
             .await?
@@ -391,17 +367,8 @@ impl RepoHandler for RepoService {
                 RPCErrors::ReasonError(format!("content {} not collected", content_id))
             })?;
         let content_size = self.ensure_local_content(&content_id, &record).await?;
-        self.save_proof(RepoProof::action(download_proof)).await?;
-
-        let now = buckyos_get_unix_timestamp();
-        let updated = DbRecord {
-            status: REPO_STATUS_PINNED.to_string(),
-            content_size,
-            pinned_at: Some(now),
-            updated_at: Some(now),
-            ..record
-        };
-        self.write_object_record(updated).await?;
+        self.pin_record(record, &content_id, content_size, Some(download_proof))
+            .await?;
         Ok(true)
     }
 
@@ -842,42 +809,42 @@ fn normalize_meta_input(value: Value) -> std::result::Result<Value, RPCErrors> {
 
 fn normalize_store_meta(
     meta: Value,
-    content_path: &Path,
     content_id: &str,
     content_size: u64,
 ) -> Value {
     let mut meta = match meta {
         Value::Object(map) => Value::Object(map),
-        _ => fallback_meta_for_store(content_path, content_id, content_size),
+        _ => fallback_meta_for_store(content_id, content_size),
     };
     if let Some(object) = meta.as_object_mut() {
+        object.insert(
+            "content_id".to_string(),
+            Value::String(content_id.to_string()),
+        );
         object.insert("content".to_string(), Value::String(content_id.to_string()));
         object.insert("size".to_string(), Value::Number(content_size.into()));
         if !object.contains_key("content_name") {
             if let Some(name) = object.get("name").and_then(Value::as_str) {
                 object.insert("content_name".to_string(), Value::String(name.to_string()));
+            } else {
+                object.insert(
+                    "content_name".to_string(),
+                    Value::String(content_id.to_string()),
+                );
             }
         }
     }
     meta
 }
 
-fn fallback_meta_for_store(content_path: &Path, content_id: &str, content_size: u64) -> Value {
-    let file_name = content_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("content")
-        .to_string();
-    let mut file_object = FileObject::new(file_name.clone(), content_size, content_id.to_string());
-    file_object.author = REPO_SERVICE_SERVICE_NAME.to_string();
-    serde_json::to_value(file_object).unwrap_or_else(|_| {
-        json!({
-            "name": file_name,
-            "content_name": file_name,
-            "author": REPO_SERVICE_SERVICE_NAME,
-            "content": content_id,
-            "size": content_size,
-        })
+fn fallback_meta_for_store(content_id: &str, content_size: u64) -> Value {
+    json!({
+        "name": content_id,
+        "content_name": content_id,
+        "author": REPO_SERVICE_SERVICE_NAME,
+        "content_id": content_id,
+        "content": content_id,
+        "size": content_size,
     })
 }
 
@@ -1221,28 +1188,30 @@ mod tests {
         let source_dir = tempfile::tempdir().expect("create source dir");
         let file_path = source_dir.path().join("demo.tar.gz");
         write_file(&file_path, b"repo-service-store").await;
-
-        let owner = DID::from_str("did:bns:buckyos").expect("parse did");
-        let mut meta = PackageMeta::new("demo-app", "1.0.0", "tester", &owner, None);
-        meta.content = String::new();
-        meta.size = 0;
-        write_file(
-            &source_dir.path().join("pkg_meta.json"),
-            serde_json::to_string_pretty(&meta)
-                .expect("serialize meta")
-                .as_bytes(),
-        )
-        .await;
-
-        let content_id = client
-            .store(file_path.to_str().expect("utf8 path"))
+        let store_mgr = service
+            .get_named_store_mgr()
             .await
-            .expect("store content");
+            .expect("load named store");
+        let file_template = FileObject::default();
+        let (file_object, _file_obj_id, _file_obj_str) = cacl_file_object(
+            Some(&store_mgr),
+            &file_path,
+            &file_template,
+            true,
+            &CheckMode::ByFullHash,
+            StoreMode::StoreInNamedMgr,
+            None,
+        )
+        .await
+        .expect("store content into named store");
+        let content_id = parse_obj_id(&file_object.content).expect("parse content id");
+
+        let stored_id = client.store(&content_id.to_string()).await.expect("store content");
         let records = client
             .list(Some(RepoListFilter::new(
                 Some(REPO_STATUS_PINNED.to_string()),
                 Some(REPO_ORIGIN_LOCAL.to_string()),
-                Some("demo-app".to_string()),
+                None,
                 None,
             )))
             .await
@@ -1250,20 +1219,72 @@ mod tests {
 
         assert_eq!(records.len(), 1);
         let record = &records[0];
+        assert_eq!(stored_id, content_id);
         assert_eq!(record.content_id, content_id.to_string());
-        assert_eq!(record.content_name.as_deref(), Some("demo-app"));
         assert_eq!(record.status, REPO_STATUS_PINNED);
         assert_eq!(record.origin, REPO_ORIGIN_LOCAL);
 
-        let store_mgr = service
-            .get_named_store_mgr()
-            .await
-            .expect("load named store");
         let (_reader, stored_size) = store_mgr
             .open_reader(&content_id, None)
             .await
             .expect("open stored content");
         assert_eq!(stored_size, b"repo-service-store".len() as u64);
+    }
+
+    #[tokio::test]
+    async fn store_promotes_existing_record_to_local_via_pin_path() {
+        let (_dir, service, client) = test_service().await;
+        let content_dir = tempfile::tempdir().expect("create content dir");
+        let content_path = content_dir.path().join("pkg.tar.gz");
+        write_file(&content_path, b"repo-service-store-existing").await;
+
+        let store_mgr = service
+            .get_named_store_mgr()
+            .await
+            .expect("load named store");
+        let file_template = FileObject::default();
+        let (file_object, _file_obj_id, _file_obj_str) = cacl_file_object(
+            Some(&store_mgr),
+            &content_path,
+            &file_template,
+            true,
+            &CheckMode::ByFullHash,
+            StoreMode::StoreInNamedMgr,
+            None,
+        )
+        .await
+        .expect("store content into named store");
+        let content_id = parse_obj_id(&file_object.content).expect("parse content id");
+
+        let owner = DID::from_str("did:bns:publisher").expect("parse owner did");
+        let mut meta = PackageMeta::new("existing-app", "1.0.0", "publisher", &owner, None);
+        meta.content = content_id.to_string();
+        meta.size = file_object.size;
+        client
+            .collect(serde_json::to_value(meta.clone()).expect("serialize meta"), None)
+            .await
+            .expect("collect content");
+
+        let stored_id = client
+            .store(&content_id.to_string())
+            .await
+            .expect("store content");
+        assert_eq!(stored_id, content_id);
+
+        let records = client
+            .list(Some(RepoListFilter::new(
+                None,
+                None,
+                Some("existing-app".to_string()),
+                None,
+            )))
+            .await
+            .expect("list records");
+        assert_eq!(records.len(), 1);
+        let record = &records[0];
+        assert_eq!(record.content_id, content_id.to_string());
+        assert_eq!(record.status, REPO_STATUS_PINNED);
+        assert_eq!(record.origin, REPO_ORIGIN_LOCAL);
     }
 
     #[tokio::test]

@@ -290,12 +290,12 @@ impl RepoServeResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoStoreReq {
-    pub content_path: String,
+    pub content_id: String,
 }
 
 impl RepoStoreReq {
-    pub fn new(content_path: String) -> Self {
-        Self { content_path }
+    pub fn new(content_id: String) -> Self {
+        Self { content_id }
     }
 
     pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
@@ -555,14 +555,14 @@ impl RepoClient {
         }
     }
 
-    pub async fn store(&self, content_path: &str) -> std::result::Result<ObjId, RPCErrors> {
+    pub async fn store(&self, content_id: &str) -> std::result::Result<ObjId, RPCErrors> {
         match self {
             Self::InProcess(handler) => {
                 let ctx = RPCContext::default();
-                handler.handle_store(content_path, ctx).await
+                handler.handle_store(content_id, ctx).await
             }
             Self::KRPC(client) => {
-                let req = RepoStoreReq::new(content_path.to_string());
+                let req = RepoStoreReq::new(content_id.to_string());
                 let req_json = serialize_request(&req, "RepoStoreReq")?;
                 let result = client.call("store", req_json).await?;
                 parse_response(result, "ObjId")
@@ -792,7 +792,7 @@ pub trait RepoHandler: Send + Sync {
     //TODO store成功返回ObjId
     async fn handle_store(
         &self,
-        content_path: &str,
+        content_id: &str,
         ctx: RPCContext,
     ) -> std::result::Result<ObjId, RPCErrors>;
 
@@ -888,7 +888,7 @@ impl<T: RepoHandler> RPCHandler for RepoServerHandler<T> {
         let result = match req.method.as_str() {
             "store" => {
                 let store_req = RepoStoreReq::from_json(req.params)?;
-                let result = self.0.handle_store(&store_req.content_path, ctx).await?;
+                let result = self.0.handle_store(&store_req.content_id, ctx).await?;
                 RPCResult::Success(json!(result))
             }
             "collect" => {

@@ -1176,16 +1176,9 @@ impl AppInstaller {
             RPCErrors::ReasonError(format!("Open named store for publish failed: {error}"))
         })?;
         let repo = self.repo_client().await?;
-        let publisher = app_doc_template.owner.to_string();
         let mut resolved_sub_pkgs = Vec::new();
 
         for prepared_sub_pkg in prepared.sub_pkgs {
-            let meta_value = serde_json::to_value(&prepared_sub_pkg.meta).map_err(|error| {
-                RPCErrors::ReasonError(format!(
-                    "Serialize sub package `{}` metadata failed: {error}",
-                    prepared_sub_pkg.key
-                ))
-            })?;
             let (meta_obj_id, meta_obj_str) = prepared_sub_pkg.meta.gen_obj_id();
             named_store
                 .put_object(&meta_obj_id, meta_obj_str.as_str())
@@ -1196,8 +1189,12 @@ impl AppInstaller {
                         prepared_sub_pkg.key
                     ))
                 })?;
-            self.pin_meta_object_in_repo(&repo, publisher.as_str(), &meta_obj_id, meta_value)
-                .await?;
+            self.store_meta_object_via_repo(
+                &repo,
+                &meta_obj_id,
+                format!("subpkg-{}", prepared_sub_pkg.key).as_str(),
+            )
+            .await?;
 
             resolved_sub_pkgs.push((prepared_sub_pkg.key, prepared_sub_pkg.desc, meta_obj_id));
         }
@@ -1223,7 +1220,11 @@ impl AppInstaller {
                     "Write final AppDoc object into named store failed: {error}"
                 ))
             })?;
-        self.pin_meta_object_in_repo(&repo, publisher.as_str(), &final_obj_id, final_value)
+        self.store_meta_object_via_repo(
+            &repo,
+            &final_obj_id,
+            "appdoc",
+        )
             .await?;
 
         Ok(final_obj_id)
@@ -1470,27 +1471,19 @@ impl AppInstaller {
         Ok(final_doc)
     }
 
-    async fn pin_meta_object_in_repo(
+    async fn store_meta_object_via_repo(
         &self,
         repo: &RepoClient,
-        publisher: &str,
         meta_obj_id: &ObjId,
-        meta_value: Value,
+        label: &str,
     ) -> Result<(), RPCErrors> {
-        let mut repo_meta = meta_value;
-        let Some(object) = repo_meta.as_object_mut() else {
-            return Err(RPCErrors::ReasonError(
-                "Published metadata must serialize to a JSON object".to_string(),
-            ));
-        };
-        object.insert(
-            "content_id".to_string(),
-            Value::String(meta_obj_id.to_string()),
-        );
-
-        repo.collect(repo_meta, None).await?;
-        let proof = self.build_download_proof(publisher, &meta_obj_id.to_string(), None, 0)?;
-        repo.pin(&meta_obj_id.to_string(), proof).await?;
+        let stored_id = repo.store(&meta_obj_id.to_string()).await?;
+        if stored_id != *meta_obj_id {
+            return Err(RPCErrors::ReasonError(format!(
+                "repo.store returned unexpected obj id for `{}`: expected {}, got {}",
+                label, meta_obj_id, stored_id
+            )));
+        }
         Ok(())
     }
 

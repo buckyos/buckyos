@@ -4,9 +4,10 @@ use std::collections::HashSet;
 use anyhow::Result;
 use buckyos_api::{AppType, SelectorType};
 use log::*;
+use package_lib::PackageId;
 use rbac::DEFAULT_POLICY;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::app::*;
 use crate::scheduler::*;
@@ -533,6 +534,33 @@ pub fn get_web_app_list(
     Ok(web_app_list)
 }
 
+fn build_web_app_servers(
+    input_system_config: &HashMap<String, String>,
+) -> Result<HashMap<String, Value>> {
+    let mut web_app_servers = HashMap::new();
+
+    for web_app in get_web_app_list(input_system_config)? {
+        if !web_app.install_config.expose_config.contains_key("www") {
+            continue;
+        }
+
+        let Some(web_pkg) = web_app.app_doc.pkg_list.web.as_ref() else {
+            continue;
+        };
+
+        let web_pkg_id = PackageId::get_pkg_id_unique_name(web_pkg.pkg_id.as_str());
+        web_app_servers.insert(
+            web_pkg_id.clone(),
+            json!({
+                "type": "dir",
+                "root_path": format!("../bin/{}/", web_pkg_id),
+            }),
+        );
+    }
+
+    Ok(web_app_servers)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum NodeGatewayAccessMode {
@@ -945,6 +973,7 @@ pub(crate) async fn update_node_gateway_config(
     input_system_config: &HashMap<String, String>,
 ) -> Result<HashMap<String, KVAction>> {
     let zone_config = get_zone_config(input_system_config)?;
+    let web_app_servers = build_web_app_servers(input_system_config)?;
     let mut result = HashMap::new();
 
     for node_id in need_update_gateway_node_list.iter() {
@@ -994,6 +1023,13 @@ pub(crate) async fn update_node_gateway_config(
                     }
                 }
             });
+        }
+
+        if !web_app_servers.is_empty() {
+            node_gateway_json["servers"] = json!({});
+            for (server_name, server_config) in web_app_servers.iter() {
+                node_gateway_json["servers"][server_name] = server_config.clone();
+            }
         }
 
         let node_gateway_config_str = serde_json::to_string_pretty(&node_gateway_json)?;
@@ -1363,6 +1399,39 @@ mod tests {
         }
     }
 
+    fn create_test_static_web_app_spec() -> AppServiceSpec {
+        let owner = DID::new("bns", "owner");
+        let app_doc = AppDocBuilder::new(
+            AppType::Web,
+            "portal",
+            "0.1.0",
+            "did:web:buckyos.ai",
+            &owner,
+        )
+        .web_pkg(SubPkgDesc::new("portal-web#0.1.0"))
+        .build()
+        .unwrap();
+
+        let mut install_config = ServiceInstallConfig::default();
+        install_config.expose_config.insert(
+            "www".to_string(),
+            ServiceExposeConfig {
+                sub_hostname: vec!["portal".to_string()],
+                ..Default::default()
+            },
+        );
+
+        AppServiceSpec {
+            app_doc,
+            app_index: 3,
+            user_id: "alice".to_string(),
+            enable: true,
+            expected_instance_count: 1,
+            state: ServiceState::Running,
+            install_config,
+        }
+    }
+
     #[test]
     fn test_create_scheduler_by_system_config_loads_agent_specs() {
         let zone_config = create_test_zone_config();
@@ -1611,6 +1680,40 @@ mod tests {
             gateway_config["stacks"]["zone_tls"]["hook_point"]["main"]["blocks"]["default"]
                 ["block"],
             "return \"server node_gateway\";\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_node_gateway_config_adds_dir_server_for_static_web_app() {
+        let zone_config = create_test_zone_config();
+        let web_app_spec = create_test_static_web_app_spec();
+
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "boot/config".to_string(),
+            serde_json::to_string(&zone_config).unwrap(),
+        );
+        input_system_config.insert(
+            "users/alice/apps/portal/spec".to_string(),
+            serde_json::to_string(&web_app_spec).unwrap(),
+        );
+
+        let mut nodes = HashSet::new();
+        nodes.insert("ood1".to_string());
+
+        let actions = update_node_gateway_config(&nodes, &input_system_config)
+            .await
+            .unwrap();
+        let gateway_config_str = match actions.get("nodes/ood1/gateway_config").unwrap() {
+            KVAction::Update(value) => value,
+            other => panic!("unexpected kv action: {:?}", other),
+        };
+        let gateway_config: serde_json::Value = serde_json::from_str(gateway_config_str).unwrap();
+
+        assert_eq!(gateway_config["servers"]["portal-web"]["type"], "dir");
+        assert_eq!(
+            gateway_config["servers"]["portal-web"]["root_path"],
+            "../bin/portal-web/"
         );
     }
 
