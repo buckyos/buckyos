@@ -66,7 +66,7 @@
 - `Node`: Zone 中的设备节点，可承载应用或系统服务。
 - `NodeGateway`: 节点本地入口，常见一致入口为 `127.0.0.1:3180`。
 - `Control Panel`: 面向系统管理的统一 UI 和 API hub。
-- `Files`: 当前实现中嵌入在 `control_panel` 内的文件与分享子系统。
+- `Files`: 当前实现中嵌入在 `control_panel` 内的文件与分享子系统；产品方向上将从传统 file browser 演进为 AI-first 的数据工作台，但名称继续保持 `Files`。
 - `Workspace`: 同属 control panel web 前端的一部分，但其主数据源并不是 Rust `control_panel` backend。
 - `Message Hub`: 当前由 control panel desktop 提供启动入口的独立消息产品表面，主入口位于 `/message-hub/chat`；当前迁移阶段的 browser-safe chat adapter 仍暂时复用 `control_panel` service。
 - `AI Models`: 当前作为 desktop 内的一等管理窗口，用于统一查看和管理 AI provider、模型别名、场景策略与诊断状态；现已通过 `control_panel` facade 对接 `AICC` 的 provider 配置、测试与 reload 流程。

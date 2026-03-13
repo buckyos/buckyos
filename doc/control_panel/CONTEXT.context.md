@@ -42,6 +42,7 @@
 ## Non-Obvious Implementation Facts
 
 - Files 主链路是 direct HTTP，不是 `files.*`/`share.*` kRPC。
+- `Files` 的长期定位不是“替代一个传统 file browser”这么简单，而是 BuckyOS 中所有用户数据和 Agent 派生数据的统一入口。
 - `workspace` 和主控制面板共享前端壳，但后台不是一个系统。
 - `msg-center` 原生接口主要是 owner DID / contact-manager scope 视角，不是 control-panel session 视角。
 - chat realtime 当前应该优先走 control panel service 内的 HTTP streaming helper，而不是为浏览器额外暴露 msg-center 或新开 WebSocket 端口。
@@ -56,6 +57,7 @@
 
 - `src/frame/control_panel/src/main.rs` 过大，dispatch 与 domain logic 混杂。
 - Files/Share 真实表面是 HTTP，但历史文档里长期以 RPC 规划形式存在。
+- Files 当前实现和产品方向之间存在明显落差：代码还是 file-manager-first，但目标已经扩展到对话检索、知识图谱、版本恢复、备份可靠性和 Agent-based data curation。
 - `doc/PRD/control_panel/control_panel.md` 混合了产品愿景、接口规格、现状说明、路线图。
 - `src/frame/control_panel/src/share_content_mgr.rs` 的定位仍需进一步澄清。
 - `src/frame/control_panel/web/src/ui/pages/DesktopHomePage.tsx` 过大，desktop shell、window manager、window content 耦合在同一文件中。
@@ -80,6 +82,7 @@
 - 可以重构前端组件，但不要默默改变 kRPC payload 字段名。
 - 可以演进 chat UI，但不要把 `msg-center` 的 owner / contact_mgr_owner 参数直接暴露成浏览器可任意指定的控制面。
 - 可以优化 Files 交互，但不要破坏共享 session 和 ACL 假设。
+- 可以扩展 Files 的 AI 搜索、图谱、版本、可靠性和 Agent 视图，但不要把产品名轻易改掉，也不要把“数据入口”重新拆散成多个互相不兼容的独立面板。
 - 如果要把 HTTP Files 契约迁回 kRPC，需要先在规格中声明迁移路径。
 - 可以把 SSO cookie 写入职责收敛到 `/sso/login`，但不要在未理清 gateway 跳转链路前误以为 `/login` 与 `/sso/login` 完全等价。
 

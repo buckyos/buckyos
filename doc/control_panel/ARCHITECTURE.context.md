@@ -114,12 +114,23 @@
 - HTTP 入口以 `/api/resources*`、`/api/share*`、`/api/public/*`、`/api/upload/session*` 为主。
 - 当前前端主链路不走 `files.*` 或 `share.*` kRPC，这是架构上的重要特例。
 
+### Files Product Direction
+
+- `Files` 的名称保持不变，但产品目标不再局限于传统目录浏览器。
+- 后续应把 `Files` 视为用户数据的统一入口：文件、对话关联内容、Agent 派生结果、知识图谱节点、版本与恢复信息都应可从这里进入。
+- `Files` 应同时承载 3 类视图：
+  - 目录/对象浏览视图
+  - AI/对话驱动搜索与检索视图
+  - Agent 构建的知识图谱与衍生数据可视化视图
+- `Files` 的重点不是只做展示，而是把存储管理、可靠性管理、版本恢复、数据谱系和 Agent 数据使用边界统一放进一个可操作表面。
+
 ### Files Boundary Rules
 
 - Files 在部署上跟随 `control_panel` 一起发布。
 - Files 在鉴权上复用 control panel session，不维护独立登录态。
 - Files 在契约上以 HTTP endpoint 为主，不应被误写成“当前是 RPC-first 架构”。
 - Files 的公开分享视图同时面向登录用户和匿名访问，因此需要和主控制台页面分开理解。
+- 即使后续引入 AI 搜索、知识图谱、备份恢复、快照版本等新能力，`Files` 仍应保持“数据入口”语义，而不是被拆成几个彼此割裂的新产品名。
 
 ## Workspace Subsystem
 
@@ -183,6 +194,7 @@
 ### Files Flow
 
 - Browser UI -> `FileManagerPage.tsx` direct `fetch('/api/...')` -> embedded `file_manager` -> file/share/ACL logic -> response.
+- Future Browser UI -> Files semantic search / graph / version panels -> control-panel-managed data services -> file objects, derived artifacts, graph nodes, and recovery state.
 
 ### Workspace Flow
 

@@ -390,6 +390,19 @@
 
 - Files 当前真实契约以 HTTP surface 为准，而不是旧 `files.*` / `share.*` RPC 规划。
 
+### Files Product Evolution Notes
+
+- `Files` 名称保持不变。
+- 当前实现仍是 HTTP-first 的文件与分享子系统，但产品方向要扩展为 AI-first 的数据基础设施入口。
+- 预期新增视图和能力包括：
+  - 基于对话的内容查找
+  - Agent 按不同逻辑构建的知识图谱与可视化访问
+  - 文件与对话、实体、Agent 派生结果之间的双向关联
+  - 版本、快照、恢复、备份与可靠性状态
+  - 数据谱系与证据回链
+  - Agent 对文件的整理、标注、聚合、知识卡片生成与专题构建
+- 这些能力后续可以落在 `files.*`、`search.*`、`index.*`、`snapshot.*`、`backup.*`、`replication.*` 等契约族群里，但对用户的产品表面仍统一叫 `Files`。
+
 ## Public Share And Download Surface
 
 ### Implemented
