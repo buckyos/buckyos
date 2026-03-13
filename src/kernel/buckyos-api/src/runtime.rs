@@ -10,13 +10,14 @@ use ::kRPC::*;
 use buckyos_kit::*;
 use jsonwebtoken::{decode, DecodingKey, EncodingKey, Validation};
 use log::*;
+use ndn_lib::{load_named_object_from_obj_str, ChunkId, ObjId};
+use serde_json::Value;
 use std::env;
 use tokio::sync::{OnceCell, RwLock};
 
 use name_client::*;
 use name_lib::*;
 use named_store::NamedStoreMgr;
-use rand::Rng;
 
 use crate::aicc_client::*;
 use crate::app_mgr::*;
@@ -128,7 +129,9 @@ impl BuckyOSRuntime {
         let store_mgr: &NamedStoreMgr = self
             .named_store_mgr
             .get_or_try_init(|| async {
-                let config_path = get_buckyos_root_dir().join("storage").join("named_store.json");
+                let config_path = get_buckyos_root_dir()
+                    .join("storage")
+                    .join("named_store.json");
                 NamedStoreMgr::get_store_mgr(config_path.as_path())
                     .await
                     .map_err(|e| {
@@ -1544,5 +1547,71 @@ impl BuckyOSRuntime {
 
         let client = kRPC::new_with_timeout_secs(&url, Some(session_token.clone()), timeout_secs);
         Ok(client)
+    }
+
+    pub async fn get_chunklist_from_known_named_object(
+        &self,
+        obj_id: &ObjId,
+        named_object: &Value,
+    ) -> Result<Vec<ChunkId>> {
+        //如果objid指向的是一个pkg_meta,则尝试解析是否为AppDoc,并根据其sub_pkg_list中的pkg_objid，逐个调用ndn-toolkit的get_named_object_from_known_named_object函数
+        //先调用ndn-toolkit的get_named_object_from_known_named_object函数
+        let store_mgr = self.get_named_store().await?;
+        let mut chunk_ids =
+            ndn_toolkit::get_chunklist_from_known_named_object(&store_mgr, obj_id, named_object)
+                .await
+                .map_err(|e| {
+                    RPCErrors::ReasonError(format!(
+                        "Failed to get chunklist from object {}: {}",
+                        obj_id, e
+                    ))
+                })?;
+
+        let app_doc = match serde_json::from_value::<crate::AppDoc>(named_object.clone()) {
+            Ok(app_doc) => app_doc,
+            Err(_) => return Ok(chunk_ids),
+        };
+
+        for (_, sub_pkg) in app_doc.pkg_list.iter() {
+            let Some(sub_pkg_obj_id) = sub_pkg.pkg_objid.clone() else {
+                continue;
+            };
+
+            let sub_pkg_json = if sub_pkg_obj_id.is_chunk() {
+                Value::Null
+            } else {
+                let obj_str = store_mgr.get_object(&sub_pkg_obj_id).await.map_err(|e| {
+                    RPCErrors::ReasonError(format!(
+                        "Failed to load sub package object {} referenced by {}: {}",
+                        sub_pkg_obj_id, obj_id, e
+                    ))
+                })?;
+                serde_json::from_str::<Value>(obj_str.as_str())
+                    .or_else(|_| load_named_object_from_obj_str(obj_str.as_str()))
+                    .map_err(|e| {
+                        RPCErrors::ReasonError(format!(
+                            "Failed to parse sub package object {} referenced by {}: {}",
+                            sub_pkg_obj_id, obj_id, e
+                        ))
+                    })?
+            };
+
+            chunk_ids.extend(
+                ndn_toolkit::get_chunklist_from_known_named_object(
+                    &store_mgr,
+                    &sub_pkg_obj_id,
+                    &sub_pkg_json,
+                )
+                .await
+                .map_err(|e| {
+                    RPCErrors::ReasonError(format!(
+                        "Failed to get chunklist from sub package {} referenced by {}: {}",
+                        sub_pkg_obj_id, obj_id, e
+                    ))
+                })?,
+            );
+        }
+
+        Ok(chunk_ids)
     }
 }

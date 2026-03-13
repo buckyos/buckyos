@@ -705,8 +705,8 @@ impl TaskManagerClient {
                     RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
                 })?;
                 let result = client.call("create_download_task", req_json).await?;
-                let response = serde_json::from_value::<CreateDownloadTaskResult>(result)
-                    .map_err(|e| {
+                let response =
+                    serde_json::from_value::<CreateDownloadTaskResult>(result).map_err(|e| {
                         RPCErrors::ParserResponseError(format!(
                             "Expected CreateDownloadTaskResult response: {}",
                             e
@@ -1123,7 +1123,6 @@ pub trait TaskManagerHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<Task>;
 
-  
     async fn handle_create_download_task(
         &self,
         download_url: &str,
@@ -1142,7 +1141,6 @@ pub trait TaskManagerHandler: Send + Sync {
     }
 
     async fn handle_get_task(&self, id: i64, ctx: RPCContext) -> Result<Task>;
-
 
     async fn handle_list_tasks(
         &self,

@@ -69,8 +69,6 @@ pub struct RepoRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub price: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub local_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub content_size: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub collected_at: Option<u64>,
@@ -92,7 +90,6 @@ impl RepoRecord {
         author: Option<String>,
         access_policy: String,
         price: Option<String>,
-        local_path: Option<String>,
         content_size: Option<u64>,
         collected_at: Option<u64>,
         pinned_at: Option<u64>,
@@ -108,7 +105,6 @@ impl RepoRecord {
             author,
             access_policy,
             price,
-            local_path,
             content_size,
             collected_at,
             pinned_at,
@@ -214,23 +210,15 @@ impl RepoStat {
 pub struct RepoContentRef {
     pub content_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub local_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub access_url: Option<String>,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub metadata: Value,
 }
 
 impl RepoContentRef {
-    pub fn new(
-        content_id: String,
-        local_path: Option<String>,
-        access_url: Option<String>,
-        metadata: Value,
-    ) -> Self {
+    pub fn new(content_id: String, access_url: Option<String>, metadata: Value) -> Self {
         Self {
             content_id,
-            local_path,
             access_url,
             metadata,
         }

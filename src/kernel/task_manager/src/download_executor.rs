@@ -1,9 +1,12 @@
 use async_trait::async_trait;
-use buckyos_api::{get_buckyos_api_runtime, Task, TaskStatus, TASK_MANAGER_SERVICE_NAME};
+use buckyos_api::{get_buckyos_api_runtime, AppDoc, Task, TaskStatus, TASK_MANAGER_SERVICE_NAME};
 use buckyos_kit::get_buckyos_service_data_dir;
 use lazy_static::lazy_static;
 use log::{error, info, warn};
-use ndn_lib::{cyfs_get_obj_id_from_url, NdnAction, NdnError, ObjId, ProgressCallbackResult};
+use ndn_lib::{
+    cyfs_get_obj_id_from_url, FileObject, NdnAction, NdnError, ObjId, ProgressCallbackResult,
+    OBJ_TYPE_PKG,
+};
 use ndn_toolkit::cyfs_ndn_client::{CyfsNdnClient, CyfsPullResult};
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -241,18 +244,25 @@ impl DownloadExecutorCore {
         let progress_callback =
             build_progress_callback(store.clone(), spec.task_id, progress_state.clone());
 
-        let mut request = client.get(spec.download_url.clone());
-        if let Some(objid) = spec.objid.clone() {
-            request = request.obj_id(objid);
-        }
-        request = request.progress_callback(progress_callback);
-
         let result = if let Some(store_mgr) = named_store.as_ref() {
-            request
-                .pull_to_named_store(store_mgr)
-                .await
-                .map_err(|err| err.to_string())?
+            let objid = spec
+                .objid
+                .clone()
+                .ok_or_else(|| "named store download requires objid".to_string())?;
+            pull_named_store_download(
+                &client,
+                store.clone(),
+                spec.task_id,
+                spec.download_url.as_str(),
+                &objid,
+                store_mgr,
+                &spec.download_options,
+                Some(progress_callback),
+            )
+            .await?
         } else {
+            let mut request = client.get(spec.download_url.clone());
+            request = request.progress_callback(progress_callback);
             let output_path = local_output_path
                 .clone()
                 .ok_or_else(|| "local output path is missing".to_string())?;
@@ -703,6 +713,513 @@ fn progress_message(downloaded_bytes: u64, total_bytes: Option<u64>) -> String {
     format!("Downloading {} bytes", downloaded_bytes)
 }
 
+#[derive(Clone)]
+struct VerifiedJsonObject {
+    obj_id: ObjId,
+    obj_json: Value,
+    obj_str: String,
+}
+
+#[derive(Clone)]
+struct SubPkgDownloadSpec {
+    key: String,
+    download_url: String,
+    objid: ObjId,
+}
+
+async fn pull_named_store_download(
+    client: &CyfsNdnClient,
+    store: Arc<dyn DownloadTaskStore>,
+    task_id: i64,
+    download_url: &str,
+    objid: &ObjId,
+    store_mgr: &named_store::NamedStoreMgr,
+    download_options: &Value,
+    progress_callback: Option<Arc<Mutex<ndn_lib::NdnProgressCallback>>>,
+) -> std::result::Result<CyfsPullResult, String> {
+    if objid.is_chunk() || objid.is_chunk_list() || objid.is_file_object() {
+        return pull_direct_to_named_store(
+            client,
+            download_url,
+            objid,
+            store_mgr,
+            progress_callback,
+        )
+        .await;
+    }
+
+    let verified = fetch_verified_json_object(client, download_url, objid).await?;
+
+    if let Ok(app_doc) = serde_json::from_value::<AppDoc>(verified.obj_json.clone()) {
+        return pull_app_doc_to_named_store(
+            client,
+            store,
+            task_id,
+            download_url,
+            verified,
+            app_doc,
+            store_mgr,
+            download_options,
+        )
+        .await;
+    }
+
+    // `pkg` objects are PackageMeta. They flatten FileObject fields and should
+    // be handled as metadata wrappers whose `content` points to the real payload.
+    if objid.obj_type == OBJ_TYPE_PKG {
+        let file_obj = serde_json::from_value::<FileObject>(verified.obj_json.clone())
+            .map_err(|err| format!("parse pkg object {} as FileObject failed: {}", objid, err))?;
+        return pull_wrapped_file_object_to_named_store(
+            client,
+            download_url,
+            verified,
+            file_obj,
+            store_mgr,
+            download_options,
+            progress_callback,
+        )
+        .await;
+    }
+
+    if let Ok(file_obj) = serde_json::from_value::<FileObject>(verified.obj_json.clone()) {
+        return pull_wrapped_file_object_to_named_store(
+            client,
+            download_url,
+            verified,
+            file_obj,
+            store_mgr,
+            download_options,
+            progress_callback,
+        )
+        .await;
+    }
+
+    Err(format!(
+        "unsupported obj type for download: {} ({})",
+        objid.obj_type, objid
+    ))
+}
+
+async fn pull_direct_to_named_store(
+    client: &CyfsNdnClient,
+    download_url: &str,
+    objid: &ObjId,
+    store_mgr: &named_store::NamedStoreMgr,
+    progress_callback: Option<Arc<Mutex<ndn_lib::NdnProgressCallback>>>,
+) -> std::result::Result<CyfsPullResult, String> {
+    let mut request = client.get(download_url.to_string()).obj_id(objid.clone());
+    if let Some(progress_callback) = progress_callback {
+        request = request.progress_callback(progress_callback);
+    }
+    request
+        .pull_to_named_store(store_mgr)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+async fn fetch_verified_json_object(
+    client: &CyfsNdnClient,
+    download_url: &str,
+    objid: &ObjId,
+) -> std::result::Result<VerifiedJsonObject, String> {
+    let (real_obj_id, obj_str) = client
+        .get(download_url.to_string())
+        .obj_id(objid.clone())
+        .send()
+        .await
+        .map_err(|err| err.to_string())?
+        .object_string()
+        .await
+        .map_err(|err| err.to_string())?;
+
+    let obj_json = serde_json::from_str::<Value>(obj_str.as_str()).map_err(|err| {
+        format!(
+            "parse object {} from {} as json failed: {}",
+            real_obj_id, download_url, err
+        )
+    })?;
+
+    Ok(VerifiedJsonObject {
+        obj_id: real_obj_id,
+        obj_json,
+        obj_str,
+    })
+}
+
+async fn pull_wrapped_file_object_to_named_store(
+    client: &CyfsNdnClient,
+    download_url: &str,
+    verified: VerifiedJsonObject,
+    file_obj: FileObject,
+    store_mgr: &named_store::NamedStoreMgr,
+    download_options: &Value,
+    progress_callback: Option<Arc<Mutex<ndn_lib::NdnProgressCallback>>>,
+) -> std::result::Result<CyfsPullResult, String> {
+    let content_objid = ObjId::new(file_obj.content.trim()).map_err(|err| {
+        format!(
+            "invalid wrapped file content obj id for {}: {}",
+            verified.obj_id, err
+        )
+    })?;
+    let content_download_url =
+        resolve_related_download_url(download_url, &content_objid, download_options)?;
+
+    let mut result = pull_direct_to_named_store(
+        client,
+        content_download_url.as_str(),
+        &content_objid,
+        store_mgr,
+        progress_callback,
+    )
+    .await?;
+
+    store_mgr
+        .put_object(&verified.obj_id, verified.obj_str.as_str())
+        .await
+        .map_err(|err| err.to_string())?;
+    push_stored_object(&mut result.stored_objects, verified.obj_id.clone());
+    result.obj_id = Some(verified.obj_id);
+    if file_obj.size > 0 {
+        result.total_size = file_obj.size.max(result.total_size);
+    }
+
+    Ok(result)
+}
+
+async fn pull_sub_pkg_to_named_store(
+    client: &CyfsNdnClient,
+    download_url: &str,
+    objid: &ObjId,
+    store_mgr: &named_store::NamedStoreMgr,
+    download_options: &Value,
+) -> std::result::Result<CyfsPullResult, String> {
+    if objid.is_chunk() || objid.is_chunk_list() || objid.is_file_object() {
+        return pull_direct_to_named_store(client, download_url, objid, store_mgr, None).await;
+    }
+
+    let verified = fetch_verified_json_object(client, download_url, objid).await?;
+
+    if serde_json::from_value::<AppDoc>(verified.obj_json.clone()).is_ok() {
+        return Err(format!(
+            "nested AppDoc sub package is not supported for {}",
+            objid
+        ));
+    }
+
+    if objid.obj_type == OBJ_TYPE_PKG {
+        let file_obj = serde_json::from_value::<FileObject>(verified.obj_json.clone())
+            .map_err(|err| format!("parse pkg object {} as FileObject failed: {}", objid, err))?;
+        return pull_wrapped_file_object_to_named_store(
+            client,
+            download_url,
+            verified,
+            file_obj,
+            store_mgr,
+            download_options,
+            None,
+        )
+        .await;
+    }
+
+    if let Ok(file_obj) = serde_json::from_value::<FileObject>(verified.obj_json.clone()) {
+        return pull_wrapped_file_object_to_named_store(
+            client,
+            download_url,
+            verified,
+            file_obj,
+            store_mgr,
+            download_options,
+            None,
+        )
+        .await;
+    }
+
+    Err(format!(
+        "unsupported sub package obj type for download: {} ({})",
+        objid.obj_type, objid
+    ))
+}
+
+async fn pull_app_doc_to_named_store(
+    client: &CyfsNdnClient,
+    store: Arc<dyn DownloadTaskStore>,
+    task_id: i64,
+    download_url: &str,
+    verified: VerifiedJsonObject,
+    app_doc: AppDoc,
+    store_mgr: &named_store::NamedStoreMgr,
+    download_options: &Value,
+) -> std::result::Result<CyfsPullResult, String> {
+    ensure_task_can_continue(store.clone(), task_id).await?;
+
+    store_mgr
+        .put_object(&verified.obj_id, verified.obj_str.as_str())
+        .await
+        .map_err(|err| err.to_string())?;
+
+    let sub_pkgs = resolve_app_doc_sub_pkg_specs(&app_doc, download_url, download_options)?;
+    let total_sub_pkgs = sub_pkgs.len();
+
+    let mut result = CyfsPullResult {
+        obj_id: Some(verified.obj_id.clone()),
+        total_size: 0,
+        chunk_count: 0,
+        stored_objects: vec![verified.obj_id.clone()],
+    };
+
+    if total_sub_pkgs == 0 {
+        return Ok(result);
+    }
+
+    for (index, sub_pkg) in sub_pkgs.iter().enumerate() {
+        ensure_task_can_continue(store.clone(), task_id).await?;
+        update_app_doc_progress(
+            store.clone(),
+            task_id,
+            sub_pkg.key.as_str(),
+            index,
+            total_sub_pkgs,
+            result.total_size,
+        )
+        .await?;
+
+        let sub_result = pull_sub_pkg_to_named_store(
+            client,
+            sub_pkg.download_url.as_str(),
+            &sub_pkg.objid,
+            store_mgr,
+            download_options,
+        )
+        .await?;
+
+        merge_pull_result(&mut result, sub_result);
+        update_app_doc_progress(
+            store.clone(),
+            task_id,
+            sub_pkg.key.as_str(),
+            index + 1,
+            total_sub_pkgs,
+            result.total_size,
+        )
+        .await?;
+    }
+
+    result.obj_id = Some(verified.obj_id);
+    Ok(result)
+}
+
+async fn ensure_task_can_continue(
+    store: Arc<dyn DownloadTaskStore>,
+    task_id: i64,
+) -> std::result::Result<(), String> {
+    let task = store.load_task(task_id).await?;
+    if task.status == TaskStatus::Canceled {
+        return Err("Download canceled".to_string());
+    }
+    if task.status == TaskStatus::Paused {
+        return Err("Download paused".to_string());
+    }
+    Ok(())
+}
+
+async fn update_app_doc_progress(
+    store: Arc<dyn DownloadTaskStore>,
+    task_id: i64,
+    current_sub_pkg: &str,
+    completed_sub_pkgs: usize,
+    total_sub_pkgs: usize,
+    downloaded_bytes: u64,
+) -> std::result::Result<(), String> {
+    let progress = if total_sub_pkgs == 0 {
+        None
+    } else {
+        Some(((completed_sub_pkgs as f32 / total_sub_pkgs as f32) * 99.0).min(99.0))
+    };
+
+    store
+        .update_task(
+            task_id,
+            None,
+            progress,
+            Some(format!(
+                "Downloading sub package {}/{}: {}",
+                completed_sub_pkgs.min(total_sub_pkgs),
+                total_sub_pkgs,
+                current_sub_pkg
+            )),
+            Some(json!({
+                "download": {
+                    "downloaded_bytes": downloaded_bytes,
+                    "sub_pkg_total": total_sub_pkgs,
+                    "sub_pkg_completed": completed_sub_pkgs,
+                    "current_sub_pkg": current_sub_pkg,
+                }
+            })),
+            "download_executor_app_doc_progress",
+        )
+        .await
+        .map(|_| ())
+}
+
+fn resolve_app_doc_sub_pkg_specs(
+    app_doc: &AppDoc,
+    app_doc_url: &str,
+    download_options: &Value,
+) -> std::result::Result<Vec<SubPkgDownloadSpec>, String> {
+    let mut sub_pkgs = Vec::new();
+
+    for (key, sub_pkg) in app_doc.pkg_list.iter() {
+        let download_url = sub_pkg
+            .source_url
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string())
+            .or_else(|| {
+                sub_pkg.pkg_objid.as_ref().and_then(|objid| {
+                    resolve_related_download_url(app_doc_url, objid, download_options).ok()
+                })
+            })
+            .or_else(|| {
+                sub_pkg
+                    .pkg_objid
+                    .as_ref()
+                    .map(|objid| format!("cyfs://{}", objid))
+            })
+            .ok_or_else(|| {
+                format!(
+                    "AppDoc sub package `{}` missing source_url and pkg_objid",
+                    key
+                )
+            })?;
+
+        let objid = sub_pkg
+            .pkg_objid
+            .clone()
+            .or_else(|| infer_objid_from_url(download_url.as_str()))
+            .ok_or_else(|| {
+                format!(
+                    "AppDoc sub package `{}` does not provide a resolvable objid",
+                    key
+                )
+            })?;
+
+        sub_pkgs.push(SubPkgDownloadSpec {
+            key,
+            download_url,
+            objid,
+        });
+    }
+
+    Ok(sub_pkgs)
+}
+
+fn resolve_related_download_url(
+    base_url: &str,
+    objid: &ObjId,
+    download_options: &Value,
+) -> std::result::Result<String, String> {
+    replace_obj_id_in_url(base_url, objid).or_else(|_| {
+        build_download_url_from_default_remote(objid, download_options).ok_or_else(|| {
+            format!(
+                "cannot resolve related download url for {} from {}",
+                objid, base_url
+            )
+        })
+    })
+}
+
+fn replace_obj_id_in_url(base_url: &str, objid: &ObjId) -> std::result::Result<String, String> {
+    let parsed_url = url::Url::parse(base_url)
+        .map_err(|err| format!("parse url {} failed: {}", base_url, err))?;
+    let (base_objid, _) =
+        cyfs_get_obj_id_from_url(base_url).map_err(|err| format!("parse objid failed: {}", err))?;
+    let mut replaced_url = parsed_url.clone();
+
+    if parsed_url
+        .host_str()
+        .and_then(|host| ObjId::from_hostname(host).ok())
+        .as_ref()
+        == Some(&base_objid)
+    {
+        let host = parsed_url
+            .host_str()
+            .ok_or_else(|| format!("missing host in {}", base_url))?;
+        let mut host_parts = host.split('.').map(str::to_string).collect::<Vec<String>>();
+        if host_parts.is_empty() {
+            return Err(format!("invalid host {} in {}", host, base_url));
+        }
+        host_parts[0] = objid.to_base32();
+        replaced_url
+            .set_host(Some(host_parts.join(".").as_str()))
+            .map_err(|_| format!("replace host failed for {}", base_url))?;
+        return Ok(replaced_url.to_string());
+    }
+
+    let segments = parsed_url
+        .path_segments()
+        .map(|segments| segments.map(str::to_string).collect::<Vec<String>>())
+        .unwrap_or_default();
+    for (index, segment) in segments.iter().enumerate() {
+        if ObjId::new(segment).ok().as_ref() == Some(&base_objid) {
+            let mut new_segments = segments.clone();
+            new_segments[index] = objid.to_string();
+            replaced_url.set_path(format!("/{}", new_segments.join("/")).as_str());
+            return Ok(replaced_url.to_string());
+        }
+    }
+
+    Err(format!("cannot replace objid in {}", base_url))
+}
+
+fn build_download_url_from_default_remote(
+    objid: &ObjId,
+    download_options: &Value,
+) -> Option<String> {
+    let default_remote_url = download_options
+        .get("default_remote_url")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let obj_id_in_host = download_options
+        .get("obj_id_in_host")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+
+    let parsed = url::Url::parse(default_remote_url).ok()?;
+    if obj_id_in_host {
+        let host = parsed.host_str()?;
+        let mut replaced = parsed.clone();
+        replaced
+            .set_host(Some(format!("{}.{}", objid.to_base32(), host).as_str()))
+            .ok()?;
+        return Some(replaced.to_string());
+    }
+
+    Some(format!(
+        "{}/{}",
+        default_remote_url.trim_end_matches('/'),
+        objid
+    ))
+}
+
+fn merge_pull_result(total: &mut CyfsPullResult, next: CyfsPullResult) {
+    total.total_size = total.total_size.saturating_add(next.total_size);
+    total.chunk_count = total.chunk_count.saturating_add(next.chunk_count);
+    if total.obj_id.is_none() {
+        total.obj_id = next.obj_id;
+    }
+    for stored_object in next.stored_objects {
+        push_stored_object(&mut total.stored_objects, stored_object);
+    }
+}
+
+fn push_stored_object(stored_objects: &mut Vec<ObjId>, objid: ObjId) {
+    if !stored_objects.iter().any(|existing| existing == &objid) {
+        stored_objects.push(objid);
+    }
+}
+
 fn build_completed_patch(
     spec: &DownloadTaskSpec,
     result: &CyfsPullResult,
@@ -818,6 +1335,63 @@ mod tests {
         assert_eq!(
             derive_filename("https://example.com/a%20b.txt?x=1"),
             "a_20b.txt"
+        );
+    }
+
+    #[test]
+    fn replace_obj_id_in_url_rewrites_path_segment() {
+        let base_url = "https://example.com/pkg:00112233/meta.json";
+        let target = ObjId::new("pkg:aabbccdd").unwrap();
+
+        let resolved = replace_obj_id_in_url(base_url, &target).unwrap();
+
+        assert_eq!(resolved, "https://example.com/pkg:aabbccdd/meta.json");
+    }
+
+    #[test]
+    fn resolve_app_doc_sub_pkg_specs_prefers_source_url_and_falls_back_to_objid() {
+        let app_doc: AppDoc = serde_json::from_value(json!({
+            "name": "demo",
+            "version": "1.0.0",
+            "show_name": "demo",
+            "author": "demo",
+            "owner": "did:web:demo.example",
+            "create_time": 1,
+            "last_update_time": 1,
+            "exp": 999999,
+            "selector_type": "single",
+            "install_config_tips": {},
+            "pkg_list": {
+                "web": {
+                    "pkg_id": "demo-web#1.0.0",
+                    "pkg_objid": "pkg:aabbccdd",
+                    "source_url": "https://download.example.com/demo-web"
+                },
+                "agent": {
+                    "pkg_id": "demo-agent#1.0.0",
+                    "pkg_objid": "pkg:11223344"
+                }
+            }
+        }))
+        .unwrap();
+
+        let specs = resolve_app_doc_sub_pkg_specs(
+            &app_doc,
+            "https://repo.example.com/pkg:55667788/appdoc.json",
+            &json!({}),
+        )
+        .unwrap();
+
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].key, "web");
+        assert_eq!(
+            specs[0].download_url,
+            "https://download.example.com/demo-web"
+        );
+        assert_eq!(specs[1].key, "agent");
+        assert_eq!(
+            specs[1].download_url,
+            "https://repo.example.com/pkg:11223344/appdoc.json"
         );
     }
 }

@@ -27,6 +27,7 @@ buckyos-api = { path = "../buckyos-api" }
 ndn-lib = { workspace = true }
 ndn-toolkit = { workspace = true }
 named_store = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -17,7 +17,6 @@ pub struct RepoObjectRecord {
     pub author: Option<String>,
     pub access_policy: String,
     pub price: Option<String>,
-    pub local_path: Option<String>,
     pub content_size: Option<u64>,
     pub collected_at: Option<u64>,
     pub pinned_at: Option<u64>,
@@ -94,24 +93,10 @@ impl SqliteRepoDb {
 
     async fn init(&self) -> Result<()> {
         self.run_db(|conn| {
+            create_objects_table(conn)?;
+            ensure_object_indexes(conn)?;
             conn.execute_batch(
                 r#"
-                CREATE TABLE IF NOT EXISTS objects (
-                    content_id TEXT PRIMARY KEY,
-                    content_name TEXT,
-                    status TEXT NOT NULL DEFAULT 'collected',
-                    origin TEXT NOT NULL,
-                    meta TEXT NOT NULL,
-                    owner_did TEXT,
-                    author TEXT,
-                    access_policy TEXT NOT NULL DEFAULT 'free',
-                    price TEXT,
-                    local_path TEXT,
-                    content_size INTEGER,
-                    collected_at INTEGER NOT NULL,
-                    pinned_at INTEGER,
-                    updated_at INTEGER NOT NULL
-                );
                 CREATE TABLE IF NOT EXISTS proofs (
                     proof_id TEXT PRIMARY KEY,
                     content_id TEXT NOT NULL,
@@ -133,11 +118,6 @@ impl SqliteRepoDb {
                     receipt_data TEXT NOT NULL,
                     created_at INTEGER NOT NULL
                 );
-                CREATE INDEX IF NOT EXISTS idx_content_name ON objects(content_name);
-                CREATE INDEX IF NOT EXISTS idx_status ON objects(status);
-                CREATE INDEX IF NOT EXISTS idx_origin ON objects(origin);
-                CREATE INDEX IF NOT EXISTS idx_owner_did ON objects(owner_did);
-                CREATE INDEX IF NOT EXISTS idx_collected_at ON objects(collected_at);
                 CREATE INDEX IF NOT EXISTS idx_proof_content_id ON proofs(content_id);
                 CREATE INDEX IF NOT EXISTS idx_proof_kind ON proofs(proof_kind);
                 CREATE INDEX IF NOT EXISTS idx_proof_action_type ON proofs(action_type);
@@ -178,8 +158,8 @@ impl RepoDb for SqliteRepoDb {
                 r#"
                 INSERT INTO objects (
                     content_id, content_name, status, origin, meta, owner_did, author,
-                    access_policy, price, local_path, content_size, collected_at, pinned_at, updated_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                    access_policy, price, content_size, collected_at, pinned_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
                 ON CONFLICT(content_id) DO UPDATE SET
                     content_name = excluded.content_name,
                     status = excluded.status,
@@ -189,7 +169,6 @@ impl RepoDb for SqliteRepoDb {
                     author = excluded.author,
                     access_policy = excluded.access_policy,
                     price = excluded.price,
-                    local_path = excluded.local_path,
                     content_size = excluded.content_size,
                     collected_at = excluded.collected_at,
                     pinned_at = excluded.pinned_at,
@@ -205,7 +184,6 @@ impl RepoDb for SqliteRepoDb {
                     record.author,
                     record.access_policy,
                     record.price,
-                    record.local_path,
                     record.content_size,
                     record.collected_at,
                     record.pinned_at,
@@ -340,11 +318,47 @@ fn scalar_u64(conn: &Connection, sql: &str) -> Result<u64> {
     Ok(value.max(0) as u64)
 }
 
+fn create_objects_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS objects (
+            content_id TEXT PRIMARY KEY,
+            content_name TEXT,
+            status TEXT NOT NULL DEFAULT 'collected',
+            origin TEXT NOT NULL,
+            meta TEXT NOT NULL,
+            owner_did TEXT,
+            author TEXT,
+            access_policy TEXT NOT NULL DEFAULT 'free',
+            price TEXT,
+            content_size INTEGER,
+            collected_at INTEGER NOT NULL,
+            pinned_at INTEGER,
+            updated_at INTEGER NOT NULL
+        );
+        "#,
+    )?;
+    Ok(())
+}
+
+fn ensure_object_indexes(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_content_name ON objects(content_name);
+        CREATE INDEX IF NOT EXISTS idx_status ON objects(status);
+        CREATE INDEX IF NOT EXISTS idx_origin ON objects(origin);
+        CREATE INDEX IF NOT EXISTS idx_owner_did ON objects(owner_did);
+        CREATE INDEX IF NOT EXISTS idx_collected_at ON objects(collected_at);
+        "#,
+    )?;
+    Ok(())
+}
+
 fn load_record_by_id(conn: &Connection, content_id: &str) -> Result<Option<RepoObjectRecord>> {
     conn.query_row(
         r#"
         SELECT content_id, content_name, status, origin, meta, owner_did, author,
-               access_policy, price, local_path, content_size, collected_at, pinned_at, updated_at
+               access_policy, price, content_size, collected_at, pinned_at, updated_at
         FROM objects
         WHERE content_id = ?1
         "#,
@@ -359,7 +373,7 @@ fn load_all_records(conn: &Connection) -> Result<Vec<RepoObjectRecord>> {
     let mut stmt = conn.prepare(
         r#"
         SELECT content_id, content_name, status, origin, meta, owner_did, author,
-               access_policy, price, local_path, content_size, collected_at, pinned_at, updated_at
+               access_policy, price, content_size, collected_at, pinned_at, updated_at
         FROM objects
         ORDER BY updated_at DESC, collected_at DESC
         "#,
@@ -387,18 +401,17 @@ fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<RepoObjectRecord> 
         author: row.get(6)?,
         access_policy: row.get(7)?,
         price: row.get(8)?,
-        local_path: row.get(9)?,
         content_size: row
-            .get::<_, Option<i64>>(10)?
+            .get::<_, Option<i64>>(9)?
             .map(|value| value.max(0) as u64),
         collected_at: row
-            .get::<_, Option<i64>>(11)?
+            .get::<_, Option<i64>>(10)?
             .map(|value| value.max(0) as u64),
         pinned_at: row
-            .get::<_, Option<i64>>(12)?
+            .get::<_, Option<i64>>(11)?
             .map(|value| value.max(0) as u64),
         updated_at: row
-            .get::<_, Option<i64>>(13)?
+            .get::<_, Option<i64>>(12)?
             .map(|value| value.max(0) as u64),
     })
 }
@@ -455,7 +468,6 @@ mod tests {
             author: Some("alice".to_string()),
             access_policy: "free".to_string(),
             price: None,
-            local_path: Some("/tmp/demo".to_string()),
             content_size: Some(12),
             collected_at: Some(1),
             pinned_at: Some(2),

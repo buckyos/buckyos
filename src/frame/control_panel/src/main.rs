@@ -1,4 +1,5 @@
 mod file_manager;
+mod app_installer;
 
 use ::kRPC::*;
 use anyhow::Result;

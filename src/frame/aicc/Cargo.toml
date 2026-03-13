@@ -16,7 +16,7 @@ log = { workspace = true }
 tokio = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
-http-body-util = { workspace = true }
+http-body-util = { workspace = true } 
 cyfs-gateway-lib = { workspace = true }
 server-runner = { workspace = true }
 reqwest = { workspace = true }
