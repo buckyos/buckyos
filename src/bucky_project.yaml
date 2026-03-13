@@ -86,6 +86,7 @@ apps:
       boot-gateway-config: etc/boot_gateway.yaml
       util.py: bin/util.py
       stop.py: bin/stop.py
+      buckyos_jarvis: bin/buckyos_jarvis/
 
 
     # 数据路径，install_data 的时候如果目标存在，则不会复制，否则从rootfs复制到目标(覆盖安装逻辑)
@@ -101,7 +102,6 @@ apps:
     - storage/            # 内核基础设施持久化存储 (chunks, named_store, dRDB)
     - local/              # host-node-local 服务数据
     - logs/
-    - agents/jarvis
 
     # 清理路径，uninstall的时候会删除（无需配置:上面所有的modules item都会自动删除)
     # 卸载时不删除: data/home/ (用户数据), data/srv/ (服务持久数据), storage/ (内核存储)
