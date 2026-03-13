@@ -179,6 +179,14 @@ impl SystemConfigBuilder {
         self.entries
             .insert("agents/jarvis/key".to_string(), jarvis_private_key_pem);
 
+        let legacy_app_spec_key = format!("users/{}/apps/jarvis/spec", config.user_name);
+        if self.entries.remove(&legacy_app_spec_key).is_some() {
+            warn!(
+                "removed conflicting legacy jarvis app spec at {} while installing default agent spec",
+                legacy_app_spec_key
+            );
+        }
+
         let jarvis_spec_key = format!("users/{}/agents/jarvis/spec", config.user_name);
         let jarvis_spec = build_default_jarvis_agent_spec(config)?;
         self.insert_json(&jarvis_spec_key, &jarvis_spec)?;
@@ -1037,6 +1045,73 @@ mod tests {
                 .as_ref()
                 .map(|pkg| pkg.pkg_id.as_str()),
             Some(expected_pkg_id.as_str())
+        );
+    }
+
+    #[test]
+    fn add_default_agents_removes_conflicting_legacy_app_spec() {
+        let value = json!({
+            "user_name": "alice",
+            "admin_password_hash": "hashed",
+            "public_key": {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
+            },
+            "zone_name": "did:web:alice.example.com"
+        });
+        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
+
+        let mut entries = HashMap::new();
+        entries.insert(
+            "users/alice/apps/jarvis/spec".to_string(),
+            json!({
+                "app_doc": {
+                    "name": "jarvis",
+                    "show_name": "Jarvis",
+                    "categories": ["dapp"],
+                    "pkg_list": {
+                        "amd64_docker_image": {
+                            "pkg_id": "jarvis#0.1.0"
+                        }
+                    },
+                    "service_dock": {},
+                    "permission": {},
+                    "install_config_tips": {
+                        "service_ports": {}
+                    }
+                },
+                "app_index": 42,
+                "user_id": "alice",
+                "enable": true,
+                "expected_instance_count": 1,
+                "state": {},
+                "install_config": {
+                    "data_mount_point": {},
+                    "cache_mount_point": [],
+                    "local_cache_mount_point": [],
+                    "service_ports": {},
+                    "expose_config": {},
+                    "bind_address": "0.0.0.0",
+                    "res_pool_id": "default"
+                }
+            })
+            .to_string(),
+        );
+
+        let mut builder = SystemConfigBuilder::new(entries);
+        let rt = tokio::runtime::Runtime::new().expect("create runtime");
+        rt.block_on(builder.add_default_agents(&summary))
+            .expect("add default agents");
+
+        let entries = builder.build();
+        assert!(
+            !entries.contains_key("users/alice/apps/jarvis/spec"),
+            "legacy app spec should be removed"
+        );
+        assert!(
+            entries.contains_key("users/alice/agents/jarvis/spec"),
+            "agent spec should exist"
         );
     }
 }

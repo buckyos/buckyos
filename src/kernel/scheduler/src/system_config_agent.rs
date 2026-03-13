@@ -1093,6 +1093,7 @@ async fn update_rbac(
     let current_rbac_policy = input_config.get("system/rbac/policy");
     let mut rbac_policy = String::new();
     if basic_rbac_policy.is_none() {
+        warn!("basic_rbac_policy is not set, use default policy");
         rbac_policy = DEFAULT_POLICY.to_string();
     } else {
         rbac_policy = basic_rbac_policy.unwrap().clone();

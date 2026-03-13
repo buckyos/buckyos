@@ -277,6 +277,7 @@ class AppDoc:
     name: str
     version: str
     show_name: str
+    app_type: Optional[AppType] = None
     sdk_version: Optional[str] = None
     author: Optional[str] = None
     owner: Optional[str] = None
@@ -298,6 +299,18 @@ class AppDoc:
 
         show_name = _as_str(dd.get("show_name")) or name
         categories = [str(x) for x in _as_list(dd.get("categories")) if _as_str(x)]
+        app_type = None
+        raw_app_type = _as_str(dd.get("app_type")) or _as_str(dd.get("type"))
+        if raw_app_type:
+            try:
+                app_type = AppType.from_str(raw_app_type)
+            except AppDocError:
+                app_type = None
+        if app_type is None and categories:
+            try:
+                app_type = AppType.from_str(categories[0])
+            except AppDocError:
+                app_type = None
 
         selector_type = SelectorType.from_str(_as_str(dd.get("selector_type")) or "single")
         install_config_tips = ServiceInstallConfigTips.from_dict(_as_dict(dd.get("install_config_tips")))
@@ -307,6 +320,7 @@ class AppDoc:
             name=name,
             version=version,
             show_name=show_name,
+            app_type=app_type,
             sdk_version=_as_str(dd.get("sdk_version")),
             author=_as_str(dd.get("author")),
             owner=_as_str(dd.get("owner")),
@@ -319,12 +333,62 @@ class AppDoc:
         )
 
     def get_app_type(self) -> AppType:
+        if self.app_type is not None:
+            return self.app_type
         if self.categories:
             try:
                 return AppType.from_str(self.categories[0])
             except Exception:
-                return AppType.SERVICE
+                pass
+
+        # Fallback for older/variant AppDoc payloads that may omit categories/app_type.
+        # Infer the kind from package layout in the same order as the Rust-side builder rules.
+        if self.pkg_list.agent is not None or self.pkg_list.agent_skills is not None:
+            return AppType.AGENT
+        if self.pkg_list.web is not None:
+            return AppType.WEB
+        if (
+            self.pkg_list.amd64_docker_image is not None
+            or self.pkg_list.aarch64_docker_image is not None
+        ):
+            return AppType.APP_SERVICE
+        if (
+            self.pkg_list.amd64_win_app is not None
+            or self.pkg_list.aarch64_win_app is not None
+            or self.pkg_list.amd64_apple_app is not None
+            or self.pkg_list.aarch64_apple_app is not None
+        ):
+            return AppType.APP_SERVICE
         return AppType.SERVICE
+
+    def describe_app_type_resolution(self) -> str:
+        resolved = self.get_app_type().value
+        explicit = self.app_type.value if self.app_type is not None else "<none>"
+        categories = ",".join(self.categories) if self.categories else "<none>"
+        pkg_hints = []
+        if self.pkg_list.agent is not None:
+            pkg_hints.append("agent")
+        if self.pkg_list.agent_skills is not None:
+            pkg_hints.append("agent_skills")
+        if self.pkg_list.web is not None:
+            pkg_hints.append("web")
+        if self.pkg_list.amd64_docker_image is not None:
+            pkg_hints.append("amd64_docker_image")
+        if self.pkg_list.aarch64_docker_image is not None:
+            pkg_hints.append("aarch64_docker_image")
+        if self.pkg_list.amd64_win_app is not None:
+            pkg_hints.append("amd64_win_app")
+        if self.pkg_list.aarch64_win_app is not None:
+            pkg_hints.append("aarch64_win_app")
+        if self.pkg_list.amd64_apple_app is not None:
+            pkg_hints.append("amd64_apple_app")
+        if self.pkg_list.aarch64_apple_app is not None:
+            pkg_hints.append("aarch64_apple_app")
+        pkg_hints_text = ",".join(pkg_hints) if pkg_hints else "<none>"
+        return (
+            f"resolved_type={resolved} explicit_app_type={explicit} "
+            f"categories={categories} pkg_hints={pkg_hints_text}"
+        )
 
     def get_docker_image_for_host(self, machine: Optional[str] = None) -> Tuple[str, str]:
         """

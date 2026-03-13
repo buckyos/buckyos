@@ -99,6 +99,7 @@ if __name__ == "__main__":
     except AppDocError as e:
         print(f"Invalid app_doc in app_instance_config: {e}")
         exit(255)
+    print(f"AppDoc type debug for {full_appid}: {app_doc.describe_app_type_resolution()}")
 
     if device_info_str:
         try:
@@ -156,4 +157,3 @@ if __name__ == "__main__":
         else:
             print(f"app {full_appid} is not running")
             exit(1)
-

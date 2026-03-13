@@ -15,7 +15,7 @@ use tokio::sync::{Mutex, RwLock};
 use ::kRPC::*;
 use buckyos_api::*;
 use buckyos_kit::*;
-use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Validation};
+use jsonwebtoken::{errors::ErrorKind, Algorithm, DecodingKey, EncodingKey, Validation};
 use name_lib::*;
 
 // Token expiration time constants
@@ -300,13 +300,11 @@ async fn cache_trustkey(kid: &str, key: DecodingKey) {
     TRUSTKEY_CACHE.lock().await.insert(kid.to_string(), key);
 }
 
-async fn get_trust_public_key(iss: &str, _kid: &Option<String>) -> Result<DecodingKey> {
-    let cached_key = load_trustkey_from_cache(iss).await;
-    if cached_key.is_some() {
-        return Ok(cached_key.unwrap());
-    }
+async fn remove_trustkey_from_cache(kid: &str) {
+    TRUSTKEY_CACHE.lock().await.remove(kid);
+}
 
-    //not found in trustkey_cache, try load from system config service
+async fn load_trust_public_key_from_source(iss: &str) -> Result<DecodingKey> {
     let result_key: DecodingKey;
     if iss == "root" {
         //load zone config from system config service
@@ -348,7 +346,16 @@ async fn get_trust_public_key(iss: &str, _kid: &Option<String>) -> Result<Decodi
     //TODO: jwt iss by user is SUDO login, need to add new verify method for sudo login
 
     cache_trustkey(&iss, result_key.clone()).await;
-    return Ok(result_key);
+    Ok(result_key)
+}
+
+async fn get_trust_public_key(iss: &str, _kid: &Option<String>) -> Result<DecodingKey> {
+    let cached_key = load_trustkey_from_cache(iss).await;
+    if let Some(cached_key) = cached_key {
+        return Ok(cached_key);
+    }
+
+    load_trust_public_key_from_source(iss).await
 }
 
 // return (kid, payload)
@@ -384,11 +391,32 @@ async fn verify_trusted_jwt(jwt: &str) -> Result<Value> {
     let public_key = get_trust_public_key(iss, &header.kid).await?;
 
     // verify jwt
-    let decoded_token =
-        jsonwebtoken::decode::<Value>(jwt, &public_key, &validation).map_err(|error| {
-            error!("JWT verify error: {}", error);
-            RPCErrors::ReasonError("JWT verify error".to_string())
-        })?;
+    let decoded_token = match jsonwebtoken::decode::<Value>(jwt, &public_key, &validation) {
+        Ok(decoded_token) => decoded_token,
+        Err(error) => {
+            let should_retry = matches!(error.kind(), ErrorKind::InvalidSignature);
+            if should_retry && iss != VERIFY_HUB_ISSUER {
+                warn!(
+                    "JWT verify failed for iss={}, retrying after trust-key reload: {}",
+                    iss, error
+                );
+                remove_trustkey_from_cache(iss).await;
+                let refreshed_key = load_trust_public_key_from_source(iss).await?;
+                jsonwebtoken::decode::<Value>(jwt, &refreshed_key, &validation).map_err(
+                    |retry_error| {
+                        error!(
+                            "JWT verify error after trust-key reload for iss={}: {}",
+                            iss, retry_error
+                        );
+                        RPCErrors::ReasonError("JWT verify error".to_string())
+                    },
+                )?
+            } else {
+                error!("JWT verify error: {}", error);
+                return Err(RPCErrors::ReasonError("JWT verify error".to_string()));
+            }
+        }
+    };
 
     Ok(decoded_token.claims)
 }

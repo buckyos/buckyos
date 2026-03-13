@@ -20,9 +20,9 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context, Result};
 use buckyos_api::msg_queue::MsgQueueClient;
 use buckyos_api::{
-    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AppDoc,
-    AppServiceInstanceConfig, AppServiceSpec, BuckyOSRuntimeType, ServiceInstallConfig,
-    AICC_SERVICE_SERVICE_NAME, OPENDAN_SERVICE_NAME,
+    get_buckyos_api_runtime, init_buckyos_api_runtime, load_app_identity_from_env,
+    set_buckyos_api_runtime, AppDoc, AppServiceInstanceConfig, AppServiceSpec, BuckyOSRuntimeType,
+    ServiceInstallConfig, AICC_SERVICE_SERVICE_NAME, OPENDAN_SERVICE_NAME,
     OPENDAN_SERVICE_PORT as DEFAULT_OPENDAN_SERVICE_PORT,
 };
 use buckyos_kit::{get_buckyos_root_dir, init_logging};
@@ -38,6 +38,8 @@ use name_lib::{AgentDocument, DIDDocumentTrait, EncodedDocument};
 use serde_json::Value as Json;
 use server_runner::Runner;
 use tokio::fs;
+#[cfg(unix)]
+use tokio::signal::unix::{signal, SignalKind};
 use tokio::time::{sleep, Duration};
 
 use crate::agent::{AIAgent, AIAgentDeps};
@@ -99,6 +101,12 @@ impl HttpServer for OpenDanHttpServer {
 const OPENDAN_AGENT_ID_ENV: [&str; 3] = ["OPENDAN_AGENT_ID", "AGENT_ID", "AGENT_INSTANCE_ID"];
 const OPENDAN_AGENT_ENV_ENV: [&str; 3] = ["OPENDAN_AGENT_ENV", "AGENT_ENV", "AGENT_ROOT"];
 const OPENDAN_AGENT_BIN_ENV: [&str; 3] = ["OPENDAN_AGENT_BIN", "AGENT_BIN", "AGENT_PACKAGE_ROOT"];
+const OPENDAN_AGENT_OWNER_ENV: [&str; 4] = [
+    "OPENDAN_AGENT_OWNER",
+    "AGENT_OWNER",
+    "OWNER_USER_ID",
+    "APP_OWNER_ID",
+];
 const OPENDAN_SERVICE_PORT_ENV: [&str; 3] = ["OPENDAN_SERVICE_PORT", "SERVICE_PORT", "LISTEN_PORT"];
 const OPENDAN_SESSION_WORKER_THREADS_ENV: &str = "OPENDAN_SESSION_WORKER_THREADS";
 const OPENDAN_STARTUP_DEP_READY_WAIT_SECS: u64 = 10;
@@ -135,6 +143,80 @@ struct LaunchConfig {
     agent_owner_did: Option<String>,
     agent_doc: Option<AgentInstanceDoc>,
     agent_spec: Option<AgentAppSpec>,
+}
+
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|panic_info| {
+        let location = panic_info
+            .location()
+            .map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let payload = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            *s
+        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            s.as_str()
+        } else {
+            "<non-string panic payload>"
+        };
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        error!(
+            "opendan panic captured: location={} payload={} backtrace=\n{}",
+            location, payload, backtrace
+        );
+    }));
+}
+
+fn install_signal_logging() {
+    #[cfg(unix)]
+    {
+        tokio::spawn(async move {
+            let mut sigterm = signal(SignalKind::terminate()).ok();
+            let mut sigint = signal(SignalKind::interrupt()).ok();
+            let mut sighup = signal(SignalKind::hangup()).ok();
+            let mut sigquit = signal(SignalKind::quit()).ok();
+
+            loop {
+                tokio::select! {
+                    _ = async {
+                        if let Some(stream) = sigterm.as_mut() {
+                            stream.recv().await;
+                        } else {
+                            std::future::pending::<()>().await;
+                        }
+                    } => {
+                        warn!("opendan received signal: SIGTERM");
+                    }
+                    _ = async {
+                        if let Some(stream) = sigint.as_mut() {
+                            stream.recv().await;
+                        } else {
+                            std::future::pending::<()>().await;
+                        }
+                    } => {
+                        warn!("opendan received signal: SIGINT");
+                    }
+                    _ = async {
+                        if let Some(stream) = sighup.as_mut() {
+                            stream.recv().await;
+                        } else {
+                            std::future::pending::<()>().await;
+                        }
+                    } => {
+                        warn!("opendan received signal: SIGHUP");
+                    }
+                    _ = async {
+                        if let Some(stream) = sigquit.as_mut() {
+                            stream.recv().await;
+                        } else {
+                            std::future::pending::<()>().await;
+                        }
+                    } => {
+                        warn!("opendan received signal: SIGQUIT");
+                    }
+                }
+            }
+        });
+    }
 }
 
 fn parse_u16_arg(value: &str, arg_name: &str) -> Result<u16> {
@@ -206,6 +288,31 @@ fn parse_startup_args() -> Result<StartupArgs> {
     parse_startup_args_from_iter(std::env::args().skip(1))
 }
 
+fn resolve_owner_from_agent_env(agent_env: Option<&PathBuf>) -> Option<String> {
+    let agent_env = agent_env?;
+    let components = agent_env
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+
+    for (index, component) in components.iter().enumerate() {
+        if component != "home" {
+            continue;
+        }
+        if index + 3 >= components.len() {
+            continue;
+        }
+        if components[index + 2] == ".local" && components[index + 3] == "share" {
+            let owner = components[index + 1].trim();
+            if !owner.is_empty() {
+                return Some(owner.to_string());
+            }
+        }
+    }
+
+    None
+}
+
 fn get_first_env_var(keys: &[&str]) -> Option<String> {
     keys.iter()
         .filter_map(|key| std::env::var(key).ok())
@@ -226,17 +333,73 @@ fn resolve_requested_service_port(startup: &StartupArgs) -> Result<u16> {
 }
 
 fn resolve_requested_agent_id(startup: &StartupArgs) -> Result<String> {
-    startup
+    if let Some(agent_id) = startup
         .agent_id
         .clone()
-        .or_else(|| get_first_env_var(&OPENDAN_AGENT_ID_ENV))
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            anyhow!(
-                "agent instance id is required; pass --agent-id or set one of {:?}",
-                OPENDAN_AGENT_ID_ENV
-            )
-        })
+    {
+        info!("resolved opendan agent_id from cli: {}", agent_id);
+        return Ok(agent_id);
+    }
+
+    if let Some(agent_id) = get_first_env_var(&OPENDAN_AGENT_ID_ENV) {
+        info!("resolved opendan agent_id from env: {}", agent_id);
+        return Ok(agent_id);
+    }
+
+    if let Some((app_id, _owner_id)) = load_app_identity_from_env()
+        .map_err(|err| anyhow!("load app identity from app_instance_config failed: {}", err))?
+    {
+        info!(
+            "resolved opendan agent_id from app_instance_config: {}",
+            app_id
+        );
+        return Ok(app_id);
+    }
+
+    warn!("failed to resolve opendan agent_id from cli/env/app_instance_config");
+    Err(anyhow!(
+        "agent instance id is required; pass --agent-id, set one of {:?}, or provide app_instance_config",
+        OPENDAN_AGENT_ID_ENV
+    ))
+}
+
+fn resolve_requested_owner_id(startup: &StartupArgs) -> Result<String> {
+    if let Some(owner_id) = get_first_env_var(&OPENDAN_AGENT_OWNER_ENV) {
+        info!("resolved opendan owner_id from env: {}", owner_id);
+        return Ok(owner_id);
+    }
+
+    if let Some(owner_id) = resolve_owner_from_agent_env(startup.agent_env.as_ref())
+        .filter(|value| !value.trim().is_empty())
+    {
+        info!(
+            "resolved opendan owner_id from agent_env path {} => {}",
+            startup
+                .agent_env
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<none>".to_string()),
+            owner_id
+        );
+        return Ok(owner_id);
+    }
+
+    if let Some((_app_id, owner_id)) = load_app_identity_from_env()
+        .map_err(|err| anyhow!("load app identity from app_instance_config failed: {}", err))?
+    {
+        info!(
+            "resolved opendan owner_id from app_instance_config: {}",
+            owner_id
+        );
+        return Ok(owner_id);
+    }
+
+    warn!("failed to resolve opendan owner_id from env/agent_env/app_instance_config");
+    Err(anyhow!(
+        "agent owner id is required; set one of {:?}, use an --agent-env under data/home/<owner>/.local/share/<appid>, or provide app_instance_config",
+        OPENDAN_AGENT_OWNER_ENV
+    ))
 }
 
 async fn load_agent_instance_doc(agent_id: &str) -> Result<Option<AgentInstanceDoc>> {
@@ -295,7 +458,6 @@ fn agent_spec_key_candidates(agent_id: &str, owner: &str) -> Vec<String> {
     let mut keys = Vec::new();
     for owner_key in owner_key_candidates(owner) {
         keys.push(format!("users/{owner_key}/agents/{agent_id}/spec"));
-        keys.push(format!("users/{owner_key}/apps/{agent_id}/spec"));
     }
     keys
 }
@@ -693,29 +855,77 @@ async fn run_agent(launch: &LaunchConfig, deps: AIAgentDeps) -> Result<()> {
 
 async fn service_main() -> Result<()> {
     init_logging("opendan", true);
+    //install_panic_hook();
+    //install_signal_logging();
     info!("starting opendan service...");
     let startup = parse_startup_args().context("parse opendan startup args failed")?;
+    info!(
+        "opendan startup args: agent_id={} agent_env={} agent_bin={} service_port={}",
+        startup.agent_id.as_deref().unwrap_or("<none>"),
+        startup
+            .agent_env
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<none>".to_string()),
+        startup
+            .agent_bin
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<none>".to_string()),
+        startup
+            .service_port
+            .map(|port| port.to_string())
+            .unwrap_or_else(|| "<none>".to_string())
+    );
     let agent_id = resolve_requested_agent_id(&startup)?;
+    let owner_id = resolve_requested_owner_id(&startup)?;
     let service_port = resolve_requested_service_port(&startup)?;
+    info!(
+        "opendan runtime init request: agent_id={} owner_id={} resolved_service_port={}",
+        agent_id, owner_id, service_port
+    );
 
-    let mut runtime = init_buckyos_api_runtime(&agent_id, None, BuckyOSRuntimeType::FrameService)
-        .await
-        .context("init buckyos runtime for opendan failed")?;
+    let mut runtime = init_buckyos_api_runtime(
+        &agent_id,
+        Some(owner_id.clone()),
+        BuckyOSRuntimeType::AppService,
+    )
+    .await
+    .context("init buckyos runtime for opendan failed")?;
     runtime
         .login()
         .await
         .context("opendan login to buckyos failed")?;
     info!(
+        "opendan runtime initialized: app_id={} owner_id={}",
+        agent_id, owner_id
+    );
+    info!(
         "opendan login succeeded, waiting {}s for dependent services to get ready",
         OPENDAN_STARTUP_DEP_READY_WAIT_SECS
     );
     sleep(Duration::from_secs(OPENDAN_STARTUP_DEP_READY_WAIT_SECS)).await;
+    info!("opendan startup wait finished, continue service bootstrap");
+    info!("setting opendan main service port to {}", service_port);
     runtime.set_main_service_port(service_port).await;
+    info!("registering global buckyos runtime for opendan");
     set_buckyos_api_runtime(runtime);
+    info!("global buckyos runtime registered for opendan");
 
+    info!("loading opendan agent instance doc: agent_id={}", agent_id);
     let agent_doc = load_agent_instance_doc(&agent_id).await?;
+    info!(
+        "loaded opendan agent instance doc: found={}",
+        agent_doc.is_some()
+    );
     let agent_owner_did = resolve_agent_owner_did(agent_doc.as_ref());
+    info!(
+        "loading opendan agent spec: agent_id={} owner_did={}",
+        agent_id,
+        agent_owner_did.as_deref().unwrap_or("<none>")
+    );
     let agent_spec = load_agent_app_spec(&agent_id, agent_owner_did.as_deref()).await?;
+    info!("loaded opendan agent spec: found={}", agent_spec.is_some());
     let agent_env_root = absolutize_path(resolve_agent_env_root(
         &startup,
         agent_spec.as_ref(),
@@ -766,7 +976,9 @@ async fn service_main() -> Result<()> {
     );
 
     let runtime = get_buckyos_api_runtime().context("load runtime failed after init")?;
+    info!("resolved global runtime after registration");
 
+    info!("initializing task-manager client");
     let taskmgr = Arc::new(
         runtime
             .get_task_mgr_client()
@@ -801,22 +1013,33 @@ async fn service_main() -> Result<()> {
         msg_queue: msg_queue.map(Arc::new),
     };
 
+    info!(
+        "initializing opendan ai runtime: env_root={}",
+        launch.agent_env_root.display()
+    );
     let ai_runtime = Arc::new(
         AiRuntime::new(AiRuntimeConfig::new(&launch.agent_env_root))
             .await
             .context("init opendan ai runtime for rpc failed")?,
     );
+    info!("opendan ai runtime initialized");
     if let Some(agent_did) = launch.agent_did.as_deref() {
+        info!("registering root agent into ai runtime: did={}", agent_did);
         ai_runtime
             .register_agent(agent_did, &launch.agent_env_root)
             .await
             .context("register root agent into opendan rpc runtime failed")?;
+        info!("registered root agent into ai runtime: did={}", agent_did);
     }
     let server = Arc::new(OpenDanHttpServer::new(ai_runtime));
     let runner = Runner::new(service_port);
     runner
         .add_http_server("/kapi/opendan".to_string(), server)
         .map_err(|err| anyhow!("failed to add opendan http server: {err:?}"))?;
+    info!(
+        "opendan http server registered, entering select loop: service_port={}",
+        service_port
+    );
 
     tokio::select! {
         runner_result = runner.run() => {
@@ -841,9 +1064,11 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_spec_key_candidates, parse_startup_args_from_iter, resolve_requested_service_port,
-        StartupArgs, DEFAULT_OPENDAN_SERVICE_PORT,
+        agent_spec_key_candidates, parse_startup_args_from_iter, resolve_owner_from_agent_env,
+        resolve_requested_owner_id, resolve_requested_service_port, StartupArgs,
+        DEFAULT_OPENDAN_SERVICE_PORT,
     };
+    use std::path::PathBuf;
 
     #[test]
     fn agent_spec_key_candidates_include_agents_and_apps_paths() {
@@ -867,6 +1092,30 @@ mod tests {
 
         assert_eq!(parsed.agent_id.as_deref(), Some("jarvis"));
         assert_eq!(parsed.service_port, Some(12016));
+    }
+
+    #[test]
+    fn resolve_owner_from_agent_env_extracts_home_owner() {
+        let owner = resolve_owner_from_agent_env(Some(&PathBuf::from(
+            "/opt/buckyos/data/home/devtest/.local/share/jarvis",
+        )));
+
+        assert_eq!(owner.as_deref(), Some("devtest"));
+    }
+
+    #[test]
+    fn resolve_requested_owner_id_uses_agent_env_as_fallback() {
+        let startup = StartupArgs {
+            agent_env: Some(PathBuf::from(
+                "/opt/buckyos/data/home/devtest/.local/share/jarvis",
+            )),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            resolve_requested_owner_id(&startup).expect("resolve owner"),
+            "devtest"
+        );
     }
 
     #[test]

@@ -631,6 +631,7 @@ def start_app():
     except AppDocError as e:
         print(f"Invalid app_doc in app_instance_config: {e}")
         exit(1)
+    print(f"AppDoc type debug for {full_appid}: {app_doc.describe_app_type_resolution()}")
 
     if app_doc.get_app_type() == AppType.AGENT:
         print(f"Start agent {full_appid} with opendan")

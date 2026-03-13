@@ -80,8 +80,8 @@ impl AppRunItem {
         )))
     }
 
-    async fn set_env_var(&self, _is_system_app: bool) -> Result<()> {
-        //if self.app_service_config.app_pkg_id.is_some() {
+    async fn build_env_vars(&self, _is_system_app: bool) -> Result<HashMap<String, String>> {
+        let mut env_vars = HashMap::new();
         let env = PackageEnv::new(get_buckyos_system_bin_dir());
         let instance_pkg_id = self.get_instance_pkg_id(env.is_strict());
         if instance_pkg_id.is_ok() {
@@ -94,26 +94,23 @@ impl AppRunItem {
                     "full_path": app_pkg.full_path.to_string_lossy(),
                 });
                 let media_info_json_str = media_info_json.to_string();
-                unsafe {
-                    std::env::set_var("app_media_info", media_info_json_str);
-                }
+                env_vars.insert("app_media_info".to_string(), media_info_json_str);
             }
         }
 
         let app_config_str = serde_json::to_string(&self.app_instance_config).unwrap();
-        unsafe {
-            std::env::set_var("app_instance_config", app_config_str);
-        }
+        env_vars.insert("app_instance_config".to_string(), app_config_str);
 
         let timestamp = buckyos_get_unix_timestamp();
         let runtime = get_buckyos_api_runtime().unwrap();
         let device_doc = runtime.device_config.as_ref().unwrap();
         let device_private_key = runtime.device_private_key.as_ref().unwrap();
+        let login_jti = timestamp.to_string();
         let app_service_session_token = kRPC::RPCSessionToken {
             token_type: kRPC::RPCSessionTokenType::Normal,
             appid: Some(self.app_id.clone()),
-            jti: None,
-            session: None,
+            jti: Some(login_jti.clone()),
+            session: Some(timestamp),
             sub: Some(self.app_instance_config.app_spec.user_id.clone()),
             aud: None,
             exp: Some(timestamp + VERIFY_HUB_TOKEN_EXPIRE_TIME * 2),
@@ -123,17 +120,23 @@ impl AppRunItem {
         };
 
         let app_service_session_token_jwt = app_service_session_token
-            .generate_jwt(None, device_private_key)
+            .generate_jwt(Some(device_doc.name.clone()), device_private_key)
             .map_err(|err| {
                 error!("generate session token for {} failed! {}", self.app_id, err);
                 return ControlRuntItemErrors::ExecuteError("start".to_string(), err.to_string());
             })?;
         let full_appid = get_full_appid(&self.app_id, &self.app_instance_config.app_spec.user_id);
         let env_key = get_session_token_env_key(&full_appid, true);
-        unsafe {
-            std::env::set_var(env_key.as_str(), app_service_session_token_jwt);
-        }
-        Ok(())
+        env_vars.insert(env_key, app_service_session_token_jwt);
+        info!(
+            "prepared isolated app-loader env for {} with app_type={:?} iss={} sub={} jti={}",
+            full_appid,
+            self.app_instance_config.app_spec.app_doc.get_app_type(),
+            device_doc.name,
+            self.app_instance_config.app_spec.user_id,
+            login_jti
+        );
+        Ok(env_vars)
     }
 }
 
@@ -168,14 +171,14 @@ impl RunItemControl for AppRunItem {
         }
 
         if !is_system_app {
-            self.set_env_var(false).await?;
+            let env_vars = self.build_env_vars(false).await?;
             let real_param = vec![
                 self.app_id.clone(),
                 self.app_instance_config.app_spec.user_id.clone(),
             ];
             let result = self
                 .app_loader
-                .execute_operation("deploy", Some(&real_param))
+                .execute_operation_with_env("deploy", Some(&real_param), Some(&env_vars))
                 .await
                 .map_err(|err| {
                     return ControlRuntItemErrors::ExecuteError(
@@ -205,11 +208,11 @@ impl RunItemControl for AppRunItem {
     async fn start(&self, params: Option<&Vec<String>>) -> Result<()> {
         //let is_system_app = self.app_instance_config.app_spec.app_doc.pkg_list.get_app_pkg_id().is_some();
         let is_system_app = false;
-        if is_system_app {
-            self.set_env_var(true).await?;
+        let env_vars = if is_system_app {
+            self.build_env_vars(true).await?
         } else {
-            self.set_env_var(false).await?;
-        }
+            self.build_env_vars(false).await?
+        };
         let real_param = vec![
             self.app_id.clone(),
             self.app_instance_config.app_spec.user_id.clone(),
@@ -217,7 +220,7 @@ impl RunItemControl for AppRunItem {
 
         let result = self
             .app_loader
-            .start(Some(&real_param))
+            .execute_operation_with_env("start", Some(&real_param), Some(&env_vars))
             .await
             .map_err(|err| {
                 return ControlRuntItemErrors::ExecuteError("start".to_string(), err.to_string());
@@ -236,18 +239,18 @@ impl RunItemControl for AppRunItem {
     async fn stop(&self, params: Option<&Vec<String>>) -> Result<()> {
         //let is_system_app = self.app_instance_config.app_spec.app_doc.pkg_list.get_app_pkg_id().is_some();
         let is_system_app = false;
-        if is_system_app {
-            self.set_env_var(true).await?;
+        let env_vars = if is_system_app {
+            self.build_env_vars(true).await?
         } else {
-            self.set_env_var(false).await?;
-        }
+            self.build_env_vars(false).await?
+        };
         let real_param = vec![
             self.app_id.clone(),
             self.app_instance_config.app_spec.user_id.clone(),
         ];
         let result = self
             .app_loader
-            .stop(Some(&real_param))
+            .execute_operation_with_env("stop", Some(&real_param), Some(&env_vars))
             .await
             .map_err(|err| {
                 return ControlRuntItemErrors::ExecuteError("stop".to_string(), err.to_string());
@@ -278,14 +281,14 @@ impl RunItemControl for AppRunItem {
         //     is_system_app = false;
         // }
 
-        self.set_env_var(is_system_app).await?;
+        let env_vars = self.build_env_vars(is_system_app).await?;
         let real_param = vec![
             self.app_id.clone(),
             self.app_instance_config.app_spec.user_id.clone(),
         ];
-        let result: ServiceInstanceState = self
+        let result = self
             .app_loader
-            .status(Some(&real_param))
+            .status_with_env(Some(&real_param), Some(&env_vars))
             .await
             .map_err(|err| {
                 return ControlRuntItemErrors::ExecuteError(

@@ -1068,6 +1068,7 @@ async fn generate_device_session_token(
     let now = SystemTime::now();
     let since_the_epoch = now.duration_since(UNIX_EPOCH).expect("Time went backwards");
     let timestamp = since_the_epoch.as_secs();
+    let login_jti = timestamp.to_string();
     let mut userid = "kernel".to_string();
     if !is_boot {
         userid = device_doc.name.clone();
@@ -1076,8 +1077,8 @@ async fn generate_device_session_token(
     let device_session_token = kRPC::RPCSessionToken {
         token_type: kRPC::RPCSessionTokenType::Normal,
         appid: Some("node-daemon".to_string()),
-        jti: None,
-        session: None,
+        jti: Some(login_jti),
+        session: Some(timestamp),
         sub: Some(userid),
         aud: None,
         exp: Some(timestamp + 60 * 15),
@@ -1087,7 +1088,7 @@ async fn generate_device_session_token(
     };
 
     let device_session_token_jwt = device_session_token
-        .generate_jwt(None, &device_private_key)
+        .generate_jwt(Some(device_doc.name.clone()), &device_private_key)
         .map_err(|err| {
             error!("generate device session token failed! {}", err);
             return String::from("generate device session token failed!");

@@ -64,8 +64,8 @@ impl LocalAppRunItem {
         )))
     }
 
-    async fn set_env_var(&self, _is_system_app: bool) -> Result<()> {
-        //if self.app_service_config.app_pkg_id.is_some() {
+    async fn build_env_vars(&self, _is_system_app: bool) -> Result<HashMap<String, String>> {
+        let mut env_vars = HashMap::new();
         let env = PackageEnv::new(get_buckyos_system_bin_dir());
         let instance_pkg_id = self.get_instance_pkg_id(env.is_strict());
         if instance_pkg_id.is_ok() {
@@ -78,19 +78,13 @@ impl LocalAppRunItem {
                     "full_path": app_pkg.full_path.to_string_lossy(),
                 });
                 let media_info_json_str = media_info_json.to_string();
-                unsafe {
-                    std::env::set_var("app_media_info", media_info_json_str);
-                }
+                env_vars.insert("app_media_info".to_string(), media_info_json_str);
             }
         }
 
         let app_config_str = serde_json::to_string(&self.app_instance_config).unwrap();
-        unsafe {
-            std::env::set_var("loca_app_instance_config", app_config_str);
-        }
-        let full_appid = get_full_appid(&self.app_id, &self.app_instance_config.user_id);
-
-        Ok(())
+        env_vars.insert("loca_app_instance_config".to_string(), app_config_str);
+        Ok(env_vars)
     }
 }
 
@@ -161,31 +155,33 @@ impl RunItemControl for LocalAppRunItem {
             .get_app_pkg_id()
             .is_some();
         if is_system_app {
-            self.set_env_var(true).await?;
+            let env_vars = self.build_env_vars(true).await?;
+            let real_param = vec![
+                self.app_id.clone(),
+                self.app_instance_config.user_id.clone(),
+            ];
+            let result = self
+                .app_loader
+                .execute_operation_with_env("start", Some(&real_param), Some(&env_vars))
+                .await
+                .map_err(|err| {
+                    return ControlRuntItemErrors::ExecuteError(
+                        "start".to_string(),
+                        err.to_string(),
+                    );
+                })?;
+
+            if result == 0 {
+                return Ok(());
+            } else {
+                return Err(ControlRuntItemErrors::ExecuteError(
+                    "start".to_string(),
+                    "failed".to_string(),
+                ));
+            }
         } else {
             return Err(ControlRuntItemErrors::NotSupport(
                 "local app not only support system app (not docker)".to_string(),
-            ));
-        }
-        let real_param = vec![
-            self.app_id.clone(),
-            self.app_instance_config.user_id.clone(),
-        ];
-
-        let result = self
-            .app_loader
-            .start(Some(&real_param))
-            .await
-            .map_err(|err| {
-                return ControlRuntItemErrors::ExecuteError("start".to_string(), err.to_string());
-            })?;
-
-        if result == 0 {
-            return Ok(());
-        } else {
-            return Err(ControlRuntItemErrors::ExecuteError(
-                "start".to_string(),
-                "failed".to_string(),
             ));
         }
     }
@@ -198,18 +194,18 @@ impl RunItemControl for LocalAppRunItem {
             .get_app_pkg_id()
             .is_some();
 
-        if is_system_app {
-            self.set_env_var(true).await?;
+        let env_vars = if is_system_app {
+            self.build_env_vars(true).await?
         } else {
-            self.set_env_var(false).await?;
-        }
+            self.build_env_vars(false).await?
+        };
         let real_param = vec![
             self.app_id.clone(),
             self.app_instance_config.user_id.clone(),
         ];
         let result = self
             .app_loader
-            .stop(Some(&real_param))
+            .execute_operation_with_env("stop", Some(&real_param), Some(&env_vars))
             .await
             .map_err(|err| {
                 return ControlRuntItemErrors::ExecuteError("stop".to_string(), err.to_string());
@@ -251,14 +247,14 @@ impl RunItemControl for LocalAppRunItem {
             ));
         }
 
-        self.set_env_var(is_system_app).await?;
+        let env_vars = self.build_env_vars(is_system_app).await?;
         let real_param = vec![
             self.app_id.clone(),
             self.app_instance_config.user_id.clone(),
         ];
-        let result: ServiceInstanceState = self
+        let result = self
             .app_loader
-            .status(Some(&real_param))
+            .status_with_env(Some(&real_param), Some(&env_vars))
             .await
             .map_err(|err| {
                 return ControlRuntItemErrors::ExecuteError(

@@ -72,6 +72,16 @@ impl ServicePkg {
         op_name: &str,
         params: Option<&Vec<String>>,
     ) -> Result<i32> {
+        self.execute_operation_with_env(op_name, params, Some(&self.env_vars))
+            .await
+    }
+
+    pub async fn execute_operation_with_env(
+        &self,
+        op_name: &str,
+        params: Option<&Vec<String>>,
+        env_vars: Option<&HashMap<String, String>>,
+    ) -> Result<i32> {
         //let media_info = self.media_info.clone().unwrap();
         let media_info = self.media_info.lock().await;
         let media_info = media_info.as_ref();
@@ -86,7 +96,7 @@ impl ServicePkg {
             1200,
             params,
             self.current_dir.as_ref(),
-            Some(&self.env_vars),
+            env_vars,
         )
         .await
         .map_err(|e| {
@@ -128,6 +138,14 @@ impl ServicePkg {
     }
 
     pub async fn status(&self, params: Option<&Vec<String>>) -> Result<ServiceInstanceState> {
+        self.status_with_env(params, Some(&self.env_vars)).await
+    }
+
+    pub async fn status_with_env(
+        &self,
+        params: Option<&Vec<String>>,
+        env_vars: Option<&HashMap<String, String>>,
+    ) -> Result<ServiceInstanceState> {
         let pkg_env = PackageEnv::new(self.pkg_env_path.clone());
         let media_info = pkg_env.load(&self.pkg_id).await;
         if media_info.is_err() {
@@ -138,7 +156,9 @@ impl ServicePkg {
         let mut media_info_lock = self.media_info.lock().await;
         *media_info_lock = Some(media_info);
         drop(media_info_lock);
-        let result = self.execute_operation("status", params).await?;
+        let result = self
+            .execute_operation_with_env("status", params, env_vars)
+            .await?;
         match result {
             0 => Ok(ServiceInstanceState::Started),
             255 => Ok(ServiceInstanceState::NotExist),

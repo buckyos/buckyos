@@ -195,7 +195,8 @@ pub struct AIAgent {
     cfg: AIAgentConfig,
     did: DID,
     agent_name: String,
-    owner_did: DID, //user-did
+    msg_owner_did: DID,
+    contact_mgr_owner_did: Option<DID>,
 
     role_md: String,
     self_md: String,
@@ -260,22 +261,23 @@ impl AIAgent {
                 err
             )
         })?;
-        let owner_did = if let Some(owner_did) = cfg
+        let contact_mgr_owner_did = if let Some(owner_did) = cfg
             .agent_owner_did
             .as_ref()
             .map(|value| value.trim())
             .filter(|value| !value.is_empty())
         {
-            DID::from_str(owner_did).map_err(|err| {
+            Some(DID::from_str(owner_did).map_err(|err| {
                 anyhow!(
                     "invalid owner did in agent config: did={:?} err={}",
                     owner_did,
                     err
                 )
-            })?
+            })?)
         } else {
-            did.clone()
+            None
         };
+        let msg_owner_did = did.clone();
         let agent_name = did.to_raw_host_name();
         let (role_md, role_status) = load_overlay_text_resource(
             &agent_root,
@@ -339,7 +341,7 @@ impl AIAgent {
 
         let behavior_cfg_cache = Arc::new(RwLock::new(HashMap::new()));
         let policy = Arc::new(AgentPolicy::new(tools.clone(), behavior_cfg_cache.clone()));
-        let kevent_source_node = owner_did.to_raw_host_name();
+        let kevent_source_node = msg_owner_did.to_raw_host_name();
         log_overlay_status("role", &cfg.agent_instance_id, &role_status);
         log_overlay_status("self", &cfg.agent_instance_id, &self_status);
         info!(
@@ -351,7 +353,8 @@ impl AIAgent {
             cfg,
             did,
             agent_name,
-            owner_did,
+            msg_owner_did,
+            contact_mgr_owner_did,
             role_md,
             self_md,
             behavior_roots,
@@ -372,6 +375,16 @@ impl AIAgent {
             default_worker_behavior,
             wakeup_seq: AtomicU64::new(0),
         };
+        info!(
+            "agent.loader.identity: did={} msg_owner_did={} contact_mgr_owner_did={}",
+            agent.did.to_string(),
+            agent.msg_owner_did.to_string(),
+            agent
+                .contact_mgr_owner_did
+                .as_ref()
+                .map(|did| did.to_string())
+                .unwrap_or_else(|| "<none>".to_string())
+        );
 
         let _ = agent.load_behavior_config(&agent.default_behavior).await?;
         let _ = agent
@@ -713,7 +726,7 @@ impl AIAgent {
                 msg_record.from_name = AgentSession::resolve_msg_from_name(
                     &msg_record.from,
                     session_from_name.as_deref(),
-                    Some(&self.owner_did),
+                    Some(self.contact_mgr_owner_did()),
                 )
                 .await;
             }
@@ -1372,7 +1385,7 @@ impl AIAgent {
             return Some(reader.clone());
         }
 
-        let patterns = Self::build_msg_center_event_patterns(&self.owner_did);
+        let patterns = Self::build_msg_center_event_patterns(&self.msg_owner_did);
         match self
             .kevent_client
             .create_event_reader(patterns.clone())
@@ -1382,9 +1395,9 @@ impl AIAgent {
                 let reader = Arc::new(reader);
                 *guard = Some(reader.clone());
                 info!(
-                    "agent.event_reader_created: did={:?} owner_did={:?} patterns={:?} reader_id={}",
+                    "agent.event_reader_created: did={:?} msg_owner_did={:?} patterns={:?} reader_id={}",
                     self.did,
-                    self.owner_did.to_string(),
+                    self.msg_owner_did.to_string(),
                     patterns,
                     reader.reader_id()
                 );
@@ -1393,17 +1406,17 @@ impl AIAgent {
             Err(err) => {
                 if matches!(err, KEventError::InvalidPattern(_)) {
                     warn!(
-                        "agent.event_reader_create_failed: did={:?} owner_did={:?} reason=invalid_pattern patterns={:?} err={:?}",
+                        "agent.event_reader_create_failed: did={:?} msg_owner_did={:?} reason=invalid_pattern patterns={:?} err={:?}",
                         self.did,
-                        self.owner_did.to_string(),
+                        self.msg_owner_did.to_string(),
                         patterns,
                         err
                     );
                 } else {
                     debug!(
-                        "agent.event_reader_create_failed: did={:?} owner_did={:?} patterns={:?} err={:?}",
+                        "agent.event_reader_create_failed: did={:?} msg_owner_did={:?} patterns={:?} err={:?}",
                         self.did,
-                        self.owner_did.to_string(),
+                        self.msg_owner_did.to_string(),
                         patterns,
                         err
                     );
@@ -2814,7 +2827,7 @@ impl AIAgent {
             msg_record.from_name = AgentSession::resolve_msg_from_name(
                 &msg_record.from,
                 Some(session_from_name.as_str()),
-                Some(&self.owner_did),
+                Some(self.contact_mgr_owner_did()),
             )
             .await;
         }
@@ -2990,8 +3003,14 @@ impl AIAgent {
         &self.workspace_root
     }
 
+    fn contact_mgr_owner_did(&self) -> &DID {
+        self.contact_mgr_owner_did
+            .as_ref()
+            .unwrap_or(&self.msg_owner_did)
+    }
+
     fn parse_owner_did_for_msg_center(&self) -> Option<DID> {
-        Some(self.owner_did.clone())
+        Some(self.msg_owner_did.clone())
     }
 }
 

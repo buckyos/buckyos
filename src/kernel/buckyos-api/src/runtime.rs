@@ -31,7 +31,8 @@ use crate::system_config::*;
 use crate::task_mgr::*;
 use crate::verify_hub_client::*;
 use crate::{
-    get_buckyos_api_runtime, get_full_appid, get_session_token_env_key, OPENDAN_SERVICE_NAME,
+    get_buckyos_api_runtime, get_full_appid, get_session_token_env_key, is_buckyos_api_runtime_set,
+    OPENDAN_SERVICE_NAME,
 };
 
 const DEFAULT_NODE_GATEWAY_PORT: u16 = 3180;
@@ -213,13 +214,28 @@ impl BuckyOSRuntime {
             }
         }
 
-        let mut session_token_key = "".to_string();
+        let mut session_token_keys = Vec::new();
         match self.runtime_type {
-            BuckyOSRuntimeType::KernelService | BuckyOSRuntimeType::FrameService => {
-                session_token_key = get_session_token_env_key(&self.get_full_appid(), false);
+            BuckyOSRuntimeType::KernelService => {
+                session_token_keys.push(get_session_token_env_key(&self.get_full_appid(), false));
+            }
+            BuckyOSRuntimeType::FrameService => {
+                if let Some(owner_id) = self.app_owner_id.as_deref() {
+                    session_token_keys.push(get_session_token_env_key(
+                        &get_full_appid(self.app_id.as_str(), owner_id),
+                        true,
+                    ));
+                }
+                session_token_keys.push(get_session_token_env_key(&self.get_full_appid(), false));
             }
             BuckyOSRuntimeType::AppService => {
-                session_token_key = get_session_token_env_key(&self.get_full_appid(), true);
+                if let Some(owner_id) = self.app_owner_id.as_deref() {
+                    session_token_keys.push(get_session_token_env_key(
+                        &get_full_appid(self.app_id.as_str(), owner_id),
+                        true,
+                    ));
+                }
+                session_token_keys.push(get_session_token_env_key(self.app_id.as_str(), true));
             }
             _ => {
                 info!(
@@ -229,17 +245,32 @@ impl BuckyOSRuntime {
             }
         }
 
-        if session_token_key.len() > 1 {
-            let session_token = env::var(session_token_key.as_str());
-            if session_token.is_ok() {
-                info!("load session_token from env var success");
+        session_token_keys.dedup();
+        if !session_token_keys.is_empty() {
+            let mut loaded_session_token = None;
+            for session_token_key in &session_token_keys {
+                if let Ok(session_token) = env::var(session_token_key.as_str()) {
+                    info!(
+                        "load session_token from env var success: {}",
+                        session_token_key
+                    );
+                    loaded_session_token = Some(session_token);
+                    break;
+                }
+            }
+
+            if let Some(session_token) = loaded_session_token {
                 let mut this_session_token = self.session_token.write().await;
-                *this_session_token = session_token.unwrap();
+                *this_session_token = session_token;
             } else {
-                info!("load session_token from env var failed");
-                return Err(RPCErrors::ReasonError(
-                    "load session_token from env var failed".to_string(),
-                ));
+                info!(
+                    "load session_token from env var failed, tried keys: {:?}",
+                    session_token_keys
+                );
+                return Err(RPCErrors::ReasonError(format!(
+                    "load session_token from env var failed, tried keys: {:?}",
+                    session_token_keys
+                )));
             }
         }
 
@@ -769,6 +800,15 @@ impl BuckyOSRuntime {
 
         //start keep-alive timer
         tokio::task::spawn(async move {
+            if !is_buckyos_api_runtime_set() {
+                info!(
+                    "keep_alive task is waiting for global runtime registration before first tick"
+                );
+                while !is_buckyos_api_runtime_set() {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                info!("keep_alive task detected global runtime registration");
+            }
             let start = tokio::time::Instant::now() + Duration::from_secs(5);
             let mut timer = tokio::time::interval_at(start, Duration::from_secs(5));
             loop {
@@ -1387,6 +1427,7 @@ impl BuckyOSRuntime {
     pub async fn get_kernel_service_url(&self, service_name: &str) -> Result<(String, bool)> {
         // get service info from system_config
         if self.device_config.is_none() {
+            warn!("access kernel service need set device_config");
             return Err(RPCErrors::ReasonError(
                 "access kernel service need set device_config".to_string(),
             ));
@@ -1408,8 +1449,12 @@ impl BuckyOSRuntime {
                             true,
                         ));
                     }
+                } else {
+                    warn!("local node {} is not started", local_node.node_did.to_string());
                 }
             }
+        } else {
+            warn!("local node {} is not found", self.device_config.as_ref().unwrap().name.as_str());
         }
 
         //通过本机的node-gatewa 转发，局域网的即使可以直连也要通过rtcp,局域网的明文流量也并不安全。
