@@ -2,7 +2,7 @@ use crate::{AppDoc, AppType, SelectorType};
 use ::kRPC::*;
 use async_trait::async_trait;
 use name_lib::DID;
-use ndn_lib::{InclusionProof, ObjId};
+use ndn_lib::{ActionObject,InclusionProof, ObjId};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -33,7 +33,7 @@ pub const REPO_SERVE_REJECT_NOT_FOUND: &str = "not_found";
 pub const REPO_SERVE_REJECT_NO_RECEIPT: &str = "no_receipt";
 pub const REPO_SERVE_REJECT_INVALID_RECEIPT: &str = "invalid_receipt";
 
-pub type RepoActionProof = Value;
+pub type RepoActionProof = ActionObject;
 pub type RepoCollectionProof = InclusionProof;
 
 #[derive(Clone, Serialize, Deserialize)]
