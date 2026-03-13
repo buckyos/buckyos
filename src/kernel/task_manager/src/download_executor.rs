@@ -161,10 +161,18 @@ impl DownloadExecutorCore {
     ) -> std::result::Result<(), String> {
         let task = store.load_task(spec.task_id).await?;
         if task.status.is_terminal() || task.status == TaskStatus::Paused {
+            info!(
+                "download task skipped: task_id={} status={} url={}",
+                spec.task_id, task.status, spec.download_url
+            );
             return Ok(());
         }
 
         if task.status == TaskStatus::Canceled {
+            info!(
+                "download task canceled before start: task_id={} url={}",
+                spec.task_id, spec.download_url
+            );
             let _ = store
                 .update_task(
                     spec.task_id,
@@ -216,6 +224,13 @@ impl DownloadExecutorCore {
                 "download_executor_start",
             )
             .await?;
+        info!(
+            "download task started: task_id={} mode={} objid={:?} url={}",
+            spec.task_id,
+            download_mode(spec.objid.as_ref()),
+            spec.objid,
+            spec.download_url
+        );
 
         let runtime = get_buckyos_api_runtime().map_err(|err| err.to_string())?;
         let session_token = runtime.get_session_token().await;
@@ -738,6 +753,10 @@ async fn pull_named_store_download(
     progress_callback: Option<Arc<Mutex<ndn_lib::NdnProgressCallback>>>,
 ) -> std::result::Result<CyfsPullResult, String> {
     if objid.is_chunk() || objid.is_chunk_list() || objid.is_file_object() {
+        info!(
+            "download task {} using direct named object path: objid={} url={}",
+            task_id, objid, download_url
+        );
         return pull_direct_to_named_store(
             client,
             download_url,
@@ -751,6 +770,10 @@ async fn pull_named_store_download(
     let verified = fetch_verified_json_object(client, download_url, objid).await?;
 
     if let Ok(app_doc) = serde_json::from_value::<AppDoc>(verified.obj_json.clone()) {
+        info!(
+            "download task {} resolved AppDoc: objid={} url={}",
+            task_id, objid, download_url
+        );
         return pull_app_doc_to_named_store(
             client,
             store,
@@ -767,6 +790,10 @@ async fn pull_named_store_download(
     // `pkg` objects are PackageMeta. They flatten FileObject fields and should
     // be handled as metadata wrappers whose `content` points to the real payload.
     if objid.obj_type == OBJ_TYPE_PKG {
+        info!(
+            "download task {} resolved pkg metadata object: objid={} url={}",
+            task_id, objid, download_url
+        );
         let file_obj = serde_json::from_value::<FileObject>(verified.obj_json.clone())
             .map_err(|err| format!("parse pkg object {} as FileObject failed: {}", objid, err))?;
         return pull_wrapped_file_object_to_named_store(
@@ -782,6 +809,10 @@ async fn pull_named_store_download(
     }
 
     if let Ok(file_obj) = serde_json::from_value::<FileObject>(verified.obj_json.clone()) {
+        info!(
+            "download task {} resolved wrapped file object: objid={} url={}",
+            task_id, objid, download_url
+        );
         return pull_wrapped_file_object_to_named_store(
             client,
             download_url,
@@ -794,6 +825,10 @@ async fn pull_named_store_download(
         .await;
     }
 
+    warn!(
+        "download task {} failed to resolve supported object type: objid={} url={}",
+        task_id, objid, download_url
+    );
     Err(format!(
         "unsupported obj type for download: {} ({})",
         objid.obj_type, objid
@@ -807,6 +842,10 @@ async fn pull_direct_to_named_store(
     store_mgr: &named_store::NamedStoreMgr,
     progress_callback: Option<Arc<Mutex<ndn_lib::NdnProgressCallback>>>,
 ) -> std::result::Result<CyfsPullResult, String> {
+    info!(
+        "direct named object download started: objid={} url={}",
+        objid, download_url
+    );
     let mut request = client.get(download_url.to_string()).obj_id(objid.clone());
     if let Some(progress_callback) = progress_callback {
         request = request.progress_callback(progress_callback);
@@ -863,6 +902,10 @@ async fn pull_wrapped_file_object_to_named_store(
     })?;
     let content_download_url =
         resolve_related_download_url(download_url, &content_objid, download_options)?;
+    info!(
+        "wrapped metadata object resolved content: meta_objid={} content_objid={} url={} content_url={}",
+        verified.obj_id, content_objid, download_url, content_download_url
+    );
 
     let mut result = pull_direct_to_named_store(
         client,
@@ -877,6 +920,10 @@ async fn pull_wrapped_file_object_to_named_store(
         .put_object(&verified.obj_id, verified.obj_str.as_str())
         .await
         .map_err(|err| err.to_string())?;
+    info!(
+        "wrapped metadata object stored: meta_objid={} content_objid={}",
+        verified.obj_id, content_objid
+    );
     push_stored_object(&mut result.stored_objects, verified.obj_id.clone());
     result.obj_id = Some(verified.obj_id);
     if file_obj.size > 0 {
@@ -894,12 +941,20 @@ async fn pull_sub_pkg_to_named_store(
     download_options: &Value,
 ) -> std::result::Result<CyfsPullResult, String> {
     if objid.is_chunk() || objid.is_chunk_list() || objid.is_file_object() {
+        info!(
+            "AppDoc sub package using direct path: objid={} url={}",
+            objid, download_url
+        );
         return pull_direct_to_named_store(client, download_url, objid, store_mgr, None).await;
     }
 
     let verified = fetch_verified_json_object(client, download_url, objid).await?;
 
     if serde_json::from_value::<AppDoc>(verified.obj_json.clone()).is_ok() {
+        warn!(
+            "nested AppDoc sub package is unsupported: objid={} url={}",
+            objid, download_url
+        );
         return Err(format!(
             "nested AppDoc sub package is not supported for {}",
             objid
@@ -907,6 +962,10 @@ async fn pull_sub_pkg_to_named_store(
     }
 
     if objid.obj_type == OBJ_TYPE_PKG {
+        info!(
+            "AppDoc sub package resolved pkg metadata: objid={} url={}",
+            objid, download_url
+        );
         let file_obj = serde_json::from_value::<FileObject>(verified.obj_json.clone())
             .map_err(|err| format!("parse pkg object {} as FileObject failed: {}", objid, err))?;
         return pull_wrapped_file_object_to_named_store(
@@ -922,6 +981,10 @@ async fn pull_sub_pkg_to_named_store(
     }
 
     if let Ok(file_obj) = serde_json::from_value::<FileObject>(verified.obj_json.clone()) {
+        info!(
+            "AppDoc sub package resolved wrapped file object: objid={} url={}",
+            objid, download_url
+        );
         return pull_wrapped_file_object_to_named_store(
             client,
             download_url,
@@ -934,6 +997,10 @@ async fn pull_sub_pkg_to_named_store(
         .await;
     }
 
+    warn!(
+        "unsupported AppDoc sub package object type: objid={} url={}",
+        objid, download_url
+    );
     Err(format!(
         "unsupported sub package obj type for download: {} ({})",
         objid.obj_type, objid
@@ -959,6 +1026,10 @@ async fn pull_app_doc_to_named_store(
 
     let sub_pkgs = resolve_app_doc_sub_pkg_specs(&app_doc, download_url, download_options)?;
     let total_sub_pkgs = sub_pkgs.len();
+    info!(
+        "AppDoc download resolved: objid={} url={} sub_pkg_count={}",
+        verified.obj_id, download_url, total_sub_pkgs
+    );
 
     let mut result = CyfsPullResult {
         obj_id: Some(verified.obj_id.clone()),
@@ -968,11 +1039,25 @@ async fn pull_app_doc_to_named_store(
     };
 
     if total_sub_pkgs == 0 {
+        info!(
+            "AppDoc download completed without sub packages: objid={} url={}",
+            verified.obj_id, download_url
+        );
         return Ok(result);
     }
 
     for (index, sub_pkg) in sub_pkgs.iter().enumerate() {
         ensure_task_can_continue(store.clone(), task_id).await?;
+        info!(
+            "AppDoc sub package download started: task_id={} appdoc_objid={} index={}/{} key={} objid={} url={}",
+            task_id,
+            verified.obj_id,
+            index + 1,
+            total_sub_pkgs,
+            sub_pkg.key,
+            sub_pkg.objid,
+            sub_pkg.download_url
+        );
         update_app_doc_progress(
             store.clone(),
             task_id,
@@ -993,6 +1078,15 @@ async fn pull_app_doc_to_named_store(
         .await?;
 
         merge_pull_result(&mut result, sub_result);
+        info!(
+            "AppDoc sub package download completed: task_id={} appdoc_objid={} index={}/{} key={} total_downloaded_bytes={}",
+            task_id,
+            verified.obj_id,
+            index + 1,
+            total_sub_pkgs,
+            sub_pkg.key,
+            result.total_size
+        );
         update_app_doc_progress(
             store.clone(),
             task_id,
@@ -1014,9 +1108,11 @@ async fn ensure_task_can_continue(
 ) -> std::result::Result<(), String> {
     let task = store.load_task(task_id).await?;
     if task.status == TaskStatus::Canceled {
+        info!("download task observed canceled state: task_id={}", task_id);
         return Err("Download canceled".to_string());
     }
     if task.status == TaskStatus::Paused {
+        info!("download task observed paused state: task_id={}", task_id);
         return Err("Download paused".to_string());
     }
     Ok(())
@@ -1087,6 +1183,10 @@ fn resolve_app_doc_sub_pkg_specs(
                     .map(|objid| format!("cyfs://{}", objid))
             })
             .ok_or_else(|| {
+                warn!(
+                    "AppDoc sub package missing source_url and pkg_objid: key={}",
+                    key
+                );
                 format!(
                     "AppDoc sub package `{}` missing source_url and pkg_objid",
                     key
@@ -1098,6 +1198,10 @@ fn resolve_app_doc_sub_pkg_specs(
             .clone()
             .or_else(|| infer_objid_from_url(download_url.as_str()))
             .ok_or_else(|| {
+                warn!(
+                    "AppDoc sub package objid is not resolvable: key={} url={}",
+                    key, download_url
+                );
                 format!(
                     "AppDoc sub package `{}` does not provide a resolvable objid",
                     key
@@ -1121,6 +1225,10 @@ fn resolve_related_download_url(
 ) -> std::result::Result<String, String> {
     replace_obj_id_in_url(base_url, objid).or_else(|_| {
         build_download_url_from_default_remote(objid, download_options).ok_or_else(|| {
+            warn!(
+                "failed to resolve related download url: base_url={} objid={}",
+                base_url, objid
+            );
             format!(
                 "cannot resolve related download url for {} from {}",
                 objid, base_url

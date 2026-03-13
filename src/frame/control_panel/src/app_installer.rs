@@ -8,7 +8,7 @@ use buckyos_kit::buckyos_get_unix_timestamp;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use kRPC::RPCErrors;
-use log::warn;
+use log::{info, warn};
 use named_store::NamedStoreMgr;
 use ndn_lib::{
     build_named_object_by_json, build_obj_id, ActionObject, FileObject, NamedObject, ObjId,
@@ -144,6 +144,28 @@ impl AppInstaller {
 
     fn service_spec_id(spec: &AppServiceSpec) -> String {
         format!("{}@{}", spec.app_id(), spec.user_id)
+    }
+
+    fn service_state_label(state: &ServiceState) -> &'static str {
+        match state {
+            ServiceState::New => "new",
+            ServiceState::Running => "running",
+            ServiceState::Stopped => "stopped",
+            ServiceState::Stopping => "stopping",
+            ServiceState::Restarting => "restarting",
+            ServiceState::Updating => "updating",
+            ServiceState::Deleted => "deleted",
+        }
+    }
+
+    fn log_spec_state_change(spec: &AppServiceSpec, state: ServiceState, detail: &str) {
+        info!(
+            "app `{}` for user `{}` state -> {}: {}",
+            spec.app_id(),
+            spec.user_id,
+            Self::service_state_label(&state),
+            detail
+        );
     }
 
     fn resolve_content_id(spec: &AppServiceSpec) -> Result<String, RPCErrors> {
@@ -395,12 +417,25 @@ impl AppInstaller {
         let content_id = Self::resolve_content_id(spec)?;
         let repo_status = self.load_repo_record_status(&content_id).await?;
         let status = repo_status.ok_or_else(|| {
-            RPCErrors::ReasonError(format!(
+            let error = RPCErrors::ReasonError(format!(
                 "Content `{content_id}` is not collected in RepoService"
-            ))
+            ));
+            warn!(
+                "pin content for app `{}` user `{}` failed: {}",
+                spec.app_id(),
+                spec.user_id,
+                error
+            );
+            error
         })?;
 
         if status == REPO_STATUS_PINNED {
+            info!(
+                "content `{}` for app `{}` user `{}` already pinned in repo",
+                content_id,
+                spec.app_id(),
+                spec.user_id
+            );
             let base_on = self
                 .latest_action_proof_id(&content_id, REPO_PROOF_TYPE_DOWNLOAD)
                 .await?;
@@ -413,9 +448,16 @@ impl AppInstaller {
         }
 
         if status != REPO_STATUS_COLLECTED {
-            return Err(RPCErrors::ReasonError(format!(
+            let error = RPCErrors::ReasonError(format!(
                 "Unsupported repo status for `{content_id}`: {status}"
-            )));
+            ));
+            warn!(
+                "pin content for app `{}` user `{}` failed: {}",
+                spec.app_id(),
+                spec.user_id,
+                error
+            );
+            return Err(error);
         }
 
         let task_mgr = self.task_mgr_client().await?;
@@ -441,6 +483,13 @@ impl AppInstaller {
                 }),
             )
             .await?;
+        info!(
+            "created download task {} for app `{}` user `{}` content `{}`",
+            download_task_id,
+            spec.app_id(),
+            spec.user_id,
+            content_id
+        );
 
         if parent_task_id > 0 {
             let _ = task_mgr
@@ -460,6 +509,13 @@ impl AppInstaller {
         self.wait_for_download_task(&task_mgr, download_task_id)
             .await?;
         self.verify_named_store_ready(&content_id).await?;
+        info!(
+            "download task {} completed for app `{}` user `{}` content `{}`",
+            download_task_id,
+            spec.app_id(),
+            spec.user_id,
+            content_id
+        );
 
         let referral_base = self
             .latest_action_proof_id(&content_id, REPO_PROOF_TYPE_REFERRAL)
@@ -482,6 +538,12 @@ impl AppInstaller {
                 return Err(error);
             }
         }
+        info!(
+            "repo content `{}` pinned for app `{}` user `{}`",
+            content_id,
+            spec.app_id(),
+            spec.user_id
+        );
         Ok(download_proof)
     }
 
@@ -493,6 +555,12 @@ impl AppInstaller {
         while waited <= self.wait_timeout {
             if let Ok(instance) = self.get_app_service_instance_config(spec.app_id()).await {
                 if matches!(instance.state, ServiceInstanceState::Started) {
+                    info!(
+                        "app `{}` for user `{}` instance ready on node `{}`",
+                        spec.app_id(),
+                        spec.user_id,
+                        instance.node_id
+                    );
                     return Ok(instance);
                 }
             }
@@ -500,10 +568,17 @@ impl AppInstaller {
             waited += self.wait_interval;
         }
 
-        Err(RPCErrors::ReasonError(format!(
+        let error = RPCErrors::ReasonError(format!(
             "Timed out waiting for app `{}` instance to become ready",
             spec.app_id()
-        )))
+        ));
+        warn!(
+            "wait for app `{}` user `{}` instance ready failed: {}",
+            spec.app_id(),
+            spec.user_id,
+            error
+        );
+        Err(error)
     }
 
     async fn wait_for_instances_removed(&self, spec: &AppServiceSpec) -> Result<(), RPCErrors> {
@@ -515,6 +590,11 @@ impl AppInstaller {
         while waited <= self.wait_timeout {
             let node_ids = Self::list_children(&client, &instances_key).await?;
             if node_ids.is_empty() {
+                info!(
+                    "all instances removed for app `{}` user `{}`",
+                    spec.app_id(),
+                    spec.user_id
+                );
                 return Ok(());
             }
 
@@ -535,6 +615,11 @@ impl AppInstaller {
             }
 
             if !has_active {
+                info!(
+                    "all active instances stopped for app `{}` user `{}`",
+                    spec.app_id(),
+                    spec.user_id
+                );
                 return Ok(());
             }
 
@@ -542,10 +627,17 @@ impl AppInstaller {
             waited += self.wait_interval;
         }
 
-        Err(RPCErrors::ReasonError(format!(
+        let error = RPCErrors::ReasonError(format!(
             "Timed out waiting for app `{}` instances to stop",
             spec.app_id()
-        )))
+        ));
+        warn!(
+            "wait for app `{}` user `{}` instances removed failed: {}",
+            spec.app_id(),
+            spec.user_id,
+            error
+        );
+        Err(error)
     }
 
     async fn create_task(
@@ -587,11 +679,18 @@ impl AppInstaller {
             .await?
             .is_empty()
         {
-            return Err(RPCErrors::ReasonError(format!(
+            let error = RPCErrors::ReasonError(format!(
                 "App `{}` is already installed for user `{}`",
                 spec.app_id(),
                 spec.user_id
-            )));
+            ));
+            warn!(
+                "install app `{}` for user `{}` rejected: {}",
+                spec.app_id(),
+                spec.user_id,
+                error
+            );
+            return Err(error);
         }
 
         let download_proof = self
@@ -616,11 +715,22 @@ impl AppInstaller {
         next_spec.state = ServiceState::New;
         let spec_path = Self::spec_storage_path(&next_spec);
         Self::set_spec_at(&client, &spec_path, &next_spec).await?;
+        Self::log_spec_state_change(
+            &next_spec,
+            ServiceState::New,
+            format!("install task {} wrote spec at `{}`", task_id, spec_path).as_str(),
+        );
 
         let repo = self.repo_client().await?;
         let install_proof =
             self.build_install_proof(&next_spec, &content_id, Some(download_proof.gen_obj_id().0))?;
         repo.add_proof(RepoProof::action(install_proof)).await?;
+        info!(
+            "recorded install proof for app `{}` user `{}` version `{}`",
+            next_spec.app_id(),
+            next_spec.user_id,
+            next_spec.app_doc.version
+        );
 
         let mut data = json!({
             "spec_path": spec_path,
@@ -644,6 +754,12 @@ impl AppInstaller {
                 Some(data),
             )
             .await?;
+        info!(
+            "install task {} completed for app `{}` user `{}`",
+            task_id,
+            next_spec.app_id(),
+            next_spec.user_id
+        );
         Ok(())
     }
 
@@ -653,9 +769,11 @@ impl AppInstaller {
         let (spec_key, mut spec) = self.get_single_matching_spec(&app_id, None).await?;
 
         if spec.state == ServiceState::Deleted {
-            return Err(RPCErrors::ReasonError(format!(
+            let error = RPCErrors::ReasonError(format!(
                 "App `{app_id}` has been deleted and can not be started"
-            )));
+            ));
+            warn!("start app `{app_id}` rejected: {}", error);
+            return Err(error);
         }
 
         let _ = task_mgr
@@ -670,6 +788,11 @@ impl AppInstaller {
 
         spec.state = ServiceState::Running;
         Self::set_spec_at(&client, &spec_key, &spec).await?;
+        Self::log_spec_state_change(
+            &spec,
+            ServiceState::Running,
+            format!("start task {} updated spec `{}`", task_id, spec_key).as_str(),
+        );
 
         let mut data = json!({
             "spec_path": spec_key,
@@ -692,6 +815,12 @@ impl AppInstaller {
                 Some(data),
             )
             .await?;
+        info!(
+            "start task {} completed for app `{}` user `{}`",
+            task_id,
+            spec.app_id(),
+            spec.user_id
+        );
         Ok(())
     }
 
@@ -721,6 +850,11 @@ impl AppInstaller {
                             path.display()
                         ))
                     })?;
+                    info!(
+                        "removed app data directory for app `{}`: {}",
+                        spec.app_id(),
+                        path.display()
+                    );
                 }
                 Ok(_) => {
                     fs::remove_file(&path).await.map_err(|error| {
@@ -729,6 +863,11 @@ impl AppInstaller {
                             path.display()
                         ))
                     })?;
+                    info!(
+                        "removed app data file for app `{}`: {}",
+                        spec.app_id(),
+                        path.display()
+                    );
                 }
                 Err(_) => {}
             }
@@ -795,6 +934,14 @@ impl AppInstaller {
                 spec.app_id(),
             )
             .await?;
+        info!(
+            "queued install task {} for app `{}` user `{}` version `{}` content `{}`",
+            task_id,
+            spec.app_id(),
+            spec.user_id,
+            spec.app_doc.version,
+            content_id
+        );
 
         let installer = self.clone();
         let spec = spec.clone();
@@ -822,15 +969,31 @@ impl AppInstaller {
         let client = self.system_config_client().await?;
         let (spec_key, mut spec) = self.get_single_matching_spec(app_id, None).await?;
 
+        info!(
+            "begin uninstall for app `{}` user `{}` remove_data={}",
+            spec.app_id(),
+            spec.user_id,
+            is_remove_data
+        );
         self.stop_app(app_id).await?;
         spec.state = ServiceState::Deleted;
         Self::set_spec_at(&client, &spec_key, &spec).await?;
+        Self::log_spec_state_change(
+            &spec,
+            ServiceState::Deleted,
+            format!("uninstall wrote spec `{}`", spec_key).as_str(),
+        );
         self.wait_for_instances_removed(&spec).await?;
 
         if is_remove_data {
             self.remove_app_data(&spec).await?;
         }
 
+        info!(
+            "uninstall completed for app `{}` user `{}`",
+            spec.app_id(),
+            spec.user_id
+        );
         Ok(())
     }
 
@@ -846,16 +1009,32 @@ impl AppInstaller {
         let (spec_key, mut spec) = self.get_single_matching_spec(app_id, None).await?;
 
         if spec.state == ServiceState::Stopped || spec.state == ServiceState::Deleted {
+            info!(
+                "skip stop for app `{}` user `{}` because current state is {}",
+                spec.app_id(),
+                spec.user_id,
+                Self::service_state_label(&spec.state)
+            );
             return Ok(());
         }
 
         spec.state = ServiceState::Stopped;
         Self::set_spec_at(&client, &spec_key, &spec).await?;
+        Self::log_spec_state_change(
+            &spec,
+            ServiceState::Stopped,
+            format!("stop wrote spec `{}`", spec_key).as_str(),
+        );
 
         if Self::should_wait_for_instance(&spec) {
             self.wait_for_instances_removed(&spec).await?;
         }
 
+        info!(
+            "stop completed for app `{}` user `{}`",
+            spec.app_id(),
+            spec.user_id
+        );
         Ok(())
     }
 
@@ -881,6 +1060,12 @@ impl AppInstaller {
                 app_id,
             )
             .await?;
+        info!(
+            "queued start task {} for app `{}` user `{}`",
+            task_id,
+            app_id,
+            spec.user_id
+        );
 
         let installer = self.clone();
         let app_id = app_id.to_string();
@@ -909,6 +1094,13 @@ impl AppInstaller {
             .get_single_matching_spec(spec.app_id(), Some(spec.user_id.as_str()))
             .await?;
 
+        info!(
+            "begin upgrade for app `{}` user `{}` from version `{}` to `{}`",
+            spec.app_id(),
+            spec.user_id,
+            current_spec.app_doc.version,
+            spec.app_doc.version
+        );
         self.stop_app(spec.app_id()).await?;
 
         let mut next_spec = spec.clone();
@@ -918,9 +1110,16 @@ impl AppInstaller {
         let content_id = Self::resolve_content_id(&next_spec)?;
         let repo_status = self.load_repo_record_status(&content_id).await?;
         let status = repo_status.ok_or_else(|| {
-            RPCErrors::ReasonError(format!(
+            let error = RPCErrors::ReasonError(format!(
                 "Content `{content_id}` is not collected in RepoService"
-            ))
+            ));
+            warn!(
+                "upgrade app `{}` for user `{}` failed: {}",
+                spec.app_id(),
+                spec.user_id,
+                error
+            );
+            error
         })?;
         let download_base = if status == REPO_STATUS_PINNED {
             self.latest_action_proof_id(&content_id, REPO_PROOF_TYPE_DOWNLOAD)
@@ -931,15 +1130,32 @@ impl AppInstaller {
         };
 
         Self::set_spec_at(&client, &spec_key, &next_spec).await?;
+        Self::log_spec_state_change(
+            &next_spec,
+            ServiceState::New,
+            format!("upgrade wrote spec `{}`", spec_key).as_str(),
+        );
 
         let repo = self.repo_client().await?;
         let install_proof = self.build_install_proof(&next_spec, &content_id, download_base)?;
         repo.add_proof(RepoProof::action(install_proof)).await?;
+        info!(
+            "recorded upgrade install proof for app `{}` user `{}` version `{}`",
+            next_spec.app_id(),
+            next_spec.user_id,
+            next_spec.app_doc.version
+        );
 
         if Self::should_wait_for_instance(&next_spec) {
             let _ = self.wait_for_instance_ready(&next_spec).await?;
         }
 
+        info!(
+            "upgrade completed for app `{}` user `{}` version `{}`",
+            next_spec.app_id(),
+            next_spec.user_id,
+            next_spec.app_doc.version
+        );
         Ok(())
     }
 
@@ -1236,10 +1452,24 @@ impl AppInstaller {
         local_dir: &Path,
         app_doc_template: &AppDoc,
     ) -> Result<ObjId, RPCErrors> {
+        info!(
+            "begin publish app `{}` type `{}` from `{}`",
+            app_doc_template.name,
+            app_type.to_string(),
+            local_dir.display()
+        );
         let plan = self.scan_publish_sources(app_type, local_dir, app_doc_template)?;
         let prepared = self.package_publish_sources(app_doc_template, plan).await?;
-        self.store_publish_pkg_metas(app_doc_template, prepared)
-            .await
+        let final_obj_id = self
+            .store_publish_pkg_metas(app_doc_template, prepared)
+            .await?;
+        info!(
+            "publish completed for app `{}` version `{}` obj `{}`",
+            app_doc_template.name,
+            app_doc_template.version,
+            final_obj_id
+        );
+        Ok(final_obj_id)
     }
 
     fn canonical_packaged_name(key: &str, desc: &SubPkgDesc, app_id: &str) -> Option<String> {

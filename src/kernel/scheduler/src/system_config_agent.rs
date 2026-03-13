@@ -596,8 +596,12 @@ struct NodeGatewayAppInfoEntry {
     app_id: String,
     sdk_version: u32,
     access_mode: NodeGatewayAccessMode,
-    node_id: String,
-    port: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    node_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dir_pkg_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     block_services: Vec<String>,
 }
@@ -734,8 +738,24 @@ fn build_app_host_entry(
         app_id: app_spec.app_id().to_string(),
         sdk_version: parse_sdk_version(app_spec),
         access_mode: NodeGatewayAccessMode::Private,
-        node_id: pick_instance.node_id.clone(),
-        port,
+        node_id: Some(pick_instance.node_id.clone()),
+        port: Some(port),
+        dir_pkg_id: None,
+        block_services: vec![],
+    })
+}
+
+fn build_static_web_app_host_entry(app_spec: &AppServiceSpec) -> Option<NodeGatewayAppInfoEntry> {
+    let web_pkg = app_spec.app_doc.pkg_list.web.as_ref()?;
+    let dir_pkg_id = PackageId::get_pkg_id_unique_name(web_pkg.pkg_id.as_str());
+
+    Some(NodeGatewayAppInfoEntry {
+        app_id: app_spec.app_id().to_string(),
+        sdk_version: parse_sdk_version(app_spec),
+        access_mode: NodeGatewayAccessMode::Public,
+        node_id: None,
+        port: None,
+        dir_pkg_id: Some(dir_pkg_id),
         block_services: vec![],
     })
 }
@@ -898,6 +918,27 @@ pub(crate) async fn update_node_gateway_info(
                     }
                 }
             }
+        }
+    }
+
+    for web_app in get_web_app_list(input_system_config)? {
+        let full_app_id = format!("{}@{}", web_app.app_id(), web_app.user_id);
+        let Some(expose_config) = web_app.install_config.expose_config.get("www") else {
+            continue;
+        };
+        let Some(app_entry) = build_static_web_app_host_entry(&web_app) else {
+            continue;
+        };
+
+        for host in zone_gateway_settings.get_shortcut(full_app_id.as_str()) {
+            node_gateway_info
+                .app_info
+                .insert(host, NodeGatewayAppEntry::App(app_entry.clone()));
+        }
+        for host in expose_config.sub_hostname.iter() {
+            node_gateway_info
+                .app_info
+                .insert(host.clone(), NodeGatewayAppEntry::App(app_entry.clone()));
         }
     }
 
@@ -1637,8 +1678,9 @@ mod tests {
             _ => panic!("files should resolve to an app entry"),
         };
         assert_eq!(files.app_id, "files");
-        assert_eq!(files.node_id, "ood2");
-        assert_eq!(files.port, 10160);
+        assert_eq!(files.node_id.as_deref(), Some("ood2"));
+        assert_eq!(files.port, Some(10160));
+        assert_eq!(files.dir_pkg_id, None);
         assert_eq!(files.sdk_version, 10);
 
         let sys = match gateway_info.app_info.get("sys").unwrap() {
@@ -1718,6 +1760,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_update_node_gateway_info_adds_static_web_app_entry() {
+        let zone_config = create_test_zone_config();
+        let web_app_spec = create_test_static_web_app_spec();
+        let device_ood1 = create_test_device_info("ood1", None);
+
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "boot/config".to_string(),
+            serde_json::to_string(&zone_config).unwrap(),
+        );
+        input_system_config.insert(
+            "devices/ood1/info".to_string(),
+            serde_json::to_string(&device_ood1).unwrap(),
+        );
+        input_system_config.insert(
+            "users/alice/apps/portal/spec".to_string(),
+            serde_json::to_string(&web_app_spec).unwrap(),
+        );
+
+        let scheduler_ctx = NodeScheduler::new_empty(1);
+        let actions = update_node_gateway_info("ood1", &scheduler_ctx, &input_system_config)
+            .await
+            .unwrap();
+        let gateway_info_str = match actions.get("nodes/ood1/gateway_info").unwrap() {
+            KVAction::Update(value) => value,
+            other => panic!("unexpected kv action: {:?}", other),
+        };
+        let gateway_info: NodeGatewayInfo = serde_json::from_str(gateway_info_str).unwrap();
+
+        let portal = match gateway_info.app_info.get("portal").unwrap() {
+            NodeGatewayAppEntry::App(entry) => entry,
+            _ => panic!("portal should resolve to an app entry"),
+        };
+        assert_eq!(portal.app_id, "portal");
+        assert_eq!(portal.sdk_version, 0);
+        assert_eq!(portal.access_mode, NodeGatewayAccessMode::Public);
+        assert_eq!(portal.node_id, None);
+        assert_eq!(portal.port, None);
+        assert_eq!(portal.dir_pkg_id.as_deref(), Some("portal-web"));
+    }
+
+    #[tokio::test]
     async fn test_update_node_gateway_info_reads_agent_specs() {
         let zone_config = create_test_zone_config();
         let agent_spec = create_test_agent_spec();
@@ -1762,8 +1846,9 @@ mod tests {
             _ => panic!("jarvis should resolve to an app entry"),
         };
         assert_eq!(jarvis.app_id, "jarvis");
-        assert_eq!(jarvis.node_id, "ood1");
-        assert_eq!(jarvis.port, 11080);
+        assert_eq!(jarvis.node_id.as_deref(), Some("ood1"));
+        assert_eq!(jarvis.port, Some(11080));
+        assert_eq!(jarvis.dir_pkg_id, None);
         assert_eq!(jarvis.sdk_version, 11);
     }
 }

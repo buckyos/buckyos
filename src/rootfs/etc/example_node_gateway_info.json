@@ -18,6 +18,12 @@
             "node_id":"ood1",
             "port": 10160,
             "block_services": ["kevent"]
+        },        
+        "test": {
+            "app_id":"bob_testweb",
+            "sdk_version":10,
+            "access_mode":"public",
+            "dir_pkg_id":"bob_testweb"
         },
         "www" : {
             "service_id":"control-panel",

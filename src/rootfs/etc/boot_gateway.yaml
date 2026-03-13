@@ -205,8 +205,13 @@ servers:
             priority: 160
             block: |
               echo "forward_to_app block";
-              eq $TARGET_APP_INFO.node_id $THIS_NODE_ID && forward "http://127.0.0.1:${TARGET_APP_INFO.port}";
-              forward "${NODE_ROUTE_MAP[$TARGET_APP_INFO.nodeid]}:${TARGET_APP_INFO.port}";
+              if match-include $TARGET_APP_INFO "dir_pkg_id" then
+                call-server $TARGET_APP_INFO.dir_pkg_id;
+              else
+                eq $TARGET_APP_INFO.node_id $THIS_NODE_ID && forward "http://127.0.0.1:${TARGET_APP_INFO.port}";
+                forward "${NODE_ROUTE_MAP[$TARGET_APP_INFO.nodeid]}:${TARGET_APP_INFO.port}";
+              end
+
 
           check_block_list:
             # 通过请求信息判断是否允许访问本zone
@@ -214,4 +219,3 @@ servers:
             block: |
               return true;
 
-    
