@@ -1,0 +1,11 @@
+{
+  "name": "app-installer-test",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "demo": "node app_client_demo.mjs"
+  },
+  "dependencies": {
+    "buckyos": "github:buckyos/buckyos-websdk"
+  }
+}

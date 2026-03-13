@@ -7,10 +7,11 @@ use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
 use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AccessGroupLevel,
-    AiMessage, AiPayload, Capability, BoxKind, BuckyOSRuntimeType, CompleteRequest, Contact,
-    ContactQuery, Event, KEventClient, ModelSpec, MsgCenterClient, MsgRecordWithObject,
-    MsgState, Requirements, SendContext, SystemConfigClient, UserState, UserType,
-    CONTROL_PANEL_SERVICE_NAME, CONTROL_PANEL_SERVICE_PORT,
+    AiMessage, AiPayload, AppDoc, AppServiceSpec, AppType, BoxKind, BuckyOSRuntimeType, Capability,
+    CompleteRequest, Contact, ContactQuery, Event, KEventClient, ModelSpec, MsgCenterClient,
+    MsgRecordWithObject, MsgState, RepoListFilter, RepoRecord, Requirements, SendContext,
+    ServiceExposeConfig, ServiceInstallConfig, ServiceState, SystemConfigClient, UserState,
+    UserType, CONTROL_PANEL_SERVICE_NAME, CONTROL_PANEL_SERVICE_PORT,
 };
 use buckyos_kit::*;
 use bytes::Bytes;
@@ -21,12 +22,14 @@ use http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE};
 use http::{Method, StatusCode, Version};
 use http_body_util::{combinators::BoxBody, BodyExt, Full, StreamBody};
 use hyper::body::Frame;
-use log::info;
+use log::{info, warn};
 use name_lib::DID;
 use ndn_lib::{MsgContent, MsgContentFormat, MsgObjKind, MsgObject};
+use semver::Version as SemVer;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::*;
 use server_runner::*;
+use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -81,7 +84,8 @@ const MIN_CHAT_STREAM_KEEPALIVE_MS: u64 = 5_000;
 const MAX_CHAT_STREAM_KEEPALIVE_MS: u64 = 60_000;
 const AICC_SETTINGS_KEY: &str = "services/aicc/settings";
 const AI_MODELS_POLICIES_KEY: &str = "services/control_panel/ai_models/policies";
-const AI_MODELS_PROVIDER_OVERRIDES_KEY: &str = "services/control_panel/ai_models/provider_overrides";
+const AI_MODELS_PROVIDER_OVERRIDES_KEY: &str =
+    "services/control_panel/ai_models/provider_overrides";
 const AI_MODELS_MODEL_CATALOG_KEY: &str = "services/control_panel/ai_models/model_catalog";
 const AI_MODELS_PROVIDER_SECRETS_KEY: &str = "services/control_panel/ai_models/provider_secrets";
 
@@ -326,11 +330,18 @@ struct SystemMetricsSnapshot {
     updated_at: Option<std::time::SystemTime>,
 }
 
+struct RepoAppReleaseCandidate {
+    record: RepoRecord,
+    app_doc: AppDoc,
+    parsed_version: Option<SemVer>,
+}
+
 #[derive(Clone)]
 struct ControlPanelServer {
     log_downloads: Arc<Mutex<HashMap<String, LogDownloadEntry>>>,
     metrics_snapshot: Arc<RwLock<SystemMetricsSnapshot>>,
     file_manager: Arc<file_manager::BuckyFileServer>,
+    app_installer: app_installer::AppInstaller,
 }
 
 impl ControlPanelServer {
@@ -356,6 +367,7 @@ impl ControlPanelServer {
             log_downloads: Arc::new(Mutex::new(HashMap::new())),
             metrics_snapshot,
             file_manager,
+            app_installer: app_installer::AppInstaller::new(),
         }
     }
 
@@ -823,6 +835,18 @@ impl ControlPanelServer {
         }
     }
 
+    fn param_bool(req: &RPCRequest, key: &str) -> Option<bool> {
+        match req.params.get(key) {
+            Some(Value::Bool(value)) => Some(*value),
+            Some(Value::String(value)) => match value.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" | "on" => Some(true),
+                "false" | "0" | "no" | "off" => Some(false),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     fn normalize_session_token(token: Option<String>) -> Option<String> {
         token
             .map(|value| value.trim().to_string())
@@ -1029,6 +1053,17 @@ impl ControlPanelServer {
     ) -> Result<&'a RpcAuthPrincipal, RPCErrors> {
         principal
             .ok_or_else(|| RPCErrors::InvalidToken("missing authenticated principal".to_string()))
+    }
+
+    fn require_rpc_principal<'a>(
+        principal: Option<&'a RpcAuthPrincipal>,
+    ) -> Result<&'a RpcAuthPrincipal, RPCErrors> {
+        principal
+            .ok_or_else(|| RPCErrors::InvalidToken("missing authenticated principal".to_string()))
+    }
+
+    fn resolve_target_user_id(req: &RPCRequest, principal: &RpcAuthPrincipal) -> String {
+        Self::param_str(req, "user_id").unwrap_or_else(|| principal.username.clone())
     }
 
     fn parse_chat_owner_did(principal: &RpcAuthPrincipal) -> Result<DID, RPCErrors> {
@@ -3416,7 +3451,10 @@ impl ControlPanelServer {
     }
 
     fn upsert_item_by_id(items: &mut Vec<Value>, id: &str, next: Value) {
-        if let Some(index) = items.iter().position(|item| item.get("id").and_then(|value| value.as_str()) == Some(id)) {
+        if let Some(index) = items
+            .iter()
+            .position(|item| item.get("id").and_then(|value| value.as_str()) == Some(id))
+        {
             items[index] = next;
         } else {
             items.push(next);
@@ -3424,7 +3462,10 @@ impl ControlPanelServer {
     }
 
     fn upsert_item_by_alias(items: &mut Vec<Value>, alias: &str, next: Value) {
-        if let Some(index) = items.iter().position(|item| item.get("alias").and_then(|value| value.as_str()) == Some(alias)) {
+        if let Some(index) = items
+            .iter()
+            .position(|item| item.get("alias").and_then(|value| value.as_str()) == Some(alias))
+        {
             items[index] = next;
         } else {
             items.push(next);
@@ -3449,7 +3490,9 @@ impl ControlPanelServer {
             .get("items")
             .and_then(|value| value.as_array())
             .and_then(|items| {
-                items.iter().find(|item| item.get("id").and_then(|value| value.as_str()) == Some(provider_id))
+                items.iter().find(|item| {
+                    item.get("id").and_then(|value| value.as_str()) == Some(provider_id)
+                })
             })
             .and_then(|item| item.get("apiKey").and_then(|value| value.as_str()))
             .map(|value| !value.trim().is_empty())
@@ -3481,7 +3524,9 @@ impl ControlPanelServer {
             .get("items")
             .and_then(|value| value.as_array())
             .and_then(|items| {
-                items.iter().find(|item| item.get("id").and_then(|value| value.as_str()) == Some(provider_id))
+                items.iter().find(|item| {
+                    item.get("id").and_then(|value| value.as_str()) == Some(provider_id)
+                })
             })
             .and_then(|item| item.get("apiKey").and_then(|value| value.as_str()))
             .and_then(Self::mask_secret)
@@ -3511,7 +3556,8 @@ impl ControlPanelServer {
             .get("default_model")
             .and_then(|value| value.as_str())
             .or_else(|| {
-                first.get("models")
+                first
+                    .get("models")
                     .and_then(|value| value.as_array())
                     .and_then(|items| items.first())
                     .and_then(|value| value.as_str())
@@ -3570,7 +3616,8 @@ impl ControlPanelServer {
             .get("default_model")
             .and_then(|value| value.as_str())
             .or_else(|| {
-                first.get("models")
+                first
+                    .get("models")
                     .and_then(|value| value.as_array())
                     .and_then(|items| items.first())
                     .and_then(|value| value.as_str())
@@ -3600,7 +3647,10 @@ impl ControlPanelServer {
     }
 
     fn ai_minimax_provider_card(settings: &Value, secret_doc: &Value) -> Value {
-        let minimax = settings.get("minimax").cloned().unwrap_or_else(|| json!({}));
+        let minimax = settings
+            .get("minimax")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
         let enabled = minimax
             .get("enabled")
             .and_then(|value| value.as_bool())
@@ -3623,7 +3673,8 @@ impl ControlPanelServer {
             .get("default_model")
             .and_then(|value| value.as_str())
             .or_else(|| {
-                first.get("models")
+                first
+                    .get("models")
                     .and_then(|value| value.as_array())
                     .and_then(|items| items.first())
                     .and_then(|value| value.as_str())
@@ -3678,10 +3729,14 @@ impl ControlPanelServer {
                 .unwrap_or_default()
                 .to_string();
             if item.get("credentialConfigured").is_none() {
-                item["credentialConfigured"] = Value::Bool(Self::provider_secret_configured(provider_id.as_str(), secret_doc));
+                item["credentialConfigured"] = Value::Bool(Self::provider_secret_configured(
+                    provider_id.as_str(),
+                    secret_doc,
+                ));
             }
             if item.get("maskedApiKey").is_none() {
-                if let Some(masked) = Self::provider_masked_secret(provider_id.as_str(), secret_doc) {
+                if let Some(masked) = Self::provider_masked_secret(provider_id.as_str(), secret_doc)
+                {
                     item["maskedApiKey"] = Value::String(masked);
                 }
             }
@@ -3822,9 +3877,11 @@ impl ControlPanelServer {
             };
             let line = format!(
                 "[{}] {}: {}\n",
-                chrono::DateTime::<chrono::Utc>::from_timestamp_millis(message.created_at_ms as i64)
-                    .map(|ts| ts.format("%Y-%m-%d %H:%M").to_string())
-                    .unwrap_or_else(|| message.created_at_ms.to_string()),
+                chrono::DateTime::<chrono::Utc>::from_timestamp_millis(
+                    message.created_at_ms as i64
+                )
+                .map(|ts| ts.format("%Y-%m-%d %H:%M").to_string())
+                .unwrap_or_else(|| message.created_at_ms.to_string()),
                 speaker,
                 message.content.replace('\n', " ")
             );
@@ -3842,7 +3899,8 @@ impl ControlPanelServer {
     async fn handle_ai_overview(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         let runtime = get_buckyos_api_runtime()?;
         let client = runtime.get_system_config_client().await?;
-        let settings = Self::load_json_config_or_default(&client, AICC_SETTINGS_KEY, json!({})).await;
+        let settings =
+            Self::load_json_config_or_default(&client, AICC_SETTINGS_KEY, json!({})).await;
         let secret_doc = Self::load_json_config_or_default(
             &client,
             AI_MODELS_PROVIDER_SECRETS_KEY,
@@ -3885,7 +3943,8 @@ impl ControlPanelServer {
     async fn handle_ai_provider_list(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         let runtime = get_buckyos_api_runtime()?;
         let client = runtime.get_system_config_client().await?;
-        let settings = Self::load_json_config_or_default(&client, AICC_SETTINGS_KEY, json!({})).await;
+        let settings =
+            Self::load_json_config_or_default(&client, AICC_SETTINGS_KEY, json!({})).await;
         let secret_doc = Self::load_json_config_or_default(
             &client,
             AI_MODELS_PROVIDER_SECRETS_KEY,
@@ -3918,7 +3977,8 @@ impl ControlPanelServer {
     async fn handle_ai_model_list(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         let runtime = get_buckyos_api_runtime()?;
         let client = runtime.get_system_config_client().await?;
-        let settings = Self::load_json_config_or_default(&client, AICC_SETTINGS_KEY, json!({})).await;
+        let settings =
+            Self::load_json_config_or_default(&client, AICC_SETTINGS_KEY, json!({})).await;
         let model_catalog = Self::load_json_config_or_default(
             &client,
             AI_MODELS_MODEL_CATALOG_KEY,
@@ -4013,10 +4073,9 @@ impl ControlPanelServer {
         };
 
         let runtime = get_buckyos_api_runtime()?;
-        let aicc = runtime
-            .get_aicc_client()
-            .await
-            .map_err(|error| RPCErrors::ReasonError(format!("init aicc client failed: {}", error)))?;
+        let aicc = runtime.get_aicc_client().await.map_err(|error| {
+            RPCErrors::ReasonError(format!("init aicc client failed: {}", error))
+        })?;
 
         let request = CompleteRequest::new(
             Capability::LlmRouter,
@@ -4148,12 +4207,12 @@ impl ControlPanelServer {
             .and_then(|value| value.as_array())
             .cloned()
             .unwrap_or_default();
-        let model_alias = Self::ai_policy_primary_model(&policies, "message_hub.summary", "gpt-fast");
+        let model_alias =
+            Self::ai_policy_primary_model(&policies, "message_hub.summary", "gpt-fast");
 
-        let aicc = runtime
-            .get_aicc_client()
-            .await
-            .map_err(|error| RPCErrors::ReasonError(format!("init aicc client failed: {}", error)))?;
+        let aicc = runtime.get_aicc_client().await.map_err(|error| {
+            RPCErrors::ReasonError(format!("init aicc client failed: {}", error))
+        })?;
         let peer_did_string = peer_did.to_string();
         let request = CompleteRequest::new(
             Capability::LlmRouter,
@@ -4204,12 +4263,16 @@ impl ControlPanelServer {
         let krpc_client = runtime
             .get_zone_service_krpc_client("aicc")
             .await
-            .map_err(|error| RPCErrors::ReasonError(format!("init aicc rpc client failed: {}", error)))?;
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!("init aicc rpc client failed: {}", error))
+            })?;
 
         let result = krpc_client
             .call("service.reload_settings", json!({}))
             .await
-            .map_err(|error| RPCErrors::ReasonError(format!("reload aicc settings failed: {}", error)))?;
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!("reload aicc settings failed: {}", error))
+            })?;
 
         Ok(RPCResponse::new(
             RPCResult::Success(json!({
@@ -4248,8 +4311,12 @@ impl ControlPanelServer {
             provider.get("endpoint").and_then(|value| value.as_str()),
         );
 
-        if provider_id == "openai-main" || provider_id == "google-main" || provider_id == "minimax-main" {
-            let mut settings = Self::load_json_config_or_default(&client, AICC_SETTINGS_KEY, json!({})).await;
+        if provider_id == "openai-main"
+            || provider_id == "google-main"
+            || provider_id == "minimax-main"
+        {
+            let mut settings =
+                Self::load_json_config_or_default(&client, AICC_SETTINGS_KEY, json!({})).await;
             let key = if provider_id == "openai-main" {
                 "openai"
             } else if provider_id == "google-main" {
@@ -4316,8 +4383,14 @@ impl ControlPanelServer {
             if first.get("models").is_none() {
                 first["models"] = json!([default_model]);
             }
-            if let Some(models) = first.get_mut("models").and_then(|value| value.as_array_mut()) {
-                if !models.iter().any(|item| item.as_str() == Some(default_model)) {
+            if let Some(models) = first
+                .get_mut("models")
+                .and_then(|value| value.as_array_mut())
+            {
+                if !models
+                    .iter()
+                    .any(|item| item.as_str() == Some(default_model))
+                {
                     models.insert(0, Value::String(default_model.to_string()));
                 }
             }
@@ -4373,7 +4446,8 @@ impl ControlPanelServer {
                     json!({ "id": provider_id, "apiKey": api_key }),
                 );
                 secret_doc["items"] = Value::Array(secret_items);
-                Self::save_json_config(&client, AI_MODELS_PROVIDER_SECRETS_KEY, &secret_doc).await?;
+                Self::save_json_config(&client, AI_MODELS_PROVIDER_SECRETS_KEY, &secret_doc)
+                    .await?;
                 info!(
                     "control_panel.ai.provider.set persisted_secret provider_id={} api_key_present=true",
                     provider_id,
@@ -4381,7 +4455,8 @@ impl ControlPanelServer {
             }
         }
 
-        let settings = Self::load_json_config_or_default(&client, AICC_SETTINGS_KEY, json!({})).await;
+        let settings =
+            Self::load_json_config_or_default(&client, AICC_SETTINGS_KEY, json!({})).await;
         let secret_doc = Self::load_json_config_or_default(
             &client,
             AI_MODELS_PROVIDER_SECRETS_KEY,
@@ -4489,6 +4564,344 @@ impl ControlPanelServer {
 
         Ok(RPCResponse::new(
             RPCResult::Success(json!({ "ok": true, "policy": policy })),
+            req.seq,
+        ))
+    }
+
+    fn repo_record_version(record: &RepoRecord) -> Option<String> {
+        record
+            .meta
+            .get("version")
+            .and_then(|value| value.as_str())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+
+    fn repo_status_rank(status: &str) -> u8 {
+        match status {
+            "pinned" => 2,
+            "collected" => 1,
+            _ => 0,
+        }
+    }
+
+    fn compare_repo_app_release(
+        lhs: &RepoAppReleaseCandidate,
+        rhs: &RepoAppReleaseCandidate,
+    ) -> Ordering {
+        match (&lhs.parsed_version, &rhs.parsed_version) {
+            (Some(left), Some(right)) if left != right => return left.cmp(right),
+            (Some(_), None) => return Ordering::Greater,
+            (None, Some(_)) => return Ordering::Less,
+            _ => {}
+        }
+
+        let lhs_status = Self::repo_status_rank(lhs.record.status.as_str());
+        let rhs_status = Self::repo_status_rank(rhs.record.status.as_str());
+        if lhs_status != rhs_status {
+            return lhs_status.cmp(&rhs_status);
+        }
+
+        let lhs_updated = lhs
+            .record
+            .updated_at
+            .or(lhs.record.pinned_at)
+            .or(lhs.record.collected_at)
+            .unwrap_or(0);
+        let rhs_updated = rhs
+            .record
+            .updated_at
+            .or(rhs.record.pinned_at)
+            .or(rhs.record.collected_at)
+            .unwrap_or(0);
+        if lhs_updated != rhs_updated {
+            return lhs_updated.cmp(&rhs_updated);
+        }
+
+        lhs.app_doc.version.cmp(&rhs.app_doc.version)
+    }
+
+    async fn resolve_repo_app_release(
+        &self,
+        app_id: &str,
+        version: Option<&str>,
+    ) -> Result<RepoAppReleaseCandidate, RPCErrors> {
+        let runtime = get_buckyos_api_runtime()?;
+        let repo = runtime.get_repo_client().await?;
+        let requested_version = version
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string());
+        let records = repo
+            .list(Some(RepoListFilter::new(
+                None,
+                None,
+                Some(app_id.to_string()),
+                None,
+            )))
+            .await?;
+
+        let mut candidates = Vec::new();
+        for record in records {
+            if record.content_name.as_deref() != Some(app_id) {
+                continue;
+            }
+
+            let Some(record_version) = Self::repo_record_version(&record) else {
+                warn!(
+                    "skip repo record without version for app `{}` content `{}`",
+                    app_id, record.content_id
+                );
+                continue;
+            };
+            if requested_version
+                .as_deref()
+                .map(|expected| expected != record_version)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+
+            let app_doc: AppDoc = match serde_json::from_value(record.meta.clone()) {
+                Ok(value) => value,
+                Err(error) => {
+                    warn!(
+                        "skip repo record `{}` for app `{}` because meta is not AppDoc: {}",
+                        record.content_id, app_id, error
+                    );
+                    continue;
+                }
+            };
+            if app_doc.name != app_id {
+                continue;
+            }
+
+            candidates.push(RepoAppReleaseCandidate {
+                parsed_version: SemVer::parse(app_doc.version.as_str()).ok(),
+                record,
+                app_doc,
+            });
+        }
+
+        candidates
+            .into_iter()
+            .max_by(|lhs, rhs| Self::compare_repo_app_release(lhs, rhs))
+            .ok_or_else(|| {
+                let detail = requested_version
+                    .map(|value| format!(" version `{value}`"))
+                    .unwrap_or_default();
+                RPCErrors::ReasonError(format!("No repo app release found for `{app_id}`{detail}"))
+            })
+    }
+
+    fn build_default_install_config(app_id: &str, app_doc: &AppDoc) -> ServiceInstallConfig {
+        let mut install_config = ServiceInstallConfig::default();
+        install_config.local_cache_mount_point =
+            app_doc.install_config_tips.local_cache_mount_point.clone();
+        install_config.container_param = app_doc.install_config_tips.container_param.clone();
+        install_config.start_param = app_doc.install_config_tips.start_param.clone();
+
+        for (service_name, service_port) in app_doc.install_config_tips.service_ports.iter() {
+            let mut expose = ServiceExposeConfig::default();
+            if service_name == "www" {
+                expose.sub_hostname.push(app_id.to_string());
+            } else {
+                expose.expose_port = Some(*service_port);
+            }
+            install_config
+                .expose_config
+                .insert(service_name.clone(), expose);
+        }
+
+        if app_doc.get_app_type() == AppType::Web
+            && !install_config.expose_config.contains_key("www")
+        {
+            install_config.expose_config.insert(
+                "www".to_string(),
+                ServiceExposeConfig {
+                    sub_hostname: vec![app_id.to_string()],
+                    ..Default::default()
+                },
+            );
+        }
+
+        install_config
+    }
+
+    fn build_install_spec_for_user(app_doc: AppDoc, user_id: String) -> AppServiceSpec {
+        let app_id = app_doc.name.clone();
+        AppServiceSpec {
+            install_config: Self::build_default_install_config(app_id.as_str(), &app_doc),
+            app_doc,
+            app_index: 0,
+            user_id,
+            enable: true,
+            expected_instance_count: 1,
+            state: ServiceState::New,
+        }
+    }
+
+    fn parse_app_type(raw: &str) -> Result<AppType, RPCErrors> {
+        AppType::try_from(raw.trim()).map_err(|error| {
+            RPCErrors::ParseRequestError(format!("Invalid app_type `{}`: {}", raw, error))
+        })
+    }
+
+    async fn handle_app_publish(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let _principal = Self::require_rpc_principal(principal)?;
+        let local_dir = Self::require_param_str(&req, "local_dir")
+            .or_else(|_| Self::require_param_str(&req, "path"))?;
+        let app_doc_value = req
+            .params
+            .get("app_doc")
+            .cloned()
+            .or_else(|| req.params.get("app_doc_template").cloned())
+            .ok_or_else(|| RPCErrors::ReasonError("missing app_doc payload".to_string()))?;
+        let app_doc: AppDoc = serde_json::from_value(app_doc_value).map_err(|error| {
+            RPCErrors::ParseRequestError(format!("Invalid app_doc payload: {}", error))
+        })?;
+        let app_type = Self::param_str(&req, "app_type")
+            .map(|raw| Self::parse_app_type(raw.as_str()))
+            .transpose()?
+            .unwrap_or_else(|| app_doc.get_app_type());
+
+        let obj_id = self
+            .app_installer
+            .publish_app_to_repo(app_type, Path::new(local_dir.as_str()), &app_doc)
+            .await?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "ok": true,
+                "obj_id": obj_id.to_string(),
+            })),
+            req.seq,
+        ))
+    }
+
+    async fn handle_apps_install(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_rpc_principal(principal)?;
+        let app_id = Self::require_param_str(&req, "app_id")?;
+        let user_id = Self::resolve_target_user_id(&req, principal);
+        let version = Self::param_str(&req, "version");
+        let release = self
+            .resolve_repo_app_release(app_id.as_str(), version.as_deref())
+            .await?;
+        let spec = Self::build_install_spec_for_user(release.app_doc, user_id);
+        let task_id = self.app_installer.install_app(&spec).await?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "task_id": task_id.to_string(),
+            })),
+            req.seq,
+        ))
+    }
+
+    async fn handle_apps_update(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_rpc_principal(principal)?;
+        let app_id = Self::require_param_str(&req, "app_id")?;
+        let version = Self::require_param_str(&req, "version")?;
+        let user_id = Self::resolve_target_user_id(&req, principal);
+        let current_spec = self
+            .app_installer
+            .get_app_service_spec(app_id.as_str(), Some(user_id.as_str()))
+            .await?;
+        let release = self
+            .resolve_repo_app_release(app_id.as_str(), Some(version.as_str()))
+            .await?;
+
+        let next_spec = AppServiceSpec {
+            app_doc: release.app_doc,
+            app_index: current_spec.app_index,
+            user_id: current_spec.user_id.clone(),
+            enable: current_spec.enable,
+            expected_instance_count: current_spec.expected_instance_count,
+            state: current_spec.state,
+            install_config: current_spec.install_config.clone(),
+        };
+        let task_id = self.app_installer.upgrade_app(&next_spec).await?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "task_id": task_id.to_string(),
+            })),
+            req.seq,
+        ))
+    }
+
+    async fn handle_apps_uninstall(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_rpc_principal(principal)?;
+        let app_id = Self::require_param_str(&req, "app_id")?;
+        let user_id = Self::resolve_target_user_id(&req, principal);
+        let remove_data = Self::param_bool(&req, "remove_data")
+            .or_else(|| Self::param_bool(&req, "is_remove_data"))
+            .unwrap_or(false);
+        let task_id = self
+            .app_installer
+            .uninstall_app(app_id.as_str(), Some(user_id.as_str()), remove_data)
+            .await?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "task_id": task_id.to_string(),
+            })),
+            req.seq,
+        ))
+    }
+
+    async fn handle_apps_start(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_rpc_principal(principal)?;
+        let app_id = Self::require_param_str(&req, "app_id")?;
+        let user_id = Self::resolve_target_user_id(&req, principal);
+        let task_id = self
+            .app_installer
+            .start_app(app_id.as_str(), Some(user_id.as_str()))
+            .await?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "ok": true,
+                "task_id": task_id.to_string(),
+            })),
+            req.seq,
+        ))
+    }
+
+    async fn handle_apps_stop(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_rpc_principal(principal)?;
+        let app_id = Self::require_param_str(&req, "app_id")?;
+        let user_id = Self::resolve_target_user_id(&req, principal);
+        self.app_installer
+            .stop_app(app_id.as_str(), Some(user_id.as_str()))
+            .await?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({ "ok": true })),
             req.seq,
         ))
     }
@@ -6425,11 +6838,12 @@ impl RPCHandler for ControlPanelServer {
             "ai.policy.list" => self.handle_ai_policy_list(req).await,
             "ai.policy.set" => self.handle_ai_policy_set(req).await,
             "ai.diagnostics.list" => self.handle_ai_diagnostics_list(req).await,
-            "apps.install" => self.handle_unimplemented(req, "Install app").await,
-            "apps.update" => self.handle_unimplemented(req, "Update app").await,
-            "apps.uninstall" => self.handle_unimplemented(req, "Uninstall app").await,
-            "apps.start" => self.handle_unimplemented(req, "Start app").await,
-            "apps.stop" => self.handle_unimplemented(req, "Stop app").await,
+            "apps.install" => self.handle_apps_install(req, principal.as_ref()).await,
+            "apps.update" => self.handle_apps_update(req, principal.as_ref()).await,
+            "apps.uninstall" => self.handle_apps_uninstall(req, principal.as_ref()).await,
+            "apps.start" => self.handle_apps_start(req, principal.as_ref()).await,
+            "apps.stop" => self.handle_apps_stop(req, principal.as_ref()).await,
+            "app.publish" => self.handle_app_publish(req, principal.as_ref()).await,
             // Chat
             "chat.bootstrap" => self.handle_chat_bootstrap(req, principal.as_ref()).await,
             "chat.contact.list" => self.handle_chat_contact_list(req, principal.as_ref()).await,
@@ -6700,13 +7114,6 @@ impl RPCHandler for ControlPanelServer {
             "verify.status" => self.handle_unimplemented(req, "Verify hub status").await,
             "verify.sessions" => self.handle_unimplemented(req, "List sessions").await,
             "verify.session.revoke" => self.handle_unimplemented(req, "Revoke session").await,
-            // Repo Service
-            "repo.sources" => self.handle_unimplemented(req, "List repo sources").await,
-            "repo.pkgs" => self.handle_unimplemented(req, "List repo packages").await,
-            "repo.install" => self.handle_unimplemented(req, "Install package").await,
-            "repo.publish" => self.handle_unimplemented(req, "Publish package").await,
-            "repo.sync" => self.handle_unimplemented(req, "Sync repo").await,
-            "repo.tasks" => self.handle_unimplemented(req, "Repo tasks").await,
             // Message Bus
             "msgbus.status" => self.handle_unimplemented(req, "Message bus status").await,
             "msgbus.topics" => self.handle_unimplemented(req, "List topics").await,

@@ -40,7 +40,9 @@ use uuid::Uuid;
 // 4. 输出: InstanceReplica -> nodes/{node}/config.apps, RemoveInstance -> 删 node config, UpdateServiceInfo -> services/{spec}/info
 // 5. node-daemon 读 nodes/{node}/config 收敛实例; 实例上报 services/{spec}/instances/{node}; gateway 读 service_info 做路由
 const INSTALL_TASK_TYPE: &str = "app_install";
+const UNINSTALL_TASK_TYPE: &str = "app_uninstall";
 const START_TASK_TYPE: &str = "app_start";
+const UPDATE_TASK_TYPE: &str = "app_update";
 const WAIT_INTERVAL_MS: u64 = 1_000;
 const WAIT_TIMEOUT_SECS: u64 = 45;
 const PROOF_EXPIRE_SECS: u64 = 365 * 24 * 60 * 60;
@@ -553,7 +555,10 @@ impl AppInstaller {
     ) -> Result<ServiceInstanceReportInfo, RPCErrors> {
         let mut waited = Duration::ZERO;
         while waited <= self.wait_timeout {
-            if let Ok(instance) = self.get_app_service_instance_config(spec.app_id()).await {
+            if let Ok(instance) = self
+                .get_app_service_instance_config(spec.app_id(), Some(spec.user_id.as_str()))
+                .await
+            {
                 if matches!(instance.state, ServiceInstanceState::Started) {
                     info!(
                         "app `{}` for user `{}` instance ready on node `{}`",
@@ -763,10 +768,17 @@ impl AppInstaller {
         Ok(())
     }
 
-    async fn run_start_task(&self, app_id: String, task_id: i64) -> Result<(), RPCErrors> {
+    async fn run_start_task(
+        &self,
+        app_id: String,
+        user_id: Option<String>,
+        task_id: i64,
+    ) -> Result<(), RPCErrors> {
         let task_mgr = self.task_mgr_client().await?;
         let client = self.system_config_client().await?;
-        let (spec_key, mut spec) = self.get_single_matching_spec(&app_id, None).await?;
+        let (spec_key, mut spec) = self
+            .get_single_matching_spec(&app_id, user_id.as_deref())
+            .await?;
 
         if spec.state == ServiceState::Deleted {
             let error = RPCErrors::ReasonError(format!(
@@ -820,6 +832,221 @@ impl AppInstaller {
             task_id,
             spec.app_id(),
             spec.user_id
+        );
+        Ok(())
+    }
+
+    async fn run_uninstall_task(
+        &self,
+        app_id: String,
+        user_id: Option<String>,
+        is_remove_data: bool,
+        task_id: i64,
+    ) -> Result<(), RPCErrors> {
+        let task_mgr = self.task_mgr_client().await?;
+        let client = self.system_config_client().await?;
+        let (spec_key, mut spec) = self
+            .get_single_matching_spec(&app_id, user_id.as_deref())
+            .await?;
+
+        let _ = task_mgr
+            .update_task(
+                task_id,
+                Some(TaskStatus::Running),
+                Some(15.0),
+                Some("Stopping app".to_string()),
+                None,
+            )
+            .await;
+
+        self.stop_app(&app_id, user_id.as_deref()).await?;
+
+        let _ = task_mgr
+            .update_task(
+                task_id,
+                None,
+                Some(55.0),
+                Some("Marking app as deleted".to_string()),
+                None,
+            )
+            .await;
+
+        spec.state = ServiceState::Deleted;
+        Self::set_spec_at(&client, &spec_key, &spec).await?;
+        Self::log_spec_state_change(
+            &spec,
+            ServiceState::Deleted,
+            format!("uninstall task {} wrote spec `{}`", task_id, spec_key).as_str(),
+        );
+
+        self.wait_for_instances_removed(&spec).await?;
+
+        if is_remove_data {
+            let _ = task_mgr
+                .update_task(
+                    task_id,
+                    None,
+                    Some(80.0),
+                    Some("Removing app data".to_string()),
+                    None,
+                )
+                .await;
+            self.remove_app_data(&spec).await?;
+        }
+
+        let data = json!({
+            "spec_path": spec_key,
+            "spec_id": Self::service_spec_id(&spec),
+            "remove_data": is_remove_data,
+        });
+
+        task_mgr
+            .update_task(
+                task_id,
+                Some(TaskStatus::Completed),
+                Some(100.0),
+                Some("App uninstalled".to_string()),
+                Some(data),
+            )
+            .await?;
+        info!(
+            "uninstall task {} completed for app `{}` user `{}`",
+            task_id,
+            spec.app_id(),
+            spec.user_id
+        );
+        Ok(())
+    }
+
+    async fn run_upgrade_task(
+        &self,
+        spec: AppServiceSpec,
+        task_id: i64,
+        root_id: String,
+    ) -> Result<(), RPCErrors> {
+        let task_mgr = self.task_mgr_client().await?;
+        let client = self.system_config_client().await?;
+        let (spec_key, current_spec) = self
+            .get_single_matching_spec(spec.app_id(), Some(spec.user_id.as_str()))
+            .await?;
+
+        let _ = task_mgr
+            .update_task(
+                task_id,
+                Some(TaskStatus::Running),
+                Some(10.0),
+                Some("Stopping current app version".to_string()),
+                None,
+            )
+            .await;
+
+        self.stop_app(spec.app_id(), Some(spec.user_id.as_str()))
+            .await?;
+
+        let _ = task_mgr
+            .update_task(
+                task_id,
+                None,
+                Some(35.0),
+                Some("Validating repo content".to_string()),
+                None,
+            )
+            .await;
+
+        let mut next_spec = spec.clone();
+        next_spec.app_index = current_spec.app_index;
+        next_spec.state = ServiceState::New;
+
+        let content_id = Self::resolve_content_id(&next_spec)?;
+        let repo_status = self.load_repo_record_status(&content_id).await?;
+        let status = repo_status.ok_or_else(|| {
+            let error = RPCErrors::ReasonError(format!(
+                "Content `{content_id}` is not collected in RepoService"
+            ));
+            warn!(
+                "upgrade app `{}` for user `{}` failed: {}",
+                spec.app_id(),
+                spec.user_id,
+                error
+            );
+            error
+        })?;
+        let download_base = if status == REPO_STATUS_PINNED {
+            self.latest_action_proof_id(&content_id, REPO_PROOF_TYPE_DOWNLOAD)
+                .await?
+        } else {
+            let proof = self
+                .ensure_content_pinned(&next_spec, task_id, root_id.as_str())
+                .await?;
+            Some(proof.gen_obj_id().0)
+        };
+
+        let _ = task_mgr
+            .update_task(
+                task_id,
+                None,
+                Some(65.0),
+                Some("Writing upgraded app spec".to_string()),
+                Some(json!({
+                    "content_id": content_id,
+                })),
+            )
+            .await;
+
+        Self::set_spec_at(&client, &spec_key, &next_spec).await?;
+        Self::log_spec_state_change(
+            &next_spec,
+            ServiceState::New,
+            format!("upgrade task {} wrote spec `{}`", task_id, spec_key).as_str(),
+        );
+
+        let repo = self.repo_client().await?;
+        let install_proof = self.build_install_proof(&next_spec, &content_id, download_base)?;
+        repo.add_proof(RepoProof::action(install_proof)).await?;
+        info!(
+            "recorded upgrade install proof for app `{}` user `{}` version `{}`",
+            next_spec.app_id(),
+            next_spec.user_id,
+            next_spec.app_doc.version
+        );
+
+        let mut data = json!({
+            "spec_path": spec_key,
+            "app_index": next_spec.app_index,
+            "spec_id": Self::service_spec_id(&next_spec),
+        });
+
+        if Self::should_wait_for_instance(&next_spec) {
+            let _ = task_mgr
+                .update_task(
+                    task_id,
+                    None,
+                    Some(85.0),
+                    Some("Waiting for upgraded app instance".to_string()),
+                    None,
+                )
+                .await;
+            let instance = self.wait_for_instance_ready(&next_spec).await?;
+            data["instance"] = serde_json::to_value(instance).map_err(|error| {
+                RPCErrors::ReasonError(format!("Serialize instance report failed: {error}"))
+            })?;
+        }
+
+        task_mgr
+            .update_task(
+                task_id,
+                Some(TaskStatus::Completed),
+                Some(100.0),
+                Some("App upgraded".to_string()),
+                Some(data),
+            )
+            .await?;
+        info!(
+            "upgrade task {} completed for app `{}` user `{}` version `{}`",
+            task_id,
+            next_spec.app_id(),
+            next_spec.user_id,
+            next_spec.app_doc.version
         );
         Ok(())
     }
@@ -965,36 +1192,48 @@ impl AppInstaller {
     /// 3. spec.state → Deleted，写回 system_config
     /// 4. 等待调度器 RemoveInstance（删除 nodes/{node}/config 中的实例配置）
     /// 5. 若 is_remove_data：清理应用数据目录
-    pub async fn uninstall_app(&self, app_id: &str, is_remove_data: bool) -> Result<(), RPCErrors> {
-        let client = self.system_config_client().await?;
-        let (spec_key, mut spec) = self.get_single_matching_spec(app_id, None).await?;
+    pub async fn uninstall_app(
+        &self,
+        app_id: &str,
+        user_id: Option<&str>,
+        is_remove_data: bool,
+    ) -> Result<u64, RPCErrors> {
+        let spec = self.get_app_service_spec(app_id, user_id).await?;
+        let (task_mgr, task_id, _root_id) = self
+            .create_task(
+                format!("Uninstall app {app_id}"),
+                UNINSTALL_TASK_TYPE,
+                json!({
+                    "app_id": app_id,
+                    "user_id": spec.user_id,
+                    "remove_data": is_remove_data,
+                }),
+                spec.user_id.as_str(),
+                app_id,
+            )
+            .await?;
 
         info!(
-            "begin uninstall for app `{}` user `{}` remove_data={}",
-            spec.app_id(),
-            spec.user_id,
-            is_remove_data
+            "queued uninstall task {} for app `{}` user `{}` remove_data={}",
+            task_id, app_id, spec.user_id, is_remove_data
         );
-        self.stop_app(app_id).await?;
-        spec.state = ServiceState::Deleted;
-        Self::set_spec_at(&client, &spec_key, &spec).await?;
-        Self::log_spec_state_change(
-            &spec,
-            ServiceState::Deleted,
-            format!("uninstall wrote spec `{}`", spec_key).as_str(),
-        );
-        self.wait_for_instances_removed(&spec).await?;
 
-        if is_remove_data {
-            self.remove_app_data(&spec).await?;
-        }
+        let installer = self.clone();
+        let app_id = app_id.to_string();
+        let user_id = Some(spec.user_id.clone());
+        tokio::spawn(async move {
+            if let Err(error) = installer
+                .run_uninstall_task(app_id, user_id, is_remove_data, task_id)
+                .await
+            {
+                warn!("uninstall app task {} failed: {}", task_id, error);
+                let _ = task_mgr
+                    .mark_task_as_failed(task_id, &error.to_string())
+                    .await;
+            }
+        });
 
-        info!(
-            "uninstall completed for app `{}` user `{}`",
-            spec.app_id(),
-            spec.user_id
-        );
-        Ok(())
+        Ok(task_id as u64)
     }
 
     /// 停止应用。
@@ -1004,9 +1243,9 @@ impl AppInstaller {
     /// 2. spec.state → Stopped，写回 system_config
     /// 3. 调度器 schedule_loop 检测到 state 变化，删除 nodes/{node}/config.apps 中该应用的 app_service_instance_config
     /// 4. node-daemon 读 config 收敛，停止容器
-    pub async fn stop_app(&self, app_id: &str) -> Result<(), RPCErrors> {
+    pub async fn stop_app(&self, app_id: &str, user_id: Option<&str>) -> Result<(), RPCErrors> {
         let client = self.system_config_client().await?;
-        let (spec_key, mut spec) = self.get_single_matching_spec(app_id, None).await?;
+        let (spec_key, mut spec) = self.get_single_matching_spec(app_id, user_id).await?;
 
         if spec.state == ServiceState::Stopped || spec.state == ServiceState::Deleted {
             info!(
@@ -1046,8 +1285,8 @@ impl AppInstaller {
     /// 3. 调度器 schedule_loop 检测到 state 变化，选点并写入 nodes/{node}/config.apps（app_service_instance_config）
     /// 4. node-daemon 读 config 收敛，启动容器
     /// 5. 创建 task，返回 task_id
-    pub async fn start_app(&self, app_id: &str) -> Result<u64, RPCErrors> {
-        let spec = self.get_app_service_spec(app_id).await?;
+    pub async fn start_app(&self, app_id: &str, user_id: Option<&str>) -> Result<u64, RPCErrors> {
+        let spec = self.get_app_service_spec(app_id, user_id).await?;
         let (task_mgr, task_id, _root_id) = self
             .create_task(
                 format!("Start app {app_id}"),
@@ -1062,15 +1301,14 @@ impl AppInstaller {
             .await?;
         info!(
             "queued start task {} for app `{}` user `{}`",
-            task_id,
-            app_id,
-            spec.user_id
+            task_id, app_id, spec.user_id
         );
 
         let installer = self.clone();
         let app_id = app_id.to_string();
+        let user_id = Some(spec.user_id.clone());
         tokio::spawn(async move {
-            if let Err(error) = installer.run_start_task(app_id, task_id).await {
+            if let Err(error) = installer.run_start_task(app_id, user_id, task_id).await {
                 warn!("start app task {} failed: {}", task_id, error);
                 let _ = task_mgr
                     .mark_task_as_failed(task_id, &error.to_string())
@@ -1088,81 +1326,57 @@ impl AppInstaller {
     /// 2. 覆盖 users/{uid}/apps|agents/{app}/spec 为新的 AppServiceSpec
     /// 3. spec.state=New，触发调度器重新选点并分配新版本 app_service_instance_config
     /// 4. repo.add_proof(install_action) 新版本安装证明
-    pub async fn upgrade_app(&self, spec: &AppServiceSpec) -> Result<(), RPCErrors> {
-        let client = self.system_config_client().await?;
-        let (spec_key, current_spec) = self
-            .get_single_matching_spec(spec.app_id(), Some(spec.user_id.as_str()))
+    pub async fn upgrade_app(&self, spec: &AppServiceSpec) -> Result<u64, RPCErrors> {
+        let current_spec = self
+            .get_app_service_spec(spec.app_id(), Some(spec.user_id.as_str()))
             .await?;
-
+        let content_id = Self::resolve_content_id(spec)?;
+        let (task_mgr, task_id, root_id) = self
+            .create_task(
+                format!("Update app {}", spec.app_id()),
+                UPDATE_TASK_TYPE,
+                json!({
+                    "app_id": spec.app_id(),
+                    "user_id": spec.user_id,
+                    "from_version": current_spec.app_doc.version,
+                    "to_version": spec.app_doc.version,
+                    "content_id": content_id,
+                }),
+                spec.user_id.as_str(),
+                spec.app_id(),
+            )
+            .await?;
         info!(
-            "begin upgrade for app `{}` user `{}` from version `{}` to `{}`",
+            "queued upgrade task {} for app `{}` user `{}` from version `{}` to `{}`",
+            task_id,
             spec.app_id(),
             spec.user_id,
             current_spec.app_doc.version,
             spec.app_doc.version
         );
-        self.stop_app(spec.app_id()).await?;
 
-        let mut next_spec = spec.clone();
-        next_spec.app_index = current_spec.app_index;
-        next_spec.state = ServiceState::New;
+        let installer = self.clone();
+        let spec = spec.clone();
+        tokio::spawn(async move {
+            if let Err(error) = installer.run_upgrade_task(spec, task_id, root_id).await {
+                warn!("upgrade app task {} failed: {}", task_id, error);
+                let _ = task_mgr
+                    .mark_task_as_failed(task_id, &error.to_string())
+                    .await;
+            }
+        });
 
-        let content_id = Self::resolve_content_id(&next_spec)?;
-        let repo_status = self.load_repo_record_status(&content_id).await?;
-        let status = repo_status.ok_or_else(|| {
-            let error = RPCErrors::ReasonError(format!(
-                "Content `{content_id}` is not collected in RepoService"
-            ));
-            warn!(
-                "upgrade app `{}` for user `{}` failed: {}",
-                spec.app_id(),
-                spec.user_id,
-                error
-            );
-            error
-        })?;
-        let download_base = if status == REPO_STATUS_PINNED {
-            self.latest_action_proof_id(&content_id, REPO_PROOF_TYPE_DOWNLOAD)
-                .await?
-        } else {
-            let proof = self.ensure_content_pinned(&next_spec, 0, "upgrade").await?;
-            Some(proof.gen_obj_id().0)
-        };
-
-        Self::set_spec_at(&client, &spec_key, &next_spec).await?;
-        Self::log_spec_state_change(
-            &next_spec,
-            ServiceState::New,
-            format!("upgrade wrote spec `{}`", spec_key).as_str(),
-        );
-
-        let repo = self.repo_client().await?;
-        let install_proof = self.build_install_proof(&next_spec, &content_id, download_base)?;
-        repo.add_proof(RepoProof::action(install_proof)).await?;
-        info!(
-            "recorded upgrade install proof for app `{}` user `{}` version `{}`",
-            next_spec.app_id(),
-            next_spec.user_id,
-            next_spec.app_doc.version
-        );
-
-        if Self::should_wait_for_instance(&next_spec) {
-            let _ = self.wait_for_instance_ready(&next_spec).await?;
-        }
-
-        info!(
-            "upgrade completed for app `{}` user `{}` version `{}`",
-            next_spec.app_id(),
-            next_spec.user_id,
-            next_spec.app_doc.version
-        );
-        Ok(())
+        Ok(task_id as u64)
     }
 
     /// 查询应用 spec。
     /// 流程：从 system_config 读取 users/{uid}/apps/{app}/spec 或 users/{uid}/agents/{app}/spec。
-    pub async fn get_app_service_spec(&self, app_id: &str) -> Result<AppServiceSpec, RPCErrors> {
-        let (_, spec) = self.get_single_matching_spec(app_id, None).await?;
+    pub async fn get_app_service_spec(
+        &self,
+        app_id: &str,
+        user_id: Option<&str>,
+    ) -> Result<AppServiceSpec, RPCErrors> {
+        let (_, spec) = self.get_single_matching_spec(app_id, user_id).await?;
         Ok(spec)
     }
 
@@ -1171,9 +1385,10 @@ impl AppInstaller {
     pub async fn get_app_service_instance_config(
         &self,
         app_id: &str,
+        user_id: Option<&str>,
     ) -> Result<ServiceInstanceReportInfo, RPCErrors> {
         let client = self.system_config_client().await?;
-        let spec = self.get_app_service_spec(app_id).await?;
+        let spec = self.get_app_service_spec(app_id, user_id).await?;
         let service_spec_id = Self::service_spec_id(&spec);
         let instances_key = format!("services/{service_spec_id}/instances");
         let node_ids = Self::list_children(&client, &instances_key).await?;
@@ -1436,11 +1651,7 @@ impl AppInstaller {
                     "Write final AppDoc object into named store failed: {error}"
                 ))
             })?;
-        self.store_meta_object_via_repo(
-            &repo,
-            &final_obj_id,
-            "appdoc",
-        )
+        self.store_meta_object_via_repo(&repo, &final_obj_id, "appdoc")
             .await?;
 
         Ok(final_obj_id)
@@ -1465,9 +1676,7 @@ impl AppInstaller {
             .await?;
         info!(
             "publish completed for app `{}` version `{}` obj `{}`",
-            app_doc_template.name,
-            app_doc_template.version,
-            final_obj_id
+            app_doc_template.name, app_doc_template.version, final_obj_id
         );
         Ok(final_obj_id)
     }

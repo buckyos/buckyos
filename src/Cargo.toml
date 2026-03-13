@@ -32,7 +32,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.5.1"
+version = "0.6.0"
 
 [workspace.dependencies]
 # BuckyOS internal dependencies
