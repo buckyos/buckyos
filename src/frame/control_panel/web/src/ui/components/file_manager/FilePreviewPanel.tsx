@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 
+import { useI18n } from '@/i18n'
 import { getTextPreviewMode, type FilePreviewKind } from './filePreview'
 import { renderMarkdownHtml } from './markdownPreview'
 import ProgressRing from './ProgressRing'
@@ -118,6 +119,7 @@ const FilePreviewPanel = ({
   formatBytes,
   formatTimestamp,
 }: FilePreviewPanelProps) => {
+  const { t } = useI18n()
   const [textExpanded, setTextExpanded] = useState(false)
 
   const textMode = useMemo(() => {
@@ -133,8 +135,8 @@ const FilePreviewPanel = ({
     if (!textIsTruncated || textExpanded) {
       return previewTextContent
     }
-    return `${previewTextContent.slice(0, TEXT_PREVIEW_LIMIT)}\n\n... (preview truncated)`
-  }, [previewTextContent, textExpanded, textIsTruncated])
+    return `${previewTextContent.slice(0, TEXT_PREVIEW_LIMIT)}\n\n${t('files.previewTruncated', '... (preview truncated)')}`
+  }, [previewTextContent, t, textExpanded, textIsTruncated])
 
   const jsonPreviewContent = useMemo(() => {
     if (textMode !== 'json' || !activeTextContent.trim()) {
@@ -177,7 +179,7 @@ const FilePreviewPanel = ({
     >
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <p className="text-sm font-semibold text-slate-800">File preview</p>
+          <p className="text-sm font-semibold text-slate-800">{t('files.filePreview', 'File preview')}</p>
           <p className="text-xs text-slate-500">
             {previewEntry.name} · {formatBytes(previewEntry.size)} · {formatTimestamp(previewEntry.modified)}
           </p>
@@ -186,9 +188,9 @@ const FilePreviewPanel = ({
 
       {previewLoading ? (
         <div className="rounded-xl border border-slate-200 bg-white px-3 py-8 text-center text-sm text-slate-500">
-          <p>{previewLoadingLabel || 'Loading preview...'}</p>
+          <p>{previewLoadingLabel || t('files.loadingPreview', 'Loading preview...')}</p>
           {previewLoadingElapsedSeconds && previewLoadingElapsedSeconds > 0 ? (
-            <p className="mt-1 text-xs text-slate-400">{previewLoadingElapsedSeconds}s elapsed</p>
+            <p className="mt-1 text-xs text-slate-400">{t('files.elapsedSeconds', '{value}s elapsed', { value: previewLoadingElapsedSeconds })}</p>
           ) : null}
         </div>
       ) : previewError ? (
@@ -201,7 +203,7 @@ const FilePreviewPanel = ({
               onClick={() => onOpenImageViewer(previewImageSrc || previewRawUrl, previewEntry.name)}
               className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-primary hover:text-primary"
             >
-              View original
+              {t('files.viewOriginal', 'View original')}
             </button>
           </div>
           {previewImageSrc ? (
@@ -218,7 +220,7 @@ const FilePreviewPanel = ({
           {previewImageLoading ? (
             <div className="flex flex-col items-center gap-2 px-1 py-10 text-center">
               <ProgressRing progressPercent={previewImageProgressPercent} />
-              <p className="text-xs font-medium text-slate-600">Loading image preview...</p>
+              <p className="text-xs font-medium text-slate-600">{t('files.loadingImagePreview', 'Loading image preview...')}</p>
               <p className="text-[11px] text-slate-500">
                 {previewImageTotalBytes != null
                   ? `${formatBytes(previewImageLoadedBytes)} / ${formatBytes(previewImageTotalBytes)}`

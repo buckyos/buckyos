@@ -1,6 +1,8 @@
 import type { FormEventHandler, ReactNode } from 'react'
 import { useEffect } from 'react'
 
+import { useI18n } from '@/i18n'
+
 type ActionDialogProps = {
   open: boolean
   title: string
@@ -30,6 +32,8 @@ const ActionDialog = ({
   onConfirm,
   onSubmit,
 }: ActionDialogProps) => {
+  const { t } = useI18n()
+
   useEffect(() => {
     if (!open || busy) {
       return
@@ -71,7 +75,7 @@ const ActionDialog = ({
           disabled={busy}
           className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {cancelLabel}
+          {t('files.cancel', cancelLabel)}
         </button>
         <button
           type={onSubmit ? 'submit' : 'button'}

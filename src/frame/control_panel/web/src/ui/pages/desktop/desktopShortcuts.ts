@@ -7,8 +7,6 @@ export type DesktopShortcutDefinition = {
 }
 
 export type DesktopWindowId =
-  | 'chat'
-  | 'workspace'
   | 'monitor'
   | 'network'
   | 'containers'
@@ -16,25 +14,10 @@ export type DesktopWindowId =
   | 'storage'
   | 'logs'
   | 'apps'
-  | 'ai-models'
   | 'settings'
   | 'users'
 
 export const DESKTOP_SHORTCUTS: DesktopShortcutDefinition[] = [
-  {
-    id: 'chat',
-    label: 'Message Hub',
-    icon: 'message',
-    tile: 'bg-emerald-600',
-    windowId: 'chat',
-  },
-  {
-    id: 'workspace',
-    label: 'Workspace',
-    icon: 'apps',
-    tile: 'bg-slate-600',
-    windowId: 'workspace',
-  },
   {
     id: 'monitor',
     label: 'Monitor',
@@ -83,13 +66,6 @@ export const DESKTOP_SHORTCUTS: DesktopShortcutDefinition[] = [
     icon: 'apps',
     tile: 'bg-sky-500',
     windowId: 'apps',
-  },
-  {
-    id: 'ai-models',
-    label: 'AI Models',
-    icon: 'spark',
-    tile: 'bg-amber-500',
-    windowId: 'ai-models',
   },
   {
     id: 'settings',

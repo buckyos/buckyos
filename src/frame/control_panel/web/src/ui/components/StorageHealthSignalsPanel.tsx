@@ -1,3 +1,5 @@
+import { useI18n } from '@/i18n'
+
 type StorageHealthSignalsPanelProps = {
   warnings?: SystemWarning[]
   disks?: DiskInfo[]
@@ -23,6 +25,7 @@ const StorageHealthSignalsPanel = ({
   loading = false,
   compact = false,
 }: StorageHealthSignalsPanelProps) => {
+  const { t } = useI18n()
   const storageWarnings = warnings.filter((warning) => warning.label === 'Storage')
   const hotDisks = disks
     .map((disk) => ({
@@ -61,14 +64,14 @@ const StorageHealthSignalsPanel = ({
         >
           <p className="font-semibold text-[var(--cp-ink)]">{disk.label}</p>
           <p className="text-[var(--cp-muted)]">
-            {disk.mount} at {disk.usagePercent}%
+            {t('storage.diskAtPercent', '{mount} at {percent}%', { mount: disk.mount, percent: disk.usagePercent })}
           </p>
         </div>
       ))}
 
       {!storageWarnings.length && !hotDisks.length ? (
         <div className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-3 text-xs text-[var(--cp-muted)]">
-          No storage warnings right now.
+          {t('storage.noWarnings', 'No storage warnings right now.')}
         </div>
       ) : null}
     </div>

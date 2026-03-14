@@ -2,7 +2,6 @@ import {buckyos} from 'buckyos'
 import { ensureSessionToken } from '@/auth/authManager'
 
 const rpcClient = new buckyos.kRPCClient('/kapi/control-panel')
-const messageHubRpcClient = new buckyos.kRPCClient('/kapi/message-hub')
 
 const isAuthError = (error: unknown) => {
   const message = error instanceof Error ? error.message : String(error ?? '')
@@ -50,205 +49,6 @@ const callRpc = async <T>(
   }
 }
 
-const callMessageHubRpc = async <T>(
-  method: string,
-  params: Record<string, unknown> = {},
-): Promise<{ data: T | null; error: unknown }> => {
-  try {
-    const sessionToken = await ensureSessionToken()
-    messageHubRpcClient.setSessionToken(sessionToken)
-
-    const result = await messageHubRpcClient.call(method, params)
-    if (!result || typeof result !== 'object') {
-      throw new Error(`Invalid ${method} response`)
-    }
-    return { data: result as T, error: null }
-  } catch (error) {
-    if (isAuthError(error)) {
-      try {
-        const refreshedToken = await ensureSessionToken({ forceRefresh: true })
-        messageHubRpcClient.setSessionToken(refreshedToken)
-
-        const retried = await messageHubRpcClient.call(method, params)
-        if (!retried || typeof retried !== 'object') {
-          throw new Error(`Invalid ${method} response`)
-        }
-        return { data: retried as T, error: null }
-      } catch (retryError) {
-        return { data: null, error: retryError }
-      }
-    }
-
-    return { data: null, error }
-  }
-}
-
-type ChatStreamDoneReason = 'closed' | 'aborted' | 'error' | 'fatal'
-
-type ChatStreamStartOptions = {
-  peerDid: string
-  threadId?: string
-  keepaliveMs?: number
-  signal?: AbortSignal
-  onEvent: (event: ChatStreamEvent) => void
-  onError?: (error: unknown) => void
-  onDone?: (reason: ChatStreamDoneReason) => void
-}
-
-const CHAT_STREAM_ENDPOINT = '/kapi/message-hub/chat/stream'
-
-const isAbortError = (error: unknown) => error instanceof DOMException && error.name === 'AbortError'
-
-const readResponseText = async (response: Response) => {
-  try {
-    const text = await response.text()
-    if (!text) return ''
-
-    try {
-      const parsed = JSON.parse(text) as { error?: string }
-      if (typeof parsed.error === 'string' && parsed.error.trim()) {
-        return parsed.error
-      }
-    } catch {
-      // ignore JSON parse failure and return raw text
-    }
-
-    return text
-  } catch {
-    return ''
-  }
-}
-
-const fetchChatStreamResponse = async (
-  peerDid: string,
-  threadId: string | undefined,
-  keepaliveMs: number | undefined,
-  signal: AbortSignal,
-) => {
-  let sessionToken = await ensureSessionToken()
-  if (!sessionToken) {
-    throw new Error('Missing Message Hub session token')
-  }
-
-  let retried = false
-  while (true) {
-    const response = await fetch(CHAT_STREAM_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        session_token: sessionToken,
-        peer_did: peerDid,
-        thread_id: threadId,
-        keepalive_ms: keepaliveMs,
-      }),
-      signal,
-    })
-
-    if ((response.status === 401 || response.status === 403) && !retried) {
-      retried = true
-      sessionToken = await ensureSessionToken({ forceRefresh: true })
-      if (sessionToken) {
-        continue
-      }
-    }
-
-    return response
-  }
-}
-
-export const startChatStream = ({
-  peerDid,
-  threadId,
-  keepaliveMs,
-  signal,
-  onEvent,
-  onError,
-  onDone,
-}: ChatStreamStartOptions) => {
-  const controller = new AbortController()
-  let settled = false
-
-  const handleExternalAbort = () => {
-    controller.abort()
-  }
-
-  signal?.addEventListener('abort', handleExternalAbort)
-
-  const finalize = (reason: ChatStreamDoneReason) => {
-    if (settled) return
-    settled = true
-    signal?.removeEventListener('abort', handleExternalAbort)
-    onDone?.(reason)
-  }
-
-  void (async () => {
-    try {
-      const response = await fetchChatStreamResponse(
-        peerDid,
-        threadId,
-        keepaliveMs,
-        controller.signal,
-      )
-      if (!response.ok) {
-        const detail = await readResponseText(response)
-        const error = new Error(detail || `Chat stream failed (${response.status})`) as Error & {
-          fatal?: boolean
-        }
-        error.fatal = response.status < 500
-        throw error
-      }
-
-      const reader = response.body?.getReader()
-      if (!reader) {
-        throw new Error('Chat stream body is unavailable')
-      }
-
-      const decoder = new TextDecoder()
-      let buffer = ''
-
-      const flushLines = (chunk: string) => {
-        buffer += chunk
-        const parts = buffer.split('\n')
-        buffer = parts.pop() ?? ''
-        for (const part of parts) {
-          const line = part.trim()
-          if (!line) continue
-          onEvent(JSON.parse(line) as ChatStreamEvent)
-        }
-      }
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) {
-          flushLines(decoder.decode())
-          const trailing = buffer.trim()
-          if (trailing) {
-            onEvent(JSON.parse(trailing) as ChatStreamEvent)
-          }
-          finalize('closed')
-          return
-        }
-
-        flushLines(decoder.decode(value, { stream: true }))
-      }
-    } catch (error) {
-      if (isAbortError(error)) {
-        finalize('aborted')
-        return
-      }
-
-      onError?.(error)
-      finalize((error as { fatal?: boolean }).fatal ? 'fatal' : 'error')
-    }
-  })()
-
-  return () => {
-    controller.abort()
-  }
-}
-
 const mockLayoutData: RootLayoutData = {
   primaryNav: [
     { label: 'Desktop', icon: 'desktop', path: '/' },
@@ -258,7 +58,6 @@ const mockLayoutData: RootLayoutData = {
     { label: 'User Management', icon: 'users', path: '/users' },
     { label: 'Storage', icon: 'storage', path: '/storage' },
     { label: 'dApp Store', icon: 'apps', path: '/dapps' },
-    { label: 'Settings', icon: 'settings', path: '/settings' },
   ],
   secondaryNav: [
     { label: 'Recent Events', icon: 'bell', path: '/notifications', badge: '3' },
@@ -974,32 +773,44 @@ export const fetchSysConfigTree = async (
 ): Promise<{ data: SysConfigTreeResponse | null; error: unknown }> =>
   callRpc<SysConfigTreeResponse>('sys_config.tree', { key, depth })
 
-export const fetchChatBootstrap = async (): Promise<{
-  data: ChatBootstrapResponse | null
+export type ControlPanelLocale = 'en' | 'zh-CN'
+
+type ControlPanelLocaleResponse = {
+  key: string
+  locale: ControlPanelLocale
+  ok?: boolean
+}
+
+export const fetchControlPanelLocale = async (): Promise<{
+  data: ControlPanelLocaleResponse | null
   error: unknown
-}> => callMessageHubRpc<ChatBootstrapResponse>('chat.bootstrap', {})
+}> => {
+  const { data, error } = await callRpc<Partial<ControlPanelLocaleResponse>>('ui.locale.get', {})
+  const locale = data?.locale === 'zh-CN' ? 'zh-CN' : 'en'
+  return {
+    data: {
+      key: data?.key ?? 'services/control_panel/settings/locale',
+      locale,
+      ok: true,
+    },
+    error,
+  }
+}
 
-export const fetchChatContacts = async (
-  params: { keyword?: string; limit?: number; offset?: number } = {},
-): Promise<{ data: ChatContactListResponse | null; error: unknown }> =>
-  callMessageHubRpc<ChatContactListResponse>('chat.contact.list', params)
-
-export const fetchChatMessages = async (
-  peerDid: string,
-  limit = 60,
-): Promise<{ data: ChatMessageListResponse | null; error: unknown }> =>
-  callMessageHubRpc<ChatMessageListResponse>('chat.message.list', { peer_did: peerDid, limit })
-
-export const sendChatMessage = async (
-  targetDid: string,
-  content: string,
-  threadId?: string,
-): Promise<{ data: ChatSendMessageResponse | null; error: unknown }> =>
-  callMessageHubRpc<ChatSendMessageResponse>('chat.message.send', {
-    target_did: targetDid,
-    content,
-    thread_id: threadId,
-  })
+export const saveControlPanelLocale = async (
+  locale: ControlPanelLocale,
+): Promise<{ data: ControlPanelLocaleResponse | null; error: unknown }> => {
+  const { data, error } = await callRpc<Partial<ControlPanelLocaleResponse>>('ui.locale.set', { locale })
+  const normalized = data?.locale === 'zh-CN' ? 'zh-CN' : locale === 'zh-CN' ? 'zh-CN' : 'en'
+  return {
+    data: {
+      key: data?.key ?? 'services/control_panel/settings/locale',
+      locale: normalized,
+      ok: data?.ok ?? !error,
+    },
+    error,
+  }
+}
 
 export type AiModelOverview = {
   providersOnline: number
@@ -1317,11 +1128,6 @@ export const runAiProviderDiagnostic = async (
 
   return { data, error }
 }
-
-export const summarizeMessageHubThread = async (
-  peerDid: string,
-): Promise<{ data: MessageHubThreadSummaryResponse | null; error: unknown }> =>
-  callRpc<MessageHubThreadSummaryResponse>('ai.message_hub.thread_summary', { peer_did: peerDid })
 
 export const reloadAiProviderSettings = async (): Promise<{
   data: { ok: boolean; result?: { ok?: boolean; providers_registered?: number } } | null

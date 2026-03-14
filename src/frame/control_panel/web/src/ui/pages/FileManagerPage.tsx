@@ -41,6 +41,7 @@ import {
 import mammoth from 'mammoth/mammoth.browser'
 import useSWR from 'swr'
 
+import { useI18n } from '@/i18n'
 import { ensureSessionToken } from '@/auth/authManager'
 import { getSessionTokenFromCookies, getStoredSessionToken } from '@/auth/session'
 import ActionDialog from '@/ui/components/file_manager/ActionDialog'
@@ -708,6 +709,7 @@ type FileManagerPageProps = {
 }
 
 const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
+  const { t } = useI18n()
   const [token, setToken] = useState(() => getStoredSessionToken() || getSessionTokenFromCookies() || '')
   const [locationPathname, setLocationPathname] = useState(() => (embedded ? '/desktop/files' : window.location.pathname))
   const publicShareId = useMemo(() => getPublicShareIdFromPath(locationPathname), [locationPathname])
@@ -3614,15 +3616,15 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
         className="w-full max-w-lg rounded-3xl border border-slate-200 bg-white p-5 shadow-2xl"
       >
         <div className="mb-4">
-          <h3 className="text-lg font-semibold text-slate-900">Rename {renameTarget.is_dir ? 'Folder' : 'File'}</h3>
+          <h3 className="text-lg font-semibold text-slate-900">{t('files.renameTarget', 'Rename {kind}', { kind: renameTarget.is_dir ? t('files.folder', 'Folder') : t('files.file', 'File') })}</h3>
           <p className="mt-1 text-xs text-slate-500">
-            <span className="font-medium text-slate-600">Current name:</span>{' '}
+            <span className="font-medium text-slate-600">{t('files.currentName', 'Current name:')}</span>{' '}
             <span className="break-all">{renameTarget.name}</span>
           </p>
         </div>
 
         <label className="block text-sm font-semibold text-slate-700" htmlFor="rename-base-input">
-          Name
+          {t('files.name', 'Name')}
         </label>
         <div className="mt-2 flex items-start gap-2">
           <input
@@ -3637,7 +3639,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
             autoFocus
             disabled={renameSubmitting}
             className="min-w-0 flex-1 rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-800 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:cursor-not-allowed disabled:bg-slate-100"
-            placeholder={renameTarget.is_dir ? 'Folder name' : 'File name'}
+            placeholder={renameTarget.is_dir ? t('files.folderName', 'Folder name') : t('files.fileName', 'File name')}
           />
           {!renameTarget.is_dir ? (
             <div className="w-[168px] shrink-0">
@@ -3654,7 +3656,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                   onBlur={() => setRenameEditingExtension(false)}
                   disabled={renameSubmitting}
                   className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-800 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:cursor-not-allowed disabled:bg-slate-100"
-                  placeholder="ext"
+                  placeholder={t('files.extensionShort', 'ext')}
                 />
               ) : (
                 <button
@@ -3663,7 +3665,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                   disabled={renameSubmitting}
                   className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2 text-left text-sm font-semibold text-slate-700 transition hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {renameExtension.trim() ? `.${renameExtension.trim().replace(/^\.+/, '')}` : '.(none)'}
+                  {renameExtension.trim() ? `.${renameExtension.trim().replace(/^\.+/, '')}` : t('files.noExtension', '.(none)')}
                 </button>
               )}
               <button
@@ -3672,7 +3674,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                 disabled={renameSubmitting}
                 className="mt-1 text-[11px] font-medium text-primary transition hover:text-teal-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {renameEditingExtension ? 'Finish extension edit' : 'Click to edit extension'}
+                {renameEditingExtension ? t('files.finishExtensionEdit', 'Finish extension edit') : t('files.clickEditExtension', 'Click to edit extension')}
               </button>
             </div>
           ) : null}
@@ -3687,14 +3689,14 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
             disabled={renameSubmitting}
             className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Cancel
+            {t('files.cancel', 'Cancel')}
           </button>
           <button
             type="submit"
             disabled={renameSubmitting}
             className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {renameSubmitting ? 'Renaming...' : 'Rename'}
+            {renameSubmitting ? t('files.renaming', 'Renaming...') : t('files.rename', 'Rename')}
           </button>
         </div>
       </form>
@@ -3706,7 +3708,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
       open
       title={confirmDialog.title}
       description={confirmDialog.description}
-      confirmLabel={confirmDialogBusy ? 'Working...' : confirmDialog.confirmLabel}
+      confirmLabel={confirmDialogBusy ? t('files.working', 'Working...') : confirmDialog.confirmLabel}
       confirmTone={confirmDialog.confirmTone}
       busy={confirmDialogBusy}
       onCancel={closeConfirmDialog}
@@ -3719,9 +3721,9 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   const folderDialogNode = (
     <ActionDialog
       open={folderDialogOpen}
-      title="Create folder"
-      description={<p>Create a new folder under <span className="font-semibold text-slate-800">{currentPath}</span>.</p>}
-      confirmLabel={folderDialogBusy ? 'Creating...' : 'Create'}
+      title={t('files.createFolder', 'Create folder')}
+      description={<p>{t('files.createFolderUnder', 'Create a new folder under {path}.', { path: currentPath })}</p>}
+      confirmLabel={folderDialogBusy ? t('files.creating', 'Creating...') : t('files.create', 'Create')}
       confirmDisabled={!folderNameInput.trim()}
       busy={folderDialogBusy}
       onCancel={closeFolderDialog}
@@ -3731,7 +3733,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
       }}
     >
       <label className="block text-sm font-semibold text-slate-700" htmlFor="create-folder-name">
-        Folder name
+        {t('files.folderName', 'Folder name')}
       </label>
       <input
         id="create-folder-name"
@@ -3745,7 +3747,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
         autoFocus
         disabled={folderDialogBusy}
         className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-800 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:cursor-not-allowed disabled:bg-slate-100"
-        placeholder="Folder name"
+        placeholder={t('files.folderName', 'Folder name')}
       />
       {folderDialogError ? <p className="text-sm text-rose-600">{folderDialogError}</p> : null}
     </ActionDialog>
@@ -3754,13 +3756,13 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
   const shareDialogNode = shareDialog ? (
     <ActionDialog
       open
-      title="Create share link"
+      title={t('files.createShareLink', 'Create share link')}
       description={
         <p>
-          Create link for <span className="font-semibold text-slate-800">{shareDialog.entry.path}</span>.
+          {t('files.createLinkFor', 'Create link for {path}.', { path: shareDialog.entry.path })}
         </p>
       }
-      confirmLabel={shareDialogBusy ? 'Creating...' : 'Create share'}
+      confirmLabel={shareDialogBusy ? t('files.creating', 'Creating...') : t('files.createShare', 'Create share')}
       busy={shareDialogBusy}
       onCancel={closeShareDialog}
       onSubmit={(event) => {
@@ -4273,7 +4275,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                 >
                   <span className="inline-flex items-center gap-1.5">
                     <Icon name="folder" className="size-3.5" />
-                    Files
+                    {t('files.filesTab', 'Files')}
                   </span>
                 </button>
                 <button
@@ -4287,7 +4289,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                 >
                   <span className="inline-flex items-center gap-1.5">
                     <Icon name="share" className="size-3.5" />
-                    Shares
+                    {t('files.sharesTab', 'Shares')}
                   </span>
                 </button>
               </div>
@@ -4295,10 +4297,10 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
               {mainTab === 'files' ? (
                 <div className="flex flex-wrap items-center gap-1.5">
                   {([
-                    { key: 'browse', label: 'Browse', icon: 'folder' as const },
-                    { key: 'recent', label: 'Recent', icon: 'scope-recent' as const },
-                    { key: 'starred', label: 'Starred', icon: 'scope-starred' as const },
-                    { key: 'trash', label: 'Trash', icon: 'scope-trash' as const },
+                    { key: 'browse', label: t('files.scopeBrowse', 'Browse'), icon: 'folder' as const },
+                    { key: 'recent', label: t('files.scopeRecent', 'Recent'), icon: 'scope-recent' as const },
+                    { key: 'starred', label: t('files.scopeStarred', 'Starred'), icon: 'scope-starred' as const },
+                    { key: 'trash', label: t('files.scopeTrash', 'Trash'), icon: 'scope-trash' as const },
                   ] as const).map((scope) => (
                     <button
                       key={scope.key}
@@ -4327,37 +4329,37 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                 <div className="flex flex-wrap items-center gap-1.5">
                   {filesScope === 'browse' ? (
                     <>
-                      <HoverTooltip label="Upload or paste">
+                      <HoverTooltip label={t('files.uploadOrPaste', 'Upload or paste')}>
                         <label className={`${compactPrimaryToolbarButtonClass} cursor-pointer`}>
                           <Icon name="upload" className="size-3.5" />
                           <input type="file" multiple onChange={onUpload} className="hidden" />
                         </label>
                       </HoverTooltip>
-                      <HoverTooltip label="Add folder">
+                      <HoverTooltip label={t('files.addFolder', 'Add folder')}>
                         <button
                           type="button"
                           onClick={() => void onCreateFolder()}
                           className={compactSecondaryToolbarButtonClass}
-                          aria-label="Add folder"
+                          aria-label={t('files.addFolder', 'Add folder')}
                         >
                           <Icon name="new-folder" className="size-3.5" />
                         </button>
                       </HoverTooltip>
                     </>
                   ) : null}
-                  <HoverTooltip label={showAdvancedFilters ? 'Hide filters' : 'Advanced filters'}>
+                  <HoverTooltip label={showAdvancedFilters ? t('files.hideFilters', 'Hide filters') : t('files.advancedFilters', 'Advanced filters')}>
                     <button
                       type="button"
                       onClick={() => setShowAdvancedFilters((prev) => !prev)}
                       className={compactSecondaryToolbarButtonClass}
-                      aria-label={showAdvancedFilters ? 'Hide filters' : 'Advanced filters'}
+                      aria-label={showAdvancedFilters ? t('files.hideFilters', 'Hide filters') : t('files.advancedFilters', 'Advanced filters')}
                     >
                       <Icon name="filter" className="size-3.5" />
                     </button>
                   </HoverTooltip>
                   {filesScope === 'browse' && currentPathIsDir ? (
                     <div className="inline-flex items-center overflow-hidden rounded-lg border border-primary">
-                      <HoverTooltip label="Icon view">
+                      <HoverTooltip label={t('files.iconView', 'Icon view')}>
                         <button
                           type="button"
                           onClick={() => setFilesViewMode('icon')}
@@ -4366,14 +4368,14 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                               ? 'bg-primary text-white'
                               : 'bg-white text-slate-700 hover:bg-slate-50 hover:text-primary'
                           }`}
-                          aria-label="Icon view"
+                          aria-label={t('files.iconView', 'Icon view')}
                         >
                           <span className="inline-flex items-center">
                             <Icon name="view-icon" />
                           </span>
                         </button>
                       </HoverTooltip>
-                      <HoverTooltip label="List view">
+                      <HoverTooltip label={t('files.listView', 'List view')}>
                         <button
                           type="button"
                           onClick={() => setFilesViewMode('list')}
@@ -4382,7 +4384,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                               ? 'bg-primary text-white'
                               : 'bg-white text-slate-700 hover:bg-slate-50 hover:text-primary'
                           }`}
-                          aria-label="List view"
+                          aria-label={t('files.listView', 'List view')}
                         >
                           <span className="inline-flex items-center">
                             <Icon name="view-list" />
@@ -4391,46 +4393,46 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                       </HoverTooltip>
                     </div>
                   ) : null}
-                  <HoverTooltip label="Move selected">
+                  <HoverTooltip label={t('files.moveSelected', 'Move selected')}>
                     <button
                       type="button"
                       disabled={selectedEntries.length === 0}
                       onClick={() => void onBatchMoveOrCopy('move')}
                       className={compactToolbarButtonClass}
-                      aria-label="Move selected"
+                      aria-label={t('files.moveSelected', 'Move selected')}
                     >
                       <span className="inline-flex items-center justify-center">
                         <Icon name="move" className="size-4" />
                       </span>
                     </button>
                   </HoverTooltip>
-                  <HoverTooltip label="Copy selected">
+                  <HoverTooltip label={t('files.copySelected', 'Copy selected')}>
                     <button
                       type="button"
                       disabled={selectedEntries.length === 0}
                       onClick={() => void onBatchMoveOrCopy('copy')}
                       className={compactToolbarButtonClass}
-                      aria-label="Copy selected"
+                      aria-label={t('files.copySelected', 'Copy selected')}
                     >
                       <span className="inline-flex items-center justify-center">
                         <Icon name="copy" className="size-4" />
                       </span>
                     </button>
                   </HoverTooltip>
-                  <HoverTooltip label="Delete selected">
+                  <HoverTooltip label={t('files.deleteSelected', 'Delete selected')}>
                     <button
                       type="button"
                       disabled={selectedEntries.length === 0}
                       onClick={() => void onBatchDelete()}
                       className={`${compactToolbarButtonClass} text-rose-600 hover:bg-rose-50 hover:text-rose-700 disabled:hover:bg-transparent disabled:hover:text-rose-600`}
-                      aria-label="Delete selected"
+                      aria-label={t('files.deleteSelected', 'Delete selected')}
                     >
                       <span className="inline-flex items-center justify-center">
                         <Icon name="delete" className="size-4" />
                       </span>
                     </button>
                   </HoverTooltip>
-                  <HoverTooltip label="Refresh">
+                  <HoverTooltip label={t('files.refresh', 'Refresh')}>
                     <button
                       type="button"
                       onClick={() => {
@@ -4446,7 +4448,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                         }
                       }}
                       className={compactSecondaryToolbarButtonClass}
-                      aria-label="Refresh"
+                      aria-label={t('files.refresh', 'Refresh')}
                     >
                       <Icon name="retry" className="size-3.5" />
                     </button>
@@ -4460,27 +4462,27 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                         void onSearch()
                       }
                     }}
-                    placeholder={filesScope === 'browse' ? 'Search by file name or path' : 'Search in current view'}
+                    placeholder={filesScope === 'browse' ? t('files.searchByNameOrPath', 'Search by file name or path') : t('files.searchCurrentView', 'Search in current view')}
                     className="w-full min-w-[220px] max-w-[720px] flex-1 rounded-lg border border-slate-300 bg-slate-50 px-3 py-1 text-sm text-slate-700 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
                   />
-                  <HoverTooltip label={searchLoading && filesScope === 'browse' ? 'Searching...' : 'Search'}>
+                  <HoverTooltip label={searchLoading && filesScope === 'browse' ? t('files.searching', 'Searching...') : t('files.search', 'Search')}>
                     <button
                       type="button"
                       onClick={() => void onSearch()}
                       disabled={searchLoading && filesScope === 'browse'}
                       className={compactPrimaryToolbarButtonClass}
-                      aria-label={searchLoading && filesScope === 'browse' ? 'Searching...' : 'Search'}
+                      aria-label={searchLoading && filesScope === 'browse' ? t('files.searching', 'Searching...') : t('files.search', 'Search')}
                     >
                       <Icon name="search" className="size-3.5" />
                     </button>
                   </HoverTooltip>
                   {searchActive ? (
-                    <HoverTooltip label="Clear search">
+                    <HoverTooltip label={t('files.clearSearch', 'Clear search')}>
                       <button
                         type="button"
                         onClick={onClearSearch}
                         className={compactSecondaryToolbarButtonClass}
-                        aria-label="Clear search"
+                        aria-label={t('files.clearSearch', 'Clear search')}
                       >
                         <Icon name="clear" className="size-3.5" />
                       </button>

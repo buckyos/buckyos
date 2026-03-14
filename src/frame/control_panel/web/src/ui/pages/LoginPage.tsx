@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
+import { useI18n } from '@/i18n'
 import { useAuth } from '@/auth/useAuth'
 import { sanitizeRedirectPath } from '@/auth/session'
 import MessageModal from '@/ui/components/MessageModal'
@@ -82,6 +83,7 @@ const getReadableLoginError = (rawError: unknown) => {
 }
 
 const LoginPage = () => {
+  const { t } = useI18n()
   const location = useLocation()
   const navigate = useNavigate()
   const { status, initError, signInWithPassword } = useAuth()
@@ -95,11 +97,11 @@ const LoginPage = () => {
   const loading = status === 'loading'
 
   useEffect(() => {
-    document.title = 'Buckyos Login'
+    document.title = t('login.documentTitle', 'Buckyos Login')
     if (defaultUsername) {
       setUsername((prev) => prev || defaultUsername)
     }
-  }, [defaultUsername])
+  }, [defaultUsername, t])
 
   useEffect(() => {
     if (status === 'authenticated' && !submitting && !messageModal) {
@@ -128,8 +130,8 @@ const LoginPage = () => {
     if (!username.trim() || !password) {
       setMessageModal({
         tone: 'error',
-        title: 'Login Failed',
-        message: 'Please enter both username and password.',
+        title: t('login.failedTitle', 'Login Failed'),
+        message: t('login.missingCredentials', 'Please enter both username and password.'),
       })
       return
     }
@@ -141,15 +143,15 @@ const LoginPage = () => {
 
       setMessageModal({
         tone: 'success',
-        title: 'Login Successful',
-        message: 'Session created. Redirecting...',
+        title: t('login.successTitle', 'Login Successful'),
+        message: t('login.redirecting', 'Session created. Redirecting...'),
         nextPath: redirectTarget,
       })
     } catch (err) {
       console.error('login failed', err)
       setMessageModal({
         tone: 'error',
-        title: 'Login Failed',
+        title: t('login.failedTitle', 'Login Failed'),
         message: getReadableLoginError(err),
       })
     } finally {
@@ -170,7 +172,7 @@ const LoginPage = () => {
                 B
               </span>
               <div className="leading-tight">
-                <p className="text-lg font-semibold">BuckyOS Desktop Login</p>
+                <p className="text-lg font-semibold">{t('login.pageTitle', 'BuckyOS Desktop Login')}</p>
               </div>
             </div>
           </div>
@@ -178,7 +180,7 @@ const LoginPage = () => {
           <div className="mt-4 flex flex-wrap items-center gap-2 text-xs font-semibold text-[var(--cp-muted)]">
             <span className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1.5 shadow-sm ring-1 ring-[var(--cp-border)]">
               <Icon name="shield" className="size-4 text-[var(--cp-primary)]" />
-              App ID: control-panel
+              {t('login.appId', 'App ID: control-panel')}
             </span>
           </div>
 
@@ -194,7 +196,7 @@ const LoginPage = () => {
                 <div className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
                   <Icon name="alert" className="mt-0.5 size-5" />
                   <div>
-                    <p className="font-semibold">Unable to Sign In</p>
+                    <p className="font-semibold">{t('login.unableTitle', 'Unable to Sign In')}</p>
                     <p className="leading-relaxed text-amber-800">{initError}</p>
                   </div>
                 </div>
@@ -204,21 +206,21 @@ const LoginPage = () => {
                     className="flex-1 rounded-2xl border border-[var(--cp-border)] bg-white px-4 py-3 font-semibold text-[var(--cp-ink)] transition hover:border-[var(--cp-primary)] hover:text-[var(--cp-primary)]"
                     onClick={() => window.location.reload()}
                   >
-                    Retry
+                    {t('login.retry', 'Retry')}
                   </button>
                   <button
                     type="button"
                     className="flex-1 rounded-2xl bg-[var(--cp-primary)] px-4 py-3 font-semibold text-white shadow-lg shadow-emerald-200 transition hover:bg-[var(--cp-primary-strong)]"
                     onClick={() => window.close()}
                   >
-                    Close Window
+                    {t('login.closeWindow', 'Close Window')}
                   </button>
                 </div>
               </div>
             ) : (
               <form className="space-y-4" onSubmit={handleSubmit}>
                 <div className="space-y-1">
-                  <label className="block text-sm font-semibold text-[var(--cp-muted)]">Username</label>
+                  <label className="block text-sm font-semibold text-[var(--cp-muted)]">{t('login.username', 'Username')}</label>
                   <div className="relative">
                     <input
                       autoFocus
@@ -228,10 +230,10 @@ const LoginPage = () => {
                           ? '!bg-slate-200 text-slate-500'
                           : 'bg-white text-[var(--cp-ink)]'
                       }`}
-                      placeholder="Enter username"
+                      placeholder={t('login.usernamePlaceholder', 'Enter username')}
                       value={username}
                       onChange={(event) => setUsername(event.target.value)}
-                      aria-label="Username"
+                      aria-label={t('login.username', 'Username')}
                       readOnly={!usernameEditable && Boolean(defaultUsername)}
                       required
                     />
@@ -248,27 +250,27 @@ const LoginPage = () => {
                           }
                         }}
                       >
-                        {usernameEditable ? 'Use default' : 'Change'}
+                        {usernameEditable ? t('login.useDefault', 'Use default') : t('login.change', 'Change')}
                       </button>
                     ) : null}
                   </div>
                   {defaultUsername ? (
                     <p className="text-[11px] leading-relaxed text-[var(--cp-muted)]">
-                      Default username comes from current domain: {defaultUsername}. Click Change to enter a delegated sub-account.
+                       {t('login.defaultUsernameHint', 'Default username comes from current domain: {value}. Click Change to enter a delegated sub-account.', { value: defaultUsername })}
                     </p>
                   ) : null}
                 </div>
 
                 <div className="space-y-1">
-                  <label className="block text-sm font-semibold text-[var(--cp-muted)]">Password</label>
+                  <label className="block text-sm font-semibold text-[var(--cp-muted)]">{t('login.password', 'Password')}</label>
                   <input
                     type="password"
                     autoComplete="current-password"
                     className={fieldClasses}
-                    placeholder="Enter password"
+                    placeholder={t('login.passwordPlaceholder', 'Enter password')}
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
-                    aria-label="Password"
+                    aria-label={t('login.password', 'Password')}
                     required
                   />
                 </div>
@@ -278,7 +280,7 @@ const LoginPage = () => {
                   disabled={disabled}
                   className="mt-1 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[var(--cp-primary)] px-4 py-3 text-[15px] font-semibold text-white shadow-lg shadow-emerald-200 transition duration-200 hover:bg-[var(--cp-primary-strong)] disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {submitting ? 'Signing in...' : 'Sign in'}
+                  {submitting ? t('login.signingIn', 'Signing in...') : t('login.signIn', 'Sign in')}
                 </button>
               </form>
             )}
@@ -292,7 +294,7 @@ const LoginPage = () => {
         title={messageModal?.title ?? ''}
         message={messageModal?.message ?? ''}
         showConfirm={messageModal?.tone === 'error'}
-        confirmLabel="OK"
+        confirmLabel={t('login.ok', 'OK')}
         onConfirm={() => {
           setMessageModal(null)
         }}

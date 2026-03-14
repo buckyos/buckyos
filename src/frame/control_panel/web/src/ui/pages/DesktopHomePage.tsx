@@ -3,6 +3,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
 import {
+  type ControlPanelLocale,
   fetchAppsList,
   fetchAppsVersionList,
   fetchContainerOverview,
@@ -21,6 +22,7 @@ import {
   querySystemLogs,
 } from '@/api'
 import { useAuth } from '@/auth/useAuth'
+import { getLocaleLabel, SUPPORTED_CONTROL_PANEL_LOCALES, useI18n } from '@/i18n'
 import ContainerOverviewPanel from '../components/ContainerOverviewPanel'
 import NetworkOverviewPanel from '../components/NetworkOverviewPanel'
 import { NetworkTrendChart, ResourceTrendChart } from '../components/MonitorTrendCharts'
@@ -29,7 +31,6 @@ import StorageHealthSignalsPanel from '../components/StorageHealthSignalsPanel'
 import SystemConfigTreeViewer from '../components/SystemConfigTreeViewer'
 import UserPatternAvatar from '../components/UserPatternAvatar'
 import FileManagerPage from './FileManagerPage'
-import AiModelsWindow from './desktop/AiModelsWindow'
 import { DESKTOP_SHORTCUTS, type DesktopWindowId } from './desktop/desktopShortcuts'
 import usePrefersReducedMotion from '../charts/usePrefersReducedMotion'
 import Icon from '../icons'
@@ -137,6 +138,12 @@ const USER_WINDOW_GROUPS: { id: UserGroupKey; label: string; description: string
   { id: 'guests', label: 'guests', description: 'Limited temporary access' },
 ]
 
+const userGroupI18nKey: Record<UserGroupKey, { label: string; description: string }> = {
+  admin: { label: 'users.group.admin', description: 'users.group.adminDesc' },
+  family: { label: 'users.group.family', description: 'users.group.familyDesc' },
+  guests: { label: 'users.group.guests', description: 'users.group.guestsDesc' },
+}
+
 const SETTINGS_WINDOW_MENU: { id: SettingsMenuKey; label: string; description: string }[] = [
   { id: 'general', label: 'General', description: 'Identity and basic preferences' },
   { id: 'zone-manager', label: 'Zone Manager', description: 'Zone naming and topology' },
@@ -148,6 +155,29 @@ const SETTINGS_WINDOW_MENU: { id: SettingsMenuKey; label: string; description: s
   { id: 'software-update', label: 'Software Update', description: 'Version and release channel' },
 ]
 
+const settingsMenuI18nKey: Record<SettingsMenuKey, { label: string; description: string }> = {
+  general: { label: 'desktop.settings.general', description: 'desktop.settings.generalDesc' },
+  'zone-manager': { label: 'desktop.settings.zoneManager', description: 'desktop.settings.zoneManagerDesc' },
+  sn: { label: 'desktop.settings.sn', description: 'desktop.settings.snDesc' },
+  'sys-manager': { label: 'desktop.settings.sysManager', description: 'desktop.settings.sysManagerDesc' },
+  'gateway-manager': { label: 'desktop.settings.gatewayManager', description: 'desktop.settings.gatewayManagerDesc' },
+  storage: { label: 'desktop.settings.storage', description: 'desktop.settings.storageDesc' },
+  permissions: { label: 'desktop.settings.permissions', description: 'desktop.settings.permissionsDesc' },
+  'software-update': { label: 'desktop.settings.softwareUpdate', description: 'desktop.settings.softwareUpdateDesc' },
+}
+
+const desktopShortcutI18nKey: Record<string, string> = {
+  monitor: 'desktop.shortcut.monitor',
+  network: 'desktop.shortcut.network',
+  containers: 'desktop.shortcut.containers',
+  files: 'desktop.shortcut.files',
+  storage: 'desktop.shortcut.storage',
+  logs: 'desktop.shortcut.logs',
+  apps: 'desktop.shortcut.apps',
+  settings: 'desktop.shortcut.settings',
+  users: 'desktop.shortcut.users',
+}
+
 const SETTINGS_POLICY_BASELINE = [
   'MFA required for Owner/Admin roles',
   'Session timeout at 12h idle window',
@@ -155,9 +185,21 @@ const SETTINGS_POLICY_BASELINE = [
   'Nightly backup validation at 04:00',
 ]
 
+const formatSettingsFileMeta = (t: ReturnType<typeof useI18n>['t'], sizeBytes?: number, modifiedAt?: string) => {
+  const parts: string[] = []
+  if (typeof sizeBytes === 'number') {
+    parts.push(t('settings.fileSizeBytes', 'size {size} bytes', { size: sizeBytes }))
+  }
+  if (modifiedAt) {
+    parts.push(t('settings.fileUpdatedAt', 'updated {time}', { time: modifiedAt }))
+  }
+  return parts.join(' · ')
+}
+
 const DesktopHomePage = () => {
   const navigate = useNavigate()
   const { signOut } = useAuth()
+  const { refreshLocale, t } = useI18n()
   const navigateTo = useCallback((to: string) => navigate(to), [navigate])
   const prefersReducedMotion = usePrefersReducedMotion()
 
@@ -220,25 +262,26 @@ const DesktopHomePage = () => {
   const windowSpec = useMemo(
     () =>
       ({
-        monitor: { title: 'System Monitor', icon: 'dashboard' as const, width: 896, height: 616 },
-        chat: { title: 'Message Hub', icon: 'message' as const, width: 1180, height: 760 },
-        workspace: { title: 'Workspace', icon: 'apps' as const, width: 1180, height: 760 },
-        network: { title: 'Network Monitor', icon: 'network' as const, width: 980, height: 700 },
-        containers: { title: 'Container Manager', icon: 'container' as const, width: 980, height: 700 },
+        monitor: { title: t('desktop.window.monitor', 'System Monitor'), icon: 'dashboard' as const, width: 896, height: 616 },
+        network: { title: t('desktop.window.network', 'Network Monitor'), icon: 'network' as const, width: 980, height: 700 },
+        containers: { title: t('desktop.window.containers', 'Container Manager'), icon: 'container' as const, width: 980, height: 700 },
         files: { title: 'Files', icon: 'drive' as const, width: 920, height: 680 },
-        storage: { title: 'Storage Center', icon: 'storage' as const, width: 896, height: 648 },
+        storage: { title: t('desktop.window.storage', 'Storage Center'), icon: 'storage' as const, width: 896, height: 648 },
         logs: { title: 'System Logs', icon: 'chart' as const, width: 1008, height: 728 },
-        apps: { title: 'Applications', icon: 'apps' as const, width: 896, height: 648 },
-        'ai-models': { title: 'AI Models', icon: 'spark' as const, width: 1040, height: 760 },
+        apps: { title: t('desktop.window.apps', 'Applications'), icon: 'apps' as const, width: 896, height: 648 },
         settings: { title: 'Settings', icon: 'settings' as const, width: 1008, height: 728 },
-        users: { title: 'Users', icon: 'users' as const, width: 872, height: 616 },
+        users: { title: t('desktop.window.users', 'Users'), icon: 'users' as const, width: 872, height: 616 },
       }) satisfies Record<WindowId, { title: string; icon: IconName; width: number; height: number }>,
-    [],
+    [t],
   )
 
   useEffect(() => {
-    document.title = 'Buckyos Desktop'
-  }, [])
+    document.title = t('desktop.documentTitle', 'Buckyos Desktop')
+  }, [t])
+
+  useEffect(() => {
+    void refreshLocale()
+  }, [refreshLocale])
 
   useEffect(() => {
     let cancelled = false
@@ -248,7 +291,7 @@ const DesktopHomePage = () => {
       setLayout(data ?? mockLayoutData)
       if (error) {
         const message =
-          error instanceof Error ? error.message : typeof error === 'string' ? error : 'Layout request failed'
+          error instanceof Error ? error.message : typeof error === 'string' ? error : t('desktop.error.layoutRequest', 'Layout request failed')
         setLayoutError(message)
       } else {
         setLayoutError(null)
@@ -258,7 +301,7 @@ const DesktopHomePage = () => {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [t])
 
   const loadAppVersions = useCallback(async () => {
     const names = apps
@@ -286,7 +329,7 @@ const DesktopHomePage = () => {
 
     if (error) {
       const message =
-        error instanceof Error ? error.message : typeof error === 'string' ? error : 'Apps version request failed'
+        error instanceof Error ? error.message : typeof error === 'string' ? error : t('desktop.error.appsVersionRequest', 'Apps version request failed')
       setAppsVersionError(message)
     } else {
       setAppsVersionError(null)
@@ -297,7 +340,7 @@ const DesktopHomePage = () => {
     }
 
     setAppsVersionLoading(false)
-  }, [apps])
+  }, [apps, t])
 
   useEffect(() => {
     if (!appsWindowOpen) {
@@ -333,7 +376,7 @@ const DesktopHomePage = () => {
             ? error.message
             : typeof error === 'string'
               ? error
-              : 'System overview request failed'
+              : t('desktop.error.systemOverviewRequest', 'System overview request failed')
         setOverviewError(message)
       } else {
         setOverviewError(null)
@@ -346,7 +389,7 @@ const DesktopHomePage = () => {
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     let cancelled = false
@@ -369,7 +412,7 @@ const DesktopHomePage = () => {
       const { data, error } = await fetchAppsList()
       if (cancelled) return
       if (error) {
-        const message = error instanceof Error ? error.message : typeof error === 'string' ? error : 'Apps request failed'
+        const message = error instanceof Error ? error.message : typeof error === 'string' ? error : t('desktop.error.appsRequest', 'Apps request failed')
         setAppsError(message)
       } else {
         setAppsError(null)
@@ -380,7 +423,7 @@ const DesktopHomePage = () => {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     let cancelled = false
@@ -394,7 +437,7 @@ const DesktopHomePage = () => {
             ? error.message
             : typeof error === 'string'
               ? error
-              : 'Network request failed'
+              : t('desktop.error.networkRequest', 'Network request failed')
         setNetworkError(message)
       } else {
         setNetworkError(null)
@@ -407,7 +450,7 @@ const DesktopHomePage = () => {
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     let cancelled = false
@@ -421,7 +464,7 @@ const DesktopHomePage = () => {
             ? error.message
             : typeof error === 'string'
               ? error
-              : 'Container request failed'
+              : t('desktop.error.containerRequest', 'Container request failed')
         setContainerError(message)
       } else {
         setContainerError(null)
@@ -434,7 +477,7 @@ const DesktopHomePage = () => {
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     let cancelled = false
@@ -448,7 +491,7 @@ const DesktopHomePage = () => {
             ? error.message
             : typeof error === 'string'
               ? error
-              : 'Zone config request failed'
+              : t('desktop.error.zoneConfigRequest', 'Zone config request failed')
         setZoneError(message)
       } else {
         setZoneError(null)
@@ -461,7 +504,7 @@ const DesktopHomePage = () => {
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     let cancelled = false
@@ -475,7 +518,7 @@ const DesktopHomePage = () => {
             ? error.message
             : typeof error === 'string'
               ? error
-              : 'Gateway config request failed'
+              : t('desktop.error.gatewayConfigRequest', 'Gateway config request failed')
         setGatewayError(message)
       } else {
         setGatewayError(null)
@@ -488,7 +531,7 @@ const DesktopHomePage = () => {
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     if (!logsWindowOpen) {
@@ -505,7 +548,7 @@ const DesktopHomePage = () => {
 
       if (cancelled) return
       const message =
-        error instanceof Error ? error.message : typeof error === 'string' ? error : error ? 'Log query failed' : null
+        error instanceof Error ? error.message : typeof error === 'string' ? error : error ? t('desktop.error.logQuery', 'Log query failed') : null
       setLogPeekError(message)
       setLogPeek(data?.entries ?? null)
     }
@@ -516,7 +559,7 @@ const DesktopHomePage = () => {
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [logsWindowOpen])
+  }, [logsWindowOpen, t])
 
   const bringToFront = useCallback((id: WindowId) => {
     zCounterRef.current += 1
@@ -527,16 +570,6 @@ const DesktopHomePage = () => {
   }, [])
 
   const openWindow = useCallback((id: WindowId) => {
-    if (id === 'chat') {
-      window.open('/message-hub/chat', '_blank', 'noopener,noreferrer')
-      return
-    }
-
-    if (id === 'workspace') {
-      window.open('/workspace', '_blank', 'noopener,noreferrer')
-      return
-    }
-
     setMode('desktop')
     setWindows((prev) => {
       const existing = prev.find((win) => win.id === id)
@@ -938,8 +971,8 @@ const DesktopHomePage = () => {
     const state = status.state
     const labels: Record<SystemStatusResponse['state'], string> = {
       online: 'System Online',
-      warning: 'Attention Needed',
-      critical: 'Critical Alerts',
+      warning: t('desktop.status.warning', 'Attention Needed'),
+      critical: t('desktop.status.critical', 'Critical Alerts'),
     }
     const tones: Record<SystemStatusResponse['state'], string> = {
       online: 'bg-emerald-500/20 text-emerald-50 ring-emerald-400/30',
@@ -956,15 +989,15 @@ const DesktopHomePage = () => {
       tone: tones[state],
       dot: dot[state],
     }
-  }, [status.state])
+  }, [status.state, t])
 
   const accessModePill = useMemo<AccessModePill>(() => {
     if (typeof window === 'undefined') {
       return {
-        label: 'Direct mode',
+        label: t('desktop.access.direct', 'Direct mode'),
         tone: 'bg-white/15 text-white ring-white/20',
         dot: 'bg-white/80',
-        description: 'Direct access to local gateway endpoint.',
+        description: t('desktop.access.directUnknown', 'Direct access to local gateway endpoint.'),
         host: 'unknown',
       }
     }
@@ -976,46 +1009,46 @@ const DesktopHomePage = () => {
 
     if (isIPv4 || isIPv6) {
       return {
-        label: 'Direct mode',
+        label: t('desktop.access.direct', 'Direct mode'),
         tone: 'bg-sky-500/20 text-sky-100 ring-sky-300/40',
         dot: 'bg-sky-300',
         description:
-          'Access through IP/local entry. Requests go straight to this node gateway with lower latency. Best for LAN and local debugging.',
+          t('desktop.access.directIp', 'Access through IP/local entry. Requests go straight to this node gateway with lower latency. Best for LAN and local debugging.'),
         host,
       }
     }
 
     if (hostname.includes('web3.buckyos.ai')) {
       return {
-        label: 'SN mode',
+        label: t('desktop.access.sn', 'SN mode'),
         tone: 'bg-emerald-500/20 text-emerald-100 ring-emerald-300/40',
         dot: 'bg-emerald-300',
         description:
-          'Access through web3 SN domain. Traffic goes via SN/DDNS mapping and tunnel route, suitable for remote access with public TLS.',
+          t('desktop.access.snDesc', 'Access through web3 SN domain. Traffic goes via SN/DDNS mapping and tunnel route, suitable for remote access with public TLS.'),
         host,
       }
     }
 
     return {
-      label: 'Direct mode',
+      label: t('desktop.access.direct', 'Direct mode'),
       tone: 'bg-white/15 text-white ring-white/20',
       dot: 'bg-white/80',
       description:
-        'Access through non-SN hostname. Requests are handled as direct gateway entry on this node.',
+        t('desktop.access.directHost', 'Access through non-SN hostname. Requests are handled as direct gateway entry on this node.'),
       host,
     }
-  }, [])
+  }, [t])
 
   const desktopApps = useMemo(
     () =>
       DESKTOP_SHORTCUTS.map((shortcut) => ({
         id: shortcut.id,
-        label: shortcut.label,
+        label: t(desktopShortcutI18nKey[shortcut.id] ?? '', shortcut.label),
         icon: shortcut.icon,
         tile: shortcut.tile,
         onClick: () => openWindow(shortcut.windowId),
       })),
-    [openWindow],
+    [openWindow, t],
   )
 
   const wallpaperStyle = useMemo(
@@ -1100,7 +1133,7 @@ const DesktopHomePage = () => {
 
   const onNotificationsClick = useCallback(() => navigateTo('/notifications'), [navigateTo])
   const onOpenNetworkWindow = useCallback(() => openWindow('network'), [openWindow])
-  const onNavigateSettings = useCallback(() => navigateTo('/settings'), [navigateTo])
+  const onOpenSettings = useCallback(() => openWindow('settings'), [openWindow])
   const onOpenSnSettings = useCallback(() => {
     setSettingsMenu('sn')
     openWindow('settings')
@@ -1162,7 +1195,7 @@ const DesktopHomePage = () => {
             profileFirstName={profileFirstName}
             prefersReducedMotion={prefersReducedMotion}
             openWindow={openWindow}
-            onNavigateSettings={onNavigateSettings}
+            onOpenSettings={onOpenSettings}
           />
         ) : (
           <DesktopView
@@ -1341,11 +1374,11 @@ type JarvisViewProps = {
   profileFirstName: string
   prefersReducedMotion: boolean
   openWindow: (id: WindowId) => void
-  onNavigateSettings: () => void
+  onOpenSettings: () => void
 }
 
 const JarvisView = memo((props: JarvisViewProps) => {
-  const { profileFirstName, prefersReducedMotion, openWindow, onNavigateSettings } = props
+  const { profileFirstName, prefersReducedMotion, openWindow, onOpenSettings } = props
   return (
     <section className="mx-auto flex max-w-4xl flex-col items-center px-4 pb-28 pt-24 text-center">
       <div
@@ -1402,7 +1435,7 @@ const JarvisView = memo((props: JarvisViewProps) => {
           </button>
           <button
             type="button"
-            onClick={onNavigateSettings}
+            onClick={onOpenSettings}
             className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-xs font-semibold text-white/90 transition hover:bg-white/15"
           >
             Network diagnostics
@@ -1425,6 +1458,7 @@ type DesktopViewProps = {
 }
 
 const DesktopView = memo((props: DesktopViewProps) => {
+  const { t } = useI18n()
   const {
     desktopApps,
     prefersReducedMotion,
@@ -1466,7 +1500,7 @@ const DesktopView = memo((props: DesktopViewProps) => {
 
             <div className="rounded-2xl border border-white/10 bg-white/10 p-4 text-white shadow-xl backdrop-blur-md">
               <div className="mb-2 flex items-center justify-between">
-                <span className="text-sm font-medium opacity-80">System Health</span>
+                <span className="text-sm font-medium opacity-80">{t('desktop.systemHealth', 'System Health')}</span>
                 <div
                   className={`size-2 rounded-full ${
                     statusState === 'online'
@@ -1495,7 +1529,7 @@ const DesktopView = memo((props: DesktopViewProps) => {
                 <span>RAM: {memoryPercent}%</span>
               </div>
               {appsError ? (
-                <p className="mt-2 text-[11px] text-amber-100/90">Apps unavailable: {appsError}</p>
+                <p className="mt-2 text-[11px] text-amber-100/90">{t('desktop.appsUnavailable', 'Apps unavailable: {message}', { message: appsError })}</p>
               ) : null}
             </div>
           </div>
@@ -1606,7 +1640,6 @@ const getWindowFullPath = (id: WindowId) => {
   if (id === 'storage') return '/storage'
   if (id === 'logs') return '/system-logs'
   if (id === 'apps') return '/dapps'
-  if (id === 'settings') return '/settings'
   return '/users'
 }
 
@@ -1874,6 +1907,13 @@ type WindowBodyProps = {
 const WindowBody = memo((props: WindowBodyProps) => {
   const { id, data } = props
   const {
+    locale,
+    loading: localeLoading,
+    settingKey,
+    setPersistedLocale,
+    t,
+  } = useI18n()
+  const {
     metrics,
     status,
     overview,
@@ -1908,28 +1948,68 @@ const WindowBody = memo((props: WindowBodyProps) => {
   const [gatewayFileErrors, setGatewayFileErrors] = useState<Record<string, string>>({})
   const [selectedUserGroup, setSelectedUserGroup] = useState<UserGroupKey>('admin')
   const [selectedContactId, setSelectedContactId] = useState('self')
+  const [localeMessage, setLocaleMessage] = useState<string | null>(null)
+  const [localeMessageTone, setLocaleMessageTone] = useState<'success' | 'error'>('success')
+  const [localeSaving, setLocaleSaving] = useState(false)
 
   const userContacts = useMemo(
     () => [
       {
         id: 'self',
-        name: layout.profile.name || 'Current user',
+        name: layout.profile.name || t('settings.currentUser', 'Current user'),
         email: layout.profile.email || '-',
-        status: 'online',
-        role: 'Owner',
+        status: t('users.status.online', 'online'),
+        role: t('users.role.owner', 'Owner'),
         memberships: {
-          admin: 'Owner',
-          family: 'Not in group',
-          guests: 'Not in group',
+          admin: t('users.membership.owner', 'Owner'),
+          family: t('users.membership.notInGroup', 'Not in group'),
+          guests: t('users.membership.notInGroup', 'Not in group'),
         } satisfies Record<UserGroupKey, string>,
       },
     ],
-    [layout.profile.email, layout.profile.name],
+    [layout.profile.email, layout.profile.name, t],
   )
 
   const selectedContact = userContacts.find((contact) => contact.id === selectedContactId) ?? userContacts[0]
   const selectedGroup = USER_WINDOW_GROUPS.find((group) => group.id === selectedUserGroup) ?? USER_WINDOW_GROUPS[0]
   const selectedGroupMembership = selectedContact.memberships[selectedUserGroup]
+  const translatedSettingsMenu = useMemo(
+    () =>
+      SETTINGS_WINDOW_MENU.map((menu) => ({
+        ...menu,
+        label: t(settingsMenuI18nKey[menu.id].label, menu.label),
+        description: t(settingsMenuI18nKey[menu.id].description, menu.description),
+      })),
+    [t],
+  )
+  const translatedUserGroups = useMemo(
+    () =>
+      USER_WINDOW_GROUPS.map((group) => ({
+        ...group,
+        label: t(userGroupI18nKey[group.id].label, group.label),
+        description: t(userGroupI18nKey[group.id].description, group.description),
+      })),
+    [t],
+  )
+  const currentLocaleLabel = useMemo(() => getLocaleLabel(locale, t), [locale, t])
+  const handleLocaleChange = useCallback(
+    async (nextLocale: ControlPanelLocale) => {
+      setLocaleSaving(true)
+      setLocaleMessage(t('settings.localeSaving', 'Saving language setting...'))
+      setLocaleMessageTone('success')
+      const { error } = await setPersistedLocale(nextLocale)
+      if (error) {
+        const message = error instanceof Error ? error.message : typeof error === 'string' ? error : 'Unknown error'
+        setLocaleMessage(t('settings.localeSaveFailed', 'Failed to save language setting: {message}', { message }))
+        setLocaleMessageTone('error')
+      } else {
+        setLocaleMessage(t('settings.localeSaved', 'Language setting saved.'))
+        setLocaleMessageTone('success')
+      }
+      setLocaleSaving(false)
+    },
+    [setPersistedLocale, t],
+  )
 
   const toggleGatewayFile = useCallback((name: string) => {
     setExpandedGatewayFile((prev) => (prev === name ? null : name))
@@ -1966,7 +2046,7 @@ const WindowBody = memo((props: WindowBodyProps) => {
             ? error.message
             : typeof error === 'string'
               ? error
-              : `Failed to load ${expandedGatewayFile}`
+              : t('desktop.error.gatewayFileLoad', 'Failed to load {name}', { name: expandedGatewayFile })
         setGatewayFileErrors((prev) => ({
           ...prev,
           [expandedGatewayFile]: message,
@@ -1998,7 +2078,7 @@ const WindowBody = memo((props: WindowBodyProps) => {
     return (
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">CPU</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">{t('desktop.monitor.cpu', 'CPU')}</p>
           <p className="mt-2 text-3xl font-semibold text-[var(--cp-ink)]">{cpuPercent}%</p>
           <div className="mt-3 h-2 overflow-hidden rounded-full bg-[var(--cp-surface-muted)]">
             <div
@@ -2008,7 +2088,7 @@ const WindowBody = memo((props: WindowBodyProps) => {
           </div>
         </div>
         <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">Memory</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">{t('desktop.monitor.memory', 'Memory')}</p>
           <p className="mt-2 text-3xl font-semibold text-[var(--cp-ink)]">{memoryPercent}%</p>
           <div className="mt-3 h-2 overflow-hidden rounded-full bg-[var(--cp-surface-muted)]">
             <div
@@ -2018,34 +2098,34 @@ const WindowBody = memo((props: WindowBodyProps) => {
           </div>
         </div>
         <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">Storage</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">{t('desktop.monitor.storage', 'Storage')}</p>
           <p className="mt-2 text-3xl font-semibold text-[var(--cp-ink)]">{diskPercent}%</p>
           <p className="mt-1 text-xs text-[var(--cp-muted)]">
             {metrics.disk?.usedGb?.toFixed(0) ?? '-'} / {metrics.disk?.totalGb?.toFixed(0) ?? '-'} GB
           </p>
         </div>
         <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">Network</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">{t('desktop.monitor.network', 'Network')}</p>
           <p className="mt-2 text-lg font-semibold text-[var(--cp-ink)]">{formatRate(rxRate)}</p>
-          <p className="mt-1 text-xs text-[var(--cp-muted)]">Up {formatRate(txRate)}</p>
+          <p className="mt-1 text-xs text-[var(--cp-muted)]">{t('desktop.monitor.up', 'Up {value}', { value: formatRate(txRate) })}</p>
         </div>
         <div className="sm:col-span-2 rounded-2xl border border-[var(--cp-border)] bg-white p-4">
           <div className="mb-3 flex items-center justify-between">
-            <p className="text-sm font-semibold text-[var(--cp-ink)]">CPU / Memory trend</p>
-            <span className="text-[11px] text-[var(--cp-muted)]">Last {resourceTimeline.length} points</span>
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('desktop.monitor.cpuMemoryTrend', 'CPU / Memory trend')}</p>
+            <span className="text-[11px] text-[var(--cp-muted)]">{t('desktop.monitor.lastPoints', 'Last {count} points', { count: resourceTimeline.length })}</span>
           </div>
           <ResourceTrendChart timeline={resourceTimeline} height={180} />
         </div>
         <div className="sm:col-span-2 rounded-2xl border border-[var(--cp-border)] bg-white p-4">
           <div className="mb-3 flex items-center justify-between">
-            <p className="text-sm font-semibold text-[var(--cp-ink)]">Network throughput trend</p>
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('desktop.monitor.networkTrend', 'Network throughput trend')}</p>
             <span className="text-[11px] text-[var(--cp-muted)]">MB/s</span>
           </div>
           <NetworkTrendChart timeline={networkTimeline} height={180} />
         </div>
         <div className="sm:col-span-2 rounded-2xl border border-[var(--cp-border)] bg-white p-4">
           <div className="flex items-center justify-between">
-            <p className="text-sm font-semibold text-[var(--cp-ink)]">System status</p>
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('desktop.monitor.systemStatus', 'System status')}</p>
             <span
               className={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-wide ${
                 status.state === 'online'
@@ -2071,32 +2151,8 @@ const WindowBody = memo((props: WindowBodyProps) => {
               ))}
             </div>
           ) : (
-            <p className="mt-2 text-xs text-[var(--cp-muted)]">No active warnings.</p>
+            <p className="mt-2 text-xs text-[var(--cp-muted)]">{t('desktop.monitor.noWarnings', 'No active warnings.')}</p>
           )}
-        </div>
-      </div>
-    )
-  }
-
-  if (id === 'chat') {
-    return (
-      <div className="flex h-full items-center justify-center p-6">
-        <div className="max-w-lg rounded-3xl border border-[var(--cp-border)] bg-white p-6 text-center shadow-sm">
-          <div className="mx-auto flex size-14 items-center justify-center rounded-3xl bg-[var(--cp-primary-soft)] text-[var(--cp-primary-strong)]">
-            <Icon name="message" className="size-6" />
-          </div>
-          <h3 className="mt-4 text-xl font-semibold text-[var(--cp-ink)]">Message Hub opens in its own page</h3>
-          <p className="mt-2 text-sm leading-6 text-[var(--cp-muted)]">
-            This desktop entry now launches the standalone Message Hub route at `/message-hub/chat`
-            so the communication center can evolve outside the desktop shell.
-          </p>
-          <button
-            type="button"
-            onClick={() => window.open('/message-hub/chat', '_blank', 'noopener,noreferrer')}
-            className="mt-5 inline-flex min-h-11 items-center justify-center rounded-full bg-[var(--cp-primary)] px-5 py-2 text-sm font-semibold text-white transition hover:bg-[var(--cp-primary-strong)]"
-          >
-            Open Message Hub
-          </button>
         </div>
       </div>
     )
@@ -2106,9 +2162,9 @@ const WindowBody = memo((props: WindowBodyProps) => {
     return (
       <div className="space-y-4">
         <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-          <p className="text-sm font-semibold text-[var(--cp-ink)]">Network monitor</p>
+          <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('desktop.network.title', 'Network monitor')}</p>
           <p className="mt-1 text-xs text-[var(--cp-muted)]">
-            Backend-thread timeline with per-interface throughput, errors, and drops.
+            {t('desktop.network.description', 'Backend-thread timeline with per-interface throughput, errors, and drops.')}
           </p>
         </div>
         <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
@@ -2126,9 +2182,9 @@ const WindowBody = memo((props: WindowBodyProps) => {
     return (
       <div className="space-y-4">
         <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-          <p className="text-sm font-semibold text-[var(--cp-ink)]">Docker runtime overview</p>
+          <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('desktop.containers.title', 'Docker runtime overview')}</p>
           <p className="mt-1 text-xs text-[var(--cp-muted)]">
-            Manage container lifecycle and inspect runtime health for this node.
+            {t('desktop.containers.description', 'Manage container lifecycle and inspect runtime health for this node.')}
           </p>
         </div>
         <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
@@ -2146,13 +2202,13 @@ const WindowBody = memo((props: WindowBodyProps) => {
     return (
       <div className="space-y-3">
         <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4 text-sm">
-          <p className="font-semibold text-[var(--cp-ink)]">Live preview</p>
-          <p className="mt-1 text-xs text-[var(--cp-muted)]">Showing a compact tail across core services.</p>
+          <p className="font-semibold text-[var(--cp-ink)]">{t('desktop.logs.livePreview', 'Live preview')}</p>
+          <p className="mt-1 text-xs text-[var(--cp-muted)]">{t('desktop.logs.description', 'Showing a compact tail across core services.')}</p>
         </div>
         <div className="rounded-2xl border border-[var(--cp-border)] bg-white">
           {logPeekError ? (
             <div className="px-4 py-3 text-xs text-amber-800" style={{ background: '#fffbeb' }}>
-              Using mock data: {logPeekError}
+              {t('root.usingMockData', 'Using mock data. {message}', { message: logPeekError })}
             </div>
           ) : null}
           {logPeek?.length ? (
@@ -2171,7 +2227,7 @@ const WindowBody = memo((props: WindowBodyProps) => {
               ))}
             </div>
           ) : (
-            <div className="px-4 py-6 text-sm text-[var(--cp-muted)]">No log entries yet.</div>
+            <div className="px-4 py-6 text-sm text-[var(--cp-muted)]">{t('desktop.logs.noEntries', 'No log entries yet.')}</div>
           )}
         </div>
       </div>
@@ -2182,10 +2238,10 @@ const WindowBody = memo((props: WindowBodyProps) => {
     return (
       <div className="space-y-3">
         <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4 text-sm">
-          <p className="font-semibold text-[var(--cp-ink)]">Installed services</p>
-          <p className="mt-1 text-xs text-[var(--cp-muted)]">Quick glance at apps known to the system config.</p>
+          <p className="font-semibold text-[var(--cp-ink)]">{t('desktop.apps.installedServices', 'Installed services')}</p>
+          <p className="mt-1 text-xs text-[var(--cp-muted)]">{t('desktop.apps.description', 'Quick glance at apps known to the system config.')}</p>
           {appsVersionError ? (
-            <p className="mt-2 text-xs text-amber-700">Version sync fallback is active: {appsVersionError}</p>
+            <p className="mt-2 text-xs text-amber-700">{t('desktop.apps.versionFallback', 'Version sync fallback is active: {message}', { message: appsVersionError })}</p>
           ) : null}
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
@@ -2211,10 +2267,10 @@ const WindowBody = memo((props: WindowBodyProps) => {
                 ) : appsVersionLoading ? (
                   <span className="inline-flex items-center gap-2">
                     <span className="size-3 animate-spin rounded-full border border-[var(--cp-border)] border-t-[var(--cp-primary)]" />
-                    Loading version...
+                    {t('desktop.apps.loadingVersion', 'Loading version...')}
                   </span>
                 ) : (
-                  'Version unavailable'
+                  t('desktop.apps.versionUnavailable', 'Version unavailable')
                 )}
               </p>
             </div>
@@ -2222,15 +2278,11 @@ const WindowBody = memo((props: WindowBodyProps) => {
         </div>
         {!apps.length ? (
           <div className="rounded-2xl border border-[var(--cp-border)] bg-white px-4 py-6 text-sm text-[var(--cp-muted)]">
-            No apps available yet.
+            {t('desktop.apps.none', 'No apps available yet.')}
           </div>
         ) : null}
       </div>
     )
-  }
-
-  if (id === 'ai-models') {
-    return <AiModelsWindow />
   }
 
   if (id === 'files') {
@@ -2251,8 +2303,8 @@ const WindowBody = memo((props: WindowBodyProps) => {
         <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="text-sm font-semibold text-[var(--cp-ink)]">Storage center preview</p>
-              <p className="text-xs text-[var(--cp-muted)]">磁盘容量、健康状态与空间趋势。</p>
+              <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('desktop.storage.previewTitle', 'Storage center preview')}</p>
+              <p className="text-xs text-[var(--cp-muted)]">{t('desktop.storage.previewDesc', 'Disk capacity, health status, and space trend.')}</p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <button
@@ -2261,7 +2313,7 @@ const WindowBody = memo((props: WindowBodyProps) => {
                 className="inline-flex h-10 items-center gap-2 rounded-xl bg-[var(--cp-primary)] px-4 text-sm font-semibold text-white transition hover:bg-[var(--cp-primary-strong)]"
               >
                 <Icon name="storage" className="size-4" />
-                Open storage
+                {t('desktop.storage.open', 'Open storage')}
               </button>
               <button
                 type="button"
@@ -2269,25 +2321,25 @@ const WindowBody = memo((props: WindowBodyProps) => {
                 className="inline-flex h-10 items-center gap-2 rounded-xl border border-[var(--cp-border)] bg-white px-4 text-sm font-semibold text-[var(--cp-ink)] transition hover:border-[var(--cp-primary)] hover:text-[var(--cp-primary-strong)]"
               >
                 <Icon name="drive" className="size-4" />
-                Back to desktop files
+                {t('desktop.storage.backToFiles', 'Back to desktop files')}
               </button>
             </div>
           </div>
           <div className="mt-3 grid gap-2 sm:grid-cols-3">
             <div className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2">
-              <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Total</p>
+              <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('storage.total', 'Total')}</p>
               <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{totalGb.toFixed(totalGb >= 100 ? 0 : 1)} GB</p>
             </div>
             <div className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2">
-              <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Used</p>
+              <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('storage.used', 'Used')}</p>
               <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{usedGb.toFixed(usedGb >= 100 ? 0 : 1)} GB</p>
             </div>
             <div className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2">
-              <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Free</p>
+              <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('storage.free', 'Free')}</p>
               <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{freeGb.toFixed(freeGb >= 100 ? 0 : 1)} GB</p>
             </div>
           </div>
-          <p className="mt-3 text-xs text-[var(--cp-muted)]">后续会在 Storage 增加备份策略、快照与恢复入口。</p>
+          <p className="mt-3 text-xs text-[var(--cp-muted)]">{t('storage.desktopNext', 'Storage will add backup policy, snapshot, and restore entry points next.')}</p>
         </div>
 
         <div className="grid gap-4 xl:grid-cols-2">
@@ -2295,7 +2347,7 @@ const WindowBody = memo((props: WindowBodyProps) => {
             <StorageDiskStatusPanel disk={metrics.disk} compact maxItems={5} />
           </div>
           <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">Health signals</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">{t('storage.healthSignals', 'Health Signals')}</p>
             <div className="mt-3">
               <StorageHealthSignalsPanel
                 warnings={status.warnings}
@@ -2310,7 +2362,7 @@ const WindowBody = memo((props: WindowBodyProps) => {
   }
 
   if (id === 'settings') {
-    const selectedMenu = SETTINGS_WINDOW_MENU.find((menu) => menu.id === settingsMenu) ?? SETTINGS_WINDOW_MENU[0]
+    const selectedMenu = translatedSettingsMenu.find((menu) => menu.id === settingsMenu) ?? translatedSettingsMenu[0]
     const currentHost = typeof window === 'undefined' ? 'unknown' : window.location.host
     const storageUsed = metrics.disk?.usedGb ?? 0
     const storageTotal = metrics.disk?.totalGb ?? 0
@@ -2323,75 +2375,75 @@ const WindowBody = memo((props: WindowBodyProps) => {
       general: (
         <div className="space-y-4">
           <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-            <p className="text-sm font-semibold text-[var(--cp-ink)]">Identity and system release</p>
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('settings.identityTitle', 'Identity and system release')}</p>
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Current user</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.currentUser', 'Current user')}</p>
                 <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{layout.profile.name}</p>
               </div>
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Device</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.device', 'Device')}</p>
                 <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{layout.profile.email}</p>
               </div>
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">System version</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.systemVersion', 'System version')}</p>
                 <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{overview?.version ?? 'Beta1'}</p>
               </div>
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">System</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.system', 'System')}</p>
                 <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{overview?.os ?? 'Linux'} · {overview?.model ?? '-'}</p>
               </div>
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2 sm:col-span-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Uptime</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.uptime', 'Uptime')}</p>
                 <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{uptimeLabel}</p>
               </div>
             </div>
             {overviewError ? (
               <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                System overview fallback is active: {overviewError}
+                {t('root.usingMockData', 'Using mock data. {message}', { message: overviewError })}
               </div>
             ) : null}
           </div>
 
           <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-            <p className="text-sm font-semibold text-[var(--cp-ink)]">Hardware and runtime details</p>
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('settings.hardwareTitle', 'Hardware and runtime details')}</p>
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">CPU model</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.cpuModel', 'CPU model')}</p>
                 <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{metrics.cpu?.model ?? 'Unknown CPU'}</p>
               </div>
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">CPU cores</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.cpuCores', 'CPU cores')}</p>
                 <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{metrics.cpu?.cores ?? '-'}</p>
               </div>
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Memory</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.memory', 'Memory')}</p>
                 <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">
                   {metrics.memory?.usedGb?.toFixed(1) ?? '-'} / {metrics.memory?.totalGb?.toFixed(1) ?? '-'} GB ({memoryPercent}%)
                 </p>
               </div>
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Swap</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.swap', 'Swap')}</p>
                 <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">
                   {metrics.swap?.usedGb?.toFixed(1) ?? '-'} / {metrics.swap?.totalGb?.toFixed(1) ?? '-'} GB ({Math.round(metrics.swap?.usagePercent ?? 0)}%)
                 </p>
               </div>
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Disk</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.disk', 'Disk')}</p>
                 <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">
                   {metrics.disk?.usedGb?.toFixed(1) ?? '-'} / {metrics.disk?.totalGb?.toFixed(1) ?? '-'} GB ({diskPercent}%)
                 </p>
               </div>
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Network throughput</p>
-                <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">Down {formatRate(rxRate)} · Up {formatRate(txRate)}</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.networkThroughput', 'Network throughput')}</p>
+                <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{t('settings.networkDownUp', 'Down {down} · Up {up}', { down: formatRate(rxRate), up: formatRate(txRate) })}</p>
               </div>
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Process count</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.processCount', 'Process count')}</p>
                 <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{metrics.processCount ?? '-'}</p>
               </div>
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Load average</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.loadAverage', 'Load average')}</p>
                 <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">
                   {metrics.loadAverage
                     ? `${metrics.loadAverage.one.toFixed(2)} / ${metrics.loadAverage.five.toFixed(2)} / ${metrics.loadAverage.fifteen.toFixed(2)}`
@@ -2400,39 +2452,84 @@ const WindowBody = memo((props: WindowBodyProps) => {
               </div>
             </div>
           </div>
+
+          <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('settings.localeTitle', 'Control Panel language')}</p>
+            <p className="mt-1 text-xs leading-5 text-[var(--cp-muted)]">
+              {t('settings.localeDescription', 'Set the UI language for the control panel. The value is stored in sys_config and defaults to English when unset.')}
+            </p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.localeCurrent', 'Current language')}</p>
+                <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{currentLocaleLabel}</p>
+              </div>
+              <label className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2 text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">
+                {t('settings.localeSelect', 'Display language')}
+                <select
+                  value={locale}
+                  disabled={localeSaving}
+                  onChange={(event) => void handleLocaleChange(event.target.value as ControlPanelLocale)}
+                  className="mt-2 block h-11 w-full rounded-xl border border-[var(--cp-border)] bg-white px-3 text-sm font-semibold normal-case tracking-normal text-[var(--cp-ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cp-primary)] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {SUPPORTED_CONTROL_PANEL_LOCALES.map((item) => (
+                    <option key={item} value={item}>
+                      {getLocaleLabel(item, t)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <p className="mt-3 text-[11px] text-[var(--cp-muted)]">{t('settings.localeHint', 'System key: {key}', { key: settingKey })}</p>
+            {localeLoading && !localeMessage ? (
+              <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                {t('settings.localeLoading', 'Loading saved language...')}
+              </div>
+            ) : null}
+            {localeMessage ? (
+              <div
+                className={`mt-3 rounded-xl px-3 py-2 text-xs ${
+                  localeMessageTone === 'error'
+                    ? 'border border-amber-200 bg-amber-50 text-amber-800'
+                    : 'border border-emerald-200 bg-emerald-50 text-emerald-800'
+                }`}
+              >
+                {localeMessage}
+              </div>
+            ) : null}
+          </div>
         </div>
       ),
       'zone-manager': (
         <div className="space-y-4">
           <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-            <p className="text-sm font-semibold text-[var(--cp-ink)]">Zone identity (/opt/buckyos/etc)</p>
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('settings.zoneIdentityTitle', 'Zone identity (/opt/buckyos/etc)')}</p>
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Zone</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.zone', 'Zone')}</p>
                 <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">
                   {zoneOverview?.zone.name || layout.profile.name}
                 </p>
               </div>
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Zone domain</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.zoneDomain', 'Zone domain')}</p>
                 <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">
                   {zoneOverview?.zone.domain || '-'}
                 </p>
               </div>
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Zone DID</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.zoneDid', 'Zone DID')}</p>
                 <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.zone.did || '-'}</p>
               </div>
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Owner DID</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.ownerDid', 'Owner DID')}</p>
                 <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.zone.ownerDid || '-'}</p>
               </div>
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">User name</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.userName', 'User name')}</p>
                 <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.zone.userName || '-'}</p>
               </div>
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Zone IAT</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.zoneIat', 'Zone IAT')}</p>
                 <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">
                   {zoneOverview?.zone.zoneIat ? String(zoneOverview.zone.zoneIat) : '-'}
                 </p>
@@ -2441,29 +2538,29 @@ const WindowBody = memo((props: WindowBodyProps) => {
 
             {zoneError ? (
               <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                Zone config fallback is active: {zoneError}
+                {t('settings.zoneFallback', 'Zone config fallback is active: {message}', { message: zoneError })}
               </div>
             ) : null}
           </div>
 
           <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-            <p className="text-sm font-semibold text-[var(--cp-ink)]">Device profile</p>
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('settings.deviceProfile', 'Device profile')}</p>
             <div className="mt-3 space-y-2">
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Device</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.device', 'Device')}</p>
                 <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.device.name || '-'}</p>
               </div>
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Device DID</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.deviceDid', 'Device DID')}</p>
                 <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.device.did || '-'}</p>
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Type</p>
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.type', 'Type')}</p>
                   <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.device.type || '-'}</p>
                 </div>
                 <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Net ID</p>
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.netId', 'Net ID')}</p>
                   <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.device.netId || '-'}</p>
                 </div>
               </div>
@@ -2471,7 +2568,7 @@ const WindowBody = memo((props: WindowBodyProps) => {
           </div>
 
           <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-            <p className="text-sm font-semibold text-[var(--cp-ink)]">Zone-related files</p>
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('settings.zoneFiles', 'Zone-related files')}</p>
             <div className="mt-3 space-y-2">
               {(zoneOverview?.files ?? []).map((file) => (
                 <div
@@ -2481,13 +2578,14 @@ const WindowBody = memo((props: WindowBodyProps) => {
                   <p className="text-xs font-semibold text-[var(--cp-ink)]">{file.name}</p>
                   <p className="mt-1 break-all text-[11px] text-[var(--cp-muted)]">{file.path}</p>
                   <p className="text-[11px] text-[var(--cp-muted)]">
-                    {file.exists ? `size ${file.sizeBytes} bytes` : 'missing file'}
-                    {file.modifiedAt ? ` · updated ${file.modifiedAt}` : ''}
+                    {file.exists
+                      ? formatSettingsFileMeta(t, file.sizeBytes, file.modifiedAt)
+                      : t('settings.fileMissing', 'missing file')}
                   </p>
                 </div>
               ))}
               {!(zoneOverview?.files ?? []).length ? (
-                <p className="text-xs text-[var(--cp-muted)]">No zone config files discovered.</p>
+                <p className="text-xs text-[var(--cp-muted)]">{t('settings.noZoneFiles', 'No zone config files discovered.')}</p>
               ) : null}
             </div>
           </div>
@@ -2500,7 +2598,7 @@ const WindowBody = memo((props: WindowBodyProps) => {
                 </p>
               ))
             ) : (
-              <p>Zone manager shows identity and topology values sourced from /opt/buckyos/etc.</p>
+              <p>{t('settings.zoneManagerNote', 'Zone manager shows identity and topology values sourced from /opt/buckyos/etc.')}</p>
             )}
           </div>
         </div>
@@ -2509,7 +2607,7 @@ const WindowBody = memo((props: WindowBodyProps) => {
         <div className="space-y-4">
           <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-sm font-semibold text-[var(--cp-ink)]">SN profile</p>
+              <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('settings.snProfile', 'SN profile')}</p>
               <span
                 className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${
                   zoneOverview?.sn.selfCertState
@@ -2517,29 +2615,29 @@ const WindowBody = memo((props: WindowBodyProps) => {
                     : 'bg-slate-200 text-slate-700'
                 }`}
               >
-                self cert: {zoneOverview?.sn.selfCertState ? 'true' : 'false'}
+                {t('settings.selfCert', 'self cert: {value}', { value: zoneOverview?.sn.selfCertState ? 'true' : 'false' })}
               </span>
             </div>
 
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">SN username</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.snUsername', 'SN username')}</p>
                 <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.sn.username || '-'}</p>
               </div>
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">SN URL</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.snUrl', 'SN URL')}</p>
                 <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">{snUrlDisplay}</p>
               </div>
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">SN host</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.snHost', 'SN host')}</p>
                 <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.sn.host || '-'}</p>
               </div>
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">SN IP</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.snIp', 'SN IP')}</p>
                 <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.sn.ip || '-'}</p>
               </div>
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2 sm:col-span-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Self cert source</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.selfCertSource', 'Self cert source')}</p>
                 <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">
                   {zoneOverview?.sn.selfCertStateSource || '-'}
                 </p>
@@ -2548,14 +2646,14 @@ const WindowBody = memo((props: WindowBodyProps) => {
 
             {zoneOverview?.sn.digError ? (
               <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                dig diagnostics: {zoneOverview.sn.digError}
+                {t('settings.digDiagnostics', 'dig diagnostics: {message}', { message: zoneOverview.sn.digError })}
               </div>
             ) : null}
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
             <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-              <p className="text-sm font-semibold text-[var(--cp-ink)]">DNS A via SN</p>
+              <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('settings.dnsA', 'DNS A via SN')}</p>
               <div className="mt-3 space-y-2">
                 {(zoneOverview?.sn.dnsARecords ?? []).map((record) => (
                   <div
@@ -2566,13 +2664,13 @@ const WindowBody = memo((props: WindowBodyProps) => {
                   </div>
                 ))}
                 {!(zoneOverview?.sn.dnsARecords ?? []).length ? (
-                  <p className="text-xs text-[var(--cp-muted)]">No A records returned from SN query.</p>
+                  <p className="text-xs text-[var(--cp-muted)]">{t('settings.noDnsA', 'No A records returned from SN query.')}</p>
                 ) : null}
               </div>
             </div>
 
             <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-              <p className="text-sm font-semibold text-[var(--cp-ink)]">DNS TXT via SN</p>
+              <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('settings.dnsTxt', 'DNS TXT via SN')}</p>
               <div className="mt-3 space-y-2">
                 {(zoneOverview?.sn.dnsTxtRecords ?? []).map((record) => (
                   <div
@@ -2583,7 +2681,7 @@ const WindowBody = memo((props: WindowBodyProps) => {
                   </div>
                 ))}
                 {!(zoneOverview?.sn.dnsTxtRecords ?? []).length ? (
-                  <p className="text-xs text-[var(--cp-muted)]">No TXT records returned from SN query.</p>
+                  <p className="text-xs text-[var(--cp-muted)]">{t('settings.noDnsTxt', 'No TXT records returned from SN query.')}</p>
                 ) : null}
               </div>
             </div>
@@ -2593,8 +2691,8 @@ const WindowBody = memo((props: WindowBodyProps) => {
       'sys-manager': (
         <div className="space-y-4">
           <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-            <p className="text-sm font-semibold text-[var(--cp-ink)]">System Config Tree</p>
-            <p className="mt-1 text-xs text-[var(--cp-muted)]">Depth-limited view (4 levels)</p>
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('settings.sysConfigTreeTitle', 'System Config Tree')}</p>
+            <p className="mt-1 text-xs text-[var(--cp-muted)]">{t('settings.depthLimitedView', 'Depth-limited view (4 levels)')}</p>
             <div className="mt-3">
               <SystemConfigTreeViewer defaultKey="" depth={4} compact />
             </div>
@@ -2604,20 +2702,20 @@ const WindowBody = memo((props: WindowBodyProps) => {
       'gateway-manager': (
         <div className="space-y-4">
           <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-            <p className="text-sm font-semibold text-[var(--cp-ink)]">Gateway config overview</p>
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('settings.gatewayOverview', 'Gateway config overview')}</p>
             <div className="mt-3 grid gap-3 sm:grid-cols-3">
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Mode</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.mode', 'Mode')}</p>
                 <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">
-                  {gatewayOverview?.mode === 'sn' ? 'SN mode' : 'Direct mode'}
+                  {gatewayOverview?.mode === 'sn' ? t('settings.snMode', 'SN mode') : t('settings.directMode', 'Direct mode')}
                 </p>
               </div>
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Host</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.host', 'Host')}</p>
                 <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">{currentHost}</p>
               </div>
               <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Config dir</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.configDir', 'Config dir')}</p>
                 <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">
                   {gatewayOverview?.etcDir ?? '/opt/buckyos/etc'}
                 </p>
@@ -2626,13 +2724,13 @@ const WindowBody = memo((props: WindowBodyProps) => {
 
             {gatewayError ? (
               <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                Gateway config fallback is active: {gatewayError}
+                {t('settings.gatewayFallback', 'Gateway config fallback is active: {message}', { message: gatewayError })}
               </div>
             ) : null}
           </div>
 
           <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-            <p className="text-sm font-semibold text-[var(--cp-ink)]">Gateway files</p>
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('settings.gatewayFiles', 'Gateway files')}</p>
             <div className="mt-3 space-y-2">
               {(gatewayOverview?.files ?? []).map((file) => (
                 <div
@@ -2648,22 +2746,23 @@ const WindowBody = memo((props: WindowBodyProps) => {
                       className="rounded-full border border-[var(--cp-border)] bg-white px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--cp-ink)] transition hover:border-[var(--cp-primary)] hover:text-[var(--cp-primary-strong)] disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {expandedGatewayFile === file.name
-                        ? 'Hide file'
+                        ? t('settings.hideFile', 'Hide file')
                         : gatewayFileLoadingName === file.name
-                          ? 'Loading...'
-                          : 'View file'}
+                          ? t('root.loadingLayout', 'Loading...')
+                          : t('settings.viewFile', 'View file')}
                     </button>
                   </div>
                   <p className="mt-1 break-all text-[11px] text-[var(--cp-muted)]">{file.path}</p>
                   <p className="text-[11px] text-[var(--cp-muted)]">
-                    {file.exists ? `size ${file.sizeBytes} bytes` : 'missing file'}
-                    {file.modifiedAt ? ` · updated ${file.modifiedAt}` : ''}
+                    {file.exists
+                      ? formatSettingsFileMeta(t, file.sizeBytes, file.modifiedAt)
+                      : t('settings.fileMissing', 'missing file')}
                   </p>
 
                   {expandedGatewayFile === file.name ? (
                     <div className="mt-3 max-h-72 min-w-0 overflow-auto rounded-xl border border-[var(--cp-border)] bg-white p-3">
                       {gatewayFileLoadingName === file.name && !gatewayFileCache[file.name] ? (
-                        <p className="text-xs text-[var(--cp-muted)]">Loading file content...</p>
+                        <p className="text-xs text-[var(--cp-muted)]">{t('settings.loadingFileContent', 'Loading file content...')}</p>
                       ) : gatewayFileErrors[file.name] ? (
                         <p className="text-xs text-amber-800">{gatewayFileErrors[file.name]}</p>
                       ) : gatewayFileCache[file.name] ? (
@@ -2671,7 +2770,7 @@ const WindowBody = memo((props: WindowBodyProps) => {
                           {gatewayFileCache[file.name].content}
                         </pre>
                       ) : (
-                        <p className="text-xs text-[var(--cp-muted)]">No file content available.</p>
+                        <p className="text-xs text-[var(--cp-muted)]">{t('settings.noFileContent', 'No file content available.')}</p>
                       )}
                     </div>
                   ) : null}
@@ -2682,7 +2781,7 @@ const WindowBody = memo((props: WindowBodyProps) => {
 
           <div className="grid gap-4 lg:grid-cols-2">
             <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-              <p className="text-sm font-semibold text-[var(--cp-ink)]">Include chain</p>
+              <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('settings.includeChain', 'Include chain')}</p>
               <div className="mt-3 space-y-2">
                 {(gatewayOverview?.includes ?? []).map((item) => (
                   <div
@@ -2693,13 +2792,13 @@ const WindowBody = memo((props: WindowBodyProps) => {
                   </div>
                 ))}
                 {!(gatewayOverview?.includes ?? []).length ? (
-                  <p className="text-xs text-[var(--cp-muted)]">No include chain data.</p>
+                  <p className="text-xs text-[var(--cp-muted)]">{t('settings.noIncludeChain', 'No include chain data.')}</p>
                 ) : null}
               </div>
             </div>
 
             <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-              <p className="text-sm font-semibold text-[var(--cp-ink)]">Stack bindings</p>
+              <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('settings.stackBindings', 'Stack bindings')}</p>
               <div className="mt-3 space-y-2">
                 {(gatewayOverview?.stacks ?? []).map((stack) => (
                   <div
@@ -2709,21 +2808,21 @@ const WindowBody = memo((props: WindowBodyProps) => {
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-xs font-semibold text-[var(--cp-ink)]">{stack.name}</p>
                       <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-700">
-                        {stack.protocol || 'unknown'}
+                        {stack.protocol || t('settings.unknown', 'unknown')}
                       </span>
                     </div>
-                    <p className="mt-1 text-[11px] text-[var(--cp-muted)]">Bind: {stack.bind || 'N/A'}</p>
+                    <p className="mt-1 text-[11px] text-[var(--cp-muted)]">{t('settings.bindLabel', 'Bind: {value}', { value: stack.bind || t('settings.notAvailable', 'N/A') })}</p>
                   </div>
                 ))}
                 {!(gatewayOverview?.stacks ?? []).length ? (
-                  <p className="text-xs text-[var(--cp-muted)]">No stack binding data.</p>
+                  <p className="text-xs text-[var(--cp-muted)]">{t('settings.noStackBindings', 'No stack binding data.')}</p>
                 ) : null}
               </div>
             </div>
           </div>
 
           <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-            <p className="text-sm font-semibold text-[var(--cp-ink)]">TLS domains</p>
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('settings.tlsDomains', 'TLS domains')}</p>
             <div className="mt-3 flex flex-wrap gap-2">
               {(gatewayOverview?.tlsDomains ?? []).map((domain) => (
                 <span
@@ -2734,16 +2833,16 @@ const WindowBody = memo((props: WindowBodyProps) => {
                 </span>
               ))}
               {!(gatewayOverview?.tlsDomains ?? []).length ? (
-                <p className="text-xs text-[var(--cp-muted)]">No TLS domain config detected.</p>
+                <p className="text-xs text-[var(--cp-muted)]">{t('settings.noTlsDomains', 'No TLS domain config detected.')}</p>
               ) : null}
             </div>
           </div>
 
           <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-            <p className="text-sm font-semibold text-[var(--cp-ink)]">Route preview</p>
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('settings.routePreview', 'Route preview')}</p>
             <div className="mt-3 max-h-52 overflow-auto rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] p-3">
               <pre className="whitespace-pre-wrap break-words font-mono text-[11px] text-[var(--cp-ink)]">
-                {gatewayOverview?.routePreview || 'No route preview available.'}
+                {gatewayOverview?.routePreview || t('settings.noRoutePreview', 'No route preview available.')}
               </pre>
             </div>
           </div>
@@ -2760,9 +2859,12 @@ const WindowBody = memo((props: WindowBodyProps) => {
       storage: (
         <div className="space-y-4">
           <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-            <p className="text-sm font-semibold text-[var(--cp-ink)]">Storage policy snapshot</p>
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('settings.storageSnapshot', 'Storage policy snapshot')}</p>
             <p className="mt-1 text-xs text-[var(--cp-muted)]">
-              {storageUsed.toFixed(storageUsed >= 100 ? 0 : 1)} / {storageTotal.toFixed(storageTotal >= 100 ? 0 : 1)} GB in use.
+              {t('settings.storageUsage', '{used} / {total} GB in use.', {
+                used: storageUsed.toFixed(storageUsed >= 100 ? 0 : 1),
+                total: storageTotal.toFixed(storageTotal >= 100 ? 0 : 1),
+              })}
             </p>
             <div className="mt-3">
               <StorageDiskStatusPanel disk={metrics.disk} compact maxItems={4} />
@@ -2770,10 +2872,10 @@ const WindowBody = memo((props: WindowBodyProps) => {
           </div>
 
           <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-            <p className="text-sm font-semibold text-[var(--cp-ink)]">Files management</p>
-            <p className="mt-1 text-xs text-[var(--cp-muted)]">Current backend storage path for Files.</p>
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('settings.filesManagement', 'Files management')}</p>
+            <p className="mt-1 text-xs text-[var(--cp-muted)]">{t('settings.filesBackendPath', 'Current backend storage path for Files.')}</p>
             <div className="mt-3 rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2">
-              <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Files backend directory</p>
+              <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.filesBackendDirectory', 'Files backend directory')}</p>
               <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">{filesBackendDir}</p>
             </div>
           </div>
@@ -2782,7 +2884,7 @@ const WindowBody = memo((props: WindowBodyProps) => {
       permissions: (
         <div className="space-y-4">
           <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-            <p className="text-sm font-semibold text-[var(--cp-ink)]">Permission baseline</p>
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('settings.permissionBaseline', 'Permission baseline')}</p>
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
               {SETTINGS_POLICY_BASELINE.map((policy) => (
                 <div
@@ -2795,24 +2897,24 @@ const WindowBody = memo((props: WindowBodyProps) => {
             </div>
           </div>
           <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4 text-sm text-[var(--cp-muted)]">
-            Permission changes should be reviewed with role ownership, app scope, and audit trail.
+            {t('settings.permissionReviewNote', 'Permission changes should be reviewed with role ownership, app scope, and audit trail.')}
           </div>
         </div>
       ),
       'software-update': (
         <div className="space-y-4">
           <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-            <p className="text-sm font-semibold text-[var(--cp-ink)]">System release</p>
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('settings.systemRelease', 'System release')}</p>
             <div className="mt-3 rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-4 py-4">
-              <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Current version</p>
+              <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.currentVersion', 'Current version')}</p>
               <p className="mt-1 text-2xl font-semibold text-[var(--cp-ink)]">Beta1</p>
               <p className="mt-1 text-xs text-[var(--cp-muted)]">
-                This version represents the whole BuckyOS system release, not individual app versions.
+                {t('settings.versionScope', 'This version represents the whole BuckyOS system release, not individual app versions.')}
               </p>
             </div>
           </div>
           <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4 text-sm text-[var(--cp-muted)]">
-            Update strategy and channel policy are managed at system level by scheduler/repo workflow.
+            {t('settings.updatePolicy', 'Update strategy and channel policy are managed at system level by scheduler/repo workflow.')}
           </div>
         </div>
       ),
@@ -2822,10 +2924,10 @@ const WindowBody = memo((props: WindowBodyProps) => {
       <div className="grid gap-4 md:grid-cols-[220px_1fr]">
         <aside className="rounded-2xl border border-[var(--cp-border)] bg-white p-3">
           <p className="px-2 pt-1 text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">
-            Settings Menu
+            {t('settingsMenu.title', 'Settings Menu')}
           </p>
           <div className="mt-2 space-y-1">
-            {SETTINGS_WINDOW_MENU.map((menu) => (
+            {translatedSettingsMenu.map((menu) => (
               <button
                 key={menu.id}
                 type="button"
@@ -2862,10 +2964,10 @@ const WindowBody = memo((props: WindowBodyProps) => {
         <aside className="flex flex-col justify-between rounded-2xl border border-[var(--cp-border)] bg-white p-3">
           <div className="space-y-4">
             <section>
-              <p className="px-2 pt-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--cp-muted)]">Main menu</p>
-              <p className="mt-2 px-2 text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">Groups</p>
+              <p className="px-2 pt-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--cp-muted)]">{t('users.mainMenu', 'Main menu')}</p>
+              <p className="mt-2 px-2 text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">{t('users.groups', 'Groups')}</p>
               <div className="mt-2 space-y-1.5">
-                {USER_WINDOW_GROUPS.map((group) => (
+                {translatedUserGroups.map((group) => (
                   <button
                     key={group.id}
                     type="button"
@@ -2886,8 +2988,8 @@ const WindowBody = memo((props: WindowBodyProps) => {
             </section>
 
             <section>
-              <p className="px-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--cp-muted)]">Quick contacts</p>
-              <p className="mt-2 px-2 text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">All contacts</p>
+              <p className="px-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--cp-muted)]">{t('users.quickContacts', 'Quick contacts')}</p>
+              <p className="mt-2 px-2 text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">{t('users.allContacts', 'All contacts')}</p>
               <div className="mt-2 space-y-1">
                 {userContacts.map((contact) => (
                   <button
@@ -2918,18 +3020,18 @@ const WindowBody = memo((props: WindowBodyProps) => {
               onClick={(event) => event.preventDefault()}
               className="w-full rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)] transition hover:border-[var(--cp-primary)] hover:text-[var(--cp-primary-strong)]"
             >
-              Invite
+              {t('users.invite', 'Invite')}
             </button>
             <div className="pointer-events-none absolute -top-10 left-1/2 -translate-x-1/2 rounded-lg bg-slate-900 px-2.5 py-1 text-[11px] font-medium text-white opacity-0 shadow-lg transition-opacity duration-150 group-hover:opacity-100">
-              Not implemented yet
+              {t('users.notImplemented', 'Not implemented yet')}
             </div>
           </div>
         </aside>
 
         <div className="space-y-4">
           <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-            <p className="text-sm font-semibold text-[var(--cp-ink)]">User information</p>
-            <p className="mt-1 text-xs text-[var(--cp-muted)]">Selected contact details and group context.</p>
+            <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('users.infoTitle', 'User information')}</p>
+            <p className="mt-1 text-xs text-[var(--cp-muted)]">{t('users.infoDescription', 'Selected contact details and group context.')}</p>
             <div className="mt-4 flex flex-wrap items-center gap-3">
               <UserPatternAvatar name={selectedContact.name} className="size-12 border border-[var(--cp-border)]" />
               <div className="min-w-0">
@@ -2944,36 +3046,36 @@ const WindowBody = memo((props: WindowBodyProps) => {
 
           <div className="grid gap-4 lg:grid-cols-2">
             <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">Account profile</p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">{t('users.accountProfile', 'Account profile')}</p>
               <div className="mt-3 space-y-2">
                 <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Role</p>
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('users.role', 'Role')}</p>
                   <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{selectedContact.role}</p>
                 </div>
                 <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Active group</p>
-                  <p className="mt-1 text-sm font-semibold capitalize text-[var(--cp-ink)]">{selectedGroup.label}</p>
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('users.activeGroup', 'Active group')}</p>
+                  <p className="mt-1 text-sm font-semibold capitalize text-[var(--cp-ink)]">{t(userGroupI18nKey[selectedGroup.id].label, selectedGroup.label)}</p>
                 </div>
                 <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Membership</p>
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('users.membership', 'Membership')}</p>
                   <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{selectedGroupMembership}</p>
                 </div>
               </div>
             </div>
 
             <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">Zone identity</p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-[var(--cp-muted)]">{t('users.zoneIdentity', 'Zone identity')}</p>
               <div className="mt-3 space-y-2">
                 <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">SN username</p>
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.snUsername', 'SN username')}</p>
                   <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.sn.username || '-'}</p>
                 </div>
                 <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Zone user</p>
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('users.zoneUser', 'Zone user')}</p>
                   <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.zone.userName || '-'}</p>
                 </div>
                 <div className="rounded-xl bg-[var(--cp-surface-muted)] px-3 py-2">
-                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Zone DID</p>
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('settings.zoneDid', 'Zone DID')}</p>
                   <p className="mt-1 break-all text-sm font-semibold text-[var(--cp-ink)]">{zoneOverview?.zone.did || '-'}</p>
                 </div>
               </div>

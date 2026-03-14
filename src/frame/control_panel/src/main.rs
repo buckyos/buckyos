@@ -83,6 +83,7 @@ const DEFAULT_CHAT_STREAM_KEEPALIVE_MS: u64 = 15_000;
 const MIN_CHAT_STREAM_KEEPALIVE_MS: u64 = 5_000;
 const MAX_CHAT_STREAM_KEEPALIVE_MS: u64 = 60_000;
 const AICC_SETTINGS_KEY: &str = "services/aicc/settings";
+const CONTROL_PANEL_LOCALE_KEY: &str = "services/control_panel/settings/locale";
 const AI_MODELS_POLICIES_KEY: &str = "services/control_panel/ai_models/policies";
 const AI_MODELS_PROVIDER_OVERRIDES_KEY: &str =
     "services/control_panel/ai_models/provider_overrides";
@@ -1692,6 +1693,71 @@ impl ControlPanelServer {
         });
 
         Ok(RPCResponse::new(RPCResult::Success(layout), req.seq))
+    }
+
+    fn normalize_control_panel_locale(value: Option<&str>) -> String {
+        let normalized = value.unwrap_or("en").trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "zh" | "zh-cn" => "zh-CN".to_string(),
+            "en" | "en-us" | "en-gb" => "en".to_string(),
+            _ => "en".to_string(),
+        }
+    }
+
+    async fn load_control_panel_locale(client: &SystemConfigClient) -> Result<String, RPCErrors> {
+        match client.get(CONTROL_PANEL_LOCALE_KEY).await {
+            Ok(value) => Ok(Self::normalize_control_panel_locale(Some(&value.value))),
+            Err(_) => Ok("en".to_string()),
+        }
+    }
+
+    async fn handle_ui_locale_get(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let runtime = get_buckyos_api_runtime()?;
+        let client = runtime.get_system_config_client().await?;
+        let locale = Self::load_control_panel_locale(&client).await?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "key": CONTROL_PANEL_LOCALE_KEY,
+                "locale": locale,
+            })),
+            req.seq,
+        ))
+    }
+
+    async fn handle_ui_locale_set(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let requested = Self::param_str(&req, "locale")
+            .or_else(|| Self::param_str(&req, "value"))
+            .unwrap_or_else(|| "en".to_string());
+        let trimmed = requested.trim();
+        let locale = Self::normalize_control_panel_locale(Some(trimmed));
+
+        if !trimmed.is_empty() {
+            let normalized_requested = trimmed.to_ascii_lowercase();
+            let is_supported = matches!(normalized_requested.as_str(), "en" | "en-us" | "en-gb" | "zh" | "zh-cn");
+            if !is_supported {
+                return Err(RPCErrors::ReasonError(format!(
+                    "unsupported control panel locale: {}",
+                    requested
+                )));
+            }
+        }
+
+        let runtime = get_buckyos_api_runtime()?;
+        let client = runtime.get_system_config_client().await?;
+        client
+            .set(CONTROL_PANEL_LOCALE_KEY, &locale)
+            .await
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "ok": true,
+                "key": CONTROL_PANEL_LOCALE_KEY,
+                "locale": locale,
+            })),
+            req.seq,
+        ))
     }
 
     async fn handle_dashboard(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
@@ -6708,6 +6774,8 @@ impl RPCHandler for ControlPanelServer {
             "main" | "ui.main" => self.handle_main(req).await,
             "layout" | "ui.layout" => self.handle_layout(req).await,
             "dashboard" | "ui.dashboard" => self.handle_dashboard(req).await,
+            "ui.locale.get" => self.handle_ui_locale_get(req).await,
+            "ui.locale.set" => self.handle_ui_locale_set(req).await,
             // Auth
             "auth.login" => self.handle_auth_login(req).await,
             "auth.logout" => self.handle_auth_logout(req).await,

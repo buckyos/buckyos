@@ -1518,11 +1518,17 @@ impl BuckyOSRuntime {
                         ));
                     }
                 } else {
-                    warn!("local node {} is not started", local_node.node_did.to_string());
+                    warn!(
+                        "local node {} is not started",
+                        local_node.node_did.to_string()
+                    );
                 }
             }
         } else {
-            warn!("local node {} is not found", self.device_config.as_ref().unwrap().name.as_str());
+            warn!(
+                "local node {} is not found",
+                self.device_config.as_ref().unwrap().name.as_str()
+            );
         }
 
         //通过本机的node-gatewa 转发，局域网的即使可以直连也要通过rtcp,局域网的明文流量也并不安全。
@@ -1671,7 +1677,7 @@ impl BuckyOSRuntime {
         //先调用ndn-toolkit的get_named_object_from_known_named_object函数
         let store_mgr = self.get_named_store().await?;
         let mut chunk_ids =
-            ndn_toolkit::get_chunklist_from_known_named_object(&store_mgr, obj_id, named_object)
+            ndn_toolkit::tools::get_chunklist_from_known_named_object(&store_mgr, obj_id, named_object)
                 .await
                 .map_err(|e| {
                     RPCErrors::ReasonError(format!(
@@ -1710,7 +1716,7 @@ impl BuckyOSRuntime {
             };
 
             chunk_ids.extend(
-                ndn_toolkit::get_chunklist_from_known_named_object(
+                ndn_toolkit::tools::get_chunklist_from_known_named_object(
                     &store_mgr,
                     &sub_pkg_obj_id,
                     &sub_pkg_json,

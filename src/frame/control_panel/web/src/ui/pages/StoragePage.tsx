@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { fetchSystemMetrics, fetchSystemStatus } from '@/api'
+import { useI18n } from '@/i18n'
 import StorageDiskStatusPanel from '../components/StorageDiskStatusPanel'
 import StorageHealthSignalsPanel from '../components/StorageHealthSignalsPanel'
 import Icon from '../icons'
@@ -10,7 +11,7 @@ const POLL_INTERVAL_MS = 6000
 
 const formatGb = (value: number) => `${value.toFixed(value >= 100 ? 0 : 1)} GB`
 
-const toErrorText = (value: unknown) => {
+const toErrorText = (value: unknown, fallback: string) => {
   if (value instanceof Error) {
     return value.message
   }
@@ -19,10 +20,11 @@ const toErrorText = (value: unknown) => {
     return value
   }
 
-  return 'Failed to refresh storage telemetry.'
+  return fallback
 }
 
 const StoragePage = () => {
+  const { t } = useI18n()
   const [metrics, setMetrics] = useState<SystemMetrics | null>(null)
   const [status, setStatus] = useState<SystemStatusResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -52,7 +54,7 @@ const StoragePage = () => {
 
     const errors = [metricsResult.error, statusResult.error].filter(Boolean)
     if (errors.length > 0) {
-      setErrorMessage(toErrorText(errors[0]))
+      setErrorMessage(toErrorText(errors[0], t('storage.refreshFailed', 'Failed to refresh storage telemetry.')))
     } else {
       setErrorMessage(null)
     }
@@ -60,7 +62,7 @@ const StoragePage = () => {
     setLastUpdatedAt(new Date())
     setLoading(false)
     setRefreshing(false)
-  }, [])
+  }, [t])
 
   useEffect(() => {
     let disposed = false
@@ -131,13 +133,13 @@ const StoragePage = () => {
       <header className="cp-panel px-8 py-6">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-semibold text-[var(--cp-ink)] sm:text-3xl">Storage Center</h1>
-            <p className="text-sm text-[var(--cp-muted)]">Unified disk health and capacity telemetry for this node.</p>
+            <h1 className="text-2xl font-semibold text-[var(--cp-ink)] sm:text-3xl">{t('storage.pageTitle', 'Storage Center')}</h1>
+            <p className="text-sm text-[var(--cp-muted)]">{t('storage.pageDescription', 'Unified disk health and capacity telemetry for this node.')}</p>
           </div>
           <div className="flex items-center gap-2">
             <div className={`cp-pill uppercase tracking-wide ${stateClass}`}>{stateTone}</div>
             {refreshing ? (
-              <div className="cp-pill bg-[var(--cp-surface-muted)] text-[var(--cp-muted)]">Refreshing</div>
+              <div className="cp-pill bg-[var(--cp-surface-muted)] text-[var(--cp-muted)]">{t('storage.refreshing', 'Refreshing')}</div>
             ) : null}
           </div>
         </div>
@@ -145,26 +147,28 @@ const StoragePage = () => {
 
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface)] px-4 py-4 shadow-sm">
-          <p className="text-xs uppercase tracking-wide text-[var(--cp-muted)]">Total Capacity</p>
+          <p className="text-xs uppercase tracking-wide text-[var(--cp-muted)]">{t('storage.totalCapacity', 'Total Capacity')}</p>
           <p className="mt-1 text-2xl font-semibold text-[var(--cp-ink)]">{formatGb(storageStats.totalGb)}</p>
         </div>
         <div className="rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface)] px-4 py-4 shadow-sm">
-          <p className="text-xs uppercase tracking-wide text-[var(--cp-muted)]">Used</p>
+          <p className="text-xs uppercase tracking-wide text-[var(--cp-muted)]">{t('storage.used', 'Used')}</p>
           <p className="mt-1 text-2xl font-semibold text-[var(--cp-ink)]">{formatGb(storageStats.usedGb)}</p>
-          <p className="mt-1 text-xs text-[var(--cp-muted)]">{storageStats.usagePercent}% of pool</p>
+          <p className="mt-1 text-xs text-[var(--cp-muted)]">{t('storage.percentOfPool', '{value}% of pool', { value: storageStats.usagePercent })}</p>
         </div>
         <div className="rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface)] px-4 py-4 shadow-sm">
-          <p className="text-xs uppercase tracking-wide text-[var(--cp-muted)]">Free Space</p>
+          <p className="text-xs uppercase tracking-wide text-[var(--cp-muted)]">{t('storage.freeSpace', 'Free Space')}</p>
           <p className="mt-1 text-2xl font-semibold text-[var(--cp-ink)]">{formatGb(storageStats.freeGb)}</p>
-          <p className="mt-1 text-xs text-[var(--cp-muted)]">Across {storageStats.diskCount} disks</p>
+          <p className="mt-1 text-xs text-[var(--cp-muted)]">{t('storage.acrossDisks', 'Across {count} disks', { count: storageStats.diskCount })}</p>
         </div>
         <div className="rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface)] px-4 py-4 shadow-sm">
-          <p className="text-xs uppercase tracking-wide text-[var(--cp-muted)]">Hottest Disk</p>
+          <p className="text-xs uppercase tracking-wide text-[var(--cp-muted)]">{t('storage.hottestDisk', 'Hottest Disk')}</p>
           <p className="mt-1 truncate text-base font-semibold text-[var(--cp-ink)]">
-            {storageStats.hottestDisk?.label ?? 'N/A'}
+            {storageStats.hottestDisk?.label ?? t('settings.notAvailable', 'N/A')}
           </p>
           <p className="mt-1 text-xs text-[var(--cp-muted)]">
-            {storageStats.hottestDisk ? `${storageStats.hottestDisk.usagePercent}% used` : 'No disk data yet'}
+            {storageStats.hottestDisk
+              ? t('storage.percentUsed', '{value}% used', { value: storageStats.hottestDisk.usagePercent })
+              : t('storage.noDiskData', 'No disk data yet')}
           </p>
         </div>
       </section>
@@ -175,7 +179,7 @@ const StoragePage = () => {
             <span className="inline-flex size-9 items-center justify-center rounded-2xl bg-[var(--cp-primary-soft)] text-[var(--cp-primary-strong)]">
               <Icon name="drive" className="size-4" />
             </span>
-            <h2>Disk Health</h2>
+            <h2>{t('storage.diskHealth', 'Disk Health')}</h2>
           </div>
           <StorageDiskStatusPanel
             disk={storageDisk}
@@ -190,7 +194,7 @@ const StoragePage = () => {
               <span className="inline-flex size-9 items-center justify-center rounded-2xl bg-[var(--cp-primary-soft)] text-[var(--cp-primary-strong)]">
                 <Icon name="alert" className="size-4" />
               </span>
-              <h2>Health Signals</h2>
+              <h2>{t('storage.healthSignals', 'Health Signals')}</h2>
             </div>
             <StorageHealthSignalsPanel
               warnings={status?.warnings}
@@ -204,10 +208,10 @@ const StoragePage = () => {
               <span className="inline-flex size-9 items-center justify-center rounded-2xl bg-[var(--cp-primary-soft)] text-[var(--cp-primary-strong)]">
                 <Icon name="apps" className="size-4" />
               </span>
-              <h2>File Manager</h2>
+              <h2>{t('storage.fileManager', 'File Manager')}</h2>
             </div>
             <p className="text-sm text-[var(--cp-muted)]">
-              文件浏览与共享由独立 File 模块负责，Storage 专注容量、磁盘与备份。
+              {t('storage.fileManagerDescription', 'File browsing and sharing live in the standalone Files module, while Storage focuses on capacity, disks, and backup posture.')}
             </p>
             <div className="mt-4 flex flex-wrap items-center gap-2">
               <Link
@@ -215,14 +219,14 @@ const StoragePage = () => {
                 className="inline-flex items-center gap-2 rounded-xl bg-[var(--cp-primary)] px-3 py-2 text-xs font-semibold text-white transition hover:bg-[var(--cp-primary-strong)]"
               >
                 <Icon name="drive" className="size-4" />
-                Open desktop files
+                {t('storage.openDesktopFiles', 'Open desktop files')}
               </Link>
               <Link
                 to="/"
                 className="inline-flex items-center gap-2 rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface)] px-3 py-2 text-xs font-semibold text-[var(--cp-ink)] transition hover:border-[var(--cp-primary)] hover:text-[var(--cp-primary-strong)]"
               >
                 <Icon name="link" className="size-4" />
-                Open from desktop
+                {t('storage.openFromDesktop', 'Open from desktop')}
               </Link>
             </div>
           </div>
@@ -230,7 +234,9 @@ const StoragePage = () => {
       </section>
 
       <p className="text-xs text-[var(--cp-muted)]">
-        Last updated: {lastUpdatedAt ? lastUpdatedAt.toLocaleTimeString() : 'waiting for first sample'}
+        {t('storage.lastUpdated', 'Last updated: {value}', {
+          value: lastUpdatedAt ? lastUpdatedAt.toLocaleTimeString() : t('storage.waitingFirstSample', 'waiting for first sample'),
+        })}
       </p>
     </div>
   )

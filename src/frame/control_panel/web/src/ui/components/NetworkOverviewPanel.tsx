@@ -1,4 +1,5 @@
 import LineAreaChart from '../charts/LineAreaChart'
+import { useI18n } from '@/i18n'
 
 type NetworkOverviewPanelProps = {
   overview: NetworkOverview | null
@@ -47,6 +48,8 @@ const NetworkOverviewPanel = ({
   errorMessage,
   compact = false,
 }: NetworkOverviewPanelProps) => {
+  const { t } = useI18n()
+
   if (loading) {
     return (
       <div className="space-y-3">
@@ -66,22 +69,22 @@ const NetworkOverviewPanel = ({
 
   const throughputData = [
       {
-        id: 'Download',
+        id: t('network.download', 'Download'),
         data: timeline.map((point) => ({ x: point.time, y: point.rx / 1024 / 1024 })),
       },
       {
-        id: 'Upload',
+        id: t('network.upload', 'Upload'),
         data: timeline.map((point) => ({ x: point.time, y: point.tx / 1024 / 1024 })),
       },
     ]
 
   const healthData = [
       {
-        id: 'Errors',
+        id: t('network.errors', 'Errors'),
         data: timeline.map((point) => ({ x: point.time, y: point.errors ?? 0 })),
       },
       {
-        id: 'Drops',
+        id: t('network.drops', 'Drops'),
         data: timeline.map((point) => ({ x: point.time, y: point.drops ?? 0 })),
       },
     ]
@@ -95,34 +98,34 @@ const NetworkOverviewPanel = ({
     <div className="space-y-4">
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
         <div className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2">
-          <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Download</p>
+          <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('network.download', 'Download')}</p>
           <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{formatRate(summary?.rxPerSec ?? 0)}</p>
-          <p className="text-[11px] text-[var(--cp-muted)]">Total {formatBytes(summary?.rxBytes ?? 0)}</p>
+          <p className="text-[11px] text-[var(--cp-muted)]">{t('network.totalBytes', 'Total {value}', { value: formatBytes(summary?.rxBytes ?? 0) })}</p>
         </div>
         <div className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2">
-          <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Upload</p>
+          <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('network.upload', 'Upload')}</p>
           <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">{formatRate(summary?.txPerSec ?? 0)}</p>
-          <p className="text-[11px] text-[var(--cp-muted)]">Total {formatBytes(summary?.txBytes ?? 0)}</p>
+          <p className="text-[11px] text-[var(--cp-muted)]">{t('network.totalBytes', 'Total {value}', { value: formatBytes(summary?.txBytes ?? 0) })}</p>
         </div>
         <div className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2">
-          <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Errors / s</p>
+          <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('network.errorsPerSecond', 'Errors / s')}</p>
           <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">
             {Math.round((timeline.at(-1)?.errors ?? 0) || 0)}
           </p>
-          <p className="text-[11px] text-[var(--cp-muted)]">Total {summary?.rxErrors ?? 0} / {summary?.txErrors ?? 0}</p>
+          <p className="text-[11px] text-[var(--cp-muted)]">{t('network.totalPair', 'Total {left} / {right}', { left: summary?.rxErrors ?? 0, right: summary?.txErrors ?? 0 })}</p>
         </div>
         <div className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2">
-          <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">Drops / s</p>
+          <p className="text-[11px] uppercase tracking-wide text-[var(--cp-muted)]">{t('network.dropsPerSecond', 'Drops / s')}</p>
           <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">
             {Math.round((timeline.at(-1)?.drops ?? 0) || 0)}
           </p>
-          <p className="text-[11px] text-[var(--cp-muted)]">Total {summary?.rxDrops ?? 0} / {summary?.txDrops ?? 0}</p>
+          <p className="text-[11px] text-[var(--cp-muted)]">{t('network.totalPair', 'Total {left} / {right}', { left: summary?.rxDrops ?? 0, right: summary?.txDrops ?? 0 })}</p>
         </div>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-3">
-          <p className="mb-2 text-sm font-semibold text-[var(--cp-ink)]">Network throughput (MB/s)</p>
+          <p className="mb-2 text-sm font-semibold text-[var(--cp-ink)]">{t('network.throughputChart', 'Network throughput (MB/s)')}</p>
           <LineAreaChart
             data={throughputData}
             height={compact ? 170 : 210}
@@ -135,7 +138,7 @@ const NetworkOverviewPanel = ({
           />
         </div>
         <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-3">
-          <p className="mb-2 text-sm font-semibold text-[var(--cp-ink)]">Errors and drops (/s)</p>
+          <p className="mb-2 text-sm font-semibold text-[var(--cp-ink)]">{t('network.healthChart', 'Errors and drops (/s)')}</p>
           <LineAreaChart
             data={healthData}
             height={compact ? 170 : 210}
@@ -151,18 +154,18 @@ const NetworkOverviewPanel = ({
 
       <div className="rounded-2xl border border-[var(--cp-border)] bg-white p-3">
         <div className="mb-2 flex items-center justify-between">
-          <p className="text-sm font-semibold text-[var(--cp-ink)]">Per-interface</p>
-          <p className="text-[11px] text-[var(--cp-muted)]">{summary?.interfaceCount ?? 0} interfaces</p>
+          <p className="text-sm font-semibold text-[var(--cp-ink)]">{t('network.perInterface', 'Per-interface')}</p>
+          <p className="text-[11px] text-[var(--cp-muted)]">{t('network.interfaceCount', '{count} interfaces', { count: summary?.interfaceCount ?? 0 })}</p>
         </div>
         <div className="max-h-64 overflow-auto">
           <table className="w-full text-xs">
             <thead className="sticky top-0 bg-white text-[var(--cp-muted)]">
               <tr className="border-b border-[var(--cp-border)]">
-                <th className="py-2 text-left font-medium">Interface</th>
-                <th className="py-2 text-right font-medium">Down</th>
-                <th className="py-2 text-right font-medium">Up</th>
-                <th className="py-2 text-right font-medium">Errors</th>
-                <th className="py-2 text-right font-medium">Drops</th>
+                <th className="py-2 text-left font-medium">{t('network.interface', 'Interface')}</th>
+                <th className="py-2 text-right font-medium">{t('network.down', 'Down')}</th>
+                <th className="py-2 text-right font-medium">{t('network.up', 'Up')}</th>
+                <th className="py-2 text-right font-medium">{t('network.errors', 'Errors')}</th>
+                <th className="py-2 text-right font-medium">{t('network.drops', 'Drops')}</th>
               </tr>
             </thead>
             <tbody>
@@ -187,7 +190,7 @@ const NetworkOverviewPanel = ({
           </table>
         </div>
         {hiddenCount > 0 ? (
-          <p className="mt-2 text-[11px] text-[var(--cp-muted)]">+ {hiddenCount} more interfaces in full view.</p>
+          <p className="mt-2 text-[11px] text-[var(--cp-muted)]">{t('network.moreInterfaces', '+ {count} more interfaces in full view.', { count: hiddenCount })}</p>
         ) : null}
       </div>
 
