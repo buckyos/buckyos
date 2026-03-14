@@ -68,7 +68,9 @@ p, root, /config/*, read|write,allow
 
 p, ood,/config/*,read,allow
 p, ood,/config/agents/*/doc,read,allow
+p, ood,/config/agents/*/settings,read,allow
 p, ood,/config/users/*/apps/*,read|write,allow
+p, ood,/config/users/*/agents/*,read|write,allow
 p, ood,/config/nodes/{device}/*,read|write,allow
 p, ood,/config/services/*,read|write,allow
 p, ood,/config/system/rbac/policy,read|write,allow
@@ -91,13 +93,18 @@ p, scheduler,/config/system/scheduler/*,read|write,allow
 
 p, app, /config/boot/*, read,allow
 p, app, /config/agents/*/doc,read,allow
+p, app, /config/agents/*/settings,read,allow
 p, app, /config/users/*/apps/{app}/settings,read|write,allow
 p, app, /config/users/*/apps/{app}/spec,read,allow
 p, app, /config/users/*/apps/{app}/info,read|write,allow
+p, app, /config/users/*/agents/{app}/settings,read|write,allow
+p, app, /config/users/*/agents/{app}/spec,read,allow
+p, app, /config/users/*/agents/{app}/info,read|write,allow
 p, app, /config/services/*/info,read,allow
 
 p, admin, /config/boot/*, read,allow
 p, admin,/config/agents/*/doc,read|write,allow
+p, admin,/config/agents/*/settings,read|write,allow
 p, admin,/config/users/{user}/*,read|write,allow
 p, admin,/config/services/*,read|write,allow
 
@@ -105,6 +112,7 @@ p, user,/config/boot/*, read,allow
 p, user,/config/agents/*/doc,read,allow
 p, user,/config/users/{user}/*,read,allow
 p, user,/config/users/{user}/apps/*/*,read|write,allow
+p, user,/config/users/{user}/agents/*/*,read|write,allow
 p, user,/config/services/*/info,read,allow
 
 g, node-daemon, kernel
