@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "demo": "node app_client_demo.mjs"
+    "demo": "node app_client_demo.mjs",
+    "test": "node --test app_installer_flow.test.mjs"
   },
   "dependencies": {
     "buckyos": "github:buckyos/buckyos-websdk"

@@ -62,7 +62,7 @@
 }
 """
 
-"system/rbac/basic_policy" = """
+"system/rbac/base_policy" = """
 p, kernel, /config/*, read|write,allow
 p, root, /config/*, read|write,allow
 
@@ -72,6 +72,7 @@ p, ood,/config/users/*/apps/*,read|write,allow
 p, ood,/config/nodes/{device}/*,read|write,allow
 p, ood,/config/services/*,read|write,allow
 p, ood,/config/system/rbac/policy,read|write,allow
+p, ood,/config/system/scheduler/*,read|write,allow
 
 p, client,/config/boot/*, read,allow
 p, client,/config/agents/*/doc,read,allow
@@ -85,7 +86,8 @@ p, service,/config/services/*/info,read,allow
 p, service,/config/users*,read,allow
 p, service,/config/users/*/*,read,allow
 p, service,/config/system/*,read,allow
-
+p, scheduler,/config/services/*/*,read|write,allow
+p, scheduler,/config/system/scheduler/*,read|write,allow
 
 p, app, /config/boot/*, read,allow
 p, app, /config/agents/*/doc,read,allow
@@ -111,6 +113,7 @@ g, system-config, kernel
 g, verify-hub, kernel
 g, task-manager, kernel
 g, kmsg, kernel
+g, repo-service, kernel
 g, aicc, kernel
 g, msg-center, kernel
 g, control-panel, kernel

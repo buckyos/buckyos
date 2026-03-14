@@ -729,8 +729,26 @@ fn test_service_info_only_publishes_alive_running_replicas() {
         service_info_nodes(scheduler.service_infos.get("search-service").unwrap()),
         node_set(&["node1"])
     );
+    assert!(
+        scheduler
+            .service_info_refresh_times
+            .get("search-service")
+            .copied()
+            .unwrap_or(0)
+            > 0
+    );
 
     let last_snapshot = scheduler.clone();
+    let mut last_snapshot = last_snapshot;
+    let refresh_time = last_snapshot
+        .service_info_refresh_times
+        .get("search-service")
+        .copied()
+        .unwrap();
+    last_snapshot.service_info_refresh_times.insert(
+        "search-service".to_string(),
+        refresh_time.saturating_sub(31),
+    );
     scheduler
         .replica_instances
         .get_mut("search-service@node2")
@@ -755,6 +773,218 @@ fn test_service_info_only_publishes_alive_running_replicas() {
     }
     assert_eq!(
         service_info_nodes(scheduler.service_infos.get("search-service").unwrap()),
+        node_set(&["node1", "node2"])
+    );
+}
+
+#[test]
+fn test_service_info_refresh_is_throttled_within_30_seconds() {
+    let mut last_snapshot = NodeScheduler::new_empty(1);
+    last_snapshot.add_node(create_test_node(
+        "node1",
+        4000,
+        1024 * 1024 * 2048,
+        vec!["core".to_string()],
+        0.0,
+        NodeState::Ready,
+        "zone-1",
+    ));
+
+    let mut api_service = create_test_service_spec("api-service");
+    api_service.state = ServiceSpecState::Deployed;
+    last_snapshot.add_service_spec(api_service.clone());
+
+    let now = buckyos_get_unix_timestamp();
+    last_snapshot.add_replica_instance(create_test_replica_instance(
+        "api-service",
+        "node1",
+        InstanceState::Running,
+        now,
+    ));
+
+    let first_actions = last_snapshot.schedule(None).unwrap();
+    assert_eq!(first_actions.len(), 1);
+
+    let first_refresh_time = last_snapshot
+        .service_info_refresh_times
+        .get("api-service")
+        .copied()
+        .unwrap();
+
+    let mut scheduler = NodeScheduler::new_empty(2);
+    scheduler.add_node(create_test_node(
+        "node1",
+        4000,
+        1024 * 1024 * 2048,
+        vec!["core".to_string()],
+        0.0,
+        NodeState::Ready,
+        "zone-1",
+    ));
+    scheduler.add_service_spec(api_service);
+
+    let actions = scheduler.schedule(Some(&last_snapshot)).unwrap();
+    assert!(
+        actions.is_empty(),
+        "service_info refresh should be throttled within 30s: {:?}",
+        actions
+    );
+    assert_eq!(
+        service_info_nodes(scheduler.service_infos.get("api-service").unwrap()),
+        node_set(&["node1"])
+    );
+    assert_eq!(
+        scheduler
+            .service_info_refresh_times
+            .get("api-service")
+            .copied()
+            .unwrap(),
+        first_refresh_time
+    );
+}
+
+#[test]
+fn test_service_info_refresh_allows_update_after_30_seconds() {
+    let mut last_snapshot = NodeScheduler::new_empty(1);
+    last_snapshot.add_node(create_test_node(
+        "node1",
+        4000,
+        1024 * 1024 * 2048,
+        vec!["core".to_string()],
+        0.0,
+        NodeState::Ready,
+        "zone-1",
+    ));
+
+    let mut api_service = create_test_service_spec("api-service");
+    api_service.state = ServiceSpecState::Deployed;
+    last_snapshot.add_service_spec(api_service.clone());
+
+    let now = buckyos_get_unix_timestamp();
+    last_snapshot.add_replica_instance(create_test_replica_instance(
+        "api-service",
+        "node1",
+        InstanceState::Running,
+        now,
+    ));
+    last_snapshot.schedule(None).unwrap();
+    last_snapshot
+        .service_info_refresh_times
+        .insert("api-service".to_string(), now.saturating_sub(31));
+
+    let mut scheduler = NodeScheduler::new_empty(2);
+    scheduler.add_node(create_test_node(
+        "node1",
+        4000,
+        1024 * 1024 * 2048,
+        vec!["core".to_string()],
+        0.0,
+        NodeState::Ready,
+        "zone-1",
+    ));
+    scheduler.add_service_spec(api_service);
+
+    let actions = scheduler.schedule(Some(&last_snapshot)).unwrap();
+    assert_eq!(actions.len(), 1);
+    match &actions[0] {
+        SchedulerAction::UpdateServiceInfo(spec_id, ServiceInfo::RandomCluster(cluster)) => {
+            assert_eq!(spec_id, "api-service");
+            assert!(cluster.is_empty());
+        }
+        other => panic!("unexpected action: {:?}", other),
+    }
+    match scheduler.service_infos.get("api-service").unwrap() {
+        ServiceInfo::RandomCluster(cluster) => assert!(cluster.is_empty()),
+        other => panic!("unexpected service info: {:?}", other),
+    }
+    assert!(
+        scheduler
+            .service_info_refresh_times
+            .get("api-service")
+            .copied()
+            .unwrap()
+            >= now
+    );
+}
+
+#[test]
+fn test_deployed_service_without_instances_recreates_replica() {
+    let mut scheduler = NodeScheduler::new_empty(1);
+    scheduler.add_node(create_test_node(
+        "node1",
+        4000,
+        1024 * 1024 * 2048,
+        vec!["core".to_string()],
+        0.0,
+        NodeState::Ready,
+        "zone-1",
+    ));
+    scheduler.add_node(create_test_node(
+        "node2",
+        5000,
+        1024 * 1024 * 2048,
+        vec!["core".to_string()],
+        0.0,
+        NodeState::Ready,
+        "zone-1",
+    ));
+
+    let mut api_service = create_test_service_spec("api-service");
+    api_service.state = ServiceSpecState::Deployed;
+    scheduler.add_service_spec(api_service);
+
+    let actions = scheduler.schedule(None).unwrap();
+    assert_eq!(action_instance_nodes(&actions, "api-service"), node_set(&["node2"]));
+    assert_eq!(scheduler.replica_instances.len(), 1);
+    assert!(
+        actions.iter().all(|action| {
+            !matches!(action, SchedulerAction::ChangeServiceStatus(spec_id, _) if spec_id == "api-service")
+        }),
+        "deployed service should not emit redundant state changes: {:?}",
+        actions
+    );
+}
+
+#[test]
+fn test_best_instance_count_change_triggers_scale_out_for_deployed_service() {
+    let mut scheduler = NodeScheduler::new_empty(1);
+    scheduler.add_node(create_test_node(
+        "node1",
+        4000,
+        1024 * 1024 * 2048,
+        vec!["core".to_string()],
+        0.0,
+        NodeState::Ready,
+        "zone-1",
+    ));
+    scheduler.add_node(create_test_node(
+        "node2",
+        5000,
+        1024 * 1024 * 2048,
+        vec!["core".to_string()],
+        0.0,
+        NodeState::Ready,
+        "zone-1",
+    ));
+
+    let mut api_service = create_test_service_spec("api-service");
+    api_service.state = ServiceSpecState::Deployed;
+    scheduler.add_service_spec(api_service.clone());
+    scheduler.add_replica_instance(create_test_replica_instance(
+        "api-service",
+        "node1",
+        InstanceState::Running,
+        buckyos_get_unix_timestamp(),
+    ));
+
+    let last_snapshot = scheduler.clone();
+    scheduler.specs.get_mut("api-service").unwrap().best_instance_count = 2;
+
+    let actions = scheduler.schedule(Some(&last_snapshot)).unwrap();
+    assert_eq!(action_instance_nodes(&actions, "api-service"), node_set(&["node2"]));
+    assert_eq!(scheduler.replica_instances.len(), 2);
+    assert_eq!(
+        service_info_nodes(scheduler.service_infos.get("api-service").unwrap()),
         node_set(&["node1", "node2"])
     );
 }

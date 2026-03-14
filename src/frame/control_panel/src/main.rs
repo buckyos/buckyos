@@ -10,8 +10,8 @@ use buckyos_api::{
     AiMessage, AiPayload, AppDoc, AppServiceSpec, AppType, BoxKind, BuckyOSRuntimeType, Capability,
     CompleteRequest, Contact, ContactQuery, Event, KEventClient, ModelSpec, MsgCenterClient,
     MsgRecordWithObject, MsgState, RepoListFilter, RepoRecord, Requirements, SendContext,
-    ServiceExposeConfig, ServiceInstallConfig, ServiceState, SystemConfigClient, UserState,
-    UserType, CONTROL_PANEL_SERVICE_NAME, CONTROL_PANEL_SERVICE_PORT,
+    ServiceExposeConfig, ServiceInstallConfig, ServiceState, SystemConfigClient, UserType,
+    CONTROL_PANEL_SERVICE_NAME, CONTROL_PANEL_SERVICE_PORT,
 };
 use buckyos_kit::*;
 use bytes::Bytes;
@@ -864,60 +864,6 @@ impl ControlPanelServer {
         )
     }
 
-    fn is_read_only_rpc_method(method: &str) -> bool {
-        matches!(
-            method,
-            "main"
-                | "layout"
-                | "dashboard"
-                | "ui.main"
-                | "ui.layout"
-                | "ui.dashboard"
-                | "system.overview"
-                | "system.status"
-                | "system.metrics"
-                | "system.logs.list"
-                | "system.logs.query"
-                | "system.logs.tail"
-                | "system.logs.download"
-                | "system.config.test"
-                | "network.overview"
-                | "network.metrics"
-                | "zone.overview"
-                | "zone.config"
-                | "gateway.overview"
-                | "gateway.config"
-                | "gateway.file.get"
-                | "container.overview"
-                | "containers.overview"
-                | "docker.overview"
-                | "chat.bootstrap"
-                | "chat.contact.list"
-                | "chat.message.list"
-                | "chat.stream"
-                | "apps.list"
-                | "apps.version.list"
-                | "ai.overview"
-                | "ai.provider.list"
-                | "ai.model.list"
-                | "ai.policy.list"
-                | "ai.diagnostics.list"
-                | "ai.message_hub.thread_summary"
-                | "sys_config.get"
-                | "sys_config.list"
-                | "sys_config.tree"
-        )
-    }
-
-    fn can_access_rpc_method(method: &str, user_type: &UserType) -> bool {
-        match user_type {
-            UserType::Root | UserType::Admin => true,
-            UserType::User | UserType::Limited | UserType::Guest => {
-                Self::is_read_only_rpc_method(method)
-            }
-        }
-    }
-
     fn extract_rpc_session_token(req: &RPCRequest) -> Option<String> {
         Self::normalize_session_token(req.token.clone())
             .or_else(|| Self::normalize_session_token(Self::param_str(req, "session_token")))
@@ -987,52 +933,17 @@ impl ControlPanelServer {
             .ok_or_else(|| RPCErrors::InvalidToken("missing session token".to_string()))?;
 
         let runtime = get_buckyos_api_runtime()?;
-        let verify_hub_client = runtime.get_verify_hub_client().await?;
-        let verified = verify_hub_client
-            .verify_token(&token, Some(CONTROL_PANEL_AUTH_APPID))
-            .await?;
-        if !verified {
-            return Err(RPCErrors::InvalidToken(
-                "verify-hub token is invalid".to_string(),
-            ));
-        }
-
-        let parsed = RPCSessionToken::from_string(&token).map_err(|error| {
-            RPCErrors::InvalidToken(format!("invalid session token format: {}", error))
-        })?;
+        let parsed = runtime.verify_trusted_session_token(&token).await?;
         let username = parsed
             .sub
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .ok_or_else(|| RPCErrors::InvalidToken("session token missing subject".to_string()))?;
-
-        let control_panel_client = runtime.get_control_panel_client().await?;
-        let user_settings = control_panel_client
-            .get_user_settings_by_username(&username)
-            .await?;
-
-        if !matches!(user_settings.state, UserState::Active) {
-            return Err(RPCErrors::NoPermission("user is not active".to_string()));
-        }
-
-        if !Self::can_access_rpc_method(method, &user_settings.user_type) {
-            return Err(RPCErrors::NoPermission(format!(
-                "method {} requires higher privileges",
-                method
-            )));
-        }
-
-        let owner_did = user_settings
-            .contact
-            .as_ref()
-            .and_then(|contact| contact.did.as_ref())
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| DID::new("bns", &username).to_string());
+        let owner_did = DID::new("bns", &username).to_string();
 
         Ok(Some(RpcAuthPrincipal {
             username,
-            user_type: user_settings.user_type,
+            user_type: UserType::Root,
             owner_did,
         }))
     }
@@ -4627,7 +4538,17 @@ impl ControlPanelServer {
         version: Option<&str>,
     ) -> Result<RepoAppReleaseCandidate, RPCErrors> {
         let runtime = get_buckyos_api_runtime()?;
-        let repo = runtime.get_repo_client().await?;
+        info!(
+            "resolve repo app release app_id=`{}` version={:?}",
+            app_id, version
+        );
+        let repo = runtime.get_repo_client().await.map_err(|error| {
+            warn!(
+                "init repo client failed while resolving app `{}`: {}",
+                app_id, error
+            );
+            RPCErrors::ReasonError(format!("Init repo client failed: {}", error))
+        })?;
         let requested_version = version
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -4639,7 +4560,14 @@ impl ControlPanelServer {
                 Some(app_id.to_string()),
                 None,
             )))
-            .await?;
+            .await
+            .map_err(|error| {
+                warn!(
+                    "repo.list failed while resolving app `{}` version {:?}: {}",
+                    app_id, requested_version, error
+                );
+                error
+            })?;
 
         let mut candidates = Vec::new();
         for record in records {
@@ -4683,7 +4611,7 @@ impl ControlPanelServer {
             });
         }
 
-        candidates
+        let release = candidates
             .into_iter()
             .max_by(|lhs, rhs| Self::compare_repo_app_release(lhs, rhs))
             .ok_or_else(|| {
@@ -4691,7 +4619,15 @@ impl ControlPanelServer {
                     .map(|value| format!(" version `{value}`"))
                     .unwrap_or_default();
                 RPCErrors::ReasonError(format!("No repo app release found for `{app_id}`{detail}"))
-            })
+            })?;
+        info!(
+            "resolved repo app release app_id=`{}` version=`{}` content=`{}` status=`{}`",
+            release.app_doc.name,
+            release.app_doc.version,
+            release.record.content_id,
+            release.record.status
+        );
+        Ok(release)
     }
 
     fn build_default_install_config(app_id: &str, app_doc: &AppDoc) -> ServiceInstallConfig {
@@ -4769,10 +4705,24 @@ impl ControlPanelServer {
             .transpose()?
             .unwrap_or_else(|| app_doc.get_app_type());
 
+        info!(
+            "rpc app.publish app=`{}` version=`{}` type=`{}` local_dir=`{}`",
+            app_doc.name,
+            app_doc.version,
+            app_type.to_string(),
+            local_dir
+        );
         let obj_id = self
             .app_installer
             .publish_app_to_repo(app_type, Path::new(local_dir.as_str()), &app_doc)
-            .await?;
+            .await
+            .map_err(|error| {
+                warn!(
+                    "rpc app.publish failed for app `{}` version `{}` local_dir `{}`: {}",
+                    app_doc.name, app_doc.version, local_dir, error
+                );
+                error
+            })?;
 
         Ok(RPCResponse::new(
             RPCResult::Success(json!({

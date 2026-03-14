@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use buckyos_api::{get_buckyos_api_runtime, ControlPanelClient, UserState, UserType};
+use buckyos_api::{get_buckyos_api_runtime, UserType};
 use buckyos_kit::get_buckyos_root_dir;
 use bytes::Bytes;
 use cyfs_gateway_lib::{
@@ -15,7 +15,7 @@ use http::{Method, StatusCode, Version};
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
-use kRPC::{RPCErrors, RPCHandler, RPCRequest, RPCResponse, RPCResult, RPCSessionToken};
+use kRPC::{RPCErrors, RPCHandler, RPCRequest, RPCResponse, RPCResult};
 use log::warn;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -33,7 +33,6 @@ use zip::write::FileOptions;
 use zip::CompressionMethod;
 
 const BUCKY_FILE_SERVICE_NAME: &str = "bucky-file";
-const CONTROL_PANEL_AUTH_APPID: &str = "control-panel";
 const DEFAULT_SHARED_OWNER_DIR: &str = "admin";
 const SHARED_PUBLIC_DIR: &str = "Public";
 const SHARED_INBOX_DIR: &str = "Inbox";
@@ -2300,48 +2299,18 @@ impl BuckyFileServer {
         Ok(collected.to_bytes().to_vec())
     }
 
-    async fn get_user_settings(
-        &self,
-        username: &str,
-    ) -> Result<buckyos_api::UserSettings, RPCErrors> {
+    async fn verify_trusted_token(&self, token: &str) -> Result<FileAuthPrincipal, RPCErrors> {
         let runtime = get_buckyos_api_runtime()?;
-        let system_config_client = runtime.get_system_config_client().await?;
-        let control_panel_client = ControlPanelClient::new(system_config_client);
-        control_panel_client
-            .get_user_settings_by_username(username)
-            .await
-    }
-
-    async fn verify_verify_hub_token(&self, token: &str) -> Result<FileAuthPrincipal, RPCErrors> {
-        let runtime = get_buckyos_api_runtime()?;
-        let verify_hub_client = runtime.get_verify_hub_client().await?;
-        let verified = verify_hub_client
-            .verify_token(token, Some(CONTROL_PANEL_AUTH_APPID))
-            .await?;
-        if !verified {
-            return Err(RPCErrors::InvalidToken(
-                "verify-hub token is invalid".to_string(),
-            ));
-        }
-
-        let parsed = RPCSessionToken::from_string(token)
-            .map_err(|err| RPCErrors::InvalidToken(format!("invalid session token: {}", err)))?;
+        let parsed = runtime.verify_trusted_session_token(token).await?;
         let username = parsed
             .sub
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| {
-                RPCErrors::InvalidToken("verify-hub token missing subject".to_string())
-            })?;
-
-        let user_settings = self.get_user_settings(&username).await?;
-        if !matches!(user_settings.state, UserState::Active) {
-            return Err(RPCErrors::NoPermission("user is not active".to_string()));
-        }
+            .ok_or_else(|| RPCErrors::InvalidToken("trusted token missing subject".to_string()))?;
 
         Ok(FileAuthPrincipal {
             username,
-            user_type: user_settings.user_type,
+            user_type: UserType::Root,
         })
     }
 
@@ -2499,7 +2468,7 @@ impl BuckyFileServer {
             }
         };
 
-        if let Ok(principal) = self.verify_verify_hub_token(&token).await {
+        if let Ok(principal) = self.verify_trusted_token(&token).await {
             self.ensure_shared_root_structure(&principal).await;
             return Ok(principal);
         }

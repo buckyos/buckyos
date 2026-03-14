@@ -16,6 +16,7 @@ pub const KNOWN_SERVICE_HTTPS: (&str, u16) = ("https", 443);
 #[serde(rename_all = "lowercase")]
 pub enum ServiceState {
     New,
+    #[serde(alias = "Deployed", alias = "deployed")]
     Running,
     Stopped,
     Stopping,

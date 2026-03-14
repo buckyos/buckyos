@@ -128,10 +128,10 @@ impl RepoService {
                 ))
             })?;
 
-        let chunk_ids = if let Ok(runtime) = get_buckyos_api_runtime() {
+        let chunk_ids_result = if let Ok(runtime) = get_buckyos_api_runtime() {
             runtime
                 .get_chunklist_from_known_named_object(content_id, &object_json)
-                .await?
+                .await
         } else {
             ndn_toolkit::get_chunklist_from_known_named_object(&store_mgr, content_id, &object_json)
                 .await
@@ -140,7 +140,25 @@ impl RepoService {
                         "get chunklist from content {} failed: {err}",
                         content_id
                     ))
-                })?
+                })
+        };
+
+        let chunk_ids = match chunk_ids_result {
+            Ok(chunk_ids) => chunk_ids,
+            Err(error) => {
+                let error_text = error.to_string();
+                if error_text.contains("not a supported known named object")
+                    || error_text.contains("invalid obj type")
+                {
+                    warn!(
+                        "treat content {} as metadata-only object because chunklist lookup is unsupported: {}",
+                        content_id, error_text
+                    );
+                    let object_size = u64::try_from(object_str.len()).ok();
+                    return Ok((object_size, Some(object_json)));
+                }
+                return Err(error);
+            }
         };
 
         for chunk_id in &chunk_ids {

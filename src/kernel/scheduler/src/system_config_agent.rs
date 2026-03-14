@@ -266,6 +266,15 @@ pub fn create_scheduler_by_system_config(
         }
     }
 
+    info!(
+        "scheduler config snapshot loaded: keys={} nodes={} users={} specs={} reported_instances={}",
+        input_config.len(),
+        scheduler_ctx.nodes.len(),
+        scheduler_ctx.users.len(),
+        scheduler_ctx.specs.len(),
+        scheduler_ctx.replica_instances.len()
+    );
+
     Ok((scheduler_ctx, device_list))
 }
 
@@ -1089,7 +1098,7 @@ async fn update_rbac(
     input_config: &HashMap<String, String>,
     scheduler_ctx: &NodeScheduler,
 ) -> Result<HashMap<String, KVAction>> {
-    let basic_rbac_policy = input_config.get("system/rbac/basic_policy");
+    let basic_rbac_policy = input_config.get("system/rbac/base_policy");
     let current_rbac_policy = input_config.get("system/rbac/policy");
     let mut rbac_policy = String::new();
     if basic_rbac_policy.is_none() {
@@ -1170,6 +1179,12 @@ pub(crate) struct SchedulePlan {
     pub schedule_snapshot: NodeScheduler,
 }
 
+fn collect_tx_action_keys(tx_actions: &HashMap<String, KVAction>) -> Vec<String> {
+    let mut keys = tx_actions.keys().cloned().collect::<Vec<_>>();
+    keys.sort();
+    keys
+}
+
 pub(crate) async fn build_schedule_plan(
     input_system_config: &HashMap<String, String>,
     is_boot: bool,
@@ -1183,6 +1198,14 @@ pub(crate) async fn build_schedule_plan(
         } else {
             None
         };
+    info!(
+        "build_schedule_plan: is_boot={} nodes={} specs={} instances={} last_snapshot_present={}",
+        is_boot,
+        scheduler_ctx.nodes.len(),
+        scheduler_ctx.specs.len(),
+        scheduler_ctx.replica_instances.len(),
+        last_schedule_snapshot.is_some()
+    );
 
     let action_list = scheduler_ctx.schedule(last_schedule_snapshot.as_ref());
     if action_list.is_err() {
@@ -1192,11 +1215,13 @@ pub(crate) async fn build_schedule_plan(
         );
         return Err(anyhow::anyhow!("scheduler.schedule failed"));
     }
+    let action_list = action_list.unwrap();
+    info!("scheduler.schedule produced {} actions", action_list.len());
 
     let mut tx_actions = HashMap::new();
     let mut need_update_gateway_node_list: HashSet<String> = HashSet::new();
     let mut need_update_rbac = false;
-    for action in action_list.unwrap() {
+    for action in action_list {
         let new_tx_actions = schedule_action_to_tx_actions(
             &action,
             &scheduler_ctx,
@@ -1242,6 +1267,13 @@ pub(crate) async fn build_schedule_plan(
         extend_kv_action_map(&mut tx_actions, &update_gateway_config_actions);
     }
 
+    info!(
+        "build_schedule_plan result: tx_actions={} need_update_rbac={} gateway_nodes={}",
+        tx_actions.len(),
+        need_update_rbac,
+        need_update_gateway_node_list.len()
+    );
+
     Ok(SchedulePlan {
         tx_actions,
         schedule_snapshot: scheduler_ctx,
@@ -1279,7 +1311,8 @@ pub async fn schedule_loop(is_boot: bool) -> Result<()> {
         }
         let input_system_config = input_system_config.unwrap();
         //cover value to hashmap
-        let input_system_config = serde_json::from_value(input_system_config);
+        let input_system_config: Result<HashMap<String, String>, _> =
+            serde_json::from_value(input_system_config);
         if input_system_config.is_err() {
             error!(
                 "serde_json::from_value failed: {:?}",
@@ -1287,22 +1320,62 @@ pub async fn schedule_loop(is_boot: bool) -> Result<()> {
             );
             continue;
         }
-        let input_system_config = input_system_config.unwrap();
+        let input_system_config: HashMap<String, String> = input_system_config.unwrap();
+        info!(
+            "schedule loop step:{} loaded {} config entries",
+            loop_step,
+            input_system_config.len()
+        );
 
-        let schedule_plan = build_schedule_plan(&input_system_config, is_boot).await?;
+        let schedule_plan = match build_schedule_plan(&input_system_config, is_boot).await {
+            Ok(plan) => plan,
+            Err(err) => {
+                error!("build_schedule_plan failed at step {}: {:?}", loop_step, err);
+                continue;
+            }
+        };
+        let tx_action_count = schedule_plan.tx_actions.len();
+        let tx_action_keys = collect_tx_action_keys(&schedule_plan.tx_actions);
+        if tx_action_count == 0 {
+            info!("schedule loop step:{} no tx actions generated", loop_step);
+        }
 
         //执行调度动作
         let ret = system_config_client
             .exec_tx(schedule_plan.tx_actions, None)
             .await;
         if ret.is_err() {
-            error!("exec_tx failed: {:?}", ret.err().unwrap());
+            error!(
+                "schedule loop step:{} exec_tx failed, keys={:?}, err={:?}",
+                loop_step,
+                tx_action_keys,
+                ret.err().unwrap()
+            );
+        } else {
+            info!(
+                "schedule loop step:{} exec_tx applied {} actions",
+                loop_step, tx_action_count
+            );
         }
         //save schedule snapshot to system_config
         let schedule_snapshot_str = serde_json::to_string(&schedule_plan.schedule_snapshot)?;
         system_config_client
-            .create("system/scheduler/snapshot", &schedule_snapshot_str)
-            .await?;
+            .set("system/scheduler/snapshot", &schedule_snapshot_str)
+            .await
+            .map_err(|err| {
+                error!(
+                    "schedule loop step:{} snapshot set failed, key=system/scheduler/snapshot, err={:?}",
+                    loop_step, err
+                );
+                err
+            })?;
+        info!(
+            "schedule loop step:{} snapshot saved with nodes={} specs={} instances={}",
+            loop_step,
+            schedule_plan.schedule_snapshot.nodes.len(),
+            schedule_plan.schedule_snapshot.specs.len(),
+            schedule_plan.schedule_snapshot.replica_instances.len()
+        );
         if is_boot {
             break;
         }

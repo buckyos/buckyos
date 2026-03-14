@@ -135,7 +135,16 @@ async fn handle_set(params: Value, session_token: &RPCSessionToken) -> Result<Va
     )
     .await
     {
-        return Err(RPCErrors::NoPermission("No write permission".to_string()));
+        warn!(
+            "set denied: appid={} userid={} key={}",
+            session_token.appid.as_deref().unwrap_or("kernel"),
+            userid,
+            full_res_path
+        );
+        return Err(RPCErrors::NoPermission(format!(
+            "No write permission for key: {}",
+            &real_key_path
+        )));
     }
 
     //do business logic
@@ -145,6 +154,14 @@ async fn handle_set(params: Value, session_token: &RPCSessionToken) -> Result<Va
         .set(real_key_path, String::from(new_value))
         .await
         .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    drop(store);
+    if should_reload_security_state(&full_res_path) {
+        info!(
+            "security config changed via set, reloading trust keys and rbac: {}",
+            full_res_path
+        );
+        handle_refresh_trust_keys().await?;
+    }
 
     return Ok(Value::Null);
 }
@@ -179,7 +196,16 @@ async fn handle_create(params: Value, session_token: &RPCSessionToken) -> Result
     )
     .await
     {
-        return Err(RPCErrors::NoPermission("No write permission".to_string()));
+        warn!(
+            "create denied: appid={} userid={} key={}",
+            session_token.appid.as_deref().unwrap_or("kernel"),
+            userid,
+            full_res_path
+        );
+        return Err(RPCErrors::NoPermission(format!(
+            "No write permission for key: {}",
+            &real_key_path
+        )));
     }
 
     //do business logic
@@ -189,6 +215,14 @@ async fn handle_create(params: Value, session_token: &RPCSessionToken) -> Result
         .create(&real_key_path, new_value)
         .await
         .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    drop(store);
+    if should_reload_security_state(&full_res_path) {
+        info!(
+            "security config changed via create, reloading trust keys and rbac: {}",
+            full_res_path
+        );
+        handle_refresh_trust_keys().await?;
+    }
 
     //if key is boot/config,will update trust_keys
 
@@ -218,7 +252,16 @@ async fn handle_delete(params: Value, session_token: &RPCSessionToken) -> Result
     )
     .await
     {
-        return Err(RPCErrors::NoPermission("No write permission".to_string()));
+        warn!(
+            "delete denied: appid={} userid={} key={}",
+            session_token.appid.as_deref().unwrap_or("kernel"),
+            userid,
+            full_res_path
+        );
+        return Err(RPCErrors::NoPermission(format!(
+            "No write permission for key: {}",
+            &real_key_path
+        )));
     }
 
     //do business logic
@@ -228,6 +271,14 @@ async fn handle_delete(params: Value, session_token: &RPCSessionToken) -> Result
         .delete(&real_key_path)
         .await
         .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    drop(store);
+    if should_reload_security_state(&full_res_path) {
+        info!(
+            "security config changed via delete, reloading trust keys and rbac: {}",
+            full_res_path
+        );
+        handle_refresh_trust_keys().await?;
+    }
 
     return Ok(Value::Null);
 }
@@ -261,7 +312,16 @@ async fn handle_append(params: Value, session_token: &RPCSessionToken) -> Result
     )
     .await
     {
-        return Err(RPCErrors::NoPermission("No write permission".to_string()));
+        warn!(
+            "append denied: appid={} userid={} key={}",
+            session_token.appid.as_deref().unwrap_or("kernel"),
+            userid,
+            full_res_path
+        );
+        return Err(RPCErrors::NoPermission(format!(
+            "No write permission for key: {}",
+            &real_key_path
+        )));
     }
 
     //read and append
@@ -323,7 +383,16 @@ async fn handle_set_by_json_path(params: Value, session_token: &RPCSessionToken)
     )
     .await
     {
-        return Err(RPCErrors::NoPermission("No write permission".to_string()));
+        warn!(
+            "set_by_json_path denied: appid={} userid={} key={}",
+            session_token.appid.as_deref().unwrap_or("kernel"),
+            userid,
+            full_res_path
+        );
+        return Err(RPCErrors::NoPermission(format!(
+            "No write permission for key: {}",
+            &real_key_path
+        )));
     }
 
     //do business logic
@@ -333,7 +402,20 @@ async fn handle_set_by_json_path(params: Value, session_token: &RPCSessionToken)
         .await
         .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
     //let result = store.get(String::from(key)).await.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    drop(store);
+    if should_reload_security_state(&full_res_path) {
+        info!(
+            "security config changed via set_by_json_path, reloading trust keys and rbac: {}",
+            full_res_path
+        );
+        handle_refresh_trust_keys().await?;
+    }
     Ok(Value::Null)
+}
+
+fn should_reload_security_state(full_res_path: &str) -> bool {
+    full_res_path == "/config/boot/config"
+        || full_res_path.starts_with("/config/system/rbac/")
 }
 
 async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Result<Value> {
@@ -354,8 +436,10 @@ async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Resul
         return Err(RPCErrors::NoPermission("No sub(userid)".to_string()));
     }
     let userid = session_token.sub.as_ref().unwrap();
+    let appid = session_token.appid.as_deref().unwrap_or("kernel");
 
     let mut tx_actions = HashMap::new();
+    let mut need_reload_security_state = false;
 
     // Process each action into KVAction
     for (key, action) in actions.as_object().unwrap() {
@@ -368,10 +452,17 @@ async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Resul
         )
         .await
         {
+            warn!(
+                "exec_tx denied: appid={} userid={} key={}",
+                appid, userid, full_res_path
+            );
             return Err(RPCErrors::NoPermission(format!(
                 "No write permission for key: {}",
                 &real_key_path
             )));
+        }
+        if should_reload_security_state(&full_res_path) {
+            need_reload_security_state = true;
         }
 
         let action_type = action
@@ -451,6 +542,12 @@ async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Resul
         .exec_tx(tx_actions, real_main_key)
         .await
         .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    drop(store);
+
+    if need_reload_security_state {
+        info!("exec_tx touched security config, reloading trust keys and rbac");
+        handle_refresh_trust_keys().await?;
+    }
 
     Ok(Value::Null)
 }

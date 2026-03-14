@@ -937,6 +937,74 @@ impl BuckyOSRuntime {
         Ok(())
     }
 
+    pub async fn verify_trusted_session_token(&self, token_str: &str) -> Result<RPCSessionToken> {
+        let mut rpc_token = RPCSessionToken::from_string(token_str).map_err(|error| {
+            RPCErrors::InvalidToken(format!("Invalid session token: {}", error))
+        })?;
+        if !rpc_token.is_self_verify() {
+            return Err(RPCErrors::InvalidToken(
+                "Session token is not valid".to_string(),
+            ));
+        }
+
+        let raw_jwt = rpc_token.token.as_deref().ok_or(RPCErrors::InvalidToken(
+            "Session token is missing raw JWT".to_string(),
+        ))?;
+        let header = jsonwebtoken::decode_header(raw_jwt)
+            .map_err(|error| RPCErrors::InvalidToken(format!("JWT decode header error: {}", error)))?;
+        let claims = decode_jwt_claim_without_verify(raw_jwt).ok();
+
+        let mut kid = header
+            .kid
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                claims.as_ref().and_then(|value| {
+                    value.get("iss").and_then(|iss| iss.as_str()).and_then(|iss| {
+                        let trimmed = iss.trim();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed.to_string())
+                        }
+                    })
+                })
+            })
+            .unwrap_or_else(|| "root".to_string());
+
+        let mut decoding_key = {
+            let key_map = self.trust_keys.read().await;
+            key_map.get(&kid).cloned()
+        };
+
+        if decoding_key.is_none() {
+            self.refresh_trust_keys().await?;
+            decoding_key = {
+                let key_map = self.trust_keys.read().await;
+                key_map.get(&kid).cloned()
+            };
+        }
+
+        if decoding_key.is_none() && kid != "root" {
+            kid = "root".to_string();
+            decoding_key = {
+                let key_map = self.trust_keys.read().await;
+                key_map.get(&kid).cloned()
+            };
+        }
+
+        let decoding_key = decoding_key.ok_or(RPCErrors::NoPermission(format!(
+            "kid {} not found",
+            kid
+        )))?;
+
+        rpc_token
+            .verify_by_key(&decoding_key)
+            .map_err(|error| RPCErrors::InvalidToken(format!("JWT decode error: {}", error)))?;
+
+        Ok(rpc_token)
+    }
+
     //success return (userid,appid)
     pub async fn enforce(
         &self,

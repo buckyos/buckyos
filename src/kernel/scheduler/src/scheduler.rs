@@ -68,6 +68,7 @@ Step4. calc_service_infos() — 基于存活的 Instance 计算 ServiceInfo
     - 只有 Running 状态且 last_update_time 在 INSTANCE_ALIVE_TIME 内的 Instance 才计入
     - 启动期调度器会注入 bootstrap 假上报（创建 Instance 时设置当前时间戳），
       避免内核服务之间的启动依赖环
+    - fake service_info 也算一次成功刷新；同一 spec 两次刷新至少间隔 30 秒
     - 仅在 ServiceInfo 发生变化时才产生 UpdateServiceInfo Action
 
 ## 执行器层（system_config_agent.rs + service.rs，非本文件）
@@ -129,7 +130,7 @@ use buckyos_api::{ServiceInstanceState, ServiceState, BASE_APP_PORT};
 use buckyos_kit::buckyos_get_unix_timestamp;
 use log::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::Hash;
 
@@ -138,6 +139,7 @@ const SMALL_SYSTEM_NODE_COUNT: usize = 7;
 // 调度器只关心“实例第一次被判定掉线”的时刻，因此允许真实访问失败与被宣告下线之间存在误差。
 // 启动期调度器也会主动构造一次“假上报”来打破内核服务之间的启动依赖环。
 const INSTANCE_ALIVE_TIME: u64 = 90;
+const SERVICE_INFO_REFRESH_INTERVAL: u64 = 30;
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum ServiceSpecType {
@@ -515,6 +517,8 @@ pub struct NodeScheduler {
 
     pub replica_instances: HashMap<String, ReplicaInstance>,
     pub service_infos: HashMap<String, ServiceInfo>,
+    #[serde(default)]
+    pub service_info_refresh_times: HashMap<String, u64>,
     pub schedule_time: u64,
 }
 
@@ -528,6 +532,7 @@ impl NodeScheduler {
             specs: HashMap::new(),
             replica_instances: HashMap::new(),
             service_infos: HashMap::new(),
+            service_info_refresh_times: HashMap::new(),
             schedule_time: buckyos_get_unix_timestamp(),
         }
     }
@@ -549,6 +554,7 @@ impl NodeScheduler {
             specs,
             replica_instances,
             service_infos,
+            service_info_refresh_times: HashMap::new(),
             schedule_time: now,
         }
     }
@@ -646,6 +652,8 @@ impl NodeScheduler {
         let now = buckyos_get_unix_timestamp();
         let mut actions = Vec::new();
         let last_service_infos = last_snapshot.map(|snapshot| &snapshot.service_infos);
+        let last_refresh_times =
+            last_snapshot.map(|snapshot| &snapshot.service_info_refresh_times);
 
         // spec_id → instances 倒排索引，将 O(S×I) 降为 O(S+I)
         let mut spec_instances: HashMap<&str, Vec<&ReplicaInstance>> = HashMap::new();
@@ -691,16 +699,45 @@ impl NodeScheduler {
             };
 
             let old_info = last_service_infos.and_then(|infos| infos.get(spec_id));
+            let old_refresh_time = last_refresh_times
+                .and_then(|times| times.get(spec_id))
+                .copied()
+                .or_else(|| {
+                    old_info.map(|_| {
+                        last_snapshot
+                            .map(|snapshot| snapshot.schedule_time)
+                            .unwrap_or(0)
+                    })
+                })
+                .unwrap_or(0);
             let is_need_update = match old_info {
                 Some(old) => old != &new_info,
                 None => true,
             };
             if is_need_update {
+                if old_info.is_some()
+                    && now.saturating_sub(old_refresh_time) < SERVICE_INFO_REFRESH_INTERVAL
+                {
+                    info!(
+                        "spec_id:{} skip service_info refresh, last_refresh={} now={} interval={}",
+                        spec_id, old_refresh_time, now, SERVICE_INFO_REFRESH_INTERVAL
+                    );
+                    if let Some(old_info) = old_info {
+                        self.service_infos.insert(spec_id.clone(), old_info.clone());
+                    }
+                    self.service_info_refresh_times
+                        .insert(spec_id.clone(), old_refresh_time);
+                    continue;
+                }
                 actions.push(SchedulerAction::UpdateServiceInfo(
                     spec_id.clone(),
                     new_info.clone(),
                 ));
                 info!("spec_id:{} calc new service info: {:?}", spec_id, new_info);
+                self.service_info_refresh_times.insert(spec_id.clone(), now);
+            } else {
+                self.service_info_refresh_times
+                    .insert(spec_id.clone(), old_refresh_time);
             }
             self.service_infos.insert(spec_id.clone(), new_info);
         }
@@ -762,37 +799,25 @@ impl NodeScheduler {
                 None => continue,
             };
             match spec_snapshot.state {
-                ServiceSpecState::New => {
-                    let new_instances =
-                        self.create_replica_instance(&spec_snapshot, &shadow_nodes)?;
-                    for instance in &new_instances {
-                        if let Some(node) =
-                            shadow_nodes.iter_mut().find(|n| n.id == instance.node_id)
-                        {
-                            node.available_cpu_mhz = node
-                                .available_cpu_mhz
-                                .saturating_sub(spec_snapshot.required_cpu_mhz);
-                            node.available_memory = node
-                                .available_memory
-                                .saturating_sub(spec_snapshot.required_memory);
-                            node.available_gpu_memory = node
-                                .available_gpu_memory
-                                .saturating_sub(spec_snapshot.required_gpu_mem);
-                        }
-                    }
+                ServiceSpecState::New | ServiceSpecState::Deployed => {
+                    let new_instances = self.reconcile_spec_instances(
+                        &spec_snapshot,
+                        &mut shadow_nodes,
+                    )?;
                     for instance in new_instances {
                         self.replica_instances
                             .insert(instance.instance_id.clone(), instance.clone());
                         scheduler_actions.push(SchedulerAction::InstanceReplica(instance));
                     }
-                    //TODO:现在没有部署中的状态
-                    if let Some(spec_mut) = self.specs.get_mut(&spec_id) {
-                        spec_mut.state = ServiceSpecState::Deployed;
+                    if spec_snapshot.state == ServiceSpecState::New {
+                        if let Some(spec_mut) = self.specs.get_mut(&spec_id) {
+                            spec_mut.state = ServiceSpecState::Deployed;
+                        }
+                        scheduler_actions.push(SchedulerAction::ChangeServiceStatus(
+                            spec_id.clone(),
+                            ServiceSpecState::Deployed,
+                        ));
                     }
-                    scheduler_actions.push(SchedulerAction::ChangeServiceStatus(
-                        spec_id.clone(),
-                        ServiceSpecState::Deployed,
-                    ));
                 }
                 ServiceSpecState::Deleted => {
                     let instance_ids: Vec<String> = self
@@ -849,6 +874,7 @@ impl NodeScheduler {
                 None => return true,
                 Some(last_spec) => {
                     if spec.state != last_spec.state
+                        || spec.best_instance_count != last_spec.best_instance_count
                         || spec.required_cpu_mhz != last_spec.required_cpu_mhz
                         || spec.required_memory != last_spec.required_memory
                         || spec.node_affinity != last_spec.node_affinity
@@ -861,6 +887,71 @@ impl NodeScheduler {
         }
 
         false
+    }
+
+    fn reconcile_spec_instances(
+        &self,
+        spec_snapshot: &ServiceSpec,
+        shadow_nodes: &mut Vec<NodeItem>,
+    ) -> Result<Vec<ReplicaInstance>> {
+        let existing_instances: Vec<ReplicaInstance> = self
+            .replica_instances
+            .values()
+            .filter(|instance| {
+                instance.spec_id == spec_snapshot.id && instance.state != InstanceState::Deleted
+            })
+            .cloned()
+            .collect();
+        let existing_count = existing_instances.len() as u32;
+        let desired_count = spec_snapshot.best_instance_count;
+        if existing_count >= desired_count {
+            info!(
+                "spec_id:{} state:{} placement already satisfied existing={} desired={}",
+                spec_snapshot.id,
+                spec_snapshot.state,
+                existing_count,
+                desired_count
+            );
+            return Ok(Vec::new());
+        }
+
+        let existing_node_ids: HashSet<String> = existing_instances
+            .iter()
+            .map(|instance| instance.node_id.clone())
+            .collect();
+        let available_shadow_nodes: Vec<NodeItem> = shadow_nodes
+            .iter()
+            .filter(|node| !existing_node_ids.contains(&node.id))
+            .cloned()
+            .collect();
+        let missing_count = desired_count - existing_count;
+        let mut desired_spec = spec_snapshot.clone();
+        desired_spec.best_instance_count = missing_count;
+
+        let new_instances = self.create_replica_instance(&desired_spec, &available_shadow_nodes)?;
+        for instance in &new_instances {
+            if let Some(node) = shadow_nodes.iter_mut().find(|n| n.id == instance.node_id) {
+                node.available_cpu_mhz = node
+                    .available_cpu_mhz
+                    .saturating_sub(spec_snapshot.required_cpu_mhz);
+                node.available_memory = node
+                    .available_memory
+                    .saturating_sub(spec_snapshot.required_memory);
+                node.available_gpu_memory = node
+                    .available_gpu_memory
+                    .saturating_sub(spec_snapshot.required_gpu_mem);
+            }
+        }
+
+        info!(
+            "spec_id:{} state:{} reconcile instances existing={} desired={} created={}",
+            spec_snapshot.id,
+            spec_snapshot.state,
+            existing_count,
+            desired_count,
+            new_instances.len()
+        );
+        Ok(new_instances)
     }
 
     // 辅助函数
@@ -934,6 +1025,12 @@ impl NodeScheduler {
             .collect();
 
         if candidate_nodes.is_empty() {
+            warn!(
+                "spec_id:{} state:{} has no candidate nodes among {} shadow nodes",
+                service_spec.id,
+                service_spec.state,
+                node_list.len()
+            );
             return Err(anyhow::anyhow!("No suitable node found for service_spec"));
         }
         let candidate_node_count: u32 = candidate_nodes.len() as u32;

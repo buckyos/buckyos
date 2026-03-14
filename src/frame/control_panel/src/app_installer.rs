@@ -108,7 +108,10 @@ impl AppInstaller {
 
     async fn repo_client(&self) -> Result<RepoClient, RPCErrors> {
         let runtime = get_buckyos_api_runtime()?;
-        runtime.get_repo_client().await
+        runtime.get_repo_client().await.map_err(|error| {
+            warn!("init repo client failed: {}", error);
+            RPCErrors::ReasonError(format!("Init repo client failed: {}", error))
+        })
     }
 
     fn parse_obj_id(raw: &str) -> Result<ObjId, RPCErrors> {
@@ -291,12 +294,24 @@ impl AppInstaller {
     }
 
     async fn load_repo_record_status(&self, content_id: &str) -> Result<Option<String>, RPCErrors> {
+        info!("query repo record status for content `{}`", content_id);
         let repo = self.repo_client().await?;
-        let records = repo.list(None).await?;
-        Ok(records
+        let records = repo.list(None).await.map_err(|error| {
+            warn!(
+                "repo.list failed while querying status for content `{}`: {}",
+                content_id, error
+            );
+            error
+        })?;
+        let status = records
             .into_iter()
             .find(|record| record.content_id == content_id)
-            .map(|record| record.status))
+            .map(|record| record.status);
+        info!(
+            "repo record status for content `{}` -> {:?}",
+            content_id, status
+        );
+        Ok(status)
     }
 
     async fn latest_action_proof_id(
@@ -304,6 +319,10 @@ impl AppInstaller {
         content_id: &str,
         proof_type: &str,
     ) -> Result<Option<ObjId>, RPCErrors> {
+        info!(
+            "query latest repo proof `{}` for content `{}`",
+            proof_type, content_id
+        );
         let repo = self.repo_client().await?;
         let proofs = repo
             .get_proofs(
@@ -316,12 +335,23 @@ impl AppInstaller {
                     None,
                 )),
             )
-            .await?;
+            .await
+            .map_err(|error| {
+                warn!(
+                    "repo.get_proofs failed for content `{}` proof_type `{}`: {}",
+                    content_id, proof_type, error
+                );
+                error
+            })?;
 
         let proof = proofs.into_iter().rev().find_map(|proof| match proof {
             RepoProof::Action(action) => Some(action.gen_obj_id().0),
             RepoProof::Collection(_) => None,
         });
+        info!(
+            "latest repo proof `{}` for content `{}` -> {:?}",
+            proof_type, content_id, proof
+        );
         Ok(proof)
     }
 
@@ -529,6 +559,12 @@ impl AppInstaller {
             download_task_id,
         )?;
         let repo = self.repo_client().await?;
+        info!(
+            "calling repo.pin for content `{}` app `{}` user `{}`",
+            content_id,
+            spec.app_id(),
+            spec.user_id
+        );
         if let Err(error) = repo.pin(&content_id, download_proof.clone()).await {
             let error_text = error.to_string();
             if error_text.contains("is not available locally") {
@@ -537,6 +573,13 @@ impl AppInstaller {
                     content_id, error_text
                 );
             } else {
+                warn!(
+                    "repo.pin failed for content `{}` app `{}` user `{}`: {}",
+                    content_id,
+                    spec.app_id(),
+                    spec.user_id,
+                    error
+                );
                 return Err(error);
             }
         }
@@ -729,7 +772,24 @@ impl AppInstaller {
         let repo = self.repo_client().await?;
         let install_proof =
             self.build_install_proof(&next_spec, &content_id, Some(download_proof.gen_obj_id().0))?;
-        repo.add_proof(RepoProof::action(install_proof)).await?;
+        info!(
+            "calling repo.add_proof install for app `{}` user `{}` content `{}`",
+            next_spec.app_id(),
+            next_spec.user_id,
+            content_id
+        );
+        repo.add_proof(RepoProof::action(install_proof))
+            .await
+            .map_err(|error| {
+                warn!(
+                    "repo.add_proof failed for install app `{}` user `{}` content `{}`: {}",
+                    next_spec.app_id(),
+                    next_spec.user_id,
+                    content_id,
+                    error
+                );
+                error
+            })?;
         info!(
             "recorded install proof for app `{}` user `{}` version `{}`",
             next_spec.app_id(),
@@ -1002,7 +1062,24 @@ impl AppInstaller {
 
         let repo = self.repo_client().await?;
         let install_proof = self.build_install_proof(&next_spec, &content_id, download_base)?;
-        repo.add_proof(RepoProof::action(install_proof)).await?;
+        info!(
+            "calling repo.add_proof upgrade for app `{}` user `{}` content `{}`",
+            next_spec.app_id(),
+            next_spec.user_id,
+            content_id
+        );
+        repo.add_proof(RepoProof::action(install_proof))
+            .await
+            .map_err(|error| {
+                warn!(
+                    "repo.add_proof failed for upgrade app `{}` user `{}` content `{}`: {}",
+                    next_spec.app_id(),
+                    next_spec.user_id,
+                    content_id,
+                    error
+                );
+                error
+            })?;
         info!(
             "recorded upgrade install proof for app `{}` user `{}` version `{}`",
             next_spec.app_id(),
@@ -1606,6 +1683,10 @@ impl AppInstaller {
         let named_store = runtime.get_named_store().await.map_err(|error| {
             RPCErrors::ReasonError(format!("Open named store for publish failed: {error}"))
         })?;
+        info!(
+            "opening repo client for publish app `{}` version `{}`",
+            app_doc_template.name, app_doc_template.version
+        );
         let repo = self.repo_client().await?;
         let mut resolved_sub_pkgs = Vec::new();
 
@@ -1916,13 +1997,34 @@ impl AppInstaller {
         meta_obj_id: &ObjId,
         label: &str,
     ) -> Result<(), RPCErrors> {
-        let stored_id = repo.store(&meta_obj_id.to_string()).await?;
+        info!(
+            "calling repo.store for publish object `{}` obj `{}`",
+            label, meta_obj_id
+        );
+        let stored_id = repo
+            .store(&meta_obj_id.to_string())
+            .await
+            .map_err(|error| {
+                warn!(
+                    "repo.store failed for publish object `{}` obj `{}`: {}",
+                    label, meta_obj_id, error
+                );
+                error
+            })?;
         if stored_id != *meta_obj_id {
+            warn!(
+                "repo.store returned unexpected obj id for `{}`: expected {}, got {}",
+                label, meta_obj_id, stored_id
+            );
             return Err(RPCErrors::ReasonError(format!(
                 "repo.store returned unexpected obj id for `{}`: expected {}, got {}",
                 label, meta_obj_id, stored_id
             )));
         }
+        info!(
+            "repo.store succeeded for publish object `{}` obj `{}`",
+            label, meta_obj_id
+        );
         Ok(())
     }
 

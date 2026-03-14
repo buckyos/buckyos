@@ -113,7 +113,8 @@ async fn create_init_list_by_template(
         .await?
         .add_kmsg()
         .await?
-        //.add_repo_service().await?
+        .add_repo_service()
+        .await?
         .add_aicc(&start_config)
         .await?
         .add_msg_center(&start_config)
@@ -266,12 +267,16 @@ async fn service_main(is_boot: bool) -> Result<i32> {
         info!("Start Scheduler Server...");
         let runner = Runner::new(SCHEDULER_SERVICE_MAIN_PORT);
         runner.add_http_server("/kapi/scheduler".to_string(), Arc::new(scheduler_server));
-        runner.run().await;
-
-        schedule_loop(false).await.map_err(|e| {
-            error!("schedule_loop failed: {:?}", e);
-            e
+        info!("Start scheduler loop task...");
+        tokio::spawn(async move {
+            if let Err(err) = schedule_loop(false).await {
+                error!("schedule_loop failed: {:?}", err);
+            }
         });
+        if let Err(err) = runner.run().await {
+            error!("scheduler runner exited with error: {:?}", err);
+            return Err(anyhow::anyhow!("scheduler runner exited: {:?}", err));
+        }
         return Ok(0);
     }
 }
@@ -372,6 +377,9 @@ mod test {
         assert!(init_map.contains_key("services/scheduler/spec"));
         assert!(init_map.contains_key("services/task-manager/spec"));
         assert!(init_map.contains_key("services/kmsg/spec"));
+        assert!(init_map.contains_key("services/repo-service/spec"));
+        assert!(init_map.contains_key("services/repo-service/settings"));
+        assert!(init_map.contains_key("services/repo-service/pkg_list"));
         assert!(init_map.contains_key("services/aicc/spec"));
         assert!(init_map.contains_key("services/msg-center/spec"));
         //assert!(init_map.contains_key("services/smb-service/spec"));
@@ -435,6 +443,8 @@ p, root, ndn://*, read|write,allow
 
 p, ood,/config/*,read,allow
 p, ood,/config/users/*/apps/*,read|write,allow
+p, ood,/config/users/*/agents/*,read|write,allow
+p, ood,/config/devices/{device}/*,read|write,allow
 p, ood,/config/nodes/{device}/*,read|write,allow
 p, ood,/config/services/*,read|write,allow
 p, ood,/config/system/rbac/policy,read|write,allow
@@ -476,6 +486,7 @@ g, system-config, kernel
 g, verify-hub, kernel
 g, task-manager, kernel
 g, kmsg, kernel
+g, repo-service, kernel
 g, aicc, kernel
 g, msg-center, kernel
 g, control-panel, kernel
