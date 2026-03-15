@@ -23,7 +23,8 @@
             "app_id":"bob_testweb",
             "sdk_version":10,
             "access_mode":"public",
-            "dir_pkg_id":"bob_testweb"
+            "dir_pkg_id":"bob_testweb",
+            "dir_pkg_objid":"pkg:1234567890"
         },
         "www" : {
             "service_id":"control-panel",

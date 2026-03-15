@@ -14,6 +14,7 @@ use tokio::sync::RwLock;
 use clap::{Arg, ArgMatches, Command};
 use futures::prelude::*;
 use log::*;
+use named_store::NamedStoreMgr;
 use serde::{Deserialize, Serialize};
 use serde_json::{from_value, json, Value};
 use simplelog::*;
@@ -286,6 +287,302 @@ async fn load_node_gateway_info(
     Ok(gateway_info)
 }
 
+fn resolve_static_dir_pkg_id(app_info: &serde_json::Map<String, Value>) -> Result<Option<String>> {
+    let Some(dir_pkg_id) = app_info.get("dir_pkg_id").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+
+    let resolved_pkg_id = match app_info.get("dir_pkg_objid").and_then(Value::as_str) {
+        Some(dir_pkg_objid) => {
+            let obj_id = ObjId::new(dir_pkg_objid).map_err(|err| {
+                NodeDaemonErrors::ReasonError(format!(
+                    "invalid dir_pkg_objid {} for dir pkg {}: {}",
+                    dir_pkg_objid, dir_pkg_id, err
+                ))
+            })?;
+            PackageId::get_pkgid_with_objid(dir_pkg_id, Some(obj_id)).map_err(|err| {
+                NodeDaemonErrors::ReasonError(format!(
+                    "build exact pkg id for {} with objid {} failed: {}",
+                    dir_pkg_id, dir_pkg_objid, err
+                ))
+            })?
+        }
+        None => {
+            warn!(
+                "static web app dir package {} missing dir_pkg_objid, fallback to pkg id only",
+                dir_pkg_id
+            );
+            dir_pkg_id.to_string()
+        }
+    };
+
+    Ok(Some(resolved_pkg_id))
+}
+
+async fn index_static_dir_pkg_meta_from_named_store(
+    pkg_env_path: &Path,
+    resolved_pkg_id: &str,
+    store_mgr: &NamedStoreMgr,
+) -> Result<bool> {
+    let package_id = PackageId::parse(resolved_pkg_id).map_err(|err| {
+        NodeDaemonErrors::ReasonError(format!(
+            "parse static dir pkg id {} failed: {}",
+            resolved_pkg_id, err
+        ))
+    })?;
+    let Some(meta_obj_id_str) = package_id.objid.as_deref() else {
+        return Ok(false);
+    };
+
+    let meta_obj_id = ObjId::new(meta_obj_id_str).map_err(|err| {
+        NodeDaemonErrors::ReasonError(format!(
+            "parse static dir pkg objid {} failed: {}",
+            meta_obj_id_str, err
+        ))
+    })?;
+    let pkg_meta_str = store_mgr.get_object(&meta_obj_id).await.map_err(|err| {
+        NodeDaemonErrors::ReasonError(format!(
+            "load static dir pkg meta {} from named store failed: {}",
+            meta_obj_id, err
+        ))
+    })?;
+    let pkg_meta = PackageMeta::from_str(pkg_meta_str.as_str()).or_else(|_| {
+        let pkg_meta_json = serde_json::from_str::<Value>(pkg_meta_str.as_str())
+            .or_else(|_| load_named_object_from_obj_str(pkg_meta_str.as_str()))
+            .map_err(|err| {
+                NodeDaemonErrors::ReasonError(format!(
+                    "parse static dir pkg meta {} from named store failed: {}",
+                    meta_obj_id, err
+                ))
+            })?;
+        serde_json::from_value::<PackageMeta>(pkg_meta_json).map_err(|err| {
+            NodeDaemonErrors::ReasonError(format!(
+                "decode static dir pkg meta {} failed: {}",
+                meta_obj_id, err
+            ))
+        })
+    })?;
+
+    let expected_pkg_name = if package_id.name.contains('.') {
+        package_id.name.clone()
+    } else {
+        format!(
+            "{}.{}",
+            new_package_env(pkg_env_path.to_path_buf()).get_prefix(),
+            package_id.name
+        )
+    };
+    let meta_obj_id_string = meta_obj_id.to_string();
+    let mut indexed_pkg_meta = pkg_meta.clone();
+    if indexed_pkg_meta.name != expected_pkg_name {
+        indexed_pkg_meta.name = expected_pkg_name;
+    }
+    let indexed_pkg_meta_str = serde_json::to_string(&indexed_pkg_meta).map_err(|err| {
+        NodeDaemonErrors::ReasonError(format!(
+            "serialize indexed static dir pkg meta {} failed: {}",
+            meta_obj_id, err
+        ))
+    })?;
+
+    std::fs::create_dir_all(pkg_env_path.join("pkgs")).map_err(|err| {
+        NodeDaemonErrors::ReasonError(format!(
+            "create pkg env meta db dir {} failed: {}",
+            pkg_env_path.join("pkgs").display(),
+            err
+        ))
+    })?;
+
+    let meta_db =
+        MetaIndexDb::new(pkg_env_path.join("pkgs/meta_index.db"), false).map_err(|err| {
+            NodeDaemonErrors::ReasonError(format!(
+                "open pkg env meta db for {} failed: {}",
+                resolved_pkg_id, err
+            ))
+        })?;
+    meta_db
+        .add_pkg_meta(
+            meta_obj_id_string.as_str(),
+            indexed_pkg_meta_str.as_str(),
+            indexed_pkg_meta.author.as_str(),
+            None,
+        )
+        .map_err(|err| {
+            NodeDaemonErrors::ReasonError(format!(
+                "insert static dir pkg meta {} into env db failed: {}",
+                meta_obj_id, err
+            ))
+        })?;
+    meta_db
+        .set_pkg_version(
+            indexed_pkg_meta.name.as_str(),
+            indexed_pkg_meta.author.as_str(),
+            indexed_pkg_meta.version.as_str(),
+            meta_obj_id_string.as_str(),
+            indexed_pkg_meta.version_tag.as_deref(),
+        )
+        .map_err(|err| {
+            NodeDaemonErrors::ReasonError(format!(
+                "set static dir pkg version for {} in env db failed: {}",
+                resolved_pkg_id, err
+            ))
+        })?;
+
+    Ok(true)
+}
+
+async fn index_static_dir_pkg_meta_from_current_named_store(
+    pkg_env_path: &Path,
+    resolved_pkg_id: &str,
+) -> Result<bool> {
+    let package_id = PackageId::parse(resolved_pkg_id).map_err(|err| {
+        NodeDaemonErrors::ReasonError(format!(
+            "parse static dir pkg id {} failed: {}",
+            resolved_pkg_id, err
+        ))
+    })?;
+    if package_id.objid.is_none() {
+        return Ok(false);
+    }
+
+    let runtime = get_buckyos_api_runtime().map_err(|err| {
+        NodeDaemonErrors::ReasonError(format!(
+            "buckyos runtime is not initialized when indexing {}: {}",
+            resolved_pkg_id, err
+        ))
+    })?;
+    let store_mgr = runtime.get_named_store().await.map_err(|err| {
+        NodeDaemonErrors::ReasonError(format!(
+            "get named store for static dir pkg {} failed: {}",
+            resolved_pkg_id, err
+        ))
+    })?;
+
+    index_static_dir_pkg_meta_from_named_store(pkg_env_path, resolved_pkg_id, &store_mgr).await
+}
+
+async fn ensure_node_gateway_dir_pkgs_installed_in_env(
+    pkg_env_path: &Path,
+    node_gateway_info: &Value,
+) -> Result<()> {
+    let Some(app_info_map) = node_gateway_info.get("app_info").and_then(Value::as_object) else {
+        return Ok(());
+    };
+
+    let mut pkg_env = new_package_env(pkg_env_path.to_path_buf());
+    let mut checked_pkg_ids = std::collections::HashSet::new();
+    let mut failures = Vec::new();
+
+    for (host, app_entry) in app_info_map {
+        let Some(app_info) = app_entry.as_object() else {
+            continue;
+        };
+        let app_id = app_info
+            .get("app_id")
+            .and_then(Value::as_str)
+            .unwrap_or(host.as_str());
+        let resolved_pkg_id = match resolve_static_dir_pkg_id(app_info) {
+            Ok(Some(pkg_id)) => pkg_id,
+            Ok(None) => continue,
+            Err(err) => {
+                failures.push(format!(
+                    "resolve static web dir pkg for app {} failed: {}",
+                    app_id, err
+                ));
+                continue;
+            }
+        };
+
+        if !checked_pkg_ids.insert(resolved_pkg_id.clone()) {
+            continue;
+        };
+
+        match pkg_env.load(resolved_pkg_id.as_str()).await {
+            Ok(media_info) => {
+                info!(
+                    "static web dir pkg {} for app {} already installed at {}",
+                    resolved_pkg_id,
+                    app_id,
+                    media_info.full_path.display()
+                );
+                continue;
+            }
+            Err(err) => {
+                info!(
+                    "static web dir pkg {} for app {} is missing or stale, will install: {}",
+                    resolved_pkg_id, app_id, err
+                );
+            }
+        }
+
+        match index_static_dir_pkg_meta_from_current_named_store(
+            pkg_env_path,
+            resolved_pkg_id.as_str(),
+        )
+        .await
+        {
+            Ok(true) => {
+                info!(
+                    "indexed static web dir pkg meta {} for app {} from named store",
+                    resolved_pkg_id, app_id
+                );
+            }
+            Ok(false) => {}
+            Err(err) => {
+                warn!(
+                    "index static web dir pkg meta {} for app {} from named store failed, will continue install: {}",
+                    resolved_pkg_id, app_id, err
+                );
+            }
+        }
+
+        match pkg_env
+            .install_pkg(resolved_pkg_id.as_str(), true, false)
+            .await
+        {
+            Ok(meta_obj_id) => {
+                info!(
+                    "installed static web dir pkg {} for app {} with meta obj id {}",
+                    resolved_pkg_id, app_id, meta_obj_id
+                );
+            }
+            Err(PkgError::PackageAlreadyInstalled(_)) => {
+                info!(
+                    "static web dir pkg {} for app {} is already installed",
+                    resolved_pkg_id, app_id
+                );
+            }
+            Err(err) => {
+                failures.push(format!(
+                    "install static web dir pkg {} for app {} failed: {}",
+                    resolved_pkg_id, app_id, err
+                ));
+                continue;
+            }
+        }
+
+        if let Err(err) = pkg_env.load(resolved_pkg_id.as_str()).await {
+            failures.push(format!(
+                "load static web dir pkg {} for app {} after install failed: {}",
+                resolved_pkg_id, app_id, err
+            ));
+        }
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(NodeDaemonErrors::ReasonError(failures.join("; ")))
+    }
+}
+
+async fn ensure_node_gateway_dir_pkgs_installed(node_gateway_info: &Value) -> Result<()> {
+    ensure_node_gateway_dir_pkgs_installed_in_env(
+        get_buckyos_system_bin_dir().as_path(),
+        node_gateway_info,
+    )
+    .await
+}
+
 async fn load_node_config(
     node_host_name: &str,
     buckyos_api_client: &SystemConfigClient,
@@ -339,7 +636,7 @@ async fn do_boot_upgreade() -> std::result::Result<(), String> {
 
 async fn check_and_update_system_pkgs(pkg_list: &Vec<String>) -> std::result::Result<bool, String> {
     let mut is_self_upgrade = false;
-    let mut pkg_env = PackageEnv::new(get_buckyos_system_bin_dir());
+    let mut pkg_env = new_system_package_env();
     for pkg_id in pkg_list {
         let media_info = pkg_env.load(&pkg_id).await;
         if media_info.is_err() {
@@ -574,7 +871,7 @@ async fn keep_system_config_service(
 
     if !system_config_service_pkg.try_load().await {
         error!("load system_config_service pkg failed!");
-        let mut env = PackageEnv::new(get_buckyos_system_bin_dir());
+        let mut env = new_system_package_env();
         let result = env.install_pkg("system-config", false, false).await;
         if result.is_err() {
             error!(
@@ -635,7 +932,7 @@ async fn keep_cyfs_gateway_service(
     if running_state == ServiceInstanceState::NotExist {
         //当版本更新后,上述检查会返回NotExist, 并触发更新操作
         warn!("cyfs_gateway service pkg not exist, try install it...");
-        let mut env = PackageEnv::new(get_buckyos_system_bin_dir());
+        let mut env = new_system_package_env();
         let result = env.install_pkg("cyfs-gateway", false, false).await;
         if result.is_err() {
             error!(
@@ -741,10 +1038,7 @@ async fn desktop_daemon_main(skip_app_ids: &Vec<String>) -> Result<()> {
             );
             return;
         }
-        let app_loader = ServicePkg::new("app-loader".to_string(), get_buckyos_system_bin_dir());
-
-        let local_app_run_item =
-            LocalAppRunItem::new(&app_id_with_name, app_cfg.clone(), app_loader);
+        let local_app_run_item = LocalAppRunItem::new(&app_id_with_name, app_cfg.clone());
 
         let target_state = RunItemTargetState::from_instance_state(&app_cfg.target_state);
         let _ = ensure_run_item_state(&local_app_run_item, target_state)
@@ -790,7 +1084,7 @@ async fn node_main(
     device_doc: &DeviceConfig,
 ) -> Result<bool> {
     //check and upgrade some system pkgs not in app_stream or kernel_stream
-    let bin_env = PackageEnv::new(get_buckyos_system_bin_dir());
+    let bin_env = new_system_package_env();
     if !bin_env.is_dev_mode() {
         let root_env_need_upgrade =
             check_and_update_root_pkg_index_db(buckyos_api_client.get_session_token()).await;
@@ -865,9 +1159,7 @@ async fn node_main(
 
     let app_stream = stream::iter(node_config.apps);
     let app_task = app_stream.for_each_concurrent(4, |(app_id_with_name, app_cfg)| async move {
-        let app_loader = ServicePkg::new("app-loader".to_string(), get_buckyos_system_bin_dir());
-
-        let app_run_item = AppRunItem::new(&app_id_with_name, app_cfg.clone(), app_loader);
+        let app_run_item = AppRunItem::new(&app_id_with_name, app_cfg.clone());
 
         let target_state = RunItemTargetState::from_instance_state(&app_cfg.target_state);
         let _ = ensure_run_item_state(&app_run_item, target_state)
@@ -1003,7 +1295,11 @@ async fn node_daemon_main_loop(
                     None => true,
                     Some(old_id) => old_id != &new_node_gateway_info_id_value,
                 };
-                if need_write {
+                let ensure_result =
+                    ensure_node_gateway_dir_pkgs_installed(&new_node_gateway_info).await;
+                if let Err(err) = ensure_result {
+                    error!("ensure static web dir pkg installed failed! {}", err);
+                } else if need_write {
                     node_gateway_info_id = Some(new_node_gateway_info_id_value);
                     info!("node gateway_info changed, will write to node_gateway_info.json");
                     let gateway_info_path =
@@ -1018,6 +1314,7 @@ async fn node_daemon_main_loop(
             info!("node_main OK, load node gateway config ...");
             let new_node_gateway_config =
                 load_node_gateway_config(node_host_name, &system_config_client).await;
+
             if new_node_gateway_config.is_ok() {
                 let mut need_reload = false;
                 let new_node_gateway_config = new_node_gateway_config.unwrap();
@@ -1039,6 +1336,7 @@ async fn node_daemon_main_loop(
                     info!(
                         "node gateway_config changed, will write to node_gateway.json and reload"
                     );
+
                     let gateway_config_path =
                         buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway.json");
                     std::fs::write(gateway_config_path, new_node_gateway_config_str.as_bytes())
@@ -1419,4 +1717,184 @@ pub(crate) fn run(matches: ArgMatches) {
         .build()
         .unwrap()
         .block_on(async_main(matches));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use named_store::{NamedLocalStore, StoreLayout, StoreTarget};
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn create_temp_pkg_env_path(test_name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("node-daemon-{test_name}-{unique}"));
+        std::fs::create_dir_all(path.join("pkgs")).unwrap();
+        path
+    }
+
+    fn cleanup_temp_pkg_env_path(path: &Path) {
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    fn index_test_pkg(pkg_env_path: &Path, unique_name: &str, version: &str) -> (String, String) {
+        let owner = DID::from_str("did:bns:test").unwrap();
+        let pkg_name = format!("{}.{}", PackageEnvConfig::get_default_prefix(), unique_name);
+        let pkg_meta = PackageMeta::new(pkg_name.as_str(), version, "test", &owner, None);
+        let pkg_meta_str = serde_json::to_string(&pkg_meta).unwrap();
+        let (meta_obj_id, _) = pkg_meta.gen_obj_id();
+        let meta_obj_id_str = meta_obj_id.to_string();
+        let meta_db = MetaIndexDb::new(pkg_env_path.join("pkgs/meta_index.db"), false).unwrap();
+        let package_id = pkg_meta.get_package_id();
+
+        meta_db
+            .add_pkg_meta(
+                meta_obj_id_str.as_str(),
+                pkg_meta_str.as_str(),
+                pkg_meta.author.as_str(),
+                None,
+            )
+            .unwrap();
+        meta_db
+            .set_pkg_version(
+                package_id.name.as_str(),
+                pkg_meta.author.as_str(),
+                pkg_meta.version.as_str(),
+                meta_obj_id_str.as_str(),
+                pkg_meta.version_tag.as_deref(),
+            )
+            .unwrap();
+
+        (pkg_name, meta_obj_id_str)
+    }
+
+    fn build_static_web_gateway_info(dir_pkg_id: &str, dir_pkg_objid: &str) -> Value {
+        json!({
+            "app_info": {
+                "portal": {
+                    "app_id": "portal",
+                    "dir_pkg_id": dir_pkg_id,
+                    "dir_pkg_objid": dir_pkg_objid
+                }
+            }
+        })
+    }
+
+    async fn create_test_store_mgr(base_dir: &Path) -> NamedStoreMgr {
+        let store = NamedLocalStore::get_named_store_by_path(base_dir.join("named_store"))
+            .await
+            .unwrap();
+        let store_id = store.store_id().to_string();
+        let store_ref = Arc::new(tokio::sync::Mutex::new(store));
+
+        let store_mgr = NamedStoreMgr::new();
+        store_mgr.register_store(store_ref).await;
+        store_mgr
+            .add_layout(StoreLayout::new(
+                1,
+                vec![StoreTarget {
+                    store_id,
+                    device_did: None,
+                    capacity: None,
+                    used: None,
+                    readonly: false,
+                    enabled: true,
+                    weight: 1,
+                }],
+                0,
+                0,
+            ))
+            .await;
+
+        store_mgr
+    }
+
+    #[tokio::test]
+    async fn test_index_static_dir_pkg_meta_from_named_store_populates_env_meta_db() {
+        let pkg_env_path = create_temp_pkg_env_path("index_static_dir_pkg_meta_from_named_store");
+        let store_mgr = create_test_store_mgr(pkg_env_path.as_path()).await;
+        let owner = DID::from_str("did:bns:test").unwrap();
+        let pkg_name = "portal-web".to_string();
+        let pkg_meta = PackageMeta::new(pkg_name.as_str(), "1.0.0", "test", &owner, None);
+        let (meta_obj_id, pkg_meta_str) = pkg_meta.gen_obj_id();
+        store_mgr
+            .put_object(&meta_obj_id, pkg_meta_str.as_str())
+            .await
+            .unwrap();
+
+        let resolved_pkg_id = format!("portal-web#{}", meta_obj_id);
+        index_static_dir_pkg_meta_from_named_store(
+            pkg_env_path.as_path(),
+            resolved_pkg_id.as_str(),
+            &store_mgr,
+        )
+        .await
+        .unwrap();
+
+        let pkg_env = PackageEnv::new(pkg_env_path.clone());
+        let (indexed_meta_obj_id, indexed_meta) = pkg_env
+            .get_pkg_meta(resolved_pkg_id.as_str())
+            .await
+            .unwrap();
+
+        cleanup_temp_pkg_env_path(&pkg_env_path);
+        assert_eq!(indexed_meta_obj_id, meta_obj_id.to_string());
+        assert_eq!(
+            indexed_meta.name,
+            format!(
+                "{}.{}",
+                PackageEnvConfig::get_default_prefix(),
+                "portal-web"
+            )
+        );
+        assert_eq!(indexed_meta.version, pkg_meta.version);
+    }
+
+    #[tokio::test]
+    async fn test_ensure_node_gateway_dir_pkgs_installed_accepts_exact_strict_pkg() {
+        let pkg_env_path =
+            create_temp_pkg_env_path("ensure_node_gateway_dir_pkgs_installed_accepts_exact");
+        let (pkg_name, meta_obj_id) = index_test_pkg(&pkg_env_path, "portal-web", "1.0.0");
+        let strict_dir = pkg_env_path
+            .join("pkgs")
+            .join(pkg_name)
+            .join(ObjId::new(meta_obj_id.as_str()).unwrap().to_filename());
+        std::fs::create_dir_all(&strict_dir).unwrap();
+
+        let gateway_info = build_static_web_gateway_info("portal-web", meta_obj_id.as_str());
+        let result =
+            ensure_node_gateway_dir_pkgs_installed_in_env(pkg_env_path.as_path(), &gateway_info)
+                .await;
+
+        cleanup_temp_pkg_env_path(&pkg_env_path);
+        result.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_ensure_node_gateway_dir_pkgs_installed_does_not_accept_friendly_dir_for_exact_pkg(
+    ) {
+        let pkg_env_path =
+            create_temp_pkg_env_path("ensure_node_gateway_dir_pkgs_installed_requires_exact");
+        let (_, meta_obj_id) = index_test_pkg(&pkg_env_path, "portal-web", "1.0.0");
+        let friendly_dir = pkg_env_path.join("portal-web");
+        std::fs::create_dir_all(&friendly_dir).unwrap();
+
+        let gateway_info = build_static_web_gateway_info("portal-web", meta_obj_id.as_str());
+        let result =
+            ensure_node_gateway_dir_pkgs_installed_in_env(pkg_env_path.as_path(), &gateway_info)
+                .await;
+
+        cleanup_temp_pkg_env_path(&pkg_env_path);
+        let err = result.expect_err("friendly dir should not satisfy exact pkg objid");
+        match err {
+            NodeDaemonErrors::ReasonError(msg) => {
+                assert!(msg.contains("portal-web"));
+                assert!(msg.contains("after install failed") || msg.contains("install static web"));
+            }
+            other => panic!("unexpected error: {}", other),
+        }
+    }
 }

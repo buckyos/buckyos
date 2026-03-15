@@ -2,6 +2,7 @@
 #![allow(unused)]
 
 mod active_server;
+mod app_loader;
 mod app_mgr; // support manager app service (run in docker,run for one user)
 mod finder;
 mod frame_service_mgr; // support manager frame service (run in docker,run for all users)
@@ -10,6 +11,8 @@ mod local_app_mgr;
 mod node_daemon;
 mod run_item;
 mod service_pkg;
+#[cfg(test)]
+mod test_app_loader;
 
 #[cfg(target_os = "windows")]
 mod win_srv;

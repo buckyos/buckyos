@@ -13,9 +13,9 @@ use crate::app::*;
 use crate::scheduler::*;
 use crate::service::*;
 use buckyos_api::{
-    get_buckyos_api_runtime, AppServiceSpec, KernelServiceSpec, NodeConfig, ServiceState,
-    ServiceInstanceReportInfo, UserSettings, UserType as ApiUserType, ZoneGatewaySettings,
-    CONTROL_PANEL_SERVICE_PORT,
+    get_buckyos_api_runtime, AppServiceSpec, KernelServiceSpec, NodeConfig,
+    ServiceInstanceReportInfo, ServiceState, UserSettings, UserType as ApiUserType,
+    ZoneGatewaySettings, CONTROL_PANEL_SERVICE_PORT,
 };
 use buckyos_kit::*;
 use name_client::*;
@@ -616,6 +616,8 @@ struct NodeGatewayAppInfoEntry {
     port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     dir_pkg_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dir_pkg_objid: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     block_services: Vec<String>,
 }
@@ -755,6 +757,7 @@ fn build_app_host_entry(
         node_id: Some(pick_instance.node_id.clone()),
         port: Some(port),
         dir_pkg_id: None,
+        dir_pkg_objid: None,
         block_services: vec![],
     })
 }
@@ -762,6 +765,7 @@ fn build_app_host_entry(
 fn build_static_web_app_host_entry(app_spec: &AppServiceSpec) -> Option<NodeGatewayAppInfoEntry> {
     let web_pkg = app_spec.app_doc.pkg_list.web.as_ref()?;
     let dir_pkg_id = PackageId::get_pkg_id_unique_name(web_pkg.pkg_id.as_str());
+    let dir_pkg_objid = web_pkg.pkg_objid.as_ref().map(|objid| objid.to_string());
 
     Some(NodeGatewayAppInfoEntry {
         app_id: app_spec.app_id().to_string(),
@@ -770,6 +774,7 @@ fn build_static_web_app_host_entry(app_spec: &AppServiceSpec) -> Option<NodeGate
         node_id: None,
         port: None,
         dir_pkg_id: Some(dir_pkg_id),
+        dir_pkg_objid,
         block_services: vec![],
     })
 }
@@ -1335,7 +1340,10 @@ pub async fn schedule_loop(is_boot: bool) -> Result<()> {
         let schedule_plan = match build_schedule_plan(&input_system_config, is_boot).await {
             Ok(plan) => plan,
             Err(err) => {
-                error!("build_schedule_plan failed at step {}: {:?}", loop_step, err);
+                error!(
+                    "build_schedule_plan failed at step {}: {:?}",
+                    loop_step, err
+                );
                 continue;
             }
         };
@@ -1841,7 +1849,14 @@ mod tests {
     #[tokio::test]
     async fn test_update_node_gateway_info_adds_static_web_app_entry() {
         let zone_config = create_test_zone_config();
-        let web_app_spec = create_test_static_web_app_spec();
+        let mut web_app_spec = create_test_static_web_app_spec();
+        web_app_spec
+            .app_doc
+            .pkg_list
+            .web
+            .as_mut()
+            .unwrap()
+            .pkg_objid = Some(serde_json::from_value(json!("pkg:1234567890")).unwrap());
         let device_ood1 = create_test_device_info("ood1", None);
 
         let mut input_system_config = HashMap::new();
@@ -1878,6 +1893,7 @@ mod tests {
         assert_eq!(portal.node_id, None);
         assert_eq!(portal.port, None);
         assert_eq!(portal.dir_pkg_id.as_deref(), Some("portal-web"));
+        assert_eq!(portal.dir_pkg_objid.as_deref(), Some("pkg:1234567890"));
     }
 
     #[tokio::test]

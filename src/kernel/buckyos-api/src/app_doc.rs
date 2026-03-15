@@ -2,7 +2,7 @@ use crate::PermissionRequest;
 use ::kRPC::*;
 use name_lib::DID;
 use ndn_lib::ObjId;
-use package_lib::PackageMeta;
+use package_lib::{PackageId, PackageMeta};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, ops::Deref};
 
@@ -118,6 +118,12 @@ pub struct SubPkgDesc {
     pub source_url: Option<String>,
 }
 
+impl SubPkgDesc {
+    pub fn get_pkg_id_with_objid(&self) -> Option<String> {
+        PackageId::get_pkgid_with_objid(self.pkg_id.as_str(), self.pkg_objid.clone()).ok()
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct SubPkgList {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -168,14 +174,24 @@ impl SubPkgList {
             } else {
                 self.amd64_apple_app.as_ref()
             };
-            return pkg.map(|pkg| pkg.pkg_id.clone());
+            if let Some(pkg) = pkg {
+                if let Some(pkg_id) = pkg.get_pkg_id_with_objid() {
+                    return Some(pkg_id);
+                }
+            }
+            return None;
         } else if cfg!(target_os = "windows") {
             let pkg = if cfg!(target_arch = "aarch64") {
                 self.aarch64_win_app.as_ref()
             } else {
                 self.amd64_win_app.as_ref()
             };
-            return pkg.map(|pkg| pkg.pkg_id.clone());
+            if let Some(pkg) = pkg {
+                if let Some(pkg_id) = pkg.get_pkg_id_with_objid() {
+                    return Some(pkg_id);
+                }
+            }
+            return None;
         }
 
         None
@@ -185,11 +201,15 @@ impl SubPkgList {
         //根据当前编译期架构，返回对应的docker image pkg_id
         if cfg!(target_arch = "aarch64") {
             if let Some(pkg) = &self.aarch64_docker_image {
-                return Some(pkg.pkg_id.clone());
+                if let Some(pkg_id) = pkg.get_pkg_id_with_objid() {
+                    return Some(pkg_id);
+                }
             }
         } else {
             if let Some(pkg) = &self.amd64_docker_image {
-                return Some(pkg.pkg_id.clone());
+                if let Some(pkg_id) = pkg.get_pkg_id_with_objid() {
+                    return Some(pkg_id);
+                }
             }
         }
 

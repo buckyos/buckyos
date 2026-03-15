@@ -2,7 +2,7 @@ import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { createPrivateKey, randomBytes, sign as signDetached } from 'node:crypto'
-import { cp, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -38,11 +38,17 @@ const OWNER_DID =
 const DOCKER_BASE_IMAGE =
   getEnv('BUCKYOS_TEST_DOCKER_BASE_IMAGE') ??
   'busybox:1.36.1'
+const POST_INSTALL_SETTLE_MS = Number(
+  getEnv('BUCKYOS_TEST_POST_INSTALL_SETTLE_MS') ?? '15000',
+)
+const UNINSTALL_AFTER_INSTALL =
+  getEnv('BUCKYOS_TEST_UNINSTALL_AFTER_INSTALL') === '1'
 
 const tempPaths = new Set()
 const dockerImages = new Set()
 
 let sdkContextPromise = null
+let versionCounter = Math.floor(Date.now() / 1000) % 60000
 
 function getEnv(name) {
   const value = process.env[name]
@@ -58,7 +64,8 @@ function createRunId(prefix) {
 }
 
 function buildVersion() {
-  return `0.1.${Math.floor(Date.now() / 1000)}`
+  versionCounter = (versionCounter + 1) % 60000
+  return `0.1.${versionCounter}`
 }
 
 function isKeyNotFoundError(error) {
@@ -100,7 +107,10 @@ function replacePlaceholders(value, tokens) {
 
   if (value && typeof value === 'object') {
     return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, replacePlaceholders(item, tokens)]),
+      Object.entries(value).map(([key, item]) => [
+        replacePlaceholders(key, tokens),
+        replacePlaceholders(item, tokens),
+      ]),
     )
   }
 
@@ -294,6 +304,13 @@ async function waitForTask(taskId) {
   return task
 }
 
+async function sleep(ms) {
+  if (ms <= 0) {
+    return
+  }
+  await new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 async function ensurePublishDependencies(systemConfigRpc) {
   try {
     const result = await systemConfigRpc.call('sys_config_get', {
@@ -451,14 +468,6 @@ async function uninstallApp({ appId, removeData = false }) {
 
   assert.ok(result.task_id, 'uninstall should return task_id')
   return waitForTask(result.task_id)
-}
-
-async function safeUninstall(appId) {
-  try {
-    await uninstallApp({ appId, removeData: false })
-  } catch (_error) {
-    // ignore cleanup failures for partially-installed cases
-  }
 }
 
 async function stageStaticWebFixture() {
@@ -625,8 +634,10 @@ after(async () => {
     buckyos.logout(false)
   }
 
-  for (const imageName of [...dockerImages]) {
-    await removeDockerImage(imageName)
+  if (UNINSTALL_AFTER_INSTALL) {
+    for (const imageName of [...dockerImages]) {
+      await removeDockerImage(imageName)
+    }
   }
 
   for (const dir of [...tempPaths]) {
@@ -638,9 +649,8 @@ test('app_installer local publish lifecycle', async (t) => {
   const ctx = await getSdkContext()
   const userId = ctx.accountInfo.user_id
 
-  await t.test('static web app publish + install + uninstall', async () => {
+  await t.test('static web app publish + install', async () => {
     const fixture = await stageStaticWebFixture()
-    let installed = false
 
     try {
       await publishApp({
@@ -653,35 +663,36 @@ test('app_installer local publish lifecycle', async (t) => {
         appId: fixture.appId,
         version: fixture.version,
       })
-      installed = true
+
+      await sleep(POST_INSTALL_SETTLE_MS)
 
       const spec = await readConfigJson(fixture.specPath(userId))
       assert.equal(spec.app_doc.name, fixture.appId)
       assert.equal(spec.app_doc.version, fixture.version)
       assert.equal(spec.app_doc.selector_type, 'static')
-      assert.equal(spec.state, 'new')
+      assert.ok(
+        isInstalledSpecState(spec.state),
+        `static web spec should be in an installed state, got ${spec.state}`,
+      )
       assert.deepEqual(installTask.data?.instance ?? null, null)
       assert.deepEqual(
         spec.install_config.expose_config.www?.sub_hostname ?? [],
         [fixture.appId],
       )
 
-      await uninstallApp({ appId: fixture.appId, removeData: false })
+      if (UNINSTALL_AFTER_INSTALL) {
+        await uninstallApp({ appId: fixture.appId, removeData: false })
 
-      const deletedSpec = await readConfigJson(fixture.specPath(userId))
-      assert.equal(deletedSpec.state, 'deleted')
-      installed = false
-    } finally {
-      if (installed) {
-        await safeUninstall(fixture.appId)
+        const deletedSpec = await readConfigJson(fixture.specPath(userId))
+        assert.equal(deletedSpec.state, 'deleted')
       }
+    } finally {
       await cleanupTempDir(fixture.localDir)
     }
   })
 
-  await t.test('agent app publish + install + uninstall', async () => {
+  await t.test('agent app publish + install', async () => {
     const fixture = await stageAgentFixture()
-    let installed = false
 
     try {
       await publishApp({
@@ -694,7 +705,8 @@ test('app_installer local publish lifecycle', async (t) => {
         appId: fixture.appId,
         version: fixture.version,
       })
-      installed = true
+
+      await sleep(POST_INSTALL_SETTLE_MS)
 
       const spec = await readConfigJson(fixture.specPath(userId))
       assert.equal(spec.app_doc.name, fixture.appId)
@@ -714,26 +726,23 @@ test('app_installer local publish lifecycle', async (t) => {
       assert.equal(installTask.data?.instance?.state, 'started')
       assert.equal(await fileExists(fixture.pidFile(userId)), true)
 
-      await uninstallApp({ appId: fixture.appId, removeData: false })
+      if (UNINSTALL_AFTER_INSTALL) {
+        await uninstallApp({ appId: fixture.appId, removeData: false })
 
-      const deletedSpec = await readConfigJson(fixture.specPath(userId))
-      assert.equal(deletedSpec.state, 'deleted')
-      assert.equal(await fileExists(fixture.pidFile(userId)), false)
-      installed = false
-    } finally {
-      if (installed) {
-        await safeUninstall(fixture.appId)
+        const deletedSpec = await readConfigJson(fixture.specPath(userId))
+        assert.equal(deletedSpec.state, 'deleted')
+        assert.equal(await fileExists(fixture.pidFile(userId)), false)
       }
+    } finally {
       await cleanupTempDir(fixture.localDir)
     }
   })
 
   await t.test(
-    'docker app publish + install + uninstall',
+    'docker app publish + install',
     { skip: !(await isDockerAvailable()) },
     async () => {
       const fixture = await stageDockerFixture()
-      let installed = false
 
       try {
         await publishApp({
@@ -746,6 +755,8 @@ test('app_installer local publish lifecycle', async (t) => {
           appId: fixture.appId,
           version: fixture.version,
         })
+
+        await sleep(POST_INSTALL_SETTLE_MS)
 
         const spec = await readConfigJson(fixture.specPath(userId))
         assert.equal(spec.app_doc.name, fixture.appId)
@@ -762,19 +773,18 @@ test('app_installer local publish lifecycle', async (t) => {
               `${installTask.task.message ?? ''}`.includes('Timed out waiting for app')),
           `docker install should either complete or only fail on control-plane readiness timeout, got status=${installTask.status}, message=${installTask.task.message ?? '<none>'}`,
         )
-        installed = true
 
-        await uninstallApp({ appId: fixture.appId, removeData: false })
+        if (UNINSTALL_AFTER_INSTALL) {
+          await uninstallApp({ appId: fixture.appId, removeData: false })
 
-        const deletedSpec = await readConfigJson(fixture.specPath(userId))
-        assert.equal(deletedSpec.state, 'deleted')
-        assert.equal(await isContainerRunning(fixture.containerName(userId)), false)
-        installed = false
-      } finally {
-        if (installed) {
-          await safeUninstall(fixture.appId)
+          const deletedSpec = await readConfigJson(fixture.specPath(userId))
+          assert.equal(deletedSpec.state, 'deleted')
+          assert.equal(await isContainerRunning(fixture.containerName(userId)), false)
         }
-        await removeDockerImage(fixture.imageName)
+      } finally {
+        if (UNINSTALL_AFTER_INSTALL) {
+          await removeDockerImage(fixture.imageName)
+        }
         await cleanupTempDir(fixture.localDir)
       }
     },

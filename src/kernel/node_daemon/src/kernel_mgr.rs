@@ -44,7 +44,7 @@ impl RunItemControl for KernelServiceRunItem {
 
     async fn deploy(&self, params: Option<&Vec<String>>) -> Result<()> {
         //这个逻辑是不区分新装和升级的
-        let mut pkg_env = PackageEnv::new(get_buckyos_system_bin_dir());
+        let mut pkg_env = new_system_package_env();
         pkg_env
             .install_pkg(&self.pkg_id, true, false)
             .await

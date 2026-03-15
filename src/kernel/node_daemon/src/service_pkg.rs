@@ -9,6 +9,24 @@ use tokio::sync::Mutex;
 
 type Result<T> = std::result::Result<T, ServiceControlError>;
 
+pub(crate) fn new_package_env(pkg_env_path: PathBuf) -> PackageEnv {
+    let mut pkg_env = PackageEnv::new(pkg_env_path);
+    if pkg_env.config.named_store_config_path.is_none() {
+        pkg_env.config.named_store_config_path = Some(
+            get_buckyos_root_dir()
+                .join("storage")
+                .join("named_store.json")
+                .to_string_lossy()
+                .to_string(),
+        );
+    }
+    pkg_env
+}
+
+pub(crate) fn new_system_package_env() -> PackageEnv {
+    new_package_env(get_buckyos_system_bin_dir())
+}
+
 pub struct ServicePkg {
     pub pkg_id: String,
     pub pkg_env_path: PathBuf,
@@ -42,7 +60,7 @@ impl ServicePkg {
     pub async fn try_load(&self) -> bool {
         let mut media_info = self.media_info.lock().await;
         if media_info.is_none() {
-            let pkg_env = PackageEnv::new(self.pkg_env_path.clone());
+            let pkg_env = new_package_env(self.pkg_env_path.clone());
             let new_media_info = pkg_env.load(&self.pkg_id).await;
             if new_media_info.is_ok() {
                 debug!("load service pkg {} success", self.pkg_id);
@@ -91,18 +109,12 @@ impl ServicePkg {
         let media_info = media_info.unwrap();
 
         let op_file = media_info.full_path.join(op_name);
-        let (result, output) = execute(
-            &op_file,
-            1200,
-            params,
-            self.current_dir.as_ref(),
-            env_vars,
-        )
-        .await
-        .map_err(|e| {
-            error!("# execute {} failed! {}", op_file.display(), e);
-            return ServiceControlError::ReasonError(e.to_string());
-        })?;
+        let (result, output) = execute(&op_file, 1200, params, self.current_dir.as_ref(), env_vars)
+            .await
+            .map_err(|e| {
+                error!("# execute {} failed! {}", op_file.display(), e);
+                return ServiceControlError::ReasonError(e.to_string());
+            })?;
 
         let params_str = params.map(|p| p.join(" ")).unwrap_or_default();
         if result == 0 {
@@ -146,7 +158,7 @@ impl ServicePkg {
         params: Option<&Vec<String>>,
         env_vars: Option<&HashMap<String, String>>,
     ) -> Result<ServiceInstanceState> {
-        let pkg_env = PackageEnv::new(self.pkg_env_path.clone());
+        let pkg_env = new_package_env(self.pkg_env_path.clone());
         let media_info = pkg_env.load(&self.pkg_id).await;
         if media_info.is_err() {
             info!("pkg {} not exist", self.pkg_id);
