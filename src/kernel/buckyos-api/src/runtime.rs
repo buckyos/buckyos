@@ -950,8 +950,9 @@ impl BuckyOSRuntime {
         let raw_jwt = rpc_token.token.as_deref().ok_or(RPCErrors::InvalidToken(
             "Session token is missing raw JWT".to_string(),
         ))?;
-        let header = jsonwebtoken::decode_header(raw_jwt)
-            .map_err(|error| RPCErrors::InvalidToken(format!("JWT decode header error: {}", error)))?;
+        let header = jsonwebtoken::decode_header(raw_jwt).map_err(|error| {
+            RPCErrors::InvalidToken(format!("JWT decode header error: {}", error))
+        })?;
         let claims = decode_jwt_claim_without_verify(raw_jwt).ok();
 
         let mut kid = header
@@ -960,14 +961,17 @@ impl BuckyOSRuntime {
             .filter(|value| !value.trim().is_empty())
             .or_else(|| {
                 claims.as_ref().and_then(|value| {
-                    value.get("iss").and_then(|iss| iss.as_str()).and_then(|iss| {
-                        let trimmed = iss.trim();
-                        if trimmed.is_empty() {
-                            None
-                        } else {
-                            Some(trimmed.to_string())
-                        }
-                    })
+                    value
+                        .get("iss")
+                        .and_then(|iss| iss.as_str())
+                        .and_then(|iss| {
+                            let trimmed = iss.trim();
+                            if trimmed.is_empty() {
+                                None
+                            } else {
+                                Some(trimmed.to_string())
+                            }
+                        })
                 })
             })
             .unwrap_or_else(|| "root".to_string());
@@ -993,10 +997,8 @@ impl BuckyOSRuntime {
             };
         }
 
-        let decoding_key = decoding_key.ok_or(RPCErrors::NoPermission(format!(
-            "kid {} not found",
-            kid
-        )))?;
+        let decoding_key =
+            decoding_key.ok_or(RPCErrors::NoPermission(format!("kid {} not found", kid)))?;
 
         rpc_token
             .verify_by_key(&decoding_key)
@@ -1676,15 +1678,18 @@ impl BuckyOSRuntime {
         //如果objid指向的是一个pkg_meta,则尝试解析是否为AppDoc,并根据其sub_pkg_list中的pkg_objid，逐个调用ndn-toolkit的get_named_object_from_known_named_object函数
         //先调用ndn-toolkit的get_named_object_from_known_named_object函数
         let store_mgr = self.get_named_store().await?;
-        let mut chunk_ids =
-            ndn_toolkit::tools::get_chunklist_from_known_named_object(&store_mgr, obj_id, named_object)
-                .await
-                .map_err(|e| {
-                    RPCErrors::ReasonError(format!(
-                        "Failed to get chunklist from object {}: {}",
-                        obj_id, e
-                    ))
-                })?;
+        let mut chunk_ids = ndn_toolkit::tools::get_chunklist_from_known_named_object(
+            &store_mgr,
+            obj_id,
+            named_object,
+        )
+        .await
+        .map_err(|e| {
+            RPCErrors::ReasonError(format!(
+                "Failed to get chunklist from object {}: {}",
+                obj_id, e
+            ))
+        })?;
 
         let app_doc = match serde_json::from_value::<crate::AppDoc>(named_object.clone()) {
             Ok(app_doc) => app_doc,

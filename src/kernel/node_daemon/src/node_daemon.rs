@@ -55,7 +55,6 @@ type Result<T> = std::result::Result<T, NodeDaemonErrors>;
 
 fn get_system_pkgs() -> Vec<String> {
     vec![
-        "app-loader".to_string(),
         "buckycli".to_string(),
         "control-panel".to_string(),
         "repo-service".to_string(),
@@ -670,7 +669,6 @@ async fn make_sure_system_pkgs_ready(
     session_token: Option<String>,
 ) -> std::result::Result<(), String> {
     let system_pkgs = vec![
-        "app-loader".to_string(),
         "node-active".to_string(),
         "buckycli".to_string(),
         "control-panel".to_string(),

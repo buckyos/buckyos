@@ -6,7 +6,6 @@
         "detail": "node daemon"
     },
     "deps": {
-        "app_loader": "*",
         "control_panel": "*",
         "cyfs_gateway": "*",
         "node_active": "*",

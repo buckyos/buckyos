@@ -1,6 +1,9 @@
 use crate::app_loader::{
-    docker_image_tar_candidates_for_arch, normalize_digest, AppLoader, CommandSpec,
-    ControlOperation, PlatformArch, PlatformOs, PlatformTarget, RuntimeType,
+    AppLoader, CommandSpec, ControlOperation, DOCKER_LABEL_IMAGE_DIGEST, DOCKER_LABEL_PKG_OBJID,
+    DockerRuntimeIdentity, PlatformArch, PlatformOs, PlatformTarget, RuntimeType,
+    command_matches_agent_process, command_matches_exact_agent_process,
+    docker_desc_requires_exact_match, docker_image_tar_candidates_for_arch,
+    docker_runtime_matches_target, normalize_digest,
 };
 use crate::run_item::ControlRuntItemErrors;
 use buckyos_api::{
@@ -8,7 +11,9 @@ use buckyos_api::{
     ServiceInstallConfig, ServiceInstanceState, ServiceState, SubPkgDesc,
 };
 use name_lib::DID;
+use ndn_lib::ObjId;
 use std::collections::HashMap;
+use std::path::Path;
 
 fn assert_programs(commands: &[CommandSpec], expected: &[&str]) {
     let actual = commands
@@ -157,6 +162,100 @@ fn helper_functions_keep_expected_normalization() {
 }
 
 #[test]
+fn docker_runtime_exact_match_uses_pkg_objid_and_digest() {
+    let mut desc = SubPkgDesc::new("demo-img#0.1.0")
+        .docker_image_name("demo/service:0.1.0-amd64")
+        .docker_image_digest("demo/service@sha256:deadbeef");
+    desc.pkg_objid = Some(ObjId::new("pkg:1234567890").unwrap());
+
+    assert!(docker_desc_requires_exact_match(&desc));
+    assert!(docker_runtime_matches_target(
+        &DockerRuntimeIdentity {
+            image_id: Some("sha256:anotherhash".to_string()),
+            repo_digests: vec!["demo/service@sha256:deadbeef".to_string()],
+            labels: HashMap::from([
+                (
+                    DOCKER_LABEL_PKG_OBJID.to_string(),
+                    "pkg:1234567890".to_string(),
+                ),
+                (
+                    DOCKER_LABEL_IMAGE_DIGEST.to_string(),
+                    "sha256:deadbeef".to_string(),
+                ),
+            ]),
+        },
+        &desc,
+    ));
+    assert!(!docker_runtime_matches_target(
+        &DockerRuntimeIdentity {
+            image_id: Some("sha256:deadbeef".to_string()),
+            repo_digests: vec!["demo/service@sha256:deadbeef".to_string()],
+            labels: HashMap::from([(
+                DOCKER_LABEL_PKG_OBJID.to_string(),
+                "pkg:oldversion".to_string(),
+            )]),
+        },
+        &desc,
+    ));
+    assert!(docker_runtime_matches_target(
+        &DockerRuntimeIdentity {
+            image_id: Some("sha256:deadbeef".to_string()),
+            ..Default::default()
+        },
+        &SubPkgDesc::new("demo-img#0.1.0")
+            .docker_image_name("demo/service:0.1.0-amd64")
+            .docker_image_digest("sha256:deadbeef"),
+    ));
+}
+
+#[test]
+fn agent_process_matching_distinguishes_wildcard_and_exact_checks() {
+    let agent_env = Path::new("/opt/buckyos/data/home/alice/.local/share/jarvis");
+    let expected_root = Path::new("/opt/buckyos/env/pkgs/jarvis-agent#pkg:1234567890");
+    let exact_cmd = vec![
+        "opendan".to_string(),
+        "--agent-id".to_string(),
+        "jarvis".to_string(),
+        "--agent-env".to_string(),
+        agent_env.to_string_lossy().to_string(),
+        "--agent-bin".to_string(),
+        expected_root.to_string_lossy().to_string(),
+        "--service-port".to_string(),
+        "4060".to_string(),
+    ];
+    let old_cmd = vec![
+        "opendan".to_string(),
+        "--agent-id".to_string(),
+        "jarvis".to_string(),
+        "--agent-env".to_string(),
+        agent_env.to_string_lossy().to_string(),
+        "--agent-bin".to_string(),
+        "/opt/buckyos/env/pkgs/jarvis-agent#pkg:oldversion".to_string(),
+        "--service-port".to_string(),
+        "4060".to_string(),
+    ];
+
+    assert!(command_matches_agent_process(
+        &exact_cmd, "jarvis", agent_env,
+    ));
+    assert!(command_matches_agent_process(&old_cmd, "jarvis", agent_env,));
+    assert!(command_matches_exact_agent_process(
+        &exact_cmd,
+        "jarvis",
+        agent_env,
+        Some(expected_root),
+        Some("pkg:1234567890"),
+    ));
+    assert!(!command_matches_exact_agent_process(
+        &old_cmd,
+        "jarvis",
+        agent_env,
+        Some(expected_root),
+        Some("pkg:1234567890"),
+    ));
+}
+
+#[test]
 fn appservice_control_commands_match_linux_amd64_docker_runtime() {
     let loader = build_service_loader(
         build_appservice_doc(),
@@ -180,9 +279,11 @@ fn appservice_control_commands_match_linux_amd64_docker_runtime() {
     assert_eq!(start.commands[0].args, vec!["rm", "-f", "alice-demo"]);
     assert!(start.commands[1].args.contains(&"run".to_string()));
     assert!(start.commands[1].args.contains(&"10080:80".to_string()));
-    assert!(start.commands[1]
-        .args
-        .contains(&"demo/service:0.1.0-amd64".to_string()));
+    assert!(
+        start.commands[1]
+            .args
+            .contains(&"demo/service:0.1.0-amd64".to_string())
+    );
 
     let stop = loader.preview_operation(ControlOperation::Stop).unwrap();
     assert_eq!(stop.runtime, RuntimeType::Docker);
@@ -216,9 +317,11 @@ fn appservice_control_commands_match_linux_aarch64_docker_runtime() {
     );
 
     let start = loader.preview_operation(ControlOperation::Start).unwrap();
-    assert!(start.commands[1]
-        .args
-        .contains(&"demo/service:0.1.0-aarch64".to_string()));
+    assert!(
+        start.commands[1]
+            .args
+            .contains(&"demo/service:0.1.0-aarch64".to_string())
+    );
 }
 
 #[test]

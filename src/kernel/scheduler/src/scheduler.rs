@@ -652,8 +652,7 @@ impl NodeScheduler {
         let now = buckyos_get_unix_timestamp();
         let mut actions = Vec::new();
         let last_service_infos = last_snapshot.map(|snapshot| &snapshot.service_infos);
-        let last_refresh_times =
-            last_snapshot.map(|snapshot| &snapshot.service_info_refresh_times);
+        let last_refresh_times = last_snapshot.map(|snapshot| &snapshot.service_info_refresh_times);
 
         // spec_id → instances 倒排索引，将 O(S×I) 降为 O(S+I)
         let mut spec_instances: HashMap<&str, Vec<&ReplicaInstance>> = HashMap::new();
@@ -800,10 +799,8 @@ impl NodeScheduler {
             };
             match spec_snapshot.state {
                 ServiceSpecState::New | ServiceSpecState::Deployed => {
-                    let new_instances = self.reconcile_spec_instances(
-                        &spec_snapshot,
-                        &mut shadow_nodes,
-                    )?;
+                    let new_instances =
+                        self.reconcile_spec_instances(&spec_snapshot, &mut shadow_nodes)?;
                     for instance in new_instances {
                         self.replica_instances
                             .insert(instance.instance_id.clone(), instance.clone());
@@ -907,10 +904,7 @@ impl NodeScheduler {
         if existing_count >= desired_count {
             info!(
                 "spec_id:{} state:{} placement already satisfied existing={} desired={}",
-                spec_snapshot.id,
-                spec_snapshot.state,
-                existing_count,
-                desired_count
+                spec_snapshot.id, spec_snapshot.state, existing_count, desired_count
             );
             return Ok(Vec::new());
         }

@@ -934,7 +934,10 @@ fn test_deployed_service_without_instances_recreates_replica() {
     scheduler.add_service_spec(api_service);
 
     let actions = scheduler.schedule(None).unwrap();
-    assert_eq!(action_instance_nodes(&actions, "api-service"), node_set(&["node2"]));
+    assert_eq!(
+        action_instance_nodes(&actions, "api-service"),
+        node_set(&["node2"])
+    );
     assert_eq!(scheduler.replica_instances.len(), 1);
     assert!(
         actions.iter().all(|action| {
@@ -978,10 +981,17 @@ fn test_best_instance_count_change_triggers_scale_out_for_deployed_service() {
     ));
 
     let last_snapshot = scheduler.clone();
-    scheduler.specs.get_mut("api-service").unwrap().best_instance_count = 2;
+    scheduler
+        .specs
+        .get_mut("api-service")
+        .unwrap()
+        .best_instance_count = 2;
 
     let actions = scheduler.schedule(Some(&last_snapshot)).unwrap();
-    assert_eq!(action_instance_nodes(&actions, "api-service"), node_set(&["node2"]));
+    assert_eq!(
+        action_instance_nodes(&actions, "api-service"),
+        node_set(&["node2"])
+    );
     assert_eq!(scheduler.replica_instances.len(), 2);
     assert_eq!(
         service_info_nodes(scheduler.service_infos.get("api-service").unwrap()),

@@ -294,7 +294,11 @@ impl RepoHandler for RepoService {
         let (inspected_size, inspected_meta) = self.inspect_local_content(&content_id).await?;
         let content_size = inspected_size
             .or_else(|| existing.as_ref().and_then(|row| row.content_size))
-            .or_else(|| existing.as_ref().and_then(|row| extract_content_size(&row.meta)))
+            .or_else(|| {
+                existing
+                    .as_ref()
+                    .and_then(|row| extract_content_size(&row.meta))
+            })
             .unwrap_or(0);
         let meta = existing
             .as_ref()
@@ -825,11 +829,7 @@ fn normalize_meta_input(value: Value) -> std::result::Result<Value, RPCErrors> {
     }
 }
 
-fn normalize_store_meta(
-    meta: Value,
-    content_id: &str,
-    content_size: u64,
-) -> Value {
+fn normalize_store_meta(meta: Value, content_id: &str, content_size: u64) -> Value {
     let mut meta = match meta {
         Value::Object(map) => Value::Object(map),
         _ => fallback_meta_for_store(content_id, content_size),
@@ -1224,7 +1224,10 @@ mod tests {
         .expect("store content into named store");
         let content_id = parse_obj_id(&file_object.content).expect("parse content id");
 
-        let stored_id = client.store(&content_id.to_string()).await.expect("store content");
+        let stored_id = client
+            .store(&content_id.to_string())
+            .await
+            .expect("store content");
         let records = client
             .list(Some(RepoListFilter::new(
                 Some(REPO_STATUS_PINNED.to_string()),
@@ -1279,7 +1282,10 @@ mod tests {
         meta.content = content_id.to_string();
         meta.size = file_object.size;
         client
-            .collect(serde_json::to_value(meta.clone()).expect("serialize meta"), None)
+            .collect(
+                serde_json::to_value(meta.clone()).expect("serialize meta"),
+                None,
+            )
             .await
             .expect("collect content");
 

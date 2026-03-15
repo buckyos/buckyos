@@ -78,7 +78,6 @@ apps:
       buckycli: bin/buckycli/
       node_active: bin/node-active/
       buckyos_systest: bin/buckyos_systest/
-      app-loader: bin/app-loader/
       aicc: bin/aicc/
       msg_center: bin/msg-center/
       opendan: bin/opendan/

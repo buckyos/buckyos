@@ -414,8 +414,7 @@ async fn handle_set_by_json_path(params: Value, session_token: &RPCSessionToken)
 }
 
 fn should_reload_security_state(full_res_path: &str) -> bool {
-    full_res_path == "/config/boot/config"
-        || full_res_path.starts_with("/config/system/rbac/")
+    full_res_path == "/config/boot/config" || full_res_path.starts_with("/config/system/rbac/")
 }
 
 async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Result<Value> {

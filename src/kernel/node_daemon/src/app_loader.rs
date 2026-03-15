@@ -1,14 +1,14 @@
 use crate::run_item::{ControlRuntItemErrors, Result};
 use crate::service_pkg::new_system_package_env;
 use buckyos_api::{
-    get_buckyos_api_runtime, get_full_appid, get_session_token_env_key, AppDoc,
-    AppServiceInstanceConfig, AppType, LocalAppInstanceConfig, ServiceInstallConfig,
-    ServiceInstanceState, SubPkgDesc, VERIFY_HUB_TOKEN_EXPIRE_TIME,
+    AppDoc, AppServiceInstanceConfig, AppType, LocalAppInstanceConfig, ServiceInstallConfig,
+    ServiceInstanceState, SubPkgDesc, VERIFY_HUB_TOKEN_EXPIRE_TIME, get_buckyos_api_runtime,
+    get_full_appid, get_session_token_env_key,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir, get_buckyos_system_bin_dir};
 use log::{debug, info, warn};
 use package_lib::MediaInfo;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shlex::Shlex;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -20,6 +20,11 @@ use tokio::process::Command;
 
 const DEFAULT_OPENDAN_SERVICE_PORT: u16 = 4060;
 const OPENDAN_SERVICE_PORT_FALLBACK_KEYS: [&str; 4] = ["www", "http", "https", "main"];
+pub(crate) const DOCKER_LABEL_APP_ID: &str = "buckyos.app_id";
+pub(crate) const DOCKER_LABEL_OWNER_USER_ID: &str = "buckyos.owner_user_id";
+pub(crate) const DOCKER_LABEL_FULL_APPID: &str = "buckyos.full_appid";
+pub(crate) const DOCKER_LABEL_PKG_OBJID: &str = "buckyos.pkg_objid";
+pub(crate) const DOCKER_LABEL_IMAGE_DIGEST: &str = "buckyos.image_digest";
 
 #[derive(Clone)]
 enum LoaderConfig {
@@ -114,6 +119,19 @@ impl CommandSpec {
 pub(crate) struct ControlCommandPreview {
     pub runtime: RuntimeType,
     pub commands: Vec<CommandSpec>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct DockerRuntimeIdentity {
+    pub image_id: Option<String>,
+    pub repo_digests: Vec<String>,
+    pub labels: HashMap<String, String>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct DockerContainerRuntime {
+    running: bool,
+    identity: DockerRuntimeIdentity,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -416,6 +434,10 @@ impl AppLoader {
         }
     }
 
+    fn agent_desc(&self) -> Option<&SubPkgDesc> {
+        self.app_doc().pkg_list.agent.as_ref()
+    }
+
     fn host_app_desc(&self) -> Option<&SubPkgDesc> {
         let pkg_list = &self.app_doc().pkg_list;
         match (self.platform.os, self.platform.arch) {
@@ -560,7 +582,7 @@ impl AppLoader {
         })?;
         let container_name = self.full_appid();
 
-        let _ = self.remove_docker_container(container_name.as_str()).await;
+        self.stop_docker().await?;
 
         let env_vars = self.build_runtime_env(PackageRole::DockerImage).await?;
         let mut args: Vec<String> = vec![
@@ -603,6 +625,11 @@ impl AppLoader {
             args.push(format!("{key}={value}"));
         }
 
+        for (key, value) in self.docker_runtime_labels(desc) {
+            args.push("--label".to_string());
+            args.push(format!("{key}={value}"));
+        }
+
         if let Some(container_param) = &self.install_config().container_param {
             args.extend(split_shell_words(container_param.as_str())?);
         }
@@ -618,59 +645,35 @@ impl AppLoader {
     }
 
     async fn stop_docker(&self) -> Result<()> {
-        let container_name = self.full_appid();
-        match self.remove_docker_container(container_name.as_str()).await {
-            Ok(_) => Ok(()),
-            Err(error) => {
-                let output = format!("{error}");
-                if output.contains("No such container") {
-                    Ok(())
-                } else {
-                    Err(error)
-                }
-            }
+        let container_ids = self.find_docker_container_ids().await?;
+        for container_id in container_ids {
+            self.remove_docker_container(container_id.as_str()).await?;
         }
+        Ok(())
     }
 
     async fn status_docker(&self) -> Result<ServiceInstanceState> {
-        let container_name = self.full_appid();
-        let running = run_command(
-            "docker",
-            &[
-                "ps".to_string(),
-                "-q".to_string(),
-                "-f".to_string(),
-                format!("name=^{}$", container_name),
-            ],
-            None,
-            None,
-        )
-        .await?;
-        ensure_success("docker ps", &running)?;
-        if !running.stdout.trim().is_empty() {
-            return Ok(ServiceInstanceState::Started);
-        }
-
-        let all = run_command(
-            "docker",
-            &[
-                "ps".to_string(),
-                "-aq".to_string(),
-                "-f".to_string(),
-                format!("name=^{}$", container_name),
-            ],
-            None,
-            None,
-        )
-        .await?;
-        ensure_success("docker ps -a", &all)?;
-        if !all.stdout.trim().is_empty() {
-            return Ok(ServiceInstanceState::Exited);
-        }
-
         let desc = self
             .docker_image_desc()
             .ok_or_else(|| self.pkg_not_found("docker image"))?;
+        let exact_match_required = docker_desc_requires_exact_match(desc);
+        let mut exact_exited = false;
+        for container_id in self.find_docker_container_ids().await? {
+            let Some(runtime) = self.inspect_docker_container(container_id.as_str()).await? else {
+                continue;
+            };
+            if exact_match_required && !docker_runtime_matches_target(&runtime.identity, desc) {
+                continue;
+            }
+            if runtime.running {
+                return Ok(ServiceInstanceState::Started);
+            }
+            exact_exited = true;
+        }
+        if exact_exited {
+            return Ok(ServiceInstanceState::Exited);
+        }
+
         let image_name = desc.docker_image_name.clone().ok_or_else(|| {
             ControlRuntItemErrors::ParserConfigError(format!(
                 "docker_image_name is missing for app {}",
@@ -802,33 +805,51 @@ impl AppLoader {
 
     async fn stop_agent(&self) -> Result<()> {
         let pid_file = self.agent_pid_file();
-        let pid = match read_pid_file(pid_file.as_path())? {
-            Some(pid) => pid,
-            None => return Ok(()),
-        };
-
-        if !is_pid_running(pid) {
-            let _ = fs::remove_file(&pid_file);
-            return Ok(());
+        let mut pids = self.agent_process_pids(None, None);
+        if pids.is_empty() {
+            if let Some(pid) = read_pid_file(pid_file.as_path())? {
+                if is_pid_running(pid) {
+                    pids.push(pid);
+                }
+            }
         }
 
-        stop_process_tree(pid).await?;
+        pids.sort_unstable();
+        pids.dedup();
+        for pid in pids {
+            stop_process_tree(pid).await?;
+        }
         let _ = fs::remove_file(&pid_file);
         Ok(())
     }
 
     async fn status_agent(&self) -> Result<ServiceInstanceState> {
-        let pkg_id = match self.agent_pkg_id() {
-            Some(pkg_id) => pkg_id,
+        let desc = match self.agent_desc() {
+            Some(desc) => desc,
             None => return Ok(ServiceInstanceState::NotExist),
         };
-        if self.try_load_pkg(pkg_id.as_str()).await.is_none() {
+        let media_info = match self.agent_pkg_id() {
+            Some(pkg_id) => self.try_load_pkg(pkg_id.as_str()).await,
+            None => None,
+        };
+        let expected_agent_root = media_info
+            .as_ref()
+            .map(|media_info| media_info.full_path.as_path());
+        let expected_pkg_objid = desc.pkg_objid.as_ref().map(|objid| objid.to_string());
+        let running = if desc.pkg_objid.is_some() {
+            self.agent_process_pids(expected_agent_root, expected_pkg_objid.as_deref())
+        } else {
+            self.agent_process_pids(None, None)
+        };
+        if !running.is_empty() {
+            return Ok(ServiceInstanceState::Started);
+        }
+        if media_info.is_none() {
             return Ok(ServiceInstanceState::NotExist);
         }
 
         let pid_file = self.agent_pid_file();
         match read_pid_file(pid_file.as_path())? {
-            Some(pid) if is_pid_running(pid) => Ok(ServiceInstanceState::Started),
             Some(_) => Ok(ServiceInstanceState::Exited),
             None => Ok(ServiceInstanceState::Stopped),
         }
@@ -1300,6 +1321,208 @@ impl AppLoader {
         self.app_data_dir().join(".opendan.pid")
     }
 
+    fn docker_runtime_labels(&self, desc: &SubPkgDesc) -> Vec<(String, String)> {
+        let mut labels = vec![
+            (DOCKER_LABEL_APP_ID.to_string(), self.app_id.clone()),
+            (
+                DOCKER_LABEL_OWNER_USER_ID.to_string(),
+                self.owner_user_id.clone(),
+            ),
+            (DOCKER_LABEL_FULL_APPID.to_string(), self.full_appid()),
+        ];
+        if let Some(pkg_objid) = desc.pkg_objid.as_ref() {
+            labels.push((DOCKER_LABEL_PKG_OBJID.to_string(), pkg_objid.to_string()));
+        }
+        if let Some(digest) = normalize_digest(desc.docker_image_digest.as_deref()) {
+            labels.push((DOCKER_LABEL_IMAGE_DIGEST.to_string(), digest.to_string()));
+        }
+        labels
+    }
+
+    fn agent_process_pids(
+        &self,
+        expected_agent_root: Option<&Path>,
+        expected_pkg_objid: Option<&str>,
+    ) -> Vec<i32> {
+        let mut system = System::new_all();
+        system.refresh_processes(ProcessesToUpdate::All, true);
+        let agent_env_root = self.app_data_dir();
+
+        let mut pids = system
+            .processes()
+            .iter()
+            .filter_map(|(pid, process)| {
+                let cmd = process
+                    .cmd()
+                    .iter()
+                    .map(|arg| arg.to_string_lossy().to_string())
+                    .collect::<Vec<_>>();
+                let matched = match (expected_agent_root, expected_pkg_objid) {
+                    (Some(agent_root), expected_pkg_objid) => command_matches_exact_agent_process(
+                        &cmd,
+                        self.app_id.as_str(),
+                        agent_env_root.as_path(),
+                        Some(agent_root),
+                        expected_pkg_objid,
+                    ),
+                    (None, Some(pkg_objid)) => command_matches_exact_agent_process(
+                        &cmd,
+                        self.app_id.as_str(),
+                        agent_env_root.as_path(),
+                        None,
+                        Some(pkg_objid),
+                    ),
+                    (None, None) => command_matches_agent_process(
+                        &cmd,
+                        self.app_id.as_str(),
+                        agent_env_root.as_path(),
+                    ),
+                };
+                matched.then_some(pid.as_u32() as i32)
+            })
+            .collect::<Vec<_>>();
+        pids.sort_unstable();
+        pids.dedup();
+        pids
+    }
+
+    async fn find_docker_container_ids(&self) -> Result<Vec<String>> {
+        let mut ids = HashSet::new();
+        let full_appid = self.full_appid();
+        for filter in [
+            format!("label={}={}", DOCKER_LABEL_FULL_APPID, full_appid),
+            format!("name=^{}$", full_appid),
+        ] {
+            for container_id in self.list_docker_container_ids(filter.as_str()).await? {
+                ids.insert(container_id);
+            }
+        }
+        let mut containers = ids.into_iter().collect::<Vec<_>>();
+        containers.sort();
+        Ok(containers)
+    }
+
+    async fn list_docker_container_ids(&self, filter: &str) -> Result<Vec<String>> {
+        let output = run_command(
+            "docker",
+            &[
+                "ps".to_string(),
+                "-aq".to_string(),
+                "-f".to_string(),
+                filter.to_string(),
+            ],
+            None,
+            None,
+        )
+        .await?;
+        ensure_success("docker ps -a", &output)?;
+        Ok(output
+            .stdout
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect())
+    }
+
+    async fn inspect_docker_container(
+        &self,
+        container_id: &str,
+    ) -> Result<Option<DockerContainerRuntime>> {
+        let state_output = run_command(
+            "docker",
+            &[
+                "inspect".to_string(),
+                "--format={{json .State.Running}}".to_string(),
+                container_id.to_string(),
+            ],
+            None,
+            None,
+        )
+        .await?;
+        if docker_object_missing(&state_output) {
+            return Ok(None);
+        }
+        ensure_success("docker inspect state", &state_output)?;
+        let running =
+            serde_json::from_str::<bool>(state_output.stdout.trim()).map_err(|error| {
+                ControlRuntItemErrors::ExecuteError(
+                    "docker inspect state".to_string(),
+                    format!("parse docker state for {} failed: {}", container_id, error),
+                )
+            })?;
+
+        let labels_output = run_command(
+            "docker",
+            &[
+                "inspect".to_string(),
+                "--format={{json .Config.Labels}}".to_string(),
+                container_id.to_string(),
+            ],
+            None,
+            None,
+        )
+        .await?;
+        ensure_success("docker inspect labels", &labels_output)?;
+        let labels = parse_docker_labels(labels_output.stdout.trim())?;
+
+        let image_id_output = run_command(
+            "docker",
+            &[
+                "inspect".to_string(),
+                "--format={{.Image}}".to_string(),
+                container_id.to_string(),
+            ],
+            None,
+            None,
+        )
+        .await?;
+        ensure_success("docker inspect image", &image_id_output)?;
+        let image_id = trim_to_option(image_id_output.stdout.trim());
+        let repo_digests = match image_id.as_deref() {
+            Some(image_id) => self.inspect_docker_image_repo_digests(image_id).await?,
+            None => Vec::new(),
+        };
+
+        Ok(Some(DockerContainerRuntime {
+            running,
+            identity: DockerRuntimeIdentity {
+                image_id,
+                repo_digests,
+                labels,
+            },
+        }))
+    }
+
+    async fn inspect_docker_image_repo_digests(&self, image_ref: &str) -> Result<Vec<String>> {
+        let output = run_command(
+            "docker",
+            &[
+                "image".to_string(),
+                "inspect".to_string(),
+                "--format={{json .RepoDigests}}".to_string(),
+                image_ref.to_string(),
+            ],
+            None,
+            None,
+        )
+        .await?;
+        if docker_object_missing(&output) {
+            return Ok(Vec::new());
+        }
+        ensure_success("docker image inspect RepoDigests", &output)?;
+        let raw = output.stdout.trim();
+        if raw.is_empty() || raw == "null" {
+            return Ok(Vec::new());
+        }
+        serde_json::from_str::<Vec<String>>(raw).map_err(|error| {
+            ControlRuntItemErrors::ExecuteError(
+                "docker image inspect RepoDigests".to_string(),
+                format!("parse docker repo digests failed: {}", error),
+            )
+        })
+    }
+
     fn preview_docker_deploy(&self) -> Result<Vec<CommandSpec>> {
         let desc = self
             .docker_image_desc()
@@ -1377,6 +1600,11 @@ impl AppLoader {
         for env_key in self.preview_env_keys(PackageRole::DockerImage) {
             docker_run_args.push("-e".to_string());
             docker_run_args.push(format!("{env_key}=<value>"));
+        }
+
+        for (key, value) in self.docker_runtime_labels(desc) {
+            docker_run_args.push("--label".to_string());
+            docker_run_args.push(format!("{key}={value}"));
         }
 
         docker_run_args.push(image_name);
@@ -1524,6 +1752,94 @@ pub(crate) fn normalize_digest(digest: Option<&str>) -> Option<&str> {
     })
 }
 
+pub(crate) fn docker_desc_requires_exact_match(desc: &SubPkgDesc) -> bool {
+    desc.pkg_objid.is_some() || normalize_digest(desc.docker_image_digest.as_deref()).is_some()
+}
+
+pub(crate) fn docker_runtime_matches_target(
+    identity: &DockerRuntimeIdentity,
+    desc: &SubPkgDesc,
+) -> bool {
+    if let Some(expected_pkg_objid) = desc.pkg_objid.as_ref() {
+        let Some(actual_pkg_objid) = identity.labels.get(DOCKER_LABEL_PKG_OBJID) else {
+            return false;
+        };
+        if actual_pkg_objid != expected_pkg_objid.to_string().as_str() {
+            return false;
+        }
+    }
+
+    let Some(expected_digest) = normalize_digest(desc.docker_image_digest.as_deref()) else {
+        return true;
+    };
+
+    if identity
+        .labels
+        .get(DOCKER_LABEL_IMAGE_DIGEST)
+        .map(String::as_str)
+        == Some(expected_digest)
+    {
+        return true;
+    }
+
+    if identity.repo_digests.iter().any(|repo_digest| {
+        repo_digest
+            .split_once('@')
+            .map(|(_, digest)| digest == expected_digest)
+            .unwrap_or(false)
+    }) {
+        return true;
+    }
+
+    identity
+        .image_id
+        .as_deref()
+        .map(|image_id| docker_image_id_matches_digest(image_id, expected_digest))
+        .unwrap_or(false)
+}
+
+pub(crate) fn command_matches_agent_process(
+    cmd: &[String],
+    app_id: &str,
+    agent_env_root: &Path,
+) -> bool {
+    if command_arg_value(cmd, "--agent-id") != Some(app_id) {
+        return false;
+    }
+
+    if let Some(agent_env) = command_arg_value(cmd, "--agent-env") {
+        return path_matches_value(agent_env_root, agent_env);
+    }
+
+    true
+}
+
+pub(crate) fn command_matches_exact_agent_process(
+    cmd: &[String],
+    app_id: &str,
+    agent_env_root: &Path,
+    expected_agent_root: Option<&Path>,
+    expected_pkg_objid: Option<&str>,
+) -> bool {
+    if !command_matches_agent_process(cmd, app_id, agent_env_root) {
+        return false;
+    }
+
+    let Some(agent_bin) = command_arg_value(cmd, "--agent-bin") else {
+        return false;
+    };
+
+    if let Some(expected_agent_root) = expected_agent_root {
+        if path_matches_value(expected_agent_root, agent_bin) {
+            return true;
+        }
+    }
+
+    expected_pkg_objid
+        .map(|pkg_objid| normalize_path_value(agent_bin).contains(pkg_objid))
+        .unwrap_or(false)
+}
+
 fn parse_mount_value(value: &str) -> (&str, Option<&'static str>) {
     if let Some(path) = value.strip_suffix(":ro") {
         return (path, Some("ro"));
@@ -1563,11 +1879,36 @@ fn trim_trailing_slash(value: &str) -> &str {
     value.trim_end_matches('/')
 }
 
+fn trim_path_separators(value: &str) -> &str {
+    value.trim_end_matches(|ch| ch == '/' || ch == '\\')
+}
+
 fn canonicalize_mount_path(path: &Path) -> PathBuf {
     if cfg!(target_os = "windows") {
         return path.to_path_buf();
     }
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn normalize_path_value(value: &str) -> String {
+    let normalized = if Path::new(value).is_absolute() {
+        canonicalize_mount_path(Path::new(value))
+            .to_string_lossy()
+            .to_string()
+    } else {
+        value.to_string()
+    };
+    let trimmed = trim_path_separators(normalized.as_str());
+    if cfg!(target_os = "windows") {
+        trimmed.to_ascii_lowercase()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn path_matches_value(expected_path: &Path, actual_value: &str) -> bool {
+    normalize_path_value(expected_path.to_string_lossy().as_ref())
+        == normalize_path_value(actual_value)
 }
 
 fn ensure_directory(path: &Path, make_world_writable: bool) -> Result<()> {
@@ -1642,6 +1983,9 @@ async fn stop_process_tree(pid: i32) -> Result<()> {
         if output.status.success() {
             return Ok(());
         }
+        if !is_pid_running(pid) {
+            return Ok(());
+        }
         return Err(ControlRuntItemErrors::ExecuteError(
             "taskkill".to_string(),
             format_command_failure("taskkill", &output),
@@ -1660,7 +2004,7 @@ async fn stop_process_tree(pid: i32) -> Result<()> {
         if !term_output.status.success() {
             let fallback_output =
                 run_command("kill", &["-TERM".to_string(), pid.to_string()], None, None).await?;
-            if !fallback_output.status.success() {
+            if !fallback_output.status.success() && is_pid_running(pid) {
                 return Err(ControlRuntItemErrors::ExecuteError(
                     "kill".to_string(),
                     format_command_failure("kill", &fallback_output),
@@ -1743,6 +2087,62 @@ fn format_command_failure(step: &str, output: &CommandOutput) -> String {
         output.stdout.trim(),
         output.stderr.trim()
     )
+}
+
+fn trim_to_option(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn docker_object_missing(output: &CommandOutput) -> bool {
+    output.stderr.contains("No such object")
+        || output.stderr.contains("No such image")
+        || output.stderr.contains("No such container")
+        || output.stdout.contains("No such object")
+        || output.stdout.contains("No such image")
+        || output.stdout.contains("No such container")
+}
+
+fn parse_docker_labels(raw: &str) -> Result<HashMap<String, String>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "null" {
+        return Ok(HashMap::new());
+    }
+    serde_json::from_str::<HashMap<String, String>>(trimmed).map_err(|error| {
+        ControlRuntItemErrors::ExecuteError(
+            "docker inspect labels".to_string(),
+            format!("parse docker labels failed: {}", error),
+        )
+    })
+}
+
+fn docker_image_id_matches_digest(image_id: &str, expected_digest: &str) -> bool {
+    if image_id == expected_digest {
+        return true;
+    }
+    if let (Some((_, image_hash)), Some((_, expected_hash))) =
+        (image_id.split_once(':'), expected_digest.split_once(':'))
+    {
+        return image_hash == expected_hash;
+    }
+    false
+}
+
+fn command_arg_value<'a>(cmd: &'a [String], key: &str) -> Option<&'a str> {
+    for (index, arg) in cmd.iter().enumerate() {
+        if arg == key {
+            return cmd.get(index + 1).map(String::as_str);
+        }
+        let prefix = format!("{key}=");
+        if let Some(value) = arg.strip_prefix(prefix.as_str()) {
+            return Some(value);
+        }
+    }
+    None
 }
 
 fn spawn_detached(

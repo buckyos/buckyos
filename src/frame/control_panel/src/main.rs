@@ -1734,7 +1734,10 @@ impl ControlPanelServer {
 
         if !trimmed.is_empty() {
             let normalized_requested = trimmed.to_ascii_lowercase();
-            let is_supported = matches!(normalized_requested.as_str(), "en" | "en-us" | "en-gb" | "zh" | "zh-cn");
+            let is_supported = matches!(
+                normalized_requested.as_str(),
+                "en" | "en-us" | "en-gb" | "zh" | "zh-cn"
+            );
             if !is_supported {
                 return Err(RPCErrors::ReasonError(format!(
                     "unsupported control panel locale: {}",

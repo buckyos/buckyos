@@ -366,7 +366,7 @@ impl SystemConfigBuilder {
                         user_id: None,
                         app_id: "control-panel".to_string(),
                     },
-                )
+                ),
             ]),
         };
         self.insert_json("services/gateway/settings", &settings)?;

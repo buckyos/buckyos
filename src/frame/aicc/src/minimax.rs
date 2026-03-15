@@ -138,7 +138,9 @@ impl MiniMaxProvider {
             .map(|items| {
                 items
                     .iter()
-                    .filter(|item| item.get("type").and_then(|value| value.as_str()) == Some("tool_use"))
+                    .filter(|item| {
+                        item.get("type").and_then(|value| value.as_str()) == Some("tool_use")
+                    })
                     .filter_map(|item| {
                         Some(AiToolCall {
                             name: item.get("name")?.as_str()?.to_string(),
@@ -183,7 +185,9 @@ impl MiniMaxProvider {
             .json(&request_value)
             .send()
             .await
-            .map_err(|error| ProviderError::retryable(format!("minimax request failed: {}", error)))?;
+            .map_err(|error| {
+                ProviderError::retryable(format!("minimax request failed: {}", error))
+            })?;
 
         let status = response.status();
         let body = response.json::<Value>().await.map_err(|error| {
@@ -225,7 +229,10 @@ impl MiniMaxProvider {
 
         let mut extra = Map::new();
         extra.insert("provider".to_string(), Value::String("minimax".to_string()));
-        extra.insert("model".to_string(), Value::String(provider_model.to_string()));
+        extra.insert(
+            "model".to_string(),
+            Value::String(provider_model.to_string()),
+        );
         extra.insert(
             "provider_io".to_string(),
             json!({
@@ -280,7 +287,10 @@ impl Provider for MiniMaxProvider {
         _sink: Arc<dyn TaskEventSink>,
     ) -> std::result::Result<ProviderStartResult, ProviderError> {
         match req.request.capability {
-            Capability::LlmRouter => self.start_llm(&ctx, provider_model.as_str(), &req.request).await,
+            Capability::LlmRouter => {
+                self.start_llm(&ctx, provider_model.as_str(), &req.request)
+                    .await
+            }
             capability => Err(ProviderError::fatal(format!(
                 "minimax provider does not support capability '{:?}'",
                 capability
@@ -560,10 +570,7 @@ pub fn register_minimax_providers(center: &AIComputeCenter, settings: &Value) ->
 
         info!(
             "registered minimax instance id={} provider_type={} base_url={} models={:?}",
-            config.instance_id,
-            config.provider_type,
-            config.base_url,
-            config.models,
+            config.instance_id, config.provider_type, config.base_url, config.models,
         );
     }
 

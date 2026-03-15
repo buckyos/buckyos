@@ -4,12 +4,7 @@ use async_trait::async_trait;
 use buckyos_api::AppServiceInstanceConfig;
 use buckyos_api::*;
 
-// 核心逻辑
-// 非docker模式逻辑与标准的service item一致，但脚本调用是由app_loader来完成
-// docker模式下
-// 1. 通过app_loader的status脚本来判断是否存在（以镜像是否存在未标准）
-// 2. 不存在，则要求app_loader安装镜像（可以指定media_info)
-// 3. 由app_loader的start脚本来创建容器，创建的过程中可能会导入镜像
+// 统一交给 Rust AppLoader 处理 app runtime 的 deploy/start/stop/status。
 pub struct AppRunItem {
     pub app_id: String,
     pub app_instance_config: AppServiceInstanceConfig,
