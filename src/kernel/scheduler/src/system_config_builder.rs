@@ -555,7 +555,7 @@ fn build_default_jarvis_agent_spec(config: &StartConfigSummary) -> Result<AppSer
     .description_detail("Default built-in OpenDAN agent for BuckyOS")
     .selector_type(SelectorType::Single)
     .service_port("www", OPENDAN_SERVICE_PORT)
-    .agent_pkg(SubPkgDesc::new(format!("{JARVIS_PKG_NAME}#{VERSION}")))
+    .agent_pkg(SubPkgDesc::new(format!("{JARVIS_PKG_NAME}")))
     .build()
     .map_err(|err| anyhow!("build default jarvis app doc failed: {err}"))?;
 
