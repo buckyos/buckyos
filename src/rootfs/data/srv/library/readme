@@ -1,0 +1,6 @@
+# cyfs://$zone_id/srv/library/
+
+Zone-level shared library data, invisible to other zones.
+All users within the zone have read/write access, but only the creator can delete their own files.
+
+Sub-directories: book, iso, music, photo, picture, public, shared, video

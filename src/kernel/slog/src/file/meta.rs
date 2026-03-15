@@ -1,6 +1,6 @@
 use rusqlite::{Connection, OptionalExtension, Result as SqlResult};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 #[derive(Debug)]
 pub struct LogFileEntry {
@@ -35,6 +35,14 @@ pub struct LogMeta {
 }
 
 impl LogMeta {
+    fn lock_conn(&self) -> SqlResult<MutexGuard<'_, Connection>> {
+        self.conn.lock().map_err(|e| {
+            let msg = format!("failed to lock log meta db connection: {}", e);
+            error!("{}", msg);
+            rusqlite::Error::InvalidQuery
+        })
+    }
+
     pub fn open(log_dir: &Path) -> Result<Self, String> {
         let db_path = log_dir.join("log_meta.db");
         let conn = Connection::open(db_path).map_err(|e| {
@@ -62,7 +70,7 @@ impl LogMeta {
             msg
         })?;
 
-        println!("LogMeta initialized successfully {}", log_dir.display());
+        info!("log meta initialized successfully at {}", log_dir.display());
 
         Ok(LogMeta {
             conn: Arc::new(Mutex::new(conn)),
@@ -71,7 +79,7 @@ impl LogMeta {
     }
 
     pub fn get_file_info(&self, id: i64) -> SqlResult<Option<LogFileEntry>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, name, create_time, write_index, is_sealed, read_index, is_read_complete 
              FROM LogFiles 
@@ -106,7 +114,7 @@ impl LogMeta {
             return Err(rusqlite::Error::InvalidQuery); // Or some other appropriate error
         }
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         conn.execute(
         "INSERT INTO LogFiles (name, create_time, write_index, is_sealed, read_index, is_read_complete) 
             VALUES (?1, strftime('%s','now'), 0, 0, 0, 0)",
@@ -118,7 +126,7 @@ impl LogMeta {
 
     // Get the current active write file (not sealed) if exists
     pub fn get_active_write_file(&self) -> SqlResult<Option<LogFileWriteInfo>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         let mut stmt: rusqlite::Statement<'_> = conn.prepare(
             "SELECT id, name FROM LogFiles WHERE is_sealed = 0 ORDER BY id DESC LIMIT 1",
         )?;
@@ -136,7 +144,7 @@ impl LogMeta {
     }
 
     pub fn get_last_sealed_file(&self) -> SqlResult<Option<LogFileEntry>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, name, create_time, write_index, is_sealed, read_index, is_read_complete 
              FROM LogFiles 
@@ -151,9 +159,9 @@ impl LogMeta {
                     name: row.get(1)?,
                     create_time: row.get(2)?,
                     write_index: row.get(3)?,
-                    is_sealed: row.get(3)?,
-                    read_index: row.get(4)?,
-                    is_read_complete: row.get(5)?,
+                    is_sealed: row.get(4)?,
+                    read_index: row.get(5)?,
+                    is_read_complete: row.get(6)?,
                 })
             })
             .optional()?; // Use optional to handle no rows case
@@ -164,18 +172,11 @@ impl LogMeta {
     pub fn update_current_write_index(&self, new_index: u64) -> SqlResult<()> {
         let current_file = self.get_active_write_file()?;
         if let Some(file) = current_file {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.lock_conn()?;
             conn.execute(
                 "UPDATE LogFiles SET write_index = ?1 WHERE id = ?2",
                 &[&(new_index as i64), &file.id],
             )?;
-
-            /*
-            println!(
-                "Updated write index for log file: {}, {} to {}",
-                file.id, file.name, new_index
-            );
-            */
 
             Ok(())
         } else {
@@ -189,13 +190,13 @@ impl LogMeta {
     pub fn increase_current_write_index(&self, increment: i64) -> SqlResult<()> {
         let current_file = self.get_active_write_file()?;
         if let Some(file) = current_file {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.lock_conn()?;
             conn.execute(
                 "UPDATE LogFiles SET write_index = write_index + ?1 WHERE id = ?2",
                 &[&increment, &file.id],
             )?;
 
-            println!(
+            info!(
                 "Increased write index for log file: {}, {} by {}",
                 file.id, file.name, increment
             );
@@ -211,7 +212,7 @@ impl LogMeta {
     pub fn seal_current_write_file(&self) -> SqlResult<()> {
         let current_file = self.get_active_write_file()?;
         if let Some(file) = current_file {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.lock_conn()?;
             conn.execute(
                 "UPDATE LogFiles SET is_sealed = 1 WHERE id = ?1",
                 &[&file.id],
@@ -227,7 +228,7 @@ impl LogMeta {
     }
 
     pub fn get_active_read_file(&self) -> SqlResult<Option<LogFileReadInfo>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, name, is_sealed, read_index, is_read_complete 
              FROM LogFiles 
@@ -253,7 +254,7 @@ impl LogMeta {
     pub fn update_current_read_index(&self, new_index: i64) -> SqlResult<()> {
         let current_file = self.get_active_read_file()?;
         if let Some(file) = current_file {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.lock_conn()?;
             conn.execute(
                 "UPDATE LogFiles SET read_index = ?1 WHERE id = ?2",
                 &[&new_index, &file.id],
@@ -273,7 +274,7 @@ impl LogMeta {
     }
 
     pub fn update_file_read_index(&self, file_id: i64, new_index: i64) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         let ret = conn.execute(
             "UPDATE LogFiles SET read_index = ?1 WHERE id = ?2",
             &[&new_index, &file_id],
@@ -296,7 +297,7 @@ impl LogMeta {
     pub fn complete_current_read_file(&self) -> SqlResult<()> {
         let current_file = self.get_active_read_file()?;
         if let Some(file) = current_file {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.lock_conn()?;
             conn.execute(
                 "UPDATE LogFiles SET is_read_complete = 1 WHERE id = ?1",
                 &[&file.id],
@@ -313,7 +314,7 @@ impl LogMeta {
     }
 
     pub fn mark_file_read_complete(&self, file_id: i64) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         conn.execute(
             "UPDATE LogFiles SET is_read_complete = 1 WHERE id = ?1",
             &[&file_id],
@@ -322,5 +323,79 @@ impl LogMeta {
         info!("Marked log file read complete: {}", file_id);
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LogMeta;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn new_temp_log_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "buckyos/slog_tests/{}_{}_{}",
+            prefix,
+            std::process::id(),
+            nanos
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_get_last_sealed_file_returns_none_when_no_sealed_file() {
+        let log_dir = new_temp_log_dir("meta_none");
+        let meta = LogMeta::open(&log_dir).unwrap();
+
+        let ret = meta.get_last_sealed_file().unwrap();
+        assert!(ret.is_none());
+
+        std::fs::remove_dir_all(&log_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_last_sealed_file_field_mapping() {
+        let log_dir = new_temp_log_dir("meta_mapping");
+        let meta = LogMeta::open(&log_dir).unwrap();
+
+        meta.append_new_file("service.1.log").unwrap();
+        meta.update_current_write_index(123).unwrap();
+        meta.seal_current_write_file().unwrap();
+        meta.update_current_read_index(45).unwrap();
+
+        let file = meta.get_last_sealed_file().unwrap().unwrap();
+        assert_eq!(file.name, "service.1.log");
+        assert_eq!(file.write_index, 123);
+        assert!(file.is_sealed);
+        assert_eq!(file.read_index, 45);
+        assert!(!file.is_read_complete);
+
+        std::fs::remove_dir_all(&log_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_last_sealed_file_returns_latest_sealed_file() {
+        let log_dir = new_temp_log_dir("meta_latest");
+        let meta = LogMeta::open(&log_dir).unwrap();
+
+        meta.append_new_file("service.1.log").unwrap();
+        meta.update_current_write_index(1).unwrap();
+        meta.seal_current_write_file().unwrap();
+
+        meta.append_new_file("service.2.log").unwrap();
+        meta.update_current_write_index(2).unwrap();
+        meta.seal_current_write_file().unwrap();
+
+        let file = meta.get_last_sealed_file().unwrap().unwrap();
+        assert_eq!(file.name, "service.2.log");
+        assert_eq!(file.write_index, 2);
+        assert!(file.is_sealed);
+
+        std::fs::remove_dir_all(&log_dir).unwrap();
     }
 }

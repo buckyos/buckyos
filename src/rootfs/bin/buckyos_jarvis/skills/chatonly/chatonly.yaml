@@ -1,0 +1,5 @@
+name: chatonly
+introduce: no action skill, only chat with the user.
+
+rules: |
+  chat with the user,no actions,no tools.

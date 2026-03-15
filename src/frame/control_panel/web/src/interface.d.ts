@@ -23,6 +23,21 @@ declare global {
     | 'drive'
     | 'chart'
     | 'server'
+    | 'agent'
+    | 'loop'
+    | 'todo'
+    | 'branch'
+    | 'play'
+    | 'pause'
+    | 'chevron-down'
+    | 'chevron-right'
+    | 'close'
+    | 'copy'
+    | 'message'
+    | 'function'
+    | 'action'
+    | 'search'
+    | 'external'
 
   type NavItem = {
     label: string
@@ -345,6 +360,13 @@ declare global {
     sn: {
       url: string
       username: string
+      host: string
+      ip: string
+      dnsARecords: string[]
+      dnsTxtRecords: string[]
+      digError: string
+      selfCertState: boolean
+      selfCertStateSource: string
     }
     files: ZoneConfigFile[]
     notes: string[]
@@ -458,10 +480,169 @@ declare global {
     key?: string
   }
 
+  type AppVersionItem = {
+    name: string
+    version: string
+  }
+
+  type AppsVersionListResponse = {
+    items: AppVersionItem[]
+    key?: string
+  }
+
   type SettingBlock = {
     title: string
     description: string
     actions: string[]
     icon: IconName
   }
+
+  // --- Agent Workspace Types ---
+
+  type AgentStatus = 'idle' | 'running' | 'sleeping' | 'error' | 'offline'
+  type AgentType = 'main' | 'sub'
+
+  type WsAgent = {
+    agent_id: string
+    agent_name: string
+    agent_type: AgentType
+    status: AgentStatus
+    parent_agent_id?: string
+    current_run_id?: string
+    last_active_at: string
+  }
+
+  type WsAgentSession = {
+    session_id: string
+    owner_agent: string
+    title: string
+    summary?: string
+    status: string
+    created_at: string
+    updated_at: string
+    last_activity_at: string
+  }
+
+  type LoopRunStatus = 'running' | 'success' | 'failed' | 'cancelled'
+
+  type LoopRunSummary = {
+    step_count: number
+    task_count: number
+    log_count: number
+    todo_count: number
+    sub_agent_count: number
+  }
+
+  type LoopRun = {
+    run_id: string
+    agent_id: string
+    trigger_event: string
+    status: LoopRunStatus
+    started_at: string
+    ended_at?: string
+    duration?: number
+    current_step_index: number
+    summary: LoopRunSummary
+  }
+
+  type StepStatus = 'running' | 'success' | 'failed' | 'skipped'
+
+  type StepLogCounts = {
+    message: number
+    function_call: number
+    action: number
+    sub_agent: number
+  }
+
+  type WsStep = {
+    step_id: string
+    step_index: number
+    title?: string
+    status: StepStatus
+    started_at: string
+    ended_at?: string
+    duration?: number
+    task_count: number
+    log_counts: StepLogCounts
+    output_snapshot?: string
+  }
+
+  type WsTaskStatus = 'queued' | 'running' | 'success' | 'failed'
+
+  type WsTask = {
+    task_id: string
+    step_id: string
+    behavior_id?: string
+    status: WsTaskStatus
+    model: string
+    tokens_in?: number
+    tokens_out?: number
+    prompt_preview: string
+    result_preview: string
+    raw_input?: string
+    raw_output?: string
+    created_at: string
+    duration?: number
+  }
+
+  type WorkLogType =
+    | 'message_sent'
+    | 'message_reply'
+    | 'function_call'
+    | 'action'
+    | 'sub_agent_created'
+    | 'sub_agent_sleep'
+    | 'sub_agent_wake'
+    | 'sub_agent_destroyed'
+
+  type WorkLogStatus = 'info' | 'success' | 'failed' | 'partial'
+
+  type WsWorkLog = {
+    log_id: string
+    type: WorkLogType
+    agent_id: string
+    related_agent_id?: string
+    step_id?: string
+    status: WorkLogStatus
+    timestamp: string
+    duration?: number
+    summary: string
+    payload?: Record<string, unknown>
+  }
+
+  type WsTodoStatus = 'open' | 'done'
+
+  type WsTodo = {
+    todo_id: string
+    agent_id: string
+    title: string
+    description?: string
+    status: WsTodoStatus
+    created_at: string
+    completed_at?: string
+    created_in_step_id?: string
+    completed_in_step_id?: string
+  }
+
+  type WsTabId = 'overview' | 'worklog' | 'tasks' | 'todos' | 'sub-agents'
+
+  type InspectorTarget =
+    | { kind: 'step'; data: WsStep }
+    | { kind: 'task'; data: WsTask }
+    | { kind: 'worklog'; data: WsWorkLog }
+    | { kind: 'todo'; data: WsTodo }
+    | { kind: 'sub-agent'; data: WsAgent }
+
+  type WsWorkLogFilters = {
+    stepId?: string
+    type?: WorkLogType
+    status?: WorkLogStatus
+    keyword?: string
+  }
+
+  type WsTaskFilters = {
+    stepId?: string
+    status?: WsTaskStatus
+  }
+
 }

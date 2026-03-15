@@ -79,7 +79,7 @@
 ✅ 建议：
 
 * 至少加一个周期性 GC：清掉 `exp < now` 的 entry
-* 如果你希望重启不掉登录：把 refresh/session 的“服务端状态”落盘（dfs:// 或 sqlite/rocksdb），哪怕只存 refresh 的 `sid -> current_refresh_nonce` 也行。
+* 如果你希望重启不掉登录：把 refresh/session 的“服务端状态”落盘（`cyfs://` 持久区或 sqlite/rocksdb），哪怕只存 refresh 的 `sid -> current_refresh_nonce` 也行。
 
 ---
 
@@ -159,5 +159,4 @@ let _ = load_service_config().await.map_err(|error| { ... return -1; });
 4. 算法白名单（只允许 EdDSA）+ issuer/aud 校验
 5. refresh reuse detection：发现异常 → 吊销该 sid 会话
 6. cache GC +（可选）refresh 状态落盘
-
 

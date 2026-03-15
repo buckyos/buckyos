@@ -1,29 +1,46 @@
+mod app_installer;
+mod file_manager;
+
 use ::kRPC::*;
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
 use buckyos_api::{
-    BuckyOSRuntimeType, CONTROL_PANEL_SERVICE_NAME, CONTROL_PANEL_SERVICE_PORT, SystemConfigClient, get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime
+    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AccessGroupLevel,
+    AiMessage, AiPayload, AppDoc, AppServiceSpec, AppType, BoxKind, BuckyOSRuntimeType, Capability,
+    CompleteRequest, Contact, ContactQuery, Event, KEventClient, ModelSpec, MsgCenterClient,
+    MsgRecordWithObject, MsgState, RepoListFilter, RepoRecord, Requirements, SendContext,
+    ServiceExposeConfig, ServiceInstallConfig, ServiceState, SystemConfigClient, UserType,
+    CONTROL_PANEL_SERVICE_NAME, CONTROL_PANEL_SERVICE_PORT,
 };
 use buckyos_kit::*;
 use bytes::Bytes;
-use chrono::{Datelike, DateTime, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, Datelike, NaiveDateTime, TimeZone, Utc};
 use cyfs_gateway_lib::*;
+use futures::{stream, TryStreamExt};
 use http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE};
-use http::{Method, Version};
-use http_body_util::{combinators::BoxBody, BodyExt, Full};
-use log::info;
+use http::{Method, StatusCode, Version};
+use http_body_util::{combinators::BoxBody, BodyExt, Full, StreamBody};
+use hyper::body::Frame;
+use log::{info, warn};
+use name_lib::DID;
+use ndn_lib::{MsgContent, MsgContentFormat, MsgObjKind, MsgObject};
+use semver::Version as SemVer;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::*;
 use server_runner::*;
+use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
-use std::{net::IpAddr, time::{Duration, Instant}};
+use std::sync::{Arc, OnceLock};
+use std::{
+    net::IpAddr,
+    time::{Duration, Instant},
+};
 use sysinfo::{DiskRefreshKind, Disks, Networks, System};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::task;
 use uuid::Uuid;
 use zip::write::FileOptions;
@@ -51,7 +68,150 @@ const GATEWAY_CONFIG_FILES: [&str; 5] = [
     "user_gateway.yaml",
     "post_gateway.yaml",
 ];
-const ZONE_CONFIG_FILES: [&str; 3] = ["start_config.json", "node_device_config.json", "node_identity.json"];
+const ZONE_CONFIG_FILES: [&str; 3] = [
+    "start_config.json",
+    "node_device_config.json",
+    "node_identity.json",
+];
+const CONTROL_PANEL_AUTH_APPID: &str = "control-panel";
+const SN_SELF_CERT_STATE_PATH: &str = "/opt/buckyos/data/cyfs_gateway/sn_dns/self_cert_state.json";
+const DEFAULT_CHAT_CONTACT_LIMIT: usize = 100;
+const DEFAULT_CHAT_MESSAGE_LIMIT: usize = 60;
+const MAX_CHAT_MESSAGE_LIMIT: usize = 100;
+const MAX_CHAT_SCAN_LIMIT: usize = 240;
+const DEFAULT_CHAT_STREAM_KEEPALIVE_MS: u64 = 15_000;
+const MIN_CHAT_STREAM_KEEPALIVE_MS: u64 = 5_000;
+const MAX_CHAT_STREAM_KEEPALIVE_MS: u64 = 60_000;
+const AICC_SETTINGS_KEY: &str = "services/aicc/settings";
+const CONTROL_PANEL_LOCALE_KEY: &str = "services/control_panel/settings/locale";
+const AI_MODELS_POLICIES_KEY: &str = "services/control_panel/ai_models/policies";
+const AI_MODELS_PROVIDER_OVERRIDES_KEY: &str =
+    "services/control_panel/ai_models/provider_overrides";
+const AI_MODELS_MODEL_CATALOG_KEY: &str = "services/control_panel/ai_models/model_catalog";
+const AI_MODELS_PROVIDER_SECRETS_KEY: &str = "services/control_panel/ai_models/provider_secrets";
+
+#[derive(Clone, Debug)]
+struct RpcAuthPrincipal {
+    username: String,
+    user_type: UserType,
+    owner_did: String,
+}
+
+#[derive(Clone, Serialize)]
+struct ChatScopeInfo {
+    username: String,
+    owner_did: String,
+    access_mode: &'static str,
+}
+
+#[derive(Clone, Serialize)]
+struct ChatCapabilityInfo {
+    contact_list: bool,
+    message_list: bool,
+    message_send: bool,
+    thread_id_send: bool,
+    realtime_events: bool,
+    standalone_chat_app_link: bool,
+    opendan_channel_ready: bool,
+}
+
+#[derive(Clone, Serialize)]
+struct ChatBootstrapResponse {
+    scope: ChatScopeInfo,
+    capabilities: ChatCapabilityInfo,
+    notes: Vec<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct ChatBindingView {
+    platform: String,
+    account_id: String,
+    display_id: String,
+    tunnel_id: String,
+    last_active_at: u64,
+    meta: HashMap<String, String>,
+}
+
+#[derive(Clone, Serialize)]
+struct ChatContactView {
+    did: String,
+    name: String,
+    avatar: Option<String>,
+    note: Option<String>,
+    access_level: &'static str,
+    is_verified: bool,
+    groups: Vec<String>,
+    tags: Vec<String>,
+    created_at: u64,
+    updated_at: u64,
+    bindings: Vec<ChatBindingView>,
+}
+
+#[derive(Clone, Serialize)]
+struct ChatContactListResponse {
+    scope: ChatScopeInfo,
+    items: Vec<ChatContactView>,
+}
+
+#[derive(Clone, Serialize)]
+struct ChatMessageView {
+    record_id: String,
+    msg_id: String,
+    direction: &'static str,
+    peer_did: String,
+    peer_name: Option<String>,
+    state: &'static str,
+    created_at_ms: u64,
+    updated_at_ms: u64,
+    sort_key: u64,
+    thread_id: Option<String>,
+    content: String,
+    content_format: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct ChatMessageListResponse {
+    scope: ChatScopeInfo,
+    peer_did: String,
+    peer_name: Option<String>,
+    items: Vec<ChatMessageView>,
+}
+
+#[derive(Clone, Serialize)]
+struct ChatSendMessageResponse {
+    scope: ChatScopeInfo,
+    target_did: String,
+    delivery_count: usize,
+    message: ChatMessageView,
+}
+
+#[derive(Clone, Serialize)]
+struct MessageHubThreadSummaryResponse {
+    peer_did: String,
+    peer_name: Option<String>,
+    model_alias: String,
+    summary: String,
+    source_message_count: usize,
+}
+
+#[derive(Clone, Deserialize)]
+struct ChatStreamHttpRequest {
+    #[serde(default)]
+    session_token: Option<String>,
+    peer_did: String,
+    #[serde(default)]
+    thread_id: Option<String>,
+    #[serde(default)]
+    keepalive_ms: Option<u64>,
+}
+
+#[derive(Clone, Deserialize)]
+struct MsgCenterBoxChangedEvent {
+    #[serde(default)]
+    operation: Option<String>,
+    #[serde(default)]
+    record_id: Option<String>,
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 struct LogQueryCursor {
@@ -171,20 +331,49 @@ struct SystemMetricsSnapshot {
     updated_at: Option<std::time::SystemTime>,
 }
 
+struct RepoAppReleaseCandidate {
+    record: RepoRecord,
+    app_doc: AppDoc,
+    parsed_version: Option<SemVer>,
+}
+
 #[derive(Clone)]
 struct ControlPanelServer {
     log_downloads: Arc<Mutex<HashMap<String, LogDownloadEntry>>>,
     metrics_snapshot: Arc<RwLock<SystemMetricsSnapshot>>,
+    file_manager: Arc<file_manager::BuckyFileServer>,
+    app_installer: app_installer::AppInstaller,
 }
 
 impl ControlPanelServer {
     pub fn new() -> Self {
         let metrics_snapshot = Arc::new(RwLock::new(SystemMetricsSnapshot::default()));
         Self::start_metrics_sampler(metrics_snapshot.clone());
+        let file_manager_data_dir = get_buckyos_root_dir()
+            .join("data")
+            .join("control-panel")
+            .join("file-manager");
+        if let Err(err) = std::fs::create_dir_all(&file_manager_data_dir) {
+            log::warn!(
+                "failed to create file-manager data dir {}: {}",
+                file_manager_data_dir.display(),
+                err
+            );
+        }
+        let file_manager = Arc::new(file_manager::BuckyFileServer::new(
+            file_manager_data_dir,
+            false,
+        ));
         ControlPanelServer {
             log_downloads: Arc::new(Mutex::new(HashMap::new())),
             metrics_snapshot,
+            file_manager,
+            app_installer: app_installer::AppInstaller::new(),
         }
+    }
+
+    async fn init_file_manager(&self) -> Result<(), RPCErrors> {
+        self.file_manager.init_share_db().await
     }
 
     fn start_metrics_sampler(metrics_snapshot: Arc<RwLock<SystemMetricsSnapshot>>) {
@@ -215,9 +404,12 @@ impl ControlPanelServer {
             let mut prev_interfaces = network_totals.per_interfaces.clone();
             let mut prev_rx = network_totals.rx_bytes;
             let mut prev_tx = network_totals.tx_bytes;
-            let mut prev_error_total =
-                network_totals.rx_errors.saturating_add(network_totals.tx_errors);
-            let mut prev_drop_total = network_totals.rx_drops.saturating_add(network_totals.tx_drops);
+            let mut prev_error_total = network_totals
+                .rx_errors
+                .saturating_add(network_totals.tx_errors);
+            let mut prev_drop_total = network_totals
+                .rx_drops
+                .saturating_add(network_totals.tx_drops);
             {
                 let mut snapshot = metrics_snapshot.write().await;
                 snapshot.cpu_brand = cpu_brand;
@@ -243,8 +435,11 @@ impl ControlPanelServer {
                 snapshot.network.rx_drops = network_totals.rx_drops;
                 snapshot.network.tx_drops = network_totals.tx_drops;
                 snapshot.network.interface_count = network_totals.interface_count;
-                snapshot.network.per_interfaces =
-                    ControlPanelServer::build_interface_rate_stats(&network_totals.per_interfaces, &prev_interfaces, 0.0);
+                snapshot.network.per_interfaces = ControlPanelServer::build_interface_rate_stats(
+                    &network_totals.per_interfaces,
+                    &prev_interfaces,
+                    0.0,
+                );
                 snapshot.network.updated_at = Some(std::time::SystemTime::now());
                 snapshot.updated_at = Some(std::time::SystemTime::now());
             }
@@ -341,8 +536,11 @@ impl ControlPanelServer {
                 snapshot.network.rx_drops = network_totals.rx_drops;
                 snapshot.network.tx_drops = network_totals.tx_drops;
                 snapshot.network.interface_count = network_totals.interface_count;
-                snapshot.network.per_interfaces =
-                    ControlPanelServer::build_interface_rate_stats(&network_totals.per_interfaces, &prev_interfaces, dt);
+                snapshot.network.per_interfaces = ControlPanelServer::build_interface_rate_stats(
+                    &network_totals.per_interfaces,
+                    &prev_interfaces,
+                    dt,
+                );
                 snapshot.network.updated_at = Some(std::time::SystemTime::now());
                 prev_interfaces = network_totals.per_interfaces.clone();
 
@@ -423,10 +621,22 @@ impl ControlPanelServer {
                 continue;
             }
 
-            let rx_errors = values.get(2).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
-            let rx_drops = values.get(3).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
-            let tx_errors = values.get(10).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
-            let tx_drops = values.get(11).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+            let rx_errors = values
+                .get(2)
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0);
+            let rx_drops = values
+                .get(3)
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0);
+            let tx_errors = values
+                .get(10)
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0);
+            let tx_drops = values
+                .get(11)
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0);
 
             map.insert(
                 iface,
@@ -537,6 +747,70 @@ impl ControlPanelServer {
         ))
     }
 
+    async fn handle_auth_login(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let username = Self::require_param_str(&req, "username")?;
+        let password = Self::require_param_str(&req, "password")?;
+        let appid = Self::param_str(&req, "appid")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| CONTROL_PANEL_AUTH_APPID.to_string());
+        let login_nonce = req
+            .params
+            .get("login_nonce")
+            .and_then(|value| value.as_u64())
+            .or(Some(req.seq));
+
+        let runtime = get_buckyos_api_runtime()?;
+        let verify_hub_client = runtime.get_verify_hub_client().await?;
+        let login_result = verify_hub_client
+            .login_by_password(username, password, appid, login_nonce)
+            .await?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!(login_result)),
+            req.seq,
+        ))
+    }
+
+    async fn handle_auth_refresh(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let refresh_token = Self::require_param_str(&req, "refresh_token")?;
+
+        let runtime = get_buckyos_api_runtime()?;
+        let verify_hub_client = runtime.get_verify_hub_client().await?;
+        let token_pair = verify_hub_client
+            .refresh_token(refresh_token.as_str())
+            .await?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!(token_pair)),
+            req.seq,
+        ))
+    }
+
+    async fn handle_auth_verify(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let session_token = Self::extract_rpc_session_token(&req)
+            .ok_or_else(|| RPCErrors::ParseRequestError("Missing session_token".to_string()))?;
+        let appid = Self::param_str(&req, "appid");
+
+        let runtime = get_buckyos_api_runtime()?;
+        let verify_hub_client = runtime.get_verify_hub_client().await?;
+        let verified = verify_hub_client
+            .verify_token(session_token.as_str(), appid.as_deref())
+            .await?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!(verified)),
+            req.seq,
+        ))
+    }
+
+    async fn handle_auth_logout(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({ "ok": true })),
+            req.seq,
+        ))
+    }
+
     fn param_str(req: &RPCRequest, key: &str) -> Option<String> {
         req.params
             .get(key)
@@ -544,8 +818,500 @@ impl ControlPanelServer {
             .map(|value| value.to_string())
     }
 
+    fn param_usize(req: &RPCRequest, key: &str) -> Option<usize> {
+        match req.params.get(key) {
+            Some(Value::Number(value)) => {
+                value.as_u64().and_then(|value| usize::try_from(value).ok())
+            }
+            Some(Value::String(value)) => value.trim().parse::<usize>().ok(),
+            _ => None,
+        }
+    }
+
+    fn param_u64(req: &RPCRequest, key: &str) -> Option<u64> {
+        match req.params.get(key) {
+            Some(Value::Number(value)) => value.as_u64(),
+            Some(Value::String(value)) => value.trim().parse::<u64>().ok(),
+            _ => None,
+        }
+    }
+
+    fn param_bool(req: &RPCRequest, key: &str) -> Option<bool> {
+        match req.params.get(key) {
+            Some(Value::Bool(value)) => Some(*value),
+            Some(Value::String(value)) => match value.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" | "on" => Some(true),
+                "false" | "0" | "no" | "off" => Some(false),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn normalize_session_token(token: Option<String>) -> Option<String> {
+        token
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+
     fn require_param_str(req: &RPCRequest, key: &str) -> Result<String, RPCErrors> {
         Self::param_str(req, key).ok_or(RPCErrors::ParseRequestError(format!("Missing {}", key)))
+    }
+
+    fn is_public_rpc_method(method: &str) -> bool {
+        matches!(
+            method,
+            "auth.login" | "auth.refresh" | "auth.verify" | "auth.logout"
+        )
+    }
+
+    fn extract_rpc_session_token(req: &RPCRequest) -> Option<String> {
+        Self::normalize_session_token(req.token.clone())
+            .or_else(|| Self::normalize_session_token(Self::param_str(req, "session_token")))
+    }
+
+    fn extract_http_session_token(
+        req: &http::Request<BoxBody<Bytes, ServerError>>,
+    ) -> Option<String> {
+        if let Some(value) = req.headers().get("X-Auth") {
+            if let Ok(token) = value.to_str() {
+                if let Some(token) = Self::normalize_session_token(Some(token.to_string())) {
+                    return Some(token);
+                }
+            }
+        }
+
+        if let Some(value) = req.headers().get(http::header::AUTHORIZATION) {
+            if let Ok(raw) = value.to_str() {
+                if let Some(token) = raw.strip_prefix("Bearer ") {
+                    if let Some(token) = Self::normalize_session_token(Some(token.to_string())) {
+                        return Some(token);
+                    }
+                }
+            }
+        }
+
+        if let Some(query) = req.uri().query() {
+            for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+                if key == "auth" || key == "session_token" {
+                    if let Some(token) = Self::normalize_session_token(Some(value.to_string())) {
+                        return Some(token);
+                    }
+                }
+            }
+        }
+
+        if let Some(cookie_header) = req.headers().get("Cookie") {
+            if let Ok(raw_cookie) = cookie_header.to_str() {
+                for piece in raw_cookie.split(';') {
+                    let segment = piece.trim();
+                    for key in ["auth=", "control-panel_token=", "control_panel_token="] {
+                        if let Some(token) = segment.strip_prefix(key) {
+                            if let Some(token) =
+                                Self::normalize_session_token(Some(token.to_string()))
+                            {
+                                return Some(token);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    async fn authenticate_session_token_for_method(
+        &self,
+        method: &str,
+        token: Option<String>,
+    ) -> Result<Option<RpcAuthPrincipal>, RPCErrors> {
+        if Self::is_public_rpc_method(method) {
+            return Ok(None);
+        }
+
+        let token = Self::normalize_session_token(token)
+            .ok_or_else(|| RPCErrors::InvalidToken("missing session token".to_string()))?;
+
+        let runtime = get_buckyos_api_runtime()?;
+        let parsed = runtime.verify_trusted_session_token(&token).await?;
+        let username = parsed
+            .sub
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| RPCErrors::InvalidToken("session token missing subject".to_string()))?;
+        let owner_did = DID::new("bns", &username).to_string();
+
+        Ok(Some(RpcAuthPrincipal {
+            username,
+            user_type: UserType::Root,
+            owner_did,
+        }))
+    }
+
+    async fn authenticate_rpc_request(
+        &self,
+        req: &RPCRequest,
+    ) -> Result<Option<RpcAuthPrincipal>, RPCErrors> {
+        self.authenticate_session_token_for_method(
+            req.method.as_str(),
+            Self::extract_rpc_session_token(req),
+        )
+        .await
+    }
+
+    fn require_chat_principal<'a>(
+        principal: Option<&'a RpcAuthPrincipal>,
+    ) -> Result<&'a RpcAuthPrincipal, RPCErrors> {
+        principal
+            .ok_or_else(|| RPCErrors::InvalidToken("missing authenticated principal".to_string()))
+    }
+
+    fn require_rpc_principal<'a>(
+        principal: Option<&'a RpcAuthPrincipal>,
+    ) -> Result<&'a RpcAuthPrincipal, RPCErrors> {
+        principal
+            .ok_or_else(|| RPCErrors::InvalidToken("missing authenticated principal".to_string()))
+    }
+
+    fn resolve_target_user_id(req: &RPCRequest, principal: &RpcAuthPrincipal) -> String {
+        Self::param_str(req, "user_id").unwrap_or_else(|| principal.username.clone())
+    }
+
+    fn parse_chat_owner_did(principal: &RpcAuthPrincipal) -> Result<DID, RPCErrors> {
+        DID::from_str(principal.owner_did.as_str()).map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "invalid chat owner DID `{}`: {}",
+                principal.owner_did, error
+            ))
+        })
+    }
+
+    fn chat_scope_info(principal: &RpcAuthPrincipal) -> ChatScopeInfo {
+        ChatScopeInfo {
+            username: principal.username.clone(),
+            owner_did: principal.owner_did.clone(),
+            access_mode: match principal.user_type {
+                UserType::Root | UserType::Admin => "full_access",
+                UserType::User | UserType::Limited | UserType::Guest => "read_only",
+            },
+        }
+    }
+
+    async fn get_msg_center_client(&self) -> Result<MsgCenterClient, RPCErrors> {
+        let runtime = get_buckyos_api_runtime()?;
+        runtime.get_msg_center_client().await.map_err(|error| {
+            RPCErrors::ReasonError(format!("get msg-center client failed: {}", error))
+        })
+    }
+
+    fn get_chat_kevent_client() -> KEventClient {
+        static CHAT_KEVENT_CLIENT: OnceLock<KEventClient> = OnceLock::new();
+        CHAT_KEVENT_CLIENT
+            .get_or_init(|| KEventClient::new_full(CONTROL_PANEL_SERVICE_NAME, None))
+            .clone()
+    }
+
+    fn normalize_chat_stream_keepalive_ms(keepalive_ms: Option<u64>) -> u64 {
+        keepalive_ms
+            .unwrap_or(DEFAULT_CHAT_STREAM_KEEPALIVE_MS)
+            .clamp(MIN_CHAT_STREAM_KEEPALIVE_MS, MAX_CHAT_STREAM_KEEPALIVE_MS)
+    }
+
+    fn boxed_http_body(bytes: Vec<u8>) -> BoxBody<Bytes, ServerError> {
+        Full::new(Bytes::from(bytes))
+            .map_err(|never: std::convert::Infallible| match never {})
+            .boxed()
+    }
+
+    fn build_http_json_response(
+        status: StatusCode,
+        payload: Value,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        let body = serde_json::to_vec(&payload).map_err(|error| {
+            server_err!(
+                ServerErrorCode::EncodeError,
+                "Failed to serialize JSON response: {}",
+                error
+            )
+        })?;
+        http::Response::builder()
+            .status(status)
+            .header(CONTENT_TYPE, "application/json")
+            .header(CACHE_CONTROL, "no-store")
+            .body(Self::boxed_http_body(body))
+            .map_err(|error| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "Failed to build JSON response: {}",
+                    error
+                )
+            })
+    }
+
+    fn build_chat_stream_response(
+        receiver: mpsc::Receiver<std::result::Result<Bytes, ServerError>>,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        let stream = stream::unfold(receiver, |mut receiver| async move {
+            receiver.recv().await.map(|item| (item, receiver))
+        });
+        let body = StreamBody::new(stream.map_ok(Frame::data));
+
+        http::Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, "application/x-ndjson")
+            .header(CACHE_CONTROL, "no-store")
+            .header("X-Accel-Buffering", "no")
+            .body(BodyExt::map_err(body, |error| error).boxed())
+            .map_err(|error| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "Failed to build chat stream response: {}",
+                    error
+                )
+            })
+    }
+
+    async fn send_chat_stream_json<T: Serialize>(
+        sender: &mpsc::Sender<std::result::Result<Bytes, ServerError>>,
+        payload: &T,
+    ) -> bool {
+        let mut body = match serde_json::to_vec(payload) {
+            Ok(body) => body,
+            Err(error) => {
+                let _ = sender
+                    .send(Err(server_err!(
+                        ServerErrorCode::EncodeError,
+                        "Failed to serialize chat stream payload: {}",
+                        error
+                    )))
+                    .await;
+                return false;
+            }
+        };
+        body.push(b'\n');
+        sender.send(Ok(Bytes::from(body))).await.is_ok()
+    }
+
+    async fn send_chat_stream_error(
+        sender: &mpsc::Sender<std::result::Result<Bytes, ServerError>>,
+        message: String,
+    ) -> bool {
+        Self::send_chat_stream_json(
+            sender,
+            &json!({
+                "type": "error",
+                "message": message,
+                "at_ms": Self::current_time_ms(),
+            }),
+        )
+        .await
+    }
+
+    fn chat_access_level_label(level: &AccessGroupLevel) -> &'static str {
+        match level {
+            AccessGroupLevel::Block => "block",
+            AccessGroupLevel::Stranger => "stranger",
+            AccessGroupLevel::Temporary => "temporary",
+            AccessGroupLevel::Friend => "friend",
+        }
+    }
+
+    fn chat_msg_state_label(state: &MsgState) -> &'static str {
+        match state {
+            MsgState::Unread => "unread",
+            MsgState::Reading => "reading",
+            MsgState::Readed => "readed",
+            MsgState::Wait => "wait",
+            MsgState::Sending => "sending",
+            MsgState::Sent => "sent",
+            MsgState::Failed => "failed",
+            MsgState::Dead => "dead",
+            MsgState::Deleted => "deleted",
+            MsgState::Archived => "archived",
+        }
+    }
+
+    fn normalize_chat_contact_limit(limit: Option<usize>) -> usize {
+        limit
+            .unwrap_or(DEFAULT_CHAT_CONTACT_LIMIT)
+            .clamp(1, DEFAULT_CHAT_CONTACT_LIMIT)
+    }
+
+    fn normalize_chat_message_limit(limit: Option<usize>) -> usize {
+        limit
+            .unwrap_or(DEFAULT_CHAT_MESSAGE_LIMIT)
+            .clamp(1, MAX_CHAT_MESSAGE_LIMIT)
+    }
+
+    fn chat_scan_limit(message_limit: usize) -> usize {
+        message_limit
+            .saturating_mul(4)
+            .clamp(40, MAX_CHAT_SCAN_LIMIT)
+    }
+
+    fn current_time_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
+    }
+
+    fn map_chat_contact(contact: Contact) -> ChatContactView {
+        ChatContactView {
+            did: contact.did.to_string(),
+            name: contact.name,
+            avatar: contact.avatar,
+            note: contact.note,
+            access_level: Self::chat_access_level_label(&contact.access_level),
+            is_verified: contact.is_verified,
+            groups: contact.groups,
+            tags: contact.tags,
+            created_at: contact.created_at,
+            updated_at: contact.updated_at,
+            bindings: contact
+                .bindings
+                .into_iter()
+                .map(|binding| ChatBindingView {
+                    platform: binding.platform,
+                    account_id: binding.account_id,
+                    display_id: binding.display_id,
+                    tunnel_id: binding.tunnel_id,
+                    last_active_at: binding.last_active_at,
+                    meta: binding.meta,
+                })
+                .collect(),
+        }
+    }
+
+    fn chat_message_thread_id(record: &MsgRecordWithObject) -> Option<String> {
+        record
+            .record
+            .ui_session_id
+            .clone()
+            .or_else(|| record.msg.as_ref().and_then(|msg| msg.thread.topic.clone()))
+            .or_else(|| {
+                record
+                    .msg
+                    .as_ref()
+                    .and_then(|msg| msg.thread.correlation_id.clone())
+            })
+            .or_else(|| {
+                record.msg.as_ref().and_then(|msg| {
+                    msg.meta
+                        .get("session_id")
+                        .and_then(|value| value.as_str())
+                        .map(|value| value.trim().to_string())
+                        .filter(|value| !value.is_empty())
+                })
+            })
+            .or_else(|| {
+                record.msg.as_ref().and_then(|msg| {
+                    msg.meta
+                        .get("owner_session_id")
+                        .and_then(|value| value.as_str())
+                        .map(|value| value.trim().to_string())
+                        .filter(|value| !value.is_empty())
+                })
+            })
+    }
+
+    fn chat_record_matches_peer(
+        record: &MsgRecordWithObject,
+        owner_did: &DID,
+        peer_did: &DID,
+    ) -> bool {
+        if record.record.msg_kind != MsgObjKind::Chat {
+            return false;
+        }
+
+        if record.record.from == *owner_did {
+            record.record.to == *peer_did
+        } else {
+            record.record.from == *peer_did
+        }
+    }
+
+    fn chat_record_matches_stream(
+        record: &MsgRecordWithObject,
+        owner_did: &DID,
+        peer_did: &DID,
+        thread_id: Option<&str>,
+    ) -> bool {
+        if !Self::chat_record_matches_peer(record, owner_did, peer_did) {
+            return false;
+        }
+
+        match thread_id {
+            Some(thread_id) => Self::chat_message_thread_id(record).as_deref() == Some(thread_id),
+            None => true,
+        }
+    }
+
+    fn chat_record_id_from_event(event: &Event) -> Option<String> {
+        serde_json::from_value::<MsgCenterBoxChangedEvent>(event.data.clone())
+            .ok()
+            .and_then(|payload| payload.record_id)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+
+    fn chat_event_operation(event: &Event) -> String {
+        serde_json::from_value::<MsgCenterBoxChangedEvent>(event.data.clone())
+            .ok()
+            .and_then(|payload| payload.operation)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "changed".to_string())
+    }
+
+    fn map_chat_message_record(
+        record: &MsgRecordWithObject,
+        owner_did: &DID,
+        peer_name: Option<String>,
+    ) -> ChatMessageView {
+        let direction = if record.record.from == *owner_did {
+            "outbound"
+        } else {
+            "inbound"
+        };
+        let peer_name = peer_name.or_else(|| {
+            if direction == "inbound" {
+                record.record.from_name.clone()
+            } else {
+                None
+            }
+        });
+        let peer_did = if direction == "outbound" {
+            record.record.to.to_string()
+        } else {
+            record.record.from.to_string()
+        };
+        let (content, content_format) = match record.msg.as_ref() {
+            Some(msg) => (
+                msg.content.content.clone(),
+                msg.content
+                    .format
+                    .as_ref()
+                    .map(|format| format!("{:?}", format)),
+            ),
+            None => (String::new(), None),
+        };
+
+        ChatMessageView {
+            record_id: record.record.record_id.clone(),
+            msg_id: record.record.msg_id.to_string(),
+            direction,
+            peer_did,
+            peer_name,
+            state: Self::chat_msg_state_label(&record.record.state),
+            created_at_ms: record.record.created_at_ms,
+            updated_at_ms: record.record.updated_at_ms,
+            sort_key: record.record.sort_key,
+            thread_id: Self::chat_message_thread_id(record),
+            content,
+            content_format,
+        }
     }
 
     fn parse_zone_name_from_did(did: &str) -> Option<String> {
@@ -564,8 +1330,12 @@ impl ControlPanelServer {
 
             if let Ok(client) = runtime.get_system_config_client().await {
                 if let Ok(boot_config_str) = client.get("boot/config").await {
-                    if let Ok(boot_config) = serde_json::from_str::<Value>(boot_config_str.value.as_str()) {
-                        if let Some(zone_id) = boot_config.get("id").and_then(|value| value.as_str()) {
+                    if let Ok(boot_config) =
+                        serde_json::from_str::<Value>(boot_config_str.value.as_str())
+                    {
+                        if let Some(zone_id) =
+                            boot_config.get("id").and_then(|value| value.as_str())
+                        {
                             if let Some(zone_name) = Self::parse_zone_name_from_did(zone_id) {
                                 return Some(zone_name);
                             }
@@ -713,7 +1483,12 @@ impl ControlPanelServer {
             ));
         }
         if let Some((ctx_ts, ctx_level)) = context {
-            return Some((ctx_ts.clone(), ctx_level.clone(), trimmed.trim().to_string(), None));
+            return Some((
+                ctx_ts.clone(),
+                ctx_level.clone(),
+                trimmed.trim().to_string(),
+                None,
+            ));
         }
         None
     }
@@ -918,6 +1693,74 @@ impl ControlPanelServer {
         });
 
         Ok(RPCResponse::new(RPCResult::Success(layout), req.seq))
+    }
+
+    fn normalize_control_panel_locale(value: Option<&str>) -> String {
+        let normalized = value.unwrap_or("en").trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "zh" | "zh-cn" => "zh-CN".to_string(),
+            "en" | "en-us" | "en-gb" => "en".to_string(),
+            _ => "en".to_string(),
+        }
+    }
+
+    async fn load_control_panel_locale(client: &SystemConfigClient) -> Result<String, RPCErrors> {
+        match client.get(CONTROL_PANEL_LOCALE_KEY).await {
+            Ok(value) => Ok(Self::normalize_control_panel_locale(Some(&value.value))),
+            Err(_) => Ok("en".to_string()),
+        }
+    }
+
+    async fn handle_ui_locale_get(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let runtime = get_buckyos_api_runtime()?;
+        let client = runtime.get_system_config_client().await?;
+        let locale = Self::load_control_panel_locale(&client).await?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "key": CONTROL_PANEL_LOCALE_KEY,
+                "locale": locale,
+            })),
+            req.seq,
+        ))
+    }
+
+    async fn handle_ui_locale_set(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let requested = Self::param_str(&req, "locale")
+            .or_else(|| Self::param_str(&req, "value"))
+            .unwrap_or_else(|| "en".to_string());
+        let trimmed = requested.trim();
+        let locale = Self::normalize_control_panel_locale(Some(trimmed));
+
+        if !trimmed.is_empty() {
+            let normalized_requested = trimmed.to_ascii_lowercase();
+            let is_supported = matches!(
+                normalized_requested.as_str(),
+                "en" | "en-us" | "en-gb" | "zh" | "zh-cn"
+            );
+            if !is_supported {
+                return Err(RPCErrors::ReasonError(format!(
+                    "unsupported control panel locale: {}",
+                    requested
+                )));
+            }
+        }
+
+        let runtime = get_buckyos_api_runtime()?;
+        let client = runtime.get_system_config_client().await?;
+        client
+            .set(CONTROL_PANEL_LOCALE_KEY, &locale)
+            .await
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "ok": true,
+                "key": CONTROL_PANEL_LOCALE_KEY,
+                "locale": locale,
+            })),
+            req.seq,
+        ))
     }
 
     async fn handle_dashboard(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
@@ -1305,8 +2148,10 @@ impl ControlPanelServer {
         let level_filter = Self::param_str(&req, "level").map(|value| value.to_lowercase());
         let keyword_raw = Self::param_str(&req, "keyword");
         let keyword_filter = keyword_raw.as_ref().map(|value| value.to_lowercase());
-        let since_filter = Self::param_str(&req, "since").and_then(|value| Self::parse_filter_time(&value));
-        let until_filter = Self::param_str(&req, "until").and_then(|value| Self::parse_filter_time(&value));
+        let since_filter =
+            Self::param_str(&req, "since").and_then(|value| Self::parse_filter_time(&value));
+        let until_filter =
+            Self::param_str(&req, "until").and_then(|value| Self::parse_filter_time(&value));
         let since_key = since_filter.as_ref().map(Self::format_log_filter_key);
         let until_key = until_filter.as_ref().map(Self::format_log_filter_key);
         let limit = req
@@ -1328,7 +2173,10 @@ impl ControlPanelServer {
             if value.direction != direction {
                 return None;
             }
-            if files.iter().any(|file| file.service == value.service && file.name == value.file) {
+            if files
+                .iter()
+                .any(|file| file.service == value.service && file.name == value.file)
+            {
                 Some(value)
             } else {
                 None
@@ -1408,8 +2256,7 @@ impl ControlPanelServer {
                             Ok(value) => value,
                             Err(_) => continue,
                         };
-                        let maybe_entry =
-                            Self::extract_log_entry(&raw, last_context.as_ref());
+                        let maybe_entry = Self::extract_log_entry(&raw, last_context.as_ref());
                         let (ts, level, message, raw_line) = match maybe_entry {
                             Some((ts, level, message, next_context)) => {
                                 if let Some(context) = next_context {
@@ -1450,7 +2297,8 @@ impl ControlPanelServer {
 
                 if let Some(cursor) = cursor.as_ref() {
                     if cursor.service == file.service && cursor.file == file.name {
-                        candidates.retain(|(line_index, _, _, _, _)| *line_index < cursor.line_index);
+                        candidates
+                            .retain(|(line_index, _, _, _, _)| *line_index < cursor.line_index);
                     }
                 }
 
@@ -1508,7 +2356,9 @@ impl ControlPanelServer {
                             for (line_index, raw) in matched_lines.into_iter() {
                                 if !reached_cursor {
                                     if let Some(cursor) = cursor.as_ref() {
-                                        if cursor.service == file.service && cursor.file == file.name {
+                                        if cursor.service == file.service
+                                            && cursor.file == file.name
+                                        {
                                             if line_index <= cursor.line_index {
                                                 continue;
                                             }
@@ -1587,8 +2437,7 @@ impl ControlPanelServer {
                             Ok(value) => value,
                             Err(_) => continue,
                         };
-                        let maybe_entry =
-                            Self::extract_log_entry(&raw, last_context.as_ref());
+                        let maybe_entry = Self::extract_log_entry(&raw, last_context.as_ref());
                         let (ts, level, message, raw_line) = match maybe_entry {
                             Some((ts, level, message, next_context)) => {
                                 if let Some(context) = next_context {
@@ -1732,9 +2581,9 @@ impl ControlPanelServer {
         if let Some(file) = file_param.as_deref() {
             files.retain(|entry| entry.name == file);
         }
-        let file = files.first().ok_or_else(|| {
-            RPCErrors::ReasonError(format!("No log files found for {}", service))
-        })?;
+        let file = files
+            .first()
+            .ok_or_else(|| RPCErrors::ReasonError(format!("No log files found for {}", service)))?;
 
         let mut start_offset = 0u64;
         let mut read_from_end = false;
@@ -1751,11 +2600,12 @@ impl ControlPanelServer {
         let path = file.path.clone();
         let file_name = file.name.clone();
         let read_result = task::spawn_blocking(move || -> Result<(Vec<String>, u64), RPCErrors> {
-            let mut file = std::fs::File::open(&path)
-                .map_err(|err| RPCErrors::ReasonError(format!("Failed to open log file: {}", err)))?;
-            let metadata = file
-                .metadata()
-                .map_err(|err| RPCErrors::ReasonError(format!("Failed to read log metadata: {}", err)))?;
+            let mut file = std::fs::File::open(&path).map_err(|err| {
+                RPCErrors::ReasonError(format!("Failed to open log file: {}", err))
+            })?;
+            let metadata = file.metadata().map_err(|err| {
+                RPCErrors::ReasonError(format!("Failed to read log metadata: {}", err))
+            })?;
             let file_len = metadata.len();
             if read_from_end {
                 let mut buffer = String::new();
@@ -1865,8 +2715,10 @@ impl ControlPanelServer {
         let mode = Self::param_str(&req, "mode").unwrap_or_else(|| "filtered".to_string());
         let level_filter = Self::param_str(&req, "level").map(|value| value.to_lowercase());
         let keyword_filter = Self::param_str(&req, "keyword").map(|value| value.to_lowercase());
-        let since_filter = Self::param_str(&req, "since").and_then(|value| Self::parse_filter_time(&value));
-        let until_filter = Self::param_str(&req, "until").and_then(|value| Self::parse_filter_time(&value));
+        let since_filter =
+            Self::param_str(&req, "since").and_then(|value| Self::parse_filter_time(&value));
+        let until_filter =
+            Self::param_str(&req, "until").and_then(|value| Self::parse_filter_time(&value));
 
         let token = Uuid::new_v4().to_string();
         let file_name = format!("buckyos-logs-{}.zip", token);
@@ -1881,7 +2733,8 @@ impl ControlPanelServer {
             let file = std::fs::File::create(&zip_path_clone)
                 .map_err(|err| RPCErrors::ReasonError(format!("Failed to create zip: {}", err)))?;
             let mut zip = zip::ZipWriter::new(file);
-            let options = FileOptions::<()>::default().compression_method(CompressionMethod::Deflated);
+            let options =
+                FileOptions::<()>::default().compression_method(CompressionMethod::Deflated);
 
             for service in services_clone.iter() {
                 let dir_path = Path::new(LOG_ROOT_DIR).join(service);
@@ -2388,9 +3241,7 @@ impl ControlPanelServer {
         let depth = depth.min(SYS_CONFIG_TREE_MAX_DEPTH);
         let runtime = get_buckyos_api_runtime()?;
         let client = runtime.get_system_config_client().await?;
-        let tree = self
-            .build_sys_config_tree(&client, &key, depth)
-            .await?;
+        let tree = self.build_sys_config_tree(&client, &key, depth).await?;
 
         Ok(RPCResponse::new(
             RPCResult::Success(json!({
@@ -2423,6 +3274,1653 @@ impl ControlPanelServer {
                 "version": value.version,
                 "isChanged": value.is_changed,
             })),
+            req.seq,
+        ))
+    }
+
+    fn default_ai_policies_value() -> Value {
+        json!({
+            "items": [
+                {
+                    "id": "message_hub.reply",
+                    "label": "Message Hub Reply",
+                    "primaryModel": "gpt-fast",
+                    "fallbackModels": ["gemini-ops"],
+                    "objective": "Fast reply drafting with safe structured output when needed.",
+                    "status": "active"
+                },
+                {
+                    "id": "message_hub.summary",
+                    "label": "Message Hub Summary",
+                    "primaryModel": "gpt-fast",
+                    "fallbackModels": ["gpt-plan"],
+                    "objective": "Summarize cross-thread context into compact inbox cards and digest blocks.",
+                    "status": "active"
+                },
+                {
+                    "id": "message_hub.task_extract",
+                    "label": "Task Extraction",
+                    "primaryModel": "gemini-ops",
+                    "fallbackModels": ["minimax-api", "gpt-fast"],
+                    "objective": "Convert commitments and deadlines into follow-up objects connected to the source thread.",
+                    "status": "review"
+                },
+                {
+                    "id": "agent.plan",
+                    "label": "Agent Plan",
+                    "primaryModel": "minimax-code-plan",
+                    "fallbackModels": ["gpt-plan"],
+                    "objective": "Use MiniMax code-planning mode for task decomposition, implementation planning, and multi-step agent execution guidance.",
+                    "status": "review"
+                },
+                {
+                    "id": "agent.raw_explain",
+                    "label": "Agent RAW Explain",
+                    "primaryModel": "minimax-api",
+                    "fallbackModels": ["gpt-plan", "gpt-fast"],
+                    "objective": "Use MiniMax API mode for structured explanation of agent-to-agent raw records.",
+                    "status": "planned"
+                }
+            ]
+        })
+    }
+
+    fn default_ai_provider_overrides_value() -> Value {
+        json!({
+            "items": [
+                {
+                    "id": "openai-compatible",
+                    "displayName": "OpenAI-Compatible Gateway",
+                    "providerType": "Compatible",
+                    "status": "needs_setup",
+                    "endpoint": "http://127.0.0.1:11434/v1",
+                    "authMode": "Optional token",
+                    "capabilities": ["Local LLM", "Low-cost fallback"],
+                    "defaultModel": "Not assigned",
+                    "note": "Reserved for local or self-hosted models once the backend management flow is connected."
+                },
+                {
+                    "id": "claude-planned",
+                    "displayName": "Claude",
+                    "providerType": "Anthropic",
+                    "status": "planned",
+                    "endpoint": "https://api.anthropic.com",
+                    "authMode": "API key",
+                    "capabilities": ["Long-form reasoning", "Tool calling"],
+                    "defaultModel": "Planned",
+                    "note": "Documented as a future provider family; not wired in this control-panel phase."
+                }
+            ]
+        })
+    }
+
+    fn default_ai_model_catalog_value() -> Value {
+        json!({
+            "items": [
+                {
+                    "alias": "minimax-code-plan",
+                    "providerId": "minimax-main",
+                    "providerModel": "MiniMax-M2.5",
+                    "capabilities": ["llm_router"],
+                    "features": ["plan", "tool_calling", "code"],
+                    "useCases": ["agent.plan", "message_hub.reply"]
+                },
+                {
+                    "alias": "minimax-api",
+                    "providerId": "minimax-main",
+                    "providerModel": "MiniMax-M2.1-highspeed",
+                    "capabilities": ["llm_router"],
+                    "features": ["json_output", "tool_calling", "api"],
+                    "useCases": ["message_hub.task_extract", "agent.raw_explain"]
+                },
+                {
+                    "alias": "gpt-fast",
+                    "providerId": "openai-main",
+                    "providerModel": "gpt-4.1-mini",
+                    "capabilities": ["llm_router"],
+                    "features": ["json_output", "tool_calling"],
+                    "useCases": ["message_hub.reply", "message_hub.summary"]
+                },
+                {
+                    "alias": "gpt-plan",
+                    "providerId": "openai-main",
+                    "providerModel": "gpt-4.1",
+                    "capabilities": ["llm_router"],
+                    "features": ["plan", "tool_calling", "json_output"],
+                    "useCases": ["agent.plan", "agent.raw_explain"]
+                },
+                {
+                    "alias": "gemini-ops",
+                    "providerId": "google-main",
+                    "providerModel": "gemini-2.5-flash",
+                    "capabilities": ["llm_router"],
+                    "features": ["json_output", "vision"],
+                    "useCases": ["message_hub.task_extract", "message_hub.priority_rank"]
+                }
+            ]
+        })
+    }
+
+    fn default_ai_provider_secrets_value() -> Value {
+        json!({ "items": [] })
+    }
+
+    async fn load_json_config_or_default(
+        client: &SystemConfigClient,
+        key: &str,
+        default: Value,
+    ) -> Value {
+        match client.get(key).await {
+            Ok(value) => serde_json::from_str::<Value>(&value.value).unwrap_or(default),
+            Err(_) => default,
+        }
+    }
+
+    async fn save_json_config(
+        client: &SystemConfigClient,
+        key: &str,
+        value: &Value,
+    ) -> Result<(), RPCErrors> {
+        let serialized = serde_json::to_string_pretty(value)
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        client
+            .set(key, &serialized)
+            .await
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        Ok(())
+    }
+
+    fn upsert_item_by_id(items: &mut Vec<Value>, id: &str, next: Value) {
+        if let Some(index) = items
+            .iter()
+            .position(|item| item.get("id").and_then(|value| value.as_str()) == Some(id))
+        {
+            items[index] = next;
+        } else {
+            items.push(next);
+        }
+    }
+
+    fn upsert_item_by_alias(items: &mut Vec<Value>, alias: &str, next: Value) {
+        if let Some(index) = items
+            .iter()
+            .position(|item| item.get("alias").and_then(|value| value.as_str()) == Some(alias))
+        {
+            items[index] = next;
+        } else {
+            items.push(next);
+        }
+    }
+
+    fn merge_provider_overrides(base_items: Vec<Value>, overrides: &[Value]) -> Vec<Value> {
+        let mut merged = base_items;
+        for override_item in overrides.iter() {
+            if let Some(id) = override_item.get("id").and_then(|value| value.as_str()) {
+                if ["openai-main", "google-main", "minimax-main"].contains(&id) {
+                    continue;
+                }
+                Self::upsert_item_by_id(&mut merged, id, override_item.clone());
+            }
+        }
+        merged
+    }
+
+    fn provider_secret_configured(provider_id: &str, secret_doc: &Value) -> bool {
+        secret_doc
+            .get("items")
+            .and_then(|value| value.as_array())
+            .and_then(|items| {
+                items.iter().find(|item| {
+                    item.get("id").and_then(|value| value.as_str()) == Some(provider_id)
+                })
+            })
+            .and_then(|item| item.get("apiKey").and_then(|value| value.as_str()))
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+    }
+
+    fn mask_secret(value: &str) -> Option<String> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        let chars = trimmed.chars().collect::<Vec<_>>();
+        let len = chars.len();
+        let prefix_len = len.min(4);
+        let suffix_len = len.saturating_sub(prefix_len).min(4);
+        let prefix = chars.iter().take(prefix_len).collect::<String>();
+        let suffix = if suffix_len == 0 {
+            String::new()
+        } else {
+            chars.iter().skip(len - suffix_len).collect::<String>()
+        };
+
+        Some(format!("{}***{}", prefix, suffix))
+    }
+
+    fn provider_masked_secret(provider_id: &str, secret_doc: &Value) -> Option<String> {
+        secret_doc
+            .get("items")
+            .and_then(|value| value.as_array())
+            .and_then(|items| {
+                items.iter().find(|item| {
+                    item.get("id").and_then(|value| value.as_str()) == Some(provider_id)
+                })
+            })
+            .and_then(|item| item.get("apiKey").and_then(|value| value.as_str()))
+            .and_then(Self::mask_secret)
+    }
+
+    fn ai_openai_provider_card(settings: &Value) -> Value {
+        let openai = settings.get("openai").cloned().unwrap_or_else(|| json!({}));
+        let enabled = openai
+            .get("enabled")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        let api_token = openai
+            .get("api_token")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let instances = openai
+            .get("instances")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let first = instances.first().cloned().unwrap_or_else(|| json!({}));
+        let endpoint = first
+            .get("base_url")
+            .and_then(|value| value.as_str())
+            .unwrap_or("https://api.openai.com/v1");
+        let default_model = first
+            .get("default_model")
+            .and_then(|value| value.as_str())
+            .or_else(|| {
+                first
+                    .get("models")
+                    .and_then(|value| value.as_array())
+                    .and_then(|items| items.first())
+                    .and_then(|value| value.as_str())
+            })
+            .unwrap_or("gpt-fast");
+        let status = if enabled && !api_token.trim().is_empty() {
+            "healthy"
+        } else if enabled {
+            "degraded"
+        } else {
+            "needs_setup"
+        };
+
+        json!({
+            "id": "openai-main",
+            "displayName": "OpenAI Main",
+            "providerType": "OpenAI",
+            "status": status,
+            "endpoint": endpoint,
+            "authMode": "Bearer token",
+            "credentialConfigured": !api_token.trim().is_empty(),
+            "maskedApiKey": Self::mask_secret(api_token),
+            "capabilities": ["Reply", "Summary", "Tool calling"],
+            "defaultModel": default_model,
+            "note": "Primary cloud provider for Message Hub reply and summary flows."
+        })
+    }
+
+    fn ai_google_provider_card(settings: &Value) -> Value {
+        let google = settings
+            .get("google")
+            .or_else(|| settings.get("gimini"))
+            .or_else(|| settings.get("gemini"))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let enabled = google
+            .get("enabled")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        let api_token = google
+            .get("api_token")
+            .or_else(|| google.get("api_key"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let instances = google
+            .get("instances")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let first = instances.first().cloned().unwrap_or_else(|| json!({}));
+        let endpoint = first
+            .get("base_url")
+            .and_then(|value| value.as_str())
+            .unwrap_or("https://generativelanguage.googleapis.com/v1beta");
+        let default_model = first
+            .get("default_model")
+            .and_then(|value| value.as_str())
+            .or_else(|| {
+                first
+                    .get("models")
+                    .and_then(|value| value.as_array())
+                    .and_then(|items| items.first())
+                    .and_then(|value| value.as_str())
+            })
+            .unwrap_or("gemini-ops");
+        let status = if enabled && !api_token.trim().is_empty() {
+            "healthy"
+        } else if enabled {
+            "degraded"
+        } else {
+            "needs_setup"
+        };
+
+        json!({
+            "id": "google-main",
+            "displayName": "Google Gemini",
+            "providerType": "Google",
+            "status": status,
+            "endpoint": endpoint,
+            "authMode": "API key",
+            "credentialConfigured": !api_token.trim().is_empty(),
+            "maskedApiKey": Self::mask_secret(api_token),
+            "capabilities": ["Task extract", "Multimodal", "JSON output"],
+            "defaultModel": default_model,
+            "note": "Secondary provider used for extraction-heavy workflows and fallback coverage."
+        })
+    }
+
+    fn ai_minimax_provider_card(settings: &Value, secret_doc: &Value) -> Value {
+        let minimax = settings
+            .get("minimax")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let enabled = minimax
+            .get("enabled")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        let api_token = minimax
+            .get("api_token")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let instances = minimax
+            .get("instances")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let first = instances.first().cloned().unwrap_or_else(|| json!({}));
+        let endpoint = first
+            .get("base_url")
+            .and_then(|value| value.as_str())
+            .unwrap_or("https://api.minimaxi.com/anthropic/v1");
+        let default_model = first
+            .get("default_model")
+            .and_then(|value| value.as_str())
+            .or_else(|| {
+                first
+                    .get("models")
+                    .and_then(|value| value.as_array())
+                    .and_then(|items| items.first())
+                    .and_then(|value| value.as_str())
+            })
+            .unwrap_or("MiniMax-M2.5");
+        let credential_configured = !api_token.trim().is_empty()
+            || Self::provider_secret_configured("minimax-main", secret_doc);
+        let masked_api_key = Self::mask_secret(api_token)
+            .or_else(|| Self::provider_masked_secret("minimax-main", secret_doc));
+        let status = if enabled && credential_configured {
+            "healthy"
+        } else if enabled {
+            "degraded"
+        } else {
+            "needs_setup"
+        };
+
+        json!({
+            "id": "minimax-main",
+            "displayName": "MiniMax",
+            "providerType": "MiniMax",
+            "status": status,
+            "endpoint": endpoint,
+            "authMode": "X-API-Key",
+            "credentialConfigured": credential_configured,
+            "maskedApiKey": masked_api_key,
+            "availableModels": [
+                "MiniMax-M2.5",
+                "MiniMax-M2.5-highspeed",
+                "MiniMax-M2.1",
+                "MiniMax-M2.1-highspeed",
+                "MiniMax-M2"
+            ],
+            "capabilities": ["Code plan", "API mode"],
+            "defaultModel": default_model,
+            "note": "Anthropic-compatible MiniMax runtime for code planning and API-oriented workflows."
+        })
+    }
+
+    fn ai_provider_cards(settings: &Value, overrides: &[Value], secret_doc: &Value) -> Vec<Value> {
+        let base_items = vec![
+            Self::ai_openai_provider_card(settings),
+            Self::ai_google_provider_card(settings),
+            Self::ai_minimax_provider_card(settings, secret_doc),
+        ];
+
+        let mut merged = Self::merge_provider_overrides(base_items, overrides);
+        for item in merged.iter_mut() {
+            let provider_id = item
+                .get("id")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if item.get("credentialConfigured").is_none() {
+                item["credentialConfigured"] = Value::Bool(Self::provider_secret_configured(
+                    provider_id.as_str(),
+                    secret_doc,
+                ));
+            }
+            if item.get("maskedApiKey").is_none() {
+                if let Some(masked) = Self::provider_masked_secret(provider_id.as_str(), secret_doc)
+                {
+                    item["maskedApiKey"] = Value::String(masked);
+                }
+            }
+        }
+        merged
+    }
+
+    fn ai_model_catalog(settings: &Value, overrides: &[Value]) -> Vec<Value> {
+        let openai = settings.get("openai").cloned().unwrap_or_else(|| json!({}));
+        let google = settings
+            .get("google")
+            .or_else(|| settings.get("gimini"))
+            .or_else(|| settings.get("gemini"))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let openai_instance = openai
+            .get("instances")
+            .and_then(|value| value.as_array())
+            .and_then(|items| items.first())
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let google_instance = google
+            .get("instances")
+            .and_then(|value| value.as_array())
+            .and_then(|items| items.first())
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+
+        let openai_default = openai_instance
+            .get("default_model")
+            .and_then(|value| value.as_str())
+            .or_else(|| {
+                openai_instance
+                    .get("models")
+                    .and_then(|value| value.as_array())
+                    .and_then(|items| items.first())
+                    .and_then(|value| value.as_str())
+            })
+            .unwrap_or("gpt-4.1-mini");
+        let google_default = google_instance
+            .get("default_model")
+            .and_then(|value| value.as_str())
+            .or_else(|| {
+                google_instance
+                    .get("models")
+                    .and_then(|value| value.as_array())
+                    .and_then(|items| items.first())
+                    .and_then(|value| value.as_str())
+            })
+            .unwrap_or("gemini-2.5-flash");
+
+        let mut items = vec![
+            json!({
+                "alias": "gpt-fast",
+                "providerId": "openai-main",
+                "providerModel": openai_default,
+                "capabilities": ["llm_router"],
+                "features": ["json_output", "tool_calling"],
+                "useCases": ["message_hub.reply", "message_hub.summary"]
+            }),
+            json!({
+                "alias": "gpt-plan",
+                "providerId": "openai-main",
+                "providerModel": openai_default,
+                "capabilities": ["llm_router"],
+                "features": ["plan", "tool_calling", "json_output"],
+                "useCases": ["agent.plan", "agent.raw_explain"]
+            }),
+            json!({
+                "alias": "gemini-ops",
+                "providerId": "google-main",
+                "providerModel": google_default,
+                "capabilities": ["llm_router"],
+                "features": ["json_output", "vision"],
+                "useCases": ["message_hub.task_extract", "message_hub.priority_rank"]
+            }),
+        ];
+
+        for override_item in overrides.iter() {
+            if let Some(alias) = override_item.get("alias").and_then(|value| value.as_str()) {
+                Self::upsert_item_by_alias(&mut items, alias, override_item.clone());
+            }
+        }
+
+        items
+    }
+
+    fn ai_overview(providers: &[Value], policies: &[Value]) -> Value {
+        let providers_online = providers
+            .iter()
+            .filter(|provider| {
+                provider.get("status").and_then(|value| value.as_str()) == Some("healthy")
+            })
+            .count();
+
+        let primary_model = |id: &str, fallback: &str| -> String {
+            policies
+                .iter()
+                .find(|policy| policy.get("id").and_then(|value| value.as_str()) == Some(id))
+                .and_then(|policy| policy.get("primaryModel").and_then(|value| value.as_str()))
+                .unwrap_or(fallback)
+                .to_string()
+        };
+
+        json!({
+            "providersOnline": providers_online,
+            "providersTotal": providers.len(),
+            "defaultReplyModel": primary_model("message_hub.reply", "gpt-fast"),
+            "defaultSummaryModel": primary_model("message_hub.summary", "gpt-fast"),
+            "defaultTaskExtractModel": primary_model("message_hub.task_extract", "gemini-ops"),
+            "defaultAgentModel": primary_model("agent.plan", "minimax-code-plan"),
+            "avgLatencyMs": 840,
+            "estimatedDailyCostUsd": 2.37,
+            "lastDiagnosticsAt": format!("Today {}", chrono::Local::now().format("%H:%M")),
+        })
+    }
+
+    fn ai_policy_primary_model(policies: &[Value], policy_id: &str, fallback: &str) -> String {
+        policies
+            .iter()
+            .find(|policy| policy.get("id").and_then(|value| value.as_str()) == Some(policy_id))
+            .and_then(|policy| policy.get("primaryModel").and_then(|value| value.as_str()))
+            .unwrap_or(fallback)
+            .to_string()
+    }
+
+    fn build_message_hub_summary_prompt(
+        peer_name: Option<&str>,
+        peer_did: &str,
+        messages: &[ChatMessageView],
+    ) -> String {
+        let mut transcript = String::new();
+        for message in messages.iter().rev().take(20).rev() {
+            let speaker = if message.direction == "outbound" {
+                "Me"
+            } else {
+                peer_name.unwrap_or(peer_did)
+            };
+            let line = format!(
+                "[{}] {}: {}\n",
+                chrono::DateTime::<chrono::Utc>::from_timestamp_millis(
+                    message.created_at_ms as i64
+                )
+                .map(|ts| ts.format("%Y-%m-%d %H:%M").to_string())
+                .unwrap_or_else(|| message.created_at_ms.to_string()),
+                speaker,
+                message.content.replace('\n', " ")
+            );
+            transcript.push_str(&line);
+        }
+
+        format!(
+            "You summarize a direct communication thread for Message Hub. Return plain text with three short sections titled Summary, Decisions, and Follow-ups. Keep it concise and action-oriented.\n\nPeer: {}\nPeer DID: {}\n\nTranscript:\n{}",
+            peer_name.unwrap_or(peer_did),
+            peer_did,
+            transcript
+        )
+    }
+
+    async fn handle_ai_overview(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let runtime = get_buckyos_api_runtime()?;
+        let client = runtime.get_system_config_client().await?;
+        let settings =
+            Self::load_json_config_or_default(&client, AICC_SETTINGS_KEY, json!({})).await;
+        let secret_doc = Self::load_json_config_or_default(
+            &client,
+            AI_MODELS_PROVIDER_SECRETS_KEY,
+            Self::default_ai_provider_secrets_value(),
+        )
+        .await;
+        let provider_overrides = Self::load_json_config_or_default(
+            &client,
+            AI_MODELS_PROVIDER_OVERRIDES_KEY,
+            Self::default_ai_provider_overrides_value(),
+        )
+        .await;
+        let policy_doc = Self::load_json_config_or_default(
+            &client,
+            AI_MODELS_POLICIES_KEY,
+            Self::default_ai_policies_value(),
+        )
+        .await;
+        let providers = Self::ai_provider_cards(
+            &settings,
+            provider_overrides
+                .get("items")
+                .and_then(|value| value.as_array())
+                .map(|items| items.as_slice())
+                .unwrap_or(&[]),
+            &secret_doc,
+        );
+        let policies = policy_doc
+            .get("items")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(Self::ai_overview(&providers, &policies)),
+            req.seq,
+        ))
+    }
+
+    async fn handle_ai_provider_list(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let runtime = get_buckyos_api_runtime()?;
+        let client = runtime.get_system_config_client().await?;
+        let settings =
+            Self::load_json_config_or_default(&client, AICC_SETTINGS_KEY, json!({})).await;
+        let secret_doc = Self::load_json_config_or_default(
+            &client,
+            AI_MODELS_PROVIDER_SECRETS_KEY,
+            Self::default_ai_provider_secrets_value(),
+        )
+        .await;
+        let provider_overrides = Self::load_json_config_or_default(
+            &client,
+            AI_MODELS_PROVIDER_OVERRIDES_KEY,
+            Self::default_ai_provider_overrides_value(),
+        )
+        .await;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "items": Self::ai_provider_cards(
+                    &settings,
+                    provider_overrides
+                        .get("items")
+                        .and_then(|value| value.as_array())
+                        .map(|items| items.as_slice())
+                        .unwrap_or(&[]),
+                    &secret_doc,
+                )
+            })),
+            req.seq,
+        ))
+    }
+
+    async fn handle_ai_model_list(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let runtime = get_buckyos_api_runtime()?;
+        let client = runtime.get_system_config_client().await?;
+        let settings =
+            Self::load_json_config_or_default(&client, AICC_SETTINGS_KEY, json!({})).await;
+        let model_catalog = Self::load_json_config_or_default(
+            &client,
+            AI_MODELS_MODEL_CATALOG_KEY,
+            Self::default_ai_model_catalog_value(),
+        )
+        .await;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "items": Self::ai_model_catalog(
+                    &settings,
+                    model_catalog
+                        .get("items")
+                        .and_then(|value| value.as_array())
+                        .map(|items| items.as_slice())
+                        .unwrap_or(&[]),
+                )
+            })),
+            req.seq,
+        ))
+    }
+
+    async fn handle_ai_policy_list(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let runtime = get_buckyos_api_runtime()?;
+        let client = runtime.get_system_config_client().await?;
+        let policy_doc = Self::load_json_config_or_default(
+            &client,
+            AI_MODELS_POLICIES_KEY,
+            Self::default_ai_policies_value(),
+        )
+        .await;
+        let items = policy_doc
+            .get("items")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({ "items": items })),
+            req.seq,
+        ))
+    }
+
+    async fn handle_ai_diagnostics_list(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "items": [
+                    {
+                        "id": "diag-openai",
+                        "title": "OpenAI round-trip test",
+                        "status": "pass",
+                        "detail": "Use control_panel to trigger a light /kapi/aicc completion through the AI Models module.",
+                        "actionLabel": "Run again"
+                    },
+                    {
+                        "id": "diag-google",
+                        "title": "Gemini extraction profile",
+                        "status": "pass",
+                        "detail": "Current policy defaults reserve Gemini for extraction-heavy Message Hub workflows.",
+                        "actionLabel": "Run again"
+                    },
+                    {
+                        "id": "diag-local",
+                        "title": "Local LLM gateway",
+                        "status": "pending",
+                        "detail": "Reserved for a future OpenAI-compatible or local endpoint once provider configuration broadens.",
+                        "actionLabel": "Review checklist"
+                    }
+                ]
+            })),
+            req.seq,
+        ))
+    }
+
+    async fn handle_ai_provider_test(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let provider_id = Self::require_param_str(&req, "provider_id")?;
+        let alias = match provider_id.as_str() {
+            "openai-main" => "gpt-fast",
+            "google-main" => "gemini-ops",
+            "minimax-main" => "minimax-code-plan",
+            _ => {
+                return Ok(RPCResponse::new(
+                    RPCResult::Success(json!({
+                        "providerId": provider_id,
+                        "ok": false,
+                        "status": "pending",
+                        "detail": "This provider family is not wired to /kapi/aicc in the current control_panel phase."
+                    })),
+                    req.seq,
+                ))
+            }
+        };
+
+        let runtime = get_buckyos_api_runtime()?;
+        let aicc = runtime.get_aicc_client().await.map_err(|error| {
+            RPCErrors::ReasonError(format!("init aicc client failed: {}", error))
+        })?;
+
+        let request = CompleteRequest::new(
+            Capability::LlmRouter,
+            ModelSpec::new(alias.to_string(), None),
+            Requirements::default(),
+            AiPayload::new(
+                None,
+                vec![AiMessage::new(
+                    "user".to_string(),
+                    "Return a compact JSON object that confirms provider connectivity.".to_string(),
+                )],
+                vec![],
+                vec![],
+                None,
+                Some(json!({
+                    "max_tokens": 64,
+                    "temperature": 0.1,
+                    "response_format": { "type": "json_object" }
+                })),
+            ),
+            None,
+        );
+
+        match aicc.complete(request).await {
+            Ok(result) => Ok(RPCResponse::new(
+                RPCResult::Success(json!({
+                    "providerId": provider_id,
+                    "ok": true,
+                    "status": "pass",
+                    "taskId": result.task_id,
+                    "detail": result
+                        .result
+                        .and_then(|summary| summary.text)
+                        .unwrap_or_else(|| "Provider test completed successfully.".to_string())
+                })),
+                req.seq,
+            )),
+            Err(error) => Ok(RPCResponse::new(
+                RPCResult::Success(json!({
+                    "providerId": provider_id,
+                    "ok": false,
+                    "status": "warn",
+                    "detail": error.to_string()
+                })),
+                req.seq,
+            )),
+        }
+    }
+
+    async fn handle_ai_message_hub_thread_summary(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_chat_principal(principal)?;
+        let owner_did = Self::parse_chat_owner_did(principal)?;
+        let peer_did_raw = Self::require_param_str(&req, "peer_did")?;
+        let peer_did = DID::from_str(peer_did_raw.trim()).map_err(|error| {
+            RPCErrors::ParseRequestError(format!("Invalid peer_did `{}`: {}", peer_did_raw, error))
+        })?;
+
+        let msg_center = self.get_msg_center_client().await?;
+        let peer_name = match msg_center
+            .get_contact(peer_did.clone(), Some(owner_did.clone()))
+            .await
+        {
+            Ok(Some(contact)) => Some(contact.name),
+            _ => None,
+        };
+
+        let inbox = msg_center
+            .list_box_by_time(
+                owner_did.clone(),
+                BoxKind::Inbox,
+                None,
+                Some(60),
+                None,
+                None,
+                Some(true),
+                Some(true),
+            )
+            .await?;
+        let outbox = msg_center
+            .list_box_by_time(
+                owner_did.clone(),
+                BoxKind::Outbox,
+                None,
+                Some(60),
+                None,
+                None,
+                Some(true),
+                Some(true),
+            )
+            .await?;
+
+        let mut records = inbox
+            .items
+            .into_iter()
+            .chain(outbox.items.into_iter())
+            .filter(|record| Self::chat_record_matches_peer(record, &owner_did, &peer_did))
+            .collect::<Vec<_>>();
+        records.sort_by(|left, right| {
+            left.record
+                .sort_key
+                .cmp(&right.record.sort_key)
+                .then_with(|| left.record.updated_at_ms.cmp(&right.record.updated_at_ms))
+        });
+
+        let items = records
+            .iter()
+            .map(|record| Self::map_chat_message_record(record, &owner_did, peer_name.clone()))
+            .collect::<Vec<_>>();
+        if items.is_empty() {
+            return Err(RPCErrors::ReasonError(
+                "No thread messages available to summarize yet.".to_string(),
+            ));
+        }
+
+        let runtime = get_buckyos_api_runtime()?;
+        let config_client = runtime.get_system_config_client().await?;
+        let policy_doc = Self::load_json_config_or_default(
+            &config_client,
+            AI_MODELS_POLICIES_KEY,
+            Self::default_ai_policies_value(),
+        )
+        .await;
+        let policies = policy_doc
+            .get("items")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let model_alias =
+            Self::ai_policy_primary_model(&policies, "message_hub.summary", "gpt-fast");
+
+        let aicc = runtime.get_aicc_client().await.map_err(|error| {
+            RPCErrors::ReasonError(format!("init aicc client failed: {}", error))
+        })?;
+        let peer_did_string = peer_did.to_string();
+        let request = CompleteRequest::new(
+            Capability::LlmRouter,
+            ModelSpec::new(model_alias.clone(), None),
+            Requirements::default(),
+            AiPayload::new(
+                Some(Self::build_message_hub_summary_prompt(
+                    peer_name.as_deref(),
+                    peer_did_string.as_str(),
+                    &items,
+                )),
+                vec![],
+                vec![],
+                vec![],
+                None,
+                Some(json!({
+                    "max_tokens": 240,
+                    "temperature": 0.2
+                })),
+            ),
+            None,
+        );
+
+        let result = aicc
+            .complete(request)
+            .await
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        let summary = result
+            .result
+            .and_then(|summary| summary.text)
+            .filter(|text| !text.trim().is_empty())
+            .unwrap_or_else(|| "No summary text returned by the model.".to_string());
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!(MessageHubThreadSummaryResponse {
+                peer_did: peer_did_string,
+                peer_name,
+                model_alias,
+                summary,
+                source_message_count: items.len(),
+            })),
+            req.seq,
+        ))
+    }
+
+    async fn handle_ai_reload(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let runtime = get_buckyos_api_runtime()?;
+        let krpc_client = runtime
+            .get_zone_service_krpc_client("aicc")
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!("init aicc rpc client failed: {}", error))
+            })?;
+
+        let result = krpc_client
+            .call("service.reload_settings", json!({}))
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!("reload aicc settings failed: {}", error))
+            })?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "ok": true,
+                "result": result,
+            })),
+            req.seq,
+        ))
+    }
+
+    async fn handle_ai_provider_set(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let provider = req
+            .params
+            .get("provider")
+            .cloned()
+            .ok_or_else(|| RPCErrors::ReasonError("missing provider payload".to_string()))?;
+        let api_key = Self::param_str(&req, "api_key");
+        let has_new_api_key = api_key
+            .as_ref()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false);
+        let provider_id = provider
+            .get("id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| RPCErrors::ReasonError("provider.id is required".to_string()))?;
+
+        let runtime = get_buckyos_api_runtime()?;
+        let client = runtime.get_system_config_client().await?;
+
+        info!(
+            "control_panel.ai.provider.set provider_id={} has_new_api_key={} requested_status={:?} default_model={:?} endpoint={:?}",
+            provider_id,
+            has_new_api_key,
+            provider.get("status").and_then(|value| value.as_str()),
+            provider.get("defaultModel").and_then(|value| value.as_str()),
+            provider.get("endpoint").and_then(|value| value.as_str()),
+        );
+
+        if provider_id == "openai-main"
+            || provider_id == "google-main"
+            || provider_id == "minimax-main"
+        {
+            let mut settings =
+                Self::load_json_config_or_default(&client, AICC_SETTINGS_KEY, json!({})).await;
+            let key = if provider_id == "openai-main" {
+                "openai"
+            } else if provider_id == "google-main" {
+                "google"
+            } else {
+                "minimax"
+            };
+            let endpoint = provider
+                .get("endpoint")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let default_model = provider
+                .get("defaultModel")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let enabled = provider
+                .get("status")
+                .and_then(|value| value.as_str())
+                .map(|value| value == "healthy" || value == "degraded")
+                .unwrap_or(false)
+                || has_new_api_key
+                || provider
+                    .get("credentialConfigured")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false);
+
+            let mut section = settings.get(key).cloned().unwrap_or_else(|| json!({}));
+            if !section.is_object() {
+                section = json!({});
+            }
+
+            section["enabled"] = Value::Bool(enabled);
+
+            let existing_api_token = section
+                .get("api_token")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string();
+            section["api_token"] = Value::String(
+                api_key
+                    .clone()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or(existing_api_token),
+            );
+
+            let mut instances = section
+                .get("instances")
+                .and_then(|value| value.as_array())
+                .cloned()
+                .unwrap_or_else(|| vec![json!({})]);
+            if instances.is_empty() {
+                instances.push(json!({}));
+            }
+
+            let mut first = instances.first().cloned().unwrap_or_else(|| json!({}));
+            if !first.is_object() {
+                first = json!({});
+            }
+            first["base_url"] = Value::String(endpoint.to_string());
+            first["default_model"] = Value::String(default_model.to_string());
+            if provider_id == "minimax-main" {
+                first["provider_type"] = Value::String("minimax".to_string());
+            }
+            if first.get("models").is_none() {
+                first["models"] = json!([default_model]);
+            }
+            if let Some(models) = first
+                .get_mut("models")
+                .and_then(|value| value.as_array_mut())
+            {
+                if !models
+                    .iter()
+                    .any(|item| item.as_str() == Some(default_model))
+                {
+                    models.insert(0, Value::String(default_model.to_string()));
+                }
+            }
+            let api_key_present = section
+                .get("api_token")
+                .and_then(|value| value.as_str())
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false);
+            instances[0] = first;
+            section["instances"] = Value::Array(instances);
+            settings[key] = section;
+            Self::save_json_config(&client, AICC_SETTINGS_KEY, &settings).await?;
+            info!(
+                "control_panel.ai.provider.set persisted_aicc provider_id={} settings_key={} enabled={} api_key_present={} default_model={} endpoint={}",
+                provider_id,
+                key,
+                enabled,
+                api_key_present,
+                default_model,
+                endpoint,
+            );
+        } else {
+            let mut overrides = Self::load_json_config_or_default(
+                &client,
+                AI_MODELS_PROVIDER_OVERRIDES_KEY,
+                Self::default_ai_provider_overrides_value(),
+            )
+            .await;
+            let mut items = overrides
+                .get("items")
+                .and_then(|value| value.as_array())
+                .cloned()
+                .unwrap_or_default();
+            Self::upsert_item_by_id(&mut items, provider_id, provider.clone());
+            overrides["items"] = Value::Array(items);
+            Self::save_json_config(&client, AI_MODELS_PROVIDER_OVERRIDES_KEY, &overrides).await?;
+
+            if let Some(api_key) = api_key.filter(|value| !value.trim().is_empty()) {
+                let mut secret_doc = Self::load_json_config_or_default(
+                    &client,
+                    AI_MODELS_PROVIDER_SECRETS_KEY,
+                    Self::default_ai_provider_secrets_value(),
+                )
+                .await;
+                let mut secret_items = secret_doc
+                    .get("items")
+                    .and_then(|value| value.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                Self::upsert_item_by_id(
+                    &mut secret_items,
+                    provider_id,
+                    json!({ "id": provider_id, "apiKey": api_key }),
+                );
+                secret_doc["items"] = Value::Array(secret_items);
+                Self::save_json_config(&client, AI_MODELS_PROVIDER_SECRETS_KEY, &secret_doc)
+                    .await?;
+                info!(
+                    "control_panel.ai.provider.set persisted_secret provider_id={} api_key_present=true",
+                    provider_id,
+                );
+            }
+        }
+
+        let settings =
+            Self::load_json_config_or_default(&client, AICC_SETTINGS_KEY, json!({})).await;
+        let secret_doc = Self::load_json_config_or_default(
+            &client,
+            AI_MODELS_PROVIDER_SECRETS_KEY,
+            Self::default_ai_provider_secrets_value(),
+        )
+        .await;
+        let provider_overrides = Self::load_json_config_or_default(
+            &client,
+            AI_MODELS_PROVIDER_OVERRIDES_KEY,
+            Self::default_ai_provider_overrides_value(),
+        )
+        .await;
+        let provider_card = Self::ai_provider_cards(
+            &settings,
+            provider_overrides
+                .get("items")
+                .and_then(|value| value.as_array())
+                .map(|items| items.as_slice())
+                .unwrap_or(&[]),
+            &secret_doc,
+        )
+        .into_iter()
+        .find(|item| item.get("id").and_then(|value| value.as_str()) == Some(provider_id))
+        .unwrap_or(provider.clone());
+
+        info!(
+            "control_panel.ai.provider.set result provider_id={} status={:?} credential_configured={:?} default_model={:?}",
+            provider_id,
+            provider_card.get("status").and_then(|value| value.as_str()),
+            provider_card
+                .get("credentialConfigured")
+                .and_then(|value| value.as_bool()),
+            provider_card
+                .get("defaultModel")
+                .and_then(|value| value.as_str()),
+        );
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({ "ok": true, "provider": provider_card })),
+            req.seq,
+        ))
+    }
+
+    async fn handle_ai_model_set(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let model = req
+            .params
+            .get("model")
+            .cloned()
+            .ok_or_else(|| RPCErrors::ReasonError("missing model payload".to_string()))?;
+        let alias = model
+            .get("alias")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| RPCErrors::ReasonError("model.alias is required".to_string()))?;
+
+        let runtime = get_buckyos_api_runtime()?;
+        let client = runtime.get_system_config_client().await?;
+        let mut catalog = Self::load_json_config_or_default(
+            &client,
+            AI_MODELS_MODEL_CATALOG_KEY,
+            Self::default_ai_model_catalog_value(),
+        )
+        .await;
+        let mut items = catalog
+            .get("items")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        Self::upsert_item_by_alias(&mut items, alias, model.clone());
+        catalog["items"] = Value::Array(items);
+        Self::save_json_config(&client, AI_MODELS_MODEL_CATALOG_KEY, &catalog).await?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({ "ok": true, "model": model })),
+            req.seq,
+        ))
+    }
+
+    async fn handle_ai_policy_set(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let policy = req
+            .params
+            .get("policy")
+            .cloned()
+            .ok_or_else(|| RPCErrors::ReasonError("missing policy payload".to_string()))?;
+        let policy_id = policy
+            .get("id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| RPCErrors::ReasonError("policy.id is required".to_string()))?;
+
+        let runtime = get_buckyos_api_runtime()?;
+        let client = runtime.get_system_config_client().await?;
+        let mut policy_doc = Self::load_json_config_or_default(
+            &client,
+            AI_MODELS_POLICIES_KEY,
+            Self::default_ai_policies_value(),
+        )
+        .await;
+        let mut items = policy_doc
+            .get("items")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        Self::upsert_item_by_id(&mut items, policy_id, policy.clone());
+        policy_doc["items"] = Value::Array(items);
+        Self::save_json_config(&client, AI_MODELS_POLICIES_KEY, &policy_doc).await?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({ "ok": true, "policy": policy })),
+            req.seq,
+        ))
+    }
+
+    fn repo_record_version(record: &RepoRecord) -> Option<String> {
+        record
+            .meta
+            .get("version")
+            .and_then(|value| value.as_str())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+
+    fn repo_status_rank(status: &str) -> u8 {
+        match status {
+            "pinned" => 2,
+            "collected" => 1,
+            _ => 0,
+        }
+    }
+
+    fn compare_repo_app_release(
+        lhs: &RepoAppReleaseCandidate,
+        rhs: &RepoAppReleaseCandidate,
+    ) -> Ordering {
+        match (&lhs.parsed_version, &rhs.parsed_version) {
+            (Some(left), Some(right)) if left != right => return left.cmp(right),
+            (Some(_), None) => return Ordering::Greater,
+            (None, Some(_)) => return Ordering::Less,
+            _ => {}
+        }
+
+        let lhs_status = Self::repo_status_rank(lhs.record.status.as_str());
+        let rhs_status = Self::repo_status_rank(rhs.record.status.as_str());
+        if lhs_status != rhs_status {
+            return lhs_status.cmp(&rhs_status);
+        }
+
+        let lhs_updated = lhs
+            .record
+            .updated_at
+            .or(lhs.record.pinned_at)
+            .or(lhs.record.collected_at)
+            .unwrap_or(0);
+        let rhs_updated = rhs
+            .record
+            .updated_at
+            .or(rhs.record.pinned_at)
+            .or(rhs.record.collected_at)
+            .unwrap_or(0);
+        if lhs_updated != rhs_updated {
+            return lhs_updated.cmp(&rhs_updated);
+        }
+
+        lhs.app_doc.version.cmp(&rhs.app_doc.version)
+    }
+
+    async fn resolve_repo_app_release(
+        &self,
+        app_id: &str,
+        version: Option<&str>,
+    ) -> Result<RepoAppReleaseCandidate, RPCErrors> {
+        let runtime = get_buckyos_api_runtime()?;
+        info!(
+            "resolve repo app release app_id=`{}` version={:?}",
+            app_id, version
+        );
+        let repo = runtime.get_repo_client().await.map_err(|error| {
+            warn!(
+                "init repo client failed while resolving app `{}`: {}",
+                app_id, error
+            );
+            RPCErrors::ReasonError(format!("Init repo client failed: {}", error))
+        })?;
+        let requested_version = version
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string());
+        let records = repo
+            .list(Some(RepoListFilter::new(
+                None,
+                None,
+                Some(app_id.to_string()),
+                None,
+            )))
+            .await
+            .map_err(|error| {
+                warn!(
+                    "repo.list failed while resolving app `{}` version {:?}: {}",
+                    app_id, requested_version, error
+                );
+                error
+            })?;
+
+        let mut candidates = Vec::new();
+        for record in records {
+            if record.content_name.as_deref() != Some(app_id) {
+                continue;
+            }
+
+            let Some(record_version) = Self::repo_record_version(&record) else {
+                warn!(
+                    "skip repo record without version for app `{}` content `{}`",
+                    app_id, record.content_id
+                );
+                continue;
+            };
+            if requested_version
+                .as_deref()
+                .map(|expected| expected != record_version)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+
+            let app_doc: AppDoc = match serde_json::from_value(record.meta.clone()) {
+                Ok(value) => value,
+                Err(error) => {
+                    warn!(
+                        "skip repo record `{}` for app `{}` because meta is not AppDoc: {}",
+                        record.content_id, app_id, error
+                    );
+                    continue;
+                }
+            };
+            if app_doc.name != app_id {
+                continue;
+            }
+
+            candidates.push(RepoAppReleaseCandidate {
+                parsed_version: SemVer::parse(app_doc.version.as_str()).ok(),
+                record,
+                app_doc,
+            });
+        }
+
+        let release = candidates
+            .into_iter()
+            .max_by(|lhs, rhs| Self::compare_repo_app_release(lhs, rhs))
+            .ok_or_else(|| {
+                let detail = requested_version
+                    .map(|value| format!(" version `{value}`"))
+                    .unwrap_or_default();
+                RPCErrors::ReasonError(format!("No repo app release found for `{app_id}`{detail}"))
+            })?;
+        info!(
+            "resolved repo app release app_id=`{}` version=`{}` content=`{}` status=`{}`",
+            release.app_doc.name,
+            release.app_doc.version,
+            release.record.content_id,
+            release.record.status
+        );
+        Ok(release)
+    }
+
+    fn build_default_install_config(app_id: &str, app_doc: &AppDoc) -> ServiceInstallConfig {
+        let mut install_config = ServiceInstallConfig::default();
+        install_config.local_cache_mount_point =
+            app_doc.install_config_tips.local_cache_mount_point.clone();
+        install_config.container_param = app_doc.install_config_tips.container_param.clone();
+        install_config.start_param = app_doc.install_config_tips.start_param.clone();
+
+        for (service_name, service_port) in app_doc.install_config_tips.service_ports.iter() {
+            let mut expose = ServiceExposeConfig::default();
+            if service_name == "www" {
+                expose.sub_hostname.push(app_id.to_string());
+            } else {
+                expose.expose_port = Some(*service_port);
+            }
+            install_config
+                .expose_config
+                .insert(service_name.clone(), expose);
+        }
+
+        if app_doc.get_app_type() == AppType::Web
+            && !install_config.expose_config.contains_key("www")
+        {
+            install_config.expose_config.insert(
+                "www".to_string(),
+                ServiceExposeConfig {
+                    sub_hostname: vec![app_id.to_string()],
+                    ..Default::default()
+                },
+            );
+        }
+
+        install_config
+    }
+
+    fn build_install_spec_for_user(app_doc: AppDoc, user_id: String) -> AppServiceSpec {
+        let app_id = app_doc.name.clone();
+        AppServiceSpec {
+            install_config: Self::build_default_install_config(app_id.as_str(), &app_doc),
+            app_doc,
+            app_index: 0,
+            user_id,
+            enable: true,
+            expected_instance_count: 1,
+            state: ServiceState::New,
+        }
+    }
+
+    fn parse_app_type(raw: &str) -> Result<AppType, RPCErrors> {
+        AppType::try_from(raw.trim()).map_err(|error| {
+            RPCErrors::ParseRequestError(format!("Invalid app_type `{}`: {}", raw, error))
+        })
+    }
+
+    async fn handle_app_publish(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let _principal = Self::require_rpc_principal(principal)?;
+        let local_dir = Self::require_param_str(&req, "local_dir")
+            .or_else(|_| Self::require_param_str(&req, "path"))?;
+        let app_doc_value = req
+            .params
+            .get("app_doc")
+            .cloned()
+            .or_else(|| req.params.get("app_doc_template").cloned())
+            .ok_or_else(|| RPCErrors::ReasonError("missing app_doc payload".to_string()))?;
+        let app_doc: AppDoc = serde_json::from_value(app_doc_value).map_err(|error| {
+            RPCErrors::ParseRequestError(format!("Invalid app_doc payload: {}", error))
+        })?;
+        let app_type = Self::param_str(&req, "app_type")
+            .map(|raw| Self::parse_app_type(raw.as_str()))
+            .transpose()?
+            .unwrap_or_else(|| app_doc.get_app_type());
+
+        info!(
+            "rpc app.publish app=`{}` version=`{}` type=`{}` local_dir=`{}`",
+            app_doc.name,
+            app_doc.version,
+            app_type.to_string(),
+            local_dir
+        );
+        let obj_id = self
+            .app_installer
+            .publish_app_to_repo(app_type, Path::new(local_dir.as_str()), &app_doc)
+            .await
+            .map_err(|error| {
+                warn!(
+                    "rpc app.publish failed for app `{}` version `{}` local_dir `{}`: {}",
+                    app_doc.name, app_doc.version, local_dir, error
+                );
+                error
+            })?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "ok": true,
+                "obj_id": obj_id.to_string(),
+            })),
+            req.seq,
+        ))
+    }
+
+    async fn handle_apps_install(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_rpc_principal(principal)?;
+        let app_id = Self::require_param_str(&req, "app_id")?;
+        let user_id = Self::resolve_target_user_id(&req, principal);
+        let version = Self::param_str(&req, "version");
+        let release = self
+            .resolve_repo_app_release(app_id.as_str(), version.as_deref())
+            .await?;
+        let spec = Self::build_install_spec_for_user(release.app_doc, user_id);
+        let task_id = self.app_installer.install_app(&spec).await?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "task_id": task_id.to_string(),
+            })),
+            req.seq,
+        ))
+    }
+
+    async fn handle_apps_update(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_rpc_principal(principal)?;
+        let app_id = Self::require_param_str(&req, "app_id")?;
+        let version = Self::require_param_str(&req, "version")?;
+        let user_id = Self::resolve_target_user_id(&req, principal);
+        let current_spec = self
+            .app_installer
+            .get_app_service_spec(app_id.as_str(), Some(user_id.as_str()))
+            .await?;
+        let release = self
+            .resolve_repo_app_release(app_id.as_str(), Some(version.as_str()))
+            .await?;
+
+        let next_spec = AppServiceSpec {
+            app_doc: release.app_doc,
+            app_index: current_spec.app_index,
+            user_id: current_spec.user_id.clone(),
+            enable: current_spec.enable,
+            expected_instance_count: current_spec.expected_instance_count,
+            state: current_spec.state,
+            install_config: current_spec.install_config.clone(),
+        };
+        let task_id = self.app_installer.upgrade_app(&next_spec).await?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "task_id": task_id.to_string(),
+            })),
+            req.seq,
+        ))
+    }
+
+    async fn handle_apps_uninstall(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_rpc_principal(principal)?;
+        let app_id = Self::require_param_str(&req, "app_id")?;
+        let user_id = Self::resolve_target_user_id(&req, principal);
+        let remove_data = Self::param_bool(&req, "remove_data")
+            .or_else(|| Self::param_bool(&req, "is_remove_data"))
+            .unwrap_or(false);
+        let task_id = self
+            .app_installer
+            .uninstall_app(app_id.as_str(), Some(user_id.as_str()), remove_data)
+            .await?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "task_id": task_id.to_string(),
+            })),
+            req.seq,
+        ))
+    }
+
+    async fn handle_apps_start(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_rpc_principal(principal)?;
+        let app_id = Self::require_param_str(&req, "app_id")?;
+        let user_id = Self::resolve_target_user_id(&req, principal);
+        let task_id = self
+            .app_installer
+            .start_app(app_id.as_str(), Some(user_id.as_str()))
+            .await?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "ok": true,
+                "task_id": task_id.to_string(),
+            })),
+            req.seq,
+        ))
+    }
+
+    async fn handle_apps_stop(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_rpc_principal(principal)?;
+        let app_id = Self::require_param_str(&req, "app_id")?;
+        let user_id = Self::resolve_target_user_id(&req, principal);
+        self.app_installer
+            .stop_app(app_id.as_str(), Some(user_id.as_str()))
+            .await?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({ "ok": true })),
             req.seq,
         ))
     }
@@ -2462,6 +4960,275 @@ impl ControlPanelServer {
             })),
             req.seq,
         ))
+    }
+
+    async fn handle_apps_version_list(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let key = Self::param_str(&req, "key").unwrap_or_else(|| "services".to_string());
+        let base_key = key.trim_end_matches('/').to_string();
+        let runtime = get_buckyos_api_runtime()?;
+        let client = runtime.get_system_config_client().await?;
+
+        let requested_names = req
+            .params
+            .get("names")
+            .and_then(|value| value.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str())
+                    .map(|name| name.trim().to_string())
+                    .filter(|name| !name.is_empty())
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_default();
+
+        let names = if requested_names.is_empty() {
+            client
+                .list(&key)
+                .await
+                .map_err(|error| RPCErrors::ReasonError(error.to_string()))?
+        } else {
+            requested_names
+        };
+
+        let mut deduped_names = Vec::new();
+        for name in names {
+            if deduped_names
+                .iter()
+                .any(|existing: &String| existing == &name)
+            {
+                continue;
+            }
+            deduped_names.push(name);
+        }
+
+        let mut versions: Vec<Value> = Vec::new();
+        for name in deduped_names {
+            let version = Self::resolve_app_version(&name, &base_key, &client).await;
+            versions.push(json!({
+                "name": name,
+                "version": version,
+            }));
+        }
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "key": key,
+                "items": versions,
+            })),
+            req.seq,
+        ))
+    }
+
+    async fn resolve_app_version(
+        service_name: &str,
+        base_key: &str,
+        client: &SystemConfigClient,
+    ) -> String {
+        if let Some(version) = Self::probe_service_binary_version(service_name).await {
+            return version;
+        }
+
+        let spec_key = format!("{}/{}/spec", base_key, service_name);
+        if let Ok(value) = client.get(&spec_key).await {
+            if let Some(version) = Self::parse_service_spec_version(&value.value) {
+                return version;
+            }
+        }
+
+        "0.0.0".to_string()
+    }
+
+    async fn probe_service_binary_version(service_name: &str) -> Option<String> {
+        let candidates = Self::service_binary_candidates(service_name);
+        for binary_path in candidates {
+            if !binary_path.exists() {
+                continue;
+            }
+
+            let candidate = binary_path.clone();
+            let version = task::spawn_blocking(move || {
+                Self::run_version_command_with_timeout(&candidate, Duration::from_millis(500))
+            })
+            .await
+            .ok()
+            .flatten();
+
+            if version.is_some() {
+                return version;
+            }
+        }
+
+        None
+    }
+
+    fn service_binary_candidates(service_name: &str) -> Vec<PathBuf> {
+        let mut candidates = Vec::new();
+        let mut push_candidate = |path: PathBuf| {
+            if !candidates.iter().any(|existing| existing == &path) {
+                candidates.push(path);
+            }
+        };
+
+        let normalized = service_name
+            .split('@')
+            .next()
+            .unwrap_or(service_name)
+            .trim();
+        if normalized.is_empty() {
+            return candidates;
+        }
+
+        let bin_root = get_buckyos_root_dir().join("bin");
+        if normalized == "gateway" {
+            push_candidate(bin_root.join("cyfs-gateway").join("cyfs_gateway"));
+        }
+
+        let dir = bin_root.join(normalized);
+        let snake_name = normalized.replace('-', "_");
+        push_candidate(dir.join(&snake_name));
+        if snake_name != normalized {
+            push_candidate(dir.join(normalized));
+        }
+
+        let kebab_name = normalized.replace('_', "-");
+        if kebab_name != normalized {
+            let kebab_dir = bin_root.join(&kebab_name);
+            push_candidate(kebab_dir.join(&snake_name));
+            push_candidate(kebab_dir.join(&kebab_name));
+        }
+
+        candidates
+    }
+
+    fn run_version_command_with_timeout(binary_path: &Path, timeout: Duration) -> Option<String> {
+        let mut child = Command::new(binary_path)
+            .arg("--version")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .ok()?;
+
+        let started = Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => {
+                    let output = child.wait_with_output().ok()?;
+                    let merged = format!(
+                        "{}\n{}",
+                        String::from_utf8_lossy(&output.stdout),
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    return Self::extract_version_from_output(&merged);
+                }
+                Ok(None) => {
+                    if started.elapsed() >= timeout {
+                        let _ = child.kill();
+                        if let Ok(output) = child.wait_with_output() {
+                            let merged = format!(
+                                "{}\n{}",
+                                String::from_utf8_lossy(&output.stdout),
+                                String::from_utf8_lossy(&output.stderr)
+                            );
+                            if let Some(version) = Self::extract_version_from_output(&merged) {
+                                return Some(version);
+                            }
+                        }
+                        return None;
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Err(_) => return None,
+            }
+        }
+    }
+
+    fn parse_service_spec_version(raw_spec: &str) -> Option<String> {
+        let parsed = serde_json::from_str::<Value>(raw_spec).ok()?;
+        parsed
+            .get("service_doc")
+            .and_then(|service_doc| service_doc.get("version"))
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string())
+            .or_else(|| {
+                parsed
+                    .get("version")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .map(|value| value.to_string())
+            })
+    }
+
+    fn extract_version_from_output(output: &str) -> Option<String> {
+        let cleaned = Self::strip_ansi_codes(output);
+        for raw_line in cleaned.lines() {
+            let line = raw_line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            if let Some(index) = line.find("buckyos version ") {
+                let tail = &line[index + "buckyos version ".len()..];
+                if let Some(token) = tail.split_whitespace().next() {
+                    if Self::is_likely_version_token(token) {
+                        return Some(token.to_string());
+                    }
+                }
+            }
+
+            if let Some(index) = line.find("CYFS Gateway Service ") {
+                let tail = &line[index + "CYFS Gateway Service ".len()..];
+                if let Some(token) = tail.split_whitespace().next() {
+                    if Self::is_likely_version_token(token) {
+                        return Some(token.to_string());
+                    }
+                }
+            }
+
+            if let Some(token) = line
+                .split_whitespace()
+                .find(|token| Self::is_likely_version_token(token))
+            {
+                return Some(token.to_string());
+            }
+        }
+
+        None
+    }
+
+    fn strip_ansi_codes(input: &str) -> String {
+        let mut result = String::with_capacity(input.len());
+        let mut chars = input.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\u{1b}' {
+                if matches!(chars.peek(), Some('[')) {
+                    let _ = chars.next();
+                    while let Some(code) = chars.next() {
+                        if ('@'..='~').contains(&code) {
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+            result.push(ch);
+        }
+        result
+    }
+
+    fn is_likely_version_token(token: &str) -> bool {
+        let trimmed =
+            token.trim_matches(|ch: char| matches!(ch, ',' | ';' | '(' | ')' | '"' | '\''));
+        if !trimmed.contains('.') || !trimmed.chars().any(|ch| ch.is_ascii_digit()) {
+            return false;
+        }
+        if trimmed.contains(':') {
+            return false;
+        }
+        trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '+' | '-' | '_'))
     }
 
     fn gateway_file_summary(path: &Path) -> Value {
@@ -2624,7 +5391,6 @@ impl ControlPanelServer {
                     continue;
                 }
             }
-
         }
 
         flush_current(
@@ -2636,6 +5402,124 @@ impl ControlPanelServer {
         );
 
         stacks
+    }
+
+    fn extract_host_from_url(raw: &str) -> Option<String> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        let normalized = if trimmed.contains("://") {
+            trimmed.to_string()
+        } else {
+            format!("https://{}", trimmed)
+        };
+
+        url::Url::parse(normalized.as_str())
+            .ok()
+            .and_then(|value| value.host_str().map(|host| host.to_string()))
+            .map(|value| value.trim().trim_matches('.').to_string())
+            .filter(|value| !value.is_empty())
+    }
+
+    fn query_dig_short_records(
+        server: Option<&str>,
+        record_name: &str,
+        record_type: &str,
+    ) -> Result<Vec<String>, String> {
+        let mut cmd = Command::new("dig");
+        cmd.arg("+short");
+
+        if let Some(server) = server
+            .map(|item| item.trim())
+            .filter(|item| !item.is_empty())
+        {
+            cmd.arg(format!("@{}", server));
+        }
+
+        let output = cmd
+            .arg(record_name)
+            .arg(record_type)
+            .output()
+            .map_err(|err| {
+                if err.kind() == std::io::ErrorKind::NotFound {
+                    "dig command not found. Please install dnsutils/bind-tools.".to_string()
+                } else {
+                    format!("failed to execute dig: {}", err)
+                }
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if stderr.is_empty() {
+                return Err(format!(
+                    "dig {} {} failed with status {}",
+                    record_name, record_type, output.status
+                ));
+            }
+            return Err(stderr);
+        }
+
+        let records = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|line| line.trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<String>>();
+
+        Ok(records)
+    }
+
+    fn self_cert_state_matches_domain(cert_domain: &str, zone_domain: &str) -> bool {
+        let cert_domain = cert_domain.trim().trim_matches('.').to_lowercase();
+        let zone_domain = zone_domain.trim().trim_matches('.').to_lowercase();
+        if cert_domain.is_empty() || zone_domain.is_empty() {
+            return false;
+        }
+
+        if cert_domain == zone_domain {
+            return true;
+        }
+
+        cert_domain
+            .strip_prefix("*.")
+            .map(|suffix| {
+                zone_domain == suffix || zone_domain.ends_with(format!(".{}", suffix).as_str())
+            })
+            .unwrap_or(false)
+    }
+
+    fn read_self_cert_state(zone_domain: &str) -> Result<Option<bool>, String> {
+        let content = std::fs::read_to_string(SN_SELF_CERT_STATE_PATH)
+            .map_err(|err| format!("read self cert state failed: {}", err))?;
+        let parsed = serde_json::from_str::<Value>(content.as_str())
+            .map_err(|err| format!("parse self cert state failed: {}", err))?;
+        let items = parsed
+            .as_array()
+            .ok_or_else(|| "self cert state is not an array".to_string())?;
+
+        let mut wildcard_state: Option<bool> = None;
+        for item in items {
+            let domain = item
+                .get("domain")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let state = item.get("state").and_then(|value| value.as_bool());
+            let Some(state) = state else {
+                continue;
+            };
+
+            if domain.trim().eq_ignore_ascii_case(zone_domain.trim()) {
+                return Ok(Some(state));
+            }
+
+            if wildcard_state.is_none() && Self::self_cert_state_matches_domain(domain, zone_domain)
+            {
+                wildcard_state = Some(state);
+            }
+        }
+
+        Ok(wildcard_state)
     }
 
     async fn handle_zone_overview(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
@@ -2663,6 +5547,12 @@ impl ControlPanelServer {
         let mut net_id = String::new();
         let mut sn_url = String::new();
         let mut sn_username = String::new();
+        let mut sn_ip = String::new();
+        let mut sn_dns_a_records: Vec<String> = Vec::new();
+        let mut sn_dns_txt_records: Vec<String> = Vec::new();
+        let mut sn_dig_error = String::new();
+        let mut self_cert_state = false;
+        let self_cert_state_source = SN_SELF_CERT_STATE_PATH.to_string();
         let mut zone_iat: i64 = 0;
         let mut notes: Vec<String> = Vec::new();
 
@@ -2755,7 +5645,10 @@ impl ControlPanelServer {
                         .unwrap_or_default()
                         .to_string();
                 }
-                zone_iat = value.get("zone_iat").and_then(|item| item.as_i64()).unwrap_or(0);
+                zone_iat = value
+                    .get("zone_iat")
+                    .and_then(|item| item.as_i64())
+                    .unwrap_or(0);
             }
         }
 
@@ -2771,10 +5664,88 @@ impl ControlPanelServer {
             notes.push("zone name not found in start_config.json or zone_did".to_string());
         }
         if zone_did.is_empty() {
-            notes.push("zone_did not found in node_device_config.json/node_identity.json".to_string());
+            notes.push(
+                "zone_did not found in node_device_config.json/node_identity.json".to_string(),
+            );
         }
         if device_name.is_empty() {
             notes.push("device name not found in node_device_config.json".to_string());
+        }
+
+        let mut dig_errors: Vec<String> = Vec::new();
+        let mut dig_available = true;
+        let sn_host = Self::extract_host_from_url(sn_url.as_str()).unwrap_or_default();
+
+        if sn_host.is_empty() {
+            notes.push("SN host cannot be parsed from sn.url".to_string());
+        } else {
+            match Self::query_dig_short_records(None, sn_host.as_str(), "A") {
+                Ok(records) => {
+                    if let Some(first_ip) = records.first() {
+                        sn_ip = first_ip.to_string();
+                    }
+                }
+                Err(err) => {
+                    dig_available = !err.contains("dig command not found");
+                    dig_errors.push(format!("resolve SN host A failed: {}", err));
+                }
+            }
+        }
+
+        if !zone_domain.is_empty() && dig_available {
+            let dns_server = if !sn_ip.is_empty() {
+                Some(sn_ip.as_str())
+            } else if !sn_host.is_empty() {
+                Some(sn_host.as_str())
+            } else {
+                None
+            };
+
+            if let Some(server) = dns_server {
+                match Self::query_dig_short_records(Some(server), zone_domain.as_str(), "A") {
+                    Ok(records) => {
+                        sn_dns_a_records = records;
+                    }
+                    Err(err) => {
+                        dig_available = !err.contains("dig command not found");
+                        dig_errors.push(format!("query zone A via SN failed: {}", err));
+                    }
+                }
+
+                if dig_available {
+                    match Self::query_dig_short_records(Some(server), zone_domain.as_str(), "TXT") {
+                        Ok(records) => {
+                            sn_dns_txt_records = records;
+                        }
+                        Err(err) => {
+                            dig_errors.push(format!("query zone TXT via SN failed: {}", err));
+                        }
+                    }
+                }
+            } else {
+                dig_errors.push("SN DNS server is unavailable for dig query".to_string());
+            }
+        }
+
+        if !dig_errors.is_empty() {
+            sn_dig_error = dig_errors.join("; ");
+            notes.push(format!("SN dig diagnostics: {}", sn_dig_error));
+        }
+
+        if !zone_domain.is_empty() {
+            match Self::read_self_cert_state(zone_domain.as_str()) {
+                Ok(Some(state)) => {
+                    self_cert_state = state;
+                }
+                Ok(None) => {
+                    notes.push(
+                        "Self cert state entry not found for current zone domain".to_string(),
+                    );
+                }
+                Err(err) => {
+                    notes.push(format!("Self cert state read failed: {}", err));
+                }
+            }
         }
 
         let response = json!({
@@ -2796,6 +5767,13 @@ impl ControlPanelServer {
             "sn": {
                 "url": sn_url,
                 "username": sn_username,
+                "host": sn_host,
+                "ip": sn_ip,
+                "dnsARecords": sn_dns_a_records,
+                "dnsTxtRecords": sn_dns_txt_records,
+                "digError": sn_dig_error,
+                "selfCertState": self_cert_state,
+                "selfCertStateSource": self_cert_state_source,
             },
             "files": files,
             "notes": notes,
@@ -2899,7 +5877,10 @@ impl ControlPanelServer {
             }
         }
 
-        let mode = if tls_domains.iter().any(|domain| domain.contains("web3.buckyos.ai")) {
+        let mode = if tls_domains
+            .iter()
+            .any(|domain| domain.contains("web3.buckyos.ai"))
+        {
             "sn"
         } else {
             "direct"
@@ -2907,9 +5888,15 @@ impl ControlPanelServer {
 
         notes.push("Gateway config loaded from /opt/buckyos/etc.".to_string());
         if custom_overrides.is_empty() {
-            notes.push("No user override rules detected in user_gateway.yaml/post_gateway.yaml.".to_string());
+            notes.push(
+                "No user override rules detected in user_gateway.yaml/post_gateway.yaml."
+                    .to_string(),
+            );
         } else {
-            notes.push("User override rules detected; they may overwrite generated gateway blocks.".to_string());
+            notes.push(
+                "User override rules detected; they may overwrite generated gateway blocks."
+                    .to_string(),
+            );
         }
 
         let response = json!({
@@ -2941,8 +5928,9 @@ impl ControlPanelServer {
             )));
         }
 
-        let bytes = std::fs::read(&path)
-            .map_err(|err| RPCErrors::ReasonError(format!("Failed to read {}: {}", path.display(), err)))?;
+        let bytes = std::fs::read(&path).map_err(|err| {
+            RPCErrors::ReasonError(format!("Failed to read {}: {}", path.display(), err))
+        })?;
 
         if bytes.len() > 2 * 1024 * 1024 {
             return Err(RPCErrors::ReasonError(format!(
@@ -3035,13 +6023,18 @@ impl ControlPanelServer {
             .map_err(|error| RPCErrors::ReasonError(format!("docker ps failed: {}", error)))?;
 
         if !ps_output.status.success() {
-            let stderr = String::from_utf8_lossy(&ps_output.stderr).trim().to_string();
+            let stderr = String::from_utf8_lossy(&ps_output.stderr)
+                .trim()
+                .to_string();
             let message = if stderr.is_empty() {
                 "docker ps returned non-zero exit code".to_string()
             } else {
                 stderr
             };
-            return Err(RPCErrors::ReasonError(format!("docker ps failed: {}", message)));
+            return Err(RPCErrors::ReasonError(format!(
+                "docker ps failed: {}",
+                message
+            )));
         }
 
         let mut containers: Vec<Value> = Vec::new();
@@ -3167,7 +6160,9 @@ impl ControlPanelServer {
             .arg(docker_action)
             .arg(id.as_str())
             .output()
-            .map_err(|error| RPCErrors::ReasonError(format!("docker {} failed: {}", docker_action, error)))?;
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!("docker {} failed: {}", docker_action, error))
+            })?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -3192,6 +6187,558 @@ impl ControlPanelServer {
         ))
     }
 
+    async fn handle_chat_bootstrap(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_chat_principal(principal)?;
+        let can_send = matches!(principal.user_type, UserType::Root | UserType::Admin);
+        let response = ChatBootstrapResponse {
+            scope: Self::chat_scope_info(principal),
+            capabilities: ChatCapabilityInfo {
+                contact_list: true,
+                message_list: true,
+                message_send: can_send,
+                thread_id_send: can_send,
+                realtime_events: false,
+                standalone_chat_app_link: true,
+                opendan_channel_ready: false,
+            },
+            notes: vec![
+                "Message Hub currently uses a browser-safe wrapper over msg-center."
+                    .to_string(),
+                "The current standalone route is /message-hub/chat while the backend adapter remains in transition."
+                    .to_string(),
+                "Future email, calendar, notification, TODO, and agent record views remain follow-up work."
+                    .to_string(),
+            ],
+        };
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!(response)),
+            req.seq,
+        ))
+    }
+
+    async fn handle_chat_contact_list(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_chat_principal(principal)?;
+        let owner_did = Self::parse_chat_owner_did(principal)?;
+        let msg_center = self.get_msg_center_client().await?;
+        let limit = Self::normalize_chat_contact_limit(Self::param_usize(&req, "limit"));
+        let keyword = Self::param_str(&req, "keyword")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let query = ContactQuery {
+            keyword,
+            limit: Some(limit),
+            offset: Self::param_u64(&req, "offset"),
+            ..Default::default()
+        };
+
+        let mut items = msg_center
+            .list_contacts(query, Some(owner_did))
+            .await?
+            .into_iter()
+            .map(Self::map_chat_contact)
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!(ChatContactListResponse {
+                scope: Self::chat_scope_info(principal),
+                items,
+            })),
+            req.seq,
+        ))
+    }
+
+    async fn handle_chat_message_list(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_chat_principal(principal)?;
+        let owner_did = Self::parse_chat_owner_did(principal)?;
+        let peer_did_raw = Self::require_param_str(&req, "peer_did")?;
+        let peer_did = DID::from_str(peer_did_raw.trim()).map_err(|error| {
+            RPCErrors::ParseRequestError(format!("Invalid peer_did `{}`: {}", peer_did_raw, error))
+        })?;
+        let limit = Self::normalize_chat_message_limit(Self::param_usize(&req, "limit"));
+        let scan_limit = Self::chat_scan_limit(limit);
+        let msg_center = self.get_msg_center_client().await?;
+
+        let peer_name = match msg_center
+            .get_contact(peer_did.clone(), Some(owner_did.clone()))
+            .await
+        {
+            Ok(Some(contact)) => Some(contact.name),
+            Ok(None) => None,
+            Err(error) => {
+                log::warn!(
+                    "chat.message.list get_contact failed: peer={:?} owner={:?} err={}",
+                    peer_did,
+                    owner_did,
+                    error
+                );
+                None
+            }
+        };
+
+        let inbox = msg_center
+            .list_box_by_time(
+                owner_did.clone(),
+                BoxKind::Inbox,
+                None,
+                Some(scan_limit),
+                None,
+                None,
+                Some(true),
+                Some(true),
+            )
+            .await?;
+        let outbox = msg_center
+            .list_box_by_time(
+                owner_did.clone(),
+                BoxKind::Outbox,
+                None,
+                Some(scan_limit),
+                None,
+                None,
+                Some(true),
+                Some(true),
+            )
+            .await?;
+
+        let mut records = inbox
+            .items
+            .into_iter()
+            .chain(outbox.items.into_iter())
+            .filter(|record| Self::chat_record_matches_peer(record, &owner_did, &peer_did))
+            .collect::<Vec<_>>();
+        records.sort_by(|left, right| {
+            right
+                .record
+                .sort_key
+                .cmp(&left.record.sort_key)
+                .then_with(|| right.record.updated_at_ms.cmp(&left.record.updated_at_ms))
+                .then_with(|| right.record.record_id.cmp(&left.record.record_id))
+        });
+        records.truncate(limit);
+
+        let items = records
+            .iter()
+            .map(|record| Self::map_chat_message_record(record, &owner_did, peer_name.clone()))
+            .collect::<Vec<_>>();
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!(ChatMessageListResponse {
+                scope: Self::chat_scope_info(principal),
+                peer_did: peer_did.to_string(),
+                peer_name,
+                items,
+            })),
+            req.seq,
+        ))
+    }
+
+    async fn handle_chat_message_send(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_chat_principal(principal)?;
+        let owner_did = Self::parse_chat_owner_did(principal)?;
+        let target_did_raw = Self::require_param_str(&req, "target_did")?;
+        let target_did = DID::from_str(target_did_raw.trim()).map_err(|error| {
+            RPCErrors::ParseRequestError(format!(
+                "Invalid target_did `{}`: {}",
+                target_did_raw, error
+            ))
+        })?;
+        let content = Self::require_param_str(&req, "content")?.trim().to_string();
+        if content.is_empty() {
+            return Err(RPCErrors::ParseRequestError(
+                "content cannot be empty".to_string(),
+            ));
+        }
+        let thread_id = Self::param_str(&req, "thread_id")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let msg_center = self.get_msg_center_client().await?;
+
+        let peer_name = match msg_center
+            .get_contact(target_did.clone(), Some(owner_did.clone()))
+            .await
+        {
+            Ok(Some(contact)) => Some(contact.name),
+            Ok(None) => None,
+            Err(error) => {
+                log::warn!(
+                    "chat.message.send get_contact failed: peer={:?} owner={:?} err={}",
+                    target_did,
+                    owner_did,
+                    error
+                );
+                None
+            }
+        };
+
+        let mut message = MsgObject {
+            from: owner_did.clone(),
+            to: vec![target_did.clone()],
+            kind: MsgObjKind::Chat,
+            created_at_ms: Self::current_time_ms(),
+            content: MsgContent {
+                format: Some(MsgContentFormat::TextPlain),
+                content: content.clone(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        if let Some(thread_id) = thread_id.as_ref() {
+            message.thread.topic = Some(thread_id.clone());
+            message.thread.correlation_id = Some(thread_id.clone());
+            message
+                .meta
+                .insert("session_id".to_string(), Value::String(thread_id.clone()));
+            message.meta.insert(
+                "owner_session_id".to_string(),
+                Value::String(thread_id.clone()),
+            );
+        }
+
+        let result = msg_center
+            .post_send(
+                message.clone(),
+                Some(SendContext {
+                    contact_mgr_owner: Some(owner_did.clone()),
+                    ..Default::default()
+                }),
+                None,
+            )
+            .await?;
+        if !result.ok {
+            return Err(RPCErrors::ReasonError(result.reason.unwrap_or_else(|| {
+                "msg-center rejected the chat send request".to_string()
+            })));
+        }
+
+        let first_delivery = result.deliveries.first().ok_or_else(|| {
+            RPCErrors::ReasonError("msg-center returned no delivery record".to_string())
+        })?;
+        let stored_record = msg_center
+            .get_record(first_delivery.record_id.clone(), Some(true))
+            .await?;
+        let mapped_message = if let Some(record) = stored_record.as_ref() {
+            Self::map_chat_message_record(record, &owner_did, peer_name.clone())
+        } else {
+            ChatMessageView {
+                record_id: first_delivery.record_id.clone(),
+                msg_id: result.msg_id.to_string(),
+                direction: "outbound",
+                peer_did: target_did.to_string(),
+                peer_name,
+                state: "sent",
+                created_at_ms: message.created_at_ms,
+                updated_at_ms: message.created_at_ms,
+                sort_key: message.created_at_ms,
+                thread_id,
+                content,
+                content_format: Some("TextPlain".to_string()),
+            }
+        };
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!(ChatSendMessageResponse {
+                scope: Self::chat_scope_info(principal),
+                target_did: target_did.to_string(),
+                delivery_count: result.deliveries.len(),
+                message: mapped_message,
+            })),
+            req.seq,
+        ))
+    }
+
+    async fn handle_chat_stream_http(
+        &self,
+        req: http::Request<BoxBody<Bytes, ServerError>>,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        let fallback_token = Self::extract_http_session_token(&req);
+        let collected = req.into_body().collect().await.map_err(|error| {
+            server_err!(
+                ServerErrorCode::BadRequest,
+                "Failed to read chat stream request body: {}",
+                error
+            )
+        })?;
+        let body = collected.to_bytes();
+        let stream_req = match serde_json::from_slice::<ChatStreamHttpRequest>(&body) {
+            Ok(value) => value,
+            Err(error) => {
+                return Self::build_http_json_response(
+                    StatusCode::BAD_REQUEST,
+                    json!({
+                        "error": format!("Invalid chat stream request: {}", error),
+                    }),
+                );
+            }
+        };
+
+        let peer_did_raw = stream_req.peer_did.trim().to_string();
+        if peer_did_raw.is_empty() {
+            return Self::build_http_json_response(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "peer_did is required" }),
+            );
+        }
+        let peer_did = match DID::from_str(peer_did_raw.as_str()) {
+            Ok(value) => value,
+            Err(error) => {
+                return Self::build_http_json_response(
+                    StatusCode::BAD_REQUEST,
+                    json!({
+                        "error": format!("Invalid peer_did `{}`: {}", peer_did_raw, error),
+                    }),
+                );
+            }
+        };
+
+        let thread_id = stream_req
+            .thread_id
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let keepalive_ms = Self::normalize_chat_stream_keepalive_ms(stream_req.keepalive_ms);
+        let principal = match self
+            .authenticate_session_token_for_method(
+                "chat.stream",
+                stream_req.session_token.or(fallback_token),
+            )
+            .await
+        {
+            Ok(Some(principal)) => principal,
+            Ok(None) => {
+                return Self::build_http_json_response(
+                    StatusCode::UNAUTHORIZED,
+                    json!({ "error": "chat stream requires an authenticated session" }),
+                );
+            }
+            Err(error) => {
+                let status = match error {
+                    RPCErrors::InvalidToken(_) => StatusCode::UNAUTHORIZED,
+                    RPCErrors::NoPermission(_) => StatusCode::FORBIDDEN,
+                    _ => StatusCode::BAD_REQUEST,
+                };
+                return Self::build_http_json_response(
+                    status,
+                    json!({ "error": error.to_string() }),
+                );
+            }
+        };
+        let owner_did = match Self::parse_chat_owner_did(&principal) {
+            Ok(value) => value,
+            Err(error) => {
+                return Self::build_http_json_response(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": error.to_string() }),
+                );
+            }
+        };
+
+        let owner_token = owner_did.to_raw_host_name();
+        let patterns = vec![
+            format!("/msg_center/{}/box/in/**", owner_token),
+            format!("/msg_center/{}/box/out/**", owner_token),
+        ];
+        let event_reader = match Self::get_chat_kevent_client()
+            .create_event_reader(patterns)
+            .await
+        {
+            Ok(reader) => reader,
+            Err(error) => {
+                return Self::build_http_json_response(
+                    StatusCode::BAD_REQUEST,
+                    json!({
+                        "error": format!("Failed to create chat event reader: {}", error),
+                    }),
+                );
+            }
+        };
+
+        let (sender, receiver) = mpsc::channel::<std::result::Result<Bytes, ServerError>>(32);
+        let scope = Self::chat_scope_info(&principal);
+        let peer_name = match self.get_msg_center_client().await {
+            Ok(msg_center) => match msg_center
+                .get_contact(peer_did.clone(), Some(owner_did.clone()))
+                .await
+            {
+                Ok(Some(contact)) => Some(contact.name),
+                Ok(None) => None,
+                Err(error) => {
+                    log::warn!(
+                        "chat.stream get_contact failed: peer={:?} owner={:?} err={}",
+                        peer_did,
+                        owner_did,
+                        error
+                    );
+                    None
+                }
+            },
+            Err(error) => {
+                return Self::build_http_json_response(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": error.to_string() }),
+                );
+            }
+        };
+
+        if !Self::send_chat_stream_json(
+            &sender,
+            &json!({
+                "type": "ack",
+                "connection_id": Uuid::new_v4().to_string(),
+                "scope": scope,
+                "peer_did": peer_did.to_string(),
+                "thread_id": thread_id.clone(),
+                "keepalive_ms": keepalive_ms,
+                "at_ms": Self::current_time_ms(),
+            }),
+        )
+        .await
+        {
+            return Self::build_http_json_response(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "Failed to initialize chat stream" }),
+            );
+        }
+
+        let server = self.clone();
+        tokio::spawn(async move {
+            let msg_center = match server.get_msg_center_client().await {
+                Ok(client) => client,
+                Err(error) => {
+                    let _ = Self::send_chat_stream_error(&sender, error.to_string()).await;
+                    return;
+                }
+            };
+
+            loop {
+                let event = match event_reader.pull_event(Some(keepalive_ms)).await {
+                    Ok(Some(event)) => event,
+                    Ok(None) => {
+                        if !Self::send_chat_stream_json(
+                            &sender,
+                            &json!({
+                                "type": "keepalive",
+                                "at_ms": Self::current_time_ms(),
+                            }),
+                        )
+                        .await
+                        {
+                            return;
+                        }
+                        continue;
+                    }
+                    Err(error) => {
+                        let _ = Self::send_chat_stream_error(
+                            &sender,
+                            format!("chat event reader failed: {}", error),
+                        )
+                        .await;
+                        return;
+                    }
+                };
+
+                let record_id = match Self::chat_record_id_from_event(&event) {
+                    Some(record_id) => record_id,
+                    None => {
+                        if !Self::send_chat_stream_json(
+                            &sender,
+                            &json!({
+                                "type": "resync",
+                                "reason": "missing_record_id",
+                                "peer_did": peer_did.to_string(),
+                                "thread_id": thread_id.clone(),
+                                "at_ms": Self::current_time_ms(),
+                            }),
+                        )
+                        .await
+                        {
+                            return;
+                        }
+                        continue;
+                    }
+                };
+
+                let record = match msg_center.get_record(record_id.clone(), Some(true)).await {
+                    Ok(Some(record)) => record,
+                    Ok(None) => {
+                        if !Self::send_chat_stream_json(
+                            &sender,
+                            &json!({
+                                "type": "resync",
+                                "reason": "record_not_found",
+                                "record_id": record_id,
+                                "peer_did": peer_did.to_string(),
+                                "thread_id": thread_id.clone(),
+                                "at_ms": Self::current_time_ms(),
+                            }),
+                        )
+                        .await
+                        {
+                            return;
+                        }
+                        continue;
+                    }
+                    Err(error) => {
+                        let _ = Self::send_chat_stream_error(
+                            &sender,
+                            format!("Failed to load chat record {}: {}", record_id, error),
+                        )
+                        .await;
+                        return;
+                    }
+                };
+
+                if !Self::chat_record_matches_stream(
+                    &record,
+                    &owner_did,
+                    &peer_did,
+                    thread_id.as_deref(),
+                ) {
+                    continue;
+                }
+
+                let message = Self::map_chat_message_record(&record, &owner_did, peer_name.clone());
+                if !Self::send_chat_stream_json(
+                    &sender,
+                    &json!({
+                        "type": "message",
+                        "operation": Self::chat_event_operation(&event),
+                        "record_id": record.record.record_id,
+                        "message": message,
+                        "at_ms": Self::current_time_ms(),
+                    }),
+                )
+                .await
+                {
+                    return;
+                }
+            }
+        });
+
+        Self::build_chat_stream_response(receiver)
+    }
+
     async fn handle_unimplemented(
         &self,
         req: RPCRequest,
@@ -3208,24 +6755,35 @@ impl ControlPanelServer {
 impl RPCHandler for ControlPanelServer {
     async fn handle_rpc_call(
         &self,
-        req: RPCRequest,
+        mut req: RPCRequest,
         _ip_from: IpAddr,
     ) -> Result<RPCResponse, RPCErrors> {
+        if req.token.is_none() {
+            req.token = Self::extract_rpc_session_token(&req);
+        }
+
+        let principal = self.authenticate_rpc_request(&req).await?;
+        if let Some(principal) = principal.as_ref() {
+            log::debug!(
+                "control-panel rpc auth: method={}, user={}, type={:?}",
+                req.method,
+                principal.username,
+                principal.user_type
+            );
+        }
+
         match req.method.as_str() {
             // Core / UI bootstrap
             "main" | "ui.main" => self.handle_main(req).await,
             "layout" | "ui.layout" => self.handle_layout(req).await,
             "dashboard" | "ui.dashboard" => self.handle_dashboard(req).await,
+            "ui.locale.get" => self.handle_ui_locale_get(req).await,
+            "ui.locale.set" => self.handle_ui_locale_set(req).await,
             // Auth
-            "auth.login" => {
-                self.handle_unimplemented(req, "Authenticate admin/user session")
-                    .await
-            }
-            "auth.logout" => self.handle_unimplemented(req, "Terminate session").await,
-            "auth.refresh" => {
-                self.handle_unimplemented(req, "Refresh token/session")
-                    .await
-            }
+            "auth.login" => self.handle_auth_login(req).await,
+            "auth.logout" => self.handle_auth_logout(req).await,
+            "auth.refresh" => self.handle_auth_refresh(req).await,
+            "auth.verify" => self.handle_auth_verify(req).await,
             // User & Role
             "user.list" => self.handle_unimplemented(req, "List users").await,
             "user.get" => self.handle_unimplemented(req, "Get user detail").await,
@@ -3286,11 +6844,32 @@ impl RPCHandler for ControlPanelServer {
             "backup.restore" => self.handle_unimplemented(req, "Restore backup").await,
             // Apps
             "apps.list" => self.handle_apps_list(req).await,
-            "apps.install" => self.handle_unimplemented(req, "Install app").await,
-            "apps.update" => self.handle_unimplemented(req, "Update app").await,
-            "apps.uninstall" => self.handle_unimplemented(req, "Uninstall app").await,
-            "apps.start" => self.handle_unimplemented(req, "Start app").await,
-            "apps.stop" => self.handle_unimplemented(req, "Stop app").await,
+            "apps.version.list" => self.handle_apps_version_list(req).await,
+            "ai.overview" => self.handle_ai_overview(req).await,
+            "ai.provider.list" => self.handle_ai_provider_list(req).await,
+            "ai.provider.set" => self.handle_ai_provider_set(req).await,
+            "ai.provider.test" => self.handle_ai_provider_test(req).await,
+            "ai.message_hub.thread_summary" => {
+                self.handle_ai_message_hub_thread_summary(req, principal.as_ref())
+                    .await
+            }
+            "ai.reload" => self.handle_ai_reload(req).await,
+            "ai.model.list" => self.handle_ai_model_list(req).await,
+            "ai.model.set" => self.handle_ai_model_set(req).await,
+            "ai.policy.list" => self.handle_ai_policy_list(req).await,
+            "ai.policy.set" => self.handle_ai_policy_set(req).await,
+            "ai.diagnostics.list" => self.handle_ai_diagnostics_list(req).await,
+            "apps.install" => self.handle_apps_install(req, principal.as_ref()).await,
+            "apps.update" => self.handle_apps_update(req, principal.as_ref()).await,
+            "apps.uninstall" => self.handle_apps_uninstall(req, principal.as_ref()).await,
+            "apps.start" => self.handle_apps_start(req, principal.as_ref()).await,
+            "apps.stop" => self.handle_apps_stop(req, principal.as_ref()).await,
+            "app.publish" => self.handle_app_publish(req, principal.as_ref()).await,
+            // Chat
+            "chat.bootstrap" => self.handle_chat_bootstrap(req, principal.as_ref()).await,
+            "chat.contact.list" => self.handle_chat_contact_list(req, principal.as_ref()).await,
+            "chat.message.list" => self.handle_chat_message_list(req, principal.as_ref()).await,
+            "chat.message.send" => self.handle_chat_message_send(req, principal.as_ref()).await,
             // Network
             "network.interfaces" => self.handle_unimplemented(req, "List interfaces").await,
             "network.interface.update" => {
@@ -3556,13 +7135,6 @@ impl RPCHandler for ControlPanelServer {
             "verify.status" => self.handle_unimplemented(req, "Verify hub status").await,
             "verify.sessions" => self.handle_unimplemented(req, "List sessions").await,
             "verify.session.revoke" => self.handle_unimplemented(req, "Revoke session").await,
-            // Repo Service
-            "repo.sources" => self.handle_unimplemented(req, "List repo sources").await,
-            "repo.pkgs" => self.handle_unimplemented(req, "List repo packages").await,
-            "repo.install" => self.handle_unimplemented(req, "Install package").await,
-            "repo.publish" => self.handle_unimplemented(req, "Publish package").await,
-            "repo.sync" => self.handle_unimplemented(req, "Sync repo").await,
-            "repo.tasks" => self.handle_unimplemented(req, "Repo tasks").await,
             // Message Bus
             "msgbus.status" => self.handle_unimplemented(req, "Message bus status").await,
             "msgbus.topics" => self.handle_unimplemented(req, "List topics").await,
@@ -3612,11 +7184,26 @@ impl HttpServer for ControlPanelServer {
         req: http::Request<BoxBody<Bytes, ServerError>>,
         info: StreamInfo,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        if *req.method() == Method::POST {
+        let method = req.method().clone();
+        let path = req.uri().path().to_string();
+
+        if path == "/api" || path.starts_with("/api/") {
+            return self.file_manager.serve_request(req, info).await;
+        }
+
+        if method == Method::POST
+            && (path == "/kapi/control-panel/chat/stream"
+                || path == "/kapi/message-hub/chat/stream")
+        {
+            return self.handle_chat_stream_http(req).await;
+        }
+
+        if method == Method::POST
+            && (path.starts_with("/kapi/control-panel") || path.starts_with("/kapi/message-hub"))
+        {
             return serve_http_by_rpc_handler(req, info, self).await;
         }
-        if *req.method() == Method::GET {
-            let path = req.uri().path();
+        if method == Method::GET {
             if let Some(token) = path.strip_prefix("/kapi/control-panel/logs/download/") {
                 if !token.is_empty() {
                     return self.handle_logs_download_http(token).await;
@@ -3643,24 +7230,44 @@ impl HttpServer for ControlPanelServer {
 }
 
 pub async fn start_control_panel_service() -> anyhow::Result<()> {
-    let mut runtime = init_buckyos_api_runtime(CONTROL_PANEL_SERVICE_NAME,None,BuckyOSRuntimeType::KernelService).await?;
+    let mut runtime = init_buckyos_api_runtime(
+        CONTROL_PANEL_SERVICE_NAME,
+        None,
+        BuckyOSRuntimeType::KernelService,
+    )
+    .await?;
     let login_result = runtime.login().await;
-    if  login_result.is_err() {
-        log::error!("control-panel service login to system failed! err:{:?}", login_result);
-        return Err(anyhow::anyhow!("control-panel service login to system failed! err:{:?}", login_result));
+    if login_result.is_err() {
+        log::error!(
+            "control-panel service login to system failed! err:{:?}",
+            login_result
+        );
+        return Err(anyhow::anyhow!(
+            "control-panel service login to system failed! err:{:?}",
+            login_result
+        ));
     }
-    runtime.set_main_service_port(CONTROL_PANEL_SERVICE_PORT).await;
+    runtime
+        .set_main_service_port(CONTROL_PANEL_SERVICE_PORT)
+        .await;
     set_buckyos_api_runtime(runtime);
 
     let control_panel_server = ControlPanelServer::new();
+    control_panel_server
+        .init_file_manager()
+        .await
+        .map_err(|err| anyhow::anyhow!("init control-panel file manager failed: {}", err))?;
+    let control_panel_server = Arc::new(control_panel_server);
     // Bind to the default control-panel service port.
 
     let runner = Runner::new(CONTROL_PANEL_SERVICE_PORT);
     // 添加 RPC 服务
     let _ = runner.add_http_server(
         "/kapi/control-panel".to_string(),
-        Arc::new(control_panel_server),
+        control_panel_server.clone(),
     );
+    // File manager API (embedded from former bucky-file service)
+    let _ = runner.add_http_server("/api".to_string(), control_panel_server.clone());
 
     // 添加 web (best-effort, skip if path cannot be resolved)
     let web_dir = std::env::current_exe()
@@ -3693,10 +7300,7 @@ async fn service_main() {
     init_logging("control-panel", true);
     let start_result = start_control_panel_service().await;
     if start_result.is_err() {
-        log::error!(
-            "control-panel service start failed! err:{:?}",
-            start_result
-        );
+        log::error!("control-panel service start failed! err:{:?}", start_result);
         return;
     }
 

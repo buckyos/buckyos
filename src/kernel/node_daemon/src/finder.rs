@@ -1,20 +1,20 @@
 //finder是一个服务，用来在局域网实现node之间的去中心互相发现
 //尤其是多OOD体系启动的时候
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::time::Duration;
-use std::collections::HashMap;
-use std::sync::Arc;
 use buckyos_kit::buckyos_get_unix_timestamp;
-use tokio::sync::{Notify, RwLock};
-use tokio::net::UdpSocket;
-use tokio::time::timeout;
-use serde::{Serialize, Deserialize};
-use serde_json;
 use log::*;
+use serde::{Deserialize, Serialize};
+use serde_json;
+use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::net::UdpSocket;
+use tokio::sync::{Notify, RwLock};
+use tokio::time::timeout;
 
 use anyhow::Result;
-use jsonwebtoken::{decode, Validation, EncodingKey, DecodingKey, encode, Header, Algorithm};
+use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 
 const FINDER_SERVER_UDP_PORT: u16 = 2980;
 
@@ -63,7 +63,6 @@ impl LookingForResp {
     }
 }
 
-
 pub struct NodeFinder {
     this_device_jwt: String,
     this_device_private_key: EncodingKey,
@@ -81,7 +80,8 @@ impl NodeFinder {
 
     pub async fn run_udp_server(&self) -> Result<()> {
         let socket = UdpSocket::bind(format!("0.0.0.0:{}", FINDER_SERVER_UDP_PORT))
-            .await.map_err(|e| { 
+            .await
+            .map_err(|e| {
                 warn!("bind NodeFinder server error: {}", e);
                 anyhow::anyhow!("bind udp server error: {}", e)
             })?;
@@ -115,8 +115,7 @@ impl NodeFinder {
                         warn!("send to error: {}", res.err().unwrap());
                         continue;
                     }
-                }
-                else {
+                } else {
                     warn!("decode req error");
                 }
             }
@@ -125,8 +124,6 @@ impl NodeFinder {
 
         Ok(())
     }
-
-
 
     pub async fn stop_udp_server(&self) {
         let mut running = self.running.write().await;
@@ -142,7 +139,10 @@ pub struct NodeFinderClient {
 
 impl NodeFinderClient {
     pub fn new(this_device_jwt: String, this_device_private_key: EncodingKey) -> Self {
-        Self { this_device_jwt, this_device_private_key }
+        Self {
+            this_device_jwt,
+            this_device_private_key,
+        }
     }
 
     pub async fn looking_by_udpv4(&self, node_id: String, timeout_secs: u64) -> Result<IpAddr> {
@@ -155,9 +155,8 @@ impl NodeFinderClient {
         let broadcast_addrs = Self::get_ipv4_broadcast_addr().await?;
         let mut futures = Vec::new();
         let notify = Arc::new(Notify::new());
-        
-        
-        for (ip,broadcast) in broadcast_addrs {
+
+        for (ip, broadcast) in broadcast_addrs {
             let socket = UdpSocket::bind(format!("{}:0", ip)).await?;
             socket.set_broadcast(true)?;
             let to_address = format!("{}:{}", broadcast, FINDER_SERVER_UDP_PORT);
@@ -186,7 +185,7 @@ impl NodeFinderClient {
                             }
                             else {
                                 warn!("recv from {} error", to_address);
-                            }        
+                            }
                         }
                         _ = notify.notified() => {
                             // 有其他任务已完成，退出
@@ -202,7 +201,7 @@ impl NodeFinderClient {
         unimplemented!();
     }
 
-    async fn get_ipv4_broadcast_addr() -> Result<Vec<(Ipv4Addr,Ipv4Addr)>> {
+    async fn get_ipv4_broadcast_addr() -> Result<Vec<(Ipv4Addr, Ipv4Addr)>> {
         let interfaces = if_addrs::get_if_addrs().unwrap();
         let mut broadcast_addrs = Vec::new();
         for interface in interfaces {
@@ -218,7 +217,7 @@ impl NodeFinderClient {
                     if broadcast.is_some() {
                         let broadcast = broadcast.unwrap();
                         //debug!("ip: {:?}, netmask: {:?}, broadcast: {:?}", ip, netmask, broadcast);
-                        broadcast_addrs.push((ip,broadcast));
+                        broadcast_addrs.push((ip, broadcast));
                     }
                 }
                 _ => {
@@ -227,16 +226,14 @@ impl NodeFinderClient {
             }
         }
         return Ok(broadcast_addrs);
-    }  
-    
+    }
 }
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::Ipv4Addr;
     use if_addrs;
+    use std::net::Ipv4Addr;
     #[tokio::test]
     async fn test_get_all_local_ipv4_addresses() {
         let ips = NodeFinderClient::get_ipv4_broadcast_addr().await.unwrap();
@@ -252,12 +249,12 @@ mod tests {
 MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
 -----END PRIVATE KEY-----
         "#;
-        let device_private_key = EncodingKey::from_ed_pem(device_private_key_pem.as_bytes()).unwrap();
+        let device_private_key =
+            EncodingKey::from_ed_pem(device_private_key_pem.as_bytes()).unwrap();
         let finder = NodeFinder::new("test".to_string(), device_private_key);
         finder.run_udp_server().await.unwrap();
         tokio::time::sleep(Duration::from_secs(10)).await;
         finder.stop_udp_server().await;
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
-
 }

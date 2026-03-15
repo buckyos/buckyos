@@ -10,29 +10,42 @@ use ::kRPC::*;
 use buckyos_kit::*;
 use jsonwebtoken::{decode, DecodingKey, EncodingKey, Validation};
 use log::*;
+use ndn_lib::{load_named_object_from_obj_str, ChunkId, ObjId};
+use serde_json::Value;
 use std::env;
-use tokio::sync::RwLock;
+use tokio::sync::{OnceCell, RwLock};
 
 use name_client::*;
 use name_lib::*;
-use rand::Rng;
+use named_store::NamedStoreMgr;
 
+use crate::aicc_client::*;
 use crate::app_mgr::*;
 use crate::control_panel::*;
+use crate::msg_center_client::*;
+use crate::msg_queue::*;
+use crate::opendan_client::*;
 use crate::repo_client::*;
 use crate::scheduler_client::*;
 use crate::system_config::*;
 use crate::task_mgr::*;
 use crate::verify_hub_client::*;
-use crate::{get_buckyos_api_runtime, get_full_appid, get_session_token_env_key};
+use crate::{
+    get_buckyos_api_runtime, get_full_appid, get_session_token_env_key, is_buckyos_api_runtime_set,
+    OPENDAN_SERVICE_NAME,
+};
 
 const DEFAULT_NODE_GATEWAY_PORT: u16 = 3180;
+const DEFAULT_AICC_KRPC_TIMEOUT_SECS: u64 = 120;
+const DEFAULT_KRPC_TIMEOUT_SECS: u64 = 15;
+const BUCKYOS_KRPC_TIMEOUT_SECS_ENV: &str = "BUCKYOS_KRPC_TIMEOUT_SECS";
+const BUCKYOS_KRPC_TIMEOUT_SECS_PREFIX: &str = "BUCKYOS_KRPC_TIMEOUT_SECS_";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuckyOSRuntimeType {
     AppClient,     //运行在所有设备上，通常不在容器里（唯一可能加载user private key的类型)
     AppService,    //R3 运行在Node上，指定用户，可能在容器里
-    FrameService,  //R2 运行在Node上，在容器里(目前系统里没有frame service)
+    FrameService,  //R2 运行在Node上，通常在容器里
     KernelService, //R1 由node-daemon启动的的系统基础服务
     Kernel,        //R0,node-daemon和cyfs-gateway使用，可以单独启动的组件
 }
@@ -61,6 +74,7 @@ pub struct BuckyOSRuntime {
     pub refresh_token: Arc<RwLock<String>>,
     trust_keys: Arc<RwLock<HashMap<String, DecodingKey>>>,
     last_update_service_info_time: RwLock<u64>,
+    named_store_mgr: OnceCell<NamedStoreMgr>,
 
     pub force_https: bool,
     pub buckyos_root_dir: PathBuf,
@@ -100,6 +114,7 @@ impl BuckyOSRuntime {
             node_gateway_port: DEFAULT_NODE_GATEWAY_PORT,
             trust_keys: Arc::new(RwLock::new(HashMap::new())),
             last_update_service_info_time: RwLock::new(0),
+            named_store_mgr: OnceCell::new(),
             web3_bridges: HashMap::new(),
             force_https: true,
         };
@@ -109,6 +124,26 @@ impl BuckyOSRuntime {
     pub async fn set_main_service_port(&self, port: u16) {
         let mut main_service_port = self.main_service_port.write().await;
         *main_service_port = port;
+    }
+
+    pub async fn get_named_store(&self) -> Result<NamedStoreMgr> {
+        let store_mgr: &NamedStoreMgr = self
+            .named_store_mgr
+            .get_or_try_init(|| async {
+                let config_path = get_buckyos_root_dir()
+                    .join("storage")
+                    .join("named_store.json");
+                NamedStoreMgr::get_store_mgr(config_path.as_path())
+                    .await
+                    .map_err(|e| {
+                        RPCErrors::ReasonError(format!(
+                            "Failed to initialize named store manager: {}",
+                            e
+                        ))
+                    })
+            })
+            .await?;
+        Ok(store_mgr.clone())
     }
 
     pub async fn fill_by_env_var(&mut self) -> Result<()> {
@@ -179,13 +214,28 @@ impl BuckyOSRuntime {
             }
         }
 
-        let mut session_token_key = "".to_string();
+        let mut session_token_keys = Vec::new();
         match self.runtime_type {
-            BuckyOSRuntimeType::KernelService | BuckyOSRuntimeType::FrameService => {
-                session_token_key = get_session_token_env_key(&self.get_full_appid(), false);
+            BuckyOSRuntimeType::KernelService => {
+                session_token_keys.push(get_session_token_env_key(&self.get_full_appid(), false));
+            }
+            BuckyOSRuntimeType::FrameService => {
+                if let Some(owner_id) = self.app_owner_id.as_deref() {
+                    session_token_keys.push(get_session_token_env_key(
+                        &get_full_appid(self.app_id.as_str(), owner_id),
+                        true,
+                    ));
+                }
+                session_token_keys.push(get_session_token_env_key(&self.get_full_appid(), false));
             }
             BuckyOSRuntimeType::AppService => {
-                session_token_key = get_session_token_env_key(&self.get_full_appid(), true);
+                if let Some(owner_id) = self.app_owner_id.as_deref() {
+                    session_token_keys.push(get_session_token_env_key(
+                        &get_full_appid(self.app_id.as_str(), owner_id),
+                        true,
+                    ));
+                }
+                session_token_keys.push(get_session_token_env_key(self.app_id.as_str(), true));
             }
             _ => {
                 info!(
@@ -195,17 +245,32 @@ impl BuckyOSRuntime {
             }
         }
 
-        if session_token_key.len() > 1 {
-            let session_token = env::var(session_token_key.as_str());
-            if session_token.is_ok() {
-                info!("load session_token from env var success");
+        session_token_keys.dedup();
+        if !session_token_keys.is_empty() {
+            let mut loaded_session_token = None;
+            for session_token_key in &session_token_keys {
+                if let Ok(session_token) = env::var(session_token_key.as_str()) {
+                    info!(
+                        "load session_token from env var success: {}",
+                        session_token_key
+                    );
+                    loaded_session_token = Some(session_token);
+                    break;
+                }
+            }
+
+            if let Some(session_token) = loaded_session_token {
                 let mut this_session_token = self.session_token.write().await;
-                *this_session_token = session_token.unwrap();
+                *this_session_token = session_token;
             } else {
-                info!("load session_token from env var failed");
-                return Err(RPCErrors::ReasonError(
-                    "load session_token from env var failed".to_string(),
-                ));
+                info!(
+                    "load session_token from env var failed, tried keys: {:?}",
+                    session_token_keys
+                );
+                return Err(RPCErrors::ReasonError(format!(
+                    "load session_token from env var failed, tried keys: {:?}",
+                    session_token_keys
+                )));
             }
         }
 
@@ -508,7 +573,7 @@ impl BuckyOSRuntime {
         if !need_refresh {
             let expired_time = real_session_token.exp.unwrap();
             let now = buckyos_get_unix_timestamp();
-            if now < expired_time - 30 {
+            if now < expired_time.saturating_sub(30) {
                 debug!("session_token is not expired,skip renew token");
                 return Ok(());
             }
@@ -591,7 +656,16 @@ impl BuckyOSRuntime {
 
     async fn keep_alive() -> Result<()> {
         //info!("buckyos-api-runtime::keep_alive start");
-        let buckyos_api_runtime = get_buckyos_api_runtime().unwrap();
+        let buckyos_api_runtime = match get_buckyos_api_runtime() {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                warn!(
+                    "buckyos-api-runtime is not initialized, skip keep_alive tick: {}",
+                    error
+                );
+                return Ok(());
+            }
+        };
         let refresh_result = buckyos_api_runtime.renew_token_from_verify_hub().await;
         if refresh_result.is_err() {
             warn!(
@@ -603,11 +677,8 @@ impl BuckyOSRuntime {
         let _ = buckyos_api_runtime.update_service_instance_info().await;
 
         if buckyos_api_runtime.is_service() {
-            let control_panel_client = buckyos_api_runtime.get_control_panel_client().await?;
-            let (rbac_model, rbac_policy) = control_panel_client.load_rbac_config().await?;
-            rbac::create_enforcer(Some(rbac_model.as_str()), Some(rbac_policy.as_str()))
-                .await
-                .unwrap();
+            // RBAC is initialized at login(). Avoid high-frequency remote RBAC reload here;
+            // keepalive should prioritize stability and token/service liveness.
             buckyos_api_runtime.refresh_trust_keys().await?;
         }
         Ok(())
@@ -720,13 +791,24 @@ impl BuckyOSRuntime {
             let (rbac_model, rbac_policy) = control_panel_client.load_rbac_config().await?;
             rbac::create_enforcer(Some(rbac_model.as_str()), Some(rbac_policy.as_str()))
                 .await
-                .unwrap();
+                .map_err(|error| {
+                    RPCErrors::ReasonError(format!("init rbac enforcer failed: {}", error))
+                })?;
             self.refresh_trust_keys().await?;
             info!("refresh trust keys OK");
         }
 
         //start keep-alive timer
         tokio::task::spawn(async move {
+            if !is_buckyos_api_runtime_set() {
+                info!(
+                    "keep_alive task is waiting for global runtime registration before first tick"
+                );
+                while !is_buckyos_api_runtime_set() {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                info!("keep_alive task detected global runtime registration");
+            }
             let start = tokio::time::Instant::now() + Duration::from_secs(5);
             let mut timer = tokio::time::interval_at(start, Duration::from_secs(5));
             loop {
@@ -855,6 +937,76 @@ impl BuckyOSRuntime {
         Ok(())
     }
 
+    pub async fn verify_trusted_session_token(&self, token_str: &str) -> Result<RPCSessionToken> {
+        let mut rpc_token = RPCSessionToken::from_string(token_str).map_err(|error| {
+            RPCErrors::InvalidToken(format!("Invalid session token: {}", error))
+        })?;
+        if !rpc_token.is_self_verify() {
+            return Err(RPCErrors::InvalidToken(
+                "Session token is not valid".to_string(),
+            ));
+        }
+
+        let raw_jwt = rpc_token.token.as_deref().ok_or(RPCErrors::InvalidToken(
+            "Session token is missing raw JWT".to_string(),
+        ))?;
+        let header = jsonwebtoken::decode_header(raw_jwt).map_err(|error| {
+            RPCErrors::InvalidToken(format!("JWT decode header error: {}", error))
+        })?;
+        let claims = decode_jwt_claim_without_verify(raw_jwt).ok();
+
+        let mut kid = header
+            .kid
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                claims.as_ref().and_then(|value| {
+                    value
+                        .get("iss")
+                        .and_then(|iss| iss.as_str())
+                        .and_then(|iss| {
+                            let trimmed = iss.trim();
+                            if trimmed.is_empty() {
+                                None
+                            } else {
+                                Some(trimmed.to_string())
+                            }
+                        })
+                })
+            })
+            .unwrap_or_else(|| "root".to_string());
+
+        let mut decoding_key = {
+            let key_map = self.trust_keys.read().await;
+            key_map.get(&kid).cloned()
+        };
+
+        if decoding_key.is_none() {
+            self.refresh_trust_keys().await?;
+            decoding_key = {
+                let key_map = self.trust_keys.read().await;
+                key_map.get(&kid).cloned()
+            };
+        }
+
+        if decoding_key.is_none() && kid != "root" {
+            kid = "root".to_string();
+            decoding_key = {
+                let key_map = self.trust_keys.read().await;
+                key_map.get(&kid).cloned()
+            };
+        }
+
+        let decoding_key =
+            decoding_key.ok_or(RPCErrors::NoPermission(format!("kid {} not found", kid)))?;
+
+        rpc_token
+            .verify_by_key(&decoding_key)
+            .map_err(|error| RPCErrors::InvalidToken(format!("JWT decode error: {}", error)))?;
+
+        Ok(rpc_token)
+    }
+
     //success return (userid,appid)
     pub async fn enforce(
         &self,
@@ -862,20 +1014,20 @@ impl BuckyOSRuntime {
         action: &str,
         resource_path: &str,
     ) -> Result<(String, String)> {
-        let token = req
-            .token
-            .as_ref()
-            .map(|token| RPCSessionToken::from_string(token.as_str()))
-            .unwrap_or(Err(RPCErrors::ParseRequestError(
-                "Invalid params, session_token is none".to_string(),
-            )));
-        let token = token.unwrap();
+        let token_str = req.token.as_deref().ok_or(RPCErrors::ParseRequestError(
+            "Invalid params, session_token is none".to_string(),
+        ))?;
+        let token = RPCSessionToken::from_string(token_str).map_err(|error| {
+            RPCErrors::InvalidToken(format!("Invalid session token: {}", error))
+        })?;
         if !token.is_self_verify() {
             return Err(RPCErrors::InvalidToken(
                 "Session token is not valid".to_string(),
             ));
         }
-        let token_str = token.token.as_ref().unwrap();
+        let token_str = token.token.as_deref().ok_or(RPCErrors::InvalidToken(
+            "Session token is missing raw JWT".to_string(),
+        ))?;
         let header: jsonwebtoken::Header =
             jsonwebtoken::decode_header(token_str).map_err(|error| {
                 RPCErrors::InvalidToken(format!("JWT decode header error : {}", error))
@@ -904,14 +1056,16 @@ impl BuckyOSRuntime {
 
         let userid = decoded_json
             .get("userid")
+            .or_else(|| decoded_json.get("sub"))
             .ok_or(RPCErrors::InvalidToken("Missing userid".to_string()))?;
         let userid = userid
             .as_str()
             .ok_or(RPCErrors::InvalidToken("Invalid userid".to_string()))?;
         let appid = decoded_json
             .get("appid")
-            .map(|appid| appid.as_str().unwrap_or("kernel"));
-        let appid = appid.unwrap_or("kernel");
+            .and_then(|appid| appid.as_str())
+            .or_else(|| decoded_json.get("aud").and_then(|aud| aud.as_str()))
+            .unwrap_or("kernel");
 
         let system_config_client = self.get_system_config_client().await?;
         let rbac_policy = system_config_client.get("system/rbac/policy").await;
@@ -977,11 +1131,20 @@ impl BuckyOSRuntime {
         let session_token_str = session_token.clone();
         drop(session_token);
 
-        let session_token = RPCSessionToken::from_string(&session_token_str).unwrap();
+        let session_token = match RPCSessionToken::from_string(&session_token_str) {
+            Ok(token) => token,
+            Err(error) => {
+                warn!(
+                    "session token parse failed, fallback to raw token string: {}",
+                    error
+                );
+                return session_token_str;
+            }
+        };
         if session_token.exp.is_some() {
             let exp = session_token.exp.unwrap();
             let now = buckyos_get_unix_timestamp();
-            if now < exp - 10 {
+            if now < exp.saturating_sub(10) {
                 return session_token_str;
             } else {
                 if self.device_private_key.is_some() {
@@ -1105,7 +1268,7 @@ impl BuckyOSRuntime {
     }
 
     pub fn get_root_pkg_env_path() -> PathBuf {
-        get_buckyos_service_local_data_dir("node_daemon", None).join("root_pkg_env")
+        get_buckyos_service_local_data_dir("node_daemon").join("root_pkg_env")
     }
 
     fn get_my_settings_path(&self) -> String {
@@ -1266,6 +1429,30 @@ impl BuckyOSRuntime {
         Ok(client)
     }
 
+    pub async fn get_aicc_client(&self) -> Result<AiccClient> {
+        let krpc_client = self
+            .get_zone_service_krpc_client_with_default_timeout(
+                AICC_SERVICE_SERVICE_NAME,
+                Some(DEFAULT_AICC_KRPC_TIMEOUT_SECS),
+            )
+            .await?;
+        let client = AiccClient::new(krpc_client);
+        Ok(client)
+    }
+
+    pub async fn get_msg_center_client(&self) -> Result<MsgCenterClient> {
+        let krpc_client = self
+            .get_zone_service_krpc_client(MSG_CENTER_SERVICE_NAME)
+            .await?;
+        let client = MsgCenterClient::new(krpc_client);
+        Ok(client)
+    }
+
+    pub async fn get_msg_queue_client(&self) -> Result<MsgQueueClient> {
+        let krpc_client = self.get_zone_service_krpc_client(KMSG_SERVICE_NAME).await?;
+        Ok(MsgQueueClient::new_krpc(Box::new(krpc_client)))
+    }
+
     pub async fn get_scheduler_client(&self) -> Result<SchedulerClient> {
         let krpc_client = self.get_zone_service_krpc_client("scheduler").await?;
         let client = SchedulerClient::new(krpc_client);
@@ -1285,9 +1472,17 @@ impl BuckyOSRuntime {
     }
 
     pub async fn get_repo_client(&self) -> Result<RepoClient> {
-        let krpc_client = self.get_zone_service_krpc_client("repo-service").await?;
-        let client = RepoClient::new(krpc_client);
-        Ok(client)
+        let krpc_client = self
+            .get_zone_service_krpc_client(REPO_SERVICE_SERVICE_NAME)
+            .await?;
+        Ok(RepoClient::new(krpc_client))
+    }
+
+    pub async fn get_opendan_client(&self) -> Result<OpenDanClient> {
+        let krpc_client = self
+            .get_zone_service_krpc_client(OPENDAN_SERVICE_NAME)
+            .await?;
+        Ok(OpenDanClient::new(krpc_client))
     }
 
     pub fn get_zone_ndn_base_url(&self) -> String {
@@ -1302,6 +1497,7 @@ impl BuckyOSRuntime {
     pub async fn get_kernel_service_url(&self, service_name: &str) -> Result<(String, bool)> {
         // get service info from system_config
         if self.device_config.is_none() {
+            warn!("access kernel service need set device_config");
             return Err(RPCErrors::ReasonError(
                 "access kernel service need set device_config".to_string(),
             ));
@@ -1317,73 +1513,87 @@ impl BuckyOSRuntime {
             if local_node.node_did == self.device_config.as_ref().unwrap().id {
                 if local_node.state == ServiceInstanceState::Started {
                     if let Some(port) = Self::resolve_service_port(local_node, "www") {
+                        //短路：直接连在本机的Service 服务的 实际端口，绕过node-gateway转发
                         return Ok((
                             format!("http://127.0.0.1:{}/kapi/{}", port, service_name),
                             true,
                         ));
                     }
-                }
-            }
-        }
-
-        if self.runtime_type != BuckyOSRuntimeType::Kernel {
-            return Ok((
-                format!(
-                    "http://127.0.0.1:{}/kapi/{}",
-                    DEFAULT_NODE_GATEWAY_PORT, service_name
-                ),
-                false,
-            ));
-        }
-
-        let mut total_weight = 0;
-        for (_node_name, node_info) in service_info.node_list.iter() {
-            if node_info.state == ServiceInstanceState::Started {
-                total_weight += node_info.weight;
-            }
-        }
-
-        let mut rng = rand::thread_rng();
-        let random_num = rng.gen_range(0..total_weight);
-        let mut current_weight = 0;
-        let mut last_best_same_lan_node_url = String::new();
-        let mut last_best_wan_node_url = String::new();
-        for (_node_name, node_info) in service_info.node_list.iter() {
-            if node_info.state == ServiceInstanceState::Started {
-                let maybe_port = Self::resolve_service_port(node_info, service_name);
-                if maybe_port.is_none() {
-                    continue;
-                }
-                let port = maybe_port.unwrap();
-                if node_info.node_net_id == self.device_config.as_ref().unwrap().net_id {
-                    last_best_same_lan_node_url = format!(
-                        "rtcp://{}/127.0.0.1:{}",
-                        node_info.node_did.to_string(),
-                        port
+                } else {
+                    warn!(
+                        "local node {} is not started",
+                        local_node.node_did.to_string()
                     );
                 }
-                if node_info.node_net_id == Some("wan".to_string()) {
-                    last_best_wan_node_url = format!(
-                        "rtcp://{}/127.0.0.1:{}",
-                        node_info.node_did.to_string(),
-                        port
-                    );
-                }
-                current_weight += node_info.weight;
-                if current_weight >= random_num {
-                    if last_best_same_lan_node_url.len() > 0 {
-                        return Ok((last_best_same_lan_node_url, false));
-                    }
-                    if last_best_wan_node_url.len() > 0 {
-                        return Ok((last_best_wan_node_url, false));
-                    }
-                }
             }
+        } else {
+            warn!(
+                "local node {} is not found",
+                self.device_config.as_ref().unwrap().name.as_str()
+            );
         }
-        //todo: use wan_node to get the
-        return Err(RPCErrors::ReasonError(
-            "no running instance found".to_string(),
+
+        //通过本机的node-gatewa 转发，局域网的即使可以直连也要通过rtcp,局域网的明文流量也并不安全。
+        return Ok((
+            format!(
+                "http://127.0.0.1:{}/kapi/{}",
+                DEFAULT_NODE_GATEWAY_PORT, service_name
+            ),
+            false,
         ));
+
+        //下面的实现其实永远不会进入，因为cyfs-gateway并不加载buckyos-sdk,而是通过process-chain规则完成下面逻辑
+        //  得到service的provider node列表，并随机选择一个
+        //  根据选择的deivce_id,查表得到forward url
+
+        // let mut total_weight = 0;
+        // for (_node_name, node_info) in service_info.node_list.iter() {
+        //     if node_info.state == ServiceInstanceState::Started {
+        //         total_weight += node_info.weight;
+        //     }
+        // }
+
+        // let mut rng = rand::thread_rng();
+        // let random_num = rng.gen_range(0..total_weight);
+        // let mut current_weight = 0;
+        // let mut last_best_same_lan_node_url = String::new();
+        // let mut last_best_wan_node_url = String::new();
+        // for (_node_name, node_info) in service_info.node_list.iter() {
+        //     if node_info.state == ServiceInstanceState::Started {
+        //         let maybe_port = Self::resolve_service_port(node_info, service_name);
+        //         if maybe_port.is_none() {
+        //             continue;
+        //         }
+        //         let port = maybe_port.unwrap();
+        //         if node_info.node_net_id == self.device_config.as_ref().unwrap().net_id {
+        //             last_best_same_lan_node_url = format!(
+        //                 "rtcp://{}/127.0.0.1:{}",
+        //                 node_info.node_did.to_string(),
+        //                 port
+        //             );
+        //         }
+        //         if node_info.node_net_id == Some("wan".to_string()) {
+        //             last_best_wan_node_url = format!(
+        //                 "rtcp://{}/127.0.0.1:{}",
+        //                 node_info.node_did.to_string(),
+        //                 port
+        //             );
+        //         }
+        //         current_weight += node_info.weight;
+        //         if current_weight >= random_num {
+        //             if last_best_same_lan_node_url.len() > 0 {
+        //                 return Ok((last_best_same_lan_node_url, false));
+        //             }
+        //             if last_best_wan_node_url.len() > 0 {
+        //                 return Ok((last_best_wan_node_url, false));
+        //             }
+        //         }
+        //     }
+        // }
+        // //todo: use wan_node to get the
+        // return Err(RPCErrors::ReasonError(
+        //     "no running instance found".to_string(),
+        // ));
     }
 
     fn resolve_service_port(_node_info: &ServiceNode, _service_name: &str) -> Option<u16> {
@@ -1391,6 +1601,8 @@ impl BuckyOSRuntime {
     }
 
     //if http_only is false, return the url with tunnel protocol
+    //这里有一个隐含的假设：所有的Service通过http path就能区分
+    //因为调整了hostname,所以通过二级域名区分appid在这里就看不到了
     pub async fn get_zone_service_url(
         &self,
         service_name: &str,
@@ -1403,20 +1615,29 @@ impl BuckyOSRuntime {
 
         match self.runtime_type {
             BuckyOSRuntimeType::AppClient => {
-                //TODO: 基于appid对system service的访问进行控制，以消除对跨域的依赖，需要依赖新版本的cyfs-gateway
-                //let host_name = format!("{}.{}",self.app_host_perfix,self.zone_id.to_host_name());
+                //通过Zone Host Name 访问Service总是可以成功的，理论上有SDK的环境不应该使用这种方式。
+                //TODO：如果约束为有SDK的环境，必然有node_gateway,那么这个分支就不必要存在
                 let host_name = self.zone_id.to_host_name();
-                return Ok(format!("{}://{}/kapi/{}", schema, host_name, service_name));
+                if self.app_host_perfix.len() > 0 {
+                    return Ok(format!(
+                        "{}://{}.{}/kapi/{}",
+                        schema, self.app_host_perfix, host_name, service_name
+                    ));
+                } else {
+                    return Ok(format!("{}://{}/kapi/{}", schema, host_name, service_name));
+                }
             }
             BuckyOSRuntimeType::AppService | BuckyOSRuntimeType::FrameService => {
-                let (result_url, is_local) = self.get_kernel_service_url(service_name).await?;
-                if is_local {
-                    return Ok(result_url);
-                }
-                return Ok(format!(
-                    "http://127.0.0.1:{}/kapi/{}",
-                    self.node_gateway_port, service_name
-                ));
+                let (result_url, _is_local) = self.get_kernel_service_url(service_name).await?;
+                return Ok(result_url);
+
+                // if is_local {
+                //     return Ok(result_url);
+                // }
+                // return Ok(format!(
+                //     "http://127.0.0.1:{}/kapi/{}",
+                //     self.node_gateway_port, service_name
+                // ));
             }
             BuckyOSRuntimeType::KernelService => {
                 let (result_url, _is_local) = self.get_kernel_service_url(service_name).await?;
@@ -1430,11 +1651,91 @@ impl BuckyOSRuntime {
     }
 
     pub async fn get_zone_service_krpc_client(&self, service_name: &str) -> Result<kRPC> {
+        self.get_zone_service_krpc_client_with_default_timeout(service_name, None)
+            .await
+    }
+
+    pub async fn get_zone_service_krpc_client_with_default_timeout(
+        &self,
+        service_name: &str,
+        default_timeout_secs: Option<u64>,
+    ) -> Result<kRPC> {
         let url = self
             .get_zone_service_url(service_name, self.force_https)
             .await?;
         let session_token = self.session_token.read().await;
-        let client = kRPC::new(&url, Some(session_token.clone()));
+        let timeout_secs = default_timeout_secs.unwrap_or(DEFAULT_KRPC_TIMEOUT_SECS);
+
+        let client = kRPC::new_with_timeout_secs(&url, Some(session_token.clone()), timeout_secs);
         Ok(client)
+    }
+
+    pub async fn get_chunklist_from_known_named_object(
+        &self,
+        obj_id: &ObjId,
+        named_object: &Value,
+    ) -> Result<Vec<ChunkId>> {
+        //如果objid指向的是一个pkg_meta,则尝试解析是否为AppDoc,并根据其sub_pkg_list中的pkg_objid，逐个调用ndn-toolkit的get_named_object_from_known_named_object函数
+        //先调用ndn-toolkit的get_named_object_from_known_named_object函数
+        let store_mgr = self.get_named_store().await?;
+        let mut chunk_ids = ndn_toolkit::tools::get_chunklist_from_known_named_object(
+            &store_mgr,
+            obj_id,
+            named_object,
+        )
+        .await
+        .map_err(|e| {
+            RPCErrors::ReasonError(format!(
+                "Failed to get chunklist from object {}: {}",
+                obj_id, e
+            ))
+        })?;
+
+        let app_doc = match serde_json::from_value::<crate::AppDoc>(named_object.clone()) {
+            Ok(app_doc) => app_doc,
+            Err(_) => return Ok(chunk_ids),
+        };
+
+        for (_, sub_pkg) in app_doc.pkg_list.iter() {
+            let Some(sub_pkg_obj_id) = sub_pkg.pkg_objid.clone() else {
+                continue;
+            };
+
+            let sub_pkg_json = if sub_pkg_obj_id.is_chunk() {
+                Value::Null
+            } else {
+                let obj_str = store_mgr.get_object(&sub_pkg_obj_id).await.map_err(|e| {
+                    RPCErrors::ReasonError(format!(
+                        "Failed to load sub package object {} referenced by {}: {}",
+                        sub_pkg_obj_id, obj_id, e
+                    ))
+                })?;
+                serde_json::from_str::<Value>(obj_str.as_str())
+                    .or_else(|_| load_named_object_from_obj_str(obj_str.as_str()))
+                    .map_err(|e| {
+                        RPCErrors::ReasonError(format!(
+                            "Failed to parse sub package object {} referenced by {}: {}",
+                            sub_pkg_obj_id, obj_id, e
+                        ))
+                    })?
+            };
+
+            chunk_ids.extend(
+                ndn_toolkit::tools::get_chunklist_from_known_named_object(
+                    &store_mgr,
+                    &sub_pkg_obj_id,
+                    &sub_pkg_json,
+                )
+                .await
+                .map_err(|e| {
+                    RPCErrors::ReasonError(format!(
+                        "Failed to get chunklist from sub package {} referenced by {}: {}",
+                        sub_pkg_obj_id, obj_id, e
+                    ))
+                })?,
+            );
+        }
+
+        Ok(chunk_ids)
     }
 }

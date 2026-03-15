@@ -279,6 +279,7 @@ pub struct ServiceInstallConfig {
 ```
 
 含义：
+- 当前代码里的字段名仍沿用 `*_mount_point` 命名；但从路径设计上，应优先按固定沙箱目录理解：`/tmp/`、`/config/*`、`/home/$userid/`、`/home/$userid/.local/share/$appid/`，而不是按旧的可自由拼装 `data/cache/local_cache` 目录模型理解。
 - `bind_address: None` 强化“默认只允许本机访问，需要通过 rtcp/网关转发”的安全策略。
 - `expose_config` 决定哪些端口/子域名会被暴露给 Zone 内/公网。
 

@@ -1,8 +1,7 @@
 use super::request::{RaftRequest, RaftResponse};
 use crate::{KNode, KNodeId, KTypeConfig};
 use openraft::error::{
-    InstallSnapshotError, NetworkError, RPCError, RaftError, Timeout,
-    Unreachable,
+    InstallSnapshotError, NetworkError, RPCError, RaftError, Timeout, Unreachable,
 };
 use openraft::network::{RPCOption, RaftNetwork, RaftNetworkFactory};
 use openraft::raft::{

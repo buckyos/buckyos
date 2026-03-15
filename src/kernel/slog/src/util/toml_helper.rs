@@ -1,6 +1,5 @@
-use std::str::FromStr;
 use std::convert::TryFrom;
-
+use std::str::FromStr;
 
 pub struct TomlHelper;
 impl TomlHelper {
@@ -139,11 +138,12 @@ impl TomlHelper {
                     error!("{}", msg);
                     Err(msg)
                 }
-            }
+            },
 
             _ => {
                 let msg = format!(
-                    "node is not table! config={}", toml::to_string(&root).unwrap()
+                    "node is not table! config={}",
+                    toml::to_string(&root).unwrap()
                 );
                 error!("{}", msg);
                 Err(msg)

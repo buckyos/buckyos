@@ -14,6 +14,12 @@ modules:
   scheduler:
     type: rust
     name: scheduler
+  task_manager:
+    type: rust
+    name: task-manager
+  kmsg:
+    type: rust
+    name: kmsg
   smb_service:
     type: rust
     name: smb_service
@@ -30,6 +36,15 @@ modules:
   control_panel:
     type: rust
     name: control_panel
+  aicc:
+    type: rust
+    name: aicc
+  msg_center:
+    type: rust
+    name: msg_center
+  opendan:
+    type: rust
+    name: opendan
   control_panel_web:
     type: web
     name: control_panel
@@ -54,6 +69,8 @@ apps:
       system_config: bin/system-config/
       verify_hub: bin/verify-hub/
       scheduler: bin/scheduler/
+      task_manager: bin/task-manager/
+      kmsg: bin/kmsg/
       control_panel: bin/control-panel/
       control_panel_web: bin/control-panel/web/
       smb_service: bin/smb-service/
@@ -61,36 +78,38 @@ apps:
       buckycli: bin/buckycli/
       node_active: bin/node-active/
       buckyos_systest: bin/buckyos_systest/
-      app-loader: bin/app-loader/
+      aicc: bin/aicc/
+      msg_center: bin/msg-center/
+      opendan: bin/opendan/
       scheduler-etc: etc/scheduler/
       boot-gateway-config: etc/boot_gateway.yaml
       util.py: bin/util.py
       stop.py: bin/stop.py
+      buckyos_jarvis: bin/buckyos_jarvis/
 
 
-    # 数据路径，install_data 的时候如果目标存在，则不会复制，否则从rootfs复制到目标
+    # 数据路径，install_data 的时候如果目标存在，则不会复制，否则从rootfs复制到目标(覆盖安装逻辑)
     data_paths: 
     - bin/applist.json
     - bin/cyfs-gateway/
+    - etc/node_gateway_info.json
     - etc/user_gateway.yaml
     - etc/post_gateway.yaml
     - etc/node_gateway.json
     - etc/cyfs_gateway.yaml
-    - cache/
+    - data/               # cyfs://$zone_id/ 映射根: home/, srv/, var/, cache/ 均在此下
+    - storage/            # 内核基础设施持久化存储 (chunks, named_store, dRDB)
+    - local/              # host-node-local 服务数据
     - logs/
-    - tmp/
-    - local/
-    - home/
-    - library/
-    - data/
 
-    # 清理路径，uninstall的时候会删除（所有的modules item都会删除)
+    # 清理路径，uninstall的时候会删除（无需配置:上面所有的modules item都会自动删除)
+    # 卸载时不删除: data/home/ (用户数据), data/srv/ (服务持久数据), storage/ (内核存储)
     clean_paths: 
-    - cache/
+    - data/var/           # 服务运行数据
+    - data/cache/         # 服务缓存数据
+    - local/              # 服务本地数据
     - logs/
-    - tmp/
-    - local/
-    - etc/
+    - etc/                # 系统配置 (删除前自动执行身份备份)
 
   buckycli:
     name: buckycli

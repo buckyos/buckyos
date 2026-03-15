@@ -4,11 +4,13 @@
 //3. use buckycli.loader to load app/kernel service for debug, app/kernel service will start normally like being started by node_daemon
 //P.S buckycli.loader is only suitable for "services that are not depended on by other services", if your service needs to be depended on by other services, you still need to use the standard node_daemon startup method
 
-use buckyos_api::{get_buckyos_api_runtime, get_session_token_env_key, VERIFY_HUB_TOKEN_EXPIRE_TIME};
+use buckyos_api::{
+    get_buckyos_api_runtime, get_session_token_env_key, VERIFY_HUB_TOKEN_EXPIRE_TIME,
+};
 use buckyos_kit::buckyos_get_unix_timestamp;
 use log::*;
-use tokio::process::Command;
 use std::collections::HashMap;
+use tokio::process::Command;
 
 pub async fn load_app_service(app_id: &str, app_service_path: &str) -> Result<(), String> {
     let timestamp = buckyos_get_unix_timestamp();
@@ -43,7 +45,6 @@ pub async fn load_app_service(app_id: &str, app_service_path: &str) -> Result<()
         })?;
 
     let env_key = get_session_token_env_key(app_id, false);
-
 
     println!(
         "MAKE SURE {} already in system/rbac/base_policy like g,{},kernel. (You can add it in boot.template.toml)",

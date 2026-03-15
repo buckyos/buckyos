@@ -1,0 +1,107 @@
+{
+    "node_info": {
+        "this_node_id": "ood1",
+        "this_zone_host": "test.buckyos.io"
+    },
+    "app_info": {
+        "publicview" : {
+            "app_id":"publicview",
+            "sdk_version":10,
+            "access_mode":"public",
+            "node_id":"ood1",
+            "port": 10161
+        },
+        "filebrowser" : {
+            "app_id":"filebrowser",
+            "sdk_version":10,
+            "access_mode":"private",
+            "node_id":"ood1",
+            "port": 10160,
+            "block_services": ["kevent"]
+        },        
+        "test": {
+            "app_id":"bob_testweb",
+            "sdk_version":10,
+            "access_mode":"public",
+            "dir_pkg_id":"bob_testweb",
+            "dir_pkg_objid":"pkg:1234567890"
+        },
+        "www" : {
+            "service_id":"control-panel",
+            "selector" : {
+                "ood1" : {
+                    "port": 10262,
+                    "weight": 10
+                },
+                "ood2" : {
+                    "port": 10263,
+                    "weight":10
+                }
+            }
+        },
+        "_" : {
+            "service_id":"control-panel",
+            "selector" : {
+                "ood1" : {
+                    "port": 10262,
+                    "weight": 10
+                },
+                "ood2" : {
+                    "port": 10263,
+                    "weight":10
+                }
+            }  
+        }
+    },
+    "service_info": {
+        "kmsg" : {
+            "selector" : {
+                "ood2" : {
+                    "port": 10163,
+                    "weight": 10
+                },
+                "ood3" : {
+                    "port": 10164,
+                    "weight": 10
+                }
+            }
+        },
+        "kevent" : {
+            "selector" : {
+                "ood1" : {
+                    "port": 10165,
+                    "weight": 10
+                }
+            }
+        },
+        "control-panel" : {
+            "selector" : {
+                "ood1" : {
+                    "port": 10262,
+                    "weight": 10
+                },
+                "ood2" : {
+                    "port": 10263,
+                    "weight":10
+                }
+            }
+        },
+        "system_config" : {
+            "selector" : {
+                "ood1" : {
+                    "port": 3200,
+                    "weight": 10
+                }
+            }
+        }
+    },
+    "node_route_map": {
+        "ood2" : "rtcp://ood2.test.buckyos.io/",
+        "ood3" : "rtcp://ood3.test.buckyos.io/"
+    },
+    "trust_key": {
+        "verify-hub": "Wo0udCICmiQtnLwzpfulTbFEDvtT5UHNP-MZvnQ3dns",
+        "ood1": "s9j6X2zwk1DPjFt60z65LeBJN1DCTsqgeh15iF6Zmd4"
+    }
+
+}

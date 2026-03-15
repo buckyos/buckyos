@@ -3,6 +3,7 @@ resolver = "2"
 
 members = [
     "./kernel/buckyos-api",
+    "./kernel/kevent",
     "./kernel/kmsg",
     "./kernel/sys_config_service",
     "./kernel/verify_hub",
@@ -16,8 +17,10 @@ members = [
     "./frame/slog_server", 
     "./frame/repo_service",
     "./frame/smb_service",
-    
+    "./frame/aicc",
+    "./frame/msg_center",
     "./frame/control_panel",
+    "./frame/opendan",
 
     "./tools/buckycli", 
     "./test/test_rbac"
@@ -29,22 +32,26 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.5.1"
+version = "0.6.0"
 
 [workspace.dependencies]
 # BuckyOS internal dependencies
 buckyos-tracing = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-tracing", branch = "main"}
 buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit", branch = "main" }
-package-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "package-lib", branch = "main" }
 name-lib = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-lib", branch = "main" }
 name-client = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-client", branch = "main" }
 kRPC = { git = "https://github.com/buckyos/buckyos-base.git", package = "kRPC", branch = "main" }
 rbac = { git = "https://github.com/buckyos/buckyos-base.git", package = "rbac", branch = "main" }
-ndn-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-lib", branch = "main" }
-cyfs-gateway = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs_gateway", branch = "main" }
-cyfs-gateway-lib = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-gateway-lib", branch = "main" }
-cyfs-sn = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-sn", branch = "main" }
-server-runner =  { git = "https://github.com/buckyos/cyfs-gateway.git", package = "server-runner", branch = "main" }
+
+ndn-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-lib", branch = "beta2" }
+named_store = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "named_store", branch = "beta2" }
+ndn-toolkit = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-toolkit", branch = "beta2" }
+package-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "package-lib", branch = "beta2" }
+
+cyfs-gateway = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs_gateway", branch = "beta2" }
+cyfs-gateway-lib = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-gateway-lib", branch = "beta2" }
+cyfs-sn = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-sn", branch = "beta2" }
+server-runner =  { git = "https://github.com/buckyos/cyfs-gateway.git", package = "server-runner", branch = "beta2" }
 
 # Common async runtime and utilities
 tokio = { version = "1.49.0", features = ["full"] }
@@ -118,6 +125,9 @@ tar = "0.4.44"
 bincode = { version = "2", features = ["serde"] }
 flexi_logger = "0.31.8"
 tempfile = "3.24.0"
+
+[patch.crates-io]
+grammers-session = { path = "patches/grammers-session-0.8.0" }
 
 [profile.release]
 # Reduce final binary size.

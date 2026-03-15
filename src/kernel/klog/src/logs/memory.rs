@@ -1,6 +1,9 @@
 use openraft::entry::RaftPayload;
-use openraft::{LogId, OptionalSend, Vote, Entry};
-use openraft::{RaftLogReader, storage::{RaftLogStorage, LogFlushed}};
+use openraft::{Entry, LogId, OptionalSend, Vote};
+use openraft::{
+    RaftLogReader,
+    storage::{LogFlushed, RaftLogStorage},
+};
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::ops::RangeBounds;
@@ -61,7 +64,7 @@ impl RaftLogReader<KTypeConfig> for MemoryLogStorage {
                 debug!("Found membership entry: {:?}", entry);
             }
         }
-        
+
         Ok(entries)
     }
 }
@@ -107,7 +110,11 @@ impl RaftLogStorage<KTypeConfig> for MemoryLogStorage {
         Ok(state.vote.clone())
     }
 
-    async fn append<I>(&mut self, entries: I, callback: LogFlushed<KTypeConfig>) -> StorageResult<()>
+    async fn append<I>(
+        &mut self,
+        entries: I,
+        callback: LogFlushed<KTypeConfig>,
+    ) -> StorageResult<()>
     where
         I: IntoIterator<Item = LogEntry> + OptionalSend,
         I::IntoIter: OptionalSend,
@@ -139,7 +146,7 @@ impl RaftLogStorage<KTypeConfig> for MemoryLogStorage {
 
         {
             let mut logs = self.logs.lock().await;
-            let new_logs=  logs.split_off(&(log_id.index + 1));
+            let new_logs = logs.split_off(&(log_id.index + 1));
             *logs = new_logs;
         }
 

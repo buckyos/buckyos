@@ -1,8 +1,8 @@
-use super::storage::{LogRecords, LogStorage, LogQueryRequest};
+use super::storage::{LogQueryRequest, LogRecords, LogStorage};
 use rusqlite::Connection;
+use slog::SystemLogRecord;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use slog::SystemLogRecord;
 
 struct SystemLogRecordResult {
     pub level: u32,
@@ -33,6 +33,23 @@ pub struct SqliteLogStorage {
 }
 
 impl SqliteLogStorage {
+    fn ensure_logs_column(conn: &Connection, col_def: &str) -> Result<(), String> {
+        let sql = format!("ALTER TABLE logs ADD COLUMN {}", col_def);
+        match conn.execute_batch(&sql) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let err_text = e.to_string();
+                if err_text.contains("duplicate column name") {
+                    Ok(())
+                } else {
+                    let msg = format!("Failed to alter logs table with '{}': {}", col_def, e);
+                    error!("{}", msg);
+                    Err(msg)
+                }
+            }
+        }
+    }
+
     pub fn open(db_path: &Path) -> Result<Self, String> {
         // First initialize the database
         let conn = Connection::open(db_path).map_err(|e| {
@@ -84,6 +101,11 @@ impl SqliteLogStorage {
             msg
         })?;
 
+        // Backward-compatible schema extension for idempotent append.
+        Self::ensure_logs_column(&conn, "batch_id TEXT")?;
+        Self::ensure_logs_column(&conn, "record_index INTEGER")?;
+        Self::ensure_logs_column(&conn, "record_id TEXT")?;
+
         // Create index on (source_fk, timestamp DESC) for efficient querying by source and time
         // Create index on (timestamp DESC) for efficient time-based queries
         conn.execute_batch(
@@ -91,7 +113,15 @@ impl SqliteLogStorage {
              ON logs (source_fk, timestamp DESC);
              
              CREATE INDEX IF NOT EXISTS idx_logs_time 
-             ON logs (timestamp DESC);",
+             ON logs (timestamp DESC);
+
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_logs_source_batch_record
+             ON logs (source_fk, batch_id, record_index)
+             WHERE batch_id IS NOT NULL;
+
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_logs_source_record_id
+             ON logs (source_fk, record_id)
+             WHERE record_id IS NOT NULL;",
         )
         .map_err(|e| {
             let msg = format!("Failed to create indexes on logs table: {}", e);
@@ -110,6 +140,13 @@ impl SqliteLogStorage {
     }
 
     fn append(&self, logs: LogRecords) -> Result<(), String> {
+        let LogRecords {
+            node,
+            service,
+            batch_id,
+            record_ids,
+            logs,
+        } = logs;
         let mut conn_lock = self.conn.lock().unwrap();
 
         // Do all operations in a transaction!
@@ -144,8 +181,9 @@ impl SqliteLogStorage {
 
         let mut log_insert_stmt = tx
             .prepare(
-                "INSERT INTO logs (source_fk, timestamp, level, target, file, line, content) 
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7);",
+                "INSERT OR IGNORE INTO logs (
+                    source_fk, timestamp, level, target, file, line, content, batch_id, record_index, record_id
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10);",
             )
             .map_err(|e| {
                 let msg = format!("Failed to prepare log insert statement: {}", e);
@@ -155,7 +193,7 @@ impl SqliteLogStorage {
 
         // Insert or get source_id
         source_stmt
-            .execute(rusqlite::params![logs.node, logs.service,])
+            .execute(rusqlite::params![&node, &service,])
             .map_err(|e| {
                 let msg = format!("Failed to insert log source: {}", e);
                 error!("{}", msg);
@@ -163,9 +201,7 @@ impl SqliteLogStorage {
             })?;
 
         let source_id: i64 = source_id_stmt
-            .query_row(rusqlite::params![logs.node, logs.service,], |row| {
-                row.get(0)
-            })
+            .query_row(rusqlite::params![&node, &service,], |row| row.get(0))
             .map_err(|e| {
                 let msg = format!("Failed to get source_id: {}", e);
                 error!("{}", msg);
@@ -173,7 +209,8 @@ impl SqliteLogStorage {
             })?;
 
         // Insert log record list
-        for record in logs.logs {
+        for (record_index, record) in logs.into_iter().enumerate() {
+            let record_id = record_ids.get(record_index).map(|s| s.as_str());
             log_insert_stmt
                 .execute(rusqlite::params![
                     source_id,
@@ -183,6 +220,9 @@ impl SqliteLogStorage {
                     record.file,
                     record.line.map(|v| v as i64),
                     record.content,
+                    batch_id.as_deref(),
+                    record_index as i64,
+                    record_id,
                 ])
                 .map_err(|e| {
                     let msg = format!("Failed to insert log record: {}", e);
@@ -252,20 +292,23 @@ impl SqliteLogStorage {
         })?;
 
         let log_iter = stmt
-            .query_map(rusqlite::params_from_iter(params.iter().map(|p| &**p)), |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    SystemLogRecordResult {
-                        time: row.get::<_, i64>(2)? as u64,
-                        level: row.get::<_, i32>(3)? as u32,
-                        target: row.get::<_, String>(4)?,
-                        file: row.get::<_, Option<String>>(5)?,
-                        line: row.get::<_, Option<i64>>(6)?.map(|v| v as u32),
-                        content: row.get::<_, String>(7)?,
-                    },
-                ))
-            })
+            .query_map(
+                rusqlite::params_from_iter(params.iter().map(|p| &**p)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        SystemLogRecordResult {
+                            time: row.get::<_, i64>(2)? as u64,
+                            level: row.get::<_, i32>(3)? as u32,
+                            target: row.get::<_, String>(4)?,
+                            file: row.get::<_, Option<String>>(5)?,
+                            line: row.get::<_, Option<i64>>(6)?.map(|v| v as u32),
+                            content: row.get::<_, String>(7)?,
+                        },
+                    ))
+                },
+            )
             .map_err(|e| {
                 let msg = format!("Failed to execute log query: {}", e);
                 error!("{}", msg);
@@ -282,10 +325,7 @@ impl SqliteLogStorage {
             let key = (node.clone(), service.clone());
             match record.try_into() {
                 Ok(rec) => {
-                    records_map
-                        .entry(key)
-                        .or_insert_with(Vec::new)
-                        .push(rec);
+                    records_map.entry(key).or_insert_with(Vec::new).push(rec);
                 }
                 Err(e) => {
                     let msg = format!("Failed to convert log record: {}", e);
@@ -297,7 +337,13 @@ impl SqliteLogStorage {
 
         let mut result = Vec::new();
         for ((node, service), logs) in records_map {
-            result.push(LogRecords { node, service, logs });
+            result.push(LogRecords {
+                node,
+                service,
+                batch_id: None,
+                record_ids: vec![],
+                logs,
+            });
         }
 
         Ok(result)
@@ -310,90 +356,409 @@ impl LogStorage for SqliteLogStorage {
         self.append(logs)
     }
 
-    async fn query_logs(
-        &self,
-        request: LogQueryRequest,
-    ) -> Result<Vec<LogRecords>, String> {
+    async fn query_logs(&self, request: LogQueryRequest) -> Result<Vec<LogRecords>, String> {
         self.query(request)
     }
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
     use slog::{LogLevel, SystemLogRecord};
-    use std::fs;
+    use std::collections::HashMap;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_db_path(prefix: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "buckyos/slog_server_tests/{}_{}_{}",
+            prefix,
+            std::process::id(),
+            nanos
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("test_logs.db")
+    }
+
+    fn sample_record(level: LogLevel, time: u64, content: &str) -> SystemLogRecord {
+        SystemLogRecord {
+            level,
+            target: "test_target".to_string(),
+            time,
+            file: None,
+            line: None,
+            content: content.to_string(),
+        }
+    }
+
+    fn cleanup_db_path(db_path: &std::path::Path) {
+        if db_path.exists() {
+            std::fs::remove_file(db_path).unwrap();
+        }
+        let parent = db_path.parent().unwrap();
+        if parent.exists() {
+            std::fs::remove_dir_all(parent).unwrap();
+        }
+    }
 
     #[test]
-    fn test_sqlite_log_storage() {
-        // Get a temporary database path
-        let dir = std::env::temp_dir().join("buckyos/slog_test");
-        fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("test_logs.db");
-        if db_path.exists() {
-            fs::remove_file(&db_path).unwrap();
-        }
-
+    fn test_sqlite_storage_append_and_query_with_filters() {
+        let db_path = temp_db_path("append_query");
         let storage = SqliteLogStorage::open(&db_path).unwrap();
 
-        let records = vec![
-            SystemLogRecord {
-                level: LogLevel::Info,
-                target: "test_target".to_string(),
-                time: 1625079600000,
-                file: Some("test_file.rs".to_string()),
-                line: Some(42),
-                content: "This is a test log message.".to_string(),
-            },
-            SystemLogRecord {
-                level: LogLevel::Error,
-                target: "test_target".to_string(),
-                time: 1625079660000,
-                file: None,
-                line: None,
-                content: "This is another test log message.".to_string(),
-            },
-        ];
+        storage
+            .append(LogRecords {
+                node: "node-1".to_string(),
+                service: "svc-a".to_string(),
+                batch_id: Some("batch-a-1".to_string()),
+                record_ids: vec!["rid-a-1".to_string(), "rid-a-2".to_string()],
+                logs: vec![
+                    sample_record(LogLevel::Info, 1000, "a-1"),
+                    sample_record(LogLevel::Error, 1010, "a-2"),
+                ],
+            })
+            .unwrap();
 
-        let log_records = LogRecords {
-            node: "test_node".to_string(),
-            service: "test_service".to_string(),
-            logs: records,
+        storage
+            .append(LogRecords {
+                node: "node-2".to_string(),
+                service: "svc-b".to_string(),
+                batch_id: Some("batch-b-1".to_string()),
+                record_ids: vec!["rid-b-1".to_string()],
+                logs: vec![sample_record(LogLevel::Warn, 1020, "b-1")],
+            })
+            .unwrap();
+
+        let all = storage
+            .query(LogQueryRequest {
+                node: None,
+                service: None,
+                level: None,
+                start_time: None,
+                end_time: None,
+                limit: None,
+            })
+            .unwrap();
+        assert_eq!(all.len(), 2);
+
+        let only_error = storage
+            .query(LogQueryRequest {
+                node: Some("node-1".to_string()),
+                service: Some("svc-a".to_string()),
+                level: Some(LogLevel::Error),
+                start_time: None,
+                end_time: None,
+                limit: Some(10),
+            })
+            .unwrap();
+        assert_eq!(only_error.len(), 1);
+        assert_eq!(only_error[0].node, "node-1");
+        assert_eq!(only_error[0].service, "svc-a");
+        assert_eq!(only_error[0].logs.len(), 1);
+        assert_eq!(only_error[0].logs[0].content, "a-2");
+        assert_eq!(only_error[0].logs[0].level, LogLevel::Error);
+
+        cleanup_db_path(&db_path);
+    }
+
+    #[test]
+    fn test_sqlite_storage_append_is_idempotent_for_same_batch_id() {
+        let db_path = temp_db_path("idempotent_batch");
+        let storage = SqliteLogStorage::open(&db_path).unwrap();
+
+        let payload = LogRecords {
+            node: "node-1".to_string(),
+            service: "svc-a".to_string(),
+            batch_id: Some("batch-dup-1".to_string()),
+            record_ids: vec!["rid-dup-1".to_string(), "rid-dup-2".to_string()],
+            logs: vec![
+                sample_record(LogLevel::Info, 1000, "dup-1"),
+                sample_record(LogLevel::Info, 1010, "dup-2"),
+            ],
         };
 
-        storage.append(log_records).unwrap();
+        storage.append(payload.clone()).unwrap();
+        storage.append(payload).unwrap();
 
-        // For another node and service
-        let records2 = vec![
-            SystemLogRecord {
-                level: LogLevel::Warn,
-                target: "test_target_2".to_string(),
-                time: 1625079720000,
-                file: Some("test_file_2.rs".to_string()),
-                line: Some(84),
-                content: "This is a warning log message.".to_string(),
-            },
-            SystemLogRecord {
-                level: LogLevel::Debug,
-                target: "test_target_2".to_string(),
-                time: 1625079780000,
-                file: None,
-                line: None,
-                content: "This is a debug log message.".to_string(),
-            },
-        ];
+        let queried = storage
+            .query(LogQueryRequest {
+                node: Some("node-1".to_string()),
+                service: Some("svc-a".to_string()),
+                level: None,
+                start_time: None,
+                end_time: None,
+                limit: None,
+            })
+            .unwrap();
+        assert_eq!(queried.len(), 1);
+        assert_eq!(queried[0].logs.len(), 2);
 
-        let log_records2 = LogRecords {
-            node: "test_node_2".to_string(),
-            service: "test_service_2".to_string(),
-            logs: records2,
-        };
+        cleanup_db_path(&db_path);
+    }
 
-        storage.append(log_records2).unwrap();
+    #[test]
+    fn test_sqlite_storage_query_isolated_by_node_for_same_service_name() {
+        let db_path = temp_db_path("node_isolation");
+        let storage = SqliteLogStorage::open(&db_path).unwrap();
 
-        drop(storage);
+        storage
+            .append(LogRecords {
+                node: "node-a".to_string(),
+                service: "svc-shared".to_string(),
+                batch_id: Some("batch-a-1".to_string()),
+                record_ids: vec!["rid-a-1".to_string()],
+                logs: vec![sample_record(LogLevel::Info, 2000, "node-a-log-1")],
+            })
+            .unwrap();
+        storage
+            .append(LogRecords {
+                node: "node-b".to_string(),
+                service: "svc-shared".to_string(),
+                batch_id: Some("batch-b-1".to_string()),
+                record_ids: vec!["rid-b-1".to_string()],
+                logs: vec![sample_record(LogLevel::Info, 2010, "node-b-log-1")],
+            })
+            .unwrap();
 
-        // Clean up
-        fs::remove_file(&db_path).unwrap();
+        let node_a = storage
+            .query(LogQueryRequest {
+                node: Some("node-a".to_string()),
+                service: Some("svc-shared".to_string()),
+                level: None,
+                start_time: None,
+                end_time: None,
+                limit: None,
+            })
+            .unwrap();
+        assert_eq!(node_a.len(), 1);
+        assert_eq!(node_a[0].node, "node-a");
+        assert_eq!(node_a[0].service, "svc-shared");
+        assert_eq!(node_a[0].logs.len(), 1);
+        assert_eq!(node_a[0].logs[0].content, "node-a-log-1");
+
+        let node_b = storage
+            .query(LogQueryRequest {
+                node: Some("node-b".to_string()),
+                service: Some("svc-shared".to_string()),
+                level: None,
+                start_time: None,
+                end_time: None,
+                limit: None,
+            })
+            .unwrap();
+        assert_eq!(node_b.len(), 1);
+        assert_eq!(node_b[0].node, "node-b");
+        assert_eq!(node_b[0].service, "svc-shared");
+        assert_eq!(node_b[0].logs.len(), 1);
+        assert_eq!(node_b[0].logs[0].content, "node-b-log-1");
+
+        let shared_service_all_nodes = storage
+            .query(LogQueryRequest {
+                node: None,
+                service: Some("svc-shared".to_string()),
+                level: None,
+                start_time: None,
+                end_time: None,
+                limit: None,
+            })
+            .unwrap();
+        assert_eq!(shared_service_all_nodes.len(), 2);
+        let mut by_node: HashMap<String, Vec<String>> = HashMap::new();
+        for item in shared_service_all_nodes {
+            by_node.insert(
+                item.node.clone(),
+                item.logs.iter().map(|l| l.content.clone()).collect(),
+            );
+        }
+        assert_eq!(
+            by_node.get("node-a").cloned().unwrap_or_default(),
+            vec!["node-a-log-1".to_string()]
+        );
+        assert_eq!(
+            by_node.get("node-b").cloned().unwrap_or_default(),
+            vec!["node-b-log-1".to_string()]
+        );
+
+        cleanup_db_path(&db_path);
+    }
+
+    #[test]
+    fn test_sqlite_storage_query_time_range_and_limit_contract() {
+        let db_path = temp_db_path("query_contract");
+        let storage = SqliteLogStorage::open(&db_path).unwrap();
+
+        storage
+            .append(LogRecords {
+                node: "node-1".to_string(),
+                service: "svc-contract".to_string(),
+                batch_id: Some("batch-q-1".to_string()),
+                record_ids: vec![
+                    "rid-q-1".to_string(),
+                    "rid-q-2".to_string(),
+                    "rid-q-3".to_string(),
+                    "rid-q-4".to_string(),
+                ],
+                logs: vec![
+                    sample_record(LogLevel::Info, 3000, "q-3000"),
+                    sample_record(LogLevel::Warn, 3010, "q-3010"),
+                    sample_record(LogLevel::Error, 3020, "q-3020"),
+                    sample_record(LogLevel::Info, 3030, "q-3030"),
+                ],
+            })
+            .unwrap();
+
+        // Time range should be inclusive on both boundaries.
+        let in_range = storage
+            .query(LogQueryRequest {
+                node: Some("node-1".to_string()),
+                service: Some("svc-contract".to_string()),
+                level: None,
+                start_time: Some(3010),
+                end_time: Some(3020),
+                limit: None,
+            })
+            .unwrap();
+        assert_eq!(in_range.len(), 1);
+        let mut in_range_contents: Vec<String> =
+            in_range[0].logs.iter().map(|l| l.content.clone()).collect();
+        in_range_contents.sort();
+        assert_eq!(
+            in_range_contents,
+            vec!["q-3010".to_string(), "q-3020".to_string()]
+        );
+
+        // Limit should cap returned rows after ordering by timestamp DESC.
+        let limited = storage
+            .query(LogQueryRequest {
+                node: Some("node-1".to_string()),
+                service: Some("svc-contract".to_string()),
+                level: None,
+                start_time: None,
+                end_time: None,
+                limit: Some(2),
+            })
+            .unwrap();
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].logs.len(), 2);
+        assert_eq!(limited[0].logs[0].content, "q-3030");
+        assert_eq!(limited[0].logs[1].content, "q-3020");
+
+        cleanup_db_path(&db_path);
+    }
+
+    #[test]
+    fn test_sqlite_storage_query_filter_combination_matrix() {
+        let db_path = temp_db_path("query_matrix");
+        let storage = SqliteLogStorage::open(&db_path).unwrap();
+
+        storage
+            .append(LogRecords {
+                node: "node-1".to_string(),
+                service: "svc-a".to_string(),
+                batch_id: Some("batch-m-1".to_string()),
+                record_ids: vec![
+                    "rid-m-1".to_string(),
+                    "rid-m-2".to_string(),
+                    "rid-m-3".to_string(),
+                ],
+                logs: vec![
+                    sample_record(LogLevel::Info, 1000, "a-info-1000"),
+                    sample_record(LogLevel::Warn, 1010, "a-warn-1010"),
+                    sample_record(LogLevel::Error, 1020, "a-error-1020"),
+                ],
+            })
+            .unwrap();
+
+        storage
+            .append(LogRecords {
+                node: "node-1".to_string(),
+                service: "svc-b".to_string(),
+                batch_id: Some("batch-m-2".to_string()),
+                record_ids: vec!["rid-m-4".to_string()],
+                logs: vec![sample_record(LogLevel::Info, 1030, "b-info-1030")],
+            })
+            .unwrap();
+
+        storage
+            .append(LogRecords {
+                node: "node-2".to_string(),
+                service: "svc-a".to_string(),
+                batch_id: Some("batch-m-3".to_string()),
+                record_ids: vec!["rid-m-5".to_string()],
+                logs: vec![sample_record(LogLevel::Info, 1040, "a-node2-info-1040")],
+            })
+            .unwrap();
+
+        let q1 = storage
+            .query(LogQueryRequest {
+                node: Some("node-1".to_string()),
+                service: Some("svc-a".to_string()),
+                level: None,
+                start_time: None,
+                end_time: None,
+                limit: None,
+            })
+            .unwrap();
+        assert_eq!(q1.len(), 1);
+        assert_eq!(q1[0].logs.len(), 3);
+
+        let q2 = storage
+            .query(LogQueryRequest {
+                node: Some("node-1".to_string()),
+                service: Some("svc-a".to_string()),
+                level: Some(LogLevel::Warn),
+                start_time: None,
+                end_time: None,
+                limit: None,
+            })
+            .unwrap();
+        assert_eq!(q2.len(), 1);
+        assert_eq!(q2[0].logs.len(), 1);
+        assert_eq!(q2[0].logs[0].content, "a-warn-1010");
+
+        let q3 = storage
+            .query(LogQueryRequest {
+                node: None,
+                service: Some("svc-a".to_string()),
+                level: Some(LogLevel::Info),
+                start_time: None,
+                end_time: None,
+                limit: None,
+            })
+            .unwrap();
+        let q3_count: usize = q3.iter().map(|item| item.logs.len()).sum();
+        assert_eq!(q3_count, 2);
+
+        let q4 = storage
+            .query(LogQueryRequest {
+                node: None,
+                service: None,
+                level: None,
+                start_time: Some(1010),
+                end_time: Some(1040),
+                limit: None,
+            })
+            .unwrap();
+        let q4_count: usize = q4.iter().map(|item| item.logs.len()).sum();
+        assert_eq!(q4_count, 4);
+
+        let q5 = storage
+            .query(LogQueryRequest {
+                node: Some("node-1".to_string()),
+                service: Some("svc-a".to_string()),
+                level: None,
+                start_time: Some(1000),
+                end_time: Some(2000),
+                limit: Some(1),
+            })
+            .unwrap();
+        assert_eq!(q5.len(), 1);
+        assert_eq!(q5[0].logs.len(), 1);
+        assert_eq!(q5[0].logs[0].content, "a-error-1020");
+
+        cleanup_db_path(&db_path);
     }
 }

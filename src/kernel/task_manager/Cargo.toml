@@ -1,5 +1,5 @@
 [package]
-name = "task-manager"
+name = "task_manager"
 version.workspace = true
 edition = "2021"
 authors = ["BuckyOS DAO","@alexsunxl","@waterflier"]
@@ -24,6 +24,10 @@ bytes = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
 buckyos-api = { path = "../buckyos-api" }
+ndn-lib = { workspace = true }
+ndn-toolkit = { workspace = true }
+named_store = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

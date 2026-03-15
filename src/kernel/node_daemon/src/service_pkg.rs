@@ -1,14 +1,31 @@
+use buckyos_api::ServiceInstanceState;
+use buckyos_kit::*;
 use log::*;
 use package_lib::*;
-use std::path::PathBuf;
-use tokio::sync::Mutex;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use thiserror::Error;
-use buckyos_kit::*;
-use buckyos_api::ServiceInstanceState;
-
+use tokio::sync::Mutex;
 
 type Result<T> = std::result::Result<T, ServiceControlError>;
+
+pub(crate) fn new_package_env(pkg_env_path: PathBuf) -> PackageEnv {
+    let mut pkg_env = PackageEnv::new(pkg_env_path);
+    if pkg_env.config.named_store_config_path.is_none() {
+        pkg_env.config.named_store_config_path = Some(
+            get_buckyos_root_dir()
+                .join("storage")
+                .join("named_store.json")
+                .to_string_lossy()
+                .to_string(),
+        );
+    }
+    pkg_env
+}
+
+pub(crate) fn new_system_package_env() -> PackageEnv {
+    new_package_env(get_buckyos_system_bin_dir())
+}
 
 pub struct ServicePkg {
     pub pkg_id: String,
@@ -17,7 +34,6 @@ pub struct ServicePkg {
     pub env_vars: HashMap<String, String>,
     pub media_info: Mutex<Option<MediaInfo>>,
 }
-
 
 impl Default for ServicePkg {
     fn default() -> Self {
@@ -44,7 +60,7 @@ impl ServicePkg {
     pub async fn try_load(&self) -> bool {
         let mut media_info = self.media_info.lock().await;
         if media_info.is_none() {
-            let pkg_env = PackageEnv::new(self.pkg_env_path.clone()); 
+            let pkg_env = new_package_env(self.pkg_env_path.clone());
             let new_media_info = pkg_env.load(&self.pkg_id).await;
             if new_media_info.is_ok() {
                 debug!("load service pkg {} success", self.pkg_id);
@@ -69,7 +85,21 @@ impl ServicePkg {
         }
     }
 
-    pub async fn execute_operation(&self, op_name: &str, params: Option<&Vec<String>>) -> Result<i32> {
+    pub async fn execute_operation(
+        &self,
+        op_name: &str,
+        params: Option<&Vec<String>>,
+    ) -> Result<i32> {
+        self.execute_operation_with_env(op_name, params, Some(&self.env_vars))
+            .await
+    }
+
+    pub async fn execute_operation_with_env(
+        &self,
+        op_name: &str,
+        params: Option<&Vec<String>>,
+        env_vars: Option<&HashMap<String, String>>,
+    ) -> Result<i32> {
         //let media_info = self.media_info.clone().unwrap();
         let media_info = self.media_info.lock().await;
         let media_info = media_info.as_ref();
@@ -79,13 +109,7 @@ impl ServicePkg {
         let media_info = media_info.unwrap();
 
         let op_file = media_info.full_path.join(op_name);
-        let (result, output) = execute(
-            &op_file,
-            1200,
-            params,
-            self.current_dir.as_ref(),
-            Some(&self.env_vars),
-        )
+        let (result, output) = execute(&op_file, 1200, params, self.current_dir.as_ref(), env_vars)
             .await
             .map_err(|e| {
                 error!("# execute {} failed! {}", op_file.display(), e);
@@ -108,14 +132,14 @@ impl ServicePkg {
                 params_str,
                 result,
                 String::from_utf8_lossy(&output)
-            ); 
+            );
         }
         Ok(result)
     }
 
     pub async fn start(&self, params: Option<&Vec<String>>) -> Result<i32> {
         self.try_load().await;
-        let result = self.execute_operation( "start", params).await?;
+        let result = self.execute_operation("start", params).await?;
         Ok(result)
     }
 
@@ -126,7 +150,15 @@ impl ServicePkg {
     }
 
     pub async fn status(&self, params: Option<&Vec<String>>) -> Result<ServiceInstanceState> {
-        let pkg_env = PackageEnv::new(self.pkg_env_path.clone()); 
+        self.status_with_env(params, Some(&self.env_vars)).await
+    }
+
+    pub async fn status_with_env(
+        &self,
+        params: Option<&Vec<String>>,
+        env_vars: Option<&HashMap<String, String>>,
+    ) -> Result<ServiceInstanceState> {
+        let pkg_env = new_package_env(self.pkg_env_path.clone());
         let media_info = pkg_env.load(&self.pkg_id).await;
         if media_info.is_err() {
             info!("pkg {} not exist", self.pkg_id);
@@ -136,7 +168,9 @@ impl ServicePkg {
         let mut media_info_lock = self.media_info.lock().await;
         *media_info_lock = Some(media_info);
         drop(media_info_lock);
-        let result = self.execute_operation("status", params).await?;
+        let result = self
+            .execute_operation_with_env("status", params, env_vars)
+            .await?;
         match result {
             0 => Ok(ServiceInstanceState::Started),
             255 => Ok(ServiceInstanceState::NotExist),

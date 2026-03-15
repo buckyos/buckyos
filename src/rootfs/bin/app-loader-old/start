@@ -1,0 +1,656 @@
+#!/usr/bin/python3
+
+import os
+import sys
+import json
+import platform
+import signal
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(current_dir)
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+import util
+from app_doc import AppDoc, AppDocError, AppType
+
+appid = None
+full_appid = None
+username = None
+app_token = None
+app_instance_config = None
+app_media_info = None
+media_info_str = None
+zone_config = None
+device_info = None
+
+is_support_docker = True
+current_dir = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_OPENDAN_SERVICE_PORT = 4060
+OPENDAN_SERVICE_PORT_FALLBACK_KEYS = ("www", "http", "https", "main")
+
+def _normalize_digest(digest):
+    if not digest:
+        return None
+    s = str(digest).strip()
+    if "@" in s:
+        s = s.split("@", 1)[1].strip()
+    return s or None
+
+
+def check_image_exists(image_name, digest=None):
+    """
+    Check if a docker image exists locally.
+
+    If `digest` is provided, also verify the local image matches the digest.
+    Digest can be either:
+    - "sha256:..."
+    - "<repo>@sha256:..."
+    """
+    print(f"do check_image_exists: {image_name}, {digest}")
+    check_image_cmd = f"docker images -q {image_name}"
+    image_id = os.popen(check_image_cmd).read().strip()
+    if not image_id:
+        return False
+
+    if not digest:
+        return True
+
+    target = str(digest).strip()
+    if "@" in target:
+        target = target.split("@", 1)[1].strip()
+    if not target:
+        return True
+
+    # First, try to match against RepoDigests (for images pulled from registry)
+    # Use different quote styles for Windows vs Linux
+    is_windows = platform.system() == "Windows"
+    if is_windows:
+        inspect_cmd = f'docker image inspect --format="{{{{json .RepoDigests}}}}" {image_name}'
+    else:
+        inspect_cmd = f"docker image inspect --format='{{{{json .RepoDigests}}}}' {image_name}"
+    inspect_out = os.popen(inspect_cmd).read().strip()
+    if inspect_out:
+        try:
+            repo_digests = json.loads(inspect_out)
+            if isinstance(repo_digests, list):
+                for rd in repo_digests:
+                    if not isinstance(rd, str):
+                        continue
+                    if "@" in rd:
+                        local_digest = rd.split("@", 1)[1].strip()
+                        if local_digest == target:
+                            return True
+        except Exception:
+            pass
+
+    # If RepoDigests is empty or doesn't match, check the image's actual digest (Id field)
+    # This handles images that were locally tagged or loaded from tar
+    if is_windows:
+        inspect_cmd_id = f'docker image inspect --format="{{{{.Id}}}}" {image_name}'
+    else:
+        inspect_cmd_id = f"docker image inspect --format='{{{{.Id}}}}' {image_name}"
+    inspect_id_out = os.popen(inspect_cmd_id).read().strip()
+    if inspect_id_out:
+        # Docker Id format is "sha256:xxxxx", same as digest format
+        if inspect_id_out == target:
+            return True
+        # Also try without the algorithm prefix
+        if ":" in inspect_id_out and ":" in target:
+            id_hash = inspect_id_out.split(":", 1)[1]
+            target_hash = target.split(":", 1)[1]
+            if id_hash == target_hash:
+                return True
+
+    return False
+
+
+def load_image_from_tar(image_tar_path):
+    load_cmd = f"docker load -i {image_tar_path}"
+    ret = os.system(load_cmd)
+    if ret != 0:
+        print(f"Failed to load image from {image_tar_path}")
+        exit(1)
+    print(f"Successfully loaded image from tar file")
+    # 这里并不删除tar文件，而是通过垃圾回收机制删除
+
+def start_app_without_docker():
+    print(f"Start app {appid} without docker")
+    full_path = app_media_info.get("full_path")
+    if not full_path:
+        print(f"No app media full path found for appid: {appid}")
+        exit(1)
+            
+    start_script = f"{full_path}/start"
+    if not os.path.exists(start_script):
+        print(f"No start script found for appid: {appid}")
+        exit(1)
+    os.system(f"python3 {start_script} {appid} {username}")
+
+
+def get_agent_pid_file(appid, username):
+    return os.path.join(util.get_app_data_dir(appid, username), ".opendan.pid")
+
+
+def read_agent_pid(appid, username):
+    pid_file = get_agent_pid_file(appid, username)
+    if not os.path.exists(pid_file):
+        return None
+    try:
+        with open(pid_file, "r", encoding="utf-8") as f:
+            return int(f.read().strip())
+    except Exception:
+        return None
+
+
+def write_agent_pid(appid, username, pid):
+    pid_file = get_agent_pid_file(appid, username)
+    os.makedirs(os.path.dirname(pid_file), exist_ok=True)
+    with open(pid_file, "w", encoding="utf-8") as f:
+        f.write(str(pid))
+
+
+def is_pid_running(pid):
+    if pid is None or pid <= 0:
+        return False
+    if platform.system() == "Windows":
+        cmd = f'tasklist /FI "PID eq {pid}" /FO CSV'
+        output = os.popen(cmd).read().strip()
+        lines = [line for line in output.splitlines() if line.strip()]
+        return len(lines) > 1
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def stop_agent_process(appid, username):
+    pid = read_agent_pid(appid, username)
+    pid_file = get_agent_pid_file(appid, username)
+    if not is_pid_running(pid):
+        if os.path.exists(pid_file):
+            os.remove(pid_file)
+        return
+
+    if platform.system() == "Windows":
+        os.system(f"taskkill /F /T /PID {pid}")
+    else:
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except Exception:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except Exception:
+                pass
+    if os.path.exists(pid_file):
+        os.remove(pid_file)
+
+
+def pkg_unique_name(pkg_id):
+    if not pkg_id:
+        return ""
+    return str(pkg_id).split("#", 1)[0].strip()
+
+
+def resolve_agent_package_root(app_doc, media_info):
+    if media_info:
+        full_path = media_info.get("full_path")
+        if full_path:
+            return full_path
+
+    agent_pkg = app_doc.pkg_list.agent
+    if agent_pkg is None or not agent_pkg.pkg_id:
+        raise AppDocError("Agent app missing pkg_list.agent.pkg_id")
+
+    pkg_name = pkg_unique_name(agent_pkg.pkg_id)
+    if not pkg_name:
+        raise AppDocError("Agent pkg id is invalid")
+
+    return os.path.join(util.get_buckyos_root(), "bin", pkg_name)
+
+
+def resolve_opendan_binary():
+    candidates = [
+        os.path.join(util.get_buckyos_root(), "bin", "opendan", "opendan"),
+        os.path.join(current_dir, "..", "opendan", "opendan"),
+    ]
+    for candidate in candidates:
+        candidate = os.path.realpath(candidate)
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def normalize_service_port(port_value):
+    try:
+        port = int(port_value)
+    except (TypeError, ValueError):
+        return None
+
+    if port <= 0 or port > 65535:
+        return None
+    return port
+
+
+def select_agent_service_port(app_doc, instance_config):
+    service_ports = instance_config.get("service_ports_config", {})
+    if not isinstance(service_ports, dict) or not service_ports:
+        print(
+            f"No service_ports_config found for agent {appid}, fallback to {DEFAULT_OPENDAN_SERVICE_PORT}"
+        )
+        return DEFAULT_OPENDAN_SERVICE_PORT
+
+    preferred_names = []
+    preferred_names.extend(app_doc.install_config_tips.service_ports.keys())
+    preferred_names.extend(OPENDAN_SERVICE_PORT_FALLBACK_KEYS)
+
+    seen_names = set()
+    for service_name in preferred_names:
+        if service_name in seen_names:
+            continue
+        seen_names.add(service_name)
+        port = normalize_service_port(service_ports.get(service_name))
+        if port is not None:
+            print(f"Selected agent service port {service_name} -> {port}")
+            return port
+
+    normalized_ports = []
+    for service_name, port_value in service_ports.items():
+        port = normalize_service_port(port_value)
+        if port is not None:
+            normalized_ports.append((str(service_name), port))
+
+    if len(normalized_ports) == 1:
+        service_name, port = normalized_ports[0]
+        print(f"Selected sole agent service port {service_name} -> {port}")
+        return port
+
+    if normalized_ports:
+        normalized_ports.sort(key=lambda item: item[0])
+        service_name, port = normalized_ports[0]
+        print(f"Selected first sorted agent service port {service_name} -> {port}")
+        return port
+
+    print(
+        f"Invalid service_ports_config for agent {appid}, fallback to {DEFAULT_OPENDAN_SERVICE_PORT}"
+    )
+    return DEFAULT_OPENDAN_SERVICE_PORT
+
+
+def start_agent(app_doc):
+    global app_media_info
+
+    opendan_bin = resolve_opendan_binary()
+    if not opendan_bin:
+        print("No opendan binary found for agent startup")
+        exit(1)
+
+    if media_info_str is not None:
+        app_media_info = json.loads(media_info_str)
+    else:
+        app_media_info = None
+
+    agent_package_root = resolve_agent_package_root(app_doc, app_media_info)
+    if not os.path.exists(agent_package_root):
+        print(f"Agent package root not found: {agent_package_root}")
+        exit(1)
+
+    agent_env_root = util.get_app_data_dir(appid, username)
+    os.makedirs(agent_env_root, exist_ok=True)
+    agent_service_port = select_agent_service_port(app_doc, app_instance_config)
+
+    stop_agent_process(appid, username)
+
+    run_cmd = [
+        opendan_bin,
+        "--agent-id",
+        appid,
+        "--agent-env",
+        agent_env_root,
+        "--agent-bin",
+        agent_package_root,
+        "--service-port",
+        str(agent_service_port),
+    ]
+    pid = util.nohup_start(run_cmd)
+    if pid is None:
+        print("Failed to start agent process")
+        exit(1)
+    write_agent_pid(appid, username, pid)
+    print(f"Agent {full_appid} started by opendan pid={pid} port={agent_service_port}")
+
+def prepare_mount_directory(host_path, permission):
+    """
+    Prepare host directory for Docker volume mount.
+    Uses shell mkdir -p for better compatibility with Docker Desktop
+    filesystem sharing (VirtioFS / gRPC-FUSE).
+    """
+    if not os.path.exists(host_path):
+        ret = os.system(f'mkdir -p "{host_path}"')
+        if ret != 0:
+            try:
+                os.makedirs(host_path, exist_ok=True)
+            except Exception as e:
+                print(f"Error: failed to create mount directory {host_path}: {e}")
+                return host_path
+
+    if not os.path.exists(host_path):
+        print(f"Error: mount directory {host_path} does not exist after creation")
+        return host_path
+
+    if permission == "rw":
+        os.system(f'chmod 777 "{host_path}"')
+    return host_path
+
+
+def get_mount_permission(container_path, appid, username):
+    """
+    Determine default Docker volume permission (ro/rw) based on
+    container path semantics per path_usage.md.
+
+    Well-known read-only paths:
+      /srv/publish/              - zone published data
+      /home/$username/shared/    - user shared data
+      /home/$username/ (generic) - user home (excluding app data)
+
+    Well-known read-write paths:
+      /home/$username/.local/share/$appid - app persistent data
+      /srv/library/                       - zone library data
+      /tmp/                               - temp data
+
+    Everything else (app-specific paths like /database/, /config/, /srv/)
+    defaults to rw.
+    """
+    p = container_path.rstrip("/")
+
+    if username:
+        app_data = f"/home/{username}/.local/share/{appid}"
+        if p == app_data or p.startswith(app_data + "/"):
+            return "rw"
+
+    if p == "/srv/publish" or p.startswith("/srv/publish/"):
+        return "ro"
+
+    if username:
+        shared = f"/home/{username}/shared"
+        if p == shared or p.startswith(shared + "/"):
+            return "ro"
+
+    if username:
+        home = f"/home/{username}"
+        if p == home or p.startswith(home + "/"):
+            return "ro"
+
+    return "rw"
+
+
+def parse_mount_value(value):
+    """
+    Parse a data_mount_point value which may include a permission suffix.
+    Supports:  "host_path"  |  "host_path:ro"  |  "host_path:rw"
+    Returns (host_relative_path, permission_override_or_None).
+    """
+    if value.endswith(":ro"):
+        return value[:-3], "ro"
+    if value.endswith(":rw"):
+        return value[:-3], "rw"
+    return value, None
+
+
+def build_volume_mounts(appid, full_appid, username, install_config):
+    """
+    Build Docker -v volume mapping string.
+
+    Mount categories (per path_usage.md):
+      1. Standard system mounts (always applied)
+         - /tmp/  => /tmp/buckyos/$full_appid   (rw)
+         - /home/$user/.local/share/$appid       (rw)
+      2. data_mount_point from install_config
+         - permission inferred from container path, overridable via ":ro"/":rw" suffix
+      3. cache_mount_point  => $buckyos_root/data/cache/$full_appid (rw)
+      4. local_cache_mount_point => /tmp/buckyos/$full_appid (rw)
+    """
+    mounts = {}  # container_path -> (host_path, permission)
+    buckyos_root = util.get_buckyos_root()
+
+    # --- 1. Standard system mounts ---
+    tmp_host = os.path.join("/tmp", "buckyos", full_appid)
+    mounts["/tmp"] = (tmp_host, "rw")
+
+    app_data_host = util.get_app_data_dir(appid, username)
+    app_data_container = f"/home/{username}/.local/share/{appid}"
+    mounts[app_data_container] = (app_data_host, "rw")
+
+    # --- 2. Data mounts from install_config (may override standards) ---
+    data_mount_point = install_config.get("data_mount_point", {})
+    for container_path, raw_value in data_mount_point.items():
+        host_relative, perm_override = parse_mount_value(raw_value)
+        host_path = os.path.join(buckyos_root, host_relative.lstrip("/"))
+        permission = perm_override or get_mount_permission(container_path, appid, username)
+        mounts[container_path] = (host_path, permission)
+
+    # --- 3. Cache mounts (rw) ---
+    cache_mount_point = install_config.get("cache_mount_point", [])
+    if cache_mount_point:
+        base_cache = util.get_app_cache_dir(appid, username)
+        for mp in cache_mount_point:
+            cache_host = os.path.join(base_cache, mp.lstrip("/"))
+            mounts[mp] = (cache_host, "rw")
+
+    # --- 4. Local cache mounts (rw) ---
+    local_cache_mount_point = install_config.get("local_cache_mount_point", [])
+    if local_cache_mount_point:
+        base_local = util.get_app_local_cache_dir(appid, username)
+        for mp in local_cache_mount_point:
+            local_host = os.path.join(base_local, mp.lstrip("/"))
+            mounts[mp] = (local_host, "rw")
+
+    # --- Build volume flag string ---
+    volume_mapping = ""
+    for container_path, (host_path, permission) in mounts.items():
+        # Resolve symlinks (e.g. macOS /opt -> /private/opt) so Docker
+        # Desktop VirtioFS can locate the directory consistently.
+        host_path = os.path.realpath(host_path.rstrip("/"))
+        prepare_mount_directory(host_path, permission)
+        container_path = container_path.rstrip("/")
+        volume_mapping += f" -v {host_path}:{container_path}:{permission}"
+
+    return volume_mapping
+
+
+def start_app_with_docker():
+    # 如果镜像已经在运行，则先停止再启动
+    global app_media_info
+    container_id = full_appid
+    print(f"Before start, try stopping container: {container_id}")
+    docker_command = f"docker kill {container_id}"
+    os.system(docker_command)
+
+    # 得到镜像名（基于 AppDoc 做架构选择）
+    try:
+        app_doc = AppDoc.from_dict(app_instance_config.get("app_spec", {}).get("app_doc", {}))
+        image_desc = app_doc.pkg_list.get_docker_image_for_host(platform.machine())
+        image_name = image_desc.docker_image_name
+        image_pkg_id = image_desc.pkg_id
+        image_digest = image_desc.docker_image_digest
+        service_install_tips = app_doc.install_config_tips
+    except AppDocError as e:
+        print(f"Invalid app_doc in app_instance_config: {e}")
+        exit(1)
+
+    if not image_name:
+        print("Image name not found in the configuration")
+        exit(1)
+
+    if not check_image_exists(image_name, image_digest):
+        print(f"Image {image_name} not installed, trying to import docker image from local tar file")
+        is_imported = False
+        # 如果能import，优先import
+        if media_info_str is not None:
+            app_media_info = json.loads(media_info_str)
+            full_path = app_media_info.get("full_path")
+            if not full_path:
+                print(f"No app media full path found for appid: {appid}")
+                exit(1)
+            if not image_pkg_id:
+                print(f"No image pkg id found for appid: {appid}")
+                exit(1)
+            image_tar_path = f"{full_path}/{appid}.tar"
+            if os.path.exists(image_tar_path):
+                print(f"Try loading docker image from {image_tar_path}")
+                load_image_from_tar(image_tar_path)
+                is_imported = True
+
+        if not is_imported:
+            image_full_name = None
+            if zone_docker_repo_base_url:
+                image_full_name = f"{zone_docker_repo_base_url}/{image_name}"
+            else:
+                image_full_name = image_name
+
+            if image_digest:
+                digest_only = _normalize_digest(image_digest)
+                pull_ref = f"{image_full_name}@{digest_only}"
+            else:
+                pull_ref = image_full_name
+
+            pull_cmd = f"docker pull {pull_ref}"
+            print(f"Try Pulling docker image by {pull_cmd}")
+            ret = os.system(pull_cmd)
+            if ret != 0:
+                print(f"Failed to import docker image {image_name}")
+                exit(1)
+            # Tag pulled ref back to `image_name` for consistent later run/check.
+            if pull_ref != image_name:
+                # When pulling by digest, we need to get the image ID and tag it
+                # because "docker tag image@digest newname" doesn't work
+                get_id_cmd = f"docker images -q {pull_ref.split('@')[0]}"
+                pulled_image_id = os.popen(get_id_cmd).read().strip()
+                if pulled_image_id:
+                    tag_cmd = f"docker tag {pulled_image_id} {image_name}"
+                    print(f"Tagging pulled image: {tag_cmd}")
+                    os.system(tag_cmd)
+                else:
+                    # Fallback: try tagging with the full pull_ref (might not work with @digest)
+                    os.system(f"docker tag {pull_ref} {image_name}")
+
+        # After import (load or pull), validate again (and verify digest if provided).
+        if not check_image_exists(image_name, image_digest):
+            print(f"Imported image {image_name} but digest/tag not matched or inspect failed")
+            exit(1)
+    
+    print(f"Image {image_name} exists, now start container ...")
+
+    instance_install_config = app_instance_config.get("app_spec").get("install_config")
+    volume_mapping = build_volume_mounts(appid, full_appid, username, instance_install_config)
+    print(f"Volume mounts: {volume_mapping}")
+
+    # 端口映射
+    port_cmd = ""
+    service_ports = app_instance_config.get("service_ports_config", {})
+    #print(f"** service_ports: {service_ports}")
+    for (service_name,instance_port) in service_ports.items():
+        docker_port = service_install_tips.service_ports.get(service_name, 0)
+        if docker_port == 0:
+            print(f"No docker port found for service: {service_name}")
+            exit(1)
+        #print(f"{service_name}: {host_port} -> {docker_port}")
+        port_cmd += f" -p {instance_port}:{docker_port} "
+
+    # 构造docker命令
+    # 让容器内拿到 zone_config 和当前 app token（使用真实 env key）
+    app_token_env_key = util.get_session_token_env_key(full_appid, True)
+    docker_command = f"docker run --rm {port_cmd} --name {container_id} -e BUCKYOS_ZONE_CONFIG -e {app_token_env_key} -d "
+
+    if volume_mapping:
+        docker_command += volume_mapping
+
+    #if network_settings:
+    #    docker_command += f"--network {network_settings} "
+
+    #if cpu_quota:
+    #    docker_command += f"--cpu-quota={cpu_quota} "
+
+
+    container_param = instance_install_config.get("container_param")
+    if container_param:
+        docker_command += f" {container_param}"
+
+    docker_command += f" {image_name}"
+
+    print(f"* craete container, command: {docker_command}")
+    os.system(docker_command)
+
+
+def start_app():
+    global appid, full_appid,username, app_token, app_instance_config,app_media_info,media_info_str
+    global zone_config, zone_docker_repo_base_url
+    global device_doc, is_support_docker
+    
+    appid = sys.argv[1]
+    username = sys.argv[2]
+    full_appid = util.get_full_appid(appid, username)
+    app_token_env_key = util.get_session_token_env_key(full_appid, True)
+    app_token = os.getenv(app_token_env_key)
+    app_instance_config_str = os.getenv("app_instance_config")
+    media_info_str = os.getenv("app_media_info")
+    zone_config_str = os.getenv(f"BUCKYOS_ZONE_CONFIG")
+    zone_config = None
+    zone_docker_repo_base_url = None
+    device_info_str = os.getenv("BUCKYOS_THIS_DEVICE_INFO")
+    device_info = {}
+    # 打印所有环境变量用于调试
+    # print("=== 环境变量列表（用于调试）===")
+    # for key, value in os.environ.items():
+    #     print(f"{key}: {value}")
+    # print("=== 环境变量列表结束 ===")
+
+
+    if zone_config_str:
+        zone_config = json.loads(zone_config_str)
+        docker_repo_base_url = zone_config.get("docker_repo_base_url")
+        if docker_repo_base_url:
+            zone_docker_repo_base_url = docker_repo_base_url
+    
+    if device_info_str:
+        try:
+            device_info = json.loads(device_info_str) or {}
+        except Exception:
+            device_info = {}
+
+    if app_token is None:
+        print(f"No session token found for appid: {full_appid},env_key: {app_token_env_key}")
+        exit(1)
+        
+    if app_instance_config_str is None:
+        print(f"No configuration found for appid: {full_appid}")
+        exit(1)
+    app_instance_config = json.loads(app_instance_config_str)
+    try:
+        app_doc = AppDoc.from_dict(app_instance_config.get("app_spec", {}).get("app_doc", {}))
+    except AppDocError as e:
+        print(f"Invalid app_doc in app_instance_config: {e}")
+        exit(1)
+    print(f"AppDoc type debug for {full_appid}: {app_doc.describe_app_type_resolution()}")
+
+    if app_doc.get_app_type() == AppType.AGENT:
+        print(f"Start agent {full_appid} with opendan")
+        start_agent(app_doc)
+        return
+
+    is_support_docker = bool(device_info.get("support_container", True))
+
+    if is_support_docker:
+        print(f"Start app {full_appid} with docker")
+        start_app_with_docker()
+    else:
+        if media_info_str is None:
+            print(f"No media info found for appid: {full_appid}")
+            exit(1)
+            
+        app_media_info = json.loads(media_info_str)
+        print(f"Start app {full_appid} without docker")
+        start_app_without_docker()
+
+if __name__ == "__main__":
+    start_app()

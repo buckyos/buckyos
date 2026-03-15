@@ -1,6 +1,6 @@
 mod constants;
-mod log_config;
 mod flexi_log;
+mod log_config;
 mod system_log;
 mod target;
 

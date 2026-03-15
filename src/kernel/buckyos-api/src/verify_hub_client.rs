@@ -93,15 +93,23 @@ pub struct LoginByPasswordRequest {
     pub password: String,
     pub appid: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub login_nonce: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub source_url: Option<String>,
 }
 
 impl LoginByPasswordRequest {
-    pub fn new(username: String, password: String, appid: String) -> Self {
+    pub fn new(
+        username: String,
+        password: String,
+        appid: String,
+        login_nonce: Option<u64>,
+    ) -> Self {
         Self {
             username,
             password,
             appid,
+            login_nonce,
             source_url: None,
         }
     }
@@ -112,10 +120,13 @@ impl LoginByPasswordRequest {
         params.insert("username".to_string(), Value::String(self.username.clone()));
         params.insert("password".to_string(), Value::String(self.password.clone()));
         params.insert("appid".to_string(), Value::String(self.appid.clone()));
+        if let Some(login_nonce) = self.login_nonce {
+            params.insert("login_nonce".to_string(), Value::Number(login_nonce.into()));
+        }
         Ok(Value::Object(params))
     }
 
-    pub fn from_json(value: Value) -> Result<(String, String, String)> {
+    pub fn from_json(value: Value) -> Result<(String, String, String, Option<u64>)> {
         let params = value.as_object().cloned().ok_or_else(|| {
             RPCErrors::ParseRequestError("Expected object params for login".to_string())
         })?;
@@ -145,8 +156,9 @@ impl LoginByPasswordRequest {
             .and_then(|value| value.as_str())
             .ok_or_else(|| RPCErrors::ParseRequestError("Missing appid".to_string()))?
             .to_string();
+        let login_nonce = params.get("login_nonce").and_then(|value| value.as_u64());
 
-        Ok((username, password, appid))
+        Ok((username, password, appid, login_nonce))
     }
 }
 
@@ -226,13 +238,11 @@ impl VerifyHubClient {
     pub fn new_krpc(krpc_client: Box<kRPC>) -> Self {
         Self::KRPC(krpc_client)
     }
-    
-    pub async fn set_context(&self, context: RPCContext)  {
+
+    pub async fn set_context(&self, context: RPCContext) {
         match self {
             Self::InProcess(_) => {}
-            Self::KRPC(client) => {
-                client.set_context(context).await
-            }
+            Self::KRPC(client) => client.set_context(context).await,
         }
     }
 
@@ -279,7 +289,8 @@ impl VerifyHubClient {
             }
             Self::KRPC(client) => {
                 client.reset_session_token().await;
-                let params = LoginByPasswordRequest::new(username, password, appid).to_json()?;
+                let params = LoginByPasswordRequest::new(username, password, appid, login_nonce)
+                    .to_json()?;
                 let result = client.call("login_by_password", params).await?;
                 let login_by_password_response: LoginByPasswordResponse =
                     serde_json::from_value(result)
@@ -361,10 +372,17 @@ impl<T: VerifyHubApiHandler> RPCHandler for VerifyHubRpcHandler<T> {
                 )
             }
             "login_by_password" => {
-                let (username, password, appid) = LoginByPasswordRequest::from_json(req.params)?;
+                let (username, password, appid, login_nonce) =
+                    LoginByPasswordRequest::from_json(req.params)?;
+                let fallback_nonce = if req.seq > 10_000_000_000_000 {
+                    req.seq / 1000
+                } else {
+                    req.seq
+                };
+                let login_nonce = login_nonce.unwrap_or(fallback_nonce);
                 let result = self
                     .0
-                    .handle_login_by_password(&username, &password, &appid, req.seq)
+                    .handle_login_by_password(&username, &password, &appid, login_nonce)
                     .await?;
                 RPCResult::Success(
                     serde_json::to_value(result)

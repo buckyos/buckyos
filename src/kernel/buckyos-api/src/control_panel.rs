@@ -59,6 +59,32 @@ pub enum UserType {
     Guest,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct UserTunnelBinding {
+    pub platform: String,
+    pub account_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel_id: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub meta: HashMap<String, String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct UserContactSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub did: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bindings: Vec<UserTunnelBinding>,
+}
+
 //did:bns:$user_id user_id is-> UserSettings
 #[derive(Serialize, Deserialize)]
 pub struct UserSettings {
@@ -70,6 +96,8 @@ pub struct UserSettings {
     pub password: String,
     pub state: UserState,
     pub res_pool_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact: Option<UserContactSettings>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -144,7 +172,6 @@ impl ControlPanelClient {
     pub async fn set_context(&self, context: RPCContext) -> SytemConfigResult<()> {
         self.system_config_client.set_context(context).await
     }
-
 
     //return (rbac_model,rbac_policy)
     pub async fn load_rbac_config(&self) -> Result<(String, String)> {
@@ -279,62 +306,9 @@ impl ControlPanelClient {
         app_config: &AppServiceSpec,
         shortcut: Option<String>,
     ) -> Result<u64> {
-        // TODO: if you want install a web-client-app, use another function
-        //1. create users/{user_id}/apps/{appid}/config
-        let app_id = app_config.app_doc.name.as_str();
-        let app_config_str = serde_json::to_string(app_config).unwrap();
-        self.system_config_client
-            .create(
-                format!("users/{}/apps/{}/config", user_id, app_id).as_str(),
-                app_config_str.as_str(),
-            )
-            .await
-            .map_err(|e| {
-                RPCErrors::ReasonError(format!("install app service failed, err:{}", e))
-            })?;
-        //2. update rbac
-        self.system_config_client
-            .append(
-                "system/rbac/policy",
-                format!("\ng, {}, app", app_id).as_str(),
-            )
-            .await
-            .map_err(|e| {
-                RPCErrors::ReasonError(format!("install app service failed, err:{}", e))
-            })?;
-        //3. update gateway shortcuts
-        if shortcut.is_some() {
-            let short_name = shortcut.unwrap();
-            let short_json_path = format!("/shortcuts/{}", short_name.as_str());
-            let short_json_value = json!({
-                "type":"app",
-                "user_id":user_id,
-                "app_id":app_id
-            });
-            let short_json_value_str = serde_json::to_string(&short_json_value).unwrap();
+        // call control-panel krpc api to install app
 
-            self.system_config_client
-                .set_by_json_path(
-                    "services/gateway/settings",
-                    short_json_path.as_str(),
-                    short_json_value_str.as_str(),
-                )
-                .await
-                .map_err(|e| {
-                    RPCErrors::ReasonError(format!("install app service failed, err:{}", e))
-                })?;
-
-            info!(
-                "set shortcut {} for user {}'s app {} success!",
-                short_name, user_id, app_id
-            );
-        }
-
-        info!(
-            "install app service {} for user {} success!",
-            app_id, user_id
-        );
-        Ok(0)
+        unimplemented!()
     }
 
     pub async fn get_user_list(&self) -> Result<Vec<String>> {

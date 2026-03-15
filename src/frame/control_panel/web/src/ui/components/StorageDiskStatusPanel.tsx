@@ -1,3 +1,5 @@
+import { useI18n } from '@/i18n'
+
 type StorageDiskStatusPanelProps = {
   disk: SystemMetricsDisk | null | undefined
   loading?: boolean
@@ -61,6 +63,7 @@ const StorageDiskStatusPanel = ({
   compact = false,
   maxItems,
 }: StorageDiskStatusPanelProps) => {
+  const { t } = useI18n()
   const totalGb = disk?.totalGb ?? 0
   const usedGb = disk?.usedGb ?? 0
   const usagePercent = totalGb > 0 ? Math.max(0, Math.min(100, Math.round((usedGb / totalGb) * 100))) : 0
@@ -102,36 +105,36 @@ const StorageDiskStatusPanel = ({
       <div className="rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <p className="text-xs uppercase tracking-wide text-[var(--cp-muted)]">Pool capacity</p>
+            <p className="text-xs uppercase tracking-wide text-[var(--cp-muted)]">{t('storage.poolCapacity', 'Pool capacity')}</p>
             <p className="mt-1 text-sm font-semibold text-[var(--cp-ink)]">
               {formatGb(usedGb)} / {formatGb(totalGb)}
             </p>
           </div>
           <span className={`rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide ${summaryTone.pillClass}`}>
-            {summaryTone.label}
+            {t(`storage.health.${summaryTone.label}`, summaryTone.label)}
           </span>
         </div>
         <div className="mt-2 h-2 overflow-hidden rounded-full bg-white">
           <div className={`h-full rounded-full ${summaryTone.barClass}`} style={{ width: `${usagePercent}%` }} />
         </div>
         <div className="mt-2 flex items-center justify-between text-[11px] text-[var(--cp-muted)]">
-          <span>{usagePercent}% used</span>
-          <span>{formatGb(freeGb)} free</span>
+          <span>{t('storage.percentUsed', '{value}% used', { value: usagePercent })}</span>
+          <span>{t('storage.freeAmount', '{value} free', { value: formatGb(freeGb) })}</span>
         </div>
       </div>
 
       {!compact ? (
         <div className="grid gap-2 sm:grid-cols-3">
           <div className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2 text-xs">
-            <p className="uppercase tracking-wide text-[var(--cp-muted)]">Healthy</p>
+            <p className="uppercase tracking-wide text-[var(--cp-muted)]">{t('storage.health.healthy', 'Healthy')}</p>
             <p className="mt-1 text-lg font-semibold text-emerald-700">{healthCounts.healthy}</p>
           </div>
           <div className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2 text-xs">
-            <p className="uppercase tracking-wide text-[var(--cp-muted)]">Warning</p>
+            <p className="uppercase tracking-wide text-[var(--cp-muted)]">{t('storage.health.warning', 'Warning')}</p>
             <p className="mt-1 text-lg font-semibold text-amber-700">{healthCounts.warning}</p>
           </div>
           <div className="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-3 py-2 text-xs">
-            <p className="uppercase tracking-wide text-[var(--cp-muted)]">Critical</p>
+            <p className="uppercase tracking-wide text-[var(--cp-muted)]">{t('storage.health.critical', 'Critical')}</p>
             <p className="mt-1 text-lg font-semibold text-rose-700">{healthCounts.critical}</p>
           </div>
         </div>
@@ -147,7 +150,7 @@ const StorageDiskStatusPanel = ({
               <div className="min-w-0">
                 <p className="truncate text-sm font-semibold text-[var(--cp-ink)]">{diskItem.label}</p>
                 <p className="truncate text-xs text-[var(--cp-muted)]">
-                  {diskItem.mount} - {diskItem.fs ?? 'unknown'}
+                  {diskItem.mount} - {diskItem.fs ?? t('storage.unknownFs', 'unknown')}
                 </p>
               </div>
               <span className={`text-xs font-semibold ${diskItem.health.textClass}`}>{diskItem.usagePercent}%</span>
@@ -164,7 +167,7 @@ const StorageDiskStatusPanel = ({
               </span>
               {!compact ? (
                 <span className={`rounded-full px-2 py-0.5 font-semibold uppercase tracking-wide ${diskItem.health.pillClass}`}>
-                  {diskItem.health.label}
+                  {t(`storage.health.${diskItem.health.label}`, diskItem.health.label)}
                 </span>
               ) : null}
             </div>
@@ -174,12 +177,12 @@ const StorageDiskStatusPanel = ({
 
       {!visibleDisks.length ? (
         <div className="rounded-2xl border border-dashed border-[var(--cp-border)] bg-[var(--cp-surface-muted)] px-4 py-6 text-sm text-[var(--cp-muted)]">
-          No disk details available yet.
+          {t('storage.noDiskDetails', 'No disk details available yet.')}
         </div>
       ) : null}
 
       {hiddenCount > 0 ? (
-        <p className="text-xs text-[var(--cp-muted)]">+ {hiddenCount} more disks in full storage view.</p>
+        <p className="text-xs text-[var(--cp-muted)]">{t('storage.moreDisks', '+ {count} more disks in full storage view.', { count: hiddenCount })}</p>
       ) : null}
 
       {errorMessage ? (

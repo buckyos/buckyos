@@ -1,17 +1,20 @@
-use async_trait::async_trait;
 use ::kRPC::*;
+use async_trait::async_trait;
 use buckyos_api::msg_queue::*;
 use buckyos_kit::get_buckyos_service_local_data_dir;
-use serde::{Deserialize, Serialize};
-use sled::{transaction::Transactional, Db, IVec, Tree};
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
-use std::path::Path;
-use tokio::task;
-use cyfs_gateway_lib::{HttpServer, ServerError, ServerResult, StreamInfo, serve_http_by_rpc_handler, server_err, ServerErrorCode};
 use bytes::Bytes;
+use cyfs_gateway_lib::{
+    HttpServer, ServerError, ServerErrorCode, ServerResult, StreamInfo, serve_http_by_rpc_handler,
+    server_err,
+};
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
+use serde::{Deserialize, Serialize};
+use sled::{Db, IVec, Tree, transaction::Transactional};
+use std::path::Path;
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::task;
 
 pub struct SledMsgQueueServer {
     handler: MsgQueueServerHandler<SledMsgQueue>,
@@ -33,7 +36,16 @@ impl RPCHandler for SledMsgQueueServer {
         req: RPCRequest,
         ip_from: std::net::IpAddr,
     ) -> std::result::Result<RPCResponse, RPCErrors> {
-        self.handler.handle_rpc_call(req, ip_from).await
+        let req_seq = req.seq;
+        let req_trace_id = req.trace_id.clone();
+        match self.handler.handle_rpc_call(req, ip_from).await {
+            Ok(resp) => Ok(resp),
+            Err(err) => Ok(RPCResponse {
+                result: RPCResult::Failed(err.to_string()),
+                seq: req_seq,
+                trace_id: req_trace_id,
+            }),
+        }
     }
 }
 
@@ -47,7 +59,10 @@ impl HttpServer for SledMsgQueueServer {
         if *req.method() == Method::POST {
             return serve_http_by_rpc_handler(req, info, self).await;
         }
-        Err(server_err!(ServerErrorCode::BadRequest, "Method not allowed"))
+        Err(server_err!(
+            ServerErrorCode::BadRequest,
+            "Method not allowed"
+        ))
     }
 
     fn id(&self) -> String {
@@ -90,11 +105,13 @@ pub struct SledMsgQueue {
 
 impl SledMsgQueue {
     pub fn new() -> std::result::Result<Self, Box<dyn std::error::Error>> {
-        let data_path = get_buckyos_service_local_data_dir("kmsg", None);
+        let data_path = get_buckyos_service_local_data_dir("kmsg");
         Self::new_in_dir(data_path)
     }
 
-    pub fn new_in_dir<P: AsRef<Path>>(path: P) -> std::result::Result<Self, Box<dyn std::error::Error>> {
+    pub fn new_in_dir<P: AsRef<Path>>(
+        path: P,
+    ) -> std::result::Result<Self, Box<dyn std::error::Error>> {
         let db = sled::open(path)?;
         Ok(Self {
             queues: db.open_tree("queues")?,
@@ -142,17 +159,13 @@ impl SledMsgQueue {
 
     fn decode_queue_config(value: &IVec) -> std::result::Result<QueueConfig, RPCErrors> {
         serde_json::from_slice(value).map_err(|err| {
-            RPCErrors::ReasonError(format!(
-                "Failed to decode queue config: {}",
-                err
-            ))
+            RPCErrors::ReasonError(format!("Failed to decode queue config: {}", err))
         })
     }
 
     fn decode_queue_meta(value: &IVec) -> std::result::Result<QueueMeta, RPCErrors> {
-        serde_json::from_slice(value).map_err(|err| {
-            RPCErrors::ReasonError(format!("Failed to decode queue meta: {}", err))
-        })
+        serde_json::from_slice(value)
+            .map_err(|err| RPCErrors::ReasonError(format!("Failed to decode queue meta: {}", err)))
     }
 
     fn encode_queue_meta(meta: &QueueMeta) -> std::result::Result<Vec<u8>, RPCErrors> {
@@ -166,9 +179,8 @@ impl SledMsgQueue {
     }
 
     fn encode_message(message: &Message) -> std::result::Result<Vec<u8>, RPCErrors> {
-        serde_json::to_vec(message).map_err(|err| {
-            RPCErrors::ReasonError(format!("Failed to encode message: {}", err))
-        })
+        serde_json::to_vec(message)
+            .map_err(|err| RPCErrors::ReasonError(format!("Failed to encode message: {}", err)))
     }
 
     fn next_id(&self, key: &str) -> std::result::Result<u64, RPCErrors> {
@@ -203,9 +215,7 @@ impl SledMsgQueue {
             .queue_meta
             .get(key)
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?
-            .ok_or_else(|| {
-                RPCErrors::ReasonError(format!("Queue not found: {}", queue_urn))
-            })?;
+            .ok_or_else(|| RPCErrors::ReasonError(format!("Queue not found: {}", queue_urn)))?;
         Self::decode_queue_meta(&meta)
     }
 
@@ -215,9 +225,7 @@ impl SledMsgQueue {
             .queues
             .get(key)
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?
-            .ok_or_else(|| {
-                RPCErrors::ReasonError(format!("Queue not found: {}", queue_urn))
-            })?;
+            .ok_or_else(|| RPCErrors::ReasonError(format!("Queue not found: {}", queue_urn)))?;
         Self::decode_queue_config(&config)
     }
 
@@ -251,8 +259,8 @@ impl MsgQueueHandler for SledMsgQueue {
         };
         let queue_urn = calc_queue_urn(appid, app_owner, &name);
         let key = Self::queue_key(&queue_urn);
-        let config_data = serde_json::to_vec(&config)
-            .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+        let config_data =
+            serde_json::to_vec(&config).map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
         let create_result = self
             .queues
             .compare_and_swap(key.clone(), None as Option<IVec>, Some(config_data))
@@ -369,8 +377,8 @@ impl MsgQueueHandler for SledMsgQueue {
                 queue_urn
             )));
         }
-        let config_data = serde_json::to_vec(&config)
-            .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+        let config_data =
+            serde_json::to_vec(&config).map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
         self.queues
             .insert(key, config_data)
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
@@ -403,20 +411,14 @@ impl MsgQueueHandler for SledMsgQueue {
             .transaction(|trees| {
                 let (messages, queue_meta) = trees;
                 let meta_value = queue_meta.get(&queue_key)?.ok_or_else(|| {
-                    sled::transaction::ConflictableTransactionError::Abort(
-                        RPCErrors::ReasonError(format!(
-                            "Queue not found: {}",
-                            queue_urn
-                        )),
-                    )
+                    sled::transaction::ConflictableTransactionError::Abort(RPCErrors::ReasonError(
+                        format!("Queue not found: {}", queue_urn),
+                    ))
                 })?;
                 let mut meta: QueueMeta = serde_json::from_slice(&meta_value).map_err(|err| {
-                    sled::transaction::ConflictableTransactionError::Abort(
-                        RPCErrors::ReasonError(format!(
-                            "Failed to decode queue meta: {}",
-                            err
-                        )),
-                    )
+                    sled::transaction::ConflictableTransactionError::Abort(RPCErrors::ReasonError(
+                        format!("Failed to decode queue meta: {}", err),
+                    ))
                 })?;
                 let index = meta.next_index;
                 meta.next_index += 1;
@@ -430,20 +432,20 @@ impl MsgQueueHandler for SledMsgQueue {
                 let mut stored_message = message.clone();
                 stored_message.index = index;
                 let data = serde_json::to_vec(&stored_message).map_err(|err| {
-                    sled::transaction::ConflictableTransactionError::Abort(
-                        RPCErrors::ReasonError(format!("Failed to encode message: {}", err)),
-                    )
+                    sled::transaction::ConflictableTransactionError::Abort(RPCErrors::ReasonError(
+                        format!("Failed to encode message: {}", err),
+                    ))
                 })?;
                 let msg_key = SledMsgQueue::message_key(queue_urn, index);
                 messages.insert(msg_key, data)?;
-                queue_meta.insert(queue_key.clone(), serde_json::to_vec(&meta).map_err(|err| {
-                    sled::transaction::ConflictableTransactionError::Abort(
-                        RPCErrors::ReasonError(format!(
-                            "Failed to encode queue meta: {}",
-                            err
-                        )),
-                    )
-                })?)?;
+                queue_meta.insert(
+                    queue_key.clone(),
+                    serde_json::to_vec(&meta).map_err(|err| {
+                        sled::transaction::ConflictableTransactionError::Abort(
+                            RPCErrors::ReasonError(format!("Failed to encode queue meta: {}", err)),
+                        )
+                    })?,
+                )?;
                 Ok(index)
             })
             .map_err(|err| match err {
@@ -472,7 +474,11 @@ impl MsgQueueHandler for SledMsgQueue {
         _ctx: RPCContext,
     ) -> std::result::Result<SubscriptionId, RPCErrors> {
         let meta = self.get_queue_meta(queue_urn)?;
-        let first_index = if meta.first_index == 0 { 1 } else { meta.first_index };
+        let first_index = if meta.first_index == 0 {
+            1
+        } else {
+            meta.first_index
+        };
         let last_index = meta.last_index;
         let cursor = match position {
             SubPosition::Earliest => first_index,
@@ -500,8 +506,8 @@ impl MsgQueueHandler for SledMsgQueue {
             queue_urn: queue_urn.to_string(),
             cursor,
         };
-        let data = serde_json::to_vec(&sub)
-            .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+        let data =
+            serde_json::to_vec(&sub).map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
         self.subs
             .insert(sub_id.as_bytes(), data)
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
@@ -568,6 +574,29 @@ impl MsgQueueHandler for SledMsgQueue {
         Ok(messages)
     }
 
+    async fn handle_read_message(
+        &self,
+        queue_urn: &str,
+        cursor: MsgIndex,
+        length: usize,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Vec<Message>, RPCErrors> {
+        let _ = self.get_queue_meta(queue_urn)?;
+        let start = Self::message_key(queue_urn, cursor);
+        let end = Self::message_key(queue_urn, u64::MAX);
+        let mut messages = Vec::new();
+        for item in self.messages.range(start..=end) {
+            let (_, value) = item.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+            let msg = Self::decode_message(&value)?;
+            messages.push(msg);
+            if messages.len() >= length {
+                break;
+            }
+        }
+
+        Ok(messages)
+    }
+
     async fn handle_commit_ack(
         &self,
         sub_id: &str,
@@ -582,8 +611,8 @@ impl MsgQueueHandler for SledMsgQueue {
         let mut sub: SubscriptionState = serde_json::from_slice(&sub_value)
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
         sub.cursor = index + 1;
-        let data = serde_json::to_vec(&sub)
-            .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+        let data =
+            serde_json::to_vec(&sub).map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
         self.subs
             .insert(sub_id.as_bytes(), data)
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
@@ -605,7 +634,11 @@ impl MsgQueueHandler for SledMsgQueue {
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
 
         let meta = self.get_queue_meta(&sub.queue_urn)?;
-        let first_index = if meta.first_index == 0 { 1 } else { meta.first_index };
+        let first_index = if meta.first_index == 0 {
+            1
+        } else {
+            meta.first_index
+        };
         let last_index = meta.last_index;
         sub.cursor = match index {
             SubPosition::Earliest => first_index,
@@ -613,8 +646,8 @@ impl MsgQueueHandler for SledMsgQueue {
             SubPosition::At(value) => value,
         };
 
-        let data = serde_json::to_vec(&sub)
-            .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+        let data =
+            serde_json::to_vec(&sub).map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
         self.subs
             .insert(sub_id.as_bytes(), data)
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
@@ -636,9 +669,7 @@ impl MsgQueueHandler for SledMsgQueue {
             let meta_value = queue_meta
                 .get(SledMsgQueue::queue_key(&queue_urn))
                 .map_err(|err| RPCErrors::ReasonError(err.to_string()))?
-                .ok_or_else(|| {
-                    RPCErrors::ReasonError(format!("Queue not found: {}", queue_urn))
-                })?;
+                .ok_or_else(|| RPCErrors::ReasonError(format!("Queue not found: {}", queue_urn)))?;
             let mut meta = SledMsgQueue::decode_queue_meta(&meta_value)?;
 
             let start = SledMsgQueue::message_key(&queue_urn, 0);
@@ -749,16 +780,18 @@ mod tests {
             )
             .await?;
         // duplicate creation should fail
-        assert!(queue
-            .handle_create_queue(
-                Some("inbox"),
-                "app",
-                "owner",
-                config.clone(),
-                RPCContext::default(),
-            )
-            .await
-            .is_err());
+        assert!(
+            queue
+                .handle_create_queue(
+                    Some("inbox"),
+                    "app",
+                    "owner",
+                    config.clone(),
+                    RPCContext::default(),
+                )
+                .await
+                .is_err()
+        );
 
         // update config and verify persisted
         let mut new_cfg = config.clone();
@@ -820,6 +853,17 @@ mod tests {
             .handle_fetch_messages(&sub_id, 1, false, RPCContext::default())
             .await?;
         assert!(msgs.is_empty());
+        let history = queue
+            .handle_read_message(&queue_urn, 1, 2, RPCContext::default())
+            .await?;
+        assert_eq!(
+            history.iter().map(|m| m.index).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        let msgs = queue
+            .handle_fetch_messages(&sub_id, 1, false, RPCContext::default())
+            .await?;
+        assert!(msgs.is_empty());
 
         // seek back to earliest and read again
         queue
@@ -865,25 +909,30 @@ mod tests {
         queue
             .handle_unsubscribe(&sub_latest, RPCContext::default())
             .await?;
-        assert!(queue
-            .handle_fetch_messages(&sub_id, 1, false, RPCContext::default())
-            .await
-            .is_err());
+        assert!(
+            queue
+                .handle_fetch_messages(&sub_id, 1, false, RPCContext::default())
+                .await
+                .is_err()
+        );
 
         // delete queue
         queue
             .handle_delete_queue(&queue_urn, RPCContext::default())
             .await?;
-        assert!(queue
-            .handle_get_queue_stats(&queue_urn, RPCContext::default())
-            .await
-            .is_err());
+        assert!(
+            queue
+                .handle_get_queue_stats(&queue_urn, RPCContext::default())
+                .await
+                .is_err()
+        );
 
         Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn test_multiple_subscribers_and_messages() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    async fn test_multiple_subscribers_and_messages()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let (_tmp, queue) = setup_queue();
         let queue_urn = queue
             .handle_create_queue(
@@ -934,7 +983,10 @@ mod tests {
         let msgs = queue
             .handle_fetch_messages(&sub_earliest, 3, true, RPCContext::default())
             .await?;
-        assert_eq!(msgs.iter().map(|m| m.index).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(
+            msgs.iter().map(|m| m.index).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
 
         // mid reads two without commit, then commit to 6
         let msgs = queue
@@ -963,7 +1015,10 @@ mod tests {
         let msgs = queue
             .handle_fetch_messages(&sub_latest, 10, true, RPCContext::default())
             .await?;
-        assert_eq!(msgs.iter().map(|m| m.index).collect::<Vec<_>>(), vec![11, 12]);
+        assert_eq!(
+            msgs.iter().map(|m| m.index).collect::<Vec<_>>(),
+            vec![11, 12]
+        );
 
         // prune older messages (<6)
         let removed = queue
@@ -981,13 +1036,19 @@ mod tests {
         let msgs = queue
             .handle_fetch_messages(&sub_earliest, 3, true, RPCContext::default())
             .await?;
-        assert_eq!(msgs.iter().map(|m| m.index).collect::<Vec<_>>(), vec![6, 7, 8]);
+        assert_eq!(
+            msgs.iter().map(|m| m.index).collect::<Vec<_>>(),
+            vec![6, 7, 8]
+        );
 
         // mid cursor at 7 after commit; fetch remaining
         let msgs = queue
             .handle_fetch_messages(&sub_mid, 10, true, RPCContext::default())
             .await?;
-        assert_eq!(msgs.iter().map(|m| m.index).collect::<Vec<_>>(), vec![7, 8, 9, 10, 11, 12]);
+        assert_eq!(
+            msgs.iter().map(|m| m.index).collect::<Vec<_>>(),
+            vec![7, 8, 9, 10, 11, 12]
+        );
 
         // cleanup
         queue
@@ -1002,6 +1063,48 @@ mod tests {
         queue
             .handle_delete_queue(&queue_urn, RPCContext::default())
             .await?;
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_path_queue_name_roundtrip() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
+        let (_tmp, queue) = setup_queue();
+        let queue_urn = "/jarvis.test.buckyos.io/sessions/tg:lzc_jarvis:5397330802/msg";
+        let sub_id = "/jarvis.test.buckyos.io/sessions/tg:lzc_jarvis:5397330802/msg_subscription";
+
+        let created = queue
+            .handle_create_queue(
+                Some(queue_urn),
+                "opendan",
+                "jarvis.test.buckyos.io",
+                QueueConfig::default(),
+                RPCContext::default(),
+            )
+            .await?;
+        assert_eq!(created, queue_urn);
+
+        queue
+            .handle_post_message(queue_urn, make_message("hello"), RPCContext::default())
+            .await?;
+
+        queue
+            .handle_subscribe(
+                queue_urn,
+                "jarvis.test.buckyos.io",
+                "opendan",
+                Some(sub_id.to_string()),
+                SubPosition::Earliest,
+                RPCContext::default(),
+            )
+            .await?;
+
+        let messages = queue
+            .handle_fetch_messages(sub_id, 1, true, RPCContext::default())
+            .await?;
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].payload, b"hello".to_vec());
 
         Ok(())
     }

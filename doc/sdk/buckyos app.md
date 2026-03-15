@@ -20,7 +20,9 @@
 ## APP的安装
 - 通过AppId安装,如安装时未制定版本号,则安装发布到当前OS Channel(硬件名+nightly | stable)的最新版本(HEAD)
 - 首先 App Installer会把整个App的包(包含所有subpackage)下载到zone repo
-- App Installer会收集用户的配置,并在SystemConfig中增加"已安装APP"的配置,配置如下
+- App Installer会收集用户的配置,并在SystemConfig中增加"已安装APP"的配置。
+- 新设计下，App 在运行时看到的核心目录是固定的：`/tmp/`、`/config/*`、`/home/$userid/`、`/home/$userid/.local/share/$appid/`。安装配置不应再要求用户自定义旧的 `data_mount_point/cache_mount_point/local_cache_mount_point` 三段式目录。
+- 一个更接近当前设计的配置示例如下：
 
 ```json
 // kv://apps/{userid}/apps/{app_id},app_id是不包含app的main-name,默认会用到域名里
@@ -30,14 +32,6 @@
   "source" : "http://xxx.com/index.db",//是从哪个源得到的app_info
   "enable" : "true", //是否启用
   "single_instance" : true,
- //安装配置,注意与app自己的settings区分,app没有权限修改本配置
-  "data_mount_point" : "/opt/data", //$data_dir是系统基于appid和userid构造的,位于DFS上的目录.系统会自动备份该目录. 有状态应用需要将该目录与docker内部的一个目录关联
-  "cache_mount_point" : "/opt/cache",//$data_dir是系统基于appid和userid构造的,位于DFS上的缓存目录.系统会尽量保留该目录以帮助应用提升性能.该配置可为空
-  "local_cache_mount_point" : "/opt/tmp",//$local_cache_dir是系统基于appid和userid构造的,位于本地文件系统上的缓存目录.该目录可能随时被清理并且永远不会被备份.该配置可为空
-
-  "data_mount_point" : "/srv",
-  "cache_mount_point" : "/database/",
-  "local_cache_mount_point" : "/config/",
   "max_cpu_num" : 4,
   "max_cpu_percent" : 80, 
   "memory_quota" : 1073741824, 
@@ -54,6 +48,12 @@
   }
 }
 ```
+- 其中固定路径语义应统一为：
+  - 应用永久数据：`/home/$userid/.local/share/$appid/`
+  - 应用临时数据：`/tmp/buckyos/$appid`
+  - 应用只读配置视图：`/config/*`
+  - 应用自己的用户配置键：`/config/users/$userid/apps/$appid/settings`
+- 如果应用需要访问超出默认隔离范围的目录，应通过 `permissions.extra_mount` 显式申请，并由用户授权。
 - App Installer会主动调用Scheduler的onAppInstall方法让其立刻执行一次调度,以让app的安装立刻生效.
   如未调用,Scheduler也会在自己的常规调度里处理应用安装(根据调度器的调度计划安排可能会有所延迟)
 - 调度器会产生必要的配置,核心是

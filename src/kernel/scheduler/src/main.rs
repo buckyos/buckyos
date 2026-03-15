@@ -1,8 +1,8 @@
 #![allow(unused_mut, unused, dead_code)]
 mod app;
 mod scheduler;
-mod service;
 mod scheduler_server;
+mod service;
 mod system_config_agent;
 mod system_config_builder;
 
@@ -11,12 +11,13 @@ mod scheduler_test;
 
 use jsonwebtoken::jwk::Jwk;
 use log::*;
-use serde_json::Value;
 use serde_json::json;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::process::exit;
 //use upon::Engine;
 
+use anyhow::Result;
 use app::*;
 use buckyos_api::*;
 use buckyos_api::*;
@@ -24,17 +25,15 @@ use buckyos_kit::*;
 use name_client::*;
 use name_lib::*;
 use scheduler_server::*;
-use service::*;
-use system_config_agent::{
-    schedule_action_to_tx_actions, schedule_loop, update_node_gateway_config,
-};
-use system_config_builder::{StartConfigSummary, SystemConfigBuilder};
 use server_runner::*;
+use service::*;
 use std::sync::Arc;
-use anyhow::Result;
+use system_config_agent::schedule_loop;
+use system_config_builder::{StartConfigSummary, SystemConfigBuilder};
 
-
-async fn create_init_list_by_template(zone_boot_config: &ZoneBootConfig) -> Result<HashMap<String, String>> {
+async fn create_init_list_by_template(
+    zone_boot_config: &ZoneBootConfig,
+) -> Result<HashMap<String, String>> {
     //load start_parms from active_service.
     let start_params_file_path = get_buckyos_system_etc_dir().join("start_config.json");
     info!(
@@ -44,13 +43,17 @@ async fn create_init_list_by_template(zone_boot_config: &ZoneBootConfig) -> Resu
     let start_params_str = tokio::fs::read_to_string(start_params_file_path).await?;
     let mut start_params: serde_json::Value = serde_json::from_str(&start_params_str)?;
     // 将Windows路径中的反斜杠转换为正斜杠，避免TOML转义问题
-    let buckyos_root = get_buckyos_root_dir().to_string_lossy().to_string().replace('\\', "/");
+    let buckyos_root = get_buckyos_root_dir()
+        .to_string_lossy()
+        .to_string()
+        .replace('\\', "/");
     start_params["BUCKYOS_ROOT"] = json!(buckyos_root);
     let start_config = StartConfigSummary::from_value(&start_params)?;
 
     //generate dynamic params
     let (private_key_pem, public_key_jwk) = generate_ed25519_key_pair();
-    let verify_hub_public_key: Jwk = serde_json::from_value(public_key_jwk).map_err(|e| anyhow::anyhow!("invalid jwk: {}", e))?;
+    let verify_hub_public_key: Jwk = serde_json::from_value(public_key_jwk)
+        .map_err(|e| anyhow::anyhow!("invalid jwk: {}", e))?;
 
     //load boot.template
     let template_file_path = get_buckyos_system_etc_dir()
@@ -82,10 +85,16 @@ async fn create_init_list_by_template(zone_boot_config: &ZoneBootConfig) -> Resu
     }
     let mut boot_config: HashMap<String, String> = toml::from_str(&result)?;
     if !boot_config.contains_key("system/rbac/base_policy") {
-        boot_config.insert("system/rbac/base_policy".to_string(), rbac::DEFAULT_POLICY.to_string());
+        boot_config.insert(
+            "system/rbac/base_policy".to_string(),
+            rbac::DEFAULT_POLICY.to_string(),
+        );
     }
     if !boot_config.contains_key("system/rbac/model") {
-        boot_config.insert("system/rbac/model".to_string(), rbac::DEFAULT_MODEL.to_string());
+        boot_config.insert(
+            "system/rbac/model".to_string(),
+            rbac::DEFAULT_MODEL.to_string(),
+        );
     }
 
     let ood_name = zone_boot_config.oods.first().unwrap().name.as_str();
@@ -94,17 +103,32 @@ async fn create_init_list_by_template(zone_boot_config: &ZoneBootConfig) -> Resu
         .add_boot_config(&start_config, &verify_hub_public_key, zone_boot_config)?
         .add_user_doc(&start_config)?
         .add_default_accounts(&start_config)?
-        .add_device_doc(ood_name,&start_config)?
+        .add_device_doc(ood_name, &start_config)?
         .add_system_defaults()?
-        .add_verify_hub(&private_key_pem).await?
-        .add_scheduler().await?
-        .add_repo_service().await?
-        .add_control_panel().await?;
+        .add_verify_hub(&private_key_pem)
+        .await?
+        .add_scheduler()
+        .await?
+        .add_task_mgr()
+        .await?
+        .add_kmsg()
+        .await?
+        .add_repo_service()
+        .await?
+        .add_aicc(&start_config)
+        .await?
+        .add_msg_center(&start_config)
+        .await?
+        .add_control_panel()
+        .await?;
 
     info!("add_kernel_services success, add default apps and gateway settings...");
     builder
         //.add_smb_service().await?
-        .add_default_apps(&start_config).await?
+        .add_default_apps(&start_config)
+        .await?
+        .add_default_agents(&start_config)
+        .await?
         .add_gateway_settings(&start_config)?
         .add_node(ood_name)?;
     let mut config = builder.build();
@@ -126,8 +150,7 @@ async fn do_boot_scheduler() -> Result<()> {
         zone_boot_config_str.as_ref().unwrap()
     );
     let zone_boot_config_json = zone_boot_config_str.unwrap();
-    let zone_boot_config: ZoneBootConfig =
-        serde_json::from_str(&zone_boot_config_json).unwrap();
+    let zone_boot_config: ZoneBootConfig = serde_json::from_str(&zone_boot_config_json).unwrap();
     let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN");
 
     if rpc_session_token_str.is_err() {
@@ -143,10 +166,12 @@ async fn do_boot_scheduler() -> Result<()> {
         ));
     }
 
-    let mut init_list = create_init_list_by_template(&zone_boot_config).await.map_err(|e| {
-        error!("create_init_list_by_template failed: {:?}", e);
-        e
-    })?;
+    let mut init_list = create_init_list_by_template(&zone_boot_config)
+        .await
+        .map_err(|e| {
+            error!("create_init_list_by_template failed: {:?}", e);
+            e
+        })?;
 
     let boot_config_str = init_list.get("boot/config");
     if boot_config_str.is_none() {
@@ -154,11 +179,12 @@ async fn do_boot_scheduler() -> Result<()> {
     }
     let boot_config_str = boot_config_str.unwrap();
     info!("after boot_config_str: {}", boot_config_str);
-    let mut zone_config: ZoneConfig = serde_json::from_str(boot_config_str.as_str()).map_err(|e| {
-        error!("load ZoneConfig from boot/config failed: {:?}", e);
-        e
-    })?;
-    zone_config.init_by_boot_config(&zone_boot_config,&zone_boot_config_json);
+    let mut zone_config: ZoneConfig =
+        serde_json::from_str(boot_config_str.as_str()).map_err(|e| {
+            error!("load ZoneConfig from boot/config failed: {:?}", e);
+            e
+        })?;
+    zone_config.init_by_boot_config(&zone_boot_config, &zone_boot_config_json);
     init_list.insert(
         "boot/config".to_string(),
         serde_json::to_string_pretty(&zone_config).unwrap(),
@@ -172,16 +198,18 @@ async fn do_boot_scheduler() -> Result<()> {
     info!("start boot schedule...");
     let boot_result = schedule_loop(true).await;
     if boot_result.is_err() {
-        error!("boot schedule_loop failed: {:?}", boot_result.err().unwrap());
+        error!(
+            "boot schedule_loop failed: {:?}",
+            boot_result.err().unwrap()
+        );
         return Err(anyhow::anyhow!("schedule_loop failed"));
     }
     system_config_client.refresh_trust_keys().await?;
     info!("system_config_service refresh trust keys success.");
-    
+
     info!("do boot scheduler success!");
     return Ok(());
 }
-
 
 async fn service_main(is_boot: bool) -> Result<i32> {
     init_logging("scheduler", true);
@@ -202,11 +230,14 @@ async fn service_main(is_boot: bool) -> Result<i32> {
             real_machine_config = machine_config.unwrap();
         }
         info!("machine_config: {:?}", &real_machine_config);
-    
-        init_name_lib(&real_machine_config.web3_bridge).await.map_err(|err| {
-            error!("init default name client failed! {}", err);
-            return String::from("init default name client failed!");
-        }).unwrap();
+
+        init_name_lib(&real_machine_config.web3_bridge)
+            .await
+            .map_err(|err| {
+                error!("init default name client failed! {}", err);
+                return String::from("init default name client failed!");
+            })
+            .unwrap();
         info!("init default name client OK!");
         set_buckyos_api_runtime(runtime);
         do_boot_scheduler().await.map_err(|e| {
@@ -223,25 +254,29 @@ async fn service_main(is_boot: bool) -> Result<i32> {
                     error!("init_buckyos_api_runtime failed: {:?}", e);
                     e
                 })?;
-                
-            runtime.login().await.map_err(|e| {
-                error!("buckyos-api-runtime::login failed: {:?}", e);
-                e
+
+        runtime.login().await.map_err(|e| {
+            error!("buckyos-api-runtime::login failed: {:?}", e);
+            e
         })?;
         set_buckyos_api_runtime(runtime);
 
         let scheduler_server = SchedulerServer::new();
-        
+
         //start!
         info!("Start Scheduler Server...");
         let runner = Runner::new(SCHEDULER_SERVICE_MAIN_PORT);
         runner.add_http_server("/kapi/scheduler".to_string(), Arc::new(scheduler_server));
-        runner.run().await;
-
-        schedule_loop(false).await.map_err(|e| {
-            error!("schedule_loop failed: {:?}", e);
-            e
+        info!("Start scheduler loop task...");
+        tokio::spawn(async move {
+            if let Err(err) = schedule_loop(false).await {
+                error!("schedule_loop failed: {:?}", err);
+            }
         });
+        if let Err(err) = runner.run().await {
+            error!("scheduler runner exited with error: {:?}", err);
+            return Err(anyhow::anyhow!("scheduler runner exited: {:?}", err));
+        }
         return Ok(0);
     }
 }
@@ -271,24 +306,25 @@ async fn main() {
 #[cfg(test)]
 mod test {
     use super::*;
-    use system_config_agent::*;
     use async_trait::async_trait;
+    use buckyos_api::test_config;
     use jsonwebtoken::{jwk::Jwk, DecodingKey};
     use name_client::{
         NameClient, NameClientConfig, NameInfo, NsProvider, RecordType, GLOBAL_NAME_CLIENT,
     };
     use name_lib::{
-        DeviceConfig, DeviceInfo, EncodedDocument, NSError, OODDescriptionString, DEFAULT_EXPIRE_TIME,
+        DeviceConfig, DeviceInfo, EncodedDocument, NSError, OODDescriptionString,
+        DEFAULT_EXPIRE_TIME,
     };
     use package_lib::PackageId;
     use serde_json::json;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
     use std::fs;
     use std::net::IpAddr;
     use std::path::Path;
     use std::sync::Arc;
+    use system_config_agent::*;
     use tempfile::TempDir;
-    use buckyos_api::test_config;
 
     const TEST_USERNAME: &str = "devtest";
     const TEST_ZONE_NAME: &str = "devtest";
@@ -300,7 +336,6 @@ mod test {
     async fn test_gen_service_doc() -> Result<()> {
         let mut docs = test_config::gen_kernel_service_docs();
         for (did, doc) in docs.iter() {
-            
             let doc_path = format!("/tmp/{}.doc.json", did.to_raw_host_name());
             fs::write(doc_path.clone(), doc.to_string()).unwrap();
             println!("path: {}, doc: {}", doc_path, doc.to_string());
@@ -313,7 +348,10 @@ mod test {
         let temp_root = TempDir::new().unwrap();
         unsafe {
             //std::env::set_var("BUCKY_LOG", "debug");
-            std::env::set_var("BUCKYOS_ROOT", temp_root.path().to_string_lossy().to_string());
+            std::env::set_var(
+                "BUCKYOS_ROOT",
+                temp_root.path().to_string_lossy().to_string(),
+            );
         }
 
         buckyos_kit::init_logging("scheduler-test", false);
@@ -327,14 +365,23 @@ mod test {
             .expect("init list generation should succeed");
         ensure_device_info_entry(
             &mut init_map,
-            zone_boot_config.owner_key.as_ref().expect("owner key missing"),
+            zone_boot_config
+                .owner_key
+                .as_ref()
+                .expect("owner key missing"),
         )
         .expect("device info generation failed");
 
         assert!(init_map.contains_key("boot/config"));
         assert!(init_map.contains_key("services/verify-hub/spec"));
         assert!(init_map.contains_key("services/scheduler/spec"));
+        assert!(init_map.contains_key("services/task-manager/spec"));
+        assert!(init_map.contains_key("services/kmsg/spec"));
         assert!(init_map.contains_key("services/repo-service/spec"));
+        assert!(init_map.contains_key("services/repo-service/settings"));
+        assert!(init_map.contains_key("services/repo-service/pkg_list"));
+        assert!(init_map.contains_key("services/aicc/spec"));
+        assert!(init_map.contains_key("services/msg-center/spec"));
         //assert!(init_map.contains_key("services/smb-service/spec"));
 
         for (key, value) in init_map.iter() {
@@ -342,39 +389,19 @@ mod test {
         }
 
         println!("start test boot scheduler...");
-        let (mut scheduler_ctx, device_list) = create_scheduler_by_system_config(&init_map).unwrap();
-        let action_list = scheduler_ctx
-            .schedule(None)
-            .expect("schedule should succeed");
+        let schedule_plan = build_schedule_plan(&init_map, true)
+            .await
+            .expect("boot schedule should succeed");
 
-        let this_snapshot = serde_json::to_string_pretty(&scheduler_ctx).unwrap();
+        let this_snapshot = serde_json::to_string_pretty(&schedule_plan.schedule_snapshot).unwrap();
         println!("this_snapshot: {}", this_snapshot);
-    
-        let mut tx_actions = HashMap::new();
-        let mut need_update_gateway_node_list:HashSet<String> = HashSet::new();
-        let mut need_update_rbac = false;
-        for action in action_list {
-            let new_tx_actions = schedule_action_to_tx_actions(
-                &action,
-                &scheduler_ctx,
-                &device_list,
-                &init_map,
-                &mut need_update_gateway_node_list,
-                &mut need_update_rbac,
-            ).unwrap();
-            extend_kv_action_map(&mut tx_actions, &new_tx_actions);
-        }
-        
- 
-        need_update_rbac = true;
-        need_update_gateway_node_list = scheduler_ctx.nodes.keys().cloned().collect();
-       
 
-        if need_update_gateway_node_list.len() > 0 {
-            // 重新生成node_gateway_config
-            let update_gateway_node_list_actions = update_node_gateway_config(&need_update_gateway_node_list, &scheduler_ctx, &init_map).await.unwrap();
-            extend_kv_action_map(&mut tx_actions, &update_gateway_node_list_actions);
-        }
+        assert!(!schedule_plan.tx_actions.is_empty());
+        assert_eq!(schedule_plan.schedule_snapshot.nodes.len(), 1);
+        assert!(schedule_plan
+            .schedule_snapshot
+            .service_infos
+            .contains_key("scheduler"));
         unsafe {
             std::env::remove_var("BUCKYOS_ROOT");
         }
@@ -406,47 +433,49 @@ mod test {
 }
 """
 "system/rbac/base_policy" = """
-p, kernel, kv://*, read|write,allow
+p, kernel, /config/*, read|write,allow
 p, kernel, dfs://*, read|write,allow
 p, kernel, ndn://*, read|write,allow
 
-p, root, kv://*, read|write,allow
+p, root, /config/*, read|write,allow
 p, root, dfs://*, read|write,allow
 p, root, ndn://*, read|write,allow
 
-p, ood,kv://*,read,allow
-p, ood,kv://users/*/apps/*,read|write,allow
-p, ood,kv://nodes/{device}/*,read|write,allow
-p, ood,kv://services/*,read|write,allow
-p, ood,kv://system/rbac/policy,read|write,allow
+p, ood,/config/*,read,allow
+p, ood,/config/users/*/apps/*,read|write,allow
+p, ood,/config/users/*/agents/*,read|write,allow
+p, ood,/config/devices/{device}/*,read|write,allow
+p, ood,/config/nodes/{device}/*,read|write,allow
+p, ood,/config/services/*,read|write,allow
+p, ood,/config/system/rbac/policy,read|write,allow
 
-p, client, kv://boot/*, read,allow
-p, client,kv://devices/{device}/*,read,allow
-p, client,kv://devices/{device}/info,read|write,allow
+p, client, /config/boot/*, read,allow
+p, client,/config/devices/{device}/*,read,allow
+p, client,/config/devices/{device}/info,read|write,allow
 
-p, service, kv://boot/*, read,allow
-p, service,kv://services/{service}/*,read|write,allow
-p, service,kv://services/*/info,read,allow
-p, service,kv://users*,read,allow
-p, service,kv://users/*/*,read,allow
-p, service,kv://system/*,read,allow
+p, service, /config/boot/*, read,allow
+p, service,/config/services/{service}/*,read|write,allow
+p, service,/config/services/*/info,read,allow
+p, service,/config/users*,read,allow
+p, service,/config/users/*/*,read,allow
+p, service,/config/system/*,read,allow
 p, service,dfs://system/data/{service}/*,read|write,allow
 p, service,dfs://system/cache/{service}/*,read|write,allow
 
-p, app, kv://boot/*, read,allow
-p, app, kv://users/*/apps/{app}/settings,read|write,allow
-p, app, kv://users/*/apps/{app}/config,read,allow
-p, app, kv://users/*/apps/{app}/info,read,allow
+p, app, /config/boot/*, read,allow
+p, app, /config/users/*/apps/{app}/settings,read|write,allow
+p, app, /config/users/*/apps/{app}/config,read,allow
+p, app, /config/users/*/apps/{app}/info,read,allow
 p, app, dfs://users/*/appdata/{app}/*, read|write,allow
 p, app, dfs://users/*/cache/{app}/*, read|write,allow
-p, admin, kv://boot/*, read,allow
-p, admin,kv://users/{user}/*,read|write,allow
+p, admin, /config/boot/*, read,allow
+p, admin,/config/users/{user}/*,read|write,allow
 p, admin,dfs://users/{user}/*,read|write,allow
-p, admin,kv://services/*,read|write,allow
+p, admin,/config/services/*,read|write,allow
 p, admin,dfs://library/*,read|write,allow
-p, user, kv://boot/*, read,allow
-p, user,kv://users/{user}/*,read,allow
-p, user,kv://users/{user}/apps/*/*,read|write,allow
+p, user, /config/boot/*, read,allow
+p, user,/config/users/{user}/*,read,allow
+p, user,/config/users/{user}/apps/*/*,read|write,allow
 p, user,dfs://users/{user}/*,read|write,allow
 p, user,dfs://users/{user}/home/*,read|write,allow
 p, user,dfs://library/*,read,allow
@@ -455,6 +484,11 @@ g, node-daemon, kernel
 g, scheduler, kernel
 g, system-config, kernel
 g, verify-hub, kernel
+g, task-manager, kernel
+g, kmsg, kernel
+g, repo-service, kernel
+g, aicc, kernel
+g, msg-center, kernel
 g, control-panel, kernel
 g, buckycli, kernel
 g, cyfs-gateway, kernel
@@ -490,25 +524,19 @@ g, cyfs-gateway, kernel
 
         let etc_dir = root.join("etc");
         fs::create_dir_all(&etc_dir).unwrap();
-        let start_config_src: std::path::PathBuf = output_dir
-            .join(TEST_DEVICE_NAME)
-            .join("start_config.json");
-        fs::copy(
-            start_config_src,
-            etc_dir.join("start_config.json"),
-        )
-        .expect("failed to copy start_config");
+        let start_config_src: std::path::PathBuf =
+            output_dir.join(TEST_DEVICE_NAME).join("start_config.json");
+        fs::copy(start_config_src, etc_dir.join("start_config.json"))
+            .expect("failed to copy start_config");
 
         let zone_config_file = format!("{}.zone.json", TEST_HOSTNAME);
-        let zone_boot_path = output_dir
-            .join(zone_config_file);
+        let zone_boot_path = output_dir.join(zone_config_file);
         let mut zone_boot_config: ZoneBootConfig = serde_json::from_str(
             &fs::read_to_string(zone_boot_path).expect("failed to read zone boot config"),
         )
         .expect("failed to parse zone boot config");
 
-        let owner_config_path = output_dir
-            .join("user_config.json");
+        let owner_config_path = output_dir.join("user_config.json");
         let owner_config_value: serde_json::Value = serde_json::from_str(
             &fs::read_to_string(owner_config_path).expect("failed to read owner config"),
         )
@@ -538,17 +566,24 @@ g, cyfs-gateway, kernel
             .ok_or_else(|| format!("{} not found in init map", doc_key))?
             .clone();
 
-        let encoded_doc =
-            EncodedDocument::from_str(doc_value).map_err(|e| format!("invalid encoded doc: {:?}", e))?;
+        let encoded_doc = EncodedDocument::from_str(doc_value)
+            .map_err(|e| format!("invalid encoded doc: {:?}", e))?;
         let decoding_key =
             DecodingKey::from_jwk(owner_key).map_err(|e| format!("invalid owner jwk: {}", e))?;
-        let device_config =
-            DeviceConfig::decode(&encoded_doc, Some(&decoding_key)).map_err(|e| {
-                format!("failed to decode device document: {}", e)
-            })?;
-        let device_info = DeviceInfo::from_device_doc(&device_config);
-        let device_info_json =
-            serde_json::to_string(&device_info).map_err(|e| format!("serialize device info: {}", e))?;
+        let device_config = DeviceConfig::decode(&encoded_doc, Some(&decoding_key))
+            .map_err(|e| format!("failed to decode device document: {}", e))?;
+        let mut device_info = serde_json::to_value(DeviceInfo::from_device_doc(&device_config))
+            .map_err(|e| format!("serialize device info: {}", e))?;
+        let device_info_obj = device_info
+            .as_object_mut()
+            .ok_or_else(|| "device info is not a json object".to_string())?;
+        device_info_obj.insert("support_container".to_string(), json!(true));
+        device_info_obj.insert("cpu_mhz".to_string(), json!(16000));
+        device_info_obj.insert("total_mem".to_string(), json!(8_u64 * 1024 * 1024 * 1024));
+        device_info_obj.insert("mem_usage".to_string(), json!(0));
+        device_info_obj.insert("net_id".to_string(), json!(TEST_NET_ID));
+        let device_info_json = serde_json::to_string(&device_info)
+            .map_err(|e| format!("serialize device info: {}", e))?;
 
         init_map.insert(
             format!("devices/{}/info", TEST_DEVICE_NAME),
@@ -564,8 +599,14 @@ g, cyfs-gateway, kernel
         let client = NameClient::new(NameClientConfig::default());
 
         let mut docs = buckyos_api::test_config::gen_kernel_service_docs();
-        docs.insert(PackageId::unique_name_to_did("buckyos_filebrowser"), get_filebrowser_doc());
-        let docs = docs.into_iter().map(|(did, doc)| (did.to_raw_host_name(), doc)).collect();
+        docs.insert(
+            PackageId::unique_name_to_did("buckyos_filebrowser"),
+            get_filebrowser_doc(),
+        );
+        let docs = docs
+            .into_iter()
+            .map(|(did, doc)| (did.to_raw_host_name(), doc))
+            .collect();
         client
             .add_provider(Box::new(StaticProvider::new(docs)), None)
             .await;
@@ -623,9 +664,6 @@ g, cyfs-gateway, kernel
         let doc: EncodedDocument = EncodedDocument::from_str(doc_str.to_string()).unwrap();
         doc
     }
-
-
-
 
     #[derive(Clone)]
     struct StaticProvider {

@@ -1,18 +1,50 @@
 import {buckyos} from 'buckyos'
+import { ensureSessionToken } from '@/auth/authManager'
 
 const rpcClient = new buckyos.kRPCClient('/kapi/control-panel')
+
+const isAuthError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  const normalized = message.toLowerCase()
+  return (
+    normalized.includes('401') ||
+    normalized.includes('403') ||
+    normalized.includes('invalid token') ||
+    normalized.includes('permission denied') ||
+    normalized.includes('no permission') ||
+    normalized.includes('token')
+  )
+}
 
 const callRpc = async <T>(
   method: string,
   params: Record<string, unknown> = {},
 ): Promise<{ data: T | null; error: unknown }> => {
   try {
+    const sessionToken = await ensureSessionToken()
+    rpcClient.setSessionToken(sessionToken)
+
     const result = await rpcClient.call(method, params)
     if (!result || typeof result !== 'object') {
       throw new Error(`Invalid ${method} response`)
     }
     return { data: result as T, error: null }
   } catch (error) {
+    if (isAuthError(error)) {
+      try {
+        const refreshedToken = await ensureSessionToken({ forceRefresh: true })
+        rpcClient.setSessionToken(refreshedToken)
+
+        const retried = await rpcClient.call(method, params)
+        if (!retried || typeof retried !== 'object') {
+          throw new Error(`Invalid ${method} response`)
+        }
+        return { data: retried as T, error: null }
+      } catch (retryError) {
+        return { data: null, error: retryError }
+      }
+    }
+
     return { data: null, error }
   }
 }
@@ -26,7 +58,6 @@ const mockLayoutData: RootLayoutData = {
     { label: 'User Management', icon: 'users', path: '/users' },
     { label: 'Storage', icon: 'storage', path: '/storage' },
     { label: 'dApp Store', icon: 'apps', path: '/dapps' },
-    { label: 'Settings', icon: 'settings', path: '/settings' },
   ],
   secondaryNav: [
     { label: 'Recent Events', icon: 'bell', path: '/notifications', badge: '3' },
@@ -274,6 +305,13 @@ const mockZoneOverview: ZoneOverview = {
   sn: {
     url: 'http://sn.buckyos.ai/kapi/sn',
     username: 'meteor101',
+    host: 'sn.buckyos.ai',
+    ip: '207.246.96.13',
+    dnsARecords: ['207.246.96.13'],
+    dnsTxtRecords: ['PKX=...', 'DEV=...'],
+    digError: '',
+    selfCertState: true,
+    selfCertStateSource: '/opt/buckyos/data/cyfs_gateway/sn_dns/self_cert_state.json',
   },
   files: [
     {
@@ -478,6 +516,30 @@ export const fetchAppsList = async (): Promise<{ data: DappCard[] | null; error:
     return { data: null, error }
   }
   return { data: data.items.map((item) => normalizeAppItem(item)), error }
+}
+
+export const fetchAppsVersionList = async (
+  names: string[] = [],
+): Promise<{ data: Record<string, string> | null; error: unknown }> => {
+  const params = names.length > 0 ? { names } : {}
+  const { data, error } = await callRpc<AppsVersionListResponse>('apps.version.list', params)
+  if (!data || !Array.isArray(data.items)) {
+    return { data: null, error }
+  }
+
+  const versions: Record<string, string> = {}
+  for (const item of data.items) {
+    if (!item || typeof item.name !== 'string' || typeof item.version !== 'string') {
+      continue
+    }
+    const name = item.name.trim()
+    if (!name) {
+      continue
+    }
+    versions[name] = item.version
+  }
+
+  return { data: versions, error }
 }
 
 export const fetchSystemOverview = async (): Promise<{
@@ -711,6 +773,396 @@ export const fetchSysConfigTree = async (
 ): Promise<{ data: SysConfigTreeResponse | null; error: unknown }> =>
   callRpc<SysConfigTreeResponse>('sys_config.tree', { key, depth })
 
+export type ControlPanelLocale = 'en' | 'zh-CN'
+
+type ControlPanelLocaleResponse = {
+  key: string
+  locale: ControlPanelLocale
+  ok?: boolean
+}
+
+export const fetchControlPanelLocale = async (): Promise<{
+  data: ControlPanelLocaleResponse | null
+  error: unknown
+}> => {
+  const { data, error } = await callRpc<Partial<ControlPanelLocaleResponse>>('ui.locale.get', {})
+  const locale = data?.locale === 'zh-CN' ? 'zh-CN' : 'en'
+  return {
+    data: {
+      key: data?.key ?? 'services/control_panel/settings/locale',
+      locale,
+      ok: true,
+    },
+    error,
+  }
+}
+
+export const saveControlPanelLocale = async (
+  locale: ControlPanelLocale,
+): Promise<{ data: ControlPanelLocaleResponse | null; error: unknown }> => {
+  const { data, error } = await callRpc<Partial<ControlPanelLocaleResponse>>('ui.locale.set', { locale })
+  const normalized = data?.locale === 'zh-CN' ? 'zh-CN' : locale === 'zh-CN' ? 'zh-CN' : 'en'
+  return {
+    data: {
+      key: data?.key ?? 'services/control_panel/settings/locale',
+      locale: normalized,
+      ok: data?.ok ?? !error,
+    },
+    error,
+  }
+}
+
+export type AiModelOverview = {
+  providersOnline: number
+  providersTotal: number
+  defaultReplyModel: string
+  defaultSummaryModel: string
+  defaultTaskExtractModel: string
+  defaultAgentModel: string
+  avgLatencyMs: number
+  estimatedDailyCostUsd: number
+  lastDiagnosticsAt: string
+}
+
+export type AiProviderCard = {
+  id: string
+  displayName: string
+  providerType: string
+  status: 'healthy' | 'needs_setup' | 'degraded' | 'planned'
+  endpoint: string
+  authMode: string
+  credentialConfigured?: boolean
+  maskedApiKey?: string
+  availableModels?: string[]
+  capabilities: string[]
+  defaultModel: string
+  note: string
+}
+
+export type AiModelCatalogEntry = {
+  alias: string
+  providerId: string
+  providerModel: string
+  capabilities: string[]
+  features: string[]
+  useCases: string[]
+}
+
+export type AiPolicyEntry = {
+  id: string
+  label: string
+  primaryModel: string
+  fallbackModels: string[]
+  objective: string
+  status: 'active' | 'review' | 'planned'
+}
+
+export type AiDiagnosticEntry = {
+  id: string
+  title: string
+  status: 'pass' | 'warn' | 'pending'
+  detail: string
+  actionLabel: string
+}
+
+const mockAiModelsOverview: AiModelOverview = {
+  providersOnline: 2,
+  providersTotal: 5,
+  defaultReplyModel: 'gpt-fast',
+  defaultSummaryModel: 'gpt-fast',
+  defaultTaskExtractModel: 'gemini-ops',
+  defaultAgentModel: 'minimax-code-plan',
+  avgLatencyMs: 840,
+  estimatedDailyCostUsd: 2.37,
+  lastDiagnosticsAt: 'Today 13:40',
+}
+
+const mockAiProviders: AiProviderCard[] = [
+  {
+    id: 'openai-main',
+    displayName: 'OpenAI Main',
+    providerType: 'OpenAI',
+    status: 'healthy',
+    endpoint: 'https://api.openai.com/v1',
+    authMode: 'Bearer token',
+    credentialConfigured: true,
+    maskedApiKey: 'sk-a***demo',
+    availableModels: ['gpt-4.1-mini', 'gpt-4.1'],
+    capabilities: ['Reply', 'Summary', 'Tool calling'],
+    defaultModel: 'gpt-fast',
+    note: 'Primary cloud provider for Message Hub reply and summary flows.',
+  },
+  {
+    id: 'google-main',
+    displayName: 'Google Gemini',
+    providerType: 'Google',
+    status: 'healthy',
+    endpoint: 'https://generativelanguage.googleapis.com',
+    authMode: 'API key',
+    credentialConfigured: true,
+    maskedApiKey: 'AIza***demo',
+    availableModels: ['gemini-2.5-flash', 'gemini-2.5-pro'],
+    capabilities: ['Task extract', 'Multimodal', 'JSON output'],
+    defaultModel: 'gemini-ops',
+    note: 'Secondary provider used for extraction-heavy workflows and fallback coverage.',
+  },
+  {
+    id: 'minimax-main',
+    displayName: 'MiniMax',
+    providerType: 'MiniMax',
+    status: 'needs_setup',
+    endpoint: 'https://api.minimaxi.com/v1',
+    authMode: 'API key',
+    credentialConfigured: false,
+    maskedApiKey: undefined,
+    availableModels: [
+      'MiniMax-M2.5',
+      'MiniMax-M2.5-highspeed',
+      'MiniMax-M2.1',
+      'MiniMax-M2.1-highspeed',
+      'MiniMax-M2',
+    ],
+    capabilities: ['Code plan', 'API mode'],
+    defaultModel: 'MiniMax-M2.5',
+    note: 'Prepared for MiniMax code-planning and API-oriented workflows inside control_panel.',
+  },
+  {
+    id: 'openai-compatible',
+    displayName: 'OpenAI-Compatible Gateway',
+    providerType: 'Compatible',
+    status: 'needs_setup',
+    endpoint: 'http://127.0.0.1:11434/v1',
+    authMode: 'Optional token',
+    credentialConfigured: false,
+    maskedApiKey: undefined,
+    availableModels: ['custom'],
+    capabilities: ['Local LLM', 'Low-cost fallback'],
+    defaultModel: 'Not assigned',
+    note: 'Reserved for local or self-hosted models once the backend management flow is connected.',
+  },
+  {
+    id: 'claude-planned',
+    displayName: 'Claude',
+    providerType: 'Anthropic',
+    status: 'planned',
+    endpoint: 'https://api.anthropic.com',
+    authMode: 'API key',
+    credentialConfigured: false,
+    maskedApiKey: undefined,
+    availableModels: ['Claude Sonnet'],
+    capabilities: ['Long-form reasoning', 'Tool calling'],
+    defaultModel: 'Planned',
+    note: 'Documented as a future provider family; not wired in this control-panel-only phase.',
+  },
+]
+
+const mockAiModelCatalog: AiModelCatalogEntry[] = [
+  {
+    alias: 'minimax-code-plan',
+    providerId: 'minimax-main',
+    providerModel: 'MiniMax-Code-Plan',
+    capabilities: ['llm_router'],
+    features: ['plan', 'tool_calling', 'code'],
+    useCases: ['agent.plan', 'message_hub.reply'],
+  },
+  {
+    alias: 'minimax-api',
+    providerId: 'minimax-main',
+    providerModel: 'MiniMax-API',
+    capabilities: ['llm_router'],
+    features: ['json_output', 'tool_calling', 'api'],
+    useCases: ['message_hub.task_extract', 'agent.raw_explain'],
+  },
+  {
+    alias: 'gpt-fast',
+    providerId: 'openai-main',
+    providerModel: 'gpt-4.1-mini',
+    capabilities: ['llm_router'],
+    features: ['json_output', 'tool_calling'],
+    useCases: ['message_hub.reply', 'message_hub.summary'],
+  },
+  {
+    alias: 'gpt-plan',
+    providerId: 'openai-main',
+    providerModel: 'gpt-4.1',
+    capabilities: ['llm_router'],
+    features: ['plan', 'tool_calling', 'json_output'],
+    useCases: ['agent.plan', 'agent.raw_explain'],
+  },
+  {
+    alias: 'gemini-ops',
+    providerId: 'google-main',
+    providerModel: 'gemini-2.0-flash',
+    capabilities: ['llm_router'],
+    features: ['json_output', 'vision'],
+    useCases: ['message_hub.task_extract', 'message_hub.priority_rank'],
+  },
+]
+
+const mockAiPolicies: AiPolicyEntry[] = [
+  {
+    id: 'message_hub.reply',
+    label: 'Message Hub Reply',
+    primaryModel: 'gpt-fast',
+    fallbackModels: ['gemini-ops'],
+    objective: 'Fast reply drafting with safe structured output when needed.',
+    status: 'active',
+  },
+  {
+    id: 'message_hub.summary',
+    label: 'Message Hub Summary',
+    primaryModel: 'gpt-fast',
+    fallbackModels: ['gpt-plan'],
+    objective: 'Summarize cross-thread context into compact inbox cards and digest blocks.',
+    status: 'active',
+  },
+  {
+    id: 'message_hub.task_extract',
+    label: 'Task Extraction',
+    primaryModel: 'gemini-ops',
+    fallbackModels: ['minimax-api', 'gpt-fast'],
+    objective: 'Convert commitments and deadlines into follow-up objects connected to the source thread.',
+    status: 'review',
+  },
+  {
+    id: 'agent.plan',
+    label: 'Agent Plan',
+    primaryModel: 'minimax-code-plan',
+    fallbackModels: ['gpt-plan'],
+    objective: 'Use MiniMax code-planning mode for task decomposition and multi-step execution guidance.',
+    status: 'review',
+  },
+  {
+    id: 'agent.raw_explain',
+    label: 'Agent RAW Explain',
+    primaryModel: 'minimax-api',
+    fallbackModels: ['gpt-plan', 'gpt-fast'],
+    objective: 'Use MiniMax API mode for structured explanation of agent-to-agent raw records.',
+    status: 'planned',
+  },
+]
+
+const mockAiDiagnostics: AiDiagnosticEntry[] = [
+  {
+    id: 'diag-openai',
+    title: 'OpenAI round-trip test',
+    status: 'pass',
+    detail: 'The latest test prompt returned a valid JSON response in 780ms.',
+    actionLabel: 'Run again',
+  },
+  {
+    id: 'diag-google',
+    title: 'Gemini extraction profile',
+    status: 'pass',
+    detail: 'The task extraction profile is available and tagged for Message Hub use cases.',
+    actionLabel: 'Inspect model',
+  },
+  {
+    id: 'diag-local',
+    title: 'Local LLM gateway',
+    status: 'pending',
+    detail: 'Reserved for a future OpenAI-compatible or local endpoint once backend wiring is allowed.',
+    actionLabel: 'Plan setup',
+  },
+]
+
+export const fetchAiModelsOverview = async (): Promise<{ data: AiModelOverview | null; error: unknown }> => {
+  const { data, error } = await callRpc<AiModelOverview>('ai.overview', {})
+  if (!data) {
+    return { data: mockAiModelsOverview, error }
+  }
+  return {
+    data: {
+      ...mockAiModelsOverview,
+      ...(data as Record<string, unknown>),
+    } as AiModelOverview,
+    error,
+  }
+}
+
+export const fetchAiProviders = async (): Promise<{ data: AiProviderCard[] | null; error: unknown }> => {
+  const { data, error } = await callRpc<{ items?: AiProviderCard[] }>('ai.provider.list', {})
+  if (!data || !Array.isArray(data.items)) {
+    return { data: mockAiProviders, error }
+  }
+  return { data: data.items, error }
+}
+
+export const fetchAiModelCatalog = async (): Promise<{ data: AiModelCatalogEntry[] | null; error: unknown }> => {
+  const { data, error } = await callRpc<{ items?: AiModelCatalogEntry[] }>('ai.model.list', {})
+  if (!data || !Array.isArray(data.items)) {
+    return { data: mockAiModelCatalog, error }
+  }
+  return { data: data.items, error }
+}
+
+export const fetchAiPolicies = async (): Promise<{ data: AiPolicyEntry[] | null; error: unknown }> => {
+  const { data, error } = await callRpc<{ items?: AiPolicyEntry[] }>('ai.policy.list', {})
+  if (!data || !Array.isArray(data.items)) {
+    return { data: mockAiPolicies, error }
+  }
+  return { data: data.items, error }
+}
+
+export const fetchAiDiagnostics = async (): Promise<{ data: AiDiagnosticEntry[] | null; error: unknown }> => {
+  const { data, error } = await callRpc<{ items?: AiDiagnosticEntry[] }>('ai.diagnostics.list', {})
+  if (!data || !Array.isArray(data.items)) {
+    return { data: mockAiDiagnostics, error }
+  }
+  return { data: data.items, error }
+}
+
+export const runAiProviderDiagnostic = async (
+  providerId: string,
+): Promise<{
+  data: { providerId: string; ok: boolean; status: AiDiagnosticEntry['status']; detail: string; taskId?: string } | null
+  error: unknown
+}> => {
+  const { data, error } = await callRpc<{
+    providerId: string
+    ok: boolean
+    status: AiDiagnosticEntry['status']
+    detail: string
+    taskId?: string
+  }>('ai.provider.test', { provider_id: providerId })
+
+  return { data, error }
+}
+
+export const reloadAiProviderSettings = async (): Promise<{
+  data: { ok: boolean; result?: { ok?: boolean; providers_registered?: number } } | null
+  error: unknown
+}> => {
+  const { data, error } = await callRpc<{ ok: boolean; result?: { ok?: boolean; providers_registered?: number } }>('ai.reload', {})
+  return { data, error }
+}
+
+export const saveAiProvider = async (
+  provider: AiProviderCard,
+  apiKey?: string,
+): Promise<{ data: AiProviderCard | null; error: unknown }> => {
+  const params: Record<string, unknown> = { provider }
+  if (apiKey && apiKey.trim()) {
+    params.api_key = apiKey.trim()
+  }
+  const { data, error } = await callRpc<{ provider?: AiProviderCard }>('ai.provider.set', params)
+  return { data: data?.provider ?? null, error }
+}
+
+export const saveAiModelCatalogEntry = async (
+  model: AiModelCatalogEntry,
+): Promise<{ data: AiModelCatalogEntry | null; error: unknown }> => {
+  const { data, error } = await callRpc<{ model?: AiModelCatalogEntry }>('ai.model.set', { model })
+  return { data: data?.model ?? null, error }
+}
+
+export const saveAiPolicy = async (
+  policy: AiPolicyEntry,
+): Promise<{ data: AiPolicyEntry | null; error: unknown }> => {
+  const { data, error } = await callRpc<{ policy?: AiPolicyEntry }>('ai.policy.set', { policy })
+  return { data: data?.policy ?? null, error }
+}
+
 export {
   mockLayoutData,
   mockDashboardData,
@@ -723,4 +1175,9 @@ export {
   mockContainerOverview,
   mockLogServices,
   mockLogEntries,
+  mockAiModelsOverview,
+  mockAiProviders,
+  mockAiModelCatalog,
+  mockAiPolicies,
+  mockAiDiagnostics,
 }

@@ -2,21 +2,22 @@ use ::kRPC::*;
 use async_trait::async_trait;
 use buckyos_api::*;
 use buckyos_kit::buckyos_get_unix_timestamp;
+use bytes::Bytes;
+use cyfs_gateway_lib::{
+    serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
+    StreamInfo,
+};
+use http::{Method, Version};
+use http_body_util::combinators::BoxBody;
+use server_runner::*;
 use std::net::IpAddr;
 use std::result::Result;
 use std::sync::Arc;
-use cyfs_gateway_lib::{HttpServer, ServerError, ServerResult, StreamInfo, serve_http_by_rpc_handler, server_err, ServerErrorCode};
-use server_runner::*;
-use bytes::Bytes;
-use http::{Method, Version};
-use http_body_util::combinators::BoxBody;
 
 pub const SCHEDULER_SERVICE_MAIN_PORT: u16 = 3400;
 
 #[derive(Clone)]
-pub struct SchedulerServer {
-    
-}
+pub struct SchedulerServer {}
 
 impl SchedulerServer {
     pub fn new() -> Self {
@@ -26,7 +27,11 @@ impl SchedulerServer {
 
 #[async_trait]
 impl RPCHandler for SchedulerServer {
-    async fn handle_rpc_call(&self, req: RPCRequest, ip_from: IpAddr) -> Result<RPCResponse, RPCErrors> {
+    async fn handle_rpc_call(
+        &self,
+        req: RPCRequest,
+        ip_from: IpAddr,
+    ) -> Result<RPCResponse, RPCErrors> {
         unimplemented!()
     }
 }
@@ -41,7 +46,10 @@ impl HttpServer for SchedulerServer {
         if *req.method() == Method::POST {
             return serve_http_by_rpc_handler(req, info, self).await;
         }
-        return Err(server_err!(ServerErrorCode::BadRequest, "Method not allowed"));
+        return Err(server_err!(
+            ServerErrorCode::BadRequest,
+            "Method not allowed"
+        ));
     }
 
     fn id(&self) -> String {

@@ -1,9 +1,10 @@
 
 # AI Compute Center（AICC）服务设计文档
 
+
 ## 1. 设计目标与定位
 
-**AI Compute Center（AICC，服务名建议：`ai-completion` 或 `aicc`）**是 BuckyOS 内核体系中的 AI 调度与执行入口服务，核心职责是：
+**AI Compute Center（AICC，服务名建议：`aicc`）**是 BuckyOS 内核体系中的 AI 调度与执行入口服务，核心职责是：
 
 1. **统一多类 AI 能力入口**：LLM、T2I、T2V、T2Voice、I2T、V2T、Video2Text 等（能力集合可扩展）。
 2. **在多 Provider / 多实例之间做“选择与启动”**：

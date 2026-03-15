@@ -1,0 +1,5 @@
+{
+  "id": "did:opendan:__APP_ID__",
+  "name": "__APP_ID__",
+  "kind": "fixture-agent"
+}

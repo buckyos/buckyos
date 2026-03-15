@@ -1,0 +1,120 @@
+#!/usr/bin/python3
+
+import os
+import sys
+import json
+import platform
+import signal
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(current_dir)
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+import util
+from app_doc import AppDoc, AppDocError, AppType
+
+
+def get_agent_pid_file(appid, username):
+    return os.path.join(util.get_app_data_dir(appid, username), ".opendan.pid")
+
+
+def read_agent_pid(appid, username):
+    pid_file = get_agent_pid_file(appid, username)
+    if not os.path.exists(pid_file):
+        return None
+    try:
+        with open(pid_file, "r", encoding="utf-8") as f:
+            return int(f.read().strip())
+    except Exception:
+        return None
+
+
+def is_pid_running(pid):
+    if pid is None or pid <= 0:
+        return False
+    if platform.system() == "Windows":
+        cmd = f'tasklist /FI "PID eq {pid}" /FO CSV'
+        output = os.popen(cmd).read().strip()
+        lines = [line for line in output.splitlines() if line.strip()]
+        return len(lines) > 1
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def stop_agent(appid, username):
+    pid = read_agent_pid(appid, username)
+    pid_file = get_agent_pid_file(appid, username)
+    if not is_pid_running(pid):
+        print(f"agent {util.get_full_appid(appid, username)} is not running")
+        if os.path.exists(pid_file):
+            os.remove(pid_file)
+        return 0
+
+    if platform.system() == "Windows":
+        result = os.system(f"taskkill /F /T /PID {pid}")
+    else:
+        result = 0
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except Exception:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except Exception:
+                result = 1
+    if os.path.exists(pid_file):
+        os.remove(pid_file)
+    return result
+
+
+if __name__ == "__main__":
+    appid = sys.argv[1]
+    username = sys.argv[2]
+    full_appid = util.get_full_appid(appid, username)
+    app_token_env_key = util.get_session_token_env_key(full_appid, True)
+    app_token = os.getenv(app_token_env_key)
+    app_instance_config_str = os.getenv("app_instance_config")
+    media_info_str = os.getenv("app_media_info")
+    device_info_str = os.getenv("BUCKYOS_THIS_DEVICE_INFO")
+    device_info = {}
+
+    if app_instance_config_str is None:
+        print(f"No configuration found for appid: {full_appid}")
+        exit(1)
+    app_instance_config = json.loads(app_instance_config_str)
+    try:
+        app_doc = AppDoc.from_dict(app_instance_config.get("app_spec", {}).get("app_doc", {}))
+    except AppDocError as e:
+        print(f"Invalid app_doc in app_instance_config: {e}")
+        exit(1)
+
+    if device_info_str:
+        try:
+            device_info = json.loads(device_info_str) or {}
+        except Exception:
+            device_info = {}
+
+    if app_doc.get_app_type() == AppType.AGENT:
+        exit(stop_agent(appid, username))
+
+    is_support_docker = bool(device_info.get("support_container", True))
+
+    if is_support_docker:
+        container_id = full_appid
+        os.system(f"docker stop {container_id}")
+    else:
+        if media_info_str is None:
+            print(f"No media info found for appid: {full_appid}")
+            exit(1)
+        app_media_info = json.loads(media_info_str)
+        full_path = app_media_info.get("full_path")
+        if not full_path:
+            print(f"No app media full path found for appid: {full_appid}")
+            exit(1)
+        script_path = f"{full_path}/stop"
+        if not os.path.exists(script_path):
+            print(f"No stop script found for appid: {full_appid}")
+            exit(1)
+        exit(os.system(f"python3 {script_path} {appid} {username}"))

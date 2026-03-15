@@ -1,0 +1,27 @@
+{
+  "name": "__APP_ID__",
+  "version": "__VERSION__",
+  "show_name": "App Installer Docker Fixture",
+  "author": "__OWNER_DID__",
+  "owner": "__OWNER_DID__",
+  "size": 0,
+  "content": "",
+  "categories": [
+    "dapp"
+  ],
+  "meta": {
+    "description": {
+      "detail": {
+        "en": "Local docker fixture for app_installer lifecycle testing."
+      }
+    }
+  },
+  "selector_type": "single",
+  "install_config_tips": {
+    "service_ports": {
+      "www": 80
+    }
+  },
+  "pkg_list": {},
+  "deps": {}
+}

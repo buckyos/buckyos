@@ -1,32 +1,210 @@
-use super::meta::LogMeta;
-use crate::system_log::{SystemLogTarget, SystemLogRecord};
-use std::{fs::File, path::{PathBuf, Path}};
-use std::sync::{Mutex, Arc};
 use super::format::SystemLogRecordLineFormatter;
+use super::meta::LogMeta;
+use crate::system_log::{SystemLogRecord, SystemLogTarget};
+use std::collections::VecDeque;
 use std::io::Write;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::{
+    fs::File,
+    path::{Path, PathBuf},
+};
+
+/// Upper bound for cached log record count before dropping.
+const DEFAULT_CACHE_MAX_RECORDS: usize = 100_000;
+/// Upper bound for cached log bytes before dropping.
+const DEFAULT_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
+/// Max records flushed from cache in one round.
+const FLUSH_BATCH_MAX_RECORDS: usize = 1024;
+/// Max approximate bytes flushed from cache in one round.
+const FLUSH_BATCH_MAX_BYTES: usize = 1024 * 1024;
+
+struct CachedRecord {
+    record: SystemLogRecord,
+    approx_size: usize,
+}
+
+struct LogRecordCacheState {
+    records: VecDeque<CachedRecord>,
+    bytes: usize,
+    dropped_oldest_total: u64,
+    dropped_newest_total: u64,
+}
+
+enum EvictDirection {
+    Front,
+    Back,
+}
 
 // Cache log records before flushing to file, then we flush log every interval
 struct LogRecordCache {
-    records: Mutex<Vec<SystemLogRecord>>,
+    state: Mutex<LogRecordCacheState>,
+    max_records: usize,
+    max_bytes: usize,
 }
 
 impl LogRecordCache {
     pub fn new() -> Self {
+        Self::with_limits(DEFAULT_CACHE_MAX_RECORDS, DEFAULT_CACHE_MAX_BYTES)
+    }
+
+    fn with_limits(max_records: usize, max_bytes: usize) -> Self {
         LogRecordCache {
-            records: Mutex::new(Vec::new()),
+            state: Mutex::new(LogRecordCacheState {
+                records: VecDeque::new(),
+                bytes: 0,
+                dropped_oldest_total: 0,
+                dropped_newest_total: 0,
+            }),
+            max_records: max_records.max(1),
+            max_bytes: max_bytes.max(1),
         }
     }
 
     pub fn add_record(&self, record: SystemLogRecord) {
-        let mut records = self.records.lock().unwrap();
-        records.push(record);
+        self.add_records_back(vec![record]);
+    }
+
+    fn add_records_back(&self, records: Vec<SystemLogRecord>) {
+        self.add_records(records, false);
+    }
+
+    // Requeue failed flush records to the front, so old records are retried first.
+    pub fn add_records_front(&self, failed_records: Vec<SystemLogRecord>) {
+        self.add_records(failed_records, true);
+    }
+
+    fn add_records(&self, records: Vec<SystemLogRecord>, insert_front: bool) {
+        if records.is_empty() {
+            return;
+        }
+
+        let mut state = self.state.lock().unwrap();
+
+        if insert_front {
+            for record in records.into_iter().rev() {
+                let approx_size = Self::estimate_record_size(&record);
+                state.records.push_front(CachedRecord {
+                    record,
+                    approx_size,
+                });
+                state.bytes = state.bytes.saturating_add(approx_size);
+            }
+            self.enforce_limits_locked(&mut state, EvictDirection::Back);
+        } else {
+            for record in records {
+                let approx_size = Self::estimate_record_size(&record);
+                state.records.push_back(CachedRecord {
+                    record,
+                    approx_size,
+                });
+                state.bytes = state.bytes.saturating_add(approx_size);
+            }
+            self.enforce_limits_locked(&mut state, EvictDirection::Front);
+        }
+    }
+
+    pub fn pop_batch(&self, max_records: usize, max_bytes: usize) -> Vec<SystemLogRecord> {
+        let max_records = max_records.max(1);
+        let max_bytes = max_bytes.max(1);
+        let mut state = self.state.lock().unwrap();
+        if state.records.is_empty() {
+            return Vec::new();
+        }
+
+        let mut result = Vec::new();
+        let mut batch_bytes = 0usize;
+        loop {
+            let Some(front) = state.records.front() else {
+                break;
+            };
+
+            let next_batch_bytes = batch_bytes.saturating_add(front.approx_size);
+            let reached_record_limit = result.len() >= max_records;
+            let reached_byte_limit = next_batch_bytes > max_bytes;
+            if !result.is_empty() && (reached_record_limit || reached_byte_limit) {
+                break;
+            }
+
+            let Some(item) = state.records.pop_front() else {
+                break;
+            };
+            state.bytes = state.bytes.saturating_sub(item.approx_size);
+            batch_bytes = batch_bytes.saturating_add(item.approx_size);
+            result.push(item.record);
+        }
+
+        result
     }
 
     pub fn fetch_all(&self) -> Vec<SystemLogRecord> {
-        let mut records = self.records.lock().unwrap();
-        let fetched = records.clone();
-        records.clear();
-        fetched
+        self.pop_batch(usize::MAX, usize::MAX)
+    }
+
+    fn estimate_record_size(record: &SystemLogRecord) -> usize {
+        // Rough in-memory estimate: struct overhead + owned strings.
+        let mut size = 96usize;
+        size = size.saturating_add(record.target.len());
+        size = size.saturating_add(record.content.len());
+        size = size.saturating_add(record.file.as_ref().map(|v| v.len()).unwrap_or(0));
+        size
+    }
+
+    fn enforce_limits_locked(
+        &self,
+        state: &mut LogRecordCacheState,
+        evict_direction: EvictDirection,
+    ) {
+        let mut dropped = 0u64;
+        while state.records.len() > self.max_records || state.bytes > self.max_bytes {
+            let removed = match evict_direction {
+                EvictDirection::Front => state.records.pop_front(),
+                EvictDirection::Back => state.records.pop_back(),
+            };
+
+            let Some(item) = removed else {
+                break;
+            };
+            state.bytes = state.bytes.saturating_sub(item.approx_size);
+            dropped += 1;
+        }
+
+        if dropped == 0 {
+            return;
+        }
+
+        match evict_direction {
+            EvictDirection::Front => state.dropped_oldest_total += dropped,
+            EvictDirection::Back => state.dropped_newest_total += dropped,
+        }
+
+        warn!(
+            "log cache overflow, dropped={} (oldest_total={}, newest_total={}), cache_records={}, cache_bytes={}, limit_records={}, limit_bytes={}",
+            dropped,
+            state.dropped_oldest_total,
+            state.dropped_newest_total,
+            state.records.len(),
+            state.bytes,
+            self.max_records,
+            self.max_bytes,
+        );
+    }
+
+    #[cfg(test)]
+    fn stats_for_test(&self) -> (usize, usize, u64, u64) {
+        let state = self.state.lock().unwrap();
+        (
+            state.records.len(),
+            state.bytes,
+            state.dropped_oldest_total,
+            state.dropped_newest_total,
+        )
+    }
+
+    #[cfg(test)]
+    fn max_bytes_for_test(&self) -> usize {
+        self.max_bytes
     }
 }
 
@@ -44,8 +222,13 @@ struct FileLogTargetInner {
     meta: LogMeta,
 
     current_file: Mutex<Option<FileInfo>>,
+    pending_write_index: Mutex<Option<u64>>,
     cache: LogRecordCache,
 
+    #[cfg(test)]
+    force_next_meta_sync_fail: AtomicBool,
+    #[cfg(test)]
+    force_write_fail_at_record: Mutex<Option<usize>>,
 }
 
 #[derive(Clone)]
@@ -54,6 +237,22 @@ pub struct FileLogTarget {
 }
 
 impl FileLogTarget {
+    fn lock_pending_write_index(&self) -> Result<std::sync::MutexGuard<'_, Option<u64>>, String> {
+        self.inner.pending_write_index.lock().map_err(|e| {
+            let msg = format!("failed to lock pending write index: {}", e);
+            error!("{}", msg);
+            msg
+        })
+    }
+
+    fn lock_current_file(&self) -> Result<std::sync::MutexGuard<'_, Option<FileInfo>>, String> {
+        self.inner.current_file.lock().map_err(|e| {
+            let msg = format!("failed to lock current log file state: {}", e);
+            error!("{}", msg);
+            msg
+        })
+    }
+
     pub fn new(
         log_dir: &Path,
         service_name: String,
@@ -70,7 +269,12 @@ impl FileLogTarget {
             flush_interval_ms,
             meta,
             current_file: Mutex::new(None),
+            pending_write_index: Mutex::new(None),
             cache,
+            #[cfg(test)]
+            force_next_meta_sync_fail: AtomicBool::new(false),
+            #[cfg(test)]
+            force_write_fail_at_record: Mutex::new(None),
         };
 
         let ret = Self {
@@ -85,22 +289,133 @@ impl FileLogTarget {
         let this = self.clone();
         std::thread::spawn(move || {
             loop {
-                std::thread::sleep(std::time::Duration::from_millis(this.inner.flush_interval_ms));
-                this.flush_to_file();
+                std::thread::sleep(std::time::Duration::from_millis(
+                    this.inner.flush_interval_ms,
+                ));
+                let flush_result =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| this.flush_to_file()));
+                if flush_result.is_err() {
+                    error!(
+                        "flush thread panicked for service {}, keep thread alive for next round",
+                        this.inner.service_name
+                    );
+                }
             }
         });
     }
 
     fn flush_to_file(&self) {
-        let records = self.inner.cache.fetch_all();
-        if records.is_empty() {
-            return;
+        self.try_sync_pending_write_index();
+        loop {
+            let records = self
+                .inner
+                .cache
+                .pop_batch(FLUSH_BATCH_MAX_RECORDS, FLUSH_BATCH_MAX_BYTES);
+            if records.is_empty() {
+                break;
+            }
+
+            let result = self.log_to_file(&records);
+            if let Some(e) = result.error.as_ref() {
+                error!("failed to flush logs to file: {}", e);
+            }
+
+            if result.written_count < records.len() {
+                let failed_records = records[result.written_count..].to_vec();
+                let count = failed_records.len();
+                self.inner.cache.add_records_front(failed_records);
+                warn!(
+                    "requeued {} unwritten log records after flush failure, written_count={}",
+                    count, result.written_count
+                );
+                break;
+            }
+
+            if !result.meta_synced {
+                warn!(
+                    "write index meta sync is pending for service {}",
+                    self.inner.service_name
+                );
+            }
+
+            if result.error.is_some() {
+                break;
+            }
+        }
+    }
+
+    fn try_sync_pending_write_index(&self) {
+        let pending = match self.lock_pending_write_index() {
+            Ok(pending_lock) => *pending_lock,
+            Err(e) => {
+                error!("failed to read pending write index: {}", e);
+                return;
+            }
+        };
+
+        if let Some(index) = pending {
+            if self.sync_write_index_or_mark_pending(index) {
+                info!("synced pending write index to meta: {}", index);
+            } else {
+                warn!("failed to sync pending write index to meta: {}", index);
+            }
+        }
+    }
+
+    fn has_pending_write_index(&self) -> bool {
+        match self.lock_pending_write_index() {
+            Ok(pending_lock) => pending_lock.is_some(),
+            Err(e) => {
+                // Be conservative: treat lock failure as pending state and avoid file sealing.
+                warn!(
+                    "treating pending write index as present due lock failure: {}",
+                    e
+                );
+                true
+            }
+        }
+    }
+
+    fn sync_write_index_or_mark_pending(&self, new_index: u64) -> bool {
+        #[cfg(test)]
+        if self
+            .inner
+            .force_next_meta_sync_fail
+            .swap(false, Ordering::SeqCst)
+        {
+            let mut pending_lock = match self.lock_pending_write_index() {
+                Ok(lock) => lock,
+                Err(_) => return false,
+            };
+            *pending_lock = Some(pending_lock.unwrap_or(0).max(new_index));
+            error!(
+                "forced meta sync failure for test, pending write index={}",
+                new_index
+            );
+            return false;
         }
 
-        // println!("Flushing {} log records to file...", records.len());
-        // First try to log to file
-        if let Err(e) = self.log_to_file(&records) {
-            error!("failed to flush logs to file: {}", e);
+        match self.inner.meta.update_current_write_index(new_index) {
+            Ok(_) => {
+                let mut pending_lock = match self.lock_pending_write_index() {
+                    Ok(lock) => lock,
+                    Err(_) => return false,
+                };
+                *pending_lock = None;
+                true
+            }
+            Err(e) => {
+                let mut pending_lock = match self.lock_pending_write_index() {
+                    Ok(lock) => lock,
+                    Err(_) => return false,
+                };
+                *pending_lock = Some(pending_lock.unwrap_or(0).max(new_index));
+                error!(
+                    "failed to update write index of current log file to {}, mark pending: {}",
+                    new_index, e
+                );
+                false
+            }
         }
     }
 
@@ -133,7 +448,14 @@ impl FileLogTarget {
             info!("created new log file: {}", file_name);
             file_name
         } else {
-            let info = write_info.unwrap();
+            let info = match write_info {
+                Some(info) => info,
+                None => {
+                    let msg = "active write file metadata missing unexpectedly".to_string();
+                    error!("{}", msg);
+                    return Err(msg);
+                }
+            };
             info!("continue using existing log file: {}", info.name);
             info.name
         };
@@ -156,22 +478,29 @@ impl FileLogTarget {
 
         // Stat the file to get its size
         let metadata = file.metadata().map_err(|e| {
-            let msg = format!("failed to get metadata of log file {}: {}", log_file.display(), e);
+            let msg = format!(
+                "failed to get metadata of log file {}: {}",
+                log_file.display(),
+                e
+            );
             error!("{}", msg);
             msg
         })?;
 
         let size = metadata.len();
+        if size > 0 {
+            let _ = self.sync_write_index_or_mark_pending(size);
+        }
 
         let file_info = FileInfo { size, file };
 
-        println!("Opened log file: {}", log_file.display());
+        info!("opened log file: {}", log_file.display());
         Ok(file_info)
     }
 
-    fn log_to_file(&self, records: &[SystemLogRecord]) -> Result<(), String> {
+    fn log_to_file(&self, records: &[SystemLogRecord]) -> FlushToFileResult {
         // First format all records to lines
-        let mut lines  = Vec::with_capacity(records.len());
+        let mut lines = Vec::with_capacity(records.len());
 
         for record in records {
             let line = SystemLogRecordLineFormatter::format_record(record);
@@ -179,70 +508,187 @@ impl FileLogTarget {
         }
 
         // Try to open current log file and check size
-        let mut current_file = self.inner.current_file.lock().unwrap();
+        let mut current_file = match self.lock_current_file() {
+            Ok(lock) => lock,
+            Err(e) => {
+                return FlushToFileResult {
+                    written_count: 0,
+                    meta_synced: true,
+                    error: Some(e),
+                };
+            }
+        };
         if current_file.is_none() {
-            let file_info = self.open_current_log_file()?;
+            let file_info = match self.open_current_log_file() {
+                Ok(file) => file,
+                Err(e) => {
+                    return FlushToFileResult {
+                        written_count: 0,
+                        meta_synced: true,
+                        error: Some(e),
+                    };
+                }
+            };
             *current_file = Some(file_info);
         } else {
-            let file_info = current_file.as_ref().unwrap();
+            let file_info = match current_file.as_ref() {
+                Some(file_info) => file_info,
+                None => {
+                    return FlushToFileResult {
+                        written_count: 0,
+                        meta_synced: true,
+                        error: Some("current log file unexpectedly missing".to_string()),
+                    };
+                }
+            };
             if file_info.size >= self.inner.max_file_size {
-                self.inner.meta.seal_current_write_file().map_err(|e| {
-                    let msg = format!("failed to seal current write log file: {}", e);
-                    error!("{}", msg);
-                    msg
-                })?;
-                let file_info = self.open_current_log_file()?;
-                *current_file = Some(file_info);
+                if self.has_pending_write_index() {
+                    warn!(
+                        "skip sealing current file due pending write index sync, service={}",
+                        self.inner.service_name
+                    );
+                } else {
+                    let seal_result = self.inner.meta.seal_current_write_file().map_err(|e| {
+                        let msg = format!("failed to seal current write log file: {}", e);
+                        error!("{}", msg);
+                        msg
+                    });
+                    if let Err(e) = seal_result {
+                        return FlushToFileResult {
+                            written_count: 0,
+                            meta_synced: true,
+                            error: Some(e),
+                        };
+                    }
+
+                    let file_info = match self.open_current_log_file() {
+                        Ok(file) => file,
+                        Err(e) => {
+                            return FlushToFileResult {
+                                written_count: 0,
+                                meta_synced: true,
+                                error: Some(e),
+                            };
+                        }
+                    };
+                    *current_file = Some(file_info);
+                }
             }
         }
 
-        let file_info = current_file.as_mut().unwrap();
-        
-        // Get current pos of the file
-        use std::io::Seek;
-        let pos = file_info.file.seek(std::io::SeekFrom::Current(0)).map_err(|e| {
-            let msg = format!("failed to seek to end of log file: {}", e);
-            error!("{}", msg);
-            msg
-        })?;
-
-        let mut i = 0;
-        let ret = loop {
-            if i >= lines.len() {
-                break Ok(());
-            }
-
-            let line = &lines[i];
-            i += 1;
-            match  file_info.file.write_all(line.as_bytes()) {
-                Ok(_) => {
-                    file_info.size += line.len() as u64;
-                },
-                Err(e) => {
-                    let msg = format!("failed to write log to file: {}", e);
-                    error!("{}", msg);
-                    break Err(msg);
-                }
+        let file_info = match current_file.as_mut() {
+            Some(file_info) => file_info,
+            None => {
+                return FlushToFileResult {
+                    written_count: 0,
+                    meta_synced: true,
+                    error: Some("current log file unexpectedly missing".to_string()),
+                };
             }
         };
 
-        let new_pos = file_info.file.seek(std::io::SeekFrom::Current(0)).map_err(|e| {
-            let msg = format!("failed to seek log file after writing: {}", e);
-            error!("{}", msg);
-            msg
-        })?;
-
-        // If any logs were written, update the write index in meta
-        if new_pos > pos {
-            self.inner.meta.update_current_write_index(new_pos).map_err(|e| {
-                let msg = format!("failed to update write index of current log file: {}", e);
+        // Get current pos of the file
+        use std::io::Seek;
+        let pos = match file_info
+            .file
+            .seek(std::io::SeekFrom::Current(0))
+            .map_err(|e| {
+                let msg = format!("failed to seek to end of log file: {}", e);
                 error!("{}", msg);
                 msg
-            })?;
+            }) {
+            Ok(pos) => pos,
+            Err(e) => {
+                return FlushToFileResult {
+                    written_count: 0,
+                    meta_synced: true,
+                    error: Some(e),
+                };
+            }
+        };
+
+        let mut written_count = 0usize;
+        let mut write_error: Option<String> = None;
+        for line_index in 0..lines.len() {
+            #[cfg(test)]
+            if self.should_force_write_fail_at_record(line_index) {
+                write_error = Some(format!("forced write failure at record {}", line_index));
+                break;
+            }
+
+            let line = &lines[line_index];
+            match file_info.file.write_all(line.as_bytes()) {
+                Ok(_) => {
+                    file_info.size += line.len() as u64;
+                    written_count += 1;
+                }
+                Err(e) => {
+                    let msg = format!("failed to write log to file: {}", e);
+                    error!("{}", msg);
+                    write_error = Some(msg);
+                    break;
+                }
+            }
         }
 
-        ret
+        let new_pos = match file_info.file.seek(std::io::SeekFrom::Current(0)) {
+            Ok(pos) => pos,
+            Err(e) => {
+                let msg = format!("failed to seek log file after writing: {}", e);
+                error!("{}", msg);
+                file_info.size
+            }
+        };
+
+        // If any logs were written, update the write index in meta
+        let mut meta_synced = true;
+        if new_pos > pos {
+            meta_synced = self.sync_write_index_or_mark_pending(new_pos);
+        }
+
+        FlushToFileResult {
+            written_count,
+            meta_synced,
+            error: write_error,
+        }
     }
+
+    #[cfg(test)]
+    fn should_force_write_fail_at_record(&self, current_index: usize) -> bool {
+        let mut fail_lock = self.inner.force_write_fail_at_record.lock().unwrap();
+        if let Some(target_index) = *fail_lock {
+            if target_index == current_index {
+                *fail_lock = None;
+                return true;
+            }
+        }
+        false
+    }
+
+    #[cfg(test)]
+    fn force_next_meta_sync_fail_for_test(&self) {
+        self.inner
+            .force_next_meta_sync_fail
+            .store(true, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    fn force_write_fail_at_record_for_test(&self, record_index: usize) {
+        let mut fail_lock = self.inner.force_write_fail_at_record.lock().unwrap();
+        *fail_lock = Some(record_index);
+    }
+
+    #[cfg(test)]
+    fn pending_write_index_for_test(&self) -> Option<u64> {
+        let pending_lock = self.inner.pending_write_index.lock().unwrap();
+        *pending_lock
+    }
+}
+
+struct FlushToFileResult {
+    written_count: usize,
+    meta_synced: bool,
+    error: Option<String>,
 }
 
 impl SystemLogTarget for FileLogTarget {
@@ -253,5 +699,198 @@ impl SystemLogTarget for FileLogTarget {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FileLogTarget, LogRecordCache, SystemLogRecordLineFormatter};
+    use crate::system_log::{LogLevel, SystemLogRecord, SystemLogTarget};
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn make_record(content: &str) -> SystemLogRecord {
+        SystemLogRecord {
+            level: LogLevel::Info,
+            target: "test".to_string(),
+            time: 1,
+            file: None,
+            line: None,
+            content: content.to_string(),
+        }
+    }
+
+    fn new_temp_log_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "buckyos/slog_tests/{}_{}_{}",
+            prefix,
+            std::process::id(),
+            nanos
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn read_records_from_current_file(
+        target: &FileLogTarget,
+        log_dir: &Path,
+    ) -> Vec<SystemLogRecord> {
+        let info = target.inner.meta.get_active_write_file().unwrap().unwrap();
+        let content = std::fs::read_to_string(log_dir.join(info.name)).unwrap();
+        content
+            .lines()
+            .map(|line| SystemLogRecordLineFormatter::parse_record(line).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn test_log_record_cache_fetch_all_keeps_order() {
+        let cache = LogRecordCache::new();
+        cache.add_record(make_record("a"));
+        cache.add_record(make_record("b"));
+
+        let first = cache.fetch_all();
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].content, "a");
+        assert_eq!(first[1].content, "b");
+
+        let second = cache.fetch_all();
+        assert!(second.is_empty());
+    }
+
+    #[test]
+    fn test_log_record_cache_requeue_front_preserves_old_first() {
+        let cache = LogRecordCache::new();
+        cache.add_record(make_record("new-1"));
+        cache.add_record(make_record("new-2"));
+
+        cache.add_records_front(vec![make_record("old-1"), make_record("old-2")]);
+
+        let all = cache.fetch_all();
+        assert_eq!(all.len(), 4);
+        assert_eq!(all[0].content, "old-1");
+        assert_eq!(all[1].content, "old-2");
+        assert_eq!(all[2].content, "new-1");
+        assert_eq!(all[3].content, "new-2");
+    }
+
+    #[test]
+    fn test_log_record_cache_drops_oldest_when_record_limit_exceeded() {
+        let cache = LogRecordCache::with_limits(2, usize::MAX);
+        cache.add_record(make_record("a"));
+        cache.add_record(make_record("b"));
+        cache.add_record(make_record("c"));
+
+        let all = cache.fetch_all();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].content, "b");
+        assert_eq!(all[1].content, "c");
+
+        let (_, _, dropped_oldest, dropped_newest) = cache.stats_for_test();
+        assert_eq!(dropped_oldest, 1);
+        assert_eq!(dropped_newest, 0);
+    }
+
+    #[test]
+    fn test_log_record_cache_requeue_front_evicts_newest_when_overflow() {
+        let cache = LogRecordCache::with_limits(3, usize::MAX);
+        cache.add_record(make_record("new-1"));
+        cache.add_record(make_record("new-2"));
+        cache.add_record(make_record("new-3"));
+
+        cache.add_records_front(vec![make_record("old-1"), make_record("old-2")]);
+
+        let all = cache.fetch_all();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].content, "old-1");
+        assert_eq!(all[1].content, "old-2");
+        assert_eq!(all[2].content, "new-1");
+
+        let (_, _, dropped_oldest, dropped_newest) = cache.stats_for_test();
+        assert_eq!(dropped_oldest, 0);
+        assert_eq!(dropped_newest, 2);
+    }
+
+    #[test]
+    fn test_log_record_cache_pop_batch_limits_records_and_bytes() {
+        let cache = LogRecordCache::with_limits(100, usize::MAX);
+        cache.add_record(make_record("one"));
+        cache.add_record(make_record("two"));
+        cache.add_record(make_record("three"));
+
+        let batch_by_count = cache.pop_batch(2, usize::MAX);
+        assert_eq!(batch_by_count.len(), 2);
+        assert_eq!(batch_by_count[0].content, "one");
+        assert_eq!(batch_by_count[1].content, "two");
+
+        let (remain_count, _, _, _) = cache.stats_for_test();
+        assert_eq!(remain_count, 1);
+
+        cache.add_record(make_record("four"));
+        let tiny_bytes = cache.max_bytes_for_test().min(100);
+        let batch_by_bytes = cache.pop_batch(100, tiny_bytes);
+        assert_eq!(batch_by_bytes.len(), 1);
+    }
+
+    #[test]
+    fn test_flush_requeues_only_unwritten_records_when_partial_write_fails() {
+        let log_dir = new_temp_log_dir("file_log_partial_write");
+        let target = FileLogTarget::new(
+            &log_dir,
+            "test_service".to_string(),
+            1024 * 1024,
+            60 * 60 * 1000,
+        )
+        .unwrap();
+
+        target.log(&make_record("a"));
+        target.log(&make_record("b"));
+        target.log(&make_record("c"));
+        target.force_write_fail_at_record_for_test(1);
+
+        target.flush_to_file();
+
+        let requeued = target.inner.cache.fetch_all();
+        assert_eq!(requeued.len(), 2);
+        assert_eq!(requeued[0].content, "b");
+        assert_eq!(requeued[1].content, "c");
+
+        let written = read_records_from_current_file(&target, &log_dir);
+        assert_eq!(written.len(), 1);
+        assert_eq!(written[0].content, "a");
+    }
+
+    #[test]
+    fn test_flush_meta_sync_failure_does_not_requeue_written_records() {
+        let log_dir = new_temp_log_dir("file_log_meta_pending");
+        let target = FileLogTarget::new(
+            &log_dir,
+            "test_service".to_string(),
+            1024 * 1024,
+            60 * 60 * 1000,
+        )
+        .unwrap();
+
+        target.log(&make_record("meta-fail-once"));
+        target.force_next_meta_sync_fail_for_test();
+
+        target.flush_to_file();
+        assert!(target.inner.cache.fetch_all().is_empty());
+        assert!(target.pending_write_index_for_test().is_some());
+
+        let after_first_flush = read_records_from_current_file(&target, &log_dir);
+        assert_eq!(after_first_flush.len(), 1);
+        assert_eq!(after_first_flush[0].content, "meta-fail-once");
+
+        target.flush_to_file();
+        assert!(target.pending_write_index_for_test().is_none());
+
+        let after_second_flush = read_records_from_current_file(&target, &log_dir);
+        assert_eq!(after_second_flush.len(), 1);
+        assert_eq!(after_second_flush[0].content, "meta-fail-once");
     }
 }

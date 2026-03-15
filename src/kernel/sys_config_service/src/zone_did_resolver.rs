@@ -2,7 +2,7 @@
 // 1. 核心功能 查询Zone内Device的实时信息）
 // 2. 最小配置是ZoneConfig,但在连上SystemConfig后，可以做到更多事情
 // 3. 未连接上SystemConfig时，基于ZoneConfig或ZoneSN进行查询。一旦连接上SystemConfig,则基于后者进行查询
-// 4. 查询的输入: 
+// 4. 查询的输入:
 //        device_short_name （friendly name）
 //        device_did
 //        device_host_name.zone_fullname
@@ -12,15 +12,17 @@
 use log::*;
 use name_lib::*;
 
+use async_trait::async_trait;
+use bytes::Bytes;
+use cyfs_gateway_lib::{
+    server_err, HttpServer, ServerError, ServerErrorCode, ServerResult, StreamInfo,
+};
+use http::Method;
+use http_body_util::{combinators::BoxBody, BodyExt, Full};
+use serde_json::{json, Value};
 use std::net::{IpAddr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::str::FromStr;
-use async_trait::async_trait;
-use serde_json::{Value, json};
-use bytes::Bytes;
-use http::Method;
-use http_body_util::{combinators::BoxBody, Full, BodyExt};
-use cyfs_gateway_lib::{HttpServer, ServerError, ServerResult, StreamInfo, server_err, ServerErrorCode};
-use url::{Url, form_urlencoded};
+use url::{form_urlencoded, Url};
 
 use crate::SYS_STORE;
 
@@ -61,7 +63,6 @@ use crate::SYS_STORE;
 
 //     return None;
 // }
-
 
 // //ipv4 first local host resolve
 // fn resolve_lan_hostname(hostname: &str) -> Option<std::net::IpAddr> {
@@ -147,7 +148,6 @@ use crate::SYS_STORE;
 //     Err(NSError::Failed("cann't resolve ip for device".to_string()))
 // }
 
-
 //TODO: 需要更系统性的思考如何得到 各种service的URL
 // pub async fn get_system_config_service_url(this_device:Option<&DeviceInfo>,zone_config:&ZoneConfig,is_gateway:bool) -> NSResult<String> {
 //     if this_device.is_none() {
@@ -171,7 +171,7 @@ use crate::SYS_STORE;
 //             let server_url = format!("http://{}:3200/kapi/system_config",ood_ip);
 //             return Ok(server_url);
 //         }
-//     } 
+//     }
 
 //     let ood_info_str = zone_config.select_wan_ood();
 //     if ood_info_str.is_some() {
@@ -227,17 +227,18 @@ impl ZoneDidResolver {
         })?;
         drop(store);
 
-        let obj_config_str =
-            obj_config_str.ok_or_else(|| NSError::NotFound(format!("device {} not found", device_id)))?;
+        let obj_config_str = obj_config_str
+            .ok_or_else(|| NSError::NotFound(format!("device {} not found", device_id)))?;
 
         let encoded_doc = EncodedDocument::from_str(obj_config_str.clone()).map_err(|e| {
             warn!("ZoneDidResolver parse device config failed: {}", e);
             NSError::Failed(format!("parse device config failed: {}", e))
         })?;
-        let device_config: DeviceConfig = DeviceConfig::decode(&encoded_doc, None).map_err(|e| {
-            warn!("ZoneDidResolver decode device config failed: {}", e);
-            NSError::Failed(format!("decode device config failed: {}", e))
-        })?;
+        let device_config: DeviceConfig =
+            DeviceConfig::decode(&encoded_doc, None).map_err(|e| {
+                warn!("ZoneDidResolver decode device config failed: {}", e);
+                NSError::Failed(format!("decode device config failed: {}", e))
+            })?;
 
         Ok((device_config, obj_config_str))
     }
@@ -251,8 +252,8 @@ impl ZoneDidResolver {
         })?;
         drop(store);
 
-        let obj_config_str =
-            obj_config_str.ok_or_else(|| NSError::NotFound(format!("owner {} not found", owner_id)))?;
+        let obj_config_str = obj_config_str
+            .ok_or_else(|| NSError::NotFound(format!("owner {} not found", owner_id)))?;
 
         let encoded_doc = EncodedDocument::from_str(obj_config_str.clone()).map_err(|e| {
             warn!("ZoneDidResolver parse owner config failed: {}", e);
@@ -264,6 +265,56 @@ impl ZoneDidResolver {
         })?;
 
         Ok((owner_config, obj_config_str))
+    }
+
+    async fn load_agent_doc(&self, agent_id: &str) -> NSResult<(AgentDocument, String)> {
+        let obj_path = format!("agents/{}/doc", agent_id);
+        let store = SYS_STORE.lock().await;
+        let obj_config_str = store.get(obj_path.clone()).await.map_err(|e| {
+            warn!("ZoneDidResolver get {} failed: {}", obj_path, e);
+            NSError::Failed(format!("get {} failed: {}", obj_path, e))
+        })?;
+        drop(store);
+
+        let obj_config_str = obj_config_str
+            .ok_or_else(|| NSError::NotFound(format!("agent {} not found", agent_id)))?;
+
+        let encoded_doc = EncodedDocument::from_str(obj_config_str.clone()).map_err(|e| {
+            warn!("ZoneDidResolver parse agent config failed: {}", e);
+            NSError::Failed(format!("parse agent config failed: {}", e))
+        })?;
+        let agent_doc: AgentDocument = AgentDocument::decode(&encoded_doc, None).map_err(|e| {
+            warn!("ZoneDidResolver decode agent config failed: {}", e);
+            NSError::Failed(format!("decode agent config failed: {}", e))
+        })?;
+
+        Ok((agent_doc, obj_config_str))
+    }
+
+    async fn load_agent_doc_by_did(&self, did_str: &str) -> NSResult<(AgentDocument, String)> {
+        let did = DID::from_str(did_str)?;
+        let store = SYS_STORE.lock().await;
+        let agent_ids = store
+            .list_direct_children("agents".to_string())
+            .await
+            .map_err(|e| {
+                warn!("ZoneDidResolver list agents failed: {}", e);
+                NSError::Failed(format!("list agents failed: {}", e))
+            })?;
+        drop(store);
+
+        for agent_id in agent_ids {
+            if let Ok((agent_doc, obj_config_str)) = self.load_agent_doc(agent_id.as_str()).await {
+                if agent_doc.id == did {
+                    return Ok((agent_doc, obj_config_str));
+                }
+            }
+        }
+
+        Err(NSError::NotFound(format!(
+            "agent did {} not found",
+            did_str
+        )))
     }
 
     async fn load_device_info(&self, name: &str) -> NSResult<DeviceInfo> {
@@ -286,13 +337,30 @@ impl ZoneDidResolver {
 
     async fn do_query_did(&self, did_str: &str, typ: Option<String>) -> NSResult<String> {
         if DID::is_did(did_str) {
+            if let Ok((_agent_doc, obj_config_str)) = self.load_agent_doc_by_did(did_str).await {
+                info!(
+                    "zone_provider resolve Agent did {} => {}",
+                    did_str,
+                    obj_config_str.as_str()
+                );
+                return Ok(obj_config_str);
+            }
+
             if let Ok((_device_config, obj_config_str)) = self.load_device_doc(did_str).await {
-                info!("zone_provider resolve did {} => {}", did_str, obj_config_str.as_str());
+                info!(
+                    "zone_provider resolve Device did {} => {}",
+                    did_str,
+                    obj_config_str.as_str()
+                );
                 return Ok(obj_config_str);
             }
 
             if let Ok((_owner_config, obj_config_str)) = self.load_owner_doc(did_str).await {
-                info!("zone_provider resolve did {} => {}", did_str, obj_config_str.as_str());
+                info!(
+                    "zone_provider resolve Owner did {} => {}",
+                    did_str,
+                    obj_config_str.as_str()
+                );
                 return Ok(obj_config_str);
             }
 
@@ -303,31 +371,34 @@ impl ZoneDidResolver {
                     let zone_config_str = self.load_zone_config_json().await?;
                     return Ok(zone_config_str);
                 }
-                // "this_device" => {
-                //     let device_config = CURRENT_DEVICE_CONFIG.get();
-                //     if device_config.is_none() {
-                //         return Err(NSError::NotFound("current device config not found".to_string()));
-                //     }
-                //     let device_config = device_config.unwrap();
-                //     return Ok(serde_json::to_string(&device_config).unwrap());
-                // },
-                // "owner" => {
-                //     // let owner_config = CURRENT_USER_CONFIG.get();
-                //     // if owner_config.is_none() {
-                //     //     return Err(NSError::NotFound("current owner config not found".to_string()));
-                //     // }
-                //     // let owner_config = owner_config.unwrap();
-                //     // return Ok(serde_json::to_string(&owner_config).unwrap());
-                //     unimplemented!()
-                // },
                 _ => {
-                    if let Ok((_device_config, obj_config_str)) = self.load_device_doc(did_str).await {
-                        info!("zone_provider resolve name {} => {}", did_str, obj_config_str.as_str());
+                    if let Ok((_device_config, obj_config_str)) =
+                        self.load_device_doc(did_str).await
+                    {
+                        info!(
+                            "zone_provider resolve name {} => {}",
+                            did_str,
+                            obj_config_str.as_str()
+                        );
                         return Ok(obj_config_str);
                     }
 
-                    if let Ok((_owner_config, obj_config_str)) = self.load_owner_doc(did_str).await {
-                        info!("zone_provider resolve name {} => {}", did_str, obj_config_str.as_str());
+                    if let Ok((_agent_doc, obj_config_str)) = self.load_agent_doc(did_str).await {
+                        info!(
+                            "zone_provider resolve name {} => {}",
+                            did_str,
+                            obj_config_str.as_str()
+                        );
+                        return Ok(obj_config_str);
+                    }
+
+                    if let Ok((_owner_config, obj_config_str)) = self.load_owner_doc(did_str).await
+                    {
+                        info!(
+                            "zone_provider resolve name {} => {}",
+                            did_str,
+                            obj_config_str.as_str()
+                        );
                         return Ok(obj_config_str);
                     }
 
@@ -361,8 +432,6 @@ impl ZoneDidResolver {
     // }
 }
 
-
-
 // #[async_trait]
 // impl NsProvider for ZoneProvider {
 //     fn get_id(&self) -> String {
@@ -386,7 +455,6 @@ impl ZoneDidResolver {
 //             return name_info;
 //         }
 
-
 //         //if target device is ood, try resolve ip by ood info in zone config
 //         info!("ZoneProvider try resolve ip by ood info in zone config for {} ...",name);
 //         let runtime = get_buckyos_api_runtime().unwrap();
@@ -402,8 +470,8 @@ impl ZoneDidResolver {
 //             if let Ok(ip) = resolve_ood_ip_by_info(&ood_info,&zone_config).await {
 //                 return Ok(NameInfo::from_address(name,ip));
 //             }
-//         } 
-        
+//         }
+
 //         Err(NSError::NotFound(format!("cann't resolve ip for {}",name)))
 //     }
 
@@ -426,24 +494,34 @@ impl ZoneDidResolver {
 
 #[async_trait]
 impl HttpServer for ZoneDidResolver {
-    async fn serve_request(&self, req: http::Request<BoxBody<Bytes, ServerError>>, info: StreamInfo) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-
+    async fn serve_request(
+        &self,
+        req: http::Request<BoxBody<Bytes, ServerError>>,
+        info: StreamInfo,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
         // helper for building CORS friendly JSON response
-        let build_resp = |body: String| -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-            Ok(http::Response::builder()
-                .header(http::header::CONTENT_TYPE, "application/json")
-                .header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .header(http::header::ACCESS_CONTROL_ALLOW_METHODS, "GET, OPTIONS")
-                .header(http::header::ACCESS_CONTROL_ALLOW_HEADERS, "*")
-                .body(
-                    BoxBody::new(
+        let build_resp =
+            |body: String| -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+                Ok(http::Response::builder()
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                    .header(http::header::ACCESS_CONTROL_ALLOW_METHODS, "GET, OPTIONS")
+                    .header(http::header::ACCESS_CONTROL_ALLOW_HEADERS, "*")
+                    .body(BoxBody::new(
                         Full::new(Bytes::from(body))
-                            .map_err(|never: std::convert::Infallible| -> ServerError { match never {} })
+                            .map_err(|never: std::convert::Infallible| -> ServerError {
+                                match never {}
+                            })
                             .boxed(),
-                    ),
-                )
-                .map_err(|e| server_err!(ServerErrorCode::InvalidData, "Failed to build response: {}", e))?)
-        };
+                    ))
+                    .map_err(|e| {
+                        server_err!(
+                            ServerErrorCode::InvalidData,
+                            "Failed to build response: {}",
+                            e
+                        )
+                    })?)
+            };
 
         // CORS 预检
         if *req.method() == Method::OPTIONS {
@@ -452,18 +530,27 @@ impl HttpServer for ZoneDidResolver {
                 .header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
                 .header(http::header::ACCESS_CONTROL_ALLOW_METHODS, "GET, OPTIONS")
                 .header(http::header::ACCESS_CONTROL_ALLOW_HEADERS, "*")
-                .body(
-                    BoxBody::new(
-                        Full::new(Bytes::from_static(b""))
-                            .map_err(|never: std::convert::Infallible| -> ServerError { match never {} })
-                            .boxed(),
-                    ),
-                )
-                .map_err(|e| server_err!(ServerErrorCode::InvalidData, "Failed to build response: {}", e))?);
+                .body(BoxBody::new(
+                    Full::new(Bytes::from_static(b""))
+                        .map_err(|never: std::convert::Infallible| -> ServerError {
+                            match never {}
+                        })
+                        .boxed(),
+                ))
+                .map_err(|e| {
+                    server_err!(
+                        ServerErrorCode::InvalidData,
+                        "Failed to build response: {}",
+                        e
+                    )
+                })?);
         }
 
         if *req.method() != Method::GET {
-            return Err(server_err!(ServerErrorCode::BadRequest, "Method not allowed"));
+            return Err(server_err!(
+                ServerErrorCode::BadRequest,
+                "Method not allowed"
+            ));
         }
 
         // GET https://example.com/1.0/identifiers/did:dev:abcdefg?type=doc_type
@@ -471,23 +558,25 @@ impl HttpServer for ZoneDidResolver {
         if path.starts_with("/1.0/identifiers/") {
             let did_str = path.trim_start_matches("/1.0/identifiers/").to_string();
             if did_str.is_empty() {
-                return Err(server_err!(ServerErrorCode::BadRequest, "invalid did in path"));
+                return Err(server_err!(
+                    ServerErrorCode::BadRequest,
+                    "invalid did in path"
+                ));
             }
 
             // parse optional `type` query parameter
-            let typ = req
-                .uri()
-                .query()
-                .and_then(|q| {
-                    form_urlencoded::parse(q.as_bytes())
-                        .find(|(k, _)| k == "type")
-                        .map(|(_, v)| v.into_owned())
-                });
+            let typ = req.uri().query().and_then(|q| {
+                form_urlencoded::parse(q.as_bytes())
+                    .find(|(k, _)| k == "type")
+                    .map(|(_, v)| v.into_owned())
+            });
 
             let did_doc = self
                 .do_query_did(did_str.as_str(), typ)
                 .await
-                .map_err(|e| server_err!(ServerErrorCode::InvalidData, "query did failed: {}", e))?;
+                .map_err(|e| {
+                    server_err!(ServerErrorCode::InvalidData, "query did failed: {}", e)
+                })?;
 
             return build_resp(did_doc);
         }
@@ -495,16 +584,12 @@ impl HttpServer for ZoneDidResolver {
         // GET http://{did_host_name}/.well-known/{doc_type}.json
         if path.starts_with("/.well-known/") && path.ends_with(".json") {
             // pick host from URI first, fallback to Host header
-            let host = req
-                .uri()
-                .host()
-                .map(|v| v.to_string())
-                .or_else(|| {
-                    req.headers()
-                        .get(http::header::HOST)
-                        .and_then(|v| v.to_str().ok())
-                        .map(|v| v.split(':').next().unwrap_or(v).to_string())
-                });
+            let host = req.uri().host().map(|v| v.to_string()).or_else(|| {
+                req.headers()
+                    .get(http::header::HOST)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|v| v.split(':').next().unwrap_or(v).to_string())
+            });
 
             if host.is_none() {
                 return Err(server_err!(ServerErrorCode::BadRequest, "host not found"));
@@ -527,12 +612,17 @@ impl HttpServer for ZoneDidResolver {
             let did_doc = self
                 .do_query_did(did_str.as_str(), Some(doc_type))
                 .await
-                .map_err(|e| server_err!(ServerErrorCode::InvalidData, "query did failed: {}", e))?;
+                .map_err(|e| {
+                    server_err!(ServerErrorCode::InvalidData, "query did failed: {}", e)
+                })?;
 
             return build_resp(did_doc);
         }
 
-        return Err(server_err!(ServerErrorCode::BadRequest, "Method not allowed"));
+        return Err(server_err!(
+            ServerErrorCode::BadRequest,
+            "Method not allowed"
+        ));
     }
 
     fn id(&self) -> String {
@@ -548,14 +638,13 @@ impl HttpServer for ZoneDidResolver {
     }
 }
 
-
 // #[async_trait]
 // impl RPCHandler for ZoneProvider {
 //     async fn handle_http_get(&self, req_path:&str,ip_from:IpAddr) -> std::result::Result<String,RPCErrors> {
 //         // Check if the path contains a "resolve" folder and extract the filename after it
 //         //url like https://dev-resolver.example.com/1.0/identifiers/did:dev:abcdefg
 //         if req_path.starts_with("/1.0/identifiers/") {
-           
+
 //             let parts: Vec<&str> = req_path.split("/").collect();
 //             let did_str = parts[parts.len() - 1];
 //             info!("ZoneProvider do_query_did handle http get for {}",did_str);
@@ -566,7 +655,7 @@ impl HttpServer for ZoneDidResolver {
 //         }
 //         // GET https://resolver.example.com/did-query?name=alice&type=user
 //         if req_path.starts_with("/did-query") {
-  
+
 //             let base = "http://localhost";
 //             let full_url = format!("{}{}", base, req_path);
 //             let parsed_url = Url::parse(&full_url);
@@ -591,7 +680,7 @@ impl HttpServer for ZoneDidResolver {
 //                 RPCErrors::ReasonError(e.to_string())
 //             });
 //         }
-        
+
 //         return Err(RPCErrors::UnknownMethod(req_path.to_string()));
 //     }
 //     async fn handle_rpc_call(&self, req:RPCRequest,ip_from:IpAddr) -> std::result::Result<RPCResponse,RPCErrors> {

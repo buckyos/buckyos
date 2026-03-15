@@ -1,0 +1,33 @@
+{
+  "name": "__APP_ID__",
+  "version": "__VERSION__",
+  "show_name": "App Installer Agent Fixture",
+  "author": "__OWNER_DID__",
+  "owner": "__OWNER_DID__",
+  "size": 0,
+  "content": "",
+  "categories": [
+    "agent"
+  ],
+  "meta": {
+    "description": {
+      "detail": {
+        "en": "Local agent fixture for app_installer lifecycle testing."
+      }
+    }
+  },
+  "selector_type": "single",
+  "install_config_tips": {
+    "service_ports": {
+      "http": 4060
+    }
+  },
+  "pkg_list": {
+    "agent": {
+      "pkg_id": "__AGENT_PKG_ID__"
+    }
+  },
+  "deps": {
+    "__APP_ID__-agent": "__VERSION__"
+  }
+}

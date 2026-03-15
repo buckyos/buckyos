@@ -1,0 +1,3 @@
+# cyfs://$zone_id/srv/publish/
+
+Zone-level published/shared data, typically read-only for consumers.

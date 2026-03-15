@@ -2,7 +2,7 @@ use crate::PermissionRequest;
 use ::kRPC::*;
 use name_lib::DID;
 use ndn_lib::ObjId;
-use package_lib::PackageMeta;
+use package_lib::{PackageId, PackageMeta};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, ops::Deref};
 
@@ -118,6 +118,12 @@ pub struct SubPkgDesc {
     pub source_url: Option<String>,
 }
 
+impl SubPkgDesc {
+    pub fn get_pkg_id_with_objid(&self) -> Option<String> {
+        PackageId::get_pkgid_with_objid(self.pkg_id.as_str(), self.pkg_objid.clone()).ok()
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct SubPkgList {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -134,6 +140,10 @@ pub struct SubPkgList {
     pub amd64_apple_app: Option<SubPkgDesc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub web: Option<SubPkgDesc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<SubPkgDesc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_skills: Option<SubPkgDesc>,
     #[serde(flatten)]
     pub others: HashMap<String, SubPkgDesc>,
 }
@@ -148,6 +158,8 @@ impl Default for SubPkgList {
             aarch64_apple_app: None,
             amd64_apple_app: None,
             web: None,
+            agent: None,
+            agent_skills: None,
             others: HashMap::new(),
         }
     }
@@ -157,13 +169,29 @@ impl SubPkgList {
     pub fn get_app_pkg_id(&self) -> Option<String> {
         //根据编译时的目标系统，返回对应的app pkg_id
         if cfg!(target_os = "macos") {
-            if let Some(pkg) = &self.aarch64_apple_app {
-                return Some(pkg.pkg_id.clone());
+            let pkg = if cfg!(target_arch = "aarch64") {
+                self.aarch64_apple_app.as_ref()
+            } else {
+                self.amd64_apple_app.as_ref()
+            };
+            if let Some(pkg) = pkg {
+                if let Some(pkg_id) = pkg.get_pkg_id_with_objid() {
+                    return Some(pkg_id);
+                }
             }
+            return None;
         } else if cfg!(target_os = "windows") {
-            if let Some(pkg) = &self.amd64_win_app {
-                return Some(pkg.pkg_id.clone());
+            let pkg = if cfg!(target_arch = "aarch64") {
+                self.aarch64_win_app.as_ref()
+            } else {
+                self.amd64_win_app.as_ref()
+            };
+            if let Some(pkg) = pkg {
+                if let Some(pkg_id) = pkg.get_pkg_id_with_objid() {
+                    return Some(pkg_id);
+                }
             }
+            return None;
         }
 
         None
@@ -173,11 +201,15 @@ impl SubPkgList {
         //根据当前编译期架构，返回对应的docker image pkg_id
         if cfg!(target_arch = "aarch64") {
             if let Some(pkg) = &self.aarch64_docker_image {
-                return Some(pkg.pkg_id.clone());
+                if let Some(pkg_id) = pkg.get_pkg_id_with_objid() {
+                    return Some(pkg_id);
+                }
             }
         } else {
             if let Some(pkg) = &self.amd64_docker_image {
-                return Some(pkg.pkg_id.clone());
+                if let Some(pkg_id) = pkg.get_pkg_id_with_objid() {
+                    return Some(pkg_id);
+                }
             }
         }
 
@@ -188,8 +220,12 @@ impl SubPkgList {
             "amd64_docker_image" => self.amd64_docker_image.as_ref(),
             "aarch64_docker_image" => self.aarch64_docker_image.as_ref(),
             "amd64_win_app" => self.amd64_win_app.as_ref(),
+            "aarch64_win_app" => self.aarch64_win_app.as_ref(),
             "aarch64_apple_app" => self.aarch64_apple_app.as_ref(),
+            "amd64_apple_app" => self.amd64_apple_app.as_ref(),
             "web" => self.web.as_ref(),
+            "agent" => self.agent.as_ref(),
+            "agent_skills" => self.agent_skills.as_ref(),
             _ => self.others.get(key),
         }
     }
@@ -205,11 +241,23 @@ impl SubPkgList {
         if let Some(pkg) = &self.amd64_win_app {
             list.push(("amd64_win_app".to_string(), pkg));
         }
+        if let Some(pkg) = &self.aarch64_win_app {
+            list.push(("aarch64_win_app".to_string(), pkg));
+        }
         if let Some(pkg) = &self.aarch64_apple_app {
             list.push(("aarch64_apple_app".to_string(), pkg));
         }
+        if let Some(pkg) = &self.amd64_apple_app {
+            list.push(("amd64_apple_app".to_string(), pkg));
+        }
         if let Some(pkg) = &self.web {
             list.push(("web".to_string(), pkg));
+        }
+        if let Some(pkg) = &self.agent {
+            list.push(("agent".to_string(), pkg));
+        }
+        if let Some(pkg) = &self.agent_skills {
+            list.push(("agent_skills".to_string(), pkg));
         }
         for (k, v) in self.others.iter() {
             list.push((k.clone(), v));
@@ -270,6 +318,10 @@ pub struct AppDoc {
     pub app_icon_url: Option<String>,
 
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sdk_version: Option<String>, //依赖的buckyos sdk版本，如果未设置则为兼容App,AppLoader要使用兼容模式启动
+
+    #[serde(default)]
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub req_capbilities: HashMap<String, i64>, //key: capability_name, value: required capability_value
     #[serde(default)]
@@ -326,7 +378,7 @@ impl Deref for AppDoc {
 //   Service: SubPkg必然没有web,也没有docker
 //   AppService: SubPkg必然有docker,但没有web,也没有*_app，一般需要申请data目录和cache目录的读写权限，申请library目录的读权限
 //   Web: SubPkg必然有web,但没有docker,也没有*_app，不需要任何权限，SelectType为Static
-//   Agent: 暂时不支持
+//   Agent: SubPkg必然有agent,可选agent_skills,但没有docker,也没有web/原生app
 
 impl SubPkgDesc {
     pub fn new(pkg_id: impl Into<String>) -> Self {
@@ -360,6 +412,7 @@ pub struct AppDocBuilder {
     meta: PackageMeta,
     show_name: Option<String>,
     app_icon_url: Option<String>,
+    sdk_version: Option<String>,
     req_capbilities: HashMap<String, i64>,
     permissions: Vec<PermissionRequest>,
     selector_type: Option<SelectorType>,
@@ -409,6 +462,7 @@ impl AppDocBuilder {
             meta,
             show_name: None,
             app_icon_url: None,
+            sdk_version: None,
             req_capbilities: HashMap::new(),
             permissions: vec![],
             selector_type: None,
@@ -425,6 +479,11 @@ impl AppDocBuilder {
 
     pub fn app_icon_url(mut self, app_icon_url: impl Into<String>) -> Self {
         self.app_icon_url = Some(app_icon_url.into());
+        self
+    }
+
+    pub fn sdk_version(mut self, sdk_version: impl Into<String>) -> Self {
+        self.sdk_version = Some(sdk_version.into());
         self
     }
 
@@ -575,6 +634,16 @@ impl AppDocBuilder {
         self
     }
 
+    pub fn agent_pkg(mut self, desc: SubPkgDesc) -> Self {
+        self.pkg_list.agent = Some(desc);
+        self
+    }
+
+    pub fn agent_skills_pkg(mut self, desc: SubPkgDesc) -> Self {
+        self.pkg_list.agent_skills = Some(desc);
+        self
+    }
+
     pub fn other_pkg(mut self, key: impl Into<String>, desc: SubPkgDesc) -> Self {
         self.pkg_list.others.insert(key.into(), desc);
         self
@@ -613,12 +682,6 @@ impl AppDocBuilder {
     }
 
     pub fn build(mut self) -> Result<AppDoc> {
-        if self.app_type == AppType::Agent {
-            return Err(RPCErrors::ReasonError(
-                "AppType::Agent is not supported yet".to_string(),
-            ));
-        }
-
         let has_docker = self.pkg_list.amd64_docker_image.is_some()
             || self.pkg_list.aarch64_docker_image.is_some();
         let has_web = self.pkg_list.web.is_some();
@@ -626,6 +689,8 @@ impl AppDocBuilder {
             || self.pkg_list.aarch64_win_app.is_some()
             || self.pkg_list.amd64_apple_app.is_some()
             || self.pkg_list.aarch64_apple_app.is_some();
+        let has_agent = self.pkg_list.agent.is_some();
+        let has_agent_skills = self.pkg_list.agent_skills.is_some();
 
         let mut errors: Vec<String> = vec![];
         match self.app_type {
@@ -638,6 +703,12 @@ impl AppDocBuilder {
                 }
                 if has_docker {
                     errors.push("Service app must not include docker images (remove `amd64_docker_image`/`aarch64_docker_image` or change AppType)".to_string());
+                }
+                if has_agent || has_agent_skills {
+                    errors.push(
+                        "Service app must not include `pkg_list.agent`/`pkg_list.agent_skills` (remove them or change AppType)"
+                            .to_string(),
+                    );
                 }
             }
             AppType::AppService => {
@@ -652,6 +723,12 @@ impl AppDocBuilder {
                 }
                 if has_native_app {
                     errors.push("AppService app must not include `*_win_app`/`*_apple_app` packages (remove them or change AppType)".to_string());
+                }
+                if has_agent || has_agent_skills {
+                    errors.push(
+                        "AppService app must not include `pkg_list.agent`/`pkg_list.agent_skills` (remove them or change AppType)"
+                            .to_string(),
+                    );
                 }
                 self.ensure_appservice_default_permissions();
             }
@@ -671,13 +748,41 @@ impl AppDocBuilder {
                             .to_string(),
                     );
                 }
+                if has_agent || has_agent_skills {
+                    errors.push(
+                        "Web app must not include `pkg_list.agent`/`pkg_list.agent_skills` (remove them or change AppType)"
+                            .to_string(),
+                    );
+                }
 
                 // Web is always static and should not request permissions.
                 self.selector_type = Some(SelectorType::Static);
                 self.permissions.clear();
                 self.install_config_tips = ServiceInstallConfigTips::default();
             }
-            AppType::Agent => unreachable!(),
+            AppType::Agent => {
+                if !has_agent {
+                    errors.push("Agent app must include `pkg_list.agent`".to_string());
+                }
+                if has_docker {
+                    errors.push(
+                        "Agent app must not include docker images (remove them or change AppType)"
+                            .to_string(),
+                    );
+                }
+                if has_web {
+                    errors.push(
+                        "Agent app must not include `pkg_list.web` (remove it or change AppType)"
+                            .to_string(),
+                    );
+                }
+                if has_native_app {
+                    errors.push(
+                        "Agent app must not include native app packages (remove them or change AppType)"
+                            .to_string(),
+                    );
+                }
+            }
         }
 
         if !errors.is_empty() {
@@ -703,6 +808,7 @@ impl AppDocBuilder {
             _base: self.meta,
             show_name,
             app_icon_url: self.app_icon_url,
+            sdk_version: self.sdk_version,
             req_capbilities: self.req_capbilities,
             permissions: self.permissions,
             selector_type: self.selector_type.unwrap_or_default(),
@@ -869,6 +975,7 @@ mod tests {
             &owner,
         )
         .show_name("Demo Service")
+        .sdk_version("0.5.1")
         .build()
         .unwrap();
         println!(
@@ -876,6 +983,7 @@ mod tests {
             serde_json::to_string_pretty(&doc).unwrap()
         );
         assert_eq!(doc.get_app_type(), AppType::Service);
+        assert_eq!(doc.sdk_version.as_deref(), Some("0.5.1"));
 
         // Service must reject docker image.
         let err = AppDoc::builder(
@@ -994,11 +1102,56 @@ mod tests {
     }
 
     #[test]
-    fn test_app_doc_builder_agent_not_supported() {
+    fn test_subpkg_list_get_and_iter_cover_all_known_keys() {
+        let mut pkg_list = SubPkgList::default();
+        pkg_list.amd64_docker_image = Some(SubPkgDesc::new("demo-img-amd64#0.1.0"));
+        pkg_list.aarch64_docker_image = Some(SubPkgDesc::new("demo-img-aarch64#0.1.0"));
+        pkg_list.amd64_win_app = Some(SubPkgDesc::new("demo-win-amd64#0.1.0"));
+        pkg_list.aarch64_win_app = Some(SubPkgDesc::new("demo-win-aarch64#0.1.0"));
+        pkg_list.amd64_apple_app = Some(SubPkgDesc::new("demo-mac-amd64#0.1.0"));
+        pkg_list.aarch64_apple_app = Some(SubPkgDesc::new("demo-mac-aarch64#0.1.0"));
+        pkg_list.web = Some(SubPkgDesc::new("demo-web#0.1.0"));
+        pkg_list.agent = Some(SubPkgDesc::new("demo-agent#0.1.0"));
+        pkg_list.agent_skills = Some(SubPkgDesc::new("demo-agent-skills#0.1.0"));
+        pkg_list
+            .others
+            .insert("custom".to_string(), SubPkgDesc::new("demo-custom#0.1.0"));
+
+        assert_eq!(
+            pkg_list
+                .get("aarch64_win_app")
+                .map(|pkg| pkg.pkg_id.as_str()),
+            Some("demo-win-aarch64#0.1.0")
+        );
+        assert_eq!(
+            pkg_list
+                .get("amd64_apple_app")
+                .map(|pkg| pkg.pkg_id.as_str()),
+            Some("demo-mac-amd64#0.1.0")
+        );
+        assert_eq!(
+            pkg_list.get("agent").map(|pkg| pkg.pkg_id.as_str()),
+            Some("demo-agent#0.1.0")
+        );
+        assert_eq!(
+            pkg_list.get("agent_skills").map(|pkg| pkg.pkg_id.as_str()),
+            Some("demo-agent-skills#0.1.0")
+        );
+
+        let keys: Vec<String> = pkg_list.iter().into_iter().map(|(key, _)| key).collect();
+        assert!(keys.iter().any(|key| key == "aarch64_win_app"));
+        assert!(keys.iter().any(|key| key == "amd64_apple_app"));
+        assert!(keys.iter().any(|key| key == "agent"));
+        assert!(keys.iter().any(|key| key == "agent_skills"));
+        assert!(keys.iter().any(|key| key == "custom"));
+    }
+
+    #[test]
+    fn test_app_doc_builder_agent_requires_agent_pkg() {
         let owner = DID::from_str("did:web:example.com").unwrap();
         let err = AppDoc::builder(
             AppType::Agent,
-            "demo_agent",
+            "demo_agent_bad",
             "0.1.0",
             "did:web:example.com",
             &owner,
@@ -1007,9 +1160,38 @@ mod tests {
         .err()
         .unwrap();
         assert!(
-            format!("{:?}", err).contains("not supported"),
+            format!("{:?}", err).contains("Agent app must include `pkg_list.agent`"),
             "unexpected error: {:?}",
             err
+        );
+    }
+
+    #[test]
+    fn test_app_doc_builder_agent_builds_with_agent_packages() {
+        let owner = DID::from_str("did:web:example.com").unwrap();
+        let doc = AppDoc::builder(
+            AppType::Agent,
+            "demo_agent",
+            "0.1.0",
+            "did:web:example.com",
+            &owner,
+        )
+        .agent_pkg(SubPkgDesc::new("demo_agent-agent#0.1.0"))
+        .agent_skills_pkg(SubPkgDesc::new("demo_agent-skills#0.1.0"))
+        .build()
+        .unwrap();
+
+        assert_eq!(doc.get_app_type(), AppType::Agent);
+        assert_eq!(
+            doc.pkg_list.agent.as_ref().map(|pkg| pkg.pkg_id.as_str()),
+            Some("demo_agent-agent#0.1.0")
+        );
+        assert_eq!(
+            doc.pkg_list
+                .agent_skills
+                .as_ref()
+                .map(|pkg| pkg.pkg_id.as_str()),
+            Some("demo_agent-skills#0.1.0")
         );
     }
 }

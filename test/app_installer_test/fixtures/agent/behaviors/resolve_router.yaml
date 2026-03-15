@@ -1,0 +1,11 @@
+process_rule: |
+  This is a local app_installer fixture behavior.
+  Stay idle until the runtime receives a real event.
+
+toolbox:
+  mode: none
+
+memory:
+  total_limit: 5%
+
+step_limit: 4

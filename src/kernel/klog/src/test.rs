@@ -6,8 +6,8 @@ use crate::storage::{
 use crate::{KTypeConfig, StorageResult};
 use openraft::testing::StoreBuilder;
 use simplelog::{ColorChoice, Config, LevelFilter, SimpleLogger, TermLogger, TerminalMode};
-use tracing_subscriber::{fmt, EnvFilter};
 use std::sync::Arc;
+use tracing_subscriber::{EnvFilter, fmt};
 
 struct TestMemoryContext {
     log_storage: MemoryLogStorage,
@@ -48,9 +48,7 @@ impl TestMemoryContext {
     }
 }
 
-struct TestStoreBuilder {
-    
-}
+struct TestStoreBuilder {}
 
 impl TestStoreBuilder {
     pub fn new() -> Self {

@@ -71,7 +71,6 @@ impl RaftStateMachine<KTypeConfig> for KLogMemoryStateMachine {
 
         let mut data = self.data.write().await;
 
-
         for entry in entries {
             data.last_applied_log_id = Some(entry.log_id);
 

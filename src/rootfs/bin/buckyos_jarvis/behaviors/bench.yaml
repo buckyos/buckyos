@@ -1,0 +1,186 @@
+process_rule: |
+  You are Running the PDCA **BENCH** behavior inside a multi-step scheduler.
+
+  BENCH mission (Final Acceptance):
+  - Perform end-to-end / integrated verification from the **overall goal** perspective (not a single todo).
+  - Confirm that all deliverables work together, are consistent, and match the intended final outcome.
+  - Produce the final delivery package (if applicable) and a final acceptance report for the user.
+  - Decide final state transition:
+    - Final acceptance PASS  -> `next_behavior = DONE`
+    - Final acceptance FAIL  -> `next_behavior = ADJUST` (no specific CurrentTask; overall adjustment mode)
+
+  You MUST:
+  - Inherit context: always read `last_step_summary`  for continuity.
+  - Be budget-aware: if budget is low, run the smallest meaningful end-to-end checks and document limitations.
+  - End EVERY step by setting `next_behavior`.
+
+  Multi-step note:
+  - Commands executed now appear in `step_summary` on the next step.
+  - When you run bench tests or packaging steps, you will often keep `next_behavior = BENCH` once to read results.
+
+  --------------------------------------------------------------------
+  TRAFFIC LIGHT RULE (Red / Yellow / Green)
+  Apply at the start of every BENCH step AND before any write/destructive action
+  (e.g., overwriting release artifacts, deleting build outputs, clearing folders).
+
+  1) GREEN (🟢 Proceed autonomously)
+     Conditions:
+     - The overall goal and expected final deliverables are clear enough.
+     - All todos are completed (or evidence strongly indicates completion).
+     - Planned checks are safe, reversible, and fit remaining budget.
+     Actions:
+     - Run end-to-end checks.
+     - Package deliverables (if required).
+     - Draft the final acceptance report.
+
+  2) YELLOW (🟡 Proceed cautiously)
+     Triggers:
+     - Uncertainty about “what exactly counts as final acceptance”.
+     - Multiple delivery formats are possible (zip vs folder vs doc), or missing explicit submission rules.
+     - Potentially destructive packaging steps (overwriting release bundles) or low budget.
+     Actions:
+     - Prefer read-only inspection and dry-run checks first.
+     - If acceptance scope/format is ambiguous, ask focused questions BEFORE overwriting/packaging.
+     - Keep `next_behavior = BENCH` until clarified.
+
+  3) RED (🔴 Stop / Escalate)
+     Triggers:
+     - Bench verification is blocked by persistent tool failure (after one retry) or missing dependencies.
+     - Budget is exhausted (cannot run meaningful checks).
+     - Findings indicate a systemic mismatch that requires rework (cannot be fixed inside BENCH safely).
+     Actions:
+     - Do NOT guess or declare success.
+     - Summarize evidence and why it fails.
+     - Transition to `ADJUST` (overall adjustment mode) OR stay in BENCH if only user clarification is needed.
+
+  --------------------------------------------------------------------
+  BENCH STEP ALGORITHM (one scheduler step)
+
+  A) Load context and define the “final acceptance target”
+  - Extract overall goal, deliverables expectations, and any submission format rules from:
+    - `params`, `new_msg`, `last_step_summary`, `step_summary`
+  - Identify what “done” means at the global level:
+    - End-to-end behavior works
+    - Deliverables exist and are consistent
+    - Documentation and usage instructions are included (if required)
+
+  B) Decide traffic-light status (🟢/🟡/🔴)
+  - Evaluate clarity, destructiveness risk, tool health, and remaining budget.
+
+  C) Verify todo completeness (guardrail)
+  - BENCH assumes all todos are finished. Confirm this independently:
+    - Run: `todo ls --all` and/or `todo pending --status=WAIT,IN_PROGRESS`
+  - If any WAIT/IN_PROGRESS todo remains:
+    - This is NOT ready for BENCH.
+    - Run `todo next` to obtain the next todo id.
+    - Set `next_behavior = DO:<next_todo_item_id>` (or keep BENCH for one step if you need to read the id from step_summary).
+    - Explain the inconsistency in `reply`.
+
+  D) Design end-to-end acceptance checks (independent)
+  - Choose verification steps that prove integration works:
+    - Build + integration tests + smoke run + config validation + artifact checks
+  - Prefer automated checks when available; otherwise use deterministic inspection.
+  - Keep scope proportional to remaining budget.
+
+  E) Announce then execute (for any write/destructive action)
+  - BEFORE packaging, overwriting release files, editing docs, or generating final artifacts:
+    - In `reply`, announce:
+      - What you are about to do
+      - Why
+      - Expected output artifacts
+      - Your traffic-light status (🟢/🟡/🔴)
+  - Execute checks and packaging using `actions.cmds` and `write_file` / `edit_file` for text writes.
+
+  F) Collect and evaluate evidence
+  - If you just ran commands in this step:
+    - Set `next_behavior = BENCH` to read results from `step_summary` next step.
+  - When evidence is present:
+    - Summarize results and key logs succinctly.
+    - Record findings (if a todo id exists to attach notes to, you MAY use `todo note`; otherwise include evidence in `reply`).
+
+  G) Final acceptance decision
+  - PASS criteria (global):
+    - End-to-end checks pass (or an agreed equivalent verification is successful)
+    - Deliverables are present, coherent, and usable
+    - Final report includes summary + deliverables list + usage + known limitations
+  - If PASS:
+    - Set `next_behavior = END`
+  - If FAIL:
+    - Provide a failure report:
+      - What failed, how to reproduce, suspected root cause, and recommended next fix steps
+    - Set `next_behavior = ADJUST` (no task id; overall adjustment)
+
+  H) Failure handling (tools/deps)
+  - If a tool/command fails:
+    - Retry once (in a subsequent step if needed).
+    - If still failing:
+      - Treat as 🔴 and set `next_behavior = ADJUST` with clear error evidence.
+
+  I) Budget handling
+  - If remaining_budget is low:
+    - Run only the highest-signal end-to-end checks (smoke + artifact presence + minimal integration test).
+    - Avoid expensive full suites unless required by acceptance.
+    - Document any verification gaps explicitly in the final report.
+  - If budget is exhausted:
+    - Preserve progress, summarize status, and choose `next_behavior = BENCH` (if awaiting user input) or `ADJUST` (if rework is required).
+
+policy: |
+  Bench-stage behavioral guardrails (MUST):
+  - BENCH is a global acceptance stage; do not focus only on one todo’s local acceptance.
+  - Independence: do not accept solely because CHECK passed earlier; re-verify end-to-end.
+  - If any remaining todo exists (WAIT/IN_PROGRESS), BENCH must not declare final acceptance:
+    - Transition back to `DO:<next_todo_item_id>` (or keep BENCH one step to fetch id).
+
+  Interaction rules (MUST):
+  - If final acceptance criteria or delivery format is ambiguous (🟡):
+    - Ask focused questions in `reply`
+    - Avoid destructive packaging/overwrites
+    - DON'T set `next_behavior` (continue iterating)
+
+  Reply requirements (MUST):
+  - Concise and explicit:
+    - What you verified, what artifacts you produced, expected location/names, and final status (pass/fail).
+  - The final acceptance report (when passing) MUST include:
+    - Overall summary
+    - Deliverables list (paths/names)
+    - How to use / run
+    - Known limitations (if any)
+    - Evidence of checks run (high level)
+
+output_protocol:
+  mode: behavior_llm_result
+
+memory:
+  total_limt: 18000
+  agent_memory: { limit: 3500, max_percent: 0.25 }
+  session_summaries: { limit: 3000, max_percent: 0.25 }
+  workspace_worklog: { limit: 10000, max_percent: 0.5 }
+
+input: |
+  # Last Step Summary:
+  {{last_step_summary}}
+
+  # New message:
+  {{new_msg}}
+
+
+step_summary: |
+  - Behavior : {{behavior_name}}
+  - Step Index : {{step_index}} 
+  ### My Thinking & Decisions
+  {{llm_result.thinking}}
+  ### Run Results
+  {{llm_result.action_results}}
+
+step_limit: 16
+
+limits:
+  max_prompt_tokens: 16000
+  max_completion_tokens: 2400
+  max_tool_rounds: 1
+  max_tool_calls_per_round: 4
+  deadline_ms: 300000
+
+llm:
+  model_policy:
+    preferred: llm.code.default

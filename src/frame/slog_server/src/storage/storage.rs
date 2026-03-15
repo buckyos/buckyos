@@ -6,6 +6,10 @@ use std::sync::Arc;
 pub struct LogRecords {
     pub node: String,
     pub service: String,
+    #[serde(default)]
+    pub batch_id: Option<String>,
+    #[serde(default)]
+    pub record_ids: Vec<String>,
     pub logs: Vec<SystemLogRecord>,
 }
 
@@ -17,6 +21,7 @@ pub trait LogStorage: Sync + Send {
 
 pub type LogStorageRef = Arc<Box<dyn LogStorage>>;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LogQueryRequest {
     pub node: Option<String>,
     pub service: Option<String>,

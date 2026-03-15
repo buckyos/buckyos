@@ -26,6 +26,8 @@ bytes = { workspace = true }
 base64 = { workspace = true }
 ed25519-dalek = { workspace = true }
 cyfs-sn = { workspace = true }
+memmap2 = "0.9.5"
+libc = "0.2.177"
 
 buckyos-kit = { workspace = true }
 package-lib = { workspace = true }
@@ -35,4 +37,5 @@ kRPC ={ workspace = true }
 rbac = { workspace = true }
 cyfs-gateway-lib = { workspace = true }
 ndn-lib = { workspace = true }
-
+named_store = { workspace = true }
+ndn-toolkit = { workspace = true }

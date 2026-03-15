@@ -1,7 +1,13 @@
-use crate::task::{Task, TaskPermissions, TaskScope, TaskStatus};
+use crate::download_executor::{
+    build_download_task_data, build_download_task_name, infer_objid_from_url,
+    merge_download_source_patch, shared_download_executor, should_enqueue_download_task,
+    spec_from_task, task_has_download_url, task_has_objid, DownloadTaskStore, DOWNLOAD_TASK_TYPE,
+};
+use crate::task::{new_task, Task, TaskScope, TaskStatus};
 use crate::task_db::DB_MANAGER;
 use ::kRPC::*;
 use async_trait::async_trait;
+use buckyos_api::*;
 use bytes::Bytes;
 use cyfs_gateway_lib::{
     serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
@@ -10,408 +16,11 @@ use cyfs_gateway_lib::{
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use log::*;
-use serde::{Deserialize, Serialize};
+use ndn_lib::ObjId;
 use serde_json::{json, Value};
 use server_runner::*;
-use std::net::IpAddr;
 use std::ops::Range;
 use std::sync::Arc;
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct CreateTaskOptions {
-    pub permissions: Option<TaskPermissions>,
-    pub parent_id: Option<i64>,
-    pub priority: Option<u8>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct TaskFilter {
-    pub app_id: Option<String>,
-    pub task_type: Option<String>,
-    pub status: Option<TaskStatus>,
-    pub parent_id: Option<i64>,
-    pub root_id: Option<i64>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct TaskUpdatePayload {
-    pub id: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<TaskStatus>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub progress: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreateTaskResult {
-    pub task_id: i64,
-    pub task: Task,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GetTaskResult {
-    pub task: Task,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ListTasksResult {
-    pub tasks: Vec<Task>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskManagerCreateTaskReq {
-    pub name: String,
-    pub task_type: String,
-    #[serde(default)]
-    pub data: Option<Value>,
-    #[serde(default)]
-    pub permissions: Option<TaskPermissions>,
-    #[serde(default)]
-    pub parent_id: Option<i64>,
-    #[serde(default)]
-    pub priority: Option<u8>,
-    #[serde(default)]
-    pub user_id: String,
-    #[serde(default)]
-    pub app_id: String,
-    #[serde(default)]
-    pub app_name: Option<String>,
-}
-
-impl TaskManagerCreateTaskReq {
-    pub fn new(
-        name: String,
-        task_type: String,
-        data: Option<Value>,
-        permissions: Option<TaskPermissions>,
-        parent_id: Option<i64>,
-        priority: Option<u8>,
-        user_id: String,
-        app_id: String,
-    ) -> Self {
-        let app_name = if app_id.is_empty() {
-            None
-        } else {
-            Some(app_id.clone())
-        };
-        Self {
-            name,
-            task_type,
-            data,
-            permissions,
-            parent_id,
-            priority,
-            user_id,
-            app_id,
-            app_name,
-        }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerCreateTaskReq: {}",
-                e
-            ))
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskManagerGetTaskReq {
-    pub id: i64,
-}
-
-impl TaskManagerGetTaskReq {
-    pub fn new(id: i64) -> Self {
-        Self { id }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerGetTaskReq: {}",
-                e
-            ))
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskManagerListTasksReq {
-    #[serde(default)]
-    pub app_id: Option<String>,
-    #[serde(default)]
-    pub task_type: Option<String>,
-    #[serde(default)]
-    pub status: Option<TaskStatus>,
-    #[serde(default)]
-    pub parent_id: Option<i64>,
-    #[serde(default)]
-    pub root_id: Option<i64>,
-    #[serde(default)]
-    pub source_user_id: Option<String>,
-    #[serde(default)]
-    pub source_app_id: Option<String>,
-}
-
-impl TaskManagerListTasksReq {
-    pub fn new(
-        filter: TaskFilter,
-        source_user_id: Option<String>,
-        source_app_id: Option<String>,
-    ) -> Self {
-        Self {
-            app_id: filter.app_id,
-            task_type: filter.task_type,
-            status: filter.status,
-            parent_id: filter.parent_id,
-            root_id: filter.root_id,
-            source_user_id,
-            source_app_id,
-        }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerListTasksReq: {}",
-                e
-            ))
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskManagerListTasksByTimeRangeReq {
-    #[serde(default)]
-    pub app_id: Option<String>,
-    #[serde(default)]
-    pub task_type: Option<String>,
-    #[serde(default)]
-    pub source_user_id: Option<String>,
-    #[serde(default)]
-    pub source_app_id: Option<String>,
-    pub start_time: u64,
-    pub end_time: u64,
-}
-
-impl TaskManagerListTasksByTimeRangeReq {
-    pub fn new(
-        app_id: Option<String>,
-        task_type: Option<String>,
-        source_user_id: Option<String>,
-        source_app_id: Option<String>,
-        time_range: Range<u64>,
-    ) -> Self {
-        Self {
-            app_id,
-            task_type,
-            source_user_id,
-            source_app_id,
-            start_time: time_range.start,
-            end_time: time_range.end,
-        }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerListTasksByTimeRangeReq: {}",
-                e
-            ))
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskManagerUpdateTaskReq {
-    pub id: i64,
-    #[serde(default)]
-    pub status: Option<TaskStatus>,
-    #[serde(default)]
-    pub progress: Option<f32>,
-    #[serde(default)]
-    pub message: Option<String>,
-    #[serde(default)]
-    pub data: Option<Value>,
-}
-
-impl TaskManagerUpdateTaskReq {
-    pub fn new(payload: TaskUpdatePayload) -> Self {
-        Self {
-            id: payload.id,
-            status: payload.status,
-            progress: payload.progress,
-            message: payload.message,
-            data: payload.data,
-        }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerUpdateTaskReq: {}",
-                e
-            ))
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskManagerCancelTaskReq {
-    pub id: i64,
-    #[serde(default)]
-    pub recursive: bool,
-}
-
-impl TaskManagerCancelTaskReq {
-    pub fn new(id: i64, recursive: bool) -> Self {
-        Self { id, recursive }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerCancelTaskReq: {}",
-                e
-            ))
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskManagerGetSubtasksReq {
-    pub parent_id: i64,
-}
-
-impl TaskManagerGetSubtasksReq {
-    pub fn new(parent_id: i64) -> Self {
-        Self { parent_id }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerGetSubtasksReq: {}",
-                e
-            ))
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskManagerUpdateTaskStatusReq {
-    pub id: i64,
-    pub status: TaskStatus,
-}
-
-impl TaskManagerUpdateTaskStatusReq {
-    pub fn new(id: i64, status: TaskStatus) -> Self {
-        Self { id, status }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerUpdateTaskStatusReq: {}",
-                e
-            ))
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskManagerUpdateTaskProgressReq {
-    pub id: i64,
-    pub completed_items: u64,
-    pub total_items: u64,
-}
-
-impl TaskManagerUpdateTaskProgressReq {
-    pub fn new(id: i64, completed_items: u64, total_items: u64) -> Self {
-        Self {
-            id,
-            completed_items,
-            total_items,
-        }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerUpdateTaskProgressReq: {}",
-                e
-            ))
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskManagerUpdateTaskErrorReq {
-    pub id: i64,
-    pub error_message: String,
-}
-
-impl TaskManagerUpdateTaskErrorReq {
-    pub fn new(id: i64, error_message: String) -> Self {
-        Self { id, error_message }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerUpdateTaskErrorReq: {}",
-                e
-            ))
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskManagerUpdateTaskDataReq {
-    pub id: i64,
-    pub data: Value,
-}
-
-impl TaskManagerUpdateTaskDataReq {
-    pub fn new(id: i64, data: Value) -> Self {
-        Self { id, data }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerUpdateTaskDataReq: {}",
-                e
-            ))
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskManagerDeleteTaskReq {
-    pub id: i64,
-}
-
-impl TaskManagerDeleteTaskReq {
-    pub fn new(id: i64) -> Self {
-        Self { id }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse TaskManagerDeleteTaskReq: {}",
-                e
-            ))
-        })
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct RequestContext {
@@ -435,101 +44,119 @@ fn request_context_from_source(user_id: Option<&str>, app_id: Option<&str>) -> R
     }
 }
 
-#[async_trait]
-pub trait TaskManagerHandler: Send + Sync {
-    async fn handle_create_task(
-        &self,
-        name: &str,
-        task_type: &str,
-        data: Option<Value>,
-        opts: CreateTaskOptions,
-        user_id: &str,
-        app_id: &str,
-        ctx: RPCContext,
-    ) -> Result<Task>;
-
-    async fn handle_get_task(&self, id: i64, ctx: RPCContext) -> Result<Task>;
-
-    async fn handle_list_tasks(
-        &self,
-        filter: TaskFilter,
-        source_user_id: Option<&str>,
-        source_app_id: Option<&str>,
-        ctx: RPCContext,
-    ) -> Result<Vec<Task>>;
-
-    async fn handle_list_tasks_by_time_range(
-        &self,
-        app_id: Option<&str>,
-        task_type: Option<&str>,
-        source_user_id: Option<&str>,
-        source_app_id: Option<&str>,
-        time_range: Range<u64>,
-        ctx: RPCContext,
-    ) -> Result<Vec<Task>>;
-
-    async fn handle_update_task(
-        &self,
-        id: i64,
-        status: Option<TaskStatus>,
-        progress: Option<f32>,
-        message: Option<String>,
-        data: Option<Value>,
-        ctx: RPCContext,
-    ) -> Result<()>;
-
-    async fn handle_cancel_task(
-        &self,
-        id: i64,
-        recursive: bool,
-        ctx: RPCContext,
-    ) -> Result<()>;
-
-    async fn handle_get_subtasks(&self, parent_id: i64, ctx: RPCContext) -> Result<Vec<Task>>;
-
-    async fn handle_update_task_status(
-        &self,
-        id: i64,
-        status: TaskStatus,
-        ctx: RPCContext,
-    ) -> Result<()>;
-
-    async fn handle_update_task_progress(
-        &self,
-        id: i64,
-        completed_items: u64,
-        total_items: u64,
-        ctx: RPCContext,
-    ) -> Result<()>;
-
-    async fn handle_update_task_error(
-        &self,
-        id: i64,
-        error_message: &str,
-        ctx: RPCContext,
-    ) -> Result<()>;
-
-    async fn handle_update_task_data(
-        &self,
-        id: i64,
-        data: Value,
-        ctx: RPCContext,
-    ) -> Result<()>;
-
-    async fn handle_delete_task(&self, id: i64, ctx: RPCContext) -> Result<()>;
+fn request_context_from_rpc(ctx: &RPCContext) -> RequestContext {
+    let Some(token) = ctx.token.as_ref() else {
+        return RequestContext::empty();
+    };
+    let Ok(session_token) = RPCSessionToken::from_string(token.as_str()) else {
+        return RequestContext::empty();
+    };
+    let Ok((user_id, app_id)) = session_token.get_subs() else {
+        return RequestContext::empty();
+    };
+    RequestContext { user_id, app_id }
 }
 
+fn request_context_from_source_or_rpc(
+    user_id: Option<&str>,
+    app_id: Option<&str>,
+    ctx: &RPCContext,
+) -> RequestContext {
+    let mut request_ctx = request_context_from_source(user_id, app_id);
+    if !request_ctx.user_id.is_empty() && !request_ctx.app_id.is_empty() {
+        return request_ctx;
+    }
+
+    let rpc_ctx = request_context_from_rpc(ctx);
+    if request_ctx.user_id.is_empty() {
+        request_ctx.user_id = rpc_ctx.user_id;
+    }
+    if request_ctx.app_id.is_empty() {
+        request_ctx.app_id = rpc_ctx.app_id;
+    }
+    request_ctx
+}
+
+fn parse_root_id_from_task_data(data: &Value) -> Option<String> {
+    for pointer in ["/root_id", "/rootid", "/meta/root_id", "/meta/rootid"] {
+        let value = data
+            .pointer(pointer)
+            .and_then(|item| item.as_str())
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(|item| item.to_string());
+        if value.is_some() {
+            return value;
+        }
+    }
+    None
+}
+
+fn unique_task_name_conflict(err: &RPCErrors) -> bool {
+    matches!(
+        err,
+        RPCErrors::ReasonError(message)
+            if message.contains("UNIQUE constraint failed")
+                || message.contains("idx_task_name_scope")
+    )
+}
 
 #[derive(Clone)]
-struct TaskManagerService {}
+struct TaskManagerService {
+    kevent_client: KEventClient,
+}
 
 impl TaskManagerService {
     pub fn new() -> Self {
-        TaskManagerService {}
+        TaskManagerService {
+            kevent_client: KEventClient::new_full(TASK_MANAGER_SERVICE_NAME, None),
+        }
     }
 
     fn is_system_app(app_id: &str) -> bool {
         app_id == "kernel" || app_id == "system"
+    }
+
+    fn task_status_event_id(task_id: i64) -> String {
+        format!("/task_mgr/{}", task_id)
+    }
+
+    async fn publish_task_status_changed_event(
+        &self,
+        before: &Task,
+        after: &Task,
+        source_method: &str,
+    ) {
+        if before.status == after.status {
+            return;
+        }
+
+        let event_id = Self::task_status_event_id(after.id);
+        let payload = json!({
+            "task_id": after.id,
+            "root_id": after.root_id,
+            "parent_id": after.parent_id,
+            "user_id": after.user_id,
+            "app_id": after.app_id,
+            "task_type": after.task_type,
+            "from_status": before.status.to_string(),
+            "to_status": after.status.to_string(),
+            "progress": after.progress,
+            "message": after.message,
+            "updated_at": after.updated_at,
+            "source_method": source_method,
+        });
+
+        if let Err(err) = self
+            .kevent_client
+            .pub_event(event_id.as_str(), payload)
+            .await
+        {
+            warn!(
+                "task_mgr.publish_task_status_changed_event failed: event_id={} task_id={} err={}",
+                event_id, after.id, err
+            );
+        }
     }
 
     fn can_read_task(&self, ctx: &RequestContext, task: &Task) -> bool {
@@ -570,6 +197,106 @@ impl TaskManagerService {
             .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
         task.ok_or_else(|| RPCErrors::ReasonError(format!("Task {} not found", id)))
     }
+
+    async fn list_download_tasks_for_request(
+        &self,
+        request_ctx: &RequestContext,
+    ) -> Result<Vec<Task>> {
+        let user_id =
+            (!request_ctx.user_id.trim().is_empty()).then_some(request_ctx.user_id.as_str());
+        let app_id = (!request_ctx.app_id.trim().is_empty()).then_some(request_ctx.app_id.as_str());
+        let db_manager = DB_MANAGER.lock().await;
+        db_manager
+            .list_tasks_filtered(app_id, Some(DOWNLOAD_TASK_TYPE), None, None, None, user_id)
+            .await
+            .map_err(|e| RPCErrors::ReasonError(e.to_string()))
+    }
+
+    async fn update_task_and_publish(
+        &self,
+        id: i64,
+        status: Option<TaskStatus>,
+        progress: Option<f32>,
+        message: Option<String>,
+        data_patch: Option<Value>,
+        source_method: &'static str,
+    ) -> std::result::Result<Task, String> {
+        let before_task = self.load_task(id).await.map_err(|err| err.to_string())?;
+        {
+            let db_manager = DB_MANAGER.lock().await;
+            db_manager
+                .update_task(id, status, progress, message, data_patch)
+                .await
+                .map_err(|err| err.to_string())?;
+        }
+
+        let after_task = self.load_task(id).await.map_err(|err| err.to_string())?;
+        if before_task.status != after_task.status {
+            self.publish_task_status_changed_event(&before_task, &after_task, source_method)
+                .await;
+        }
+        Ok(after_task)
+    }
+
+    async fn update_task_error_and_publish(
+        &self,
+        id: i64,
+        error_message: &str,
+        source_method: &'static str,
+    ) -> std::result::Result<Task, String> {
+        let before_task = self.load_task(id).await.map_err(|err| err.to_string())?;
+        {
+            let db_manager = DB_MANAGER.lock().await;
+            db_manager
+                .update_task_error(id, error_message)
+                .await
+                .map_err(|err| err.to_string())?;
+        }
+
+        let after_task = self.load_task(id).await.map_err(|err| err.to_string())?;
+        self.publish_task_status_changed_event(&before_task, &after_task, source_method)
+            .await;
+        Ok(after_task)
+    }
+}
+
+#[async_trait]
+impl DownloadTaskStore for TaskManagerService {
+    async fn load_task(&self, task_id: i64) -> std::result::Result<Task, String> {
+        TaskManagerService::load_task(self, task_id)
+            .await
+            .map_err(|err| err.to_string())
+    }
+
+    async fn update_task(
+        &self,
+        task_id: i64,
+        status: Option<TaskStatus>,
+        progress: Option<f32>,
+        message: Option<String>,
+        data_patch: Option<Value>,
+        source_method: &'static str,
+    ) -> std::result::Result<Task, String> {
+        self.update_task_and_publish(
+            task_id,
+            status,
+            progress,
+            message,
+            data_patch,
+            source_method,
+        )
+        .await
+    }
+
+    async fn mark_failed(
+        &self,
+        task_id: i64,
+        error_message: String,
+        source_method: &'static str,
+    ) -> std::result::Result<Task, String> {
+        self.update_task_error_and_publish(task_id, error_message.as_str(), source_method)
+            .await
+    }
 }
 
 #[async_trait]
@@ -582,13 +309,13 @@ impl TaskManagerHandler for TaskManagerService {
         opts: CreateTaskOptions,
         user_id: &str,
         app_id: &str,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> Result<Task> {
-        let request_ctx = request_context_from_source(Some(user_id), Some(app_id));
+        let request_ctx = request_context_from_source_or_rpc(Some(user_id), Some(app_id), &ctx);
         let permissions = opts.permissions.unwrap_or_default();
         let data = data.unwrap_or_else(|| json!({}));
 
-        let mut task = Task::new(
+        let mut task = new_task(
             name.to_string(),
             task_type.to_string(),
             request_ctx.user_id.clone(),
@@ -605,7 +332,17 @@ impl TaskManagerHandler for TaskManagerService {
                     "No permission to create subtasks".to_string(),
                 ));
             }
-            task.root_id = parent.root_id.or(Some(parent.id));
+            task.root_id = parent.root_id;
+        } else if let Some(root_id) = opts
+            .root_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string())
+        {
+            task.root_id = root_id;
+        } else if let Some(root_id) = parse_root_id_from_task_data(&task.data) {
+            task.root_id = root_id;
         }
 
         let db_manager = DB_MANAGER.lock().await;
@@ -614,16 +351,123 @@ impl TaskManagerHandler for TaskManagerService {
             .await
             .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
 
-        if task.root_id.is_none() {
+        if task.root_id.trim().is_empty() {
+            let root_id = task_id.to_string();
             db_manager
-                .set_root_id(task_id, task_id)
+                .set_root_id(task_id, root_id.as_str())
                 .await
                 .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-            task.root_id = Some(task_id);
+            task.root_id = root_id;
         }
 
         task.id = task_id;
         Ok(task)
+    }
+
+    async fn handle_create_download_task(
+        &self,
+        download_url: &str,
+        objid: Option<ObjId>,
+        download_options: Option<Value>,
+        parent_id: Option<i64>,
+        mut opts: CreateTaskOptions,
+        user_id: &str,
+        app_id: &str,
+        ctx: RPCContext,
+    ) -> Result<TaskId> {
+        let download_url = download_url.trim();
+        if download_url.is_empty() {
+            return Err(RPCErrors::ParseRequestError(
+                "download_url is required".to_string(),
+            ));
+        }
+
+        if opts.parent_id.is_none() {
+            opts.parent_id = parent_id;
+        }
+
+        let request_ctx = request_context_from_source_or_rpc(Some(user_id), Some(app_id), &ctx);
+        let resolved_objid = objid.or_else(|| infer_objid_from_url(download_url));
+        let scoped_tasks = self.list_download_tasks_for_request(&request_ctx).await?;
+
+        let existing_task = resolved_objid
+            .as_ref()
+            .and_then(|objid| {
+                scoped_tasks
+                    .iter()
+                    .find(|task| task_has_objid(task, objid))
+                    .cloned()
+            })
+            .or_else(|| {
+                scoped_tasks
+                    .iter()
+                    .find(|task| task_has_download_url(task, download_url))
+                    .cloned()
+            });
+
+        if let Some(existing_task) = existing_task {
+            let mut task = existing_task;
+            if let Some(data_patch) = merge_download_source_patch(
+                &task.data,
+                download_url,
+                resolved_objid.as_ref(),
+                download_options.as_ref(),
+            ) {
+                {
+                    let db_manager = DB_MANAGER.lock().await;
+                    db_manager
+                        .update_task(task.id, None, None, None, Some(data_patch))
+                        .await
+                        .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+                }
+                task = self.load_task(task.id).await?;
+            }
+
+            if should_enqueue_download_task(&task) {
+                if let Some(spec) = spec_from_task(&task) {
+                    let _ = shared_download_executor()
+                        .enqueue(Arc::new(self.clone()), spec)
+                        .await;
+                }
+            }
+            return Ok(task.id);
+        }
+
+        let task_name = build_download_task_name(download_url, resolved_objid.as_ref());
+        let task_data =
+            build_download_task_data(download_url, resolved_objid.as_ref(), download_options);
+
+        let task = match self
+            .handle_create_task(
+                task_name.as_str(),
+                DOWNLOAD_TASK_TYPE,
+                Some(task_data),
+                opts,
+                user_id,
+                app_id,
+                ctx.clone(),
+            )
+            .await
+        {
+            Ok(task) => task,
+            Err(err) if unique_task_name_conflict(&err) => {
+                let scoped_tasks = self.list_download_tasks_for_request(&request_ctx).await?;
+                let existing_task = scoped_tasks
+                    .into_iter()
+                    .find(|task| task.name == task_name)
+                    .ok_or(err)?;
+                existing_task
+            }
+            Err(err) => return Err(err),
+        };
+
+        if let Some(spec) = spec_from_task(&task) {
+            let _ = shared_download_executor()
+                .enqueue(Arc::new(self.clone()), spec)
+                .await;
+        }
+
+        Ok(task.id)
     }
 
     async fn handle_get_task(&self, id: i64, _ctx: RPCContext) -> Result<Task> {
@@ -653,7 +497,7 @@ impl TaskManagerHandler for TaskManagerService {
                 filter.task_type.as_deref(),
                 filter.status,
                 filter.parent_id,
-                filter.root_id,
+                filter.root_id.as_deref(),
                 None,
             )
             .await
@@ -705,27 +549,43 @@ impl TaskManagerHandler for TaskManagerService {
         _ctx: RPCContext,
     ) -> Result<()> {
         let request_ctx = request_context_from_source(None, None);
-        let task = self.load_task(id).await?;
-        if !self.can_write_task(&request_ctx, &task) {
+        let before_task = self.load_task(id).await?;
+        if !self.can_write_task(&request_ctx, &before_task) {
             return Err(RPCErrors::NoPermission(
                 "No permission to update task".to_string(),
             ));
         }
 
-        let db_manager = DB_MANAGER.lock().await;
-        db_manager
-            .update_task(id, status, progress, message, data)
-            .await
-            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        {
+            let db_manager = DB_MANAGER.lock().await;
+            db_manager
+                .update_task(id, status, progress, message, data)
+                .await
+                .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        }
+
+        if status.is_some() {
+            match self.load_task(id).await {
+                Ok(after_task) => {
+                    self.publish_task_status_changed_event(
+                        &before_task,
+                        &after_task,
+                        "update_task",
+                    )
+                    .await;
+                }
+                Err(err) => {
+                    warn!(
+                        "task_mgr.update_task status changed but failed to reload task {} for event publish: {}",
+                        id, err
+                    );
+                }
+            }
+        }
         Ok(())
     }
 
-    async fn handle_cancel_task(
-        &self,
-        id: i64,
-        recursive: bool,
-        _ctx: RPCContext,
-    ) -> Result<()> {
+    async fn handle_cancel_task(&self, id: i64, recursive: bool, _ctx: RPCContext) -> Result<()> {
         let request_ctx = request_context_from_source(None, None);
         let task = self.load_task(id).await?;
         if !self.can_write_task(&request_ctx, &task) {
@@ -734,27 +594,81 @@ impl TaskManagerHandler for TaskManagerService {
             ));
         }
 
-        let db_manager = DB_MANAGER.lock().await;
         if recursive {
-            let root_id = task.root_id.unwrap_or(task.id);
-            db_manager
-                .update_task_status_by_root_id(root_id, TaskStatus::Canceled)
-                .await
-                .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+            let root_id = if task.root_id.trim().is_empty() {
+                task.id.to_string()
+            } else {
+                task.root_id.clone()
+            };
+
+            let before_tasks = {
+                let db_manager = DB_MANAGER.lock().await;
+                let before_tasks = db_manager
+                    .list_tasks_filtered(None, None, None, None, Some(root_id.as_str()), None)
+                    .await
+                    .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+
+                db_manager
+                    .update_task_status_by_root_id(root_id.as_str(), TaskStatus::Canceled)
+                    .await
+                    .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+                before_tasks
+            };
+
+            for before_task in before_tasks
+                .into_iter()
+                .filter(|existing| existing.status != TaskStatus::Canceled)
+            {
+                match self.load_task(before_task.id).await {
+                    Ok(after_task) => {
+                        self.publish_task_status_changed_event(
+                            &before_task,
+                            &after_task,
+                            "cancel_task_recursive",
+                        )
+                        .await;
+                    }
+                    Err(err) => {
+                        warn!(
+                            "task_mgr.cancel_task recursive failed to reload task {} for event publish: {}",
+                            before_task.id, err
+                        );
+                    }
+                }
+            }
         } else {
-            db_manager
-                .update_task_status(id, TaskStatus::Canceled)
-                .await
-                .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+            let before_task = task.clone();
+            {
+                let db_manager = DB_MANAGER.lock().await;
+                db_manager
+                    .update_task_status(id, TaskStatus::Canceled)
+                    .await
+                    .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+            }
+
+            if before_task.status != TaskStatus::Canceled {
+                match self.load_task(id).await {
+                    Ok(after_task) => {
+                        self.publish_task_status_changed_event(
+                            &before_task,
+                            &after_task,
+                            "cancel_task",
+                        )
+                        .await;
+                    }
+                    Err(err) => {
+                        warn!(
+                            "task_mgr.cancel_task failed to reload task {} for event publish: {}",
+                            id, err
+                        );
+                    }
+                }
+            }
         }
         Ok(())
     }
 
-    async fn handle_get_subtasks(
-        &self,
-        parent_id: i64,
-        _ctx: RPCContext,
-    ) -> Result<Vec<Task>> {
+    async fn handle_get_subtasks(&self, parent_id: i64, _ctx: RPCContext) -> Result<Vec<Task>> {
         let request_ctx = request_context_from_source(None, None);
         let db_manager = DB_MANAGER.lock().await;
         let tasks = db_manager
@@ -776,18 +690,39 @@ impl TaskManagerHandler for TaskManagerService {
         _ctx: RPCContext,
     ) -> Result<()> {
         let request_ctx = request_context_from_source(None, None);
-        let task = self.load_task(id).await?;
-        if !self.can_write_task(&request_ctx, &task) {
+        let before_task = self.load_task(id).await?;
+        if !self.can_write_task(&request_ctx, &before_task) {
             return Err(RPCErrors::NoPermission(
                 "No permission to update task".to_string(),
             ));
         }
 
-        let db_manager = DB_MANAGER.lock().await;
-        db_manager
-            .update_task_status(id, status)
-            .await
-            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        {
+            let db_manager = DB_MANAGER.lock().await;
+            db_manager
+                .update_task_status(id, status)
+                .await
+                .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        }
+
+        if before_task.status != status {
+            match self.load_task(id).await {
+                Ok(after_task) => {
+                    self.publish_task_status_changed_event(
+                        &before_task,
+                        &after_task,
+                        "update_task_status",
+                    )
+                    .await;
+                }
+                Err(err) => {
+                    warn!(
+                        "task_mgr.update_task_status failed to reload task {} for event publish: {}",
+                        id, err
+                    );
+                }
+            }
+        }
         Ok(())
     }
 
@@ -814,12 +749,7 @@ impl TaskManagerHandler for TaskManagerService {
 
         let db_manager = DB_MANAGER.lock().await;
         db_manager
-            .update_task_progress(
-                id,
-                progress,
-                completed_items as i32,
-                total_items as i32,
-            )
+            .update_task_progress(id, progress, completed_items as i32, total_items as i32)
             .await
             .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
 
@@ -842,27 +772,41 @@ impl TaskManagerHandler for TaskManagerService {
         _ctx: RPCContext,
     ) -> Result<()> {
         let request_ctx = request_context_from_source(None, None);
-        let task = self.load_task(id).await?;
-        if !self.can_write_task(&request_ctx, &task) {
+        let before_task = self.load_task(id).await?;
+        if !self.can_write_task(&request_ctx, &before_task) {
             return Err(RPCErrors::NoPermission(
                 "No permission to update task".to_string(),
             ));
         }
 
-        let db_manager = DB_MANAGER.lock().await;
-        db_manager
-            .update_task_error(id, error_message)
-            .await
-            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        {
+            let db_manager = DB_MANAGER.lock().await;
+            db_manager
+                .update_task_error(id, error_message)
+                .await
+                .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        }
+
+        match self.load_task(id).await {
+            Ok(after_task) => {
+                self.publish_task_status_changed_event(
+                    &before_task,
+                    &after_task,
+                    "update_task_error",
+                )
+                .await;
+            }
+            Err(err) => {
+                warn!(
+                    "task_mgr.update_task_error failed to reload task {} for event publish: {}",
+                    id, err
+                );
+            }
+        }
         Ok(())
     }
 
-    async fn handle_update_task_data(
-        &self,
-        id: i64,
-        data: Value,
-        _ctx: RPCContext,
-    ) -> Result<()> {
+    async fn handle_update_task_data(&self, id: i64, data: Value, _ctx: RPCContext) -> Result<()> {
         let request_ctx = request_context_from_source(None, None);
         let task = self.load_task(id).await?;
         if !self.can_write_task(&request_ctx, &task) {
@@ -871,8 +815,8 @@ impl TaskManagerHandler for TaskManagerService {
             ));
         }
 
-        let data_str = serde_json::to_string(&data)
-            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        let data_str =
+            serde_json::to_string(&data).map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
         let db_manager = DB_MANAGER.lock().await;
         db_manager
             .update_task_data(id, data_str.as_str())
@@ -881,11 +825,7 @@ impl TaskManagerHandler for TaskManagerService {
         Ok(())
     }
 
-    async fn handle_delete_task(
-        &self,
-        id: i64,
-        _ctx: RPCContext,
-    ) -> Result<()> {
+    async fn handle_delete_task(&self, id: i64, _ctx: RPCContext) -> Result<()> {
         let request_ctx = request_context_from_source(None, None);
         let task = self.load_task(id).await?;
         if !self.can_write_task(&request_ctx, &task) {
@@ -902,236 +842,32 @@ impl TaskManagerHandler for TaskManagerService {
         Ok(())
     }
 }
+pub struct TaskManagerHttpServer<T: TaskManagerHandler> {
+    rpc_handler: buckyos_api::TaskManagerServerHandler<T>,
+}
 
-pub struct TaskManagerServerHandler<T: TaskManagerHandler>(pub T);
-
-impl<T: TaskManagerHandler> TaskManagerServerHandler<T> {
+impl<T: TaskManagerHandler> TaskManagerHttpServer<T> {
     pub fn new(handler: T) -> Self {
-        Self(handler)
-    }
-
-    fn to_rpc_result<R: Serialize>(res: Result<R>) -> RPCResult {
-        match res {
-            Ok(value) => RPCResult::Success(json!(value)),
-            Err(err) => RPCResult::Failed(err.to_string()),
+        Self {
+            rpc_handler: buckyos_api::TaskManagerServerHandler::new(handler),
         }
     }
 }
 
 #[async_trait]
-impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
-    async fn handle_rpc_call(
-        &self,
-        req: RPCRequest,
-        ip_from: IpAddr,
-    ) -> Result<RPCResponse> {
-        let seq = req.seq;
-        let trace_id = req.trace_id.clone();
-        let ctx = RPCContext::from_request(&req, ip_from);
-
-        let result = match req.method.as_str() {
-            "create_task" => {
-                let create_req = TaskManagerCreateTaskReq::from_json(req.params)?;
-                let TaskManagerCreateTaskReq {
-                    name,
-                    task_type,
-                    data,
-                    permissions,
-                    parent_id,
-                    priority,
-                    user_id,
-                    app_id,
-                    app_name,
-                } = create_req;
-                let resolved_app_id = if app_id.is_empty() {
-                    app_name.unwrap_or_default()
-                } else {
-                    app_id
-                };
-                let opts = CreateTaskOptions {
-                    permissions,
-                    parent_id,
-                    priority,
-                };
-                let result = self
-                    .0
-                    .handle_create_task(
-                        &name,
-                        &task_type,
-                        data,
-                        opts,
-                        user_id.as_str(),
-                        resolved_app_id.as_str(),
-                        ctx,
-                    )
-                    .await
-                    .map(|task| CreateTaskResult {
-                        task_id: task.id,
-                        task,
-                    });
-                Self::to_rpc_result(result)
-            }
-            "get_task" => {
-                let get_req = TaskManagerGetTaskReq::from_json(req.params)?;
-                let result = self
-                    .0
-                    .handle_get_task(get_req.id, ctx)
-                    .await
-                    .map(|task| GetTaskResult { task });
-                Self::to_rpc_result(result)
-            }
-            "list_tasks" => {
-                let list_req = TaskManagerListTasksReq::from_json(req.params)?;
-                let TaskManagerListTasksReq {
-                    app_id,
-                    task_type,
-                    status,
-                    parent_id,
-                    root_id,
-                    source_user_id,
-                    source_app_id,
-                } = list_req;
-                let filter = TaskFilter {
-                    app_id,
-                    task_type,
-                    status,
-                    parent_id,
-                    root_id,
-                };
-                let result = self
-                    .0
-                    .handle_list_tasks(
-                        filter,
-                        source_user_id.as_deref(),
-                        source_app_id.as_deref(),
-                        ctx,
-                    )
-                    .await
-                    .map(|tasks| ListTasksResult { tasks });
-                Self::to_rpc_result(result)
-            }
-            "list_tasks_by_time_range" => {
-                let list_req = TaskManagerListTasksByTimeRangeReq::from_json(req.params)?;
-                let TaskManagerListTasksByTimeRangeReq {
-                    app_id,
-                    task_type,
-                    source_user_id,
-                    source_app_id,
-                    start_time,
-                    end_time,
-                } = list_req;
-                let time_range = start_time..end_time;
-                let result = self
-                    .0
-                    .handle_list_tasks_by_time_range(
-                        app_id.as_deref(),
-                        task_type.as_deref(),
-                        source_user_id.as_deref(),
-                        source_app_id.as_deref(),
-                        time_range,
-                        ctx,
-                    )
-                    .await
-                    .map(|tasks| ListTasksResult { tasks });
-                Self::to_rpc_result(result)
-            }
-            "update_task" => {
-                let update_req = TaskManagerUpdateTaskReq::from_json(req.params)?;
-                Self::to_rpc_result(
-                    self.0
-                        .handle_update_task(
-                            update_req.id,
-                            update_req.status,
-                            update_req.progress,
-                            update_req.message,
-                            update_req.data,
-                            ctx,
-                        )
-                        .await,
-                )
-            }
-            "cancel_task" => {
-                let cancel_req = TaskManagerCancelTaskReq::from_json(req.params)?;
-                Self::to_rpc_result(
-                    self.0
-                        .handle_cancel_task(cancel_req.id, cancel_req.recursive, ctx)
-                        .await,
-                )
-            }
-            "get_subtasks" => {
-                let sub_req = TaskManagerGetSubtasksReq::from_json(req.params)?;
-                let result = self
-                    .0
-                    .handle_get_subtasks(sub_req.parent_id, ctx)
-                    .await
-                    .map(|tasks| ListTasksResult { tasks });
-                Self::to_rpc_result(result)
-            }
-            "update_task_status" => {
-                let update_req = TaskManagerUpdateTaskStatusReq::from_json(req.params)?;
-                Self::to_rpc_result(
-                    self.0
-                        .handle_update_task_status(update_req.id, update_req.status, ctx)
-                        .await,
-                )
-            }
-            "update_task_progress" => {
-                let update_req = TaskManagerUpdateTaskProgressReq::from_json(req.params)?;
-                Self::to_rpc_result(
-                    self.0
-                        .handle_update_task_progress(
-                            update_req.id,
-                            update_req.completed_items,
-                            update_req.total_items,
-                            ctx,
-                        )
-                        .await,
-                )
-            }
-            "update_task_error" => {
-                let update_req = TaskManagerUpdateTaskErrorReq::from_json(req.params)?;
-                Self::to_rpc_result(
-                    self.0
-                        .handle_update_task_error(update_req.id, update_req.error_message.as_str(), ctx)
-                        .await,
-                )
-            }
-            "update_task_data" => {
-                let update_req = TaskManagerUpdateTaskDataReq::from_json(req.params)?;
-                Self::to_rpc_result(
-                    self.0
-                        .handle_update_task_data(update_req.id, update_req.data, ctx)
-                        .await,
-                )
-            }
-            "delete_task" => {
-                let delete_req = TaskManagerDeleteTaskReq::from_json(req.params)?;
-                Self::to_rpc_result(
-                    self.0.handle_delete_task(delete_req.id, ctx).await,
-                )
-            }
-            _ => return Err(RPCErrors::UnknownMethod(req.method.clone())),
-        };
-
-        Ok(RPCResponse {
-            result,
-            seq,
-            trace_id,
-        })
-    }
-}
-
-#[async_trait]
-impl<T: TaskManagerHandler + 'static> HttpServer for TaskManagerServerHandler<T> {
+impl<T: TaskManagerHandler + 'static> HttpServer for TaskManagerHttpServer<T> {
     async fn serve_request(
         &self,
         req: http::Request<BoxBody<Bytes, ServerError>>,
         info: StreamInfo,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
         if *req.method() == Method::POST {
-            return serve_http_by_rpc_handler(req, info, self).await;
+            return serve_http_by_rpc_handler(req, info, &self.rpc_handler).await;
         }
-        Err(server_err!(ServerErrorCode::BadRequest, "Method not allowed"))
+        Err(server_err!(
+            ServerErrorCode::BadRequest,
+            "Method not allowed"
+        ))
     }
 
     fn id(&self) -> String {
@@ -1147,9 +883,27 @@ impl<T: TaskManagerHandler + 'static> HttpServer for TaskManagerServerHandler<T>
     }
 }
 
-pub async fn start_task_manager_service() {
+pub async fn start_task_manager_service() -> Result<()> {
+    let mut runtime = init_buckyos_api_runtime(
+        TASK_MANAGER_SERVICE_NAME,
+        None,
+        BuckyOSRuntimeType::KernelService,
+    )
+    .await?;
+    if let Err(err) = runtime.login().await {
+        error!("task manager service login to system failed! err:{:?}", err);
+        return Err(RPCErrors::ReasonError(format!(
+            "task manager login to system failed! err:{:?}",
+            err
+        )));
+    }
+    runtime
+        .set_main_service_port(TASK_MANAGER_SERVICE_MAIN_PORT)
+        .await;
+    set_buckyos_api_runtime(runtime);
+
     let handler = TaskManagerService::new();
-    let server = TaskManagerServerHandler::new(handler);
+    let server = TaskManagerHttpServer::new(handler);
 
     info!("start node task manager service...");
     const TASK_MANAGER_SERVICE_MAIN_PORT: u16 = 3380;
@@ -1160,6 +914,7 @@ pub async fn start_task_manager_service() {
     if let Err(err) = runner.run().await {
         error!("task manager runner exited with error: {:?}", err);
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1188,9 +943,8 @@ mod tests {
         }
     }
 
-    async fn setup_test_environment(
-    ) -> (
-        TaskManagerServerHandler<TaskManagerService>,
+    async fn setup_test_environment() -> (
+        buckyos_api::TaskManagerServerHandler<TaskManagerService>,
         tempfile::TempDir,
         MutexGuard<'static, ()>,
     ) {
@@ -1207,7 +961,7 @@ mod tests {
         db.init_db().await.unwrap();
         *crate::task_db::DB_MANAGER.lock().await = db;
 
-        let server = TaskManagerServerHandler::new(TaskManagerService::new());
+        let server = buckyos_api::TaskManagerServerHandler::new(TaskManagerService::new());
         (server, temp_dir, guard)
     }
 
@@ -1249,6 +1003,83 @@ mod tests {
         } else {
             panic!("Failed to create task");
         }
+        clean_test_environment(_temp_dir).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_create_task_uses_data_rootid_for_record_root_id() {
+        let (server, _temp_dir, _guard) = setup_test_environment().await;
+        let ip = IpAddr::from_str("127.0.0.1").unwrap();
+
+        let create_params = json!({
+            "name": "grouped_task",
+            "task_type": "test_type",
+            "app_name": "test_app",
+            "data": {
+                "rootid": "session-alpha"
+            }
+        });
+        let create_req = create_rpc_request("create_task", create_params);
+        let create_resp = server.handle_rpc_call(create_req, ip).await.unwrap();
+        let task_id = if let RPCResult::Success(result) = create_resp.result {
+            assert_eq!(result["task"]["root_id"], "session-alpha");
+            result["task_id"]
+                .as_i64()
+                .expect("task_id should be present")
+        } else {
+            panic!("Failed to create task");
+        };
+
+        let list_req = create_rpc_request("list_tasks", json!({ "root_id": "session-alpha" }));
+        let list_resp = server.handle_rpc_call(list_req, ip).await.unwrap();
+        if let RPCResult::Success(result) = list_resp.result {
+            let tasks = result["tasks"].as_array().expect("tasks should be array");
+            assert_eq!(tasks.len(), 1);
+            assert_eq!(tasks[0]["id"], task_id);
+            assert_eq!(tasks[0]["root_id"], "session-alpha");
+        } else {
+            panic!("Failed to list tasks by root_id");
+        }
+
+        clean_test_environment(_temp_dir).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_create_task_uses_request_root_id_field() {
+        let (server, _temp_dir, _guard) = setup_test_environment().await;
+        let ip = IpAddr::from_str("127.0.0.1").unwrap();
+
+        let create_params = json!({
+            "name": "grouped_task_req_root",
+            "task_type": "test_type",
+            "app_name": "test_app",
+            "root_id": "session-beta",
+            "data": {
+                "rootid": "session-alpha"
+            }
+        });
+        let create_req = create_rpc_request("create_task", create_params);
+        let create_resp = server.handle_rpc_call(create_req, ip).await.unwrap();
+        let task_id = if let RPCResult::Success(result) = create_resp.result {
+            assert_eq!(result["task"]["root_id"], "session-beta");
+            result["task_id"]
+                .as_i64()
+                .expect("task_id should be present")
+        } else {
+            panic!("Failed to create task");
+        };
+
+        let list_req = create_rpc_request("list_tasks", json!({ "root_id": "session-beta" }));
+        let list_resp = server.handle_rpc_call(list_req, ip).await.unwrap();
+        if let RPCResult::Success(result) = list_resp.result {
+            let tasks = result["tasks"].as_array().expect("tasks should be array");
+            assert_eq!(tasks.len(), 1);
+            assert_eq!(tasks[0]["id"], task_id);
+            assert_eq!(tasks[0]["root_id"], "session-beta");
+        } else {
+            panic!("Failed to list tasks by root_id");
+        }
+
         clean_test_environment(_temp_dir).await;
     }
 
@@ -1545,11 +1376,11 @@ mod tests {
             });
 
             let get_req = create_rpc_request("get_task", get_params);
-            let get_resp = server.handle_rpc_call(get_req, ip).await.unwrap();
-
-            if let RPCResult::Success(_) = get_resp.result {
-                panic!("Unexpected success when getting deleted task");
-            }
+            let get_result = server.handle_rpc_call(get_req, ip).await;
+            assert!(
+                get_result.is_err(),
+                "Unexpected success when getting deleted task"
+            );
         } else {
             panic!("Failed to delete task");
         }

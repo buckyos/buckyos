@@ -131,6 +131,46 @@ img {
     width: 100%;
     background: var(--cp-border);
   }
+
+  .bucky-file-app .rounded-lg {
+    border-radius: 0.9rem;
+  }
+
+  .bucky-file-app .rounded-xl {
+    border-radius: 1.05rem;
+  }
+
+  .bucky-file-app .rounded-2xl {
+    border-radius: 1.35rem;
+  }
+
+  .bucky-file-app .rounded-3xl {
+    border-radius: 1.75rem;
+  }
+
+  .bucky-file-app button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    line-height: 1.1;
+  }
+
+  .bucky-file-app button > span.inline-flex {
+    display: contents;
+  }
+
+  .bucky-file-app :is(a, label) > span.inline-flex {
+    display: inline-flex;
+    align-items: center;
+    line-height: 1.1;
+    justify-content: center;
+    gap: 0.375rem;
+  }
+
+  .bucky-file-app :is(button, a, label) svg {
+    display: block;
+  }
 }
 
 @media (max-width: 768px) {

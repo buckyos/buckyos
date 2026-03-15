@@ -24,6 +24,7 @@
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -90,6 +91,67 @@ def write_text(path: Path, content: str) -> None:
     ensure_dir(path.parent)
     path.write_text(content)
     print(f"write content {path}")
+
+def apply_dev_boot_template_override(target_dir: Path, group_name: str) -> None:
+    """
+    For dev groups, optionally merge local private settings into rootfs boot template.
+    source: ~/.buckycli/buckyos_boot.toml
+    dest  : <target_dir>/etc/scheduler/boot.template.toml
+    """
+    if group_name not in ("dev", "devtest_ood1"):
+        return
+
+    local_boot_toml = Path("~/.buckycli/buckyos_boot.toml").expanduser()
+    if not local_boot_toml.exists():
+        print(f"skip missing dev boot override: {local_boot_toml}")
+        return
+
+    dst_boot_template = target_dir / "etc" / "scheduler" / "boot.template.toml"
+    src_text = local_boot_toml.read_text()
+    entry_pattern = re.compile(
+        r'(?ms)^\s*"(?P<key>[^"\n]+)"\s*=\s*"""\n(?P<value>.*?)\n"""[ \t]*\n?'
+    )
+    entries = []
+    for match in entry_pattern.finditer(src_text):
+        key = match.group("key")
+        print(f"load {key} from .buckycli/boot_template")
+        value = match.group("value")
+        block = f'"{key}" = """\n{value}\n"""'
+        entries.append((key, block))
+
+    if not entries:
+        print(f"skip invalid dev boot override (no key/value found): {local_boot_toml}")
+        return
+
+    if not dst_boot_template.exists():
+        write_text(dst_boot_template, src_text)
+        print(f"create boot template from local override: {dst_boot_template}")
+        return
+
+    merged = dst_boot_template.read_text()
+    replaced = 0
+    added = 0
+    for key, block in entries:
+        target_pattern = re.compile(
+            rf'(?ms)^\s*"{re.escape(key)}"\s*=\s*"""\n.*?\n"""[ \t]*\n?'
+        )
+        merged, count = target_pattern.subn(block + "\n", merged, count=1)
+        if count > 0:
+            replaced += 1
+            continue
+
+        if merged and not merged.endswith("\n"):
+            merged += "\n"
+        if merged and not merged.endswith("\n\n"):
+            merged += "\n"
+        merged += block + "\n"
+        added += 1
+
+    write_text(dst_boot_template, merged)
+    print(
+        f"merge dev boot override into template: {dst_boot_template} "
+        f"(replaced={replaced}, added={added})"
+    )
 
 
 def extract_base_host(web3_bns: str) -> str:
@@ -719,6 +781,7 @@ def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_d
             ca_dir,
         )
         make_repo_cache_file(target_root)
+        apply_dev_boot_template_override(target_root, group_name)
     
     print(f"config {group_name} generation finished.")
 
@@ -752,4 +815,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     sys.exit(main())
-

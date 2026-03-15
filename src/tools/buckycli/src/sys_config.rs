@@ -63,12 +63,12 @@ pub async fn connect_into() {
     // handle input
     let mut rl = DefaultEditor::new().unwrap();
     loop {
-    // Read user input
-    let readline = rl.readline("sys_config> ");
-    match readline {
-        Ok(line) => {
-            let _ = rl.add_history_entry(line.as_str());
-            // Parse input command
+        // Read user input
+        let readline = rl.readline("sys_config> ");
+        match readline {
+            Ok(line) => {
+                let _ = rl.add_history_entry(line.as_str());
+                // Parse input command
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.is_empty() {
                     continue;

@@ -41,7 +41,7 @@ impl TaskDb {
                 user_id         TEXT NOT NULL DEFAULT '',
                 app_id          TEXT NOT NULL DEFAULT '',
                 parent_id       INTEGER,
-                root_id         INTEGER,
+                root_id         TEXT NOT NULL DEFAULT '',
                 permissions     TEXT,
                 message         TEXT,
                 FOREIGN KEY(parent_id) REFERENCES task(id) ON DELETE CASCADE
@@ -93,10 +93,20 @@ impl TaskDb {
         )?;
 
         let id = conn.last_insert_rowid();
+        info!(
+            "task_db.create_task: id={} app_id={} user_id={} name={} task_type={} parent_id={:?} status={}",
+            id,
+            task.app_id,
+            task.user_id,
+            task.name,
+            task.task_type,
+            task.parent_id,
+            task.status
+        );
         Ok(id)
     }
 
-    pub async fn set_root_id(&self, id: i64, root_id: i64) -> Result<()> {
+    pub async fn set_root_id(&self, id: i64, root_id: &str) -> Result<()> {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
         conn.execute(
@@ -143,7 +153,7 @@ impl TaskDb {
         task_type: Option<&str>,
         status: Option<TaskStatus>,
         parent_id: Option<i64>,
-        root_id: Option<i64>,
+        root_id: Option<&str>,
         user_id: Option<&str>,
     ) -> rusqlite::Result<Vec<Task>> {
         let mut sql = "SELECT * FROM task".to_string();
@@ -172,7 +182,7 @@ impl TaskDb {
         }
         if let Some(root_id) = root_id {
             conditions.push("root_id = ?".to_string());
-            params_vec.push(root_id.into());
+            params_vec.push(rusqlite::types::Value::Text(root_id.to_string()));
         }
 
         if !conditions.is_empty() {
@@ -214,25 +224,33 @@ impl TaskDb {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
         let updated_at = now_ts();
-        conn.execute(
+        let changed = conn.execute(
             "UPDATE task SET status = ?1, updated_at = ?2 WHERE id = ?3",
             params![status.to_string(), updated_at, id],
         )?;
+        info!(
+            "task_db.update_task_status: id={} status={} changed={}",
+            id, status, changed
+        );
         Ok(())
     }
 
     pub async fn update_task_status_by_root_id(
         &self,
-        root_id: i64,
+        root_id: &str,
         status: TaskStatus,
     ) -> Result<()> {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
         let updated_at = now_ts();
-        conn.execute(
+        let changed = conn.execute(
             "UPDATE task SET status = ?1, updated_at = ?2 WHERE root_id = ?3",
             params![status.to_string(), updated_at, root_id],
         )?;
+        info!(
+            "task_db.update_task_status_by_root_id: root_id={} status={} changed={}",
+            root_id, status, changed
+        );
         Ok(())
     }
 
@@ -246,10 +264,14 @@ impl TaskDb {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
         let updated_at = now_ts();
-        conn.execute(
+        let changed = conn.execute(
             "UPDATE task SET progress = ?1, completed_items = ?2, total_items = ?3, updated_at = ?4 WHERE id = ?5",
             params![progress, completed_items, total_items, updated_at, id],
         )?;
+        info!(
+            "task_db.update_task_progress: id={} progress={} completed_items={} total_items={} changed={}",
+            id, progress, completed_items, total_items, changed
+        );
         Ok(())
     }
 
@@ -257,7 +279,7 @@ impl TaskDb {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
         let updated_at = now_ts();
-        conn.execute(
+        let changed = conn.execute(
             "UPDATE task SET status = ?1, error_message = ?2, message = ?3, updated_at = ?4 WHERE id = ?5",
             params![
                 TaskStatus::Failed.to_string(),
@@ -267,6 +289,10 @@ impl TaskDb {
                 id,
             ],
         )?;
+        info!(
+            "task_db.update_task_error: id={} changed={} error_message={}",
+            id, changed, error_message
+        );
         Ok(())
     }
 
@@ -282,10 +308,11 @@ impl TaskDb {
             .unwrap_or_else(|_| Value::Object(Default::default()));
         let data_str = serde_json::to_string(&data_value).unwrap_or_else(|_| "{}".to_string());
         let updated_at = now_ts();
-        conn.execute(
+        let changed = conn.execute(
             "UPDATE task SET data = ?1, updated_at = ?2 WHERE id = ?3",
             params![data_str, updated_at, id],
         )?;
+        info!("task_db.update_task_data: id={} changed={}", id, changed);
         Ok(())
     }
 
@@ -304,17 +331,21 @@ impl TaskDb {
                     .map(|task| task.data)
                     .unwrap_or_else(|| Value::Object(Default::default()));
                 merge_json(&mut current, &data_patch);
-                data_str = Some(serde_json::to_string(&current).unwrap_or_else(|_| "{}".to_string()));
+                data_str =
+                    Some(serde_json::to_string(&current).unwrap_or_else(|_| "{}".to_string()));
             }
         }
 
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
         let updated_at = now_ts();
-        conn.execute(
+        let status_str = status.as_ref().map(|s| s.to_string());
+        let message_present = message.is_some();
+        let data_patch_present = data_str.is_some();
+        let changed = conn.execute(
             "UPDATE task SET status = COALESCE(?1, status), progress = COALESCE(?2, progress), message = COALESCE(?3, message), data = COALESCE(?4, data), updated_at = ?5 WHERE id = ?6",
             params![
-                status.map(|s| s.to_string()),
+                status_str,
                 progress,
                 message,
                 data_str,
@@ -322,6 +353,15 @@ impl TaskDb {
                 id
             ],
         )?;
+        info!(
+            "task_db.update_task: id={} status={:?} progress={:?} message_present={} data_patch_present={} changed={}",
+            id,
+            status,
+            progress,
+            message_present,
+            data_patch_present,
+            changed
+        );
         Ok(())
     }
 
@@ -361,16 +401,16 @@ fn task_from_row(row: &Row) -> rusqlite::Result<Task> {
     let data_str: Option<String> = row.get("data")?;
     let permissions_str: Option<String> = row.get("permissions")?;
     let parent_id: Option<i64> = row.get("parent_id")?;
-    let root_id: Option<i64> = row.get("root_id")?;
+    let root_id: Option<String> = row.get("root_id")?;
     let user_id: Option<String> = row.get("user_id")?;
     let app_id: Option<String> = row.get("app_id")?;
     let created_at: i64 = row.get("created_at")?;
     let updated_at: i64 = row.get("updated_at")?;
 
-    let mut resolved_root_id = root_id;
-    if resolved_root_id.is_none() {
-        resolved_root_id = Some(id);
-    }
+    let resolved_root_id = root_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| id.to_string());
 
     let resolved_app_id = app_id.unwrap_or_else(|| "".to_string());
     let resolved_user_id = user_id.unwrap_or_else(|| "".to_string());
@@ -443,7 +483,7 @@ mod tests {
             user_id: "user1".to_string(),
             app_id: "app1".to_string(),
             parent_id: None,
-            root_id: None,
+            root_id: String::new(),
             status: TaskStatus::Pending,
             progress: 0.0,
             message: None,
@@ -567,7 +607,10 @@ mod tests {
         db.create_task(&task2).await.unwrap();
 
         let running_tasks = db.list_tasks_by_status(TaskStatus::Running).await.unwrap();
-        let completed_tasks = db.list_tasks_by_status(TaskStatus::Completed).await.unwrap();
+        let completed_tasks = db
+            .list_tasks_by_status(TaskStatus::Completed)
+            .await
+            .unwrap();
 
         assert_eq!(running_tasks.len(), 1);
         assert_eq!(completed_tasks.len(), 1);
@@ -582,7 +625,9 @@ mod tests {
         let task = create_test_task("status_test");
         let id = db.create_task(&task).await.unwrap();
 
-        db.update_task_status(id, TaskStatus::Running).await.unwrap();
+        db.update_task_status(id, TaskStatus::Running)
+            .await
+            .unwrap();
 
         let updated_task = db.get_task(id).await.unwrap().unwrap();
         assert_eq!(updated_task.status, TaskStatus::Running);
@@ -607,7 +652,9 @@ mod tests {
         let task = create_test_task("error_test");
         let id = db.create_task(&task).await.unwrap();
 
-        db.update_task_error(id, "Test error message").await.unwrap();
+        db.update_task_error(id, "Test error message")
+            .await
+            .unwrap();
         let updated_task = db.get_task(id).await.unwrap().unwrap();
         assert_eq!(updated_task.status, TaskStatus::Failed);
         assert_eq!(updated_task.message, Some("Test error message".to_string()));

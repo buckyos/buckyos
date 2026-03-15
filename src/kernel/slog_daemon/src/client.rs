@@ -1,64 +1,219 @@
 use super::read_manager::{LogReaderManager, LogRecordLoad};
 use super::upload::LogUploader;
+use crate::constants::DEFAULT_UPLOAD_GLOBAL_CONCURRENCY;
 use std::path::{Path, PathBuf};
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::{Semaphore, mpsc};
+use tokio::task::{JoinHandle, JoinSet};
+use tokio_util::sync::CancellationToken;
 
 pub struct LogDaemonClient {
     node: String,
     service_endpoint: String,
     log_dir: PathBuf, // The log root directory
+    upload_global_concurrency: usize,
     reader_manager: LogReaderManager,
+    upload_task: JoinHandle<()>,
+    shutdown_token: CancellationToken,
 }
 
 impl LogDaemonClient {
-    pub fn new(node: String, service_endpoint: String, log_dir: &Path, excluded: Vec<String>) -> Result<Self, String> {
-        let uploader = LogUploader::new(node.clone(), service_endpoint.clone());
+    pub fn new(
+        node: String,
+        service_endpoint: String,
+        upload_timeout_secs: u64,
+        log_dir: &Path,
+        excluded: Vec<String>,
+    ) -> Result<Self, String> {
+        Self::new_with_upload_concurrency(
+            node,
+            service_endpoint,
+            upload_timeout_secs,
+            DEFAULT_UPLOAD_GLOBAL_CONCURRENCY,
+            log_dir,
+            excluded,
+        )
+    }
+
+    pub fn new_with_upload_concurrency(
+        node: String,
+        service_endpoint: String,
+        upload_timeout_secs: u64,
+        upload_global_concurrency: usize,
+        log_dir: &Path,
+        excluded: Vec<String>,
+    ) -> Result<Self, String> {
+        let upload_global_concurrency = upload_global_concurrency.max(1);
+        let shutdown_token = CancellationToken::new();
+        let reader_shutdown = shutdown_token.child_token();
+        let uploader_shutdown = shutdown_token.child_token();
+
+        let uploader =
+            LogUploader::new(node.clone(), service_endpoint.clone(), upload_timeout_secs);
 
         let (tx, rx) = mpsc::channel::<LogRecordLoad>(100);
-        let reader_manager = LogReaderManager::open(log_dir, excluded, tx).map_err(|e| {
-            let msg = format!("failed to open log reader manager: {}", e);
+        let reader_manager = LogReaderManager::open(log_dir, excluded, tx, reader_shutdown)
+            .map_err(|e| {
+                let msg = format!("failed to open log reader manager: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+
+        let upload_task = tokio::task::spawn(async move {
+            Self::run_upload_processor(rx, uploader, upload_global_concurrency, uploader_shutdown)
+                .await;
+        });
+
+        Ok(Self {
+            node,
+            service_endpoint,
+            log_dir: log_dir.to_path_buf(),
+            upload_global_concurrency,
+            reader_manager,
+            upload_task,
+            shutdown_token,
+        })
+    }
+
+    pub async fn shutdown(self) -> Result<(), String> {
+        let LogDaemonClient {
+            node,
+            service_endpoint,
+            log_dir,
+            upload_global_concurrency,
+            reader_manager,
+            upload_task,
+            shutdown_token,
+        } = self;
+
+        info!(
+            "shutting down slog daemon client, node={}, endpoint={}, log_dir={}, upload_global_concurrency={}",
+            node,
+            service_endpoint,
+            log_dir.display(),
+            upload_global_concurrency
+        );
+
+        shutdown_token.cancel();
+
+        tokio::task::spawn_blocking(move || reader_manager.shutdown())
+            .await
+            .map_err(|e| {
+                let msg = format!("log reader manager shutdown task join failed: {}", e);
+                error!("{}", msg);
+                msg
+            })??;
+
+        upload_task.await.map_err(|e| {
+            let msg = format!("log upload processor task join failed: {}", e);
             error!("{}", msg);
             msg
         })?;
 
-        let ret = Self {
-            node,
-            service_endpoint,
-            log_dir: log_dir.to_path_buf(),
-            reader_manager,
-        };
-
-        tokio::task::spawn(async move {
-            Self::run_upload_processor(rx, uploader).await;
-        });
-
-        Ok(ret)
+        info!("slog daemon client shutdown completed");
+        Ok(())
     }
 
-    async fn run_upload_processor(mut rx: mpsc::Receiver<LogRecordLoad>, uploader: LogUploader) {
-        loop {
-            match rx.recv().await {
-                Some(load) => {
-                    // Upload the records
-                    let mut ret = true;
-                    if let Err(e) = uploader.upload_logs(&load.id, load.records).await {
-                        let msg = format!("failed to upload log records: {}", e);
-                        error!("{}", msg);
-                        ret = false;
-                    }
+    async fn run_upload_processor(
+        mut rx: mpsc::Receiver<LogRecordLoad>,
+        uploader: LogUploader,
+        global_concurrency: usize,
+        shutdown: CancellationToken,
+    ) {
+        let max_concurrency = global_concurrency.max(1);
+        let semaphore = Arc::new(Semaphore::new(max_concurrency));
+        let mut workers = JoinSet::new();
+        let mut draining = false;
+        let mut channel_closed = false;
 
-                    // Send ack
-                    if let Err(e) = load.ack.send(ret) {
-                        let msg = format!("failed to send ack for uploaded log records: {}", e);
-                        error!("{}", msg);
+        loop {
+            if channel_closed && workers.is_empty() {
+                info!("log upload processor drained all inflight uploads, exiting...");
+                break;
+            }
+
+            tokio::select! {
+                _ = shutdown.cancelled(), if !draining => {
+                    draining = true;
+                    info!("upload processor received shutdown signal, entering drain mode");
+                }
+                join_result = workers.join_next(), if !workers.is_empty() => {
+                    if let Some(Err(e)) = join_result {
+                        error!("upload worker task join failed: {}", e);
                     }
                 }
-                None => {
-                    // Channel closed
-                    info!("log upload processor channel closed, exiting...");
-                    break;
+                recv_result = rx.recv(), if !channel_closed => {
+                    match recv_result {
+                        Some(load) => {
+                            let semaphore = semaphore.clone();
+                            let uploader = uploader.clone();
+                            workers.spawn(async move {
+                                let permit = semaphore.acquire_owned().await;
+                                let _permit = match permit {
+                                    Ok(p) => p,
+                                    Err(e) => {
+                                        error!("failed to acquire upload semaphore permit: {}", e);
+                                        let _ = load.ack.send(false);
+                                        return;
+                                    }
+                                };
+
+                                let mut ret = true;
+                                if let Err(e) = uploader
+                                    .upload_logs(&load.id, &load.batch_id, load.record_ids, load.records)
+                                    .await
+                                {
+                                    let msg = format!("failed to upload log records: {}", e);
+                                    error!("{}", msg);
+                                    ret = false;
+                                }
+
+                                if let Err(e) = load.ack.send(ret) {
+                                    let msg = format!("failed to send ack for uploaded log records: {}", e);
+                                    error!("{}", msg);
+                                }
+                            });
+                        }
+                        None => {
+                            channel_closed = true;
+                            info!("log upload processor channel closed, waiting inflight workers...");
+                        }
+                    }
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LogDaemonClient;
+    use super::LogUploader;
+    use tokio::sync::mpsc;
+    use tokio::time::{Duration, timeout};
+    use tokio_util::sync::CancellationToken;
+
+    #[tokio::test]
+    async fn test_upload_processor_exits_after_shutdown_and_channel_close() {
+        let uploader = LogUploader::new(
+            "node-001".to_string(),
+            "http://127.0.0.1:22001/logs".to_string(),
+            1,
+        );
+        let (tx, rx) = mpsc::channel(1);
+        let shutdown = CancellationToken::new();
+        let task_shutdown = shutdown.clone();
+
+        let handle = tokio::spawn(async move {
+            LogDaemonClient::run_upload_processor(rx, uploader, 2, task_shutdown.child_token())
+                .await;
+        });
+
+        shutdown.cancel();
+        drop(tx);
+
+        let join_result = timeout(Duration::from_secs(2), handle).await;
+        assert!(join_result.is_ok());
+        assert!(join_result.unwrap().is_ok());
     }
 }

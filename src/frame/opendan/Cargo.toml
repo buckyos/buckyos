@@ -1,0 +1,37 @@
+[package]
+name = "opendan"
+version = "0.5.1"
+edition = "2021"
+authors = ["BuckyOS DAO","waterflier","codex5.3"]
+
+[dependencies]
+async-trait = {workspace = true}
+serde = {workspace = true}
+serde_json = {workspace = true}
+serde_yaml = "0.9"
+thiserror = {workspace = true}
+buckyos-api = { path = "../../kernel/buckyos-api" }
+kRPC = { workspace = true }
+ndn-lib = {workspace = true}
+named_store = {workspace = true}
+tokio = { workspace = true }
+reqwest = { workspace = true }
+name-lib = { workspace = true }
+rusqlite = { workspace = true }
+chrono = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+log = { workspace = true }
+anyhow = { workspace = true }
+buckyos-kit = { workspace = true }
+server-runner = { workspace = true }
+cyfs-gateway-lib = { workspace = true }
+bytes = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+upon = { workspace = true }
+uuid = { workspace = true }
+xmltree = "0.12.0"
+
+[dev-dependencies]
+tempfile = { workspace = true }

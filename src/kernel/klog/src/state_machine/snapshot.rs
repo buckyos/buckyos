@@ -141,10 +141,7 @@ impl SnapshotManager {
         // let src = self.get_temp_snapshot_path();
 
         let dest = self.data_dir.join(format!("snapshot_{}", meta.snapshot_id));
-        info!(
-            "Installing snapshot {} to {:?}",
-            meta.snapshot_id, dest
-        );
+        info!("Installing snapshot {} to {:?}", meta.snapshot_id, dest);
 
         // Save snapshot data to dest path
         if dest.exists() {

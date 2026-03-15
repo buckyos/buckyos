@@ -2,19 +2,35 @@ import { useEffect, useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 
 import { fetchLayout, mockLayoutData } from '@/api'
+import { useI18n } from '@/i18n'
 import UserPatternAvatar from './components/UserPatternAvatar'
 import Icon from './icons'
 
 const baseNavClasses =
   'cp-nav-link text-[var(--cp-muted)] hover:bg-[var(--cp-surface-muted)] hover:text-[var(--cp-primary-strong)]'
 
+const navLabelKeyByPath: Record<string, string> = {
+  '/': 'nav.desktop',
+  '/monitor': 'nav.monitor',
+  '/network': 'nav.network',
+  '/containers': 'nav.containers',
+  '/users': 'nav.users',
+  '/storage': 'nav.storage',
+  '/dapps': 'nav.dapps',
+  '/notifications': 'nav.notifications',
+  '/system-logs': 'nav.systemLogs',
+  '/sign-out': 'nav.signOut',
+}
+
 const RootLayout = () => {
   const [data, setData] = useState<RootLayoutData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<unknown>(null)
+  const { refreshLocale, t } = useI18n()
 
   useEffect(() => {
     const load = async () => {
+      void refreshLocale()
       const { data, error } = await fetchLayout()
       setData(data ?? mockLayoutData)
       setError(error)
@@ -22,16 +38,16 @@ const RootLayout = () => {
     }
 
     load()
-  }, [])
+  }, [refreshLocale])
 
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-transparent text-[var(--cp-ink)]">
-        <div className="cp-panel px-6 py-4 text-sm text-[var(--cp-muted)]">
-          Loading layout...
+          <div className="cp-panel px-6 py-4 text-sm text-[var(--cp-muted)]">
+          {t('root.loadingLayout', 'Loading layout...')}
+          </div>
         </div>
-      </div>
-    )
+      )
   }
 
   if (!data) {
@@ -39,7 +55,7 @@ const RootLayout = () => {
       <div className="flex min-h-screen items-center justify-center bg-transparent text-[var(--cp-ink)]">
         <div className="cp-panel flex items-center gap-3 px-6 py-4 text-sm text-[var(--cp-danger)]">
           <Icon name="alert" className="size-4" />
-          Failed to load layout data.
+          {t('root.layoutFailed', 'Failed to load layout data.')}
         </div>
       </div>
     )
@@ -51,7 +67,7 @@ const RootLayout = () => {
       ? error.message
       : typeof error === 'string'
         ? error
-        : 'Failed to load layout data'
+        : t('root.layoutFailed', 'Failed to load layout data.')
 
   return (
     <div className="relative min-h-screen text-[var(--cp-ink)]">
@@ -63,8 +79,8 @@ const RootLayout = () => {
           >
             <Icon name="alert" className="mt-0.5 size-4" />
             <div className="flex-1">
-              <p className="font-medium text-amber-900">Layout request failed</p>
-              <p className="text-xs text-amber-700">Using mock data. {errorMessage}</p>
+              <p className="font-medium text-amber-900">{t('root.layoutRequestFailed', 'Layout request failed')}</p>
+              <p className="text-xs text-amber-700">{t('root.usingMockData', 'Using mock data. {message}', { message: errorMessage })}</p>
             </div>
           </div>
         </div>
@@ -77,7 +93,7 @@ const RootLayout = () => {
             </span>
             <div className="flex flex-col leading-tight">
               <span className="font-semibold">BuckyOS</span>
-              <span className="text-xs font-medium text-[var(--cp-muted)]">Control Panel</span>
+              <span className="text-xs font-medium text-[var(--cp-muted)]">{t('app.controlPanel', 'Control Panel')}</span>
             </div>
           </div>
 
@@ -98,7 +114,7 @@ const RootLayout = () => {
                   }
                 >
                   <Icon name={item.icon} className="size-4" />
-                  <span className="flex-1">{item.label}</span>
+                  <span className="flex-1">{t(navLabelKeyByPath[item.path] ?? '', item.label)}</span>
                 </NavLink>
               ))}
             </div>
@@ -118,7 +134,7 @@ const RootLayout = () => {
                   }
                 >
                   <Icon name={item.icon} className="size-4" />
-                  <span className="flex-1">{item.label}</span>
+                  <span className="flex-1">{t(navLabelKeyByPath[item.path] ?? '', item.label)}</span>
                   {item.badge ? (
                     <span className="inline-flex min-w-6 items-center justify-center rounded-full bg-[var(--cp-danger)] px-1.5 text-xs font-semibold text-white">
                       {item.badge}
@@ -140,14 +156,14 @@ const RootLayout = () => {
             <div className="rounded-xl border border-[var(--cp-border)] bg-white px-4 py-3 text-xs leading-5 text-[var(--cp-muted)]">
               <div className="mb-2 flex items-center gap-2 text-[var(--cp-ink)]">
                 <span className="size-2 rounded-full bg-[var(--cp-success)]" aria-hidden />
-                {systemStatus.label}
+                {t('root.systemOnline', systemStatus.label)}
               </div>
               <div className="flex justify-between">
-                <span>Network</span>
+                <span>{t('root.networkPeers', 'Network')}</span>
                 <span className="text-[var(--cp-ink)]">{systemStatus.networkPeers} peers</span>
               </div>
               <div className="flex justify-between">
-                <span>Active Sessions</span>
+                <span>{t('root.activeSessions', 'Active Sessions')}</span>
                 <span className="text-[var(--cp-ink)]">{systemStatus.activeSessions}</span>
               </div>
             </div>

@@ -1,7 +1,7 @@
 # AGENTS
 
 ## Scope
-- Repo root: /root/app/buckyos/buckyos
+
 - Rust workspace root: `src/` (Cargo workspace; most crates live here)
 - Control panel service (Rust + kRPC): `src/frame/control_panel/`
 - Control panel UI (React/Vite/Tailwind): `src/frame/control_panel/web/`
@@ -35,6 +35,13 @@
 - Install rootfs (incremental): `cd src && buckyos-install`
 - Start local rootfs: `cd src && python3 start.py`
 - Cargo tests (CI when enabled): `cd src && cargo test -- --test-threads=1`
+
+### Preferred deploy flow (local machine)
+- Activate env: `source /root/app/myenv/bin/activate`
+- Build control panel only: `cd src && buckyos-build -s control_panel control_panel_web`
+- Install to `/opt/buckyos`: `cd src && buckyos-install`
+- Restart services: `systemctl restart buckyos`
+- Note: `buckyos-build -s control-panel control-panel-web` may skip Rust modules in this repo; prefer underscore module ids above.
 
 ### Control panel service (Rust)
 - Run: `cd src && cargo run -p control_panel`

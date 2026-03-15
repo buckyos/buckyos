@@ -21,7 +21,7 @@ pub struct LogDebugInfoFlags(u32);
 
 impl Default for LogDebugInfoFlags {
     fn default() -> Self {
-        Self(u32::MAX)
+        Self(0)
     }
 }
 
@@ -87,7 +87,7 @@ impl LogModuleConfig {
 
             level: LogLevel::default(),
             console: LogLevel::default(),
-            file: false,    // Disable file log by default
+            file: false, // Disable file log by default
             file_name: Some(name.to_string()),
             file_max_size: 1024 * 1024 * 10,
             file_max_count: 10,
@@ -350,5 +350,26 @@ impl LogConfig {
         mod_list.iter().for_each(|(name, level)| {
             self.disable_module_log(name, level);
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LogDebugInfoFlags;
+
+    #[test]
+    fn test_log_debug_info_flags_default_is_safe() {
+        let flags = LogDebugInfoFlags::default();
+        assert!(!flags.is_args_present());
+        assert!(!flags.is_env_present());
+    }
+
+    #[test]
+    fn test_log_debug_info_flags_toggle_methods() {
+        let flags = LogDebugInfoFlags::new(u32::MAX)
+            .without_args()
+            .without_env();
+        assert!(!flags.is_args_present());
+        assert!(!flags.is_env_present());
     }
 }

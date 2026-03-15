@@ -15,12 +15,19 @@ pub const KNOWN_SERVICE_HTTPS: (&str, u16) = ("https", 443);
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ServiceState {
+    #[serde(alias = "New")]
     New,
+    #[serde(alias = "Running", alias = "Deployed", alias = "deployed")]
     Running,
+    #[serde(alias = "Stopped", alias = "Disable")]
     Stopped,
+    #[serde(alias = "Stopping")]
     Stopping,
+    #[serde(alias = "Restarting")]
     Restarting,
+    #[serde(alias = "Updating")]
     Updating,
+    #[serde(alias = "Deleted")]
     Deleted,
 }
 

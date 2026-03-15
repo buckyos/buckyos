@@ -1,12 +1,32 @@
 use ::kRPC::*;
 use async_trait::async_trait;
+use name_lib::DID;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::IpAddr;
 
-const KMSG_SERVICE_NAME: &str = "kmsg";
+use crate::{AppDoc, AppType, SelectorType};
+
+pub const KMSG_SERVICE_UNIQUE_ID: &str = "kmsg";
+pub const KMSG_SERVICE_NAME: &str = "kmsg";
 pub const KMSG_SERVICE_MAIN_PORT: u16 = 4030;
+
+pub fn generate_kmsg_service_doc() -> AppDoc {
+    const VERSION: &str = env!("CARGO_PKG_VERSION");
+    let owner_did = DID::from_str("did:bns:buckyos").unwrap();
+    AppDoc::builder(
+        AppType::Service,
+        KMSG_SERVICE_UNIQUE_ID,
+        VERSION,
+        "did:bns:buckyos",
+        &owner_did,
+    )
+    .show_name("Kernel Message Queue")
+    .selector_type(SelectorType::Single)
+    .build()
+    .unwrap()
+}
 
 /// 全局唯一的队列标识符 (Uniform Resource Name)
 /// 格式通常为: "appid::owner::name"
@@ -17,7 +37,6 @@ pub type MsgIndex = u64;
 
 /// 订阅者 ID
 pub type SubscriptionId = String;
-
 
 /// 消息体定义
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,7 +72,7 @@ pub struct QueueConfig {
     /// 是否需要同步落盘 (Write-Ahead-Log 语义)
     pub sync_write: bool,
 
-    pub other_app_can_read: bool,  
+    pub other_app_can_read: bool,
     pub other_app_can_write: bool,
     pub other_user_can_read: bool,
     pub other_user_can_write: bool,
@@ -118,10 +137,7 @@ impl MsgQueueCreateQueueReq {
 
     pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse MsgQueueCreateQueueReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse MsgQueueCreateQueueReq: {}", e))
         })
     }
 }
@@ -138,10 +154,7 @@ impl MsgQueueDeleteQueueReq {
 
     pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse MsgQueueDeleteQueueReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse MsgQueueDeleteQueueReq: {}", e))
         })
     }
 }
@@ -158,10 +171,7 @@ impl MsgQueueGetQueueStatsReq {
 
     pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse MsgQueueGetQueueStatsReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse MsgQueueGetQueueStatsReq: {}", e))
         })
     }
 }
@@ -200,10 +210,7 @@ impl MsgQueuePostMessageReq {
 
     pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse MsgQueuePostMessageReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse MsgQueuePostMessageReq: {}", e))
         })
     }
 }
@@ -238,10 +245,7 @@ impl MsgQueueSubscribeReq {
 
     pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse MsgQueueSubscribeReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse MsgQueueSubscribeReq: {}", e))
         })
     }
 }
@@ -258,10 +262,7 @@ impl MsgQueueUnsubscribeReq {
 
     pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse MsgQueueUnsubscribeReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse MsgQueueUnsubscribeReq: {}", e))
         })
     }
 }
@@ -284,10 +285,30 @@ impl MsgQueueFetchMessagesReq {
 
     pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse MsgQueueFetchMessagesReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse MsgQueueFetchMessagesReq: {}", e))
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgQueueReadMessageReq {
+    pub queue_urn: QueueUrn,
+    pub cursor: MsgIndex,
+    pub length: usize,
+}
+
+impl MsgQueueReadMessageReq {
+    pub fn new(queue_urn: QueueUrn, cursor: MsgIndex, length: usize) -> Self {
+        Self {
+            queue_urn,
+            cursor,
+            length,
+        }
+    }
+
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        serde_json::from_value(value).map_err(|e| {
+            RPCErrors::ParseRequestError(format!("Failed to parse MsgQueueReadMessageReq: {}", e))
         })
     }
 }
@@ -305,10 +326,7 @@ impl MsgQueueCommitAckReq {
 
     pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse MsgQueueCommitAckReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse MsgQueueCommitAckReq: {}", e))
         })
     }
 }
@@ -326,10 +344,7 @@ impl MsgQueueSeekReq {
 
     pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
         serde_json::from_value(value).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse MsgQueueSeekReq: {}",
-                e
-            ))
+            RPCErrors::ParseRequestError(format!("Failed to parse MsgQueueSeekReq: {}", e))
         })
     }
 }
@@ -369,12 +384,10 @@ impl MsgQueueClient {
         Self::KRPC(client)
     }
 
-    pub async fn set_context(&self, context: RPCContext)  {
+    pub async fn set_context(&self, context: RPCContext) {
         match self {
             Self::InProcess(_) => {}
-            Self::KRPC(client) => {
-                client.set_context(context).await
-            }
+            Self::KRPC(client) => client.set_context(context).await,
         }
     }
 
@@ -416,10 +429,7 @@ impl MsgQueueClient {
         }
     }
 
-    pub async fn delete_queue(
-        &self,
-        queue_urn: &str,
-    ) -> std::result::Result<(), RPCErrors> {
+    pub async fn delete_queue(&self, queue_urn: &str) -> std::result::Result<(), RPCErrors> {
         match self {
             Self::InProcess(handler) => {
                 let ctx = RPCContext::default();
@@ -475,7 +485,9 @@ impl MsgQueueClient {
         match self {
             Self::InProcess(handler) => {
                 let ctx = RPCContext::default();
-                handler.handle_update_queue_config(queue_urn, config, ctx).await
+                handler
+                    .handle_update_queue_config(queue_urn, config, ctx)
+                    .await
             }
             Self::KRPC(client) => {
                 let req = MsgQueueUpdateQueueConfigReq::new(queue_urn.to_string(), config);
@@ -551,18 +563,13 @@ impl MsgQueueClient {
                     .as_str()
                     .map(|value| value.to_string())
                     .ok_or_else(|| {
-                        RPCErrors::ParserResponseError(
-                            "Expected SubscriptionId string".to_string(),
-                        )
+                        RPCErrors::ParserResponseError("Expected SubscriptionId string".to_string())
                     })
             }
         }
     }
 
-    pub async fn unsubscribe(
-        &self,
-        sub_id: &str,
-    ) -> std::result::Result<(), RPCErrors> {
+    pub async fn unsubscribe(&self, sub_id: &str) -> std::result::Result<(), RPCErrors> {
         match self {
             Self::InProcess(handler) => {
                 let ctx = RPCContext::default();
@@ -596,8 +603,7 @@ impl MsgQueueClient {
                     .await
             }
             Self::KRPC(client) => {
-                let req =
-                    MsgQueueFetchMessagesReq::new(sub_id.to_string(), length, auto_commit);
+                let req = MsgQueueFetchMessagesReq::new(sub_id.to_string(), length, auto_commit);
                 let req_json = serde_json::to_value(&req).map_err(|e| {
                     RPCErrors::ReasonError(format!(
                         "Failed to serialize MsgQueueFetchMessagesReq: {}",
@@ -605,6 +611,38 @@ impl MsgQueueClient {
                     ))
                 })?;
                 let result = client.call("fetch_messages", req_json).await?;
+                serde_json::from_value(result).map_err(|e| {
+                    RPCErrors::ParserResponseError(format!(
+                        "Failed to deserialize Vec<Message> response: {}",
+                        e
+                    ))
+                })
+            }
+        }
+    }
+
+    pub async fn read_message(
+        &self,
+        queue_urn: &str,
+        cursor: MsgIndex,
+        length: usize,
+    ) -> std::result::Result<Vec<Message>, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler
+                    .handle_read_message(queue_urn, cursor, length, ctx)
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req = MsgQueueReadMessageReq::new(queue_urn.to_string(), cursor, length);
+                let req_json = serde_json::to_value(&req).map_err(|e| {
+                    RPCErrors::ReasonError(format!(
+                        "Failed to serialize MsgQueueReadMessageReq: {}",
+                        e
+                    ))
+                })?;
+                let result = client.call("read_message", req_json).await?;
                 serde_json::from_value(result).map_err(|e| {
                     RPCErrors::ParserResponseError(format!(
                         "Failed to deserialize Vec<Message> response: {}",
@@ -652,10 +690,7 @@ impl MsgQueueClient {
             Self::KRPC(client) => {
                 let req = MsgQueueSeekReq::new(sub_id.to_string(), index);
                 let req_json = serde_json::to_value(&req).map_err(|e| {
-                    RPCErrors::ReasonError(format!(
-                        "Failed to serialize MsgQueueSeekReq: {}",
-                        e
-                    ))
+                    RPCErrors::ReasonError(format!("Failed to serialize MsgQueueSeekReq: {}", e))
                 })?;
                 client.call("seek", req_json).await?;
                 Ok(())
@@ -671,7 +706,9 @@ impl MsgQueueClient {
         match self {
             Self::InProcess(handler) => {
                 let ctx = RPCContext::default();
-                handler.handle_delete_message_before(queue_urn, index, ctx).await
+                handler
+                    .handle_delete_message_before(queue_urn, index, ctx)
+                    .await
             }
             Self::KRPC(client) => {
                 let req = MsgQueueDeleteMessageBeforeReq::new(queue_urn.to_string(), index);
@@ -748,6 +785,14 @@ pub trait MsgQueueHandler: Send + Sync {
         sub_id: &str,
         length: usize,
         auto_commit: bool,
+        ctx: RPCContext,
+    ) -> std::result::Result<Vec<Message>, RPCErrors>;
+
+    async fn handle_read_message(
+        &self,
+        queue_urn: &str,
+        cursor: MsgIndex,
+        length: usize,
         ctx: RPCContext,
     ) -> std::result::Result<Vec<Message>, RPCErrors>;
 
@@ -875,6 +920,14 @@ impl<T: MsgQueueHandler> RPCHandler for MsgQueueServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
+            "read_message" => {
+                let read_req = MsgQueueReadMessageReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_read_message(&read_req.queue_urn, read_req.cursor, read_req.length, ctx)
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
             "commit_ack" => {
                 let commit_req = MsgQueueCommitAckReq::from_json(req.params)?;
                 let result = self
@@ -912,9 +965,16 @@ impl<T: MsgQueueHandler> RPCHandler for MsgQueueServerHandler<T> {
 
 /// 计算确定性的 Queue URN (Deterministic Naming)
 /// 这是一个纯函数，不涉及 IO。
-/// 格式: `appid::owner::name`
+/// 规则:
+/// - 绝对路径对象 ID（`/xxx/...`）保持原样，作为最终 QueueUrn。
+/// - 兼容旧式 URN（`appid::owner::name`）透传，避免二次封装。
+/// - 其他名称按旧规则拼装为 `appid::owner::name`。
 pub fn calc_queue_urn(appid: &str, app_owner: &str, name: &str) -> String {
-    format!("{}::{}::{}", appid, app_owner, name)
+    let normalized = name.trim();
+    if normalized.starts_with('/') || normalized.contains("::") {
+        return normalized.to_string();
+    }
+    format!("{}::{}::{}", appid, app_owner, normalized)
 }
 
 /// 解析 URN 获取各个部分
@@ -933,6 +993,24 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU64, Ordering};
     use tokio::sync::Mutex;
+
+    #[test]
+    fn calc_queue_urn_keeps_absolute_path() {
+        let path = "/jarvis.test.buckyos.io/sessions/tg:lzc_jarvis:5397330802/msg";
+        assert_eq!(
+            calc_queue_urn("opendan", "jarvis.test.buckyos.io", path),
+            path
+        );
+    }
+
+    #[test]
+    fn calc_queue_urn_keeps_legacy_urn() {
+        let legacy = "opendan::jarvis.test.buckyos.io::legacy_queue";
+        assert_eq!(
+            calc_queue_urn("ignored", "ignored", legacy),
+            legacy.to_string()
+        );
+    }
 
     #[derive(Debug, Clone)]
     struct QueueState {
@@ -986,9 +1064,9 @@ mod tests {
             config: QueueConfig,
             _ctx: RPCContext,
         ) -> std::result::Result<QueueUrn, RPCErrors> {
-            let name = name.map(|value| value.to_string()).unwrap_or_else(|| {
-                self.next_queue_name()
-            });
+            let name = name
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| self.next_queue_name());
             let urn = calc_queue_urn(appid, app_owner, &name);
             let mut queues = self.queues.lock().await;
             if queues.contains_key(&urn) {
@@ -1033,9 +1111,9 @@ mod tests {
             _ctx: RPCContext,
         ) -> std::result::Result<QueueStats, RPCErrors> {
             let queues = self.queues.lock().await;
-            let queue = queues.get(queue_urn).ok_or_else(|| {
-                RPCErrors::ReasonError(format!("Queue not found: {}", queue_urn))
-            })?;
+            let queue = queues
+                .get(queue_urn)
+                .ok_or_else(|| RPCErrors::ReasonError(format!("Queue not found: {}", queue_urn)))?;
             let message_count = queue.messages.len() as u64;
             let first_index = queue.messages.first().map(|msg| msg.index).unwrap_or(0);
             let last_index = queue.messages.last().map(|msg| msg.index).unwrap_or(0);
@@ -1060,9 +1138,9 @@ mod tests {
             _ctx: RPCContext,
         ) -> std::result::Result<(), RPCErrors> {
             let mut queues = self.queues.lock().await;
-            let queue = queues.get_mut(queue_urn).ok_or_else(|| {
-                RPCErrors::ReasonError(format!("Queue not found: {}", queue_urn))
-            })?;
+            let queue = queues
+                .get_mut(queue_urn)
+                .ok_or_else(|| RPCErrors::ReasonError(format!("Queue not found: {}", queue_urn)))?;
             queue.config = config;
             Ok(())
         }
@@ -1074,9 +1152,9 @@ mod tests {
             _ctx: RPCContext,
         ) -> std::result::Result<MsgIndex, RPCErrors> {
             let mut queues = self.queues.lock().await;
-            let queue = queues.get_mut(queue_urn).ok_or_else(|| {
-                RPCErrors::ReasonError(format!("Queue not found: {}", queue_urn))
-            })?;
+            let queue = queues
+                .get_mut(queue_urn)
+                .ok_or_else(|| RPCErrors::ReasonError(format!("Queue not found: {}", queue_urn)))?;
             let index = queue.next_index;
             queue.next_index += 1;
             message.index = index;
@@ -1094,15 +1172,11 @@ mod tests {
             _ctx: RPCContext,
         ) -> std::result::Result<SubscriptionId, RPCErrors> {
             let queues = self.queues.lock().await;
-            let queue = queues.get(queue_urn).ok_or_else(|| {
-                RPCErrors::ReasonError(format!("Queue not found: {}", queue_urn))
-            })?;
+            let queue = queues
+                .get(queue_urn)
+                .ok_or_else(|| RPCErrors::ReasonError(format!("Queue not found: {}", queue_urn)))?;
             let last_index = queue.messages.last().map(|msg| msg.index).unwrap_or(0);
-            let first_index = queue
-                .messages
-                .first()
-                .map(|msg| msg.index)
-                .unwrap_or(1);
+            let first_index = queue.messages.first().map(|msg| msg.index).unwrap_or(1);
             let cursor = match position {
                 SubPosition::Earliest => first_index,
                 SubPosition::Latest => last_index + 1,
@@ -1159,7 +1233,7 @@ mod tests {
                 RPCErrors::ReasonError(format!("Queue not found: {}", sub.queue_urn))
             })?;
 
-            let mut messages: Vec<Message> = queue
+            let messages: Vec<Message> = queue
                 .messages
                 .iter()
                 .filter(|msg| msg.index >= sub.cursor)
@@ -1173,6 +1247,27 @@ mod tests {
                 }
             }
 
+            Ok(messages)
+        }
+
+        async fn handle_read_message(
+            &self,
+            queue_urn: &str,
+            cursor: MsgIndex,
+            length: usize,
+            _ctx: RPCContext,
+        ) -> std::result::Result<Vec<Message>, RPCErrors> {
+            let queues = self.queues.lock().await;
+            let queue = queues
+                .get(queue_urn)
+                .ok_or_else(|| RPCErrors::ReasonError(format!("Queue not found: {}", queue_urn)))?;
+            let messages = queue
+                .messages
+                .iter()
+                .filter(|msg| msg.index >= cursor)
+                .take(length)
+                .cloned()
+                .collect();
             Ok(messages)
         }
 
@@ -1205,11 +1300,7 @@ mod tests {
                 RPCErrors::ReasonError(format!("Queue not found: {}", sub.queue_urn))
             })?;
             let last_index = queue.messages.last().map(|msg| msg.index).unwrap_or(0);
-            let first_index = queue
-                .messages
-                .first()
-                .map(|msg| msg.index)
-                .unwrap_or(1);
+            let first_index = queue.messages.first().map(|msg| msg.index).unwrap_or(1);
             sub.cursor = match index {
                 SubPosition::Earliest => first_index,
                 SubPosition::Latest => last_index + 1,
@@ -1225,9 +1316,9 @@ mod tests {
             _ctx: RPCContext,
         ) -> std::result::Result<u64, RPCErrors> {
             let mut queues = self.queues.lock().await;
-            let queue = queues.get_mut(queue_urn).ok_or_else(|| {
-                RPCErrors::ReasonError(format!("Queue not found: {}", queue_urn))
-            })?;
+            let queue = queues
+                .get_mut(queue_urn)
+                .ok_or_else(|| RPCErrors::ReasonError(format!("Queue not found: {}", queue_urn)))?;
             let before_len = queue.messages.len();
             queue.messages.retain(|msg| msg.index >= index);
             let removed = before_len - queue.messages.len();
@@ -1299,10 +1390,47 @@ mod tests {
         let messages = client.fetch_messages(&sub_id, 1, false).await.unwrap();
         assert!(messages.is_empty());
 
-        client.seek(&sub_id, SubPosition::At(first_index)).await.unwrap();
+        client
+            .seek(&sub_id, SubPosition::At(first_index))
+            .await
+            .unwrap();
         let messages = client.fetch_messages(&sub_id, 1, false).await.unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].payload, b"one".to_vec());
+    }
+
+    #[tokio::test]
+    async fn test_read_message_without_side_effect() {
+        let client = build_client();
+        let queue_urn = client
+            .create_queue(Some("delta"), "app", "owner", QueueConfig::default())
+            .await
+            .unwrap();
+        let first_index = client
+            .post_message(&queue_urn, Message::new(b"one".to_vec()))
+            .await
+            .unwrap();
+        let second_index = client
+            .post_message(&queue_urn, Message::new(b"two".to_vec()))
+            .await
+            .unwrap();
+
+        let sub_id = client
+            .subscribe(&queue_urn, "user", "app", None, SubPosition::Earliest)
+            .await
+            .unwrap();
+        client.commit_ack(&sub_id, second_index).await.unwrap();
+
+        let messages = client
+            .read_message(&queue_urn, first_index, 2)
+            .await
+            .unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].index, first_index);
+        assert_eq!(messages[1].index, second_index);
+
+        let pending = client.fetch_messages(&sub_id, 1, false).await.unwrap();
+        assert!(pending.is_empty());
     }
 
     #[tokio::test]
@@ -1339,5 +1467,43 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(removed, 1);
+    }
+
+    #[tokio::test]
+    async fn test_path_queue_name_roundtrip() {
+        let client = build_client();
+        let queue_path = "/jarvis.test.buckyos.io/sessions/tg:lzc_jarvis:5397330802/msg";
+        let sub_id = "/jarvis.test.buckyos.io/sessions/tg:lzc_jarvis:5397330802/msg_subscription";
+
+        let queue_urn = client
+            .create_queue(
+                Some(queue_path),
+                "opendan",
+                "jarvis.test.buckyos.io",
+                QueueConfig::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(queue_urn, queue_path);
+
+        client
+            .post_message(&queue_urn, Message::new(b"path-message".to_vec()))
+            .await
+            .unwrap();
+
+        client
+            .subscribe(
+                &queue_urn,
+                "jarvis.test.buckyos.io",
+                "opendan",
+                Some(sub_id.to_string()),
+                SubPosition::Earliest,
+            )
+            .await
+            .unwrap();
+
+        let messages = client.fetch_messages(sub_id, 1, true).await.unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].payload, b"path-message".to_vec());
     }
 }

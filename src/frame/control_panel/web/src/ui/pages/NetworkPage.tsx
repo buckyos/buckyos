@@ -1,22 +1,24 @@
 import { useCallback, useEffect, useState } from 'react'
 
 import { fetchNetworkOverview } from '@/api'
+import { useI18n } from '@/i18n'
 import NetworkOverviewPanel from '../components/NetworkOverviewPanel'
 import Icon from '../icons'
 
 const POLL_INTERVAL_MS = 4000
 
-const toErrorText = (value: unknown) => {
+const toErrorText = (value: unknown, fallback: string) => {
   if (value instanceof Error) {
     return value.message
   }
   if (typeof value === 'string') {
     return value
   }
-  return 'Network overview request failed.'
+  return fallback
 }
 
 const NetworkPage = () => {
+  const { t } = useI18n()
   const [overview, setOverview] = useState<NetworkOverview | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -31,10 +33,10 @@ const NetworkPage = () => {
 
     const { data, error } = await fetchNetworkOverview()
     setOverview(data)
-    setErrorMessage(error ? toErrorText(error) : null)
+    setErrorMessage(error ? toErrorText(error, t('network.pageRequestFailed', 'Network overview request failed.')) : null)
     setLoading(false)
     setRefreshing(false)
-  }, [])
+  }, [t])
 
   useEffect(() => {
     let cancelled = false
@@ -61,17 +63,17 @@ const NetworkPage = () => {
       <header className="cp-panel px-8 py-6">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-semibold text-[var(--cp-ink)] sm:text-3xl">Network Monitor</h1>
+            <h1 className="text-2xl font-semibold text-[var(--cp-ink)] sm:text-3xl">{t('network.pageTitle', 'Network Monitor')}</h1>
             <p className="text-sm text-[var(--cp-muted)]">
-              Deep network telemetry with backend timeline and per-interface health counters.
+              {t('network.pageDescription', 'Deep network telemetry with backend timeline and per-interface health counters.')}
             </p>
           </div>
           <div className="flex items-center gap-2">
             <span className="cp-pill bg-[var(--cp-surface-muted)] text-[var(--cp-muted)]">
-              {refreshing ? 'Refreshing' : 'Live'}
+              {refreshing ? t('network.refreshing', 'Refreshing') : t('network.live', 'Live')}
             </span>
             <span className="cp-pill bg-[var(--cp-primary-soft)] text-[var(--cp-primary-strong)]">
-              <Icon name="network" className="mr-1 inline size-3.5" /> Telemetry
+              <Icon name="network" className="mr-1 inline size-3.5" /> {t('network.telemetry', 'Telemetry')}
             </span>
           </div>
         </div>
