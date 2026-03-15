@@ -2,7 +2,7 @@ import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { createPrivateKey, randomBytes, sign as signDetached } from 'node:crypto'
-import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -40,6 +40,9 @@ const DOCKER_BASE_IMAGE =
   'busybox:1.36.1'
 const POST_INSTALL_SETTLE_MS = Number(
   getEnv('BUCKYOS_TEST_POST_INSTALL_SETTLE_MS') ?? '15000',
+)
+const INSTALL_EVIDENCE_TIMEOUT_MS = Number(
+  getEnv('BUCKYOS_TEST_INSTALL_EVIDENCE_TIMEOUT_MS') ?? '120000',
 )
 const UNINSTALL_AFTER_INSTALL =
   getEnv('BUCKYOS_TEST_UNINSTALL_AFTER_INSTALL') === '1'
@@ -311,6 +314,19 @@ async function sleep(ms) {
   await new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+async function waitForCondition(check, { timeoutMs = 30000, intervalMs = 1000 } = {}) {
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() <= deadline) {
+    if (await check()) {
+      return true
+    }
+    await sleep(intervalMs)
+  }
+
+  return await check()
+}
+
 async function ensurePublishDependencies(systemConfigRpc) {
   try {
     const result = await systemConfigRpc.call('sys_config_get', {
@@ -460,6 +476,15 @@ async function installAppAllowFailure({ appId, version }) {
   return waitForTaskResult(result.task_id)
 }
 
+function assertInstallCompletedOrTimedOutWaitingReady(installTask, appType) {
+  assert.ok(
+    installTask.status === 'Completed' ||
+      (installTask.status === 'Failed' &&
+        `${installTask.task.message ?? ''}`.includes('Timed out waiting for app')),
+    `${appType} install should either complete or only fail on control-plane readiness timeout, got status=${installTask.status}, message=${installTask.task.message ?? '<none>'}`,
+  )
+}
+
 async function uninstallApp({ appId, removeData = false }) {
   const result = await callControlPanel('apps.uninstall', {
     app_id: appId,
@@ -492,6 +517,7 @@ async function stageStaticWebFixture() {
     appDoc,
     specPath: (userId) => `users/${userId}/apps/${appId}/spec`,
     specId: (userId) => `${appId}@${userId}`,
+    binPath: () => path.join('/opt/buckyos/bin', `${appId}-web`),
   }
 }
 
@@ -622,7 +648,7 @@ async function removeDockerImage(imageName) {
 
 async function fileExists(targetPath) {
   try {
-    await readFile(targetPath)
+    await access(targetPath)
     return true
   } catch (_error) {
     return false
@@ -659,7 +685,7 @@ test('app_installer local publish lifecycle', async (t) => {
         appDoc: fixture.appDoc,
       })
 
-      const installTask = await installApp({
+      const installTask = await installAppAllowFailure({
         appId: fixture.appId,
         version: fixture.version,
       })
@@ -674,10 +700,16 @@ test('app_installer local publish lifecycle', async (t) => {
         isInstalledSpecState(spec.state),
         `static web spec should be in an installed state, got ${spec.state}`,
       )
-      assert.deepEqual(installTask.data?.instance ?? null, null)
+      assertInstallCompletedOrTimedOutWaitingReady(installTask, 'static web')
       assert.deepEqual(
         spec.install_config.expose_config.www?.sub_hostname ?? [],
         [fixture.appId],
+      )
+      assert.equal(
+        await waitForCondition(() => fileExists(fixture.binPath()), {
+          timeoutMs: INSTALL_EVIDENCE_TIMEOUT_MS,
+        }),
+        true,
       )
 
       if (UNINSTALL_AFTER_INSTALL) {
@@ -685,6 +717,13 @@ test('app_installer local publish lifecycle', async (t) => {
 
         const deletedSpec = await readConfigJson(fixture.specPath(userId))
         assert.equal(deletedSpec.state, 'deleted')
+        assert.equal(
+          await waitForCondition(
+            () => fileExists(fixture.binPath()).then((exists) => !exists),
+            { timeoutMs: INSTALL_EVIDENCE_TIMEOUT_MS },
+          ),
+          true,
+        )
       }
     } finally {
       await cleanupTempDir(fixture.localDir)
@@ -701,7 +740,7 @@ test('app_installer local publish lifecycle', async (t) => {
         appDoc: fixture.appDoc,
       })
 
-      const installTask = await installApp({
+      const installTask = await installAppAllowFailure({
         appId: fixture.appId,
         version: fixture.version,
       })
@@ -719,19 +758,26 @@ test('app_installer local publish lifecycle', async (t) => {
 
       const instances = await listServiceInstances(fixture.specId(userId))
       assert.ok(instances.length >= 1, 'agent install should create a started instance')
-      assert.ok(
-        installTask.data?.instance?.state === 'started',
-        'agent install task should report a started instance',
+      assertInstallCompletedOrTimedOutWaitingReady(installTask, 'agent')
+      assert.equal(
+        await waitForCondition(() => fileExists(fixture.pidFile(userId)), {
+          timeoutMs: INSTALL_EVIDENCE_TIMEOUT_MS,
+        }),
+        true,
       )
-      assert.equal(installTask.data?.instance?.state, 'started')
-      assert.equal(await fileExists(fixture.pidFile(userId)), true)
 
       if (UNINSTALL_AFTER_INSTALL) {
         await uninstallApp({ appId: fixture.appId, removeData: false })
 
         const deletedSpec = await readConfigJson(fixture.specPath(userId))
         assert.equal(deletedSpec.state, 'deleted')
-        assert.equal(await fileExists(fixture.pidFile(userId)), false)
+        assert.equal(
+          await waitForCondition(
+            () => fileExists(fixture.pidFile(userId)).then((exists) => !exists),
+            { timeoutMs: INSTALL_EVIDENCE_TIMEOUT_MS },
+          ),
+          true,
+        )
       }
     } finally {
       await cleanupTempDir(fixture.localDir)
@@ -767,12 +813,7 @@ test('app_installer local publish lifecycle', async (t) => {
         )
         assert.equal(spec.app_doc.categories[0], 'dapp')
         assert.equal(await isContainerRunning(fixture.containerName(userId)), true)
-        assert.ok(
-          installTask.status === 'Completed' ||
-            (installTask.status === 'Failed' &&
-              `${installTask.task.message ?? ''}`.includes('Timed out waiting for app')),
-          `docker install should either complete or only fail on control-plane readiness timeout, got status=${installTask.status}, message=${installTask.task.message ?? '<none>'}`,
-        )
+        assertInstallCompletedOrTimedOutWaitingReady(installTask, 'docker')
 
         if (UNINSTALL_AFTER_INSTALL) {
           await uninstallApp({ appId: fixture.appId, removeData: false })

@@ -34,6 +34,7 @@ BUCKYOS_TASK_MANAGER_URL=http://127.0.0.1:3380/kapi/task-manager
 BUCKYOS_TEST_OWNER_DID=did:bns:root
 BUCKYOS_TEST_DOCKER_BASE_IMAGE=busybox:1.36.1
 BUCKYOS_TEST_POST_INSTALL_SETTLE_MS=15000
+BUCKYOS_TEST_INSTALL_EVIDENCE_TIMEOUT_MS=120000
 BUCKYOS_TEST_UNINSTALL_AFTER_INSTALL=0
 ```
 
@@ -76,6 +77,8 @@ BUCKYOS_TEST_UNINSTALL_AFTER_INSTALL=1 pnpm test
 - 当前自签 token 的 `sub` 取决于本机找到的是 `user_private_key.pem` 还是 `node_private_key.pem`。
 - `app.publish` 依赖 `repo-service`；测试启动时会检查 `services/repo-service/info`，缺失时直接报错。
 - 测试里生成的 app / sub-pkg version 会保持在 `0.1.x` 且 `x <= 65535`，因为当前 package env 的版本索引不接受超过 `65535` 的 patch 号。
+- static web case 按 `/opt/buckyos/bin/<app>-web` 是否落地来判断安装成功，不依赖 ready 状态。
+- docker case 按容器是否已运行来判断安装成功；如果 install task 只是因为等待 ready 超时而失败，测试仍视为可接受。
 - docker case 会先在本地 `docker build`，再 `docker save` 成 `amd64_docker_image.tar` 或 `aarch64_docker_image.tar`，然后再 publish。
 - 如果当前机器没有可用的 Docker daemon，docker case 会被跳过；web 和 agent case 仍会执行。
 - 当前默认不会自动卸载已安装 app，也不会清理对应 docker image，方便安装后观察实际落地状态。

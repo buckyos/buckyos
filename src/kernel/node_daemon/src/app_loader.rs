@@ -7,7 +7,8 @@ use buckyos_api::{
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir, get_buckyos_system_bin_dir};
 use log::{debug, info, warn};
-use package_lib::MediaInfo;
+use ndn_lib::{ObjId, load_named_object_from_obj_str};
+use package_lib::{MediaInfo, PackageEnv, PackageId, PackageMeta, PkgError};
 use serde_json::{Value, json};
 use shlex::Shlex;
 use std::collections::{HashMap, HashSet};
@@ -491,8 +492,12 @@ impl AppLoader {
 
     async fn ensure_pkg_installed(&self, pkg_id: &str) -> Result<MediaInfo> {
         let mut env = new_system_package_env();
+        self.ensure_pkg_meta_indexed(&env, pkg_id).await?;
         match env.install_pkg(pkg_id, true, false).await {
             Ok(_) => info!("installed pkg {} for app {}", pkg_id, self.app_id),
+            Err(PkgError::PackageAlreadyInstalled(_)) => {
+                info!("pkg {} already installed for app {}", pkg_id, self.app_id)
+            }
             Err(error) => {
                 warn!(
                     "install pkg {} for app {} failed, will continue to load installed media if present: {}",
@@ -692,6 +697,10 @@ impl AppLoader {
     }
 
     async fn start_host_script(&self) -> Result<()> {
+        let pkg_id = self
+            .host_app_pkg_id()
+            .ok_or_else(|| self.pkg_not_found("host app package"))?;
+        self.ensure_pkg_installed(pkg_id.as_str()).await?;
         let env_vars = self.build_runtime_env(PackageRole::HostApp).await?;
         let output = self
             .run_host_script("start", PackageRole::HostApp, &env_vars)
@@ -1523,6 +1532,72 @@ impl AppLoader {
         })
     }
 
+    async fn ensure_pkg_meta_indexed(&self, env: &PackageEnv, pkg_id: &str) -> Result<()> {
+        let package_id = PackageId::parse(pkg_id).map_err(|error| {
+            ControlRuntItemErrors::ExecuteError(
+                "index_pkg_meta".to_string(),
+                format!("parse pkg id {} failed: {}", pkg_id, error),
+            )
+        })?;
+        let Some(meta_obj_id_str) = package_id.objid.as_deref() else {
+            return Ok(());
+        };
+        if env.get_pkg_meta(pkg_id).await.is_ok() {
+            return Ok(());
+        }
+
+        let runtime = get_buckyos_api_runtime().map_err(|error| {
+            ControlRuntItemErrors::ExecuteError(
+                "index_pkg_meta".to_string(),
+                format!(
+                    "buckyos runtime unavailable when indexing {}: {}",
+                    pkg_id, error
+                ),
+            )
+        })?;
+        let store_mgr = runtime.get_named_store().await.map_err(|error| {
+            ControlRuntItemErrors::ExecuteError(
+                "index_pkg_meta".to_string(),
+                format!("get named store for {} failed: {}", pkg_id, error),
+            )
+        })?;
+        let meta_obj_id = ObjId::new(meta_obj_id_str).map_err(|error| {
+            ControlRuntItemErrors::ExecuteError(
+                "index_pkg_meta".to_string(),
+                format!("parse pkg objid {} failed: {}", meta_obj_id_str, error),
+            )
+        })?;
+        let pkg_meta_str = store_mgr.get_object(&meta_obj_id).await.map_err(|error| {
+            ControlRuntItemErrors::ExecuteError(
+                "index_pkg_meta".to_string(),
+                format!(
+                    "load pkg meta {} from named store failed: {}",
+                    meta_obj_id, error
+                ),
+            )
+        })?;
+        let meta_obj_id_string = meta_obj_id.to_string();
+        let mut pkg_meta =
+            parse_package_meta_from_store(meta_obj_id_string.as_str(), &pkg_meta_str)?;
+        let expected_pkg_name = expected_env_pkg_name(env, &package_id);
+        if pkg_meta.name != expected_pkg_name {
+            pkg_meta.name = expected_pkg_name;
+        }
+        env.set_pkg_meta_to_index_db(meta_obj_id_string.as_str(), &pkg_meta)
+            .await
+            .map_err(|error| {
+                ControlRuntItemErrors::ExecuteError(
+                    "index_pkg_meta".to_string(),
+                    format!(
+                        "insert pkg meta {} into env db failed: {}",
+                        meta_obj_id, error
+                    ),
+                )
+            })?;
+        info!("indexed pkg meta {} for app {}", pkg_id, self.app_id);
+        Ok(())
+    }
+
     fn preview_docker_deploy(&self) -> Result<Vec<CommandSpec>> {
         let desc = self
             .docker_image_desc()
@@ -1750,6 +1825,36 @@ pub(crate) fn normalize_digest(digest: Option<&str>) -> Option<&str> {
             Some(normalized)
         }
     })
+}
+
+fn parse_package_meta_from_store(meta_obj_id: &str, pkg_meta_str: &str) -> Result<PackageMeta> {
+    PackageMeta::from_str(pkg_meta_str).or_else(|_| {
+        let pkg_meta_json = serde_json::from_str::<Value>(pkg_meta_str)
+            .or_else(|_| load_named_object_from_obj_str(pkg_meta_str))
+            .map_err(|error| {
+                ControlRuntItemErrors::ExecuteError(
+                    "index_pkg_meta".to_string(),
+                    format!(
+                        "parse pkg meta {} from named store failed: {}",
+                        meta_obj_id, error
+                    ),
+                )
+            })?;
+        serde_json::from_value::<PackageMeta>(pkg_meta_json).map_err(|error| {
+            ControlRuntItemErrors::ExecuteError(
+                "index_pkg_meta".to_string(),
+                format!("decode pkg meta {} failed: {}", meta_obj_id, error),
+            )
+        })
+    })
+}
+
+fn expected_env_pkg_name(env: &PackageEnv, package_id: &PackageId) -> String {
+    if package_id.name.contains('.') {
+        package_id.name.clone()
+    } else {
+        format!("{}.{}", env.get_prefix(), package_id.name)
+    }
 }
 
 pub(crate) fn docker_desc_requires_exact_match(desc: &SubPkgDesc) -> bool {

@@ -1,9 +1,9 @@
 use crate::app_loader::{
-    AppLoader, CommandSpec, ControlOperation, DOCKER_LABEL_IMAGE_DIGEST, DOCKER_LABEL_PKG_OBJID,
-    DockerRuntimeIdentity, PlatformArch, PlatformOs, PlatformTarget, RuntimeType,
     command_matches_agent_process, command_matches_exact_agent_process,
     docker_desc_requires_exact_match, docker_image_tar_candidates_for_arch,
-    docker_runtime_matches_target, normalize_digest,
+    docker_runtime_matches_target, normalize_digest, AppLoader, CommandSpec, ControlOperation,
+    DockerRuntimeIdentity, PlatformArch, PlatformOs, PlatformTarget, RuntimeType,
+    DOCKER_LABEL_IMAGE_DIGEST, DOCKER_LABEL_PKG_OBJID,
 };
 use crate::run_item::ControlRuntItemErrors;
 use buckyos_api::{
@@ -279,11 +279,9 @@ fn appservice_control_commands_match_linux_amd64_docker_runtime() {
     assert_eq!(start.commands[0].args, vec!["rm", "-f", "alice-demo"]);
     assert!(start.commands[1].args.contains(&"run".to_string()));
     assert!(start.commands[1].args.contains(&"10080:80".to_string()));
-    assert!(
-        start.commands[1]
-            .args
-            .contains(&"demo/service:0.1.0-amd64".to_string())
-    );
+    assert!(start.commands[1]
+        .args
+        .contains(&"demo/service:0.1.0-amd64".to_string()));
 
     let stop = loader.preview_operation(ControlOperation::Stop).unwrap();
     assert_eq!(stop.runtime, RuntimeType::Docker);
@@ -317,11 +315,9 @@ fn appservice_control_commands_match_linux_aarch64_docker_runtime() {
     );
 
     let start = loader.preview_operation(ControlOperation::Start).unwrap();
-    assert!(
-        start.commands[1]
-            .args
-            .contains(&"demo/service:0.1.0-aarch64".to_string())
-    );
+    assert!(start.commands[1]
+        .args
+        .contains(&"demo/service:0.1.0-aarch64".to_string()));
 }
 
 #[test]
