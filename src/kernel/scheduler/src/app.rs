@@ -215,13 +215,17 @@ pub fn instance_app_service(
 
 pub fn uninstance_app_service(instance: &ReplicaInstance) -> Result<HashMap<String, KVAction>> {
     let mut result = HashMap::new();
-    let (app_id, user_id, node_id) = parse_instance_id(instance.spec_id.as_str())?;
 
     let key_path = format!("nodes/{}/config", instance.node_id.as_str());
     let mut set_action = HashMap::new();
+    let node_instance_id = format!("{}@{}", instance.spec_id, instance.node_id);
     set_action.insert(
-        format!("/apps/{}/target_state", instance.instance_id.as_str()),
-        Some(json!("Stopped")),
+        format!("/apps/{}/target_state", node_instance_id),
+        Some(json!(ServiceInstanceState::Stopped)),
+    );
+    set_action.insert(
+        format!("/apps/{}/app_spec/state", node_instance_id),
+        Some(json!(ServiceState::Deleted)),
     );
     result.insert(key_path, KVAction::SetByJsonPath(set_action));
 
@@ -241,7 +245,24 @@ pub fn uninstance_app_service(instance: &ReplicaInstance) -> Result<HashMap<Stri
 pub fn update_app_service_instance(
     instance: &ReplicaInstance,
 ) -> Result<HashMap<String, KVAction>> {
-    unimplemented!();
+    let mut result = HashMap::new();
+    let key_path = format!("nodes/{}/config", instance.node_id.as_str());
+    let node_instance_id = format!("{}@{}", instance.spec_id, instance.node_id);
+    let mut set_action = HashMap::new();
+    let app_state = match instance.state {
+        InstanceState::Deleted => ServiceState::Deleted,
+        _ => ServiceState::Stopped,
+    };
+    set_action.insert(
+        format!("/apps/{}/target_state", node_instance_id),
+        Some(json!(ServiceInstanceState::Stopped)),
+    );
+    set_action.insert(
+        format!("/apps/{}/app_spec/state", node_instance_id),
+        Some(json!(app_state)),
+    );
+    result.insert(key_path, KVAction::SetByJsonPath(set_action));
+    Ok(result)
 }
 
 pub fn set_app_service_state(
@@ -257,7 +278,7 @@ pub fn set_app_service_state(
         .unwrap_or_else(|| format!("users/{}/apps/{}/spec", user_id, app_id));
     debug!("update_app_service sepc key: {}", key);
     let mut set_paths = HashMap::new();
-    set_paths.insert("state".to_string(), Some(json!(state.to_string())));
+    set_paths.insert("state".to_string(), Some(json!(state.to_config_state()?)));
     let mut result = HashMap::new();
     result.insert(key, KVAction::SetByJsonPath(set_paths));
     Ok(result)

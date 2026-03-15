@@ -57,7 +57,8 @@ Step1. resort_nodes() — 节点状态审查
 
 Step2. schedule_spec_change() — ServiceSpec 实例化/反实例化（仅在 spec 发生变化时触发）
     - New → 过滤+打分选择最优节点，创建 ReplicaInstance，标记为 Deployed
-    - Deleted → 回收所有关联的 ReplicaInstance
+    - Disable → 保留 node config item，仅把实例 target_state 收敛到 Stopped
+    - Deleted → 对 App 保留 node config item，并把实例收敛到 `Stopped/Deleted`
     - 节点过滤（filter_node_for_instance）：检查节点状态(Ready)、类型(OOD/Server)、
       容器支持、CPU/Memory/GPU 资源、node_affinity 标签匹配
     - 节点打分（score_node）：资源充足度 + 负载均衡 + 网络亲和性
@@ -77,7 +78,7 @@ SchedulerAction 的执行由外部模块负责：
 - ChangeNodeStatus     → 更新 nodes/{node_id}/config 中的 state
 - ChangeServiceStatus  → 更新 services/{spec_id}/spec 或 users/.../apps/.../spec 中的 state
 - InstanceReplica      → 写入 nodes/{node_id}/config 中的 kernel 或 app 配置
-- RemoveInstance       → 从 node config 中移除实例配置
+- RemoveInstance       → 对 App 保留 node config item，并把实例状态收敛到 `Stopped/Deleted`
 - UpdateServiceInfo    → 更新 services/{spec_id}/info，供其他服务发现使用
 - CreateOPTask         → 未来版本将重构为 Function Instance 调度
     （详见 doc/arch/使用function_instance实现分布式调度器.md）
@@ -188,6 +189,21 @@ impl fmt::Display for ServiceSpecState {
             ServiceSpecState::Deleted => "Deleted",
         };
         write!(f, "{value}")
+    }
+}
+
+impl ServiceSpecState {
+    pub fn to_config_state(&self) -> Result<ServiceState> {
+        match self {
+            ServiceSpecState::New => Ok(ServiceState::New),
+            ServiceSpecState::Deployed => Ok(ServiceState::Running),
+            ServiceSpecState::Disable => Ok(ServiceState::Stopped),
+            ServiceSpecState::Deleted => Ok(ServiceState::Deleted),
+            ServiceSpecState::DeployFailed | ServiceSpecState::Abnormal => Err(anyhow::anyhow!(
+                "cannot persist scheduler-only service state {} to config",
+                self
+            )),
+        }
     }
 }
 
@@ -850,6 +866,36 @@ impl NodeScheduler {
                         spec_id.clone(),
                         ServiceSpecState::Deleted,
                     ));
+                }
+                ServiceSpecState::Disable => {
+                    if spec_snapshot.spec_type != ServiceSpecType::App {
+                        continue;
+                    }
+
+                    let instance_ids: Vec<String> = self
+                        .replica_instances
+                        .iter()
+                        .filter(|(_, instance)| {
+                            instance.spec_id == spec_id
+                                && instance.state != InstanceState::Suspended
+                                && instance.state != InstanceState::Deleted
+                        })
+                        .map(|(instance_id, _)| instance_id.clone())
+                        .collect();
+
+                    for instance_id in instance_ids {
+                        if let Some(instance) = self.replica_instances.get_mut(&instance_id) {
+                            info!(
+                                "will stop instance: {} @ node: {}, spec_id:{}",
+                                instance.instance_id, &instance.node_id, &instance.spec_id
+                            );
+                            instance.state = InstanceState::Suspended;
+                            scheduler_actions.push(SchedulerAction::UpdateInstance(
+                                instance.instance_id.clone(),
+                                instance.clone(),
+                            ));
+                        }
+                    }
                 }
                 _ => {}
             }

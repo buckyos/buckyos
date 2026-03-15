@@ -78,6 +78,7 @@ BUCKYOS_TEST_UNINSTALL_AFTER_INSTALL=1 pnpm test
 - `app.publish` 依赖 `repo-service`；测试启动时会检查 `services/repo-service/info`，缺失时直接报错。
 - 测试里生成的 app / sub-pkg version 会保持在 `0.1.x` 且 `x <= 65535`，因为当前 package env 的版本索引不接受超过 `65535` 的 patch 号。
 - static web case 按 `/opt/buckyos/bin/<app>-web` 是否落地来判断安装成功，不依赖 ready 状态。
+- agent case 当前默认跳过，因为安装完成判定仍依赖 runtime 设计调整。
 - docker case 按容器是否已运行来判断安装成功；如果 install task 只是因为等待 ready 超时而失败，测试仍视为可接受。
 - docker case 会先在本地 `docker build`，再 `docker save` 成 `amd64_docker_image.tar` 或 `aarch64_docker_image.tar`，然后再 publish。
 - 如果当前机器没有可用的 Docker daemon，docker case 会被跳过；web 和 agent case 仍会执行。

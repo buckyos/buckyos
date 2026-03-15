@@ -322,6 +322,50 @@ fn test_pod_state_change() {
     // }
 }
 
+#[test]
+fn test_app_disable_updates_instance_instead_of_removing_it() {
+    let mut scheduler = NodeScheduler::new_empty(1);
+
+    scheduler.add_service_spec(ServiceSpec {
+        id: "jarvis@alice".to_string(),
+        app_id: "jarvis".to_string(),
+        owner_id: "alice".to_string(),
+        spec_type: ServiceSpecType::App,
+        state: ServiceSpecState::Disable,
+        best_instance_count: 1,
+        need_container: true,
+        required_cpu_mhz: 100,
+        required_memory: 1024 * 1024 * 128,
+        required_gpu_tflops: 0.0,
+        required_gpu_mem: 0,
+        node_affinity: None,
+        network_affinity: None,
+        app_index: 11,
+        service_ports_config: HashMap::new(),
+    });
+
+    scheduler.add_replica_instance(ReplicaInstance {
+        node_id: "node1".to_string(),
+        spec_id: "jarvis@alice".to_string(),
+        res_limits: HashMap::new(),
+        instance_id: "jarvis@alice@node1".to_string(),
+        last_update_time: buckyos_get_unix_timestamp(),
+        state: InstanceState::Running,
+        service_ports: HashMap::new(),
+    });
+
+    let actions = scheduler.schedule_spec_change().unwrap();
+    assert_eq!(actions.len(), 1);
+    match &actions[0] {
+        SchedulerAction::UpdateInstance(instance_id, instance) => {
+            assert_eq!(instance_id, "jarvis@alice@node1");
+            assert_eq!(instance.instance_id, "jarvis@alice@node1");
+            assert_eq!(instance.state, InstanceState::Suspended);
+        }
+        other => panic!("unexpected action: {:?}", other),
+    }
+}
+
 // test create service_spec instance with no suitable node
 #[test]
 fn test_create_pod_instance_no_suitable_node() {

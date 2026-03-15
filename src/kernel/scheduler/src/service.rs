@@ -153,7 +153,7 @@ pub fn set_service_state(
 ) -> Result<HashMap<String, KVAction>> {
     let key = format!("services/{}/spec", spec_id);
     let mut set_paths = HashMap::new();
-    set_paths.insert("state".to_string(), Some(json!(state.to_string())));
+    set_paths.insert("state".to_string(), Some(json!(state.to_config_state()?)));
     let mut result = HashMap::new();
     result.insert(key, KVAction::SetByJsonPath(set_paths));
     Ok(result)

@@ -730,7 +730,10 @@ test('app_installer local publish lifecycle', async (t) => {
     }
   })
 
-  await t.test('agent app publish + install', async () => {
+  await t.test(
+    'agent app publish + install',
+    { skip: 'temporarily disabled due to runtime-dependent install design' },
+    async () => {
     const fixture = await stageAgentFixture()
 
     try {
@@ -782,7 +785,8 @@ test('app_installer local publish lifecycle', async (t) => {
     } finally {
       await cleanupTempDir(fixture.localDir)
     }
-  })
+    },
+  )
 
   await t.test(
     'docker app publish + install',

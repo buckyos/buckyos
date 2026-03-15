@@ -1265,9 +1265,9 @@ impl AppInstaller {
     ///
     /// 流程：
     /// 1. get_app_service_spec(app_id)，校验 spec 存在
-    /// 2. stop_app(app_id) — 改 spec.state=Stopped，触发调度器删除 instance config
+    /// 2. stop_app(app_id) — 改 spec.state=Stopped，触发调度器把实例 item 收敛到 `target_state=Stopped`
     /// 3. spec.state → Deleted，写回 system_config
-    /// 4. 等待调度器 RemoveInstance（删除 nodes/{node}/config 中的实例配置）
+    /// 4. 等待实例停止；node config 中的实例 item 仍保留，后续 GC 再决定是否清理
     /// 5. 若 is_remove_data：清理应用数据目录
     pub async fn uninstall_app(
         &self,
@@ -1318,7 +1318,7 @@ impl AppInstaller {
     /// 流程：
     /// 1. get_app_service_spec(app_id)
     /// 2. spec.state → Stopped，写回 system_config
-    /// 3. 调度器 schedule_loop 检测到 state 变化，删除 nodes/{node}/config.apps 中该应用的 app_service_instance_config
+    /// 3. 调度器 schedule_loop 检测到 state 变化，把 nodes/{node}/config.apps 中该应用的 target_state 收敛到 `Stopped`
     /// 4. node-daemon 读 config 收敛，停止容器
     pub async fn stop_app(&self, app_id: &str, user_id: Option<&str>) -> Result<(), RPCErrors> {
         let client = self.system_config_client().await?;

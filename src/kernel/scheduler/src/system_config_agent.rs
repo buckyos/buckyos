@@ -375,27 +375,41 @@ pub(crate) fn schedule_action_to_tx_actions(
             }
             let service_spec = service_spec.unwrap();
             need_update_gateway_node_list.insert(node_id.clone());
-            let instance = scheduler_ctx.get_replica_instance(instance_id.as_str());
-            if instance.is_none() {
-                return Err(anyhow::anyhow!("instance not found"));
-            }
-            let instance = instance.unwrap();
+            let instance = scheduler_ctx
+                .get_replica_instance(instance_id.as_str())
+                .cloned()
+                .unwrap_or_else(|| {
+                    warn!(
+                        "remove instance {} missing from scheduler snapshot, using action payload",
+                        instance_id
+                    );
+                    ReplicaInstance {
+                        spec_id: spec_id.clone(),
+                        instance_id: instance_id.clone(),
+                        node_id: node_id.clone(),
+                        res_limits: HashMap::new(),
+                        last_update_time: 0,
+                        state: InstanceState::Deleted,
+                        service_ports: HashMap::new(),
+                    }
+                });
             match service_spec.spec_type {
                 ServiceSpecType::App => {
                     info!("will uninstance app service: {}", instance.spec_id);
-                    let uninstance_action = uninstance_app_service(instance)?;
+                    let uninstance_action = uninstance_app_service(&instance)?;
                     result.extend(uninstance_action);
                 }
                 ServiceSpecType::Service | ServiceSpecType::Kernel => {
                     info!("will uninstance service: {}", instance.spec_id);
-                    let uninstance_action = uninstance_service(instance)?;
+                    let uninstance_action = uninstance_service(&instance)?;
                     result.extend(uninstance_action);
                 }
             }
         }
         SchedulerAction::UpdateInstance(instance_id, instance) => {
             //相对比较复杂的操作:需要根据service_spec的类型,来执行更新实例化操作
-            let (spec_id, _owner_id, _node_id) = parse_instance_id(instance_id.as_str())?;
+            let (app_id, owner_id, _node_id) = parse_instance_id(instance_id.as_str())?;
+            let spec_id = format!("{}@{}", app_id, owner_id);
             let service_spec_opt = scheduler_ctx.get_service_spec(spec_id.as_str());
             if service_spec_opt.is_none() {
                 return Err(anyhow::anyhow!("service_spec not found"));
@@ -1401,7 +1415,7 @@ mod tests {
     use super::*;
     use buckyos_api::{
         AppDocBuilder, AppServiceSpec, AppType, ServiceExposeConfig, ServiceInstallConfig,
-        ServiceState, SubPkgDesc,
+        ServiceInstanceState, ServiceState, SubPkgDesc,
     };
     use jsonwebtoken::jwk::Jwk;
     use name_lib::generate_ed25519_key_pair;
@@ -1604,6 +1618,37 @@ mod tests {
     }
 
     #[test]
+    fn test_create_scheduler_by_system_config_accepts_uppercase_deleted_app_state() {
+        let zone_config = create_test_zone_config();
+        let device_ood1 = create_test_device_info("ood1", None);
+        let mut app_spec = create_test_app_spec();
+        app_spec.state = ServiceState::Deleted;
+        let mut app_spec_value = serde_json::to_value(&app_spec).unwrap();
+        app_spec_value["state"] = json!("Deleted");
+
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "boot/config".to_string(),
+            serde_json::to_string(&zone_config).unwrap(),
+        );
+        input_system_config.insert(
+            "devices/ood1/info".to_string(),
+            serde_json::to_string(&device_ood1).unwrap(),
+        );
+        input_system_config.insert(
+            "users/alice/apps/files/spec".to_string(),
+            serde_json::to_string(&app_spec_value).unwrap(),
+        );
+
+        let (scheduler_ctx, _) = create_scheduler_by_system_config(&input_system_config).unwrap();
+        let spec = scheduler_ctx
+            .get_service_spec("files@alice")
+            .expect("app spec should be loaded");
+
+        assert_eq!(spec.state, ServiceSpecState::Deleted);
+    }
+
+    #[test]
     fn test_schedule_action_to_tx_actions_instances_agent_and_marks_gateway_update() {
         let zone_config = create_test_zone_config();
         let device_ood1 = create_test_device_info("ood1", None);
@@ -1678,6 +1723,291 @@ mod tests {
                     serde_json::from_value(value.clone()).expect("parse instance config");
                 assert_eq!(instance.app_spec.app_id(), "jarvis");
                 assert_eq!(instance.app_spec.user_id, "alice");
+            }
+            other => panic!("unexpected kv action: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_schedule_action_to_tx_actions_remove_instance_keeps_app_entry_and_marks_deleted() {
+        let zone_config = create_test_zone_config();
+
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "boot/config".to_string(),
+            serde_json::to_string(&zone_config).unwrap(),
+        );
+
+        let mut scheduler_ctx = NodeScheduler::new_empty(1);
+        scheduler_ctx.add_service_spec(ServiceSpec {
+            id: "jarvis@alice".to_string(),
+            app_id: "jarvis".to_string(),
+            app_index: 2,
+            owner_id: "alice".to_string(),
+            spec_type: ServiceSpecType::App,
+            state: ServiceSpecState::Deleted,
+            need_container: true,
+            best_instance_count: 1,
+            required_cpu_mhz: 200,
+            required_memory: 1024 * 1024 * 256,
+            required_gpu_tflops: 0.0,
+            required_gpu_mem: 0,
+            node_affinity: None,
+            network_affinity: None,
+            service_ports_config: HashMap::new(),
+        });
+
+        let instance = create_test_replica_instance(
+            "jarvis@alice",
+            "jarvis@alice@ood1",
+            "ood1",
+            &[("www", 11080)],
+        );
+        scheduler_ctx.add_replica_instance(instance);
+
+        let mut need_update_gateway_node_list = HashSet::new();
+        let mut need_update_rbac = false;
+
+        let tx_actions = schedule_action_to_tx_actions(
+            &SchedulerAction::RemoveInstance(
+                "jarvis@alice".to_string(),
+                "jarvis@alice@ood1".to_string(),
+                "ood1".to_string(),
+            ),
+            &scheduler_ctx,
+            &HashMap::new(),
+            &input_system_config,
+            &mut need_update_gateway_node_list,
+            &mut need_update_rbac,
+        )
+        .unwrap();
+
+        assert!(need_update_gateway_node_list.contains("ood1"));
+        let node_action = tx_actions
+            .get("nodes/ood1/config")
+            .expect("node config update should exist");
+        match node_action {
+            KVAction::SetByJsonPath(paths) => {
+                assert_eq!(
+                    paths.get("/apps/jarvis@alice@ood1/target_state"),
+                    Some(&Some(json!(ServiceInstanceState::Stopped)))
+                );
+                assert_eq!(
+                    paths.get("/apps/jarvis@alice@ood1/app_spec/state"),
+                    Some(&Some(json!(ServiceState::Deleted)))
+                );
+                assert!(!paths.contains_key("/apps/jarvis@alice@ood1"));
+            }
+            other => panic!("unexpected kv action: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_schedule_action_to_tx_actions_remove_instance_works_without_snapshot_instance() {
+        let zone_config = create_test_zone_config();
+
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "boot/config".to_string(),
+            serde_json::to_string(&zone_config).unwrap(),
+        );
+
+        let mut scheduler_ctx = NodeScheduler::new_empty(1);
+        scheduler_ctx.add_service_spec(ServiceSpec {
+            id: "jarvis@alice".to_string(),
+            app_id: "jarvis".to_string(),
+            app_index: 2,
+            owner_id: "alice".to_string(),
+            spec_type: ServiceSpecType::App,
+            state: ServiceSpecState::Deleted,
+            need_container: true,
+            best_instance_count: 1,
+            required_cpu_mhz: 200,
+            required_memory: 1024 * 1024 * 256,
+            required_gpu_tflops: 0.0,
+            required_gpu_mem: 0,
+            node_affinity: None,
+            network_affinity: None,
+            service_ports_config: HashMap::new(),
+        });
+
+        let mut need_update_gateway_node_list = HashSet::new();
+        let mut need_update_rbac = false;
+
+        let tx_actions = schedule_action_to_tx_actions(
+            &SchedulerAction::RemoveInstance(
+                "jarvis@alice".to_string(),
+                "jarvis@alice@ood1".to_string(),
+                "ood1".to_string(),
+            ),
+            &scheduler_ctx,
+            &HashMap::new(),
+            &input_system_config,
+            &mut need_update_gateway_node_list,
+            &mut need_update_rbac,
+        )
+        .unwrap();
+
+        assert!(need_update_gateway_node_list.contains("ood1"));
+        let node_action = tx_actions
+            .get("nodes/ood1/config")
+            .expect("node config update should exist");
+        match node_action {
+            KVAction::SetByJsonPath(paths) => {
+                assert_eq!(
+                    paths.get("/apps/jarvis@alice@ood1/target_state"),
+                    Some(&Some(json!(ServiceInstanceState::Stopped)))
+                );
+                assert_eq!(
+                    paths.get("/apps/jarvis@alice@ood1/app_spec/state"),
+                    Some(&Some(json!(ServiceState::Deleted)))
+                );
+            }
+            other => panic!("unexpected kv action: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_schedule_action_to_tx_actions_update_instance_keeps_app_entry_and_marks_stopped() {
+        let zone_config = create_test_zone_config();
+
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "boot/config".to_string(),
+            serde_json::to_string(&zone_config).unwrap(),
+        );
+
+        let mut scheduler_ctx = NodeScheduler::new_empty(1);
+        scheduler_ctx.add_service_spec(ServiceSpec {
+            id: "jarvis@alice".to_string(),
+            app_id: "jarvis".to_string(),
+            app_index: 2,
+            owner_id: "alice".to_string(),
+            spec_type: ServiceSpecType::App,
+            state: ServiceSpecState::Disable,
+            need_container: true,
+            best_instance_count: 1,
+            required_cpu_mhz: 200,
+            required_memory: 1024 * 1024 * 256,
+            required_gpu_tflops: 0.0,
+            required_gpu_mem: 0,
+            node_affinity: None,
+            network_affinity: None,
+            service_ports_config: HashMap::new(),
+        });
+
+        let mut instance = create_test_replica_instance(
+            "jarvis@alice",
+            "jarvis@alice@ood1",
+            "ood1",
+            &[("www", 11080)],
+        );
+        instance.state = InstanceState::Suspended;
+        scheduler_ctx.add_replica_instance(instance.clone());
+
+        let mut need_update_gateway_node_list = HashSet::new();
+        let mut need_update_rbac = false;
+
+        let tx_actions = schedule_action_to_tx_actions(
+            &SchedulerAction::UpdateInstance(instance.instance_id.clone(), instance),
+            &scheduler_ctx,
+            &HashMap::new(),
+            &input_system_config,
+            &mut need_update_gateway_node_list,
+            &mut need_update_rbac,
+        )
+        .unwrap();
+
+        let node_action = tx_actions
+            .get("nodes/ood1/config")
+            .expect("node config update should exist");
+        match node_action {
+            KVAction::SetByJsonPath(paths) => {
+                assert_eq!(
+                    paths.get("/apps/jarvis@alice@ood1/target_state"),
+                    Some(&Some(json!(ServiceInstanceState::Stopped)))
+                );
+                assert_eq!(
+                    paths.get("/apps/jarvis@alice@ood1/app_spec/state"),
+                    Some(&Some(json!(ServiceState::Stopped)))
+                );
+                assert!(!paths.contains_key("/apps/jarvis@alice@ood1"));
+            }
+            other => panic!("unexpected kv action: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_schedule_action_to_tx_actions_change_service_status_writes_config_state_values() {
+        let zone_config = create_test_zone_config();
+        let app_spec = create_test_app_spec();
+
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "boot/config".to_string(),
+            serde_json::to_string(&zone_config).unwrap(),
+        );
+        input_system_config.insert(
+            "users/alice/apps/files/spec".to_string(),
+            serde_json::to_string(&app_spec).unwrap(),
+        );
+
+        let mut scheduler_ctx = NodeScheduler::new_empty(1);
+        scheduler_ctx.add_service_spec(ServiceSpec {
+            id: "files@alice".to_string(),
+            app_id: "files".to_string(),
+            app_index: 3,
+            owner_id: "alice".to_string(),
+            spec_type: ServiceSpecType::App,
+            state: ServiceSpecState::Deployed,
+            need_container: true,
+            best_instance_count: 1,
+            required_cpu_mhz: 200,
+            required_memory: 1024 * 1024 * 256,
+            required_gpu_tflops: 0.0,
+            required_gpu_mem: 0,
+            node_affinity: None,
+            network_affinity: None,
+            service_ports_config: HashMap::new(),
+        });
+
+        let mut need_update_gateway_node_list = HashSet::new();
+        let mut need_update_rbac = false;
+
+        let deployed_actions = schedule_action_to_tx_actions(
+            &SchedulerAction::ChangeServiceStatus(
+                "files@alice".to_string(),
+                ServiceSpecState::Deployed,
+            ),
+            &scheduler_ctx,
+            &HashMap::new(),
+            &input_system_config,
+            &mut need_update_gateway_node_list,
+            &mut need_update_rbac,
+        )
+        .unwrap();
+        match deployed_actions.get("users/alice/apps/files/spec").unwrap() {
+            KVAction::SetByJsonPath(paths) => {
+                assert_eq!(paths.get("state"), Some(&Some(json!("running"))));
+            }
+            other => panic!("unexpected kv action: {:?}", other),
+        }
+
+        let deleted_actions = schedule_action_to_tx_actions(
+            &SchedulerAction::ChangeServiceStatus(
+                "files@alice".to_string(),
+                ServiceSpecState::Deleted,
+            ),
+            &scheduler_ctx,
+            &HashMap::new(),
+            &input_system_config,
+            &mut need_update_gateway_node_list,
+            &mut need_update_rbac,
+        )
+        .unwrap();
+        match deleted_actions.get("users/alice/apps/files/spec").unwrap() {
+            KVAction::SetByJsonPath(paths) => {
+                assert_eq!(paths.get("state"), Some(&Some(json!("deleted"))));
             }
             other => panic!("unexpected kv action: {:?}", other),
         }
