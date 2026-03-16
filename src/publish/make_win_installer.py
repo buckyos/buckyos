@@ -23,6 +23,10 @@ def make_installer(architecture, version):
     shutil.copy(installer_script, tmp_install_dir)
     print(f"copy installer script to {tmp_install_dir}")
 
+    bundled_vcredist = os.path.join(src_dir, "publish", "win_pkg", "vcredist_x64.exe")
+    if os.path.exists(bundled_vcredist):
+        shutil.copy(bundled_vcredist, os.path.join(tmp_install_dir, "vcredist_x64.exe"))
+
     # dest_dir is rootfs, collection items to this NEW rootfs
     perpare_offical_installer.prepare_rootfs_for_installer(os.path.join(tmp_install_dir, "rootfs"),  "windows", architecture, version)
 
