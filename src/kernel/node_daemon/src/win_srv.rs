@@ -10,7 +10,7 @@ use windows_service::service::{
     ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType,
 };
 use windows_service::service_control_handler::{ServiceControlHandlerResult, ServiceStatusHandle};
-use windows_service::{define_windows_service, service_control_handler, service_dispatcher, Error};
+use windows_service::{define_windows_service, service_control_handler, service_dispatcher};
 
 define_windows_service!(ffi_service_main, service_main);
 
@@ -83,8 +83,28 @@ pub(crate) fn service_main(_arguments: Vec<OsString>) -> windows_service::Result
 
     let matches = MATCHES.get().unwrap().clone();
 
-    node_daemon::run(matches);
-    log::warn!("service exited!!");
+    let run_result = node_daemon::run(matches);
+    if let Err(err) = run_result {
+        let mut service = SERVICE.write().unwrap();
+        service.cur_svc_status.current_state = ServiceState::Stopped;
+        service.cur_svc_status.controls_accepted = ServiceControlAccept::empty();
+        service.cur_svc_status.exit_code = ServiceExitCode::Win32(1);
+        if let Err(set_status_err) = service
+            .status_handle
+            .as_ref()
+            .expect("windows service status handle not initialized")
+            .set_service_status(service.cur_svc_status.clone())
+        {
+            log::error!(
+                "failed setting service stopped status after run error: {}",
+                set_status_err
+            );
+        }
+        log::error!("node daemon exited with error: {:?}", err);
+        return Ok(());
+    }
+
+    log::warn!("node daemon exited normally");
     Ok(())
 }
 

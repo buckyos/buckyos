@@ -1705,16 +1705,20 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn run(matches: ArgMatches) {
+pub(crate) fn run(matches: ArgMatches) -> std::result::Result<(), String> {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     if num_cpus::get() < 2 {
         builder.worker_threads(2);
     }
-    builder
+    let runtime = builder
         .enable_all()
         .build()
-        .unwrap()
-        .block_on(async_main(matches));
+        .map_err(|err| {
+            error!("create tokio runtime failed: {err}");
+            String::from("create tokio runtime failed!")
+        })?;
+
+    runtime.block_on(async_main(matches))
 }
 
 #[cfg(test)]

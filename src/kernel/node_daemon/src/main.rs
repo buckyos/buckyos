@@ -59,7 +59,9 @@ fn main() {
         #[cfg(windows)]
         {
             info!("node daemon running in windows service mode");
-            win_srv::service_start(matches);
+            if let Err(err) = win_srv::service_start(matches) {
+                error!("windows service start failed: {:?}", err);
+            }
         }
         #[cfg(not(windows))]
         {
@@ -67,6 +69,8 @@ fn main() {
             return;
         }
     } else {
-        node_daemon::run(matches);
+        if let Err(err) = node_daemon::run(matches) {
+            error!("node daemon exited with error: {:?}", err);
+        }
     }
 }
