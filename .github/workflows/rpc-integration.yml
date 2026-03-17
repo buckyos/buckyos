@@ -1,0 +1,94 @@
+name: RPC Integration
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/rpc-integration.yml"
+      - "src/**"
+
+jobs:
+  rpc-integration:
+    name: Build, Start, RPC Test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      BUCKYOS_ROOT: /opt/buckyos
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "latest"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-musl
+
+      - name: Setup system packages
+        run: |
+          sudo apt update
+          sudo apt install -y musl-tools
+
+      - name: Install buckyos devkit
+        run: python3 -m pip install -U "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"
+
+      - name: Prepare writable BuckyOS root
+        run: |
+          sudo mkdir -p /opt/buckyos
+          sudo chown -R "$USER:$USER" /opt/buckyos
+
+      - name: Build BuckyOS
+        working-directory: ./src
+        run: buckyos-build
+
+      - name: Install buckycli for config generation
+        working-directory: ./src
+        run: buckyos-update --app=buckycli --all
+
+      - name: Start single-node environment
+        working-directory: ./src
+        run: python3 start.py --all
+
+      - name: Run RPC integration tests
+        working-directory: ./src
+        run: bash ./test/run_rpc_tests.sh
+
+      - name: Show diagnostics on failure
+        if: failure()
+        working-directory: ./src
+        run: |
+          echo "=== process list ==="
+          ps -ef | grep -E "node_daemon|system_config|verify_hub|control_panel|scheduler|repo_service|task_manager" | grep -v grep || true
+          echo "=== /opt/buckyos/logs ==="
+          find /opt/buckyos/logs -maxdepth 2 -type f | sort || true
+          echo "=== recent logs ==="
+          find /opt/buckyos/logs -maxdepth 2 -type f | sort | while read -r file; do
+            echo "--- ${file} ---"
+            tail -n 200 "${file}" || true
+          done
+
+      - name: Stop BuckyOS
+        if: always()
+        working-directory: ./src
+        run: python3 stop.py
+
+      - name: Upload BuckyOS logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buckyos-rpc-integration-logs
+          path: |
+            /opt/buckyos/logs
+            /opt/buckyos/etc
+          if-no-files-found: warn

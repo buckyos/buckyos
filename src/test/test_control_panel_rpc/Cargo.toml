@@ -1,0 +1,11 @@
+[package]
+name = "test_control_panel_rpc"
+version.workspace = true
+edition = "2024"
+
+[dependencies]
+tokio = { workspace = true }
+serde_json = { workspace = true }
+buckyos-kit = { workspace = true }
+kRPC = { workspace = true }
+name-lib = { workspace = true }

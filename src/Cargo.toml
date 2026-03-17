@@ -23,7 +23,8 @@ members = [
     "./frame/opendan",
 
     "./tools/buckycli", 
-    "./test/test_rbac"
+    "./test/test_rbac",
+    "./test/test_control_panel_rpc"
 ]
 
 exclude = [
