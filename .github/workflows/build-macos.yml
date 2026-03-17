@@ -2,9 +2,6 @@ name: Build Buckyos MacOS Components
 on: 
     workflow_call:
         inputs:
-            version:
-                required: true
-                type: string
             arch:
                 required: true
                 type: string
@@ -12,25 +9,12 @@ on:
                 required: false
                 type: boolean
                 default: false
-        outputs:
-            build_time:
-                value: ${{jobs.build.outputs.build_time}}
 
 jobs:
   build:
     name: build
     runs-on: ${{ inputs.arch == 'aarch64' && 'macos-15' || 'macos-15-intel' }}
     steps:
-    - name: Set up current date and time
-      uses: Kaven-Universe/github-action-current-date-time@v1
-      id: date
-      with:
-        format: 'YYYYMMDD'
-    - name: short time
-      id: short_time
-      run: |
-        val="${{ steps.date.outputs.time }}"
-        echo "last6=${val: -6}" >> $GITHUB_OUTPUT
     - name: Checkout
       uses: actions/checkout@v6
     - name: Setup pnpm
@@ -61,26 +45,34 @@ jobs:
     - name: Prepare tools
       run: 
         sudo mkdir -p tools && sudo chmod 777 tools && sudo cp ./src/rootfs/bin/buckycli/buckycli ./tools/ 
+    - name: Get Version
+      id: get_version
+      run: |
+        version=$("./src/rootfs/bin/node-daemon/node_daemon" --version)
+
+        full_version=$(printf '%s\n' "$version" | sed -nE 's/.*?([0-9]+(\.[0-9]+)*\+build[^[:space:]]+).*/\1/p')
+        echo "full_version=$full_version" >> "$GITHUB_OUTPUT"
+
+        short_version=$(printf '%s\n' "$version" | sed -nE 's/.*?([0-9]+(\.[0-9]+)*\+build[0-9]+).*/\1/p')
+        echo "short_version=$short_version" >> "$GITHUB_OUTPUT"
     - name: Upload tools
       uses: actions/upload-artifact@v6
       with:
-        name: buckyos-tools-apple-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{inputs.version}}+build${{ steps.short_time.outputs.last6 }}
+        name: buckyos-tools-apple-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{steps.get_version.outputs.short_version}}
         path: tools
         if-no-files-found: error
     - name: Upload
       id: upload
       uses: actions/upload-artifact@v6
       with:
-        name: buckyos-apple-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{inputs.version}}+build${{ steps.short_time.outputs.last6 }}
+        name: buckyos-apple-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{steps.get_version.outputs.short_version}}
         path: rootfs.tar
         if-no-files-found: error
     - name: Report Upload Urls
       run: |
         npm install @buckyos/test-server-client
-        npx test-server-client seturl buckyos ${{inputs.version}}+build${{ steps.short_time.outputs.last6 }} macos ${{inputs.arch}} ${{steps.upload.outputs.artifact-url}} ${{github.sha}}
+        npx test-server-client seturl buckyos ${{steps.get_version.outputs.short_version}} macos ${{inputs.arch}} ${{steps.upload.outputs.artifact-url}} ${{github.sha}}
       env:
         USERNAME: ${{ secrets.TEST_SERVER_USERNAME }}
         PRIVATE_KEY: ${{ secrets.TEST_SERVER_PRIVATE_KEY }}
         ENDPOINT: "https://buckyos.ai"
-    outputs:
-      build_time: ${{ steps.date.outputs.time }}

@@ -23,8 +23,6 @@ use log::*;
 use std::panic;
 
 fn main() {
-    init_logging("node_daemon", true);
-
     let matches = Command::new("BuckyOS Node Daemon")
         .version(get_version())
         .arg(
@@ -55,6 +53,7 @@ fn main() {
                 .required(false),
         )
         .get_matches();
+    init_logging("node_daemon", true);
     if matches.get_flag("as_win_srv") {
         #[cfg(windows)]
         {

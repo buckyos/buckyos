@@ -3,10 +3,6 @@ name: Build All
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Version number'
-        required: true
-        type: string
       enable_tests:
         description: 'Enable cargo tests during build'
         required: false
@@ -14,18 +10,11 @@ on:
         default: false
   workflow_call:
     inputs:
-      version:
-        description: 'Version number'
-        required: true
-        type: string
       enable_tests:
         description: 'Enable cargo tests during build'
         required: false
         type: boolean
         default: false
-    outputs:
-      build_time:
-        value: ${{jobs.build-linux.outputs.build_time}}
 
 jobs:
   build-windows:
@@ -34,7 +23,6 @@ jobs:
         arch: ["x86_64"]
     uses: ./.github/workflows/build-windows.yml
     with:
-      version: ${{ inputs.version }}
       arch: ${{ matrix.arch }}
       enable_tests: ${{inputs.enable_tests}}
     secrets: inherit
@@ -44,7 +32,6 @@ jobs:
         arch: ["x86_64", "aarch64"]
     uses: ./.github/workflows/build-linux.yml
     with:
-      version: ${{ inputs.version }}
       arch: ${{ matrix.arch }}
       enable_tests: ${{inputs.enable_tests}}
     secrets: inherit
@@ -54,7 +41,6 @@ jobs:
         arch: ["x86_64", "aarch64"]
     uses: ./.github/workflows/build-macos.yml
     with:
-      version: ${{ inputs.version }}
       arch: ${{ matrix.arch }}
       enable_tests: ${{inputs.enable_tests}}
     secrets: inherit

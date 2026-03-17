@@ -2,9 +2,6 @@ name: Build Buckyos Windows Components
 on: 
     workflow_call:
         inputs:
-            version:
-                required: true
-                type: string
             arch:
                 required: true
                 type: string
@@ -12,26 +9,12 @@ on:
                 required: false
                 type: boolean
                 default: false
-        outputs:
-            build_time:
-                value: ${{jobs.build.outputs.build_time}}
 
 jobs:
   build:
     name: build
     runs-on: ${{ inputs.arch == 'aarch64' && 'windows-11-arm' || 'windows-2025' }}
     steps:
-    - name: Set up current date and time
-      uses: Kaven-Universe/github-action-current-date-time@v1
-      id: date
-      with:
-        format: 'YYYYMMDD'
-    - name: short time
-      id: short_time
-      run: |
-        $val = "${{ steps.date.outputs.time }}"
-        $last6 = $val.Substring($val.Length - 6)
-        echo "last6=$last6" >> $env:GITHUB_OUTPUT
     - name: Checkout
       uses: actions/checkout@v6
     - name: Setup pnpm
@@ -64,6 +47,21 @@ jobs:
       env:
         PYTHONIOENCODING: 'utf-8'
         PYTHONLEGACYWINDOWSSTDIO: "utf-8"
+    - name: Get Version
+      id: get_version
+      shell: pwsh
+      run: |
+        $version = (& './src/rootfs/bin/node-daemon/node_daemon' --version)
+
+        if ($version -match '\d+(?:\.\d+)*\+build\S+') {
+            $full_version = $matches[0]
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "full_version=$full_version"
+        }
+
+        if ($version -match '\d+(?:\.\d+)*\+build\d+') {
+            $short_version = $matches[0]
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "short_version=$short_version"
+        }
     - name: Prepare tools
       run: |
         mkdir tools
@@ -71,23 +69,21 @@ jobs:
     - name: Upload tools
       uses: actions/upload-artifact@v6
       with:
-        name: buckyos-tools-windows-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{inputs.version}}+build${{ steps.short_time.outputs.last6 }}
+        name: buckyos-tools-windows-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{steps.get_version.outputs.short_version}}
         path: tools
         if-no-files-found: error
     - name: Upload
       id: upload
       uses: actions/upload-artifact@v6
       with:
-        name: buckyos-windows-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{inputs.version}}+build${{ steps.short_time.outputs.last6 }}
+        name: buckyos-windows-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{steps.get_version.outputs.short_version}}
         path: src/rootfs
         if-no-files-found: error
     - name: Report Upload Urls
       run: |
         npm install @buckyos/test-server-client
-        npx test-server-client seturl buckyos ${{inputs.version}}+build${{ steps.short_time.outputs.last6 }} windows ${{inputs.arch}} ${{steps.upload.outputs.artifact-url}} ${{github.sha}}
+        npx test-server-client seturl buckyos ${{steps.get_version.outputs.short_version}} windows ${{inputs.arch}} ${{steps.upload.outputs.artifact-url}} ${{github.sha}}
       env:
         USERNAME: ${{ secrets.TEST_SERVER_USERNAME }}
         PRIVATE_KEY: ${{ secrets.TEST_SERVER_PRIVATE_KEY }}
         ENDPOINT: "https://buckyos.ai"
-    outputs:
-      build_time: ${{ steps.date.outputs.time }}

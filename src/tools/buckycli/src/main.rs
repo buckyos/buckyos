@@ -37,8 +37,6 @@ fn is_local_cmd(cmd_name: &str) -> bool {
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
-    buckyos_kit::init_logging("buckycli", false);
-
     let matches = Command::new("buckyos control tool")
         .version(get_version())
         .author("buckyos")
@@ -470,7 +468,7 @@ oods look like this 'ood1,ood2'.")
                 )
         )
         .get_matches();
-
+    buckyos_kit::init_logging("buckycli", false);
     let mut private_key = None;
     let subcommand = matches.subcommand();
 

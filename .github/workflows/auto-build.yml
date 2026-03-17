@@ -9,7 +9,6 @@ jobs:
   get-version:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.get-version.outputs.version }}
       have_new_commit: ${{ steps.compare-commits.outputs.have_new_commit }}
     steps:
       - name: Checkout Repository
@@ -32,23 +31,10 @@ jobs:
             echo "No new commit."
             echo "have_new_commit=false" >> $GITHUB_OUTPUT
           fi
-      - name: Get Version From Git Tags
-        id: get-version
-        if: steps.compare-commits.outputs.have_new_commit == 'true'
-        run: |
-          latest_tag=$(git describe --tags $(git rev-list --tags --max-count=1))
-          if [[ -z "$latest_tag" ]]; then
-            echo "No tags found, using default version 0.1.0"
-            echo "version=0.1.0" >> $GITHUB_OUTPUT
-          else
-            echo "Latest tag is $latest_tag"
-            echo "version=$latest_tag" >> $GITHUB_OUTPUT
-          fi
   auto-build:
     needs: get-version
     if: needs.get-version.outputs.have_new_commit == 'true'
     uses: ./.github/workflows/build-all.yml
     with:
-      version: ${{ needs.get-version.outputs.version }}
       enable_tests: false
     secrets: inherit
