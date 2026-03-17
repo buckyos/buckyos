@@ -76,9 +76,17 @@ jobs:
         working-directory: ./src
         run: buckyos-update --app=buckycli --all
 
+      - name: Update BuckyOS files and generate dev config
+        working-directory: ./src
+        run: |
+          python3 stop.py || true
+          buckyos-update --app=buckyos --all
+          python3 make_config.py dev --rootfs /opt/buckyos
+
       - name: Start single-node environment
         working-directory: ./src
-        run: python3 start.py --all
+        run: |
+          sudo bash -lc 'BUCKYOS_ROOT=/opt/buckyos nohup /opt/buckyos/bin/node-daemon/node_daemon --enable_active >/tmp/node_daemon.stdout 2>&1 &'
 
       - name: Run RPC integration tests
         working-directory: ./src
@@ -106,6 +114,8 @@ jobs:
           else
             echo "node_daemon log not found"
           fi
+          echo "=== /tmp/node_daemon.stdout ==="
+          tail -n 200 /tmp/node_daemon.stdout || true
           echo "=== /opt/buckyos/logs ==="
           find /opt/buckyos/logs -maxdepth 2 -type f | sort || true
           echo "=== recent logs ==="
@@ -117,7 +127,7 @@ jobs:
       - name: Stop BuckyOS
         if: always()
         working-directory: ./src
-        run: python3 stop.py
+        run: sudo python3 stop.py || true
 
       - name: Upload BuckyOS logs
         if: always()
@@ -127,4 +137,5 @@ jobs:
           path: |
             /opt/buckyos/logs
             /opt/buckyos/etc
+            /tmp/node_daemon.stdout
           if-no-files-found: warn
