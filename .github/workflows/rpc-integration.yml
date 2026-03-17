@@ -49,10 +49,24 @@ jobs:
       - name: Install buckyos devkit
         run: python3 -m pip install -U "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"
 
-      - name: Prepare writable BuckyOS root
+      - name: Prepare writable install roots
         run: |
           sudo mkdir -p /opt/buckyos
+          sudo mkdir -p /opt/web3-gateway
           sudo chown -R "$USER:$USER" /opt/buckyos
+          sudo chown -R "$USER:$USER" /opt/web3-gateway
+
+      - name: Checkout cyfs-gateway
+        uses: actions/checkout@v4
+        with:
+          repository: buckyos/cyfs-gateway
+          path: cyfs-gateway
+
+      - name: Build cyfs-gateway
+        working-directory: ./cyfs-gateway/src
+        run: |
+          buckyos-build
+          buckyos-install --all
 
       - name: Build BuckyOS
         working-directory: ./src
