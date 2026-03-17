@@ -31,15 +31,15 @@ jobs:
         val="${{ steps.date.outputs.time }}"
         echo "last6=${val: -6}" >> $GITHUB_OUTPUT
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
     - name: Setup pnpm
       uses: pnpm/action-setup@v4
       with:
         version: "latest"
     - name: Setup Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v6
       with:
-        node-version: '22.x'
+        node-version: '24.x'
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
       with:
@@ -67,13 +67,13 @@ jobs:
         mkdir -p tools
         cp ./src/rootfs/bin/buckycli/buckycli ./tools/
     - name: Upload tools
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: buckyos-tools-linux-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{inputs.version}}+build${{ steps.short_time.outputs.last6 }}
         path: tools
         if-no-files-found: error
     - name: Upload
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       id: upload
       with:
         name: buckyos-linux-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{inputs.version}}+build${{ steps.short_time.outputs.last6 }}
