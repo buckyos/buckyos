@@ -2,6 +2,12 @@ name: RPC Integration
 
 on:
   workflow_dispatch:
+    inputs:
+      debug_with_tmate:
+        description: "Keep failed runner open with tmate for live debugging"
+        required: false
+        type: boolean
+        default: false
   pull_request:
     paths:
       - ".github/workflows/rpc-integration.yml"
@@ -64,12 +70,28 @@ jobs:
         working-directory: ./src
         run: bash ./test/run_rpc_tests.sh
 
+      - name: Setup tmate on failure
+        if: failure() && github.event_name == 'workflow_dispatch' && inputs.debug_with_tmate
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
+
       - name: Show diagnostics on failure
         if: failure()
         working-directory: ./src
         run: |
+          latest_node_daemon_log="$(find /opt/buckyos/logs \
+            \( -path '*/node_daemon/*.log' -o -path '*/node-daemon/*.log' \) \
+            -type f -print 2>/dev/null | sort | tail -n 1 || true)"
           echo "=== process list ==="
           ps -ef | grep -E "node_daemon|system_config|verify_hub|control_panel|scheduler|repo_service|task_manager" | grep -v grep || true
+          echo "=== latest node_daemon log ==="
+          if [ -n "${latest_node_daemon_log}" ]; then
+            echo "${latest_node_daemon_log}"
+            tail -n 200 "${latest_node_daemon_log}" || true
+          else
+            echo "node_daemon log not found"
+          fi
           echo "=== /opt/buckyos/logs ==="
           find /opt/buckyos/logs -maxdepth 2 -type f | sort || true
           echo "=== recent logs ==="

@@ -2,6 +2,26 @@
 
 set -euo pipefail
 
+dump_latest_node_daemon_log() {
+  local log_file=""
+
+  log_file="$(find /opt/buckyos/logs \
+    \( -path '*/node_daemon/*.log' -o -path '*/node-daemon/*.log' \) \
+    -type f -print 2>/dev/null | sort | tail -n 1 || true)"
+
+  echo "[diag] process list"
+  ps -ef | grep -E "node_daemon|node-daemon|system_config|verify_hub|control_panel|scheduler|repo_service|task_manager" | grep -v grep || true
+
+  if [[ -n "${log_file}" ]]; then
+    echo "[diag] latest node_daemon log: ${log_file}"
+    tail -n 200 "${log_file}" || true
+    return 0
+  fi
+
+  echo "[diag] no node_daemon log found under /opt/buckyos/logs"
+  find /opt/buckyos/logs -maxdepth 2 -type f | sort || true
+}
+
 wait_for_port() {
   local name="$1"
   local host="$2"
@@ -18,6 +38,7 @@ wait_for_port() {
   done
 
   echo "[timeout] ${name} on ${host}:${port}" >&2
+  dump_latest_node_daemon_log
   return 1
 }
 
