@@ -644,6 +644,13 @@ async fn run_command(
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
     let output = cmd.output().await.map_err(|error| {
         ServiceControlError::ReasonError(format!("spawn {} failed: {}", program.display(), error))
     })?;
