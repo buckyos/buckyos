@@ -1,36 +1,104 @@
+# Desktop Packaging
 
-# buckyos-nightly channel  的发布流程
+当前仓库只保留本地桌面安装包脚本：
 
-## download_pkgs.py $version
+- `make_local_osx_pkg.py`
+- `make_local_win_installer.py`
+- `make_local_deb.py`
 
-- 执行Github Action BuildAll,等待完成
-- 下载BuildAll得到的Artifacts(不同平台的rootfs)
-- 基于version下载默认app的pkgs
-- 解压上述内容到 /opt/buckyos_pkgs/$version/
-- 构建必要的 pkg_meta.json到每一个pkg目录
+这三套脚本共享同一个配置源：
 
-## pack_pkgs.py $version
+- `src/bucky_project.yaml`
 
-这一步需要有buckyos.ai的开发者私钥 
+脚本会在打包时读取：
 
-- 挨个读取/opt/buckyos_pkgs/$version/下的目录，并调用buckycli的pack_pkg命令
-- pack_pkg的结果，放到 /opt/buckyos_pack_pkgs/$version/目录下
+- `apps.buckyos.*`
+- `publish.macos_pkg.apps.*`
+- `publish.win_pkg.apps.*`
 
-## upload_pkgs.py $version
+然后把目录布局、`data_paths`、`clean_paths`、组件列表和默认安装目标固化进最终安装包与安装脚本。安装时不会再回仓库实时读取 `bucky_project.yaml`。
 
-- 将/opt/buckyos_pack_pkgs/$version/下的pkg upload到buckyos.ai的官方repo
+## Common Flow
 
-## make_office_deb.py / make_win_install.py / make_mac_pkg.py $version
+### 准备 BUCKYOS_BUILD_ROOT
+0. 注意依赖，buckyos的local安装包依赖cyfs-gateway和BuckyOSApp,src目录结构固定。安装脚本不会去做git的任何操作
+1. cyfs-gateway使用buckyos-build/buckyos-install构建，构建目录在BUCKYOS_ROOT, BuckyOSApp使用pnpm run tauri build构建，构建目录在 `$RUST_BUILD/release/bundle/...`
+2. 用 `buckyos-build` 和 `buckyos-install` 准备好 `BUCKYOS_BUILD_ROOT` 下的发布目录。
+3. 运行 `make_config.py release --rootfs <staged_rootfs>` 生成发布配置。
+### 制作安装包
+4. 调用对应平台的 `make_local_*` 脚本执行 `build-pkg`。
+5. 如需校验，调用对应脚本的 `verify-pkg`。
+6. 版本号规则是 src/VERSION下的内容作为主版本，然后 +buildYYMMDD
 
-基于/opt/buckyos_pack_pkgs/$version/目录，以及/opt/buckyos_pkgs/$version/目录下的rootfs,构造各个系统的正式版完整安装包。
+默认 staging 根目录由 `BUCKYOS_BUILD_ROOT` 决定：
 
-根据系统机制，这些安装包里携带的Pkg的版本比buckyos.ai的官方Repo的版本更高，因此不会被自动升级。按流程，buckyos的完整安装包总是比自动升级的版本先发布。
+- macOS / Linux 默认 `/opt/buckyosci`
+- Windows 默认 `C:\opt\buckyosci`
 
-## publish_to_repo.py $version
+## Platform Commands
 
-等完整安装包经过了一段时间测试后，就可以推送自动更新了
+macOS:
 
-- 从buckyos.ai的官方repo下载 meta-index.db
-- 将 /opt/buckyos_pack_pkgs/$version/目录下的pkg meta加入到meta-index.db中
-- 上传新版本的meta-index.db,实现发布（需要buckyos.ai的私钥）
-- 发布后，所有订阅nightyly-channel的buckyos系统会收到更新，执行自动升级
+```bash
+python3 ./src/publish/make_local_osx_pkg.py build-pkg aarch64 0.5.1+build260115 \
+  --app-publish-dir /opt/buckyosci \
+  --out-dir ./publish
+```
+
+Windows:
+
+```powershell
+python .\src\publish\make_local_win_installer.py build-pkg amd64 0.5.1+build260115 `
+  --app-publish-dir C:\opt\buckyosci `
+  --out-dir .\publish
+```
+
+Linux:
+
+```bash
+python3 ./src/publish/make_local_deb.py build-pkg amd64 0.5.1+build260115 \
+  --app-publish-dir /opt/buckyosci \
+  --out-dir ./publish
+```
+
+## Unified Entry
+
+仓库根目录只保留统一入口：
+
+- `make_local_pkg.py`
+
+它会先执行 Common Flow 里的通用准备步骤：
+
+- 清理并重建 `BUCKYOS_BUILD_ROOT`
+- 构建并安装 `cyfs-gateway`、`buckycli`、`buckyos`
+- 执行 `make_config.py release --rootfs <staged_rootfs>`
+- 按约定在 BuckyOS 同层目录查找并构建桌面端项目：
+  `../cyfs-gateway`、`../BuckyOSApp`
+- 桌面端构建产物优先从用户环境变量 `RUST_BUILD` 读取；若未设置，则读取 `~/.cargo/config.toml` 的 `[build].target-dir`；再回退到 `/tmp/rust_build`
+- 如需覆盖默认约定，可用 `--desktop-app` 直接指定桌面端产物
+
+然后再自动识别当前 OS/Arch，并转调 `src/publish/` 下对应的子脚本：
+
+- macOS -> `make_local_osx_pkg.py`
+- Windows -> `make_local_win_installer.py`
+- Linux -> `make_local_deb.py`
+
+常用命令：
+
+```bash
+python3 ./make_local_pkg.py prepare-root
+python3 ./make_local_pkg.py build-pkg
+python3 ./make_local_pkg.py build-pkg 0.6.0+build260317 --build-root /opt/buckyosci --out-dir ./publish
+python3 ./make_local_pkg.py verify-pkg ./publish/<pkg-file>
+python3 ./make_local_pkg.py show-target
+```
+
+说明：
+
+- `build-pkg` 不传版本号时，默认使用 `src/VERSION + buildYYMMDD`
+- `build-pkg` 默认先执行 `prepare-root`；如果 staging 已经准备好，可加 `--skip-prepare`
+- 默认会在 `../BuckyOSApp` 执行 `pnpm run tauri build`，并从 Rust 构建目录 `release/bundle/...` 复制产物到 `BUCKYOS_BUILD_ROOT/BuckyOSApp/`
+- 如果不想自动构建桌面端，可加 `--skip-desktop-app-build`
+- 如果桌面端产物不在约定目录，可用 `--desktop-app` 明确指定
+- `verify-pkg` 会统一转调当前平台对应的子脚本
+- `sync-scripts` 会在 macOS / Windows 上同步安装脚本模板

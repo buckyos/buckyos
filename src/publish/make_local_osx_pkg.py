@@ -939,10 +939,13 @@ def _data_copy_lines(root_var: str, defaults_var: str, rel_paths: List[str]) -> 
         if rel_s.endswith("/"):
             rel_s = rel_s.rstrip("/")
             out += [
-                # If the destination dir already exists but is empty (common when payload creates it),
-                # treat it as "missing" and seed it once from defaults.
                 f'if [ -d "{defaults_var}/{rel_s}" ]; then',
-                f'  ditto "{defaults_var}/{rel_s}" "{root_var}/{rel_s}"',
+                f'  if [ ! -e "{root_var}/{rel_s}" ]; then',
+                f'    mkdir -p "{root_var}/{rel_s}"',
+                f'    ditto "{defaults_var}/{rel_s}" "{root_var}/{rel_s}"',
+                f'  elif [ -d "{root_var}/{rel_s}" ] && [ -z "$(/usr/bin/find "{root_var}/{rel_s}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then',
+                f'    ditto "{defaults_var}/{rel_s}" "{root_var}/{rel_s}"',
+                "  fi",
                 "fi",
             ]
         else:

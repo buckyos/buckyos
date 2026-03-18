@@ -1,6 +1,0 @@
-{
-    "enable_link": true,
-    "enable_strict_mode": true,
-    "parent": "../local/node_daemon/root_pkg_env",
-    "ready_only": false
-}

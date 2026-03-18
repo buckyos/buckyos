@@ -2,9 +2,10 @@
 Windows NSIS Installer Builder for BuckyOS.
 
 This script supports:
-- build-pkg: Build a Windows .exe installer using NSIS
-- verify:    Verify a built installer using 7zip
-- sync:      Regenerate PowerShell scripts from bucky_project.yaml
+- build-pkg:   Build a Windows .exe installer using NSIS
+- verify-pkg:  Verify a built installer using 7zip
+- verify:      Alias of verify-pkg for backward compatibility
+- sync:        Regenerate PowerShell scripts from bucky_project.yaml
 
 It reads:
 - `apps.buckyos.*` for app layout configuration.
@@ -277,6 +278,7 @@ def generate_nsis_script(
     payload_dir: Path,
     out_path: Path,
     license_file: Path | None = None,
+    bundled_vcredist: Path | None = None,
 ) -> None:
     """Generate the NSIS installer script."""
     
@@ -302,6 +304,7 @@ def generate_nsis_script(
     lines.append("!include \"LogicLib.nsh\"")
     lines.append("!include \"FileFunc.nsh\"")
     lines.append("!include \"nsDialogs.nsh\"")
+    lines.append("!include \"WinMessages.nsh\"")
     
     # Include x64 support for 64-bit installers
     if nsis_arch == "x64":
@@ -339,14 +342,11 @@ def generate_nsis_script(
     lines.append("!define MUI_UNICON \"${NSISDIR}\\Contrib\\Graphics\\Icons\\modern-uninstall.ico\"")
     lines.append("")
 
-    # Optional redistributable package
-    lines.append("[Files]")
-    lines.append(f'Source: "{_escape_nsis_path(str(Path("payload") / "vcredist_x64.exe"))}"; DestDir: "{{tmp}}"; Flags: skipifnewer skipifsourcedoesntexist')
-    lines.append("")
-    
     # Variables for each component's install directory
     lines.append("; Variables for component install directories")
     lines.append("Var PythonInstalled")
+    lines.append("Var MissingCrtDlls")
+    lines.append("Var ExistingBuckyRoot")
     for comp in components:
         var_name = f"InstDir_{_sanitize_id(comp.key).replace('-', '_')}"
         lines.append(f"Var {var_name}")
@@ -438,103 +438,78 @@ def generate_nsis_script(
 
     # Runtime dependency checks
     lines.append("; Runtime dependency checks")
-    lines.append("function GetMissingCrtDlls: String;")
-    lines.append("var")
-    lines.append("    Missing: String;")
-    lines.append("    SysDir: String;")
-    lines.append("begin")
-    lines.append("    Missing := '';")
-    lines.append("    SysDir := ExpandConstant('{sys}');")
+    lines.append("Function GetMissingCrtDlls")
+    lines.append('  StrCpy $MissingCrtDlls ""')
+    lines.append('  IfFileExists "$SYSDIR\\VCRUNTIME140.dll" +2 0')
+    lines.append('    StrCpy $MissingCrtDlls "$MissingCrtDlls$\\r$\\n- VCRUNTIME140.dll"')
+    lines.append('  IfFileExists "$SYSDIR\\VCRUNTIME140_1.dll" +2 0')
+    lines.append('    StrCpy $MissingCrtDlls "$MissingCrtDlls$\\r$\\n- VCRUNTIME140_1.dll"')
+    lines.append('  IfFileExists "$SYSDIR\\api-ms-win-core-synch-l1-2-0.dll" +2 0')
+    lines.append('    StrCpy $MissingCrtDlls "$MissingCrtDlls$\\r$\\n- api-ms-win-core-synch-l1-2-0.dll"')
+    lines.append('  IfFileExists "$SYSDIR\\api-ms-win-crt-math-l1-1-0.dll" +2 0')
+    lines.append('    StrCpy $MissingCrtDlls "$MissingCrtDlls$\\r$\\n- api-ms-win-crt-math-l1-1-0.dll"')
+    lines.append('  IfFileExists "$SYSDIR\\api-ms-win-crt-string-l1-1-0.dll" +2 0')
+    lines.append('    StrCpy $MissingCrtDlls "$MissingCrtDlls$\\r$\\n- api-ms-win-crt-string-l1-1-0.dll"')
+    lines.append('  IfFileExists "$SYSDIR\\api-ms-win-crt-heap-l1-1-0.dll" +2 0')
+    lines.append('    StrCpy $MissingCrtDlls "$MissingCrtDlls$\\r$\\n- api-ms-win-crt-heap-l1-1-0.dll"')
+    lines.append('  IfFileExists "$SYSDIR\\api-ms-win-crt-utility-l1-1-0.dll" +2 0')
+    lines.append('    StrCpy $MissingCrtDlls "$MissingCrtDlls$\\r$\\n- api-ms-win-crt-utility-l1-1-0.dll"')
+    lines.append('  IfFileExists "$SYSDIR\\api-ms-win-crt-time-l1-1-0.dll" +2 0')
+    lines.append('    StrCpy $MissingCrtDlls "$MissingCrtDlls$\\r$\\n- api-ms-win-crt-time-l1-1-0.dll"')
+    lines.append('  IfFileExists "$SYSDIR\\api-ms-win-crt-runtime-l1-1-0.dll" +2 0')
+    lines.append('    StrCpy $MissingCrtDlls "$MissingCrtDlls$\\r$\\n- api-ms-win-crt-runtime-l1-1-0.dll"')
+    lines.append('  IfFileExists "$SYSDIR\\api-ms-win-crt-convert-l1-1-0.dll" +2 0')
+    lines.append('    StrCpy $MissingCrtDlls "$MissingCrtDlls$\\r$\\n- api-ms-win-crt-convert-l1-1-0.dll"')
+    lines.append('  IfFileExists "$SYSDIR\\api-ms-win-crt-stdio-l1-1-0.dll" +2 0')
+    lines.append('    StrCpy $MissingCrtDlls "$MissingCrtDlls$\\r$\\n- api-ms-win-crt-stdio-l1-1-0.dll"')
+    lines.append('  IfFileExists "$SYSDIR\\api-ms-win-crt-locale-l1-1-0.dll" +2 0')
+    lines.append('    StrCpy $MissingCrtDlls "$MissingCrtDlls$\\r$\\n- api-ms-win-crt-locale-l1-1-0.dll"')
+    lines.append("FunctionEnd")
     lines.append("")
-    lines.append("    if not FileExists(SysDir + '\\VCRUNTIME140.dll') then")
-    lines.append("        Missing := Missing + '\\r\\n- VCRUNTIME140.dll';")
-    lines.append("    if not FileExists(SysDir + '\\VCRUNTIME140_1.dll') then")
-    lines.append("        Missing := Missing + '\\r\\n- VCRUNTIME140_1.dll';")
-    lines.append("    if not FileExists(SysDir + '\\api-ms-win-core-synch-l1-2-0.dll') then")
-    lines.append("        Missing := Missing + '\\r\\n- api-ms-win-core-synch-l1-2-0.dll';")
-    lines.append("    if not FileExists(SysDir + '\\api-ms-win-crt-math-l1-1-0.dll') then")
-    lines.append("        Missing := Missing + '\\r\\n- api-ms-win-crt-math-l1-1-0.dll';")
-    lines.append("    if not FileExists(SysDir + '\\api-ms-win-crt-string-l1-1-0.dll') then")
-    lines.append("        Missing := Missing + '\\r\\n- api-ms-win-crt-string-l1-1-0.dll';")
-    lines.append("    if not FileExists(SysDir + '\\api-ms-win-crt-heap-l1-1-0.dll') then")
-    lines.append("        Missing := Missing + '\\r\\n- api-ms-win-crt-heap-l1-1-0.dll';")
-    lines.append("    if not FileExists(SysDir + '\\api-ms-win-crt-utility-l1-1-0.dll') then")
-    lines.append("        Missing := Missing + '\\r\\n- api-ms-win-crt-utility-l1-1-0.dll';")
-    lines.append("    if not FileExists(SysDir + '\\api-ms-win-crt-time-l1-1-0.dll') then")
-    lines.append("        Missing := Missing + '\\r\\n- api-ms-win-crt-time-l1-1-0.dll';")
-    lines.append("    if not FileExists(SysDir + '\\api-ms-win-crt-runtime-l1-1-0.dll') then")
-    lines.append("        Missing := Missing + '\\r\\n- api-ms-win-crt-runtime-l1-1-0.dll';")
-    lines.append("    if not FileExists(SysDir + '\\api-ms-win-crt-convert-l1-1-0.dll') then")
-    lines.append("        Missing := Missing + '\\r\\n- api-ms-win-crt-convert-l1-1-0.dll';")
-    lines.append("    if not FileExists(SysDir + '\\api-ms-win-crt-stdio-l1-1-0.dll') then")
-    lines.append("        Missing := Missing + '\\r\\n- api-ms-win-crt-stdio-l1-1-0.dll';")
-    lines.append("    if not FileExists(SysDir + '\\api-ms-win-crt-locale-l1-1-0.dll') then")
-    lines.append("        Missing := Missing + '\\r\\n- api-ms-win-crt-locale-l1-1-0.dll';")
+
+    if bundled_vcredist and bundled_vcredist.exists():
+        lines.append("Function ExtractBundledVCRedist")
+        lines.append("  InitPluginsDir")
+        lines.append('  SetOutPath "$PLUGINSDIR"')
+        lines.append(f'  File /oname=vcredist_x64.exe "{_escape_nsis_path(str(bundled_vcredist))}"')
+        lines.append("FunctionEnd")
+        lines.append("")
+
+        lines.append("Function TryInstallVCRedist")
+        lines.append('  IfFileExists "$PLUGINSDIR\\vcredist_x64.exe" 0 no_vcredist')
+        lines.append('  MessageBox MB_YESNO|MB_ICONQUESTION "Detected missing Visual C++ runtime.$\\r$\\nDo you want to install Microsoft Visual C++ 2015-2022 (x64) now?" IDYES +2')
+        lines.append("  Return")
+        lines.append('  ExecWait \'"$PLUGINSDIR\\vcredist_x64.exe" /quiet /norestart\' $0')
+        lines.append("  StrCmp $0 0 vcredist_ok")
+        lines.append('  MessageBox MB_OK|MB_ICONSTOP "Visual C++ Redistributable installation failed, return code: $0. Installation aborted."')
+        lines.append("  Return")
+        lines.append("vcredist_ok:")
+        lines.append('  MessageBox MB_OK|MB_ICONINFORMATION "Runtime installed. Please re-run setup."')
+        lines.append("  Return")
+        lines.append("no_vcredist:")
+        lines.append('  MessageBox MB_OK|MB_ICONSTOP "Missing Visual C++ runtime. Please install Microsoft Visual C++ 2015-2022 (x64) and retry."')
+        lines.append("FunctionEnd")
+        lines.append("")
+
+    lines.append("Function StopExistingBuckyOS")
+    lines.append('  StrCpy $ExistingBuckyRoot ""')
+    lines.append('  ReadRegStr $ExistingBuckyRoot HKLM "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment" "BUCKYOS_ROOT"')
+    lines.append('  ${If} $ExistingBuckyRoot == ""')
+    lines.append('    ReadRegStr $ExistingBuckyRoot HKLM "Software\\BuckyOS" "BuckyOSServiceDir"')
+    lines.append('  ${EndIf}')
+    lines.append('  ${If} $ExistingBuckyRoot != ""')
+    lines.append('    nsExec::ExecToLog \'sc stop buckyos\'')
+    lines.append("    Sleep 2000")
+    lines.append('    IfFileExists "$ExistingBuckyRoot\\bin\\stop.py" 0 +2')
+    lines.append('      nsExec::ExecToLog \'python.exe "$ExistingBuckyRoot\\bin\\stop.py"\'')
+    lines.append('    nsExec::ExecToLog \'sc delete buckyos\'')
+    lines.append('  ${EndIf}')
+    lines.append("FunctionEnd")
     lines.append("")
-    lines.append("    Result := Missing;")
-    lines.append("end;")
-    lines.append("")
-    lines.append("function TryInstallVCRedist: Boolean;")
-    lines.append("var")
-    lines.append("    ResultCode: Integer;")
-    lines.append("begin")
-    lines.append("    if FileExists(ExpandConstant('{tmp}\\vcredist_x64.exe')) then")
-    lines.append("    begin")
-    lines.append("        if MsgBox('Detected missing Visual C++ runtime.\\r\\nDo you want to install Microsoft Visual C++ 2015-2022 (x64) now?', mbQuestion, MB_YESNO) = IDYES then")
-    lines.append("        begin")
-    lines.append("            if not Exec(ExpandConstant('{tmp}\\vcredist_x64.exe'), '/quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then")
-    lines.append("            begin")
-    lines.append("                MsgBox('Failed to install Visual C++ Redistributable. Installation aborted.', mbError, MB_OK);")
-    lines.append("                Result := False;")
-    lines.append("                Exit;")
-    lines.append("            end;")
-    lines.append("")
-    lines.append("            if ResultCode <> 0 then")
-    lines.append("            begin")
-    lines.append("                MsgBox('Visual C++ Redistributable installation failed, return code: ' + IntToStr(ResultCode) + '. Installation aborted.', mbError, MB_OK);")
-    lines.append("                Result := False;")
-    lines.append("                Exit;")
-    lines.append("            end;")
-    lines.append("")
-    lines.append("            MsgBox('Runtime installed. Please re-run setup.', mbInformation, MB_OK);")
-    lines.append("            Result := False;")
-    lines.append("            Exit;")
-    lines.append("        end;")
-    lines.append("    end")
-    lines.append("    else")
-    lines.append("    begin")
-    lines.append("        MsgBox('Missing Visual C++ runtime. Please install Microsoft Visual C++ 2015-2022 (x64) and retry.', mbError, MB_OK);")
-    lines.append("    end;")
-    lines.append("")
-    lines.append("    Result := False;")
-    lines.append("end;")
-    lines.append("")
-    
+
     # .onInit function
     lines.append("; Functions")
     lines.append("Function .onInit")
-    lines.append("var")
-    lines.append("  ResultCode: Integer;")
-
-    lines.append("  ; Check required C++ runtime dependencies first")
-    lines.append("  if GetMissingCrtDlls() <> '' then")
-    lines.append("  begin")
-    lines.append("    if FileExists(ExpandConstant('{tmp}\\vcredist_x64.exe')) then")
-    lines.append("    begin")
-    lines.append("      if not TryInstallVCRedist() then")
-    lines.append("      begin")
-    lines.append("        Abort;")
-    lines.append("      end;")
-    lines.append("    end")
-    lines.append("    else if MsgBox('Missing runtime libraries:\\r\\n' + GetMissingCrtDlls() + '\\r\\n\\r\\nvcredist_x64.exe was not found in the installer package.\\r\\nOpen Microsoft download page?', mbError, MB_YESNO) = IDYES then")
-    lines.append("    begin")
-    lines.append("      ShellExec('', 'https://aka.ms/vs/17/release/vc_redist.x64.exe', '', '', SW_SHOWNORMAL, ewNoWait, ResultCode);")
-    lines.append("      Abort;")
-    lines.append("    end;")
-    lines.append("")
-    lines.append("    Abort;")
-    lines.append("  end;")
-    lines.append("")
     
     # Add 64-bit runtime check for x64 installers
     if nsis_arch == "x64":
@@ -571,9 +546,25 @@ def generate_nsis_script(
     lines.append('  ${If} $0 == 0')
     lines.append('    StrCpy $PythonInstalled "1"')
     lines.append('  ${Else}')
-    lines.append('    StrCpy $PythonInstalled "0"')
-    lines.append('    MessageBox MB_YESNO|MB_ICONQUESTION "Python 3 is required but not found. Do you want to continue anyway?" IDYES +2')
+    lines.append('    MessageBox MB_YESNO|MB_ICONQUESTION "Python is not installed. Do you want to download it?" IDYES +2')
     lines.append("    Abort")
+    lines.append('    ExecShell "open" "https://www.python.org/downloads/"')
+    lines.append("    Abort")
+    lines.append('  ${EndIf}')
+    lines.append('  StrCpy $PythonInstalled "1"')
+    lines.append("")
+
+    lines.append("  Call GetMissingCrtDlls")
+    lines.append('  ${If} $MissingCrtDlls != ""')
+    if bundled_vcredist and bundled_vcredist.exists():
+        lines.append("    Call ExtractBundledVCRedist")
+        lines.append("    Call TryInstallVCRedist")
+        lines.append("    Abort")
+    else:
+        lines.append('    MessageBox MB_YESNO|MB_ICONSTOP "Missing runtime libraries:$\\r$\\n$MissingCrtDlls$\\r$\\n\\r$\\nOpen Microsoft download page?" IDYES +2')
+        lines.append("    Abort")
+        lines.append('    ExecShell "open" "https://aka.ms/vs/17/release/vc_redist.x64.exe"')
+        lines.append("    Abort")
     lines.append('  ${EndIf}')
     lines.append("FunctionEnd")
     lines.append("")
@@ -592,6 +583,9 @@ def generate_nsis_script(
         # Source files - use component-specific install directory
         comp_payload = payload_dir / comp.key
         if comp_payload.exists():
+            if comp.system_service:
+                lines.append("  ; Stop existing service and running processes before overwrite")
+                lines.append("  Call StopExistingBuckyOS")
             lines.append(f'  SetOutPath "${var_name}"')
             lines.append(f'  File /r "{comp_payload}\\*.*"')
         
@@ -618,6 +612,7 @@ def generate_nsis_script(
             lines.append("")
             lines.append("  ; Set BUCKYOS_ROOT environment variable")
             lines.append(f'  WriteRegStr HKLM "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment" "BUCKYOS_ROOT" "${var_name}"')
+            lines.append(f'  WriteRegStr HKLM "Software\\BuckyOS" "InstallDir" "${var_name}"')
             lines.append('  ; Broadcast environment change')
             lines.append('  SendMessage ${HWND_BROADCAST} ${WM_WININICHANGE} 0 "STR:Environment" /TIMEOUT=5000')
             lines.append("")
@@ -628,8 +623,8 @@ def generate_nsis_script(
             lines.append('  nsExec::ExecToLog \'sc stop buckyos\'')
             lines.append("  Sleep 2000")
             lines.append('  nsExec::ExecToLog \'sc delete buckyos\'')
-            lines.append(f'  nsExec::ExecToLog \'sc create buckyos start=auto binPath="${var_name}\\bin\\node-daemon\\node_daemon.exe --as_win_srv --enable_active"\'')
-            lines.append('  nsExec::ExecToLog \'sc failure buckyos reset=3600 actions=restart/5000/restart/10000\'')
+            lines.append(f'  nsExec::ExecToLog \'sc create buckyos start= auto binPath= "${var_name}\\bin\\node-daemon\\node_daemon.exe --as_win_srv --enable_active"\'')
+            lines.append('  nsExec::ExecToLog \'sc failure buckyos reset= 3600 actions= restart/5000/restart/10000\'')
             lines.append('  nsExec::ExecToLog \'sc start buckyos\'')
             lines.append("")
             lines.append(f'  ; Save install directory to registry')
@@ -703,9 +698,21 @@ def generate_nsis_script(
         lines.append(f'  ReadRegStr $0 HKLM "Software\\BuckyOS" "InstDir_{comp.key}"')
         lines.append(f'  ${{If}} $0 != ""')
         if comp.system_service:
+            lines.append(f'    ; Stop service and running processes for service component')
+            lines.append(f'    nsExec::ExecToLog \'sc stop buckyos\'')
+            lines.append("    Sleep 3000")
+            lines.append('    IfFileExists "$0\\bin\\stop.py" 0 +2')
+            lines.append('      nsExec::ExecToLog \'python.exe "$0\\bin\\stop.py"\'')
+            lines.append(f'    nsExec::ExecToLog \'sc delete buckyos\'')
             lines.append(f'    ; Run cleanup script for service component')
             lines.append(f'    nsExec::ExecToLog \'powershell.exe -ExecutionPolicy Bypass -File "$0\\scripts\\uninstall_cleanup.ps1"\'')
-        lines.append(f'    RMDir /r "$0"')
+            lines.append(f'    RMDir /r "$0\\.buckyos_installer_defaults"')
+            lines.append(f'    RMDir /r "$0\\scripts"')
+            lines.append('    MessageBox MB_YESNO|MB_ICONQUESTION "Do you want to delete your data and identity?" IDYES +2')
+            lines.append("    Goto +2")
+            lines.append(f'    RMDir /r "$0"')
+        else:
+            lines.append(f'    RMDir /r "$0"')
         lines.append(f'  ${{EndIf}}')
         lines.append("")
     
@@ -814,11 +821,6 @@ def build_win_installer(
             else:
                 shutil.copy2(src, comp_payload / src.name)
 
-    if not dry_run:
-        bundled_vcredist = WIN_PKG_PROJECT_DIR / "vcredist_x64.exe"
-        if bundled_vcredist.exists():
-            shutil.copy2(str(bundled_vcredist), str(payload_dir / "vcredist_x64.exe"))
-    
     if dry_run:
         print(f"\n[dry-run] Would generate NSIS script: {nsi_file}")
         print(f"[dry-run] Would compile installer to: {out_dir / f'buckyos-win-{architecture}-{version}.exe'}")
@@ -834,6 +836,7 @@ def build_win_installer(
         payload_dir=payload_dir,
         out_path=nsi_file,
         license_file=license_file if license_file.exists() else None,
+        bundled_vcredist=(WIN_PKG_PROJECT_DIR / "vcredist_x64.exe"),
     )
     print(f"[build] Generated NSIS script: {nsi_file}")
     
@@ -1141,7 +1144,7 @@ def main(argv: List[str]) -> int:
     p_build.add_argument("--dry-run", action="store_true", help="Preview build without executing NSIS")
     
     # verify command
-    p_verify = sub.add_parser("verify", help="Verify a built installer using 7zip")
+    p_verify = sub.add_parser("verify-pkg", aliases=["verify"], help="Verify a built installer using 7zip")
     p_verify.add_argument("--pkg", required=True, help="Path to .exe installer")
     p_verify.add_argument("--project", default=str(PROJECT_YAML), help="Path to bucky_project.yaml")
     
@@ -1169,7 +1172,7 @@ def main(argv: List[str]) -> int:
         print(f"Installer built: {out_exe}")
         return 0
     
-    if args.cmd == "verify":
+    if args.cmd in ("verify", "verify-pkg"):
         return verify_pkg(
             pkg_path=Path(args.pkg).expanduser().resolve(),
             project_yaml_path=Path(args.project)
