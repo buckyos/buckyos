@@ -1,7 +1,7 @@
 use ::kRPC::*;
 use buckyos_kit::*;
 use name_lib::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn generate_session_token() -> std::result::Result<String, String> {
     let etc_dir = get_buckyos_system_etc_dir();
@@ -27,9 +27,13 @@ fn generate_session_token() -> std::result::Result<String, String> {
     let private_key = load_private_key(&user_private_key_file).map_err(|err| err.to_string())?;
     println!("owner user name: {:?}", owner_config.name);
 
-    let (session_token, _real_session_token) =
-        RPCSessionToken::generate_jwt_token(&owner_config.name, "control-panel", None, &private_key)
-            .map_err(|err| err.to_string())?;
+    let (session_token, _real_session_token) = RPCSessionToken::generate_jwt_token(
+        &owner_config.name,
+        "control-panel",
+        None,
+        &private_key,
+    )
+    .map_err(|err| err.to_string())?;
 
     Ok(session_token)
 }

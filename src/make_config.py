@@ -24,10 +24,12 @@
 import argparse
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 import time
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -46,6 +48,23 @@ if not BUCKYCLI_BIN.exists():
 
 BUCKYCLI_DIR = BUCKYCLI_BIN.parent
 print(f"* buckycli = {BUCKYCLI_BIN}")
+
+DEFAULT_PKG_AUTHOR = "did:bns:buckyos"
+DEFAULT_PKG_OWNER = "did:bns:buckyos"
+BIN_META_SEED_PACKAGES = {
+    "aicc",
+    "control-panel",
+    "kmsg",
+    "msg-center",
+    "node-daemon",
+    "opendan",
+    "repo-service",
+    "scheduler",
+    "smb-service",
+    "system-config",
+    "task-manager",
+    "verify-hub",
+}
 
 
 def ensure_dir(path: Path) -> Path:
@@ -91,6 +110,90 @@ def write_text(path: Path, content: str) -> None:
     ensure_dir(path.parent)
     path.write_text(content)
     print(f"write content {path}")
+
+
+def get_workspace_version() -> str:
+    cargo_toml = PROJECT_DIR / "Cargo.toml"
+    version_match = re.search(
+        r'^version\s*=\s*"(?P<version>[^"]+)"',
+        cargo_toml.read_text(),
+        re.MULTILINE,
+    )
+    if version_match is None:
+        raise RuntimeError(f"workspace version missing in {cargo_toml}")
+    return version_match.group("version")
+
+
+def get_current_pkg_prefix() -> str:
+    os_name = platform.system().lower()
+    arch = platform.machine().lower()
+
+    if os_name == "darwin":
+        os_name = "apple"
+    elif os_name not in ("linux", "windows"):
+        raise RuntimeError(f"unsupported platform for pkg prefix: {os_name}")
+
+    if arch in ("x86_64", "amd64"):
+        arch = "amd64"
+    elif arch in ("arm64", "aarch64"):
+        arch = "aarch64"
+    else:
+        raise RuntimeError(f"unsupported architecture for pkg prefix: {arch}")
+
+    return f"nightly-{os_name}-{arch}"
+
+
+def build_dev_pkg_meta(pkg_name: str, prefix: str, version: str) -> dict:
+    now = int(time.time())
+    return {
+        "name": f"{prefix}.{pkg_name}",
+        "author": DEFAULT_PKG_AUTHOR,
+        "owner": DEFAULT_PKG_OWNER,
+        "create_time": now,
+        "last_update_time": now,
+        "exp": now + 3600 * 24 * 365 * 3,
+        "size": 0,
+        "content": "",
+        "version": version,
+        "meta": {
+            "description": {
+                "detail": {
+                    "en": f"{pkg_name} dev mode package meta",
+                }
+            }
+        },
+    }
+
+
+def seed_bin_pkg_meta_db(target_dir: Path) -> None:
+    bin_dir = target_dir / "bin"
+    if not bin_dir.exists():
+        print(f"skip missing bin dir: {bin_dir}")
+        return
+
+    pkg_names = sorted(
+        pkg_name
+        for pkg_name in BIN_META_SEED_PACKAGES
+        if (bin_dir / pkg_name).is_dir()
+    )
+    if not pkg_names:
+        print(f"skip bin pkg meta seed, no known service pkg found in {bin_dir}")
+        return
+
+    prefix = get_current_pkg_prefix()
+    version = get_workspace_version()
+    meta_db_path = ensure_dir(bin_dir / "pkgs") / "meta_index.db"
+    meta_db_path.touch(exist_ok=True)
+
+    with tempfile.TemporaryDirectory(prefix="buckyos-bin-meta-") as temp_dir_str:
+        temp_dir = Path(temp_dir_str)
+        for pkg_name in pkg_names:
+            meta_path = temp_dir / f"{pkg_name}.pkg_meta.json"
+            meta_path.write_text(
+                json.dumps(build_dev_pkg_meta(pkg_name, prefix, version), indent=2) + "\n"
+            )
+            run_buckycli(["set_pkg_meta", str(meta_path), str(meta_db_path)])
+            print(f"seed pkg meta {prefix}.{pkg_name}#{version} -> {meta_db_path}")
 
 def apply_dev_boot_template_override(target_dir: Path, group_name: str) -> None:
     """
@@ -694,6 +797,7 @@ def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_d
         )
         
         make_cache_did_docs(target_root)
+        seed_bin_pkg_meta_db(target_root)
         return
     
     params = get_params_from_group_name(group_name)
@@ -781,6 +885,7 @@ def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_d
             ca_dir,
         )
         make_repo_cache_file(target_root)
+        seed_bin_pkg_meta_db(target_root)
         apply_dev_boot_template_override(target_root, group_name)
     
     print(f"config {group_name} generation finished.")

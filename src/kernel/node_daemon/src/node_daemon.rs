@@ -53,23 +53,6 @@ enum NodeDaemonErrors {
 
 type Result<T> = std::result::Result<T, NodeDaemonErrors>;
 
-fn get_system_pkgs() -> Vec<String> {
-    vec![
-        "buckycli".to_string(),
-        "control-panel".to_string(),
-        "repo-service".to_string(),
-        "cyfs-gateway".to_string(),
-        "node-active".to_string(),
-        "node-daemon".to_string(),
-        "repo-service".to_string(),
-        "scheduler".to_string(),
-        "smb-service".to_string(),
-        "sys-test".to_string(),
-        "system-config".to_string(),
-        "verify-hub".to_string(),
-    ]
-}
-
 async fn looking_zone_boot_config(node_identity: &NodeIdentityConfig) -> Result<ZoneBootConfig> {
     //If local files exist, priority loads local files
     let etc_dir = get_buckyos_system_etc_dir();
@@ -633,131 +616,6 @@ async fn do_boot_upgreade() -> std::result::Result<(), String> {
     Ok(())
 }
 
-async fn check_and_update_system_pkgs(pkg_list: &Vec<String>) -> std::result::Result<bool, String> {
-    let mut is_self_upgrade = false;
-    let mut pkg_env = new_system_package_env();
-    for pkg_id in pkg_list {
-        let media_info = pkg_env.load(&pkg_id).await;
-        if media_info.is_err() {
-            info!(
-                "check_and_update_system_pkgs: pkg {} not exist, deploy it",
-                pkg_id
-            );
-            let result = pkg_env.install_pkg(&pkg_id, true, false).await;
-            if result.is_err() {
-                error!(
-                    "check_and_update_system_pkgs: deploy pkg {} failed! {}",
-                    pkg_id,
-                    result.err().unwrap()
-                );
-            }
-            if pkg_id == "node_daemon" {
-                is_self_upgrade = true;
-            }
-            info!(
-                "check_and_update_system_pkgs: deploy pkg {} success",
-                pkg_id
-            );
-        }
-    }
-    Ok(is_self_upgrade)
-}
-
-async fn make_sure_system_pkgs_ready(
-    meta_db_path: &PathBuf,
-    prefix: &str,
-    session_token: Option<String>,
-) -> std::result::Result<(), String> {
-    let system_pkgs = vec![
-        "node-active".to_string(),
-        "buckycli".to_string(),
-        "control-panel".to_string(),
-        "repo-service".to_string(),
-        "cyfs-gateway".to_string(),
-        "system-config".to_string(),
-        "verify-hub".to_string(),
-    ];
-    let mut miss_chunk_list = vec![];
-    let current_runtime = get_buckyos_api_runtime().unwrap();
-    let store_mgr = current_runtime.get_named_store().await.unwrap();
-    for pkg_id in system_pkgs {
-        let pkg_id = format!("{}.{}", prefix, pkg_id);
-        let check_result = PackageEnv::check_pkg_ready(
-            meta_db_path,
-            pkg_id.as_str(),
-            &store_mgr,
-            &mut miss_chunk_list,
-        )
-        .await;
-        if check_result.is_err() {
-            error!(
-                "make_sure_system_pkgs_ready: pkg {} is not ready! {}",
-                pkg_id,
-                check_result.err().unwrap()
-            );
-            return Err(String::from("pkg is not ready!"));
-        }
-    }
-
-    // for chunk_id in miss_chunk_list {
-    //     let ndn_client = NdnClient::new("http://127.0.0.1/ndn/".to_string(), session_token.clone(),None);
-    //     let chunk_result = ndn_client.pull_chunk(chunk_id.clone(), StoreMode::StoreInNamedMgr).await;
-    //     if chunk_result.is_err() {
-    //         error!("make_sure_system_pkgs_ready: pull chunk {} failed! {}", chunk_id.to_string(), chunk_result.err().unwrap());
-    //     }
-    //     info!("make_sure_system_pkgs_ready: pull chunk {} success", chunk_id.to_string());
-    // }
-
-    Ok(())
-}
-
-async fn check_and_update_root_pkg_index_db(
-    session_token: Option<String>,
-) -> std::result::Result<bool, String> {
-    // let root_env_path = BuckyOSRuntime::get_root_pkg_env_path();
-    // let mut root_env = PackageEnv::new(root_env_path.clone());
-    // let meta_db_file_patgh = root_env_path.join("pkgs").join("meta_index.db");
-
-    // //TODO:beta1 需要得到正确的repo service地址
-    // let zone_repo_index_db_url = "http://127.0.0.1/ndn/repo/meta_index.db";
-    // let ndn_client = NdnClient::new("http://127.0.0.1/ndn/".to_string(), session_token.clone(),None);
-
-    // let remote_is_better = ndn_client.remote_is_better(zone_repo_index_db_url,&meta_db_file_patgh).await
-    //     .map_err(|e| {
-    //         error!("check remote meta-index.db is better than local meta-index.db failed, err:{}", e);
-    //         return String::from("check remote meta-index.db is better than local meta-index.db failed!");
-    //     })?;
-    // if !remote_is_better {
-    //     info!("local meta-index.db is better than repo's default meta-index.db, no need to update!");
-    //     return Ok(false);
-    // }
-
-    // info!("remote index db is not same as local index db, start update node's root_pkg_env.meta_index.db");
-    // let download_path = root_env_path.join("pkgs").join("meta_index.downloading");
-    // ndn_client.download_fileobj(zone_repo_index_db_url, &download_path, None).await
-    //     .map_err(|err| {
-    //         error!("download remote index db to root pkg env's meta-Index db failed! {}", err);
-    //         return String::from("download remote index db to root pkg env's meta-Index db failed!");
-    //     })?;
-    // info!("download new meta-index.db success, will update root env's meta-index.db..");
-
-    // let prefix = root_env.get_prefix();
-    // make_sure_system_pkgs_ready(&download_path, &prefix, session_token.clone()).await?;
-    // root_env.try_update_index_db(&download_path).await
-    //     .map_err(|err| {
-    //         error!("update root pkg env's meta-Index db failed! {}", err);
-    //         return String::from("update root pkg env's meta-Index db failed!");
-    //     })?;
-
-    // info!("update root pkg env's meta-index.db OK");
-    // let remove_result = std::fs::remove_file(download_path);
-    // if remove_result.is_err() {
-    //     warn!("remove meta_index.downloading error!");
-    // }
-
-    Ok(true)
-}
-
 async fn update_device_info(device_info: &DeviceInfo, syste_config_client: &SystemConfigClient) {
     let device_key = format!("devices/{}/info", device_info.name.as_str());
     let device_info_str = serde_json::to_string(&device_info).unwrap();
@@ -1081,32 +939,6 @@ async fn node_main(
     buckyos_api_client: &SystemConfigClient,
     device_doc: &DeviceConfig,
 ) -> Result<bool> {
-    //check and upgrade some system pkgs not in app_stream or kernel_stream
-    let bin_env = new_system_package_env();
-    if !bin_env.is_dev_mode() {
-        let root_env_need_upgrade =
-            check_and_update_root_pkg_index_db(buckyos_api_client.get_session_token()).await;
-        if root_env_need_upgrade.is_err() {
-            warn!(
-                "check and update root_pkg_env index db failed! {}",
-                root_env_need_upgrade.err().unwrap()
-            );
-        }
-        let system_pkgs = get_system_pkgs();
-        let is_self_upgrade = check_and_update_system_pkgs(&system_pkgs).await;
-        if is_self_upgrade.is_err() {
-            warn!(
-                "check and update system pkgs failed! {}",
-                is_self_upgrade.err().unwrap()
-            );
-        } else {
-            if is_self_upgrade.unwrap() {
-                warn!("node_daemon self upgrade,will restart!");
-                return Ok(false);
-            }
-        }
-    }
-
     //control replica instance to target state
     let node_config = load_node_config(node_host_name, buckyos_api_client)
         .await
@@ -1416,9 +1248,6 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         })?;
     info!("init default name client OK!");
 
-    let initial_pkgs = get_system_pkgs();
-    check_and_update_system_pkgs(&initial_pkgs).await;
-
     //load node identity config
     let node_identity_file = get_buckyos_system_etc_dir().join("node_identity.json");
     let mut node_identity = NodeIdentityConfig::load_node_identity_config(&node_identity_file);
@@ -1710,13 +1539,10 @@ pub(crate) fn run(matches: ArgMatches) -> std::result::Result<(), String> {
     if num_cpus::get() < 2 {
         builder.worker_threads(2);
     }
-    let runtime = builder
-        .enable_all()
-        .build()
-        .map_err(|err| {
-            error!("create tokio runtime failed: {err}");
-            String::from("create tokio runtime failed!")
-        })?;
+    let runtime = builder.enable_all().build().map_err(|err| {
+        error!("create tokio runtime failed: {err}");
+        String::from("create tokio runtime failed!")
+    })?;
 
     runtime.block_on(async_main(matches))
 }

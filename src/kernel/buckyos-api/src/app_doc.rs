@@ -131,6 +131,10 @@ pub struct SubPkgList {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aarch64_docker_image: Option<SubPkgDesc>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub amd64_linux_app: Option<SubPkgDesc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aarch64_linux_app: Option<SubPkgDesc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub amd64_win_app: Option<SubPkgDesc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aarch64_win_app: Option<SubPkgDesc>,
@@ -153,6 +157,8 @@ impl Default for SubPkgList {
         Self {
             amd64_docker_image: None,
             aarch64_docker_image: None,
+            amd64_linux_app: None,
+            aarch64_linux_app: None,
             amd64_win_app: None,
             aarch64_win_app: None,
             aarch64_apple_app: None,
@@ -168,7 +174,23 @@ impl Default for SubPkgList {
 impl SubPkgList {
     pub fn get_app_pkg_id(&self) -> Option<String> {
         //根据编译时的目标系统，返回对应的app pkg_id
-        if cfg!(target_os = "macos") {
+        if cfg!(target_os = "linux") {
+            let pkg = if cfg!(target_arch = "aarch64") {
+                self.aarch64_linux_app
+                    .as_ref()
+                    .or(self.amd64_linux_app.as_ref())
+            } else {
+                self.amd64_linux_app
+                    .as_ref()
+                    .or(self.aarch64_linux_app.as_ref())
+            };
+            if let Some(pkg) = pkg {
+                if let Some(pkg_id) = pkg.get_pkg_id_with_objid() {
+                    return Some(pkg_id);
+                }
+            }
+            return None;
+        } else if cfg!(target_os = "macos") {
             let pkg = if cfg!(target_arch = "aarch64") {
                 self.aarch64_apple_app.as_ref()
             } else {
@@ -219,6 +241,8 @@ impl SubPkgList {
         match key {
             "amd64_docker_image" => self.amd64_docker_image.as_ref(),
             "aarch64_docker_image" => self.aarch64_docker_image.as_ref(),
+            "amd64_linux_app" => self.amd64_linux_app.as_ref(),
+            "aarch64_linux_app" => self.aarch64_linux_app.as_ref(),
             "amd64_win_app" => self.amd64_win_app.as_ref(),
             "aarch64_win_app" => self.aarch64_win_app.as_ref(),
             "aarch64_apple_app" => self.aarch64_apple_app.as_ref(),
@@ -237,6 +261,12 @@ impl SubPkgList {
         }
         if let Some(pkg) = &self.aarch64_docker_image {
             list.push(("aarch64_docker_image".to_string(), pkg));
+        }
+        if let Some(pkg) = &self.amd64_linux_app {
+            list.push(("amd64_linux_app".to_string(), pkg));
+        }
+        if let Some(pkg) = &self.aarch64_linux_app {
+            list.push(("aarch64_linux_app".to_string(), pkg));
         }
         if let Some(pkg) = &self.amd64_win_app {
             list.push(("amd64_win_app".to_string(), pkg));
@@ -629,6 +659,16 @@ impl AppDocBuilder {
         self
     }
 
+    pub fn amd64_linux_app(mut self, desc: SubPkgDesc) -> Self {
+        self.pkg_list.amd64_linux_app = Some(desc);
+        self
+    }
+
+    pub fn aarch64_linux_app(mut self, desc: SubPkgDesc) -> Self {
+        self.pkg_list.aarch64_linux_app = Some(desc);
+        self
+    }
+
     pub fn web_pkg(mut self, desc: SubPkgDesc) -> Self {
         self.pkg_list.web = Some(desc);
         self
@@ -685,7 +725,9 @@ impl AppDocBuilder {
         let has_docker = self.pkg_list.amd64_docker_image.is_some()
             || self.pkg_list.aarch64_docker_image.is_some();
         let has_web = self.pkg_list.web.is_some();
-        let has_native_app = self.pkg_list.amd64_win_app.is_some()
+        let has_native_app = self.pkg_list.amd64_linux_app.is_some()
+            || self.pkg_list.aarch64_linux_app.is_some()
+            || self.pkg_list.amd64_win_app.is_some()
             || self.pkg_list.aarch64_win_app.is_some()
             || self.pkg_list.amd64_apple_app.is_some()
             || self.pkg_list.aarch64_apple_app.is_some();
@@ -1106,6 +1148,8 @@ mod tests {
         let mut pkg_list = SubPkgList::default();
         pkg_list.amd64_docker_image = Some(SubPkgDesc::new("demo-img-amd64#0.1.0"));
         pkg_list.aarch64_docker_image = Some(SubPkgDesc::new("demo-img-aarch64#0.1.0"));
+        pkg_list.amd64_linux_app = Some(SubPkgDesc::new("demo-linux-amd64#0.1.0"));
+        pkg_list.aarch64_linux_app = Some(SubPkgDesc::new("demo-linux-aarch64#0.1.0"));
         pkg_list.amd64_win_app = Some(SubPkgDesc::new("demo-win-amd64#0.1.0"));
         pkg_list.aarch64_win_app = Some(SubPkgDesc::new("demo-win-aarch64#0.1.0"));
         pkg_list.amd64_apple_app = Some(SubPkgDesc::new("demo-mac-amd64#0.1.0"));
@@ -1117,6 +1161,12 @@ mod tests {
             .others
             .insert("custom".to_string(), SubPkgDesc::new("demo-custom#0.1.0"));
 
+        assert_eq!(
+            pkg_list
+                .get("amd64_linux_app")
+                .map(|pkg| pkg.pkg_id.as_str()),
+            Some("demo-linux-amd64#0.1.0")
+        );
         assert_eq!(
             pkg_list
                 .get("aarch64_win_app")
@@ -1139,6 +1189,7 @@ mod tests {
         );
 
         let keys: Vec<String> = pkg_list.iter().into_iter().map(|(key, _)| key).collect();
+        assert!(keys.iter().any(|key| key == "amd64_linux_app"));
         assert!(keys.iter().any(|key| key == "aarch64_win_app"));
         assert!(keys.iter().any(|key| key == "amd64_apple_app"));
         assert!(keys.iter().any(|key| key == "agent"));

@@ -1,15 +1,15 @@
 use crate::run_item::{ControlRuntItemErrors, Result};
 use crate::service_pkg::new_system_package_env;
 use buckyos_api::{
-    AppDoc, AppServiceInstanceConfig, AppType, LocalAppInstanceConfig, ServiceInstallConfig,
-    ServiceInstanceState, SubPkgDesc, VERIFY_HUB_TOKEN_EXPIRE_TIME, get_buckyos_api_runtime,
-    get_full_appid, get_session_token_env_key,
+    get_buckyos_api_runtime, get_full_appid, get_session_token_env_key, AppDoc,
+    AppServiceInstanceConfig, AppType, LocalAppInstanceConfig, ServiceInstallConfig,
+    ServiceInstanceState, SubPkgDesc, VERIFY_HUB_TOKEN_EXPIRE_TIME,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir, get_buckyos_system_bin_dir};
 use log::{debug, info, warn};
-use ndn_lib::{ObjId, load_named_object_from_obj_str};
+use ndn_lib::{load_named_object_from_obj_str, ObjId};
 use package_lib::{MediaInfo, PackageEnv, PackageId, PackageMeta, PkgError};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use shlex::Shlex;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -442,6 +442,14 @@ impl AppLoader {
     fn host_app_desc(&self) -> Option<&SubPkgDesc> {
         let pkg_list = &self.app_doc().pkg_list;
         match (self.platform.os, self.platform.arch) {
+            (PlatformOs::Linux, PlatformArch::Aarch64) => pkg_list
+                .aarch64_linux_app
+                .as_ref()
+                .or(pkg_list.amd64_linux_app.as_ref()),
+            (PlatformOs::Linux, PlatformArch::Amd64) => pkg_list
+                .amd64_linux_app
+                .as_ref()
+                .or(pkg_list.aarch64_linux_app.as_ref()),
             (PlatformOs::Macos, PlatformArch::Aarch64) => pkg_list
                 .aarch64_apple_app
                 .as_ref()
@@ -1827,7 +1835,10 @@ pub(crate) fn normalize_digest(digest: Option<&str>) -> Option<&str> {
     })
 }
 
-fn parse_package_meta_from_store(meta_obj_id: &str, pkg_meta_str: &str) -> Result<PackageMeta> {
+pub(crate) fn parse_package_meta_from_store(
+    meta_obj_id: &str,
+    pkg_meta_str: &str,
+) -> Result<PackageMeta> {
     PackageMeta::from_str(pkg_meta_str).or_else(|_| {
         let pkg_meta_json = serde_json::from_str::<Value>(pkg_meta_str)
             .or_else(|_| load_named_object_from_obj_str(pkg_meta_str))
@@ -1849,7 +1860,7 @@ fn parse_package_meta_from_store(meta_obj_id: &str, pkg_meta_str: &str) -> Resul
     })
 }
 
-fn expected_env_pkg_name(env: &PackageEnv, package_id: &PackageId) -> String {
+pub(crate) fn expected_env_pkg_name(env: &PackageEnv, package_id: &PackageId) -> String {
     if package_id.name.contains('.') {
         package_id.name.clone()
     } else {

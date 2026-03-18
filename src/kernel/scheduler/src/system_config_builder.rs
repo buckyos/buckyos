@@ -739,9 +739,10 @@ async fn build_kernel_service_spec(
     pkg_name: &str,
     port: u16,
     expected_instance_count: u32,
-    service_doc: AppDoc,
+    mut service_doc: AppDoc,
 ) -> Result<KernelServiceSpec> {
-    let service_did = PackageId::unique_name_to_did(pkg_name);
+    let _service_did = PackageId::unique_name_to_did(pkg_name);
+    attach_current_platform_service_pkg(&mut service_doc);
 
     let mut install_config = ServiceInstallConfig::default();
     let service_expose_config = ServiceExposeConfig {
@@ -761,6 +762,47 @@ async fn build_kernel_service_spec(
         state: ServiceState::default(),
         install_config,
     })
+}
+
+fn attach_current_platform_service_pkg(service_doc: &mut AppDoc) {
+    let current_pkg = SubPkgDesc::new(service_doc.get_package_id().to_string());
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        if service_doc.pkg_list.amd64_linux_app.is_none() {
+            service_doc.pkg_list.amd64_linux_app = Some(current_pkg);
+        }
+    }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        if service_doc.pkg_list.aarch64_linux_app.is_none() {
+            service_doc.pkg_list.aarch64_linux_app = Some(current_pkg);
+        }
+    }
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        if service_doc.pkg_list.amd64_win_app.is_none() {
+            service_doc.pkg_list.amd64_win_app = Some(current_pkg);
+        }
+    }
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+    {
+        if service_doc.pkg_list.aarch64_win_app.is_none() {
+            service_doc.pkg_list.aarch64_win_app = Some(current_pkg);
+        }
+    }
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    {
+        if service_doc.pkg_list.amd64_apple_app.is_none() {
+            service_doc.pkg_list.amd64_apple_app = Some(current_pkg);
+        }
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        if service_doc.pkg_list.aarch64_apple_app.is_none() {
+            service_doc.pkg_list.aarch64_apple_app = Some(current_pkg);
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -834,10 +876,11 @@ impl StartConfigSummary {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_aicc_settings, build_default_jarvis_agent_spec, build_msg_center_settings,
-        build_zone_user_contact_settings, StartConfigSummary, SystemConfigBuilder,
+        build_aicc_settings, build_default_jarvis_agent_spec, build_kernel_service_spec,
+        build_msg_center_settings, build_zone_user_contact_settings, StartConfigSummary,
+        SystemConfigBuilder,
     };
-    use buckyos_api::OPENDAN_SERVICE_PORT;
+    use buckyos_api::{generate_verify_hub_service_doc, OPENDAN_SERVICE_PORT};
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -1112,6 +1155,33 @@ mod tests {
         assert!(
             entries.contains_key("users/alice/agents/jarvis/spec"),
             "agent spec should exist"
+        );
+    }
+
+    #[test]
+    fn build_kernel_service_spec_inserts_current_platform_native_pkg() {
+        let rt = tokio::runtime::Runtime::new().expect("create runtime");
+        let spec = rt
+            .block_on(build_kernel_service_spec(
+                "verify-hub",
+                3300,
+                1,
+                generate_verify_hub_service_doc(),
+            ))
+            .expect("build kernel service spec");
+
+        let expected_pkg_id = spec.service_doc.get_package_id().to_string();
+        assert_eq!(
+            spec.service_doc.pkg_list.get_app_pkg_id().as_deref(),
+            Some(expected_pkg_id.as_str())
+        );
+        assert!(
+            spec.service_doc
+                .pkg_list
+                .iter()
+                .into_iter()
+                .any(|(_, pkg)| { pkg.pkg_id == expected_pkg_id && pkg.pkg_objid.is_none() }),
+            "current platform host pkg should be inserted without pkg_objid"
         );
     }
 }

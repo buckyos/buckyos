@@ -75,6 +75,8 @@ fn build_local_service_doc() -> AppDoc {
     .build()
     .unwrap();
 
+    doc.pkg_list.aarch64_linux_app = Some(SubPkgDesc::new("desktop-tool-linux-arm#0.1.0"));
+    doc.pkg_list.amd64_linux_app = Some(SubPkgDesc::new("desktop-tool-linux-amd#0.1.0"));
     doc.pkg_list.aarch64_apple_app = Some(SubPkgDesc::new("desktop-tool-macos-arm#0.1.0"));
     doc.pkg_list.amd64_apple_app = Some(SubPkgDesc::new("desktop-tool-macos-amd#0.1.0"));
     doc.pkg_list.aarch64_win_app = Some(SubPkgDesc::new("desktop-tool-win-arm#0.1.0"));
@@ -427,7 +429,7 @@ fn service_local_runtime_matches_macos_host_script_preview() {
 }
 
 #[test]
-fn service_local_runtime_is_rejected_on_linux_without_native_pkg() {
+fn service_local_runtime_matches_linux_host_script_preview() {
     let config = LocalAppInstanceConfig {
         target_state: ServiceInstanceState::Started,
         enable: true,
@@ -439,8 +441,13 @@ fn service_local_runtime_is_rejected_on_linux_without_native_pkg() {
         .with_platform(PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64))
         .with_container_support_override(false);
 
-    let preview = loader.preview_operation(ControlOperation::Start);
-    assert!(matches!(preview, Err(ControlRuntItemErrors::NotSupport(_))));
+    let preview = loader.preview_operation(ControlOperation::Start).unwrap();
+    assert_eq!(preview.runtime, RuntimeType::HostScript);
+    assert_eq!(preview.commands[0].program, "python3");
+    assert_eq!(
+        preview.commands[0].args,
+        vec!["<app_pkg>/start", "desktop-tool", "alice"]
+    );
 }
 
 #[test]
