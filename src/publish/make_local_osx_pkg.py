@@ -608,6 +608,13 @@ def _pkg_payload_files(pkg_component_dir: Path) -> List[str]:
     return [line.strip() for line in out.decode("utf-8", errors="ignore").splitlines() if line.strip()]
 
 
+def _pkg_script_text(pkg_component_dir: Path, script_name: str) -> Optional[str]:
+    script_path = pkg_component_dir / "Scripts" / script_name
+    if not script_path.exists():
+        return None
+    return script_path.read_text(encoding="utf-8", errors="ignore")
+
+
 def verify_pkg(
     *,
     pkg_path: Path,
@@ -682,6 +689,23 @@ def verify_pkg(
             if (not expects_scripts) and scripts_dir.exists():
                 failures.append(f"component {comp.key} should NOT have Scripts/ (no templates provided)")
 
+        # Verify BuckyOSApp payload and overwrite-install semantics.
+        buckyosapp_pkg_dir = expanded / "buckyosapp.pkg"
+        if buckyosapp_pkg_dir.exists():
+            app_payload_files = set(_pkg_payload_files(buckyosapp_pkg_dir))
+            app_prefix = "Library/Application Support/BuckyOS/BuckyOS.app/Contents/"
+            if not any(p.lstrip("./").lstrip("/").startswith(app_prefix) for p in app_payload_files):
+                failures.append(f"BuckyOSApp payload missing expected app bundle content under '{app_prefix}'")
+
+            postinstall_text = _pkg_script_text(buckyosapp_pkg_dir, "postinstall")
+            if postinstall_text is None:
+                failures.append("BuckyOSApp missing postinstall script")
+            else:
+                if 'rm -rf "$DEST_APP"' not in postinstall_text:
+                    failures.append('BuckyOSApp postinstall should remove existing "$DEST_APP" before copy')
+                if 'ditto "$STAGE_APP" "$DEST_APP"' not in postinstall_text:
+                    failures.append('BuckyOSApp postinstall should copy "$STAGE_APP" to "$DEST_APP"')
+
         # Verify data_paths payload staging for buckyos.
         buckyos_pkg_dir = expanded / "buckyos.pkg"
         if buckyos_pkg_dir.exists():
@@ -703,6 +727,20 @@ def verify_pkg(
                     failures.append(f"data_paths '{rel}' should NOT be in payload at '{real_prefix}' (would overwrite)")
                 if not defaults_present:
                     failures.append(f"data_paths '{rel}' missing from defaults payload at '{defaults_prefix}'")
+
+            postinstall_text = _pkg_script_text(buckyos_pkg_dir, "postinstall")
+            if postinstall_text is None:
+                failures.append("buckyos missing postinstall script")
+            else:
+                expected_snippets = [
+                    'if [ -d "$DEFAULTS_DIR/bin/cyfs-gateway" ]; then',
+                    'ditto "$DEFAULTS_DIR/bin/cyfs-gateway" "$BUCKYOS_ROOT/bin/cyfs-gateway"',
+                ]
+                for snippet in expected_snippets:
+                    if snippet not in postinstall_text:
+                        failures.append(f"buckyos postinstall missing cyfs-gateway install step: {snippet}")
+                if 'rm -rf "$BUCKYOS_ROOT/bin/cyfs-gateway"' in postinstall_text:
+                    failures.append("buckyos postinstall should not force-remove cyfs-gateway before copy")
 
         else:
             failures.append("missing embedded buckyos.pkg (cannot verify data_paths semantics)")
