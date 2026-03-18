@@ -76,13 +76,15 @@ def run_cmd(cmd: List[str], cwd: Optional[Path] = None) -> None:
     result = subprocess.run(
         cmd,
         cwd=str(cwd) if cwd is not None else None,
-        text=True,
         capture_output=True,
+        check=False,
     )
-    if result.stdout:
-        print(result.stdout)
-    if result.stderr:
-        print(result.stderr, file=sys.stderr)
+    stdout = result.stdout.decode("utf-8", errors="replace") if isinstance(result.stdout, (bytes, bytearray)) else result.stdout
+    stderr = result.stderr.decode("utf-8", errors="replace") if isinstance(result.stderr, (bytes, bytearray)) else result.stderr
+    if stdout:
+        print(stdout)
+    if stderr:
+        print(stderr, file=sys.stderr)
     if result.returncode != 0:
         raise RuntimeError(f"command failed: {' '.join(cmd)}")
 
@@ -103,12 +105,12 @@ def copy_if_exists(src: Path, dst: Path) -> None:
 
 def write_json(path: Path, data: dict) -> None:
     ensure_dir(path.parent)
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     print(f"write json {path}")
 
 def write_text(path: Path, content: str) -> None:
     ensure_dir(path.parent)
-    path.write_text(content)
+    path.write_text(content, encoding="utf-8")
     print(f"write content {path}")
 
 
@@ -190,7 +192,8 @@ def seed_bin_pkg_meta_db(target_dir: Path) -> None:
         for pkg_name in pkg_names:
             meta_path = temp_dir / f"{pkg_name}.pkg_meta.json"
             meta_path.write_text(
-                json.dumps(build_dev_pkg_meta(pkg_name, prefix, version), indent=2) + "\n"
+                json.dumps(build_dev_pkg_meta(pkg_name, prefix, version), indent=2) + "\n",
+                encoding="utf-8",
             )
             run_buckycli(["set_pkg_meta", str(meta_path), str(meta_db_path)])
             print(f"seed pkg meta {prefix}.{pkg_name}#{version} -> {meta_db_path}")
