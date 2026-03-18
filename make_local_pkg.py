@@ -519,15 +519,36 @@ def _default_version() -> str:
 
 
 def _python_executable() -> str:
-    candidates = [
-        REPO_ROOT / "venv" / "bin" / "python3",
-        REPO_ROOT / "venv" / "bin" / "python",
-        REPO_ROOT / "venv" / "Scripts" / "python.exe",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return str(candidate)
-    return sys.executable or "python3"
+    current = (sys.executable or "").strip()
+    if current:
+        if os.name != "nt" or "windowsapps" not in current.lower():
+            return current
+
+    if os.name == "nt":
+        venv = (os.environ.get("VIRTUAL_ENV") or "").strip()
+        if venv:
+            venv_python = Path(venv) / "Scripts" / "python.exe"
+            if venv_python.exists():
+                return str(venv_python)
+
+    return current or "python"
+
+
+def _pnpm_command() -> list[str]:
+    for name in ("pnpm", "pnpm.cmd", "pnpm.exe"):
+        path = shutil.which(name)
+        if path:
+            return [path]
+
+    for corepack_name in ("corepack", "corepack.cmd", "corepack.exe"):
+        corepack_path = shutil.which(corepack_name)
+        if corepack_path:
+            return [corepack_path, "pnpm"]
+
+    raise RuntimeError(
+        "pnpm not found in PATH. "
+        "Please install pnpm (or enable it via corepack) before building desktop app."
+    )
 
 
 def _run(cmd: list[str], *, cwd: Path | None = None, dry_run: bool = False) -> int:
@@ -642,7 +663,7 @@ def _build_desktop_app(target: TargetScript, *, dry_run: bool) -> Path | None:
     if not DESKTOP_APP_REPO_DIR.exists():
         return None
 
-    _run_checked(["pnpm", "run", "tauri", "build"], cwd=DESKTOP_APP_REPO_DIR, dry_run=dry_run)
+    _run_checked(_pnpm_command() + ["run", "tauri", "build"], cwd=DESKTOP_APP_REPO_DIR, dry_run=dry_run)
     candidates = _built_desktop_app_candidates(target)
     if dry_run:
         return candidates[0] if candidates else None
