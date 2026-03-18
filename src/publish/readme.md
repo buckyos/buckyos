@@ -10,13 +10,19 @@
 
 - `src/bucky_project.yaml`
 
-脚本会在打包时读取：
+统一入口 `make_local_pkg.py` 会先把它转换成一份中间 manifest JSON，
+平台脚本优先消费这份 manifest；只有直接单独调用平台脚本且未传 `--manifest`
+时，才会回退读取 `bucky_project.yaml`。
+
+manifest 会固化：
 
 - `apps.buckyos.*`
 - `publish.macos_pkg.apps.*`
 - `publish.win_pkg.apps.*`
+- 如本地存在 `../cyfs-gateway/src/bucky_project.{yaml,yml,json}`，会把其中 `cyfs-gateway` app 的安装项并入 `buckyos`
 
 然后把目录布局、`data_paths`、`clean_paths`、组件列表和默认安装目标固化进最终安装包与安装脚本。安装时不会再回仓库实时读取 `bucky_project.yaml`。
+打包和本地安装时会过滤 `.DS_Store`、`__pycache__` 这类无关文件/目录。
 
 ## Common Flow
 
@@ -89,6 +95,8 @@ python3 ./src/publish/make_local_deb.py build-pkg amd64 0.5.1+build260115 \
 python3 ./make_local_pkg.py prepare-root
 python3 ./make_local_pkg.py build-pkg
 python3 ./make_local_pkg.py build-pkg 0.6.0+build260317 --build-root /opt/buckyosci --out-dir ./publish
+python3 ./make_local_pkg.py show-manifest
+python3 ./make_local_pkg.py show-manifest --out /tmp/buckyos-pkg-manifest.json
 python3 ./make_local_pkg.py verify-pkg ./publish/<pkg-file>
 python3 ./make_local_pkg.py show-target
 ```
@@ -102,3 +110,5 @@ python3 ./make_local_pkg.py show-target
 - 如果桌面端产物不在约定目录，可用 `--desktop-app` 明确指定
 - `verify-pkg` 会统一转调当前平台对应的子脚本
 - `sync-scripts` 会在 macOS / Windows 上同步安装脚本模板
+- `show-manifest` 会输出按安装项目分组的通用 JSON 清单，其中 `module_items` / `data_items` / `clean_items` 都带 `target_dir_name`
+- manifest 里的 `source_rootfs` / `source_path` 语义是 staging 后的 `BUCKYOS_BUILD_ROOT` 路径；原工程来源只保留在 `project_source_*` 元数据里

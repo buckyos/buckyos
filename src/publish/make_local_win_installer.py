@@ -18,6 +18,7 @@ Before building, ensure you have built the latest components:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -29,10 +30,8 @@ from typing import Any, Dict, List, Optional
 
 try:
     import yaml  # type: ignore
-except ImportError as e:
-    raise ImportError(
-        "PyYAML is required. Use your project venv or install via `pip install pyyaml`."
-    ) from e
+except ImportError:  # pragma: no cover
+    yaml = None  # type: ignore[assignment]
 
 
 SRC_DIR = Path(__file__).resolve().parent.parent
@@ -43,14 +42,27 @@ TMP_INSTALL_DIR = RESULT_ROOT_DIR / "win-installer"
 
 WIN_PKG_PROJECT_DIR = SRC_DIR / "publish" / "win_pkg"
 BUCKYOS_DEFAULTS_SUBDIR = ".buckyos_installer_defaults"
+IGNORED_STAGE_NAMES = {".DS_Store", "__pycache__"}
 
 
 def yaml_load_file(path: Path) -> Dict[str, Any]:
+    if yaml is None:
+        raise ImportError(
+            "PyYAML is required to read bucky_project.yaml. "
+            "Use your project venv or install via `pip install pyyaml`."
+        )
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     if data is None:
         return {}
     if not isinstance(data, dict):
         raise ValueError(f"YAML root must be a map: {path}")
+    return data
+
+
+def json_load_file(path: Path) -> Dict[str, Any]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"JSON root must be a map: {path}")
     return data
 
 
@@ -60,14 +72,25 @@ def _expand_vars(s: str) -> str:
     for name, default in [
         ("BUCKYOS_ROOT", "C:\\opt\\buckyos"),
         ("BUCKYOS_BUILD_ROOT", str(RESULT_ROOT_DIR)),
-        ("APPDATA", os.environ.get("APPDATA", "")),
-        ("LOCALAPPDATA", os.environ.get("LOCALAPPDATA", "")),
-        ("USERPROFILE", os.environ.get("USERPROFILE", "")),
+        ("APPDATA", os.environ.get("APPDATA") or "%APPDATA%"),
+        ("LOCALAPPDATA", os.environ.get("LOCALAPPDATA") or "%LOCALAPPDATA%"),
+        ("USERPROFILE", os.environ.get("USERPROFILE") or "%USERPROFILE%"),
     ]:
         val = os.environ.get(name, default)
         out = out.replace(f"${{{name}}}", val)
         out = out.replace(f"%{name}%", val)
     return out
+
+
+def _manifest_install_project(manifest_path: Path, project_key: str) -> Dict[str, Any]:
+    data = json_load_file(manifest_path)
+    install_projects = data.get("install_projects", {}) or {}
+    if not isinstance(install_projects, dict):
+        raise ValueError("manifest.install_projects must be a map")
+    project = install_projects.get(project_key)
+    if not isinstance(project, dict):
+        raise ValueError(f"manifest.install_projects.{project_key} missing or invalid")
+    return project
 
 
 @dataclass(frozen=True)
@@ -77,6 +100,14 @@ class AppLayout:
     module_paths: List[str]
     data_paths: List[str]
     clean_paths: List[str]
+
+
+def _ignore_copy_entries(_: str, names: List[str]) -> List[str]:
+    return [name for name in names if name in IGNORED_STAGE_NAMES]
+
+
+def _copytree_filtered(src: Path, dst: Path) -> None:
+    shutil.copytree(src, dst, dirs_exist_ok=True, ignore=_ignore_copy_entries)
 
 
 def load_app_layout(
@@ -110,6 +141,54 @@ def load_app_layout(
         data_paths=data_paths,
         clean_paths=clean_paths,
     )
+
+
+def load_app_layout_from_manifest(
+    manifest_path: Path,
+    app_key: str,
+    target_override: str | None = None,
+) -> AppLayout:
+    app_cfg = _manifest_install_project(manifest_path, app_key)
+    source_rootfs_raw = app_cfg.get("source_rootfs")
+    if not isinstance(source_rootfs_raw, str) or not source_rootfs_raw.strip():
+        raise ValueError(f"manifest install project '{app_key}' missing source_rootfs")
+
+    default_target = str(
+        app_cfg.get("default_target_rootfs")
+        or app_cfg.get("default_target_rootfs_raw")
+        or "${BUCKYOS_ROOT}"
+    )
+    target_str = target_override if target_override else default_target
+
+    def item_paths(name: str) -> List[str]:
+        items = app_cfg.get(name, []) or []
+        if not isinstance(items, list):
+            raise ValueError(f"manifest install project '{app_key}'.{name} must be a list")
+        return [
+            str(item.get("raw_path") or item.get("target_dir_name") or "")
+            for item in items
+            if isinstance(item, dict) and str(item.get("raw_path") or item.get("target_dir_name") or "").strip()
+        ]
+
+    return AppLayout(
+        source_rootfs=Path(source_rootfs_raw).resolve(),
+        target_rootfs=Path(_expand_vars(target_str)).resolve(),
+        module_paths=item_paths("module_items"),
+        data_paths=item_paths("data_items"),
+        clean_paths=item_paths("clean_items"),
+    )
+
+
+def resolve_app_layout(
+    *,
+    app_key: str,
+    project_yaml_path: Path,
+    manifest_path: Path | None = None,
+    target_override: str | None = None,
+) -> AppLayout:
+    if manifest_path is not None:
+        return load_app_layout_from_manifest(manifest_path, app_key, target_override=target_override)
+    return load_app_layout(project_yaml_path, app_key, target_override=target_override)
 
 
 def load_buckyos_layout(project_yaml_path: Path = PROJECT_YAML, target_override: str | None = None) -> AppLayout:
@@ -183,6 +262,44 @@ def load_win_pkg_components(project_yaml_path: Path) -> List[PublishComponent]:
     return components
 
 
+def load_win_pkg_components_from_manifest(manifest_path: Path) -> List[PublishComponent]:
+    data = json_load_file(manifest_path)
+    install_projects = data.get("install_projects", {}) or {}
+    platforms = data.get("platforms", {}) or {}
+    win_cfg = platforms.get("windows", {}) or {}
+    component_keys = win_cfg.get("component_keys", []) or []
+    if not isinstance(install_projects, dict):
+        raise ValueError("manifest.install_projects must be a map")
+    if not isinstance(component_keys, list):
+        raise ValueError("manifest.platforms.windows.component_keys must be a list")
+
+    components: List[PublishComponent] = []
+    for key in component_keys:
+        project = install_projects.get(key)
+        if not isinstance(project, dict):
+            raise ValueError(f"manifest install project missing for Windows component: {key}")
+        platform_cfg = (project.get("platforms", {}) or {}).get("windows")
+        if not isinstance(platform_cfg, dict):
+            raise ValueError(f"manifest install project '{key}' missing windows platform config")
+        system_service_val = platform_cfg.get("system_service", False)
+        if isinstance(system_service_val, str):
+            system_service = system_service_val.lower().strip().rstrip(",") == "true"
+        else:
+            system_service = bool(system_service_val)
+        components.append(
+            PublishComponent(
+                key=_as_str(platform_cfg.get("key", key)),
+                name=_as_str(platform_cfg.get("name", project.get("name", key))).strip() or _as_str(key),
+                kind=_as_str(platform_cfg.get("kind", project.get("kind", "app"))).strip() or "app",
+                optional=bool(platform_cfg.get("optional", False)),
+                src=_as_str(platform_cfg.get("src", "")).strip() or None,
+                default_target=_as_str(platform_cfg.get("default_target", "")).strip(),
+                system_service=system_service,
+            )
+        )
+    return components
+
+
 def _resolve_component_src(component: PublishComponent, app_publish_dir: Path) -> Path:
     """Resolve the source path for a component."""
     if component.src:
@@ -201,9 +318,11 @@ def _resolve_component_target(component: PublishComponent) -> str:
 def _copy_dir_contents(src_dir: Path, dst_dir: Path) -> None:
     dst_dir.mkdir(parents=True, exist_ok=True)
     for child in src_dir.iterdir():
+        if child.name in IGNORED_STAGE_NAMES:
+            continue
         dst = dst_dir / child.name
         if child.is_dir():
-            shutil.copytree(child, dst, dirs_exist_ok=True)
+            _copytree_filtered(child, dst)
         else:
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(child, dst)
@@ -227,7 +346,7 @@ def _stage_buckyos_app_root(*, src_root: Path, dst_root: Path, layout: AppLayout
         s = src_root / rel_s
         d = dst_root / rel_s
         if s.is_dir():
-            shutil.copytree(s, d, dirs_exist_ok=True)
+            _copytree_filtered(s, d)
         elif s.exists():
             d.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(s, d)
@@ -245,7 +364,7 @@ def _stage_buckyos_app_root(*, src_root: Path, dst_root: Path, layout: AppLayout
             print(f"[warn] data_paths source missing: '{rel}' -> '{s}', skipping")
             continue
         if s.is_dir():
-            shutil.copytree(s, d, dirs_exist_ok=True)
+            _copytree_filtered(s, d)
         else:
             d.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(s, d)
@@ -735,7 +854,7 @@ def _print_file_tree(path: Path, prefix: str = "", is_last: bool = True) -> None
     print(f"{prefix}{connector}{path.name}")
     
     if path.is_dir():
-        children = list(path.iterdir())
+        children = [child for child in path.iterdir() if child.name not in IGNORED_STAGE_NAMES]
         children.sort(key=lambda x: (not x.is_dir(), x.name.lower()))
         for i, child in enumerate(children[:20]):  # Limit to 20 items
             extension = "    " if is_last else "│   "
@@ -750,13 +869,18 @@ def build_win_installer(
     architecture: str,
     version: str,
     project_yaml_path: Path,
+    manifest_path: Path | None,
     app_publish_dir: Path,
     out_dir: Path,
     dry_run: bool = False,
 ) -> Path:
     """Build the Windows NSIS installer."""
-    
-    components = load_win_pkg_components(project_yaml_path)
+
+    components = (
+        load_win_pkg_components_from_manifest(manifest_path)
+        if manifest_path is not None
+        else load_win_pkg_components(project_yaml_path)
+    )
     
     work_dir = TMP_INSTALL_DIR / "distbuild"
     payload_dir = work_dir / "payload"
@@ -764,7 +888,7 @@ def build_win_installer(
     
     # Keep scripts in sync with bucky_project.yaml before building
     if not dry_run and not bool(os.environ.get("BUCKYOS_PKG_NO_SYNC_SCRIPTS")):
-        sync_win_scripts(project_yaml_path, WIN_PKG_PROJECT_DIR / "scripts")
+        sync_win_scripts(project_yaml_path, WIN_PKG_PROJECT_DIR / "scripts", manifest_path=manifest_path)
     
     if work_dir.exists() and not dry_run:
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -807,14 +931,19 @@ def build_win_installer(
         
         if comp.key == "buckyos":
             # Special staging for buckyos with data_paths semantics
-            layout = load_buckyos_layout(project_yaml_path, target_override="C:\\opt\\buckyos")
+            layout = resolve_app_layout(
+                app_key="buckyos",
+                project_yaml_path=project_yaml_path,
+                manifest_path=manifest_path,
+                target_override="C:\\opt\\buckyos",
+            )
             _stage_buckyos_app_root(src_root=src, dst_root=comp_payload, layout=layout)
             
             # Copy scripts to payload
             scripts_src = WIN_PKG_PROJECT_DIR / "scripts"
             scripts_dst = comp_payload / "scripts"
             if scripts_src.exists():
-                shutil.copytree(scripts_src, scripts_dst, dirs_exist_ok=True)
+                _copytree_filtered(scripts_src, scripts_dst)
         else:
             if src.is_dir():
                 _copy_dir_contents(src, comp_payload)
@@ -889,6 +1018,7 @@ def verify_pkg(
     *,
     pkg_path: Path,
     project_yaml_path: Path,
+    manifest_path: Path | None = None,
 ) -> int:
     """
     Verify a built Windows installer using 7zip.
@@ -902,7 +1032,11 @@ def verify_pkg(
         print(f"VERIFY FAIL: Installer not found: {pkg_path}")
         return 1
     
-    components = load_win_pkg_components(project_yaml_path)
+    components = (
+        load_win_pkg_components_from_manifest(manifest_path)
+        if manifest_path is not None
+        else load_win_pkg_components(project_yaml_path)
+    )
     failures: List[str] = []
     
     # Try to find 7z
@@ -1066,7 +1200,12 @@ def _replace_marked_block(text: str, block_name: str, new_lines: List[str], inde
     return "\r\n".join(replaced).rstrip("\r\n") + "\r\n"
 
 
-def sync_win_scripts(project_yaml_path: Path, scripts_dir: Path) -> None:
+def sync_win_scripts(
+    project_yaml_path: Path,
+    scripts_dir: Path,
+    *,
+    manifest_path: Path | None = None,
+) -> None:
     """
     Update PowerShell scripts based on bucky_project.yaml.
 
@@ -1082,7 +1221,11 @@ def sync_win_scripts(project_yaml_path: Path, scripts_dir: Path) -> None:
     scripts_dir.mkdir(parents=True, exist_ok=True)
     
     # Only process buckyos app layout for the main scripts
-    layout = load_app_layout(project_yaml_path, "buckyos")
+    layout = resolve_app_layout(
+        app_key="buckyos",
+        project_yaml_path=project_yaml_path,
+        manifest_path=manifest_path,
+    )
     
     # Update seed_defaults.ps1
     seed_script = scripts_dir / "seed_defaults.ps1"
@@ -1126,6 +1269,7 @@ def main(argv: List[str]) -> int:
     p_build.add_argument("architecture", help="amd64|arm64")
     p_build.add_argument("version", help="Version string (e.g., 0.5.1+build260114)")
     p_build.add_argument("--project", default=str(PROJECT_YAML), help="Path to bucky_project.yaml")
+    p_build.add_argument("--manifest", default=None, help="Path to generated project manifest JSON")
     p_build.add_argument(
         "--app-publish-dir",
         default=str(RESULT_ROOT_DIR),
@@ -1147,10 +1291,12 @@ def main(argv: List[str]) -> int:
     p_verify = sub.add_parser("verify-pkg", aliases=["verify"], help="Verify a built installer using 7zip")
     p_verify.add_argument("--pkg", required=True, help="Path to .exe installer")
     p_verify.add_argument("--project", default=str(PROJECT_YAML), help="Path to bucky_project.yaml")
-    
+    p_verify.add_argument("--manifest", default=None, help="Path to generated project manifest JSON")
+
     # sync command
     p_sync = sub.add_parser("sync", help="Regenerate PowerShell scripts from bucky_project.yaml")
     p_sync.add_argument("--project", default=str(PROJECT_YAML), help="Path to bucky_project.yaml")
+    p_sync.add_argument("--manifest", default=None, help="Path to generated project manifest JSON")
     
     args = parser.parse_args(argv[1:])
     
@@ -1165,6 +1311,7 @@ def main(argv: List[str]) -> int:
             architecture=arch,
             version=args.version,
             project_yaml_path=Path(args.project),
+            manifest_path=Path(args.manifest).resolve() if args.manifest else None,
             app_publish_dir=Path(args.app_publish_dir),
             out_dir=Path(args.out_dir),
             dry_run=bool(args.dry_run),
@@ -1175,11 +1322,16 @@ def main(argv: List[str]) -> int:
     if args.cmd in ("verify", "verify-pkg"):
         return verify_pkg(
             pkg_path=Path(args.pkg).expanduser().resolve(),
-            project_yaml_path=Path(args.project)
+            project_yaml_path=Path(args.project),
+            manifest_path=Path(args.manifest).resolve() if args.manifest else None,
         )
-    
+
     if args.cmd == "sync":
-        sync_win_scripts(Path(args.project), WIN_PKG_PROJECT_DIR / "scripts")
+        sync_win_scripts(
+            Path(args.project),
+            WIN_PKG_PROJECT_DIR / "scripts",
+            manifest_path=Path(args.manifest).resolve() if args.manifest else None,
+        )
         print("win_pkg scripts synced.")
         return 0
     

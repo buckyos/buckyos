@@ -11,19 +11,27 @@ This wrapper owns the common staging flow:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover
     tomllib = None  # type: ignore[assignment]
+
+try:
+    import yaml  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    yaml = None  # type: ignore[assignment]
 
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -32,6 +40,7 @@ PUBLISH_DIR = SRC_DIR / "publish"
 VERSION_FILE = SRC_DIR / "VERSION"
 CYFS_SRC_DIR = REPO_ROOT.parent / "cyfs-gateway" / "src"
 DESKTOP_APP_REPO_DIR = REPO_ROOT.parent / "BuckyOSApp"
+IGNORED_STAGE_NAMES = {".DS_Store", "__pycache__"}
 
 
 @dataclass(frozen=True)
@@ -40,6 +49,419 @@ class TargetScript:
     script_path: Path
     architecture: str
     build_root: Path
+
+
+def _require_yaml() -> Any:
+    if yaml is None:
+        raise RuntimeError(
+            "PyYAML is required to analyze bucky_project.yaml. "
+            "Use the repo venv or install buckyos-devkit / `pip install pyyaml`."
+        )
+    return yaml
+
+
+def _yaml_load_file(path: Path) -> dict[str, Any]:
+    yaml_mod = _require_yaml()
+    data = yaml_mod.safe_load(path.read_text(encoding="utf-8"))
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise RuntimeError(f"YAML root must be a map: {path}")
+    return data
+
+
+def _json_load_file(path: Path) -> dict[str, Any]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise RuntimeError(f"JSON root must be a map: {path}")
+    return data
+
+
+def _load_project_config(path: Path) -> dict[str, Any]:
+    suffix = path.suffix.lower()
+    if suffix in (".yaml", ".yml"):
+        return _yaml_load_file(path)
+    if suffix == ".json":
+        return _json_load_file(path)
+    raise RuntimeError(f"unsupported project config format: {path}")
+
+
+def _expand_project_vars(raw: str, *, build_root: Path) -> str:
+    out = os.path.expanduser(raw)
+    replacements = {
+        "BUCKYOS_ROOT": os.environ.get("BUCKYOS_ROOT", "/opt/buckyos"),
+        "BUCKYOS_BUILD_ROOT": str(build_root),
+        "APPDATA": os.environ.get("APPDATA") or "%APPDATA%",
+        "LOCALAPPDATA": os.environ.get("LOCALAPPDATA") or "%LOCALAPPDATA%",
+        "USERPROFILE": os.environ.get("USERPROFILE") or "%USERPROFILE%",
+    }
+    for name, value in replacements.items():
+        out = out.replace(f"${{{name}}}", value)
+        out = out.replace(f"%{name}%", value)
+    return out
+
+
+def _normalize_target_dir_name(raw_path: str) -> str:
+    return raw_path.strip().lstrip("/\\").rstrip("/\\")
+
+
+def _detect_item_kind(raw_path: str, source_path: Path) -> str:
+    if raw_path.rstrip() != raw_path:
+        raw_path = raw_path.rstrip()
+    if raw_path.endswith("/") or raw_path.endswith("\\"):
+        return "dir"
+    if source_path.is_dir():
+        return "dir"
+    if source_path.is_file():
+        return "file"
+    return "unknown"
+
+
+def _is_ignored_stage_path(path: Path) -> bool:
+    return any(part in IGNORED_STAGE_NAMES for part in path.parts)
+
+
+def _list_item_files(source_path: Path, item_kind: str) -> list[str]:
+    if not source_path.exists():
+        return []
+    if item_kind == "file":
+        if _is_ignored_stage_path(Path(source_path.name)):
+            return []
+        return [source_path.name]
+    if item_kind != "dir":
+        return []
+    files: list[str] = []
+    for path in sorted(source_path.rglob("*")):
+        rel = path.relative_to(source_path)
+        if _is_ignored_stage_path(rel):
+            continue
+        if path.is_file():
+            files.append(path.relative_to(source_path).as_posix())
+    return files
+
+
+def _build_item_record(
+    *,
+    item_key: str | None,
+    raw_path: str,
+    source_rootfs: Path,
+    project_source_rootfs: Path | None = None,
+) -> dict[str, Any]:
+    target_dir_name = _normalize_target_dir_name(raw_path)
+    source_path = source_rootfs / Path(target_dir_name)
+    item_kind = _detect_item_kind(raw_path, source_path)
+    record: dict[str, Any] = {
+        "raw_path": raw_path,
+        "target_dir_name": target_dir_name,
+        "source_path": str(source_path),
+        "source_exists": source_path.exists(),
+        "item_kind": item_kind,
+        "file_items": _list_item_files(source_path, item_kind),
+    }
+    if project_source_rootfs is not None:
+        record["project_source_path"] = str(project_source_rootfs / Path(target_dir_name))
+    if item_key is not None:
+        record["key"] = item_key
+    return record
+
+
+def _append_unique_item(target_items: list[dict[str, Any]], item: dict[str, Any]) -> None:
+    target_dir_name = str(item.get("target_dir_name", "")).strip()
+    source_path = str(item.get("source_path", "")).strip()
+    for existing in target_items:
+        if (
+            str(existing.get("target_dir_name", "")).strip() == target_dir_name
+            and str(existing.get("source_path", "")).strip() == source_path
+        ):
+            return
+    target_items.append(item)
+
+
+def _rebase_item_to_source_root(item: dict[str, Any], source_rootfs: Path) -> dict[str, Any]:
+    rebased = dict(item)
+    target_dir_name = str(rebased.get("target_dir_name", "")).strip()
+    source_path = source_rootfs / Path(target_dir_name)
+    item_kind = _detect_item_kind(str(rebased.get("raw_path", "")), source_path)
+    rebased["source_path"] = str(source_path)
+    rebased["source_exists"] = source_path.exists()
+    rebased["item_kind"] = item_kind
+    rebased["file_items"] = _list_item_files(source_path, item_kind)
+    return rebased
+
+
+def _merge_install_project_items(target_project: dict[str, Any], source_project: dict[str, Any], *, source_rootfs: Path) -> None:
+    for item_name in ("module_items", "data_items", "clean_items"):
+        source_items = source_project.get(item_name, []) or []
+        if not isinstance(source_items, list):
+            continue
+        target_items = target_project.setdefault(item_name, [])
+        for item in source_items:
+            if isinstance(item, dict):
+                _append_unique_item(target_items, _rebase_item_to_source_root(item, source_rootfs))
+
+
+def _project_metadata(path: Path, data: dict[str, Any]) -> dict[str, str]:
+    return {
+        "project_name": str(data.get("name", path.stem)),
+        "project_path": str(path),
+    }
+
+
+def _build_install_projects_from_config(
+    *,
+    project_file: Path,
+    data: dict[str, Any],
+    build_root: Path,
+    publish_root: Path,
+) -> dict[str, dict[str, Any]]:
+    project_base = (project_file.parent / str(data.get("base_dir", "."))).resolve()
+    metadata = _project_metadata(project_file, data)
+    install_projects: dict[str, dict[str, Any]] = {}
+
+    for app_key, app_cfg_raw in (data.get("apps", {}) or {}).items():
+        app_cfg = app_cfg_raw or {}
+        if not isinstance(app_cfg, dict):
+            raise RuntimeError(f"apps.{app_key} must be a map")
+        source_rootfs = (project_base / str(app_cfg.get("rootfs", "rootfs/"))).resolve()
+        default_target_raw = str(app_cfg.get("default_target_rootfs", "${BUCKYOS_ROOT}"))
+        modules = app_cfg.get("modules", {}) or {}
+        data_paths = app_cfg.get("data_paths", []) or []
+        clean_paths = app_cfg.get("clean_paths", []) or []
+
+        if not isinstance(modules, dict):
+            raise RuntimeError(f"apps.{app_key}.modules must be a map")
+        if not isinstance(data_paths, list):
+            raise RuntimeError(f"apps.{app_key}.data_paths must be a list")
+        if not isinstance(clean_paths, list):
+            raise RuntimeError(f"apps.{app_key}.clean_paths must be a list")
+
+        staged_source_rootfs = (publish_root / str(app_key)).resolve()
+
+        def build_item(item_key: str | None, raw_path: str) -> dict[str, Any]:
+            item = _build_item_record(
+                item_key=item_key,
+                raw_path=raw_path,
+                source_rootfs=staged_source_rootfs,
+                project_source_rootfs=source_rootfs,
+            )
+            item.update(
+                {
+                    "source_project": metadata["project_name"],
+                    "source_project_path": metadata["project_path"],
+                    "source_app": str(app_key),
+                }
+            )
+            if item_key is not None:
+                item["source_item_key"] = item_key
+            return item
+
+        install_projects[str(app_key)] = {
+            "key": str(app_key),
+            "kind": "app",
+            "name": str(app_cfg.get("name", app_key)),
+            "app_key": str(app_key),
+            "source_rootfs": str(staged_source_rootfs),
+            "project_source_rootfs": str(source_rootfs),
+            "default_target_rootfs_raw": default_target_raw,
+            "default_target_rootfs": _expand_project_vars(default_target_raw, build_root=build_root),
+            "source_project": metadata["project_name"],
+            "source_project_path": metadata["project_path"],
+            "module_items": [
+                build_item(item_key=str(module_key), raw_path=str(module_path))
+                for module_key, module_path in modules.items()
+            ],
+            "data_items": [
+                build_item(item_key=None, raw_path=str(item))
+                for item in data_paths
+            ],
+            "clean_items": [
+                build_item(item_key=None, raw_path=str(item))
+                for item in clean_paths
+            ],
+            "platforms": {},
+        }
+
+    return install_projects
+
+
+def _find_cyfs_project_file() -> Path | None:
+    candidates = [
+        CYFS_SRC_DIR / "bucky_project.yaml",
+        CYFS_SRC_DIR / "bucky_project.yml",
+        CYFS_SRC_DIR / "bucky_project.json",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    return None
+
+
+def _resolve_component_source(
+    *,
+    component_key: str,
+    component_src: str | None,
+    app_publish_dir: Path,
+) -> Path:
+    if component_src:
+        src_path = Path(component_src)
+        if src_path.is_absolute():
+            return src_path
+        return app_publish_dir / component_key / component_src
+    return app_publish_dir / component_key
+
+
+def _build_project_manifest(project_path: Path, *, build_root: Path, app_publish_dir: Path | None = None) -> dict[str, Any]:
+    project_file = project_path.expanduser().resolve()
+    data = _load_project_config(project_file)
+    project_base = (project_file.parent / str(data.get("base_dir", "."))).resolve()
+    publish_root = (app_publish_dir or build_root).expanduser().resolve()
+
+    install_projects = _build_install_projects_from_config(
+        project_file=project_file,
+        data=data,
+        build_root=build_root,
+        publish_root=publish_root,
+    )
+    platform_manifest: dict[str, dict[str, Any]] = {
+        "linux": {"component_keys": []},
+        "macos": {"component_keys": []},
+        "windows": {"component_keys": []},
+    }
+
+    cyfs_project_file = _find_cyfs_project_file()
+    if cyfs_project_file is not None:
+        cyfs_data = _load_project_config(cyfs_project_file)
+        cyfs_projects = _build_install_projects_from_config(
+            project_file=cyfs_project_file,
+            data=cyfs_data,
+            build_root=build_root,
+            publish_root=publish_root,
+        )
+        cyfs_buckyos = cyfs_projects.get("cyfs-gateway")
+        if cyfs_buckyos is not None and "buckyos" in install_projects:
+            target_source_root = Path(str(install_projects["buckyos"].get("source_rootfs", publish_root / "buckyos"))).resolve()
+            _merge_install_project_items(install_projects["buckyos"], cyfs_buckyos, source_rootfs=target_source_root)
+            merged_sources = install_projects["buckyos"].setdefault("merged_from_projects", [])
+            merged_sources.append(
+                {
+                    "project_name": str(cyfs_data.get("name", cyfs_project_file.stem)),
+                    "project_path": str(cyfs_project_file),
+                    "app_key": "cyfs-gateway",
+                }
+            )
+
+    platform_publish = {
+        "macos": (((data.get("publish", {}) or {}).get("macos_pkg", {}) or {}).get("apps", {}) or {}),
+        "windows": (((data.get("publish", {}) or {}).get("win_pkg", {}) or {}).get("apps", {}) or {}),
+    }
+    for platform_key, components in platform_publish.items():
+        if not isinstance(components, dict):
+            raise RuntimeError(f"publish.{platform_key}.apps must be a map")
+        for component_key, component_cfg_raw in components.items():
+            platform_manifest[platform_key]["component_keys"].append(str(component_key))
+            component_cfg = component_cfg_raw or {}
+            if not isinstance(component_cfg, dict):
+                raise RuntimeError(f"publish.{platform_key}.apps.{component_key} must be a map")
+            project_key = str(component_key)
+            project_record = install_projects.setdefault(
+                project_key,
+                {
+                    "key": project_key,
+                    "kind": str(component_cfg.get("type", "bundle") or "bundle"),
+                    "name": str(component_cfg.get("name", component_key)),
+                    "app_key": None,
+                    "source_rootfs": None,
+                    "default_target_rootfs_raw": None,
+                    "default_target_rootfs": None,
+                    "module_items": [],
+                    "data_items": [],
+                    "clean_items": [],
+                    "platforms": {},
+                },
+            )
+
+            component_kind = str(component_cfg.get("type", "app") or "app")
+            app_key = project_record.get("app_key")
+            if component_kind == "app" and app_key is None and project_key in install_projects and install_projects[project_key].get("app_key"):
+                app_key = project_key
+            component_src = str(component_cfg.get("src", "")).strip() or None
+            default_target_raw = str(component_cfg.get("default_target", "")).strip()
+            if not default_target_raw:
+                raise RuntimeError(f"publish.{platform_key}.apps.{component_key} missing default_target")
+            system_service_raw = component_cfg.get("system_service", False)
+            if isinstance(system_service_raw, str):
+                system_service = system_service_raw.lower().strip().rstrip(",") == "true"
+            else:
+                system_service = bool(system_service_raw)
+
+            project_record["kind"] = component_kind
+            project_record["name"] = str(component_cfg.get("name", project_record.get("name", component_key)))
+            project_record["platforms"][platform_key] = {
+                "key": project_key,
+                "name": str(component_cfg.get("name", component_key)),
+                "kind": component_kind,
+                "optional": bool(component_cfg.get("optional", False)),
+                "src": component_src,
+                "source_path": str(
+                    _resolve_component_source(
+                        component_key=project_key,
+                        component_src=component_src,
+                        app_publish_dir=publish_root,
+                    )
+                ),
+                "default_target_raw": default_target_raw,
+                "default_target": _expand_project_vars(default_target_raw, build_root=build_root),
+                "system_service": system_service,
+            }
+
+    linux_target = _expand_project_vars("${BUCKYOS_ROOT}", build_root=build_root)
+    if "buckyos" in install_projects:
+        platform_manifest["linux"]["component_keys"] = ["buckyos"]
+        install_projects["buckyos"]["platforms"].setdefault(
+            "linux",
+            {
+                "key": "buckyos",
+                "name": str(install_projects["buckyos"].get("name", "buckyos")),
+                "kind": "app",
+                "optional": False,
+                "src": None,
+                "source_path": str(publish_root / "buckyos"),
+                "default_target_raw": "${BUCKYOS_ROOT}",
+                "default_target": linux_target,
+                "system_service": True,
+            },
+        )
+
+    return {
+        "schema_version": 1,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "project_path": str(project_file),
+        "project_base": str(project_base),
+        "build_root": str(build_root),
+        "app_publish_dir": str(publish_root),
+        "platforms": platform_manifest,
+        "install_projects": install_projects,
+    }
+
+
+def _write_project_manifest(
+    *,
+    project_path: Path,
+    build_root: Path,
+    app_publish_dir: Path | None = None,
+    out_path: Path | None = None,
+) -> Path:
+    manifest = _build_project_manifest(project_path, build_root=build_root, app_publish_dir=app_publish_dir)
+    if out_path is not None:
+        manifest_path = out_path.expanduser().resolve()
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=False) + "\n", encoding="utf-8")
+        return manifest_path
+
+    with tempfile.NamedTemporaryFile(prefix="buckyos-pkg-manifest-", suffix=".json", delete=False) as tmp:
+        manifest_path = Path(tmp.name)
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=False) + "\n", encoding="utf-8")
+    return manifest_path
 
 
 def _detect_platform_key() -> str:
@@ -143,7 +565,7 @@ def _copy_path(src: Path, dst: Path, *, dry_run: bool) -> None:
             dst.unlink()
     dst.parent.mkdir(parents=True, exist_ok=True)
     if src.is_dir():
-        shutil.copytree(src, dst)
+        shutil.copytree(src, dst, ignore=shutil.ignore_patterns(*IGNORED_STAGE_NAMES))
     else:
         shutil.copy2(src, dst)
 
@@ -393,26 +815,34 @@ def build_pkg(argv: list[str]) -> int:
     else:
         print("[prepare] skipped by --skip-prepare")
 
-    cmd = [
-        _python_executable(),
-        str(target.script_path),
-        "build-pkg",
-        target.architecture,
-        version,
-        "--project",
-        args.project,
-        "--app-publish-dir",
-        str(target.build_root),
-        "--out-dir",
-        args.out_dir,
-    ]
-    if args.no_sync_scripts:
-        cmd.append("--no-sync-scripts")
-    if args.dry_run:
-        cmd.append("--dry-run")
-    cmd += forwarded
-    _run_checked(cmd, dry_run=False)
-    return 0
+    manifest_path = _write_project_manifest(
+        project_path=Path(args.project),
+        build_root=target.build_root,
+        app_publish_dir=target.build_root,
+    )
+    try:
+        cmd = [
+            _python_executable(),
+            str(target.script_path),
+            "build-pkg",
+            target.architecture,
+            version,
+            "--manifest",
+            str(manifest_path),
+            "--app-publish-dir",
+            str(target.build_root),
+            "--out-dir",
+            args.out_dir,
+        ]
+        if args.no_sync_scripts:
+            cmd.append("--no-sync-scripts")
+        if args.dry_run:
+            cmd.append("--dry-run")
+        cmd += forwarded
+        _run_checked(cmd, dry_run=False)
+        return 0
+    finally:
+        manifest_path.unlink(missing_ok=True)
 
 
 def verify_pkg(argv: list[str]) -> int:
@@ -424,13 +854,21 @@ def verify_pkg(argv: list[str]) -> int:
     args, forwarded = parser.parse_known_args(argv)
 
     target = detect_target(args.arch, args.build_root)
-    base_cmd = [_python_executable(), str(target.script_path)]
-    if target.platform_key == "windows":
-        cmd = base_cmd + ["verify-pkg", "--pkg", args.pkg, "--project", args.project]
-    else:
-        cmd = base_cmd + ["verify-pkg", args.pkg, "--project", args.project]
-    cmd += forwarded
-    return _run(cmd)
+    manifest_path = _write_project_manifest(
+        project_path=Path(args.project),
+        build_root=target.build_root,
+        app_publish_dir=target.build_root,
+    )
+    try:
+        base_cmd = [_python_executable(), str(target.script_path)]
+        if target.platform_key == "windows":
+            cmd = base_cmd + ["verify-pkg", "--pkg", args.pkg, "--manifest", str(manifest_path)]
+        else:
+            cmd = base_cmd + ["verify-pkg", args.pkg, "--manifest", str(manifest_path)]
+        cmd += forwarded
+        return _run(cmd)
+    finally:
+        manifest_path.unlink(missing_ok=True)
 
 
 def sync_scripts(argv: list[str]) -> int:
@@ -441,14 +879,23 @@ def sync_scripts(argv: list[str]) -> int:
     args, forwarded = parser.parse_known_args(argv)
 
     target = detect_target(args.arch, args.build_root)
-    if target.platform_key == "macos":
-        cmd = [_python_executable(), str(target.script_path), "sync-macos-scripts", "--project", args.project]
-    elif target.platform_key == "windows":
-        cmd = [_python_executable(), str(target.script_path), "sync", "--project", args.project]
-    else:
+    if target.platform_key == "linux":
         raise RuntimeError("sync-scripts is not supported for Linux packages")
-    cmd += forwarded
-    return _run(cmd)
+
+    manifest_path = _write_project_manifest(
+        project_path=Path(args.project),
+        build_root=target.build_root,
+        app_publish_dir=target.build_root,
+    )
+    if target.platform_key == "macos":
+        cmd = [_python_executable(), str(target.script_path), "sync-macos-scripts", "--manifest", str(manifest_path)]
+    else:
+        cmd = [_python_executable(), str(target.script_path), "sync", "--manifest", str(manifest_path)]
+    try:
+        cmd += forwarded
+        return _run(cmd)
+    finally:
+        manifest_path.unlink(missing_ok=True)
 
 
 def local_action(action: str, argv: list[str]) -> int:
@@ -465,15 +912,23 @@ def local_action(action: str, argv: list[str]) -> int:
     if target.platform_key == "windows":
         raise RuntimeError(f"{action} is not supported by the Windows installer script")
 
-    cmd = [_python_executable(), str(target.script_path), action, "--project", args.project]
-    if args.target:
-        cmd += ["--target", args.target]
-    if args.source:
-        cmd += ["--source", args.source]
-    if args.dry_run:
-        cmd.append("--dry-run")
-    cmd += forwarded
-    return _run(cmd)
+    manifest_path = _write_project_manifest(
+        project_path=Path(args.project),
+        build_root=target.build_root,
+        app_publish_dir=target.build_root,
+    )
+    try:
+        cmd = [_python_executable(), str(target.script_path), action, "--manifest", str(manifest_path)]
+        if args.target:
+            cmd += ["--target", args.target]
+        if args.source:
+            cmd += ["--source", args.source]
+        if args.dry_run:
+            cmd.append("--dry-run")
+        cmd += forwarded
+        return _run(cmd)
+    finally:
+        manifest_path.unlink(missing_ok=True)
 
 
 def show_target(argv: list[str]) -> int:
@@ -490,6 +945,36 @@ def show_target(argv: list[str]) -> int:
     return 0
 
 
+def show_manifest(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="make_local_pkg.py show-manifest")
+    parser.add_argument("--arch", default=None, help="Override detected architecture")
+    parser.add_argument("--build-root", default=None, help="Override BUCKYOS_BUILD_ROOT")
+    parser.add_argument("--app-publish-dir", default=None, help="Override app publish dir in generated manifest")
+    parser.add_argument("--project", default=str(SRC_DIR / "bucky_project.yaml"))
+    parser.add_argument("--out", default=None, help="Write manifest JSON to file instead of stdout")
+    args = parser.parse_args(argv)
+
+    target = detect_target(args.arch, args.build_root)
+    app_publish_dir = Path(args.app_publish_dir).expanduser() if args.app_publish_dir else target.build_root
+    if args.out:
+        manifest_path = _write_project_manifest(
+            project_path=Path(args.project),
+            build_root=target.build_root,
+            app_publish_dir=app_publish_dir,
+            out_path=Path(args.out),
+        )
+        print(manifest_path)
+        return 0
+
+    manifest = _build_project_manifest(
+        Path(args.project),
+        build_root=target.build_root,
+        app_publish_dir=app_publish_dir,
+    )
+    print(json.dumps(manifest, indent=2, sort_keys=False))
+    return 0
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2 or argv[1] in ("-h", "--help"):
         print(
@@ -503,6 +988,7 @@ def main(argv: list[str]) -> int:
             "  update         Local update helper (macOS/Linux only)\n"
             "  uninstall      Local uninstall helper (macOS/Linux only)\n"
             "  show-target    Print the detected platform/script mapping\n"
+            "  show-manifest  Print the generated project manifest JSON\n"
         )
         return 0
 
@@ -520,6 +1006,8 @@ def main(argv: list[str]) -> int:
             return local_action(command, argv[2:])
         if command == "show-target":
             return show_target(argv[2:])
+        if command == "show-manifest":
+            return show_manifest(argv[2:])
         raise RuntimeError(f"unknown command: {command}")
     except RuntimeError as err:
         print(f"error: {err}", file=sys.stderr)

@@ -16,6 +16,7 @@ Before making a deb, ensure you have built the latest buckyos rootfs.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -27,11 +28,8 @@ from typing import Any, Dict, List
 
 try:
     import yaml  # type: ignore
-except ImportError as e:
-    raise ImportError(
-        "PyYAML is required. Use your project venv (e.g. `./venv/bin/python ...`), "
-        "or install buckyos-devkit (recommended) / `pip install pyyaml`."
-    ) from e
+except ImportError:  # pragma: no cover
+    yaml = None  # type: ignore[assignment]
 
 
 SRC_DIR = Path(__file__).resolve().parent.parent
@@ -42,14 +40,28 @@ TMP_INSTALL_DIR = RESULT_ROOT_DIR / "deb-build"
 
 DEB_TEMPLATE_DIR = Path(__file__).resolve().parent / "deb_template"
 BUCKYOS_DEFAULTS_SUBDIR = ".buckyos_installer_defaults"
+IGNORED_STAGE_NAMES = {".DS_Store", "__pycache__"}
 
 
 def yaml_load_file(path: Path) -> Dict[str, Any]:
+    if yaml is None:
+        raise ImportError(
+            "PyYAML is required to read bucky_project.yaml. "
+            "Use your project venv (e.g. `./venv/bin/python ...`), "
+            "or install buckyos-devkit (recommended) / `pip install pyyaml`."
+        )
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     if data is None:
         return {}
     if not isinstance(data, dict):
         raise ValueError(f"YAML root must be a map: {path}")
+    return data
+
+
+def json_load_file(path: Path) -> Dict[str, Any]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"JSON root must be a map: {path}")
     return data
 
 
@@ -62,6 +74,17 @@ def _expand_vars(s: str) -> str:
     return os.path.expanduser(out)
 
 
+def _manifest_install_project(manifest_path: Path, app_key: str) -> Dict[str, Any]:
+    data = json_load_file(manifest_path)
+    install_projects = data.get("install_projects", {}) or {}
+    if not isinstance(install_projects, dict):
+        raise ValueError("manifest.install_projects must be a map")
+    project = install_projects.get(app_key)
+    if not isinstance(project, dict):
+        raise ValueError(f"manifest.install_projects.{app_key} missing or invalid")
+    return project
+
+
 @dataclass(frozen=True)
 class AppLayout:
     source_rootfs: Path
@@ -69,6 +92,35 @@ class AppLayout:
     module_paths: List[str]
     data_paths: List[str]
     clean_paths: List[str]
+    module_source_paths: Dict[str, str]
+    data_source_paths: Dict[str, str]
+
+
+def _ignore_copy_entries(_: str, names: List[str]) -> List[str]:
+    return [name for name in names if name in IGNORED_STAGE_NAMES]
+
+
+def _copytree_filtered(src: Path, dst: Path) -> None:
+    shutil.copytree(src, dst, dirs_exist_ok=True, ignore=_ignore_copy_entries)
+
+
+def _source_path_for(
+    layout: AppLayout,
+    rel: str,
+    *,
+    item_kind: str,
+    source_root_override: Path | None = None,
+) -> Path:
+    if source_root_override is not None:
+        override_rel = rel.strip().lstrip("/").rstrip("/")
+        candidate = source_root_override / override_rel
+        if candidate.exists():
+            return candidate
+    mapping = layout.module_source_paths if item_kind == "module" else layout.data_source_paths
+    configured = mapping.get(rel)
+    if configured:
+        return Path(configured).resolve()
+    return _safe_join(layout.source_rootfs, rel)
 
 
 def load_app_layout(
@@ -101,7 +153,73 @@ def load_app_layout(
         module_paths=module_paths,
         data_paths=data_paths,
         clean_paths=clean_paths,
+        module_source_paths={rel: str((source_rootfs / rel.strip().lstrip("/")).resolve()) for rel in module_paths},
+        data_source_paths={rel: str((source_rootfs / rel.strip().lstrip("/")).resolve()) for rel in data_paths},
     )
+
+
+def load_app_layout_from_manifest(
+    manifest_path: Path,
+    app_key: str,
+    target_override: str | None = None,
+) -> AppLayout:
+    app_cfg = _manifest_install_project(manifest_path, app_key)
+    source_rootfs_raw = app_cfg.get("source_rootfs")
+    if not isinstance(source_rootfs_raw, str) or not source_rootfs_raw.strip():
+        raise ValueError(f"manifest install project '{app_key}' missing source_rootfs")
+
+    default_target = str(
+        app_cfg.get("default_target_rootfs")
+        or app_cfg.get("default_target_rootfs_raw")
+        or "${BUCKYOS_ROOT}"
+    )
+    target_str = target_override if target_override else default_target
+
+    def item_paths(name: str) -> List[str]:
+        items = app_cfg.get(name, []) or []
+        if not isinstance(items, list):
+            raise ValueError(f"manifest install project '{app_key}'.{name} must be a list")
+        return [
+            str(item.get("raw_path") or item.get("target_dir_name") or "")
+            for item in items
+            if isinstance(item, dict) and str(item.get("raw_path") or item.get("target_dir_name") or "").strip()
+        ]
+
+    def item_source_paths(name: str) -> Dict[str, str]:
+        items = app_cfg.get(name, []) or []
+        if not isinstance(items, list):
+            raise ValueError(f"manifest install project '{app_key}'.{name} must be a list")
+        out: Dict[str, str] = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            rel = str(item.get("raw_path") or item.get("target_dir_name") or "").strip()
+            source_path = str(item.get("source_path") or "").strip()
+            if rel and source_path:
+                out[rel] = source_path
+        return out
+
+    return AppLayout(
+        source_rootfs=Path(source_rootfs_raw).resolve(),
+        target_rootfs=Path(_expand_vars(target_str)).resolve(),
+        module_paths=item_paths("module_items"),
+        data_paths=item_paths("data_items"),
+        clean_paths=item_paths("clean_items"),
+        module_source_paths=item_source_paths("module_items"),
+        data_source_paths=item_source_paths("data_items"),
+    )
+
+
+def resolve_app_layout(
+    *,
+    app_key: str,
+    project_yaml_path: Path,
+    manifest_path: Path | None = None,
+    target_override: str | None = None,
+) -> AppLayout:
+    if manifest_path is not None:
+        return load_app_layout_from_manifest(manifest_path, app_key, target_override=target_override)
+    return load_app_layout(project_yaml_path, app_key, target_override=target_override)
 
 
 def load_buckyos_layout(project_yaml_path: Path = PROJECT_YAML, target_override: str | None = None) -> AppLayout:
@@ -124,10 +242,10 @@ def _stage_buckyos_app_root(*, src_root: Path, dst_root: Path, layout: AppLayout
         if rel_s.startswith("/"):
             rel_s = rel_s[1:]
         rel_s = rel_s.rstrip("/")
-        s = src_root / rel_s
+        s = _source_path_for(layout, rel, item_kind="module", source_root_override=src_root)
         d = dst_root / rel_s
         if s.is_dir():
-            shutil.copytree(s, d, dirs_exist_ok=True)
+            _copytree_filtered(s, d)
         elif s.exists():
             d.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(s, d)
@@ -139,7 +257,7 @@ def _stage_buckyos_app_root(*, src_root: Path, dst_root: Path, layout: AppLayout
         if rel_s.startswith("/"):
             rel_s = rel_s[1:]
         rel_s = rel_s.rstrip("/")
-        s = src_root / rel_s
+        s = _source_path_for(layout, rel, item_kind="data", source_root_override=src_root)
         d = defaults_root / rel_s
         if not s.exists():
             raise FileNotFoundError(
@@ -148,7 +266,7 @@ def _stage_buckyos_app_root(*, src_root: Path, dst_root: Path, layout: AppLayout
                 "or remove it from apps.buckyos.data_paths."
             )
         if s.is_dir():
-            shutil.copytree(s, d, dirs_exist_ok=True)
+            _copytree_filtered(s, d)
         else:
             d.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(s, d)
@@ -234,7 +352,12 @@ def _replace_marked_block(text: str, block_name: str, new_lines: List[str], inde
     return "\n".join(replaced).rstrip("\n") + "\n"
 
 
-def sync_deb_scripts(project_yaml_path: Path, scripts_dir: Path) -> None:
+def sync_deb_scripts(
+    project_yaml_path: Path,
+    scripts_dir: Path,
+    *,
+    manifest_path: Path | None = None,
+) -> None:
     """
     Update debian maintainer scripts based on bucky_project.yaml.
 
@@ -243,7 +366,11 @@ def sync_deb_scripts(project_yaml_path: Path, scripts_dir: Path) -> None:
       ...
       # END AUTO-GENERATED: <name>
     """
-    layout = load_app_layout(project_yaml_path, "buckyos")
+    layout = resolve_app_layout(
+        app_key="buckyos",
+        project_yaml_path=project_yaml_path,
+        manifest_path=manifest_path,
+    )
 
     preinst = scripts_dir / "preinst"
     if preinst.exists():
@@ -289,6 +416,7 @@ def build_deb(
     architecture: str,
     version: str,
     project_yaml_path: Path,
+    manifest_path: Path | None,
     app_publish_dir: Path,
     out_dir: Path,
     source_rootfs: Path | None = None,
@@ -301,7 +429,7 @@ def build_deb(
 
     # Keep scripts in sync with bucky_project.yaml before building.
     if (not dry_run) and (not bool(os.environ.get("BUCKYOS_PKG_NO_SYNC_SCRIPTS"))):
-        sync_deb_scripts(project_yaml_path, DEB_TEMPLATE_DIR / "DEBIAN")
+        sync_deb_scripts(project_yaml_path, DEB_TEMPLATE_DIR / "DEBIAN", manifest_path=manifest_path)
 
     if deb_dir.exists() and not dry_run:
         shutil.rmtree(deb_dir, ignore_errors=True)
@@ -315,7 +443,12 @@ def build_deb(
         _adjust_control_file(deb_dir, version, deb_arch)
 
     payload_root = deb_dir / "opt" / "buckyos"
-    layout = load_buckyos_layout(project_yaml_path, target_override="/opt/buckyos")
+    layout = resolve_app_layout(
+        app_key="buckyos",
+        project_yaml_path=project_yaml_path,
+        manifest_path=manifest_path,
+        target_override="/opt/buckyos",
+    )
     src_root = _resolve_buckyos_src(source_override=source_rootfs, app_publish_dir=app_publish_dir, layout=layout)
 
     if dry_run:
@@ -352,6 +485,7 @@ def verify_pkg(
     *,
     pkg_path: Path,
     project_yaml_path: Path,
+    manifest_path: Path | None = None,
 ) -> int:
     """
     Verify a built Debian package using dpkg-deb.
@@ -384,7 +518,12 @@ def verify_pkg(
             except subprocess.CalledProcessError as e:
                 failures.append(f"dpkg-deb extract failed: {e}")
             else:
-                layout = load_buckyos_layout(project_yaml_path, target_override="/opt/buckyos")
+                layout = resolve_app_layout(
+                    app_key="buckyos",
+                    project_yaml_path=project_yaml_path,
+                    manifest_path=manifest_path,
+                    target_override="/opt/buckyos",
+                )
                 root = extract_dir / "opt" / "buckyos"
                 defaults_root = root / BUCKYOS_DEFAULTS_SUBDIR
 
@@ -450,7 +589,7 @@ def _copy_path(src: Path, dst: Path, overwrite: bool, dry_run: bool) -> None:
     if overwrite and (dst.exists() or dst.is_symlink()):
         _remove_path(dst, dry_run=False)
     if src.is_dir():
-        shutil.copytree(src, dst, dirs_exist_ok=True)
+        _copytree_filtered(src, dst)
     else:
         shutil.copy2(src, dst)
 
@@ -463,13 +602,13 @@ def action_update(layout: AppLayout, dry_run: bool = False) -> None:
     layout.target_rootfs.mkdir(parents=True, exist_ok=True)
     # overwrite modules
     for rel in layout.module_paths:
-        src = _safe_join(layout.source_rootfs, rel)
+        src = _source_path_for(layout, rel, item_kind="module")
         dst = _safe_join(layout.target_rootfs, rel)
         _copy_path(src, dst, overwrite=True, dry_run=dry_run)
 
     # ensure data paths exist, but never overwrite existing
     for rel in layout.data_paths:
-        src = _safe_join(layout.source_rootfs, rel)
+        src = _source_path_for(layout, rel, item_kind="data")
         dst = _safe_join(layout.target_rootfs, rel)
         if dst.exists() or dst.is_symlink():
             continue
@@ -524,6 +663,7 @@ def _legacy_build_main(argv: List[str]) -> int:
             architecture=architecture,
             version=version,
             project_yaml_path=PROJECT_YAML,
+            manifest_path=None,
             app_publish_dir=RESULT_ROOT_DIR,
             out_dir=Path.cwd() / "publish",
             dry_run=False,
@@ -545,6 +685,7 @@ def main(argv: List[str]) -> int:
     p_build.add_argument("architecture", help="amd64|arm64 (x86_64 accepted)")
     p_build.add_argument("version", help="Version string")
     p_build.add_argument("--project", default=str(PROJECT_YAML), help="Path to bucky_project.yaml")
+    p_build.add_argument("--manifest", default=None, help="Path to generated project manifest JSON")
     p_build.add_argument(
         "--app-publish-dir",
         default=str(RESULT_ROOT_DIR),
@@ -570,10 +711,12 @@ def main(argv: List[str]) -> int:
     p_verify = sub.add_parser("verify-pkg", help="Verify a built Debian .deb offline (no install)")
     p_verify.add_argument("pkg", help="Path to .deb")
     p_verify.add_argument("--project", default=str(PROJECT_YAML), help="Path to bucky_project.yaml")
+    p_verify.add_argument("--manifest", default=None, help="Path to generated project manifest JSON")
 
     for name in ("install", "update", "uninstall"):
         p = sub.add_parser(name, help=f"Local filesystem action: {name}")
         p.add_argument("--project", default=str(PROJECT_YAML), help="Path to bucky_project.yaml")
+        p.add_argument("--manifest", default=None, help="Path to generated project manifest JSON")
         p.add_argument("--target", default=None, help="Override target rootfs (default from bucky_project.yaml)")
         p.add_argument("--source", default=None, help="Override source rootfs (default from bucky_project.yaml)")
         p.add_argument("--dry-run", action="store_true", help="Print actions without changing filesystem")
@@ -590,6 +733,7 @@ def main(argv: List[str]) -> int:
             architecture=arch,
             version=args.version,
             project_yaml_path=Path(args.project),
+            manifest_path=Path(args.manifest).resolve() if args.manifest else None,
             app_publish_dir=Path(args.app_publish_dir),
             out_dir=Path(args.out_dir),
             source_rootfs=Path(args.source_rootfs).resolve() if args.source_rootfs else None,
@@ -599,16 +743,28 @@ def main(argv: List[str]) -> int:
         return 0
 
     if args.cmd == "verify-pkg":
-        return verify_pkg(pkg_path=Path(args.pkg).expanduser().resolve(), project_yaml_path=Path(args.project))
+        return verify_pkg(
+            pkg_path=Path(args.pkg).expanduser().resolve(),
+            project_yaml_path=Path(args.project),
+            manifest_path=Path(args.manifest).resolve() if args.manifest else None,
+        )
 
-    layout = load_buckyos_layout(Path(args.project), target_override=args.target)
+    layout = resolve_app_layout(
+        app_key="buckyos",
+        project_yaml_path=Path(args.project),
+        manifest_path=Path(args.manifest).resolve() if args.manifest else None,
+        target_override=args.target,
+    )
     if args.source:
+        source_rootfs = Path(args.source).resolve()
         layout = AppLayout(
-            source_rootfs=Path(args.source).resolve(),
+            source_rootfs=source_rootfs,
             target_rootfs=layout.target_rootfs,
             module_paths=layout.module_paths,
             data_paths=layout.data_paths,
             clean_paths=layout.clean_paths,
+            module_source_paths={rel: str((source_rootfs / rel.strip().lstrip("/")).resolve()) for rel in layout.module_paths},
+            data_source_paths={rel: str((source_rootfs / rel.strip().lstrip("/")).resolve()) for rel in layout.data_paths},
         )
 
     if args.cmd == "install":
