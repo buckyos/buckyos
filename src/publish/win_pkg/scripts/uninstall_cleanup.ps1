@@ -1,9 +1,58 @@
 ﻿$ErrorActionPreference = "Continue"
+
+
+
+
+
+
+
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+
+
+
+
+
+
 $Root = Split-Path -Parent $ScriptDir
+
+
+
+
+
+
+
 $DefaultsDir = Join-Path $Root ".buckyos_installer_defaults"
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue -Path $DefaultsDir
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # BEGIN AUTO-GENERATED: clean_paths
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue -Path (Join-Path $Root "data\var")
@@ -12,6 +61,13 @@ Remove-Item -Recurse -Force -ErrorAction SilentlyContinue -Path (Join-Path $Root
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue -Path (Join-Path $Root "logs")
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue -Path (Join-Path $Root "etc")
 # END AUTO-GENERATED: clean_paths
+
+
+
+
+
+
+
 # BEGIN AUTO-GENERATED: modules
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue -Path (Join-Path $Root "bin\node-daemon")
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue -Path (Join-Path $Root "bin\system-config")

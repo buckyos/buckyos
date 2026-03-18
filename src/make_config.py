@@ -72,10 +72,11 @@ def ensure_dir(path: Path) -> Path:
     return path
 
 
-def run_cmd(cmd: List[str], cwd: Optional[Path] = None) -> None:
+def run_cmd(cmd: List[str], cwd: Optional[Path] = None, env: Optional[Dict[str, str]] = None) -> None:
     result = subprocess.run(
         cmd,
         cwd=str(cwd) if cwd is not None else None,
+        env=env,
         capture_output=True,
         check=False,
     )
@@ -89,9 +90,19 @@ def run_cmd(cmd: List[str], cwd: Optional[Path] = None) -> None:
         raise RuntimeError(f"command failed: {' '.join(cmd)}")
 
 
-def run_buckycli(args: List[str]) -> None:
+def run_buckycli(args: List[str], cwd: Optional[Path] = None) -> None:
     cmd = [str(BUCKYCLI_BIN)] + args
-    run_cmd(cmd, cwd=ROOTFS_DIR)
+    work_dir = cwd if cwd is not None else ROOTFS_DIR
+    if work_dir is not None:
+        work_dir = work_dir.expanduser()
+        if not work_dir.exists():
+            ensure_dir(work_dir)
+    runtime_root = ROOTFS_DIR.expanduser()
+    if not runtime_root.exists():
+        ensure_dir(runtime_root)
+    run_env = os.environ.copy()
+    run_env["BUCKYOS_ROOT"] = str(runtime_root)
+    run_cmd(cmd, cwd=work_dir, env=run_env)
 
 
 def copy_if_exists(src: Path, dst: Path) -> None:
@@ -195,7 +206,7 @@ def seed_bin_pkg_meta_db(target_dir: Path) -> None:
                 json.dumps(build_dev_pkg_meta(pkg_name, prefix, version), indent=2) + "\n",
                 encoding="utf-8",
             )
-            run_buckycli(["set_pkg_meta", str(meta_path), str(meta_db_path)])
+            run_buckycli(["set_pkg_meta", str(meta_path), str(meta_db_path)], cwd=target_dir)
             print(f"seed pkg meta {prefix}.{pkg_name}#{version} -> {meta_db_path}")
 
 def apply_dev_boot_template_override(target_dir: Path, group_name: str) -> None:
@@ -329,7 +340,7 @@ def make_cache_did_docs(target_dir: Path) -> None:
 
     ensure_dir(docs_dst)
     try:
-        run_buckycli(["build_did_docs", "--output_dir", str(docs_dst)])
+        run_buckycli(["build_did_docs", "--output_dir", str(docs_dst)], cwd=target_dir)
         print(f"built did_docs at {docs_dst}")
     except RuntimeError as e:
         print(f"warning: build_did_docs not available yet: {e}")
@@ -458,7 +469,8 @@ def make_identity_files(
             str(rtcp_port),
             "--output_dir",
             str(user_tmp),
-        ]
+        ],
+        cwd=tmp_root,
     )
 
     # 2. Create node configuration
@@ -471,7 +483,8 @@ def make_identity_files(
             netid,
             "--env_dir",
             str(user_tmp),
-        ]
+        ],
+        cwd=tmp_root,
     )
 
     # 3. Copy identity files
@@ -505,7 +518,8 @@ def make_repo_cache_file(target_dir: Path) -> None:
 def add_user_to_sn(root_dir: Path, username: str, sn_db_path: Path) -> None:
     """Add user to SN database."""
     run_buckycli(
-        ["register_user_to_sn", "--username", username, "--sn_db_path", str(sn_db_path), "--output_dir", str(root_dir)]
+        ["register_user_to_sn", "--username", username, "--sn_db_path", str(sn_db_path), "--output_dir", str(root_dir)],
+        cwd=root_dir,
     )
     print(f"root directory: {root_dir}")
     print(f"added user {username} to SN database at {sn_db_path}")
@@ -514,7 +528,8 @@ def add_user_to_sn(root_dir: Path, username: str, sn_db_path: Path) -> None:
 def add_device_to_sn(root_dir: Path, username: str, device_name: str, sn_db_path: Path) -> None:
     """Add device to SN database."""
     run_buckycli(
-        ["register_device_to_sn", "--username", username, "--device_name", device_name, "--sn_db_path", str(sn_db_path), "--output_dir", str(root_dir)]
+        ["register_device_to_sn", "--username", username, "--device_name", device_name, "--sn_db_path", str(sn_db_path), "--output_dir", str(root_dir)],
+        cwd=root_dir,
     )
     print(f"root directory: {root_dir}")
     print(f"added device {username}.{device_name} to SN database at {sn_db_path}")
@@ -571,7 +586,8 @@ def make_sn_configs(
             sn_ip,
             "--sn_base_host",
             sn_base_host,
-        ]
+        ],
+        cwd=target_dir,
     )
     
     # buckycli generates files under target_dir/sn_server/, need to move to target_dir
@@ -788,9 +804,11 @@ def get_local_ip() -> str:
     return ip_address
 
 def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_dir: Optional[Path],sn_ip: Optional[str],env_root: Optional[Path]) -> None:
+    global ROOTFS_DIR
     if group_name == "release":
         if target_root is None:
             target_root = ROOTFS_DIR
+        ROOTFS_DIR = target_root.expanduser()
         print(f"release mode, write basic configs to {target_root}")
         make_global_env_config(
             target_root,
@@ -820,6 +838,7 @@ def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_d
                 target_root = Path(appdata) / "web3-gateway"
             else:
                 target_root = Path("/opt/web3-gateway")
+        ROOTFS_DIR = target_root.expanduser()
 
         if env_root is None:
             env_root = BUCKYCLI_DIR
@@ -861,6 +880,7 @@ def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_d
     else:
         if target_root is None:
             target_root = ROOTFS_DIR
+        ROOTFS_DIR = target_root.expanduser()
         # Normal OOD node configuration generation
         print(f"username   : {params['username']}")
         print(f"zone       : {params['zone_id']}")
@@ -895,6 +915,7 @@ def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_d
 
 
 def main() -> None:
+    global ROOTFS_DIR
     parser = argparse.ArgumentParser(
         description="Generate configuration files under rootfs",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -919,7 +940,12 @@ def main() -> None:
         help="SN IP address",
     )
     args = parser.parse_args()
-    make_config_by_group_name(args.group, args.rootfs, args.ca, args.sn_ip, None)
+
+    target_root = args.rootfs.expanduser() if args.rootfs is not None else None
+    if target_root is not None:
+        ROOTFS_DIR = target_root
+
+    make_config_by_group_name(args.group, target_root, args.ca, args.sn_ip, None)
 
 if __name__ == "__main__":
     sys.exit(main())

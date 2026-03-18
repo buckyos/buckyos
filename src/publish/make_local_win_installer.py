@@ -469,6 +469,7 @@ def generate_nsis_script(
     lines.append("Var VCRedistInstalled")
     lines.append("Var VCRedistVersion")
     lines.append("Var ExistingBuckyRoot")
+    lines.append("Var BestInstallDrive")
     for comp in components:
         var_name = f"InstDir_{_sanitize_id(comp.key).replace('-', '_')}"
         lines.append(f"Var {var_name}")
@@ -562,14 +563,14 @@ def generate_nsis_script(
     lines.append("; Runtime dependency checks")
     lines.append("Function CheckDockerDesktopForUser")
     lines.append('  StrCpy $DockerCheckCode "0"')
-    lines.append('  nsExec::ExecToStack \'cmd /c "where docker >nul 2>nul"\'')
+    lines.append('  nsExec::ExecToStack \'cmd /c "set PATH=%ProgramW6432%\\Docker\\Docker\\resources\\bin;%ProgramFiles%\\Docker\\Docker\\resources\\bin;%PATH% && where docker >nul 2>nul"\'')
     lines.append("  Pop $0")
     lines.append('  ${If} $0 != 0')
     lines.append('    StrCpy $DockerCheckCode "1"')
     lines.append("    Return")
     lines.append("  ${EndIf}")
     lines.append("")
-    lines.append('  nsExec::ExecToStack \'cmd /c "docker version --format {{.Server.Version}} >nul 2>nul"\'')
+    lines.append('  nsExec::ExecToStack \'cmd /c "set PATH=%ProgramW6432%\\Docker\\Docker\\resources\\bin;%ProgramFiles%\\Docker\\Docker\\resources\\bin;%PATH% && docker version --format {{.Server.Version}} >nul 2>nul"\'')
     lines.append("  Pop $0")
     lines.append('  ${If} $0 != 0')
     lines.append('    StrCpy $DockerCheckCode "2"')
@@ -654,6 +655,7 @@ def generate_nsis_script(
     lines.append('  ${If} $ExistingBuckyRoot == ""')
     lines.append('    ReadRegStr $ExistingBuckyRoot HKLM "Software\\BuckyOS" "BuckyOSServiceDir"')
     lines.append('  ${EndIf}')
+    lines.append('  nsExec::ExecToLog \'schtasks /Delete /TN "BuckyOSNodeDaemonKeepAlive" /F\'')
     lines.append('  DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "BuckyOSDaemon"')
     lines.append('  nsExec::ExecToLog \'taskkill /F /IM node_daemon.exe\'')
     lines.append('  ${If} $ExistingBuckyRoot != ""')
@@ -661,6 +663,27 @@ def generate_nsis_script(
     lines.append('    nsExec::ExecToLog \'sc stop buckyos\'')
     lines.append("    Sleep 2000")
     lines.append('    nsExec::ExecToLog \'sc delete buckyos\'')
+    lines.append('  ${EndIf}')
+    lines.append("FunctionEnd")
+    lines.append("")
+
+    lines.append("Function SelectBestInstallDrive")
+    lines.append('  StrCpy $BestInstallDrive "C:"')
+    lines.append('  Delete "$TEMP\\buckyos_best_drive.txt"')
+    lines.append(
+        '  nsExec::ExecToLog \'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$$d = Get-CimInstance Win32_LogicalDisk | Where-Object { $$_.DriveType -eq 3 -and $$_.FreeSpace -ne $$null } | Sort-Object FreeSpace -Descending | Select-Object -First 1 -ExpandProperty DeviceID; if ([string]::IsNullOrWhiteSpace($$d)) { $$d = \'\'C:\'\' }; Set-Content -Path \'\'$$env:TEMP\\\\buckyos_best_drive.txt\'\' -Value $$d -Encoding ASCII"\''
+    )
+    lines.append('  IfFileExists "$TEMP\\buckyos_best_drive.txt" +2 0')
+    lines.append("    Return")
+    lines.append('  FileOpen $0 "$TEMP\\buckyos_best_drive.txt" r')
+    lines.append("  IfErrors select_best_drive_done_read")
+    lines.append("  FileRead $0 $1")
+    lines.append("  FileClose $0")
+    lines.append("select_best_drive_done_read:")
+    lines.append('  Delete "$TEMP\\buckyos_best_drive.txt"')
+    lines.append('  StrCpy $1 $1 2')
+    lines.append('  ${If} $1 != ""')
+    lines.append('    StrCpy $BestInstallDrive $1')
     lines.append('  ${EndIf}')
     lines.append("FunctionEnd")
     lines.append("")
@@ -681,21 +704,12 @@ def generate_nsis_script(
         lines.append("")
     
     # Initialize install directories with default values
+    lines.append("  ; Pick the local disk with largest free space and use X:\\buckyos\\ as default")
+    lines.append("  Call SelectBestInstallDrive")
     lines.append('  ; Initialize default install directories')
     for comp in components:
         var_name = f"InstDir_{_sanitize_id(comp.key).replace('-', '_')}"
-        default_target = comp.default_target
-        # Convert Windows env vars to NSIS variables
-        default_target_nsis = default_target
-        # Replace common Windows env vars with NSIS equivalents
-        default_target_nsis = default_target_nsis.replace("%APPDATA%", "$APPDATA")
-        default_target_nsis = default_target_nsis.replace("%LOCALAPPDATA%", "$LOCALAPPDATA")
-        default_target_nsis = default_target_nsis.replace("%USERPROFILE%", "$PROFILE")
-        default_target_nsis = default_target_nsis.replace("%PROGRAMFILES%", "$PROGRAMFILES")
-        default_target_nsis = default_target_nsis.replace("${BUCKYOS_ROOT}", "$PROGRAMFILES\\BuckyOS")
-        # Normalize path separators
-        default_target_nsis = default_target_nsis.replace("/", "\\")
-        lines.append(f'  StrCpy ${var_name} "{default_target_nsis}"')
+        lines.append(f'  StrCpy ${var_name} "$BestInstallDrive\\buckyos\\"')
     lines.append("")
     
     lines.append('  ; Check Docker Desktop availability for current user context')
@@ -780,6 +794,13 @@ def generate_nsis_script(
             lines.append("  ; Run seed defaults script")
             lines.append(f'  nsExec::ExecToLog \'powershell.exe -ExecutionPolicy Bypass -File "${var_name}\\scripts\\seed_defaults.ps1"\'')
             lines.append("")
+            lines.append("  ; Create node_daemon keepalive scheduled task (every 1 minute)")
+            lines.append('  nsExec::ExecToLog \'schtasks /Delete /TN "BuckyOSNodeDaemonKeepAlive" /F\'')
+            lines.append(
+                f'  nsExec::ExecToLog \'schtasks /Create /TN "BuckyOSNodeDaemonKeepAlive" /SC MINUTE /MO 1 /F /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $\\"${var_name}\\scripts\\node_daemon_loader.ps1$\\" -NodeDaemonPath $\\"${var_name}\\bin\\node-daemon\\node_daemon.exe$\\""\'' 
+            )
+            lines.append('  nsExec::ExecToLog \'schtasks /Run /TN "BuckyOSNodeDaemonKeepAlive"\'')
+            lines.append("")
             lines.append("  ; Register current-user startup and launch node_daemon")
             lines.append(
                 f'  WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "BuckyOSDaemon" \'$\\"${var_name}\\bin\\node-daemon\\node_daemon.exe$\\" --enable_active\''
@@ -841,6 +862,7 @@ def generate_nsis_script(
     lines.append('  nsExec::ExecToLog \'sc stop buckyos\'')
     lines.append("  Sleep 3000")
     lines.append('  nsExec::ExecToLog \'sc delete buckyos\'')
+    lines.append('  nsExec::ExecToLog \'schtasks /Delete /TN "BuckyOSNodeDaemonKeepAlive" /F\'')
     lines.append('  DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "BuckyOSDaemon"')
     lines.append('  nsExec::ExecToLog \'taskkill /F /IM node_daemon.exe\'')
     lines.append("")
@@ -862,6 +884,7 @@ def generate_nsis_script(
         lines.append(f'  ${{If}} $0 != ""')
         if comp.system_service:
             lines.append(f'    ; Stop running processes and old service for service component')
+            lines.append(f'    nsExec::ExecToLog \'schtasks /Delete /TN "BuckyOSNodeDaemonKeepAlive" /F\'')
             lines.append(f'    DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "BuckyOSDaemon"')
             lines.append(f'    nsExec::ExecToLog \'taskkill /F /IM node_daemon.exe\'')
             lines.append(f'    nsExec::ExecToLog \'sc stop buckyos\'')

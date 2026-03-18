@@ -1,7 +1,42 @@
 ﻿$ErrorActionPreference = "Stop"
+
+
+
+
+
+
+
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+
+
+
+
+
+
 $Root = Split-Path -Parent $ScriptDir
+
+
+
+
+
+
+
 $DefaultsDir = Join-Path $Root ".buckyos_installer_defaults"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # BEGIN AUTO-GENERATED: data_paths
 $src = Join-Path $DefaultsDir "bin\applist.json"
