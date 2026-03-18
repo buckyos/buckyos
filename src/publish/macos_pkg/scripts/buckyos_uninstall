@@ -44,6 +44,8 @@ rm -rf "$BUCKYOS_ROOT/etc/boot_gateway.yaml"
 rm -rf "$BUCKYOS_ROOT/bin/util.py"
 rm -rf "$BUCKYOS_ROOT/bin/stop.py"
 rm -rf "$BUCKYOS_ROOT/bin/buckyos_jarvis"
+rm -rf "$BUCKYOS_ROOT/bin/cyfs-gateway"
+rm -rf "$BUCKYOS_ROOT/bin/test-server"
 # END AUTO-GENERATED: modules
 # BEGIN AUTO-GENERATED: clean_paths
 rm -rf "$BUCKYOS_ROOT/data/var"

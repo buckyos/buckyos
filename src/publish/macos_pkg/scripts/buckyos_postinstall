@@ -93,14 +93,6 @@ if [ -d "$DEFAULTS_DIR" ]; then
     mkdir -p "$(dirname "$BUCKYOS_ROOT/bin/applist.json")"
     cp -p "$DEFAULTS_DIR/bin/applist.json" "$BUCKYOS_ROOT/bin/applist.json"
   fi
-  if [ -d "$DEFAULTS_DIR/bin/cyfs-gateway" ]; then
-    if [ ! -e "$BUCKYOS_ROOT/bin/cyfs-gateway" ]; then
-      mkdir -p "$BUCKYOS_ROOT/bin/cyfs-gateway"
-      ditto "$DEFAULTS_DIR/bin/cyfs-gateway" "$BUCKYOS_ROOT/bin/cyfs-gateway"
-    elif [ -d "$BUCKYOS_ROOT/bin/cyfs-gateway" ] && [ -z "$(/usr/bin/find "$BUCKYOS_ROOT/bin/cyfs-gateway" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
-      ditto "$DEFAULTS_DIR/bin/cyfs-gateway" "$BUCKYOS_ROOT/bin/cyfs-gateway"
-    fi
-  fi
   if [ ! -e "$BUCKYOS_ROOT/etc/node_gateway_info.json" ] && [ -e "$DEFAULTS_DIR/etc/node_gateway_info.json" ]; then
     mkdir -p "$(dirname "$BUCKYOS_ROOT/etc/node_gateway_info.json")"
     cp -p "$DEFAULTS_DIR/etc/node_gateway_info.json" "$BUCKYOS_ROOT/etc/node_gateway_info.json"

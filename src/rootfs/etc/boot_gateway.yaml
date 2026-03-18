@@ -68,6 +68,10 @@ stacks:
               return "server node_gateway";
 
 servers:
+  buckyos_public:
+    type: dir
+    root_path: ../data/srv/publish/ 
+
   node_gateway:
     type: http
     gzip_vary: true
@@ -88,6 +92,11 @@ servers:
               global THIS_NODE_ID=$NODE_INFO.this_node_id;
               global THIS_ZONE_HOST=$NODE_INFO.this_zone_host;
               global CONTROL_PANEL_URL="https://sys.${THIS_ZONE_HOST}/";
+
+              if eq $REQ.host "public.${THIS_ZONE_HOST}" then
+                return --from chain $(exec forward_to_public);
+              end
+
               exec get_app_info_from_req;
               exec get_service_info_from_req;
               if !eq $SERVICE_ID "" then
@@ -211,6 +220,12 @@ servers:
                 eq $TARGET_APP_INFO.node_id $THIS_NODE_ID && forward "http://127.0.0.1:${TARGET_APP_INFO.port}";
                 forward "${NODE_ROUTE_MAP[$TARGET_APP_INFO.nodeid]}:${TARGET_APP_INFO.port}";
               end
+
+          forward_to_public:
+            priority: 170
+            block: |
+              echo "forward_to_public block";
+              call-server "buckyos_public";
 
 
           check_block_list:

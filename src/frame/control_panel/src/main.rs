@@ -7266,7 +7266,7 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
         "/kapi/control-panel".to_string(),
         control_panel_server.clone(),
     );
-    // File manager API (embedded from former bucky-file service)
+    // File manager API exposed by control-panel.
     let _ = runner.add_http_server("/api".to_string(), control_panel_server.clone());
 
     // 添加 web (best-effort, skip if path cannot be resolved)

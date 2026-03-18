@@ -4,7 +4,8 @@
 >
 > 本文最初按“独立服务进程”设计。当前代码主线已调整为：
 > `files` 作为 `control_panel` 的内嵌模块提供能力，统一通过 `control_panel` 的 `/api` 对外暴露。
-> 文中涉及“独立 bucky-file 服务”的内容保留为历史方案与兼容参考，不再作为默认部署路径。
+> 本文已按当前实现更新：`files` 由 `control_panel` 内嵌提供，
+> 不再保留独立 `bucky-file` 服务代码路径。
 
 ## 1. 目标与定位
 
@@ -30,7 +31,6 @@
 - 对外接口由 `control_panel` 统一承载：
   - 外部/前端接口：`/api/*`（文件管理主接口）。
   - 控制面接口：`/kapi/control-panel`（统一控制面 RPC）。
-- `frame/bucky_file` 保留为历史兼容实现，不作为默认发布入口。
 - 核心子模块：
   - `auth`：登录、续签、会话验证。
   - `fs`：目录树、读写、移动、复制、删除、重命名。
@@ -94,9 +94,6 @@ doc/
       bucky_file_api.md (待补)
       bucky_file_migration.md (待补)
 ```
-
-历史目录（兼容参考，非默认入口）:
-- `src/frame/bucky_file/`
 
 ## 5. 功能分期
 

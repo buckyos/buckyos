@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use buckyos_api::{get_buckyos_api_runtime, UserType};
+use buckyos_api::get_buckyos_api_runtime;
 use buckyos_kit::get_buckyos_root_dir;
 use bytes::Bytes;
 use cyfs_gateway_lib::{
@@ -33,10 +33,8 @@ use zip::write::FileOptions;
 use zip::CompressionMethod;
 
 const BUCKY_FILE_SERVICE_NAME: &str = "bucky-file";
-const DEFAULT_SHARED_OWNER_DIR: &str = "admin";
-const SHARED_PUBLIC_DIR: &str = "Public";
-const SHARED_INBOX_DIR: &str = "Inbox";
 const INTERNAL_RECYCLE_BIN_DIR: &str = ".bucky_recycle_bin";
+const USER_PUBLIC_LINK_NAME: &str = "public";
 const INLINE_TEXT_CONTENT_MAX_BYTES: u64 = 2 * 1024 * 1024;
 const PDF_PREVIEW_SUPPORTED_EXTENSIONS: &[&str] = &["doc", "docx", "odt", "rtf"];
 const FILE_META_STATE_KEY_ROOT_SEEDED: &str = "root_seeded";
@@ -56,7 +54,6 @@ pub(crate) struct BuckyFileServer {
 #[derive(Debug, Clone)]
 struct FileAuthPrincipal {
     username: String,
-    user_type: UserType,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -271,7 +268,6 @@ impl BuckyFileServer {
         let db_path = self.db_path();
         let upload_tmp_dir = self.upload_tmp_dir();
         let thumbnail_cache_dir = self.thumbnail_cache_dir();
-        let recycle_bin_dir = self.recycle_bin_dir();
         tokio::task::spawn_blocking(move || -> Result<(), RPCErrors> {
             let conn = Connection::open(db_path).map_err(|err| {
                 RPCErrors::ReasonError(format!("open share database failed: {}", err))
@@ -389,9 +385,6 @@ impl BuckyFileServer {
             })?;
             std::fs::create_dir_all(&thumbnail_cache_dir).map_err(|err| {
                 RPCErrors::ReasonError(format!("prepare thumbnail cache dir failed: {}", err))
-            })?;
-            std::fs::create_dir_all(&recycle_bin_dir).map_err(|err| {
-                RPCErrors::ReasonError(format!("prepare recycle bin dir failed: {}", err))
             })?;
             Ok(())
         })
@@ -770,13 +763,8 @@ impl BuckyFileServer {
         self.mark_owner_root_seeded(owner).await
     }
 
-    fn recycle_bin_dir(&self) -> PathBuf {
-        self.files_root().join(INTERNAL_RECYCLE_BIN_DIR)
-    }
-
-    fn recycle_bin_item_rel_path(owner: &str, item_id: &str, name: &str) -> PathBuf {
+    fn recycle_bin_item_rel_path(item_id: &str, name: &str) -> PathBuf {
         PathBuf::from(INTERNAL_RECYCLE_BIN_DIR)
-            .join(owner)
             .join(item_id)
             .join(name)
     }
@@ -2310,7 +2298,6 @@ impl BuckyFileServer {
 
         Ok(FileAuthPrincipal {
             username,
-            user_type: UserType::Root,
         })
     }
 
@@ -2349,96 +2336,121 @@ impl BuckyFileServer {
         None
     }
 
-    fn is_privileged_user_type(user_type: &UserType) -> bool {
-        matches!(user_type, UserType::Root | UserType::Admin)
+    fn can_read_rel_path(_principal: &FileAuthPrincipal, _rel_path: &Path) -> bool {
+        true
     }
 
-    fn shared_inbox_prefix(username: &str) -> PathBuf {
-        PathBuf::from(SHARED_INBOX_DIR).join(username)
+    fn can_write_rel_path(_principal: &FileAuthPrincipal, _rel_path: &Path) -> bool {
+        true
     }
 
-    fn can_read_rel_path(principal: &FileAuthPrincipal, rel_path: &Path) -> bool {
-        if Self::is_privileged_user_type(&principal.user_type) {
-            return true;
-        }
-
-        if rel_path.as_os_str().is_empty() {
-            return true;
-        }
-
-        if rel_path.starts_with(Path::new(SHARED_PUBLIC_DIR)) {
-            return true;
-        }
-
-        if rel_path == Path::new(SHARED_INBOX_DIR) {
-            return true;
-        }
-
-        rel_path.starts_with(Self::shared_inbox_prefix(&principal.username))
-    }
-
-    fn can_write_rel_path(principal: &FileAuthPrincipal, rel_path: &Path) -> bool {
-        if Self::is_privileged_user_type(&principal.user_type) {
-            return true;
-        }
-
-        rel_path.starts_with(Self::shared_inbox_prefix(&principal.username))
-    }
-
-    fn files_root(&self) -> PathBuf {
+    fn user_root(&self, username: &str) -> PathBuf {
         if let Ok(root) = std::env::var("BUCKY_FILE_ROOT") {
             let trimmed = root.trim();
             if !trimmed.is_empty() {
-                return PathBuf::from(trimmed);
+                return PathBuf::from(trimmed).join(username);
             }
         }
 
-        let home_root = get_buckyos_root_dir().join("home");
-        let admin_root = home_root.join(DEFAULT_SHARED_OWNER_DIR);
-        if admin_root.exists() {
-            admin_root
-        } else {
-            home_root
-        }
+        get_buckyos_root_dir()
+            .join("data")
+            .join("home")
+            .join(username)
     }
 
-    async fn ensure_shared_root_structure(&self, principal: &FileAuthPrincipal) {
-        let root = self.files_root();
+    fn publish_root() -> PathBuf {
+        get_buckyos_root_dir().join("data").join("srv").join("publish")
+    }
+
+    async fn ensure_user_home(&self, principal: &FileAuthPrincipal) {
+        let root = self.user_root(&principal.username);
         if let Err(err) = tokio::fs::create_dir_all(&root).await {
             warn!(
-                "prepare shared file root failed at {}: {}",
+                "prepare user file root failed at {}: {}",
                 root.display(),
                 err
             );
             return;
         }
 
-        let public_root = root.join(SHARED_PUBLIC_DIR);
-        if let Err(err) = tokio::fs::create_dir_all(&public_root).await {
+        let recycle_root = root.join(INTERNAL_RECYCLE_BIN_DIR);
+        if let Err(err) = tokio::fs::create_dir_all(&recycle_root).await {
             warn!(
-                "prepare shared public directory failed at {}: {}",
-                public_root.display(),
-                err
-            );
-        }
-
-        let inbox_root = root.join(SHARED_INBOX_DIR);
-        if let Err(err) = tokio::fs::create_dir_all(&inbox_root).await {
-            warn!(
-                "prepare shared inbox root failed at {}: {}",
-                inbox_root.display(),
-                err
-            );
-        }
-
-        let user_inbox = root.join(Self::shared_inbox_prefix(&principal.username));
-        if let Err(err) = tokio::fs::create_dir_all(&user_inbox).await {
-            warn!(
-                "prepare shared inbox for {} failed at {}: {}",
+                "prepare recycle bin root failed for {} at {}: {}",
                 principal.username,
-                user_inbox.display(),
+                recycle_root.display(),
                 err
             );
+        }
+
+        let public_link = root.join(USER_PUBLIC_LINK_NAME);
+        let publish_root = Self::publish_root();
+        let link_metadata = tokio::fs::symlink_metadata(&public_link).await;
+        match link_metadata {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() {
+                    match tokio::fs::read_link(&public_link).await {
+                        Ok(target) if target == publish_root => {}
+                        Ok(target) => {
+                            warn!(
+                                "user public link points to unexpected target for {}: {} -> {}",
+                                principal.username,
+                                public_link.display(),
+                                target.display()
+                            );
+                        }
+                        Err(err) => {
+                            warn!(
+                                "read user public link failed for {} at {}: {}",
+                                principal.username,
+                                public_link.display(),
+                                err
+                            );
+                        }
+                    }
+                } else {
+                    warn!(
+                        "user public path exists but is not a symlink for {} at {}",
+                        principal.username,
+                        public_link.display()
+                    );
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                #[cfg(unix)]
+                {
+                    if let Err(err) = std::os::unix::fs::symlink(&publish_root, &public_link) {
+                        warn!(
+                            "create user public symlink failed for {} at {} -> {}: {}",
+                            principal.username,
+                            public_link.display(),
+                            publish_root.display(),
+                            err
+                        );
+                    }
+                }
+                #[cfg(windows)]
+                {
+                    if let Err(err) = std::os::windows::fs::symlink_dir(&publish_root, &public_link)
+                    {
+                        warn!(
+                            "create user public symlink failed for {} at {} -> {}: {}",
+                            principal.username,
+                            public_link.display(),
+                            publish_root.display(),
+                            err
+                        );
+                    }
+                }
+            }
+            Err(err) => {
+                warn!(
+                    "inspect user public link failed for {} at {}: {}",
+                    principal.username,
+                    public_link.display(),
+                    err
+                );
+            }
         }
     }
 
@@ -2469,7 +2481,7 @@ impl BuckyFileServer {
         };
 
         if let Ok(principal) = self.verify_trusted_token(&token).await {
-            self.ensure_shared_root_structure(&principal).await;
+            self.ensure_user_home(&principal).await;
             return Ok(principal);
         }
 
@@ -2483,10 +2495,6 @@ impl BuckyFileServer {
                 .body(Self::boxed_body(Vec::new()))
                 .unwrap_or_else(|_| unreachable!())
         }))
-    }
-
-    fn user_root(&self, _username: &str) -> PathBuf {
-        self.files_root()
     }
 
     fn parse_relative_path(raw: &str) -> Result<PathBuf, RPCErrors> {
@@ -3931,7 +3939,8 @@ impl BuckyFileServer {
                     err
                 )
             })? {
-                let entry_meta = entry.metadata().await.map_err(|err| {
+                let entry_path = entry.path();
+                let entry_meta = tokio::fs::metadata(&entry_path).await.map_err(|err| {
                     server_err!(
                         ServerErrorCode::InvalidData,
                         "read shared entry metadata failed: {}",
@@ -4163,7 +4172,8 @@ impl BuckyFileServer {
                 if file_name == INTERNAL_RECYCLE_BIN_DIR {
                     continue;
                 }
-                let entry_meta = entry.metadata().await.map_err(|err| {
+                let entry_path = entry.path();
+                let entry_meta = tokio::fs::metadata(&entry_path).await.map_err(|err| {
                     server_err!(
                         ServerErrorCode::InvalidData,
                         "read entry metadata failed: {}",
@@ -5552,7 +5562,7 @@ impl BuckyFileServer {
             })?;
 
         let item_id = Uuid::new_v4().simple().to_string();
-        let recycle_rel_path = Self::recycle_bin_item_rel_path(owner, &item_id, &name);
+        let recycle_rel_path = Self::recycle_bin_item_rel_path(&item_id, &name);
         let recycle_abs_path = self.user_root(owner).join(&recycle_rel_path);
         if let Some(parent) = recycle_abs_path.parent() {
             tokio::fs::create_dir_all(parent).await.map_err(|err| {
