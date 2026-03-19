@@ -18,20 +18,20 @@ const MAX_WORKSPACE_NAME_LEN: usize = 96;
 const MAX_POLICY_PROFILE_ID_LEN: usize = 128;
 const WORKSHOP_INDEX_FILE_NAME: &str = "index.json";
 pub(crate) const SESSION_BINDINGS_REL_PATH: &str = "workspaces/session_workspace_bindings.json";
-const LOCAL_WORKSPACES_REL_PATH: &str = "workspaces/";
+const LOCAL_WORKSPACES_REL_PATH: &str = "workspaces";
 
 static LOCAL_WORKSPACE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug)]
 pub struct LocalWorkspaceManagerConfig {
-    pub workshop_root: PathBuf,
+    pub agent_env_root: PathBuf,
     pub lock_ttl_ms: u64,
 }
 
 impl LocalWorkspaceManagerConfig {
-    pub fn new(workshop_root: impl Into<PathBuf>) -> Self {
+    pub fn new(agent_env_root: impl Into<PathBuf>) -> Self {
         Self {
-            workshop_root: workshop_root.into(),
+            agent_env_root: agent_env_root.into(),
             lock_ttl_ms: DEFAULT_LOCK_TTL_MS,
         }
     }
@@ -145,6 +145,8 @@ pub struct SessionWorkspaceBinding {
     pub session_id: String,
     pub local_workspace_id: String,
     pub workspace_path: String,
+    pub workspace_rel_path: String,
+    pub agent_env_root: String,
     pub bound_at_ms: u64,
 }
 
@@ -154,6 +156,8 @@ impl Default for SessionWorkspaceBinding {
             session_id: String::new(),
             local_workspace_id: String::new(),
             workspace_path: String::new(),
+            workspace_rel_path: String::new(),
+            agent_env_root: String::new(),
             bound_at_ms: 0,
         }
     }
@@ -250,13 +254,13 @@ impl LocalWorkspaceManager {
         mut cfg: LocalWorkspaceManagerConfig,
     ) -> Result<Self, AgentToolError> {
         let agent_did = validate_agent_did(agent_did.into())?;
-        cfg.workshop_root = normalize_workshop_root(&cfg.workshop_root)?;
+        cfg.agent_env_root = normalize_agent_env_root(&cfg.agent_env_root)?;
         if cfg.lock_ttl_ms == 0 {
             cfg.lock_ttl_ms = DEFAULT_LOCK_TTL_MS;
         }
 
-        ensure_workshop_layout(&cfg.workshop_root).await?;
-        let index_path = cfg.workshop_root.join(WORKSHOP_INDEX_FILE_NAME);
+        ensure_agent_env_layout(&cfg.agent_env_root).await?;
+        let index_path = cfg.agent_env_root.join(WORKSHOP_INDEX_FILE_NAME);
         let mut index = if fs::try_exists(&index_path)
             .await
             .map_err(|err| io_error("check workshop index", &index_path, err))?
@@ -276,7 +280,7 @@ impl LocalWorkspaceManager {
             write_json_file(&index_path, &index).await?;
         }
 
-        let session_bindings = load_session_bindings(&cfg.workshop_root).await?;
+        let session_bindings = load_session_bindings(&cfg.agent_env_root).await?;
         Ok(Self {
             cfg,
             state: std::sync::Arc::new(Mutex::new(LocalWorkspaceState {
@@ -291,13 +295,13 @@ impl LocalWorkspaceManager {
         mut cfg: LocalWorkspaceManagerConfig,
     ) -> Result<Self, AgentToolError> {
         let agent_did = validate_agent_did(agent_did.into())?;
-        cfg.workshop_root = normalize_workshop_root(&cfg.workshop_root)?;
+        cfg.agent_env_root = normalize_agent_env_root(&cfg.agent_env_root)?;
         if cfg.lock_ttl_ms == 0 {
             cfg.lock_ttl_ms = DEFAULT_LOCK_TTL_MS;
         }
 
-        ensure_workshop_layout(&cfg.workshop_root).await?;
-        let index_path = cfg.workshop_root.join(WORKSHOP_INDEX_FILE_NAME);
+        ensure_agent_env_layout(&cfg.agent_env_root).await?;
+        let index_path = cfg.agent_env_root.join(WORKSHOP_INDEX_FILE_NAME);
         if !fs::try_exists(&index_path)
             .await
             .map_err(|err| io_error("check workshop index", &index_path, err))?
@@ -315,7 +319,7 @@ impl LocalWorkspaceManager {
             write_json_file(&index_path, &index).await?;
         }
 
-        let session_bindings = load_session_bindings(&cfg.workshop_root).await?;
+        let session_bindings = load_session_bindings(&cfg.agent_env_root).await?;
         Ok(Self {
             cfg,
             state: std::sync::Arc::new(Mutex::new(LocalWorkspaceState {
@@ -325,12 +329,12 @@ impl LocalWorkspaceManager {
         })
     }
 
-    pub fn workshop_root(&self) -> &Path {
-        &self.cfg.workshop_root
+    pub fn agent_env_root(&self) -> &Path {
+        &self.cfg.agent_env_root
     }
 
     pub fn workspaces_root(&self) -> PathBuf {
-        self.cfg.workshop_root.join(LOCAL_WORKSPACES_REL_PATH)
+        self.cfg.agent_env_root.join(LOCAL_WORKSPACES_REL_PATH)
     }
 
     pub async fn workshop_index(&self) -> WorkshopIndex {
@@ -363,7 +367,7 @@ impl LocalWorkspaceManager {
             .join(&workspace_id)
             .to_string_lossy()
             .to_string();
-        let abs_path = self.cfg.workshop_root.join(&relative_path);
+        let abs_path = self.cfg.agent_env_root.join(&relative_path);
 
         if !fs::try_exists(&abs_path)
             .await
@@ -494,10 +498,12 @@ impl LocalWorkspaceManager {
             local_workspace_id: local_workspace_id.to_string(),
             workspace_path: self
                 .cfg
-                .workshop_root
+                .agent_env_root
                 .join(&target_path)
                 .to_string_lossy()
                 .to_string(),
+            workspace_rel_path: target_path.clone(),
+            agent_env_root: self.cfg.agent_env_root.to_string_lossy().to_string(),
             bound_at_ms: now,
         };
 
@@ -600,7 +606,7 @@ impl LocalWorkspaceManager {
                 "local workspace `{local_workspace_id}` missing relative_path"
             ))
         })?;
-        Ok(self.cfg.workshop_root.join(rel_path))
+        Ok(self.cfg.agent_env_root.join(rel_path))
     }
 
     pub async fn snapshot_metadata(
@@ -632,7 +638,7 @@ impl LocalWorkspaceManager {
                 ))
             })?;
             (
-                self.cfg.workshop_root.join(rel_path),
+                self.cfg.agent_env_root.join(rel_path),
                 item.status.clone(),
                 item.lock.clone(),
             )
@@ -869,13 +875,13 @@ impl LocalWorkspaceManager {
         &self,
         state: &LocalWorkspaceState,
     ) -> Result<(), AgentToolError> {
-        let index_path = self.cfg.workshop_root.join(WORKSHOP_INDEX_FILE_NAME);
+        let index_path = self.cfg.agent_env_root.join(WORKSHOP_INDEX_FILE_NAME);
         write_json_file(&index_path, &state.index).await?;
 
         let bindings = SessionBindingsFile {
             bindings: state.session_bindings.values().cloned().collect(),
         };
-        let binding_path = self.cfg.workshop_root.join(SESSION_BINDINGS_REL_PATH);
+        let binding_path = self.cfg.agent_env_root.join(SESSION_BINDINGS_REL_PATH);
         if let Some(parent) = binding_path.parent() {
             if !fs::try_exists(parent)
                 .await
@@ -908,7 +914,7 @@ impl LocalWorkspaceManager {
         }
 
         let mut skill_records = HashMap::<String, AgentSkillRecord>::new();
-        let agent_skills_root = self.cfg.workshop_root.join(agent_skill::SKILLS_REL_PATH);
+        let agent_skills_root = self.cfg.agent_env_root.join(agent_skill::SKILLS_REL_PATH);
         agent_skill::merge_skill_records_from_dir(&agent_skills_root, &mut skill_records).await?;
 
         let local_workspace_path = self.get_local_workspace_path(local_workspace_id).await?;
@@ -922,7 +928,7 @@ impl LocalWorkspaceManager {
     }
 
     pub async fn load_skill(&self, skill_name: &str) -> Result<AgentSkillSpec, AgentToolError> {
-        let skills_root = self.cfg.workshop_root.join(agent_skill::SKILLS_REL_PATH);
+        let skills_root = self.cfg.agent_env_root.join(agent_skill::SKILLS_REL_PATH);
         agent_skill::load_skill_from_root(&skills_root, skill_name).await
     }
 }
@@ -980,18 +986,16 @@ fn generate_workspace_id(name: &str, timestamp_ms: u64) -> String {
     format!("local-{slug}-{timestamp_ms}-{counter}")
 }
 
-async fn ensure_workshop_layout(workshop_root: &Path) -> Result<(), AgentToolError> {
+async fn ensure_agent_env_layout(agent_env_root: &Path) -> Result<(), AgentToolError> {
     let dirs = [
-        workshop_root.to_path_buf(),
-        workshop_root.join("tools"),
-        workshop_root.join("skills"),
-        workshop_root.join("sessions"),
-        workshop_root.join("workspaces"),
-        workshop_root.join("workspaces/local"),
-        workshop_root.join("workspaces/remote"),
-        workshop_root.join("worklog"),
-        workshop_root.join("todo"),
-        workshop_root.join("artifacts"),
+        agent_env_root.to_path_buf(),
+        agent_env_root.join("tools"),
+        agent_env_root.join("skills"),
+        agent_env_root.join("sessions"),
+        agent_env_root.join("workspaces"),
+        agent_env_root.join("worklog"),
+        agent_env_root.join("todo"),
+        agent_env_root.join("artifacts"),
     ];
 
     for dir in dirs {
@@ -1012,9 +1016,9 @@ async fn ensure_workshop_layout(workshop_root: &Path) -> Result<(), AgentToolErr
 }
 
 async fn load_session_bindings(
-    workshop_root: &Path,
+    agent_env_root: &Path,
 ) -> Result<HashMap<String, SessionWorkspaceBinding>, AgentToolError> {
-    let path = workshop_root.join(SESSION_BINDINGS_REL_PATH);
+    let path = agent_env_root.join(SESSION_BINDINGS_REL_PATH);
     if !fs::try_exists(&path)
         .await
         .map_err(|err| io_error("check session bindings", &path, err))?
@@ -1091,7 +1095,7 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-fn normalize_workshop_root(root: &Path) -> Result<PathBuf, AgentToolError> {
+fn normalize_agent_env_root(root: &Path) -> Result<PathBuf, AgentToolError> {
     let abs = if root.is_absolute() {
         root.to_path_buf()
     } else {

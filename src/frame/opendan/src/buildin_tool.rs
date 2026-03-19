@@ -68,9 +68,9 @@ impl EditFilePolicy {
 
         let allowed_write_roots = parse_workspace_relative_roots(
             params.get("allowed_write_roots"),
-            &workshop_cfg.workspace_root,
+            &workshop_cfg.agent_env_root,
         )?
-        .unwrap_or_else(|| vec![workshop_cfg.workspace_root.clone()]);
+        .unwrap_or_else(|| vec![workshop_cfg.agent_env_root.clone()]);
 
         Ok(Self {
             allow_create,
@@ -127,9 +127,9 @@ impl WriteFilePolicy {
 
         let allowed_write_roots = parse_workspace_relative_roots(
             params.get("allowed_write_roots"),
-            &workshop_cfg.workspace_root,
+            &workshop_cfg.agent_env_root,
         )?
-        .unwrap_or_else(|| vec![workshop_cfg.workspace_root.clone()]);
+        .unwrap_or_else(|| vec![workshop_cfg.agent_env_root.clone()]);
 
         Ok(Self {
             allow_create,
@@ -175,9 +175,9 @@ impl ReadFilePolicy {
 
         let allowed_read_roots = parse_workspace_relative_roots(
             params.get("allowed_read_roots"),
-            &workshop_cfg.workspace_root,
+            &workshop_cfg.agent_env_root,
         )?
-        .unwrap_or_else(|| vec![workshop_cfg.workspace_root.clone()]);
+        .unwrap_or_else(|| vec![workshop_cfg.agent_env_root.clone()]);
 
         Ok(Self {
             max_read_bytes,
@@ -244,7 +244,7 @@ impl AgentTool for EditFileTool {
         args: Json,
     ) -> Result<AgentToolResult, AgentToolError> {
         let file_path = require_string(&args, "path")?;
-        let abs_path = resolve_path_in_workspace(&self.cfg.workspace_root, &file_path)?;
+        let abs_path = resolve_path_in_agent_env(&self.cfg.agent_env_root, &file_path)?;
         if !is_path_under_any(&abs_path, &self.policy.allowed_write_roots) {
             return Err(AgentToolError::InvalidArgs(format!(
                 "path `{file_path}` is not writable by workshop tool policy"
@@ -447,7 +447,7 @@ impl AgentTool for WriteFileTool {
     ) -> Result<AgentToolResult, AgentToolError> {
         let file_path = require_string(&args, "path")?;
         let content = require_string(&args, "content")?;
-        let abs_path = resolve_path_in_workspace(&self.cfg.workspace_root, &file_path)?;
+        let abs_path = resolve_path_in_agent_env(&self.cfg.agent_env_root, &file_path)?;
         if !is_path_under_any(&abs_path, &self.policy.allowed_write_roots) {
             return Err(AgentToolError::InvalidArgs(format!(
                 "path `{file_path}` is not writable by workshop tool policy"
@@ -628,7 +628,7 @@ impl AgentTool for ReadFileTool {
         args: Json,
     ) -> Result<AgentToolResult, AgentToolError> {
         let file_path = require_string(&args, "path")?;
-        let abs_path = resolve_path_in_workspace(&self.cfg.workspace_root, &file_path)?;
+        let abs_path = resolve_path_in_agent_env(&self.cfg.agent_env_root, &file_path)?;
         if !is_path_under_any(&abs_path, &self.policy.allowed_read_roots) {
             return Err(AgentToolError::InvalidArgs(format!(
                 "path `{file_path}` is not readable by workshop tool policy"
@@ -675,7 +675,7 @@ impl AgentTool for ReadFileTool {
             "line_range": line_range_label,
             "bytes": full_content.len(),
             "truncated": truncated,
-            "pwd": self.cfg.workspace_root.to_string_lossy().to_string(),
+            "pwd": self.cfg.agent_env_root.to_string_lossy().to_string(),
         });
         let summary = format!(
             "read {} bytes{}",
@@ -1309,7 +1309,7 @@ pub(crate) fn read_bool_from_map(
 
 pub(crate) fn parse_workspace_relative_roots(
     value: Option<&Json>,
-    workspace_root: &Path,
+    agent_env_root: &Path,
 ) -> Result<Option<Vec<PathBuf>>, AgentToolError> {
     let Some(value) = value else {
         return Ok(None);
@@ -1322,13 +1322,13 @@ pub(crate) fn parse_workspace_relative_roots(
         let raw = item.as_str().ok_or_else(|| {
             AgentToolError::InvalidArgs("tool params path roots must be string array".to_string())
         })?;
-        roots.push(resolve_path_in_workspace(workspace_root, raw)?);
+        roots.push(resolve_path_in_agent_env(agent_env_root, raw)?);
     }
     Ok(Some(roots))
 }
 
-fn resolve_path_in_workspace(
-    workspace_root: &Path,
+fn resolve_path_in_agent_env(
+    agent_env_root: &Path,
     raw_path: &str,
 ) -> Result<PathBuf, AgentToolError> {
     if raw_path.trim().is_empty() {
@@ -1340,10 +1340,10 @@ fn resolve_path_in_workspace(
     let candidate = if user_path.is_absolute() {
         user_path.to_path_buf()
     } else {
-        workspace_root.join(user_path)
+        agent_env_root.join(user_path)
     };
     let normalized = normalize_abs_path(&candidate);
-    if !normalized.starts_with(workspace_root) {
+    if !normalized.starts_with(agent_env_root) {
         return Err(AgentToolError::InvalidArgs(format!(
             "path out of workspace scope: {raw_path}"
         )));

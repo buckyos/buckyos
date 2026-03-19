@@ -13,6 +13,7 @@ pub mod buildin_tool;
 pub mod test_utils;
 pub mod worklog;
 pub mod workspace;
+pub mod workspace_path;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -502,9 +503,7 @@ fn resolve_agent_env_root(
         &[
             "/agent_env",
             "/agent_env_root",
-            "/environment_root",
             "/runtime/agent_env",
-            "/runtime/environment_root",
             "/app_spec/install_config/custom_config/agent_env",
             "/app_spec/install_config/custom_config/agent_env_root",
             "/app_spec/app_doc/install_config_tips/custom_config/agent_env",
@@ -518,12 +517,8 @@ fn resolve_agent_env_root(
         &[
             "/agent_env",
             "/agent_env_root",
-            "/environment_root",
-            "/environment/root",
             "/paths/agent_env",
-            "/paths/environment",
             "/runtime/agent_env",
-            "/runtime/environment_root",
         ],
     );
     if direct.is_some() {
@@ -609,13 +604,7 @@ fn pkg_unique_name(pkg_id_or_name: &str) -> &str {
 }
 
 fn resolve_agent_env_root_from_spec_mounts(spec: &AgentAppSpec) -> Option<PathBuf> {
-    for key in [
-        "root",
-        "agent_root",
-        "agent_env",
-        "environment",
-        "workspace",
-    ] {
+    for key in ["root", "agent_root", "agent_env", "workspace"] {
         if let Some(path) = spec.install_config.data_mount_point.get(key) {
             let path = path.trim();
             if !path.is_empty() {

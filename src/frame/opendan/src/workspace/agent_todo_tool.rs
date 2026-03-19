@@ -75,8 +75,8 @@ impl TodoTool {
         if session_id.is_empty() {
             return None;
         }
-        let workshop_root = self.cfg.db_path.parent()?.parent()?;
-        let bindings_path = workshop_root.join(SESSION_BINDINGS_REL_PATH);
+        let agent_env_root = self.cfg.db_path.parent()?.parent()?;
+        let bindings_path = agent_env_root.join(SESSION_BINDINGS_REL_PATH);
         let raw = std::fs::read_to_string(bindings_path).ok()?;
         let parsed = serde_json::from_str::<TodoSessionBindingsFile>(&raw).ok()?;
         parsed
@@ -1416,13 +1416,13 @@ mod tests {
     }
 
     fn write_session_binding(tool: &TodoTool, session_id: &str, workspace_id: &str) {
-        let workshop_root = tool
+        let agent_env_root = tool
             .cfg
             .db_path
             .parent()
             .and_then(|parent| parent.parent())
-            .expect("workshop root from db path");
-        let bindings_path = workshop_root.join(SESSION_BINDINGS_REL_PATH);
+            .expect("agent env root from db path");
+        let bindings_path = agent_env_root.join(SESSION_BINDINGS_REL_PATH);
         std::fs::create_dir_all(bindings_path.parent().expect("bindings parent"))
             .expect("create sessions dir");
         let payload = json!({

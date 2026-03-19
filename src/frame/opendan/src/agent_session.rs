@@ -21,6 +21,9 @@ use crate::agent_tool::{AgentTool, AgentToolError, AgentToolResult, ToolSpec, TO
 use crate::behavior::SessionRuntimeContext;
 use crate::worklog::{render_worklog_prompt_line, render_worklog_prompt_line_from_parts};
 use crate::workspace::LocalWorkspaceManager;
+use crate::workspace_path::{
+    resolve_agent_env_root, resolve_bound_workspace_root, WORKSHOP_WORKLOG_DB_REL_PATH,
+};
 
 const DEFAULT_SESSION_FILE: &str = "session.json";
 const DEFAULT_SESSION_SUMMARY_FILE: &str = "summary.md";
@@ -689,7 +692,7 @@ impl AgentSession {
             PathBuf::from(raw_session)
         } else {
             let session_id = sanitize_session_id(raw_session)?;
-            let default_root = PathBuf::from("session");
+            let default_root = PathBuf::from("sessions");
             if fs::metadata(&default_root)
                 .await
                 .map(|meta| meta.is_dir())
@@ -866,7 +869,7 @@ impl AgentSessionMgr {
         &self.sessions_root
     }
 
-    fn workspace_root(&self) -> PathBuf {
+    fn agent_env_root(&self) -> PathBuf {
         self.sessions_root
             .parent()
             .map(|path| path.to_path_buf())
@@ -875,8 +878,8 @@ impl AgentSessionMgr {
 
     fn hydrate_session_runtime_context(&self, session: &mut AgentSession) {
         if session.pwd.as_os_str().is_empty() {
-            session.pwd = bound_workspace_root_from_info(session.workspace_info.as_ref())
-                .unwrap_or_else(|| self.workspace_root());
+            session.pwd = resolve_bound_workspace_root(session.workspace_info.as_ref())
+                .unwrap_or_else(|| self.agent_env_root());
         }
         if session.session_root_dir.as_os_str().is_empty() {
             session.session_root_dir = self.sessions_root.clone();
@@ -1437,29 +1440,13 @@ fn extract_step_summary_text(summary: &Json) -> Option<String> {
     None
 }
 
-fn bound_workspace_root_from_info(workspace_info: Option<&Json>) -> Option<PathBuf> {
-    workspace_info
-        .and_then(|value| value.get("binding"))
-        .and_then(|value| value.get("workspace_path"))
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-}
-
 fn resolve_workspace_worklog_db_path(
     workspace_info: Option<&Json>,
     session_cwd: &Path,
 ) -> Option<PathBuf> {
-    let candidates = collect_workspace_path_candidates(workspace_info, session_cwd);
-    let roots = collect_candidate_ancestors(&candidates);
-    for root in roots {
-        let worklog_db_path = root.join("worklog").join("worklog.db");
-        if worklog_db_path.is_file() {
-            return Some(worklog_db_path);
-        }
-    }
-    None
+    resolve_agent_env_root(workspace_info, session_cwd)
+        .map(|root| root.join(WORKSHOP_WORKLOG_DB_REL_PATH))
+        .filter(|path| path.is_file())
 }
 
 fn resolve_default_local_workspace_path(
@@ -1467,100 +1454,12 @@ fn resolve_default_local_workspace_path(
     workspace_info: Option<&Json>,
     session_cwd: &Path,
 ) -> Option<PathBuf> {
-    let local_workspace_id = normalize_optional_text(local_workspace_id)?;
-    let candidates = collect_workspace_path_candidates(workspace_info, session_cwd);
-    let roots = collect_candidate_ancestors(&candidates);
-    for root in roots {
-        let path = root
-            .join("workspaces")
-            .join("local")
-            .join(local_workspace_id.as_str());
-        if path.is_dir() {
-            return Some(path);
-        }
-    }
-    None
-}
-
-fn collect_workspace_path_candidates(
-    workspace_info: Option<&Json>,
-    session_cwd: &Path,
-) -> Vec<PathBuf> {
-    let mut out = Vec::<PathBuf>::new();
-    if let Some(path) = bound_workspace_root_from_info(workspace_info) {
-        push_unique_pathbuf(&mut out, path);
-    }
-    if let Some(workspace_info) = workspace_info {
-        for pointer in [
-            "/workspace_root",
-            "/workspace/root",
-            "/workspace/root_path",
-            "/workspace/path",
-            "/workspace/cwd",
-            "/workspace/workspace_path",
-            "/binding/workspace_path",
-            "/binding/workspace_root",
-            "/root",
-            "/root_path",
-            "/path",
-            "/workspace_path",
-        ] {
-            let path = workspace_info
-                .pointer(pointer)
-                .and_then(|value| value.as_str())
-                .map(str::trim)
-                .filter(|value| !value.is_empty());
-            if let Some(path) = path {
-                push_unique_pathbuf(&mut out, PathBuf::from(path));
-            }
-        }
-    }
-    if !session_cwd.as_os_str().is_empty() {
-        push_unique_pathbuf(&mut out, session_cwd.to_path_buf());
-    }
-    if out.is_empty() {
-        if let Ok(current) = std::env::current_dir() {
-            push_unique_pathbuf(&mut out, current);
-        }
-    }
-    out
-}
-
-fn collect_candidate_ancestors(paths: &[PathBuf]) -> Vec<PathBuf> {
-    let mut out = Vec::<PathBuf>::new();
-    for path in paths {
-        let candidate = if path.is_absolute() {
-            path.clone()
-        } else if let Ok(current_dir) = std::env::current_dir() {
-            current_dir.join(path)
-        } else {
-            path.clone()
-        };
-        for ancestor in candidate.ancestors() {
-            if ancestor.as_os_str().is_empty() {
-                continue;
-            }
-            push_unique_pathbuf(&mut out, ancestor.to_path_buf());
-        }
-    }
-    out
-}
-
-fn push_unique_pathbuf(paths: &mut Vec<PathBuf>, value: PathBuf) {
-    if value.as_os_str().is_empty() {
-        return;
-    }
-    if paths.iter().any(|item| item == &value) {
-        return;
-    }
-    paths.push(value);
-}
-
-fn normalize_optional_text(value: Option<&str>) -> Option<String> {
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_string())
+    crate::workspace_path::resolve_default_local_workspace_path(
+        local_workspace_id,
+        workspace_info,
+        session_cwd,
+    )
+    .filter(|path| path.is_dir())
 }
 
 fn parse_runtime_meta(meta: &Json) -> SessionRuntimeState {
@@ -1855,7 +1754,7 @@ mod tests {
     #[tokio::test]
     async fn session_summary_file_is_persisted_and_preferred_over_session_json() {
         let root = tempfile::tempdir().expect("create temp dir");
-        let sessions_root = root.path().join("session");
+        let sessions_root = root.path().join("sessions");
         let store = AgentSessionMgr::new(
             "did:opendan:test",
             sessions_root.clone(),
@@ -1914,7 +1813,7 @@ mod tests {
     #[tokio::test]
     async fn hydrate_restores_pwd_from_bound_workspace_info() {
         let root = tempfile::tempdir().expect("create temp dir");
-        let sessions_root = root.path().join("session");
+        let sessions_root = root.path().join("sessions");
         let store = AgentSessionMgr::new(
             "did:opendan:test",
             sessions_root.clone(),
@@ -1962,11 +1861,7 @@ mod tests {
     async fn session_resolve_workspace_worklog_db_path_uses_bound_workspace() {
         let root = tempfile::tempdir().expect("create temp dir");
         let local_workspace_id = "ws-demo";
-        let workspace_path = root
-            .path()
-            .join("workspaces")
-            .join("local")
-            .join(local_workspace_id);
+        let workspace_path = root.path().join("workspaces").join(local_workspace_id);
         let worklog_db_path = workspace_path.join("worklog").join("worklog.db");
         fs::create_dir_all(worklog_db_path.parent().expect("worklog parent"))
             .await

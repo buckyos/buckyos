@@ -42,7 +42,6 @@ use crate::behavior::{
 };
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
-const LEGACY_ENV_DIR_NAME: &str = "environment";
 const MAX_MSG_PULL_PER_TICK: usize = 128;
 const MAX_EVENT_PULL_TIMEOUT_MS: u64 = 10_000;
 const MAX_SESSION_WORKER_IDLE_SLEEP_MS: u64 = 10_000;
@@ -212,7 +211,7 @@ pub struct AIAgent {
     memory: AgentMemory,
     session_mgr: Arc<AgentSessionMgr>,
     environment: Arc<AgentEnvironment>,
-    workspace_root: PathBuf,
+    agent_env_root: PathBuf,
 
     tokenizer: Arc<SimpleTokenizer>,
 
@@ -301,13 +300,13 @@ impl AIAgent {
         )
         .await?;
 
-        let workspace_root = resolve_workspace_root(&agent_root, &cfg.environment_dir_name).await?;
-        let session_root = workspace_root.join("session");
+        let agent_env_root = resolve_agent_env_root(&agent_root).await?;
+        let session_root = agent_env_root.join("sessions");
 
         let tools = Arc::new(AgentToolManager::new());
 
         let environment = Arc::new(
-            AgentEnvironment::new(workspace_root.clone())
+            AgentEnvironment::new(agent_env_root.clone())
                 .await
                 .map_err(|err| anyhow!("init agent environment failed: {err}"))?,
         );
@@ -358,7 +357,7 @@ impl AIAgent {
             role_md,
             self_md,
             behavior_roots,
-            workspace_root,
+            agent_env_root,
             tools,
             memory,
             environment,
@@ -2999,8 +2998,8 @@ impl AIAgent {
         self.did.to_string()
     }
 
-    pub fn workspace_root(&self) -> &Path {
-        &self.workspace_root
+    pub fn agent_env_root(&self) -> &Path {
+        &self.agent_env_root
     }
 
     fn contact_mgr_owner_did(&self) -> &DID {
@@ -3300,27 +3299,15 @@ fn extract_action_result_pwd(result: &crate::agent_tool::AgentToolResult) -> Opt
         .map(|v| v.to_string())
 }
 
-async fn resolve_workspace_root(agent_root: &Path, env_name: &str) -> Result<PathBuf> {
-    let normal = agent_root.join(env_name);
-    let legacy = agent_root.join(LEGACY_ENV_DIR_NAME);
-
-    let root = if is_existing_dir(&normal).await {
-        normal
-    } else if is_existing_dir(&legacy).await {
-        legacy
-    } else if looks_like_workspace_root(agent_root).await {
-        agent_root.to_path_buf()
-    } else {
-        normal
-    };
-
+async fn resolve_agent_env_root(agent_root: &Path) -> Result<PathBuf> {
+    let root = agent_root.to_path_buf();
     info!(
-        "agent.persist_entity_prepare: kind=workspace_root path={}",
+        "agent.persist_entity_prepare: kind=agent_env_root path={}",
         root.display()
     );
     fs::create_dir_all(&root).await.map_err(|err| {
         anyhow!(
-            "create workspace root failed: path={} err={}",
+            "create agent env root failed: path={} err={}",
             root.display(),
             err
         )
@@ -3576,29 +3563,6 @@ async fn is_existing_dir(path: &Path) -> bool {
         .await
         .map(|meta| meta.is_dir())
         .unwrap_or(false)
-}
-
-async fn looks_like_workspace_root(path: &Path) -> bool {
-    for dir_name in [
-        "config",
-        "prompts",
-        "behaviors",
-        "session",
-        "workspace",
-        "state",
-        "logs",
-        "memory",
-        "cache",
-        "todo",
-        "tools",
-        "artifacts",
-        "worklog",
-    ] {
-        if is_existing_dir(&path.join(dir_name)).await {
-            return true;
-        }
-    }
-    false
 }
 
 fn compact_text_for_log(value: &str, max_chars: usize) -> String {
@@ -4083,7 +4047,7 @@ process_rule: "test behavior for action rendering"
             .expect("ensure session");
         {
             let mut guard = session.lock().await;
-            guard.pwd = agent.workspace_root.clone();
+            guard.pwd = agent.agent_env_root.clone();
         }
         agent
             .session_mgr
@@ -4092,13 +4056,13 @@ process_rule: "test behavior for action rendering"
             .expect("save session");
 
         fs::write(
-            agent.workspace_root.join("prompt_preview.txt"),
+            agent.agent_env_root.join("prompt_preview.txt"),
             "line-1\nline-2\nline-3\n",
         )
         .await
         .expect("write preview file");
         fs::write(
-            agent.workspace_root.join("edit_preview.txt"),
+            agent.agent_env_root.join("edit_preview.txt"),
             "line-alpha\nline-beta\nline-gamma\n",
         )
         .await
@@ -4110,13 +4074,13 @@ process_rule: "test behavior for action rendering"
         }
         let large_bytes = large_content.len();
         fs::write(
-            agent.workspace_root.join("large_preview.txt"),
+            agent.agent_env_root.join("large_preview.txt"),
             large_content,
         )
         .await
         .expect("write large preview file");
 
-        let tree_root = agent.workspace_root.join("tree_preview");
+        let tree_root = agent.agent_env_root.join("tree_preview");
         for i in 0..8 {
             let branch = tree_root.join(format!("dir-{i:02}"));
             fs::create_dir_all(branch.join("nested"))
@@ -4139,7 +4103,7 @@ process_rule: "test behavior for action rendering"
         }
 
         let curl_source = "curl-source-line\n".repeat(1024);
-        fs::write(agent.workspace_root.join("curl_source.txt"), &curl_source)
+        fs::write(agent.agent_env_root.join("curl_source.txt"), &curl_source)
             .await
             .expect("write curl source file");
 
@@ -4238,18 +4202,18 @@ process_rule: "test behavior for action rendering"
             "read_file missing-file.txt  =>  read file failed: No such file or directory (os error 2)"
         ));
 
-        let edited = fs::read_to_string(agent.workspace_root.join("edit_preview.txt"))
+        let edited = fs::read_to_string(agent.agent_env_root.join("edit_preview.txt"))
             .await
             .expect("read edited file");
         assert!(edited.contains("line-alpha-before\nline-alpha\n"));
         assert!(edited.contains("line-beta-updated"));
         assert!(edited.contains("line-gamma\nline-gamma-after\n"));
-        let write_preview = fs::read_to_string(agent.workspace_root.join("write_preview.txt"))
+        let write_preview = fs::read_to_string(agent.agent_env_root.join("write_preview.txt"))
             .await
             .expect("read write preview file");
         assert_eq!(write_preview, "preview-write-line\n");
 
-        let downloaded = fs::read_to_string(agent.workspace_root.join("curl_download.txt"))
+        let downloaded = fs::read_to_string(agent.agent_env_root.join("curl_download.txt"))
             .await
             .expect("read downloaded file");
         assert_eq!(downloaded, curl_source);

@@ -1334,8 +1334,8 @@ mod tests {
     async fn build_real_tool_catalog_for_review(
     ) -> (Vec<ToolSpec>, Vec<ToolSpec>, Vec<ToolSpec>, Vec<ToolSpec>) {
         let temp = tempdir().expect("create tempdir for tool catalog");
-        let workspace_root = temp.path().join("workspace");
-        let sessions_root = workspace_root.join("session");
+        let agent_env_root = temp.path().join("workspace");
+        let sessions_root = agent_env_root.join("sessions");
         let agent_root = temp.path().join("agent");
         let runtime_agents_root = temp.path().join("runtime_agents");
 
@@ -1346,7 +1346,7 @@ mod tests {
                 .expect("create session store"),
         );
 
-        let environment = AgentEnvironment::new(workspace_root)
+        let environment = AgentEnvironment::new(agent_env_root)
             .await
             .expect("create agent environment");
         environment

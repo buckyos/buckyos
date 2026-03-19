@@ -66,9 +66,9 @@ impl ExecBashPolicy {
         let allow_env = read_bool_from_map(params, "allow_env")?.unwrap_or(true);
         let allowed_cwd_roots = parse_workspace_relative_roots(
             params.get("allowed_cwd_roots"),
-            &workshop_cfg.workspace_root,
+            &workshop_cfg.agent_env_root,
         )?
-        .unwrap_or_else(|| vec![workshop_cfg.workspace_root.clone()]);
+        .unwrap_or_else(|| vec![workshop_cfg.agent_env_root.clone()]);
 
         Ok(Self {
             default_timeout_ms,
@@ -475,16 +475,16 @@ impl ExecBashTool {
 
     async fn align_tmux_path_to_workspace(&self, tmux_path: &Path) -> Option<PathBuf> {
         let normalized = normalize_abs_path(tmux_path);
-        if normalized.starts_with(&self.cfg.workspace_root) {
+        if normalized.starts_with(&self.cfg.agent_env_root) {
             return Some(normalized);
         }
 
         // tmux may report a different absolute alias (e.g. /private/var vs /var on macOS).
-        // Canonicalize and remap back under workspace_root so downstream policy checks remain stable.
+        // Canonicalize and remap back under agent_env_root so downstream policy checks remain stable.
         let canonical_tmux = fs::canonicalize(tmux_path).await.ok()?;
-        let canonical_root = fs::canonicalize(&self.cfg.workspace_root).await.ok()?;
+        let canonical_root = fs::canonicalize(&self.cfg.agent_env_root).await.ok()?;
         let relative = canonical_tmux.strip_prefix(&canonical_root).ok()?;
-        Some(normalize_abs_path(&self.cfg.workspace_root.join(relative)))
+        Some(normalize_abs_path(&self.cfg.agent_env_root.join(relative)))
     }
 
     async fn resolve_session_pwd(&self, session_id: &str) -> Result<PathBuf, AgentToolError> {
@@ -498,14 +498,14 @@ impl ExecBashTool {
             guard.pwd.clone()
         };
         let pwd = if raw_pwd.as_os_str().is_empty() {
-            self.cfg.workspace_root.clone()
+            self.cfg.agent_env_root.clone()
         } else if raw_pwd.is_absolute() {
             normalize_abs_path(&raw_pwd)
         } else {
-            normalize_abs_path(&self.cfg.workspace_root.join(raw_pwd))
+            normalize_abs_path(&self.cfg.agent_env_root.join(raw_pwd))
         };
 
-        if !pwd.starts_with(&self.cfg.workspace_root) {
+        if !pwd.starts_with(&self.cfg.agent_env_root) {
             return Err(AgentToolError::InvalidArgs(format!(
                 "session pwd out of workspace scope: {}",
                 pwd.display()
@@ -522,7 +522,7 @@ impl ExecBashTool {
     }
 
     async fn persist_session_pwd(&self, session_id: &str, pwd: &Path) {
-        if !pwd.starts_with(&self.cfg.workspace_root)
+        if !pwd.starts_with(&self.cfg.agent_env_root)
             || !is_path_under_any(pwd, &self.policy.allowed_cwd_roots)
         {
             return;
@@ -559,7 +559,7 @@ impl ExecBashTool {
 
         let runtime_dir = self
             .cfg
-            .workspace_root
+            .agent_env_root
             .join(".runtime")
             .join("exec_bash")
             .join(sanitize_token_for_id(session_id));

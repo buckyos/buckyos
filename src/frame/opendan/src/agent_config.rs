@@ -3,7 +3,6 @@ use std::path::PathBuf;
 const DEFAULT_ROLE_MD: &str = "role.md";
 const DEFAULT_SELF_MD: &str = "self.md";
 const DEFAULT_BEHAVIORS_DIR: &str = "behaviors";
-const DEFAULT_ENVIRONMENT_DIR: &str = "environment";
 const DEFAULT_WORKLOG_FILE: &str = "worklog/agent-loop.jsonl";
 const DEFAULT_MEMORY_TOKEN_LIMIT: u32 = 1_500;
 
@@ -15,7 +14,6 @@ pub struct AIAgentConfig {
     pub agent_did: Option<String>,
     pub agent_owner_did: Option<String>,
     pub behaviors_dir_name: String,
-    pub environment_dir_name: String,
     pub role_file_name: String,
     pub self_file_name: String,
     pub worklog_file_rel_path: PathBuf,
@@ -41,7 +39,6 @@ impl AIAgentConfig {
             agent_did: None,
             agent_owner_did: None,
             behaviors_dir_name: DEFAULT_BEHAVIORS_DIR.to_string(),
-            environment_dir_name: DEFAULT_ENVIRONMENT_DIR.to_string(),
             role_file_name: DEFAULT_ROLE_MD.to_string(),
             self_file_name: DEFAULT_SELF_MD.to_string(),
             worklog_file_rel_path: PathBuf::from(DEFAULT_WORKLOG_FILE),

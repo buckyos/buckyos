@@ -622,13 +622,13 @@ end"#;
   <reply>先执行检查命令，再执行结构化编辑动作。</reply>
   <shell_commands>
     <![CDATA[
-      sed -n '1,240p' workspaces/local-llk-frontend-game-1772767149633-0/index.html
-      sed -n '240,520p' workspaces/local-llk-frontend-game-1772767149633-0/index.html
+      sed -n '1,240p' workspaces/llk-frontend-game-1772767149633-0/index.html
+      sed -n '240,520p' workspaces/llk-frontend-game-1772767149633-0/index.html
     ]]>
   </shell_commands>
   <actions mode="all">
     <command>echo hello</command>
-    <exec name="write_file" path="workspaces/local-llk-frontend-game-1772767149633-0/index.html" mode="write">
+    <exec name="write_file" path="workspaces/llk-frontend-game-1772767149633-0/index.html" mode="write">
       <![CDATA[
         hello from cdata
       ]]>
@@ -648,7 +648,7 @@ end"#;
                         .get("path")
                         .and_then(Json::as_str)
                         .unwrap_or_default(),
-                    "workspaces/local-llk-frontend-game-1772767149633-0/index.html"
+                    "workspaces/llk-frontend-game-1772767149633-0/index.html"
                 );
                 assert_eq!(
                     call.call_params

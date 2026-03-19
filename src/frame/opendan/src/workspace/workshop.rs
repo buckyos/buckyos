@@ -46,7 +46,7 @@ const DEFAULT_LOCAL_WORKSPACE_LOCK_TTL_MS: u64 = 120_000;
 
 #[derive(Clone, Debug)]
 pub struct AgentWorkshopConfig {
-    pub workspace_root: PathBuf,
+    pub agent_env_root: PathBuf,
     pub agent_did: String,
     pub bash_path: PathBuf,
     pub default_timeout_ms: u64,
@@ -58,9 +58,9 @@ pub struct AgentWorkshopConfig {
 }
 
 impl AgentWorkshopConfig {
-    pub fn new(workspace_root: impl Into<PathBuf>) -> Self {
+    pub fn new(agent_env_root: impl Into<PathBuf>) -> Self {
         Self {
-            workspace_root: workspace_root.into(),
+            agent_env_root: agent_env_root.into(),
             agent_did: DEFAULT_AGENT_DID.to_string(),
             bash_path: PathBuf::from(DEFAULT_BASH_PATH),
             default_timeout_ms: DEFAULT_TIMEOUT_MS,
@@ -166,12 +166,12 @@ impl AgentWorkshop {
         mut cfg: AgentWorkshopConfig,
         create_if_missing: bool,
     ) -> Result<Self, AgentToolError> {
-        let workspace_root = normalize_workspace_root(&cfg.workspace_root)?;
-        create_minimal_workspace_dirs(&workspace_root).await?;
-        cfg.workspace_root = workspace_root.clone();
+        let agent_env_root = normalize_agent_env_root(&cfg.agent_env_root)?;
+        create_minimal_agent_env_dirs(&agent_env_root).await?;
+        cfg.agent_env_root = agent_env_root.clone();
 
         let local_cfg = LocalWorkspaceManagerConfig {
-            workshop_root: workspace_root.clone(),
+            agent_env_root: agent_env_root.clone(),
             lock_ttl_ms: cfg.local_workspace_lock_ttl_ms,
         };
         let local_workspace_mgr = if create_if_missing {
@@ -180,7 +180,7 @@ impl AgentWorkshop {
             LocalWorkspaceManager::load_workshop(cfg.agent_did.clone(), local_cfg).await?
         };
 
-        let tools_cfg = load_tools_config(&workspace_root, &cfg).await?;
+        let tools_cfg = load_tools_config(&agent_env_root, &cfg).await?;
         validate_tools_config(&tools_cfg)?;
 
         Ok(Self {
@@ -190,8 +190,8 @@ impl AgentWorkshop {
         })
     }
 
-    pub fn workspace_root(&self) -> &Path {
-        &self.cfg.workspace_root
+    pub fn agent_env_root(&self) -> &Path {
+        &self.cfg.agent_env_root
     }
 
     pub fn tools_config(&self) -> &AgentWorkshopToolsConfig {
@@ -396,8 +396,8 @@ impl AgentWorkshop {
             }
         }
 
-        Ok(WorklogToolConfig::with_db_path(resolve_path_in_workspace(
-            &self.cfg.workspace_root,
+        Ok(WorklogToolConfig::with_db_path(resolve_path_in_agent_env(
+            &self.cfg.agent_env_root,
             DEFAULT_WORKLOG_DB_REL_PATH,
         )?))
     }
@@ -896,9 +896,9 @@ impl TodoToolPolicy {
         })?;
 
         let db_path = if let Some(raw_db_path) = read_string_from_map(params, "db_path")? {
-            resolve_path_in_workspace(&workshop_cfg.workspace_root, &raw_db_path)?
+            resolve_path_in_agent_env(&workshop_cfg.agent_env_root, &raw_db_path)?
         } else {
-            resolve_path_in_workspace(&workshop_cfg.workspace_root, DEFAULT_TODO_DB_REL_PATH)?
+            resolve_path_in_agent_env(&workshop_cfg.agent_env_root, DEFAULT_TODO_DB_REL_PATH)?
         };
 
         let default_list_limit = read_u64_from_map(params, "default_list_limit")?
@@ -945,9 +945,9 @@ impl WorklogToolPolicy {
         })?;
 
         let db_path = if let Some(raw_db_path) = read_string_from_map(params, "db_path")? {
-            resolve_path_in_workspace(&workshop_cfg.workspace_root, &raw_db_path)?
+            resolve_path_in_agent_env(&workshop_cfg.agent_env_root, &raw_db_path)?
         } else {
-            resolve_path_in_workspace(&workshop_cfg.workspace_root, DEFAULT_WORKLOG_DB_REL_PATH)?
+            resolve_path_in_agent_env(&workshop_cfg.agent_env_root, DEFAULT_WORKLOG_DB_REL_PATH)?
         };
 
         let default_list_limit = read_u64_from_map(params, "default_list_limit")?
@@ -1101,7 +1101,7 @@ fn build_mcp_tool_config(tool_cfg: &WorkshopToolConfig) -> Result<MCPToolConfig,
     })
 }
 
-fn normalize_workspace_root(root: &Path) -> Result<PathBuf, AgentToolError> {
+fn normalize_agent_env_root(root: &Path) -> Result<PathBuf, AgentToolError> {
     let root_abs = if root.is_absolute() {
         root.to_path_buf()
     } else {
@@ -1112,25 +1112,23 @@ fn normalize_workspace_root(root: &Path) -> Result<PathBuf, AgentToolError> {
     Ok(normalize_abs_path(&root_abs))
 }
 
-async fn create_minimal_workspace_dirs(workspace_root: &Path) -> Result<(), AgentToolError> {
+async fn create_minimal_agent_env_dirs(agent_env_root: &Path) -> Result<(), AgentToolError> {
     let roots = [
-        workspace_root.to_path_buf(),
-        workspace_root.join("skills"),
-        workspace_root.join("sessions"),
-        workspace_root.join("workspaces"),
-        workspace_root.join("workspaces/local"),
-        workspace_root.join("workspaces/remote"),
-        workspace_root.join("worklog"),
-        workspace_root.join("todo"),
-        workspace_root.join("tools"),
-        workspace_root.join("artifacts"),
+        agent_env_root.to_path_buf(),
+        agent_env_root.join("skills"),
+        agent_env_root.join("sessions"),
+        agent_env_root.join("workspaces"),
+        agent_env_root.join("worklog"),
+        agent_env_root.join("todo"),
+        agent_env_root.join("tools"),
+        agent_env_root.join("artifacts"),
     ];
     for dir in roots {
         if !fs::try_exists(&dir).await.map_err(|err| {
             AgentToolError::ExecFailed(format!("check dir `{}` failed: {err}", dir.display()))
         })? {
             info!(
-                "opendan.persist_entity_prepare: kind=workshop_root_dir path={}",
+                "opendan.persist_entity_prepare: kind=agent_env_root_dir path={}",
                 dir.display()
             );
         }
@@ -1142,10 +1140,10 @@ async fn create_minimal_workspace_dirs(workspace_root: &Path) -> Result<(), Agen
 }
 
 async fn load_tools_config(
-    workspace_root: &Path,
+    agent_env_root: &Path,
     workshop_cfg: &AgentWorkshopConfig,
 ) -> Result<AgentWorkshopToolsConfig, AgentToolError> {
-    let tools_json_path = workspace_root.join(&workshop_cfg.tools_json_rel_path);
+    let tools_json_path = agent_env_root.join(&workshop_cfg.tools_json_rel_path);
     match fs::read_to_string(&tools_json_path).await {
         Ok(content) => {
             let cfg =
@@ -1186,8 +1184,8 @@ fn validate_tools_config(cfg: &AgentWorkshopToolsConfig) -> Result<(), AgentTool
     Ok(())
 }
 
-fn resolve_path_in_workspace(
-    workspace_root: &Path,
+fn resolve_path_in_agent_env(
+    agent_env_root: &Path,
     raw_path: &str,
 ) -> Result<PathBuf, AgentToolError> {
     if raw_path.trim().is_empty() {
@@ -1199,10 +1197,10 @@ fn resolve_path_in_workspace(
     let candidate = if user_path.is_absolute() {
         user_path.to_path_buf()
     } else {
-        workspace_root.join(user_path)
+        agent_env_root.join(user_path)
     };
     let normalized = normalize_abs_path(&candidate);
-    if !normalized.starts_with(workspace_root) {
+    if !normalized.starts_with(agent_env_root) {
         return Err(AgentToolError::InvalidArgs(format!(
             "path out of workspace scope: {raw_path}"
         )));
@@ -1240,7 +1238,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::process::Command;
 
-    fn unique_workspace_root(test_name: &str) -> PathBuf {
+    fn unique_agent_env_root(test_name: &str) -> PathBuf {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -1249,32 +1247,42 @@ mod tests {
     }
 
     async fn create_session_store(root: &Path) -> Arc<AgentSessionMgr> {
+        create_session_store_with_id(root, "session-test").await
+    }
+
+    async fn create_session_store_with_id(root: &Path, session_id: &str) -> Arc<AgentSessionMgr> {
         let store = Arc::new(
             AgentSessionMgr::new(
                 "did:example:agent".to_string(),
-                root.join("session"),
+                root.join("sessions"),
                 "on_wakeup".to_string(),
             )
             .await
             .expect("create session store"),
         );
         let session = store
-            .ensure_session("session-test", Some("Session Test".to_string()), None, None)
+            .ensure_session(session_id, Some("Session Test".to_string()), None, None)
             .await
             .expect("ensure session");
         {
             let mut guard = session.lock().await;
             guard.pwd = root.to_path_buf();
         }
-        store
-            .save_session("session-test")
-            .await
-            .expect("save session");
+        store.save_session(session_id).await.expect("save session");
         store
     }
 
     async fn call(
         tool_mgr: &AgentToolManager,
+        name: &str,
+        args: Json,
+    ) -> Result<AgentToolResult, AgentToolError> {
+        call_with_session_id(tool_mgr, "session-test", name, args).await
+    }
+
+    async fn call_with_session_id(
+        tool_mgr: &AgentToolManager,
+        session_id: &str,
         name: &str,
         args: Json,
     ) -> Result<AgentToolResult, AgentToolError> {
@@ -1286,7 +1294,7 @@ mod tests {
                     behavior: "on_wakeup".to_string(),
                     step_idx: 0,
                     wakeup_id: "wakeup-test".to_string(),
-                    session_id: "session-test".to_string(),
+                    session_id: session_id.to_string(),
                 },
                 AiToolCall {
                     name: name.to_string(),
@@ -1346,18 +1354,20 @@ mod tests {
         if !tmux_ready().await {
             return;
         }
-        let root = unique_workspace_root("exec-bash");
+        let root = unique_agent_env_root("exec-bash");
+        let session_id = "session-tmux-linux";
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
-        let session_store = create_session_store(&root).await;
+        let session_store = create_session_store_with_id(&root, session_id).await;
         let tool_mgr = AgentToolManager::new();
         workshop
             .register_tools(&tool_mgr, session_store)
             .expect("register workshop tools");
 
-        let result = call(
+        let result = call_with_session_id(
             &tool_mgr,
+            session_id,
             TOOL_EXEC_BASH,
             json!({
                 "command": "printf 'hello-linux'",
@@ -1377,7 +1387,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_bash_tool_can_forward_line_to_registered_tool() {
-        let root = unique_workspace_root("exec-bash-forward-tool");
+        let root = unique_agent_env_root("exec-bash-forward-tool");
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
@@ -1431,7 +1441,8 @@ mod tests {
         if !tmux_ready().await {
             return;
         }
-        let root = unique_workspace_root("exec-bash-pane-cwd");
+        let root = unique_agent_env_root("exec-bash-pane-cwd");
+        let session_id = "session-tmux-pane-cwd";
         fs::create_dir_all(root.join("subdir"))
             .await
             .expect("create subdir");
@@ -1442,9 +1453,9 @@ mod tests {
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
-        let session_store = create_session_store(&root).await;
+        let session_store = create_session_store_with_id(&root, session_id).await;
         let session = session_store
-            .get_session("session-test")
+            .get_session(session_id)
             .await
             .expect("session should exist");
         {
@@ -1452,7 +1463,7 @@ mod tests {
             guard.pwd = root.join("subdir");
         }
         session_store
-            .save_session("session-test")
+            .save_session(session_id)
             .await
             .expect("save session");
 
@@ -1461,8 +1472,9 @@ mod tests {
             .register_tools(&tool_mgr, session_store)
             .expect("register workshop tools");
 
-        let result = call(
+        let result = call_with_session_id(
             &tool_mgr,
+            session_id,
             TOOL_EXEC_BASH,
             json!({
                 "command": "cat 1.txt\nread_file 1.txt 1:1",
@@ -1494,7 +1506,8 @@ mod tests {
         if !tmux_ready().await {
             return;
         }
-        let root = unique_workspace_root("exec-bash-cd-pane-pwd");
+        let root = unique_agent_env_root("exec-bash-cd-pane-pwd");
+        let session_id = "session-tmux-cd-pane-pwd";
         fs::create_dir_all(root.join("subdir"))
             .await
             .expect("create subdir");
@@ -1505,9 +1518,9 @@ mod tests {
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
-        let session_store = create_session_store(&root).await;
+        let session_store = create_session_store_with_id(&root, session_id).await;
         let session = session_store
-            .get_session("session-test")
+            .get_session(session_id)
             .await
             .expect("session should exist");
         {
@@ -1515,7 +1528,7 @@ mod tests {
             guard.pwd = root.clone();
         }
         session_store
-            .save_session("session-test")
+            .save_session(session_id)
             .await
             .expect("save session");
 
@@ -1524,8 +1537,9 @@ mod tests {
             .register_tools(&tool_mgr, session_store)
             .expect("register workshop tools");
 
-        let result = call(
+        let result = call_with_session_id(
             &tool_mgr,
+            session_id,
             TOOL_EXEC_BASH,
             json!({
                 "command": "cd subdir\nread_file 1.txt 1:1",
@@ -1552,7 +1566,7 @@ mod tests {
 
     #[tokio::test]
     async fn do_actions_mixed_cmds_and_calls_support_builtin_tools_in_bash_cmd() {
-        let root = unique_workspace_root("do-actions-mixed");
+        let root = unique_agent_env_root("do-actions-mixed");
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
@@ -1653,7 +1667,7 @@ mod tests {
 
     #[tokio::test]
     async fn edit_file_tool_writes_file_and_returns_diff() {
-        let root = unique_workspace_root("edit-file");
+        let root = unique_agent_env_root("edit-file");
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
@@ -1701,7 +1715,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_file_tool_supports_new_append_write_modes() {
-        let root = unique_workspace_root("write-file-modes");
+        let root = unique_agent_env_root("write-file-modes");
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
@@ -1770,7 +1784,7 @@ mod tests {
 
     #[tokio::test]
     async fn edit_file_tool_supports_pos_chunk_modes_and_noop_on_miss() {
-        let root = unique_workspace_root("edit-pos-chunk");
+        let root = unique_agent_env_root("edit-pos-chunk");
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
@@ -1833,7 +1847,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_file_tool_supports_first_chunk_and_range() {
-        let root = unique_workspace_root("read-range");
+        let root = unique_agent_env_root("read-range");
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
@@ -1907,7 +1921,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_workspace_tool_creates_and_binds_for_session() {
-        let root = unique_workspace_root("create-workspace");
+        let root = unique_agent_env_root("create-workspace");
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
@@ -1953,7 +1967,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_workspace_tool_rejects_non_bash_mode() {
-        let root = unique_workspace_root("create-workspace-non-bash");
+        let root = unique_agent_env_root("create-workspace-non-bash");
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
@@ -1983,7 +1997,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_workspace_tool_rejects_extra_bash_args() {
-        let root = unique_workspace_root("create-workspace-extra-args");
+        let root = unique_agent_env_root("create-workspace-extra-args");
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
@@ -2010,7 +2024,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_workspace_tool_requires_summary_argument() {
-        let root = unique_workspace_root("create-workspace-missing-summary");
+        let root = unique_agent_env_root("create-workspace-missing-summary");
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
@@ -2034,7 +2048,7 @@ mod tests {
 
     #[tokio::test]
     async fn bind_workspace_tool_fails_when_session_already_bound() {
-        let root = unique_workspace_root("bind-local-workspace-fail-rebind");
+        let root = unique_agent_env_root("bind-local-workspace-fail-rebind");
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
@@ -2106,7 +2120,7 @@ mod tests {
 
     #[tokio::test]
     async fn bind_workspace_tool_rejects_non_bash_mode() {
-        let root = unique_workspace_root("bind-workspace-non-bash");
+        let root = unique_agent_env_root("bind-workspace-non-bash");
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
             .expect("create workshop");
@@ -2136,7 +2150,7 @@ mod tests {
 
     #[tokio::test]
     async fn tools_config_can_enable_subset_of_runtime_tools() {
-        let root = unique_workspace_root("tool-subset");
+        let root = unique_agent_env_root("tool-subset");
         write_tools_json(
             &root,
             json!({
@@ -2175,7 +2189,7 @@ mod tests {
 
     #[tokio::test]
     async fn tool_params_apply_workshop_boundary_controls() {
-        let root = unique_workspace_root("tool-policy");
+        let root = unique_agent_env_root("tool-policy");
         write_tools_json(
             &root,
             json!({
@@ -2234,7 +2248,7 @@ mod tests {
 
     #[tokio::test]
     async fn tools_config_can_register_mcp_tool() {
-        let root = unique_workspace_root("tool-mcp");
+        let root = unique_agent_env_root("tool-mcp");
         write_tools_json(
             &root,
             json!({
@@ -2275,7 +2289,7 @@ mod tests {
 
     #[tokio::test]
     async fn tools_markdown_is_ignored_without_tools_json() {
-        let root = unique_workspace_root("tool-md");
+        let root = unique_agent_env_root("tool-md");
         let md_path = root.join("tools/tools.md");
         fs::create_dir_all(md_path.parent().expect("tools parent"))
             .await
@@ -2318,7 +2332,7 @@ mod tests {
 
     #[tokio::test]
     async fn worklog_manage_tool_is_not_registered_even_if_enabled() {
-        let root = unique_workspace_root("worklog-manage-removed");
+        let root = unique_agent_env_root("worklog-manage-removed");
         write_tools_json(
             &root,
             json!({

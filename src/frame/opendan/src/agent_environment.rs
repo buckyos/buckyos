@@ -24,6 +24,11 @@ use crate::workspace::{
     AgentWorkshop, AgentWorkshopConfig, LocalWorkspaceManager, WorkshopIndex,
     WorkshopWorkspaceRecord, WorkspaceType,
 };
+use crate::workspace_path::{
+    non_empty_path, resolve_agent_env_root, resolve_agent_env_root_from_local_workspace_hint,
+    resolve_default_local_workspace_path, resolve_session_workspace_root, WORKSHOP_INDEX_FILE_NAME,
+    WORKSHOP_TODO_DB_REL_PATH,
+};
 
 const MAX_INCLUDE_BYTES: usize = 64 * 1024;
 const MAX_TOTAL_RENDER_BYTES: usize = 256 * 1024;
@@ -33,8 +38,6 @@ const DEFAULT_NEW_MSG_MAX_PULL: usize = 32;
 const DEFAULT_SESSION_LIST_MAX_PULL: usize = 16;
 const DEFAULT_LOCAL_WORKSPACE_LIST_MAX_PULL: usize = 16;
 const SESSION_RECORD_FILE_NAME: &str = "session.json";
-const WORKSHOP_INDEX_FILE_NAME: &str = "index.json";
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TemplateRenderMode {
     Text,
@@ -68,13 +71,13 @@ pub struct AgentTemplateRenderResult {
 }
 
 impl AgentEnvironment {
-    pub async fn new(workspace_root: impl Into<PathBuf>) -> Result<Self, AgentToolError> {
-        let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(workspace_root)).await?;
+    pub async fn new(agent_env_root: impl Into<PathBuf>) -> Result<Self, AgentToolError> {
+        let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(agent_env_root)).await?;
         Ok(Self { workshop })
     }
 
-    pub fn workspace_root(&self) -> &Path {
-        self.workshop.workspace_root()
+    pub fn agent_env_root(&self) -> &Path {
+        self.workshop.agent_env_root()
     }
 
     pub fn local_workspace_manager(&self) -> &LocalWorkspaceManager {
@@ -425,8 +428,7 @@ impl AgentEnvironment {
                 .and_then(|ws| resolve_workspace_info_text(ws, k)));
         }
 
-        let workspace_root = extract_workspace_root_from_info(workspace_info.as_ref())
-            .or_else(|| non_empty_path(&session_cwd))
+        let workspace_root = resolve_session_workspace_root(workspace_info.as_ref(), &session_cwd)
             .unwrap_or(std::env::current_dir().map_err(|err| {
                 AgentToolError::ExecFailed(format!("read current_dir failed: {err}"))
             })?);
@@ -569,11 +571,11 @@ impl AgentEnvironment {
         }
 
         let root = match ns {
-            "workspace" => self.workspace_root().to_path_buf(),
+            "workspace" => self.agent_env_root().to_path_buf(),
             "cwd" => ctx
                 .cwd_path
                 .clone()
-                .unwrap_or_else(|| self.workspace_root().to_path_buf()),
+                .unwrap_or_else(|| self.agent_env_root().to_path_buf()),
             _ => return Ok(None),
         };
 
@@ -884,38 +886,32 @@ async fn render_recent_local_workspaces_from_disk(
         return None;
     }
 
-    let candidates = collect_workspace_path_candidates(workspace_info, session_cwd);
-    let candidate_roots = collect_candidate_ancestors(&candidates);
-    let mut records = Vec::<WorkshopWorkspaceRecord>::new();
-
-    for root in candidate_roots {
-        let index_path = root.join(WORKSHOP_INDEX_FILE_NAME);
-        if !fs::metadata(&index_path)
-            .await
-            .map(|meta| meta.is_file())
-            .unwrap_or(false)
-        {
-            continue;
-        }
-
-        let local_root = root.join("workspaces").join("local");
-        if !fs::metadata(&local_root)
-            .await
-            .map(|meta| meta.is_dir())
-            .unwrap_or(false)
-        {
-            continue;
-        }
-
-        let Ok(raw) = fs::read_to_string(&index_path).await else {
-            continue;
-        };
-        let Ok(index) = serde_json::from_str::<WorkshopIndex>(&raw) else {
-            continue;
-        };
-        records = index.workspaces;
-        break;
+    let root = resolve_agent_env_root(workspace_info, session_cwd)?;
+    let index_path = root.join(WORKSHOP_INDEX_FILE_NAME);
+    if !fs::metadata(&index_path)
+        .await
+        .map(|meta| meta.is_file())
+        .unwrap_or(false)
+    {
+        return None;
     }
+
+    let local_root = root.join("workspaces");
+    if !fs::metadata(&local_root)
+        .await
+        .map(|meta| meta.is_dir())
+        .unwrap_or(false)
+    {
+        return None;
+    }
+
+    let Ok(raw) = fs::read_to_string(&index_path).await else {
+        return None;
+    };
+    let Ok(index) = serde_json::from_str::<WorkshopIndex>(&raw) else {
+        return None;
+    };
+    let records = index.workspaces;
 
     if records.is_empty() {
         return None;
@@ -972,7 +968,7 @@ async fn resolve_session_root_from_cwd(
 
     for root in roots {
         for ancestor in root.ancestors() {
-            let session_root = ancestor.join("session");
+            let session_root = ancestor.join("sessions");
             let marker = session_root
                 .join(session_id.as_str())
                 .join(SESSION_RECORD_FILE_NAME);
@@ -1255,104 +1251,21 @@ fn resolve_todo_db_path(
     workspace_info: Option<&Json>,
     session_cwd: &Path,
 ) -> Option<PathBuf> {
-    let candidates = collect_workspace_path_candidates(workspace_info, session_cwd);
-    let candidate_roots = collect_candidate_ancestors(&candidates);
-
-    if let Some(local_workspace_id) = normalize_optional_text(local_workspace_id) {
-        for root in &candidate_roots {
-            let local_workspace_path = root
-                .join("workspaces")
-                .join("local")
-                .join(local_workspace_id.as_str());
-            let todo_db_path = root.join("todo").join("todo.db");
-            if local_workspace_path.is_dir() && todo_db_path.is_file() {
-                return Some(todo_db_path);
-            }
+    if let Some(local_workspace_path) =
+        resolve_default_local_workspace_path(local_workspace_id, workspace_info, session_cwd)
+    {
+        if !local_workspace_path.is_dir() {
+            return None;
         }
     }
 
-    for root in &candidate_roots {
-        let todo_db_path = root.join("todo").join("todo.db");
-        if todo_db_path.is_file() {
-            return Some(todo_db_path);
-        }
-    }
-
-    None
-}
-
-fn collect_workspace_path_candidates(
-    workspace_info: Option<&Json>,
-    session_cwd: &Path,
-) -> Vec<PathBuf> {
-    let mut out = Vec::<PathBuf>::new();
-    if let Some(workspace_info) = workspace_info {
-        // FIXME(opendan-strong-typing): Weakly-typed compatibility lookup from Json is forbidden.
-        // Replace with strongly-typed structs + serde deserialization.
-        for pointer in [
-            "/workspace_root",
-            "/workspace/root",
-            "/workspace/root_path",
-            "/workspace/path",
-            "/workspace/cwd",
-            "/workspace/workspace_path",
-            "/binding/workspace_path",
-            "/binding/workspace_root",
-            "/root",
-            "/root_path",
-            "/path",
-            "/workspace_path",
-        ] {
-            let path = workspace_info
-                .pointer(pointer)
-                .and_then(|value| value.as_str())
-                .map(str::trim)
-                .filter(|value| !value.is_empty());
-            if let Some(path) = path {
-                push_unique_pathbuf(&mut out, PathBuf::from(path));
-            }
-        }
-    }
-    if let Some(path) = non_empty_path(session_cwd) {
-        push_unique_pathbuf(&mut out, path);
-    }
-    if out.is_empty() {
-        if let Ok(current) = std::env::current_dir() {
-            push_unique_pathbuf(&mut out, current);
-        }
-    }
-    out
-}
-
-fn collect_candidate_ancestors(paths: &[PathBuf]) -> Vec<PathBuf> {
-    let mut out = Vec::<PathBuf>::new();
-    for path in paths {
-        let candidate = if path.is_absolute() {
-            path.clone()
-        } else if let Ok(current_dir) = std::env::current_dir() {
-            current_dir.join(path)
-        } else {
-            path.clone()
-        };
-
-        for ancestor in candidate.ancestors() {
-            if ancestor.as_os_str().is_empty() {
-                continue;
-            }
-            push_unique_pathbuf(&mut out, ancestor.to_path_buf());
-        }
-    }
-    out
-}
-
-fn push_unique_pathbuf(paths: &mut Vec<PathBuf>, value: PathBuf) {
-    if value.as_os_str().is_empty() {
-        return;
-    }
-    if paths.iter().any(|item| item == &value) {
-        return;
-    }
-    paths.push(value);
+    resolve_agent_env_root_from_local_workspace_hint(
+        local_workspace_id,
+        workspace_info,
+        session_cwd,
+    )
+    .map(|root| root.join(WORKSHOP_TODO_DB_REL_PATH))
+    .filter(|path| path.is_file())
 }
 
 fn normalize_optional_text(value: Option<&str>) -> Option<String> {
@@ -1402,40 +1315,6 @@ fn push_unique_path(paths: &mut Vec<String>, value: &str) {
         return;
     }
     paths.push(trimmed.to_string());
-}
-
-fn extract_workspace_root_from_info(workspace_info: Option<&Json>) -> Option<PathBuf> {
-    // FIXME(opendan-strong-typing): Weakly-typed compatibility lookup from Json is forbidden.
-    // Replace with strongly-typed structs + serde deserialization.
-    let info = workspace_info?;
-    for pointer in [
-        "/workspace_root",
-        "/workspace/root",
-        "/workspace/root_path",
-        "/workspace/path",
-        "/workspace/cwd",
-        "/root",
-        "/root_path",
-        "/path",
-    ] {
-        let root = info
-            .pointer(pointer)
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        if let Some(root) = root {
-            return Some(PathBuf::from(root));
-        }
-    }
-    None
-}
-
-fn non_empty_path(path: &Path) -> Option<PathBuf> {
-    if path.as_os_str().is_empty() {
-        None
-    } else {
-        Some(path.to_path_buf())
-    }
 }
 
 async fn load_text_from_root(
@@ -1785,14 +1664,11 @@ mod tests {
     #[tokio::test]
     async fn load_value_from_session_workspace_todolist_todo_ref_reads_db_with_session_scope() {
         let root = tempdir().expect("create temp dir");
-        let workshop_root = root.path();
+        let agent_env_root = root.path();
         let local_workspace_id = "ws-demo";
         let session_id = "s-work";
-        let todo_db_path = workshop_root.join("todo").join("todo.db");
-        let workspace_dir = workshop_root
-            .join("workspaces")
-            .join("local")
-            .join(local_workspace_id);
+        let todo_db_path = agent_env_root.join("todo").join("todo.db");
+        let workspace_dir = agent_env_root.join("workspaces").join(local_workspace_id);
         std::fs::create_dir_all(&workspace_dir).expect("create local workspace path");
 
         // Ensure todo schema exists.
@@ -1839,10 +1715,7 @@ mod tests {
 
         let mut s_other = AgentSession::new("s-other", "did:test:agent", Some("on_wakeup"));
         s_other.local_workspace_id = Some(local_workspace_id.to_string());
-        s_other.pwd = workshop_root
-            .join("workspaces")
-            .join("local")
-            .join(local_workspace_id);
+        s_other.pwd = agent_env_root.join("workspaces").join(local_workspace_id);
         let session_other = Arc::new(Mutex::new(s_other));
         let hidden =
             AgentEnvironment::load_value_from_session(session_other, "workspace.todolist.T001")
@@ -2132,7 +2005,7 @@ mod tests {
     #[tokio::test]
     async fn load_value_from_session_session_list_defaults_to_16_and_sorts_recent_first() {
         let root = tempdir().expect("create temp dir");
-        let session_root = root.path().join("session");
+        let session_root = root.path().join("sessions");
         fs::create_dir_all(&session_root)
             .await
             .expect("create session root");
@@ -2211,7 +2084,7 @@ mod tests {
     #[tokio::test]
     async fn load_value_from_session_local_workspace_list_sorts_recent_first() {
         let root = tempdir().expect("create temp dir");
-        fs::create_dir_all(root.path().join("workspaces").join("local"))
+        fs::create_dir_all(root.path().join("workspaces"))
             .await
             .expect("create local workspace dir");
 

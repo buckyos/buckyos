@@ -27,6 +27,12 @@ use crate::worklog::{
 use crate::workspace::agent_skill::{
     load_skill_from_root, merge_skill_records_from_dir, AgentSkillRecord,
 };
+use crate::workspace_path::{
+    resolve_agent_env_root,
+    resolve_default_local_workspace_path as resolve_default_local_workspace_root,
+    resolve_session_workspace_root, LOCAL_WORKSPACE_SKILLS_DIR,
+    LOCAL_WORKSPACE_WORKLOG_DB_REL_PATH, WORKSHOP_WORKLOG_DB_REL_PATH,
+};
 
 use super::sanitize::{sanitize_json_compact, sanitize_text};
 use super::types::BehaviorExecInput;
@@ -642,109 +648,19 @@ fn resolve_worklog_db_path(
     workspace_info: Option<&Json>,
     session_cwd: &Path,
 ) -> Option<PathBuf> {
-    let candidates = collect_workspace_path_candidates(workspace_info, session_cwd);
-    let roots = collect_candidate_ancestors(&candidates);
-
     if let Some(local_workspace_path) =
-        resolve_default_local_workspace_path(local_workspace_id, workspace_info, session_cwd)
+        resolve_default_local_workspace_root(local_workspace_id, workspace_info, session_cwd)
+            .filter(|path| path.is_dir())
     {
-        let worklog_db_path = local_workspace_path.join("worklog").join("worklog.db");
+        let worklog_db_path = local_workspace_path.join(LOCAL_WORKSPACE_WORKLOG_DB_REL_PATH);
         if worklog_db_path.is_file() {
             return Some(worklog_db_path);
         }
     }
 
-    for root in &roots {
-        let worklog_db_path = root.join("worklog").join("worklog.db");
-        if worklog_db_path.is_file() {
-            return Some(worklog_db_path);
-        }
-    }
-    None
-}
-
-fn collect_workspace_path_candidates(
-    workspace_info: Option<&Json>,
-    session_cwd: &Path,
-) -> Vec<PathBuf> {
-    let mut out = Vec::<PathBuf>::new();
-    if let Some(workspace_info) = workspace_info {
-        // FIXME(opendan-strong-typing): Weakly-typed compatibility lookup from Json is forbidden.
-        // Replace with strongly-typed structs + serde deserialization.
-        for pointer in [
-            "/workspace_root",
-            "/workspace/root",
-            "/workspace/root_path",
-            "/workspace/path",
-            "/workspace/cwd",
-            "/workspace/workspace_path",
-            "/binding/workspace_path",
-            "/binding/workspace_root",
-            "/root",
-            "/root_path",
-            "/path",
-            "/workspace_path",
-        ] {
-            if let Some(path) = workspace_info
-                .pointer(pointer)
-                .and_then(|value| value.as_str())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                push_unique_pathbuf(&mut out, PathBuf::from(path));
-            }
-        }
-    }
-
-    if let Some(path) = non_empty_path(session_cwd) {
-        push_unique_pathbuf(&mut out, path);
-    }
-    if out.is_empty() {
-        if let Ok(current) = std::env::current_dir() {
-            push_unique_pathbuf(&mut out, current);
-        }
-    }
-    out
-}
-
-fn resolve_default_local_workspace_path(
-    local_workspace_id: Option<&str>,
-    workspace_info: Option<&Json>,
-    session_cwd: &Path,
-) -> Option<PathBuf> {
-    let local_workspace_id = normalize_optional_text(local_workspace_id)?;
-    let candidates = collect_workspace_path_candidates(workspace_info, session_cwd);
-    let roots = collect_candidate_ancestors(&candidates);
-    for root in roots {
-        let path = root
-            .join("workspaces")
-            .join("local")
-            .join(local_workspace_id.as_str());
-        if path.is_dir() {
-            return Some(path);
-        }
-    }
-    None
-}
-
-fn collect_candidate_ancestors(paths: &[PathBuf]) -> Vec<PathBuf> {
-    let mut out = Vec::<PathBuf>::new();
-    for path in paths {
-        let candidate = if path.is_absolute() {
-            path.clone()
-        } else if let Ok(current_dir) = std::env::current_dir() {
-            current_dir.join(path)
-        } else {
-            path.clone()
-        };
-        for ancestor in candidate.ancestors() {
-            if ancestor.as_os_str().is_empty() {
-                continue;
-            }
-            push_unique_pathbuf(&mut out, ancestor.to_path_buf());
-        }
-    }
-    out
+    resolve_agent_env_root(workspace_info, session_cwd)
+        .map(|root| root.join(WORKSHOP_WORKLOG_DB_REL_PATH))
+        .filter(|path| path.is_file())
 }
 
 fn push_unique_pathbuf(paths: &mut Vec<PathBuf>, value: PathBuf) {
@@ -2360,48 +2276,27 @@ async fn collect_workspace_skill_roots(
     workspace_info: Option<&Json>,
     session_cwd: &Path,
 ) -> Vec<PathBuf> {
-    let mut candidates = Vec::<PathBuf>::new();
-    if let Some(workspace_info) = workspace_info {
-        for pointer in [
-            "/workspace_root",
-            "/workspace/root",
-            "/workspace/root_path",
-            "/workspace/path",
-            "/workspace/cwd",
-            "/workspace/workspace_path",
-            "/binding/workspace_path",
-            "/binding/workspace_root",
-            "/root",
-            "/root_path",
-            "/path",
-            "/workspace_path",
-        ] {
-            if let Some(path) = workspace_info
-                .pointer(pointer)
-                .and_then(|value| value.as_str())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                push_unique_pathbuf(&mut candidates, PathBuf::from(path));
-            }
-        }
-    }
-    if let Some(path) = non_empty_path(session_cwd) {
-        push_unique_pathbuf(&mut candidates, path);
-    }
-    if candidates.is_empty() {
-        return vec![];
-    }
-
-    let roots = collect_candidate_ancestors(&candidates);
     let mut skill_roots = Vec::<PathBuf>::new();
     if let Some(local_workspace_path) =
-        resolve_default_local_workspace_path(local_workspace_id, workspace_info, session_cwd)
+        resolve_default_local_workspace_root(local_workspace_id, workspace_info, session_cwd)
+            .filter(|path| path.is_dir())
     {
-        push_unique_pathbuf(&mut skill_roots, local_workspace_path.join("skills"));
+        push_unique_pathbuf(
+            &mut skill_roots,
+            local_workspace_path.join(LOCAL_WORKSPACE_SKILLS_DIR),
+        );
     }
-    for root in roots {
-        push_unique_pathbuf(&mut skill_roots, root.join("skills"));
+    if let Some(workspace_root) = resolve_session_workspace_root(workspace_info, session_cwd) {
+        push_unique_pathbuf(
+            &mut skill_roots,
+            workspace_root.join(LOCAL_WORKSPACE_SKILLS_DIR),
+        );
+    }
+    if let Some(agent_env_root) = resolve_agent_env_root(workspace_info, session_cwd) {
+        push_unique_pathbuf(
+            &mut skill_roots,
+            agent_env_root.join(LOCAL_WORKSPACE_SKILLS_DIR),
+        );
     }
 
     let mut existing = Vec::<PathBuf>::new();
@@ -2735,9 +2630,9 @@ mod tests {
     #[tokio::test]
     async fn load_history_messages_with_limit_reads_session_jsonl_reverse() {
         let temp = tempdir().expect("create tempdir");
-        let workspace_root = temp.path().join("workspace");
+        let agent_env_root = temp.path().join("workspace");
         let session_id = "session-1";
-        let session_dir = workspace_root.join("session").join(session_id);
+        let session_dir = agent_env_root.join("sessions").join(session_id);
         tokio::fs::create_dir_all(&session_dir)
             .await
             .expect("create session dir");
@@ -2799,8 +2694,8 @@ mod tests {
         .expect("write msg record file");
 
         let mut session = AgentSession::new(session_id, "did:web:agent.example.com", None);
-        session.pwd = workspace_root.clone();
-        session.session_root_dir = workspace_root.join("session");
+        session.pwd = agent_env_root.clone();
+        session.session_root_dir = agent_env_root.join("sessions");
         let input = BehaviorExecInput {
             session_id: session_id.to_string(),
             trace: SessionRuntimeContext {
@@ -2839,9 +2734,9 @@ mod tests {
     #[tokio::test]
     async fn build_memory_prompt_text_includes_history_messages_timeline() {
         let temp = tempdir().expect("create tempdir");
-        let workspace_root = temp.path().join("workspace");
+        let agent_env_root = temp.path().join("workspace");
         let session_id = "session-1";
-        let session_dir = workspace_root.join("session").join(session_id);
+        let session_dir = agent_env_root.join("sessions").join(session_id);
         tokio::fs::create_dir_all(&session_dir)
             .await
             .expect("create session dir");
@@ -2951,8 +2846,8 @@ mod tests {
         .expect("write msg record file");
 
         let mut session = AgentSession::new(session_id, "did:web:agent.example.com", None);
-        session.pwd = workspace_root.clone();
-        session.session_root_dir = workspace_root.join("session");
+        session.pwd = agent_env_root.clone();
+        session.session_root_dir = agent_env_root.join("sessions");
         let input = BehaviorExecInput {
             session_id: session_id.to_string(),
             trace: SessionRuntimeContext {
@@ -3007,12 +2902,9 @@ mod tests {
     #[tokio::test]
     async fn load_workspace_worklog_with_limit_reads_from_worklog_db() {
         let temp = tempdir().expect("create tempdir");
-        let workspace_root = temp.path().join("workspace");
+        let agent_env_root = temp.path().join("workspace");
         let local_workspace_id = "ws-demo";
-        let local_workspace_path = workspace_root
-            .join("workspaces")
-            .join("local")
-            .join(local_workspace_id);
+        let local_workspace_path = agent_env_root.join("workspaces").join(local_workspace_id);
         let worklog_db = local_workspace_path.join("worklog").join("worklog.db");
 
         let worklog_tool =
@@ -3107,12 +2999,9 @@ mod tests {
     #[tokio::test]
     async fn load_workspace_worklog_with_limit_falls_back_when_workspace_id_missing_in_record() {
         let temp = tempdir().expect("create tempdir");
-        let workspace_root = temp.path().join("workspace");
+        let agent_env_root = temp.path().join("workspace");
         let local_workspace_id = "ws-demo";
-        let local_workspace_path = workspace_root
-            .join("workspaces")
-            .join("local")
-            .join(local_workspace_id);
+        let local_workspace_path = agent_env_root.join("workspaces").join(local_workspace_id);
         let worklog_db = local_workspace_path.join("worklog").join("worklog.db");
 
         let worklog_tool =
@@ -3184,12 +3073,9 @@ mod tests {
     #[tokio::test]
     async fn load_workspace_worklog_with_limit_filters_last_step_records() {
         let temp = tempdir().expect("create tempdir");
-        let workspace_root = temp.path().join("workspace");
+        let agent_env_root = temp.path().join("workspace");
         let local_workspace_id = "ws-demo";
-        let local_workspace_path = workspace_root
-            .join("workspaces")
-            .join("local")
-            .join(local_workspace_id);
+        let local_workspace_path = agent_env_root.join("workspaces").join(local_workspace_id);
         let worklog_db = local_workspace_path.join("worklog").join("worklog.db");
 
         let worklog_tool =
@@ -3281,12 +3167,9 @@ mod tests {
     #[tokio::test]
     async fn load_workspace_worklog_with_limit_ignores_tool_call_action_noise() {
         let temp = tempdir().expect("create tempdir");
-        let workspace_root = temp.path().join("workspace");
+        let agent_env_root = temp.path().join("workspace");
         let local_workspace_id = "ws-demo";
-        let local_workspace_path = workspace_root
-            .join("workspaces")
-            .join("local")
-            .join(local_workspace_id);
+        let local_workspace_path = agent_env_root.join("workspaces").join(local_workspace_id);
         let worklog_db = local_workspace_path.join("worklog").join("worklog.db");
 
         let worklog_tool =
@@ -3374,12 +3257,9 @@ mod tests {
     #[tokio::test]
     async fn load_workspace_worklog_with_limit_formats_step_header_and_nested_lines() {
         let temp = tempdir().expect("create tempdir");
-        let workspace_root = temp.path().join("workspace");
+        let agent_env_root = temp.path().join("workspace");
         let local_workspace_id = "ws-demo";
-        let local_workspace_path = workspace_root
-            .join("workspaces")
-            .join("local")
-            .join(local_workspace_id);
+        let local_workspace_path = agent_env_root.join("workspaces").join(local_workspace_id);
         let worklog_db = local_workspace_path.join("worklog").join("worklog.db");
 
         let worklog_tool =

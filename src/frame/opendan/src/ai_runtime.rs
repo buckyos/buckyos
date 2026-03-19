@@ -27,14 +27,13 @@ use crate::behavior::SessionRuntimeContext;
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
 const DEFAULT_SUB_AGENTS_DIR: &str = "sub-agents";
-const DEFAULT_ENVIRONMENT_DIR: &str = "environment";
 const DEFAULT_EXTERNAL_WORKSPACES_DIR: &str = "workspaces";
 const DEFAULT_BEHAVIORS_DIR: &str = "behaviors";
 const DEFAULT_MEMORY_DIR: &str = "memory";
 const DEFAULT_ROLE_FILE: &str = "role.md";
 const DEFAULT_SELF_FILE: &str = "self.md";
 const DEFAULT_WORKSPACE_BINDINGS_FILE: &str = "bindings.json";
-const DEFAULT_AGENT_SESSIONS_DIR: &str = "session";
+const DEFAULT_AGENT_SESSIONS_DIR: &str = "sessions";
 const DEFAULT_AGENT_SESSION_FILE_NAME: &str = "session.json";
 const DEFAULT_AGENT_SESSION_DB_FILE_NAME: &str = "sessions.db";
 const DEFAULT_SUB_AGENT_ROLE: &str = "# Role\nYou are a specialized sub-agent.\n";
@@ -90,7 +89,6 @@ impl From<AiRuntimeError> for AgentToolError {
 pub struct AiRuntimeConfig {
     pub agents_root: PathBuf,
     pub sub_agents_dir_name: String,
-    pub environment_dir_name: String,
     pub external_workspaces_dir_name: String,
     pub role_file_name: String,
     pub self_file_name: String,
@@ -102,7 +100,6 @@ impl AiRuntimeConfig {
         Self {
             agents_root: agents_root.into(),
             sub_agents_dir_name: DEFAULT_SUB_AGENTS_DIR.to_string(),
-            environment_dir_name: DEFAULT_ENVIRONMENT_DIR.to_string(),
             external_workspaces_dir_name: DEFAULT_EXTERNAL_WORKSPACES_DIR.to_string(),
             role_file_name: DEFAULT_ROLE_FILE.to_string(),
             self_file_name: DEFAULT_SELF_FILE.to_string(),
@@ -439,9 +436,7 @@ impl AiRuntime {
             )));
         }
 
-        let mount_base = agent_root
-            .join(&self.cfg.environment_dir_name)
-            .join(&self.cfg.external_workspaces_dir_name);
+        let mount_base = agent_root.join(&self.cfg.external_workspaces_dir_name);
         info!(
             "opendan.persist_entity_prepare: kind=external_workspace_mount_base agent_did={} path={}",
             did,
@@ -553,7 +548,6 @@ impl AiRuntime {
 
     fn workspace_bindings_path(&self, agent_root: &Path) -> PathBuf {
         agent_root
-            .join(&self.cfg.environment_dir_name)
             .join(&self.cfg.external_workspaces_dir_name)
             .join(&self.cfg.workspace_bindings_file_name)
     }
@@ -622,11 +616,11 @@ impl OpenDanRuntimeKrpcHandler {
 
     async fn to_agent_info(&self, agent: &RuntimeAgentInfo) -> OpenDanAgentInfo {
         let agent_root = PathBuf::from(&agent.root);
-        let workspace_root = workspace_root_from_agent_root(&self.runtime.cfg, &agent_root);
-        let todo_db = todo_db_path(&workspace_root);
-        let worklog_db = worklog_db_path(&workspace_root);
+        let agent_env_root = agent_env_root_from_agent_root(&self.runtime.cfg, &agent_root);
+        let todo_db = todo_db_path(&agent_env_root);
+        let worklog_db = worklog_db_path(&agent_env_root);
         let updated_at = latest_modified_ms(&[
-            workspace_root.join("worklog").join("agent-loop.jsonl"),
+            agent_env_root.join("worklog").join("agent-loop.jsonl"),
             worklog_db,
             todo_db,
         ])
@@ -645,7 +639,7 @@ impl OpenDanRuntimeKrpcHandler {
             parent_agent_id: agent.parent_did.clone(),
             current_run_id: None,
             workspace_id: Some(format!("workspace:{}", agent.did)),
-            workspace_path: Some(workspace_root.to_string_lossy().to_string()),
+            workspace_path: Some(agent_env_root.to_string_lossy().to_string()),
             last_active_at: updated_at.map(|ts| ts.to_string()),
             updated_at,
             extra: Some(json!({
@@ -719,10 +713,10 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
         _ctx: RPCContext,
     ) -> KRPCResult<OpenDanWorkspaceInfo> {
         let agent = self.find_agent(agent_id).await?;
-        let workspace_root =
-            workspace_root_from_agent_root(&self.runtime.cfg, Path::new(&agent.root));
-        let todo_db = todo_db_path(&workspace_root);
-        let worklog_db = worklog_db_path(&workspace_root);
+        let agent_env_root =
+            agent_env_root_from_agent_root(&self.runtime.cfg, Path::new(&agent.root));
+        let todo_db = todo_db_path(&agent_env_root);
+        let worklog_db = worklog_db_path(&agent_env_root);
 
         let sub_agent_total = self
             .runtime
@@ -768,7 +762,7 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
         Ok(OpenDanWorkspaceInfo {
             workspace_id: format!("workspace:{}", agent.did),
             agent_id: agent.did.clone(),
-            workspace_path: Some(workspace_root.to_string_lossy().to_string()),
+            workspace_path: Some(agent_env_root.to_string_lossy().to_string()),
             todo_db_path: Some(todo_db.to_string_lossy().to_string()),
             worklog_db_path: Some(worklog_db.to_string_lossy().to_string()),
             summary: Some(json!({
@@ -786,9 +780,9 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
         _ctx: RPCContext,
     ) -> KRPCResult<OpenDanWorkspaceWorklogsResult> {
         let agent = self.find_agent(&request.agent_id).await?;
-        let workspace_root =
-            workspace_root_from_agent_root(&self.runtime.cfg, Path::new(&agent.root));
-        let db_path = worklog_db_path(&workspace_root);
+        let agent_env_root =
+            agent_env_root_from_agent_root(&self.runtime.cfg, Path::new(&agent.root));
+        let db_path = worklog_db_path(&agent_env_root);
 
         let limit = normalize_limit(request.limit);
         let offset = parse_cursor(request.cursor.as_deref())?;
@@ -830,9 +824,9 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
         _ctx: RPCContext,
     ) -> KRPCResult<OpenDanWorkspaceTodosResult> {
         let agent = self.find_agent(&request.agent_id).await?;
-        let workspace_root =
-            workspace_root_from_agent_root(&self.runtime.cfg, Path::new(&agent.root));
-        let db_path = todo_db_path(&workspace_root);
+        let agent_env_root =
+            agent_env_root_from_agent_root(&self.runtime.cfg, Path::new(&agent.root));
+        let db_path = todo_db_path(&agent_env_root);
 
         let limit = normalize_limit(request.limit);
         let offset = parse_cursor(request.cursor.as_deref())?;
@@ -919,9 +913,9 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
         _ctx: RPCContext,
     ) -> KRPCResult<OpenDanAgentSessionListResult> {
         let agent = self.find_agent(&request.agent_id).await?;
-        let workspace_root =
-            workspace_root_from_agent_root(&self.runtime.cfg, Path::new(&agent.root));
-        let sessions_dir = workspace_root.join(DEFAULT_AGENT_SESSIONS_DIR);
+        let agent_env_root =
+            agent_env_root_from_agent_root(&self.runtime.cfg, Path::new(&agent.root));
+        let sessions_dir = agent_env_root.join(DEFAULT_AGENT_SESSIONS_DIR);
         let limit = normalize_limit(request.limit);
         let offset = parse_cursor(request.cursor.as_deref())?;
 
@@ -1037,16 +1031,17 @@ fn normalize_owner_session_id(value: &str) -> KRPCResult<String> {
     Ok(normalized.to_string())
 }
 
-fn workspace_root_from_agent_root(cfg: &AiRuntimeConfig, agent_root: &Path) -> PathBuf {
-    agent_root.join(&cfg.environment_dir_name)
+fn agent_env_root_from_agent_root(cfg: &AiRuntimeConfig, agent_root: &Path) -> PathBuf {
+    let _ = cfg;
+    agent_root.to_path_buf()
 }
 
-fn todo_db_path(workspace_root: &Path) -> PathBuf {
-    workspace_root.join("todo").join("todo.db")
+fn todo_db_path(agent_env_root: &Path) -> PathBuf {
+    agent_env_root.join("todo").join("todo.db")
 }
 
-fn worklog_db_path(workspace_root: &Path) -> PathBuf {
-    workspace_root.join("worklog").join("worklog.db")
+fn worklog_db_path(agent_env_root: &Path) -> PathBuf {
+    agent_env_root.join("worklog").join("worklog.db")
 }
 
 async fn latest_modified_ms(paths: &[PathBuf]) -> Option<u64> {
@@ -1469,9 +1464,9 @@ fn load_agent_session_record_globally_sync(
 ) -> KRPCResult<OpenDanAgentSessionRecord> {
     let mut matched = Vec::<OpenDanAgentSessionRecord>::new();
     for agent in agents {
-        let workspace_root =
-            workspace_root_from_agent_root(runtime_cfg, Path::new(agent.root.as_str()));
-        if let Some(record) = load_agent_session_record_for_agent_sync(&workspace_root, session_id)?
+        let agent_env_root =
+            agent_env_root_from_agent_root(runtime_cfg, Path::new(agent.root.as_str()));
+        if let Some(record) = load_agent_session_record_for_agent_sync(&agent_env_root, session_id)?
         {
             matched.push(record);
             if matched.len() > 1 {
@@ -1492,10 +1487,10 @@ fn load_agent_session_record_globally_sync(
 }
 
 fn load_agent_session_record_for_agent_sync(
-    workspace_root: &Path,
+    agent_env_root: &Path,
     session_id: &str,
 ) -> KRPCResult<Option<OpenDanAgentSessionRecord>> {
-    let sessions_dir = workspace_root.join(DEFAULT_AGENT_SESSIONS_DIR);
+    let sessions_dir = agent_env_root.join(DEFAULT_AGENT_SESSIONS_DIR);
     if !sessions_dir.exists() {
         return Ok(None);
     }
@@ -1519,24 +1514,24 @@ fn update_agent_session_status_globally_sync(
     session_id: &str,
     status: &str,
 ) -> KRPCResult<OpenDanAgentSessionRecord> {
-    let mut matched_workspaces = Vec::<PathBuf>::new();
+    let mut matched_agent_env_roots = Vec::<PathBuf>::new();
     for agent in agents {
-        let workspace_root =
-            workspace_root_from_agent_root(runtime_cfg, Path::new(agent.root.as_str()));
-        if load_agent_session_record_for_agent_sync(&workspace_root, session_id)?.is_some() {
-            matched_workspaces.push(workspace_root);
-            if matched_workspaces.len() > 1 {
+        let agent_env_root =
+            agent_env_root_from_agent_root(runtime_cfg, Path::new(agent.root.as_str()));
+        if load_agent_session_record_for_agent_sync(&agent_env_root, session_id)?.is_some() {
+            matched_agent_env_roots.push(agent_env_root);
+            if matched_agent_env_roots.len() > 1 {
                 break;
             }
         }
     }
 
-    match matched_workspaces.len() {
+    match matched_agent_env_roots.len() {
         0 => Err(RPCErrors::ReasonError(format!(
             "session not found: {session_id}"
         ))),
         1 => update_agent_session_status_for_agent_sync(
-            matched_workspaces[0].as_path(),
+            matched_agent_env_roots[0].as_path(),
             session_id,
             status,
         )?
@@ -1552,11 +1547,11 @@ fn update_agent_session_status_globally_sync(
 }
 
 fn update_agent_session_status_for_agent_sync(
-    workspace_root: &Path,
+    agent_env_root: &Path,
     session_id: &str,
     status: &str,
 ) -> KRPCResult<Option<OpenDanAgentSessionRecord>> {
-    let sessions_dir = workspace_root.join(DEFAULT_AGENT_SESSIONS_DIR);
+    let sessions_dir = agent_env_root.join(DEFAULT_AGENT_SESSIONS_DIR);
     if !sessions_dir.exists() {
         return Ok(None);
     }
@@ -1967,7 +1962,6 @@ impl AgentTool for RuntimeListExternalWorkspacesTool {
 
 fn validate_runtime_config(cfg: &AiRuntimeConfig) -> Result<(), AiRuntimeError> {
     if cfg.sub_agents_dir_name.trim().is_empty()
-        || cfg.environment_dir_name.trim().is_empty()
         || cfg.external_workspaces_dir_name.trim().is_empty()
         || cfg.role_file_name.trim().is_empty()
         || cfg.self_file_name.trim().is_empty()
@@ -2045,15 +2039,13 @@ async fn create_minimal_agent_layout(
         agent_root.to_path_buf(),
         agent_root.join(DEFAULT_BEHAVIORS_DIR),
         agent_root.join(DEFAULT_MEMORY_DIR),
+        agent_root.join(DEFAULT_AGENT_SESSIONS_DIR),
         agent_root.join(&cfg.sub_agents_dir_name),
-        agent_root.join(&cfg.environment_dir_name),
-        agent_root.join(&cfg.environment_dir_name).join("todo"),
-        agent_root.join(&cfg.environment_dir_name).join("tools"),
-        agent_root.join(&cfg.environment_dir_name).join("artifacts"),
-        agent_root.join(&cfg.environment_dir_name).join("worklog"),
-        agent_root
-            .join(&cfg.environment_dir_name)
-            .join(&cfg.external_workspaces_dir_name),
+        agent_root.join("todo"),
+        agent_root.join("tools"),
+        agent_root.join("artifacts"),
+        agent_root.join("worklog"),
+        agent_root.join(&cfg.external_workspaces_dir_name),
     ];
 
     for dir in dirs {
@@ -2331,10 +2323,7 @@ mod tests {
         title: &str,
         last_activity_ms: u64,
     ) {
-        let session_path = agent_root
-            .join(DEFAULT_ENVIRONMENT_DIR)
-            .join(DEFAULT_AGENT_SESSIONS_DIR)
-            .join(session_id);
+        let session_path = agent_root.join(DEFAULT_AGENT_SESSIONS_DIR).join(session_id);
         fs::create_dir_all(&session_path)
             .await
             .expect("create session dir");
@@ -2366,9 +2355,7 @@ mod tests {
         title: &str,
         last_activity_ms: u64,
     ) {
-        let sessions_root = agent_root
-            .join(DEFAULT_ENVIRONMENT_DIR)
-            .join(DEFAULT_AGENT_SESSIONS_DIR);
+        let sessions_root = agent_root.join(DEFAULT_AGENT_SESSIONS_DIR);
         let session_dir = sessions_root.join(session_id);
         fs::create_dir_all(&session_dir)
             .await
@@ -2576,7 +2563,6 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
         write_session_record(&agent_root, "session-b", did, "Session B", 20).await;
         fs::create_dir_all(
             agent_root
-                .join(DEFAULT_ENVIRONMENT_DIR)
                 .join(DEFAULT_AGENT_SESSIONS_DIR)
                 .join("session-without-file"),
         )

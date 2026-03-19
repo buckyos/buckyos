@@ -56,7 +56,7 @@ process_rule: |
      Actions:
      - Do NOT guess.
      - Record what is blocked and why.
-     - If blocked by environment/tools, transition to ADJUST:todo=<current_todo_item_id> (or ADJUST if no task).
+     - If blocked by tools or agent env setup, transition to ADJUST:todo=<current_todo_item_id> (or ADJUST if no task).
      - If blocked by requirement conflict/ambiguity, ask user and stay in CHECK.
 
   --------------------------------------------------------------------

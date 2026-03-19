@@ -254,26 +254,26 @@ mod tests {
         }
     }
 
-    async fn load_runtime_tool_specs(workspace_root: &Path) -> (Vec<AiToolSpec>, Vec<ToolSpec>) {
+    async fn load_runtime_tool_specs(agent_env_root: &Path) -> (Vec<AiToolSpec>, Vec<ToolSpec>) {
         let tool_mgr = AgentToolManager::new();
         let session_store = Arc::new(
             AgentSessionMgr::new(
                 "did:web:agent.example.com",
-                workspace_root.join("session"),
+                agent_env_root.join("sessions"),
                 "resolve_router".to_string(),
             )
             .await
             .expect("create session store"),
         );
 
-        let environment = AgentEnvironment::new(workspace_root.to_path_buf())
+        let environment = AgentEnvironment::new(agent_env_root.to_path_buf())
             .await
             .expect("create agent environment");
         environment
             .register_workshop_tools(&tool_mgr, session_store.clone())
             .expect("register workshop tools");
 
-        let memory = AgentMemory::new(AgentMemoryConfig::new(workspace_root.to_path_buf()))
+        let memory = AgentMemory::new(AgentMemoryConfig::new(agent_env_root.to_path_buf()))
             .await
             .expect("create memory");
         memory
@@ -300,10 +300,10 @@ mod tests {
 
     async fn render_toolbox_prompt_preview(
         skill_name: &str,
-        workspace_root: &Path,
+        agent_env_root: &Path,
     ) -> (String, Vec<AiToolSpec>) {
         let mut session = AgentSession::new("session-1", "did:web:agent.example.com", None);
-        session.pwd = workspace_root.to_path_buf();
+        session.pwd = agent_env_root.to_path_buf();
         session.loaded_skills = vec![skill_name.to_string()];
         let session = Arc::new(Mutex::new(session));
 
@@ -327,7 +327,7 @@ mod tests {
             session: None,
         };
 
-        let (tools, action_specs) = load_runtime_tool_specs(workspace_root).await;
+        let (tools, action_specs) = load_runtime_tool_specs(agent_env_root).await;
 
         let req = PromptBuilder::build(
             &input,
@@ -352,21 +352,18 @@ mod tests {
 
     #[tokio::test]
     async fn load_skill_from_root_prints_toolbox_prompt_preview() {
-        let skills_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../rootfs/agents/jarvis/environment/skills");
-        let workspace_root = skills_root.parent().unwrap();
-        let skill_name = "allinone";
+        let skills_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rootfs/bin/buckyos_jarvis/skills");
+        let agent_env_root = skills_root.parent().unwrap();
+        let skill_name = "chatonly";
 
         let spec = load_skill_from_root(&skills_root, skill_name)
             .await
             .expect("load skill");
-        assert_eq!(
-            spec.introduce,
-            "All-in-one skill for OpenDAN actions,contain all the actions and tools."
-        );
+        assert_eq!(spec.introduce, "no action skill, only chat with the user.");
 
         let (toolbox_prompt, tool_specs) =
-            render_toolbox_prompt_preview(skill_name, workspace_root).await;
+            render_toolbox_prompt_preview(skill_name, agent_env_root).await;
         println!(
             "\n[toolbox section prompt preview after loading skill `{}`]\n{}\n",
             skill_name, toolbox_prompt
@@ -376,12 +373,12 @@ mod tests {
         }
         println!("--------------------------------");
         let skill_name = "planner";
-        let spec = load_skill_from_root(&skills_root, skill_name)
+        load_skill_from_root(&skills_root, skill_name)
             .await
             .expect("load skill");
 
         let (toolbox_prompt, tool_specs) =
-            render_toolbox_prompt_preview(skill_name, workspace_root).await;
+            render_toolbox_prompt_preview(skill_name, agent_env_root).await;
         println!(
             "\n[toolbox section prompt preview after loading skill `{}`]\n{}\n",
             skill_name, toolbox_prompt
