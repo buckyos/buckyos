@@ -221,6 +221,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          PYTHON_BIN="$(command -v python)"
 
           wait_for_port() {
             local name="$1"
@@ -246,7 +247,7 @@ jobs:
           pushd src
           buckyos-build
           buckyos-install --all
-          sudo HOME="$HOME" PATH="$PATH" BUCKYOS_ROOT="$BUCKYOS_ROOT" python3 start.py --all
+          sudo HOME="$HOME" PATH="$PATH" BUCKYOS_ROOT="$BUCKYOS_ROOT" "$PYTHON_BIN" start.py --all
           wait_for_port "node gateway" 127.0.0.1 3180
           wait_for_port "system_config" 127.0.0.1 3200
           cargo run -p test_rbac
@@ -364,8 +365,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          PYTHON_BIN="$(command -v python)"
           pushd src
-          sudo HOME="$HOME" PATH="$PATH" BUCKYOS_ROOT="$BUCKYOS_ROOT" python3 stop.py || true
+          sudo HOME="$HOME" PATH="$PATH" BUCKYOS_ROOT="$BUCKYOS_ROOT" "$PYTHON_BIN" stop.py || true
           popd
           sudo rm -rf "$BUCKYOS_ROOT" "$WEB3_GATEWAY_ROOT"
 
