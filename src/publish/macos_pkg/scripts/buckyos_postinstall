@@ -1,9 +1,37 @@
 #!/bin/zsh
 set -e
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 BUCKYOS_ROOT="${BUCKYOS_ROOT:-/opt/buckyos}"
 DEFAULTS_DIR="$BUCKYOS_ROOT/.buckyos_installer_defaults"
 # Run node_daemon as a system LaunchDaemon (root) so it can bind privileged ports (80/443).
 PLIST="/Library/LaunchDaemons/buckyos.service.plist"
+
+run_with_timeout() {
+  local seconds="$1"
+  shift
+  /usr/bin/perl -e '$t=shift; alarm $t; exec @ARGV' "$seconds" "$@"
+}
+
+start_buckyos_service() {
+  echo "[buckyos] postinstall: starting LaunchDaemon"
+  run_with_timeout 10 launchctl bootout system "$PLIST" >/dev/null 2>&1 || true
+  run_with_timeout 10 launchctl bootstrap system "$PLIST"
+  run_with_timeout 10 launchctl enable "system/buckyos.service" >/dev/null 2>&1 || true
+  run_with_timeout 10 launchctl kickstart -k "system/buckyos.service"
+}
+
+wait_for_node_daemon() {
+  local attempt=1
+  while [ "$attempt" -le 15 ]; do
+    if /usr/bin/pgrep -f "${BUCKYOS_ROOT}/bin/node-daemon/node_daemon --enable_active" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
 mkdir -p "/Library/LaunchDaemons"
 cat > "$PLIST" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -40,13 +68,6 @@ EOF
 # /Library/LaunchDaemons plists should not be writable by non-root users.
 chown root:wheel "$PLIST" || true
 chmod 644 "$PLIST"
-
-# Best-effort (re)load for system domain.
-launchctl bootout system "$PLIST" >/dev/null 2>&1 || true
-launchctl bootstrap system "$PLIST" >/dev/null 2>&1 || true
-launchctl enable "system/buckyos.service" >/dev/null 2>&1 || true
-launchctl kickstart -k "system/buckyos.service" >/dev/null 2>&1 || true
-echo "BuckyOS install success, open http://127.0.0.1:3182/index.html to start, ENJOY!"
 echo "[buckyos] postinstall: install data_paths if missing (overwrite install semantics)"
 
 # Keep ${BUCKYOS_ROOT}/home stable for legacy paths, but store actual data under
@@ -150,3 +171,13 @@ if [ -d "$DEFAULTS_DIR" ]; then
 
   rm -rf "$DEFAULTS_DIR" || true
 fi
+
+start_buckyos_service
+if ! wait_for_node_daemon; then
+  echo "[buckyos] postinstall: node_daemon did not start successfully." >&2
+  echo "[buckyos] postinstall: check /var/log/buckyos.service.out.log and /var/log/buckyos.service.err.log" >&2
+  launchctl print "system/buckyos.service" >&2 || true
+  exit 1
+fi
+
+echo "BuckyOS install success, open http://127.0.0.1:3182/index.html to start, ENJOY!"

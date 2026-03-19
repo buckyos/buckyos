@@ -269,7 +269,7 @@ fn appservice_control_commands_match_linux_amd64_docker_runtime() {
     let deploy = loader.preview_operation(ControlOperation::Deploy).unwrap();
     assert_eq!(deploy.runtime, RuntimeType::Docker);
     assert_programs(&deploy.commands, &["pkg-install", "docker", "docker"]);
-    assert_eq!(deploy.commands[0].args, vec!["demo-img#0.1.0"]);
+    assert_eq!(deploy.commands[0].args, vec!["demo-img"]);
     assert_eq!(
         deploy.commands[2].args,
         vec!["pull", "demo/service:0.1.0-amd64@sha256:deadbeef"]
@@ -310,7 +310,7 @@ fn appservice_control_commands_match_linux_aarch64_docker_runtime() {
 
     let deploy = loader.preview_operation(ControlOperation::Deploy).unwrap();
     assert_eq!(deploy.runtime, RuntimeType::Docker);
-    assert_eq!(deploy.commands[0].args, vec!["demo-img-arm#0.1.0"]);
+    assert_eq!(deploy.commands[0].args, vec!["demo-img-arm"]);
     assert_eq!(
         deploy.commands[2].args,
         vec!["pull", "demo/service:0.1.0-aarch64@sha256:beadfeed"]
@@ -342,8 +342,8 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
     let deploy = loader.preview_operation(ControlOperation::Deploy).unwrap();
     assert_eq!(deploy.runtime, RuntimeType::Agent);
     assert_programs(&deploy.commands, &["pkg-install", "pkg-install"]);
-    assert_eq!(deploy.commands[0].args, vec!["jarvis-agent#0.1.0"]);
-    assert_eq!(deploy.commands[1].args, vec!["jarvis-skills#0.1.0"]);
+    assert_eq!(deploy.commands[0].args, vec!["jarvis-agent"]);
+    assert_eq!(deploy.commands[1].args, vec!["jarvis-skills"]);
 
     let start = loader.preview_operation(ControlOperation::Start).unwrap();
     assert_eq!(start.runtime, RuntimeType::Agent);

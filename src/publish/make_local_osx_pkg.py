@@ -46,6 +46,7 @@ RESULT_ROOT_DIR = Path(os.environ.get("BUCKYOS_BUILD_ROOT", "/opt/buckyosci"))
 TMP_INSTALL_DIR = RESULT_ROOT_DIR / "macos-pkg"
 
 MACOS_PKG_PROJECT_DIR = Path(__file__).resolve().parent / "macos_pkg"
+MACOS_INSTALL_CHECK_SCRIPT = "docker_install_check.sh"
 BUCKYOS_DEFAULTS_SUBDIR = ".buckyos_installer_defaults"
 IGNORED_STAGE_NAMES = {".DS_Store", "__pycache__"}
 
@@ -472,7 +473,40 @@ def _write_distribution_xml(
     lines.append('<?xml version="1.0" encoding="utf-8"?>')
     lines.append('<installer-gui-script minSpecVersion="1">')
     lines.append(f"  <title>{_xml_escape(title)}</title>")
-    lines.append('  <options customize="always" />')
+    lines.append('  <options customize="always" allow-external-scripts="true" />')
+    lines.append("  <script><![CDATA[")
+    lines.append("function checkCurrentUserDocker() {")
+    lines.append("  var exitCode = null;")
+    lines.append("  try {")
+    lines.append(f'    exitCode = system.runOnce("{MACOS_INSTALL_CHECK_SCRIPT}");')
+    lines.append("  } catch (error) {")
+    lines.append('    system.log("docker installation-check exception: " + error)')
+    lines.append("  }")
+    lines.append('  system.log("docker installation-check exit code: " + exitCode)')
+    lines.append('  if (exitCode === 0 || exitCode === "0") {')
+    lines.append("    return true")
+    lines.append("  }")
+    lines.append('  my.result.type = "Fatal"')
+    lines.append('  my.result.title = "Docker Required"')
+    lines.append('  if (exitCode === 10 || exitCode === "10") {')
+    lines.append(
+        '    my.result.message = "BuckyOS requires OrbStack before installation. The docker CLI was not found in the current macOS session.\\n\\nPlease install and start OrbStack, then reopen this installer.\\nDownload: https://orbstack.dev/download"'
+    )
+    lines.append("    return false")
+    lines.append("  }")
+    lines.append('  if (exitCode === 11 || exitCode === "11") {')
+    lines.append(
+        '    my.result.message = "BuckyOS requires OrbStack before installation. Docker is installed but not reachable from the current macOS session.\\n\\nPlease start OrbStack and confirm `docker info` works in Terminal, then reopen this installer.\\nDownload: https://orbstack.dev/download\\n\\nThe installer will re-check LaunchDaemon access during install."'
+    )
+    lines.append("    return false")
+    lines.append("  }")
+    lines.append(
+        '  my.result.message = "BuckyOS could not verify OrbStack in the current macOS session.\\n\\nPlease allow the installer check, make sure OrbStack is installed and running, then reopen this installer.\\nDownload: https://orbstack.dev/download\\n\\nThe installer will re-check LaunchDaemon access during install."'
+    )
+    lines.append("  return false")
+    lines.append("}")
+    lines.append("  ]]></script>")
+    lines.append('  <installation-check script="checkCurrentUserDocker()" />')
 
     # Optional HTML screens (if present in resources).
     for tag, filename in (("welcome", "welcome.html"), ("license", "license.html"), ("conclusion", "conclusion.html")):
@@ -819,6 +853,28 @@ def verify_pkg(
                 root = None
 
             if root is not None:
+                install_check = root.find(".//installation-check")
+                if install_check is None:
+                    failures.append("missing installation-check in Distribution")
+                else:
+                    if install_check.attrib.get("script") != "checkCurrentUserDocker()":
+                        failures.append(
+                            "Distribution installation-check should call checkCurrentUserDocker()"
+                        )
+
+                script_elem = root.find(".//script")
+                script_text = "" if script_elem is None or script_elem.text is None else script_elem.text
+                required_dist_script_snippets = [
+                    'system.runOnce("docker_install_check.sh")',
+                    'my.result.type = "Fatal"',
+                    'my.result.title = "Docker Required"',
+                    "https://orbstack.dev/download",
+                    "The installer will re-check LaunchDaemon access during install.",
+                ]
+                for snippet in required_dist_script_snippets:
+                    if snippet not in script_text:
+                        failures.append(f"Distribution script missing Docker installation-check snippet: {snippet}")
+
                 # Collect choices
                 choices = {c.attrib.get("id", ""): c for c in root.findall(".//choice")}
                 for choice_id, comp in by_choice_id.items():
@@ -836,6 +892,10 @@ def verify_pkg(
                     else:
                         if required not in (None, "false"):
                             failures.append(f"component {comp.key} should be required=false, got {required}")
+
+        resources_check = expanded / "Resources" / MACOS_INSTALL_CHECK_SCRIPT
+        if not resources_check.exists():
+            failures.append(f"missing installer resource helper: Resources/{MACOS_INSTALL_CHECK_SCRIPT}")
 
         # Verify component packages exist and scripts attachment.
         # Embedded component packages are named by sanitized key: {sanitize(key)}.pkg
@@ -903,15 +963,59 @@ def verify_pkg(
             if postinstall_text is None:
                 failures.append("buckyos missing postinstall script")
             else:
-                expected_snippets = [
-                    'if [ -d "$DEFAULTS_DIR/bin/cyfs-gateway" ]; then',
-                    'ditto "$DEFAULTS_DIR/bin/cyfs-gateway" "$BUCKYOS_ROOT/bin/cyfs-gateway"',
+                root_var = _detect_root_var(postinstall_text)
+                defaults_var = _detect_defaults_var(postinstall_text)
+                for rel in layout.data_paths:
+                    rel_s = rel.strip().lstrip("/")
+                    if not rel_s:
+                        continue
+                    if rel_s.endswith("/"):
+                        rel_s = rel_s.rstrip("/")
+                        expected_snippets = [
+                            f'if [ -d "{defaults_var}/{rel_s}" ]; then',
+                            f'    ditto "{defaults_var}/{rel_s}" "{root_var}/{rel_s}"',
+                        ]
+                    else:
+                        expected_snippets = [
+                            f'if [ ! -e "{root_var}/{rel_s}" ] && [ -e "{defaults_var}/{rel_s}" ]; then',
+                            f'  cp -p "{defaults_var}/{rel_s}" "{root_var}/{rel_s}"',
+                        ]
+
+                    for snippet in expected_snippets:
+                        if snippet not in postinstall_text:
+                            failures.append(
+                                f"buckyos postinstall missing data_paths install step for '{rel}': {snippet}"
+                            )
+                required_postinstall_snippets = [
+                    'start_buckyos_service',
+                    'wait_for_node_daemon',
+                    'launchctl bootstrap system "$PLIST"',
+                    'launchctl kickstart -k "system/buckyos.service"',
+                    '/usr/bin/pgrep -f "${BUCKYOS_ROOT}/bin/node-daemon/node_daemon --enable_active"',
                 ]
-                for snippet in expected_snippets:
+                for snippet in required_postinstall_snippets:
                     if snippet not in postinstall_text:
-                        failures.append(f"buckyos postinstall missing cyfs-gateway install step: {snippet}")
-                if 'rm -rf "$BUCKYOS_ROOT/bin/cyfs-gateway"' in postinstall_text:
-                    failures.append("buckyos postinstall should not force-remove cyfs-gateway before copy")
+                        failures.append(f"buckyos postinstall missing startup check step: {snippet}")
+
+                data_block_end = postinstall_text.find("# END AUTO-GENERATED: data_paths")
+                start_call_idx = postinstall_text.rfind("\nstart_buckyos_service\n")
+                if data_block_end != -1 and start_call_idx != -1 and start_call_idx < data_block_end:
+                    failures.append("buckyos postinstall should start LaunchDaemon only after data_paths setup")
+
+            preinstall_text = _pkg_script_text(buckyos_pkg_dir, "preinstall")
+            if preinstall_text is None:
+                failures.append("buckyos missing preinstall script")
+            else:
+                required_preinstall_snippets = [
+                    'checking Docker availability for LaunchDaemon/root',
+                    'command -v docker',
+                    'docker info',
+                    'OrbStack',
+                    'https://orbstack.dev/download',
+                ]
+                for snippet in required_preinstall_snippets:
+                    if snippet not in preinstall_text:
+                        failures.append(f"buckyos preinstall missing Docker/OrbStack check: {snippet}")
 
         else:
             failures.append("missing embedded buckyos.pkg (cannot verify data_paths semantics)")

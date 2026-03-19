@@ -1,0 +1,518 @@
+name: Dev Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_unit_tests:
+        description: "Run cargo test before the multi-platform flow"
+        required: false
+        type: boolean
+        default: true
+      debug_with_tmate:
+        description: "Keep failed runners open with tmate for live debugging"
+        required: false
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - ".github/workflows/dev-tests.yml"
+      - "make_local_pkg.py"
+      - "notepads/GitActionv2.md"
+      - "src/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dev-tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quick-unit-tests:
+    name: Quick Cargo Tests
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_unit_tests }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Run cargo test
+        working-directory: ./src
+        run: cargo test -- --test-threads=1
+
+      - name: Setup tmate on failure
+        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_with_tmate }}
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
+
+  dev-tests:
+    name: ${{ matrix.name }}
+    needs:
+      - quick-unit-tests
+    if: ${{ always() && (needs.quick-unit-tests.result == 'success' || needs.quick-unit-tests.result == 'skipped') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux Dev Test
+            runner: ubuntu-24.04
+            platform_key: linux
+            arch: x86_64
+            rust_target: x86_64-unknown-linux-musl
+            needs_musl: true
+            needs_tauri: false
+            needs_nsis: false
+          - name: macOS Apple Silicon Dev Test
+            runner: macos-15
+            platform_key: macos
+            arch: aarch64
+            rust_target: aarch64-apple-darwin
+            needs_musl: false
+            needs_tauri: true
+            needs_nsis: false
+          - name: macOS Intel Dev Test
+            runner: macos-15-intel
+            platform_key: macos
+            arch: x86_64
+            rust_target: x86_64-apple-darwin
+            needs_musl: false
+            needs_tauri: true
+            needs_nsis: false
+          - name: Windows x64 Dev Test
+            runner: windows-2025
+            platform_key: windows
+            arch: x86_64
+            rust_target: x86_64-pc-windows-msvc
+            needs_musl: false
+            needs_tauri: true
+            needs_nsis: true
+          - name: Windows ARM64 Dev Test
+            runner: windows-11-arm
+            platform_key: windows
+            arch: aarch64
+            rust_target: aarch64-pc-windows-msvc
+            needs_musl: false
+            needs_tauri: true
+            needs_nsis: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.rust_target }}
+
+      - name: Setup MSVC
+        if: ${{ runner.os == 'Windows' }}
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Setup Linux system packages
+        if: ${{ matrix.needs_musl }}
+        run: |
+          sudo apt update
+          sudo apt install -y musl-tools
+
+      - name: Setup Windows NSIS
+        if: ${{ matrix.needs_nsis }}
+        shell: pwsh
+        run: choco install nsis -y --no-progress
+
+      - name: Install buckyos devkit
+        run: python -m pip install -U "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"
+
+      - name: Set runtime paths (Unix)
+        if: ${{ runner.os != 'Windows' }}
+        run: |
+          echo "BUCKYOS_ROOT=/opt/buckyos" >> "$GITHUB_ENV"
+          echo "BUCKYOS_BUILD_ROOT=/opt/buckyosci" >> "$GITHUB_ENV"
+          echo "BUCKYOS_LOGS_PATH=/opt/buckyos/logs" >> "$GITHUB_ENV"
+          echo "LOCAL_PKG_DIR=$GITHUB_WORKSPACE/publish" >> "$GITHUB_ENV"
+
+      - name: Set runtime paths (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          "BUCKYOS_ROOT=$($env:APPDATA)\BuckyOS" >> $env:GITHUB_ENV
+          "BUCKYOS_BUILD_ROOT=C:\opt\buckyosci" >> $env:GITHUB_ENV
+          "BUCKYOS_LOGS_PATH=$($env:APPDATA)\BuckyOS\logs" >> $env:GITHUB_ENV
+          "LOCAL_PKG_DIR=$env:GITHUB_WORKSPACE\publish" >> $env:GITHUB_ENV
+
+      - name: Prepare writable install roots (Unix)
+        if: ${{ runner.os != 'Windows' }}
+        run: |
+          sudo mkdir -p /opt/buckyos /opt/buckyosci
+          sudo chown -R "$(id -un):$(id -gn)" /opt/buckyos /opt/buckyosci
+
+      - name: Prepare writable install roots (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "C:\opt\buckyosci" -Force | Out-Null
+          New-Item -ItemType Directory -Path $env:BUCKYOS_ROOT -Force | Out-Null
+
+      - name: Clone cyfs-gateway
+        run: git clone --depth 1 https://github.com/buckyos/cyfs-gateway.git ../cyfs-gateway
+
+      - name: Clone BuckyOSApp
+        if: ${{ matrix.needs_tauri }}
+        run: git clone --depth 1 https://github.com/buckyos/BuckyOSApp.git ../BuckyOSApp
+
+      - name: Install BuckyOSApp dependencies (Unix)
+        if: ${{ matrix.needs_tauri && runner.os != 'Windows' }}
+        working-directory: ${{ github.workspace }}/../BuckyOSApp
+        run: pnpm install --frozen-lockfile
+
+      - name: Install BuckyOSApp dependencies (Windows)
+        if: ${{ matrix.needs_tauri && runner.os == 'Windows' }}
+        shell: pwsh
+        working-directory: ${{ github.workspace }}/../BuckyOSApp
+        run: pnpm install --frozen-lockfile
+
+      - name: Show package target (Unix)
+        if: ${{ runner.os != 'Windows' }}
+        run: python3 ./make_local_pkg.py show-target --arch ${{ matrix.arch }}
+
+      - name: Show package target (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: python .\make_local_pkg.py show-target --arch ${{ matrix.arch }}
+
+      - name: Build single-node environment and run test_rbac (Unix)
+        if: ${{ runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          wait_for_port() {
+            local name="$1"
+            local host="$2"
+            local port="$3"
+            local retries="${4:-60}"
+            for ((i = 1; i <= retries; i++)); do
+              if bash -lc "</dev/tcp/${host}/${port}" >/dev/null 2>&1; then
+                echo "[ready] ${name} on ${host}:${port}"
+                return 0
+              fi
+              echo "[wait] ${name} on ${host}:${port} (${i}/${retries})"
+              sleep 2
+            done
+            return 1
+          }
+
+          pushd ../cyfs-gateway/src
+          buckyos-build
+          buckyos-install --all
+          popd
+
+          pushd src
+          buckyos-build
+          buckyos-install --all
+          python3 start.py --all
+          wait_for_port "node gateway" 127.0.0.1 3180
+          wait_for_port "system_config" 127.0.0.1 3200
+          cargo run -p test_rbac
+          popd
+
+      - name: Build single-node environment and run test_rbac (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          function Wait-ForPort {
+            param(
+              [string]$Name,
+              [string]$Host,
+              [int]$Port,
+              [int]$Retries = 60
+            )
+
+            for ($i = 1; $i -le $Retries; $i++) {
+              $client = [System.Net.Sockets.TcpClient]::new()
+              try {
+                $async = $client.BeginConnect($Host, $Port, $null, $null)
+                if ($async.AsyncWaitHandle.WaitOne(2000) -and $client.Connected) {
+                  $client.EndConnect($async)
+                  Write-Host "[ready] $Name on $Host:$Port"
+                  return
+                }
+              } catch {
+              } finally {
+                $client.Dispose()
+              }
+
+              Write-Host "[wait] $Name on $Host:$Port ($i/$Retries)"
+              Start-Sleep -Seconds 2
+            }
+
+            throw "Timeout waiting for $Name on $Host:$Port"
+          }
+
+          Push-Location ..\cyfs-gateway\src
+          buckyos-build
+          buckyos-install --all
+          Pop-Location
+
+          Push-Location .\src
+          buckyos-build
+          buckyos-install --all
+          python .\start.py --all
+          Wait-ForPort -Name "node gateway" -Host "127.0.0.1" -Port 3180
+          Wait-ForPort -Name "system_config" -Host "127.0.0.1" -Port 3200
+          cargo run -p test_rbac
+          Pop-Location
+
+      - name: Stop single-node environment and clean install root (Unix)
+        if: ${{ runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pushd src
+          python3 stop.py || true
+          popd
+          sudo rm -rf "$BUCKYOS_ROOT"
+
+      - name: Stop single-node environment and clean install root (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          Push-Location .\src
+          python .\stop.py
+          Pop-Location
+          Remove-Item -Recurse -Force $env:BUCKYOS_ROOT -ErrorAction SilentlyContinue
+
+      - name: Build local package (Unix)
+        if: ${{ runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$LOCAL_PKG_DIR"
+          python3 ./make_local_pkg.py build-pkg --arch ${{ matrix.arch }} --out-dir "$LOCAL_PKG_DIR"
+
+      - name: Build local package (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Path $env:LOCAL_PKG_DIR -Force | Out-Null
+          python .\make_local_pkg.py build-pkg --arch ${{ matrix.arch }} --out-dir $env:LOCAL_PKG_DIR
+
+      - name: Capture package path (Unix)
+        id: package_unix
+        if: ${{ runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkg_path="$(find "$LOCAL_PKG_DIR" -maxdepth 1 -type f | sort | tail -n 1)"
+          if [ -z "$pkg_path" ]; then
+            echo "No package produced in $LOCAL_PKG_DIR" >&2
+            exit 1
+          fi
+          echo "pkg_path=$pkg_path" >> "$GITHUB_OUTPUT"
+          echo "pkg_name=$(basename "$pkg_path")" >> "$GITHUB_OUTPUT"
+
+      - name: Capture package path (Windows)
+        id: package_windows
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pkg = Get-ChildItem -Path $env:LOCAL_PKG_DIR -File | Sort-Object FullName | Select-Object -Last 1
+          if (-not $pkg) {
+            throw "No package produced in $env:LOCAL_PKG_DIR"
+          }
+          "pkg_path=$($pkg.FullName)" >> $env:GITHUB_OUTPUT
+          "pkg_name=$($pkg.Name)" >> $env:GITHUB_OUTPUT
+
+      - name: Verify local package (Unix)
+        if: ${{ runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 ./make_local_pkg.py verify-pkg "${{ steps.package_unix.outputs.pkg_path }}" --arch ${{ matrix.arch }}
+
+      - name: Verify local package (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python .\make_local_pkg.py verify-pkg "${{ steps.package_windows.outputs.pkg_path }}" --arch ${{ matrix.arch }}
+
+      - name: Silent install package and verify endpoint (Linux)
+        if: ${{ matrix.platform_key == 'linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          wait_for_http() {
+            local url="$1"
+            local retries="${2:-90}"
+            for ((i = 1; i <= retries; i++)); do
+              if curl --fail --silent --show-error "$url" >/dev/null; then
+                echo "[ready] ${url}"
+                return 0
+              fi
+              echo "[wait] ${url} (${i}/${retries})"
+              sleep 2
+            done
+            return 1
+          }
+
+          sudo dpkg -i "${{ steps.package_unix.outputs.pkg_path }}"
+          wait_for_http "http://127.0.0.1:3182/index.html"
+
+      - name: Silent install package and verify endpoint (macOS)
+        if: ${{ matrix.platform_key == 'macos' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          wait_for_http() {
+            local url="$1"
+            local retries="${2:-90}"
+            for ((i = 1; i <= retries; i++)); do
+              if curl --fail --silent --show-error "$url" >/dev/null; then
+                echo "[ready] ${url}"
+                return 0
+              fi
+              echo "[wait] ${url} (${i}/${retries})"
+              sleep 2
+            done
+            return 1
+          }
+
+          sudo installer -pkg "${{ steps.package_unix.outputs.pkg_path }}" -target /
+          wait_for_http "http://127.0.0.1:3182/index.html"
+
+      - name: Silent install package and verify endpoint (Windows)
+        if: ${{ matrix.platform_key == 'windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          function Wait-ForHttp {
+            param(
+              [string]$Url,
+              [int]$Retries = 90
+            )
+
+            for ($i = 1; $i -le $Retries; $i++) {
+              try {
+                Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 5 | Out-Null
+                Write-Host "[ready] $Url"
+                return
+              } catch {
+                Write-Host "[wait] $Url ($i/$Retries)"
+                Start-Sleep -Seconds 2
+              }
+            }
+
+            throw "Timeout waiting for $Url"
+          }
+
+          $installer = Start-Process -FilePath "${{ steps.package_windows.outputs.pkg_path }}" -ArgumentList "/S" -Wait -PassThru
+          if ($installer.ExitCode -ne 0) {
+            throw "Installer exited with code $($installer.ExitCode)"
+          }
+          Wait-ForHttp -Url "http://127.0.0.1:3182/index.html"
+
+      - name: Setup tmate on failure
+        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_with_tmate }}
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
+
+      - name: Show diagnostics on failure (Unix)
+        if: ${{ failure() && runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          set +e
+          echo "=== process list ==="
+          ps -ef | grep -E "node_daemon|node-daemon|system_config|verify_hub|control_panel|scheduler|repo_service|task_manager" | grep -v grep || true
+          echo "=== recent logs ==="
+          find "$BUCKYOS_LOGS_PATH" -maxdepth 2 -type f 2>/dev/null | sort | while read -r file; do
+            echo "--- ${file} ---"
+            tail -n 200 "${file}" || true
+          done
+
+      - name: Show diagnostics on failure (Windows)
+        if: ${{ failure() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          Write-Host "=== process list ==="
+          Get-Process node_daemon, system_config, verify_hub, control_panel, scheduler, repo_service, task_manager -ErrorAction SilentlyContinue | Format-Table -AutoSize
+          Write-Host "=== recent logs ==="
+          if (Test-Path $env:BUCKYOS_LOGS_PATH) {
+            Get-ChildItem -Path $env:BUCKYOS_LOGS_PATH -Recurse -File | Sort-Object FullName | ForEach-Object {
+              Write-Host "--- $($_.FullName) ---"
+              Get-Content $_.FullName -Tail 200 -ErrorAction SilentlyContinue
+            }
+          } else {
+            Write-Host "No logs found at $env:BUCKYOS_LOGS_PATH"
+          }
+
+      - name: Upload local package (Unix)
+        if: ${{ success() && runner.os != 'Windows' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-pkg-${{ matrix.platform_key }}-${{ matrix.arch }}
+          path: ${{ steps.package_unix.outputs.pkg_path }}
+          if-no-files-found: error
+
+      - name: Upload local package (Windows)
+        if: ${{ success() && runner.os == 'Windows' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-pkg-${{ matrix.platform_key }}-${{ matrix.arch }}
+          path: ${{ steps.package_windows.outputs.pkg_path }}
+          if-no-files-found: error
+
+      - name: Upload failure diagnostics (Unix)
+        if: ${{ failure() && runner.os != 'Windows' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dev-tests-logs-${{ matrix.platform_key }}-${{ matrix.arch }}
+          path: |
+            ${{ env.BUCKYOS_LOGS_PATH }}
+            ${{ env.BUCKYOS_ROOT }}/etc
+            ${{ env.LOCAL_PKG_DIR }}
+          if-no-files-found: warn
+
+      - name: Upload failure diagnostics (Windows)
+        if: ${{ failure() && runner.os == 'Windows' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dev-tests-logs-${{ matrix.platform_key }}-${{ matrix.arch }}
+          path: |
+            ${{ env.BUCKYOS_LOGS_PATH }}
+            ${{ env.LOCAL_PKG_DIR }}
+          if-no-files-found: warn

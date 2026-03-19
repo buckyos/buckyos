@@ -1,5 +1,6 @@
 #!/bin/zsh
 set -e
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 BUCKYOS_ROOT="${BUCKYOS_ROOT:-/opt/buckyos}"
 DAEMON_PLIST="/Library/LaunchDaemons/buckyos.service.plist"
 AGENT_PLIST="/Library/LaunchAgents/buckyos.service.plist"
@@ -11,6 +12,29 @@ run_with_timeout() {
   shift
   /usr/bin/perl -e '$t=shift; alarm $t; exec @ARGV' "$seconds" "$@"
 }
+
+print_docker_help() {
+  cat >&2 <<'EOF'
+[buckyos] preinstall: Docker is required and must be available to macOS LaunchDaemon (root).
+[buckyos] preinstall: Please install and start OrbStack first, then run this installer again.
+[buckyos] preinstall: Download: https://orbstack.dev/download
+EOF
+}
+
+ensure_launchdaemon_docker() {
+  echo "[buckyos] preinstall: checking Docker availability for LaunchDaemon/root"
+  if ! command -v docker >/dev/null 2>&1; then
+    print_docker_help
+    exit 1
+  fi
+  if ! run_with_timeout 15 docker info >/dev/null 2>&1; then
+    echo "[buckyos] preinstall: Docker CLI exists, but root/LaunchDaemon cannot access Docker." >&2
+    print_docker_help
+    exit 1
+  fi
+}
+
+ensure_launchdaemon_docker
 
 echo "[buckyos] preinstall: stopping service (best effort)"
 # Don't use kickstart here: it may start (or wait for) the job and block in installer context.
