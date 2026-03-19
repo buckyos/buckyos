@@ -2296,9 +2296,7 @@ impl BuckyFileServer {
             .filter(|value| !value.is_empty())
             .ok_or_else(|| RPCErrors::InvalidToken("trusted token missing subject".to_string()))?;
 
-        Ok(FileAuthPrincipal {
-            username,
-        })
+        Ok(FileAuthPrincipal { username })
     }
 
     fn extract_auth_token(req: &http::Request<BoxBody<Bytes, ServerError>>) -> Option<String> {
@@ -2359,7 +2357,10 @@ impl BuckyFileServer {
     }
 
     fn publish_root() -> PathBuf {
-        get_buckyos_root_dir().join("data").join("srv").join("publish")
+        get_buckyos_root_dir()
+            .join("data")
+            .join("srv")
+            .join("publish")
     }
 
     async fn ensure_user_home(&self, principal: &FileAuthPrincipal) {

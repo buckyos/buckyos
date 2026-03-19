@@ -19,10 +19,8 @@ use buckyos_api::{
     REPO_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, TASK_MANAGER_SERVICE_PORT,
     TASK_MANAGER_SERVICE_UNIQUE_ID,
 };
-use buckyos_kit::get_buckyos_root_dir;
 use jsonwebtoken::jwk::Jwk;
 use log::{debug, info, warn};
-use name_client::resolve_did;
 use name_lib::{
     generate_ed25519_key_pair, AgentDocument, OwnerConfig, VerifyHubInfo, ZoneBootConfig,
     ZoneConfig, DID,
@@ -73,7 +71,15 @@ pub struct StartConfigSummary {
 
 #[derive(Serialize, Deserialize)]
 pub struct SystemInstallSettings {
-    pub pre_install_apps: HashMap<String, ServiceInstallConfig>,
+    pub pre_install_apps: HashMap<String, PreInstallAppConfig>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PreInstallAppConfig {
+    #[serde(alias = "app-doc")]
+    pub app_doc: AppDoc,
+    #[serde(flatten)]
+    pub install_config: ServiceInstallConfig,
 }
 
 pub struct SystemConfigBuilder {
@@ -129,35 +135,6 @@ impl SystemConfigBuilder {
         Ok(self)
     }
 
-    pub async fn build_app_doc(&self, app_id: &str) -> Result<AppDoc> {
-        let app_did = PackageId::unique_name_to_did(app_id);
-        let did_raw_host = app_did.to_raw_host_name();
-        let cache_doc = get_buckyos_root_dir()
-            .join("local")
-            .join("did_docs")
-            .join(format!("{}.doc.json", did_raw_host));
-        let app_doc = resolve_did(&app_did, None).await.map_err(|e| {
-            let cache_hint = if cache_doc.exists() {
-                format!("cache_present={}", cache_doc.display())
-            } else {
-                format!(
-                    "cache_missing={}, hint=populate did_docs cache",
-                    cache_doc.display()
-                )
-            };
-            anyhow!(
-                "resolve_did failed for app_id={}, did_raw_host={}, {}, err={}",
-                app_id,
-                did_raw_host,
-                cache_hint,
-                e
-            )
-        })?;
-        let doc_value = app_doc.to_json_value()?;
-        let app_doc = serde_json::from_value(doc_value)?;
-        Ok(app_doc)
-    }
-
     pub async fn add_default_agents(&mut self, config: &StartConfigSummary) -> Result<&mut Self> {
         //add jarvis agent as default agent
         // agents/jarvis/doc -> agent doc
@@ -208,8 +185,15 @@ impl SystemConfigBuilder {
         let install_settings: SystemInstallSettings =
             serde_json::from_str(install_settings.unwrap())?;
         let mut app_index = 10;
-        for (app_id, app_install_config) in install_settings.pre_install_apps.iter() {
-            let app_doc = self.build_app_doc(app_id).await?;
+        for (app_id, pre_install_app) in install_settings.pre_install_apps.iter() {
+            let app_doc = pre_install_app.app_doc.clone();
+            if app_doc.name != *app_id {
+                return Err(anyhow!(
+                    "pre_install_apps[{}].app_doc.name={} does not match app_id",
+                    app_id,
+                    app_doc.name
+                ));
+            }
             let app_key = format!("users/{}/apps/{}/spec", config.user_name, app_id);
             debug!("app_key: {}", app_key);
 
@@ -220,7 +204,7 @@ impl SystemConfigBuilder {
                 enable: true,
                 expected_instance_count: 1,
                 state: ServiceState::default(),
-                install_config: app_install_config.clone(),
+                install_config: pre_install_app.install_config.clone(),
             };
 
             self.insert_json(&app_key, &app_spec)?;
@@ -880,9 +864,26 @@ mod tests {
         build_msg_center_settings, build_zone_user_contact_settings, StartConfigSummary,
         SystemConfigBuilder,
     };
-    use buckyos_api::{generate_verify_hub_service_doc, OPENDAN_SERVICE_PORT};
+    use buckyos_api::{
+        generate_verify_hub_service_doc, AppDoc, AppServiceSpec, AppType, OPENDAN_SERVICE_PORT,
+    };
+    use name_lib::DID;
     use serde_json::json;
     use std::collections::HashMap;
+
+    fn sample_preinstall_app_doc(app_id: &str, version: &str) -> AppDoc {
+        let owner = DID::from_str("did:web:example.com").expect("valid owner did");
+        AppDoc::builder(
+            AppType::Service,
+            app_id,
+            version,
+            "did:web:example.com",
+            &owner,
+        )
+        .show_name("Demo App")
+        .build()
+        .expect("build sample app doc")
+    }
 
     #[test]
     fn start_config_summary_parses_optional_bootstrap_configs() {
@@ -1171,6 +1172,98 @@ mod tests {
         assert_eq!(
             spec.service_doc.pkg_list.get_app_pkg_id().as_deref(),
             Some("verify-hub")
+        );
+    }
+
+    #[test]
+    fn add_default_apps_uses_app_doc_from_preinstall_settings() {
+        let value = json!({
+            "user_name": "alice",
+            "admin_password_hash": "hashed",
+            "public_key": {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
+            },
+            "zone_name": "did:web:alice.example.com"
+        });
+        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
+        let app_doc = sample_preinstall_app_doc("demo_app", "1.2.3");
+
+        let mut entries = HashMap::new();
+        entries.insert(
+            "system/install_settings".to_string(),
+            json!({
+                "pre_install_apps": {
+                    "demo_app": {
+                        "app_doc": app_doc,
+                        "data_mount_point": {},
+                        "cache_mount_point": [],
+                        "local_cache_mount_point": [],
+                        "res_pool_id": "default"
+                    }
+                }
+            })
+            .to_string(),
+        );
+
+        let mut builder = SystemConfigBuilder::new(entries);
+        let rt = tokio::runtime::Runtime::new().expect("create runtime");
+        rt.block_on(builder.add_default_apps(&summary))
+            .expect("add default apps");
+
+        let entries = builder.build();
+        let spec = entries
+            .get("users/alice/apps/demo_app/spec")
+            .expect("demo app spec should exist");
+        let spec: AppServiceSpec = serde_json::from_str(spec).expect("parse app spec");
+
+        assert_eq!(spec.user_id, "alice");
+        assert_eq!(spec.app_doc.name, "demo_app");
+        assert_eq!(spec.app_doc.version, "1.2.3");
+    }
+
+    #[test]
+    fn add_default_apps_requires_app_doc_in_preinstall_settings() {
+        let value = json!({
+            "user_name": "alice",
+            "admin_password_hash": "hashed",
+            "public_key": {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
+            },
+            "zone_name": "did:web:alice.example.com"
+        });
+        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
+
+        let mut entries = HashMap::new();
+        entries.insert(
+            "system/install_settings".to_string(),
+            json!({
+                "pre_install_apps": {
+                    "demo_app": {
+                        "data_mount_point": {},
+                        "cache_mount_point": [],
+                        "local_cache_mount_point": [],
+                        "res_pool_id": "default"
+                    }
+                }
+            })
+            .to_string(),
+        );
+
+        let mut builder = SystemConfigBuilder::new(entries);
+        let rt = tokio::runtime::Runtime::new().expect("create runtime");
+        let err = match rt.block_on(builder.add_default_apps(&summary)) {
+            Ok(_) => panic!("missing app_doc should fail"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.to_string().contains("app_doc"),
+            "unexpected error: {}",
+            err
         );
     }
 }

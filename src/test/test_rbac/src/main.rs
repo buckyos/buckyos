@@ -4,6 +4,9 @@ use name_lib::*;
 use serde_json::json;
 
 async fn test() -> std::result::Result<(), String> {
+    let app_id = "buckyos_filebrowser";
+    let other_app_id = "buckyos_systest";
+
     //读取etc下的私钥和用户信息
     let etc_dir = get_buckyos_system_etc_dir();
     let bucky_cli_dir = etc_dir.join(".buckycli");
@@ -174,126 +177,152 @@ async fn test() -> std::result::Result<(), String> {
     println!("End admin + kernel test");
     println!("***********************");
 
-    //admin + sys-test
+    //admin + app
     println!("**********************");
     println!("Begin admin + app test");
     println!("**********************");
     let (session_token_str, _real_session_token) =
-        RPCSessionToken::generate_jwt_token(&user_name, "sys-test", None, &private_key).map_err(
+        RPCSessionToken::generate_jwt_token(&user_name, app_id, None, &private_key).map_err(
             |e| {
                 println!(
-                    "Failed to generate session token: for admin + sys-test {}",
+                    "Failed to generate session token: for admin + {} {}",
+                    app_id,
                     e
                 );
                 return e.to_string();
             },
         )?;
-    println!("generate session token for admin + sys-test success");
+    println!("generate session token for admin + {} success", app_id);
     let client = kRPC::new(
         "http://127.0.0.1:3200/kapi/system_config",
         Some(session_token_str),
     );
 
-    println!("==> test GET system/rbac/policy via admin + sys-test, should success");
+    println!(
+        "==> test GET system/rbac/policy via admin + {}, should failed",
+        app_id
+    );
     let result = client
         .call("sys_config_get", json!({"key": "system/rbac/policy"}))
-        .await
-        .map_err(|e| {
-            println!(
-                "Failed to get system/rbac/policy via admin + sys-test: {}",
-                e
-            );
-            return e.to_string();
-        })?;
-    if result.is_null() {
-        println!("result is null");
-        return Err("system/rbac/policy is null".to_string());
+        .await;
+    if result.is_ok() {
+        println!("test GET system/rbac/policy via admin + {} should failed", app_id);
+        return Err(format!(
+            "test GET system/rbac/policy via admin + {} should failed",
+            app_id
+        ));
     }
-    println!("<== test GET system/rbac/policy via admin + sys-test, pass");
+    println!("<== test GET system/rbac/policy via admin + {}, pass", app_id);
 
-    println!("==> test SET system/test_rbac/set via admin + sys-test, should failed");
+    println!(
+        "==> test SET system/test_rbac/set via admin + {}, should failed",
+        app_id
+    );
     let result = client
         .call(
             "sys_config_set",
             json!({"key": "system/test_rbac/set", "value": "test_rbac_set_value"}),
         )
         .await;
-    println!("result: {:?}", _result);
     if result.is_ok() {
-        println!("test SET system/test_rbac/set via admin + sys-test should failed");
-        return Err("test SET system/test_rbac/set via admin + sys-test should failed".to_string());
+        println!("test SET system/test_rbac/set via admin + {} should failed", app_id);
+        return Err(format!(
+            "test SET system/test_rbac/set via admin + {} should failed",
+            app_id
+        ));
     }
-    println!("<== test SET system/test_rbac/set via admin + sys-test, pass");
+    println!("<== test SET system/test_rbac/set via admin + {}, pass", app_id);
 
     println!(
-        "==> test SET users/devtest/apps/sys-test/settings via admin + sys-test, should success"
+        "==> test SET users/devtest/apps/{}/settings via admin + {}, should success",
+        app_id, app_id
     );
     let _result = client
         .call(
             "sys_config_set",
-            json!({"key": "users/devtest/apps/sys-test/settings", "value": "test_rbac_set_value"}),
+            json!({"key": format!("users/devtest/apps/{}/settings", app_id), "value": "test_rbac_set_value"}),
         )
         .await
         .map_err(|e| {
             println!(
-                "Failed to set users/devtest/apps/sys-test/settings via admin + sys-test: {}",
-                e
+                "Failed to set users/devtest/apps/{}/settings via admin + {}: {}",
+                app_id, app_id, e
             );
             return e.to_string();
         })?;
-    println!("<== test SET users/devtest/apps/sys-test/settings via admin + sys-test, pass");
+    println!(
+        "<== test SET users/devtest/apps/{}/settings via admin + {}, pass",
+        app_id, app_id
+    );
 
     println!(
-        "==> test GET users/devtest/apps/sys-test/settings via admin + sys-test, should success"
+        "==> test GET users/devtest/apps/{}/settings via admin + {}, should success",
+        app_id, app_id
     );
     let _result = client
         .call(
             "sys_config_get",
-            json!({"key": "users/devtest/apps/sys-test/settings"}),
+            json!({"key": format!("users/devtest/apps/{}/settings", app_id)}),
         )
         .await
         .map_err(|e| {
             println!(
-                "Failed to get users/devtest/apps/sys-test/settings via admin + sys-test: {}",
-                e
+                "Failed to get users/devtest/apps/{}/settings via admin + {}: {}",
+                app_id, app_id, e
             );
             return e.to_string();
         })?;
-    println!("<== test GET users/devtest/apps/sys-test/settings via admin + sys-test, pass");
+    println!(
+        "<== test GET users/devtest/apps/{}/settings via admin + {}, pass",
+        app_id, app_id
+    );
 
-    //p, app, /config/users/*/apps/{app}/config,read,allow
-    println!("==> test SET users/devtest/apps/sys-test/config via admin + sys-test, should failed");
+    println!(
+        "==> test SET users/devtest/apps/{}/config via admin + {}, should failed",
+        app_id, app_id
+    );
     let result = client
         .call(
             "sys_config_set",
-            json!({"key": "users/devtest/apps/sys-test/config", "value": "test_rbac_set_value"}),
+            json!({"key": format!("users/devtest/apps/{}/config", app_id), "value": "test_rbac_set_value"}),
         )
         .await;
     if result.is_ok() {
-        println!("test SET users/devtest/apps/sys-test/config via admin + sys-test should failed");
-        return Err(
-            "test SET users/devtest/apps/sys-test/config via admin + sys-test should failed"
-                .to_string(),
+        println!(
+            "test SET users/devtest/apps/{}/config via admin + {} should failed",
+            app_id, app_id
         );
+        return Err(format!(
+            "test SET users/devtest/apps/{}/config via admin + {} should failed",
+            app_id, app_id
+        ));
     }
-    println!("<== test SET users/devtest/apps/sys-test/config via admin + sys-test, pass");
+    println!(
+        "<== test SET users/devtest/apps/{}/config via admin + {}, pass",
+        app_id, app_id
+    );
 
-    //p, app, /config/users/*/apps/{app}/info,read,allow
-    println!("==> test SET users/devtest/apps/sys-test/info via admin + sys-test, should failed");
-    let result = client
+    println!(
+        "==> test SET users/devtest/apps/{}/info via admin + {}, should success",
+        app_id, app_id
+    );
+    let _result = client
         .call(
             "sys_config_set",
-            json!({"key": "users/devtest/apps/sys-test/info", "value": "test_rbac_set_value"}),
+            json!({"key": format!("users/devtest/apps/{}/info", app_id), "value": "test_rbac_set_value"}),
         )
-        .await;
-    if result.is_ok() {
-        println!("test SET users/devtest/apps/sys-test/info via admin + sys-test should failed");
-        return Err(
-            "test SET users/devtest/apps/sys-test/info via admin + sys-test should failed"
-                .to_string(),
-        );
-    }
-    println!("<== test SET users/devtest/apps/sys-test/info via admin + sys-test, pass");
+        .await
+        .map_err(|e| {
+            println!(
+                "Failed to set users/devtest/apps/{}/info via admin + {}: {}",
+                app_id, app_id, e
+            );
+            return e.to_string();
+        })?;
+    println!(
+        "<== test SET users/devtest/apps/{}/info via admin + {}, pass",
+        app_id, app_id
+    );
 
     println!("********************");
     println!("End admin + app test");
@@ -305,42 +334,53 @@ async fn test() -> std::result::Result<(), String> {
     println!("**********************************");
 
     println!(
-        "==> test GET users/devtest/apps/buckyos-filebrowser/settings via admin + sys-test, should success"
-    );
-    let _result = client
-        .call(
-            "sys_config_get",
-            json!({"key": "users/devtest/apps/buckyos-filebrowser/settings"}),
-        )
-        .await
-        .map_err(|e| {
-            println!(
-                "Failed to get users/devtest/apps/buckyos-filebrowser/settings via admin + sys-test: {}",
-                e
-            );
-            return e.to_string();
-        })?;
-    println!(
-        "<== test GET users/devtest/apps/buckyos-filebrowser/settings via admin + sys-test, pass"
-    );
-
-    println!(
-        "==> test SET users/devtest/apps/buckyos-filebrowser/settings via admin + sys-test, should failed"
+        "==> test GET users/devtest/apps/{}/settings via admin + {}, should failed",
+        other_app_id, app_id
     );
     let result = client
         .call(
-            "sys_config_set",
-            json!({"key": "users/devtest/apps/buckyos-filebrowser/settings", "value": "test_rbac_set_value"}),
+            "sys_config_get",
+            json!({"key": format!("users/devtest/apps/{}/settings", other_app_id)}),
         )
         .await;
     if result.is_ok() {
         println!(
-            "test SET users/devtest/apps/buckyos-filebrowser/settings via admin + sys-test should failed"
+            "test GET users/devtest/apps/{}/settings via admin + {} should failed",
+            other_app_id, app_id
         );
-        return Err("test SET users/devtest/apps/buckyos-filebrowser/settings via admin + sys-test should failed".to_string());
+        return Err(format!(
+            "test GET users/devtest/apps/{}/settings via admin + {} should failed",
+            other_app_id, app_id
+        ));
     }
     println!(
-        "<== test SET users/devtest/apps/buckyos-filebrowser/settings via admin + sys-test, pass"
+        "<== test GET users/devtest/apps/{}/settings via admin + {}, pass",
+        other_app_id, app_id
+    );
+
+    println!(
+        "==> test SET users/devtest/apps/{}/settings via admin + {}, should failed",
+        other_app_id, app_id
+    );
+    let result = client
+        .call(
+            "sys_config_set",
+            json!({"key": format!("users/devtest/apps/{}/settings", other_app_id), "value": "test_rbac_set_value"}),
+        )
+        .await;
+    if result.is_ok() {
+        println!(
+            "test SET users/devtest/apps/{}/settings via admin + {} should failed",
+            other_app_id, app_id
+        );
+        return Err(format!(
+            "test SET users/devtest/apps/{}/settings via admin + {} should failed",
+            other_app_id, app_id
+        ));
+    }
+    println!(
+        "<== test SET users/devtest/apps/{}/settings via admin + {}, pass",
+        other_app_id, app_id
     );
 
     println!("********************************");

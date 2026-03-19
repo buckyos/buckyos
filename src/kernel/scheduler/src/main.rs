@@ -416,6 +416,47 @@ mod test {
 {
     "pre_install_apps": {
         "buckyos_filebrowser": {
+            "app_doc": {
+                "name": "buckyos_filebrowser",
+                "version": "0.5.1",
+                "meta": {
+                    "detail": "BuckyOS File Browser"
+                },
+                "create_time": 1743008063,
+                "last_update_time": 1743008063,
+                "exp": 1837616063,
+                "tag": "latest",
+                "author": "did:web:buckyos.ai",
+                "owner": "did:web:buckyos.ai",
+                "show_name": "BuckyOS File Browser",
+                "selector_type": "single",
+                "install_config_tips": {
+                    "data_mount_point": ["/srv/", "/database/", "/config/"],
+                    "local_cache_mount_point": [],
+                    "service_ports": {
+                        "www": 80
+                    }
+                },
+                "pkg_list": {
+                    "amd64_docker_image": {
+                        "pkg_id": "nightly-linux-amd64.buckyos_filebrowser-img#0.5.1",
+                        "docker_image_name": "buckyos/nightly-buckyos_filebrowser:0.5.1-amd64"
+                    },
+                    "aarch64_docker_image": {
+                        "pkg_id": "nightly-linux-aarch64.buckyos_filebrowser-img#0.5.1",
+                        "docker_image_name": "buckyos/nightly-buckyos_filebrowser:0.5.1-aarch64"
+                    },
+                    "amd64_win_app": {
+                        "pkg_id": "nightly-windows-amd64.buckyos_filebrowser-bin#0.5.1"
+                    },
+                    "aarch64_apple_app": {
+                        "pkg_id": "nightly-apple-aarch64.buckyos_filebrowser-bin#0.5.1"
+                    },
+                    "amd64_apple_app": {
+                        "pkg_id": "nightly-apple-amd64.buckyos_filebrowser-bin#0.5.1"
+                    }
+                }
+            },
             "data_mount_point": {
                 "root": "/root"
             },
@@ -427,6 +468,33 @@ mod test {
             "service_ports": {
                 "http": 80
             },
+            "res_pool_id": "default"
+        },
+        "buckyos_systest": {
+            "app_doc": {
+                "name": "buckyos_systest",
+                "version": "0.5.1",
+                "meta": {
+                    "detail": "BuckyOS System Test App"
+                },
+                "create_time": 1743008063,
+                "last_update_time": 1743008063,
+                "exp": 1837616063,
+                "tag": "latest",
+                "author": "did:web:buckyos.ai",
+                "owner": "did:web:buckyos.ai",
+                "show_name": "BuckyOS System Test",
+                "selector_type": "static",
+                "install_config_tips": {},
+                "pkg_list": {
+                    "web": {
+                        "pkg_id": "nightly-linux-amd64.buckyos_systest#0.5.1"
+                    }
+                }
+            },
+            "data_mount_point": {},
+            "cache_mount_point": [],
+            "local_cache_mount_point": [],
             "res_pool_id": "default"
         }
     }

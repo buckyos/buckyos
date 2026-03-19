@@ -145,7 +145,6 @@ struct LaunchConfig {
     agent_spec: Option<AgentAppSpec>,
 }
 
-
 fn parse_u16_arg(value: &str, arg_name: &str) -> Result<u16> {
     value
         .parse::<u16>()

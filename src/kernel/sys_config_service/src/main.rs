@@ -891,6 +891,83 @@ async fn load_device_doc(device_name: &str) -> Result<DeviceConfig> {
     return Ok(device_doc);
 }
 
+fn is_privileged_user_type(user_type: &str) -> bool {
+    matches!(
+        user_type.trim().to_ascii_lowercase().as_str(),
+        "admin" | "root"
+    )
+}
+
+fn user_has_privileged_role_in_policy(policy: &str, user_name: &str) -> bool {
+    policy.lines().any(|line| {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            return false;
+        }
+
+        let parts: Vec<&str> = line.split(',').map(|part| part.trim()).collect();
+        if parts.len() < 3 || parts[0] != "g" || parts[1] != user_name {
+            return false;
+        }
+
+        is_privileged_user_type(parts[2])
+    })
+}
+
+async fn load_privileged_user_doc(user_name: &str) -> Result<OwnerConfig> {
+    let store = SYS_STORE.lock().await;
+    let mut is_privileged = false;
+
+    let user_settings = store
+        .get(format!("users/{}/settings", user_name))
+        .await
+        .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+
+    if let Some(user_settings) = user_settings.as_ref() {
+        let user_settings_json: Value = serde_json::from_str(user_settings).map_err(|err| {
+            RPCErrors::ReasonError(format!("parse user settings failed: {}", err))
+        })?;
+        let user_type = user_settings_json
+            .get("type")
+            .or_else(|| user_settings_json.get("user_type"))
+            .and_then(|value| value.as_str());
+        if let Some(user_type) = user_type {
+            is_privileged = is_privileged_user_type(user_type);
+        }
+    }
+
+    if !is_privileged {
+        if let Some(policy) = store
+            .get("system/rbac/policy".to_string())
+            .await
+            .map_err(|err| RPCErrors::ReasonError(err.to_string()))?
+        {
+            is_privileged = user_has_privileged_role_in_policy(&policy, user_name);
+        }
+    }
+
+    if !is_privileged {
+        return Err(RPCErrors::NoPermission(format!(
+            "user {} is not granted admin/root privilege",
+            user_name
+        )));
+    }
+
+    let owner_doc = store
+        .get(format!("users/{}/doc", user_name))
+        .await
+        .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    drop(store);
+
+    let owner_doc =
+        owner_doc.ok_or_else(|| RPCErrors::KeyNotExist(format!("users/{}/doc", user_name)))?;
+    let encoded_doc = EncodedDocument::from_str(owner_doc)
+        .map_err(|err| RPCErrors::ReasonError(format!("parse owner doc failed: {}", err)))?;
+    let owner_config = OwnerConfig::decode(&encoded_doc, None)
+        .map_err(|err| RPCErrors::ReasonError(format!("decode owner doc failed: {}", err)))?;
+    Ok(owner_config)
+}
+
 async fn verify_trusted_jwt(jwt: &str) -> Result<RPCSessionToken> {
     // Parse header first to check algorithm and kid
     let header: jsonwebtoken::Header = jsonwebtoken::decode_header(jwt).map_err(|error| {
@@ -920,26 +997,45 @@ async fn verify_trusted_jwt(jwt: &str) -> Result<RPCSessionToken> {
     let mut trust_keys = TRUST_KEYS.lock().await;
     let mut public_key = trust_keys.get(&key_id);
 
-    // If missing, attempt to load device doc and cache its public key
+    // If missing, attempt to load a privileged user doc first, then a device doc, and cache its public key.
     if public_key.is_none() {
         drop(trust_keys); // release lock before awaiting
-        let device_doc = load_device_doc(&key_id).await?;
-        if device_doc.device_type != "ood" && device_doc.device_type != "node" {
-            return Err(RPCErrors::ReasonError(format!(
-                "device type is not ood or node: {}",
-                key_id
-            )));
-        }
-        let device_key = device_doc.get_default_key();
-        if device_key.is_none() {
-            return Err(RPCErrors::ReasonError(format!(
-                "device {} has no default key",
-                key_id
-            )));
-        }
-        let device_key = device_key.unwrap();
-        let real_key = DecodingKey::from_jwk(&device_key)
-            .map_err(|err| RPCErrors::ReasonError(format!("parse device key failed: {}", err)))?;
+        let real_key = match load_privileged_user_doc(&key_id).await {
+            Ok(owner_config) => {
+                let owner_key = owner_config.get_default_key().ok_or_else(|| {
+                    RPCErrors::ReasonError(format!("privileged user {} has no default key", key_id))
+                })?;
+                info!("loaded privileged user doc for JWT issuer {}", key_id);
+                DecodingKey::from_jwk(&owner_key).map_err(|err| {
+                    RPCErrors::ReasonError(format!("parse privileged user key failed: {}", err))
+                })?
+            }
+            Err(user_err) => {
+                info!(
+                    "issuer {} is not a privileged user doc source: {}",
+                    key_id, user_err
+                );
+                let device_doc = load_device_doc(&key_id).await?;
+                if device_doc.device_type != "ood" && device_doc.device_type != "node" {
+                    return Err(RPCErrors::ReasonError(format!(
+                        "device type is not ood or node: {}",
+                        key_id
+                    )));
+                }
+                let device_key = device_doc.get_default_key();
+                if device_key.is_none() {
+                    return Err(RPCErrors::ReasonError(format!(
+                        "device {} has no default key",
+                        key_id
+                    )));
+                }
+                let device_key = device_key.unwrap();
+                info!("loaded device doc for JWT issuer {}", key_id);
+                DecodingKey::from_jwk(&device_key).map_err(|err| {
+                    RPCErrors::ReasonError(format!("parse device key failed: {}", err))
+                })?
+            }
+        };
 
         // cache and reuse
         trust_keys = TRUST_KEYS.lock().await;
