@@ -164,6 +164,9 @@ jobs:
           "BUCKYOS_BUILD_ROOT=C:\opt\buckyosci" >> $env:GITHUB_ENV
           "BUCKYOS_LOGS_PATH=$($env:APPDATA)\BuckyOS\logs" >> $env:GITHUB_ENV
           "LOCAL_PKG_DIR=$env:GITHUB_WORKSPACE\publish" >> $env:GITHUB_ENV
+          "PYTHONIOENCODING=utf-8" >> $env:GITHUB_ENV
+          "PYTHONLEGACYWINDOWSSTDIO=utf-8" >> $env:GITHUB_ENV
+          "PYTHONUTF8=1" >> $env:GITHUB_ENV
 
       - name: Prepare writable install roots (Unix)
         if: ${{ runner.os != 'Windows' }}
