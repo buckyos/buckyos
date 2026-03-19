@@ -46,7 +46,6 @@ RESULT_ROOT_DIR = Path(os.environ.get("BUCKYOS_BUILD_ROOT", "/opt/buckyosci"))
 TMP_INSTALL_DIR = RESULT_ROOT_DIR / "macos-pkg"
 
 MACOS_PKG_PROJECT_DIR = Path(__file__).resolve().parent / "macos_pkg"
-MACOS_INSTALL_CHECK_SCRIPT = "docker_install_check.sh"
 BUCKYOS_DEFAULTS_SUBDIR = ".buckyos_installer_defaults"
 IGNORED_STAGE_NAMES = {".DS_Store", "__pycache__"}
 
@@ -471,42 +470,54 @@ def _write_distribution_xml(
     # Build a simple Distribution XML with a customization screen.
     lines: List[str] = []
     lines.append('<?xml version="1.0" encoding="utf-8"?>')
-    lines.append('<installer-gui-script minSpecVersion="1">')
+    lines.append('<installer-gui-script minSpecVersion="2">')
     lines.append(f"  <title>{_xml_escape(title)}</title>")
-    lines.append('  <options customize="always" allow-external-scripts="true" />')
-    lines.append("  <script><![CDATA[")
-    lines.append("function checkCurrentUserDocker() {")
-    lines.append("  var exitCode = null;")
-    lines.append("  try {")
-    lines.append(f'    exitCode = system.runOnce("{MACOS_INSTALL_CHECK_SCRIPT}");')
-    lines.append("  } catch (error) {")
-    lines.append('    system.log("docker installation-check exception: " + error)')
-    lines.append("  }")
-    lines.append('  system.log("docker installation-check exit code: " + exitCode)')
-    lines.append('  if (exitCode === 0 || exitCode === "0") {')
-    lines.append("    return true")
-    lines.append("  }")
-    lines.append('  my.result.type = "Fatal"')
-    lines.append('  my.result.title = "Docker Required"')
-    lines.append('  if (exitCode === 10 || exitCode === "10") {')
+    lines.append('  <options customize="always" />')
+    lines.append('  <installation-check script="installationCheck()"/>')
+    lines.append("  <script>")
+    lines.append("    function pathExists(path) {")
+    lines.append("        try {")
+    lines.append("            return system.files.fileExistsAtPath(path);")
+    lines.append("        } catch (error) {")
+    lines.append("            system.log('pathExists failed for ' + path + ': ' + error);")
+    lines.append("            return false;")
+    lines.append("        }")
+    lines.append("    }")
+    lines.append("    function bundleExists(path) {")
+    lines.append("        try {")
+    lines.append("            var bundle = system.files.bundleAtPath(path);")
+    lines.append("            return bundle != null;")
+    lines.append("        } catch (error) {")
+    lines.append("            system.log('bundleExists failed for ' + path + ': ' + error);")
+    lines.append("            return false;")
+    lines.append("        }")
+    lines.append("    }")
+    lines.append("    function installationCheckFailure(message) {")
+    lines.append("            my.result.title = 'Docker Required';")
+    lines.append("            my.result.message = message;")
+    lines.append("            my.result.type = 'Fatal';")
+    lines.append("            return false;")
+    lines.append("    }")
+    lines.append("    function installationCheck() {")
+    lines.append("        var orbStackApp = bundleExists('/Applications/OrbStack.app');")
+    lines.append("        var dockerCli =")
+    lines.append("            pathExists('/opt/homebrew/bin/docker') ||")
+    lines.append("            pathExists('/usr/local/bin/docker') ||")
+    lines.append("            pathExists('/usr/bin/docker');")
+    lines.append("        var dockerSocket = pathExists('/var/run/docker.sock');")
+    lines.append("        if (!orbStackApp && !dockerCli) {")
     lines.append(
-        '    my.result.message = "BuckyOS requires OrbStack before installation. The docker CLI was not found in the current macOS session.\\n\\nPlease install and start OrbStack, then reopen this installer.\\nDownload: https://orbstack.dev/download"'
+        "            return installationCheckFailure('Please install and start OrbStack first.\\nDownload: https://orbstack.dev/download');"
     )
-    lines.append("    return false")
-    lines.append("  }")
-    lines.append('  if (exitCode === 11 || exitCode === "11") {')
+    lines.append("        }")
+    lines.append("        if (!dockerSocket) {")
     lines.append(
-        '    my.result.message = "BuckyOS requires OrbStack before installation. Docker is installed but not reachable from the current macOS session.\\n\\nPlease start OrbStack and confirm `docker info` works in Terminal, then reopen this installer.\\nDownload: https://orbstack.dev/download\\n\\nThe installer will re-check LaunchDaemon access during install."'
+        "            return installationCheckFailure('OrbStack appears to be installed, but Docker is not ready yet.\\nPlease start OrbStack first.\\nDownload: https://orbstack.dev/download');"
     )
-    lines.append("    return false")
-    lines.append("  }")
-    lines.append(
-        '  my.result.message = "BuckyOS could not verify OrbStack in the current macOS session.\\n\\nPlease allow the installer check, make sure OrbStack is installed and running, then reopen this installer.\\nDownload: https://orbstack.dev/download\\n\\nThe installer will re-check LaunchDaemon access during install."'
-    )
-    lines.append("  return false")
-    lines.append("}")
-    lines.append("  ]]></script>")
-    lines.append('  <installation-check script="checkCurrentUserDocker()" />')
+    lines.append("        }")
+    lines.append("        return true;")
+    lines.append("    }")
+    lines.append("  </script>")
 
     # Optional HTML screens (if present in resources).
     for tag, filename in (("welcome", "welcome.html"), ("license", "license.html"), ("conclusion", "conclusion.html")):
@@ -857,19 +868,23 @@ def verify_pkg(
                 if install_check is None:
                     failures.append("missing installation-check in Distribution")
                 else:
-                    if install_check.attrib.get("script") != "checkCurrentUserDocker()":
+                    if install_check.attrib.get("script") != "installationCheck()":
                         failures.append(
-                            "Distribution installation-check should call checkCurrentUserDocker()"
+                            "Distribution installation-check should call installationCheck()"
                         )
 
                 script_elem = root.find(".//script")
                 script_text = "" if script_elem is None or script_elem.text is None else script_elem.text
                 required_dist_script_snippets = [
-                    'system.runOnce("docker_install_check.sh")',
-                    'my.result.type = "Fatal"',
-                    'my.result.title = "Docker Required"',
+                    "function installationCheck()",
+                    "system.files.fileExistsAtPath(path)",
+                    "system.files.bundleAtPath(path)",
+                    "bundleExists('/Applications/OrbStack.app')",
+                    "pathExists('/var/run/docker.sock')",
+                    "my.result.type = 'Fatal'",
+                    "my.result.title = 'Docker Required'",
+                    "Please install and start OrbStack first.",
                     "https://orbstack.dev/download",
-                    "The installer will re-check LaunchDaemon access during install.",
                 ]
                 for snippet in required_dist_script_snippets:
                     if snippet not in script_text:
@@ -892,10 +907,6 @@ def verify_pkg(
                     else:
                         if required not in (None, "false"):
                             failures.append(f"component {comp.key} should be required=false, got {required}")
-
-        resources_check = expanded / "Resources" / MACOS_INSTALL_CHECK_SCRIPT
-        if not resources_check.exists():
-            failures.append(f"missing installer resource helper: Resources/{MACOS_INSTALL_CHECK_SCRIPT}")
 
         # Verify component packages exist and scripts attachment.
         # Embedded component packages are named by sanitized key: {sanitize(key)}.pkg

@@ -71,6 +71,14 @@ jobs:
             needs_musl: true
             needs_tauri: false
             needs_nsis: false
+          - name: Linux ARM64 Dev Test
+            runner: ubuntu-24.04-arm
+            platform_key: linux
+            arch: aarch64
+            rust_target: aarch64-unknown-linux-gnu
+            needs_musl: false
+            needs_tauri: false
+            needs_nsis: false
           - name: macOS Apple Silicon Dev Test
             runner: macos-15
             platform_key: macos
@@ -92,14 +100,6 @@ jobs:
             platform_key: windows
             arch: x86_64
             rust_target: x86_64-pc-windows-msvc
-            needs_musl: false
-            needs_tauri: true
-            needs_nsis: true
-          - name: Windows ARM64 Dev Test
-            runner: windows-11-arm
-            platform_key: windows
-            arch: aarch64
-            rust_target: aarch64-pc-windows-msvc
             needs_musl: false
             needs_tauri: true
             needs_nsis: true
@@ -152,6 +152,7 @@ jobs:
         run: |
           echo "BUCKYOS_ROOT=/opt/buckyos" >> "$GITHUB_ENV"
           echo "BUCKYOS_BUILD_ROOT=/opt/buckyosci" >> "$GITHUB_ENV"
+          echo "WEB3_GATEWAY_ROOT=/opt/web3-gateway" >> "$GITHUB_ENV"
           echo "BUCKYOS_LOGS_PATH=/opt/buckyos/logs" >> "$GITHUB_ENV"
           echo "LOCAL_PKG_DIR=$GITHUB_WORKSPACE/publish" >> "$GITHUB_ENV"
 
@@ -167,8 +168,8 @@ jobs:
       - name: Prepare writable install roots (Unix)
         if: ${{ runner.os != 'Windows' }}
         run: |
-          sudo mkdir -p /opt/buckyos /opt/buckyosci
-          sudo chown -R "$(id -un):$(id -gn)" /opt/buckyos /opt/buckyosci
+          sudo mkdir -p /opt/buckyos /opt/buckyosci /opt/web3-gateway
+          sudo chown -R "$(id -un):$(id -gn)" /opt/buckyos /opt/buckyosci /opt/web3-gateway
 
       - name: Prepare writable install roots (Windows)
         if: ${{ runner.os == 'Windows' }}
@@ -249,7 +250,7 @@ jobs:
           function Wait-ForPort {
             param(
               [string]$Name,
-              [string]$Host,
+              [string]$TargetHost,
               [int]$Port,
               [int]$Retries = 60
             )
@@ -257,10 +258,10 @@ jobs:
             for ($i = 1; $i -le $Retries; $i++) {
               $client = [System.Net.Sockets.TcpClient]::new()
               try {
-                $async = $client.BeginConnect($Host, $Port, $null, $null)
+                $async = $client.BeginConnect($TargetHost, $Port, $null, $null)
                 if ($async.AsyncWaitHandle.WaitOne(2000) -and $client.Connected) {
                   $client.EndConnect($async)
-                  Write-Host "[ready] $Name on $Host:$Port"
+                  Write-Host ("[ready] {0} on {1}:{2}" -f $Name, $TargetHost, $Port)
                   return
                 }
               } catch {
@@ -268,11 +269,11 @@ jobs:
                 $client.Dispose()
               }
 
-              Write-Host "[wait] $Name on $Host:$Port ($i/$Retries)"
+              Write-Host ("[wait] {0} on {1}:{2} ({3}/{4})" -f $Name, $TargetHost, $Port, $i, $Retries)
               Start-Sleep -Seconds 2
             }
 
-            throw "Timeout waiting for $Name on $Host:$Port"
+            throw ("Timeout waiting for {0} on {1}:{2}" -f $Name, $TargetHost, $Port)
           }
 
           Push-Location ..\cyfs-gateway\src
@@ -284,8 +285,8 @@ jobs:
           buckyos-build
           buckyos-install --all
           python .\start.py --all
-          Wait-ForPort -Name "node gateway" -Host "127.0.0.1" -Port 3180
-          Wait-ForPort -Name "system_config" -Host "127.0.0.1" -Port 3200
+          Wait-ForPort -Name "node gateway" -TargetHost "127.0.0.1" -Port 3180
+          Wait-ForPort -Name "system_config" -TargetHost "127.0.0.1" -Port 3200
           cargo run -p test_rbac
           Pop-Location
 
@@ -297,7 +298,7 @@ jobs:
           pushd src
           python3 stop.py || true
           popd
-          sudo rm -rf "$BUCKYOS_ROOT"
+          sudo rm -rf "$BUCKYOS_ROOT" "$WEB3_GATEWAY_ROOT"
 
       - name: Stop single-node environment and clean install root (Windows)
         if: ${{ runner.os == 'Windows' }}
@@ -504,6 +505,7 @@ jobs:
           path: |
             ${{ env.BUCKYOS_LOGS_PATH }}
             ${{ env.BUCKYOS_ROOT }}/etc
+            ${{ env.WEB3_GATEWAY_ROOT }}
             ${{ env.LOCAL_PKG_DIR }}
           if-no-files-found: warn
 
