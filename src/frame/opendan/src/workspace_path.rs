@@ -51,14 +51,8 @@ pub(crate) fn resolve_agent_env_root_from_local_workspace_hint(
     workspace_info: Option<&Json>,
     session_cwd: &Path,
 ) -> Option<PathBuf> {
-    resolve_agent_env_root_from_info(workspace_info)
-        .or_else(|| {
-            derive_agent_env_root_from_path(
-                session_cwd,
-                normalize_optional_text(local_workspace_id).as_deref(),
-            )
-        })
-        .or_else(|| non_empty_path(session_cwd))
+    let _ = local_workspace_id;
+    resolve_agent_env_root(workspace_info, session_cwd)
 }
 
 pub(crate) fn resolve_default_local_workspace_path(
@@ -114,56 +108,9 @@ fn local_workspace_id_from_info(info: &WorkspaceInfoView) -> Option<String> {
     normalize_optional_text(Some(info.local_workspace_id.as_str()))
 }
 
-fn derive_agent_env_root_from_path(
-    path: &Path,
-    local_workspace_id: Option<&str>,
-) -> Option<PathBuf> {
-    let local_workspace_id = normalize_optional_text(local_workspace_id)?;
-    let local_workspace_root =
-        derive_local_workspace_root_from_path(path, local_workspace_id.as_str())?;
-    strip_suffix_path(
-        &local_workspace_root,
-        &Path::new(WORKSPACES_LOCAL_DIR).join(local_workspace_id),
-    )
-}
-
 fn derive_local_workspace_root_from_path(path: &Path, local_workspace_id: &str) -> Option<PathBuf> {
     let suffix = Path::new(WORKSPACES_LOCAL_DIR).join(local_workspace_id);
     prefix_through_subpath(path, &suffix)
-}
-
-fn strip_suffix_path(path: &Path, suffix: &Path) -> Option<PathBuf> {
-    let suffix_len = normalized_component_count(suffix);
-    if suffix_len == 0 {
-        return Some(path.to_path_buf());
-    }
-
-    let normalized_path_components = path
-        .components()
-        .filter(|component| !matches!(component, Component::CurDir))
-        .collect::<Vec<_>>();
-    let normalized_suffix_components = suffix
-        .components()
-        .filter(|component| !matches!(component, Component::CurDir))
-        .collect::<Vec<_>>();
-
-    if normalized_path_components.len() < normalized_suffix_components.len() {
-        return None;
-    }
-    if normalized_path_components
-        [normalized_path_components.len() - normalized_suffix_components.len()..]
-        != normalized_suffix_components[..]
-    {
-        return None;
-    }
-
-    let mut out = path.to_path_buf();
-    for _ in 0..suffix_len {
-        if !out.pop() {
-            return None;
-        }
-    }
-    Some(out)
 }
 
 fn prefix_through_subpath(path: &Path, subpath: &Path) -> Option<PathBuf> {
@@ -212,12 +159,6 @@ fn build_path_from_components(components: &[Component<'_>]) -> Option<PathBuf> {
         out.push(component.as_os_str());
     }
     Some(out)
-}
-
-fn normalized_component_count(path: &Path) -> usize {
-    path.components()
-        .filter(|component| !matches!(component, Component::CurDir))
-        .count()
 }
 
 pub(crate) fn non_empty_path(path: &Path) -> Option<PathBuf> {

@@ -1701,6 +1701,14 @@ mod tests {
         let mut s = AgentSession::new(session_id, "did:test:agent", Some("on_wakeup"));
         s.local_workspace_id = Some(local_workspace_id.to_string());
         s.pwd = workspace_dir;
+        s.workspace_info = Some(json!({
+            "binding": {
+                "local_workspace_id": local_workspace_id,
+                "workspace_path": agent_env_root.join("workspaces").join(local_workspace_id),
+                "workspace_rel_path": format!("workspaces/{local_workspace_id}"),
+                "agent_env_root": agent_env_root
+            }
+        }));
         let session = Arc::new(Mutex::new(s));
 
         let rendered =
@@ -1716,6 +1724,14 @@ mod tests {
         let mut s_other = AgentSession::new("s-other", "did:test:agent", Some("on_wakeup"));
         s_other.local_workspace_id = Some(local_workspace_id.to_string());
         s_other.pwd = agent_env_root.join("workspaces").join(local_workspace_id);
+        s_other.workspace_info = Some(json!({
+            "binding": {
+                "local_workspace_id": local_workspace_id,
+                "workspace_path": agent_env_root.join("workspaces").join(local_workspace_id),
+                "workspace_rel_path": format!("workspaces/{local_workspace_id}"),
+                "agent_env_root": agent_env_root
+            }
+        }));
         let session_other = Arc::new(Mutex::new(s_other));
         let hidden =
             AgentEnvironment::load_value_from_session(session_other, "workspace.todolist.T001")

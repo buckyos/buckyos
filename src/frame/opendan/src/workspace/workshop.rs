@@ -1115,6 +1115,7 @@ fn normalize_agent_env_root(root: &Path) -> Result<PathBuf, AgentToolError> {
 async fn create_minimal_agent_env_dirs(agent_env_root: &Path) -> Result<(), AgentToolError> {
     let roots = [
         agent_env_root.to_path_buf(),
+        agent_env_root.join("memory"),
         agent_env_root.join("skills"),
         agent_env_root.join("sessions"),
         agent_env_root.join("workspaces"),

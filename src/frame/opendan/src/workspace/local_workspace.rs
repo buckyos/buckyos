@@ -989,6 +989,7 @@ fn generate_workspace_id(name: &str, timestamp_ms: u64) -> String {
 async fn ensure_agent_env_layout(agent_env_root: &Path) -> Result<(), AgentToolError> {
     let dirs = [
         agent_env_root.to_path_buf(),
+        agent_env_root.join("memory"),
         agent_env_root.join("tools"),
         agent_env_root.join("skills"),
         agent_env_root.join("sessions"),
