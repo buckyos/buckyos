@@ -40,6 +40,8 @@ const DEFAULT_AICC_KRPC_TIMEOUT_SECS: u64 = 120;
 const DEFAULT_KRPC_TIMEOUT_SECS: u64 = 15;
 const BUCKYOS_KRPC_TIMEOUT_SECS_ENV: &str = "BUCKYOS_KRPC_TIMEOUT_SECS";
 const BUCKYOS_KRPC_TIMEOUT_SECS_PREFIX: &str = "BUCKYOS_KRPC_TIMEOUT_SECS_";
+const BUCKYOS_HOST_GATEWAY_ENV: &str = "BUCKYOS_HOST_GATEWAY";
+const DEFAULT_DOCKER_HOST_GATEWAY: &str = "host.docker.internal";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuckyOSRuntimeType {
@@ -93,13 +95,18 @@ impl BuckyOSRuntime {
         } else {
             app_host_perfix = format!("{}-{}", app_id, app_owner_user_id.clone().unwrap());
         }
+        let user_id = if runtime_type == BuckyOSRuntimeType::AppService {
+            app_owner_user_id.clone()
+        } else {
+            None
+        };
 
         let runtime = BuckyOSRuntime {
             app_id: app_id.to_string(),
             app_owner_id: app_owner_user_id,
             app_host_perfix: app_host_perfix,
             main_service_port: RwLock::new(0),
-            user_id: None,
+            user_id,
             runtime_type,
             session_token: Arc::new(RwLock::new("".to_string())),
             refresh_token: Arc::new(RwLock::new("".to_string())),
@@ -190,20 +197,18 @@ impl BuckyOSRuntime {
             self.device_info = Some(device_info);
         }
 
-        if CURRENT_DEVICE_CONFIG.get().is_none() {
-            let device_doc = env::var("BUCKYOS_THIS_DEVICE");
-            if device_doc.is_ok() {
-                let device_doc = device_doc.unwrap();
-                info!("device_doc:{}", device_doc);
-                let device_config = serde_json::from_str(device_doc.as_str());
-                if device_config.is_err() {
-                    warn!("device_doc format error");
-                    return Err(RPCErrors::ReasonError(
-                        "device_doc format error".to_string(),
-                    ));
-                }
-                let device_config: DeviceConfig = device_config.unwrap();
-                self.device_config = Some(device_config.clone());
+        if let Ok(device_doc) = env::var("BUCKYOS_THIS_DEVICE") {
+            info!("device_doc:{}", device_doc);
+            let device_config = serde_json::from_str(device_doc.as_str());
+            if device_config.is_err() {
+                warn!("device_doc format error");
+                return Err(RPCErrors::ReasonError(
+                    "device_doc format error".to_string(),
+                ));
+            }
+            let device_config: DeviceConfig = device_config.unwrap();
+            self.device_config = Some(device_config.clone());
+            if CURRENT_DEVICE_CONFIG.get().is_none() {
                 let set_result = CURRENT_DEVICE_CONFIG.set(device_config.clone());
                 if set_result.is_err() {
                     warn!("Failed to set CURRENT_DEVICE_CONFIG by env var");
@@ -212,6 +217,14 @@ impl BuckyOSRuntime {
                     ));
                 }
             }
+        } else if self.device_config.is_none() {
+            if let Some(device_config) = CURRENT_DEVICE_CONFIG.get() {
+                self.device_config = Some(device_config.clone());
+            }
+        }
+
+        if self.runtime_type == BuckyOSRuntimeType::AppService && self.user_id.is_none() {
+            self.user_id = self.app_owner_id.clone();
         }
 
         let mut session_token_keys = Vec::new();
@@ -278,6 +291,11 @@ impl BuckyOSRuntime {
     }
 
     pub async fn fill_policy_by_load_config(&mut self) -> Result<()> {
+        if self.runtime_type == BuckyOSRuntimeType::AppService {
+            info!("AppService runtime skips system config root bootstrap");
+            return Ok(());
+        }
+
         let mut config_root_dir = None;
         if self.runtime_type == BuckyOSRuntimeType::AppClient {
             let bucky_dev_user_home_dir = get_buckyos_dev_user_home();
@@ -1392,27 +1410,44 @@ impl BuckyOSRuntime {
         Ok(client)
     }
 
+    fn resolve_local_service_host(&self) -> String {
+        match self.runtime_type {
+            BuckyOSRuntimeType::AppService | BuckyOSRuntimeType::FrameService => {
+                env::var(BUCKYOS_HOST_GATEWAY_ENV)
+                    .ok()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| DEFAULT_DOCKER_HOST_GATEWAY.to_string())
+            }
+            _ => "127.0.0.1".to_string(),
+        }
+    }
+
     pub async fn get_system_config_client(&self) -> Result<SystemConfigClient> {
-        let mut url = "http://127.0.0.1:3200/kapi/system_config".to_string();
+        let mut url = format!(
+            "http://{}:3200/kapi/system_config",
+            self.resolve_local_service_host()
+        );
         let mut schema = "http";
         if self.force_https {
             schema = "https";
         }
         let zone_host = self.zone_id.to_host_name();
-        if !self.is_ood() {
-            match self.runtime_type {
-                BuckyOSRuntimeType::AppClient => {
+        match self.runtime_type {
+            BuckyOSRuntimeType::AppClient => {
+                if !self.is_ood() {
                     url = format!("{}://{}/kapi/system_config", schema, zone_host);
                 }
-                BuckyOSRuntimeType::AppService => {
-                    url = format!(
-                        "http://127.0.0.1:{}/kapi/system_config",
-                        DEFAULT_NODE_GATEWAY_PORT
-                    );
-                }
-                _ => {
-                    //do nothing
-                }
+            }
+            BuckyOSRuntimeType::AppService | BuckyOSRuntimeType::FrameService => {
+                url = format!(
+                    "http://{}:{}/kapi/system_config",
+                    self.resolve_local_service_host(),
+                    DEFAULT_NODE_GATEWAY_PORT
+                );
+            }
+            _ => {
+                // keep local direct system_config url
             }
         }
 
@@ -1502,6 +1537,7 @@ impl BuckyOSRuntime {
                 "access kernel service need set device_config".to_string(),
             ));
         }
+        let local_service_host = self.resolve_local_service_host();
         let control_panel_client = self.get_system_control_panel_client().await?;
         let service_info = control_panel_client.get_services_info(service_name).await?;
         // select best instance
@@ -1515,7 +1551,10 @@ impl BuckyOSRuntime {
                     if let Some(port) = Self::resolve_service_port(local_node, "www") {
                         //短路：直接连在本机的Service 服务的 实际端口，绕过node-gateway转发
                         return Ok((
-                            format!("http://127.0.0.1:{}/kapi/{}", port, service_name),
+                            format!(
+                                "http://{}:{}/kapi/{}",
+                                local_service_host, port, service_name
+                            ),
                             true,
                         ));
                     }
@@ -1536,8 +1575,8 @@ impl BuckyOSRuntime {
         //通过本机的node-gatewa 转发，局域网的即使可以直连也要通过rtcp,局域网的明文流量也并不安全。
         return Ok((
             format!(
-                "http://127.0.0.1:{}/kapi/{}",
-                DEFAULT_NODE_GATEWAY_PORT, service_name
+                "http://{}:{}/kapi/{}",
+                local_service_host, DEFAULT_NODE_GATEWAY_PORT, service_name
             ),
             false,
         ));

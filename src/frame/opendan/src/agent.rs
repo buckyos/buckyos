@@ -43,7 +43,7 @@ use crate::behavior::{
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
 const MAX_MSG_PULL_PER_TICK: usize = 128;
-const MAX_EVENT_PULL_TIMEOUT_MS: u64 = 10_000;
+const MAX_EVENT_PULL_TIMEOUT_MS: u64 = 1_000;
 const MAX_SESSION_WORKER_IDLE_SLEEP_MS: u64 = 10_000;
 const MSG_ROUTED_REASON: &str = "routed_by_opendan_runtime";
 const MSG_CENTER_EVENT_BOX_PATTERN_NAMES: [&str; 9] = [
@@ -447,7 +447,7 @@ impl AIAgent {
             let has_inputs = !pulled_msgs.is_empty() || !pulled_events.is_empty();
             if has_inputs {
                 info!(
-                    "{} dispatch_tick_inputs: pulled_msgs={} pulled_events={} waited_on_events={}",
+                    "{} pull_msgs_and_events success, dispatch_inputs: pulled_msgs={} pulled_events={} waited_on_events={}",
                     self.agent_name,
                     pulled_msgs.len(),
                     pulled_events.len(),
@@ -535,7 +535,7 @@ impl AIAgent {
         let mut msg_pull_boxes = Vec::<BoxKind>::new();
         match event_reader.pull_event(Some(wait_timeout_ms)).await {
             Ok(Some(event)) => {
-                info!(
+                debug!(
                     "{}.event_pull_hit: event_id={} source_node={} ingress_node={}",
                     self.agent_name,
                     event.eventid,
@@ -544,7 +544,7 @@ impl AIAgent {
                 );
                 Self::collect_event_pull_targets(event, &mut msg_pull_boxes, &mut pulled_events);
 
-                info!(
+                debug!(
                     "{}.event_pull_targets: msg_pull_boxes={:?} pulled_events={}",
                     self.agent_name,
                     msg_pull_boxes,
@@ -553,7 +553,7 @@ impl AIAgent {
             }
             Ok(None) => {
                 // KEvent is a poll accelerator. Timeout still falls back to queue pull.
-                info!("{}.event_pull_timeout", self.agent_name);
+                debug!("{}.event_pull_timeout", self.agent_name);
                 Self::append_all_msg_center_boxes_updated(&mut msg_pull_boxes);
             }
             Err(err) => {
@@ -573,7 +573,7 @@ impl AIAgent {
             self.pull_msg_packs_by_boxes(msg_pull_boxes.as_slice())
                 .await
         };
-        info!(
+        debug!(
             "{}.pull_msgs_and_events_done: msg_pull_boxes={:?} pulled_msgs={} pulled_events={}",
             self.agent_name,
             msg_pull_boxes,

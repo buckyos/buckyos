@@ -1,26 +1,33 @@
 use crate::run_item::{ControlRuntItemErrors, Result};
 use crate::service_pkg::new_system_package_env;
 use buckyos_api::{
-    get_buckyos_api_runtime, get_full_appid, get_session_token_env_key, AppDoc,
-    AppServiceInstanceConfig, AppType, LocalAppInstanceConfig, ServiceInstallConfig,
-    ServiceInstanceState, SubPkgDesc, VERIFY_HUB_TOKEN_EXPIRE_TIME,
+    AppDoc, AppServiceInstanceConfig, AppType, LocalAppInstanceConfig, ServiceInstallConfig,
+    ServiceInstanceState, SubPkgDesc, VERIFY_HUB_TOKEN_EXPIRE_TIME, get_buckyos_api_runtime,
+    get_full_appid, get_session_token_env_key,
 };
-use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir, get_buckyos_system_bin_dir};
+use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir};
 use log::{debug, info, warn};
-use ndn_lib::{load_named_object_from_obj_str, ObjId};
+use ndn_lib::{ObjId, load_named_object_from_obj_str};
 use package_lib::{MediaInfo, PackageEnv, PackageId, PackageMeta, PkgError};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shlex::Shlex;
 use std::collections::{HashMap, HashSet};
-use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use sysinfo::{Pid, ProcessesToUpdate, System};
 use tokio::process::Command;
 
 const DEFAULT_OPENDAN_SERVICE_PORT: u16 = 4060;
 const OPENDAN_SERVICE_PORT_FALLBACK_KEYS: [&str; 4] = ["www", "http", "https", "main"];
+const AGENT_RUNTIME_IMAGE_REPO: &str = "paios/aios";
+const AGENT_RUNTIME_HOST_GATEWAY: &str = "host.docker.internal";
+const AGENT_CONTAINER_PACKAGE_ROOT: &str = "/opt/agent/package";
+const AGENT_CONTAINER_DATA_ROOT: &str = "/opt/agent/data";
+const AGENT_CONTAINER_ENV_ROOT: &str = "/opt/agent/rootfs";
+const AGENT_CONTAINER_FUSE_DEVICE: &str = "/dev/fuse";
+const AGENT_CONTAINER_LOG_ROOT: &str = "/opt/buckyos/logs";
+const AGENT_CONTAINER_STORAGE_ROOT: &str = "/opt/buckyos/storage";
+const AGENT_CONTAINER_OPENDAN_BIN: &str = "/opt/buckyos/bin/opendan/opendan";
 pub(crate) const DOCKER_LABEL_APP_ID: &str = "buckyos.app_id";
 pub(crate) const DOCKER_LABEL_OWNER_USER_ID: &str = "buckyos.owner_user_id";
 pub(crate) const DOCKER_LABEL_FULL_APPID: &str = "buckyos.full_appid";
@@ -82,13 +89,6 @@ impl PlatformTarget {
         match self.os {
             PlatformOs::Windows => "python",
             PlatformOs::Linux | PlatformOs::Macos => "python3",
-        }
-    }
-
-    fn opendan_binary_name(self) -> &'static str {
-        match self.os {
-            PlatformOs::Windows => "opendan.exe",
-            PlatformOs::Linux | PlatformOs::Macos => "opendan",
         }
     }
 }
@@ -307,7 +307,7 @@ impl AppLoader {
             (RuntimeType::Agent, ControlOperation::Deploy) => self.preview_agent_deploy()?,
             (RuntimeType::Agent, ControlOperation::Start) => self.preview_agent_start()?,
             (RuntimeType::Agent, ControlOperation::Stop) => vec![self.preview_agent_stop()],
-            (RuntimeType::Agent, ControlOperation::Status) => vec![self.preview_agent_status()],
+            (RuntimeType::Agent, ControlOperation::Status) => self.preview_agent_status(),
             (RuntimeType::Vm, _) => {
                 return Err(ControlRuntItemErrors::NotSupport(
                     "vm runtime is reserved but not implemented".to_string(),
@@ -377,6 +377,12 @@ impl AppLoader {
         if app_type == AppType::Agent || has_agent_pkg {
             if !has_agent_pkg {
                 return Err(self.pkg_not_found("agent package"));
+            }
+            if !self.device_supports_container() {
+                return Err(ControlRuntItemErrors::NotSupport(format!(
+                    "agent app {} requires container runtime but current device does not support containers",
+                    self.app_id
+                )));
             }
             return Ok(RuntimeType::Agent);
         }
@@ -581,6 +587,37 @@ impl AppLoader {
         Ok(())
     }
 
+    async fn prepare_agent_runtime_image(&self) -> Result<()> {
+        let image_name = self.agent_runtime_image_name();
+        if self
+            .check_docker_image_exists(image_name.as_str(), None)
+            .await?
+        {
+            return Ok(());
+        }
+
+        info!(
+            "agent runtime image {} missing for app {}, pulling now",
+            image_name, self.app_id
+        );
+        self.pull_docker_image(image_name.as_str(), None).await?;
+
+        if !self
+            .check_docker_image_exists(image_name.as_str(), None)
+            .await?
+        {
+            return Err(ControlRuntItemErrors::ExecuteError(
+                "deploy".to_string(),
+                format!(
+                    "agent runtime image {} prepared but validation failed",
+                    image_name
+                ),
+            ));
+        }
+
+        Ok(())
+    }
+
     async fn start_docker(&self) -> Result<()> {
         self.prepare_docker_image().await?;
 
@@ -763,16 +800,13 @@ impl AppLoader {
     async fn start_agent(&self) -> Result<()> {
         let _ = self.deploy().await?;
 
-        let opendan_bin = self.resolve_opendan_binary().ok_or_else(|| {
-            ControlRuntItemErrors::ExecuteError(
-                "start".to_string(),
-                "opendan binary not found".to_string(),
-            )
-        })?;
-        let pkg_id = self
-            .agent_pkg_id()
+        let desc = self
+            .agent_desc()
             .ok_or_else(|| self.pkg_not_found("agent package"))?;
-        let media_info = self.ensure_pkg_installed(pkg_id.as_str()).await?;
+        let media_info = self
+            .package_media_info(PackageRole::AgentPkg)
+            .await?
+            .ok_or_else(|| self.pkg_not_found("agent package"))?;
         let agent_root = media_info.full_path.clone();
         if !agent_root.exists() {
             return Err(ControlRuntItemErrors::ExecuteError(
@@ -783,60 +817,75 @@ impl AppLoader {
 
         self.stop_agent().await?;
 
-        let agent_env_root = self.app_data_dir();
-        ensure_directory(&agent_env_root, true)?;
         let service_port = self.select_agent_service_port();
-        let env_vars = self.build_runtime_env(PackageRole::AgentPkg).await?;
-
-        let args = vec![
-            "--agent-id".to_string(),
-            self.app_id.clone(),
-            "--agent-env".to_string(),
-            agent_env_root.to_string_lossy().to_string(),
-            "--agent-bin".to_string(),
-            agent_root.to_string_lossy().to_string(),
-            "--service-port".to_string(),
-            service_port.to_string(),
+        let env_vars = self.build_agent_runtime_env(service_port).await?;
+        let image_name = self.agent_runtime_image_name();
+        info!(
+            "starting agent {} in container image={} package_root={} env_root={} service_port={}",
+            self.full_appid(),
+            image_name,
+            agent_root.display(),
+            AGENT_CONTAINER_ENV_ROOT,
+            service_port
+        );
+        let mut args = vec![
+            "run".to_string(),
+            "--rm".to_string(),
+            "-d".to_string(),
+            "--name".to_string(),
+            self.full_appid(),
+            "--entrypoint".to_string(),
+            "/bin/bash".to_string(),
+            "--cap-add".to_string(),
+            "SYS_ADMIN".to_string(),
+            "-p".to_string(),
+            format!("{service_port}:{service_port}"),
         ];
+        self.append_agent_fuse_run_args(&mut args);
 
-        let pid = spawn_detached(opendan_bin.as_path(), &args, &env_vars, None)?;
-        let pid_file = self.agent_pid_file();
-        if let Some(parent) = pid_file.parent() {
-            ensure_directory(parent, true)?;
+        for (container_path, host_path, permission) in
+            self.build_agent_volume_mounts(agent_root.as_path())?
+        {
+            args.push("-v".to_string());
+            args.push(format!(
+                "{}:{}:{}",
+                host_path.to_string_lossy(),
+                container_path,
+                permission
+            ));
         }
-        fs::write(&pid_file, pid.to_string()).map_err(|error| {
-            ControlRuntItemErrors::ExecuteError(
-                "start".to_string(),
-                format!("write pid file {} failed: {}", pid_file.display(), error),
-            )
-        })?;
+
+        for (key, value) in env_vars.iter() {
+            args.push("-e".to_string());
+            args.push(format!("{key}={value}"));
+        }
+
+        for (key, value) in self.docker_runtime_labels(desc) {
+            args.push("--label".to_string());
+            args.push(format!("{key}={value}"));
+        }
+
+        args.push(image_name.clone());
+        args.push("-lc".to_string());
+        args.push(self.build_agent_runtime_bootstrap_script(service_port));
+
+        let output = run_command("docker", &args, None, None).await?;
+        ensure_success("docker run", &output)?;
 
         info!(
-            "agent {} started by opendan pid={} port={}",
+            "agent {} started in container {} with runtime image {} port={}",
             self.full_appid(),
-            pid,
+            self.full_appid(),
+            image_name,
             service_port
         );
         Ok(())
     }
 
     async fn stop_agent(&self) -> Result<()> {
-        let pid_file = self.agent_pid_file();
-        let mut pids = self.agent_process_pids(None, None);
-        if pids.is_empty() {
-            if let Some(pid) = read_pid_file(pid_file.as_path())? {
-                if is_pid_running(pid) {
-                    pids.push(pid);
-                }
-            }
+        for container_id in self.find_docker_container_ids().await? {
+            self.remove_docker_container(container_id.as_str()).await?;
         }
-
-        pids.sort_unstable();
-        pids.dedup();
-        for pid in pids {
-            stop_process_tree(pid).await?;
-        }
-        let _ = fs::remove_file(&pid_file);
         Ok(())
     }
 
@@ -849,26 +898,35 @@ impl AppLoader {
             Some(pkg_id) => self.try_load_pkg(pkg_id.as_str()).await,
             None => None,
         };
-        let expected_agent_root = media_info
-            .as_ref()
-            .map(|media_info| media_info.full_path.as_path());
-        let expected_pkg_objid = desc.pkg_objid.as_ref().map(|objid| objid.to_string());
-        let running = if desc.pkg_objid.is_some() {
-            self.agent_process_pids(expected_agent_root, expected_pkg_objid.as_deref())
-        } else {
-            self.agent_process_pids(None, None)
-        };
-        if !running.is_empty() {
-            return Ok(ServiceInstanceState::Started);
-        }
         if media_info.is_none() {
             return Ok(ServiceInstanceState::NotExist);
         }
 
-        let pid_file = self.agent_pid_file();
-        match read_pid_file(pid_file.as_path())? {
-            Some(_) => Ok(ServiceInstanceState::Exited),
-            None => Ok(ServiceInstanceState::Stopped),
+        let exact_match_required = desc.pkg_objid.is_some();
+        let mut exact_exited = false;
+        for container_id in self.find_docker_container_ids().await? {
+            let Some(runtime) = self.inspect_docker_container(container_id.as_str()).await? else {
+                continue;
+            };
+            if exact_match_required && !docker_runtime_matches_target(&runtime.identity, desc) {
+                continue;
+            }
+            if runtime.running {
+                return Ok(ServiceInstanceState::Started);
+            }
+            exact_exited = true;
+        }
+        if exact_exited {
+            return Ok(ServiceInstanceState::Exited);
+        }
+
+        if self
+            .check_docker_image_exists(self.agent_runtime_image_name().as_str(), None)
+            .await?
+        {
+            Ok(ServiceInstanceState::Stopped)
+        } else {
+            Ok(ServiceInstanceState::NotExist)
         }
     }
 
@@ -928,6 +986,13 @@ impl AppLoader {
         if let Some(device_info) = std::env::var("BUCKYOS_THIS_DEVICE_INFO").ok() {
             env_vars.insert("BUCKYOS_THIS_DEVICE_INFO".to_string(), device_info);
         }
+        if let Some(device_doc) = std::env::var("BUCKYOS_THIS_DEVICE").ok() {
+            env_vars.insert("BUCKYOS_THIS_DEVICE".to_string(), device_doc);
+        }
+        env_vars.insert(
+            "BUCKYOS_HOST_GATEWAY".to_string(),
+            AGENT_RUNTIME_HOST_GATEWAY.to_string(),
+        );
 
         if let Some(media_info) = self.package_media_info(role).await? {
             env_vars.insert(
@@ -1297,20 +1362,6 @@ impl AppLoader {
             .unwrap_or(DEFAULT_OPENDAN_SERVICE_PORT)
     }
 
-    fn resolve_opendan_binary(&self) -> Option<PathBuf> {
-        let candidates = [
-            get_buckyos_root_dir()
-                .join("bin")
-                .join("opendan")
-                .join(self.platform.opendan_binary_name()),
-            get_buckyos_system_bin_dir()
-                .join("opendan")
-                .join(self.platform.opendan_binary_name()),
-        ];
-
-        candidates.into_iter().find(|path| path.exists())
-    }
-
     fn app_data_dir(&self) -> PathBuf {
         get_buckyos_root_dir()
             .join("data")
@@ -1334,8 +1385,154 @@ impl AppLoader {
             .join(self.full_appid())
     }
 
-    fn agent_pid_file(&self) -> PathBuf {
-        self.app_data_dir().join(".opendan.pid")
+    fn agent_log_dir(&self) -> PathBuf {
+        get_buckyos_root_dir()
+            .join("logs")
+            .join("agents")
+            .join(self.full_appid())
+    }
+
+    fn agent_storage_dir(&self) -> PathBuf {
+        get_buckyos_root_dir().join("storage")
+    }
+
+    fn build_agent_volume_mounts(
+        &self,
+        agent_package_root: &Path,
+    ) -> Result<Vec<(String, PathBuf, &'static str)>> {
+        let agent_data_root = self.app_data_dir();
+        let agent_log_root = self.agent_log_dir();
+        let agent_storage_root = self.agent_storage_dir();
+        ensure_directory(&agent_data_root, true)?;
+        ensure_directory(&agent_log_root, true)?;
+        ensure_directory(&agent_storage_root, true)?;
+        let mut mounts = vec![
+            (
+                AGENT_CONTAINER_DATA_ROOT.to_string(),
+                canonicalize_mount_path(agent_data_root.as_path()),
+                "rw",
+            ),
+            (
+                AGENT_CONTAINER_PACKAGE_ROOT.to_string(),
+                canonicalize_mount_path(agent_package_root),
+                "ro",
+            ),
+            (
+                AGENT_CONTAINER_LOG_ROOT.to_string(),
+                canonicalize_mount_path(agent_log_root.as_path()),
+                "rw",
+            ),
+            (
+                AGENT_CONTAINER_STORAGE_ROOT.to_string(),
+                canonicalize_mount_path(agent_storage_root.as_path()),
+                "rw",
+            ),
+        ];
+        mounts.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        Ok(mounts)
+    }
+
+    fn agent_runtime_image_name(&self) -> String {
+        let arch_tag = match self.platform.arch {
+            PlatformArch::Aarch64 => "latest-aarch64",
+            PlatformArch::Amd64 => "latest-amd64",
+        };
+        format!("{AGENT_RUNTIME_IMAGE_REPO}:{arch_tag}")
+    }
+
+    fn build_agent_runtime_bootstrap_script(&self, service_port: u16) -> String {
+        let app_id = shell_quote(self.app_id.as_str());
+        let package_root = shell_quote(AGENT_CONTAINER_PACKAGE_ROOT);
+        let data_root = shell_quote(AGENT_CONTAINER_DATA_ROOT);
+        let env_root = shell_quote(AGENT_CONTAINER_ENV_ROOT);
+        let fuse_device = shell_quote(AGENT_CONTAINER_FUSE_DEVICE);
+        let opendan_bin = shell_quote(AGENT_CONTAINER_OPENDAN_BIN);
+
+        format!(
+            "set -eu\n\
+PACKAGE_ROOT={package_root}\n\
+DATA_UPPER={data_root}\n\
+OVERLAY_WORK=\"$DATA_UPPER/.overlay_work\"\n\
+AGENT_ENV_ROOT={env_root}\n\
+FUSE_DEVICE={fuse_device}\n\
+mkdir -p \"$DATA_UPPER\" \"$OVERLAY_WORK\"\n\
+if [ ! -e \"$AGENT_ENV_ROOT\" ]; then\n  mkdir -p \"$AGENT_ENV_ROOT\"\nfi\n\
+mount_kernel_overlay() {{\n\
+  mount -t overlay overlay -o lowerdir=\"$PACKAGE_ROOT\",upperdir=\"$DATA_UPPER\",workdir=\"$OVERLAY_WORK\" \"$AGENT_ENV_ROOT\" 2>/tmp/agent_overlay.err\n\
+}}\n\
+mount_fuse_overlay() {{\n\
+  if ! command -v fuse-overlayfs >/dev/null 2>&1; then\n\
+    return 1\n\
+  fi\n\
+  if [ ! -e \"$FUSE_DEVICE\" ]; then\n\
+    echo \"agent runtime fuse-overlayfs unavailable: missing $FUSE_DEVICE\" >&2\n\
+    return 1\n\
+  fi\n\
+  rm -rf \"$AGENT_ENV_ROOT\"\n\
+  mkdir -p \"$AGENT_ENV_ROOT\"\n\
+  fuse-overlayfs -o lowerdir=\"$PACKAGE_ROOT\",upperdir=\"$DATA_UPPER\",workdir=\"$OVERLAY_WORK\" \"$AGENT_ENV_ROOT\" 2>/tmp/agent_fuse_overlay.err\n\
+}}\n\
+materialize_env_root() {{\n\
+  rm -rf \"$AGENT_ENV_ROOT\"\n\
+  mkdir -p \"$AGENT_ENV_ROOT\"\n\
+  for entry in \"$DATA_UPPER\"/* \"$DATA_UPPER\"/.[!.]* \"$DATA_UPPER\"/..?*; do\n\
+    [ -e \"$entry\" ] || continue\n\
+    name=$(basename \"$entry\")\n\
+    [ \"$name\" = \".overlay_work\" ] && continue\n\
+    ln -s \"$entry\" \"$AGENT_ENV_ROOT/$name\"\n\
+  done\n\
+  for entry in \"$PACKAGE_ROOT\"/* \"$PACKAGE_ROOT\"/.[!.]* \"$PACKAGE_ROOT\"/..?*; do\n\
+    [ -e \"$entry\" ] || continue\n\
+    name=$(basename \"$entry\")\n\
+    [ -e \"$AGENT_ENV_ROOT/$name\" ] && continue\n\
+    ln -s \"$entry\" \"$AGENT_ENV_ROOT/$name\"\n\
+  done\n\
+  echo \"agent runtime overlay unavailable, materialized merged view at $AGENT_ENV_ROOT (upper=$DATA_UPPER lower=$PACKAGE_ROOT)\" >&2\n\
+}}\n\
+if mount_kernel_overlay; then\n\
+  echo \"agent runtime overlay mounted at $AGENT_ENV_ROOT\"\n\
+elif mount_fuse_overlay; then\n\
+  echo \"agent runtime fuse-overlayfs mounted at $AGENT_ENV_ROOT\"\n\
+else\n\
+  materialize_env_root\n\
+  if [ -f /tmp/agent_overlay.err ]; then cat /tmp/agent_overlay.err >&2; fi\n\
+  if [ -f /tmp/agent_fuse_overlay.err ]; then cat /tmp/agent_fuse_overlay.err >&2; fi\n\
+fi\n\
+exec {opendan_bin} --agent-id {app_id} --agent-env \"$AGENT_ENV_ROOT\" --agent-bin \"$PACKAGE_ROOT\" --service-port {service_port}"
+        )
+    }
+
+    fn append_agent_fuse_run_args(&self, args: &mut Vec<String>) {
+        if !Path::new(AGENT_CONTAINER_FUSE_DEVICE).exists() {
+            return;
+        }
+
+        args.push("--device".to_string());
+        args.push(AGENT_CONTAINER_FUSE_DEVICE.to_string());
+        args.push("--security-opt".to_string());
+        args.push("apparmor=unconfined".to_string());
+        args.push("--security-opt".to_string());
+        args.push("seccomp=unconfined".to_string());
+    }
+
+    async fn build_agent_runtime_env(&self, service_port: u16) -> Result<HashMap<String, String>> {
+        let mut env_vars = self.build_runtime_env(PackageRole::AgentPkg).await?;
+        env_vars.insert("OPENDAN_AGENT_ID".to_string(), self.app_id.clone());
+        env_vars.insert("OPENDAN_SERVICE_PORT".to_string(), service_port.to_string());
+
+        if let Some(media_info) = env_vars.get("app_media_info").cloned() {
+            if let Ok(mut value) = serde_json::from_str::<Value>(media_info.as_str()) {
+                if let Some(object) = value.as_object_mut() {
+                    object.insert(
+                        "full_path".to_string(),
+                        Value::String(AGENT_CONTAINER_PACKAGE_ROOT.to_string()),
+                    );
+                    env_vars.insert("app_media_info".to_string(), value.to_string());
+                }
+            }
+        }
+
+        Ok(env_vars)
     }
 
     fn docker_runtime_labels(&self, desc: &SubPkgDesc) -> Vec<(String, String)> {
@@ -1354,53 +1551,6 @@ impl AppLoader {
             labels.push((DOCKER_LABEL_IMAGE_DIGEST.to_string(), digest.to_string()));
         }
         labels
-    }
-
-    fn agent_process_pids(
-        &self,
-        expected_agent_root: Option<&Path>,
-        expected_pkg_objid: Option<&str>,
-    ) -> Vec<i32> {
-        let mut system = System::new_all();
-        system.refresh_processes(ProcessesToUpdate::All, true);
-        let agent_env_root = self.app_data_dir();
-
-        let mut pids = system
-            .processes()
-            .iter()
-            .filter_map(|(pid, process)| {
-                let cmd = process
-                    .cmd()
-                    .iter()
-                    .map(|arg| arg.to_string_lossy().to_string())
-                    .collect::<Vec<_>>();
-                let matched = match (expected_agent_root, expected_pkg_objid) {
-                    (Some(agent_root), expected_pkg_objid) => command_matches_exact_agent_process(
-                        &cmd,
-                        self.app_id.as_str(),
-                        agent_env_root.as_path(),
-                        Some(agent_root),
-                        expected_pkg_objid,
-                    ),
-                    (None, Some(pkg_objid)) => command_matches_exact_agent_process(
-                        &cmd,
-                        self.app_id.as_str(),
-                        agent_env_root.as_path(),
-                        None,
-                        Some(pkg_objid),
-                    ),
-                    (None, None) => command_matches_agent_process(
-                        &cmd,
-                        self.app_id.as_str(),
-                        agent_env_root.as_path(),
-                    ),
-                };
-                matched.then_some(pid.as_u32() as i32)
-            })
-            .collect::<Vec<_>>();
-        pids.sort_unstable();
-        pids.dedup();
-        pids
     }
 
     async fn find_docker_container_ids(&self) -> Result<Vec<String>> {
@@ -1731,47 +1881,89 @@ impl AppLoader {
         if let Some(skills_pkg_id) = self.agent_skills_pkg_id() {
             commands.push(CommandSpec::new("pkg-install", [skills_pkg_id]));
         }
+        commands.push(CommandSpec::new(
+            "docker",
+            ["pull", self.agent_runtime_image_name().as_str()],
+        ));
         Ok(commands)
     }
 
     fn preview_agent_start(&self) -> Result<Vec<CommandSpec>> {
+        let service_port = self.select_agent_service_port();
+        let image_name = self.agent_runtime_image_name();
+        let mut docker_run_args = vec![
+            "run".to_string(),
+            "--rm".to_string(),
+            "-d".to_string(),
+            "--name".to_string(),
+            self.full_appid(),
+            "--entrypoint".to_string(),
+            "/bin/bash".to_string(),
+            "--add-host".to_string(),
+            format!("{AGENT_RUNTIME_HOST_GATEWAY}:host-gateway"),
+            "--cap-add".to_string(),
+            "SYS_ADMIN".to_string(),
+            "-p".to_string(),
+            format!("{service_port}:{service_port}"),
+            "-v".to_string(),
+            format!("<agent_data>:{}:rw", AGENT_CONTAINER_DATA_ROOT),
+            "-v".to_string(),
+            format!("<agent_pkg>:{}:ro", AGENT_CONTAINER_PACKAGE_ROOT),
+            "-v".to_string(),
+            format!("<agent_logs>:{}:rw", AGENT_CONTAINER_LOG_ROOT),
+            "-v".to_string(),
+            format!("<agent_storage>:{}:rw", AGENT_CONTAINER_STORAGE_ROOT),
+        ];
+        self.append_agent_fuse_run_args(&mut docker_run_args);
+
+        for env_key in self.preview_env_keys(PackageRole::AgentPkg) {
+            docker_run_args.push("-e".to_string());
+            docker_run_args.push(format!("{env_key}=<value>"));
+        }
+        docker_run_args.push("-e".to_string());
+        docker_run_args.push(format!("OPENDAN_AGENT_ID={}", self.app_id));
+        docker_run_args.push("-e".to_string());
+        docker_run_args.push(format!("OPENDAN_SERVICE_PORT={service_port}"));
+
+        if let Some(desc) = self.agent_desc() {
+            for (key, value) in self.docker_runtime_labels(desc) {
+                docker_run_args.push("--label".to_string());
+                docker_run_args.push(format!("{key}={value}"));
+            }
+        }
+
+        docker_run_args.push(image_name);
+        docker_run_args.push("-lc".to_string());
+        docker_run_args.push("<agent-bootstrap-script>".to_string());
+
         Ok(vec![
             self.preview_agent_stop(),
-            CommandSpec::new(
-                "opendan",
-                [
-                    "--agent-id".to_string(),
-                    self.app_id.clone(),
-                    "--agent-env".to_string(),
-                    self.app_data_dir().to_string_lossy().to_string(),
-                    "--agent-bin".to_string(),
-                    "<agent_pkg>".to_string(),
-                    "--service-port".to_string(),
-                    self.select_agent_service_port().to_string(),
-                ],
-            ),
+            CommandSpec::new("docker", docker_run_args),
         ])
     }
 
     fn preview_agent_stop(&self) -> CommandSpec {
-        if self.platform.os == PlatformOs::Windows {
-            return CommandSpec::new("taskkill", ["/F", "/T", "/PID", "<agent-pid>"]);
-        }
-
-        CommandSpec::new("kill", ["-TERM", "-<agent-pid>"])
+        CommandSpec::new("docker", ["rm", "-f", self.full_appid().as_str()])
     }
 
-    fn preview_agent_status(&self) -> CommandSpec {
-        CommandSpec::new(
-            "pid-check",
-            [self.agent_pid_file().to_string_lossy().to_string()],
-        )
+    fn preview_agent_status(&self) -> Vec<CommandSpec> {
+        let filter = format!("name=^{}$", self.full_appid());
+        vec![
+            CommandSpec::new("docker", ["ps", "-q", "-f", filter.as_str()]),
+            CommandSpec::new("docker", ["ps", "-aq", "-f", filter.as_str()]),
+            CommandSpec::new(
+                "docker",
+                ["images", "-q", self.agent_runtime_image_name().as_str()],
+            ),
+        ]
     }
 
     fn preview_env_keys(&self, role: PackageRole) -> Vec<String> {
         let mut keys = vec![
             "BUCKYOS_ZONE_CONFIG".to_string(),
             "BUCKYOS_THIS_DEVICE_INFO".to_string(),
+            "BUCKYOS_THIS_DEVICE".to_string(),
+            "BUCKYOS_HOST_GATEWAY".to_string(),
         ];
         if self.media_pkg_id(role).is_some() {
             keys.push("app_media_info".to_string());
@@ -2050,88 +2242,6 @@ fn ensure_directory(path: &Path, make_world_writable: bool) -> Result<()> {
     Ok(())
 }
 
-fn read_pid_file(path: &Path) -> Result<Option<i32>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let raw = fs::read_to_string(path).map_err(|error| {
-        ControlRuntItemErrors::ExecuteError(
-            "read_pid".to_string(),
-            format!("read pid file {} failed: {}", path.display(), error),
-        )
-    })?;
-    match raw.trim().parse::<i32>() {
-        Ok(pid) if pid > 0 => Ok(Some(pid)),
-        Ok(_) => Ok(None),
-        Err(_) => Ok(None),
-    }
-}
-
-fn is_pid_running(pid: i32) -> bool {
-    if pid <= 0 {
-        return false;
-    }
-    let mut system = System::new_all();
-    system.refresh_processes(ProcessesToUpdate::All, true);
-    system.process(Pid::from_u32(pid as u32)).is_some()
-}
-
-async fn stop_process_tree(pid: i32) -> Result<()> {
-    if pid <= 0 {
-        return Ok(());
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let output = run_command(
-            "taskkill",
-            &[
-                "/F".to_string(),
-                "/T".to_string(),
-                "/PID".to_string(),
-                pid.to_string(),
-            ],
-            None,
-            None,
-        )
-        .await?;
-        if output.status.success() {
-            return Ok(());
-        }
-        if !is_pid_running(pid) {
-            return Ok(());
-        }
-        return Err(ControlRuntItemErrors::ExecuteError(
-            "taskkill".to_string(),
-            format_command_failure("taskkill", &output),
-        ));
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let term_output = run_command(
-            "kill",
-            &["-TERM".to_string(), format!("-{pid}")],
-            None,
-            None,
-        )
-        .await?;
-        if !term_output.status.success() {
-            let fallback_output =
-                run_command("kill", &["-TERM".to_string(), pid.to_string()], None, None).await?;
-            if !fallback_output.status.success() && is_pid_running(pid) {
-                return Err(ControlRuntItemErrors::ExecuteError(
-                    "kill".to_string(),
-                    format_command_failure("kill", &fallback_output),
-                ));
-            }
-        }
-
-        Ok(())
-    }
-}
-
 fn split_shell_words(input: &str) -> Result<Vec<String>> {
     let words = Shlex::new(input).collect::<Vec<_>>();
     if words.is_empty() && !input.trim().is_empty() {
@@ -2268,49 +2378,6 @@ fn command_arg_value<'a>(cmd: &'a [String], key: &str) -> Option<&'a str> {
     None
 }
 
-fn spawn_detached(
-    program: &Path,
-    args: &[String],
-    envs: &HashMap<String, String>,
-    cwd: Option<&Path>,
-) -> Result<u32> {
-    let mut cmd = std::process::Command::new(program);
-    cmd.args(args);
-    cmd.stdin(Stdio::null());
-    cmd.stdout(Stdio::null());
-    cmd.stderr(Stdio::null());
-    if let Some(cwd) = cwd {
-        cmd.current_dir(cwd);
-    }
-    cmd.envs(envs);
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        unsafe {
-            cmd.pre_exec(|| {
-                if libc::setsid() == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-    }
-
-    let child = cmd.spawn().map_err(|error| {
-        ControlRuntItemErrors::ExecuteError(
-            "spawn_detached".to_string(),
-            format!("spawn {} failed: {}", program.display(), error),
-        )
-    })?;
-    Ok(child.id())
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }

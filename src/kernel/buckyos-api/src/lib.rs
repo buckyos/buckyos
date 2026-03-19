@@ -244,13 +244,38 @@ pub async fn init_buckyos_api_runtime(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::env;
+    use std::fs;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use name_lib::DID;
 
     use super::{
+        get_full_appid, get_session_token_env_key, init_buckyos_api_runtime,
         parse_app_identity_from_instance_config, AppDoc, AppServiceInstanceConfig, AppServiceSpec,
-        AppType, ServiceInstallConfig, ServiceInstanceState, ServiceState, SubPkgDesc,
+        AppType, BuckyOSRuntimeType, ServiceInstallConfig, ServiceInstanceState, ServiceState,
+        SubPkgDesc,
     };
+
+    fn test_env_lock() -> &'static Mutex<()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn set_env_var(key: &str, value: &str) -> Option<String> {
+        let previous = env::var(key).ok();
+        env::set_var(key, value);
+        previous
+    }
+
+    fn restore_env_var(key: &str, previous: Option<String>) {
+        if let Some(value) = previous {
+            env::set_var(key, value);
+        } else {
+            env::remove_var(key);
+        }
+    }
 
     #[test]
     fn parse_app_identity_from_instance_config_extracts_app_and_owner() {
@@ -286,6 +311,44 @@ mod tests {
             parse_app_identity_from_instance_config(&raw).expect("parse app_instance_config");
         assert_eq!(app_id, "jarvis");
         assert_eq!(owner_user_id, "devtest");
+    }
+
+    #[tokio::test]
+    async fn init_app_service_runtime_skips_system_etc_and_uses_env_bootstrap() {
+        let _lock = test_env_lock().lock().expect("lock env");
+        let token_key = get_session_token_env_key(&get_full_appid("jarvis", "devtest"), true);
+        let missing_root = env::temp_dir().join(format!(
+            "buckyos-appservice-runtime-missing-root-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("unix epoch")
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&missing_root);
+        assert!(!missing_root.exists(), "test root should not exist");
+
+        let prev_root = set_env_var("BUCKYOS_ROOT", missing_root.to_string_lossy().as_ref());
+        let prev_token = set_env_var(&token_key, "dummy-session-token");
+
+        let result = init_buckyos_api_runtime(
+            "jarvis",
+            Some("devtest".to_string()),
+            BuckyOSRuntimeType::AppService,
+        )
+        .await;
+
+        restore_env_var(&token_key, prev_token);
+        restore_env_var("BUCKYOS_ROOT", prev_root);
+
+        let runtime = result.expect("init app service runtime should succeed without system etc");
+        assert_eq!(runtime.get_app_id(), "jarvis");
+        assert_eq!(runtime.get_owner_user_id().as_deref(), Some("devtest"));
+        assert_eq!(runtime.user_id.as_deref(), Some("devtest"));
+        assert_eq!(
+            runtime.session_token.read().await.as_str(),
+            "dummy-session-token"
+        );
     }
 }
 

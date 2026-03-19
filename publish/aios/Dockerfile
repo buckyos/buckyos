@@ -8,6 +8,20 @@ LABEL org.opencontainers.image.title="AIOS" \
 
 WORKDIR /opt/buckyos
 
+# Required by OpenDAN runtime and common agent workspace workflows.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tmux \
+    bash \
+    ca-certificates \
+    fuse-overlayfs \
+    python3 \
+    python3-pip \
+    python3-venv \
+    nodejs \
+    npm \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN mkdir -p /opt/buckyos/bin/opendan
 
 COPY opendan /opt/buckyos/bin/opendan/opendan

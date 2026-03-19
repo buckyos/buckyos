@@ -341,40 +341,94 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
 
     let deploy = loader.preview_operation(ControlOperation::Deploy).unwrap();
     assert_eq!(deploy.runtime, RuntimeType::Agent);
-    assert_programs(&deploy.commands, &["pkg-install", "pkg-install"]);
+    assert_programs(&deploy.commands, &["pkg-install", "pkg-install", "docker"]);
     assert_eq!(deploy.commands[0].args, vec!["jarvis-agent"]);
     assert_eq!(deploy.commands[1].args, vec!["jarvis-skills"]);
+    assert_eq!(
+        deploy.commands[2].args,
+        vec!["pull", "paios/aios:latest-amd64"]
+    );
 
     let start = loader.preview_operation(ControlOperation::Start).unwrap();
     assert_eq!(start.runtime, RuntimeType::Agent);
-    assert_eq!(start.commands[1].program, "opendan");
-    assert!(start.commands[1].args.contains(&"--agent-id".to_string()));
-    assert!(start.commands[1].args.contains(&"jarvis".to_string()));
-    assert!(start.commands[1].args.contains(&"14060".to_string()));
+    assert_programs(&start.commands, &["docker", "docker"]);
+    assert_eq!(start.commands[0].args, vec!["rm", "-f", "alice-jarvis"]);
+    assert!(start.commands[1].args.contains(&"run".to_string()));
+    assert!(start.commands[1].args.contains(&"--entrypoint".to_string()));
+    assert!(start.commands[1].args.contains(&"/bin/bash".to_string()));
+    assert!(start.commands[1].args.contains(&"--add-host".to_string()));
+    assert!(start.commands[1]
+        .args
+        .contains(&"host.docker.internal:host-gateway".to_string()));
+    assert!(start.commands[1].args.contains(&"SYS_ADMIN".to_string()));
+    assert!(start.commands[1]
+        .args
+        .contains(&"OPENDAN_AGENT_ID=jarvis".to_string()));
+    assert!(start.commands[1]
+        .args
+        .contains(&"OPENDAN_SERVICE_PORT=14060".to_string()));
+    assert!(start.commands[1]
+        .args
+        .contains(&"BUCKYOS_THIS_DEVICE=<value>".to_string()));
+    assert!(start.commands[1]
+        .args
+        .contains(&"BUCKYOS_HOST_GATEWAY=<value>".to_string()));
+    assert!(start.commands[1].args.contains(&"14060:14060".to_string()));
+    assert!(start.commands[1]
+        .args
+        .contains(&"paios/aios:latest-amd64".to_string()));
+    assert!(start.commands[1]
+        .args
+        .iter()
+        .any(|arg| arg == "<agent_logs>:/opt/buckyos/logs:rw"));
+    assert!(start.commands[1]
+        .args
+        .iter()
+        .any(|arg| arg == "<agent_storage>:/opt/buckyos/storage:rw"));
+    assert!(start.commands[1]
+        .args
+        .contains(&"<agent-bootstrap-script>".to_string()));
+    assert!(!start.commands[1]
+        .args
+        .iter()
+        .any(|arg| arg.contains("<buckyos_etc>:")));
 
     let stop = loader.preview_operation(ControlOperation::Stop).unwrap();
     assert_eq!(stop.runtime, RuntimeType::Agent);
-    assert_eq!(stop.commands[0].program, "kill");
+    assert_programs(&stop.commands, &["docker"]);
+    assert_eq!(stop.commands[0].args, vec!["rm", "-f", "alice-jarvis"]);
 
     let status = loader.preview_operation(ControlOperation::Status).unwrap();
     assert_eq!(status.runtime, RuntimeType::Agent);
-    assert_programs(&status.commands, &["pid-check"]);
-    assert!(status.commands[0].args[0].ends_with(".opendan.pid"));
+    assert_programs(&status.commands, &["docker", "docker", "docker"]);
+    assert_eq!(
+        status.commands[0].args,
+        vec!["ps", "-q", "-f", "name=^alice-jarvis$"]
+    );
+    assert_eq!(
+        status.commands[2].args,
+        vec!["images", "-q", "paios/aios:latest-amd64"]
+    );
 }
 
 #[test]
-fn agent_stop_command_switches_to_taskkill_on_windows() {
+fn agent_stop_command_uses_docker_on_windows() {
     let loader = build_agent_loader(PlatformTarget::new(
         PlatformOs::Windows,
         PlatformArch::Amd64,
     ));
     let stop = loader.preview_operation(ControlOperation::Stop).unwrap();
     assert_eq!(stop.runtime, RuntimeType::Agent);
-    assert_eq!(stop.commands[0].program, "taskkill");
-    assert_eq!(
-        stop.commands[0].args,
-        vec!["/F", "/T", "/PID", "<agent-pid>"]
-    );
+    assert_eq!(stop.commands[0].program, "docker");
+    assert_eq!(stop.commands[0].args, vec!["rm", "-f", "alice-jarvis"]);
+}
+
+#[test]
+fn agent_requires_container_support() {
+    let loader = build_agent_loader(PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64))
+        .with_container_support_override(false);
+    let result = loader.preview_operation(ControlOperation::Start);
+    assert!(matches!(result, Err(ControlRuntItemErrors::NotSupport(_))));
 }
 
 #[test]

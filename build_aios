@@ -371,7 +371,7 @@ main() {
   python_bin="$(resolve_python)"
 
   tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/build_aios.XXXXXX")"
-  trap 'rm -rf "$tmp_root"' EXIT
+  trap "rm -rf '$tmp_root'" EXIT
 
   log "Version tag: $VERSION_TAG"
   log "Runtime packages: $(package_list_to_string "${RUNTIME_PACKAGES[@]}")"
