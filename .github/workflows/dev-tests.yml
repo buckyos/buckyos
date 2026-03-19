@@ -258,6 +258,62 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
+          function Test-PortBindable {
+            param([int]$Port)
+
+            $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, $Port)
+            try {
+              $listener.Start()
+              return $true
+            } catch {
+              return $false
+            } finally {
+              try {
+                $listener.Stop()
+              } catch {
+              }
+            }
+          }
+
+          function Clear-RequiredPorts {
+            param([int[]]$Ports)
+
+            foreach ($serviceName in @("W3SVC", "WAS")) {
+              $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+              if ($service -and $service.Status -ne "Stopped") {
+                Write-Host "Stopping service $serviceName"
+                Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+              }
+            }
+
+            foreach ($port in $Ports) {
+              if (Test-PortBindable -Port $port) {
+                Write-Host "[ready] port $port is bindable"
+                continue
+              }
+
+              $connections = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+              if (-not $connections) {
+                throw "Port $port is not bindable, but no listening owner was found"
+              }
+
+              foreach ($connection in $connections) {
+                $pid = $connection.OwningProcess
+                Write-Host "Port $port is held by PID $pid"
+                if ($pid -eq 4) {
+                  throw "Port $port is owned by System (PID 4); runner cannot free it safely"
+                }
+                Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+              }
+
+              Start-Sleep -Seconds 2
+              if (-not (Test-PortBindable -Port $port)) {
+                throw "Port $port is still not bindable after cleanup"
+              }
+              Write-Host "[ready] port $port is bindable after cleanup"
+            }
+          }
+
           function Wait-ForPort {
             param(
               [string]$Name,
@@ -286,6 +342,8 @@ jobs:
 
             throw ("Timeout waiting for {0} on {1}:{2}" -f $Name, $TargetHost, $Port)
           }
+
+          Clear-RequiredPorts -Ports @(3180, 80, 443)
 
           Push-Location ..\cyfs-gateway\src
           buckyos-build
@@ -430,6 +488,62 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
+          function Test-PortBindable {
+            param([int]$Port)
+
+            $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, $Port)
+            try {
+              $listener.Start()
+              return $true
+            } catch {
+              return $false
+            } finally {
+              try {
+                $listener.Stop()
+              } catch {
+              }
+            }
+          }
+
+          function Clear-RequiredPorts {
+            param([int[]]$Ports)
+
+            foreach ($serviceName in @("W3SVC", "WAS")) {
+              $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+              if ($service -and $service.Status -ne "Stopped") {
+                Write-Host "Stopping service $serviceName"
+                Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+              }
+            }
+
+            foreach ($port in $Ports) {
+              if (Test-PortBindable -Port $port) {
+                Write-Host "[ready] port $port is bindable"
+                continue
+              }
+
+              $connections = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+              if (-not $connections) {
+                throw "Port $port is not bindable, but no listening owner was found"
+              }
+
+              foreach ($connection in $connections) {
+                $pid = $connection.OwningProcess
+                Write-Host "Port $port is held by PID $pid"
+                if ($pid -eq 4) {
+                  throw "Port $port is owned by System (PID 4); runner cannot free it safely"
+                }
+                Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+              }
+
+              Start-Sleep -Seconds 2
+              if (-not (Test-PortBindable -Port $port)) {
+                throw "Port $port is still not bindable after cleanup"
+              }
+              Write-Host "[ready] port $port is bindable after cleanup"
+            }
+          }
+
           function Wait-ForHttp {
             param(
               [string]$Url,
@@ -449,6 +563,8 @@ jobs:
 
             throw "Timeout waiting for $Url"
           }
+
+          Clear-RequiredPorts -Ports @(3180, 80, 443)
 
           $installer = Start-Process -FilePath "${{ steps.package_windows.outputs.pkg_path }}" -ArgumentList "/S" -Wait -PassThru
           if ($installer.ExitCode -ne 0) {
