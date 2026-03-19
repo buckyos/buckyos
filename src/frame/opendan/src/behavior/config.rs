@@ -991,10 +991,10 @@ toolbox:
         assert_eq!(cfg.toolbox.tools.mode, BehaviorToolMode::AllowList);
         assert_eq!(cfg.toolbox.skills, vec!["plan".to_string()]);
         assert_eq!(cfg.llm.process_name, "opendan-llm-behavior");
-        assert_eq!(cfg.limits.max_prompt_tokens, 12_000);
+        assert_eq!(cfg.limits.max_prompt_tokens, 200_000);
         assert!(cfg.llm.force_json);
-        assert_eq!(cfg.llm.output_mode, "auto");
-        assert!(cfg.llm.output_protocol.trim().is_empty());
+        assert_eq!(cfg.llm.output_mode, "behavior_llm_result");
+        assert!(cfg.llm.output_protocol.contains("<response>"));
     }
 
     #[test]
@@ -1170,7 +1170,7 @@ toolbox:
     }
 
     #[test]
-    fn behavior_config_toolbox_alone_mode_uses_default_allow_functions_alias() {
+    fn behavior_config_toolbox_alone_mode_uses_allow_tools_and_load_skills() {
         let path = Path::new("do.yaml");
         let cfg = BehaviorConfig::parse_from_str(
             path,
@@ -1183,11 +1183,11 @@ toolbox:
   skills:
     - coding/rust
     - coding/rust
-  default_allow_functions:
+  allow_tools:
     - read_file
     - read_file
     - bash
-  default_load_skills:
+  load_skills:
     - buildin
 "#,
         )
@@ -1206,7 +1206,7 @@ toolbox:
     }
 
     #[test]
-    fn behavior_config_toolbox_inherit_mode_merges_default_and_behavior_skills() {
+    fn behavior_config_toolbox_inherit_mode_merges_load_and_behavior_skills() {
         let path = Path::new("plan.yaml");
         let cfg = BehaviorConfig::parse_from_str(
             path,
@@ -1217,7 +1217,7 @@ tools:
   names:
     - exec_bash
 toolbox:
-  default_load_skills:
+  load_skills:
     - buildin
     - buildin
   skills:

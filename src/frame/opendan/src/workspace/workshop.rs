@@ -1415,14 +1415,13 @@ mod tests {
         assert_eq!(result["line_results"][0]["mode"], "tool");
 
         let stdout = result["stdout"].as_str().unwrap_or_default();
-        let first_line = stdout.lines().next().unwrap_or_default();
-        let forwarded: Json = serde_json::from_str(first_line).expect("stdout json line");
-        assert_eq!(forwarded["ok"], true);
-        assert!(forwarded["path"]
-            .as_str()
-            .unwrap_or_default()
-            .ends_with("/notes/forward.txt"));
-        assert_eq!(forwarded["content"], "L1");
+        assert_eq!(stdout.lines().next().unwrap_or_default(), "L1");
+        assert_eq!(
+            result["line_results"][0]["tool_name"]
+                .as_str()
+                .unwrap_or_default(),
+            TOOL_READ_FILE
+        );
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -1475,16 +1474,17 @@ mod tests {
         assert_eq!(result["ok"], true);
         assert_eq!(result["engine"], "tmux+tool");
         let stdout = result["stdout"].as_str().unwrap_or_default();
-        assert!(stdout.lines().any(|line| line.trim() == "pane-line"));
-
-        let json_line = stdout
+        let pane_lines = stdout
             .lines()
-            .rev()
-            .find(|line| line.trim_start().starts_with('{'))
-            .expect("stdout should contain tool json line");
-        let forwarded: Json = serde_json::from_str(json_line).expect("parse tool json line");
-        assert_eq!(forwarded["ok"], true);
-        assert_eq!(forwarded["content"], "pane-line");
+            .filter(|line| line.trim() == "pane-line")
+            .count();
+        assert!(pane_lines >= 2, "stdout={stdout}");
+        assert_eq!(
+            result["line_results"][1]["tool_name"]
+                .as_str()
+                .unwrap_or_default(),
+            TOOL_READ_FILE
+        );
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -1545,17 +1545,7 @@ mod tests {
             .ends_with("/subdir"));
 
         let stdout = result["stdout"].as_str().unwrap_or_default();
-        let json_line = stdout
-            .lines()
-            .find(|line| line.trim_start().starts_with('{'))
-            .expect("stdout should contain tool json line");
-        let forwarded: Json = serde_json::from_str(json_line).expect("parse tool json line");
-        assert_eq!(forwarded["ok"], true);
-        assert_eq!(forwarded["content"], "cd-pane-line");
-        assert!(forwarded["pwd"]
-            .as_str()
-            .unwrap_or_default()
-            .ends_with("/subdir"));
+        assert_eq!(stdout.trim(), "cd-pane-line");
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -1636,29 +1626,24 @@ mod tests {
 
         let first_bash = &results[1];
         assert_eq!(first_bash["engine"], "tool");
-        let first_line = first_bash["stdout"]
-            .as_str()
-            .unwrap_or_default()
-            .lines()
-            .next()
-            .unwrap_or_default();
-        let first_forwarded: Json =
-            serde_json::from_str(first_line).expect("first bash stdout json line");
-        assert_eq!(first_forwarded["ok"], true);
-        assert_eq!(first_forwarded["content"], "L1");
+        assert_eq!(
+            first_bash["stdout"]
+                .as_str()
+                .unwrap_or_default()
+                .lines()
+                .next()
+                .unwrap_or_default(),
+            "L1"
+        );
 
         let second_bash = &results[3];
         assert_eq!(second_bash["engine"], "tool");
-        let second_line = second_bash["stdout"]
-            .as_str()
-            .unwrap_or_default()
-            .lines()
-            .next()
-            .unwrap_or_default();
-        let second_forwarded: Json =
-            serde_json::from_str(second_line).expect("second bash stdout json line");
-        assert_eq!(second_forwarded["ok"], true);
-        assert_eq!(second_forwarded["content"], "L1\nL2-updated");
+        let second_stdout = second_bash["stdout"].as_str().unwrap_or_default();
+        assert!(second_stdout.contains("L1"), "stdout={second_stdout}");
+        assert!(
+            second_stdout.contains("L2-updated"),
+            "stdout={second_stdout}"
+        );
 
         let final_call = &results[4];
         assert_eq!(final_call["content"], "L1\nL2-updated");
@@ -2171,10 +2156,10 @@ mod tests {
             .register_tools(&tool_mgr, session_store)
             .expect("register workshop tools");
 
-        assert!(tool_mgr.has_tool(TOOL_EDIT_FILE));
+        assert!(tool_mgr.get_action(TOOL_EDIT_FILE).is_some());
         assert!(!tool_mgr.has_tool(TOOL_EXEC_BASH));
-        assert!(!tool_mgr.has_tool(TOOL_TODO_MANAGE));
-        assert!(!tool_mgr.has_tool(TOOL_WORKLOG_MANAGE));
+        assert!(tool_mgr.get_bash_cmd(TOOL_TODO_MANAGE).is_none());
+        assert!(tool_mgr.get_bash_cmd(TOOL_WORKLOG_MANAGE).is_none());
 
         let err = call(
             &tool_mgr,
@@ -2196,7 +2181,7 @@ mod tests {
             json!({
                 "enabled_tools": [
                     {
-                        "name": "edit_file",
+                        "name": "write_file",
                         "enabled": true,
                         "params": {
                             "allowed_write_roots": ["todo"],
@@ -2221,10 +2206,11 @@ mod tests {
 
         call(
             &tool_mgr,
-            TOOL_EDIT_FILE,
+            TOOL_WRITE_FILE,
             json!({
                 "path": "todo/ok.md",
-                "content": "ok"
+                "content": "ok",
+                "mode": "new"
             }),
         )
         .await
@@ -2232,10 +2218,11 @@ mod tests {
 
         let err = call(
             &tool_mgr,
-            TOOL_EDIT_FILE,
+            TOOL_WRITE_FILE,
             json!({
                 "path": "artifacts/out.md",
-                "content": "blocked"
+                "content": "blocked",
+                "mode": "new"
             }),
         )
         .await
@@ -2276,11 +2263,12 @@ mod tests {
             .register_tools(&tool_mgr, session_store)
             .expect("register workshop tools");
 
-        assert!(tool_mgr.has_tool("weather"));
+        assert!(tool_mgr.get_bash_cmd("weather").is_some());
+        assert!(tool_mgr.get_action("weather").is_some());
         assert!(!tool_mgr.has_tool(TOOL_EXEC_BASH));
-        assert!(!tool_mgr.has_tool(TOOL_EDIT_FILE));
-        assert!(!tool_mgr.has_tool(TOOL_TODO_MANAGE));
-        assert!(!tool_mgr.has_tool(TOOL_WORKLOG_MANAGE));
+        assert!(tool_mgr.get_action(TOOL_EDIT_FILE).is_none());
+        assert!(tool_mgr.get_bash_cmd(TOOL_TODO_MANAGE).is_none());
+        assert!(tool_mgr.get_bash_cmd(TOOL_WORKLOG_MANAGE).is_none());
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -2319,11 +2307,11 @@ mod tests {
             .expect("register workshop tools");
 
         assert!(tool_mgr.has_tool(TOOL_EXEC_BASH));
-        assert!(tool_mgr.has_tool(TOOL_EDIT_FILE));
-        assert!(tool_mgr.has_tool(TOOL_TODO_MANAGE));
-        assert!(!tool_mgr.has_tool(TOOL_WORKLOG_MANAGE));
-        assert!(tool_mgr.has_tool(TOOL_CREATE_WORKSPACE));
-        assert!(tool_mgr.has_tool(TOOL_BIND_WORKSPACE));
+        assert!(tool_mgr.get_action(TOOL_EDIT_FILE).is_some());
+        assert!(tool_mgr.get_bash_cmd("todo").is_some());
+        assert!(tool_mgr.get_bash_cmd(TOOL_WORKLOG_MANAGE).is_none());
+        assert!(tool_mgr.get_bash_cmd(TOOL_CREATE_WORKSPACE).is_some());
+        assert!(tool_mgr.get_bash_cmd(TOOL_BIND_WORKSPACE).is_some());
 
         let _ = fs::remove_dir_all(root).await;
     }

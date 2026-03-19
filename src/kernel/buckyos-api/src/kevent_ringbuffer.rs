@@ -282,6 +282,46 @@ impl SharedKEventRingBuffer {
             .collect()
     }
 
+    /// Snapshot currently active producer rings into the local cursor table.
+    ///
+    /// This is used when a new reader subscribes to global events: we want
+    /// the next event published by already-active producers to be observable,
+    /// even if the ShmDispatch thread has not drained those rings yet.
+    /// Missing cursors start at the producer's current head, so existing
+    /// backlog is skipped and only future publishes are observed.
+    pub fn prime_cursors(&self) {
+        let mut inner = match self.consume.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+
+        let region = unsafe { &*inner.region_ptr };
+        let my_ring_id = inner.my_ring_id;
+
+        for ring_id in 0..MAX_RINGS {
+            if ring_id == my_ring_id {
+                continue;
+            }
+
+            let entry = &region.directory[ring_id];
+            if entry.state.load(Ordering::Acquire) != ENTRY_READY {
+                continue;
+            }
+
+            let generation = entry.generation.load(Ordering::Acquire);
+            let ring = &region.rings[ring_id];
+            inner.cursors.entry(ring_id).or_insert_with(|| RingCursor {
+                generation,
+                read_seq: ring.head_seq.load(Ordering::Acquire),
+            });
+        }
+
+        let my_entry = &region.directory[my_ring_id];
+        my_entry
+            .last_heartbeat_ms
+            .store(now_millis(), Ordering::Relaxed);
+    }
+
     fn drain_payloads(&self, max_events: usize) -> Vec<Vec<u8>> {
         if max_events == 0 {
             return Vec::new();

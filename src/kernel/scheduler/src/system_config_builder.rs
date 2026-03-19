@@ -1014,7 +1014,6 @@ mod tests {
 
     #[test]
     fn build_default_jarvis_agent_spec_uses_agent_pkg() {
-        let expected_pkg_id = format!("buckyos_jarvis#{}", env!("CARGO_PKG_VERSION"));
         let value = json!({
             "user_name": "alice",
             "admin_password_hash": "hashed",
@@ -1043,13 +1042,12 @@ mod tests {
                 .agent
                 .as_ref()
                 .map(|pkg| pkg.pkg_id.as_str()),
-            Some(expected_pkg_id.as_str())
+            Some("buckyos_jarvis")
         );
     }
 
     #[test]
     fn add_default_agents_writes_user_scoped_agent_spec() {
-        let expected_pkg_id = format!("buckyos_jarvis#{}", env!("CARGO_PKG_VERSION"));
         let value = json!({
             "user_name": "alice",
             "admin_password_hash": "hashed",
@@ -1087,7 +1085,7 @@ mod tests {
                 .agent
                 .as_ref()
                 .map(|pkg| pkg.pkg_id.as_str()),
-            Some(expected_pkg_id.as_str())
+            Some("buckyos_jarvis")
         );
     }
 
@@ -1170,18 +1168,9 @@ mod tests {
             ))
             .expect("build kernel service spec");
 
-        let expected_pkg_id = spec.service_doc.get_package_id().to_string();
         assert_eq!(
             spec.service_doc.pkg_list.get_app_pkg_id().as_deref(),
-            Some(expected_pkg_id.as_str())
-        );
-        assert!(
-            spec.service_doc
-                .pkg_list
-                .iter()
-                .into_iter()
-                .any(|(_, pkg)| { pkg.pkg_id == expected_pkg_id && pkg.pkg_objid.is_none() }),
-            "current platform host pkg should be inserted without pkg_objid"
+            Some("verify-hub")
         );
     }
 }

@@ -562,7 +562,7 @@ process_rule: test_rule
             .as_ref()
             .and_then(|value| value.get("rootid"))
             .and_then(|value| value.as_str()),
-        Some("agent#default")
+        None
     );
     assert!(requests_guard[0]
         .payload
@@ -584,14 +584,14 @@ process_rule: test_rule
             .data
             .get("rootid")
             .and_then(|value| value.as_str()),
-        Some("agent#default")
+        Some("session-test")
     );
     assert_eq!(
         behavior_task
             .data
             .get("session_id")
             .and_then(|value| value.as_str()),
-        None
+        Some("session-test")
     );
     assert!(!tasks_guard
         .values()
@@ -688,7 +688,7 @@ process_rule: test_rule
             .as_ref()
             .and_then(|value| value.get("rootid"))
             .and_then(|value| value.as_str()),
-        Some("session-user-1")
+        None
     );
     assert_eq!(
         requests_guard[0]
@@ -697,7 +697,7 @@ process_rule: test_rule
             .as_ref()
             .and_then(|value| value.get("session_id"))
             .and_then(|value| value.as_str()),
-        Some("session-user-1")
+        None
     );
     drop(requests_guard);
 

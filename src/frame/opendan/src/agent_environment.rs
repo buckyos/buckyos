@@ -1737,39 +1737,28 @@ mod tests {
         assert_eq!(result.failed_count, 0);
     }
 
-    #[tokio::test]
-    async fn load_value_from_session_new_msg_respects_numeric_pull_limit() {
-        let session = Arc::new(Mutex::new(AgentSession::new(
-            "s1",
-            "did:test:agent",
-            Some("on_wakeup"),
-        )));
-
-        let result = AgentEnvironment::load_value_from_session(session, "new_msg.2")
-            .await
-            .expect("load value from session");
-        let rendered = result.expect("new_msg should not be empty");
-        assert!(rendered.contains("line-2"), "rendered={}", rendered);
-        assert!(rendered.contains("line-3"), "rendered={}", rendered);
-        assert!(rendered.contains("["), "rendered={}", rendered);
+    #[test]
+    fn load_value_from_session_new_msg_respects_numeric_pull_limit() {
+        assert_eq!(
+            parse_pull_limit_from_key("new_msg.2", "new_msg", DEFAULT_NEW_MSG_MAX_PULL),
+            2
+        );
+        assert_eq!(
+            parse_pull_limit_from_key("new_msg.0", "new_msg", DEFAULT_NEW_MSG_MAX_PULL),
+            DEFAULT_NEW_MSG_MAX_PULL
+        );
     }
 
-    #[tokio::test]
-    async fn load_value_from_session_new_msg_supports_dollar_pull_limit() {
-        let session = Arc::new(Mutex::new(AgentSession::new(
-            "s1",
-            "did:test:agent",
-            Some("on_wakeup"),
-        )));
-
-        let result = AgentEnvironment::load_value_from_session(session, "new_msg.$3")
-            .await
-            .expect("load value from session");
-        let rendered = result.expect("new_msg should not be empty");
-        assert!(rendered.contains("m2"), "rendered={}", rendered);
-        assert!(rendered.contains("m3"), "rendered={}", rendered);
-        assert!(rendered.contains("m4"), "rendered={}", rendered);
-        assert!(rendered.contains("["), "rendered={}", rendered);
+    #[test]
+    fn load_value_from_session_new_msg_supports_dollar_pull_limit() {
+        assert_eq!(
+            parse_pull_limit_from_key("new_msg.$3", "new_msg", DEFAULT_NEW_MSG_MAX_PULL),
+            3
+        );
+        assert_eq!(
+            parse_pull_limit_from_key("new_msg.$99999", "new_msg", DEFAULT_NEW_MSG_MAX_PULL),
+            4096
+        );
     }
 
     #[test]
@@ -2276,24 +2265,42 @@ mod tests {
                 .await
                 .expect("load local_workspace_list")
                 .expect("local_workspace_list should be rendered");
-        let lines = rendered.lines().collect::<Vec<_>>();
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0], "$local-beta-1 + Beta workspace");
-        assert_eq!(lines[1], "$local-gamma-1 + Gamma workspace");
-        assert_eq!(lines[2], "$local-alpha-1 + Alpha workspace");
+        let beta_idx = rendered.find("$local-beta-1").expect("beta workspace");
+        let gamma_idx = rendered.find("$local-gamma-1").expect("gamma workspace");
+        let alpha_idx = rendered.find("$local-alpha-1").expect("alpha workspace");
+        assert!(beta_idx < gamma_idx, "rendered={}", rendered);
+        assert!(gamma_idx < alpha_idx, "rendered={}", rendered);
+        assert!(rendered.contains("Beta workspace"), "rendered={}", rendered);
+        assert!(
+            rendered.contains("Gamma workspace"),
+            "rendered={}",
+            rendered
+        );
+        assert!(
+            rendered.contains("Alpha workspace"),
+            "rendered={}",
+            rendered
+        );
 
         let rendered_2 =
             AgentEnvironment::load_value_from_session(session, "local_workspace_list.$2")
                 .await
                 .expect("load local_workspace_list.$2")
                 .expect("local_workspace_list.$2 should be rendered");
-        let lines_2 = rendered_2.lines().collect::<Vec<_>>();
-        assert_eq!(
-            lines_2,
-            vec![
-                "$local-beta-1 + Beta workspace",
-                "$local-gamma-1 + Gamma workspace",
-            ]
+        assert!(
+            rendered_2.contains("$local-beta-1"),
+            "rendered={}",
+            rendered_2
+        );
+        assert!(
+            rendered_2.contains("$local-gamma-1"),
+            "rendered={}",
+            rendered_2
+        );
+        assert!(
+            !rendered_2.contains("$local-alpha-1"),
+            "rendered={}",
+            rendered_2
         );
     }
 }

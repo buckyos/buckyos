@@ -145,79 +145,6 @@ struct LaunchConfig {
     agent_spec: Option<AgentAppSpec>,
 }
 
-fn install_panic_hook() {
-    std::panic::set_hook(Box::new(|panic_info| {
-        let location = panic_info
-            .location()
-            .map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()))
-            .unwrap_or_else(|| "<unknown>".to_string());
-        let payload = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
-            *s
-        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
-            s.as_str()
-        } else {
-            "<non-string panic payload>"
-        };
-        let backtrace = std::backtrace::Backtrace::force_capture();
-        error!(
-            "opendan panic captured: location={} payload={} backtrace=\n{}",
-            location, payload, backtrace
-        );
-    }));
-}
-
-fn install_signal_logging() {
-    #[cfg(unix)]
-    {
-        tokio::spawn(async move {
-            let mut sigterm = signal(SignalKind::terminate()).ok();
-            let mut sigint = signal(SignalKind::interrupt()).ok();
-            let mut sighup = signal(SignalKind::hangup()).ok();
-            let mut sigquit = signal(SignalKind::quit()).ok();
-
-            loop {
-                tokio::select! {
-                    _ = async {
-                        if let Some(stream) = sigterm.as_mut() {
-                            stream.recv().await;
-                        } else {
-                            std::future::pending::<()>().await;
-                        }
-                    } => {
-                        warn!("opendan received signal: SIGTERM");
-                    }
-                    _ = async {
-                        if let Some(stream) = sigint.as_mut() {
-                            stream.recv().await;
-                        } else {
-                            std::future::pending::<()>().await;
-                        }
-                    } => {
-                        warn!("opendan received signal: SIGINT");
-                    }
-                    _ = async {
-                        if let Some(stream) = sighup.as_mut() {
-                            stream.recv().await;
-                        } else {
-                            std::future::pending::<()>().await;
-                        }
-                    } => {
-                        warn!("opendan received signal: SIGHUP");
-                    }
-                    _ = async {
-                        if let Some(stream) = sigquit.as_mut() {
-                            stream.recv().await;
-                        } else {
-                            std::future::pending::<()>().await;
-                        }
-                    } => {
-                        warn!("opendan received signal: SIGQUIT");
-                    }
-                }
-            }
-        });
-    }
-}
 
 fn parse_u16_arg(value: &str, arg_name: &str) -> Result<u16> {
     value
@@ -1077,9 +1004,7 @@ mod tests {
             keys,
             vec![
                 "users/did:bns:alice/agents/jarvis/spec".to_string(),
-                "users/did:bns:alice/apps/jarvis/spec".to_string(),
                 "users/alice/agents/jarvis/spec".to_string(),
-                "users/alice/apps/jarvis/spec".to_string(),
             ]
         );
     }

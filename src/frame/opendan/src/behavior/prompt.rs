@@ -3487,7 +3487,7 @@ mod tests {
         println!("merged:\n{}", merged);
         assert!(merged.contains("### "));
         assert!(merged.contains("SUCCESS (1), FAILED (1)"));
-        assert!(merged.contains(" do 1 / 16, SUCCESS (1), FAILED (1)"));
+        assert!(merged.contains("Behavior do Step 1 : SUCCESS (1), FAILED (1)"));
         assert!(merged.contains("- Run cargo test => OK"));
         assert!(merged.contains("- Run cargo clippy => FAILED"));
         assert!(!merged.contains("Step completed:"));

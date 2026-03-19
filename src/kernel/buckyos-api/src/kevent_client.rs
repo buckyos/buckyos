@@ -441,6 +441,12 @@ impl KEventClient {
             .insert(reader_id.clone(), state);
 
         if self.mode == KEventClientMode::Full && has_global_patterns {
+            if let Some(shared_ring) = &self.inner.shared_ring {
+                shared_ring.prime_cursors();
+            }
+        }
+
+        if self.mode == KEventClientMode::Full && has_global_patterns {
             if let Some(bridge) = &self.bridge {
                 if let Err(err) = bridge.register_reader(&reader_id, &patterns).await {
                     self.inner.readers.write().await.remove(&reader_id);
