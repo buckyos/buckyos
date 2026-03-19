@@ -5,15 +5,19 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$ROOT_DIR/src"
 PROJECT_CONFIG_PATH="$SRC_DIR/bucky_project.yaml"
-DOCKERFILE_PATH="$ROOT_DIR/publish/aios/Dockerfile"
 IMAGE_NAME="${IMAGE_NAME:-paios/aios}"
-VERSION_TAG="${VERSION_TAG:-$(sed -nE 's/^version = "([^"]+)"/\1/p' "$SRC_DIR/frame/opendan/Cargo.toml" | head -n 1)}"
+VERSION_FILE="$SRC_DIR/VERSION"
+VERSION_TAG="${VERSION_TAG:-}"
 PLATFORMS=("amd64" "aarch64")
+RUNTIME_PACKAGES=("tmux" "bash" "ca-certificates")
+WORKSPACE_PACKAGES=("python3" "python3-pip" "python3-venv" "nodejs" "npm" "git")
+EXTRA_APT_PACKAGES=()
 PUSH=0
+INSTALL_WORKSPACE_TOOLS=1
 
 usage() {
   cat <<'EOF'
-Usage: ./build_aios [--push] [--image <name>] [--tag <tag>]
+Usage: ./build_aios [--push] [--image <name>] [--tag <tag>] [--runtime-only] [--apt-package <name>]
 
 Builds the OpenDAN binary with cargo for:
   - amd64   -> x86_64-unknown-linux-musl
@@ -28,7 +32,9 @@ Then packages each binary into an Ubuntu-based Docker image:
 Options:
   --push          Push arch-specific images and create multi-arch manifests
   --image <name>  Override image name, default: paios/aios
-  --tag <tag>     Override version tag, default: opendan Cargo.toml version
+  --tag <tag>     Override version tag, default: src/VERSION
+  --runtime-only  Install only required runtime dependencies in the image
+  --apt-package   Add an extra apt package to the image; can be repeated
   -h, --help      Show this help
 EOF
 }
@@ -47,6 +53,14 @@ while [[ $# -gt 0 ]]; do
       VERSION_TAG="$2"
       shift 2
       ;;
+    --runtime-only)
+      INSTALL_WORKSPACE_TOOLS=0
+      shift
+      ;;
+    --apt-package)
+      EXTRA_APT_PACKAGES+=("$2")
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -61,6 +75,77 @@ done
 
 log() {
   printf '[build_aios] %s\n' "$*"
+}
+
+resolve_version_tag() {
+  if [[ -n "$VERSION_TAG" ]]; then
+    return
+  fi
+
+  if [[ ! -f "$VERSION_FILE" ]]; then
+    echo "Missing version file: $VERSION_FILE" >&2
+    exit 1
+  fi
+
+  VERSION_TAG="$(tr -d '[:space:]' < "$VERSION_FILE")"
+
+  if [[ -z "$VERSION_TAG" ]]; then
+    echo "Version file is empty: $VERSION_FILE" >&2
+    exit 1
+  fi
+}
+
+package_list_to_string() {
+  local IFS=' '
+  printf '%s' "$*"
+}
+
+render_dockerfile() {
+  local output_path="$1"
+  local -a apt_packages=("${RUNTIME_PACKAGES[@]}")
+
+  if [[ "$INSTALL_WORKSPACE_TOOLS" -eq 1 ]]; then
+    apt_packages+=("${WORKSPACE_PACKAGES[@]}")
+  fi
+
+  if [[ ${#EXTRA_APT_PACKAGES[@]} -gt 0 ]]; then
+    apt_packages+=("${EXTRA_APT_PACKAGES[@]}")
+  fi
+
+  {
+    cat <<'EOF'
+FROM ubuntu:24.04
+
+ARG TARGET_ARCH
+
+LABEL org.opencontainers.image.title="AIOS" \
+      org.opencontainers.image.description="OpenDAN runtime image for paios/aios" \
+      org.opencontainers.image.vendor="BuckyOS DAO"
+
+WORKDIR /opt/buckyos
+
+# Required by OpenDAN runtime and common agent workspace workflows.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+EOF
+
+    for package in "${apt_packages[@]}"; do
+      printf '    %s \\\n' "$package"
+    done
+
+    cat <<'EOF'
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /opt/buckyos/bin/opendan
+
+COPY opendan /opt/buckyos/bin/opendan/opendan
+
+ENV AIOS_TARGET_ARCH="${TARGET_ARCH}"
+
+EXPOSE 3180
+
+ENTRYPOINT ["/opt/buckyos/bin/opendan/opendan"]
+EOF
+  } > "$output_path"
 }
 
 resolve_python() {
@@ -233,6 +318,7 @@ build_image() {
   local arch="$1"
   local context_dir="$2"
   local platform="$3"
+  local dockerfile_path="$4"
   local version_arch_tag="$IMAGE_NAME:$VERSION_TAG-$arch"
   local latest_arch_tag="$IMAGE_NAME:latest-$arch"
 
@@ -245,7 +331,7 @@ build_image() {
       --tag "$version_arch_tag" \
       --tag "$latest_arch_tag" \
       --push \
-      -f "$DOCKERFILE_PATH" \
+      -f "$dockerfile_path" \
       "$context_dir"
   else
     docker buildx build \
@@ -254,7 +340,7 @@ build_image() {
       --tag "$version_arch_tag" \
       --tag "$latest_arch_tag" \
       --load \
-      -f "$DOCKERFILE_PATH" \
+      -f "$dockerfile_path" \
       "$context_dir"
   fi
 }
@@ -276,31 +362,40 @@ main() {
   local tmp_root
   local python_bin
 
-  if [[ ! -f "$DOCKERFILE_PATH" ]]; then
-    echo "Missing Dockerfile: $DOCKERFILE_PATH" >&2
-    exit 1
-  fi
-
   if [[ ! -f "$PROJECT_CONFIG_PATH" ]]; then
     echo "Missing project config: $PROJECT_CONFIG_PATH" >&2
     exit 1
   fi
 
+  resolve_version_tag
   python_bin="$(resolve_python)"
 
   tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/build_aios.XXXXXX")"
   trap 'rm -rf "$tmp_root"' EXIT
 
+  log "Version tag: $VERSION_TAG"
+  log "Runtime packages: $(package_list_to_string "${RUNTIME_PACKAGES[@]}")"
+  if [[ "$INSTALL_WORKSPACE_TOOLS" -eq 1 ]]; then
+    log "Workspace packages: $(package_list_to_string "${WORKSPACE_PACKAGES[@]}")"
+  else
+    log "Workspace packages: skipped (--runtime-only)"
+  fi
+  if [[ ${#EXTRA_APT_PACKAGES[@]} -gt 0 ]]; then
+    log "Extra apt packages: $(package_list_to_string "${EXTRA_APT_PACKAGES[@]}")"
+  fi
+
   for arch in "${PLATFORMS[@]}"; do
     local context_dir="$tmp_root/$arch"
     local cargo_target_dir="$tmp_root/cargo-$arch"
+    local dockerfile_path="$context_dir/Dockerfile"
     local platform
 
     platform="$(docker_platform_for_arch "$arch")"
     mkdir -p "$context_dir"
 
     build_binary "$arch" "$context_dir/opendan" "$cargo_target_dir" "$python_bin"
-    build_image "$arch" "$context_dir" "$platform"
+    render_dockerfile "$dockerfile_path"
+    build_image "$arch" "$context_dir" "$platform" "$dockerfile_path"
   done
 
   if [[ "$PUSH" -eq 1 ]]; then

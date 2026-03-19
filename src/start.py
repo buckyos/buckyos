@@ -15,6 +15,22 @@ build_dir = os.path.dirname(os.path.abspath(__file__))
 # 2) update files to /opt/buckyos (--all to update all files to /opt/buckyos)
 # 3) start the system (run /opt/buckyos/bin/node_daemon/node_daemon)
 
+
+def resolve_buckyos_root() -> Path:
+    """Resolve BUCKYOS_ROOT using env first, then platform defaults."""
+    buckyos_root = os.environ.get("BUCKYOS_ROOT")
+    if buckyos_root:
+        print(f"Using BUCKYOS_ROOT: {buckyos_root}")
+        return Path(buckyos_root).expanduser()
+
+    if platform.system() == "Windows":
+        default_root = os.path.join(os.path.expandvars("%AppData%"), "buckyos")
+    else:
+        default_root = "/opt/buckyos"
+
+    print(f"BUCKYOS_ROOT not set, using default: {default_root}")
+    return Path(default_root).expanduser()
+
 def kill_all_processes():
     """Kill all related BuckyOS processes"""
     print("Stopping all BuckyOS processes...")
@@ -45,7 +61,7 @@ def update_files(install_all=False,config_group_name=None):
         subprocess.run(install_cmd, env=os.environ.copy())
 
         if config_group_name:
-           target_root : Path = Path("/opt/buckyos")
+           target_root = resolve_buckyos_root()
            make_config_by_group_name(config_group_name, target_root, None, None, None)
         print("Files updated successfully")
     except ImportError as e:
@@ -64,18 +80,7 @@ def update_files(install_all=False,config_group_name=None):
 def start_system():
     """Start BuckyOS system"""
     print("Starting BuckyOS system...")
-    
-    # Get BUCKYOS_ROOT environment variable or use default installation directory
-    buckyos_root = os.environ.get('BUCKYOS_ROOT')
-    if not buckyos_root:
-        # Use default installation directory if BUCKYOS_ROOT is not set
-        if platform.system() == "Windows":
-            buckyos_root = os.path.join(os.path.expandvars("%AppData%"), "buckyos")
-        else:
-            buckyos_root = "/opt/buckyos"
-        print(f"BUCKYOS_ROOT not set, using default: {buckyos_root}")
-    else:
-        print(f"Using BUCKYOS_ROOT: {buckyos_root}")
+    buckyos_root = str(resolve_buckyos_root())
     
     # Start node_daemon
     node_daemon_path = os.path.join(buckyos_root, "bin", "node-daemon", "node_daemon")

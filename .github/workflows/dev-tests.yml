@@ -139,6 +139,14 @@ jobs:
           sudo apt update
           sudo apt install -y musl-tools
 
+      - name: Setup OpenSSL (macOS)
+        if: ${{ runner.os == 'macOS' }}
+        shell: bash
+        run: |
+          brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
+          echo "$(brew --prefix openssl@3)/bin" >> "$GITHUB_PATH"
+          openssl version
+
       - name: Setup Windows NSIS
         if: ${{ matrix.needs_nsis }}
         shell: pwsh
@@ -238,7 +246,7 @@ jobs:
           pushd src
           buckyos-build
           buckyos-install --all
-          python3 start.py --all
+          sudo HOME="$HOME" PATH="$PATH" BUCKYOS_ROOT="$BUCKYOS_ROOT" python3 start.py --all
           wait_for_port "node gateway" 127.0.0.1 3180
           wait_for_port "system_config" 127.0.0.1 3200
           cargo run -p test_rbac
@@ -299,7 +307,7 @@ jobs:
         run: |
           set -euo pipefail
           pushd src
-          python3 stop.py || true
+          sudo HOME="$HOME" PATH="$PATH" BUCKYOS_ROOT="$BUCKYOS_ROOT" python3 stop.py || true
           popd
           sudo rm -rf "$BUCKYOS_ROOT" "$WEB3_GATEWAY_ROOT"
 
