@@ -38,7 +38,6 @@ ensure_launchdaemon_docker
 
 echo "[buckyos] preinstall: stopping service (best effort)"
 # Don't use kickstart here: it may start (or wait for) the job and block in installer context.
-launchctl disable "system/buckyos.service" >/dev/null 2>&1 || true
 run_with_timeout 10 launchctl bootout system "$DAEMON_PLIST" >/dev/null 2>&1 || true
 rm -f "$DAEMON_PLIST" >/dev/null 2>&1 || true
 

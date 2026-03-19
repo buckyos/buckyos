@@ -474,7 +474,7 @@ def _write_distribution_xml(
     lines.append(f"  <title>{_xml_escape(title)}</title>")
     lines.append('  <options customize="always" />')
     lines.append('  <installation-check script="installationCheck()"/>')
-    lines.append("  <script>")
+    lines.append("  <script><![CDATA[")
     lines.append("    function pathExists(path) {")
     lines.append("        try {")
     lines.append("            return system.files.fileExistsAtPath(path);")
@@ -517,7 +517,7 @@ def _write_distribution_xml(
     lines.append("        }")
     lines.append("        return true;")
     lines.append("    }")
-    lines.append("  </script>")
+    lines.append("  ]]></script>")
 
     # Optional HTML screens (if present in resources).
     for tag, filename in (("welcome", "welcome.html"), ("license", "license.html"), ("conclusion", "conclusion.html")):

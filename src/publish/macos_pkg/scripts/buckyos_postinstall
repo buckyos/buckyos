@@ -3,8 +3,14 @@ set -e
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 BUCKYOS_ROOT="${BUCKYOS_ROOT:-/opt/buckyos}"
 DEFAULTS_DIR="$BUCKYOS_ROOT/.buckyos_installer_defaults"
+REAL_BUCKYOS_ROOT="$(cd "$BUCKYOS_ROOT" 2>/dev/null && pwd -P || printf '%s\n' "$BUCKYOS_ROOT")"
 # Run node_daemon as a system LaunchDaemon (root) so it can bind privileged ports (80/443).
 PLIST="/Library/LaunchDaemons/buckyos.service.plist"
+POSTINSTALL_LOG="/private/tmp/buckyos-postinstall.log"
+
+mkdir -p "$(dirname "$POSTINSTALL_LOG")"
+touch "$POSTINSTALL_LOG" >/dev/null 2>&1 || true
+exec > >(tee -a "$POSTINSTALL_LOG") 2>&1
 
 run_with_timeout() {
   local seconds="$1"
@@ -14,10 +20,22 @@ run_with_timeout() {
 
 start_buckyos_service() {
   echo "[buckyos] postinstall: starting LaunchDaemon"
-  run_with_timeout 10 launchctl bootout system "$PLIST" >/dev/null 2>&1 || true
-  run_with_timeout 10 launchctl bootstrap system "$PLIST"
+  if [ ! -x "${REAL_BUCKYOS_ROOT}/bin/node-daemon/node_daemon" ]; then
+    echo "[buckyos] postinstall: missing or non-executable node_daemon at ${REAL_BUCKYOS_ROOT}/bin/node-daemon/node_daemon" >&2
+    return 1
+  fi
+  /usr/bin/plutil -lint "$PLIST"
   run_with_timeout 10 launchctl enable "system/buckyos.service" >/dev/null 2>&1 || true
-  run_with_timeout 10 launchctl kickstart -k "system/buckyos.service"
+  run_with_timeout 10 launchctl bootout system "$PLIST" >/dev/null 2>&1 || true
+  if ! run_with_timeout 10 launchctl bootstrap system "$PLIST"; then
+    echo "[buckyos] postinstall: launchctl bootstrap failed for $PLIST" >&2
+    launchctl print system/buckyos.service >&2 || true
+    return 1
+  fi
+  if ! run_with_timeout 10 launchctl kickstart -k "system/buckyos.service"; then
+    echo "[buckyos] postinstall: launchctl kickstart failed, continuing to wait for RunAtLoad." >&2
+    launchctl print system/buckyos.service >&2 || true
+  fi
 }
 
 wait_for_node_daemon() {
@@ -33,6 +51,8 @@ wait_for_node_daemon() {
 }
 
 mkdir -p "/Library/LaunchDaemons"
+mkdir -p "${REAL_BUCKYOS_ROOT}/logs/node_daemon" || true
+chown -R root:wheel "${REAL_BUCKYOS_ROOT}/logs" >/dev/null 2>&1 || true
 cat > "$PLIST" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -42,15 +62,21 @@ cat > "$PLIST" << EOF
     <string>buckyos.service</string>
     <key>ProgramArguments</key>
     <array>
-        <string>${BUCKYOS_ROOT}/bin/node-daemon/node_daemon</string>
+        <string>${REAL_BUCKYOS_ROOT}/bin/node-daemon/node_daemon</string>
         <string>--enable_active</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>${BUCKYOS_ROOT}</string>
+    <string>${REAL_BUCKYOS_ROOT}</string>
     <key>EnvironmentVariables</key>
     <dict>
+        <key>BUCKYOS_ROOT</key>
+        <string>${REAL_BUCKYOS_ROOT}</string>
+        <key>HOME</key>
+        <string>/var/root</string>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>RUST_BACKTRACE</key>
+        <string>1</string>
     </dict>
     <key>StandardOutPath</key>
     <string>/var/log/buckyos.service.out.log</string>
@@ -175,7 +201,13 @@ fi
 start_buckyos_service
 if ! wait_for_node_daemon; then
   echo "[buckyos] postinstall: node_daemon did not start successfully." >&2
+  /usr/bin/env >&2 || true
+  ls -l "$PLIST" "${REAL_BUCKYOS_ROOT}/bin/node-daemon/node_daemon" "${REAL_BUCKYOS_ROOT}/logs" "${REAL_BUCKYOS_ROOT}/logs/node_daemon" >&2 || true
+  tail -n 200 "$POSTINSTALL_LOG" >&2 || true
   echo "[buckyos] postinstall: check /var/log/buckyos.service.out.log and /var/log/buckyos.service.err.log" >&2
+  tail -n 200 /var/log/buckyos.service.out.log >&2 || true
+  tail -n 200 /var/log/buckyos.service.err.log >&2 || true
+  find "${REAL_BUCKYOS_ROOT}/logs/node_daemon" -maxdepth 1 -type f -print >&2 || true
   launchctl print "system/buckyos.service" >&2 || true
   exit 1
 fi
