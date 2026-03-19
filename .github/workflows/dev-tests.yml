@@ -369,7 +369,7 @@ jobs:
           pushd src
           sudo HOME="$HOME" PATH="$PATH" BUCKYOS_ROOT="$BUCKYOS_ROOT" "$PYTHON_BIN" stop.py || true
           popd
-          sudo rm -rf "$BUCKYOS_ROOT" "$WEB3_GATEWAY_ROOT"
+          sudo rm -rf "$BUCKYOS_ROOT" "$WEB3_GATEWAY_ROOT" /tmp/buckyos
 
       - name: Stop single-node environment and clean install root (Windows)
         if: ${{ runner.os == 'Windows' }}
