@@ -90,14 +90,14 @@ def run_cmd(cmd: List[str], cwd: Optional[Path] = None, env: Optional[Dict[str, 
         raise RuntimeError(f"command failed: {' '.join(cmd)}")
 
 
-def run_buckycli(args: List[str], cwd: Optional[Path] = None) -> None:
+def run_buckycli(args: List[str], cwd: Optional[Path] = None, runtime_root: Optional[Path] = None) -> None:
     cmd = [str(BUCKYCLI_BIN)] + args
     work_dir = cwd if cwd is not None else ROOTFS_DIR
     if work_dir is not None:
         work_dir = work_dir.expanduser()
         if not work_dir.exists():
             ensure_dir(work_dir)
-    runtime_root = ROOTFS_DIR.expanduser()
+    runtime_root = (runtime_root if runtime_root is not None else ROOTFS_DIR).expanduser()
     if not runtime_root.exists():
         ensure_dir(runtime_root)
     run_env = os.environ.copy()
@@ -206,7 +206,11 @@ def seed_bin_pkg_meta_db(target_dir: Path) -> None:
                 json.dumps(build_dev_pkg_meta(pkg_name, prefix, version), indent=2) + "\n",
                 encoding="utf-8",
             )
-            run_buckycli(["set_pkg_meta", str(meta_path), str(meta_db_path)], cwd=target_dir)
+            run_buckycli(
+                ["set_pkg_meta", str(meta_path), str(meta_db_path)],
+                cwd=target_dir,
+                runtime_root=target_dir,
+            )
             print(f"seed pkg meta {prefix}.{pkg_name}#{version} -> {meta_db_path}")
 
 def apply_dev_boot_template_override(target_dir: Path, group_name: str) -> None:
@@ -340,7 +344,11 @@ def make_cache_did_docs(target_dir: Path) -> None:
 
     ensure_dir(docs_dst)
     try:
-        run_buckycli(["build_did_docs", "--output_dir", str(docs_dst)], cwd=target_dir)
+        run_buckycli(
+            ["build_did_docs", "--output_dir", str(docs_dst)],
+            cwd=target_dir,
+            runtime_root=target_dir,
+        )
         print(f"built did_docs at {docs_dst}")
     except RuntimeError as e:
         print(f"warning: build_did_docs not available yet: {e}")
@@ -471,6 +479,7 @@ def make_identity_files(
             str(user_tmp),
         ],
         cwd=tmp_root,
+        runtime_root=target_dir,
     )
 
     # 2. Create node configuration
@@ -485,6 +494,7 @@ def make_identity_files(
             str(user_tmp),
         ],
         cwd=tmp_root,
+        runtime_root=target_dir,
     )
 
     # 3. Copy identity files
@@ -520,6 +530,7 @@ def add_user_to_sn(root_dir: Path, username: str, sn_db_path: Path) -> None:
     run_buckycli(
         ["register_user_to_sn", "--username", username, "--sn_db_path", str(sn_db_path), "--output_dir", str(root_dir)],
         cwd=root_dir,
+        runtime_root=root_dir,
     )
     print(f"root directory: {root_dir}")
     print(f"added user {username} to SN database at {sn_db_path}")
@@ -530,6 +541,7 @@ def add_device_to_sn(root_dir: Path, username: str, device_name: str, sn_db_path
     run_buckycli(
         ["register_device_to_sn", "--username", username, "--device_name", device_name, "--sn_db_path", str(sn_db_path), "--output_dir", str(root_dir)],
         cwd=root_dir,
+        runtime_root=root_dir,
     )
     print(f"root directory: {root_dir}")
     print(f"added device {username}.{device_name} to SN database at {sn_db_path}")
@@ -588,6 +600,7 @@ def make_sn_configs(
             sn_base_host,
         ],
         cwd=target_dir,
+        runtime_root=target_dir,
     )
     
     # buckycli generates files under target_dir/sn_server/, need to move to target_dir

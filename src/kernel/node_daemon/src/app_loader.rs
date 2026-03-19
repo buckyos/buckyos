@@ -1,15 +1,15 @@
 use crate::run_item::{ControlRuntItemErrors, Result};
 use crate::service_pkg::new_system_package_env;
 use buckyos_api::{
-    AppDoc, AppServiceInstanceConfig, AppType, LocalAppInstanceConfig, ServiceInstallConfig,
-    ServiceInstanceState, SubPkgDesc, VERIFY_HUB_TOKEN_EXPIRE_TIME, get_buckyos_api_runtime,
-    get_full_appid, get_session_token_env_key,
+    get_buckyos_api_runtime, get_full_appid, get_session_token_env_key, AppDoc,
+    AppServiceInstanceConfig, AppType, LocalAppInstanceConfig, ServiceInstallConfig,
+    ServiceInstanceState, SubPkgDesc, VERIFY_HUB_TOKEN_EXPIRE_TIME,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir};
 use log::{debug, info, warn};
-use ndn_lib::{ObjId, load_named_object_from_obj_str};
+use ndn_lib::{load_named_object_from_obj_str, ObjId};
 use package_lib::{MediaInfo, PackageEnv, PackageId, PackageMeta, PkgError};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use shlex::Shlex;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -1449,56 +1449,47 @@ impl AppLoader {
         let opendan_bin = shell_quote(AGENT_CONTAINER_OPENDAN_BIN);
 
         format!(
-            "set -eu\n\
-PACKAGE_ROOT={package_root}\n\
-DATA_UPPER={data_root}\n\
-OVERLAY_WORK=\"$DATA_UPPER/.overlay_work\"\n\
-AGENT_ENV_ROOT={env_root}\n\
-FUSE_DEVICE={fuse_device}\n\
-mkdir -p \"$DATA_UPPER\" \"$OVERLAY_WORK\"\n\
-if [ ! -e \"$AGENT_ENV_ROOT\" ]; then\n  mkdir -p \"$AGENT_ENV_ROOT\"\nfi\n\
-mount_kernel_overlay() {{\n\
-  mount -t overlay overlay -o lowerdir=\"$PACKAGE_ROOT\",upperdir=\"$DATA_UPPER\",workdir=\"$OVERLAY_WORK\" \"$AGENT_ENV_ROOT\" 2>/tmp/agent_overlay.err\n\
-}}\n\
-mount_fuse_overlay() {{\n\
-  if ! command -v fuse-overlayfs >/dev/null 2>&1; then\n\
-    return 1\n\
-  fi\n\
-  if [ ! -e \"$FUSE_DEVICE\" ]; then\n\
-    echo \"agent runtime fuse-overlayfs unavailable: missing $FUSE_DEVICE\" >&2\n\
-    return 1\n\
-  fi\n\
-  rm -rf \"$AGENT_ENV_ROOT\"\n\
-  mkdir -p \"$AGENT_ENV_ROOT\"\n\
-  fuse-overlayfs -o lowerdir=\"$PACKAGE_ROOT\",upperdir=\"$DATA_UPPER\",workdir=\"$OVERLAY_WORK\" \"$AGENT_ENV_ROOT\" 2>/tmp/agent_fuse_overlay.err\n\
-}}\n\
-materialize_env_root() {{\n\
-  rm -rf \"$AGENT_ENV_ROOT\"\n\
-  mkdir -p \"$AGENT_ENV_ROOT\"\n\
-  for entry in \"$DATA_UPPER\"/* \"$DATA_UPPER\"/.[!.]* \"$DATA_UPPER\"/..?*; do\n\
-    [ -e \"$entry\" ] || continue\n\
-    name=$(basename \"$entry\")\n\
-    [ \"$name\" = \".overlay_work\" ] && continue\n\
-    ln -s \"$entry\" \"$AGENT_ENV_ROOT/$name\"\n\
-  done\n\
-  for entry in \"$PACKAGE_ROOT\"/* \"$PACKAGE_ROOT\"/.[!.]* \"$PACKAGE_ROOT\"/..?*; do\n\
-    [ -e \"$entry\" ] || continue\n\
-    name=$(basename \"$entry\")\n\
-    [ -e \"$AGENT_ENV_ROOT/$name\" ] && continue\n\
-    ln -s \"$entry\" \"$AGENT_ENV_ROOT/$name\"\n\
-  done\n\
-  echo \"agent runtime overlay unavailable, materialized merged view at $AGENT_ENV_ROOT (upper=$DATA_UPPER lower=$PACKAGE_ROOT)\" >&2\n\
-}}\n\
-if mount_kernel_overlay; then\n\
-  echo \"agent runtime overlay mounted at $AGENT_ENV_ROOT\"\n\
-elif mount_fuse_overlay; then\n\
-  echo \"agent runtime fuse-overlayfs mounted at $AGENT_ENV_ROOT\"\n\
-else\n\
-  materialize_env_root\n\
-  if [ -f /tmp/agent_overlay.err ]; then cat /tmp/agent_overlay.err >&2; fi\n\
-  if [ -f /tmp/agent_fuse_overlay.err ]; then cat /tmp/agent_fuse_overlay.err >&2; fi\n\
-fi\n\
-exec {opendan_bin} --agent-id {app_id} --agent-env \"$AGENT_ENV_ROOT\" --agent-bin \"$PACKAGE_ROOT\" --service-port {service_port}"
+            r#"set -eu
+PACKAGE_ROOT={package_root}
+DATA_UPPER={data_root}
+OVERLAY_WORK="$DATA_UPPER/.overlay_work"
+AGENT_ENV_ROOT={env_root}
+FUSE_DEVICE={fuse_device}
+mkdir -p "$DATA_UPPER" "$OVERLAY_WORK"
+if [ ! -e "$AGENT_ENV_ROOT" ]; then
+  mkdir -p "$AGENT_ENV_ROOT"
+fi
+mount_kernel_overlay() {{
+  mount -t overlay overlay -o lowerdir="$PACKAGE_ROOT",upperdir="$DATA_UPPER",workdir="$OVERLAY_WORK" "$AGENT_ENV_ROOT" 2>/tmp/agent_overlay.err
+}}
+mount_fuse_overlay() {{
+  if ! command -v fuse-overlayfs >/dev/null 2>&1; then
+    return 1
+  fi
+  if [ ! -e "$FUSE_DEVICE" ]; then
+    echo "agent runtime fuse-overlayfs unavailable: missing $FUSE_DEVICE" >&2
+    return 1
+  fi
+  rm -rf "$AGENT_ENV_ROOT"
+  mkdir -p "$AGENT_ENV_ROOT"
+  fuse-overlayfs -o lowerdir="$PACKAGE_ROOT",upperdir="$DATA_UPPER",workdir="$OVERLAY_WORK" "$AGENT_ENV_ROOT" 2>/tmp/agent_fuse_overlay.err
+}}
+materialize_env_root() {{
+  cp -a -n "$PACKAGE_ROOT"/. "$DATA_UPPER"/
+  rm -rf "$AGENT_ENV_ROOT"
+  ln -s "$DATA_UPPER" "$AGENT_ENV_ROOT"
+  echo "agent runtime overlay unavailable, seeded upperdir from $PACKAGE_ROOT and linked $AGENT_ENV_ROOT -> $DATA_UPPER" >&2
+}}
+if mount_kernel_overlay; then
+  echo "agent runtime overlay mounted at $AGENT_ENV_ROOT"
+elif mount_fuse_overlay; then
+  echo "agent runtime fuse-overlayfs mounted at $AGENT_ENV_ROOT"
+else
+  materialize_env_root
+  if [ -f /tmp/agent_overlay.err ]; then cat /tmp/agent_overlay.err >&2; fi
+  if [ -f /tmp/agent_fuse_overlay.err ]; then cat /tmp/agent_fuse_overlay.err >&2; fi
+fi
+exec {opendan_bin} --agent-id {app_id} --agent-env "$AGENT_ENV_ROOT" --agent-bin "$PACKAGE_ROOT" --service-port {service_port}"#
         )
     }
 

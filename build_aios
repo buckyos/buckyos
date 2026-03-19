@@ -77,6 +77,90 @@ log() {
   printf '[build_aios] %s\n' "$*"
 }
 
+prepare_docker_config() {
+  local workspace_tmp_root="$1"
+  local docker_config_dir="${DOCKER_CONFIG:-$HOME/.docker}"
+  local docker_config_path="$docker_config_dir/config.json"
+  local sanitized_dir="$workspace_tmp_root/docker-config"
+  local sanitized_config_path="$sanitized_dir/config.json"
+  local python_bin
+  local sanitize_result
+
+  if [[ "$(uname -s)" != "Linux" ]]; then
+    return
+  fi
+
+  if [[ ! -f "$docker_config_path" ]]; then
+    return
+  fi
+
+  python_bin="$(resolve_python)"
+  sanitize_result="$(
+    "$python_bin" - "$docker_config_path" "$sanitized_config_path" <<'PY'
+import json
+import os
+import shutil
+import sys
+
+config_path = sys.argv[1]
+output_path = sys.argv[2]
+
+with open(config_path, "r", encoding="utf-8") as fh:
+    config = json.load(fh)
+
+removed = []
+
+def helper_binary(helper):
+    return f"docker-credential-{helper}"
+
+def helper_missing(helper):
+    return shutil.which(helper_binary(helper)) is None
+
+creds_store = config.get("credsStore")
+if isinstance(creds_store, str) and helper_missing(creds_store):
+    removed.append(f"credsStore={creds_store}")
+    config.pop("credsStore", None)
+
+cred_helpers = config.get("credHelpers")
+if isinstance(cred_helpers, dict):
+    sanitized_helpers = {}
+    for registry, helper in cred_helpers.items():
+        if isinstance(helper, str) and helper_missing(helper):
+            removed.append(f"credHelpers[{registry}]={helper}")
+            continue
+        sanitized_helpers[registry] = helper
+    if sanitized_helpers:
+        config["credHelpers"] = sanitized_helpers
+    else:
+        config.pop("credHelpers", None)
+
+if not removed:
+    print("UNCHANGED")
+    raise SystemExit(0)
+
+os.makedirs(os.path.dirname(output_path), exist_ok=True)
+with open(output_path, "w", encoding="utf-8") as fh:
+    json.dump(config, fh, indent=2)
+    fh.write("\n")
+
+print("SANITIZED")
+for item in removed:
+    print(item)
+PY
+  )"
+
+  if [[ "$sanitize_result" == UNCHANGED* ]]; then
+    return
+  fi
+
+  export DOCKER_CONFIG="$sanitized_dir"
+  log "Detected missing Docker credential helper(s); using sanitized DOCKER_CONFIG at $DOCKER_CONFIG"
+  while IFS= read -r line; do
+    [[ "$line" == "SANITIZED" || -z "$line" ]] && continue
+    log "  removed $line"
+  done <<< "$sanitize_result"
+}
+
 resolve_version_tag() {
   if [[ -n "$VERSION_TAG" ]]; then
     return
@@ -372,6 +456,8 @@ main() {
 
   tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/build_aios.XXXXXX")"
   trap "rm -rf '$tmp_root'" EXIT
+
+  prepare_docker_config "$tmp_root"
 
   log "Version tag: $VERSION_TAG"
   log "Runtime packages: $(package_list_to_string "${RUNTIME_PACKAGES[@]}")"

@@ -665,7 +665,7 @@ impl AIAgent {
                     }
                 }
             }
-            info!(
+            debug!(
                 "agent.msg_pull_box_done: did={:?} box_kind={:?} pulled_in_box={}",
                 self.did, box_kind, pulled_in_box
             );
