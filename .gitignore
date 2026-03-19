@@ -61,3 +61,4 @@ src/rootfs/bin/aicc/aicc
 src/rootfs/bin/msg-center/msg_center
 src/rootfs/bin/opendan/opendan*
 src/rootfs/bin/bucky-file/
+src/publish/win_pkg/scripts/seed_defaults.ps1
