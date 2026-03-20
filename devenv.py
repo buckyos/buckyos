@@ -73,7 +73,7 @@ LINUX_CROSS_PACKAGE_CHOICES = {
     "apt-get": [["musl-tools"], ["gcc-aarch64-linux-gnu"]],
     "dnf": [["musl-gcc"], ["gcc-aarch64-linux-gnu"]],
     "yum": [["musl-gcc"], ["gcc-aarch64-linux-gnu"]],
-    "pacman": [["musl"], ["aarch64-linux-gnu-gcc"]],
+    "pacman": [["musl"], ["musl-aarch64"]],
     "zypper": [["musl"], ["gcc-aarch64-linux-gnu"], ["cross-aarch64-gcc13", "cross-aarch64-binutils"]],
 }
 
@@ -341,6 +341,7 @@ class Bootstrapper:
         if not self.args.skip_cross_tools:
             for choices in LINUX_CROSS_PACKAGE_CHOICES[self.package_manager]:
                 self.install_first_resolved_set("cross-compilation dependencies", [choices], optional=True)
+            self.check_linux_static_tooling()
 
         if not self.args.skip_buckyos_dir:
             self.ensure_buckyos_directory()
@@ -405,6 +406,18 @@ class Bootstrapper:
         self.ensure_rust_toolchain()
         self.notes.append("For Linux target cross-compilation on Windows, consider using WSL2")
 
+    def check_linux_static_tooling(self) -> None:
+        if not shutil.which("musl-gcc") and not shutil.which("x86_64-linux-musl-gcc"):
+            self.warnings.append(
+                "x86_64 musl toolchain not found; static Linux builds require musl-gcc or x86_64-linux-musl-gcc"
+            )
+
+        if not shutil.which("aarch64-linux-musl-gcc") and not Path("/usr/aarch64-linux-musl/bin/musl-gcc").exists():
+            self.warnings.append(
+                "aarch64 musl toolchain not found; static Linux builds require aarch64-linux-musl-gcc "
+                "or /usr/aarch64-linux-musl/bin/musl-gcc"
+            )
+
     def ensure_macos_build_tools(self) -> None:
         if self.probe(["xcode-select", "-p"]):
             return
@@ -423,6 +436,7 @@ class Bootstrapper:
         if self.system == "Linux" and not self.args.skip_cross_tools:
             self.run([rustup, "target", "add", "x86_64-unknown-linux-musl"])
             self.run([rustup, "target", "add", "aarch64-unknown-linux-gnu"])
+            self.run([rustup, "target", "add", "aarch64-unknown-linux-musl"])
         if self.system == "Windows" and not self.args.skip_msvc:
             host_arch = platform.machine().lower()
             if host_arch in {"amd64", "x86_64"}:

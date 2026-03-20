@@ -328,6 +328,87 @@ def _copy_dir_contents(src_dir: Path, dst_dir: Path) -> None:
             shutil.copy2(child, dst)
 
 
+def _iter_payload_file_basenames(root: Path, *, limit: int = 256) -> List[str]:
+    names: List[str] = []
+    if not root.exists():
+        return names
+    if root.is_file():
+        return [root.name.lower()]
+
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root)
+        if any(part in IGNORED_STAGE_NAMES for part in rel.parts):
+            continue
+        names.append(path.name.lower())
+        if len(names) >= limit:
+            break
+    return names
+
+
+def _append_unique_names(target: List[str], values: List[str]) -> None:
+    seen = set(target)
+    for value in values:
+        normalized = value.strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        target.append(normalized)
+        seen.add(normalized)
+
+
+def _component_expected_filenames(
+    *,
+    comp: "PublishComponent",
+    manifest_path: Path | None,
+) -> List[str]:
+    expected: List[str] = []
+
+    if comp.src:
+        _append_unique_names(expected, [Path(comp.src.replace("\\", "/")).name])
+
+    if comp.key == "buckyos":
+        _append_unique_names(
+            expected,
+            [
+                "node_daemon.exe",
+                "seed_defaults.ps1",
+                "uninstall_cleanup.ps1",
+                "node_daemon_loader.ps1",
+                "node_daemon_loader.vbs",
+            ],
+        )
+
+    if manifest_path is None:
+        return expected
+
+    try:
+        project = _manifest_install_project(manifest_path, comp.key)
+    except Exception:
+        return expected
+
+    platform_cfg = (project.get("platforms", {}) or {}).get("windows", {}) or {}
+    source_path_raw = str(platform_cfg.get("source_path") or "").strip()
+    if source_path_raw:
+        _append_unique_names(expected, _iter_payload_file_basenames(Path(source_path_raw)))
+
+    for item_name in ("module_items", "data_items"):
+        items = project.get(item_name, []) or []
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            file_items = item.get("file_items", []) or []
+            if isinstance(file_items, list):
+                _append_unique_names(
+                    expected,
+                    [Path(str(file_item).replace("\\", "/")).name for file_item in file_items],
+                )
+
+    return expected
+
+
 def _stage_buckyos_app_root(*, src_root: Path, dst_root: Path, layout: AppLayout) -> None:
     """
     Stage buckyos rootfs into dst_root.
@@ -412,6 +493,8 @@ def generate_nsis_script(
         nsis_arch = "x86"
         allow_arch = ""
 
+    launch_bundle = next((comp for comp in components if comp.kind == "bundle"), None)
+
     lines: List[str] = []
     
     # Header and definitions
@@ -459,6 +542,10 @@ def generate_nsis_script(
     lines.append("!define MUI_ABORTWARNING")
     lines.append("!define MUI_ICON \"${NSISDIR}\\Contrib\\Graphics\\Icons\\modern-install.ico\"")
     lines.append("!define MUI_UNICON \"${NSISDIR}\\Contrib\\Graphics\\Icons\\modern-uninstall.ico\"")
+    if launch_bundle is not None:
+        lines.append("!define MUI_FINISHPAGE_RUN")
+        lines.append(f'!define MUI_FINISHPAGE_RUN_TEXT "Launch {launch_bundle.name}"')
+        lines.append('!define MUI_FINISHPAGE_RUN_FUNCTION "LaunchInstalledApplication"')
     lines.append("")
 
     # Variables for each component's install directory
@@ -470,6 +557,7 @@ def generate_nsis_script(
     lines.append("Var VCRedistVersion")
     lines.append("Var ExistingBuckyRoot")
     lines.append("Var BestInstallDrive")
+    lines.append("Var LaunchAfterInstall")
     for comp in components:
         var_name = f"InstDir_{_sanitize_id(comp.key).replace('-', '_')}"
         lines.append(f"Var {var_name}")
@@ -696,6 +784,7 @@ def generate_nsis_script(
     for comp in components:
         var_name = f"InstDir_{_sanitize_id(comp.key).replace('-', '_')}"
         lines.append(f'  StrCpy ${var_name} "$BestInstallDrive\\buckyos\\"')
+    lines.append('  StrCpy $LaunchAfterInstall ""')
     lines.append("")
     
     lines.append('  ; Check Docker Desktop availability for current user context')
@@ -729,6 +818,17 @@ def generate_nsis_script(
     lines.append('  ${EndIf}')
     lines.append("FunctionEnd")
     lines.append("")
+
+    if launch_bundle is not None:
+        lines.append("Function LaunchInstalledApplication")
+        lines.append('  ${If} $LaunchAfterInstall == ""')
+        lines.append("    Return")
+        lines.append('  ${EndIf}')
+        lines.append('  IfFileExists "$LaunchAfterInstall" +2 0')
+        lines.append("    Return")
+        lines.append('  ExecShell "open" "$LaunchAfterInstall"')
+        lines.append("FunctionEnd")
+        lines.append("")
     
     # Sections for each component - all selected by default (no /o flag for optional)
     has_service = False
@@ -766,6 +866,9 @@ def generate_nsis_script(
             lines.append("")
             lines.append("  ; Create Desktop shortcut")
             lines.append(f'  CreateShortcut "$DESKTOP\\{comp.name}.lnk" "${var_name}\\{exe_name}" "" "${var_name}\\{exe_name}" 0')
+            lines.append("")
+            lines.append("  ; Launch the UI app from the finish page after installation completes")
+            lines.append(f'  StrCpy $LaunchAfterInstall "${var_name}\\{exe_name}"')
         
         # For buckyos service component - set BUCKYOS_ROOT env var
         if comp.system_service:
@@ -780,20 +883,17 @@ def generate_nsis_script(
             lines.append("  ; Run seed defaults script")
             lines.append(f'  nsExec::ExecToLog \'powershell.exe -ExecutionPolicy Bypass -File "${var_name}\\scripts\\seed_defaults.ps1"\'')
             lines.append("")
-            lines.append("  ; Create node_daemon keepalive scheduled task (every 1 minute)")
+            lines.append("  ; Create node_daemon keepalive scheduled task (every 1 minute) via hidden VBS wrapper")
             lines.append('  nsExec::ExecToLog \'schtasks /Delete /TN "BuckyOSNodeDaemonKeepAlive" /F\'')
             lines.append(
-                f'  nsExec::ExecToLog \'schtasks /Create /TN "BuckyOSNodeDaemonKeepAlive" /SC MINUTE /MO 1 /F /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $\\"${var_name}\\scripts\\node_daemon_loader.ps1$\\" -NodeDaemonPath $\\"${var_name}\\bin\\node-daemon\\node_daemon.exe$\\""\'' 
+                f'  nsExec::ExecToLog \'schtasks /Create /TN "BuckyOSNodeDaemonKeepAlive" /SC MINUTE /MO 1 /F /TR "wscript.exe //B //NoLogo $\\"${var_name}\\scripts\\node_daemon_loader.vbs$\\" $\\"${var_name}\\bin\\node-daemon\\node_daemon.exe$\\""\'' 
             )
             lines.append('  nsExec::ExecToLog \'schtasks /Run /TN "BuckyOSNodeDaemonKeepAlive"\'')
             lines.append("")
-            lines.append("  ; Register current-user startup and launch node_daemon")
+            lines.append("  ; Register current-user startup via the same hidden wrapper")
             lines.append(
-                f'  WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "BuckyOSDaemon" \'$\\"${var_name}\\bin\\node-daemon\\node_daemon.exe$\\" --enable_active\''
+                f'  WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "BuckyOSDaemon" \'wscript.exe //B //NoLogo $\\"${var_name}\\scripts\\node_daemon_loader.vbs$\\" $\\"${var_name}\\bin\\node-daemon\\node_daemon.exe$\\"\''
             )
-            lines.append('  nsExec::ExecToLog \'taskkill /F /IM node_daemon.exe\'')
-            lines.append("  Sleep 1000")
-            lines.append(f'  nsExec::ExecToLog \'"${var_name}\\bin\\node-daemon\\node_daemon.exe" --enable_active\'')
             lines.append("")
             lines.append(f'  ; Save install directory to registry')
             lines.append(f'  WriteRegStr HKCU "Software\\BuckyOS" "BuckyOSUserDir" "${var_name}"')
@@ -1124,38 +1224,30 @@ def verify_pkg(
             if result.returncode != 0:
                 failures.append(f"Failed to extract installer: {result.stderr.decode()}")
             else:
-                # Check for expected component directories
+                extracted_basenames = {
+                    path.name.lower()
+                    for path in extract_dir.rglob("*")
+                    if path.is_file()
+                }
+
+                # NSIS extraction does not preserve our logical component directories,
+                # so verify by payload marker files instead of folder names.
                 for comp in components:
-                    comp_dir = extract_dir / "$INSTDIR" / comp.key
-                    # NSIS extracts to $INSTDIR subfolder
-                    if not comp_dir.exists():
-                        # Try alternative paths
-                        alt_paths = [
-                            extract_dir / comp.key,
-                            extract_dir / "$_OUTDIR" / comp.key,
-                        ]
-                        found = False
-                        for alt in alt_paths:
-                            if alt.exists():
-                                found = True
-                                break
-                        if not found:
-                            failures.append(f"Component directory not found: {comp.key}")
-                
-                # Check for scripts if buckyos component exists
-                scripts_check_paths = [
-                    extract_dir / "$INSTDIR" / "buckyos" / "scripts",
-                    extract_dir / "buckyos" / "scripts",
-                ]
-                scripts_found = False
-                for sp in scripts_check_paths:
-                    if sp.exists():
-                        scripts_found = True
-                        required_scripts = ["seed_defaults.ps1", "uninstall_cleanup.ps1"]
-                        for script in required_scripts:
-                            if not (sp / script).exists():
-                                failures.append(f"Missing required script: {script}")
-                        break
+                    expected_names = _component_expected_filenames(comp=comp, manifest_path=manifest_path)
+                    if expected_names and not any(name in extracted_basenames for name in expected_names):
+                        failures.append(
+                            f"Component payload not detected: {comp.key} "
+                            f"(expected files like {', '.join(expected_names[:5])})"
+                        )
+
+                for script in (
+                    "seed_defaults.ps1",
+                    "uninstall_cleanup.ps1",
+                    "node_daemon_loader.ps1",
+                    "node_daemon_loader.vbs",
+                ):
+                    if script.lower() not in extracted_basenames:
+                        failures.append(f"Missing required script: {script}")
     
     # Verify file size is reasonable
     file_size = pkg_path.stat().st_size

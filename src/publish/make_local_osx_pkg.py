@@ -483,15 +483,6 @@ def _write_distribution_xml(
     lines.append("            return false;")
     lines.append("        }")
     lines.append("    }")
-    lines.append("    function bundleExists(path) {")
-    lines.append("        try {")
-    lines.append("            var bundle = system.files.bundleAtPath(path);")
-    lines.append("            return bundle != null;")
-    lines.append("        } catch (error) {")
-    lines.append("            system.log('bundleExists failed for ' + path + ': ' + error);")
-    lines.append("            return false;")
-    lines.append("        }")
-    lines.append("    }")
     lines.append("    function installationCheckFailure(message) {")
     lines.append("            my.result.title = 'Docker Required';")
     lines.append("            my.result.message = message;")
@@ -499,20 +490,19 @@ def _write_distribution_xml(
     lines.append("            return false;")
     lines.append("    }")
     lines.append("    function installationCheck() {")
-    lines.append("        var orbStackApp = bundleExists('/Applications/OrbStack.app');")
     lines.append("        var dockerCli =")
     lines.append("            pathExists('/opt/homebrew/bin/docker') ||")
     lines.append("            pathExists('/usr/local/bin/docker') ||")
     lines.append("            pathExists('/usr/bin/docker');")
     lines.append("        var dockerSocket = pathExists('/var/run/docker.sock');")
-    lines.append("        if (!orbStackApp && !dockerCli) {")
+    lines.append("        if (!dockerCli) {")
     lines.append(
-        "            return installationCheckFailure('Please install and start OrbStack first.\\nDownload: https://orbstack.dev/download');"
+        "            return installationCheckFailure('Please install and start Docker Desktop or OrbStack first.\\nDocker docs: https://docs.docker.com/desktop/setup/install/mac-install/');"
     )
     lines.append("        }")
     lines.append("        if (!dockerSocket) {")
     lines.append(
-        "            return installationCheckFailure('OrbStack appears to be installed, but Docker is not ready yet.\\nPlease start OrbStack first.\\nDownload: https://orbstack.dev/download');"
+        "            return installationCheckFailure('Docker CLI is installed, but the Docker Engine socket is not ready yet.\\nPlease start Docker Desktop or OrbStack first.');"
     )
     lines.append("        }")
     lines.append("        return true;")
@@ -878,13 +868,11 @@ def verify_pkg(
                 required_dist_script_snippets = [
                     "function installationCheck()",
                     "system.files.fileExistsAtPath(path)",
-                    "system.files.bundleAtPath(path)",
-                    "bundleExists('/Applications/OrbStack.app')",
                     "pathExists('/var/run/docker.sock')",
                     "my.result.type = 'Fatal'",
                     "my.result.title = 'Docker Required'",
-                    "Please install and start OrbStack first.",
-                    "https://orbstack.dev/download",
+                    "Please install and start Docker Desktop or OrbStack first.",
+                    "https://docs.docker.com/desktop/setup/install/mac-install/",
                 ]
                 for snippet in required_dist_script_snippets:
                     if snippet not in script_text:
@@ -1021,12 +1009,12 @@ def verify_pkg(
                     'checking Docker availability for LaunchDaemon/root',
                     'command -v docker',
                     'docker info',
-                    'OrbStack',
-                    'https://orbstack.dev/download',
+                    'Docker Desktop or OrbStack',
+                    'https://docs.docker.com/desktop/setup/install/mac-install/',
                 ]
                 for snippet in required_preinstall_snippets:
                     if snippet not in preinstall_text:
-                        failures.append(f"buckyos preinstall missing Docker/OrbStack check: {snippet}")
+                        failures.append(f"buckyos preinstall missing Docker runtime check: {snippet}")
 
         else:
             failures.append("missing embedded buckyos.pkg (cannot verify data_paths semantics)")

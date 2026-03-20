@@ -16,8 +16,8 @@ run_with_timeout() {
 print_docker_help() {
   cat >&2 <<'EOF'
 [buckyos] preinstall: Docker is required and must be available to macOS LaunchDaemon (root).
-[buckyos] preinstall: Please install and start OrbStack first, then run this installer again.
-[buckyos] preinstall: Download: https://orbstack.dev/download
+[buckyos] preinstall: Please install and start Docker Desktop or OrbStack first, then run this installer again.
+[buckyos] preinstall: Docker docs: https://docs.docker.com/desktop/setup/install/mac-install/
 EOF
 }
 

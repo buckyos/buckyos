@@ -254,22 +254,15 @@ resolve_python() {
 
 load_build_context() {
   local python_bin="$1"
-  local arch="$2"
+  local rust_target="$2"
 
-  "$python_bin" - "$PROJECT_CONFIG_PATH" "$arch" <<'PY'
+  "$python_bin" - "$PROJECT_CONFIG_PATH" "$rust_target" <<'PY'
 import contextlib
 import io
 import sys
 
 config_path = sys.argv[1]
-arch = sys.argv[2]
-
-if arch == "amd64":
-    target = "x86_64-unknown-linux-musl"
-elif arch == "aarch64":
-    target = "aarch64-unknown-linux-musl"
-else:
-    raise SystemExit(f"Unsupported arch: {arch}")
+target = sys.argv[2]
 
 with contextlib.redirect_stdout(io.StringIO()):
     from buckyos_devkit.build_rust import get_cross_compile_env_vars_by_target, get_env_vars_by_target
@@ -291,25 +284,82 @@ for key, value in env.items():
 PY
 }
 
-rewrite_env_line() {
-  local line="$1"
+resolve_rust_target() {
+  local arch="$1"
 
-  if [[ "$(uname -s)" != "Darwin" ]]; then
-    printf '%s\n' "$line"
+  case "$arch" in
+    amd64)
+      echo "x86_64-unknown-linux-musl"
+      ;;
+    aarch64)
+      echo "aarch64-unknown-linux-musl"
+      ;;
+    *)
+      echo "Unsupported arch: $arch" >&2
+      exit 1
+      ;;
+  esac
+}
+
+resolve_aarch64_musl_cc() {
+  if command -v aarch64-linux-musl-gcc >/dev/null 2>&1; then
+    command -v aarch64-linux-musl-gcc
     return
   fi
 
-  if [[ "$line" == "CC_x86_64_unknown_linux_musl=musl-gcc" ]] && ! command -v musl-gcc >/dev/null 2>&1; then
-    if command -v x86_64-linux-musl-gcc >/dev/null 2>&1; then
-      printf '%s\n' "CC_x86_64_unknown_linux_musl=$(command -v x86_64-linux-musl-gcc)"
-      return
-    fi
+  if [[ -x /usr/aarch64-linux-musl/bin/musl-gcc ]]; then
+    echo "/usr/aarch64-linux-musl/bin/musl-gcc"
+    return
   fi
 
-  if [[ "$line" == "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc" ]] && ! command -v musl-gcc >/dev/null 2>&1; then
-    if command -v x86_64-linux-musl-gcc >/dev/null 2>&1; then
-      printf '%s\n' "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=$(command -v x86_64-linux-musl-gcc)"
+  return 1
+}
+
+rewrite_env_line() {
+  local line="$1"
+  local aarch64_musl_cc
+
+  if [[ "$line" == "CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc" ]]; then
+    if aarch64_musl_cc="$(resolve_aarch64_musl_cc)"; then
+      printf '%s\n' "CC_aarch64_unknown_linux_musl=$aarch64_musl_cc"
       return
+    fi
+    cat >&2 <<'EOF'
+Missing musl cross compiler: aarch64-linux-musl-gcc
+Linux builds in this repository are fully static. Install an aarch64 musl toolchain
+that provides either `aarch64-linux-musl-gcc` in PATH or `/usr/aarch64-linux-musl/bin/musl-gcc`,
+then rerun build_aios.
+EOF
+    exit 1
+  fi
+
+  if [[ "$line" == "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc" ]]; then
+    if aarch64_musl_cc="$(resolve_aarch64_musl_cc)"; then
+      printf '%s\n' "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=$aarch64_musl_cc"
+      return
+    fi
+    cat >&2 <<'EOF'
+Missing musl cross linker: aarch64-linux-musl-gcc
+Linux builds in this repository are fully static. Install an aarch64 musl toolchain
+that provides either `aarch64-linux-musl-gcc` in PATH or `/usr/aarch64-linux-musl/bin/musl-gcc`,
+then rerun build_aios.
+EOF
+    exit 1
+  fi
+
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    if [[ "$line" == "CC_x86_64_unknown_linux_musl=musl-gcc" ]] && ! command -v musl-gcc >/dev/null 2>&1; then
+      if command -v x86_64-linux-musl-gcc >/dev/null 2>&1; then
+        printf '%s\n' "CC_x86_64_unknown_linux_musl=$(command -v x86_64-linux-musl-gcc)"
+        return
+      fi
+    fi
+
+    if [[ "$line" == "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc" ]] && ! command -v musl-gcc >/dev/null 2>&1; then
+      if command -v x86_64-linux-musl-gcc >/dev/null 2>&1; then
+        printf '%s\n' "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=$(command -v x86_64-linux-musl-gcc)"
+        return
+      fi
     fi
   fi
 
@@ -328,6 +378,7 @@ build_binary() {
   local -a env_lines
   local raw_line
 
+  rust_target="$(resolve_rust_target "$arch")"
   env_lines=()
   while IFS= read -r raw_line; do
     if [[ "$raw_line" == RUST_TARGET=* ]]; then
@@ -335,7 +386,7 @@ build_binary() {
     elif [[ -n "$raw_line" ]]; then
       env_lines+=("$raw_line")
     fi
-  done < <(load_build_context "$python_bin" "$arch")
+  done < <(load_build_context "$python_bin" "$rust_target")
 
   if [[ -z "${rust_target:-}" ]]; then
     echo "Failed to resolve rust target for arch: $arch" >&2
@@ -367,7 +418,7 @@ build_binary() {
     env_cmd+=("${normalized_env_lines[@]}")
   fi
 
-  log "Building opendan for $arch via ${cargo_cmd[*]}"
+  log "Building opendan for $arch using target $rust_target via ${cargo_cmd[*]}"
   (
     cd "$SRC_DIR"
     "${env_cmd[@]}" "${cargo_cmd[@]}"

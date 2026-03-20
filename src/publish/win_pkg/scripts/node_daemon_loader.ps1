@@ -21,7 +21,14 @@ try {
     exit 1
   }
 
-  Start-Process -FilePath $NodeDaemonPath -ArgumentList "--enable_active" -WindowStyle Hidden
+  $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+  $startInfo.FileName = $NodeDaemonPath
+  $startInfo.Arguments = "--enable_active"
+  $startInfo.WorkingDirectory = Split-Path -Parent $NodeDaemonPath
+  $startInfo.UseShellExecute = $false
+  $startInfo.CreateNoWindow = $true
+
+  [System.Diagnostics.Process]::Start($startInfo) | Out-Null
   exit 0
 }
 catch {
