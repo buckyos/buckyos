@@ -663,7 +663,13 @@ def _build_desktop_app(target: TargetScript, *, dry_run: bool) -> Path | None:
     if not DESKTOP_APP_REPO_DIR.exists():
         return None
 
-    _run_checked(_pnpm_command() + ["run", "tauri", "build"], cwd=DESKTOP_APP_REPO_DIR, dry_run=dry_run)
+    build_cmd = _pnpm_command() + ["tauri", "build"]
+    if target.platform_key == "macos":
+        build_cmd += ["--bundles", "app"]
+    elif target.platform_key == "windows":
+        build_arch = "x86_64" if target.architecture == "amd64" else "aarch64"
+        build_cmd += ["--no-bundle", "--", "--target", f"{build_arch}-pc-windows-msvc"]
+    _run_checked(build_cmd, cwd=DESKTOP_APP_REPO_DIR, dry_run=dry_run)
     candidates = _built_desktop_app_candidates(target)
     if dry_run:
         return candidates[0] if candidates else None
