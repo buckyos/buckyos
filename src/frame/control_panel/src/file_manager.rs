@@ -21,6 +21,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::ffi::OsStr;
 use std::io::{Read, SeekFrom, Write};
 use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
@@ -44,6 +45,27 @@ const THUMBNAIL_SIZE_MIN: u32 = 48;
 const THUMBNAIL_SIZE_MAX: u32 = 512;
 
 static THUMBNAIL_WORKER_ONCE: Once = Once::new();
+
+#[cfg(not(target_os = "windows"))]
+fn external_command(program: impl AsRef<OsStr>) -> Command {
+    Command::new(program)
+}
+
+#[cfg(target_os = "windows")]
+fn external_command(program: impl AsRef<OsStr>) -> Command {
+    let mut command = Command::new(program);
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(windows_hidden_process_creation_flags());
+    command
+}
+
+#[cfg(target_os = "windows")]
+fn windows_hidden_process_creation_flags() -> u32 {
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct BuckyFileServer {
@@ -2776,7 +2798,7 @@ impl BuckyFileServer {
     ) -> Result<(), RPCErrors> {
         let mut last_error: Option<String> = None;
         for binary in ["libreoffice", "soffice"] {
-            let output = Command::new(binary)
+            let output = external_command(binary)
                 .arg("--headless")
                 .arg("--nologo")
                 .arg("--nodefault")

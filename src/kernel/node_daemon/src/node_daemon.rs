@@ -899,10 +899,11 @@ async fn desktop_daemon_main(skip_app_ids: &Vec<String>) -> Result<()> {
         let target_state = RunItemTargetState::from_instance_state(&app_cfg.target_state);
         let _ = ensure_run_item_state(&local_app_run_item, target_state)
             .await
-            .map_err(|_err| {
+            .map_err(|err| {
                 error!(
-                    "ensure app {} to target state failed!",
-                    app_id_with_name.clone()
+                    "ensure app {} to target state failed: {}",
+                    app_id_with_name.clone(),
+                    err
                 );
             });
     });
@@ -962,10 +963,11 @@ async fn node_main(
 
             let _ = ensure_run_item_state(&kernel_run_item, target_state)
                 .await
-                .map_err(|_err| {
+                .map_err(|err| {
                     error!(
-                        "ensure {} to target state failed!",
-                        kernel_service_name.clone()
+                        "ensure {} to target state failed: {}",
+                        kernel_service_name.clone(),
+                        err
                     );
                     return NodeDaemonErrors::SystemConfigError(kernel_service_name.clone());
                 });
@@ -994,10 +996,11 @@ async fn node_main(
         let target_state = RunItemTargetState::from_instance_state(&app_cfg.target_state);
         let _ = ensure_run_item_state(&app_run_item, target_state)
             .await
-            .map_err(|_err| {
+            .map_err(|err| {
                 error!(
-                    "ensure app {} to target state failed!",
-                    app_id_with_name.clone()
+                    "ensure app {} to target state failed: {}",
+                    app_id_with_name.clone(),
+                    err
                 );
                 return NodeDaemonErrors::SystemConfigError(app_id_with_name.clone());
             });

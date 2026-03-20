@@ -2245,9 +2245,17 @@ fn split_shell_words(input: &str) -> Result<Vec<String>> {
 }
 
 struct CommandOutput {
+    command_line: String,
     status: std::process::ExitStatus,
     stdout: String,
     stderr: String,
+}
+
+fn render_command_for_log(program: &str, args: &[String]) -> String {
+    std::iter::once(program.to_string())
+        .chain(args.iter().map(|arg| shell_quote(arg)))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 async fn run_command(
@@ -2256,6 +2264,11 @@ async fn run_command(
     envs: Option<&HashMap<String, String>>,
     cwd: Option<&Path>,
 ) -> Result<CommandOutput> {
+    let command_line = render_command_for_log(program, args);
+    if program == "docker" && matches!(args.first().map(String::as_str), Some("run")) {
+        info!("executing docker run: {}", command_line);
+    }
+
     let mut cmd = Command::new(program);
     cmd.args(args);
     cmd.stdin(Stdio::null());
@@ -2277,11 +2290,12 @@ async fn run_command(
     let output = cmd.output().await.map_err(|error| {
         ControlRuntItemErrors::ExecuteError(
             program.to_string(),
-            format!("spawn {} failed: {}", program, error),
+            format!("spawn {} failed: {} (cmd={})", program, error, command_line),
         )
     })?;
 
     Ok(CommandOutput {
+        command_line,
         status: output.status,
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
@@ -2313,9 +2327,10 @@ fn format_command_failure(step: &str, output: &CommandOutput) -> String {
         .map(|value| value.to_string())
         .unwrap_or_else(|| "terminated by signal".to_string());
     format!(
-        "{} failed (code={}): stdout=`{}` stderr=`{}`",
+        "{} failed (code={}): cmd=`{}` stdout=`{}` stderr=`{}`",
         step,
         code,
+        output.command_line,
         output.stdout.trim(),
         output.stderr.trim()
     )

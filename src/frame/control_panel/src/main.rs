@@ -31,6 +31,7 @@ use serde_json::*;
 use server_runner::*;
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
+use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -51,6 +52,31 @@ use zip::CompressionMethod;
 
 fn bytes_to_gb(bytes: u64) -> f64 {
     (bytes as f64) / 1024.0 / 1024.0 / 1024.0
+}
+
+#[cfg(not(target_os = "windows"))]
+fn external_command(program: impl AsRef<OsStr>) -> Command {
+    Command::new(program)
+}
+
+#[cfg(target_os = "windows")]
+fn external_command(program: impl AsRef<OsStr>) -> Command {
+    let mut command = Command::new(program);
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(windows_hidden_process_creation_flags());
+    command
+}
+
+fn docker_command() -> Command {
+    external_command("docker")
+}
+
+#[cfg(target_os = "windows")]
+fn windows_hidden_process_creation_flags() -> u32 {
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
 }
 
 const LOG_ROOT_DIR: &str = "/opt/buckyos/logs";
@@ -1706,7 +1732,7 @@ impl ControlPanelServer {
     }
 
     fn rg_available() -> bool {
-        Command::new("rg")
+        external_command("rg")
             .arg("--version")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -1716,7 +1742,7 @@ impl ControlPanelServer {
     }
 
     fn rg_search_lines(path: &Path, keyword: &str) -> Result<Vec<(u64, String)>, RPCErrors> {
-        let output = Command::new("rg")
+        let output = external_command("rg")
             .arg("--line-number")
             .arg("--fixed-strings")
             .arg("--no-heading")
@@ -5281,7 +5307,7 @@ impl ControlPanelServer {
     }
 
     fn run_version_command_with_timeout(binary_path: &Path, timeout: Duration) -> Option<String> {
-        let mut child = Command::new(binary_path)
+        let mut child = external_command(binary_path)
             .arg("--version")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -5607,7 +5633,7 @@ impl ControlPanelServer {
         record_name: &str,
         record_type: &str,
     ) -> Result<Vec<String>, String> {
-        let mut cmd = Command::new("dig");
+        let mut cmd = external_command("dig");
         cmd.arg("+short");
 
         if let Some(server) = server
@@ -6141,7 +6167,7 @@ impl ControlPanelServer {
     async fn handle_container_overview(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         let mut notes: Vec<String> = Vec::new();
 
-        let server_info = match Command::new("docker")
+        let server_info = match docker_command()
             .args(["info", "--format", "{{json .}}"])
             .output()
         {
@@ -6196,7 +6222,7 @@ impl ControlPanelServer {
             }
         };
 
-        let ps_output = Command::new("docker")
+        let ps_output = docker_command()
             .args(["ps", "--all", "--format", "{{json .}}"])
             .output()
             .map_err(|error| RPCErrors::ReasonError(format!("docker ps failed: {}", error)))?;
@@ -6335,7 +6361,7 @@ impl ControlPanelServer {
             }
         };
 
-        let output = Command::new("docker")
+        let output = docker_command()
             .arg(docker_action)
             .arg(id.as_str())
             .output()
