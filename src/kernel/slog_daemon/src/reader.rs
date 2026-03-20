@@ -128,13 +128,12 @@ impl LogDirReader {
         let mut remain_size = batch_size;
         let mut visited = 0usize;
         let mut offset = 0usize;
-        let mut last_processed_idx: Option<usize> = None;
+        let mut last_progress_idx: Option<usize> = None;
 
         while visited < list_len && remain_size > 0 {
             let idx = (start_idx + offset) % list_len;
             offset += 1;
             visited += 1;
-            last_processed_idx = Some(idx);
 
             let item = &mut list_lock[idx];
             if blocked_ids.contains(&item.id) {
@@ -172,6 +171,7 @@ impl LogDirReader {
                             record_ids,
                             flush_only: false,
                         });
+                        last_progress_idx = Some(idx);
                     } else if parse_failures > 0
                         && window
                             .as_ref()
@@ -189,6 +189,7 @@ impl LogDirReader {
                             record_ids: Vec::new(),
                             flush_only: true,
                         });
+                        last_progress_idx = Some(idx);
                     }
                 }
                 Err(e) => {
@@ -203,7 +204,7 @@ impl LogDirReader {
             }
         }
 
-        if let Some(last_idx) = last_processed_idx {
+        if let Some(last_idx) = last_progress_idx {
             let mut idx_lock = self.next_start_index.lock().unwrap();
             *idx_lock = (last_idx + 1) % list_len;
         }
@@ -316,6 +317,8 @@ impl LogDirReader {
                 }
             }
         }
+
+        log_dirs.sort();
 
         Ok(log_dirs)
     }
