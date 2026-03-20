@@ -11,7 +11,7 @@ use crate::{AppDoc, AppType, SelectorType, UserInfo};
 pub const VERIFY_HUB_UNIQUE_ID: &str = "verify-hub";
 pub const VERIFY_HUB_SERVICE_NAME: &str = "verify-hub";
 pub const VERIFY_HUB_TOKEN_EXPIRE_TIME: u64 = 60 * 10; //10 minutes
-pub const VERIFY_HUB_SERVICE_PORT: u16 = 3210;
+pub const VERIFY_HUB_SERVICE_PORT: u16 = 3300;
 
 #[allow(dead_code)]
 #[derive(Serialize, Deserialize)]

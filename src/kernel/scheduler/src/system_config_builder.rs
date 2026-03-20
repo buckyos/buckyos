@@ -11,7 +11,7 @@ use buckyos_api::{
     ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, SubPkgDesc,
     UserContactSettings, UserSettings, UserState, UserTunnelBinding, UserType,
     OPENDAN_SERVICE_PORT, OPENDAN_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID,
-    VERIFY_HUB_UNIQUE_ID,
+    VERIFY_HUB_SERVICE_PORT, VERIFY_HUB_UNIQUE_ID,
 };
 use buckyos_api::{
     AICC_SERVICE_SERVICE_PORT, AICC_SERVICE_UNIQUE_ID, CONTROL_PANEL_SERVICE_PORT,
@@ -259,7 +259,13 @@ impl SystemConfigBuilder {
 
         let service_doc = generate_verify_hub_service_doc();
 
-        let config = build_kernel_service_spec(VERIFY_HUB_UNIQUE_ID, 3300, 1, service_doc).await?;
+        let config = build_kernel_service_spec(
+            VERIFY_HUB_UNIQUE_ID,
+            VERIFY_HUB_SERVICE_PORT,
+            1,
+            service_doc,
+        )
+        .await?;
         self.insert_json("services/verify-hub/spec", &config)?;
 
         let settings = VerifyHubSettings { trust_keys: vec![] };

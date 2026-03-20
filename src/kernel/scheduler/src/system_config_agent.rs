@@ -15,7 +15,7 @@ use crate::service::*;
 use buckyos_api::{
     get_buckyos_api_runtime, AppServiceSpec, KernelServiceSpec, NodeConfig,
     ServiceInstanceReportInfo, ServiceState, UserSettings, UserType as ApiUserType,
-    ZoneGatewaySettings, CONTROL_PANEL_SERVICE_PORT,
+    ZoneGatewaySettings, CONTROL_PANEL_SERVICE_PORT, VERIFY_HUB_SERVICE_PORT,
 };
 use buckyos_kit::*;
 use name_client::*;
@@ -983,6 +983,21 @@ pub(crate) async fn update_node_gateway_info(
             "system_config".to_string(),
             NodeGatewayServiceInfoEntry {
                 selector: system_config_selector,
+            },
+        );
+    }
+
+    let verify_hub_selector = node_gateway_info
+        .service_info
+        .get("verify-hub")
+        .map(|entry| entry.selector.clone())
+        .filter(|selector| !selector.is_empty())
+        .unwrap_or_else(|| build_fixed_selector_from_oods(&zone_config, VERIFY_HUB_SERVICE_PORT));
+    if !verify_hub_selector.is_empty() {
+        node_gateway_info.service_info.insert(
+            "verify-hub".to_string(),
+            NodeGatewayServiceInfoEntry {
+                selector: verify_hub_selector,
             },
         );
     }
@@ -2090,6 +2105,9 @@ mod tests {
         let system_config = gateway_info.service_info.get("system_config").unwrap();
         assert_eq!(system_config.selector.get("ood1").unwrap().port, 3200);
         assert_eq!(system_config.selector.get("ood2").unwrap().port, 3200);
+
+        let verify_hub = gateway_info.service_info.get("verify-hub").unwrap();
+        assert_eq!(verify_hub.selector.get("ood1").unwrap().port, VERIFY_HUB_SERVICE_PORT);
 
         let files = match gateway_info.app_info.get("files").unwrap() {
             NodeGatewayAppEntry::App(entry) => entry,
