@@ -430,6 +430,14 @@ pub(crate) fn schedule_action_to_tx_actions(
             }
         }
         SchedulerAction::UpdateServiceInfo(spec_id, service_info) => {
+            if should_skip_app_service_info_deletion(spec_id.as_str(), service_info, input_config)?
+            {
+                info!(
+                    "skip deleting service info for legacy docker app-service: {}",
+                    spec_id
+                );
+                return Ok(result);
+            }
             let update_action =
                 update_service_info(spec_id.as_str(), service_info, device_list, &input_config)?;
             info!("will update service info: {}", spec_id);
@@ -492,6 +500,24 @@ pub fn get_app_spec_by_spec_id(
         user_id, app_id, user_id, app_id
     );
     Err(anyhow::anyhow!("app_spec not found"))
+}
+
+fn should_skip_app_service_info_deletion(
+    spec_id: &str,
+    service_info: &ServiceInfo,
+    input_system_config: &HashMap<String, String>,
+) -> Result<bool> {
+    if !spec_id.contains('@') {
+        return Ok(false);
+    }
+
+    let app_spec = get_app_spec_by_spec_id(spec_id, input_system_config)?;
+    let is_service_info_empty = match service_info {
+        ServiceInfo::SingleInstance(_) => false,
+        ServiceInfo::RandomCluster(cluster) => cluster.is_empty(),
+    };
+
+    Ok(is_legacy_docker_app_service(&app_spec) && is_service_info_empty)
 }
 
 pub fn get_zone_config(input_system_config: &HashMap<String, String>) -> Result<ZoneConfig> {
@@ -750,6 +776,12 @@ fn parse_sdk_version(app_spec: &AppServiceSpec) -> u32 {
         .unwrap_or(0)
 }
 
+fn is_legacy_docker_app_service(app_spec: &AppServiceSpec) -> bool {
+    app_spec.app_doc.selector_type != SelectorType::Static
+        && app_spec.app_doc.get_app_type() != AppType::Agent
+        && app_spec.app_doc.sdk_version.is_none()
+}
+
 fn build_app_host_entry(
     app_spec: &AppServiceSpec,
     service_info: &ServiceInfo,
@@ -770,6 +802,41 @@ fn build_app_host_entry(
         sdk_version: parse_sdk_version(app_spec),
         access_mode: NodeGatewayAccessMode::Private,
         node_id: Some(pick_instance.node_id.clone()),
+        port: Some(port),
+        dir_pkg_id: None,
+        dir_pkg_objid: None,
+        block_services: vec![],
+    })
+}
+
+fn load_persisted_service_info(
+    spec_id: &str,
+    input_system_config: &HashMap<String, String>,
+) -> Option<buckyos_api::ServiceInfo> {
+    let key = format!("services/{}/info", spec_id);
+    input_system_config
+        .get(&key)
+        .and_then(|raw| serde_json::from_str(raw).ok())
+}
+
+fn build_app_host_entry_from_persisted_service_info(
+    app_spec: &AppServiceSpec,
+    service_info: &buckyos_api::ServiceInfo,
+    service_name: &str,
+) -> Option<NodeGatewayAppInfoEntry> {
+    let (node_id, node_info) = service_info
+        .node_list
+        .iter()
+        .filter(|(_, node)| node.state == buckyos_api::ServiceInstanceState::Started)
+        .filter(|(_, node)| select_gateway_port(&node.service_port, service_name).is_some())
+        .min_by(|left, right| left.0.cmp(right.0))?;
+
+    let port = select_gateway_port(&node_info.service_port, service_name)?;
+    Some(NodeGatewayAppInfoEntry {
+        app_id: app_spec.app_id().to_string(),
+        sdk_version: parse_sdk_version(app_spec),
+        access_mode: NodeGatewayAccessMode::Private,
+        node_id: Some(node_id.clone()),
         port: Some(port),
         dir_pkg_id: None,
         dir_pkg_objid: None,
@@ -902,8 +969,9 @@ pub(crate) async fn update_node_gateway_info(
 
     for (service_info_id, service_info) in scheduler_ctx.service_infos.iter() {
         let (spec_id, service_name) = get_spec_id_from_service_info_id(service_info_id);
+        let selector = build_service_selector(service_info, service_name.as_str());
 
-        if let Some(selector) = build_service_selector(service_info, service_name.as_str()) {
+        if let Some(selector) = selector.as_ref() {
             if !spec_id.contains('@') {
                 node_gateway_info.service_info.insert(
                     spec_id.clone(),
@@ -912,37 +980,51 @@ pub(crate) async fn update_node_gateway_info(
                     },
                 );
             }
+        }
 
-            if service_name == "www" {
-                if spec_id.contains('@') {
-                    if let Ok(app_spec) =
-                        get_app_spec_by_spec_id(spec_id.as_str(), input_system_config)
-                    {
-                        if let Some(expose_config) =
-                            app_spec.install_config.expose_config.get("www")
-                        {
-                            if let Some(app_entry) =
-                                build_app_host_entry(&app_spec, service_info, service_name.as_str())
-                            {
-                                for host in zone_gateway_settings.get_shortcut(spec_id.as_str()) {
-                                    node_gateway_info
-                                        .app_info
-                                        .insert(host, NodeGatewayAppEntry::App(app_entry.clone()));
-                                }
-                                for host in expose_config.sub_hostname.iter() {
-                                    node_gateway_info.app_info.insert(
-                                        host.clone(),
-                                        NodeGatewayAppEntry::App(app_entry.clone()),
-                                    );
-                                }
+        if service_name == "www" {
+            if spec_id.contains('@') {
+                if let Ok(app_spec) = get_app_spec_by_spec_id(spec_id.as_str(), input_system_config)
+                {
+                    if let Some(expose_config) = app_spec.install_config.expose_config.get("www") {
+                        let app_entry =
+                            build_app_host_entry(&app_spec, service_info, service_name.as_str())
+                                .or_else(|| {
+                                    if !is_legacy_docker_app_service(&app_spec) {
+                                        return None;
+                                    }
+                                    let persisted_service_info = load_persisted_service_info(
+                                        spec_id.as_str(),
+                                        input_system_config,
+                                    )?;
+                                    build_app_host_entry_from_persisted_service_info(
+                                        &app_spec,
+                                        &persisted_service_info,
+                                        service_name.as_str(),
+                                    )
+                                });
+
+                        if let Some(app_entry) = app_entry {
+                            for host in zone_gateway_settings.get_shortcut(spec_id.as_str()) {
+                                node_gateway_info
+                                    .app_info
+                                    .insert(host, NodeGatewayAppEntry::App(app_entry.clone()));
+                            }
+                            for host in expose_config.sub_hostname.iter() {
+                                node_gateway_info.app_info.insert(
+                                    host.clone(),
+                                    NodeGatewayAppEntry::App(app_entry.clone()),
+                                );
                             }
                         }
                     }
-                } else if spec_id == "control-panel" {
+                }
+            } else if spec_id == "control-panel" {
+                if let Some(selector) = selector.as_ref() {
                     let service_entry =
                         NodeGatewayAppEntry::Service(NodeGatewayAppServiceInfoEntry {
                             service_id: spec_id.clone(),
-                            selector,
+                            selector: selector.clone(),
                         });
                     for host in ["_", "www", "sys"] {
                         node_gateway_info
@@ -1507,6 +1589,12 @@ mod tests {
         }
     }
 
+    fn create_test_legacy_docker_app_spec() -> AppServiceSpec {
+        let mut app_spec = create_test_app_spec();
+        app_spec.app_doc.sdk_version = None;
+        app_spec
+    }
+
     fn create_test_agent_spec() -> AppServiceSpec {
         let owner = DID::new("bns", "owner");
         let app_doc = AppDocBuilder::new(
@@ -2014,6 +2102,144 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_schedule_action_to_tx_actions_keeps_service_info_creation_for_legacy_docker_app_service(
+    ) {
+        let zone_config = create_test_zone_config();
+        let app_spec = create_test_legacy_docker_app_spec();
+        let device_ood1 = create_test_device_info("ood1", None);
+
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "boot/config".to_string(),
+            serde_json::to_string(&zone_config).unwrap(),
+        );
+        input_system_config.insert(
+            "devices/ood1/info".to_string(),
+            serde_json::to_string(&device_ood1).unwrap(),
+        );
+        input_system_config.insert(
+            "users/alice/apps/files/spec".to_string(),
+            serde_json::to_string(&app_spec).unwrap(),
+        );
+
+        let mut device_list = HashMap::new();
+        device_list.insert("ood1".to_string(), device_ood1);
+
+        let mut need_update_gateway_node_list = HashSet::new();
+        let mut need_update_rbac = false;
+
+        let tx_actions = schedule_action_to_tx_actions(
+            &SchedulerAction::UpdateServiceInfo(
+                "files@alice".to_string(),
+                ServiceInfo::SingleInstance(create_test_replica_instance(
+                    "files@alice",
+                    "files@alice@ood1",
+                    "ood1",
+                    &[("www", 10160)],
+                )),
+            ),
+            &NodeScheduler::new_empty(1),
+            &device_list,
+            &input_system_config,
+            &mut need_update_gateway_node_list,
+            &mut need_update_rbac,
+        )
+        .unwrap();
+
+        assert!(tx_actions.contains_key("services/files@alice/info"));
+    }
+
+    #[test]
+    fn test_schedule_action_to_tx_actions_skips_service_info_deletion_for_legacy_docker_app_service(
+    ) {
+        let zone_config = create_test_zone_config();
+        let app_spec = create_test_legacy_docker_app_spec();
+        let device_ood1 = create_test_device_info("ood1", None);
+
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "boot/config".to_string(),
+            serde_json::to_string(&zone_config).unwrap(),
+        );
+        input_system_config.insert(
+            "devices/ood1/info".to_string(),
+            serde_json::to_string(&device_ood1).unwrap(),
+        );
+        input_system_config.insert(
+            "users/alice/apps/files/spec".to_string(),
+            serde_json::to_string(&app_spec).unwrap(),
+        );
+
+        let mut device_list = HashMap::new();
+        device_list.insert("ood1".to_string(), device_ood1);
+
+        let mut need_update_gateway_node_list = HashSet::new();
+        let mut need_update_rbac = false;
+
+        let tx_actions = schedule_action_to_tx_actions(
+            &SchedulerAction::UpdateServiceInfo(
+                "files@alice".to_string(),
+                ServiceInfo::RandomCluster(HashMap::new()),
+            ),
+            &NodeScheduler::new_empty(1),
+            &device_list,
+            &input_system_config,
+            &mut need_update_gateway_node_list,
+            &mut need_update_rbac,
+        )
+        .unwrap();
+
+        assert!(tx_actions.is_empty());
+    }
+
+    #[test]
+    fn test_schedule_action_to_tx_actions_keeps_service_info_for_sdk_app_service() {
+        let zone_config = create_test_zone_config();
+        let app_spec = create_test_app_spec();
+        let device_ood1 = create_test_device_info("ood1", None);
+
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "boot/config".to_string(),
+            serde_json::to_string(&zone_config).unwrap(),
+        );
+        input_system_config.insert(
+            "devices/ood1/info".to_string(),
+            serde_json::to_string(&device_ood1).unwrap(),
+        );
+        input_system_config.insert(
+            "users/alice/apps/files/spec".to_string(),
+            serde_json::to_string(&app_spec).unwrap(),
+        );
+
+        let mut device_list = HashMap::new();
+        device_list.insert("ood1".to_string(), device_ood1);
+
+        let mut need_update_gateway_node_list = HashSet::new();
+        let mut need_update_rbac = false;
+
+        let tx_actions = schedule_action_to_tx_actions(
+            &SchedulerAction::UpdateServiceInfo(
+                "files@alice".to_string(),
+                ServiceInfo::SingleInstance(create_test_replica_instance(
+                    "files@alice",
+                    "files@alice@ood1",
+                    "ood1",
+                    &[("www", 10160)],
+                )),
+            ),
+            &NodeScheduler::new_empty(1),
+            &device_list,
+            &input_system_config,
+            &mut need_update_gateway_node_list,
+            &mut need_update_rbac,
+        )
+        .unwrap();
+
+        assert!(tx_actions.contains_key("services/files@alice/info"));
+    }
+
     #[tokio::test]
     async fn test_update_node_gateway_info_builds_expected_payload() {
         let zone_config = create_test_zone_config();
@@ -2107,6 +2333,69 @@ mod tests {
         };
         assert_eq!(sys.service_id, "control-panel");
         assert_eq!(sys.selector.get("ood1").unwrap().port, 4020);
+    }
+
+    #[tokio::test]
+    async fn test_update_node_gateway_info_keeps_legacy_app_entry_from_persisted_service_info() {
+        let zone_config = create_test_zone_config();
+        let app_spec = create_test_legacy_docker_app_spec();
+        let device_ood1 = create_test_device_info("ood1", None);
+
+        let persisted_service_info = buckyos_api::ServiceInfo {
+            selector_type: "random".to_string(),
+            node_list: HashMap::from([(
+                "ood1".to_string(),
+                buckyos_api::ServiceNode {
+                    node_did: device_ood1.id.clone(),
+                    node_net_id: device_ood1.device_doc.net_id.clone(),
+                    state: buckyos_api::ServiceInstanceState::Started,
+                    weight: 100,
+                    service_port: HashMap::from([("www".to_string(), 10160)]),
+                },
+            )]),
+        };
+
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "boot/config".to_string(),
+            serde_json::to_string(&zone_config).unwrap(),
+        );
+        input_system_config.insert(
+            "devices/ood1/info".to_string(),
+            serde_json::to_string(&device_ood1).unwrap(),
+        );
+        input_system_config.insert(
+            "users/alice/apps/files/spec".to_string(),
+            serde_json::to_string(&app_spec).unwrap(),
+        );
+        input_system_config.insert(
+            "services/files@alice/info".to_string(),
+            serde_json::to_string(&persisted_service_info).unwrap(),
+        );
+
+        let mut scheduler_ctx = NodeScheduler::new_empty(1);
+        scheduler_ctx.service_infos.insert(
+            "files@alice".to_string(),
+            ServiceInfo::RandomCluster(HashMap::new()),
+        );
+
+        let actions = update_node_gateway_info("ood1", &scheduler_ctx, &input_system_config)
+            .await
+            .unwrap();
+        let gateway_info_str = match actions.get("nodes/ood1/gateway_info").unwrap() {
+            KVAction::Update(value) => value,
+            other => panic!("unexpected kv action: {:?}", other),
+        };
+        let gateway_info: NodeGatewayInfo = serde_json::from_str(gateway_info_str).unwrap();
+
+        let files = match gateway_info.app_info.get("files").unwrap() {
+            NodeGatewayAppEntry::App(entry) => entry,
+            _ => panic!("files should resolve to an app entry"),
+        };
+        assert_eq!(files.app_id, "files");
+        assert_eq!(files.node_id.as_deref(), Some("ood1"));
+        assert_eq!(files.port, Some(10160));
+        assert_eq!(files.sdk_version, 0);
     }
 
     #[tokio::test]
