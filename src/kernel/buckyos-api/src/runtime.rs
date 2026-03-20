@@ -1466,7 +1466,22 @@ impl BuckyOSRuntime {
     }
 
     pub async fn get_verify_hub_client(&self) -> Result<VerifyHubClient> {
-        let krpc_client = self.get_zone_service_krpc_client("verify-hub").await?;
+        let krpc_client = if self.is_ood()
+            && matches!(
+                self.runtime_type,
+                BuckyOSRuntimeType::Kernel | BuckyOSRuntimeType::KernelService
+            )
+        {
+            let session_token = self.session_token.read().await;
+            let url = "http://127.0.0.1:3300/kapi/verify-hub".to_string();
+            kRPC::new_with_timeout_secs(
+                &url,
+                Some(session_token.clone()),
+                DEFAULT_KRPC_TIMEOUT_SECS,
+            )
+        } else {
+            self.get_zone_service_krpc_client("verify-hub").await?
+        };
         let client = VerifyHubClient::new(krpc_client);
         Ok(client)
     }
