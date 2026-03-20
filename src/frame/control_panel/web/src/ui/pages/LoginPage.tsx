@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate, type NavigateFunction } from 'react-router-dom'
 
 import { useI18n } from '@/i18n'
 import { useAuth } from '@/auth/useAuth'
-import { sanitizeRedirectPath } from '@/auth/session'
+import { sanitizeRedirectTarget } from '@/auth/session'
 import MessageModal from '@/ui/components/MessageModal'
 
 import Icon from '../icons'
@@ -82,6 +82,15 @@ const getReadableLoginError = (rawError: unknown) => {
   return 'Sign-in failed. Please try again.'
 }
 
+const redirectToTarget = (target: string, navigate: NavigateFunction) => {
+  if (/^https?:\/\//i.test(target)) {
+    window.location.replace(target)
+    return
+  }
+
+  navigate(target, { replace: true })
+}
+
 const LoginPage = () => {
   const { t } = useI18n()
   const location = useLocation()
@@ -93,7 +102,8 @@ const LoginPage = () => {
   const [password, setPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [messageModal, setMessageModal] = useState<LoginModalState | null>(null)
-  const redirectTarget = sanitizeRedirectPath(new URLSearchParams(location.search).get('redirect'))
+  const searchParams = new URLSearchParams(location.search)
+  const redirectTarget = sanitizeRedirectTarget(searchParams.get('redirect_url') ?? searchParams.get('redirect'))
   const loading = status === 'loading'
 
   useEffect(() => {
@@ -105,7 +115,7 @@ const LoginPage = () => {
 
   useEffect(() => {
     if (status === 'authenticated' && !submitting && !messageModal) {
-      navigate(redirectTarget, { replace: true })
+      redirectToTarget(redirectTarget, navigate)
     }
   }, [messageModal, navigate, redirectTarget, status, submitting])
 
@@ -115,7 +125,7 @@ const LoginPage = () => {
     }
 
     const timer = window.setTimeout(() => {
-      navigate(messageModal.nextPath || '/', { replace: true })
+      redirectToTarget(messageModal.nextPath || '/', navigate)
     }, 1500)
 
     return () => {

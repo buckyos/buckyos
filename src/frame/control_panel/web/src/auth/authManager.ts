@@ -4,6 +4,7 @@ import {
   clearStoredSession,
   getStoredAccountInfo,
   getStoredRefreshToken,
+  saveSsoSessionCookie,
   saveStoredAccountInfo,
   type StoredAccountInfo,
 } from './session'
@@ -127,6 +128,7 @@ const refreshSessionWithToken = async (refreshToken: string, base: StoredAccount
   }
 
   saveStoredAccountInfo(updated)
+  saveSsoSessionCookie(sessionToken)
   resetVerifyCache()
   return updated
 }
@@ -173,6 +175,7 @@ export const ensureSessionToken = async (options: EnsureSessionOptions = {}) => 
   if (!forceRefresh) {
     const verified = await verifySessionToken(sessionToken)
     if (verified) {
+      saveSsoSessionCookie(sessionToken)
       return sessionToken
     }
   }
@@ -212,6 +215,7 @@ export const loginWithPassword = async (username: string, password: string) => {
     session_token: sessionToken,
     refresh_token: normalized.refresh_token?.trim() || undefined,
   })
+  saveSsoSessionCookie(sessionToken)
   resetVerifyCache()
 
   return normalized
