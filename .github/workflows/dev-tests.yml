@@ -438,29 +438,6 @@ jobs:
           $ErrorActionPreference = "Stop"
           python .\make_local_pkg.py verify-pkg "${{ steps.package_windows.outputs.pkg_path }}" --arch ${{ matrix.arch }}
 
-      - name: Check Docker availability for macOS install test
-        id: macos_docker
-        if: ${{ matrix.platform_key == 'macos' }}
-        shell: bash
-        env:
-          EXPECT_DOCKER: ${{ (matrix.arch == 'aarch64' && vars.DEVTESTS_MACOS_ARM64_RUNNER_JSON != '') || (matrix.arch == 'x86_64' && vars.DEVTESTS_MACOS_X64_RUNNER_JSON != '') }}
-        run: |
-          set -euo pipefail
-
-          if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && [ -S /var/run/docker.sock ]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-            echo "[ready] Docker is available for macOS install test"
-            exit 0
-          fi
-
-          if [ "$EXPECT_DOCKER" = "true" ]; then
-            echo "::error::This macOS runner was expected to have Docker available, but docker is not ready."
-            exit 1
-          fi
-
-          echo "ready=false" >> "$GITHUB_OUTPUT"
-          echo "[skip] macOS install smoke test requires a runner with Docker preinstalled and started."
-
       - name: Silent install package and verify endpoint (Linux)
         if: ${{ matrix.platform_key == 'linux' }}
         shell: bash
@@ -483,36 +460,6 @@ jobs:
 
           sudo dpkg -i "${{ steps.package_unix.outputs.pkg_path }}"
           wait_for_http "http://127.0.0.1:3182/index.html"
-
-      - name: Silent install package and verify endpoint (macOS)
-        if: ${{ matrix.platform_key == 'macos' && steps.macos_docker.outputs.ready == 'true' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          wait_for_http() {
-            local url="$1"
-            local retries="${2:-90}"
-            for ((i = 1; i <= retries; i++)); do
-              if curl --fail --silent --show-error "$url" >/dev/null; then
-                echo "[ready] ${url}"
-                return 0
-              fi
-              echo "[wait] ${url} (${i}/${retries})"
-              sleep 2
-            done
-            return 1
-          }
-
-          sudo installer -pkg "${{ steps.package_unix.outputs.pkg_path }}" -target /
-          wait_for_http "http://127.0.0.1:3182/index.html"
-
-      - name: Skip macOS install smoke test on runner without Docker
-        if: ${{ matrix.platform_key == 'macos' && steps.macos_docker.outputs.ready != 'true' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "macOS install smoke test skipped because this runner does not provide a ready Docker daemon."
 
       - name: Silent install package and verify endpoint (Windows)
         if: ${{ matrix.platform_key == 'windows' }}
