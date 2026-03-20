@@ -27,7 +27,8 @@ async fn main() -> anyhow::Result<()> {
         ));
     }
     runtime.set_main_service_port(KMSG_SERVICE_MAIN_PORT).await;
-    set_buckyos_api_runtime(runtime);
+    set_buckyos_api_runtime(runtime)
+        .map_err(|err| anyhow::anyhow!("register kmsg runtime failed: {}", err))?;
 
     let server = SledMsgQueueServer::new();
 

@@ -67,8 +67,14 @@ pub fn get_buckyos_api_runtime() -> Result<&'static BuckyOSRuntime> {
     ))
 }
 
-pub fn set_buckyos_api_runtime(runtime: BuckyOSRuntime) {
-    let _ = CURRENT_BUCKYOS_RUNTIME.set(runtime);
+pub fn set_buckyos_api_runtime(runtime: BuckyOSRuntime) -> Result<()> {
+    CURRENT_BUCKYOS_RUNTIME.set(runtime).map_err(|_| {
+        RPCErrors::ReasonError("BuckyOSRuntime is already registered".to_string())
+    })?;
+    if let Some(runtime) = CURRENT_BUCKYOS_RUNTIME.get() {
+        runtime.start_registered_tasks_if_needed();
+    }
+    Ok(())
 }
 
 pub fn is_buckyos_api_runtime_set() -> bool {
@@ -345,6 +351,7 @@ mod tests {
         assert_eq!(runtime.get_app_id(), "jarvis");
         assert_eq!(runtime.get_owner_user_id().as_deref(), Some("devtest"));
         assert_eq!(runtime.user_id.as_deref(), Some("devtest"));
+        assert_eq!(runtime.get_authenticated_user_id().as_deref(), None);
         assert_eq!(
             runtime.session_token.read().await.as_str(),
             "dummy-session-token"

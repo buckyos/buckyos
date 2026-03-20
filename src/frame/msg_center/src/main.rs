@@ -857,7 +857,8 @@ pub async fn start_msg_center_service() -> Result<()> {
         }
     };
 
-    set_buckyos_api_runtime(runtime);
+    set_buckyos_api_runtime(runtime)
+        .map_err(|err| anyhow::anyhow!("register msg-center runtime failed: {}", err))?;
 
     let center = MessageCenter::try_new()
         .map_err(|err| anyhow::anyhow!("create message center failed: {:?}", err))?;

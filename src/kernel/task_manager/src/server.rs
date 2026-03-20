@@ -900,7 +900,9 @@ pub async fn start_task_manager_service() -> Result<()> {
     runtime
         .set_main_service_port(TASK_MANAGER_SERVICE_MAIN_PORT)
         .await;
-    set_buckyos_api_runtime(runtime);
+    set_buckyos_api_runtime(runtime).map_err(|err| {
+        RPCErrors::ReasonError(format!("register task manager runtime failed: {}", err))
+    })?;
 
     let handler = TaskManagerService::new();
     let server = TaskManagerHttpServer::new(handler);

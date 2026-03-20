@@ -484,7 +484,10 @@ oods look like this 'ood1,ood2'.")
             println!("Failed to login: {}", e);
             return e.to_string();
         })?;
-        set_buckyos_api_runtime(runtime);
+        set_buckyos_api_runtime(runtime).map_err(|e| {
+            println!("Failed to register runtime: {}", e);
+            e.to_string()
+        })?;
         let buckyos_runtime = get_buckyos_api_runtime().unwrap();
         let zone_host_name = buckyos_runtime.zone_id.to_host_name();
         println!(
@@ -499,7 +502,10 @@ oods look like this 'ood1,ood2'.")
                 runtime.user_private_key.clone().unwrap(),
             ));
         }
-        set_buckyos_api_runtime(runtime);
+        set_buckyos_api_runtime(runtime).map_err(|e| {
+            println!("Failed to register runtime: {}", e);
+            e.to_string()
+        })?;
     }
 
     // Handle subcommands

@@ -554,7 +554,7 @@ mod tests {
                     user_id = runtime.user_id.clone().unwrap();
                     println!("user id {:?}", runtime.user_id);
                     println!("user config {:?}", runtime.user_config);
-                    set_buckyos_api_runtime(runtime);
+                    set_buckyos_api_runtime(runtime).expect("register global runtime");
                 }
                 Err(e) => {
                     println!("Failed to login: {}", e);

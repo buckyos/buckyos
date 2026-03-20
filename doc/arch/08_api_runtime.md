@@ -71,12 +71,24 @@ pub struct BuckyOSRuntime {
 
 ## 初始化：runtime 如何“收集登陆所需信息”
 
-初始化入口：`init_buckyos_api_runtime()`（`src/kernel/buckyos-api/src/lib.rs`）。它的目标不是“连上系统”，而是准备好 login 所需的数据来源。
+初始化入口：`init_buckyos_api_runtime()`（`src/kernel/buckyos-api/src/lib.rs`）。它现在的语义不是“创建全局单件”，而是“构造一个未注册、未认证的 runtime 草稿”。
 
 代码关键点：
 - `fill_policy_by_load_config()`：读取 machine.json 类策略（如 `force_https`、web3 bridge）。（`src/kernel/buckyos-api/src/runtime.rs`）
 - `fill_by_load_config()`：按 runtime 类型读取 `node_identity.json` / `node_private_key.pem` / `user_config.json` / `user_private_key.pem` 等。（`src/kernel/buckyos-api/src/runtime.rs`）
 - `fill_by_env_var()`：为服务类 runtime（KernelService / AppService 等）从环境变量读取启动 token；未配置会直接报错。（`src/kernel/buckyos-api/src/runtime.rs`）
+- `init()` 本身不会注册全局 runtime，也不会启动 keep-alive 后台任务；只有 `set_buckyos_api_runtime()` 成功后，全局 runtime 才可被 `get_buckyos_api_runtime()` 访问。
+
+因此，正确顺序是：
+
+```text
+runtime = init_buckyos_api_runtime(...)
+runtime.login()?
+set_buckyos_api_runtime(runtime)?
+global_runtime = get_buckyos_api_runtime()?
+```
+
+`init()` 到 `login()` 之间允许存在 `app_id/user_id` 等“声明身份”，但它们还不是已经认证的身份。
 
 token 环境变量名规则：`get_session_token_env_key()`（`src/kernel/buckyos-api/src/lib.rs`）：
 - 先把 full_app_id upper-case 并把 `-` 替换为 `_`。
@@ -96,8 +108,8 @@ token 环境变量名规则：`get_session_token_env_key()`（`src/kernel/buckyo
 - 代码路径：`get_control_panel_client()` → `load_zone_config()`（`src/kernel/buckyos-api/src/runtime.rs`）。
 - 结果写入 `self.zone_config`。
 
-3) 启动 keep-alive 定时任务（5s 一次）
-- 代码路径：`login()` 末尾 `tokio::task::spawn(...)`（`src/kernel/buckyos-api/src/runtime.rs`）。
+3) 允许在后续注册后启动 keep-alive 定时任务（5s 一次）
+- 代码路径：`set_buckyos_api_runtime()` 成功后调用 `start_registered_tasks_if_needed()`（`src/kernel/buckyos-api/src/lib.rs` / `src/kernel/buckyos-api/src/runtime.rs`）。
 - keep-alive 主要做：
   - `renew_token_from_verify_hub()`（必要时刷新 token）
   - `update_service_instance_info()`（服务实例上报）
@@ -162,6 +174,8 @@ process_main():
     //  - spawn keep_alive timer
 
   set_buckyos_api_runtime(runtime)
+    // 只有第一次注册可以成功
+    // 注册成功后后台 keep-alive 才会启动
 
   // later call
   url = runtime.get_zone_service_url(service, https_only)

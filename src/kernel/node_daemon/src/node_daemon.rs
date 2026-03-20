@@ -1498,7 +1498,10 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         runtime.zone_config = Some(zone_config);
         runtime.session_token = Arc::new(RwLock::new(device_session_token_jwt.clone()));
         runtime.force_https = false;
-        set_buckyos_api_runtime(runtime);
+        set_buckyos_api_runtime(runtime).map_err(|err| {
+            error!("register global runtime failed: {}", err);
+            String::from("register global runtime failed!")
+        })?;
     } else {
         //this node is not ood: try connect to system_config_service
         let mut runtime = init_buckyos_api_runtime("node-daemon", None, BuckyOSRuntimeType::Kernel)
@@ -1519,7 +1522,10 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
                 break;
             }
         }
-        set_buckyos_api_runtime(runtime);
+        set_buckyos_api_runtime(runtime).map_err(|err| {
+            error!("register global runtime failed: {}", err);
+            String::from("register global runtime failed!")
+        })?;
     }
 
     info!(

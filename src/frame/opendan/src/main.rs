@@ -824,7 +824,7 @@ async fn service_main() -> Result<()> {
     info!("setting opendan main service port to {}", service_port);
     runtime.set_main_service_port(service_port).await;
     info!("registering global buckyos runtime for opendan");
-    set_buckyos_api_runtime(runtime);
+    set_buckyos_api_runtime(runtime).context("register opendan runtime failed")?;
     info!("global buckyos runtime registered for opendan");
 
     info!("loading opendan agent instance doc: agent_id={}", agent_id);

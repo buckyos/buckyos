@@ -239,7 +239,10 @@ async fn service_main(is_boot: bool) -> Result<i32> {
             })
             .unwrap();
         info!("init default name client OK!");
-        set_buckyos_api_runtime(runtime);
+        set_buckyos_api_runtime(runtime).map_err(|err| {
+            error!("register global runtime failed: {}", err);
+            anyhow::anyhow!("register global runtime failed: {}", err)
+        })?;
         do_boot_scheduler().await.map_err(|e| {
             error!("do_boot_scheduler failed: {:?}", e);
             e
@@ -259,7 +262,10 @@ async fn service_main(is_boot: bool) -> Result<i32> {
             error!("buckyos-api-runtime::login failed: {:?}", e);
             e
         })?;
-        set_buckyos_api_runtime(runtime);
+        set_buckyos_api_runtime(runtime).map_err(|err| {
+            error!("register global runtime failed: {}", err);
+            anyhow::anyhow!("register global runtime failed: {}", err)
+        })?;
 
         let scheduler_server = SchedulerServer::new();
 

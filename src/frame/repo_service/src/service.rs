@@ -722,7 +722,7 @@ pub async fn run_service() -> Result<()> {
         .set_main_service_port(REPO_SERVICE_SERVICE_PORT)
         .await;
     let data_dir = runtime.get_data_folder();
-    set_buckyos_api_runtime(runtime);
+    set_buckyos_api_runtime(runtime).context("register repo-service runtime failed")?;
 
     let service = RepoService::new(data_dir).await?;
     let server = Arc::new(RepoHttpServer::new(service));

@@ -7456,7 +7456,8 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
     runtime
         .set_main_service_port(CONTROL_PANEL_SERVICE_PORT)
         .await;
-    set_buckyos_api_runtime(runtime);
+    set_buckyos_api_runtime(runtime)
+        .map_err(|err| anyhow::anyhow!("register control-panel runtime failed: {}", err))?;
 
     let control_panel_server = ControlPanelServer::new();
     control_panel_server

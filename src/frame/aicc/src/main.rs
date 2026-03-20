@@ -226,7 +226,8 @@ pub async fn start_aicc_service(mut center: AIComputeCenter) -> Result<()> {
         }
     }
 
-    set_buckyos_api_runtime(runtime);
+    set_buckyos_api_runtime(runtime)
+        .map_err(|err| anyhow::anyhow!("register aicc runtime failed: {}", err))?;
 
     let server = AiccHttpServer::new(center);
 

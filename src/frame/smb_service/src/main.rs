@@ -120,7 +120,10 @@ async fn async_main() {
                 log::error!("login failed: {}", e);
                 return;
             }
-            set_buckyos_api_runtime(runtime);
+            if let Err(e) = set_buckyos_api_runtime(runtime) {
+                log::error!("register global runtime failed: {}", e);
+                return;
+            }
 
             enter_update_smb_loop().await;
         }
