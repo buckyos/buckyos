@@ -477,6 +477,74 @@ mod tests {
     }
 
     #[test]
+    fn test_scan_dir_order_is_deterministic_after_open_and_update() {
+        let base = new_temp_root("deterministic_dir_order");
+        create_service_dir_with_logs(&base, "service_c", 10);
+        create_service_dir_with_logs(&base, "service_a", 10);
+        create_service_dir_with_logs(&base, "service_b", 10);
+
+        let reader = LogDirReader::open(&base, vec![]).unwrap();
+
+        let first = reader
+            .try_read_records(READ_RECORD_PER_SERVICE_QUOTA)
+            .unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].id, "service_a");
+        reader.flush_read_pos(&first[0].id).unwrap();
+
+        let second = reader
+            .try_read_records(READ_RECORD_PER_SERVICE_QUOTA)
+            .unwrap();
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].id, "service_b");
+        reader.flush_read_pos(&second[0].id).unwrap();
+
+        let third = reader
+            .try_read_records(READ_RECORD_PER_SERVICE_QUOTA)
+            .unwrap();
+        assert_eq!(third.len(), 1);
+        assert_eq!(third[0].id, "service_c");
+        reader.flush_read_pos(&third[0].id).unwrap();
+
+        create_service_dir_with_logs(&base, "service_aa", 10);
+        reader.update_dir().unwrap();
+
+        let fourth = reader
+            .try_read_records(READ_RECORD_PER_SERVICE_QUOTA)
+            .unwrap();
+        assert_eq!(fourth.len(), 1);
+        assert_eq!(fourth[0].id, "service_aa");
+
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn test_blocked_services_do_not_advance_round_robin_cursor() {
+        let base = new_temp_root("blocked_cursor_stability");
+        create_service_dir_with_logs(&base, "service_a", 20);
+        create_service_dir_with_logs(&base, "service_b", 20);
+        create_service_dir_with_logs(&base, "service_c", 20);
+
+        let reader = LogDirReader::open(&base, vec![]).unwrap();
+        let blocked = HashSet::from([String::from("service_a"), String::from("service_b")]);
+
+        let blocked_round = reader
+            .try_read_records_with_blocked(READ_RECORD_PER_SERVICE_QUOTA * 3, &blocked)
+            .unwrap();
+        assert_eq!(blocked_round.len(), 1);
+        assert_eq!(blocked_round[0].id, "service_c");
+        reader.flush_read_pos(&blocked_round[0].id).unwrap();
+
+        let next_round = reader
+            .try_read_records(READ_RECORD_PER_SERVICE_QUOTA)
+            .unwrap();
+        assert_eq!(next_round.len(), 1);
+        assert_eq!(next_round[0].id, "service_a");
+
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
     fn test_try_read_records_emits_flush_only_item_for_invalid_lines() {
         let base = new_temp_root("invalid_line_flush_only");
         let dir = base.join("service_invalid");
