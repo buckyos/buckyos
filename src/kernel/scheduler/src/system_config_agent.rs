@@ -23,6 +23,7 @@ use name_lib::{get_x_from_jwk, DeviceInfo, ZoneConfig};
 
 const SYSTEM_CONFIG_SERVICE_PORT: u16 = 3200;
 const FIXED_SERVICE_WEIGHT: u32 = 100;
+const DEFAULT_REQUIRED_MEMORY: u64 = 32 * 1024 * 1024;
 
 fn map_api_user_type(user_type: &ApiUserType) -> UserType {
     match user_type {
@@ -92,7 +93,7 @@ fn create_service_spec_by_app_config(
         need_container,
         best_instance_count: app_config.expected_instance_count,
         required_cpu_mhz: 200,
-        required_memory: 1024 * 1024 * 256,
+        required_memory: DEFAULT_REQUIRED_MEMORY,
         required_gpu_tflops: 0.0,
         required_gpu_mem: 0,
         node_affinity: None,
@@ -117,7 +118,7 @@ fn create_service_spec_by_service_config(
         need_container: false,
         best_instance_count: service_config.expected_instance_count,
         required_cpu_mhz: 300,
-        required_memory: 1024 * 1024 * 256,
+        required_memory: DEFAULT_REQUIRED_MEMORY,
         required_gpu_tflops: 0.0,
         required_gpu_mem: 0,
         node_affinity: None,
@@ -1679,7 +1680,7 @@ mod tests {
             need_container: true,
             best_instance_count: 1,
             required_cpu_mhz: 200,
-            required_memory: 1024 * 1024 * 256,
+            required_memory: DEFAULT_REQUIRED_MEMORY,
             required_gpu_tflops: 0.0,
             required_gpu_mem: 0,
             node_affinity: None,
@@ -1749,7 +1750,7 @@ mod tests {
             need_container: true,
             best_instance_count: 1,
             required_cpu_mhz: 200,
-            required_memory: 1024 * 1024 * 256,
+            required_memory: DEFAULT_REQUIRED_MEMORY,
             required_gpu_tflops: 0.0,
             required_gpu_mem: 0,
             node_affinity: None,
@@ -1823,7 +1824,7 @@ mod tests {
             need_container: true,
             best_instance_count: 1,
             required_cpu_mhz: 200,
-            required_memory: 1024 * 1024 * 256,
+            required_memory: DEFAULT_REQUIRED_MEMORY,
             required_gpu_tflops: 0.0,
             required_gpu_mem: 0,
             node_affinity: None,
@@ -1888,7 +1889,7 @@ mod tests {
             need_container: true,
             best_instance_count: 1,
             required_cpu_mhz: 200,
-            required_memory: 1024 * 1024 * 256,
+            required_memory: DEFAULT_REQUIRED_MEMORY,
             required_gpu_tflops: 0.0,
             required_gpu_mem: 0,
             node_affinity: None,
@@ -1963,7 +1964,7 @@ mod tests {
             need_container: true,
             best_instance_count: 1,
             required_cpu_mhz: 200,
-            required_memory: 1024 * 1024 * 256,
+            required_memory: DEFAULT_REQUIRED_MEMORY,
             required_gpu_tflops: 0.0,
             required_gpu_mem: 0,
             node_affinity: None,
