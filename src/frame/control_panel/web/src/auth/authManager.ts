@@ -21,7 +21,12 @@ let cachedVerifyToken: string | null = null
 let cachedVerifyResult = false
 let cachedVerifyAt = 0
 
-const normalizeLoginResponse = (response: unknown, fallbackUsername: string): StoredAccountInfo => {
+type NormalizedLoginResponse = {
+  accountInfo: StoredAccountInfo
+  ssoToken?: string
+}
+
+const normalizeLoginResponse = (response: unknown, fallbackUsername: string): NormalizedLoginResponse => {
   const payload = response as {
     user_info?: { show_name?: string; user_id?: string; user_type?: string }
     user_name?: string
@@ -29,24 +34,32 @@ const normalizeLoginResponse = (response: unknown, fallbackUsername: string): St
     user_type?: string
     session_token?: string
     refresh_token?: string
+    sso_token?: string
   }
 
+  const ssoToken = payload.sso_token?.trim() || undefined
   if (payload.user_info) {
     return {
-      user_name: payload.user_info.show_name || fallbackUsername,
-      user_id: payload.user_info.user_id,
-      user_type: payload.user_info.user_type,
-      session_token: payload.session_token,
-      refresh_token: payload.refresh_token,
+      accountInfo: {
+        user_name: payload.user_info.show_name || fallbackUsername,
+        user_id: payload.user_info.user_id,
+        user_type: payload.user_info.user_type,
+        session_token: payload.session_token,
+        refresh_token: payload.refresh_token,
+      },
+      ssoToken,
     }
   }
 
   return {
-    user_name: payload.user_name || fallbackUsername,
-    user_id: payload.user_id,
-    user_type: payload.user_type,
-    session_token: payload.session_token,
-    refresh_token: payload.refresh_token,
+    accountInfo: {
+      user_name: payload.user_name || fallbackUsername,
+      user_id: payload.user_id,
+      user_type: payload.user_type,
+      session_token: payload.session_token,
+      refresh_token: payload.refresh_token,
+    },
+    ssoToken,
   }
 }
 
@@ -188,13 +201,15 @@ export const ensureSessionToken = async (options: EnsureSessionOptions = {}) => 
   return refreshed?.session_token?.trim() || null
 }
 
-export const loginWithPassword = async (username: string, password: string) => {
+export const loginWithPassword = async (username: string, password: string, redirectUrl?: string | null) => {
   await ensureAuthRuntime()
 
   const trimmedUsername = username.trim()
   const nonce = Date.now()
   const passwordHash = buckyos.hashPassword(trimmedUsername, password, nonce)
   authRpcClient.setSeq(nonce)
+  const normalizedRedirectUrl =
+    typeof redirectUrl === 'string' && /^https?:\/\//i.test(redirectUrl.trim()) ? redirectUrl.trim() : undefined
 
   const response = await callAuthRpc<unknown>('auth.login', {
     username: trimmedUsername,
@@ -202,23 +217,56 @@ export const loginWithPassword = async (username: string, password: string) => {
     appid: APP_ID,
     source_url: window.location.href,
     login_nonce: nonce,
+    ...(normalizedRedirectUrl ? { redirect_url: normalizedRedirectUrl } : {}),
   })
 
   const normalized = normalizeLoginResponse(response, trimmedUsername)
-  const sessionToken = normalized.session_token?.trim()
+  const sessionToken = normalized.accountInfo.session_token?.trim()
   if (!sessionToken) {
     throw new Error('verify-hub did not return a session token')
   }
+  if (normalizedRedirectUrl) {
+    if (!normalized.ssoToken) {
+      throw new Error('auth.login did not return sso token')
+    }
+    saveSsoSessionCookie(normalized.ssoToken)
+  }
 
   saveStoredAccountInfo({
-    ...normalized,
+    ...normalized.accountInfo,
     session_token: sessionToken,
-    refresh_token: normalized.refresh_token?.trim() || undefined,
+    refresh_token: normalized.accountInfo.refresh_token?.trim() || undefined,
   })
   saveSsoSessionCookie(sessionToken)
   resetVerifyCache()
 
-  return normalized
+  return normalized.accountInfo
+}
+
+export const issueSsoTokenForRedirect = async (redirectUrl: string) => {
+  await ensureAuthRuntime()
+
+  const normalizedRedirectUrl = redirectUrl.trim()
+  if (!/^https?:\/\//i.test(normalizedRedirectUrl)) {
+    throw new Error('redirect_url must be an absolute http(s) url')
+  }
+
+  const sessionToken = await ensureSessionToken()
+  if (!sessionToken) {
+    throw new Error('missing authenticated control-panel session')
+  }
+
+  const response = await callAuthRpc<{ sso_token?: string }>('auth.issue_sso_token', {
+    session_token: sessionToken,
+    redirect_url: normalizedRedirectUrl,
+  })
+  const ssoToken = response?.sso_token?.trim()
+  if (!ssoToken) {
+    throw new Error('auth.issue_sso_token did not return sso token')
+  }
+
+  saveSsoSessionCookie(ssoToken)
+  return ssoToken
 }
 
 export const signOutSession = async () => {
