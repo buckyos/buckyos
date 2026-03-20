@@ -6,7 +6,7 @@ export type AuthContextValue = {
   status: AuthStatus
   initError: string | null
   refreshAuth: () => Promise<void>
-  signInWithPassword: (username: string, password: string) => Promise<void>
+  signInWithPassword: (username: string, password: string, redirectUrl?: string | null) => Promise<void>
   signOut: () => Promise<void>
 }
 

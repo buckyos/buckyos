@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate, type NavigateFunction } from 'react-router-dom'
 
 import { useI18n } from '@/i18n'
+import { issueSsoTokenForRedirect } from '@/auth/authManager'
 import { useAuth } from '@/auth/useAuth'
-import { sanitizeRedirectPath } from '@/auth/session'
+import { sanitizeRedirectTarget } from '@/auth/session'
 import MessageModal from '@/ui/components/MessageModal'
 
 import Icon from '../icons'
@@ -82,6 +83,15 @@ const getReadableLoginError = (rawError: unknown) => {
   return 'Sign-in failed. Please try again.'
 }
 
+const redirectToTarget = (target: string, navigate: NavigateFunction) => {
+  if (/^https?:\/\//i.test(target)) {
+    window.location.replace(target)
+    return
+  }
+
+  navigate(target, { replace: true })
+}
+
 const LoginPage = () => {
   const { t } = useI18n()
   const location = useLocation()
@@ -92,8 +102,11 @@ const LoginPage = () => {
   const [usernameEditable, setUsernameEditable] = useState(defaultUsername.length === 0)
   const [password, setPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [issuingSso, setIssuingSso] = useState(false)
   const [messageModal, setMessageModal] = useState<LoginModalState | null>(null)
-  const redirectTarget = sanitizeRedirectPath(new URLSearchParams(location.search).get('redirect'))
+  const searchParams = new URLSearchParams(location.search)
+  const redirectTarget = sanitizeRedirectTarget(searchParams.get('redirect_url') ?? searchParams.get('redirect'))
+  const needsSsoCookie = /^https?:\/\//i.test(redirectTarget)
   const loading = status === 'loading'
 
   useEffect(() => {
@@ -104,10 +117,43 @@ const LoginPage = () => {
   }, [defaultUsername, t])
 
   useEffect(() => {
-    if (status === 'authenticated' && !submitting && !messageModal) {
-      navigate(redirectTarget, { replace: true })
+    if (status !== 'authenticated' || submitting || issuingSso || messageModal) {
+      return
     }
-  }, [messageModal, navigate, redirectTarget, status, submitting])
+
+    if (!needsSsoCookie) {
+      redirectToTarget(redirectTarget, navigate)
+      return
+    }
+
+    let cancelled = false
+    setIssuingSso(true)
+
+    void issueSsoTokenForRedirect(redirectTarget)
+      .then(() => {
+        if (!cancelled) {
+          redirectToTarget(redirectTarget, navigate)
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setMessageModal({
+            tone: 'error',
+            title: t('login.failedTitle', 'Login Failed'),
+            message: getReadableLoginError(error),
+          })
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIssuingSso(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [issuingSso, messageModal, navigate, needsSsoCookie, redirectTarget, status, submitting, t])
 
   useEffect(() => {
     if (messageModal?.tone !== 'success') {
@@ -115,7 +161,7 @@ const LoginPage = () => {
     }
 
     const timer = window.setTimeout(() => {
-      navigate(messageModal.nextPath || '/', { replace: true })
+      redirectToTarget(messageModal.nextPath || '/', navigate)
     }, 1500)
 
     return () => {
@@ -125,7 +171,7 @@ const LoginPage = () => {
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (loading || submitting) return
+    if (loading || submitting || issuingSso) return
 
     if (!username.trim() || !password) {
       setMessageModal({
@@ -139,7 +185,7 @@ const LoginPage = () => {
     setSubmitting(true)
 
     try {
-      await signInWithPassword(username.trim(), password)
+      await signInWithPassword(username.trim(), password, needsSsoCookie ? redirectTarget : null)
 
       setMessageModal({
         tone: 'success',
@@ -159,7 +205,7 @@ const LoginPage = () => {
     }
   }
 
-  const disabled = loading || submitting
+  const disabled = loading || submitting || issuingSso
 
   return (
     <div className="min-h-screen bg-transparent px-4 py-6 text-[var(--cp-ink)]">

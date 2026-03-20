@@ -1,7 +1,7 @@
 const ACCOUNT_STORAGE_KEY = 'buckyos.control_panel.account_info'
 const LEGACY_ACCOUNT_STORAGE_KEY = 'buckyos.account_info'
-const SESSION_COOKIE_NAMES = ['control-panel_token', 'control_panel_token', 'auth']
 const SSO_SESSION_COOKIE_NAME = 'buckyos_session_token'
+const SESSION_COOKIE_NAMES = ['control-panel_token', 'control_panel_token', 'auth', SSO_SESSION_COOKIE_NAME]
 
 export type StoredAccountInfo = {
   user_name?: string
@@ -169,7 +169,23 @@ export const clearStoredSession = () => {
 
   expireCookie('control-panel_token')
   expireCookie('control_panel_token')
+  expireCookie('auth')
   expireCookie(SSO_SESSION_COOKIE_NAME)
+}
+
+const isUnsafeAuthRedirectPath = (pathname: string) => pathname === '/login' || pathname === '/sso/login'
+
+const resolveZoneHost = () => {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  const hostname = window.location.hostname.trim().toLowerCase()
+  if (!hostname) {
+    return null
+  }
+
+  return hostname.startsWith('sys.') ? hostname.slice(4) || null : hostname
 }
 
 export const sanitizeRedirectPath = (candidate: string | null | undefined, fallback = '/') => {
@@ -182,13 +198,55 @@ export const sanitizeRedirectPath = (candidate: string | null | undefined, fallb
     return fallback
   }
 
-  if (normalized === '/login' || normalized.startsWith('/login?')) {
-    return fallback
-  }
-
-  if (normalized === '/sso/login' || normalized.startsWith('/sso/login?')) {
+  const queryIndex = normalized.indexOf('?')
+  const pathname = queryIndex >= 0 ? normalized.slice(0, queryIndex) : normalized
+  if (isUnsafeAuthRedirectPath(pathname)) {
     return fallback
   }
 
   return normalized
+}
+
+export const sanitizeRedirectTarget = (candidate: string | null | undefined, fallback = '/') => {
+  const localTarget = sanitizeRedirectPath(candidate, '')
+  if (localTarget) {
+    return localTarget
+  }
+
+  if (!candidate || typeof window === 'undefined') {
+    return fallback
+  }
+
+  const normalized = candidate.trim()
+  if (!normalized) {
+    return fallback
+  }
+
+  try {
+    const url = new URL(normalized)
+    const currentProtocol = window.location.protocol.toLowerCase()
+    if (url.protocol.toLowerCase() !== currentProtocol) {
+      return fallback
+    }
+
+    const zoneHost = resolveZoneHost()
+    const targetHost = url.hostname.trim().toLowerCase()
+    if (!zoneHost || (!targetHost.endsWith(`.${zoneHost}`) && targetHost !== zoneHost)) {
+      return fallback
+    }
+
+    if (url.port && url.port !== window.location.port) {
+      return fallback
+    }
+
+    const normalizedPathname = `/${url.pathname.replace(/^\/+/, '')}`
+    if (isUnsafeAuthRedirectPath(normalizedPathname)) {
+      return fallback
+    }
+
+    url.pathname = normalizedPathname
+    return url.toString()
+  } catch {
+    return fallback
+  }
 }

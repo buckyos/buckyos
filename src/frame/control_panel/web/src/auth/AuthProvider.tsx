@@ -31,10 +31,10 @@ const AuthProvider = ({ children }: AuthProviderProps) => {
     void refreshAuth()
   }, [refreshAuth])
 
-  const signInWithPasswordAction = useCallback(async (username: string, password: string) => {
+  const signInWithPasswordAction = useCallback(async (username: string, password: string, redirectUrl?: string | null) => {
     setInitError(null)
     await ensureAuthRuntime()
-    await loginWithPassword(username, password)
+    await loginWithPassword(username, password, redirectUrl)
     setStatus('authenticated')
   }, [])
 
