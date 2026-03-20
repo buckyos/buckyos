@@ -39,9 +39,12 @@ type Result<T> = std::result::Result<T, RPCErrors>;
 struct VerifyServiceConfig {
     zone_config: ZoneConfig,
     device_id: String,
+    node_did: DID,
+    start_time: u64,
 }
 
 const VERIFY_HUB_ISSUER: &str = "verify-hub";
+const VERIFY_HUB_SERVICE_MAIN_PORT: u16 = 3300;
 
 lazy_static! {
     static ref VERIFY_HUB_PRIVATE_KEY: Arc<RwLock<EncodingKey>> = {
@@ -271,6 +274,70 @@ async fn get_system_config_client() -> Result<SystemConfigClient> {
     let rpc_token = get_my_krpc_token().await?;
     let rpc_token_str = rpc_token.to_string();
     Ok(SystemConfigClient::new(None, Some(&rpc_token_str)))
+}
+
+async fn report_service_instance_info() -> Result<()> {
+    let service_config = VERIFY_SERVICE_CONFIG
+        .lock()
+        .await
+        .as_ref()
+        .cloned()
+        .ok_or(RPCErrors::ReasonError(
+            "verify_hub service config not loaded".to_string(),
+        ))?;
+
+    let mut service_ports = HashMap::new();
+    service_ports.insert("www".to_string(), VERIFY_HUB_SERVICE_MAIN_PORT);
+
+    let instance_info = ServiceInstanceReportInfo {
+        instance_id: format!("{}-{}", VERIFY_HUB_UNIQUE_ID, service_config.device_id),
+        node_id: service_config.device_id.clone(),
+        node_did: service_config.node_did.clone(),
+        state: ServiceInstanceState::Started,
+        service_ports,
+        last_update_time: buckyos_get_unix_timestamp(),
+        start_time: service_config.start_time,
+        pid: std::process::id(),
+    };
+
+    let system_config_client = get_system_config_client().await?;
+    let control_panel_client = ControlPanelClient::new(system_config_client);
+    control_panel_client
+        .update_service_instance_info(
+            VERIFY_HUB_UNIQUE_ID,
+            service_config.device_id.as_str(),
+            &instance_info,
+        )
+        .await?;
+    info!(
+        "verify_hub reported service instance info,node_id:{}",
+        service_config.device_id
+    );
+    Ok(())
+}
+
+fn start_service_instance_reporter() {
+    tokio::task::spawn(async move {
+        if let Err(error) = report_service_instance_info().await {
+            warn!(
+                "verify_hub initial service instance report failed: {:?}",
+                error
+            );
+        }
+
+        let start = tokio::time::Instant::now()
+            + std::time::Duration::from_secs(SERVICE_INSTANCE_INFO_UPDATE_INTERVAL);
+        let mut timer = tokio::time::interval_at(
+            start,
+            std::time::Duration::from_secs(SERVICE_INSTANCE_INFO_UPDATE_INTERVAL),
+        );
+        loop {
+            timer.tick().await;
+            if let Err(error) = report_service_instance_info().await {
+                warn!("verify_hub service instance report failed: {:?}", error);
+            }
+        }
+    });
 }
 
 async fn load_token_from_cache(key: &str) -> Option<RPCSessionToken> {
@@ -854,9 +921,12 @@ async fn load_service_config() -> Result<()> {
     cache_trustkey("verify-hub", verify_hub_pub_key).await;
     info!("verify_hub public key loaded from system config service OK!");
 
+    let device_info = control_panel_client.get_device_info(device_id.as_str()).await?;
     let new_service_config = VerifyServiceConfig {
         zone_config: zone_config,
         device_id: device_id,
+        node_did: device_info.id.clone(),
+        start_time: buckyos_get_unix_timestamp(),
     };
 
     {
@@ -875,7 +945,9 @@ async fn service_main() -> i32 {
     init_logging("verify_hub", true);
     info!("Starting verify_hub service...");
     //init service config from system config service and env
+    let mut service_config_loaded = true;
     if let Err(error) = load_service_config().await {
+        service_config_loaded = false;
         error!("load service config failed:{}", error);
         if !cfg!(test) {
             return -1;
@@ -884,8 +956,11 @@ async fn service_main() -> i32 {
     }
     //load cache from service_cache@dfs:// and service_local_cache@fs://
 
+    if service_config_loaded {
+        start_service_instance_reporter();
+    }
+
     let server = VerifyHubServer::new();
-    const VERIFY_HUB_SERVICE_MAIN_PORT: u16 = 3300;
     info!(
         "verify_hub service initialized, running on port {}",
         VERIFY_HUB_SERVICE_MAIN_PORT
