@@ -719,6 +719,7 @@ def _prepare_common_build_root(
     skip_cyfs_gateway: bool,
     desktop_app: str | None,
     skip_desktop_app_build: bool,
+    rust_target: str | None = None,
 ) -> None:
     python_exe = _python_executable()
     buckyos_root = target.build_root / "buckyos"
@@ -736,7 +737,10 @@ def _prepare_common_build_root(
             buckyos_root.mkdir(parents=True, exist_ok=True)
         if not skip_cargo_update:
             _run_checked(["cargo", "update"], cwd=CYFS_SRC_DIR, dry_run=dry_run)
-        _run_checked(["buckyos-build"], cwd=CYFS_SRC_DIR, dry_run=dry_run)
+        cyfs_build_cmd = ["buckyos-build"]
+        if rust_target:
+            cyfs_build_cmd.append(f"--target={rust_target}")
+        _run_checked(cyfs_build_cmd, cwd=CYFS_SRC_DIR, dry_run=dry_run)
         _run_checked(
             ["buckyos-install", "--all", f"--target-rootfs={buckyos_root}", "--app=cyfs-gateway"],
             cwd=CYFS_SRC_DIR,
@@ -749,7 +753,10 @@ def _prepare_common_build_root(
 
     if not skip_cargo_update:
         _run_checked(["cargo", "update"], cwd=SRC_DIR, dry_run=dry_run)
-    _run_checked(["buckyos-build"], cwd=SRC_DIR, dry_run=dry_run)
+    buckyos_build_cmd = ["buckyos-build"]
+    if rust_target:
+        buckyos_build_cmd.append(f"--target={rust_target}")
+    _run_checked(buckyos_build_cmd, cwd=SRC_DIR, dry_run=dry_run)
     _run_checked(
         ["buckyos-install", "--all", f"--target-rootfs={buckycli_root}", "--app=buckycli"],
         cwd=SRC_DIR,
@@ -783,6 +790,7 @@ def prepare_root(argv: list[str]) -> int:
     )
     parser.add_argument("--skip-cargo-update", action="store_true", help="Skip cargo update in shared build steps")
     parser.add_argument("--skip-cyfs-gateway", action="store_true", help="Skip cyfs-gateway staging")
+    parser.add_argument("--rust-target", default=None, help="Pass explicit --target to internal buckyos-build commands")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing them")
     args = parser.parse_args(argv)
 
@@ -795,6 +803,7 @@ def prepare_root(argv: list[str]) -> int:
         skip_cyfs_gateway=bool(args.skip_cyfs_gateway),
         desktop_app=args.desktop_app,
         skip_desktop_app_build=bool(args.skip_desktop_app_build),
+        rust_target=args.rust_target,
     )
     return 0
 
@@ -816,6 +825,7 @@ def build_pkg(argv: list[str]) -> int:
     parser.add_argument("--skip-prepare", action="store_true", help="Assume BUCKYOS_BUILD_ROOT is already staged")
     parser.add_argument("--skip-cargo-update", action="store_true", help="Skip cargo update in shared build steps")
     parser.add_argument("--skip-cyfs-gateway", action="store_true", help="Skip cyfs-gateway staging")
+    parser.add_argument("--rust-target", default=None, help="Pass explicit --target to internal buckyos-build commands")
     parser.add_argument("--no-sync-scripts", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args, forwarded = parser.parse_known_args(argv)
@@ -832,6 +842,7 @@ def build_pkg(argv: list[str]) -> int:
             skip_cyfs_gateway=bool(args.skip_cyfs_gateway),
             desktop_app=args.desktop_app,
             skip_desktop_app_build=bool(args.skip_desktop_app_build),
+            rust_target=args.rust_target,
         )
     else:
         print("[prepare] skipped by --skip-prepare")
