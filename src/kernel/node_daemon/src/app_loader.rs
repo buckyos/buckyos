@@ -2258,6 +2258,7 @@ async fn run_command(
 ) -> Result<CommandOutput> {
     let mut cmd = Command::new(program);
     cmd.args(args);
+    cmd.stdin(Stdio::null());
     if let Some(envs) = envs {
         cmd.envs(envs);
     }
@@ -2270,8 +2271,7 @@ async fn run_command(
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd.creation_flags(windows_hidden_process_creation_flags());
     }
 
     let output = cmd.output().await.map_err(|error| {
@@ -2286,6 +2286,14 @@ async fn run_command(
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
     })
+}
+
+#[cfg(target_os = "windows")]
+fn windows_hidden_process_creation_flags() -> u32 {
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
 }
 
 fn ensure_success(step: &str, output: &CommandOutput) -> Result<()> {

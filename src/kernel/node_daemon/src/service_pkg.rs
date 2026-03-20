@@ -132,6 +132,12 @@ impl ServicePkg {
             }
             media_info.unwrap().full_path.clone()
         };
+        if should_prefer_native_operation(self.pkg_id.as_str(), media_root.as_path(), op_name) {
+            return self
+                .execute_native_operation(media_root.as_path(), op_name, params, env_vars)
+                .await;
+        }
+
         let op_file = media_root.join(op_name);
         if !op_file.exists() {
             return self
@@ -394,6 +400,22 @@ fn package_unique_name(pkg_id: &str) -> String {
     base.rsplit('.').next().unwrap_or(base).trim().to_string()
 }
 
+fn should_prefer_native_operation(pkg_id: &str, media_root: &Path, op_name: &str) -> bool {
+    if !matches!(op_name, "start" | "stop" | "status") {
+        return false;
+    }
+
+    let dir_name = media_root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+
+    matches!(
+        package_unique_name(pkg_id).as_str(),
+        "cyfs-gateway" | "cyfs_gateway"
+    ) || matches!(dir_name, "cyfs-gateway" | "cyfs_gateway")
+}
+
 fn push_service_aliases(target: &mut Vec<String>, name: Option<&str>) {
     for alias in name_aliases(name.unwrap_or_default()) {
         if !alias.is_empty() && !target.iter().any(|value| value == &alias) {
@@ -635,6 +657,7 @@ async fn run_command(
 ) -> Result<CommandOutput> {
     let mut cmd = Command::new(program);
     cmd.args(args);
+    cmd.stdin(Stdio::null());
     if let Some(envs) = envs {
         cmd.envs(envs);
     }
@@ -647,8 +670,7 @@ async fn run_command(
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd.creation_flags(windows_hidden_process_creation_flags());
     }
 
     let output = cmd.output().await.map_err(|error| {
@@ -683,10 +705,7 @@ fn spawn_detached(
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+        cmd.creation_flags(windows_hidden_process_creation_flags());
     }
 
     #[cfg(unix)]
@@ -706,6 +725,14 @@ fn spawn_detached(
         ServiceControlError::ReasonError(format!("spawn {} failed: {}", program.display(), error))
     })?;
     Ok(child.id())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_hidden_process_creation_flags() -> u32 {
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
 }
 
 fn exit_code(status: &std::process::ExitStatus) -> i32 {
@@ -792,5 +819,24 @@ mod tests {
             native_args(&spec, "status", None),
             vec!["status".to_string()]
         );
+    }
+
+    #[test]
+    fn cyfs_gateway_prefers_native_service_control_for_runtime_ops() {
+        let dir = temp_dir("cyfs-gateway");
+
+        for op_name in ["start", "stop", "status"] {
+            assert!(should_prefer_native_operation(
+                "nightly-windows-amd64.cyfs-gateway",
+                dir.as_path(),
+                op_name
+            ));
+        }
+
+        assert!(!should_prefer_native_operation(
+            "nightly-windows-amd64.cyfs-gateway",
+            dir.as_path(),
+            "deploy"
+        ));
     }
 }

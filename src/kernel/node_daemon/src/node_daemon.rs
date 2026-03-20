@@ -803,7 +803,7 @@ async fn keep_cyfs_gateway_service(
 
     if is_reload && running_state == ServiceInstanceState::Started {
         info!("cyfs_gateway service pkg loaded, will do reload ...");
-        let params = vec!["--reload".to_string()];
+        let params = vec!["reload".to_string()];
         cyfs_gateway_service_pkg
             .start(Some(&params))
             .await

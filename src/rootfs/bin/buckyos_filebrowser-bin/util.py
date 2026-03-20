@@ -110,19 +110,27 @@ def nohup_start(run_cmd, env_vars=None):
     if env_vars:
         env.update(env_vars)
 
+    split_posix = system != "Windows"
+    args = run_cmd if isinstance(run_cmd, (list, tuple)) else shlex.split(str(run_cmd), posix=split_posix)
+
     if system == "Windows":
-        cmd = f"start /min {run_cmd}"
         creationflags = (
             subprocess.DETACHED_PROCESS
             | subprocess.CREATE_NEW_PROCESS_GROUP
             | subprocess.CREATE_NO_WINDOW
         )
-        print(f"will run cmd {cmd} on system {system}")
-        subprocess.run(cmd, shell=True, creationflags=creationflags, env=env)
-        return None
+        print(f"will run cmd {args} on system {system}")
+        proc = subprocess.Popen(
+            list(args),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+            env=env,
+        )
+        return proc.pid
 
     # POSIX (macOS/Linux): detach from parent session/process group so parent exit won't affect child.
-    args = run_cmd if isinstance(run_cmd, (list, tuple)) else shlex.split(str(run_cmd))
     print(f"will run cmd {args} on system {system}")
     proc = subprocess.Popen(
         list(args),
