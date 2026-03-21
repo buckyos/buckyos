@@ -27,13 +27,12 @@ use uuid::Uuid;
 
 use crate::agent_config::AIAgentConfig;
 use crate::agent_environment::AgentEnvironment;
-use crate::agent_memory::{AgentMemory, AgentMemoryConfig};
 use crate::agent_session::{
     AgentSession, AgentSessionMgr, GetSessionTool, SessionInputItem, SessionState,
 };
 use crate::agent_tool::{
-    normalize_tool_name, AgentPolicy, AgentToolManager, DoAction, DoActionResults, DoActions,
-    TOOL_EXEC_BASH,
+    normalize_tool_name, AgentMemory, AgentMemoryConfig, AgentPolicy, AgentToolManager,
+    DoAction, DoActionResults, DoActions, TOOL_EXEC_BASH,
 };
 use crate::behavior::{
     AgentWorkEvent, BehaviorConfig, BehaviorExecInput, BehaviorLLMResult, LLMBehavior,

@@ -13,7 +13,9 @@ use tokio::time::{timeout, Duration};
 
 pub mod cli;
 pub mod file_tools;
+pub mod memory;
 pub mod todo;
+pub mod workspace;
 
 pub use file_tools::{
     normalize_abs_path, parse_read_file_bash_args, rewrite_read_file_path_with_shell_cwd,
@@ -21,9 +23,15 @@ pub use file_tools::{
     NoopFileWriteAudit, ReadFileTool, WriteFileTool, TOOL_EDIT_FILE, TOOL_READ_FILE,
     TOOL_WRITE_FILE,
 };
+pub use memory::{AgentMemory, AgentMemoryConfig, MemoryRankItem};
 pub use todo::{
     get_next_ready_todo_code, get_next_ready_todo_text, get_session_todo_text_by_ref, TodoTool,
     TodoToolConfig,
+};
+pub use workspace::{
+    ExternalWorkspaceBinding, ExternalWorkspaceRuntimeBackend, ExternalWorkspaceServiceConfig,
+    ManagedExternalWorkspaceBackend, ManagedWorkspaceToolBackend, SessionWorkspaceBindingView,
+    WorkspaceRecordView, WorkspaceRuntimeBackend,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

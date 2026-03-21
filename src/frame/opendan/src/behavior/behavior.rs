@@ -21,7 +21,7 @@ use super::sanitize::Sanitizer;
 use super::tool_loop::{self, ToolContext};
 use super::types::*;
 use crate::agent_environment::AgentEnvironment;
-use crate::agent_memory::AgentMemory;
+use crate::agent_tool::AgentMemory;
 use crate::agent_tool::{AgentToolManager, ToolSpec};
 
 #[derive(Clone)]

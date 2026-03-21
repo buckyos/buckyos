@@ -22,8 +22,9 @@ use tokio::{fs, task};
 use crate::agent_tool::{
     AgentTool, AgentToolError, AgentToolManager, AgentToolResult,
     BindExternalWorkspaceTool as SharedBindExternalWorkspaceTool,
-    ListExternalWorkspacesTool as SharedListExternalWorkspacesTool, ToolSpec,
-    TOOL_CREATE_SUB_AGENT,
+    ExternalWorkspaceRuntimeBackend, ExternalWorkspaceServiceConfig,
+    ListExternalWorkspacesTool as SharedListExternalWorkspacesTool, ManagedExternalWorkspaceBackend,
+    ToolSpec, TOOL_CREATE_SUB_AGENT,
 };
 use crate::behavior::SessionRuntimeContext;
 use crate::runtime_utils::{normalize_abs_path, now_ms};
@@ -135,19 +136,6 @@ pub struct CreateSubAgentResult {
     pub created_at_ms: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ExternalWorkspaceBinding {
-    pub name: String,
-    pub source: String,
-    pub mount: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BindExternalWorkspaceRequest {
-    pub name: String,
-    pub workspace_path: String,
-}
-
 #[derive(Clone)]
 pub struct AiRuntime {
     cfg: AiRuntimeConfig,
@@ -183,13 +171,20 @@ impl AiRuntime {
     }
 
     pub async fn register_tools(&self, tool_mgr: &AgentToolManager) -> Result<(), AgentToolError> {
+        let external_backend = Arc::new(ManagedExternalWorkspaceBackend::new(
+            Arc::new(OpenDanExternalWorkspaceRuntime::new(self.clone())),
+            ExternalWorkspaceServiceConfig {
+                external_workspaces_dir_name: self.cfg.external_workspaces_dir_name.clone(),
+                workspace_bindings_file_name: self.cfg.workspace_bindings_file_name.clone(),
+            },
+        ));
         tool_mgr.register_tool(RuntimeCreateSubAgentTool {
             runtime: Arc::new(self.clone()),
         })?;
-        tool_mgr.register_tool(SharedBindExternalWorkspaceTool::new(Arc::new(self.clone())))?;
-        tool_mgr.register_tool(SharedListExternalWorkspacesTool::new(Arc::new(
-            self.clone(),
-        )))?;
+        tool_mgr.register_tool(SharedBindExternalWorkspaceTool::new(
+            external_backend.clone(),
+        ))?;
+        tool_mgr.register_tool(SharedListExternalWorkspacesTool::new(external_backend))?;
         Ok(())
     }
 
@@ -408,80 +403,6 @@ impl AiRuntime {
         })
     }
 
-    pub async fn bind_external_workspace(
-        &self,
-        agent_did: &str,
-        req: BindExternalWorkspaceRequest,
-    ) -> Result<ExternalWorkspaceBinding, AiRuntimeError> {
-        let did = agent_did.trim();
-        if did.is_empty() {
-            return Err(AiRuntimeError::InvalidArgs(
-                "agent_did cannot be empty".to_string(),
-            ));
-        }
-        validate_binding_name(&req.name)?;
-
-        let agent_root = self.lookup_agent_root(did)?;
-        let source_path = normalize_abs_path(&to_abs_path(Path::new(req.workspace_path.trim()))?);
-        let metadata = fs::metadata(&source_path)
-            .await
-            .map_err(|source| AiRuntimeError::Io {
-                path: source_path.display().to_string(),
-                source,
-            })?;
-        if !metadata.is_dir() {
-            return Err(AiRuntimeError::InvalidArgs(format!(
-                "workspace_path is not a directory: {}",
-                source_path.display()
-            )));
-        }
-
-        let mount_base = agent_root.join(&self.cfg.external_workspaces_dir_name);
-        info!(
-            "opendan.persist_entity_prepare: kind=external_workspace_mount_base agent_did={} path={}",
-            did,
-            mount_base.display()
-        );
-        fs::create_dir_all(&mount_base)
-            .await
-            .map_err(|source| AiRuntimeError::Io {
-                path: mount_base.display().to_string(),
-                source,
-            })?;
-
-        let mount_path = mount_base.join(req.name.trim());
-        ensure_mount_link(&mount_path, &source_path).await?;
-
-        let binding = ExternalWorkspaceBinding {
-            name: req.name.trim().to_string(),
-            source: source_path.to_string_lossy().to_string(),
-            mount: mount_path.to_string_lossy().to_string(),
-        };
-
-        let mut bindings = self.read_workspace_bindings(&agent_root).await?;
-        upsert_binding(&mut bindings, binding.clone());
-        self.write_workspace_bindings(&agent_root, &bindings)
-            .await?;
-
-        Ok(binding)
-    }
-
-    pub async fn list_external_workspaces(
-        &self,
-        agent_did: &str,
-    ) -> Result<Vec<ExternalWorkspaceBinding>, AiRuntimeError> {
-        let did = agent_did.trim();
-        if did.is_empty() {
-            return Err(AiRuntimeError::InvalidArgs(
-                "agent_did cannot be empty".to_string(),
-            ));
-        }
-        let agent_root = self.lookup_agent_root(did)?;
-        let mut bindings = self.read_workspace_bindings(&agent_root).await?;
-        bindings.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(bindings)
-    }
-
     fn lookup_agent_root(&self, did: &str) -> Result<PathBuf, AiRuntimeError> {
         let guard = self
             .agents_by_did
@@ -493,64 +414,6 @@ impl AiRuntime {
             .ok_or_else(|| AiRuntimeError::AgentNotFound(did.to_string()))
     }
 
-    async fn read_workspace_bindings(
-        &self,
-        agent_root: &Path,
-    ) -> Result<Vec<ExternalWorkspaceBinding>, AiRuntimeError> {
-        let path = self.workspace_bindings_path(agent_root);
-        if !fs::try_exists(&path)
-            .await
-            .map_err(|source| AiRuntimeError::Io {
-                path: path.display().to_string(),
-                source,
-            })?
-        {
-            return Ok(vec![]);
-        }
-        let content = fs::read_to_string(&path)
-            .await
-            .map_err(|source| AiRuntimeError::Io {
-                path: path.display().to_string(),
-                source,
-            })?;
-        let parsed: Json =
-            serde_json::from_str(&content).map_err(|source| AiRuntimeError::Json {
-                path: path.display().to_string(),
-                source,
-            })?;
-
-        let Some(arr) = parsed.get("bindings").and_then(|v| v.as_array()) else {
-            return Ok(vec![]);
-        };
-
-        let mut out = Vec::<ExternalWorkspaceBinding>::with_capacity(arr.len());
-        for item in arr {
-            let parsed = serde_json::from_value::<ExternalWorkspaceBinding>(item.clone()).map_err(
-                |source| AiRuntimeError::Json {
-                    path: path.display().to_string(),
-                    source,
-                },
-            )?;
-            out.push(parsed);
-        }
-        Ok(out)
-    }
-
-    async fn write_workspace_bindings(
-        &self,
-        agent_root: &Path,
-        bindings: &[ExternalWorkspaceBinding],
-    ) -> Result<(), AiRuntimeError> {
-        let path = self.workspace_bindings_path(agent_root);
-        let payload = json!({ "bindings": bindings });
-        write_json_file(path, &payload).await
-    }
-
-    fn workspace_bindings_path(&self, agent_root: &Path) -> PathBuf {
-        agent_root
-            .join(&self.cfg.external_workspaces_dir_name)
-            .join(&self.cfg.workspace_bindings_file_name)
-    }
 }
 
 #[derive(Clone)]
@@ -1571,6 +1434,17 @@ struct RuntimeCreateSubAgentTool {
     runtime: Arc<AiRuntime>,
 }
 
+#[derive(Clone)]
+struct OpenDanExternalWorkspaceRuntime {
+    runtime: AiRuntime,
+}
+
+impl OpenDanExternalWorkspaceRuntime {
+    fn new(runtime: AiRuntime) -> Self {
+        Self { runtime }
+    }
+}
+
 #[async_trait]
 impl AgentTool for RuntimeCreateSubAgentTool {
     fn spec(&self) -> ToolSpec {
@@ -1634,31 +1508,9 @@ impl AgentTool for RuntimeCreateSubAgentTool {
 }
 
 #[async_trait]
-impl ::agent_tool::ExternalWorkspaceBackend for AiRuntime {
-    async fn bind_external_workspace(
-        &self,
-        agent_did: &str,
-        name: &str,
-        workspace_path: &str,
-    ) -> Result<Json, AgentToolError> {
-        let binding = AiRuntime::bind_external_workspace(
-            self,
-            agent_did,
-            BindExternalWorkspaceRequest {
-                name: name.to_string(),
-                workspace_path: workspace_path.to_string(),
-            },
-        )
-        .await?;
-        serde_json::to_value(binding)
-            .map_err(|err| AgentToolError::ExecFailed(format!("serialize binding failed: {err}")))
-    }
-
-    async fn list_external_workspaces(&self, agent_did: &str) -> Result<Json, AgentToolError> {
-        let workspaces = AiRuntime::list_external_workspaces(self, agent_did).await?;
-        serde_json::to_value(workspaces).map_err(|err| {
-            AgentToolError::ExecFailed(format!("serialize external workspaces failed: {err}"))
-        })
+impl ExternalWorkspaceRuntimeBackend for OpenDanExternalWorkspaceRuntime {
+    async fn resolve_agent_root(&self, agent_did: &str) -> Result<PathBuf, AgentToolError> {
+        self.runtime.lookup_agent_root(agent_did).map_err(Into::into)
     }
 }
 
@@ -1678,10 +1530,6 @@ fn validate_runtime_config(cfg: &AiRuntimeConfig) -> Result<(), AiRuntimeError> 
 
 fn validate_agent_name(name: &str) -> Result<(), AiRuntimeError> {
     validate_simple_name(name, "sub-agent name")
-}
-
-fn validate_binding_name(name: &str) -> Result<(), AiRuntimeError> {
-    validate_simple_name(name, "workspace binding name")
 }
 
 fn validate_simple_name(value: &str, field: &str) -> Result<(), AiRuntimeError> {
@@ -1845,106 +1693,6 @@ fn extract_agent_did(did_document: &Json, agent_root: &Path) -> String {
         })
 }
 
-async fn ensure_mount_link(mount_path: &Path, source_path: &Path) -> Result<(), AiRuntimeError> {
-    if fs::try_exists(mount_path)
-        .await
-        .map_err(|source| AiRuntimeError::Io {
-            path: mount_path.display().to_string(),
-            source,
-        })?
-    {
-        let meta = fs::symlink_metadata(mount_path)
-            .await
-            .map_err(|source| AiRuntimeError::Io {
-                path: mount_path.display().to_string(),
-                source,
-            })?;
-
-        if meta.file_type().is_symlink() {
-            let current_target =
-                fs::read_link(mount_path)
-                    .await
-                    .map_err(|source| AiRuntimeError::Io {
-                        path: mount_path.display().to_string(),
-                        source,
-                    })?;
-            if normalize_abs_path(&to_abs_path(&current_target)?) == normalize_abs_path(source_path)
-            {
-                return Ok(());
-            }
-            return Err(AiRuntimeError::AlreadyExists(format!(
-                "mount `{}` already points to `{}`",
-                mount_path.display(),
-                current_target.display()
-            )));
-        }
-
-        return Err(AiRuntimeError::AlreadyExists(format!(
-            "mount path already exists and is not a symlink: {}",
-            mount_path.display()
-        )));
-    }
-
-    if let Some(parent) = mount_path.parent() {
-        if !fs::try_exists(parent)
-            .await
-            .map_err(|source| AiRuntimeError::Io {
-                path: parent.display().to_string(),
-                source,
-            })?
-        {
-            info!(
-                "opendan.persist_entity_prepare: kind=mount_parent_dir path={}",
-                parent.display()
-            );
-        }
-        fs::create_dir_all(parent)
-            .await
-            .map_err(|source| AiRuntimeError::Io {
-                path: parent.display().to_string(),
-                source,
-            })?;
-    }
-
-    info!(
-        "opendan.persist_entity_prepare: kind=workspace_mount_symlink source={} target={}",
-        source_path.display(),
-        mount_path.display()
-    );
-    create_symlink(source_path, mount_path)
-        .await
-        .map_err(|source| AiRuntimeError::Io {
-            path: mount_path.display().to_string(),
-            source,
-        })
-}
-
-async fn create_symlink(source: &Path, target: &Path) -> Result<(), std::io::Error> {
-    let source = source.to_path_buf();
-    let target = target.to_path_buf();
-    tokio::task::spawn_blocking(move || symlink_dir_impl(&source, &target))
-        .await
-        .map_err(|err| std::io::Error::other(format!("join symlink task failed: {err}")))?
-}
-
-#[cfg(unix)]
-fn symlink_dir_impl(source: &Path, target: &Path) -> Result<(), std::io::Error> {
-    std::os::unix::fs::symlink(source, target)
-}
-
-#[cfg(windows)]
-fn symlink_dir_impl(source: &Path, target: &Path) -> Result<(), std::io::Error> {
-    std::os::windows::fs::symlink_dir(source, target)
-}
-
-fn upsert_binding(bindings: &mut Vec<ExternalWorkspaceBinding>, binding: ExternalWorkspaceBinding) {
-    if let Some(existing) = bindings.iter_mut().find(|item| item.name == binding.name) {
-        *existing = binding;
-        return;
-    }
-    bindings.push(binding);
-}
-
 fn require_string(args: &Json, key: &str) -> Result<String, AgentToolError> {
     let value = args
         .get(key)
@@ -2084,16 +1832,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_tools_create_sub_agent_and_bind_external_workspace() {
+    async fn runtime_tools_create_sub_agent() {
         let tmp = tempdir().expect("create tempdir");
         let agents_root = tmp.path().join("agents");
         let parent_root = agents_root.join("jarvis");
-        let external_workspace = tmp.path().join("external-workspace");
 
         write_agent_doc(&parent_root, "did:test:jarvis").await;
-        fs::create_dir_all(&external_workspace)
-            .await
-            .expect("create external workspace");
 
         let runtime = AiRuntime::new(AiRuntimeConfig::new(&agents_root))
             .await
@@ -2134,50 +1878,6 @@ mod tests {
         assert!(fs::try_exists(sub_root.join("agent.json.doc"))
             .await
             .expect("check sub agent doc"));
-
-        let bind_result = tool_mgr
-            .call_tool(
-                &call_ctx("did:test:jarvis"),
-                AiToolCall {
-                    name: TOOL_BIND_EXTERNAL_WORKSPACE.to_string(),
-                    args: value_to_object_map(json!({
-                        "name": "shared-repo",
-                        "workspace_path": external_workspace.to_string_lossy().to_string()
-                    })),
-                    call_id: "call-bind-workspace".to_string(),
-                },
-            )
-            .await
-            .expect("bind workspace via tool");
-
-        let mount_path = bind_result["binding"]["mount"]
-            .as_str()
-            .expect("read mount path");
-        assert!(fs::try_exists(mount_path)
-            .await
-            .expect("check mount path exists"));
-
-        let list_result = tool_mgr
-            .call_tool(
-                &call_ctx("did:test:jarvis"),
-                AiToolCall {
-                    name: TOOL_LIST_EXTERNAL_WORKSPACES.to_string(),
-                    args: value_to_object_map(json!({})),
-                    call_id: "call-list-workspaces".to_string(),
-                },
-            )
-            .await
-            .expect("list bound workspaces via tool");
-
-        let workspaces = list_result["workspaces"]
-            .as_array()
-            .expect("workspaces array");
-        assert_eq!(workspaces.len(), 1);
-        assert_eq!(workspaces[0]["name"], "shared-repo");
-        assert_eq!(
-            workspaces[0]["source"],
-            external_workspace.to_string_lossy().to_string()
-        );
     }
 
     #[tokio::test]

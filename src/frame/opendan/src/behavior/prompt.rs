@@ -15,9 +15,8 @@ use tokio::fs;
 use tokio::sync::Mutex;
 
 use crate::agent_environment::AgentEnvironment;
-use crate::agent_memory::AgentMemory;
 use crate::agent_session::AgentSession;
-use crate::agent_tool::ToolSpec;
+use crate::agent_tool::{AgentMemory, ToolSpec};
 use crate::behavior::config::BehaviorMemoryBucketConfig;
 use crate::behavior::BehaviorConfig;
 use crate::worklog::{
@@ -2404,7 +2403,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::agent_memory::{AgentMemory, AgentMemoryConfig};
+    use crate::agent_tool::{AgentMemory, AgentMemoryConfig};
     use crate::agent_session::AgentSession;
     use crate::agent_tool::AgentTool;
     use crate::behavior::types::{SessionRuntimeContext, StepLimits};

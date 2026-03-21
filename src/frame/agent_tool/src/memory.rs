@@ -13,7 +13,10 @@ use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
-use crate::agent_tool::{AgentToolError, AgentToolManager, LoadMemoryTool, MemoryLoadPreview};
+use crate::{
+    AgentToolError, AgentToolManager, LoadMemoryTool, MemoryLoadBackend, MemoryLoadPreview,
+    TOOL_LOAD_MEMORY,
+};
 
 const DEFAULT_MEMORY_DIR_NAME: &str = "memory";
 const DEFAULT_LOG_FILE_NAME: &str = "log.jsonl";
@@ -144,7 +147,7 @@ impl AgentMemory {
     }
 
     pub fn register_tools(&self, tool_mgr: &AgentToolManager) -> Result<(), AgentToolError> {
-        if !tool_mgr.has_tool(crate::agent_tool::TOOL_LOAD_MEMORY) {
+        if !tool_mgr.has_tool(TOOL_LOAD_MEMORY) {
             tool_mgr.register_tool(LoadMemoryTool::new(Arc::new(self.clone())))?;
         }
         Ok(())
@@ -260,303 +263,296 @@ impl AgentMemory {
         if log_len == 0 {
             return Ok(());
         }
+
         info!(
             "agent_memory.bootstrap: rebuilding state from log: path={}",
             self.inner.log_path.display()
         );
         let _guard = self.inner.write_lock.lock().await;
-        self.compact_locked().await?;
+        let state_map = self.rebuild_state_from_log().await?;
+        self.write_state_map_atomic(&state_map).await?;
         Ok(())
     }
 
-    async fn compact_locked(&self) -> Result<Json, AgentToolError> {
-        let records = self.read_latest_from_log().await?;
-        let now = Utc::now();
-        let mut active = HashMap::<String, MemoryEnvelope>::new();
-        let mut expired = 0_usize;
-        let mut tombstone = 0_usize;
-
-        for record in records.values() {
-            if !record.valid {
-                tombstone += 1;
-                continue;
-            }
-            if is_expired_at(record.content.get("expired_at"), &now) {
-                expired += 1;
-                continue;
-            }
-            active.insert(record.key.clone(), record.clone());
-        }
-
-        self.write_state_map_atomic(&active).await?;
-        self.rebuild_index_from_active(&active).await?;
-
-        Ok(json!({
-            "ok": true,
-            "total_keys": records.len(),
-            "active_keys": active.len(),
-            "expired_keys": expired,
-            "tombstone_keys": tombstone
-        }))
-    }
-
-    async fn load_memory_by_request(
-        &self,
-        req: LoadMemoryRequest,
-    ) -> Result<Vec<MemoryRankItem>, AgentToolError> {
-        let mut records = self.read_state_map().await?;
-        if records.is_empty() {
-            records = self.read_latest_from_log().await?;
-        }
-
-        let requested_tags: HashSet<String> = req
-            .tags
-            .iter()
-            .map(|t| t.trim().to_ascii_lowercase())
-            .filter(|t| !t.is_empty())
-            .collect();
-
-        let mut candidates = Vec::<MemoryRankItem>::new();
-        for record in records.values() {
-            if !record.valid {
-                continue;
-            }
-            if is_expired_at(record.content.get("expired_at"), &req.current_time) {
-                continue;
-            }
-
-            let importance = extract_importance(&record.content);
-            let type_name = extract_type_name(&record.content);
-            let tags = extract_tags(&record.content);
-            let tag_score = tags
-                .iter()
-                .filter(|tag| requested_tags.contains(tag.as_str()))
-                .count() as u32;
-            let summary = extract_summary_text(&record.content);
-
-            candidates.push(MemoryRankItem {
-                key: record.key.clone(),
-                type_name,
-                content: summary,
-                importance,
-                tag_score,
-                ts_unix_ms: parse_rfc3339_to_ms(&record.ts).unwrap_or(0),
-            });
-        }
-
-        candidates.sort_by(rank_candidates);
-
-        let mut selected = Vec::<MemoryRankItem>::new();
-        let mut used_tokens = 0_usize;
-        let mut truncated = false;
-
-        for item in &candidates {
-            let line = render_memory_line(item);
-            let line_tokens = estimate_token_count(&line);
-            if used_tokens.saturating_add(line_tokens) > req.token_limit as usize {
-                truncated = true;
-                break;
-            }
-            used_tokens += line_tokens;
-            selected.push(item.clone());
-        }
-
-        debug!(
-            "agent_memory.load_memory: token_limit={} selected={} total={} tags={}",
-            req.token_limit,
-            selected.len(),
-            candidates.len(),
-            req.tags.join(",")
-        );
-
-        if truncated {
-            debug!(
-                "agent_memory.load_memory truncated: selected={} total={} token_estimate={}",
-                selected.len(),
-                candidates.len(),
-                used_tokens
-            );
-        }
-
-        Ok(selected)
-    }
-
-    async fn append_log_line(&self, envelope: &MemoryEnvelope) -> Result<(), AgentToolError> {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.inner.log_path)
+    async fn rebuild_state_from_log(&self) -> Result<HashMap<String, MemoryEnvelope>, AgentToolError> {
+        let content = fs::read_to_string(&self.inner.log_path)
             .await
             .map_err(|err| {
                 AgentToolError::ExecFailed(format!(
-                    "open memory log for append failed: path={}, err={err}",
+                    "read memory log failed: path={} err={err}",
                     self.inner.log_path.display()
                 ))
             })?;
 
-        let line = serde_json::to_string(envelope).map_err(|err| {
-            AgentToolError::ExecFailed(format!("serialize memory envelope failed: {err}"))
-        })?;
-        file.write_all(line.as_bytes()).await.map_err(|err| {
-            AgentToolError::ExecFailed(format!("append memory log line failed: {err}"))
-        })?;
-        file.write_all(b"\n").await.map_err(|err| {
-            AgentToolError::ExecFailed(format!("append memory log newline failed: {err}"))
-        })?;
-        file.flush()
-            .await
-            .map_err(|err| AgentToolError::ExecFailed(format!("flush memory log failed: {err}")))?;
-        Ok(())
-    }
-
-    async fn read_state_map(&self) -> Result<HashMap<String, MemoryEnvelope>, AgentToolError> {
-        self.read_jsonl_map(&self.inner.state_path).await
-    }
-
-    async fn read_latest_from_log(
-        &self,
-    ) -> Result<HashMap<String, MemoryEnvelope>, AgentToolError> {
-        self.read_jsonl_map(&self.inner.log_path).await
-    }
-
-    async fn read_jsonl_map(
-        &self,
-        file_path: &Path,
-    ) -> Result<HashMap<String, MemoryEnvelope>, AgentToolError> {
-        let payload = match fs::read_to_string(file_path).await {
-            Ok(text) => text,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
-            Err(err) => {
-                return Err(AgentToolError::ExecFailed(format!(
-                    "read memory file failed: path={}, err={err}",
-                    file_path.display()
-                )));
-            }
-        };
-
-        let mut result = HashMap::<String, MemoryEnvelope>::new();
-        for (line_idx, raw_line) in payload.lines().enumerate() {
-            let line = raw_line.trim();
-            if line.is_empty() {
+        let mut state_map = HashMap::<String, MemoryEnvelope>::new();
+        for (idx, line) in content.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
                 continue;
             }
-            match serde_json::from_str::<MemoryEnvelope>(line) {
-                Ok(record) => {
-                    result.insert(record.key.clone(), record);
+            match serde_json::from_str::<MemoryEnvelope>(trimmed) {
+                Ok(envelope) => {
+                    if envelope.valid {
+                        let index_path = self.index_path_for_key(&envelope.key);
+                        self.write_index_doc(&index_path, &envelope).await?;
+                        state_map.insert(envelope.key.clone(), envelope);
+                    } else {
+                        state_map.remove(&envelope.key);
+                    }
                 }
                 Err(err) => {
                     warn!(
                         "agent_memory.invalid_jsonl_line: path={} line={} err={}",
-                        file_path.display(),
-                        line_idx + 1,
+                        self.inner.log_path.display(),
+                        idx + 1,
                         err
                     );
                 }
             }
         }
-        Ok(result)
+        Ok(state_map)
     }
 
-    async fn write_state_map_atomic(
+    async fn load_memory_by_request(
         &self,
-        state_map: &HashMap<String, MemoryEnvelope>,
-    ) -> Result<(), AgentToolError> {
-        let mut keys: Vec<&String> = state_map.keys().collect();
-        keys.sort();
+        request: LoadMemoryRequest,
+    ) -> Result<Vec<MemoryRankItem>, AgentToolError> {
+        let state_map = self.read_state_map().await?;
+        let tag_filters = request
+            .tags
+            .iter()
+            .map(|tag| tag.trim().to_ascii_lowercase())
+            .filter(|tag| !tag.is_empty())
+            .collect::<HashSet<_>>();
 
-        let mut body = String::new();
-        for key in keys {
-            let Some(record) = state_map.get(key) else {
-                continue;
-            };
-            if !record.valid {
+        let mut candidates = Vec::<MemoryRankItem>::new();
+        for envelope in state_map.into_values() {
+            if !envelope.valid {
                 continue;
             }
-            let line = serde_json::to_string(record).map_err(|err| {
-                AgentToolError::ExecFailed(format!("serialize state line failed: {err}"))
+            let tags = extract_tags(&envelope.content);
+            if !tag_filters.is_empty()
+                && tags
+                    .iter()
+                    .all(|tag| !tag_filters.contains(&tag.to_ascii_lowercase()))
+            {
+                continue;
+            }
+
+            let recency_hours = parse_rfc3339(&envelope.ts)
+                .map(|ts| request.current_time.signed_duration_since(ts).num_hours().max(0))
+                .unwrap_or(24);
+
+            let importance = extract_importance(&envelope.content);
+            let type_name = extract_type_name(&envelope.content);
+            let summary = extract_summary_text(&envelope.content);
+            let tag_score = tags
+                .iter()
+                .filter(|tag| tag_filters.contains(&tag.to_ascii_lowercase()))
+                .count() as u32;
+            let ts_unix_ms = parse_rfc3339(&envelope.ts)
+                .map(|ts| ts.timestamp_millis())
+                .unwrap_or_default();
+            let token_estimate = estimate_token_count(
+                render_memory_line(&MemoryRankItem {
+                    key: envelope.key.clone(),
+                    ts: envelope.ts.clone(),
+                    source: envelope.source.clone(),
+                    content: envelope.content.clone(),
+                    importance,
+                    recency_hours,
+                    token_estimate: 0,
+                    tags: tags.clone(),
+                    type_name: type_name.clone(),
+                    summary: summary.clone(),
+                    tag_score,
+                    ts_unix_ms,
+                })
+                .as_str(),
+            );
+            candidates.push(MemoryRankItem {
+                key: envelope.key,
+                ts: envelope.ts,
+                source: envelope.source,
+                content: envelope.content,
+                importance,
+                recency_hours,
+                token_estimate,
+                tags,
+                type_name,
+                summary,
+                tag_score,
+                ts_unix_ms,
+            });
+        }
+
+        candidates.sort_by(rank_candidates);
+        let mut selected = Vec::<MemoryRankItem>::new();
+        let mut used_tokens = 0_usize;
+        let mut truncated = false;
+        for item in candidates.into_iter() {
+            let next_total = used_tokens.saturating_add(item.token_estimate);
+            if next_total > request.token_limit as usize {
+                truncated = true;
+                break;
+            }
+            used_tokens = next_total;
+            selected.push(item);
+        }
+
+        info!(
+            "agent_memory.load_memory: token_limit={} selected={} total={} tags={}",
+            request.token_limit,
+            selected.len(),
+            used_tokens,
+            request.tags.join(",")
+        );
+        if truncated {
+            debug!(
+                "agent_memory.load_memory truncated: selected={} total={} token_estimate={}",
+                selected.len(),
+                used_tokens,
+                request.token_limit,
+            );
+        }
+        Ok(selected)
+    }
+
+    async fn compact_locked(&self) -> Result<Json, AgentToolError> {
+        let state_map = self.read_state_map().await?;
+        let mut values = state_map.into_values().collect::<Vec<_>>();
+        values.sort_by(|a, b| a.key.cmp(&b.key).then(a.ts.cmp(&b.ts)));
+
+        let mut body = String::new();
+        for value in &values {
+            let line = serde_json::to_string(value).map_err(|err| {
+                AgentToolError::ExecFailed(format!("serialize compacted memory line failed: {err}"))
             })?;
             body.push_str(&line);
             body.push('\n');
         }
 
-        write_atomic_text(&self.inner.state_path, &body).await
+        atomic_write(&self.inner.log_path, body.as_bytes()).await?;
+        self.write_state_map_atomic(
+            &values
+                .into_iter()
+                .map(|item| (item.key.clone(), item))
+                .collect::<HashMap<_, _>>(),
+        )
+        .await?;
+
+        Ok(json!({
+            "ok": true,
+            "entries": self.read_state_map().await?.len(),
+        }))
     }
 
-    async fn rebuild_index_from_active(
-        &self,
-        active: &HashMap<String, MemoryEnvelope>,
-    ) -> Result<(), AgentToolError> {
-        if let Err(err) = fs::remove_dir_all(&self.inner.index_root).await {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                return Err(AgentToolError::ExecFailed(format!(
-                    "cleanup memory index dir failed: path={}, err={err}",
-                    self.inner.index_root.display()
-                )));
-            }
-        }
-        fs::create_dir_all(&self.inner.index_root)
+    async fn append_log_line(&self, envelope: &MemoryEnvelope) -> Result<(), AgentToolError> {
+        let line = serde_json::to_string(envelope).map_err(|err| {
+            AgentToolError::ExecFailed(format!("serialize memory log line failed: {err}"))
+        })?;
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&self.inner.log_path)
             .await
             .map_err(|err| {
-                AgentToolError::ExecFailed(format!("recreate memory index dir failed: {err}"))
+                AgentToolError::ExecFailed(format!(
+                    "open memory log failed: path={} err={err}",
+                    self.inner.log_path.display()
+                ))
             })?;
-
-        let mut keys: Vec<&String> = active.keys().collect();
-        keys.sort();
-        for key in keys {
-            let Some(record) = active.get(key) else {
-                continue;
-            };
-            let index_path = self.index_path_for_key(&record.key);
-            self.write_index_doc(&index_path, record).await?;
-        }
+        file.write_all(line.as_bytes()).await.map_err(|err| {
+            AgentToolError::ExecFailed(format!(
+                "append memory log failed: path={} err={err}",
+                self.inner.log_path.display()
+            ))
+        })?;
+        file.write_all(b"\n").await.map_err(|err| {
+            AgentToolError::ExecFailed(format!(
+                "append memory log newline failed: path={} err={err}",
+                self.inner.log_path.display()
+            ))
+        })?;
+        file.flush().await.map_err(|err| {
+            AgentToolError::ExecFailed(format!(
+                "flush memory log failed: path={} err={err}",
+                self.inner.log_path.display()
+            ))
+        })?;
         Ok(())
+    }
+
+    async fn read_state_map(&self) -> Result<HashMap<String, MemoryEnvelope>, AgentToolError> {
+        let content = fs::read_to_string(&self.inner.state_path)
+            .await
+            .map_err(|err| {
+                AgentToolError::ExecFailed(format!(
+                    "read memory state failed: path={} err={err}",
+                    self.inner.state_path.display()
+                ))
+            })?;
+        let mut out = HashMap::<String, MemoryEnvelope>::new();
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let envelope = serde_json::from_str::<MemoryEnvelope>(trimmed).map_err(|err| {
+                AgentToolError::ExecFailed(format!(
+                    "parse memory state failed: path={} err={err}",
+                    self.inner.state_path.display()
+                ))
+            })?;
+            out.insert(envelope.key.clone(), envelope);
+        }
+        Ok(out)
+    }
+
+    async fn write_state_map_atomic(
+        &self,
+        map: &HashMap<String, MemoryEnvelope>,
+    ) -> Result<(), AgentToolError> {
+        let mut values = map.values().cloned().collect::<Vec<_>>();
+        values.sort_by(|a, b| a.key.cmp(&b.key).then(a.ts.cmp(&b.ts)));
+
+        let mut body = String::new();
+        for value in values {
+            let line = serde_json::to_string(&value).map_err(|err| {
+                AgentToolError::ExecFailed(format!("serialize memory state line failed: {err}"))
+            })?;
+            body.push_str(&line);
+            body.push('\n');
+        }
+        atomic_write(&self.inner.state_path, body.as_bytes()).await
     }
 
     async fn write_index_doc(
         &self,
-        index_path: &Path,
-        record: &MemoryEnvelope,
+        path: &Path,
+        envelope: &MemoryEnvelope,
     ) -> Result<(), AgentToolError> {
-        if let Some(parent) = index_path.parent() {
-            fs::create_dir_all(parent).await.map_err(|err| {
-                AgentToolError::ExecFailed(format!(
-                    "create index parent dir failed: path={}, err={err}",
-                    parent.display()
-                ))
-            })?;
-        }
         let doc = MemoryIndexDocument {
-            key: record.key.clone(),
-            ts: record.ts.clone(),
-            source: record.source.clone(),
-            content: record.content.clone(),
+            key: envelope.key.clone(),
+            ts: envelope.ts.clone(),
+            source: envelope.source.clone(),
+            content: envelope.content.clone(),
         };
-        let payload = serde_json::to_string_pretty(&doc).map_err(|err| {
+        let bytes = serde_json::to_vec_pretty(&doc).map_err(|err| {
             AgentToolError::ExecFailed(format!("serialize memory index doc failed: {err}"))
         })?;
-        write_atomic_text(index_path, &payload).await
+        atomic_write(path, &bytes).await
     }
 
     fn index_path_for_key(&self, key: &str) -> PathBuf {
-        let segments: Vec<&str> = key.trim_start_matches('/').split('/').collect();
-        let mut path = self.inner.index_root.clone();
-        if segments.is_empty() {
-            return path.join("_root@00000000.json");
-        }
-        if segments.len() == 1 {
-            let file_segment = build_index_file_segment(segments[0]);
-            return path.join(file_segment);
-        }
-
-        for segment in &segments[..segments.len() - 1] {
-            path = path.join(build_index_dir_segment(segment));
-        }
-        path.join(build_index_file_segment(segments[segments.len() - 1]))
+        let digest = Sha256::digest(key.as_bytes());
+        let hex = hex::encode(digest);
+        let dir = &hex[..MAX_INDEX_SEGMENT_BYTES.min(hex.len())];
+        self.inner.index_root.join(dir).join("entry.json")
     }
 }
 
 #[async_trait]
-impl ::agent_tool::MemoryLoadBackend for AgentMemory {
+impl MemoryLoadBackend for AgentMemory {
     async fn load_memory_preview(
         &self,
         token_limit: Option<u32>,
@@ -565,7 +561,8 @@ impl ::agent_tool::MemoryLoadBackend for AgentMemory {
     ) -> Result<MemoryLoadPreview, AgentToolError> {
         let current_time = current_time
             .as_deref()
-            .and_then(|raw| parse_rfc3339_to_utc(raw).ok());
+            .map(parse_rfc3339)
+            .transpose()?;
         let items = self.load_memory(token_limit, tags, current_time).await?;
         Ok(MemoryLoadPreview {
             rendered: Self::render_memory_items(&items),
@@ -574,12 +571,18 @@ impl ::agent_tool::MemoryLoadBackend for AgentMemory {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct MemoryRankItem {
     pub key: String,
-    pub type_name: String,
-    pub content: String,
+    pub ts: String,
+    pub source: Json,
+    pub content: Json,
     pub importance: i64,
+    pub recency_hours: i64,
+    pub token_estimate: usize,
+    pub tags: Vec<String>,
+    pub type_name: String,
+    pub summary: String,
     pub tag_score: u32,
     pub ts_unix_ms: i64,
 }
@@ -589,7 +592,7 @@ fn rank_candidates(a: &MemoryRankItem, b: &MemoryRankItem) -> Ordering {
         .cmp(&a.ts_unix_ms)
         .then_with(|| b.importance.cmp(&a.importance))
         .then_with(|| b.tag_score.cmp(&a.tag_score))
-        .then_with(|| a.key.cmp(&b.key))
+        .then(a.key.cmp(&b.key))
 }
 
 fn render_memory_line(item: &MemoryRankItem) -> String {
@@ -603,48 +606,45 @@ fn render_memory_line(item: &MemoryRankItem) -> String {
         "- {}{} {}",
         key_part,
         type_part,
-        truncate_chars(item.content.as_str(), 120)
+        truncate_chars(item.summary.as_str(), 120)
     )
 }
 
 fn extract_importance(content: &Json) -> i64 {
-    match content.get("importance") {
-        Some(Json::Number(n)) => n
-            .as_i64()
-            .or_else(|| n.as_f64().map(|f| f as i64))
-            .unwrap_or(0),
-        Some(Json::String(s)) => s.parse::<i64>().unwrap_or(0),
-        _ => 0,
-    }
-}
-
-fn extract_type_name(content: &Json) -> String {
     content
-        .get("type")
-        .and_then(|v| v.as_str())
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_default()
+        .get("importance")
+        .and_then(Json::as_i64)
+        .unwrap_or(0)
 }
 
 fn extract_tags(content: &Json) -> Vec<String> {
     content
         .get("tags")
-        .and_then(|v| v.as_array())
+        .and_then(Json::as_array)
         .map(|arr| {
             arr.iter()
-                .filter_map(|v| v.as_str())
-                .map(|v| v.trim().to_ascii_lowercase())
-                .filter(|v| !v.is_empty())
-                .collect()
+                .filter_map(Json::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
         })
+        .unwrap_or_default()
+}
+
+fn extract_type_name(content: &Json) -> String {
+    content
+        .get("type")
+        .and_then(Json::as_str)
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
         .unwrap_or_default()
 }
 
 fn extract_summary_text(content: &Json) -> String {
     if let Some(summary) = content
         .get("summary")
-        .and_then(|v| v.as_str())
+        .and_then(Json::as_str)
         .map(str::trim)
         .filter(|v| !v.is_empty())
     {
@@ -652,7 +652,7 @@ fn extract_summary_text(content: &Json) -> String {
     }
     if let Some(text) = content
         .get("text")
-        .and_then(|v| v.as_str())
+        .and_then(Json::as_str)
         .map(str::trim)
         .filter(|v| !v.is_empty())
     {
@@ -665,198 +665,71 @@ fn extract_summary_text(content: &Json) -> String {
     truncate_chars(serialized.as_str(), 140)
 }
 
-fn parse_rfc3339_to_ms(raw: &str) -> Option<i64> {
-    parse_rfc3339_to_utc(raw)
-        .ok()
-        .map(|dt| dt.timestamp_millis())
+fn parse_rfc3339(raw: &str) -> Result<DateTime<Utc>, AgentToolError> {
+    DateTime::parse_from_rfc3339(raw)
+        .map(|value| value.with_timezone(&Utc))
+        .map_err(|err| AgentToolError::InvalidArgs(format!("invalid RFC3339 timestamp: {err}")))
 }
 
-fn parse_rfc3339_to_utc(raw: &str) -> Result<DateTime<Utc>, chrono::ParseError> {
-    DateTime::parse_from_rfc3339(raw).map(|dt| dt.with_timezone(&Utc))
+fn parse_content_value(content: &str) -> Json {
+    serde_json::from_str::<Json>(content).unwrap_or_else(|_| Json::String(content.to_string()))
 }
 
-fn is_expired_at(raw_expired_at: Option<&Json>, now: &DateTime<Utc>) -> bool {
-    let Some(raw) = raw_expired_at else {
-        return false;
+fn estimate_token_count(text: &str) -> usize {
+    text.chars().count().div_ceil(4).max(1)
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars();
+    for _ in 0..max_chars {
+        let Some(ch) = chars.next() else {
+            return text.to_string();
+        };
+        out.push(ch);
+    }
+    if chars.next().is_some() {
+        out.push_str("...");
+    }
+    out
+}
+
+fn validate_source(key: &str, source: &Json) -> Result<(), AgentToolError> {
+    let Some(map) = source.as_object() else {
+        return Err(AgentToolError::InvalidArgs(format!(
+            "memory source for `{key}` must be object"
+        )));
     };
-    let Some(text) = raw.as_str() else {
-        return false;
-    };
-    parse_rfc3339_to_utc(text)
-        .map(|expired| now > &expired)
-        .unwrap_or(false)
+    for required in ["kind", "name", "retrieved_at", "locator"] {
+        if !map.contains_key(required) {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "memory source for `{key}` missing required field `{required}`"
+            )));
+        }
+    }
+    Ok(())
 }
 
-fn normalize_key(raw_key: &str) -> Result<String, AgentToolError> {
-    let raw = raw_key.trim();
-    if raw.is_empty() {
+fn normalize_key(key: &str) -> Result<String, AgentToolError> {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
         return Err(AgentToolError::InvalidArgs(
             "memory key cannot be empty".to_string(),
         ));
     }
-    let key = if raw.starts_with('/') {
-        raw.to_string()
+    let normalized = if trimmed.starts_with('/') {
+        trimmed.to_string()
     } else {
-        format!("/{raw}")
+        format!("/{trimmed}")
     };
-    if key.contains('\0') || key.contains('\n') || key.contains('\r') {
-        return Err(AgentToolError::InvalidArgs(
-            "memory key contains forbidden control characters".to_string(),
-        ));
-    }
-
-    let mut segments = Vec::<&str>::new();
-    for segment in key.split('/') {
-        let seg = segment.trim();
-        if seg.is_empty() {
-            continue;
-        }
-        if seg == "." || seg == ".." {
-            return Err(AgentToolError::InvalidArgs(
-                "memory key cannot contain `.` or `..` segments".to_string(),
-            ));
-        }
-        segments.push(seg);
-    }
-
-    if segments.is_empty() {
-        return Err(AgentToolError::InvalidArgs(
-            "memory key must include at least one segment".to_string(),
-        ));
-    }
-    Ok(format!("/{}", segments.join("/")))
-}
-
-fn validate_source(key: &str, source: &Json) -> Result<(), AgentToolError> {
-    if source.is_null() {
-        return Err(AgentToolError::InvalidArgs(
-            "source is required and cannot be null".to_string(),
-        ));
-    }
-
-    if let Some(text) = source.as_str() {
-        if text.trim().is_empty() {
-            return Err(AgentToolError::InvalidArgs(
-                "source string cannot be empty".to_string(),
-            ));
-        }
-        if key.starts_with("/kb/") || key == "/kb" {
-            return Err(AgentToolError::InvalidArgs(
-                "kb namespace requires object provenance source".to_string(),
-            ));
-        }
-        return Ok(());
-    }
-
-    let Some(obj) = source.as_object() else {
-        return Err(AgentToolError::InvalidArgs(
-            "source must be object or string".to_string(),
-        ));
-    };
-
-    let kind = obj.get("kind").and_then(|v| v.as_str()).unwrap_or_default();
-    let should_require_provenance =
-        key.starts_with("/kb/") || key == "/kb" || matches!(kind, "web" | "tool" | "file");
-
-    if should_require_provenance {
-        let name = obj.get("name").and_then(|v| v.as_str()).unwrap_or_default();
-        let retrieved_at = obj
-            .get("retrieved_at")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        let locator = obj.get("locator");
-
-        if kind.trim().is_empty()
-            || name.trim().is_empty()
-            || retrieved_at.trim().is_empty()
-            || locator.is_none()
-        {
-            return Err(AgentToolError::InvalidArgs(
-                "source missing required provenance fields: kind/name/retrieved_at/locator"
-                    .to_string(),
-            ));
-        }
-        parse_rfc3339_to_utc(retrieved_at).map_err(|err| {
-            AgentToolError::InvalidArgs(format!("source.retrieved_at must be RFC3339: {err}"))
-        })?;
-    }
-
-    Ok(())
-}
-
-fn parse_content_value(raw_content: &str) -> Json {
-    if raw_content.trim().is_empty() {
-        return Json::String(String::new());
-    }
-
-    serde_json::from_str::<Json>(raw_content)
-        .unwrap_or_else(|_| Json::String(raw_content.to_string()))
-}
-
-fn build_index_dir_segment(raw_segment: &str) -> String {
-    sanitize_index_segment(raw_segment, false)
-}
-
-fn build_index_file_segment(raw_segment: &str) -> String {
-    format!(
-        "{}@{}.json",
-        sanitize_index_segment(raw_segment, true),
-        short_hash_hex(raw_segment.as_bytes())
-    )
-}
-
-fn sanitize_index_segment(raw_segment: &str, is_file_name: bool) -> String {
-    let mut encoded = String::new();
-    for byte in raw_segment.as_bytes() {
-        let c = *byte as char;
-        if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
-            encoded.push(c);
-        } else {
-            encoded.push('%');
-            encoded.push_str(format!("{:02X}", byte).as_str());
-        }
-    }
-
-    if encoded.is_empty() {
-        encoded.push('_');
-    }
-
-    if encoded.len() > MAX_INDEX_SEGMENT_BYTES {
-        let keep_len = MAX_INDEX_SEGMENT_BYTES.min(encoded.len());
-        let prefix = encoded.chars().take(keep_len).collect::<String>();
-        let digest = short_hash_hex(raw_segment.as_bytes());
-        encoded = format!("{prefix}@{digest}");
-    }
-
-    if is_file_name && encoded.ends_with('.') {
-        encoded.push('_');
-    }
-    encoded
-}
-
-fn short_hash_hex(data: &[u8]) -> String {
-    let digest = Sha256::digest(data);
-    hex::encode(&digest[..4])
-}
-
-fn truncate_chars(input: &str, max_chars: usize) -> String {
-    if input.chars().count() <= max_chars {
-        return input.to_string();
-    }
-    let mut out = input.chars().take(max_chars).collect::<String>();
-    out.push_str("...");
-    out
-}
-
-fn estimate_token_count(text: &str) -> usize {
-    text.split_whitespace().count().max(1)
+    Ok(normalized)
 }
 
 async fn touch_file(path: &Path) -> Result<(), AgentToolError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await.map_err(|err| {
             AgentToolError::ExecFailed(format!(
-                "create parent directory failed: path={}, err={err}",
+                "create parent dir failed: path={} err={err}",
                 parent.display()
             ))
         })?;
@@ -867,10 +740,7 @@ async fn touch_file(path: &Path) -> Result<(), AgentToolError> {
         .open(path)
         .await
         .map_err(|err| {
-            AgentToolError::ExecFailed(format!(
-                "touch file failed: path={}, err={err}",
-                path.display()
-            ))
+            AgentToolError::ExecFailed(format!("touch file failed: path={} err={err}", path.display()))
         })?;
     Ok(())
 }
@@ -879,22 +749,21 @@ async fn file_len_or_zero(path: &Path) -> u64 {
     fs::metadata(path).await.map(|meta| meta.len()).unwrap_or(0)
 }
 
-async fn write_atomic_text(path: &Path, body: &str) -> Result<(), AgentToolError> {
+async fn atomic_write(path: &Path, body: &[u8]) -> Result<(), AgentToolError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await.map_err(|err| {
             AgentToolError::ExecFailed(format!(
-                "create parent dir failed for atomic write: path={}, err={err}",
+                "create parent dir failed: path={} err={err}",
                 parent.display()
             ))
         })?;
     }
 
     let tmp_name = format!(
-        ".{}.tmp.{}",
+        ".{}.tmp",
         path.file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("memory"),
-        Utc::now().timestamp_nanos_opt().unwrap_or(0)
+            .and_then(|name| name.to_str())
+            .unwrap_or("memory")
     );
     let tmp_path = path
         .parent()
@@ -922,6 +791,7 @@ mod tests {
     use super::*;
     use buckyos_api::{value_to_object_map, AiToolCall};
     use tempfile::tempdir;
+    use crate::SessionRuntimeContext;
 
     fn test_trace_ctx() -> SessionRuntimeContext {
         SessionRuntimeContext {
@@ -961,7 +831,6 @@ mod tests {
             .await
             .expect("load memory");
         let memory_text = AgentMemory::render_memory_items(&loaded);
-        print!("Loaded memory:\n{memory_text}");
         assert!(memory_text.contains("user/preference/style"));
         assert!(memory_text.contains("用户偏好简洁回复"));
     }
@@ -1140,21 +1009,11 @@ mod tests {
             .await
             .expect("load memory with token limit for 40 lines");
         let forty = AgentMemory::render_memory_items(&forty);
-        print!("Loaded memory after tombstone:\n{forty}");
         let twenty = memory
             .load_memory(Some(token_limit_20), vec!["trim".to_string()], None)
             .await
             .expect("load memory with token limit for 20 lines");
         let twenty = AgentMemory::render_memory_items(&twenty);
-
-        println!(
-            "load_memory(token_limit={} -> target 40 lines):\n{}",
-            token_limit_40, forty
-        );
-        println!(
-            "load_memory(token_limit={} -> target 20 lines):\n{}",
-            token_limit_20, twenty
-        );
 
         let forty_lines = forty
             .lines()

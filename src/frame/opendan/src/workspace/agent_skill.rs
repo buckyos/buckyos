@@ -238,9 +238,8 @@ mod tests {
     use tokio::sync::Mutex;
 
     use crate::agent_environment::AgentEnvironment;
-    use crate::agent_memory::{AgentMemory, AgentMemoryConfig};
     use crate::agent_session::{AgentSession, AgentSessionMgr, GetSessionTool};
-    use crate::agent_tool::{AgentToolManager, ToolSpec};
+    use crate::agent_tool::{AgentMemory, AgentMemoryConfig, AgentToolManager, ToolSpec};
     use crate::behavior::{
         BehaviorConfig, BehaviorExecInput, PromptBuilder, SessionRuntimeContext, StepLimits,
         Tokenizer,

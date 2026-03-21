@@ -3,7 +3,6 @@ pub mod agent;
 pub mod agent_bash;
 pub mod agent_config;
 pub mod agent_environment;
-pub mod agent_memory;
 pub mod agent_session;
 pub mod agent_tool;
 pub mod ai_runtime;
