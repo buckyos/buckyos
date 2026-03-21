@@ -8,16 +8,12 @@ use serde_json::{json, Map, Value};
 use thiserror::Error;
 
 use std::collections::HashMap;
-use std::sync::LazyLock;
 use tokio::sync::{OnceCell, RwLock};
 
 use crate::KVAction;
 
 const CONFIG_CACHE_TIME: u64 = 10; //10s
-
-//key -> (value,version)
-static CONFIG_CACHE: LazyLock<RwLock<HashMap<String, (String, u64)>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
+type ConfigCache = HashMap<String, (String, u64, u64)>;
 
 #[derive(Error, Debug)]
 pub enum SystemConfigError {
@@ -34,9 +30,9 @@ pub enum SystemConfigError {
 pub type SytemConfigResult<T> = std::result::Result<T, SystemConfigError>;
 pub struct SystemConfigClient {
     client: kRPC,
-    session_token: Option<String>,
+    session_token: RwLock<Option<String>>,
     cache_key_control: OnceCell<Vec<String>>,
-    current_version: RwLock<u64>,
+    config_cache: RwLock<ConfigCache>,
 }
 
 pub struct SystemConfigValue {
@@ -74,56 +70,85 @@ impl SystemConfigClient {
         Ok(())
     }
 
-    async fn get_config_cache(&self, key: &str) -> Option<String> {
-        let config_cache = &CONFIG_CACHE;
-        let current_version = self.current_version.read().await;
-        let real_current_version = *current_version;
-        drop(current_version);
+    async fn rpc_get_optional_value_with_revision(
+        &self,
+        key: &str,
+    ) -> SytemConfigResult<Option<(String, u64)>> {
+        let result = self
+            .client
+            .call("sys_config_get", json!({"key": key}))
+            .await
+            .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
 
-        let cache_guard = config_cache.read().await;
+        if result.is_null() {
+            return Ok(None);
+        }
+
+        let value = result
+            .get("value")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                SystemConfigError::ReasonError(format!(
+                    "sys_config_get missing string value for key {}",
+                    key
+                ))
+            })?;
+        let revision = result
+            .get("version")
+            .and_then(|value| value.as_u64())
+            .ok_or_else(|| {
+                SystemConfigError::ReasonError(format!(
+                    "sys_config_get missing numeric version for key {}",
+                    key
+                ))
+            })?;
+
+        Ok(Some((value.to_string(), revision)))
+    }
+
+    async fn get_config_cache(&self, key: &str) -> Option<(String, u64)> {
+        let cache_guard = self.config_cache.read().await;
         let v = cache_guard.get(key);
         if v.is_none() {
             return None;
         }
-        let (value, version) = v.unwrap();
-        if version + CONFIG_CACHE_TIME < real_current_version {
+        let (value, revision, cached_at) = v.unwrap();
+        let now = buckyos_get_unix_timestamp();
+        if *cached_at + CONFIG_CACHE_TIME < now {
             // 缓存过期，删除缓存项
             drop(cache_guard); // 释放读锁
-            let mut cache_guard = config_cache.write().await;
+            let mut cache_guard = self.config_cache.write().await;
             cache_guard.remove(key);
             return None;
         }
-        debug!("get system_config from CONFIG_CACHE {}=>{}", &key, &value);
-        Some(value.clone())
+        debug!(
+            "get system_config from CONFIG_CACHE {}=>{}@{}",
+            &key, &value, revision
+        );
+        Some((value.clone(), *revision))
     }
 
-    async fn set_config_cache(&self, key: &str, value: &str, version: u64) -> bool {
+    async fn set_config_cache(&self, key: &str, value: &str, revision: u64) -> bool {
         if !self.need_cache(key) {
             return true;
         }
 
-        let mut current_version = self.current_version.write().await;
-        if *current_version < version {
-            *current_version = version;
-        }
-        drop(current_version);
-
-        let config_cache = &CONFIG_CACHE;
-        let mut cache_guard = config_cache.write().await;
-        let old_value = cache_guard.insert(key.to_string(), (value.to_string(), version));
+        let mut cache_guard = self.config_cache.write().await;
+        let cached_at = buckyos_get_unix_timestamp();
+        let old_value =
+            cache_guard.insert(key.to_string(), (value.to_string(), revision, cached_at));
         if old_value.is_none() {
             return true;
         }
         let old_value = old_value.unwrap();
-        if old_value.0 == value {
+        if old_value.0 == value && old_value.1 == revision {
             return false;
         }
         true
     }
 
     async fn remove_config_cache(&self, key: &str) {
-        let config_cache = &CONFIG_CACHE;
-        let mut cache_guard = config_cache.write().await;
+        let mut cache_guard = self.config_cache.write().await;
         cache_guard.remove(key);
     }
 
@@ -150,14 +175,27 @@ impl SystemConfigClient {
 
         SystemConfigClient {
             client,
-            session_token: real_session_token,
+            session_token: RwLock::new(real_session_token),
             cache_key_control: cache_key_control,
-            current_version: RwLock::new(0),
+            config_cache: RwLock::new(HashMap::new()),
         }
     }
 
-    pub fn get_session_token(&self) -> Option<String> {
-        self.session_token.clone()
+    pub async fn get_session_token(&self) -> Option<String> {
+        let session_token = self.session_token.read().await;
+        session_token.clone()
+    }
+
+    pub async fn sync_session_token(&self, session_token: Option<&str>) -> SytemConfigResult<()> {
+        let next_token = session_token.map(|value| value.to_string());
+
+        let mut context = RPCContext::default();
+        context.token = next_token.clone();
+        self.client.set_context(context).await;
+
+        let mut current_token = self.session_token.write().await;
+        *current_token = next_token;
+        Ok(())
     }
 
     fn get_krpc_client(&self) -> SytemConfigResult<&kRPC> {
@@ -167,32 +205,20 @@ impl SystemConfigClient {
     //return (value,version,is_changed)
     pub async fn get(&self, key: &str) -> SytemConfigResult<SystemConfigValue> {
         // 首先尝试从缓存获取
-        if let Some(cached_value) = self.get_config_cache(key).await {
-            return Ok(SystemConfigValue::new(cached_value, 0, false));
+        if let Some((cached_value, cached_revision)) = self.get_config_cache(key).await {
+            return Ok(SystemConfigValue::new(cached_value, cached_revision, false));
         }
 
         // 缓存中没有，从服务器获取
-
-        let result = self
-            .client
-            .call("sys_config_get", json!({"key": key}))
-            .await
-            .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
-
-        if result.is_null() {
+        let result = self.rpc_get_optional_value_with_revision(key).await?;
+        let Some((value, revision)) = result else {
             return Err(SystemConfigError::KeyNotFound(key.to_string()));
-        }
-        let value = result.as_str().unwrap_or("");
-        let revision = buckyos_get_unix_timestamp();
+        };
 
         // 将结果存入缓存
         let is_changed = self.set_config_cache(key, &value, revision).await;
 
-        Ok(SystemConfigValue::new(
-            value.to_string(),
-            revision,
-            is_changed,
-        ))
+        Ok(SystemConfigValue::new(value, revision, is_changed))
     }
 
     pub async fn set(&self, key: &str, value: &str) -> SytemConfigResult<u64> {
@@ -214,9 +240,7 @@ impl SystemConfigClient {
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
 
-        let revision = buckyos_get_unix_timestamp();
-        let _is_changed = self.set_config_cache(key, value, revision).await;
-
+        self.remove_config_cache(key).await;
         Ok(0)
     }
 
@@ -235,8 +259,7 @@ impl SystemConfigClient {
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
 
-        let revision = buckyos_get_unix_timestamp();
-        let _is_changed = self.set_config_cache(key, value, revision).await;
+        self.remove_config_cache(key).await;
 
         Ok(0)
     }
@@ -248,6 +271,7 @@ impl SystemConfigClient {
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
 
+        self.remove_config_cache(key).await;
         Ok(0)
     }
 
@@ -271,8 +295,7 @@ impl SystemConfigClient {
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
 
-        let revision = buckyos_get_unix_timestamp();
-        let _is_changed = self.set_config_cache(key, value, revision).await;
+        self.remove_config_cache(key).await;
 
         Ok(0)
     }
@@ -390,5 +413,49 @@ impl SystemConfigClient {
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cache_is_scoped_to_client_instance() {
+        let client_a = SystemConfigClient::new(None, Some("token-a"));
+        let client_b = SystemConfigClient::new(None, Some("token-b"));
+
+        assert!(
+            client_a
+                .set_config_cache("services/demo", "value-a", 1)
+                .await
+        );
+        assert_eq!(
+            client_a.get_config_cache("services/demo").await,
+            Some(("value-a".to_string(), 1))
+        );
+        assert_eq!(client_b.get_config_cache("services/demo").await, None);
+
+        client_a.remove_config_cache("services/demo").await;
+        assert_eq!(client_a.get_config_cache("services/demo").await, None);
+    }
+
+    #[tokio::test]
+    async fn sync_session_token_updates_underlying_krpc_client() {
+        let client = SystemConfigClient::new(None, Some("token-a"));
+
+        client
+            .sync_session_token(Some("token-b"))
+            .await
+            .expect("sync session token");
+
+        assert_eq!(
+            client.get_session_token().await,
+            Some("token-b".to_string())
+        );
+        assert_eq!(
+            client.client.get_session_token().await,
+            Some("token-b".to_string())
+        );
     }
 }

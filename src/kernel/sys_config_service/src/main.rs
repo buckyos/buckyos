@@ -45,6 +45,16 @@ lazy_static! {
         Arc::new(Mutex::new(SledStore::new().unwrap()));
 }
 
+const INTERNAL_META_PREFIX: &str = "__meta/";
+
+fn is_internal_meta_key(key_path: &str) -> bool {
+    let key = key_path
+        .trim_start_matches("/config/")
+        .trim_start_matches('/')
+        .trim_start_matches('\\');
+    key.starts_with(INTERNAL_META_PREFIX)
+}
+
 fn get_full_res_path(key_path: &str) -> Result<(String, String)> {
     let mut real_key_path = key_path;
     if key_path.starts_with("/config/") {
@@ -75,6 +85,12 @@ async fn handle_get(params: Value, session_token: &RPCSessionToken) -> Result<Va
     }
     let key = key.unwrap();
 
+    if is_internal_meta_key(key) {
+        return Err(RPCErrors::ReasonError(
+            "internal metadata key is reserved".to_string(),
+        ));
+    }
+
     if session_token.sub.is_none() {
         return Err(RPCErrors::NoPermission("No sub(userid)".to_string()));
     }
@@ -95,14 +111,16 @@ async fn handle_get(params: Value, session_token: &RPCSessionToken) -> Result<Va
 
     let store = SYS_STORE.lock().await;
     let result = store
-        .get(real_key_path)
+        .get_with_revision(real_key_path)
         .await
         .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
-    if result.is_none() {
+    let Some((value, version)) = result else {
         return Ok(Value::Null);
-    } else {
-        return Ok(Value::String(result.unwrap()));
-    }
+    };
+    Ok(serde_json::json!({
+        "value": value,
+        "version": version,
+    }))
 }
 
 async fn handle_set(params: Value, session_token: &RPCSessionToken) -> Result<Value> {
@@ -120,6 +138,11 @@ async fn handle_set(params: Value, session_token: &RPCSessionToken) -> Result<Va
     }
     let new_value = new_value.unwrap();
     let new_value = new_value.as_str().unwrap();
+    if is_internal_meta_key(key) {
+        return Err(RPCErrors::ReasonError(
+            "internal metadata key is reserved".to_string(),
+        ));
+    }
 
     //check access control
     if session_token.sub.is_none() {
@@ -181,6 +204,11 @@ async fn handle_create(params: Value, session_token: &RPCSessionToken) -> Result
     }
     let new_value = new_value.unwrap();
     let new_value = new_value.as_str().unwrap();
+    if is_internal_meta_key(key) {
+        return Err(RPCErrors::ReasonError(
+            "internal metadata key is reserved".to_string(),
+        ));
+    }
 
     //check access control
     if session_token.sub.is_none() {
@@ -237,6 +265,11 @@ async fn handle_delete(params: Value, session_token: &RPCSessionToken) -> Result
     }
     let key = key.unwrap();
     let key = key.as_str().unwrap();
+    if is_internal_meta_key(key) {
+        return Err(RPCErrors::ReasonError(
+            "internal metadata key is reserved".to_string(),
+        ));
+    }
 
     //check access control
     if session_token.sub.is_none() {
@@ -297,6 +330,11 @@ async fn handle_append(params: Value, session_token: &RPCSessionToken) -> Result
     }
     let append_value = append_value.unwrap();
     let append_value = append_value.as_str().unwrap();
+    if is_internal_meta_key(key) {
+        return Err(RPCErrors::ReasonError(
+            "internal metadata key is reserved".to_string(),
+        ));
+    }
 
     //check access control
     if session_token.sub.is_none() {
@@ -359,6 +397,11 @@ async fn handle_set_by_json_path(params: Value, session_token: &RPCSessionToken)
     }
     let new_value = new_value.unwrap();
     let new_value = new_value.as_str().unwrap();
+    if is_internal_meta_key(key) {
+        return Err(RPCErrors::ReasonError(
+            "internal metadata key is reserved".to_string(),
+        ));
+    }
     let new_value: Value =
         serde_json::from_str(new_value).map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
 
@@ -442,6 +485,12 @@ async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Resul
 
     // Process each action into KVAction
     for (key, action) in actions.as_object().unwrap() {
+        if is_internal_meta_key(key) {
+            return Err(RPCErrors::ReasonError(format!(
+                "internal metadata key is reserved: {}",
+                key
+            )));
+        }
         let (full_res_path, real_key_path) = get_full_res_path(key)?;
         if !enforce(
             userid,
@@ -559,6 +608,11 @@ async fn handle_list(params: Value, session_token: &RPCSessionToken) -> Result<V
     }
     let key = key.unwrap();
     let key = key.as_str().unwrap();
+    if is_internal_meta_key(key) {
+        return Err(RPCErrors::ReasonError(
+            "internal metadata key is reserved".to_string(),
+        ));
+    }
 
     //check access control
     if session_token.sub.is_none() {
@@ -1284,7 +1338,13 @@ mod test {
             )
             .await
             .unwrap();
-        assert_eq!(result.as_str().unwrap(), "{\"field\":\"new_value\"}");
+        assert_eq!(
+            result
+                .get("value")
+                .and_then(|value| value.as_str())
+                .unwrap(),
+            "{\"field\":\"new_value\"}"
+        );
         //test token expired
         sleep(Duration::from_millis(8000)).await;
         println!("test token expired");
@@ -1375,7 +1435,11 @@ mod test {
             .call("sys_config_get", json!({"key": "users/alice/key1"}))
             .await;
         assert_eq!(
-            get_key1.unwrap().as_str().unwrap(),
+            get_key1
+                .unwrap()
+                .get("value")
+                .and_then(|value| value.as_str())
+                .unwrap(),
             "value1",
             "Key1 should have correct value"
         );
@@ -1384,7 +1448,11 @@ mod test {
             .call("sys_config_get", json!({"key": "users/alice/key2"}))
             .await;
         assert_eq!(
-            get_key2.unwrap().as_str().unwrap(),
+            get_key2
+                .unwrap()
+                .get("value")
+                .and_then(|value| value.as_str())
+                .unwrap(),
             "value2",
             "Key2 should have correct value"
         );

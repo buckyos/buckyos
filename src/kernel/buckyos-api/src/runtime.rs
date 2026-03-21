@@ -78,6 +78,7 @@ pub struct BuckyOSRuntime {
     trust_keys: Arc<RwLock<HashMap<String, DecodingKey>>>,
     last_update_service_info_time: RwLock<u64>,
     named_store_mgr: OnceCell<NamedStoreMgr>,
+    system_config_client: OnceCell<Arc<SystemConfigClient>>,
 
     pub force_https: bool,
     pub buckyos_root_dir: PathBuf,
@@ -128,6 +129,7 @@ impl BuckyOSRuntime {
             trust_keys: Arc::new(RwLock::new(HashMap::new())),
             last_update_service_info_time: RwLock::new(0),
             named_store_mgr: OnceCell::new(),
+            system_config_client: OnceCell::new(),
             web3_bridges: HashMap::new(),
             force_https: true,
             registered_tasks_started: AtomicBool::new(false),
@@ -1427,7 +1429,7 @@ impl BuckyOSRuntime {
 
     pub async fn get_system_control_panel_client(&self) -> Result<ControlPanelClient> {
         let system_config_client = self.get_system_config_client().await?;
-        let client = ControlPanelClient::new(system_config_client);
+        let client = ControlPanelClient::from_shared(system_config_client);
         Ok(client)
     }
 
@@ -1444,7 +1446,7 @@ impl BuckyOSRuntime {
         }
     }
 
-    pub async fn get_system_config_client(&self) -> Result<SystemConfigClient> {
+    pub async fn get_system_config_client(&self) -> Result<Arc<SystemConfigClient>> {
         let mut url = format!(
             "http://{}:3200/kapi/system_config",
             self.resolve_local_service_host()
@@ -1474,9 +1476,21 @@ impl BuckyOSRuntime {
 
         //let url = self.get_zone_service_url("system_config",self.force_https)?;
         let session_token = self.get_session_token().await;
-        let client = SystemConfigClient::new(Some(url.as_str()), Some(session_token.as_str()));
+        let client = self
+            .system_config_client
+            .get_or_try_init(|| async {
+                Ok(Arc::new(SystemConfigClient::new(
+                    Some(url.as_str()),
+                    Some(session_token.as_str()),
+                )))
+            })
+            .await?;
+        client
+            .sync_session_token(Some(session_token.as_str()))
+            .await
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
         debug!("get system config client OK,url:{}", url);
-        Ok(client)
+        Ok(client.clone())
     }
 
     pub async fn get_task_mgr_client(&self) -> Result<TaskManagerClient> {
@@ -1517,7 +1531,7 @@ impl BuckyOSRuntime {
 
     pub async fn get_control_panel_client(&self) -> Result<ControlPanelClient> {
         let system_config_client = self.get_system_config_client().await?;
-        let client = ControlPanelClient::new(system_config_client);
+        let client = ControlPanelClient::from_shared(system_config_client);
         Ok(client)
     }
 
@@ -1797,5 +1811,39 @@ impl BuckyOSRuntime {
         }
 
         Ok(chunk_ids)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn reuses_shared_system_config_client_and_syncs_token() {
+        let runtime = BuckyOSRuntime::new("system_config_test", None, BuckyOSRuntimeType::Kernel);
+
+        {
+            let mut session_token = runtime.session_token.write().await;
+            *session_token = "token-a".to_string();
+        }
+        let client_a = runtime
+            .get_system_config_client()
+            .await
+            .expect("get shared client");
+
+        {
+            let mut session_token = runtime.session_token.write().await;
+            *session_token = "token-b".to_string();
+        }
+        let client_b = runtime
+            .get_system_config_client()
+            .await
+            .expect("reuse shared client");
+
+        assert!(Arc::ptr_eq(&client_a, &client_b));
+        assert_eq!(
+            client_b.get_session_token().await,
+            Some("token-b".to_string())
+        );
     }
 }

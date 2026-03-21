@@ -8,6 +8,7 @@ use name_lib::*;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 pub const CONTROL_PANEL_SERVICE_NAME: &str = "control-panel";
 pub const CONTROL_PANEL_SERVICE_UNIQUE_ID: &str = "control-panel";
@@ -159,11 +160,17 @@ impl NodeConfig {
 }
 
 pub struct ControlPanelClient {
-    system_config_client: SystemConfigClient,
+    system_config_client: Arc<SystemConfigClient>,
 }
 
 impl ControlPanelClient {
     pub fn new(system_config_client: SystemConfigClient) -> Self {
+        Self {
+            system_config_client: Arc::new(system_config_client),
+        }
+    }
+
+    pub fn from_shared(system_config_client: Arc<SystemConfigClient>) -> Self {
         Self {
             system_config_client,
         }

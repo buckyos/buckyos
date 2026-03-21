@@ -21,6 +21,7 @@ use serde_json::{json, Value};
 use std::fs::File as StdFile;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use tar::Builder;
 use tokio::fs;
@@ -96,7 +97,7 @@ impl AppInstaller {
         }
     }
 
-    async fn system_config_client(&self) -> Result<SystemConfigClient, RPCErrors> {
+    async fn system_config_client(&self) -> Result<Arc<SystemConfigClient>, RPCErrors> {
         let runtime = get_buckyos_api_runtime()?;
         runtime.get_system_config_client().await
     }

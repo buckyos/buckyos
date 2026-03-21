@@ -11,6 +11,12 @@ pub enum KVStoreErrors {
     KeyNotFound(String),
     #[error("key exist : {0}")]
     KeyExist(String),
+    #[error("revision mismatch for key {key}: expected {expected}, actual {actual}")]
+    RevisionMismatch {
+        key: String,
+        expected: u64,
+        actual: u64,
+    },
     #[error("internal error : {0}")]
     InternalError(String),
 }
@@ -20,6 +26,7 @@ pub type Result<T> = std::result::Result<T, KVStoreErrors>;
 #[async_trait]
 pub trait KVStoreProvider: Send + Sync {
     async fn get(&self, key: String) -> Result<Option<String>>;
+    async fn get_with_revision(&self, key: String) -> Result<Option<(String, u64)>>;
     async fn set(&self, key: String, value: String) -> Result<()>;
     async fn set_by_path(&self, key: String, json_path: String, value: &Value) -> Result<()>;
     async fn exec_tx(

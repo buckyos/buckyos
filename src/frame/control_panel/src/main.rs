@@ -8,10 +8,10 @@ use base64::{engine::general_purpose, Engine as _};
 use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AccessGroupLevel,
     AiMessage, AiPayload, AppDoc, AppServiceSpec, AppType, BoxKind, BuckyOSRuntimeType, Capability,
-    CompleteRequest, Contact, ContactQuery, Event, KEventClient, ModelSpec, MsgCenterClient,
-    LoginByPasswordResponse, MsgRecordWithObject, MsgState, RepoListFilter, RepoRecord, Requirements, SendContext,
-    ServiceExposeConfig, ServiceInstallConfig, ServiceState, SystemConfigClient, UserType,
-    CONTROL_PANEL_SERVICE_NAME, CONTROL_PANEL_SERVICE_PORT,
+    CompleteRequest, Contact, ContactQuery, Event, KEventClient, LoginByPasswordResponse,
+    ModelSpec, MsgCenterClient, MsgRecordWithObject, MsgState, RepoListFilter, RepoRecord,
+    Requirements, SendContext, ServiceExposeConfig, ServiceInstallConfig, ServiceState,
+    SystemConfigClient, UserType, CONTROL_PANEL_SERVICE_NAME, CONTROL_PANEL_SERVICE_PORT,
 };
 use buckyos_kit::*;
 use bytes::Bytes;
@@ -853,8 +853,11 @@ impl ControlPanelServer {
             .filter(|value| !value.is_empty())
             .ok_or_else(|| RPCErrors::InvalidToken("session token missing subject".to_string()))?;
         let issuer = Self::resolve_local_device_name(runtime)?;
-        let sso_token =
-            Self::issue_gateway_sso_token(issuer.as_str(), user_id.as_str(), target_appid.as_str())?;
+        let sso_token = Self::issue_gateway_sso_token(
+            issuer.as_str(),
+            user_id.as_str(),
+            target_appid.as_str(),
+        )?;
 
         Ok(RPCResponse::new(
             RPCResult::Success(json!({ "sso_token": sso_token })),
@@ -994,7 +997,9 @@ impl ControlPanelServer {
         } else {
             let suffix = format!(".{}", zone_host);
             let prefix = host.strip_suffix(suffix.as_str()).ok_or_else(|| {
-                RPCErrors::ParseRequestError("redirect_url host is outside current zone".to_string())
+                RPCErrors::ParseRequestError(
+                    "redirect_url host is outside current zone".to_string(),
+                )
             })?;
             prefix
                 .split(['.', '-'])
@@ -1007,7 +1012,9 @@ impl ControlPanelServer {
                             .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
                 })
                 .ok_or_else(|| {
-                    RPCErrors::ParseRequestError("redirect_url host does not resolve to an app".to_string())
+                    RPCErrors::ParseRequestError(
+                        "redirect_url host does not resolve to an app".to_string(),
+                    )
                 })?
         };
 

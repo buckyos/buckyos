@@ -68,9 +68,9 @@ pub fn get_buckyos_api_runtime() -> Result<&'static BuckyOSRuntime> {
 }
 
 pub fn set_buckyos_api_runtime(runtime: BuckyOSRuntime) -> Result<()> {
-    CURRENT_BUCKYOS_RUNTIME.set(runtime).map_err(|_| {
-        RPCErrors::ReasonError("BuckyOSRuntime is already registered".to_string())
-    })?;
+    CURRENT_BUCKYOS_RUNTIME
+        .set(runtime)
+        .map_err(|_| RPCErrors::ReasonError("BuckyOSRuntime is already registered".to_string()))?;
     if let Some(runtime) = CURRENT_BUCKYOS_RUNTIME.get() {
         runtime.start_registered_tasks_if_needed();
     }
