@@ -1367,6 +1367,19 @@ mod tests {
         }
     }
 
+    fn parse_cli_json_line(text: &str) -> Json {
+        serde_json::from_str(text.trim()).expect("stdout should be cli json")
+    }
+
+    fn parse_last_cli_json_line(text: &str) -> Json {
+        let line = text
+            .lines()
+            .rev()
+            .find(|line| line.trim_start().starts_with('{'))
+            .expect("stdout should contain cli json line");
+        parse_cli_json_line(line)
+    }
+
     #[tokio::test]
     async fn exec_bash_tool_runs_linux_command() {
         if !tmux_ready().await {
@@ -1494,21 +1507,18 @@ mod tests {
             }),
         )
         .await
-        .expect("exec should forward to tool");
+        .expect("exec should run via cli");
 
         assert_eq!(result["ok"], true);
         assert_eq!(result["exit_code"], 0);
-        assert_eq!(result["engine"], "tool");
-        assert_eq!(result["line_results"][0]["mode"], "tool");
+        assert_eq!(result["engine"], "tmux");
+        assert_eq!(result["line_results"][0]["mode"], "bash");
 
         let stdout = result["stdout"].as_str().unwrap_or_default();
-        assert_eq!(stdout.lines().next().unwrap_or_default(), "L1");
-        assert_eq!(
-            result["line_results"][0]["tool_name"]
-                .as_str()
-                .unwrap_or_default(),
-            TOOL_READ_FILE
-        );
+        let payload = parse_cli_json_line(stdout);
+        assert_eq!(payload["status"], "success");
+        assert_eq!(payload["tool"], TOOL_READ_FILE);
+        assert_eq!(payload["detail"]["content"], "L1");
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -1561,19 +1571,16 @@ mod tests {
         .expect("exec should succeed");
 
         assert_eq!(result["ok"], true);
-        assert_eq!(result["engine"], "tmux+tool");
+        assert_eq!(result["engine"], "tmux");
         let stdout = result["stdout"].as_str().unwrap_or_default();
         let pane_lines = stdout
             .lines()
             .filter(|line| line.trim() == "pane-line")
             .count();
-        assert!(pane_lines >= 2, "stdout={stdout}");
-        assert_eq!(
-            result["line_results"][1]["tool_name"]
-                .as_str()
-                .unwrap_or_default(),
-            TOOL_READ_FILE
-        );
+        assert_eq!(pane_lines, 1, "stdout={stdout}");
+        let payload = parse_last_cli_json_line(stdout);
+        assert_eq!(payload["tool"], TOOL_READ_FILE);
+        assert_eq!(payload["detail"]["content"], "pane-line");
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -1626,9 +1633,9 @@ mod tests {
         .expect("exec should succeed");
 
         assert_eq!(result["ok"], true);
-        assert_eq!(result["engine"], "tmux+tool");
+        assert_eq!(result["engine"], "tmux");
         assert_eq!(result["line_results"][0]["mode"], "bash");
-        assert_eq!(result["line_results"][1]["mode"], "tool");
+        assert_eq!(result["line_results"][1]["mode"], "bash");
         assert_eq!(result["line_results"][0]["command"], "cd subdir");
         assert!(result["pwd"]
             .as_str()
@@ -1636,7 +1643,9 @@ mod tests {
             .ends_with("/subdir"));
 
         let stdout = result["stdout"].as_str().unwrap_or_default();
-        assert_eq!(stdout.trim(), "cd-pane-line");
+        let payload = parse_cli_json_line(stdout);
+        assert_eq!(payload["tool"], TOOL_READ_FILE);
+        assert_eq!(payload["detail"]["content"], "cd-pane-line");
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -1716,25 +1725,16 @@ mod tests {
         }
 
         let first_bash = &results[1];
-        assert_eq!(first_bash["engine"], "tool");
-        assert_eq!(
-            first_bash["stdout"]
-                .as_str()
-                .unwrap_or_default()
-                .lines()
-                .next()
-                .unwrap_or_default(),
-            "L1"
-        );
+        assert_eq!(first_bash["engine"], "tmux");
+        let first_payload =
+            parse_cli_json_line(first_bash["stdout"].as_str().unwrap_or_default());
+        assert_eq!(first_payload["detail"]["content"], "L1");
 
         let second_bash = &results[3];
-        assert_eq!(second_bash["engine"], "tool");
-        let second_stdout = second_bash["stdout"].as_str().unwrap_or_default();
-        assert!(second_stdout.contains("L1"), "stdout={second_stdout}");
-        assert!(
-            second_stdout.contains("L2-updated"),
-            "stdout={second_stdout}"
-        );
+        assert_eq!(second_bash["engine"], "tmux");
+        let second_payload =
+            parse_cli_json_line(second_bash["stdout"].as_str().unwrap_or_default());
+        assert_eq!(second_payload["detail"]["content"], "L1\nL2-updated");
 
         let final_call = &results[4];
         assert_eq!(final_call["content"], "L1\nL2-updated");

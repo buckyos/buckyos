@@ -178,10 +178,13 @@ impl TaskManagerHandler for MockTaskMgrHandler {
 
     async fn handle_cancel_task(
         &self,
-        _id: i64,
+        id: i64,
         _recursive: bool,
         _ctx: RPCContext,
     ) -> KRPCResult<()> {
+        if let Some(task) = self.tasks.lock().expect("tasks lock").get_mut(&id) {
+            task.status = TaskStatus::Canceled;
+        }
         Ok(())
     }
 

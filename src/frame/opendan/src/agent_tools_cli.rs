@@ -3,9 +3,15 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use buckyos_api::{
+    get_buckyos_api_runtime, init_buckyos_api_runtime, BuckyOSRuntimeType, Task,
+    TaskManagerClient, TaskStatus,
+};
+use kRPC::kRPC;
 use serde::Serialize;
 use serde_json::{json, Value as Json};
 use tokio::io::{self, AsyncReadExt};
+use tokio::process::Command;
 
 use crate::agent_environment::AgentEnvironment;
 use crate::agent_session::{AgentSessionMgr, GetSessionTool};
@@ -22,7 +28,9 @@ use crate::worklog::WorklogToolConfig;
 use crate::workspace::workshop::{AgentWorkshopConfig, WorkshopToolConfig};
 
 const TOOL_TODO: &str = "todo";
-const TOOL_NAMES: [&str; 7] = [
+const TOOL_CHECK_TASK: &str = "check_task";
+const TOOL_CANCEL_TASK: &str = "cancel_task";
+const TOOL_NAMES: [&str; 9] = [
     TOOL_READ_FILE,
     TOOL_WRITE_FILE,
     TOOL_EDIT_FILE,
@@ -30,6 +38,8 @@ const TOOL_NAMES: [&str; 7] = [
     TOOL_TODO,
     TOOL_CREATE_WORKSPACE,
     TOOL_BIND_WORKSPACE,
+    TOOL_CHECK_TASK,
+    TOOL_CANCEL_TASK,
 ];
 const EXIT_SUCCESS: i32 = 0;
 const EXIT_ERROR: i32 = 1;
@@ -128,6 +138,15 @@ enum ParsedCommand {
         tool_name: String,
         args: Json,
         new_content: ContentInput,
+    },
+    CheckTask {
+        tool_name: String,
+        task_id: i64,
+    },
+    CancelTask {
+        tool_name: String,
+        task_id: i64,
+        recursive: bool,
     },
 }
 
@@ -246,6 +265,37 @@ async fn execute(
                 EXIT_SUCCESS,
             ))
         }
+        ParsedCommand::CheckTask { tool_name, task_id } => {
+            let task_mgr = build_task_manager_client(&env).await?;
+            let task = task_mgr.get_task(task_id).await.map_err(|err| {
+                AgentToolError::ExecFailed(format!("get task `{task_id}` failed: {err}"))
+            })?;
+            Ok(render_output(
+                build_check_task_envelope(&tool_name, task),
+                EXIT_SUCCESS,
+            ))
+        }
+        ParsedCommand::CancelTask {
+            tool_name,
+            task_id,
+            recursive,
+        } => {
+            let task_mgr = build_task_manager_client(&env).await?;
+            let before = task_mgr.get_task(task_id).await.map_err(|err| {
+                AgentToolError::ExecFailed(format!("get task `{task_id}` failed: {err}"))
+            })?;
+            task_mgr.cancel_task(task_id, recursive).await.map_err(|err| {
+                AgentToolError::ExecFailed(format!("cancel task `{task_id}` failed: {err}"))
+            })?;
+            let interrupt_error = interrupt_task_if_supported(&before).await;
+            let after = task_mgr.get_task(task_id).await.map_err(|err| {
+                AgentToolError::ExecFailed(format!("reload task `{task_id}` failed: {err}"))
+            })?;
+            Ok(render_output(
+                build_cancel_task_envelope(&tool_name, after, recursive, interrupt_error),
+                EXIT_SUCCESS,
+            ))
+        }
     }
 }
 
@@ -340,10 +390,106 @@ fn parse_tool_command(
         TOOL_TODO | TOOL_CREATE_WORKSPACE | TOOL_BIND_WORKSPACE => {
             Ok(parse_passthrough_bash_command(tool_name, tokens))
         }
+        TOOL_CHECK_TASK => parse_check_task_cli_command(tool_name, tokens),
+        TOOL_CANCEL_TASK => parse_cancel_task_cli_command(tool_name, tokens),
         _ => Err(AgentToolError::InvalidArgs(format!(
             "unsupported tool `{tool_name}`"
         ))),
     }
+}
+
+fn parse_check_task_cli_command(
+    tool_name: String,
+    tokens: &[String],
+) -> Result<ParsedCommand, AgentToolError> {
+    Ok(ParsedCommand::CheckTask {
+        tool_name,
+        task_id: parse_task_id_arg(tokens, TOOL_CHECK_TASK)?,
+    })
+}
+
+fn parse_cancel_task_cli_command(
+    tool_name: String,
+    tokens: &[String],
+) -> Result<ParsedCommand, AgentToolError> {
+    let mut recursive = false;
+    let mut task_tokens = Vec::new();
+    for token in tokens {
+        match token.as_str() {
+            "--recursive" => recursive = true,
+            "--no-recursive" => recursive = false,
+            _ => task_tokens.push(token.clone()),
+        }
+    }
+
+    Ok(ParsedCommand::CancelTask {
+        tool_name,
+        task_id: parse_task_id_arg(&task_tokens, TOOL_CANCEL_TASK)?,
+        recursive,
+    })
+}
+
+fn parse_task_id_arg(tokens: &[String], tool_name: &str) -> Result<i64, AgentToolError> {
+    if tokens.is_empty() {
+        return Err(with_tool_usage("missing required arg `task_id`", tool_name));
+    }
+
+    let mut task_id: Option<i64> = None;
+    let mut idx = 0usize;
+    while idx < tokens.len() {
+        match tokens[idx].as_str() {
+            "--task-id" => {
+                idx += 1;
+                let value = tokens.get(idx).ok_or_else(|| {
+                    with_tool_usage("missing value for `--task-id`", tool_name)
+                })?;
+                task_id = Some(parse_task_id_value(value, tool_name)?);
+            }
+            token if token.starts_with("--") => {
+                return Err(with_tool_usage(
+                    format!("unsupported flag `{token}`"),
+                    tool_name,
+                ));
+            }
+            token if token.contains('=') => {
+                let (key, value) = token
+                    .split_once('=')
+                    .ok_or_else(|| with_tool_usage("invalid key=value arg", tool_name))?;
+                match key {
+                    "task_id" | "task" | "id" => {
+                        task_id = Some(parse_task_id_value(value, tool_name)?);
+                    }
+                    _ => {
+                        return Err(with_tool_usage(
+                            format!("unsupported arg `{key}`"),
+                            tool_name,
+                        ));
+                    }
+                }
+            }
+            value => {
+                if task_id.is_some() {
+                    return Err(with_tool_usage(
+                        format!("unexpected positional arg `{value}`"),
+                        tool_name,
+                    ));
+                }
+                task_id = Some(parse_task_id_value(value, tool_name)?);
+            }
+        }
+        idx += 1;
+    }
+
+    task_id.ok_or_else(|| with_tool_usage("missing required arg `task_id`", tool_name))
+}
+
+fn parse_task_id_value(raw: &str, tool_name: &str) -> Result<i64, AgentToolError> {
+    raw.trim().parse::<i64>().map_err(|_| {
+        with_tool_usage(
+            format!("invalid task_id `{}`", raw.trim()),
+            tool_name,
+        )
+    })
 }
 
 fn parse_get_session_cli_command(
@@ -907,12 +1053,14 @@ fn static_tool_usage(tool_name: &str) -> &'static str {
         TOOL_TODO => "todo <command> [args...]",
         TOOL_CREATE_WORKSPACE => "create_workspace <name> <summary>",
         TOOL_BIND_WORKSPACE => "bind_workspace <workspace_id|workspace_path>",
+        TOOL_CHECK_TASK => "check_task <task_id>",
+        TOOL_CANCEL_TASK => "cancel_task <task_id> [--recursive]",
         _ => "agent_tool <tool> ...",
     }
 }
 
 fn generic_usage() -> &'static str {
-    "agent_tool <read_file|write_file|edit_file|get_session|todo|create_workspace|bind_workspace> [args...]"
+    "agent_tool <read_file|write_file|edit_file|get_session|todo|create_workspace|bind_workspace|check_task|cancel_task> [args...]"
 }
 
 fn error_kind(err: &AgentToolError) -> &'static str {
@@ -992,6 +1140,211 @@ async fn build_runtime_tool_manager(
     environment.register_workshop_tools(&tool_mgr, session_store.clone())?;
     tool_mgr.register_tool(GetSessionTool::new(session_store))?;
     Ok(tool_mgr)
+}
+
+async fn build_task_manager_client(
+    _env: &CliRuntimeEnv,
+) -> Result<TaskManagerClient, AgentToolError> {
+    if let Ok(runtime) = get_buckyos_api_runtime() {
+        return runtime.get_task_mgr_client().await.map_err(|err| {
+            AgentToolError::ExecFailed(format!("init task-manager client from runtime failed: {err}"))
+        });
+    }
+
+    if let Some(url) = first_string_env(&[
+        "OPENDAN_TASK_MANAGER_URL",
+        "OPENDAN_TASK_MANAGER_RPC",
+        "TASK_MANAGER_URL",
+        "TASK_MANAGER_RPC",
+    ]) {
+        let session_token = first_string_env(&["OPENDAN_SESSION_TOKEN", "SESSION_TOKEN"]);
+        return Ok(TaskManagerClient::new(kRPC::new(
+            url.as_str(),
+            session_token,
+        )));
+    }
+
+    let runtime = init_buckyos_api_runtime("opendan", None, BuckyOSRuntimeType::FrameService)
+        .await
+        .map_err(|err| {
+            AgentToolError::ExecFailed(format!(
+                "init runtime for task-manager access failed: {err}"
+            ))
+        })?;
+    runtime.get_task_mgr_client().await.map_err(|err| {
+        AgentToolError::ExecFailed(format!("init task-manager client failed: {err}"))
+    })
+}
+
+fn build_check_task_envelope(tool_name: &str, task: Task) -> CliResultEnvelope {
+    let top_status = task_protocol_status(&task);
+    let summary = task_summary(&task, top_status);
+    let pending_reason = task_pending_reason(&task);
+    let mut detail = normalized_task_detail(&task);
+    if let Some(map) = detail.as_object_mut() {
+        map.insert("task".to_string(), json!(task.clone()));
+    }
+
+    CliResultEnvelope {
+        status: top_status,
+        summary,
+        tool: Some(tool_name.to_string()),
+        cmd_line: Some(format!("{tool_name} {}", task.id)),
+        detail,
+        stdout: None,
+        stderr: None,
+        pending_reason,
+        task_id: Some(task.id.to_string()),
+        estimated_wait: task
+            .data
+            .get("estimated_wait")
+            .and_then(Json::as_str)
+            .map(|value| value.to_string()),
+        check_after: task
+            .data
+            .get("check_after")
+            .and_then(Json::as_u64)
+            .or_else(|| (top_status == "pending").then_some(5)),
+    }
+}
+
+fn build_cancel_task_envelope(
+    tool_name: &str,
+    task: Task,
+    recursive: bool,
+    interrupt_error: Option<String>,
+) -> CliResultEnvelope {
+    let mut detail = normalized_task_detail(&task);
+    if let Some(map) = detail.as_object_mut() {
+        map.insert("task".to_string(), json!(task.clone()));
+        map.insert("recursive".to_string(), Json::Bool(recursive));
+        if let Some(err) = interrupt_error.as_ref() {
+            map.insert("interrupt_error".to_string(), Json::String(err.clone()));
+        }
+    }
+
+    let summary = match interrupt_error {
+        Some(err) => format!("canceled task {} (interrupt failed: {err})", task.id),
+        None => format!("canceled task {}", task.id),
+    };
+
+    CliResultEnvelope {
+        status: "success",
+        summary,
+        tool: Some(tool_name.to_string()),
+        cmd_line: Some(format!("{tool_name} {}", task.id)),
+        detail,
+        stdout: None,
+        stderr: None,
+        pending_reason: None,
+        task_id: Some(task.id.to_string()),
+        estimated_wait: None,
+        check_after: None,
+    }
+}
+
+fn normalized_task_detail(task: &Task) -> Json {
+    let mut detail = if task.data.is_object() {
+        task.data.clone()
+    } else {
+        json!({ "task_data": task.data.clone() })
+    };
+    if let Some(map) = detail.as_object_mut() {
+        map.entry("task_id".to_string())
+            .or_insert_with(|| Json::String(task.id.to_string()));
+        map.entry("task_status".to_string())
+            .or_insert_with(|| Json::String(task.status.to_string()));
+        map.entry("task_name".to_string())
+            .or_insert_with(|| Json::String(task.name.clone()));
+        map.entry("task_type".to_string())
+            .or_insert_with(|| Json::String(task.task_type.clone()));
+        map.entry("task_progress".to_string())
+            .or_insert_with(|| json!(task.progress));
+        if let Some(message) = task.message.as_ref() {
+            map.entry("task_message".to_string())
+                .or_insert_with(|| Json::String(message.clone()));
+        }
+    }
+    detail
+}
+
+fn task_protocol_status(task: &Task) -> &'static str {
+    match task.status {
+        TaskStatus::Completed => match task.data.get("status").and_then(Json::as_str) {
+            Some("error") => "error",
+            _ => "success",
+        },
+        TaskStatus::Failed | TaskStatus::Canceled => "error",
+        TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused | TaskStatus::WaitingForApproval => {
+            "pending"
+        }
+    }
+}
+
+fn task_summary(task: &Task, protocol_status: &str) -> String {
+    task.data
+        .get("summary")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .or_else(|| task.message.as_ref().map(|value| value.trim().to_string()))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| match (protocol_status, task.status) {
+            ("pending", TaskStatus::WaitingForApproval) => {
+                format!("task {} is waiting for approval", task.id)
+            }
+            ("pending", _) => format!("task {} is still running", task.id),
+            ("success", _) => format!("task {} completed", task.id),
+            ("error", TaskStatus::Canceled) => format!("task {} was canceled", task.id),
+            ("error", _) => format!("task {} failed", task.id),
+            _ => format!("task {} updated", task.id),
+        })
+}
+
+fn task_pending_reason(task: &Task) -> Option<String> {
+    task.data
+        .get("pending_reason")
+        .and_then(Json::as_str)
+        .map(|value| value.to_string())
+        .or_else(|| match task.status {
+            TaskStatus::WaitingForApproval => Some("user_approval".to_string()),
+            TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused => {
+                Some("long_running".to_string())
+            }
+            _ => None,
+        })
+}
+
+async fn interrupt_task_if_supported(task: &Task) -> Option<String> {
+    if task.data.get("kind").and_then(Json::as_str) != Some("tool.exec_bash") {
+        return None;
+    }
+    let tmux_target = task
+        .data
+        .get("tmux_target")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+
+    let output = match Command::new("tmux")
+        .args(["send-keys", "-t", tmux_target, "C-c"])
+        .output()
+        .await
+    {
+        Ok(output) => output,
+        Err(err) => return Some(format!("tmux interrupt `{tmux_target}` failed: {err}")),
+    };
+    if output.status.success() {
+        return None;
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Some(if stderr.is_empty() {
+        format!("tmux interrupt `{tmux_target}` failed")
+    } else {
+        format!("tmux interrupt `{tmux_target}` failed: {stderr}")
+    })
 }
 
 fn build_bash_cli_line(tool_name: &str, tokens: &[String]) -> String {
@@ -1142,7 +1495,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn generic_help_lists_all_m1_tools() {
+    async fn generic_help_lists_all_cli_tools() {
         let temp = tempdir().expect("create tempdir");
         let root = temp.path().join("agent");
         let output = execute(
@@ -1157,8 +1510,52 @@ mod tests {
         assert_eq!(payload["status"], "success");
         assert_eq!(
             payload["detail"]["tools"].as_array().map(|v| v.len()),
-            Some(7)
+            Some(9)
         );
+    }
+
+    #[test]
+    fn parse_check_task_alias_accepts_positional_task_id() {
+        let parsed = parse_command(
+            &[OsString::from("/tmp/check_task"), OsString::from("42")],
+            Path::new("/tmp"),
+        )
+        .expect("parse check_task");
+
+        match parsed {
+            ParsedCommand::CheckTask { tool_name, task_id } => {
+                assert_eq!(tool_name, TOOL_CHECK_TASK);
+                assert_eq!(task_id, 42);
+            }
+            other => panic!("unexpected parsed command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_cancel_task_subcommand_accepts_recursive_flag() {
+        let parsed = parse_command(
+            &[
+                OsString::from(MAIN_BINARY_NAME),
+                OsString::from(TOOL_CANCEL_TASK),
+                OsString::from("--recursive"),
+                OsString::from("task_id=7"),
+            ],
+            Path::new("/tmp"),
+        )
+        .expect("parse cancel_task");
+
+        match parsed {
+            ParsedCommand::CancelTask {
+                tool_name,
+                task_id,
+                recursive,
+            } => {
+                assert_eq!(tool_name, TOOL_CANCEL_TASK);
+                assert_eq!(task_id, 7);
+                assert!(recursive);
+            }
+            other => panic!("unexpected parsed command: {other:?}"),
+        }
     }
 
     #[tokio::test]

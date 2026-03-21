@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs as std_fs;
 #[cfg(unix)]
-use std::os::unix::fs as unix_fs;
+use std::os::unix::fs::{self as unix_fs, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -51,6 +51,7 @@ const EXEC_BASH_AGENT_CLI_TOOL_NAMES: [&str; 7] = [
     TOOL_CREATE_WORKSPACE,
     TOOL_BIND_WORKSPACE,
 ];
+const EXEC_BASH_ALWAYS_AVAILABLE_CLI_TOOL_NAMES: [&str; 2] = ["check_task", "cancel_task"];
 static EXEC_BASH_TASK_NAME_SEQ: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug)]
@@ -233,6 +234,7 @@ impl AgentTool for ExecBashTool {
         }
 
         let session_tool_env = self.prepare_session_tool_env(&session_id).await?;
+        let allow_legacy_builtin_fallback = session_tool_env.is_none();
         let env_vars = parse_exec_env_args(&args, self.policy.allow_env)?;
         let env_vars = build_exec_env_vars(
             ctx,
@@ -241,7 +243,15 @@ impl AgentTool for ExecBashTool {
             session_tool_env.as_ref(),
         );
         let run_result = self
-            .run_command_lines(ctx, &session_id, &command, &pwd, timeout_ms, &env_vars)
+            .run_command_lines(
+                ctx,
+                &session_id,
+                &command,
+                &pwd,
+                timeout_ms,
+                &env_vars,
+                allow_legacy_builtin_fallback,
+            )
             .await?;
         match run_result {
             ExecBashRunOutcome::Completed(run_result) => {
@@ -462,6 +472,7 @@ impl ExecBashTool {
         pwd: &Path,
         timeout_ms: u64,
         env_vars: &[(String, String)],
+        allow_legacy_builtin_fallback: bool,
     ) -> Result<ExecBashRunOutcome, AgentToolError> {
         let mut state =
             ExecBashAggregateState::new(self.resolve_tmux_pane_cwd(session_id, pwd).await);
@@ -473,25 +484,27 @@ impl ExecBashTool {
                 .await;
             let command_name = AgentToolManager::parse_bash_command_name(&line.text);
 
-            if let Some(tool_run) = self
-                .run_registered_tool_line(
-                    ctx,
-                    &line.text,
-                    line.line_no,
-                    state.current_pwd.as_path(),
-                )
-                .await?
-            {
-                state.used_tool = true;
-                state.stdout.extend_from_slice(&tool_run.stdout);
-                state.stderr.extend_from_slice(&tool_run.stderr);
-                state.line_results.push(tool_run.line_result);
-                if tool_run.exit_code != 0 {
-                    return Ok(ExecBashRunOutcome::Completed(
-                        self.build_completed_result(state, tool_run.exit_code),
-                    ));
+            if allow_legacy_builtin_fallback {
+                if let Some(tool_run) = self
+                    .run_registered_tool_line(
+                        ctx,
+                        &line.text,
+                        line.line_no,
+                        state.current_pwd.as_path(),
+                    )
+                    .await?
+                {
+                    state.used_tool = true;
+                    state.stdout.extend_from_slice(&tool_run.stdout);
+                    state.stderr.extend_from_slice(&tool_run.stderr);
+                    state.line_results.push(tool_run.line_result);
+                    if tool_run.exit_code != 0 {
+                        return Ok(ExecBashRunOutcome::Completed(
+                            self.build_completed_result(state, tool_run.exit_code),
+                        ));
+                    }
+                    continue;
                 }
-                continue;
             }
 
             match self
@@ -534,12 +547,13 @@ impl ExecBashTool {
                             command,
                             timeout_ms,
                             env_vars,
-                            command_lines.clone(),
-                            index,
-                            state,
-                            pending_run,
-                        )
-                        .await?;
+                    command_lines.clone(),
+                    index,
+                    state,
+                    pending_run,
+                    allow_legacy_builtin_fallback,
+                )
+                .await?;
                     return Ok(ExecBashRunOutcome::Pending(pending_result));
                 }
             }
@@ -882,6 +896,7 @@ impl ExecBashTool {
         current_index: usize,
         mut state: ExecBashAggregateState,
         pending_run: ExecBashTmuxPendingRun,
+        allow_legacy_builtin_fallback: bool,
     ) -> Result<ExecBashPendingResult, AgentToolError> {
         let Some(task_mgr) = self.task_mgr.clone() else {
             let _ = interrupt_tmux_target(&pending_run.handle.tmux_target).await;
@@ -991,6 +1006,7 @@ impl ExecBashTool {
                     current_index,
                     state,
                     pending_run,
+                    allow_legacy_builtin_fallback,
                 )
                 .await;
         });
@@ -1019,6 +1035,7 @@ impl ExecBashTool {
         current_index: usize,
         mut state: ExecBashAggregateState,
         pending_run: ExecBashTmuxPendingRun,
+        allow_legacy_builtin_fallback: bool,
     ) {
         let final_result = self
             .resume_pending_command_lines(
@@ -1029,6 +1046,7 @@ impl ExecBashTool {
                 current_index,
                 &mut state,
                 pending_run,
+                allow_legacy_builtin_fallback,
             )
             .await;
 
@@ -1051,6 +1069,22 @@ impl ExecBashTool {
                     self.cfg.max_output_bytes.max(DEFAULT_MAX_OUTPUT_BYTES),
                     &summary,
                 );
+                match task_mgr.get_task(task_id).await {
+                    Ok(task) if task.status == TaskStatus::Canceled => {
+                        warn!(
+                            "skip finalizing canceled exec_bash task: task_id={} session={}",
+                            task_id, session_id
+                        );
+                        return;
+                    }
+                    Ok(_) => {}
+                    Err(err) => {
+                        warn!(
+                            "reload exec_bash task before finalize failed: task_id={} session={} err={}",
+                            task_id, session_id, err
+                        );
+                    }
+                }
                 let _ = task_mgr
                     .update_task(
                         task_id,
@@ -1071,6 +1105,15 @@ impl ExecBashTool {
                     "exec_bash background task failed: task_id={} session={} err={}",
                     task_id, session_id, err
                 );
+                if let Ok(task) = task_mgr.get_task(task_id).await {
+                    if task.status == TaskStatus::Canceled {
+                        warn!(
+                            "skip failing canceled exec_bash task: task_id={} session={}",
+                            task_id, session_id
+                        );
+                        return;
+                    }
+                }
                 let _ = task_mgr
                     .mark_task_as_failed(task_id, &err.to_string())
                     .await;
@@ -1087,6 +1130,7 @@ impl ExecBashTool {
         current_index: usize,
         state: &mut ExecBashAggregateState,
         pending_run: ExecBashTmuxPendingRun,
+        allow_legacy_builtin_fallback: bool,
     ) -> Result<ExecBashRunResult, AgentToolError> {
         let current_line = command_lines
             .get(current_index)
@@ -1125,23 +1169,25 @@ impl ExecBashTool {
             state.current_pwd = self
                 .resolve_tmux_pane_cwd(session_id, state.current_pwd.as_path())
                 .await;
-            if let Some(tool_run) = self
-                .run_registered_tool_line(
-                    ctx,
-                    &line.text,
-                    line.line_no,
-                    state.current_pwd.as_path(),
-                )
-                .await?
-            {
-                state.used_tool = true;
-                state.stdout.extend_from_slice(&tool_run.stdout);
-                state.stderr.extend_from_slice(&tool_run.stderr);
-                state.line_results.push(tool_run.line_result);
-                if tool_run.exit_code != 0 {
-                    return Ok(self.build_completed_result(state.clone(), tool_run.exit_code));
+            if allow_legacy_builtin_fallback {
+                if let Some(tool_run) = self
+                    .run_registered_tool_line(
+                        ctx,
+                        &line.text,
+                        line.line_no,
+                        state.current_pwd.as_path(),
+                    )
+                    .await?
+                {
+                    state.used_tool = true;
+                    state.stdout.extend_from_slice(&tool_run.stdout);
+                    state.stderr.extend_from_slice(&tool_run.stderr);
+                    state.line_results.push(tool_run.line_result);
+                    if tool_run.exit_code != 0 {
+                        return Ok(self.build_completed_result(state.clone(), tool_run.exit_code));
+                    }
+                    continue;
                 }
-                continue;
             }
 
             let bash_result = match self
@@ -1331,6 +1377,39 @@ fn resolve_agent_tool_path() -> Option<PathBuf> {
     if legacy.exists() {
         return Some(legacy);
     }
+    if let Some(parent_dir) = current_dir.parent() {
+        let parent_preferred = parent_dir.join(EXEC_BASH_AGENT_TOOL_BIN);
+        if parent_preferred.exists() {
+            return Some(parent_preferred);
+        }
+        let parent_legacy = parent_dir.join("agent-tools");
+        if parent_legacy.exists() {
+            return Some(parent_legacy);
+        }
+    }
+    if let Ok(entries) = std_fs::read_dir(&current_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            #[cfg(unix)]
+            let is_executable = std_fs::metadata(&path)
+                .map(|meta| meta.permissions().mode() & 0o111 != 0)
+                .unwrap_or(false);
+            #[cfg(not(unix))]
+            let is_executable = path.is_file();
+            if (file_name == EXEC_BASH_AGENT_TOOL_BIN
+                || file_name.starts_with(&format!("{EXEC_BASH_AGENT_TOOL_BIN}-"))
+                || file_name == "agent-tools"
+                || file_name.starts_with("agent-tools-"))
+                && path.is_file()
+                && is_executable
+            {
+                return Some(path);
+            }
+        }
+    }
     None
 }
 
@@ -1374,6 +1453,7 @@ fn sanitize_token_for_id(raw: &str) -> String {
 fn default_agent_cli_tool_names() -> Vec<String> {
     EXEC_BASH_AGENT_CLI_TOOL_NAMES
         .iter()
+        .chain(EXEC_BASH_ALWAYS_AVAILABLE_CLI_TOOL_NAMES.iter())
         .map(|name| (*name).to_string())
         .collect()
 }
@@ -1393,6 +1473,12 @@ fn filter_session_cli_tool_names(raw_names: &[String]) -> Vec<String> {
         if EXEC_BASH_AGENT_CLI_TOOL_NAMES.contains(&tool_name)
             && seen.insert(tool_name.to_string())
         {
+            filtered.push(tool_name.to_string());
+        }
+    }
+
+    for tool_name in EXEC_BASH_ALWAYS_AVAILABLE_CLI_TOOL_NAMES {
+        if seen.insert(tool_name.to_string()) {
             filtered.push(tool_name.to_string());
         }
     }
@@ -2036,7 +2122,6 @@ fn build_tool_prompt_render(
     }
 
     if action == "apply_delta" {
-        // Successful PDCA mutation commands should not emit extra stdout blocks.
         render.append_rendered_prompt = false;
     }
 
