@@ -3,7 +3,9 @@ use std::future::Future;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use buckyos_api::{get_buckyos_api_runtime, MsgRecord, OpenDanAgentSessionRecord};
+use buckyos_api::{
+    get_buckyos_api_runtime, MsgRecord, OpenDanAgentSessionRecord, TaskManagerClient,
+};
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use log::{debug, warn};
 use ndn_lib::MsgObject;
@@ -90,6 +92,16 @@ impl AgentEnvironment {
         session_store: Arc<AgentSessionMgr>,
     ) -> Result<(), AgentToolError> {
         self.workshop.register_tools(tool_mgr, session_store)
+    }
+
+    pub fn register_workshop_tools_with_task_mgr(
+        &self,
+        tool_mgr: &AgentToolManager,
+        session_store: Arc<AgentSessionMgr>,
+        task_mgr: Arc<TaskManagerClient>,
+    ) -> Result<(), AgentToolError> {
+        self.workshop
+            .register_tools_with_task_mgr(tool_mgr, session_store, Some(task_mgr))
     }
 
     // Backward compatibility for old call sites.

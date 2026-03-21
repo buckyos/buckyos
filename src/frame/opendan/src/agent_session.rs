@@ -17,7 +17,10 @@ use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, Notify, RwLock};
 
-use crate::agent_tool::{AgentTool, AgentToolError, AgentToolResult, ToolSpec, TOOL_GET_SESSION};
+use crate::agent_tool::{
+    parse_default_bash_exec_args, tokenize_bash_command_line, AgentTool, AgentToolError,
+    AgentToolResult, ToolSpec, TOOL_GET_SESSION,
+};
 use crate::behavior::SessionRuntimeContext;
 use crate::worklog::{render_worklog_prompt_line, render_worklog_prompt_line_from_parts};
 use crate::workspace::LocalWorkspaceManager;
@@ -1368,7 +1371,6 @@ impl AgentTool for GetSessionTool {
                 "properties": {
                     "session_id": { "type": "string" }
                 },
-                "required": ["session_id"],
                 "additionalProperties": false
             }),
             output_schema: json!({
@@ -1378,7 +1380,7 @@ impl AgentTool for GetSessionTool {
                     "session": { "type": "object" }
                 }
             }),
-            usage: None,
+            usage: Some("get_session [session_id]".to_string()),
         }
     }
 
@@ -1394,10 +1396,20 @@ impl AgentTool for GetSessionTool {
 
     async fn call(
         &self,
-        _ctx: &SessionRuntimeContext,
+        ctx: &SessionRuntimeContext,
         args: Json,
     ) -> Result<AgentToolResult, AgentToolError> {
-        let session_id = require_string(&args, "session_id")?;
+        let session_id = args
+            .get("session_id")
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| ctx.session_id.trim());
+        if session_id.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "session_id is required".to_string(),
+            ));
+        }
         let session = self.store.session_view(&session_id).await?;
         Ok(AgentToolResult::from_details(json!({
         "ok": true,
@@ -1405,6 +1417,30 @@ impl AgentTool for GetSessionTool {
         }))
         .with_cmd_line(format!("{TOOL_GET_SESSION} {session_id}"))
         .with_result("ok"))
+    }
+
+    async fn exec(
+        &self,
+        ctx: &SessionRuntimeContext,
+        line: &str,
+        _shell_cwd: Option<&Path>,
+    ) -> Result<AgentToolResult, AgentToolError> {
+        let tokens = tokenize_bash_command_line(line)?;
+        if tokens.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "empty bash command line".to_string(),
+            ));
+        }
+        if tokens.len() == 1 {
+            return self.call(ctx, json!({})).await;
+        }
+        if tokens.len() == 2 && !tokens[1].contains('=') {
+            return self
+                .call(ctx, json!({ "session_id": tokens[1].trim() }))
+                .await;
+        }
+        let args = parse_default_bash_exec_args(&tokens[1..])?;
+        self.call(ctx, args).await
     }
 }
 
@@ -1558,15 +1594,6 @@ async fn is_existing_dir(path: &Path) -> bool {
         .await
         .map(|meta| meta.is_dir())
         .unwrap_or(false)
-}
-
-fn require_string(args: &Json, key: &str) -> Result<String, AgentToolError> {
-    args.get(key)
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| AgentToolError::InvalidArgs(format!("missing `{key}`")))
 }
 
 fn now_ms() -> u64 {

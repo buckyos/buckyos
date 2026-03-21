@@ -324,7 +324,11 @@ impl AIAgent {
         );
 
         environment
-            .register_workshop_tools(&tools, session_store.clone())
+            .register_workshop_tools_with_task_mgr(
+                &tools,
+                session_store.clone(),
+                deps.taskmgr.clone(),
+            )
             .map_err(|err| anyhow!("register workshop tools failed: {err}"))?;
 
         let memory = AgentMemory::new(AgentMemoryConfig::new(agent_root.clone()))

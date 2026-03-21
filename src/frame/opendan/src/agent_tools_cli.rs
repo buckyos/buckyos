@@ -1,13 +1,17 @@
 use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::{json, Value as Json};
 use tokio::io::{self, AsyncReadExt};
 
+use crate::agent_environment::AgentEnvironment;
+use crate::agent_session::{AgentSessionMgr, GetSessionTool};
 use crate::agent_tool::{
-    AgentTool, AgentToolError, AgentToolResult, TOOL_EDIT_FILE, TOOL_READ_FILE, TOOL_WRITE_FILE,
+    AgentTool, AgentToolError, AgentToolManager, AgentToolResult, TOOL_BIND_WORKSPACE,
+    TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE, TOOL_GET_SESSION, TOOL_READ_FILE, TOOL_WRITE_FILE,
 };
 use crate::behavior::SessionRuntimeContext;
 use crate::buildin_tool::{
@@ -17,7 +21,16 @@ use crate::buildin_tool::{
 use crate::worklog::WorklogToolConfig;
 use crate::workspace::workshop::{AgentWorkshopConfig, WorkshopToolConfig};
 
-const TOOL_NAMES: [&str; 3] = [TOOL_READ_FILE, TOOL_WRITE_FILE, TOOL_EDIT_FILE];
+const TOOL_TODO: &str = "todo";
+const TOOL_NAMES: [&str; 7] = [
+    TOOL_READ_FILE,
+    TOOL_WRITE_FILE,
+    TOOL_EDIT_FILE,
+    TOOL_GET_SESSION,
+    TOOL_TODO,
+    TOOL_CREATE_WORKSPACE,
+    TOOL_BIND_WORKSPACE,
+];
 const EXIT_SUCCESS: i32 = 0;
 const EXIT_ERROR: i32 = 1;
 const EXIT_USAGE: i32 = 2;
@@ -39,7 +52,9 @@ impl CliRuntimeEnv {
     fn from_process() -> Result<Self, AgentToolError> {
         let current_dir = env::current_dir()
             .map(|path| canonicalize_or_normalize(path, None))
-            .map_err(|err| AgentToolError::ExecFailed(format!("resolve current dir failed: {err}")))?;
+            .map_err(|err| {
+                AgentToolError::ExecFailed(format!("resolve current dir failed: {err}"))
+            })?;
         let agent_env_root = first_path_env(
             &["OPENDAN_AGENT_ENV", "AGENT_ENV", "AGENT_ROOT"],
             &current_dir,
@@ -87,6 +102,10 @@ enum ContentInput {
 enum ParsedCommand {
     Help {
         tool_name: Option<String>,
+    },
+    BashTool {
+        tool_name: String,
+        line: String,
     },
     ReadFile {
         tool_name: String,
@@ -153,11 +172,32 @@ async fn execute(
 ) -> Result<CliRunOutput, AgentToolError> {
     let parsed = parse_command(&args, &env.current_dir)?;
     match parsed {
-        ParsedCommand::Help { tool_name } => Ok(render_output(help_envelope(tool_name.as_deref()), EXIT_SUCCESS)),
+        ParsedCommand::Help { tool_name } => Ok(render_output(
+            build_help_envelope(&env, tool_name.as_deref()).await,
+            EXIT_SUCCESS,
+        )),
+        ParsedCommand::BashTool { tool_name, line } => {
+            let tool_mgr = build_runtime_tool_manager(&env).await?;
+            let result = tool_mgr
+                .call_tool_from_bash_line_with_cwd(
+                    &env.call_ctx,
+                    &line,
+                    Some(env.current_dir.as_path()),
+                )
+                .await?
+                .ok_or_else(|| AgentToolError::NotFound(tool_name.clone()))?;
+            Ok(render_output(
+                success_envelope(&tool_name, result),
+                EXIT_SUCCESS,
+            ))
+        }
         ParsedCommand::ReadFile { tool_name, args } => {
             let tool = build_read_file_tool(&env)?;
             let result = tool.call(&env.call_ctx, args).await?;
-            Ok(render_output(success_envelope(&tool_name, result), EXIT_SUCCESS))
+            Ok(render_output(
+                success_envelope(&tool_name, result),
+                EXIT_SUCCESS,
+            ))
         }
         ParsedCommand::WriteFile {
             tool_name,
@@ -165,13 +205,16 @@ async fn execute(
             content,
         } => {
             let content = resolve_content_input(content, stdin_override).await?;
-            let map = args
-                .as_object_mut()
-                .ok_or_else(|| AgentToolError::InvalidArgs("write_file args must be object".to_string()))?;
+            let map = args.as_object_mut().ok_or_else(|| {
+                AgentToolError::InvalidArgs("write_file args must be object".to_string())
+            })?;
             map.insert("content".to_string(), Json::String(content));
             let tool = build_write_file_tool(&env)?;
             let result = tool.call(&env.call_ctx, args).await?;
-            Ok(render_output(success_envelope(&tool_name, result), EXIT_SUCCESS))
+            Ok(render_output(
+                success_envelope(&tool_name, result),
+                EXIT_SUCCESS,
+            ))
         }
         ParsedCommand::EditFile {
             tool_name,
@@ -179,13 +222,16 @@ async fn execute(
             new_content,
         } => {
             let new_content = resolve_content_input(new_content, stdin_override).await?;
-            let map = args
-                .as_object_mut()
-                .ok_or_else(|| AgentToolError::InvalidArgs("edit_file args must be object".to_string()))?;
+            let map = args.as_object_mut().ok_or_else(|| {
+                AgentToolError::InvalidArgs("edit_file args must be object".to_string())
+            })?;
             map.insert("new_content".to_string(), Json::String(new_content));
             let tool = build_edit_file_tool(&env)?;
             let result = tool.call(&env.call_ctx, args).await?;
-            Ok(render_output(success_envelope(&tool_name, result), EXIT_SUCCESS))
+            Ok(render_output(
+                success_envelope(&tool_name, result),
+                EXIT_SUCCESS,
+            ))
         }
     }
 }
@@ -261,9 +307,87 @@ fn parse_tool_command(
         }),
         TOOL_WRITE_FILE => parse_write_file_cli_args(tool_name, tokens, current_dir),
         TOOL_EDIT_FILE => parse_edit_file_cli_args(tool_name, tokens, current_dir),
+        TOOL_GET_SESSION => parse_get_session_cli_command(tool_name, tokens),
+        TOOL_TODO | TOOL_CREATE_WORKSPACE | TOOL_BIND_WORKSPACE => {
+            Ok(parse_passthrough_bash_command(tool_name, tokens))
+        }
         _ => Err(AgentToolError::InvalidArgs(format!(
             "unsupported tool `{tool_name}`"
         ))),
+    }
+}
+
+fn parse_get_session_cli_command(
+    tool_name: String,
+    tokens: &[String],
+) -> Result<ParsedCommand, AgentToolError> {
+    if tokens.is_empty() {
+        return Ok(ParsedCommand::BashTool {
+            tool_name: tool_name.clone(),
+            line: tool_name,
+        });
+    }
+
+    let mut session_id: Option<String> = None;
+    let mut idx = 0usize;
+    while idx < tokens.len() {
+        match tokens[idx].as_str() {
+            "--session-id" => {
+                idx += 1;
+                let value = tokens.get(idx).ok_or_else(|| {
+                    with_tool_usage("missing value for `--session-id`", TOOL_GET_SESSION)
+                })?;
+                session_id = Some(value.clone());
+            }
+            token if token.starts_with("--") => {
+                return Err(with_tool_usage(
+                    format!("unsupported flag `{token}`"),
+                    TOOL_GET_SESSION,
+                ));
+            }
+            token if token.contains('=') => {
+                let (key, value) = token
+                    .split_once('=')
+                    .ok_or_else(|| with_tool_usage("invalid key=value arg", TOOL_GET_SESSION))?;
+                match key {
+                    "session_id" | "session" => {
+                        session_id = Some(value.to_string());
+                    }
+                    _ => {
+                        return Err(with_tool_usage(
+                            format!("unsupported arg `{key}`"),
+                            TOOL_GET_SESSION,
+                        ));
+                    }
+                }
+            }
+            value => {
+                if session_id.is_some() {
+                    return Err(with_tool_usage(
+                        format!("unexpected positional arg `{value}`"),
+                        TOOL_GET_SESSION,
+                    ));
+                }
+                session_id = Some(value.to_string());
+            }
+        }
+        idx += 1;
+    }
+
+    let mut forwarded = Vec::new();
+    if let Some(session_id) = session_id {
+        forwarded.push(format!("session_id={session_id}"));
+    }
+    Ok(ParsedCommand::BashTool {
+        tool_name: tool_name.clone(),
+        line: build_bash_cli_line(&tool_name, &forwarded),
+    })
+}
+
+fn parse_passthrough_bash_command(tool_name: String, tokens: &[String]) -> ParsedCommand {
+    ParsedCommand::BashTool {
+        tool_name: tool_name.clone(),
+        line: build_bash_cli_line(&tool_name, tokens),
     }
 }
 
@@ -356,9 +480,14 @@ fn parse_write_file_cli_args(
         idx += 1;
     }
 
-    let path = path.ok_or_else(|| with_tool_usage("missing required arg `path`", TOOL_WRITE_FILE))?;
-    let content = content
-        .ok_or_else(|| with_tool_usage("one of `--content` or `--content-stdin` is required", TOOL_WRITE_FILE))?;
+    let path =
+        path.ok_or_else(|| with_tool_usage("missing required arg `path`", TOOL_WRITE_FILE))?;
+    let content = content.ok_or_else(|| {
+        with_tool_usage(
+            "one of `--content` or `--content-stdin` is required",
+            TOOL_WRITE_FILE,
+        )
+    })?;
     args.insert(
         "path".to_string(),
         Json::String(rewrite_path_with_shell_cwd(path, current_dir)),
@@ -397,9 +526,9 @@ fn parse_edit_file_cli_args(
         match tokens[idx].as_str() {
             "--mode" => {
                 idx += 1;
-                let value = tokens.get(idx).ok_or_else(|| {
-                    with_tool_usage("missing value for `--mode`", TOOL_EDIT_FILE)
-                })?;
+                let value = tokens
+                    .get(idx)
+                    .ok_or_else(|| with_tool_usage("missing value for `--mode`", TOOL_EDIT_FILE))?;
                 mode = Some(value.clone());
             }
             "--pos-chunk" => {
@@ -466,10 +595,10 @@ fn parse_edit_file_cli_args(
         idx += 1;
     }
 
-    let path = path.ok_or_else(|| with_tool_usage("missing required arg `path`", TOOL_EDIT_FILE))?;
-    let pos_chunk = pos_chunk.ok_or_else(|| {
-        with_tool_usage("missing required arg `--pos-chunk`", TOOL_EDIT_FILE)
-    })?;
+    let path =
+        path.ok_or_else(|| with_tool_usage("missing required arg `path`", TOOL_EDIT_FILE))?;
+    let pos_chunk = pos_chunk
+        .ok_or_else(|| with_tool_usage("missing required arg `--pos-chunk`", TOOL_EDIT_FILE))?;
     let new_content = new_content.ok_or_else(|| {
         with_tool_usage(
             "one of `--new-content` or `--new-content-stdin` is required",
@@ -517,7 +646,9 @@ fn build_edit_file_tool(env: &CliRuntimeEnv) -> Result<EditFileTool, AgentToolEr
 }
 
 fn cli_workshop_config(env: &CliRuntimeEnv) -> AgentWorkshopConfig {
-    AgentWorkshopConfig::new(&env.agent_env_root)
+    let mut cfg = AgentWorkshopConfig::new(&env.agent_env_root);
+    cfg.agent_did = env.call_ctx.agent_name.clone();
+    cfg
 }
 
 fn cli_state_root(env: &CliRuntimeEnv) -> PathBuf {
@@ -529,21 +660,35 @@ fn cli_state_root(env: &CliRuntimeEnv) -> PathBuf {
 }
 
 fn success_envelope(tool_name: &str, result: AgentToolResult) -> CliResultEnvelope {
+    let detail = result.details.clone();
+    let status = if detail.get("status").and_then(Json::as_str) == Some("pending") {
+        "pending"
+    } else {
+        "success"
+    };
     CliResultEnvelope {
-        status: "success",
+        status,
         summary: result
             .result
             .clone()
             .unwrap_or_else(|| "completed".to_string()),
         tool: Some(tool_name.to_string()),
         cmd_line: (!result.cmd_line.trim().is_empty()).then_some(result.cmd_line),
-        detail: result.details,
+        detail,
         stdout: result.stdout,
         stderr: result.stderr,
-        pending_reason: None,
-        task_id: None,
+        pending_reason: result
+            .details
+            .get("pending_reason")
+            .and_then(Json::as_str)
+            .map(|value| value.to_string()),
+        task_id: result
+            .details
+            .get("task_id")
+            .and_then(Json::as_str)
+            .map(|value| value.to_string()),
         estimated_wait: None,
-        check_after: None,
+        check_after: result.details.get("check_after").and_then(Json::as_u64),
     }
 }
 
@@ -567,7 +712,34 @@ fn error_envelope(tool_name: Option<&str>, err: AgentToolError) -> CliResultEnve
     }
 }
 
-fn help_envelope(tool_name: Option<&str>) -> CliResultEnvelope {
+async fn build_help_envelope(env: &CliRuntimeEnv, tool_name: Option<&str>) -> CliResultEnvelope {
+    match load_help_specs(env).await {
+        Ok(specs) => help_envelope_from_specs(tool_name, &specs),
+        Err(_) => static_help_envelope(tool_name),
+    }
+}
+
+async fn load_help_specs(env: &CliRuntimeEnv) -> Result<Vec<(String, String)>, AgentToolError> {
+    let tool_mgr = build_runtime_tool_manager(env).await?;
+    let specs = TOOL_NAMES
+        .iter()
+        .map(|tool_name| {
+            let usage = tool_mgr
+                .get_bash_cmd(tool_name)
+                .map(|tool| tool.spec())
+                .or_else(|| tool_mgr.get_tool(tool_name).map(|tool| tool.spec()))
+                .and_then(|spec| spec.usage)
+                .unwrap_or_else(|| static_tool_usage(tool_name).to_string());
+            ((*tool_name).to_string(), usage)
+        })
+        .collect::<Vec<_>>();
+    Ok(specs)
+}
+
+fn help_envelope_from_specs(
+    tool_name: Option<&str>,
+    specs: &[(String, String)],
+) -> CliResultEnvelope {
     match tool_name {
         Some(tool_name) => CliResultEnvelope {
             status: "success",
@@ -576,7 +748,53 @@ fn help_envelope(tool_name: Option<&str>) -> CliResultEnvelope {
             cmd_line: None,
             detail: json!({
                 "tool": tool_name,
-                "usage": tool_usage(tool_name),
+                "usage": specs
+                    .iter()
+                    .find(|(name, _)| name == tool_name)
+                    .map(|(_, usage)| usage.as_str())
+                    .unwrap_or_else(|| static_tool_usage(tool_name)),
+            }),
+            stdout: None,
+            stderr: None,
+            pending_reason: None,
+            task_id: None,
+            estimated_wait: None,
+            check_after: None,
+        },
+        None => CliResultEnvelope {
+            status: "success",
+            summary: "show usage".to_string(),
+            tool: None,
+            cmd_line: None,
+            detail: json!({
+                "usage": generic_usage(),
+                "tools": specs.iter().map(|(tool_name, usage)| {
+                    json!({
+                        "name": tool_name,
+                        "usage": usage,
+                    })
+                }).collect::<Vec<_>>(),
+            }),
+            stdout: None,
+            stderr: None,
+            pending_reason: None,
+            task_id: None,
+            estimated_wait: None,
+            check_after: None,
+        },
+    }
+}
+
+fn static_help_envelope(tool_name: Option<&str>) -> CliResultEnvelope {
+    match tool_name {
+        Some(tool_name) => CliResultEnvelope {
+            status: "success",
+            summary: "show usage".to_string(),
+            tool: Some(tool_name.to_string()),
+            cmd_line: None,
+            detail: json!({
+                "tool": tool_name,
+                "usage": static_tool_usage(tool_name),
             }),
             stdout: None,
             stderr: None,
@@ -595,7 +813,7 @@ fn help_envelope(tool_name: Option<&str>) -> CliResultEnvelope {
                 "tools": TOOL_NAMES.iter().map(|tool_name| {
                     json!({
                         "name": tool_name,
-                        "usage": tool_usage(tool_name),
+                        "usage": static_tool_usage(tool_name),
                     })
                 }).collect::<Vec<_>>(),
             }),
@@ -610,17 +828,22 @@ fn help_envelope(tool_name: Option<&str>) -> CliResultEnvelope {
 }
 
 fn render_output(payload: CliResultEnvelope, exit_code: i32) -> CliRunOutput {
-    let stdout = serde_json::to_string(&payload)
-        .unwrap_or_else(|_| "{\"status\":\"error\",\"summary\":\"serialize cli result failed\",\"detail\":{}}".to_string());
+    let stdout = serde_json::to_string(&payload).unwrap_or_else(|_| {
+        "{\"status\":\"error\",\"summary\":\"serialize cli result failed\",\"detail\":{}}"
+            .to_string()
+    });
     CliRunOutput { exit_code, stdout }
 }
 
 fn with_tool_usage(message: impl Into<String>, tool_name: &str) -> AgentToolError {
     let message = message.into();
-    AgentToolError::InvalidArgs(format!("{message}\nUsage: {}", tool_usage(tool_name)))
+    AgentToolError::InvalidArgs(format!(
+        "{message}\nUsage: {}",
+        static_tool_usage(tool_name)
+    ))
 }
 
-fn tool_usage(tool_name: &str) -> &'static str {
+fn static_tool_usage(tool_name: &str) -> &'static str {
     match tool_name {
         TOOL_READ_FILE => {
             "read_file <path> [range] [first_chunk]\n\trange: 1-based; supports negative/$/+N, and applies within first_chunk slice"
@@ -631,12 +854,16 @@ fn tool_usage(tool_name: &str) -> &'static str {
         TOOL_EDIT_FILE => {
             "edit_file <path> --pos-chunk <text> [--mode replace|after|before] (--new-content <text> | --new-content-stdin)"
         }
-        _ => "agent-tools <read_file|write_file|edit_file> ...",
+        TOOL_GET_SESSION => "get_session [session_id]",
+        TOOL_TODO => "todo <command> [args...]",
+        TOOL_CREATE_WORKSPACE => "create_workspace <name> <summary>",
+        TOOL_BIND_WORKSPACE => "bind_workspace <workspace_id|workspace_path>",
+        _ => "agent-tools <tool> ...",
     }
 }
 
 fn generic_usage() -> &'static str {
-    "agent-tools <read_file|write_file|edit_file> [args...]"
+    "agent-tools <read_file|write_file|edit_file|get_session|todo|create_workspace|bind_workspace> [args...]"
 }
 
 fn error_kind(err: &AgentToolError) -> &'static str {
@@ -668,16 +895,14 @@ fn first_string_env(keys: &[&str]) -> Option<String> {
 }
 
 fn first_path_env(keys: &[&str], current_dir: &Path) -> Option<PathBuf> {
-    keys.iter()
-        .find_map(|key| env::var_os(key))
-        .map(|value| {
-            let path = PathBuf::from(value);
-            if path.is_absolute() {
-                canonicalize_or_normalize(path, None)
-            } else {
-                canonicalize_or_normalize(path, Some(current_dir))
-            }
-        })
+    keys.iter().find_map(|key| env::var_os(key)).map(|value| {
+        let path = PathBuf::from(value);
+        if path.is_absolute() {
+            canonicalize_or_normalize(path, None)
+        } else {
+            canonicalize_or_normalize(path, Some(current_dir))
+        }
+    })
 }
 
 fn is_tool_name(raw: &str) -> bool {
@@ -702,13 +927,45 @@ fn rewrite_path_with_shell_cwd(raw_path: String, current_dir: &Path) -> String {
         .to_string()
 }
 
+async fn build_runtime_tool_manager(
+    env: &CliRuntimeEnv,
+) -> Result<AgentToolManager, AgentToolError> {
+    let tool_mgr = AgentToolManager::new();
+    let session_store = Arc::new(
+        AgentSessionMgr::new(
+            env.call_ctx.agent_name.clone(),
+            env.agent_env_root.join("sessions"),
+            env.call_ctx.behavior.clone(),
+        )
+        .await?,
+    );
+    let environment = AgentEnvironment::new(&env.agent_env_root).await?;
+    environment.register_workshop_tools(&tool_mgr, session_store.clone())?;
+    tool_mgr.register_tool(GetSessionTool::new(session_store))?;
+    Ok(tool_mgr)
+}
+
+fn build_bash_cli_line(tool_name: &str, tokens: &[String]) -> String {
+    let mut line = String::from(tool_name);
+    for token in tokens {
+        line.push(' ');
+        line.push_str(&shell_quote_token(token));
+    }
+    line
+}
+
+fn shell_quote_token(raw: &str) -> String {
+    if raw.is_empty() {
+        return "''".to_string();
+    }
+    format!("'{}'", raw.replace('\'', "'\"'\"'"))
+}
+
 fn canonicalize_or_normalize(path: PathBuf, base_dir: Option<&Path>) -> PathBuf {
     let absolute = if path.is_absolute() {
         path
     } else {
-        base_dir
-            .map(|base| base.join(&path))
-            .unwrap_or(path)
+        base_dir.map(|base| base.join(&path)).unwrap_or(path)
     };
     std::fs::canonicalize(&absolute).unwrap_or_else(|_| normalize_abs_path(&absolute))
 }
@@ -716,6 +973,8 @@ fn canonicalize_or_normalize(path: PathBuf, base_dir: Option<&Path>) -> PathBuf 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::agent_session::AgentSessionMgr;
 
     use tempfile::tempdir;
     use tokio::fs;
@@ -736,12 +995,33 @@ mod tests {
         }
     }
 
+    async fn seed_session(agent_env_root: &Path, session_id: &str, pwd: &Path) {
+        let store = AgentSessionMgr::new(
+            "did:example:agent",
+            agent_env_root.join("sessions"),
+            "plan".to_string(),
+        )
+        .await
+        .expect("create session store");
+        let session = store
+            .ensure_session(session_id, Some("CLI Session".to_string()), None, None)
+            .await
+            .expect("ensure session");
+        {
+            let mut guard = session.lock().await;
+            guard.pwd = pwd.to_path_buf();
+        }
+        store.save_session(session_id).await.expect("save session");
+    }
+
     #[tokio::test]
     async fn read_file_alias_returns_structured_json() {
         let temp = tempdir().expect("create tempdir");
         let root = temp.path().join("agent");
         let cwd = root.join("workspace");
-        fs::create_dir_all(&cwd).await.expect("create workspace dir");
+        fs::create_dir_all(&cwd)
+            .await
+            .expect("create workspace dir");
         fs::write(cwd.join("demo.txt"), "line-1\nline-2\n")
             .await
             .expect("write demo file");
@@ -770,7 +1050,9 @@ mod tests {
         let temp = tempdir().expect("create tempdir");
         let root = temp.path().join("agent");
         let cwd = root.join("workspace");
-        fs::create_dir_all(&cwd).await.expect("create workspace dir");
+        fs::create_dir_all(&cwd)
+            .await
+            .expect("create workspace dir");
 
         let write_output = execute(
             vec![
@@ -824,14 +1106,19 @@ mod tests {
 
         let payload: Json = serde_json::from_str(&output.stdout).expect("parse help json");
         assert_eq!(payload["status"], "success");
-        assert_eq!(payload["detail"]["tools"].as_array().map(|v| v.len()), Some(3));
+        assert_eq!(
+            payload["detail"]["tools"].as_array().map(|v| v.len()),
+            Some(7)
+        );
     }
 
     #[tokio::test]
     async fn read_file_without_agent_env_has_no_scope_limit() {
         let temp = tempdir().expect("create tempdir");
         let outside = temp.path().join("outside");
-        fs::create_dir_all(&outside).await.expect("create outside dir");
+        fs::create_dir_all(&outside)
+            .await
+            .expect("create outside dir");
         fs::write(outside.join("demo.txt"), "free\n")
             .await
             .expect("write outside file");
@@ -862,5 +1149,99 @@ mod tests {
         let payload: Json = serde_json::from_str(&output.stdout).expect("parse json");
         assert_eq!(payload["status"], "success");
         assert_eq!(payload["detail"]["content"], "free\n");
+    }
+
+    #[tokio::test]
+    async fn create_workspace_and_get_session_aliases_share_local_state() {
+        let temp = tempdir().expect("create tempdir");
+        let root = temp.path().join("agent");
+        let cwd = root.join("workspace");
+        fs::create_dir_all(&cwd)
+            .await
+            .expect("create workspace dir");
+        seed_session(&root, "session-test", &cwd).await;
+
+        let create_output = execute(
+            vec![
+                OsString::from("/tmp/create_workspace"),
+                OsString::from("demo"),
+                OsString::from("workspace summary"),
+            ],
+            test_env(root.clone(), cwd.clone()),
+            None,
+        )
+        .await
+        .expect("run create_workspace");
+        let create_payload: Json =
+            serde_json::from_str(&create_output.stdout).expect("parse create json");
+        assert_eq!(create_payload["status"], "success");
+        let workspace_id = create_payload["detail"]["workspace"]["workspace_id"]
+            .as_str()
+            .expect("workspace id");
+
+        let session_output = execute(
+            vec![OsString::from("/tmp/get_session")],
+            test_env(root.clone(), cwd),
+            None,
+        )
+        .await
+        .expect("run get_session");
+        let session_payload: Json =
+            serde_json::from_str(&session_output.stdout).expect("parse session json");
+        assert_eq!(session_payload["status"], "success");
+        assert_eq!(
+            session_payload["detail"]["session"]["local_workspace_id"],
+            workspace_id
+        );
+    }
+
+    #[tokio::test]
+    async fn todo_alias_uses_bound_workspace_without_rpc() {
+        let temp = tempdir().expect("create tempdir");
+        let root = temp.path().join("agent");
+        let cwd = root.join("workspace");
+        fs::create_dir_all(&cwd)
+            .await
+            .expect("create workspace dir");
+        seed_session(&root, "session-test", &cwd).await;
+
+        let _ = execute(
+            vec![
+                OsString::from("/tmp/create_workspace"),
+                OsString::from("demo"),
+                OsString::from("workspace summary"),
+            ],
+            test_env(root.clone(), cwd.clone()),
+            None,
+        )
+        .await
+        .expect("create workspace");
+
+        let add_output = execute(
+            vec![
+                OsString::from("/tmp/todo"),
+                OsString::from("add"),
+                OsString::from("Task A"),
+            ],
+            test_env(root.clone(), cwd.clone()),
+            None,
+        )
+        .await
+        .expect("run todo add");
+        let add_payload: Json = serde_json::from_str(&add_output.stdout).expect("parse add json");
+        assert_eq!(add_payload["status"], "success");
+        assert_eq!(add_payload["detail"]["created_items"][0]["title"], "Task A");
+
+        let next_output = execute(
+            vec![OsString::from("/tmp/todo"), OsString::from("next")],
+            test_env(root, cwd),
+            None,
+        )
+        .await
+        .expect("run todo next");
+        let next_payload: Json =
+            serde_json::from_str(&next_output.stdout).expect("parse next json");
+        assert_eq!(next_payload["status"], "success");
+        assert_eq!(next_payload["detail"]["item"]["title"], "Task A");
     }
 }

@@ -131,11 +131,8 @@ impl AgentTool for EditFileTool {
                 .map_err(|err| AgentToolError::ExecFailed(format!("write file failed: {err}")))?;
         }
 
-        let (diff, diff_truncated) = build_simple_diff(
-            &file_path,
-            &original_content,
-            &updated_content,
-        );
+        let (diff, diff_truncated) =
+            build_simple_diff(&file_path, &original_content, &updated_content);
         if changed {
             if let Err(err) = self
                 .write_audit
@@ -300,11 +297,8 @@ impl AgentTool for WriteFileTool {
             .map_err(|err| AgentToolError::ExecFailed(format!("write file failed: {err}")))?;
 
         let changed = original_content != updated_content;
-        let (diff, diff_truncated) = build_simple_diff(
-            &file_path,
-            &original_content,
-            &updated_content,
-        );
+        let (diff, diff_truncated) =
+            build_simple_diff(&file_path, &original_content, &updated_content);
         if let Err(err) = self
             .write_audit
             .record_file_write(
@@ -1116,7 +1110,10 @@ pub(crate) fn parse_workspace_relative_roots(
     Ok(Some(roots))
 }
 
-fn resolve_path_in_agent_env(agent_env_root: &Path, raw_path: &str) -> Result<PathBuf, AgentToolError> {
+fn resolve_path_in_agent_env(
+    agent_env_root: &Path,
+    raw_path: &str,
+) -> Result<PathBuf, AgentToolError> {
     if raw_path.trim().is_empty() {
         return Err(AgentToolError::InvalidArgs(
             "path cannot be empty".to_string(),
@@ -1220,11 +1217,7 @@ fn build_read_file_cmd_line(path: &str, range: Option<&Json>, first_chunk: Optio
     cmd
 }
 
-fn build_simple_diff(
-    display_path: &str,
-    before: &str,
-    after: &str,
-) -> (String, bool) {
+fn build_simple_diff(display_path: &str, before: &str, after: &str) -> (String, bool) {
     let before_lines = before.lines().collect::<Vec<_>>();
     let after_lines = after.lines().collect::<Vec<_>>();
 

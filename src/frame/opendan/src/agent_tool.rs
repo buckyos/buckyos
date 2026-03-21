@@ -1116,7 +1116,7 @@ fn append_usage_on_invalid_args(err: AgentToolError, usage: &str) -> AgentToolEr
     }
 }
 
-fn parse_default_bash_exec_args(tokens: &[String]) -> Result<Json, AgentToolError> {
+pub(crate) fn parse_default_bash_exec_args(tokens: &[String]) -> Result<Json, AgentToolError> {
     if tokens.is_empty() {
         return Ok(json!({}));
     }

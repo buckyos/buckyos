@@ -3,6 +3,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use buckyos_api::TaskManagerClient;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
@@ -297,6 +298,15 @@ impl AgentWorkshop {
         tool_mgr: &AgentToolManager,
         session_store: Arc<AgentSessionMgr>,
     ) -> Result<(), AgentToolError> {
+        self.register_tools_with_task_mgr(tool_mgr, session_store, None)
+    }
+
+    pub fn register_tools_with_task_mgr(
+        &self,
+        tool_mgr: &AgentToolManager,
+        session_store: Arc<AgentSessionMgr>,
+        task_mgr: Option<Arc<TaskManagerClient>>,
+    ) -> Result<(), AgentToolError> {
         let write_audit = BuiltinWorkshopWriteAudit::new(self.resolve_write_audit_config()?);
         for tool in self
             .tools_cfg
@@ -307,12 +317,15 @@ impl AgentWorkshop {
             match tool.kind.as_str() {
                 "builtin" => match tool.name.as_str() {
                     TOOL_EXEC_BASH => {
-                        tool_mgr.register_tool(BuiltinExecBashTool::from_tool_config(
-                            &self.cfg,
-                            tool,
-                            session_store.clone(),
-                            tool_mgr.clone(),
-                        )?)?;
+                        tool_mgr.register_tool(
+                            BuiltinExecBashTool::from_tool_config_with_task_mgr(
+                                &self.cfg,
+                                tool,
+                                session_store.clone(),
+                                tool_mgr.clone(),
+                                task_mgr.clone(),
+                            )?,
+                        )?;
                     }
                     TOOL_EDIT_FILE => {
                         tool_mgr.register_tool(BuiltinEditFileTool::from_tool_config(
@@ -1235,9 +1248,13 @@ mod tests {
     use crate::agent_session::AgentSessionMgr;
     use crate::agent_tool::{DoAction, DoActions};
     use crate::behavior::SessionRuntimeContext;
-    use buckyos_api::{value_to_object_map, AiToolCall};
+    use crate::test_utils::MockTaskMgrHandler;
+    use buckyos_api::{value_to_object_map, AiToolCall, TaskManagerClient, TaskStatus};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::process::Command;
+    use tokio::time::Duration;
 
     fn unique_agent_env_root(test_name: &str) -> PathBuf {
         let ts = SystemTime::now()
@@ -1382,6 +1399,65 @@ mod tests {
         assert_eq!(result["stdout"], "hello-linux");
         assert_eq!(result["details"], "hello-linux");
         assert_eq!(result["engine"], "tmux");
+
+        let _ = fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn exec_bash_tool_timeout_returns_pending_and_completes_task() {
+        if !tmux_ready().await {
+            return;
+        }
+
+        let root = unique_agent_env_root("exec-bash-pending-task");
+        let session_id = "session-exec-bash-pending";
+        let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
+            .await
+            .expect("create workshop");
+        let session_store = create_session_store_with_id(&root, session_id).await;
+        let tool_mgr = AgentToolManager::new();
+        let task_mgr = Arc::new(TaskManagerClient::new_in_process(Box::new(
+            MockTaskMgrHandler {
+                counter: Mutex::new(0),
+                tasks: Arc::new(Mutex::new(HashMap::new())),
+            },
+        )));
+        workshop
+            .register_tools_with_task_mgr(&tool_mgr, session_store, Some(task_mgr.clone()))
+            .expect("register workshop tools with task_mgr");
+
+        let result = call_with_session_id(
+            &tool_mgr,
+            session_id,
+            TOOL_EXEC_BASH,
+            json!({
+                "command": "sleep 0.2\nprintf 'done'",
+                "timeout_ms": 30,
+            }),
+        )
+        .await
+        .expect("exec bash should return pending");
+
+        assert_eq!(result["status"], "pending");
+        assert_eq!(result["pending_reason"], "long_running");
+        let task_id = result["task_id"]
+            .as_str()
+            .expect("pending task id should exist")
+            .parse::<i64>()
+            .expect("task id should parse");
+
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            task_mgr.wait_for_task_end_with_interval(task_id, Duration::from_millis(100)),
+        )
+            .await
+            .expect("task should finish within timeout")
+            .expect("wait for task end");
+        let task = task_mgr.get_task(task_id).await.expect("get task");
+        assert_eq!(task.status, TaskStatus::Completed);
+        assert_eq!(task.data["status"], "success");
+        assert_eq!(task.data["exit_code"], 0);
+        assert_eq!(task.data["stdout"], "done");
 
         let _ = fs::remove_dir_all(root).await;
     }
