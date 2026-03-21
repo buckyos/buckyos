@@ -1,4 +1,4 @@
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -7,8 +7,8 @@ use serde_json::{json, Value as Json};
 use tokio::fs;
 
 use crate::{
-    tokenize_bash_command_line, AgentTool, AgentToolError, AgentToolResult, SessionRuntimeContext,
-    ToolSpec,
+    optional_string_arg, require_string_arg, resolve_path_from_root, tokenize_bash_command_line,
+    u64_to_usize_arg, AgentTool, AgentToolError, AgentToolResult, SessionRuntimeContext, ToolSpec,
 };
 
 pub const TOOL_EDIT_FILE: &str = "edit_file";
@@ -121,7 +121,7 @@ impl AgentTool for EditFileTool {
         ctx: &SessionRuntimeContext,
         args: Json,
     ) -> Result<AgentToolResult, AgentToolError> {
-        let file_path = require_string(&args, "path")?;
+        let file_path = require_string_arg(&args, "path")?;
         let abs_path = resolve_path_from_root(&self.cfg.root_dir, &file_path)?;
 
         let exists = fs::metadata(&abs_path).await.is_ok();
@@ -131,8 +131,8 @@ impl AgentTool for EditFileTool {
             String::new()
         };
 
-        let pos_chunk = require_string(&args, "pos_chunk")?;
-        let new_content = require_string(&args, "new_content")?;
+        let pos_chunk = require_string_arg(&args, "pos_chunk")?;
+        let new_content = require_string_arg(&args, "new_content")?;
         let mode = parse_edit_mode(&args)?;
         let (operation, updated_content, matched) =
             if let Some(anchor_pos) = original_content.find(&pos_chunk) {
@@ -293,8 +293,8 @@ impl AgentTool for WriteFileTool {
         ctx: &SessionRuntimeContext,
         args: Json,
     ) -> Result<AgentToolResult, AgentToolError> {
-        let file_path = require_string(&args, "path")?;
-        let content = require_string(&args, "content")?;
+        let file_path = require_string_arg(&args, "path")?;
+        let content = require_string_arg(&args, "content")?;
         let abs_path = resolve_path_from_root(&self.cfg.root_dir, &file_path)?;
 
         let mode = parse_write_mode(&args)?;
@@ -445,11 +445,11 @@ impl AgentTool for ReadFileTool {
         _ctx: &SessionRuntimeContext,
         args: Json,
     ) -> Result<AgentToolResult, AgentToolError> {
-        let file_path = require_string(&args, "path")?;
+        let file_path = require_string_arg(&args, "path")?;
         let abs_path = resolve_path_from_root(&self.cfg.root_dir, &file_path)?;
 
         let full_content = read_text_file_lossy(&abs_path).await?;
-        let first_chunk = optional_string(&args, "first_chunk")?;
+        let first_chunk = optional_string_arg(&args, "first_chunk")?;
         let (selected_content, matched) = if let Some(first_chunk) = first_chunk.as_deref() {
             if let Some(pos) = full_content.find(first_chunk) {
                 (full_content[pos..].to_string(), true)
@@ -622,46 +622,6 @@ pub fn rewrite_read_file_path_with_shell_cwd(args: &mut Json, shell_cwd: &Path) 
         "path".to_string(),
         Json::String(joined.to_string_lossy().to_string()),
     );
-}
-
-pub fn normalize_abs_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
-            Component::RootDir => normalized.push(component.as_os_str()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                let _ = normalized.pop();
-            }
-            Component::Normal(seg) => normalized.push(seg),
-        }
-    }
-    normalized
-}
-
-fn require_string(args: &Json, key: &str) -> Result<String, AgentToolError> {
-    let value = args
-        .get(key)
-        .and_then(|v| v.as_str())
-        .map(|v| v.to_string())
-        .ok_or_else(|| AgentToolError::InvalidArgs(format!("missing or invalid `{key}`")))?;
-    if value.is_empty() {
-        return Err(AgentToolError::InvalidArgs(format!(
-            "`{key}` cannot be empty"
-        )));
-    }
-    Ok(value)
-}
-
-fn optional_string(args: &Json, key: &str) -> Result<Option<String>, AgentToolError> {
-    let Some(value) = args.get(key) else {
-        return Ok(None);
-    };
-    let raw = value
-        .as_str()
-        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be a string")))?;
-    Ok(Some(raw.to_string()))
 }
 
 fn parse_edit_mode(args: &Json) -> Result<&'static str, AgentToolError> {
@@ -915,7 +875,7 @@ fn parse_line_count_text(raw: &str, range_text: &str) -> Result<usize, AgentTool
             "range count must be positive integer".to_string(),
         ));
     }
-    u64_to_usize(count_u64)
+    u64_to_usize_arg(count_u64, "count")
 }
 
 fn parse_line_marker_json(value: &Json, name: &str) -> Result<LineMarker, AgentToolError> {
@@ -949,7 +909,7 @@ fn parse_line_count_json(value: &Json, name: &str) -> Result<usize, AgentToolErr
             "{name} must be positive integer"
         )));
     }
-    u64_to_usize(count_u64)
+    u64_to_usize_arg(count_u64, "count")
 }
 
 fn resolve_line_range(
@@ -996,21 +956,6 @@ fn resolve_line_marker(marker: LineMarker, total_lines: i64) -> i64 {
         LineMarker::Index(v) if v > 0 => v,
         LineMarker::Index(v) => total_lines.saturating_add(v).saturating_add(1),
     }
-}
-
-fn resolve_path_from_root(root: &Path, raw_path: &str) -> Result<PathBuf, AgentToolError> {
-    if raw_path.trim().is_empty() {
-        return Err(AgentToolError::InvalidArgs(
-            "path cannot be empty".to_string(),
-        ));
-    }
-    let user_path = Path::new(raw_path);
-    let candidate = if user_path.is_absolute() {
-        user_path.to_path_buf()
-    } else {
-        root.join(user_path)
-    };
-    Ok(normalize_abs_path(&candidate))
 }
 
 async fn read_text_file_lossy(path: &Path) -> Result<String, AgentToolError> {
@@ -1099,11 +1044,6 @@ fn build_simple_diff(display_path: &str, before: &str, after: &str) -> (String, 
     ));
     diff.extend(body);
     (diff.join("\n"), false)
-}
-
-fn u64_to_usize(v: u64) -> Result<usize, AgentToolError> {
-    usize::try_from(v)
-        .map_err(|_| AgentToolError::InvalidArgs("value is too large for current platform".to_string()))
 }
 
 #[cfg(test)]

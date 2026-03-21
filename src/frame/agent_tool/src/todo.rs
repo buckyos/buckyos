@@ -3,7 +3,6 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use buckyos_api::KEventClient;
 use log::info;
@@ -12,7 +11,15 @@ use serde::Serialize;
 use serde_json::{json, Value as Json};
 use tokio::task;
 
-use crate::{AgentToolError, SessionRuntimeContext};
+use crate::{
+    now_ms, optional_trimmed_string_arg, require_trimmed_string_arg, AgentToolError,
+    SessionRuntimeContext,
+};
+
+pub(crate) use crate::optional_trimmed_string_arg as optional_string;
+pub(crate) use crate::optional_u64_arg as optional_u64;
+pub(crate) use crate::require_trimmed_string_arg as require_string;
+pub(crate) use crate::u64_to_usize_arg as u64_to_usize;
 
 const DEFAULT_LIST_LIMIT: usize = 32;
 const DEFAULT_MAX_LIST_LIMIT: usize = 128;
@@ -278,7 +285,11 @@ impl ActorCtx {
             .and_then(|v| v.as_str())
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
-            .or_else(|| optional_string(args, "session_id").ok().flatten());
+            .or_else(|| {
+                optional_trimmed_string_arg(args, "session_id")
+                    .ok()
+                    .flatten()
+            });
 
         let trace_id = actor_raw
             .and_then(|m| m.get("trace_id"))
@@ -368,21 +379,21 @@ impl TodoListFilters {
             statuses = parse_status_list(args.get("status"))?;
         }
         if todo_type.is_none() {
-            todo_type = optional_string(args, "type")?
+            todo_type = optional_trimmed_string_arg(args, "type")?
                 .map(|v| TodoType::parse(&v))
                 .transpose()?;
         }
         if assignee.is_none() {
-            assignee = optional_string(args, "assignee")?;
+            assignee = optional_trimmed_string_arg(args, "assignee")?;
         }
         if label.is_none() {
-            label = optional_string(args, "label")?;
+            label = optional_trimmed_string_arg(args, "label")?;
         }
         if query.is_none() {
-            query = optional_string(args, "query")?;
+            query = optional_trimmed_string_arg(args, "query")?;
         }
         if sort_by.is_none() {
-            sort_by = optional_string(args, "sort_by")?;
+            sort_by = optional_trimmed_string_arg(args, "sort_by")?;
         }
         if !asc {
             asc = optional_bool(args, "asc")?.unwrap_or(false);
@@ -2591,54 +2602,13 @@ fn parse_string_array(
 }
 
 fn require_workspace_id(args: &Json) -> Result<String, AgentToolError> {
-    let workspace_id = require_string(args, "workspace_id")?;
+    let workspace_id = require_trimmed_string_arg(args, "workspace_id")?;
     if workspace_id.chars().count() > MAX_TEXT_256 {
         return Err(AgentToolError::InvalidArgs(
             "`workspace_id` too long (max 256 chars)".to_string(),
         ));
     }
     Ok(workspace_id)
-}
-
-fn require_string(args: &Json, key: &str) -> Result<String, AgentToolError> {
-    let value = args
-        .get(key)
-        .and_then(|v| v.as_str())
-        .map(|v| v.trim().to_string())
-        .ok_or_else(|| AgentToolError::InvalidArgs(format!("missing or invalid `{key}`")))?;
-    if value.is_empty() {
-        return Err(AgentToolError::InvalidArgs(format!(
-            "`{key}` cannot be empty"
-        )));
-    }
-    Ok(value)
-}
-
-fn optional_string(args: &Json, key: &str) -> Result<Option<String>, AgentToolError> {
-    let Some(value) = args.get(key) else {
-        return Ok(None);
-    };
-    if value.is_null() {
-        return Ok(None);
-    }
-    let raw = value
-        .as_str()
-        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be a string")))?;
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(trimmed.to_string()))
-}
-
-fn optional_u64(args: &Json, key: &str) -> Result<Option<u64>, AgentToolError> {
-    let Some(value) = args.get(key) else {
-        return Ok(None);
-    };
-    value
-        .as_u64()
-        .map(Some)
-        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be a positive integer")))
 }
 
 fn optional_bool(args: &Json, key: &str) -> Result<Option<bool>, AgentToolError> {
@@ -2763,13 +2733,6 @@ fn truncate_chars(raw: &str, max_len: usize) -> String {
     raw.chars().take(max_len).collect::<String>() + "..."
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
 fn generate_id(prefix: &str) -> String {
     let seq = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("{prefix}-{}-{seq}", now_ms())
@@ -2795,9 +2758,6 @@ fn usize_to_i64(v: usize, field: &str) -> Result<i64, AgentToolError> {
     i64::try_from(v).map_err(|_| AgentToolError::InvalidArgs(format!("`{field}` too large")))
 }
 
-fn u64_to_usize(v: u64, field: &str) -> Result<usize, AgentToolError> {
-    usize::try_from(v).map_err(|_| AgentToolError::InvalidArgs(format!("`{field}` too large")))
-}
 #[cfg(test)]
 mod tests {
     use super::*;

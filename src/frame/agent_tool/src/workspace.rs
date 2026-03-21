@@ -8,8 +8,8 @@ use serde_json::{json, Value as Json};
 use tokio::fs;
 
 use crate::{
-    AgentToolError, ExternalWorkspaceBackend, SessionRuntimeContext, WorkspaceToolBackend,
-    normalize_abs_path,
+    normalize_abs_path, to_abs_path, AgentToolError, ExternalWorkspaceBackend,
+    SessionRuntimeContext, WorkspaceToolBackend,
 };
 
 const DEFAULT_EXTERNAL_WORKSPACES_DIR: &str = "workspaces";
@@ -114,7 +114,10 @@ impl WorkspaceToolBackend for ManagedWorkspaceToolBackend {
                 .create_workspace_record(&session_id, name.as_str())
                 .await?;
 
-            let workspace_path = self.runtime.get_workspace_path(&workspace.workspace_id).await?;
+            let workspace_path = self
+                .runtime
+                .get_workspace_path(&workspace.workspace_id)
+                .await?;
             let summary_path = workspace_path.join("SUMMARY.md");
             fs::write(&summary_path, format!("{summary}\n"))
                 .await
@@ -354,16 +357,25 @@ impl ManagedExternalWorkspaceBackend {
     ) -> Result<Vec<ExternalWorkspaceBinding>, AgentToolError> {
         let path = self.workspace_bindings_path(agent_root);
         if !fs::try_exists(&path).await.map_err(|err| {
-            AgentToolError::ExecFailed(format!("check workspace bindings failed: path={} err={err}", path.display()))
+            AgentToolError::ExecFailed(format!(
+                "check workspace bindings failed: path={} err={err}",
+                path.display()
+            ))
         })? {
             return Ok(vec![]);
         }
 
         let content = fs::read_to_string(&path).await.map_err(|err| {
-            AgentToolError::ExecFailed(format!("read workspace bindings failed: path={} err={err}", path.display()))
+            AgentToolError::ExecFailed(format!(
+                "read workspace bindings failed: path={} err={err}",
+                path.display()
+            ))
         })?;
         let parsed: Json = serde_json::from_str(&content).map_err(|err| {
-            AgentToolError::ExecFailed(format!("parse workspace bindings failed: path={} err={err}", path.display()))
+            AgentToolError::ExecFailed(format!(
+                "parse workspace bindings failed: path={} err={err}",
+                path.display()
+            ))
         })?;
         let Some(arr) = parsed.get("bindings").and_then(|v| v.as_array()) else {
             return Ok(vec![]);
@@ -395,9 +407,10 @@ impl ManagedExternalWorkspaceBackend {
                 ))
             })?;
         }
-        let payload = serde_json::to_string_pretty(&json!({ "bindings": bindings })).map_err(
-            |err| AgentToolError::ExecFailed(format!("serialize workspace bindings failed: {err}")),
-        )?;
+        let payload =
+            serde_json::to_string_pretty(&json!({ "bindings": bindings })).map_err(|err| {
+                AgentToolError::ExecFailed(format!("serialize workspace bindings failed: {err}"))
+            })?;
         fs::write(&path, payload).await.map_err(|err| {
             AgentToolError::ExecFailed(format!(
                 "write workspace bindings failed: path={} err={err}",
@@ -423,9 +436,7 @@ impl ExternalWorkspaceBackend for ManagedExternalWorkspaceBackend {
         }
         let name = name.trim();
         if name.is_empty() {
-            return Err(AgentToolError::InvalidArgs(
-                "name is required".to_string(),
-            ));
+            return Err(AgentToolError::InvalidArgs("name is required".to_string()));
         }
         let raw_path = workspace_path.trim();
         if raw_path.is_empty() {
@@ -472,7 +483,8 @@ impl ExternalWorkspaceBackend for ManagedExternalWorkspaceBackend {
         };
         let mut bindings = self.read_workspace_bindings(&agent_root).await?;
         upsert_binding(&mut bindings, binding.clone());
-        self.write_workspace_bindings(&agent_root, &bindings).await?;
+        self.write_workspace_bindings(&agent_root, &bindings)
+            .await?;
 
         serde_json::to_value(binding)
             .map_err(|err| AgentToolError::ExecFailed(format!("serialize binding failed: {err}")))
@@ -494,19 +506,12 @@ impl ExternalWorkspaceBackend for ManagedExternalWorkspaceBackend {
     }
 }
 
-fn to_abs_path(path: &Path) -> Result<PathBuf, AgentToolError> {
-    if path.is_absolute() {
-        Ok(normalize_abs_path(path))
-    } else {
-        std::env::current_dir()
-            .map(|cwd| normalize_abs_path(&cwd.join(path)))
-            .map_err(|err| AgentToolError::ExecFailed(format!("read current_dir failed: {err}")))
-    }
-}
-
 async fn ensure_mount_link(mount_path: &Path, source_path: &Path) -> Result<(), AgentToolError> {
     if fs::try_exists(mount_path).await.map_err(|err| {
-        AgentToolError::ExecFailed(format!("check mount path failed: path={} err={err}", mount_path.display()))
+        AgentToolError::ExecFailed(format!(
+            "check mount path failed: path={} err={err}",
+            mount_path.display()
+        ))
     })? {
         let meta = fs::symlink_metadata(mount_path).await.map_err(|err| {
             AgentToolError::ExecFailed(format!(
@@ -553,12 +558,14 @@ async fn ensure_mount_link(mount_path: &Path, source_path: &Path) -> Result<(), 
         source_path.display(),
         mount_path.display()
     );
-    create_symlink(source_path, mount_path).await.map_err(|err| {
-        AgentToolError::ExecFailed(format!(
-            "create workspace mount symlink failed: path={} err={err}",
-            mount_path.display()
-        ))
-    })
+    create_symlink(source_path, mount_path)
+        .await
+        .map_err(|err| {
+            AgentToolError::ExecFailed(format!(
+                "create workspace mount symlink failed: path={} err={err}",
+                mount_path.display()
+            ))
+        })
 }
 
 async fn create_symlink(source: &Path, target: &Path) -> Result<(), std::io::Error> {
@@ -660,7 +667,9 @@ mod tests {
                 .workspace_paths
                 .get(workspace_id)
                 .cloned()
-                .ok_or_else(|| AgentToolError::InvalidArgs(format!("workspace not found: `{workspace_id}`")))
+                .ok_or_else(|| {
+                    AgentToolError::InvalidArgs(format!("workspace not found: `{workspace_id}`"))
+                })
         }
 
         async fn bind_workspace_record(
@@ -673,7 +682,9 @@ mod tests {
                 .workspace_paths
                 .get(workspace_id)
                 .cloned()
-                .ok_or_else(|| AgentToolError::InvalidArgs(format!("workspace not found: `{workspace_id}`")))?;
+                .ok_or_else(|| {
+                    AgentToolError::InvalidArgs(format!("workspace not found: `{workspace_id}`"))
+                })?;
             let binding = SessionWorkspaceBindingView {
                 session_id: session_id.to_string(),
                 local_workspace_id: workspace_id.to_string(),

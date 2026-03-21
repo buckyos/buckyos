@@ -234,12 +234,10 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use buckyos_api::{value_to_object_map, AiToolSpec};
+    use buckyos_api::AiToolSpec;
     use tokio::sync::Mutex;
 
-    use crate::agent_environment::AgentEnvironment;
-    use crate::agent_session::{AgentSession, AgentSessionMgr, GetSessionTool};
-    use crate::agent_tool::{AgentMemory, AgentMemoryConfig, AgentToolManager, ToolSpec};
+    use crate::agent_session::AgentSession;
     use crate::behavior::{
         BehaviorConfig, BehaviorExecInput, PromptBuilder, SessionRuntimeContext, StepLimits,
         Tokenizer,
@@ -251,50 +249,6 @@ mod tests {
         fn count_tokens(&self, text: &str) -> u32 {
             text.split_whitespace().count() as u32
         }
-    }
-
-    async fn load_runtime_tool_specs(agent_env_root: &Path) -> (Vec<AiToolSpec>, Vec<ToolSpec>) {
-        let tool_mgr = AgentToolManager::new();
-        let session_store = Arc::new(
-            AgentSessionMgr::new(
-                "did:web:agent.example.com",
-                agent_env_root.join("sessions"),
-                "resolve_router".to_string(),
-            )
-            .await
-            .expect("create session store"),
-        );
-
-        let environment = AgentEnvironment::new(agent_env_root.to_path_buf())
-            .await
-            .expect("create agent environment");
-        environment
-            .register_workshop_tools(&tool_mgr, session_store.clone())
-            .expect("register workshop tools");
-
-        let memory = AgentMemory::new(AgentMemoryConfig::new(agent_env_root.to_path_buf()))
-            .await
-            .expect("create memory");
-        memory
-            .register_tools(&tool_mgr)
-            .expect("register memory tools");
-
-        tool_mgr
-            .register_tool(GetSessionTool::new(session_store))
-            .expect("register get_session tool");
-
-        let tools = tool_mgr
-            .list_tool_specs()
-            .into_iter()
-            .map(|tool| AiToolSpec {
-                name: tool.name.clone(),
-                description: tool.description.clone(),
-                args_schema: value_to_object_map(tool.args_schema.clone()),
-                output_schema: tool.output_schema.clone(),
-            })
-            .collect::<Vec<_>>();
-        let action_specs = tool_mgr.list_action_specs();
-        (tools, action_specs)
     }
 
     async fn render_toolbox_prompt_preview(
@@ -325,13 +279,8 @@ mod tests {
             behavior_cfg: BehaviorConfig::default(),
             session: None,
         };
-
-        let (tools, action_specs) = load_runtime_tool_specs(agent_env_root).await;
-
         let req = PromptBuilder::build(
             &input,
-            &tools,
-            &action_specs,
             &input.behavior_cfg,
             &MockTokenizer,
             Some(session),

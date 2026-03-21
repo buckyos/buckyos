@@ -12,24 +12,43 @@ pub(crate) const WORKSPACES_LOCAL_DIR: &str = "workspaces";
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
-struct WorkspaceBindingView {
-    local_workspace_id: String,
-    workspace_path: String,
-    workspace_rel_path: String,
-    agent_env_root: String,
+pub(crate) struct WorkspaceBindingRef {
+    pub local_workspace_id: String,
+    pub workspace_path: String,
+    pub workspace_rel_path: String,
+    pub agent_env_root: String,
+}
+
+impl WorkspaceBindingRef {
+    pub(crate) fn normalized_local_workspace_id(&self) -> Option<String> {
+        normalize_optional_text(Some(self.local_workspace_id.as_str()))
+    }
+
+    fn normalized_workspace_path(&self) -> Option<PathBuf> {
+        non_empty_path_str(&self.workspace_path)
+    }
+
+    fn normalized_agent_env_root(&self) -> Option<PathBuf> {
+        non_empty_path_str(&self.agent_env_root)
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 struct WorkspaceInfoView {
-    binding: Option<WorkspaceBindingView>,
+    binding: Option<WorkspaceBindingRef>,
     local_workspace_id: String,
 }
 
+pub(crate) fn resolve_workspace_binding_ref(
+    workspace_info: Option<&Json>,
+) -> Option<WorkspaceBindingRef> {
+    workspace_info_view(workspace_info).and_then(|info| info.binding)
+}
+
 pub(crate) fn resolve_bound_workspace_root(workspace_info: Option<&Json>) -> Option<PathBuf> {
-    workspace_info_view(workspace_info)
-        .and_then(|info| info.binding)
-        .and_then(|binding| non_empty_path_str(&binding.workspace_path))
+    resolve_workspace_binding_ref(workspace_info)
+        .and_then(|binding| binding.normalized_workspace_path())
 }
 
 pub(crate) fn resolve_bound_workspace_id(workspace_info: Option<&Json>) -> Option<String> {
@@ -37,7 +56,7 @@ pub(crate) fn resolve_bound_workspace_id(workspace_info: Option<&Json>) -> Optio
     normalize_optional_text(Some(info.local_workspace_id.as_str())).or_else(|| {
         info.binding
             .as_ref()
-            .and_then(|binding| normalize_optional_text(Some(binding.local_workspace_id.as_str())))
+            .and_then(WorkspaceBindingRef::normalized_local_workspace_id)
     })
 }
 
@@ -107,10 +126,8 @@ fn workspace_info_view(workspace_info: Option<&Json>) -> Option<WorkspaceInfoVie
 }
 
 fn resolve_agent_env_root_from_info(workspace_info: Option<&Json>) -> Option<PathBuf> {
-    let info = workspace_info_view(workspace_info)?;
-    let binding = info.binding.as_ref()?;
-    let _ = info;
-    non_empty_path_str(&binding.agent_env_root)
+    resolve_workspace_binding_ref(workspace_info)
+        .and_then(|binding| binding.normalized_agent_env_root())
 }
 
 fn local_workspace_id_from_info(info: &WorkspaceInfoView) -> Option<String> {

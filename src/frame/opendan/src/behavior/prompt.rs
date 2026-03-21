@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use buckyos_api::{
-    features, AiMessage, AiPayload, AiToolSpec, BoxKind, Capability, CompleteRequest, ModelSpec,
+    features, AiMessage, AiPayload, BoxKind, Capability, CompleteRequest, ModelSpec,
     MsgRecordWithObject, Requirements,
 };
 use chrono::{DateTime, Utc};
@@ -16,7 +16,7 @@ use tokio::sync::Mutex;
 
 use crate::agent_environment::AgentEnvironment;
 use crate::agent_session::AgentSession;
-use crate::agent_tool::{AgentMemory, ToolSpec};
+use crate::agent_tool::AgentMemory;
 use crate::behavior::config::BehaviorMemoryBucketConfig;
 use crate::behavior::BehaviorConfig;
 use crate::worklog::{
@@ -61,8 +61,6 @@ impl PromptBuilder {
     //通过理解下面实现，可以理解OpenDAN Agent的整体设计
     pub async fn build(
         input: &BehaviorExecInput,
-        _tools: &[AiToolSpec],
-        _action_specs: &[ToolSpec],
         cfg: &BehaviorConfig,
         tokenizer: &dyn Tokenizer,
         session: Option<Arc<Mutex<AgentSession>>>,
@@ -2403,9 +2401,9 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::agent_tool::{AgentMemory, AgentMemoryConfig};
     use crate::agent_session::AgentSession;
     use crate::agent_tool::AgentTool;
+    use crate::agent_tool::{AgentMemory, AgentMemoryConfig};
     use crate::behavior::types::{SessionRuntimeContext, StepLimits};
     use crate::worklog::{WorklogTool, WorklogToolConfig};
     use buckyos_api::MsgRecordWithObject;
@@ -2446,17 +2444,9 @@ mod tests {
             session: None,
         };
 
-        let req = PromptBuilder::build(
-            &input,
-            &[],
-            &[],
-            &input.behavior_cfg,
-            &MockTokenizer,
-            None,
-            None,
-        )
-        .await
-        .expect("build prompt");
+        let req = PromptBuilder::build(&input, &input.behavior_cfg, &MockTokenizer, None, None)
+            .await
+            .expect("build prompt");
 
         let system = req
             .payload

@@ -28,7 +28,8 @@ use crate::workspace::{
 use crate::workspace_path::{
     non_empty_path, resolve_agent_env_root, resolve_agent_env_root_from_local_workspace_hint,
     resolve_bound_workspace_id, resolve_default_local_workspace_path,
-    resolve_session_workspace_root, WORKSHOP_INDEX_FILE_NAME, WORKSHOP_TODO_DB_REL_PATH,
+    resolve_session_workspace_root, resolve_workspace_binding_ref, WORKSHOP_INDEX_FILE_NAME,
+    WORKSHOP_TODO_DB_REL_PATH,
 };
 
 const MAX_INCLUDE_BYTES: usize = 64 * 1024;
@@ -1228,6 +1229,10 @@ fn resolve_session_workspace_id(
     workspace_info: Option<&Json>,
 ) -> Option<String> {
     normalize_optional_text(local_workspace_id)
+        .or_else(|| {
+            resolve_workspace_binding_ref(workspace_info)
+                .and_then(|binding| binding.normalized_local_workspace_id())
+        })
         .or_else(|| resolve_bound_workspace_id(workspace_info))
 }
 

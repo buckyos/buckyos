@@ -9,6 +9,10 @@ pub use ::agent_tool::{
     ReadFileTool, WriteFileTool, TOOL_EDIT_FILE, TOOL_READ_FILE, TOOL_WRITE_FILE,
 };
 
+use crate::agent_tool::{
+    optional_string_arg, read_bool_from_map as shared_read_bool_from_map,
+    read_u64_from_map as shared_read_u64_from_map, require_string_arg,
+};
 use crate::agent_tool::{AgentToolError, SessionRuntimeContext};
 use crate::runtime_utils::{optional_u64_arg, resolve_path_from_root};
 use crate::worklog::{WorklogService, WorklogToolConfig};
@@ -35,12 +39,12 @@ impl FileWriteAuditBackend for WorkshopWriteAudit {
         record: &FileWriteAuditRecord,
     ) -> Result<(), AgentToolError> {
         let worklog_service = WorklogService::new(self.worklog_cfg.clone())?;
-        let owner_session_id = optional_string(args, "session_id")?;
-        let step_id = optional_string(args, "step_id")?
+        let owner_session_id = optional_string_arg(args, "session_id")?;
+        let step_id = optional_string_arg(args, "step_id")?
             .unwrap_or_else(|| format!("{}#{}", ctx.behavior, ctx.step_idx));
-        let task_id = optional_string(args, "task_id")?;
-        let action_id = optional_string(args, "action_id")?;
-        let run_id = optional_string(args, "run_id")?.unwrap_or_else(|| ctx.trace_id.clone());
+        let task_id = optional_string_arg(args, "task_id")?;
+        let action_id = optional_string_arg(args, "action_id")?;
+        let run_id = optional_string_arg(args, "run_id")?.unwrap_or_else(|| ctx.trace_id.clone());
         let mut tags = vec![
             "workspace".to_string(),
             "local_workspace".to_string(),
@@ -86,27 +90,7 @@ impl FileWriteAuditBackend for WorkshopWriteAudit {
 }
 
 pub(crate) fn require_string(args: &Json, key: &str) -> Result<String, AgentToolError> {
-    let value = args
-        .get(key)
-        .and_then(|v| v.as_str())
-        .map(|v| v.to_string())
-        .ok_or_else(|| AgentToolError::InvalidArgs(format!("missing or invalid `{key}`")))?;
-    if value.is_empty() {
-        return Err(AgentToolError::InvalidArgs(format!(
-            "`{key}` cannot be empty"
-        )));
-    }
-    Ok(value)
-}
-
-fn optional_string(args: &Json, key: &str) -> Result<Option<String>, AgentToolError> {
-    let Some(value) = args.get(key) else {
-        return Ok(None);
-    };
-    let raw = value
-        .as_str()
-        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be a string")))?;
-    Ok(Some(raw.to_string()))
+    require_string_arg(args, key)
 }
 
 pub(crate) fn optional_u64(args: &Json, key: &str) -> Result<Option<u64>, AgentToolError> {
@@ -117,26 +101,14 @@ pub(crate) fn read_u64_from_map(
     map: &serde_json::Map<String, Json>,
     key: &str,
 ) -> Result<Option<u64>, AgentToolError> {
-    let Some(value) = map.get(key) else {
-        return Ok(None);
-    };
-    value
-        .as_u64()
-        .map(Some)
-        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be an integer")))
+    shared_read_u64_from_map(map, key)
 }
 
 pub(crate) fn read_bool_from_map(
     map: &serde_json::Map<String, Json>,
     key: &str,
 ) -> Result<Option<bool>, AgentToolError> {
-    let Some(value) = map.get(key) else {
-        return Ok(None);
-    };
-    value
-        .as_bool()
-        .map(Some)
-        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be a boolean")))
+    shared_read_bool_from_map(map, key)
 }
 
 pub(crate) fn parse_workspace_relative_roots(

@@ -17,13 +17,13 @@ use tokio::io::{self, AsyncReadExt};
 use tokio::process::Command;
 
 use crate::{
-    cli_exit_code_for_error, normalize_abs_path, parse_read_file_bash_args,
-    render_cli_output, rewrite_read_file_path_with_shell_cwd, AgentTool, AgentToolError,
-    AgentToolResult, BindWorkspaceTool, CliPendingReason, CliResultEnvelope, CliRunOutput,
-    CliStatus, CreateWorkspaceTool, EditFileTool, FileToolConfig, GetSessionTool,
-    NoopFileWriteAudit, ReadFileTool, SessionRuntimeContext, SessionViewBackend, TodoTool,
-    TodoToolConfig, WorkspaceToolBackend, WriteFileTool, TOOL_BIND_WORKSPACE,
-    TOOL_CREATE_WORKSPACE, TOOL_GET_SESSION,
+    cli_exit_code_for_error, normalize_abs_path, parse_read_file_bash_args, render_cli_output,
+    rewrite_read_file_path_with_shell_cwd, AgentTool, AgentToolError, AgentToolResult,
+    BindWorkspaceTool, CliPendingReason, CliResultEnvelope, CliRunOutput, CliStatus,
+    CreateWorkspaceTool, EditFileTool, FileToolConfig, GetSessionTool, NoopFileWriteAudit,
+    ReadFileTool, SessionRuntimeContext, SessionViewBackend, TodoTool, TodoToolConfig,
+    WorkspaceToolBackend, WriteFileTool, TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE,
+    TOOL_GET_SESSION,
 };
 
 const TOOL_TODO: &str = "todo";
@@ -982,7 +982,10 @@ impl WorkspaceToolBackend for CliWorkspaceBackend {
                 "session `{session_id}` already bound local workspace"
             )));
         }
-        if load_session_binding(&self.state_root, session_id).await?.is_some() {
+        if load_session_binding(&self.state_root, session_id)
+            .await?
+            .is_some()
+        {
             return Err(AgentToolError::InvalidArgs(format!(
                 "session `{session_id}` already bound local workspace"
             )));
@@ -1001,10 +1004,12 @@ impl WorkspaceToolBackend for CliWorkspaceBackend {
 
         let now = now_ms();
         workspace.updated_at_ms = now;
-        workspace.bound_sessions.push(CliLocalWorkspaceSessionBinding {
-            session_id: session_id.to_string(),
-            bound_at_ms: now,
-        });
+        workspace
+            .bound_sessions
+            .push(CliLocalWorkspaceSessionBinding {
+                session_id: session_id.to_string(),
+                bound_at_ms: now,
+            });
         let workspace_snapshot = workspace.clone();
         index.updated_at_ms = now;
         save_workspace_index(&self.state_root, &index).await?;
@@ -1051,9 +1056,11 @@ async fn execute_bash_tool(
                 .exec(&env.call_ctx, line, Some(env.current_dir.as_path()))
                 .await
         }
-        TOOL_TODO => build_todo_tool(env)?
-            .exec(&env.call_ctx, line, Some(env.current_dir.as_path()))
-            .await,
+        TOOL_TODO => {
+            build_todo_tool(env)?
+                .exec(&env.call_ctx, line, Some(env.current_dir.as_path()))
+                .await
+        }
         TOOL_CREATE_WORKSPACE => {
             build_create_workspace_tool(env)?
                 .exec(&env.call_ctx, line, Some(env.current_dir.as_path()))
@@ -1080,9 +1087,7 @@ fn build_todo_tool(env: &CliRuntimeEnv) -> Result<TodoTool, AgentToolError> {
     ))
 }
 
-fn build_create_workspace_tool(
-    env: &CliRuntimeEnv,
-) -> Result<CreateWorkspaceTool, AgentToolError> {
+fn build_create_workspace_tool(env: &CliRuntimeEnv) -> Result<CreateWorkspaceTool, AgentToolError> {
     Ok(CreateWorkspaceTool::new(Arc::new(CliWorkspaceBackend {
         state_root: cli_state_root(env),
         agent_id: env.call_ctx.agent_name.clone(),
@@ -1260,13 +1265,19 @@ fn now_ms() -> u64 {
 }
 
 fn session_file_path(state_root: &Path, session_id: &str) -> PathBuf {
-    state_root.join("sessions").join(session_id).join(SESSION_RECORD_FILE)
+    state_root
+        .join("sessions")
+        .join(session_id)
+        .join(SESSION_RECORD_FILE)
 }
 
 async fn load_session_json(state_root: &Path, session_id: &str) -> Result<Json, AgentToolError> {
     let path = session_file_path(state_root, session_id);
     let raw = fs::read_to_string(&path).await.map_err(|err| {
-        AgentToolError::ExecFailed(format!("read session file `{}` failed: {err}", path.display()))
+        AgentToolError::ExecFailed(format!(
+            "read session file `{}` failed: {err}",
+            path.display()
+        ))
     })?;
     serde_json::from_str(&raw).map_err(|err| {
         AgentToolError::ExecFailed(format!(
@@ -1293,7 +1304,10 @@ async fn save_session_json(
     let bytes = serde_json::to_vec_pretty(session)
         .map_err(|err| AgentToolError::ExecFailed(format!("serialize session failed: {err}")))?;
     fs::write(&path, bytes).await.map_err(|err| {
-        AgentToolError::ExecFailed(format!("write session file `{}` failed: {err}", path.display()))
+        AgentToolError::ExecFailed(format!(
+            "write session file `{}` failed: {err}",
+            path.display()
+        ))
     })
 }
 

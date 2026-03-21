@@ -13,17 +13,29 @@ use tokio::time::{timeout, Duration};
 
 pub mod cli;
 pub mod file_tools;
+pub mod json_args;
 pub mod memory;
+pub mod path_utils;
+pub mod runtime_utils;
 pub mod todo;
 pub mod workspace;
 
 pub use file_tools::{
-    normalize_abs_path, parse_read_file_bash_args, rewrite_read_file_path_with_shell_cwd,
-    EditFileTool, FileToolConfig, FileWriteAuditBackend, FileWriteAuditRecord,
-    NoopFileWriteAudit, ReadFileTool, WriteFileTool, TOOL_EDIT_FILE, TOOL_READ_FILE,
-    TOOL_WRITE_FILE,
+    parse_read_file_bash_args, rewrite_read_file_path_with_shell_cwd, EditFileTool, FileToolConfig,
+    FileWriteAuditBackend, FileWriteAuditRecord, NoopFileWriteAudit, ReadFileTool, WriteFileTool,
+    TOOL_EDIT_FILE, TOOL_READ_FILE, TOOL_WRITE_FILE,
+};
+pub use json_args::{
+    optional_string_arg, optional_trimmed_string_arg, optional_u64_arg, read_bool_from_map,
+    read_string_from_map, read_u64_from_map, require_string_arg, require_trimmed_string_arg,
+    u64_to_usize_arg,
 };
 pub use memory::{AgentMemory, AgentMemoryConfig, MemoryRankItem};
+pub use path_utils::{
+    normalize_abs_path, normalize_root_path, resolve_path_from_root, resolve_path_under_root,
+    to_abs_path,
+};
+pub use runtime_utils::now_ms;
 pub use todo::{
     get_next_ready_todo_code, get_next_ready_todo_text, get_session_todo_text_by_ref, TodoTool,
     TodoToolConfig,
@@ -219,44 +231,6 @@ pub struct ToolSpec {
 impl ToolSpec {
     pub fn render_for_prompt(tools: &[ToolSpec]) -> String {
         serde_json::to_string(tools).unwrap_or_else(|_| "[]".to_string())
-    }
-
-    pub fn render_action_introduce_prompt(&self) -> String {
-        format!("- {} : {}", self.name, self.action_introduce())
-    }
-
-    pub fn render_action_prompt(&self) -> String {
-        let action_name = self.name.trim();
-        let usage = format!(
-            "[\"{}\", {}]",
-            action_name,
-            serde_json::to_string(&self.args_schema).unwrap_or_else(|_| "{}".to_string())
-        );
-        let args_schema =
-            serde_json::to_string(&self.args_schema).unwrap_or_else(|_| "{}".to_string());
-        let output_schema =
-            serde_json::to_string(&self.output_schema).unwrap_or_else(|_| "{}".to_string());
-        let description = format!(
-            "{} Args schema: {} Output schema: {}",
-            self.description.trim(),
-            args_schema,
-            output_schema
-        );
-
-        format!(
-            "**{}**\n - Action Name: {}\n - Kind: call_tool\n - Usage: {}\n - Description: {}",
-            action_name, action_name, usage, description
-        )
-    }
-
-    fn action_introduce(&self) -> String {
-        self.description
-            .split('.')
-            .next()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| format!("Call `{}` tool action", self.name))
     }
 }
 
@@ -1076,9 +1050,10 @@ impl AgentTool for BindExternalWorkspaceTool {
         ctx: &SessionRuntimeContext,
         args: Json,
     ) -> Result<AgentToolResult, AgentToolError> {
-        let agent_did = optional_string_arg(&args, "agent_did")?.unwrap_or(ctx.agent_name.clone());
-        let name = require_string_arg(&args, "name")?;
-        let workspace_path = require_string_arg(&args, "workspace_path")?;
+        let agent_did =
+            optional_trimmed_string_arg(&args, "agent_did")?.unwrap_or(ctx.agent_name.clone());
+        let name = require_trimmed_string_arg(&args, "name")?;
+        let workspace_path = require_trimmed_string_arg(&args, "workspace_path")?;
         let binding = self
             .backend
             .bind_external_workspace(agent_did.as_str(), name.as_str(), workspace_path.as_str())
@@ -1145,7 +1120,8 @@ impl AgentTool for ListExternalWorkspacesTool {
         ctx: &SessionRuntimeContext,
         args: Json,
     ) -> Result<AgentToolResult, AgentToolError> {
-        let agent_did = optional_string_arg(&args, "agent_did")?.unwrap_or(ctx.agent_name.clone());
+        let agent_did =
+            optional_trimmed_string_arg(&args, "agent_did")?.unwrap_or(ctx.agent_name.clone());
         let workspaces = self
             .backend
             .list_external_workspaces(agent_did.as_str())
@@ -1613,7 +1589,6 @@ struct ToolNamespaceRegistry {
     all_tools: HashMap<String, Arc<dyn AgentTool>>,
     llm_tools: HashMap<String, Arc<dyn AgentTool>>,
     bash_cmds: HashMap<String, Arc<dyn AgentTool>>,
-    action_tools: HashMap<String, Arc<dyn AgentTool>>,
 }
 
 #[derive(Clone)]
@@ -1701,11 +1676,6 @@ impl AgentToolManager {
                 .bash_cmds
                 .insert(normalized_name.clone(), registered.clone());
         }
-        if support_action {
-            guard
-                .action_tools
-                .insert(normalized_name.clone(), registered);
-        }
         if normalized_name != original_name {
             warn!(
                 "tool name normalized for provider compatibility: original={} normalized={}",
@@ -1734,7 +1704,6 @@ impl AgentToolManager {
 
         guard.llm_tools.remove(normalized_name.as_str());
         guard.bash_cmds.remove(normalized_name.as_str());
-        guard.action_tools.remove(normalized_name.as_str());
         true
     }
 
@@ -1763,11 +1732,11 @@ impl AgentToolManager {
         let Ok(guard) = self.namespaces.read() else {
             return None;
         };
-        guard.action_tools.get(name).cloned()
-    }
-
-    pub fn get_action_tool_spec(&self, name: &str) -> Option<ToolSpec> {
-        self.get_action(name).map(|tool| tool.spec())
+        guard
+            .all_tools
+            .get(name)
+            .filter(|tool| tool.support_action())
+            .cloned()
     }
 
     pub fn get_tool_spec(&self, name: &str) -> Option<ToolSpec> {
@@ -1797,20 +1766,13 @@ impl AgentToolManager {
             return vec![];
         };
         let mut specs: Vec<ToolSpec> = guard
-            .action_tools
+            .all_tools
             .values()
+            .filter(|tool| tool.support_action())
             .map(|tool| tool.spec())
             .collect();
         specs.sort_by(|a, b| a.name.cmp(&b.name));
         specs
-    }
-
-    pub fn list_action_specs(&self) -> Vec<ToolSpec> {
-        self.list_action_tool_specs()
-    }
-
-    pub fn get_action_spec(&self, name: &str) -> Option<ToolSpec> {
-        self.get_action_tool_spec(name)
     }
 
     pub fn parse_bash_command_name(line: &str) -> Option<String> {
@@ -2017,30 +1979,6 @@ fn append_usage_on_invalid_args(err: AgentToolError, usage: &str) -> AgentToolEr
         }
         other => other,
     }
-}
-
-fn require_string_arg(args: &Json, key: &str) -> Result<String, AgentToolError> {
-    let value = args
-        .get(key)
-        .and_then(|v| v.as_str())
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| AgentToolError::InvalidArgs(format!("missing or invalid `{key}`")))?;
-    Ok(value)
-}
-
-fn optional_string_arg(args: &Json, key: &str) -> Result<Option<String>, AgentToolError> {
-    let Some(value) = args.get(key) else {
-        return Ok(None);
-    };
-    let value = value
-        .as_str()
-        .map(|v| v.trim().to_string())
-        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be a string")))?;
-    if value.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(value))
 }
 
 pub fn parse_default_bash_exec_args(tokens: &[String]) -> Result<Json, AgentToolError> {

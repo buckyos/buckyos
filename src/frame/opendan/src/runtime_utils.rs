@@ -1,89 +1,47 @@
-use std::path::{Component, Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::{Path, PathBuf};
 
 use serde_json::Value as Json;
 
-use crate::agent_tool::AgentToolError;
+use crate::agent_tool::{
+    normalize_abs_path as shared_normalize_abs_path,
+    normalize_root_path as shared_normalize_root_path, optional_u64_arg as shared_optional_u64_arg,
+    resolve_path_from_root as shared_resolve_path_from_root,
+    resolve_path_under_root as shared_resolve_path_under_root,
+    u64_to_usize_arg as shared_u64_to_usize_arg, AgentToolError,
+};
 
 pub(crate) fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+    ::agent_tool::now_ms()
 }
 
 pub(crate) fn normalize_abs_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
-            Component::RootDir => normalized.push(component.as_os_str()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                let _ = normalized.pop();
-            }
-            Component::Normal(seg) => normalized.push(seg),
-        }
-    }
-    normalized
+    shared_normalize_abs_path(path)
 }
 
 pub(crate) fn normalize_root_path(root: &Path) -> Result<PathBuf, AgentToolError> {
-    let abs = if root.is_absolute() {
-        root.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(|err| AgentToolError::ExecFailed(format!("read current_dir failed: {err}")))?
-            .join(root)
-    };
-    Ok(normalize_abs_path(&abs))
+    shared_normalize_root_path(root)
 }
 
 pub(crate) fn resolve_path_from_root(
     root: &Path,
     raw_path: &str,
 ) -> Result<PathBuf, AgentToolError> {
-    if raw_path.trim().is_empty() {
-        return Err(AgentToolError::InvalidArgs(
-            "path cannot be empty".to_string(),
-        ));
-    }
-    let user_path = Path::new(raw_path);
-    let candidate = if user_path.is_absolute() {
-        user_path.to_path_buf()
-    } else {
-        root.join(user_path)
-    };
-    Ok(normalize_abs_path(&candidate))
+    shared_resolve_path_from_root(root, raw_path)
 }
 
 pub(crate) fn resolve_path_under_root(
     root: &Path,
     raw_path: &str,
 ) -> Result<PathBuf, AgentToolError> {
-    let normalized = resolve_path_from_root(root, raw_path)?;
-    if !normalized.starts_with(root) {
-        return Err(AgentToolError::InvalidArgs(format!(
-            "path out of workspace scope: {raw_path}"
-        )));
-    }
-    Ok(normalized)
+    shared_resolve_path_under_root(root, raw_path)
 }
 
 pub(crate) fn optional_u64_arg(args: &Json, key: &str) -> Result<Option<u64>, AgentToolError> {
-    let Some(value) = args.get(key) else {
-        return Ok(None);
-    };
-    value
-        .as_u64()
-        .map(Some)
-        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be an unsigned integer")))
+    shared_optional_u64_arg(args, key)
 }
 
 pub(crate) fn u64_to_usize_arg(value: u64, key: &str) -> Result<usize, AgentToolError> {
-    usize::try_from(value).map_err(|_| {
-        AgentToolError::InvalidArgs(format!("`{key}` is too large for current platform"))
-    })
+    shared_u64_to_usize_arg(value, key)
 }
 
 pub fn find_string_pointer<'a>(json: &'a Json, pointers: &[&str]) -> Option<&'a str> {

@@ -274,7 +274,9 @@ impl AgentMemory {
         Ok(())
     }
 
-    async fn rebuild_state_from_log(&self) -> Result<HashMap<String, MemoryEnvelope>, AgentToolError> {
+    async fn rebuild_state_from_log(
+        &self,
+    ) -> Result<HashMap<String, MemoryEnvelope>, AgentToolError> {
         let content = fs::read_to_string(&self.inner.log_path)
             .await
             .map_err(|err| {
@@ -340,7 +342,13 @@ impl AgentMemory {
             }
 
             let recency_hours = parse_rfc3339(&envelope.ts)
-                .map(|ts| request.current_time.signed_duration_since(ts).num_hours().max(0))
+                .map(|ts| {
+                    request
+                        .current_time
+                        .signed_duration_since(ts)
+                        .num_hours()
+                        .max(0)
+                })
                 .unwrap_or(24);
 
             let importance = extract_importance(&envelope.content);
@@ -559,10 +567,7 @@ impl MemoryLoadBackend for AgentMemory {
         tags: Vec<String>,
         current_time: Option<String>,
     ) -> Result<MemoryLoadPreview, AgentToolError> {
-        let current_time = current_time
-            .as_deref()
-            .map(parse_rfc3339)
-            .transpose()?;
+        let current_time = current_time.as_deref().map(parse_rfc3339).transpose()?;
         let items = self.load_memory(token_limit, tags, current_time).await?;
         Ok(MemoryLoadPreview {
             rendered: Self::render_memory_items(&items),
@@ -740,7 +745,10 @@ async fn touch_file(path: &Path) -> Result<(), AgentToolError> {
         .open(path)
         .await
         .map_err(|err| {
-            AgentToolError::ExecFailed(format!("touch file failed: path={} err={err}", path.display()))
+            AgentToolError::ExecFailed(format!(
+                "touch file failed: path={} err={err}",
+                path.display()
+            ))
         })?;
     Ok(())
 }
@@ -789,9 +797,9 @@ async fn atomic_write(path: &Path, body: &[u8]) -> Result<(), AgentToolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SessionRuntimeContext;
     use buckyos_api::{value_to_object_map, AiToolCall};
     use tempfile::tempdir;
-    use crate::SessionRuntimeContext;
 
     fn test_trace_ctx() -> SessionRuntimeContext {
         SessionRuntimeContext {

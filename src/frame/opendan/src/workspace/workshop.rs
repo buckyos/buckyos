@@ -19,13 +19,13 @@ use super::todo::{TodoTool, TodoToolConfig};
 use crate::agent_bash::ExecBashTool as BuiltinExecBashTool;
 use crate::agent_session::AgentSessionMgr;
 use crate::agent_tool::{
-    AgentToolError, AgentToolManager, BindWorkspaceTool as SharedBindWorkspaceTool,
-    CreateWorkspaceTool as SharedCreateWorkspaceTool, EditFileTool as SharedEditFileTool,
-    FileToolConfig, MCPToolConfig, ManagedWorkspaceToolBackend, ReadFileTool as SharedReadFileTool,
-    SessionWorkspaceBindingView, WorkspaceRecordView, WorkspaceRuntimeBackend,
-    WriteFileTool as SharedWriteFileTool, TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE,
-    TOOL_EDIT_FILE, TOOL_EXEC_BASH, TOOL_READ_FILE, TOOL_TODO_MANAGE, TOOL_WORKLOG_MANAGE,
-    TOOL_WRITE_FILE,
+    read_string_from_map, read_u64_from_map, AgentToolError, AgentToolManager,
+    BindWorkspaceTool as SharedBindWorkspaceTool, CreateWorkspaceTool as SharedCreateWorkspaceTool,
+    EditFileTool as SharedEditFileTool, FileToolConfig, MCPToolConfig, ManagedWorkspaceToolBackend,
+    ReadFileTool as SharedReadFileTool, SessionWorkspaceBindingView, WorkspaceRecordView,
+    WorkspaceRuntimeBackend, WriteFileTool as SharedWriteFileTool, TOOL_BIND_WORKSPACE,
+    TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE, TOOL_EXEC_BASH, TOOL_READ_FILE, TOOL_TODO_MANAGE,
+    TOOL_WORKLOG_MANAGE, TOOL_WRITE_FILE,
 };
 use crate::buildin_tool::WorkshopWriteAudit as BuiltinWorkshopWriteAudit;
 use crate::runtime_utils::{
@@ -523,7 +523,9 @@ impl WorkspaceRuntimeBackend for OpenDanWorkspaceRuntime {
             .session_store
             .get_session(session_id)
             .await
-            .ok_or_else(|| AgentToolError::InvalidArgs(format!("session not found: {session_id}")))?;
+            .ok_or_else(|| {
+                AgentToolError::InvalidArgs(format!("session not found: {session_id}"))
+            })?;
         let guard = session.lock().await;
         Ok(guard
             .local_workspace_id
@@ -602,11 +604,11 @@ impl TodoToolPolicy {
         };
 
         let default_list_limit = read_u64_from_map(params, "default_list_limit")?
-            .map(u64_to_usize)
+            .map(|value| u64_to_usize_arg(value, "default_list_limit"))
             .transpose()?
             .unwrap_or(DEFAULT_TODO_LIST_LIMIT);
         let max_list_limit = read_u64_from_map(params, "max_list_limit")?
-            .map(u64_to_usize)
+            .map(|value| u64_to_usize_arg(value, "max_list_limit"))
             .transpose()?
             .unwrap_or(DEFAULT_TODO_MAX_LIST_LIMIT.max(default_list_limit));
 
@@ -651,11 +653,11 @@ impl WorklogToolPolicy {
         };
 
         let default_list_limit = read_u64_from_map(params, "default_list_limit")?
-            .map(u64_to_usize)
+            .map(|value| u64_to_usize_arg(value, "default_list_limit"))
             .transpose()?
             .unwrap_or(DEFAULT_WORKLOG_LIST_LIMIT);
         let max_list_limit = read_u64_from_map(params, "max_list_limit")?
-            .map(u64_to_usize)
+            .map(|value| u64_to_usize_arg(value, "max_list_limit"))
             .transpose()?
             .unwrap_or(DEFAULT_WORKLOG_MAX_LIST_LIMIT.max(default_list_limit));
 
@@ -672,32 +674,6 @@ impl WorklogToolPolicy {
             max_list_limit,
         })
     }
-}
-
-fn read_u64_from_map(
-    map: &serde_json::Map<String, Json>,
-    key: &str,
-) -> Result<Option<u64>, AgentToolError> {
-    let Some(value) = map.get(key) else {
-        return Ok(None);
-    };
-    value
-        .as_u64()
-        .map(Some)
-        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be an integer")))
-}
-
-fn read_string_from_map(
-    map: &serde_json::Map<String, Json>,
-    key: &str,
-) -> Result<Option<String>, AgentToolError> {
-    let Some(value) = map.get(key) else {
-        return Ok(None);
-    };
-    let value = value
-        .as_str()
-        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be a string")))?;
-    Ok(Some(value.to_string()))
 }
 
 async fn persist_session_workspace_binding(
@@ -854,10 +830,6 @@ async fn load_tools_config(
         }
     }
     Ok(AgentWorkshopToolsConfig::default())
-}
-
-fn u64_to_usize(v: u64) -> Result<usize, AgentToolError> {
-    u64_to_usize_arg(v, "value")
 }
 
 fn validate_tools_config(cfg: &AgentWorkshopToolsConfig) -> Result<(), AgentToolError> {

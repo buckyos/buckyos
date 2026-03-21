@@ -13,7 +13,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::task;
 
-use crate::agent_tool::{AgentTool, AgentToolError, AgentToolResult, ToolSpec};
+use crate::agent_tool::{
+    optional_trimmed_string_arg as optional_string, require_string_arg as require_string,
+    AgentTool, AgentToolError, AgentToolResult, ToolSpec,
+};
 use crate::behavior::SessionRuntimeContext;
 use crate::runtime_utils::{
     now_ms, optional_u64_arg as optional_u64, u64_to_usize_arg as u64_to_usize,
@@ -2215,34 +2218,6 @@ fn parse_step_index_from_id(step_id: &str) -> Option<u32> {
         return None;
     }
     digits.parse::<u32>().ok()
-}
-
-fn require_string(args: &Json, key: &str) -> Result<String, AgentToolError> {
-    let value = args
-        .get(key)
-        .and_then(|v| v.as_str())
-        .map(|v| v.to_string())
-        .ok_or_else(|| AgentToolError::InvalidArgs(format!("missing or invalid `{key}`")))?;
-    if value.is_empty() {
-        return Err(AgentToolError::InvalidArgs(format!(
-            "`{key}` cannot be empty"
-        )));
-    }
-    Ok(value)
-}
-
-fn optional_string(args: &Json, key: &str) -> Result<Option<String>, AgentToolError> {
-    let Some(value) = args.get(key) else {
-        return Ok(None);
-    };
-    let raw = value
-        .as_str()
-        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be a string")))?;
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(trimmed.to_string()))
 }
 
 fn optional_non_empty(raw: &str) -> Option<String> {

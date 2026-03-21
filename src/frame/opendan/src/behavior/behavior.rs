@@ -7,9 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(not(test))]
 use buckyos_api::get_buckyos_api_runtime;
 use buckyos_api::{
-    value_to_object_map, AiToolCall, AiToolSpec, AiccClient, CompleteRequest, CompleteResponse,
-    CompleteStatus, CompleteTaskOptions, CreateTaskOptions, TaskFilter, TaskManagerClient,
-    TaskStatus, AICC_SERVICE_SERVICE_NAME,
+    value_to_object_map, AiToolCall, AiccClient, CompleteRequest, CompleteResponse, CompleteStatus,
+    CompleteTaskOptions, CreateTaskOptions, TaskFilter, TaskManagerClient, TaskStatus,
+    AICC_SERVICE_SERVICE_NAME,
 };
 use serde_json::{json, Map, Value as Json};
 
@@ -22,7 +22,7 @@ use super::tool_loop::{self, ToolContext};
 use super::types::*;
 use crate::agent_environment::AgentEnvironment;
 use crate::agent_tool::AgentMemory;
-use crate::agent_tool::{AgentToolManager, ToolSpec};
+use crate::agent_tool::AgentToolManager;
 
 #[derive(Clone)]
 pub struct LLMBehaviorDeps {
@@ -137,32 +137,8 @@ impl LLMBehavior {
             return Err(LLMComputeError::Timeout);
         }
 
-        let allowed_tools = self
-            .deps
-            .policy
-            .allowed_tools(input)
-            .await
-            .map_err(LLMComputeError::Internal)?;
-
-        let ai_tool_specs: Vec<AiToolSpec> = allowed_tools
-            .iter()
-            .map(|tool| AiToolSpec {
-                name: tool.name.clone(),
-                description: tool.description.clone(),
-                args_schema: value_to_object_map(tool.args_schema.clone()),
-                output_schema: tool.output_schema.clone(),
-            })
-            .collect();
-
-        let allowed_action_specs: Vec<ToolSpec> = allowed_tools
-            .iter()
-            .filter_map(|tool| self.deps.tools.get_action_tool_spec(tool.name.as_str()))
-            .collect();
-
         let llm_req = PromptBuilder::build(
             input,
-            &ai_tool_specs,
-            &allowed_action_specs,
             &input.behavior_cfg,
             &*self.deps.tokenizer,
             input.session.clone(),

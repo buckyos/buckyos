@@ -20,11 +20,11 @@ use serde_json::{json, Value as Json};
 use tokio::{fs, task};
 
 use crate::agent_tool::{
+    optional_trimmed_string_arg as optional_string, require_trimmed_string_arg as require_string,
     AgentTool, AgentToolError, AgentToolManager, AgentToolResult,
-    BindExternalWorkspaceTool as SharedBindExternalWorkspaceTool,
-    ExternalWorkspaceRuntimeBackend, ExternalWorkspaceServiceConfig,
-    ListExternalWorkspacesTool as SharedListExternalWorkspacesTool, ManagedExternalWorkspaceBackend,
-    ToolSpec, TOOL_CREATE_SUB_AGENT,
+    BindExternalWorkspaceTool as SharedBindExternalWorkspaceTool, ExternalWorkspaceRuntimeBackend,
+    ExternalWorkspaceServiceConfig, ListExternalWorkspacesTool as SharedListExternalWorkspacesTool,
+    ManagedExternalWorkspaceBackend, ToolSpec, TOOL_CREATE_SUB_AGENT,
 };
 use crate::behavior::SessionRuntimeContext;
 use crate::runtime_utils::{normalize_abs_path, now_ms};
@@ -413,7 +413,6 @@ impl AiRuntime {
             .cloned()
             .ok_or_else(|| AiRuntimeError::AgentNotFound(did.to_string()))
     }
-
 }
 
 #[derive(Clone)]
@@ -1510,7 +1509,9 @@ impl AgentTool for RuntimeCreateSubAgentTool {
 #[async_trait]
 impl ExternalWorkspaceRuntimeBackend for OpenDanExternalWorkspaceRuntime {
     async fn resolve_agent_root(&self, agent_did: &str) -> Result<PathBuf, AgentToolError> {
-        self.runtime.lookup_agent_root(agent_did).map_err(Into::into)
+        self.runtime
+            .lookup_agent_root(agent_did)
+            .map_err(Into::into)
     }
 }
 
@@ -1691,33 +1692,6 @@ fn extract_agent_did(did_document: &Json, agent_root: &Path) -> String {
                 .unwrap_or("agent");
             format!("did:opendan:{dir_name}")
         })
-}
-
-fn require_string(args: &Json, key: &str) -> Result<String, AgentToolError> {
-    let value = args
-        .get(key)
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` is required")))?;
-    Ok(value.to_string())
-}
-
-fn optional_string(args: &Json, key: &str) -> Result<Option<String>, AgentToolError> {
-    match args.get(key) {
-        None | Some(Json::Null) => Ok(None),
-        Some(Json::String(value)) => {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(trimmed.to_string()))
-            }
-        }
-        Some(_) => Err(AgentToolError::InvalidArgs(format!(
-            "`{key}` must be a string"
-        ))),
-    }
 }
 
 #[cfg(test)]
