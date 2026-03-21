@@ -37,45 +37,5 @@ xmltree = "0.12.0"
 tempfile = { workspace = true }
 
 [[bin]]
-name = "agent-tools"
-path = "src/agent_tools_bin.rs"
-
-[[bin]]
 name = "agent_tool"
 path = "src/agent_tool_bin.rs"
-
-[[bin]]
-name = "read_file"
-path = "src/read_file_bin.rs"
-
-[[bin]]
-name = "write_file"
-path = "src/write_file_bin.rs"
-
-[[bin]]
-name = "edit_file"
-path = "src/edit_file_bin.rs"
-
-[[bin]]
-name = "get_session"
-path = "src/get_session_bin.rs"
-
-[[bin]]
-name = "todo"
-path = "src/todo_bin.rs"
-
-[[bin]]
-name = "create_workspace"
-path = "src/create_workspace_bin.rs"
-
-[[bin]]
-name = "bind_workspace"
-path = "src/bind_workspace_bin.rs"
-
-[[bin]]
-name = "check_task"
-path = "src/check_task_bin.rs"
-
-[[bin]]
-name = "cancel_task"
-path = "src/cancel_task_bin.rs"

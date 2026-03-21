@@ -826,6 +826,162 @@ impl BindWorkspaceTool {
 }
 
 #[async_trait]
+pub trait ExternalWorkspaceBackend: Send + Sync {
+    async fn bind_external_workspace(
+        &self,
+        agent_did: &str,
+        name: &str,
+        workspace_path: &str,
+    ) -> Result<Json, AgentToolError>;
+
+    async fn list_external_workspaces(&self, agent_did: &str) -> Result<Json, AgentToolError>;
+}
+
+#[derive(Clone)]
+pub struct BindExternalWorkspaceTool {
+    backend: Arc<dyn ExternalWorkspaceBackend>,
+}
+
+impl BindExternalWorkspaceTool {
+    pub fn new(backend: Arc<dyn ExternalWorkspaceBackend>) -> Self {
+        Self { backend }
+    }
+}
+
+#[async_trait]
+impl AgentTool for BindExternalWorkspaceTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: TOOL_BIND_EXTERNAL_WORKSPACE.to_string(),
+            description:
+                "Bind an external workspace directory so this agent can access it from runtime."
+                    .to_string(),
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Local mount name." },
+                    "workspace_path": { "type": "string", "description": "Absolute or relative source workspace path." },
+                    "agent_did": { "type": "string", "description": "Optional target agent DID. Defaults to current agent DID." }
+                },
+                "required": ["name", "workspace_path"],
+                "additionalProperties": false
+            }),
+            output_schema: json!({
+                "type": "object",
+                "properties": {
+                    "ok": { "type": "boolean" },
+                    "binding": { "type": "object" }
+                }
+            }),
+            usage: None,
+        }
+    }
+
+    fn support_bash(&self) -> bool {
+        true
+    }
+
+    fn support_action(&self) -> bool {
+        false
+    }
+
+    fn support_llm_tool_call(&self) -> bool {
+        false
+    }
+
+    async fn call(
+        &self,
+        ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<AgentToolResult, AgentToolError> {
+        let agent_did = optional_string_arg(&args, "agent_did")?.unwrap_or(ctx.agent_name.clone());
+        let name = require_string_arg(&args, "name")?;
+        let workspace_path = require_string_arg(&args, "workspace_path")?;
+        let binding = self
+            .backend
+            .bind_external_workspace(
+                agent_did.as_str(),
+                name.as_str(),
+                workspace_path.as_str(),
+            )
+            .await?;
+
+        Ok(AgentToolResult::from_details(json!({
+            "ok": true,
+            "binding": binding
+        }))
+        .with_cmd_line(TOOL_BIND_EXTERNAL_WORKSPACE.to_string())
+        .with_result("ok"))
+    }
+}
+
+#[derive(Clone)]
+pub struct ListExternalWorkspacesTool {
+    backend: Arc<dyn ExternalWorkspaceBackend>,
+}
+
+impl ListExternalWorkspacesTool {
+    pub fn new(backend: Arc<dyn ExternalWorkspaceBackend>) -> Self {
+        Self { backend }
+    }
+}
+
+#[async_trait]
+impl AgentTool for ListExternalWorkspacesTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: TOOL_LIST_EXTERNAL_WORKSPACES.to_string(),
+            description: "List bound external workspaces visible to current agent.".to_string(),
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "agent_did": { "type": "string", "description": "Optional agent DID. Defaults to current agent DID." }
+                },
+                "additionalProperties": false
+            }),
+            output_schema: json!({
+                "type": "object",
+                "properties": {
+                    "ok": { "type": "boolean" },
+                    "workspaces": { "type": "array", "items": { "type": "object" } }
+                }
+            }),
+            usage: None,
+        }
+    }
+
+    fn support_bash(&self) -> bool {
+        true
+    }
+
+    fn support_action(&self) -> bool {
+        false
+    }
+
+    fn support_llm_tool_call(&self) -> bool {
+        false
+    }
+
+    async fn call(
+        &self,
+        ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<AgentToolResult, AgentToolError> {
+        let agent_did = optional_string_arg(&args, "agent_did")?.unwrap_or(ctx.agent_name.clone());
+        let workspaces = self
+            .backend
+            .list_external_workspaces(agent_did.as_str())
+            .await?;
+        Ok(AgentToolResult::from_details(json!({
+            "ok": true,
+            "workspaces": workspaces
+        }))
+        .with_cmd_line(TOOL_LIST_EXTERNAL_WORKSPACES.to_string())
+        .with_result("ok"))
+    }
+}
+
+#[async_trait]
 impl AgentTool for BindWorkspaceTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
@@ -1683,6 +1839,30 @@ fn append_usage_on_invalid_args(err: AgentToolError, usage: &str) -> AgentToolEr
         }
         other => other,
     }
+}
+
+fn require_string_arg(args: &Json, key: &str) -> Result<String, AgentToolError> {
+    let value = args
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| AgentToolError::InvalidArgs(format!("missing or invalid `{key}`")))?;
+    Ok(value)
+}
+
+fn optional_string_arg(args: &Json, key: &str) -> Result<Option<String>, AgentToolError> {
+    let Some(value) = args.get(key) else {
+        return Ok(None);
+    };
+    let value = value
+        .as_str()
+        .map(|v| v.trim().to_string())
+        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be a string")))?;
+    if value.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(value))
 }
 
 pub fn parse_default_bash_exec_args(tokens: &[String]) -> Result<Json, AgentToolError> {

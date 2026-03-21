@@ -20,8 +20,10 @@ use serde_json::{json, Value as Json};
 use tokio::{fs, task};
 
 use crate::agent_tool::{
-    AgentTool, AgentToolError, AgentToolManager, AgentToolResult, ToolSpec,
-    TOOL_BIND_EXTERNAL_WORKSPACE, TOOL_CREATE_SUB_AGENT, TOOL_LIST_EXTERNAL_WORKSPACES,
+    AgentTool, AgentToolError, AgentToolManager, AgentToolResult,
+    BindExternalWorkspaceTool as SharedBindExternalWorkspaceTool,
+    ListExternalWorkspacesTool as SharedListExternalWorkspacesTool, ToolSpec,
+    TOOL_CREATE_SUB_AGENT,
 };
 use crate::behavior::SessionRuntimeContext;
 use crate::runtime_utils::{normalize_abs_path, now_ms};
@@ -184,12 +186,8 @@ impl AiRuntime {
         tool_mgr.register_tool(RuntimeCreateSubAgentTool {
             runtime: Arc::new(self.clone()),
         })?;
-        tool_mgr.register_tool(RuntimeBindExternalWorkspaceTool {
-            runtime: Arc::new(self.clone()),
-        })?;
-        tool_mgr.register_tool(RuntimeListExternalWorkspacesTool {
-            runtime: Arc::new(self.clone()),
-        })?;
+        tool_mgr.register_tool(SharedBindExternalWorkspaceTool::new(Arc::new(self.clone())))?;
+        tool_mgr.register_tool(SharedListExternalWorkspacesTool::new(Arc::new(self.clone())))?;
         Ok(())
     }
 
@@ -1633,126 +1631,32 @@ impl AgentTool for RuntimeCreateSubAgentTool {
     }
 }
 
-#[derive(Clone)]
-struct RuntimeBindExternalWorkspaceTool {
-    runtime: Arc<AiRuntime>,
-}
-
 #[async_trait]
-impl AgentTool for RuntimeBindExternalWorkspaceTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_BIND_EXTERNAL_WORKSPACE.to_string(),
-            description:
-                "Bind an external workspace directory so this agent can access it from runtime."
-                    .to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string", "description": "Local mount name." },
-                    "workspace_path": { "type": "string", "description": "Absolute or relative source workspace path." },
-                    "agent_did": { "type": "string", "description": "Optional target agent DID. Defaults to current agent DID." }
-                },
-                "required": ["name", "workspace_path"],
-                "additionalProperties": false
-            }),
-            output_schema: json!({
-                "type": "object",
-                "properties": {
-                    "ok": { "type": "boolean" },
-                    "binding": { "type": "object" }
-                }
-            }),
-            usage: None,
-        }
-    }
-
-    fn support_bash(&self) -> bool {
-        true
-    }
-    fn support_action(&self) -> bool {
-        false
-    }
-    fn support_llm_tool_call(&self) -> bool {
-        false
-    }
-
-    async fn call(
+impl ::agent_tool::ExternalWorkspaceBackend for AiRuntime {
+    async fn bind_external_workspace(
         &self,
-        ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let agent_did = optional_string(&args, "agent_did")?.unwrap_or(ctx.agent_name.clone());
-        let req = BindExternalWorkspaceRequest {
-            name: require_string(&args, "name")?,
-            workspace_path: require_string(&args, "workspace_path")?,
-        };
-
-        let binding = self
-            .runtime
-            .bind_external_workspace(&agent_did, req)
-            .await?;
-        Ok(AgentToolResult::from_details(json!({
-        "ok": true,
-        "binding": binding
-        }))
-        .with_cmd_line(TOOL_BIND_EXTERNAL_WORKSPACE.to_string())
-        .with_result("ok"))
-    }
-}
-
-#[derive(Clone)]
-struct RuntimeListExternalWorkspacesTool {
-    runtime: Arc<AiRuntime>,
-}
-
-#[async_trait]
-impl AgentTool for RuntimeListExternalWorkspacesTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_LIST_EXTERNAL_WORKSPACES.to_string(),
-            description: "List bound external workspaces visible to current agent.".to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "agent_did": { "type": "string", "description": "Optional agent DID. Defaults to current agent DID." }
-                },
-                "additionalProperties": false
-            }),
-            output_schema: json!({
-                "type": "object",
-                "properties": {
-                    "ok": { "type": "boolean" },
-                    "workspaces": { "type": "array", "items": { "type": "object" } }
-                }
-            }),
-            usage: None,
-        }
+        agent_did: &str,
+        name: &str,
+        workspace_path: &str,
+    ) -> Result<Json, AgentToolError> {
+        let binding = AiRuntime::bind_external_workspace(
+            self,
+            agent_did,
+            BindExternalWorkspaceRequest {
+                name: name.to_string(),
+                workspace_path: workspace_path.to_string(),
+            },
+        )
+        .await?;
+        serde_json::to_value(binding)
+            .map_err(|err| AgentToolError::ExecFailed(format!("serialize binding failed: {err}")))
     }
 
-    fn support_bash(&self) -> bool {
-        true
-    }
-    fn support_action(&self) -> bool {
-        false
-    }
-    fn support_llm_tool_call(&self) -> bool {
-        false
-    }
-
-    async fn call(
-        &self,
-        ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let agent_did = optional_string(&args, "agent_did")?.unwrap_or(ctx.agent_name.clone());
-        let workspaces = self.runtime.list_external_workspaces(&agent_did).await?;
-        Ok(AgentToolResult::from_details(json!({
-        "ok": true,
-        "workspaces": workspaces
-        }))
-        .with_cmd_line(TOOL_LIST_EXTERNAL_WORKSPACES.to_string())
-        .with_result("ok"))
+    async fn list_external_workspaces(&self, agent_did: &str) -> Result<Json, AgentToolError> {
+        let workspaces = AiRuntime::list_external_workspaces(self, agent_did).await?;
+        serde_json::to_value(workspaces).map_err(|err| {
+            AgentToolError::ExecFailed(format!("serialize external workspaces failed: {err}"))
+        })
     }
 }
 
