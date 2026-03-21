@@ -1,5 +1,6 @@
 //system control panel client
 
+use ::kRPC::*;
 use crate::AppDoc;
 use log::warn;
 use name_lib::DID;
@@ -246,7 +247,9 @@ pub struct FrameServiceInstanceConfig {
 }
 
 impl FrameServiceInstanceConfig {
-    pub fn new(_pkg_id: String) -> Self {
-        unimplemented!()
+    pub fn new(_pkg_id: String) -> Result<Self> {
+        Err(RPCErrors::ReasonError(
+            "NotImplemented: FrameServiceInstanceConfig::new".to_string(),
+        ))
     }
 }

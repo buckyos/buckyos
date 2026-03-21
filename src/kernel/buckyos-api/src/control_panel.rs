@@ -313,9 +313,10 @@ impl ControlPanelClient {
         app_config: &AppServiceSpec,
         shortcut: Option<String>,
     ) -> Result<u64> {
-        // call control-panel krpc api to install app
-
-        unimplemented!()
+        let _ = (user_id, app_config, shortcut);
+        Err(RPCErrors::ReasonError(
+            "NotImplemented: ControlPanelClient::install_app_service".to_string(),
+        ))
     }
 
     pub async fn get_user_list(&self) -> Result<Vec<String>> {
@@ -377,7 +378,12 @@ impl ControlPanelClient {
         instance_info: &ServiceInstanceReportInfo,
     ) -> Result<u64> {
         let service_info_path = format!("services/{}/instances/{}", service_name, node_name);
-        let service_info_str = serde_json::to_string(instance_info).unwrap();
+        let service_info_str = serde_json::to_string(instance_info).map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "serialize service instance info {}@{} failed: {}",
+                service_name, node_name, error
+            ))
+        })?;
         self.system_config_client
             .set(service_info_path.as_str(), service_info_str.as_str())
             .await
@@ -412,16 +418,22 @@ impl ControlPanelClient {
     // }
 
     pub async fn remove_app(&self, _appid: &str) -> Result<u64> {
-        unimplemented!();
+        Err(RPCErrors::ReasonError(
+            "NotImplemented: ControlPanelClient::remove_app".to_string(),
+        ))
     }
 
     //disable means stop app service
     pub async fn stop_app(&self, _appid: &str) -> Result<u64> {
-        unimplemented!();
+        Err(RPCErrors::ReasonError(
+            "NotImplemented: ControlPanelClient::stop_app".to_string(),
+        ))
     }
 
     pub async fn start_app(&self, _appid: &str) -> Result<u64> {
-        unimplemented!();
+        Err(RPCErrors::ReasonError(
+            "NotImplemented: ControlPanelClient::start_app".to_string(),
+        ))
     }
 }
 

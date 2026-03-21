@@ -721,7 +721,9 @@ pub async fn run_service() -> Result<()> {
     runtime
         .set_main_service_port(REPO_SERVICE_SERVICE_PORT)
         .await;
-    let data_dir = runtime.get_data_folder();
+    let data_dir = runtime
+        .get_data_folder()
+        .context("repo-service resolve data folder failed")?;
     set_buckyos_api_runtime(runtime).context("register repo-service runtime failed")?;
 
     let service = RepoService::new(data_dir).await?;
@@ -738,7 +740,10 @@ pub async fn run_service() -> Result<()> {
         info!(
             "repo-service started: port={}, data_dir={}",
             REPO_SERVICE_SERVICE_PORT,
-            runtime.get_data_folder().display()
+            runtime
+                .get_data_folder()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|error| format!("<unavailable: {}>", error))
         );
     }
     runner.run().await.context("repo-service runner failed")

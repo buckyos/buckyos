@@ -12,6 +12,8 @@ use buckyos_kit::*;
 use jsonwebtoken::{decode, DecodingKey, EncodingKey, Validation};
 use log::*;
 use ndn_lib::{load_named_object_from_obj_str, ChunkId, ObjId};
+use rand::Rng;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::env;
 use tokio::sync::{OnceCell, RwLock};
@@ -52,6 +54,98 @@ pub enum BuckyOSRuntimeType {
     Kernel,        //R0,node-daemon和cyfs-gateway使用，可以单独启动的组件
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeErrorClass {
+    Retryable,
+    NonRetryable,
+    Degraded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeBackgroundTaskKind {
+    RenewToken,
+    UpdateServiceInstanceInfo,
+    RefreshTrustKeys,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeBackgroundTaskStatus {
+    pub task: RuntimeBackgroundTaskKind,
+    pub error_class: Option<RuntimeErrorClass>,
+    pub consecutive_failures: u32,
+    pub last_error: Option<String>,
+    pub last_failure_time: Option<u64>,
+    pub last_success_time: Option<u64>,
+    pub next_retry_time: Option<u64>,
+    pub degraded_since: Option<u64>,
+}
+
+impl RuntimeBackgroundTaskStatus {
+    fn new(task: RuntimeBackgroundTaskKind) -> Self {
+        Self {
+            task,
+            error_class: None,
+            consecutive_failures: 0,
+            last_error: None,
+            last_failure_time: None,
+            last_success_time: None,
+            next_retry_time: None,
+            degraded_since: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeHealthSnapshot {
+    pub tasks: Vec<RuntimeBackgroundTaskStatus>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RetryPolicy {
+    max_attempts: u32,
+    base_delay_ms: u64,
+    max_delay_ms: u64,
+    jitter_ms: u64,
+}
+
+impl RetryPolicy {
+    fn delay_for_attempt(&self, attempt: u32) -> Duration {
+        let exp = attempt.saturating_sub(1).min(16);
+        let scale = 1u64 << exp;
+        let delay_ms = self
+            .base_delay_ms
+            .saturating_mul(scale)
+            .min(self.max_delay_ms);
+        let jitter_ms = if self.jitter_ms == 0 {
+            0
+        } else {
+            rand::thread_rng().gen_range(0..=self.jitter_ms)
+        };
+        Duration::from_millis(delay_ms.saturating_add(jitter_ms))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BackgroundTaskPolicy {
+    degraded_after_failures: u32,
+    base_retry_secs: u64,
+    max_retry_secs: u64,
+}
+
+impl BackgroundTaskPolicy {
+    fn next_retry_time(&self, consecutive_failures: u32, now: u64) -> u64 {
+        let exp = consecutive_failures.saturating_sub(1).min(16);
+        let scale = 1u64 << exp;
+        let delay = self
+            .base_retry_secs
+            .saturating_mul(scale)
+            .min(self.max_retry_secs);
+        now.saturating_add(delay)
+    }
+}
+
 pub struct BuckyOSRuntime {
     pub app_owner_id: Option<String>,
     pub app_id: String,
@@ -79,6 +173,7 @@ pub struct BuckyOSRuntime {
     last_update_service_info_time: RwLock<u64>,
     named_store_mgr: OnceCell<NamedStoreMgr>,
     system_config_client: OnceCell<Arc<SystemConfigClient>>,
+    background_task_status: Arc<RwLock<HashMap<RuntimeBackgroundTaskKind, RuntimeBackgroundTaskStatus>>>,
 
     pub force_https: bool,
     pub buckyos_root_dir: PathBuf,
@@ -130,6 +225,22 @@ impl BuckyOSRuntime {
             last_update_service_info_time: RwLock::new(0),
             named_store_mgr: OnceCell::new(),
             system_config_client: OnceCell::new(),
+            background_task_status: Arc::new(RwLock::new(HashMap::from([
+                (
+                    RuntimeBackgroundTaskKind::RenewToken,
+                    RuntimeBackgroundTaskStatus::new(RuntimeBackgroundTaskKind::RenewToken),
+                ),
+                (
+                    RuntimeBackgroundTaskKind::UpdateServiceInstanceInfo,
+                    RuntimeBackgroundTaskStatus::new(
+                        RuntimeBackgroundTaskKind::UpdateServiceInstanceInfo,
+                    ),
+                ),
+                (
+                    RuntimeBackgroundTaskKind::RefreshTrustKeys,
+                    RuntimeBackgroundTaskStatus::new(RuntimeBackgroundTaskKind::RefreshTrustKeys),
+                ),
+            ]))),
             web3_bridges: HashMap::new(),
             force_https: true,
             registered_tasks_started: AtomicBool::new(false),
@@ -531,30 +642,265 @@ impl BuckyOSRuntime {
         self.authenticated_user_id.clone()
     }
 
+    pub fn classify_error(error: &RPCErrors) -> RuntimeErrorClass {
+        match error {
+            RPCErrors::InvalidToken(_)
+            | RPCErrors::ParseRequestError(_)
+            | RPCErrors::ParserResponseError(_)
+            | RPCErrors::NoPermission(_)
+            | RPCErrors::InvalidPassword
+            | RPCErrors::UserNotFound(_)
+            | RPCErrors::KeyNotExist(_)
+            | RPCErrors::UnknownMethod(_) => RuntimeErrorClass::NonRetryable,
+            RPCErrors::TokenExpired(_) | RPCErrors::ServiceNotValid(_) => {
+                RuntimeErrorClass::Retryable
+            }
+            RPCErrors::ReasonError(message) => {
+                let message = message.to_ascii_lowercase();
+                if [
+                    "timeout",
+                    "timed out",
+                    "connection refused",
+                    "connection reset",
+                    "temporarily unavailable",
+                    "503",
+                    "502",
+                    "504",
+                    "leader",
+                    "unreachable",
+                    "broken pipe",
+                    "eof",
+                    "dns",
+                ]
+                .iter()
+                .any(|pattern| message.contains(pattern))
+                {
+                    RuntimeErrorClass::Retryable
+                } else if [
+                    "notsupported",
+                    "not supported",
+                    "notimplemented",
+                    "not implemented",
+                    "invalid",
+                    "parse",
+                    "permission",
+                    "forbidden",
+                    "unauthorized",
+                    "401",
+                    "403",
+                    "contract",
+                    "schema",
+                    "format",
+                ]
+                .iter()
+                .any(|pattern| message.contains(pattern))
+                {
+                    RuntimeErrorClass::NonRetryable
+                } else {
+                    RuntimeErrorClass::Retryable
+                }
+            }
+        }
+    }
+
+    pub fn is_retryable_error(error: &RPCErrors) -> bool {
+        matches!(Self::classify_error(error), RuntimeErrorClass::Retryable)
+    }
+
+    pub async fn get_runtime_health_snapshot(&self) -> RuntimeHealthSnapshot {
+        let tasks = self
+            .background_task_status
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        RuntimeHealthSnapshot { tasks }
+    }
+
+    fn login_retry_policy() -> RetryPolicy {
+        RetryPolicy {
+            max_attempts: 3,
+            base_delay_ms: 250,
+            max_delay_ms: 2_000,
+            jitter_ms: 250,
+        }
+    }
+
+    fn renew_token_retry_policy() -> RetryPolicy {
+        RetryPolicy {
+            max_attempts: 3,
+            base_delay_ms: 500,
+            max_delay_ms: 5_000,
+            jitter_ms: 300,
+        }
+    }
+
+    fn background_task_policy(task: RuntimeBackgroundTaskKind) -> BackgroundTaskPolicy {
+        match task {
+            RuntimeBackgroundTaskKind::RenewToken => BackgroundTaskPolicy {
+                degraded_after_failures: 3,
+                base_retry_secs: 5,
+                max_retry_secs: 60,
+            },
+            RuntimeBackgroundTaskKind::UpdateServiceInstanceInfo => BackgroundTaskPolicy {
+                degraded_after_failures: 3,
+                base_retry_secs: 5,
+                max_retry_secs: 60,
+            },
+            RuntimeBackgroundTaskKind::RefreshTrustKeys => BackgroundTaskPolicy {
+                degraded_after_failures: 2,
+                base_retry_secs: 10,
+                max_retry_secs: 300,
+            },
+        }
+    }
+
+    fn unsupported_error(&self, capability: &str) -> RPCErrors {
+        RPCErrors::ReasonError(format!(
+            "NotSupported: runtime_type {:?} does not support {}",
+            self.runtime_type, capability
+        ))
+    }
+
+    fn not_implemented_error(operation: &str) -> RPCErrors {
+        RPCErrors::ReasonError(format!("NotImplemented: {}", operation))
+    }
+
+    async fn should_run_background_task(&self, task: RuntimeBackgroundTaskKind, now: u64) -> bool {
+        let status_map = self.background_task_status.read().await;
+        status_map
+            .get(&task)
+            .and_then(|status| status.next_retry_time)
+            .map(|retry_at| retry_at <= now)
+            .unwrap_or(true)
+    }
+
+    async fn record_background_task_success(&self, task: RuntimeBackgroundTaskKind, now: u64) {
+        let mut status_map = self.background_task_status.write().await;
+        let status = status_map
+            .entry(task)
+            .or_insert_with(|| RuntimeBackgroundTaskStatus::new(task));
+        let had_failures = status.consecutive_failures > 0 || status.degraded_since.is_some();
+        status.error_class = None;
+        status.consecutive_failures = 0;
+        status.last_error = None;
+        status.last_success_time = Some(now);
+        status.next_retry_time = None;
+        status.degraded_since = None;
+        if had_failures {
+            info!("runtime background task {:?} recovered", task);
+        }
+    }
+
+    async fn record_background_task_failure(
+        &self,
+        task: RuntimeBackgroundTaskKind,
+        now: u64,
+        error: &RPCErrors,
+        forced_class: Option<RuntimeErrorClass>,
+    ) {
+        let policy = Self::background_task_policy(task);
+        let mut status_map = self.background_task_status.write().await;
+        let status = status_map
+            .entry(task)
+            .or_insert_with(|| RuntimeBackgroundTaskStatus::new(task));
+        status.consecutive_failures = status.consecutive_failures.saturating_add(1);
+        status.last_failure_time = Some(now);
+        status.last_error = Some(error.to_string());
+        let error_class = forced_class.unwrap_or_else(|| Self::classify_error(error));
+        let should_degrade = matches!(error_class, RuntimeErrorClass::Degraded)
+            || status.consecutive_failures >= policy.degraded_after_failures;
+        status.error_class = Some(if should_degrade {
+            RuntimeErrorClass::Degraded
+        } else {
+            error_class
+        });
+        status.next_retry_time = Some(policy.next_retry_time(status.consecutive_failures, now));
+        if should_degrade && status.degraded_since.is_none() {
+            status.degraded_since = Some(now);
+        }
+
+        let should_log = status.consecutive_failures == 1
+            || should_degrade
+            || status.consecutive_failures % 10 == 0;
+        if should_log {
+            warn!(
+                "runtime background task {:?} failed: class={:?} failures={} next_retry={} err={}",
+                task,
+                status.error_class.unwrap_or(error_class),
+                status.consecutive_failures,
+                status.next_retry_time.unwrap_or(now),
+                error
+            );
+        }
+    }
+
+    async fn execute_retryable_operation<F, Fut>(
+        &self,
+        operation_name: &str,
+        policy: RetryPolicy,
+        mut operation: F,
+    ) -> Result<()>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+    {
+        let mut last_error = None;
+        for attempt in 1..=policy.max_attempts {
+            match operation().await {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    let retryable = Self::is_retryable_error(&error);
+                    if !retryable || attempt == policy.max_attempts {
+                        return Err(error);
+                    }
+
+                    let delay = policy.delay_for_attempt(attempt);
+                    warn!(
+                        "{} failed on attempt {}/{} with retryable error: {}. retry in {:?}",
+                        operation_name, attempt, policy.max_attempts, error, delay
+                    );
+                    last_error = Some(error);
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            RPCErrors::ReasonError(format!(
+                "{} failed without returning a concrete error",
+                operation_name
+            ))
+        }))
+    }
+
     pub async fn update_service_instance_info(&self) -> Result<()> {
         if !self.is_service() {
             return Ok(());
         }
 
-        let mut last_update_service_info_time = self.last_update_service_info_time.write().await;
         let now = buckyos_get_unix_timestamp();
+        let last_update_service_info_time = self.last_update_service_info_time.read().await;
         if now - *last_update_service_info_time
             < crate::app_mgr::SERVICE_INSTANCE_INFO_UPDATE_INTERVAL
         {
             return Ok(());
         }
-        *last_update_service_info_time = now;
         drop(last_update_service_info_time);
 
-        let node_did = self.device_config.as_ref().unwrap().id.clone();
-        let node_id = self.device_config.as_ref().unwrap().name.clone();
+        let device_config = self.device_config.as_ref().ok_or_else(|| {
+            RPCErrors::ReasonError(
+                "update_service_instance_info requires device_config for service runtime"
+                    .to_string(),
+            )
+        })?;
+        let node_did = device_config.id.clone();
+        let node_id = device_config.name.clone();
         let instance_id = format!(
             "{}-{}",
             self.app_id,
-            self.device_config
-                .as_ref()
-                .map(|cfg| cfg.name.clone())
-                .unwrap_or_default()
+            device_config.name
         );
         let main_port = *self.main_service_port.read().await;
         let mut service_ports = HashMap::new();
@@ -573,14 +919,25 @@ impl BuckyOSRuntime {
         };
 
         let control_panel_client = self.get_control_panel_client().await?;
-        let _ = control_panel_client
+        control_panel_client
             .update_service_instance_info(&self.app_id, &node_id, &service_instance_info)
             .await?;
+        let mut last_update_service_info_time = self.last_update_service_info_time.write().await;
+        *last_update_service_info_time = now;
         info!("update service instance info,app_id:{}", self.app_id);
         Ok(())
     }
 
     pub async fn renew_token_from_verify_hub(&self) -> Result<()> {
+        self.execute_retryable_operation(
+            "renew_token_from_verify_hub",
+            Self::renew_token_retry_policy(),
+            || self.renew_token_from_verify_hub_once(),
+        )
+        .await
+    }
+
+    async fn renew_token_from_verify_hub_once(&self) -> Result<()> {
         let session_token = self.session_token.write().await;
         if session_token.is_empty() {
             debug!("session_token is empty,skip refresh token");
@@ -685,8 +1042,7 @@ impl BuckyOSRuntime {
         ))
     }
 
-    async fn keep_alive() -> Result<()> {
-        //info!("buckyos-api-runtime::keep_alive start");
+    async fn keep_alive() {
         let buckyos_api_runtime = match get_buckyos_api_runtime() {
             Ok(runtime) => runtime,
             Err(error) => {
@@ -694,25 +1050,88 @@ impl BuckyOSRuntime {
                     "buckyos-api-runtime is not initialized, skip keep_alive tick: {}",
                     error
                 );
-                return Ok(());
+                return;
             }
         };
-        let refresh_result = buckyos_api_runtime.renew_token_from_verify_hub().await;
-        if refresh_result.is_err() {
-            warn!(
-                "buckyos-api-runtime::renew_token_from_verify_hub failed {:?}",
-                refresh_result.err().unwrap()
-            );
+        let now = buckyos_get_unix_timestamp();
+
+        if buckyos_api_runtime
+            .should_run_background_task(RuntimeBackgroundTaskKind::RenewToken, now)
+            .await
+        {
+            match buckyos_api_runtime.renew_token_from_verify_hub().await {
+                Ok(()) => {
+                    buckyos_api_runtime
+                        .record_background_task_success(RuntimeBackgroundTaskKind::RenewToken, now)
+                        .await;
+                }
+                Err(error) => {
+                    buckyos_api_runtime
+                        .record_background_task_failure(
+                            RuntimeBackgroundTaskKind::RenewToken,
+                            now,
+                            &error,
+                            None,
+                        )
+                        .await;
+                }
+            }
         }
 
-        let _ = buckyos_api_runtime.update_service_instance_info().await;
+        if buckyos_api_runtime
+            .should_run_background_task(RuntimeBackgroundTaskKind::UpdateServiceInstanceInfo, now)
+            .await
+        {
+            match buckyos_api_runtime.update_service_instance_info().await {
+                Ok(()) => {
+                    buckyos_api_runtime
+                        .record_background_task_success(
+                            RuntimeBackgroundTaskKind::UpdateServiceInstanceInfo,
+                            now,
+                        )
+                        .await;
+                }
+                Err(error) => {
+                    buckyos_api_runtime
+                        .record_background_task_failure(
+                            RuntimeBackgroundTaskKind::UpdateServiceInstanceInfo,
+                            now,
+                            &error,
+                            Some(RuntimeErrorClass::Degraded),
+                        )
+                        .await;
+                }
+            }
+        }
 
-        if buckyos_api_runtime.is_service() {
+        if buckyos_api_runtime.is_service()
+            && buckyos_api_runtime
+                .should_run_background_task(RuntimeBackgroundTaskKind::RefreshTrustKeys, now)
+                .await
+        {
             // RBAC is initialized at login(). Avoid high-frequency remote RBAC reload here;
             // keepalive should prioritize stability and token/service liveness.
-            buckyos_api_runtime.refresh_trust_keys().await?;
+            match buckyos_api_runtime.refresh_trust_keys().await {
+                Ok(()) => {
+                    buckyos_api_runtime
+                        .record_background_task_success(
+                            RuntimeBackgroundTaskKind::RefreshTrustKeys,
+                            now,
+                        )
+                        .await;
+                }
+                Err(error) => {
+                    buckyos_api_runtime
+                        .record_background_task_failure(
+                            RuntimeBackgroundTaskKind::RefreshTrustKeys,
+                            now,
+                            &error,
+                            Some(RuntimeErrorClass::Degraded),
+                        )
+                        .await;
+                }
+            }
         }
-        Ok(())
     }
 
     pub fn start_registered_tasks_if_needed(&'static self) {
@@ -731,19 +1150,38 @@ impl BuckyOSRuntime {
             let mut timer = tokio::time::interval_at(start, Duration::from_secs(5));
             loop {
                 timer.tick().await;
-                let result = BuckyOSRuntime::keep_alive().await;
-                if result.is_err() {
-                    warn!(
-                        "buckyos-api-runtime::keep_alive failed {:?}",
-                        result.err().unwrap()
-                    );
-                }
+                BuckyOSRuntime::keep_alive().await;
             }
         });
     }
 
-    //if login by jwt failed, exit current process is the best choose
     pub async fn login(&mut self) -> Result<()> {
+        let policy = Self::login_retry_policy();
+        let mut last_error = None;
+        for attempt in 1..=policy.max_attempts {
+            match self.login_once().await {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    if !Self::is_retryable_error(&error) || attempt == policy.max_attempts {
+                        return Err(error);
+                    }
+                    let delay = policy.delay_for_attempt(attempt);
+                    warn!(
+                        "login failed on attempt {}/{} with retryable error: {}. retry in {:?}",
+                        attempt, policy.max_attempts, error, delay
+                    );
+                    last_error = Some(error);
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            RPCErrors::ReasonError("login failed without concrete error".to_string())
+        }))
+    }
+
+    async fn login_once(&mut self) -> Result<()> {
         if !self.zone_id.is_valid() {
             return Err(RPCErrors::ReasonError(
                 "Zone id is not valid,api-runtime.login failed".to_string(),
@@ -860,8 +1298,29 @@ impl BuckyOSRuntime {
                 .map_err(|error| {
                     RPCErrors::ReasonError(format!("init rbac enforcer failed: {}", error))
                 })?;
-            self.refresh_trust_keys().await?;
-            info!("refresh trust keys OK");
+            match self.refresh_trust_keys().await {
+                Ok(()) => {
+                    self.record_background_task_success(
+                        RuntimeBackgroundTaskKind::RefreshTrustKeys,
+                        buckyos_get_unix_timestamp(),
+                    )
+                    .await;
+                    info!("refresh trust keys OK");
+                }
+                Err(error) => {
+                    self.record_background_task_failure(
+                        RuntimeBackgroundTaskKind::RefreshTrustKeys,
+                        buckyos_get_unix_timestamp(),
+                        &error,
+                        Some(RuntimeErrorClass::Degraded),
+                    )
+                    .await;
+                    warn!(
+                        "refresh trust keys failed during login, runtime enters degraded mode: {}",
+                        error
+                    );
+                }
+            }
         }
 
         Ok(())
@@ -1188,9 +1647,10 @@ impl BuckyOSRuntime {
             if now < exp.saturating_sub(10) {
                 return session_token_str;
             } else {
-                if self.device_private_key.is_some() {
-                    let device_private_key = self.device_private_key.as_ref().unwrap();
-                    let device_uid = self.device_config.as_ref().unwrap().name.clone();
+                if let (Some(device_private_key), Some(device_config)) =
+                    (self.device_private_key.as_ref(), self.device_config.as_ref())
+                {
+                    let device_uid = device_config.name.clone();
                     let jwt_result = RPCSessionToken::generate_jwt_token(
                         device_uid.as_str(),
                         self.app_id.as_str(),
@@ -1215,96 +1675,88 @@ impl BuckyOSRuntime {
         return session_token_str;
     }
 
-    pub fn get_data_folder(&self) -> PathBuf {
+    pub fn get_data_folder(&self) -> Result<PathBuf> {
         match self.runtime_type {
-            BuckyOSRuntimeType::AppClient => {
-                //返回
-                panic!("AppClient not support get_data_folder");
-            }
-            BuckyOSRuntimeType::AppService => {
-                //返回
-                return self
-                    .buckyos_root_dir
-                    .join("data")
-                    .join(self.user_id.clone().unwrap())
-                    .join(self.app_id.clone());
-            }
+            BuckyOSRuntimeType::AppClient => Err(self.unsupported_error("get_data_folder")),
+            BuckyOSRuntimeType::AppService => Ok(self
+                .buckyos_root_dir
+                .join("data")
+                .join(self.user_id.clone().ok_or_else(|| {
+                    RPCErrors::ReasonError(
+                        "AppService get_data_folder requires resolved user_id".to_string(),
+                    )
+                })?)
+                .join(self.app_id.clone())),
             BuckyOSRuntimeType::FrameService
             | BuckyOSRuntimeType::KernelService
             | BuckyOSRuntimeType::Kernel => {
-                return self.buckyos_root_dir.join("data").join(self.app_id.clone());
-                //返回
+                Ok(self.buckyos_root_dir.join("data").join(self.app_id.clone()))
             }
         }
     }
 
-    pub fn get_cache_folder(&self) -> PathBuf {
+    pub fn get_cache_folder(&self) -> Result<PathBuf> {
         match self.runtime_type {
-            BuckyOSRuntimeType::AppClient => {
-                //返回
-                panic!("AppClient not support get_cache_folder");
-            }
-            BuckyOSRuntimeType::AppService => {
-                //返回
-                return self
-                    .buckyos_root_dir
-                    .join("cache")
-                    .join(self.user_id.clone().unwrap())
-                    .join(self.app_id.clone());
-            }
+            BuckyOSRuntimeType::AppClient => Err(self.unsupported_error("get_cache_folder")),
+            BuckyOSRuntimeType::AppService => Ok(self
+                .buckyos_root_dir
+                .join("cache")
+                .join(self.user_id.clone().ok_or_else(|| {
+                    RPCErrors::ReasonError(
+                        "AppService get_cache_folder requires resolved user_id".to_string(),
+                    )
+                })?)
+                .join(self.app_id.clone())),
             BuckyOSRuntimeType::FrameService
             | BuckyOSRuntimeType::KernelService
-            | BuckyOSRuntimeType::Kernel => {
-                return self
-                    .buckyos_root_dir
-                    .join("cache")
-                    .join(self.app_id.clone()); //返回
-            }
+            | BuckyOSRuntimeType::Kernel => Ok(self
+                .buckyos_root_dir
+                .join("cache")
+                .join(self.app_id.clone())),
         }
     }
 
-    pub fn get_local_cache_folder(&self) -> PathBuf {
+    pub fn get_local_cache_folder(&self) -> Result<PathBuf> {
         match self.runtime_type {
             BuckyOSRuntimeType::AppClient => {
-                //返回
-                panic!("AppClient not support get_local_cache_folder");
+                Err(self.unsupported_error("get_local_cache_folder"))
             }
-            BuckyOSRuntimeType::AppService => {
-                return self
-                    .buckyos_root_dir
-                    .join("tmp")
-                    .join(self.user_id.clone().unwrap())
-                    .join(self.app_id.clone());
-            }
+            BuckyOSRuntimeType::AppService => Ok(self
+                .buckyos_root_dir
+                .join("tmp")
+                .join(self.user_id.clone().ok_or_else(|| {
+                    RPCErrors::ReasonError(
+                        "AppService get_local_cache_folder requires resolved user_id".to_string(),
+                    )
+                })?)
+                .join(self.app_id.clone())),
             BuckyOSRuntimeType::FrameService
             | BuckyOSRuntimeType::KernelService
-            | BuckyOSRuntimeType::Kernel => {
-                return self.buckyos_root_dir.join("tmp").join(self.app_id.clone());
-            }
+            | BuckyOSRuntimeType::Kernel => Ok(self.buckyos_root_dir.join("tmp").join(self.app_id.clone())),
         }
     }
 
     // 获得与物理逻辑磁盘绑定的本地存储目录，存储的可靠性和特性由物理磁盘决定
     //目录原理上是  disk_id/service_instance_id/
-    pub fn get_lcoal_storage_folder(&self, disk_id: Option<String>) -> PathBuf {
+    pub fn get_lcoal_storage_folder(&self, disk_id: Option<String>) -> Result<PathBuf> {
         if self.runtime_type == BuckyOSRuntimeType::KernelService
             || self.runtime_type == BuckyOSRuntimeType::FrameService
         {
             if disk_id.is_some() {
                 let disk_id = disk_id.unwrap();
-                return self
+                return Ok(self
                     .buckyos_root_dir
                     .join("local")
                     .join(disk_id)
-                    .join(self.app_id.clone());
+                    .join(self.app_id.clone()));
             } else {
-                return self
+                return Ok(self
                     .buckyos_root_dir
                     .join("local")
-                    .join(self.app_id.clone());
+                    .join(self.app_id.clone()));
             }
         } else {
-            panic!("This runtime type not support get_lcoal_storage_folder");
+            Err(self.unsupported_error("get_lcoal_storage_folder"))
         }
     }
 
@@ -1312,29 +1764,28 @@ impl BuckyOSRuntime {
         get_buckyos_service_local_data_dir("node_daemon").join("root_pkg_env")
     }
 
-    fn get_my_settings_path(&self) -> String {
+    fn get_my_settings_path(&self) -> Result<String> {
         match self.runtime_type {
-            BuckyOSRuntimeType::AppClient => {
-                panic!("AppClient not support get_my_settings_path");
-            }
-            BuckyOSRuntimeType::AppService => {
-                format!(
+            BuckyOSRuntimeType::AppClient => Err(self.unsupported_error("get_my_settings_path")),
+            BuckyOSRuntimeType::AppService => Ok(format!(
                     "users/{}/apps/{}/settings",
-                    self.user_id.as_ref().unwrap(),
+                    self.user_id.as_ref().ok_or_else(|| {
+                        RPCErrors::ReasonError(
+                            "AppService get_my_settings_path requires resolved user_id"
+                                .to_string(),
+                        )
+                    })?,
                     self.app_id.as_str()
-                )
-            }
+                )),
             BuckyOSRuntimeType::FrameService
             | BuckyOSRuntimeType::KernelService
-            | BuckyOSRuntimeType::Kernel => {
-                format!("services/{}/settings", self.app_id.as_str())
-            }
+            | BuckyOSRuntimeType::Kernel => Ok(format!("services/{}/settings", self.app_id.as_str())),
         }
     }
 
     pub async fn get_my_settings(&self) -> Result<serde_json::Value> {
         let system_config_client = self.get_system_config_client().await?;
-        let settiing_path = self.get_my_settings_path();
+        let settiing_path = self.get_my_settings_path()?;
         let result_value = system_config_client
             .get(settiing_path.as_str())
             .await
@@ -1356,7 +1807,7 @@ impl BuckyOSRuntime {
         settings: serde_json::Value,
     ) -> Result<()> {
         let system_config_client = self.get_system_config_client().await?;
-        let settiing_path = self.get_my_settings_path();
+        let settiing_path = self.get_my_settings_path()?;
         let settings_str = serde_json::to_string(&settings).map_err(|e| {
             error!("serialize settings failed! err:{}", e);
             RPCErrors::ReasonError(format!("serialize settings failed! err:{}", e))
@@ -1375,7 +1826,7 @@ impl BuckyOSRuntime {
 
     pub async fn update_all_my_settings(&self, settings: serde_json::Value) -> Result<()> {
         let system_config_client = self.get_system_config_client().await?;
-        let settiing_path = self.get_my_settings_path();
+        let settiing_path = self.get_my_settings_path()?;
         let settings_str = serde_json::to_string(&settings).map_err(|e| {
             error!("serialize settings failed! err:{}", e);
             RPCErrors::ReasonError(format!("serialize settings failed! err:{}", e))
@@ -1392,22 +1843,12 @@ impl BuckyOSRuntime {
 
     pub fn get_my_sys_config_path(&self, config_name: &str) -> String {
         match self.runtime_type {
-            BuckyOSRuntimeType::AppClient => {
-                format!(
-                    "users/{}/apps/{}/{}",
-                    self.user_id.as_ref().unwrap(),
-                    self.app_id.as_str(),
-                    config_name
-                )
-            }
-            BuckyOSRuntimeType::AppService => {
-                format!(
-                    "users/{}/apps/{}/{}",
-                    self.user_id.as_ref().unwrap(),
-                    self.app_id.as_str(),
-                    config_name
-                )
-            }
+            BuckyOSRuntimeType::AppClient | BuckyOSRuntimeType::AppService => format!(
+                "users/{}/apps/{}/{}",
+                self.user_id.as_deref().unwrap_or(""),
+                self.app_id.as_str(),
+                config_name
+            ),
             BuckyOSRuntimeType::FrameService
             | BuckyOSRuntimeType::KernelService
             | BuckyOSRuntimeType::Kernel => {
@@ -1845,5 +2286,39 @@ mod tests {
             client_b.get_session_token().await,
             Some("token-b".to_string())
         );
+    }
+
+    #[test]
+    fn classify_errors_for_retry_policy() {
+        assert_eq!(
+            BuckyOSRuntime::classify_error(&RPCErrors::ReasonError(
+                "connection refused".to_string()
+            )),
+            RuntimeErrorClass::Retryable
+        );
+        assert_eq!(
+            BuckyOSRuntime::classify_error(&RPCErrors::ParseRequestError(
+                "bad payload".to_string()
+            )),
+            RuntimeErrorClass::NonRetryable
+        );
+        assert_eq!(
+            BuckyOSRuntime::classify_error(&RPCErrors::ReasonError(
+                "NotImplemented: demo".to_string()
+            )),
+            RuntimeErrorClass::NonRetryable
+        );
+    }
+
+    #[test]
+    fn unsupported_folder_apis_return_error_instead_of_panicking() {
+        let runtime = BuckyOSRuntime::new("demo", None, BuckyOSRuntimeType::AppClient);
+        let data_dir = runtime.get_data_folder();
+        let cache_dir = runtime.get_cache_folder();
+        let local_cache_dir = runtime.get_local_cache_folder();
+
+        assert!(data_dir.is_err());
+        assert!(cache_dir.is_err());
+        assert!(local_cache_dir.is_err());
     }
 }
