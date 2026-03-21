@@ -14,15 +14,7 @@ use crate::behavior::{BehaviorConfig, LLMComputeError};
 pub type InboxPack = Json;
 pub type MemoryPack = Json;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SessionRuntimeContext {
-    pub trace_id: String,
-    pub agent_name: String,
-    pub behavior: String,
-    pub step_idx: u32,
-    pub wakeup_id: String,
-    pub session_id: String,
-}
+pub use ::agent_tool::SessionRuntimeContext;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EnvKV {

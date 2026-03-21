@@ -10,12 +10,12 @@ serde = {workspace = true}
 serde_json = {workspace = true}
 serde_yaml = "0.9"
 thiserror = {workspace = true}
+agent_tool = { path = "../agent_tool" }
 buckyos-api = { path = "../../kernel/buckyos-api" }
 kRPC = { workspace = true }
 ndn-lib = {workspace = true}
 named_store = {workspace = true}
 tokio = { workspace = true }
-reqwest = { workspace = true }
 name-lib = { workspace = true }
 rusqlite = { workspace = true }
 chrono = { workspace = true }
