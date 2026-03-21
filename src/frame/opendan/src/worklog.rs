@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -12,9 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::task;
 
-use crate::agent_tool::{
-    AgentTool, AgentToolError, AgentToolResult, ToolSpec, TOOL_WORKLOG_MANAGE,
-};
+use crate::agent_tool::{AgentTool, AgentToolError, AgentToolResult, ToolSpec};
 use crate::behavior::SessionRuntimeContext;
 use crate::runtime_utils::{
     now_ms, optional_u64_arg as optional_u64, u64_to_usize_arg as u64_to_usize,
@@ -236,15 +235,18 @@ impl WorklogService {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct WorklogTool {
     service: WorklogService,
+    inner: ::agent_tool::WorklogTool,
 }
 
 impl WorklogTool {
     pub fn new(cfg: WorklogToolConfig) -> Result<Self, AgentToolError> {
+        let service = WorklogService::new(cfg)?;
         Ok(Self {
-            service: WorklogService::new(cfg)?,
+            inner: ::agent_tool::WorklogTool::new(Arc::new(service.clone())),
+            service,
         })
     }
 
@@ -260,87 +262,20 @@ impl WorklogTool {
     }
 }
 
-fn worklog_tool_spec() -> ToolSpec {
-    ToolSpec {
-        name: TOOL_WORKLOG_MANAGE.to_string(),
-        description: "Structured workspace worklog with event records, step summary and prompt-safe rendering.".to_string(),
-        args_schema: json!({
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": [
-                        "append_worklog",
-                        "append_step_summary",
-                        "mark_step_committed",
-                        "list_worklog",
-                        "get_worklog",
-                        "list_step",
-                        "build_prompt_worklog",
-                        "append",
-                        "list",
-                        "get",
-                        "render_for_prompt"
-                    ]
-                },
-                "record": { "type": "object" },
-                "log_id": { "type": "string" },
-                "id": { "type": "string" },
-                "step_id": { "type": "string" },
-                "owner_session_id": { "type": "string" },
-                "workspace_id": { "type": "string" },
-                "todo_id": { "type": "string" },
-                "type": {
-                    "type": "string",
-                    "enum": [
-                        "GetMessage",
-                        "ReplyMessage",
-                        "FunctionRecord",
-                        "ActionRecord",
-                        "CreateSubAgent",
-                        "StepSummary"
-                    ]
-                },
-                "status": { "type": "string" },
-                "tag": { "type": "string" },
-                "limit": { "type": "integer", "minimum": 1 },
-                "offset": { "type": "integer", "minimum": 0 },
-                "token_budget": { "type": "integer", "minimum": 1 }
-            },
-            "required": ["action"],
-            "additionalProperties": true
-        }),
-        output_schema: json!({
-            "type": "object",
-            "properties": {
-                "ok": { "type": "boolean" },
-                "action": { "type": "string" },
-                "record": { "type": "object" },
-                "records": { "type": "array", "items": { "type": "object" } },
-                "total": { "type": "integer" },
-                "text": { "type": "string" },
-                "prompt_text": { "type": "string" },
-                "updated": { "type": "integer" }
-            }
-        }),
-        usage: None,
-    }
-}
-
 #[async_trait]
 impl AgentTool for WorklogTool {
     fn spec(&self) -> ToolSpec {
-        worklog_tool_spec()
+        self.inner.spec()
     }
 
     fn support_bash(&self) -> bool {
-        true
+        self.inner.support_bash()
     }
     fn support_action(&self) -> bool {
-        false
+        self.inner.support_action()
     }
     fn support_llm_tool_call(&self) -> bool {
-        false
+        self.inner.support_llm_tool_call()
     }
 
     async fn call(
@@ -348,15 +283,7 @@ impl AgentTool for WorklogTool {
         ctx: &SessionRuntimeContext,
         args: Json,
     ) -> Result<AgentToolResult, AgentToolError> {
-        let details = self.service.execute_action(ctx, args).await?;
-        let action = details
-            .get("action")
-            .and_then(Json::as_str)
-            .unwrap_or("worklog")
-            .to_string();
-        Ok(AgentToolResult::from_details(details)
-            .with_cmd_line(TOOL_WORKLOG_MANAGE.to_string())
-            .with_result(action))
+        self.inner.call(ctx, args).await
     }
 }
 
@@ -531,6 +458,17 @@ impl WorklogService {
             "text": text,
             "total": records.len()
         }))
+    }
+}
+
+#[async_trait]
+impl ::agent_tool::WorklogActionBackend for WorklogService {
+    async fn execute_action(
+        &self,
+        ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<Json, AgentToolError> {
+        WorklogService::execute_action(self, ctx, args).await
     }
 }
 

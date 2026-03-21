@@ -13,3 +13,4 @@ buckyos-api = { path = "../../kernel/buckyos-api" }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 log = { workspace = true }
+rusqlite = { workspace = true }

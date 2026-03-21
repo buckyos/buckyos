@@ -19,9 +19,10 @@ use super::todo::{TodoTool, TodoToolConfig};
 use crate::agent_bash::ExecBashTool as BuiltinExecBashTool;
 use crate::agent_session::AgentSessionMgr;
 use crate::agent_tool::{
-    tokenize_bash_command_line, AgentTool, AgentToolError, AgentToolManager, AgentToolResult,
-    MCPToolConfig, ToolSpec, TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE,
-    TOOL_EXEC_BASH, TOOL_READ_FILE, TOOL_TODO_MANAGE, TOOL_WORKLOG_MANAGE, TOOL_WRITE_FILE,
+    AgentToolError, AgentToolManager, BindWorkspaceTool as SharedBindWorkspaceTool,
+    CreateWorkspaceTool as SharedCreateWorkspaceTool, MCPToolConfig, WorkspaceToolBackend,
+    TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE, TOOL_EXEC_BASH, TOOL_READ_FILE,
+    TOOL_TODO_MANAGE, TOOL_WORKLOG_MANAGE, TOOL_WRITE_FILE,
 };
 use crate::behavior::SessionRuntimeContext;
 use crate::buildin_tool::{
@@ -365,16 +366,20 @@ impl AgentWorkshop {
                         let _ = WorklogToolPolicy::from_tool_config(&self.cfg, tool)?;
                     }
                     TOOL_CREATE_WORKSPACE => {
-                        tool_mgr.register_tool(CreateWorkspaceTool::new(
-                            self.local_workspace_mgr.clone(),
-                            session_store.clone(),
-                        ))?;
+                        tool_mgr.register_tool(SharedCreateWorkspaceTool::new(Arc::new(
+                            CreateWorkspaceBackend::new(
+                                self.local_workspace_mgr.clone(),
+                                session_store.clone(),
+                            ),
+                        )))?;
                     }
                     TOOL_BIND_WORKSPACE => {
-                        tool_mgr.register_tool(BindWorkspaceTool::new(
-                            self.local_workspace_mgr.clone(),
-                            session_store.clone(),
-                        ))?;
+                        tool_mgr.register_tool(SharedBindWorkspaceTool::new(Arc::new(
+                            BindWorkspaceBackend::new(
+                                self.local_workspace_mgr.clone(),
+                                session_store.clone(),
+                            ),
+                        )))?;
                     }
                     unsupported => {
                         return Err(AgentToolError::InvalidArgs(format!(
@@ -421,12 +426,12 @@ impl AgentWorkshop {
 }
 
 #[derive(Clone)]
-struct CreateWorkspaceTool {
+struct CreateWorkspaceBackend {
     local_workspace_mgr: LocalWorkspaceManager,
     session_store: Arc<AgentSessionMgr>,
 }
 
-impl CreateWorkspaceTool {
+impl CreateWorkspaceBackend {
     fn new(
         local_workspace_mgr: LocalWorkspaceManager,
         session_store: Arc<AgentSessionMgr>,
@@ -528,103 +533,46 @@ impl CreateWorkspaceTool {
 }
 
 #[async_trait]
-impl AgentTool for CreateWorkspaceTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_CREATE_WORKSPACE.to_string(),
-            description: "创建session的wrokspace并设置为session的default workspace".to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string" },
-                    "summary": { "type": "string" }
-                },
-                "required": ["name", "summary"],
-                "additionalProperties": false
-            }),
-            output_schema: json!({
-                "type": "object",
-                "properties": {
-                    "ok": { "type": "boolean" },
-                    "workspace": { "type": "object" },
-                    "binding": { "type": "object" },
-                    "summary_path": { "type": "string" },
-                    "session_id": { "type": "string" },
-                    "session_updated": { "type": "boolean" }
-                }
-            }),
-            usage: Some("create_workspace <name> <summary>".to_string()),
-        }
-    }
-
-    fn support_bash(&self) -> bool {
-        true
-    }
-    fn support_action(&self) -> bool {
-        false
-    }
-    fn support_llm_tool_call(&self) -> bool {
-        false
-    }
-
-    async fn call(
-        &self,
-        _ctx: &SessionRuntimeContext,
-        _args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        Err(AgentToolError::InvalidArgs(
-            "not support: create_workspace only supports bash mode".to_string(),
-        ))
-    }
-
-    async fn exec(
+impl WorkspaceToolBackend for CreateWorkspaceBackend {
+    async fn create_workspace(
         &self,
         ctx: &SessionRuntimeContext,
-        line: &str,
-        _shell_cwd: Option<&Path>,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let tokens = tokenize_bash_command_line(line)?;
-        if tokens.len() < 3 {
-            return Err(AgentToolError::InvalidArgs(
-                "missing required arguments: <name> <summary>".to_string(),
-            ));
-        }
-        if tokens.len() > 3 {
-            return Err(AgentToolError::InvalidArgs(
-                "create_workspace only supports arguments: <name> <summary>".to_string(),
-            ));
-        }
+        name: String,
+        summary: String,
+    ) -> Result<Json, AgentToolError> {
+        CreateWorkspaceBackend::create_workspace(self, ctx, name, summary).await
+    }
 
-        let name = tokens[1].trim();
-        if name.is_empty() {
-            return Err(AgentToolError::InvalidArgs(
-                "workspace name cannot be empty".to_string(),
-            ));
-        }
-        let summary = tokens[2].trim();
-        if summary.is_empty() {
-            return Err(AgentToolError::InvalidArgs(
-                "workspace summary cannot be empty".to_string(),
-            ));
-        }
+    async fn resolve_workspace_id(
+        &self,
+        workspace_ref: &str,
+        shell_cwd: Option<&Path>,
+    ) -> Result<String, AgentToolError> {
+        let _ = shell_cwd;
+        Err(AgentToolError::InvalidArgs(format!(
+            "resolve_workspace_id is not supported for `{workspace_ref}` on create_workspace backend"
+        )))
+    }
 
-        self.create_workspace(ctx, name.to_string(), summary.to_string())
-            .await
-            .map(|details| {
-                AgentToolResult::from_details(details)
-                    .with_cmd_line(line.trim().to_string())
-                    .with_result("ok")
-            })
+    async fn bind_workspace(
+        &self,
+        _ctx: &SessionRuntimeContext,
+        session_id: &str,
+        workspace_id: &str,
+    ) -> Result<Json, AgentToolError> {
+        Err(AgentToolError::InvalidArgs(format!(
+            "bind_workspace is not supported on create_workspace backend: session_id={session_id} workspace_id={workspace_id}"
+        )))
     }
 }
 
 #[derive(Clone)]
-struct BindWorkspaceTool {
+struct BindWorkspaceBackend {
     local_workspace_mgr: LocalWorkspaceManager,
     session_store: Arc<AgentSessionMgr>,
 }
 
-impl BindWorkspaceTool {
+impl BindWorkspaceBackend {
     fn new(
         local_workspace_mgr: LocalWorkspaceManager,
         session_store: Arc<AgentSessionMgr>,
@@ -790,106 +738,33 @@ impl BindWorkspaceTool {
 }
 
 #[async_trait]
-impl AgentTool for BindWorkspaceTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_BIND_WORKSPACE.to_string(),
-            description: "设置agent_session的当前workspace".to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "workspace": { "type": "string" }
-                },
-                "required": ["workspace"],
-                "additionalProperties": false
-            }),
-            output_schema: json!({
-                "type": "object",
-                "properties": {
-                    "ok": { "type": "boolean" },
-                    "binding": { "type": "object" },
-                    "session_id": { "type": "string" },
-                    "session_updated": { "type": "boolean" }
-                }
-            }),
-            usage: Some("bind_workspace <workspace_id|workspace_path>".to_string()),
-        }
-    }
-
-    fn support_bash(&self) -> bool {
-        true
-    }
-    fn support_action(&self) -> bool {
-        false
-    }
-    fn support_llm_tool_call(&self) -> bool {
-        false
-    }
-
-    async fn call(
+impl WorkspaceToolBackend for BindWorkspaceBackend {
+    async fn create_workspace(
         &self,
         _ctx: &SessionRuntimeContext,
-        _args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        Err(AgentToolError::InvalidArgs(
-            "not support: bind_workspace only supports bash mode".to_string(),
-        ))
+        name: String,
+        summary: String,
+    ) -> Result<Json, AgentToolError> {
+        Err(AgentToolError::InvalidArgs(format!(
+            "create_workspace is not supported on bind_workspace backend: name={name} summary={summary}"
+        )))
     }
 
-    async fn exec(
+    async fn resolve_workspace_id(
+        &self,
+        workspace_ref: &str,
+        shell_cwd: Option<&Path>,
+    ) -> Result<String, AgentToolError> {
+        BindWorkspaceBackend::resolve_workspace_id(self, workspace_ref, shell_cwd).await
+    }
+
+    async fn bind_workspace(
         &self,
         ctx: &SessionRuntimeContext,
-        line: &str,
-        shell_cwd: Option<&Path>,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let tokens = tokenize_bash_command_line(line)?;
-        if tokens.len() < 2 {
-            return Err(AgentToolError::InvalidArgs(
-                "missing workspace argument".to_string(),
-            ));
-        }
-        if tokens.len() > 2 {
-            return Err(AgentToolError::InvalidArgs(
-                "bind_workspace only supports one argument: <workspace_id|workspace_path>"
-                    .to_string(),
-            ));
-        }
-
-        let raw_arg = tokens[1].trim();
-        let workspace_ref = if let Some((key, value)) = raw_arg.split_once('=') {
-            match key.trim() {
-                "workspace" | "workspace_id" | "workspace_path" | "local_workspace_id" => {
-                    value.trim()
-                }
-                other => {
-                    return Err(AgentToolError::InvalidArgs(format!(
-                        "unsupported argument `{other}`; expected workspace/workspace_id/workspace_path"
-                    )));
-                }
-            }
-        } else {
-            raw_arg
-        };
-
-        if workspace_ref.is_empty() {
-            return Err(AgentToolError::InvalidArgs(
-                "workspace argument cannot be empty".to_string(),
-            ));
-        }
-        if ctx.session_id.trim().is_empty() {
-            return Err(AgentToolError::InvalidArgs(
-                "session_id is required".to_string(),
-            ));
-        }
-
-        let workspace_id = self.resolve_workspace_id(workspace_ref, shell_cwd).await?;
-        self.bind_workspace(ctx, ctx.session_id.as_str(), workspace_id.as_str())
-            .await
-            .map(|details| {
-                AgentToolResult::from_details(details)
-                    .with_cmd_line(line.trim().to_string())
-                    .with_result("ok")
-            })
+        session_id: &str,
+        workspace_id: &str,
+    ) -> Result<Json, AgentToolError> {
+        BindWorkspaceBackend::bind_workspace(self, ctx, session_id, workspace_id).await
     }
 }
 

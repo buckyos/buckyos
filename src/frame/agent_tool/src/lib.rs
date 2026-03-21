@@ -11,6 +11,13 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Value as Json};
 use tokio::time::{timeout, Duration};
 
+pub mod todo;
+
+pub use todo::{
+    get_next_ready_todo_code, get_next_ready_todo_text, get_session_todo_text_by_ref, TodoTool,
+    TodoToolConfig,
+};
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionRuntimeContext {
     pub trace_id: String,
@@ -453,6 +460,576 @@ pub trait AgentTool: Send + Sync {
         }
         let args = parse_default_bash_exec_args(&tokens[1..])?;
         self.call(ctx, args).await
+    }
+}
+
+#[async_trait]
+pub trait SessionViewBackend: Send + Sync {
+    async fn session_view(&self, session_id: &str) -> Result<Json, AgentToolError>;
+}
+
+#[derive(Clone)]
+pub struct GetSessionTool {
+    backend: Arc<dyn SessionViewBackend>,
+}
+
+impl GetSessionTool {
+    pub fn new(backend: Arc<dyn SessionViewBackend>) -> Self {
+        Self { backend }
+    }
+}
+
+#[async_trait]
+impl AgentTool for GetSessionTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: TOOL_GET_SESSION.to_string(),
+            description:
+                "Read current session state and status. Used by runtime before each LLM round."
+                    .to_string(),
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string" }
+                },
+                "additionalProperties": false
+            }),
+            output_schema: json!({
+                "type": "object",
+                "properties": {
+                    "ok": { "type": "boolean" },
+                    "session": { "type": "object" }
+                }
+            }),
+            usage: Some("get_session [session_id]".to_string()),
+        }
+    }
+
+    fn support_bash(&self) -> bool {
+        true
+    }
+
+    fn support_action(&self) -> bool {
+        false
+    }
+
+    fn support_llm_tool_call(&self) -> bool {
+        false
+    }
+
+    async fn call(
+        &self,
+        ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<AgentToolResult, AgentToolError> {
+        let session_id = args
+            .get("session_id")
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| ctx.session_id.trim());
+        if session_id.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "session_id is required".to_string(),
+            ));
+        }
+        let session = self.backend.session_view(session_id).await?;
+        Ok(AgentToolResult::from_details(json!({
+            "ok": true,
+            "session": session
+        }))
+        .with_cmd_line(format!("{TOOL_GET_SESSION} {session_id}"))
+        .with_result("ok"))
+    }
+
+    async fn exec(
+        &self,
+        ctx: &SessionRuntimeContext,
+        line: &str,
+        _shell_cwd: Option<&Path>,
+    ) -> Result<AgentToolResult, AgentToolError> {
+        let tokens = tokenize_bash_command_line(line)?;
+        if tokens.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "empty bash command line".to_string(),
+            ));
+        }
+        if tokens.len() == 1 {
+            return self.call(ctx, json!({})).await;
+        }
+        if tokens.len() == 2 && !tokens[1].contains('=') {
+            return self
+                .call(ctx, json!({ "session_id": tokens[1].trim() }))
+                .await;
+        }
+        let args = parse_default_bash_exec_args(&tokens[1..])?;
+        self.call(ctx, args).await
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct MemoryLoadPreview {
+    pub rendered: String,
+    pub item_count: usize,
+}
+
+#[async_trait]
+pub trait MemoryLoadBackend: Send + Sync {
+    async fn load_memory_preview(
+        &self,
+        token_limit: Option<u32>,
+        tags: Vec<String>,
+        current_time: Option<String>,
+    ) -> Result<MemoryLoadPreview, AgentToolError>;
+}
+
+#[derive(Clone)]
+pub struct LoadMemoryTool {
+    backend: Arc<dyn MemoryLoadBackend>,
+}
+
+impl LoadMemoryTool {
+    pub fn new(backend: Arc<dyn MemoryLoadBackend>) -> Self {
+        Self { backend }
+    }
+}
+
+#[async_trait]
+impl AgentTool for LoadMemoryTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: TOOL_LOAD_MEMORY.to_string(),
+            description: "Read memory summary using default retrieval strategy.".to_string(),
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "token_limit": {"type":"number"},
+                    "tags": {
+                        "type":"array",
+                        "items": {"type":"string"}
+                    },
+                    "current_time": {"type":"string"}
+                }
+            }),
+            output_schema: json!({
+                "type":"string"
+            }),
+            usage: None,
+        }
+    }
+
+    fn support_bash(&self) -> bool {
+        true
+    }
+
+    fn support_action(&self) -> bool {
+        false
+    }
+
+    fn support_llm_tool_call(&self) -> bool {
+        true
+    }
+
+    async fn call(
+        &self,
+        _ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<AgentToolResult, AgentToolError> {
+        let token_limit = args
+            .get("token_limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| n.min(u32::MAX as u64) as u32);
+        let tags = args
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_default();
+        let current_time = args
+            .get("current_time")
+            .and_then(|v| v.as_str())
+            .map(|raw| raw.to_string());
+
+        let preview = self
+            .backend
+            .load_memory_preview(token_limit, tags, current_time)
+            .await?;
+        Ok(
+            AgentToolResult::from_details(Json::String(preview.rendered))
+                .with_cmd_line(TOOL_LOAD_MEMORY.to_string())
+                .with_result(format!("loaded {} memory item(s)", preview.item_count)),
+        )
+    }
+}
+
+#[async_trait]
+pub trait WorklogActionBackend: Send + Sync {
+    async fn execute_action(
+        &self,
+        ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<Json, AgentToolError>;
+}
+
+#[derive(Clone)]
+pub struct WorklogTool {
+    backend: Arc<dyn WorklogActionBackend>,
+}
+
+impl WorklogTool {
+    pub fn new(backend: Arc<dyn WorklogActionBackend>) -> Self {
+        Self { backend }
+    }
+}
+
+#[async_trait]
+pub trait WorkspaceToolBackend: Send + Sync {
+    async fn create_workspace(
+        &self,
+        ctx: &SessionRuntimeContext,
+        name: String,
+        summary: String,
+    ) -> Result<Json, AgentToolError>;
+
+    async fn resolve_workspace_id(
+        &self,
+        workspace_ref: &str,
+        shell_cwd: Option<&Path>,
+    ) -> Result<String, AgentToolError>;
+
+    async fn bind_workspace(
+        &self,
+        ctx: &SessionRuntimeContext,
+        session_id: &str,
+        workspace_id: &str,
+    ) -> Result<Json, AgentToolError>;
+}
+
+#[derive(Clone)]
+pub struct CreateWorkspaceTool {
+    backend: Arc<dyn WorkspaceToolBackend>,
+}
+
+impl CreateWorkspaceTool {
+    pub fn new(backend: Arc<dyn WorkspaceToolBackend>) -> Self {
+        Self { backend }
+    }
+}
+
+#[async_trait]
+impl AgentTool for CreateWorkspaceTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: TOOL_CREATE_WORKSPACE.to_string(),
+            description: "创建session的wrokspace并设置为session的default workspace".to_string(),
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "summary": { "type": "string" }
+                },
+                "required": ["name", "summary"],
+                "additionalProperties": false
+            }),
+            output_schema: json!({
+                "type": "object",
+                "properties": {
+                    "ok": { "type": "boolean" },
+                    "workspace": { "type": "object" },
+                    "binding": { "type": "object" },
+                    "summary_path": { "type": "string" },
+                    "session_id": { "type": "string" },
+                    "session_updated": { "type": "boolean" }
+                }
+            }),
+            usage: Some("create_workspace <name> <summary>".to_string()),
+        }
+    }
+
+    fn support_bash(&self) -> bool {
+        true
+    }
+
+    fn support_action(&self) -> bool {
+        false
+    }
+
+    fn support_llm_tool_call(&self) -> bool {
+        false
+    }
+
+    async fn call(
+        &self,
+        _ctx: &SessionRuntimeContext,
+        _args: Json,
+    ) -> Result<AgentToolResult, AgentToolError> {
+        Err(AgentToolError::InvalidArgs(
+            "not support: create_workspace only supports bash mode".to_string(),
+        ))
+    }
+
+    async fn exec(
+        &self,
+        ctx: &SessionRuntimeContext,
+        line: &str,
+        _shell_cwd: Option<&Path>,
+    ) -> Result<AgentToolResult, AgentToolError> {
+        let tokens = tokenize_bash_command_line(line)?;
+        if tokens.len() < 3 {
+            return Err(AgentToolError::InvalidArgs(
+                "missing required arguments: <name> <summary>".to_string(),
+            ));
+        }
+        if tokens.len() > 3 {
+            return Err(AgentToolError::InvalidArgs(
+                "create_workspace only supports arguments: <name> <summary>".to_string(),
+            ));
+        }
+
+        let name = tokens[1].trim();
+        if name.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "workspace name cannot be empty".to_string(),
+            ));
+        }
+        let summary = tokens[2].trim();
+        if summary.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "workspace summary cannot be empty".to_string(),
+            ));
+        }
+
+        self.backend
+            .create_workspace(ctx, name.to_string(), summary.to_string())
+            .await
+            .map(|details| {
+                AgentToolResult::from_details(details)
+                    .with_cmd_line(line.trim().to_string())
+                    .with_result("ok")
+            })
+    }
+}
+
+#[derive(Clone)]
+pub struct BindWorkspaceTool {
+    backend: Arc<dyn WorkspaceToolBackend>,
+}
+
+impl BindWorkspaceTool {
+    pub fn new(backend: Arc<dyn WorkspaceToolBackend>) -> Self {
+        Self { backend }
+    }
+}
+
+#[async_trait]
+impl AgentTool for BindWorkspaceTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: TOOL_BIND_WORKSPACE.to_string(),
+            description: "设置agent_session的当前workspace".to_string(),
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "workspace": { "type": "string" }
+                },
+                "required": ["workspace"],
+                "additionalProperties": false
+            }),
+            output_schema: json!({
+                "type": "object",
+                "properties": {
+                    "ok": { "type": "boolean" },
+                    "binding": { "type": "object" },
+                    "session_id": { "type": "string" },
+                    "session_updated": { "type": "boolean" }
+                }
+            }),
+            usage: Some("bind_workspace <workspace_id|workspace_path>".to_string()),
+        }
+    }
+
+    fn support_bash(&self) -> bool {
+        true
+    }
+
+    fn support_action(&self) -> bool {
+        false
+    }
+
+    fn support_llm_tool_call(&self) -> bool {
+        false
+    }
+
+    async fn call(
+        &self,
+        _ctx: &SessionRuntimeContext,
+        _args: Json,
+    ) -> Result<AgentToolResult, AgentToolError> {
+        Err(AgentToolError::InvalidArgs(
+            "not support: bind_workspace only supports bash mode".to_string(),
+        ))
+    }
+
+    async fn exec(
+        &self,
+        ctx: &SessionRuntimeContext,
+        line: &str,
+        shell_cwd: Option<&Path>,
+    ) -> Result<AgentToolResult, AgentToolError> {
+        let tokens = tokenize_bash_command_line(line)?;
+        if tokens.len() < 2 {
+            return Err(AgentToolError::InvalidArgs(
+                "missing workspace argument".to_string(),
+            ));
+        }
+        if tokens.len() > 2 {
+            return Err(AgentToolError::InvalidArgs(
+                "bind_workspace only supports one argument: <workspace_id|workspace_path>"
+                    .to_string(),
+            ));
+        }
+
+        let raw_arg = tokens[1].trim();
+        let workspace_ref = if let Some((key, value)) = raw_arg.split_once('=') {
+            match key.trim() {
+                "workspace" | "workspace_id" | "workspace_path" | "local_workspace_id" => {
+                    value.trim()
+                }
+                other => {
+                    return Err(AgentToolError::InvalidArgs(format!(
+                        "unsupported argument `{other}`; expected workspace/workspace_id/workspace_path"
+                    )));
+                }
+            }
+        } else {
+            raw_arg
+        };
+
+        if workspace_ref.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "workspace argument cannot be empty".to_string(),
+            ));
+        }
+        if ctx.session_id.trim().is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "session_id is required".to_string(),
+            ));
+        }
+
+        let workspace_id = self
+            .backend
+            .resolve_workspace_id(workspace_ref, shell_cwd)
+            .await?;
+        self.backend
+            .bind_workspace(ctx, ctx.session_id.as_str(), workspace_id.as_str())
+            .await
+            .map(|details| {
+                AgentToolResult::from_details(details)
+                    .with_cmd_line(line.trim().to_string())
+                    .with_result("ok")
+            })
+    }
+}
+
+#[async_trait]
+impl AgentTool for WorklogTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: TOOL_WORKLOG_MANAGE.to_string(),
+            description: "Structured workspace worklog with event records, step summary and prompt-safe rendering.".to_string(),
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "append_worklog",
+                            "append_step_summary",
+                            "mark_step_committed",
+                            "list_worklog",
+                            "get_worklog",
+                            "list_step",
+                            "build_prompt_worklog",
+                            "append",
+                            "list",
+                            "get",
+                            "render_for_prompt"
+                        ]
+                    },
+                    "record": { "type": "object" },
+                    "log_id": { "type": "string" },
+                    "id": { "type": "string" },
+                    "step_id": { "type": "string" },
+                    "owner_session_id": { "type": "string" },
+                    "workspace_id": { "type": "string" },
+                    "todo_id": { "type": "string" },
+                    "type": {
+                        "type": "string",
+                        "enum": [
+                            "GetMessage",
+                            "ReplyMessage",
+                            "FunctionRecord",
+                            "ActionRecord",
+                            "CreateSubAgent",
+                            "StepSummary"
+                        ]
+                    },
+                    "status": { "type": "string" },
+                    "tag": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1 },
+                    "offset": { "type": "integer", "minimum": 0 },
+                    "token_budget": { "type": "integer", "minimum": 1 }
+                },
+                "required": ["action"],
+                "additionalProperties": true
+            }),
+            output_schema: json!({
+                "type": "object",
+                "properties": {
+                    "ok": { "type": "boolean" },
+                    "action": { "type": "string" },
+                    "record": { "type": "object" },
+                    "records": { "type": "array", "items": { "type": "object" } },
+                    "total": { "type": "integer" },
+                    "text": { "type": "string" },
+                    "prompt_text": { "type": "string" },
+                    "updated": { "type": "integer" }
+                }
+            }),
+            usage: None,
+        }
+    }
+
+    fn support_bash(&self) -> bool {
+        true
+    }
+
+    fn support_action(&self) -> bool {
+        false
+    }
+
+    fn support_llm_tool_call(&self) -> bool {
+        false
+    }
+
+    async fn call(
+        &self,
+        ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<AgentToolResult, AgentToolError> {
+        let details = self.backend.execute_action(ctx, args).await?;
+        let action = details
+            .get("action")
+            .and_then(Json::as_str)
+            .unwrap_or("worklog")
+            .to_string();
+        Ok(AgentToolResult::from_details(details)
+            .with_cmd_line(TOOL_WORKLOG_MANAGE.to_string())
+            .with_result(action))
     }
 }
 

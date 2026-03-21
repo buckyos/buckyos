@@ -13,10 +13,7 @@ use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
-use crate::agent_tool::{
-    AgentTool, AgentToolError, AgentToolManager, AgentToolResult, ToolSpec, TOOL_LOAD_MEMORY,
-};
-use crate::behavior::SessionRuntimeContext;
+use crate::agent_tool::{AgentToolError, AgentToolManager, LoadMemoryTool, MemoryLoadPreview};
 
 const DEFAULT_MEMORY_DIR_NAME: &str = "memory";
 const DEFAULT_LOG_FILE_NAME: &str = "log.jsonl";
@@ -147,8 +144,8 @@ impl AgentMemory {
     }
 
     pub fn register_tools(&self, tool_mgr: &AgentToolManager) -> Result<(), AgentToolError> {
-        if !tool_mgr.has_tool(TOOL_LOAD_MEMORY) {
-            tool_mgr.register_tool(LoadMemoryTool::new(self.clone()))?;
+        if !tool_mgr.has_tool(crate::agent_tool::TOOL_LOAD_MEMORY) {
+            tool_mgr.register_tool(LoadMemoryTool::new(Arc::new(self.clone())))?;
         }
         Ok(())
     }
@@ -558,84 +555,22 @@ impl AgentMemory {
     }
 }
 
-struct LoadMemoryTool {
-    memory: AgentMemory,
-}
-
-impl LoadMemoryTool {
-    fn new(memory: AgentMemory) -> Self {
-        Self { memory }
-    }
-}
-
 #[async_trait]
-impl AgentTool for LoadMemoryTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_LOAD_MEMORY.to_string(),
-            description: "Read memory summary using default retrieval strategy.".to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "token_limit": {"type":"number"},
-                    "tags": {
-                        "type":"array",
-                        "items": {"type":"string"}
-                    },
-                    "current_time": {"type":"string"}
-                }
-            }),
-            output_schema: json!({
-                "type":"string"
-            }),
-            usage: None,
-        }
-    }
-
-    fn support_bash(&self) -> bool {
-        true
-    }
-    fn support_action(&self) -> bool {
-        false
-    }
-    fn support_llm_tool_call(&self) -> bool {
-        true
-    }
-
-    async fn call(
+impl ::agent_tool::MemoryLoadBackend for AgentMemory {
+    async fn load_memory_preview(
         &self,
-        _ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let token_limit = args
-            .get("token_limit")
-            .and_then(|v| v.as_u64())
-            .map(|n| n.min(u32::MAX as u64) as u32);
-        let tags = args
-            .get("tags")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
-                    .filter(|s| !s.is_empty())
-                    .collect::<Vec<String>>()
-            })
-            .unwrap_or_default();
-        let current_time = args
-            .get("current_time")
-            .and_then(|v| v.as_str())
+        token_limit: Option<u32>,
+        tags: Vec<String>,
+        current_time: Option<String>,
+    ) -> Result<MemoryLoadPreview, AgentToolError> {
+        let current_time = current_time
+            .as_deref()
             .and_then(|raw| parse_rfc3339_to_utc(raw).ok());
-
-        let items = self
-            .memory
-            .load_memory(token_limit, tags, current_time)
-            .await?;
-        let rendered = AgentMemory::render_memory_items(&items);
-        Ok(
-            AgentToolResult::from_details(Json::String(rendered.clone()))
-                .with_cmd_line(TOOL_LOAD_MEMORY.to_string())
-                .with_result(format!("loaded {} memory item(s)", items.len())),
-        )
+        let items = self.load_memory(token_limit, tags, current_time).await?;
+        Ok(MemoryLoadPreview {
+            rendered: Self::render_memory_items(&items),
+            item_count: items.len(),
+        })
     }
 }
 

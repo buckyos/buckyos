@@ -17,10 +17,9 @@ use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, Notify, RwLock};
 
-use crate::agent_tool::{
-    parse_default_bash_exec_args, tokenize_bash_command_line, AgentTool, AgentToolError,
-    AgentToolResult, ToolSpec, TOOL_GET_SESSION,
-};
+pub use ::agent_tool::GetSessionTool;
+
+use crate::agent_tool::AgentToolError;
 use crate::behavior::SessionRuntimeContext;
 use crate::worklog::{render_worklog_prompt_line, render_worklog_prompt_line_from_parts};
 use crate::workspace::LocalWorkspaceManager;
@@ -1347,100 +1346,10 @@ impl AgentSessionMgr {
     }
 }
 
-#[derive(Clone)]
-pub struct GetSessionTool {
-    store: Arc<AgentSessionMgr>,
-}
-
-impl GetSessionTool {
-    pub fn new(store: Arc<AgentSessionMgr>) -> Self {
-        Self { store }
-    }
-}
-
 #[async_trait]
-impl AgentTool for GetSessionTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_GET_SESSION.to_string(),
-            description:
-                "Read current session state and status. Used by runtime before each LLM round."
-                    .to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "session_id": { "type": "string" }
-                },
-                "additionalProperties": false
-            }),
-            output_schema: json!({
-                "type": "object",
-                "properties": {
-                    "ok": { "type": "boolean" },
-                    "session": { "type": "object" }
-                }
-            }),
-            usage: Some("get_session [session_id]".to_string()),
-        }
-    }
-
-    fn support_bash(&self) -> bool {
-        true
-    }
-    fn support_action(&self) -> bool {
-        false
-    }
-    fn support_llm_tool_call(&self) -> bool {
-        false
-    }
-
-    async fn call(
-        &self,
-        ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let session_id = args
-            .get("session_id")
-            .and_then(Json::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| ctx.session_id.trim());
-        if session_id.is_empty() {
-            return Err(AgentToolError::InvalidArgs(
-                "session_id is required".to_string(),
-            ));
-        }
-        let session = self.store.session_view(&session_id).await?;
-        Ok(AgentToolResult::from_details(json!({
-        "ok": true,
-        "session": session
-        }))
-        .with_cmd_line(format!("{TOOL_GET_SESSION} {session_id}"))
-        .with_result("ok"))
-    }
-
-    async fn exec(
-        &self,
-        ctx: &SessionRuntimeContext,
-        line: &str,
-        _shell_cwd: Option<&Path>,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let tokens = tokenize_bash_command_line(line)?;
-        if tokens.is_empty() {
-            return Err(AgentToolError::InvalidArgs(
-                "empty bash command line".to_string(),
-            ));
-        }
-        if tokens.len() == 1 {
-            return self.call(ctx, json!({})).await;
-        }
-        if tokens.len() == 2 && !tokens[1].contains('=') {
-            return self
-                .call(ctx, json!({ "session_id": tokens[1].trim() }))
-                .await;
-        }
-        let args = parse_default_bash_exec_args(&tokens[1..])?;
-        self.call(ctx, args).await
+impl ::agent_tool::SessionViewBackend for AgentSessionMgr {
+    async fn session_view(&self, session_id: &str) -> Result<Json, AgentToolError> {
+        AgentSessionMgr::session_view(self, session_id).await
     }
 }
 

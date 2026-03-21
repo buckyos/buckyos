@@ -6,15 +6,15 @@ use log::{info, warn};
 use serde::Deserialize;
 use serde_json::{json, Value as Json};
 
-use crate::agent_tool::{
-    tokenize_bash_command_line, AgentTool, AgentToolError, AgentToolResult, ToolSpec,
+use crate::{
+    tokenize_bash_command_line, AgentTool, AgentToolError, AgentToolResult, SessionRuntimeContext,
+    ToolSpec,
 };
-use crate::behavior::SessionRuntimeContext;
-use crate::workspace::local_workspace::SESSION_BINDINGS_REL_PATH;
 
 use super::*;
 
 const TOOL_TODO: &str = "todo";
+const SESSION_BINDINGS_REL_PATH: &str = "workspaces/session_workspace_bindings.json";
 
 const TODO_USAGE: &str = "\
 todo <command> [args...]
