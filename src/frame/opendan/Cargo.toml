@@ -35,3 +35,19 @@ xmltree = "0.12.0"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[[bin]]
+name = "agent-tools"
+path = "src/agent_tools_bin.rs"
+
+[[bin]]
+name = "read_file"
+path = "src/read_file_bin.rs"
+
+[[bin]]
+name = "write_file"
+path = "src/write_file_bin.rs"
+
+[[bin]]
+name = "edit_file"
+path = "src/edit_file_bin.rs"

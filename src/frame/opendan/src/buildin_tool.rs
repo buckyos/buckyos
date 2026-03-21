@@ -17,191 +17,22 @@ pub const TOOL_EXEC_BASH: &str = "exec";
 pub const TOOL_WRITE_FILE: &str = "write_file";
 pub const TOOL_READ_FILE: &str = "read_file";
 
-const DEFAULT_MAX_FILE_READ_BYTES: usize = 256 * 1024;
 const CMD_PARAM_PREVIEW_KEEP_CHARS: usize = 32;
-
-#[derive(Clone, Debug)]
-struct EditFilePolicy {
-    allow_create: bool,
-    allow_replace: bool,
-    max_write_bytes: usize,
-    max_diff_lines: usize,
-    allowed_write_roots: Vec<PathBuf>,
-}
-
-impl EditFilePolicy {
-    fn from_tool_config(
-        workshop_cfg: &AgentWorkshopConfig,
-        tool_cfg: &WorkshopToolConfig,
-    ) -> Result<Self, AgentToolError> {
-        let params = tool_cfg.params.as_object().ok_or_else(|| {
-            AgentToolError::InvalidArgs(format!(
-                "tool `{}` params must be a json object",
-                tool_cfg.name
-            ))
-        })?;
-
-        let allow_create = read_bool_from_map(params, "allow_create")?.unwrap_or(true);
-        let allow_replace = read_bool_from_map(params, "allow_replace")?.unwrap_or(true);
-
-        let max_write_bytes = read_u64_from_map(params, "max_write_bytes")?
-            .map(u64_to_usize)
-            .transpose()?
-            .unwrap_or(workshop_cfg.default_max_file_write_bytes);
-        if max_write_bytes == 0 {
-            return Err(AgentToolError::InvalidArgs(format!(
-                "tool `{}` max_write_bytes must be > 0",
-                tool_cfg.name
-            )));
-        }
-
-        let max_diff_lines = read_u64_from_map(params, "max_diff_lines")?
-            .map(u64_to_usize)
-            .transpose()?
-            .unwrap_or(workshop_cfg.default_max_diff_lines);
-        if max_diff_lines == 0 {
-            return Err(AgentToolError::InvalidArgs(format!(
-                "tool `{}` max_diff_lines must be > 0",
-                tool_cfg.name
-            )));
-        }
-
-        let allowed_write_roots = parse_workspace_relative_roots(
-            params.get("allowed_write_roots"),
-            &workshop_cfg.agent_env_root,
-        )?
-        .unwrap_or_else(|| vec![workshop_cfg.agent_env_root.clone()]);
-
-        Ok(Self {
-            allow_create,
-            allow_replace,
-            max_write_bytes,
-            max_diff_lines,
-            allowed_write_roots,
-        })
-    }
-}
-
-#[derive(Clone, Debug)]
-struct WriteFilePolicy {
-    allow_create: bool,
-    max_write_bytes: usize,
-    max_diff_lines: usize,
-    allowed_write_roots: Vec<PathBuf>,
-}
-
-impl WriteFilePolicy {
-    fn from_tool_config(
-        workshop_cfg: &AgentWorkshopConfig,
-        tool_cfg: &WorkshopToolConfig,
-    ) -> Result<Self, AgentToolError> {
-        let params = tool_cfg.params.as_object().ok_or_else(|| {
-            AgentToolError::InvalidArgs(format!(
-                "tool `{}` params must be a json object",
-                tool_cfg.name
-            ))
-        })?;
-
-        let allow_create = read_bool_from_map(params, "allow_create")?.unwrap_or(true);
-        let max_write_bytes = read_u64_from_map(params, "max_write_bytes")?
-            .map(u64_to_usize)
-            .transpose()?
-            .unwrap_or(workshop_cfg.default_max_file_write_bytes);
-        if max_write_bytes == 0 {
-            return Err(AgentToolError::InvalidArgs(format!(
-                "tool `{}` max_write_bytes must be > 0",
-                tool_cfg.name
-            )));
-        }
-
-        let max_diff_lines = read_u64_from_map(params, "max_diff_lines")?
-            .map(u64_to_usize)
-            .transpose()?
-            .unwrap_or(workshop_cfg.default_max_diff_lines);
-        if max_diff_lines == 0 {
-            return Err(AgentToolError::InvalidArgs(format!(
-                "tool `{}` max_diff_lines must be > 0",
-                tool_cfg.name
-            )));
-        }
-
-        let allowed_write_roots = parse_workspace_relative_roots(
-            params.get("allowed_write_roots"),
-            &workshop_cfg.agent_env_root,
-        )?
-        .unwrap_or_else(|| vec![workshop_cfg.agent_env_root.clone()]);
-
-        Ok(Self {
-            allow_create,
-            max_write_bytes,
-            max_diff_lines,
-            allowed_write_roots,
-        })
-    }
-}
-
-#[derive(Clone, Debug)]
-struct ReadFilePolicy {
-    max_read_bytes: usize,
-    allowed_read_roots: Vec<PathBuf>,
-}
-
-impl ReadFilePolicy {
-    fn from_tool_config(
-        workshop_cfg: &AgentWorkshopConfig,
-        tool_cfg: &WorkshopToolConfig,
-    ) -> Result<Self, AgentToolError> {
-        let params = tool_cfg.params.as_object().ok_or_else(|| {
-            AgentToolError::InvalidArgs(format!(
-                "tool `{}` params must be a json object",
-                tool_cfg.name
-            ))
-        })?;
-
-        let max_read_bytes = read_u64_from_map(params, "max_read_bytes")?
-            .map(u64_to_usize)
-            .transpose()?
-            .unwrap_or(
-                workshop_cfg
-                    .max_output_bytes
-                    .max(DEFAULT_MAX_FILE_READ_BYTES),
-            );
-        if max_read_bytes == 0 {
-            return Err(AgentToolError::InvalidArgs(format!(
-                "tool `{}` max_read_bytes must be > 0",
-                tool_cfg.name
-            )));
-        }
-
-        let allowed_read_roots = parse_workspace_relative_roots(
-            params.get("allowed_read_roots"),
-            &workshop_cfg.agent_env_root,
-        )?
-        .unwrap_or_else(|| vec![workshop_cfg.agent_env_root.clone()]);
-
-        Ok(Self {
-            max_read_bytes,
-            allowed_read_roots,
-        })
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct EditFileTool {
     cfg: AgentWorkshopConfig,
-    policy: EditFilePolicy,
     write_audit: WorkshopWriteAudit,
 }
 
 impl EditFileTool {
     pub fn from_tool_config(
         cfg: &AgentWorkshopConfig,
-        tool_cfg: &WorkshopToolConfig,
+        _tool_cfg: &WorkshopToolConfig,
         write_audit: WorkshopWriteAudit,
     ) -> Result<Self, AgentToolError> {
         Ok(Self {
             cfg: cfg.clone(),
-            policy: EditFilePolicy::from_tool_config(cfg, tool_cfg)?,
             write_audit,
         })
     }
@@ -225,7 +56,10 @@ impl AgentTool for EditFileTool {
                 "additionalProperties": true
             }),
             output_schema: json!({"type": "object"}),
-            usage: None,
+            usage: Some(
+                "edit_file <path> --pos-chunk <text> [--mode replace|after|before] (--new-content <text> | --new-content-stdin)"
+                    .to_string(),
+            ),
         }
     }
     fn support_bash(&self) -> bool {
@@ -245,18 +79,8 @@ impl AgentTool for EditFileTool {
     ) -> Result<AgentToolResult, AgentToolError> {
         let file_path = require_string(&args, "path")?;
         let abs_path = resolve_path_in_agent_env(&self.cfg.agent_env_root, &file_path)?;
-        if !is_path_under_any(&abs_path, &self.policy.allowed_write_roots) {
-            return Err(AgentToolError::InvalidArgs(format!(
-                "path `{file_path}` is not writable by workshop tool policy"
-            )));
-        }
 
         let exists = fs::metadata(&abs_path).await.is_ok();
-        if !exists && !self.policy.allow_create {
-            return Err(AgentToolError::InvalidArgs(format!(
-                "file does not exist or create disabled by policy: {file_path}"
-            )));
-        }
 
         let original_content = if exists {
             read_text_file_lossy(&abs_path).await?
@@ -267,11 +91,6 @@ impl AgentTool for EditFileTool {
         let pos_chunk = require_string(&args, "pos_chunk")?;
         let new_content = require_string(&args, "new_content")?;
         let mode = parse_edit_mode(&args)?;
-        if mode == "replace" && !self.policy.allow_replace {
-            return Err(AgentToolError::InvalidArgs(
-                "replace mode disabled by workshop tool policy".to_string(),
-            ));
-        }
         let (operation, updated_content, matched) =
             if let Some(anchor_pos) = original_content.find(&pos_chunk) {
                 let updated = match mode {
@@ -299,14 +118,6 @@ impl AgentTool for EditFileTool {
                 (mode.to_string(), original_content.clone(), false)
             };
 
-        if updated_content.len() > self.policy.max_write_bytes {
-            return Err(AgentToolError::InvalidArgs(format!(
-                "file content too large: {} > {} bytes",
-                updated_content.len(),
-                self.policy.max_write_bytes
-            )));
-        }
-
         let changed = original_content != updated_content;
         let created = changed && !exists;
         if changed {
@@ -324,7 +135,6 @@ impl AgentTool for EditFileTool {
             &file_path,
             &original_content,
             &updated_content,
-            self.policy.max_diff_lines,
         );
         if changed {
             if let Err(err) = self
@@ -393,19 +203,17 @@ impl AgentTool for EditFileTool {
 #[derive(Clone, Debug)]
 pub struct WriteFileTool {
     cfg: AgentWorkshopConfig,
-    policy: WriteFilePolicy,
     write_audit: WorkshopWriteAudit,
 }
 
 impl WriteFileTool {
     pub fn from_tool_config(
         cfg: &AgentWorkshopConfig,
-        tool_cfg: &WorkshopToolConfig,
+        _tool_cfg: &WorkshopToolConfig,
         write_audit: WorkshopWriteAudit,
     ) -> Result<Self, AgentToolError> {
         Ok(Self {
             cfg: cfg.clone(),
-            policy: WriteFilePolicy::from_tool_config(cfg, tool_cfg)?,
             write_audit,
         })
     }
@@ -428,7 +236,10 @@ impl AgentTool for WriteFileTool {
                 "additionalProperties": true
             }),
             output_schema: json!({"type": "object"}),
-            usage: None,
+            usage: Some(
+                "write_file <path> [--mode new|append|write] (--content <text> | --content-stdin)"
+                    .to_string(),
+            ),
         }
     }
     fn support_bash(&self) -> bool {
@@ -448,20 +259,10 @@ impl AgentTool for WriteFileTool {
         let file_path = require_string(&args, "path")?;
         let content = require_string(&args, "content")?;
         let abs_path = resolve_path_in_agent_env(&self.cfg.agent_env_root, &file_path)?;
-        if !is_path_under_any(&abs_path, &self.policy.allowed_write_roots) {
-            return Err(AgentToolError::InvalidArgs(format!(
-                "path `{file_path}` is not writable by workshop tool policy"
-            )));
-        }
 
         let mode = parse_write_mode(&args)?;
         let exists = fs::metadata(&abs_path).await.is_ok();
 
-        if !exists && !self.policy.allow_create {
-            return Err(AgentToolError::InvalidArgs(format!(
-                "file creation disabled by policy: {file_path}"
-            )));
-        }
         if mode == "new" && exists {
             return Err(AgentToolError::InvalidArgs(format!(
                 "write mode `new` requires target file not exist: {file_path}"
@@ -489,14 +290,6 @@ impl AgentTool for WriteFileTool {
             content.clone()
         };
 
-        if updated_content.len() > self.policy.max_write_bytes {
-            return Err(AgentToolError::InvalidArgs(format!(
-                "file content too large: {} > {} bytes",
-                updated_content.len(),
-                self.policy.max_write_bytes
-            )));
-        }
-
         if let Some(parent) = abs_path.parent() {
             fs::create_dir_all(parent).await.map_err(|err| {
                 AgentToolError::ExecFailed(format!("create parent dir failed: {err}"))
@@ -511,7 +304,6 @@ impl AgentTool for WriteFileTool {
             &file_path,
             &original_content,
             &updated_content,
-            self.policy.max_diff_lines,
         );
         if let Err(err) = self
             .write_audit
@@ -571,18 +363,14 @@ impl AgentTool for WriteFileTool {
 #[derive(Clone, Debug)]
 pub struct ReadFileTool {
     cfg: AgentWorkshopConfig,
-    policy: ReadFilePolicy,
 }
 
 impl ReadFileTool {
     pub fn from_tool_config(
         cfg: &AgentWorkshopConfig,
-        tool_cfg: &WorkshopToolConfig,
+        _tool_cfg: &WorkshopToolConfig,
     ) -> Result<Self, AgentToolError> {
-        Ok(Self {
-            cfg: cfg.clone(),
-            policy: ReadFilePolicy::from_tool_config(cfg, tool_cfg)?,
-        })
+        Ok(Self { cfg: cfg.clone() })
     }
 }
 
@@ -629,11 +417,6 @@ impl AgentTool for ReadFileTool {
     ) -> Result<AgentToolResult, AgentToolError> {
         let file_path = require_string(&args, "path")?;
         let abs_path = resolve_path_in_agent_env(&self.cfg.agent_env_root, &file_path)?;
-        if !is_path_under_any(&abs_path, &self.policy.allowed_read_roots) {
-            return Err(AgentToolError::InvalidArgs(format!(
-                "path `{file_path}` is not readable by workshop tool policy"
-            )));
-        }
 
         let full_content = read_text_file_lossy(&abs_path).await?;
         let first_chunk = optional_string(&args, "first_chunk")?;
@@ -663,8 +446,8 @@ impl AgentTool for ReadFileTool {
             }
         };
 
-        let (content, truncated) =
-            truncate_bytes(selected_content.as_bytes(), self.policy.max_read_bytes);
+        let content = selected_content;
+        let truncated = false;
 
         let details = json!({
             "ok": true,
@@ -725,7 +508,7 @@ impl AgentTool for ReadFileTool {
     }
 }
 
-fn parse_read_file_bash_args(tokens: &[String]) -> Result<Json, AgentToolError> {
+pub(crate) fn parse_read_file_bash_args(tokens: &[String]) -> Result<Json, AgentToolError> {
     let mut out = serde_json::Map::<String, Json>::new();
     if tokens.is_empty() {
         return Err(AgentToolError::InvalidArgs(
@@ -794,7 +577,7 @@ fn parse_read_file_bash_args(tokens: &[String]) -> Result<Json, AgentToolError> 
     Ok(Json::Object(out))
 }
 
-fn rewrite_read_file_path_with_shell_cwd(args: &mut Json, shell_cwd: &Path) {
+pub(crate) fn rewrite_read_file_path_with_shell_cwd(args: &mut Json, shell_cwd: &Path) {
     let Some(map) = args.as_object_mut() else {
         return;
     };
@@ -1322,15 +1105,18 @@ pub(crate) fn parse_workspace_relative_roots(
         let raw = item.as_str().ok_or_else(|| {
             AgentToolError::InvalidArgs("tool params path roots must be string array".to_string())
         })?;
-        roots.push(resolve_path_in_agent_env(agent_env_root, raw)?);
+        let resolved = resolve_path_in_agent_env(agent_env_root, raw)?;
+        if !resolved.starts_with(agent_env_root) {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "path out of workspace scope: {raw}"
+            )));
+        }
+        roots.push(resolved);
     }
     Ok(Some(roots))
 }
 
-fn resolve_path_in_agent_env(
-    agent_env_root: &Path,
-    raw_path: &str,
-) -> Result<PathBuf, AgentToolError> {
+fn resolve_path_in_agent_env(agent_env_root: &Path, raw_path: &str) -> Result<PathBuf, AgentToolError> {
     if raw_path.trim().is_empty() {
         return Err(AgentToolError::InvalidArgs(
             "path cannot be empty".to_string(),
@@ -1343,11 +1129,6 @@ fn resolve_path_in_agent_env(
         agent_env_root.join(user_path)
     };
     let normalized = normalize_abs_path(&candidate);
-    if !normalized.starts_with(agent_env_root) {
-        return Err(AgentToolError::InvalidArgs(format!(
-            "path out of workspace scope: {raw_path}"
-        )));
-    }
     Ok(normalized)
 }
 
@@ -1443,29 +1224,19 @@ fn build_simple_diff(
     display_path: &str,
     before: &str,
     after: &str,
-    max_body_lines: usize,
 ) -> (String, bool) {
     let before_lines = before.lines().collect::<Vec<_>>();
     let after_lines = after.lines().collect::<Vec<_>>();
 
     let mut body = Vec::new();
-    let mut truncated = false;
     let max_len = before_lines.len().max(after_lines.len());
     for idx in 0..max_len {
-        if body.len() >= max_body_lines {
-            truncated = true;
-            break;
-        }
         let old = before_lines.get(idx).copied();
         let new = after_lines.get(idx).copied();
         match (old, new) {
             (Some(a), Some(b)) if a == b => body.push(format!(" {a}")),
             (Some(a), Some(b)) => {
                 body.push(format!("-{a}"));
-                if body.len() >= max_body_lines {
-                    truncated = true;
-                    break;
-                }
                 body.push(format!("+{b}"));
             }
             (Some(a), None) => body.push(format!("-{a}")),
@@ -1483,11 +1254,8 @@ fn build_simple_diff(
         after_lines.len()
     ));
     diff.extend(body);
-    if truncated {
-        diff.push("... [DIFF_TRUNCATED]".to_string());
-    }
 
-    (diff.join("\n"), truncated)
+    (diff.join("\n"), false)
 }
 
 fn u64_to_usize(v: u64) -> Result<usize, AgentToolError> {

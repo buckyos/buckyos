@@ -1,20 +1,3 @@
-#[allow(non_snake_case)]
-pub mod agent;
-pub mod agent_bash;
-pub mod agent_config;
-pub mod agent_environment;
-pub mod agent_memory;
-pub mod agent_session;
-pub mod agent_tool;
-pub mod ai_runtime;
-pub mod behavior;
-pub mod buildin_tool;
-#[cfg(test)]
-pub mod test_utils;
-pub mod worklog;
-pub mod workspace;
-pub mod workspace_path;
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -39,13 +22,11 @@ use name_lib::{AgentDocument, DIDDocumentTrait, EncodedDocument};
 use serde_json::Value as Json;
 use server_runner::Runner;
 use tokio::fs;
-#[cfg(unix)]
-use tokio::signal::unix::{signal, SignalKind};
 use tokio::time::{sleep, Duration};
 
-use crate::agent::{AIAgent, AIAgentDeps};
-use crate::agent_config::AIAgentConfig;
-use crate::ai_runtime::{AiRuntime, AiRuntimeConfig, OpenDanRuntimeKrpcHandler};
+use opendan::agent::{AIAgent, AIAgentDeps};
+use opendan::agent_config::AIAgentConfig;
+use opendan::ai_runtime::{AiRuntime, AiRuntimeConfig, OpenDanRuntimeKrpcHandler};
 
 struct OpenDanHttpServer {
     rpc_handler: buckyos_api::OpenDanServerHandler<OpenDanRuntimeKrpcHandler>,
