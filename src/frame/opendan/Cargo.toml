@@ -41,6 +41,10 @@ name = "agent-tools"
 path = "src/agent_tools_bin.rs"
 
 [[bin]]
+name = "agent_tool"
+path = "src/agent_tool_bin.rs"
+
+[[bin]]
 name = "read_file"
 path = "src/read_file_bin.rs"
 

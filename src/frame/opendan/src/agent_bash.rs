@@ -1,4 +1,7 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+use std::fs as std_fs;
+#[cfg(unix)]
+use std::os::unix::fs as unix_fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -15,7 +18,8 @@ use tokio::time::{sleep, Duration, Instant};
 use crate::agent_session::AgentSessionMgr;
 use crate::agent_tool::{
     tokenize_bash_command_line, AgentTool, AgentToolError, AgentToolManager, AgentToolResult,
-    ToolSpec,
+    ToolSpec, TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE, TOOL_GET_SESSION,
+    TOOL_READ_FILE, TOOL_WRITE_FILE,
 };
 use crate::behavior::SessionRuntimeContext;
 use crate::buildin_tool::{
@@ -35,7 +39,25 @@ const EXEC_BASH_TMUX_LIST_FORMAT: &str = "#{session_name}\t#{session_activity}";
 const EXEC_BASH_PENDING_PARTIAL_LINES: usize = 10;
 const EXEC_BASH_LONG_RUNNING_CHECK_AFTER_SECS: u64 = 5;
 const EXEC_BASH_LONG_RUNNING_TASK_TYPE: &str = "exec_bash";
+const EXEC_BASH_SESSION_TOOL_DIR: &str = ".tool";
+const EXEC_BASH_AGENT_TOOL_BIN: &str = "agent_tool";
+const EXEC_BASH_COMMAND_NOT_FOUND_PROXY: &str = "__command_not_found__";
+const EXEC_BASH_AGENT_CLI_TOOL_NAMES: [&str; 7] = [
+    TOOL_READ_FILE,
+    TOOL_WRITE_FILE,
+    TOOL_EDIT_FILE,
+    TOOL_GET_SESSION,
+    "todo",
+    TOOL_CREATE_WORKSPACE,
+    TOOL_BIND_WORKSPACE,
+];
 static EXEC_BASH_TASK_NAME_SEQ: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Debug)]
+struct PreparedSessionToolEnv {
+    tool_dir: PathBuf,
+    agent_tool_path: PathBuf,
+}
 
 #[derive(Clone, Debug)]
 struct ExecBashPolicy {
@@ -120,6 +142,37 @@ impl ExecBashTool {
             task_mgr,
         })
     }
+
+    async fn prepare_session_tool_env(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<PreparedSessionToolEnv>, AgentToolError> {
+        let Some(agent_tool_path) = resolve_agent_tool_path() else {
+            return Ok(None);
+        };
+
+        let tool_dir = self
+            .cfg
+            .agent_env_root
+            .join("sessions")
+            .join(session_id)
+            .join(EXEC_BASH_SESSION_TOOL_DIR);
+        let tool_names = self.resolve_session_cli_tool_names(session_id).await;
+        sync_session_tool_links(&tool_dir, &agent_tool_path, &tool_names)?;
+
+        Ok(Some(PreparedSessionToolEnv {
+            tool_dir,
+            agent_tool_path,
+        }))
+    }
+
+    async fn resolve_session_cli_tool_names(&self, session_id: &str) -> Vec<String> {
+        let Some(session) = self.session_store.get_session(session_id).await else {
+            return default_agent_cli_tool_names();
+        };
+        let guard = session.lock().await;
+        filter_session_cli_tool_names(&guard.loaded_tools)
+    }
 }
 
 #[async_trait]
@@ -179,8 +232,14 @@ impl AgentTool for ExecBashTool {
             )));
         }
 
+        let session_tool_env = self.prepare_session_tool_env(&session_id).await?;
         let env_vars = parse_exec_env_args(&args, self.policy.allow_env)?;
-        let env_vars = build_exec_env_vars(ctx, &self.cfg.agent_env_root, &env_vars);
+        let env_vars = build_exec_env_vars(
+            ctx,
+            &self.cfg.agent_env_root,
+            &env_vars,
+            session_tool_env.as_ref(),
+        );
         let run_result = self
             .run_command_lines(ctx, &session_id, &command, &pwd, timeout_ms, &env_vars)
             .await?;
@@ -1195,13 +1254,14 @@ fn build_exec_env_vars(
     ctx: &SessionRuntimeContext,
     agent_env_root: &Path,
     user_env: &[(String, String)],
+    session_tool_env: Option<&PreparedSessionToolEnv>,
 ) -> Vec<(String, String)> {
     let mut merged = BTreeMap::<String, String>::new();
     for (key, value) in user_env {
         merged.insert(key.clone(), value.clone());
     }
 
-    if let Some(tool_dir) = resolve_agent_tool_bin_dir() {
+    if let Some(tool_env) = session_tool_env {
         let base_path = merged
             .get("PATH")
             .cloned()
@@ -1209,11 +1269,24 @@ fn build_exec_env_vars(
             .unwrap_or_default();
         merged.insert(
             "PATH".to_string(),
-            prepend_path_entry(tool_dir.to_string_lossy().as_ref(), &base_path),
+            prepend_path_entry(tool_env.tool_dir.to_string_lossy().as_ref(), &base_path),
         );
         merged.insert(
             "OPENDAN_AGENT_BIN".to_string(),
-            tool_dir.to_string_lossy().to_string(),
+            tool_env
+                .agent_tool_path
+                .parent()
+                .unwrap_or_else(|| Path::new(""))
+                .to_string_lossy()
+                .to_string(),
+        );
+        merged.insert(
+            "OPENDAN_AGENT_TOOL".to_string(),
+            tool_env.agent_tool_path.to_string_lossy().to_string(),
+        );
+        merged.insert(
+            "OPENDAN_SESSION_TOOL_PATH".to_string(),
+            tool_env.tool_dir.to_string_lossy().to_string(),
         );
     }
 
@@ -1236,10 +1309,29 @@ fn build_exec_env_vars(
     merged.into_iter().collect()
 }
 
-fn resolve_agent_tool_bin_dir() -> Option<PathBuf> {
-    std::env::current_exe()
+fn resolve_agent_tool_path() -> Option<PathBuf> {
+    if let Some(root) = std::env::var_os("BUCKYOS_ROOT") {
+        let candidate = PathBuf::from(root)
+            .join("bin")
+            .join("opendan")
+            .join(EXEC_BASH_AGENT_TOOL_BIN);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    let current_dir = std::env::current_exe()
         .ok()
-        .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))
+        .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))?;
+    let preferred = current_dir.join(EXEC_BASH_AGENT_TOOL_BIN);
+    if preferred.exists() {
+        return Some(preferred);
+    }
+    let legacy = current_dir.join("agent-tools");
+    if legacy.exists() {
+        return Some(legacy);
+    }
+    None
 }
 
 fn prepend_path_entry(entry: &str, base_path: &str) -> String {
@@ -1277,6 +1369,126 @@ fn sanitize_token_for_id(raw: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+fn default_agent_cli_tool_names() -> Vec<String> {
+    EXEC_BASH_AGENT_CLI_TOOL_NAMES
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect()
+}
+
+fn filter_session_cli_tool_names(raw_names: &[String]) -> Vec<String> {
+    if raw_names.is_empty() {
+        return default_agent_cli_tool_names();
+    }
+
+    let mut filtered = Vec::new();
+    let mut seen = HashSet::<String>::new();
+    for raw_name in raw_names {
+        let tool_name = raw_name.trim();
+        if tool_name.is_empty() {
+            continue;
+        }
+        if EXEC_BASH_AGENT_CLI_TOOL_NAMES.contains(&tool_name)
+            && seen.insert(tool_name.to_string())
+        {
+            filtered.push(tool_name.to_string());
+        }
+    }
+    filtered
+}
+
+fn sync_session_tool_links(
+    tool_dir: &Path,
+    agent_tool_path: &Path,
+    tool_names: &[String],
+) -> Result<(), AgentToolError> {
+    #[cfg(not(unix))]
+    {
+        let _ = (tool_dir, agent_tool_path, tool_names);
+        return Err(AgentToolError::ExecFailed(
+            "session-scoped tool links require unix symlink support".to_string(),
+        ));
+    }
+
+    #[cfg(unix)]
+    {
+        std_fs::create_dir_all(tool_dir).map_err(|err| {
+            AgentToolError::ExecFailed(format!(
+                "create session tool dir `{}` failed: {err}",
+                tool_dir.display()
+            ))
+        })?;
+
+        let desired = tool_names
+            .iter()
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect::<HashSet<_>>();
+
+        for entry in std_fs::read_dir(tool_dir).map_err(|err| {
+            AgentToolError::ExecFailed(format!(
+                "read session tool dir `{}` failed: {err}",
+                tool_dir.display()
+            ))
+        })? {
+            let entry = entry.map_err(|err| {
+                AgentToolError::ExecFailed(format!(
+                    "read session tool dir entry `{}` failed: {err}",
+                    tool_dir.display()
+                ))
+            })?;
+            let entry_name = entry.file_name().to_string_lossy().to_string();
+            if desired.contains(entry_name.as_str()) {
+                continue;
+            }
+            remove_fs_entry(entry.path().as_path())?;
+        }
+
+        for tool_name in tool_names {
+            let tool_name = tool_name.trim();
+            if tool_name.is_empty() {
+                continue;
+            }
+            let link_path = tool_dir.join(tool_name);
+            let needs_refresh = match std_fs::read_link(&link_path) {
+                Ok(target) => target != agent_tool_path,
+                Err(_) => true,
+            };
+            if !needs_refresh {
+                continue;
+            }
+            if link_path.exists() || std_fs::symlink_metadata(&link_path).is_ok() {
+                remove_fs_entry(link_path.as_path())?;
+            }
+            unix_fs::symlink(agent_tool_path, &link_path).map_err(|err| {
+                AgentToolError::ExecFailed(format!(
+                    "link session tool `{}` -> `{}` failed: {err}",
+                    link_path.display(),
+                    agent_tool_path.display()
+                ))
+            })?;
+        }
+
+        Ok(())
+    }
+}
+
+fn remove_fs_entry(path: &Path) -> Result<(), AgentToolError> {
+    let metadata = std_fs::symlink_metadata(path).map_err(|err| {
+        AgentToolError::ExecFailed(format!("stat `{}` failed: {err}", path.display()))
+    })?;
+    if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+        std_fs::remove_dir_all(path).map_err(|err| {
+            AgentToolError::ExecFailed(format!("remove dir `{}` failed: {err}", path.display()))
+        })?;
+    } else {
+        std_fs::remove_file(path).map_err(|err| {
+            AgentToolError::ExecFailed(format!("remove file `{}` failed: {err}", path.display()))
+        })?;
+    }
+    Ok(())
 }
 
 fn build_tmux_session_name(session_id: &str) -> String {
@@ -1329,6 +1541,20 @@ fn build_tmux_exec_script(
             shell_single_quote(value.as_str())
         ));
     }
+    lines.push("  if [ -n \"${OPENDAN_AGENT_TOOL:-}\" ]; then".to_string());
+    lines.push("    command_not_found_handle() {".to_string());
+    lines.push("      local __od_tool=\"${OPENDAN_AGENT_TOOL:-}\"".to_string());
+    lines.push(format!(
+        "      \"$__od_tool\" {} \"$@\"",
+        shell_single_quote(EXEC_BASH_COMMAND_NOT_FOUND_PROXY)
+    ));
+    lines.push("      local __od_ec=$?".to_string());
+    lines.push("      if [ \"$__od_ec\" -eq 127 ]; then".to_string());
+    lines.push("        printf 'bash: %s: command not found\\n' \"$1\" >&2".to_string());
+    lines.push("      fi".to_string());
+    lines.push("      return \"$__od_ec\"".to_string());
+    lines.push("    }".to_string());
+    lines.push("  fi".to_string());
     lines.push(command.to_string());
     lines.push("} > >(tee \"$__od_stdout\") 2> >(tee \"$__od_stderr\" >&2)".to_string());
     lines.push("__od_ec=$?".to_string());
@@ -2053,4 +2279,69 @@ fn now_unix_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use tempfile::tempdir;
+
+    #[test]
+    fn filter_session_cli_tool_names_defaults_to_all_supported_tools() {
+        assert_eq!(
+            filter_session_cli_tool_names(&[]),
+            default_agent_cli_tool_names()
+        );
+    }
+
+    #[test]
+    fn sync_session_tool_links_rewrites_visible_tool_set() {
+        let temp = tempdir().expect("create tempdir");
+        let tool_dir = temp.path().join("session").join(".tool");
+        let agent_tool_path = temp.path().join("agent_tool");
+        std_fs::create_dir_all(&tool_dir).expect("create tool dir");
+        std_fs::write(&agent_tool_path, "#!/bin/sh\n").expect("seed agent_tool");
+
+        sync_session_tool_links(
+            &tool_dir,
+            &agent_tool_path,
+            &[TOOL_READ_FILE.to_string(), TOOL_WRITE_FILE.to_string()],
+        )
+        .expect("seed tool links");
+
+        assert_eq!(
+            std_fs::read_link(tool_dir.join(TOOL_READ_FILE)).expect("read read_file link"),
+            agent_tool_path
+        );
+        assert_eq!(
+            std_fs::read_link(tool_dir.join(TOOL_WRITE_FILE)).expect("read write_file link"),
+            agent_tool_path
+        );
+
+        sync_session_tool_links(&tool_dir, &agent_tool_path, &[TOOL_GET_SESSION.to_string()])
+            .expect("rewrite tool links");
+
+        assert!(tool_dir.join(TOOL_GET_SESSION).exists());
+        assert!(!tool_dir.join(TOOL_READ_FILE).exists());
+        assert!(!tool_dir.join(TOOL_WRITE_FILE).exists());
+    }
+
+    #[test]
+    fn build_tmux_exec_script_installs_command_not_found_proxy() {
+        let script = build_tmux_exec_script(
+            "run-1",
+            Path::new("/tmp/stdout"),
+            Path::new("/tmp/stderr"),
+            Path::new("/tmp"),
+            "read_file demo.txt",
+            &[(
+                "OPENDAN_AGENT_TOOL".to_string(),
+                "/opt/buckyos/bin/opendan/agent_tool".to_string(),
+            )],
+        );
+
+        assert!(script.contains("command_not_found_handle"));
+        assert!(script.contains(EXEC_BASH_COMMAND_NOT_FOUND_PROXY));
+    }
 }

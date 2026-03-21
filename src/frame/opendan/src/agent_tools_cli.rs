@@ -34,6 +34,9 @@ const TOOL_NAMES: [&str; 7] = [
 const EXIT_SUCCESS: i32 = 0;
 const EXIT_ERROR: i32 = 1;
 const EXIT_USAGE: i32 = 2;
+const EXIT_COMMAND_NOT_FOUND: i32 = 127;
+const COMMAND_NOT_FOUND_PROXY: &str = "__command_not_found__";
+const MAIN_BINARY_NAME: &str = "agent_tool";
 const DEFAULT_AGENT_NAME: &str = "did:opendan:cli";
 const DEFAULT_TRACE_ID: &str = "cli-trace";
 const DEFAULT_SESSION_ID: &str = "cli-session";
@@ -90,6 +93,7 @@ impl CliRuntimeEnv {
 pub struct CliRunOutput {
     pub exit_code: i32,
     pub stdout: String,
+    pub stderr: String,
 }
 
 #[derive(Clone, Debug)]
@@ -100,6 +104,10 @@ enum ContentInput {
 
 #[derive(Clone, Debug)]
 enum ParsedCommand {
+    CommandNotFound {
+        command: Option<String>,
+        argv: Vec<String>,
+    },
     Help {
         tool_name: Option<String>,
     },
@@ -172,6 +180,11 @@ async fn execute(
 ) -> Result<CliRunOutput, AgentToolError> {
     let parsed = parse_command(&args, &env.current_dir)?;
     match parsed {
+        ParsedCommand::CommandNotFound { command, argv } => Ok(CliRunOutput {
+            exit_code: EXIT_COMMAND_NOT_FOUND,
+            stdout: String::new(),
+            stderr: render_command_not_found_log(command.as_deref(), &argv),
+        }),
         ParsedCommand::Help { tool_name } => Ok(render_output(
             build_help_envelope(&env, tool_name.as_deref()).await,
             EXIT_SUCCESS,
@@ -262,7 +275,7 @@ fn parse_command(args: &[OsString], current_dir: &Path) -> Result<ParsedCommand,
         .first()
         .and_then(|value| Path::new(value).file_name())
         .and_then(|value| value.to_str())
-        .unwrap_or("agent-tools");
+        .unwrap_or(MAIN_BINARY_NAME);
     let rest = args
         .iter()
         .skip(1)
@@ -271,6 +284,22 @@ fn parse_command(args: &[OsString], current_dir: &Path) -> Result<ParsedCommand,
 
     if is_tool_name(argv0) {
         return parse_tool_command(argv0.to_string(), &rest, current_dir);
+    }
+
+    if rest.first().map(|value| value.as_str()) == Some(COMMAND_NOT_FOUND_PROXY) {
+        let Some(tool_name) = rest.get(1) else {
+            return Ok(ParsedCommand::CommandNotFound {
+                command: None,
+                argv: vec![],
+            });
+        };
+        if !is_tool_name(tool_name) {
+            return Ok(ParsedCommand::CommandNotFound {
+                command: Some(tool_name.clone()),
+                argv: rest[1..].to_vec(),
+            });
+        }
+        return parse_tool_command(tool_name.to_string(), &rest[2..], current_dir);
     }
 
     if rest.is_empty() || matches!(rest[0].as_str(), "--help" | "-h" | "help") {
@@ -832,7 +861,27 @@ fn render_output(payload: CliResultEnvelope, exit_code: i32) -> CliRunOutput {
         "{\"status\":\"error\",\"summary\":\"serialize cli result failed\",\"detail\":{}}"
             .to_string()
     });
-    CliRunOutput { exit_code, stdout }
+    CliRunOutput {
+        exit_code,
+        stdout,
+        stderr: String::new(),
+    }
+}
+
+fn render_command_not_found_log(command: Option<&str>, argv: &[String]) -> String {
+    let command = command.unwrap_or("").trim();
+    let argv_text = if argv.is_empty() {
+        String::new()
+    } else {
+        format!(" argv={}", argv.join(" "))
+    };
+    if command.is_empty() {
+        "agent_tool auto-implement placeholder: command_not_found with empty command".to_string()
+    } else {
+        format!(
+            "agent_tool auto-implement placeholder: missing command `{command}`{argv_text}"
+        )
+    }
 }
 
 fn with_tool_usage(message: impl Into<String>, tool_name: &str) -> AgentToolError {
@@ -858,12 +907,12 @@ fn static_tool_usage(tool_name: &str) -> &'static str {
         TOOL_TODO => "todo <command> [args...]",
         TOOL_CREATE_WORKSPACE => "create_workspace <name> <summary>",
         TOOL_BIND_WORKSPACE => "bind_workspace <workspace_id|workspace_path>",
-        _ => "agent-tools <tool> ...",
+        _ => "agent_tool <tool> ...",
     }
 }
 
 fn generic_usage() -> &'static str {
-    "agent-tools <read_file|write_file|edit_file|get_session|todo|create_workspace|bind_workspace> [args...]"
+    "agent_tool <read_file|write_file|edit_file|get_session|todo|create_workspace|bind_workspace> [args...]"
 }
 
 fn error_kind(err: &AgentToolError) -> &'static str {
@@ -1056,7 +1105,7 @@ mod tests {
 
         let write_output = execute(
             vec![
-                OsString::from("agent-tools"),
+                OsString::from(MAIN_BINARY_NAME),
                 OsString::from("write_file"),
                 OsString::from("notes.txt"),
                 OsString::from("--mode"),
@@ -1097,7 +1146,7 @@ mod tests {
         let temp = tempdir().expect("create tempdir");
         let root = temp.path().join("agent");
         let output = execute(
-            vec![OsString::from("agent-tools"), OsString::from("--help")],
+            vec![OsString::from(MAIN_BINARY_NAME), OsString::from("--help")],
             test_env(root.clone(), root),
             None,
         )
@@ -1149,6 +1198,29 @@ mod tests {
         let payload: Json = serde_json::from_str(&output.stdout).expect("parse json");
         assert_eq!(payload["status"], "success");
         assert_eq!(payload["detail"]["content"], "free\n");
+    }
+
+    #[tokio::test]
+    async fn command_not_found_proxy_returns_127_for_unknown_command() {
+        let temp = tempdir().expect("create tempdir");
+        let root = temp.path().join("agent");
+
+        let output = execute(
+            vec![
+                OsString::from(MAIN_BINARY_NAME),
+                OsString::from(COMMAND_NOT_FOUND_PROXY),
+                OsString::from("missing_tool"),
+            ],
+            test_env(root.clone(), root),
+            None,
+        )
+        .await
+        .expect("run command_not_found proxy");
+
+        assert_eq!(output.exit_code, EXIT_COMMAND_NOT_FOUND);
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.contains("auto-implement placeholder"));
+        assert!(output.stderr.contains("missing_tool"));
     }
 
     #[tokio::test]

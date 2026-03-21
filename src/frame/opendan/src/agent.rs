@@ -968,6 +968,15 @@ impl AIAgent {
                     //TODO 应该是session有一个通用函数，自动load当前behavior的skills
                     guard.loaded_skills = behavior_cfg.toolbox.load_skills.clone();
                 }
+                guard.loaded_tools = match behavior_cfg.toolbox.tools.mode {
+                    crate::behavior::config::BehaviorToolMode::All => vec![],
+                    crate::behavior::config::BehaviorToolMode::None => {
+                        vec!["__toolbox_none__".to_string()]
+                    }
+                    crate::behavior::config::BehaviorToolMode::AllowList => {
+                        behavior_cfg.toolbox.tools.names.clone()
+                    }
+                };
                 (session_id, current_step_index)
             };
 
