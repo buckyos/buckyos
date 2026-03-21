@@ -17,11 +17,13 @@ use tokio::io::{self, AsyncReadExt};
 use tokio::process::Command;
 
 use crate::{
-    cli_exit_code_for_error, render_cli_output, AgentTool, AgentToolError, AgentToolResult,
-    BindWorkspaceTool, CliPendingReason, CliResultEnvelope, CliRunOutput, CliStatus,
-    CreateWorkspaceTool, GetSessionTool, SessionRuntimeContext, SessionViewBackend, TodoTool,
-    TodoToolConfig, WorkspaceToolBackend, TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE,
-    TOOL_GET_SESSION,
+    cli_exit_code_for_error, normalize_abs_path, parse_read_file_bash_args,
+    render_cli_output, rewrite_read_file_path_with_shell_cwd, AgentTool, AgentToolError,
+    AgentToolResult, BindWorkspaceTool, CliPendingReason, CliResultEnvelope, CliRunOutput,
+    CliStatus, CreateWorkspaceTool, EditFileTool, FileToolConfig, GetSessionTool,
+    NoopFileWriteAudit, ReadFileTool, SessionRuntimeContext, SessionViewBackend, TodoTool,
+    TodoToolConfig, WorkspaceToolBackend, WriteFileTool, TOOL_BIND_WORKSPACE,
+    TOOL_CREATE_WORKSPACE, TOOL_GET_SESSION,
 };
 
 const TOOL_TODO: &str = "todo";
@@ -1094,163 +1096,37 @@ fn build_bind_workspace_tool(env: &CliRuntimeEnv) -> Result<BindWorkspaceTool, A
     })))
 }
 
+fn build_read_file_tool(env: &CliRuntimeEnv) -> ReadFileTool {
+    ReadFileTool::new(FileToolConfig::new(env.current_dir.clone()))
+}
+
+fn build_write_file_tool(env: &CliRuntimeEnv) -> WriteFileTool {
+    WriteFileTool::new(
+        FileToolConfig::new(env.current_dir.clone()),
+        Arc::new(NoopFileWriteAudit),
+    )
+}
+
+fn build_edit_file_tool(env: &CliRuntimeEnv) -> EditFileTool {
+    EditFileTool::new(
+        FileToolConfig::new(env.current_dir.clone()),
+        Arc::new(NoopFileWriteAudit),
+    )
+}
+
 async fn run_read_file(env: &CliRuntimeEnv, args: Json) -> Result<AgentToolResult, AgentToolError> {
-    let file_path = require_string_arg(&args, "path")?;
-    let abs_path = resolve_cli_path(env, &file_path);
-    let bytes = fs::read(&abs_path)
-        .await
-        .map_err(|err| AgentToolError::ExecFailed(format!("read file failed: {err}")))?;
-    let full_content = String::from_utf8_lossy(&bytes).to_string();
-    let first_chunk = optional_string_arg(&args, "first_chunk")?;
-    let (selected_content, matched) = if let Some(first_chunk) = first_chunk.as_deref() {
-        if let Some(pos) = full_content.find(first_chunk) {
-            (full_content[pos..].to_string(), true)
-        } else {
-            (String::new(), false)
-        }
-    } else {
-        (full_content.clone(), true)
-    };
-    let (content, line_range) = apply_line_range(&selected_content, args.get("range"))?;
-    Ok(AgentToolResult::from_details(json!({
-        "ok": true,
-        "path": file_path,
-        "abs_path": abs_path.to_string_lossy().to_string(),
-        "content": content,
-        "matched": matched,
-        "line_range": line_range,
-        "bytes": full_content.len(),
-        "truncated": false,
-        "pwd": env.current_dir.to_string_lossy().to_string(),
-    }))
-    .with_cmd_line(build_read_file_cmd_line(&file_path, args.get("range"), first_chunk.as_deref()))
-    .with_result(format!("read {} bytes", full_content.len()))
-    .with_stdout((!content.trim().is_empty()).then_some(content)))
+    build_read_file_tool(env).call(&env.call_ctx, args).await
 }
 
 async fn run_write_file(
     env: &CliRuntimeEnv,
     args: Json,
 ) -> Result<AgentToolResult, AgentToolError> {
-    let file_path = require_string_arg(&args, "path")?;
-    let content = require_raw_string_arg(&args, "content")?;
-    let mode = parse_write_mode(&args)?;
-    let abs_path = resolve_cli_path(env, &file_path);
-    let existed = fs::try_exists(&abs_path)
-        .await
-        .map_err(|err| AgentToolError::ExecFailed(format!("check file existence failed: {err}")))?;
-    if mode == "new" && existed {
-        return Err(AgentToolError::InvalidArgs(format!(
-            "file already exists: {}",
-            abs_path.display()
-        )));
-    }
-    let original = if existed {
-        String::from_utf8_lossy(
-            &fs::read(&abs_path)
-                .await
-                .map_err(|err| AgentToolError::ExecFailed(format!("read file failed: {err}")))?,
-        )
-        .to_string()
-    } else {
-        String::new()
-    };
-    let updated = match mode {
-        "append" => format!("{original}{content}"),
-        _ => content.clone(),
-    };
-    if let Some(parent) = abs_path.parent() {
-        fs::create_dir_all(parent).await.map_err(|err| {
-            AgentToolError::ExecFailed(format!("create parent dir failed: {err}"))
-        })?;
-    }
-    fs::write(&abs_path, updated.as_bytes())
-        .await
-        .map_err(|err| AgentToolError::ExecFailed(format!("write file failed: {err}")))?;
-    Ok(AgentToolResult::from_details(json!({
-        "ok": true,
-        "path": file_path,
-        "abs_path": abs_path.to_string_lossy().to_string(),
-        "created": !existed,
-        "changed": original != updated,
-        "bytes_before": original.len(),
-        "bytes_after": updated.len(),
-    }))
-    .with_cmd_line(format!("{TOOL_WRITE_FILE} {file_path} mode={mode}"))
-    .with_result(format!("{mode} {} -> {} bytes", original.len(), updated.len())))
+    build_write_file_tool(env).call(&env.call_ctx, args).await
 }
 
 async fn run_edit_file(env: &CliRuntimeEnv, args: Json) -> Result<AgentToolResult, AgentToolError> {
-    let file_path = require_string_arg(&args, "path")?;
-    let pos_chunk = require_string_arg(&args, "pos_chunk")?;
-    let new_content = require_raw_string_arg(&args, "new_content")?;
-    let mode = parse_edit_mode(&args)?;
-    let abs_path = resolve_cli_path(env, &file_path);
-    let existed = fs::try_exists(&abs_path)
-        .await
-        .map_err(|err| AgentToolError::ExecFailed(format!("check file existence failed: {err}")))?;
-    let original = if existed {
-        String::from_utf8_lossy(
-            &fs::read(&abs_path)
-                .await
-                .map_err(|err| AgentToolError::ExecFailed(format!("read file failed: {err}")))?,
-        )
-        .to_string()
-    } else {
-        String::new()
-    };
-    let (updated, matched) = if let Some(anchor_pos) = original.find(&pos_chunk) {
-        let updated = match mode {
-            "replace" => {
-                let mut out = original.clone();
-                let end = anchor_pos + pos_chunk.len();
-                out.replace_range(anchor_pos..end, &new_content);
-                out
-            }
-            "after" => {
-                let mut out = original.clone();
-                out.insert_str(anchor_pos + pos_chunk.len(), &new_content);
-                out
-            }
-            "before" => {
-                let mut out = original.clone();
-                out.insert_str(anchor_pos, &new_content);
-                out
-            }
-            _ => original.clone(),
-        };
-        (updated, true)
-    } else {
-        (original.clone(), false)
-    };
-    if let Some(parent) = abs_path.parent() {
-        fs::create_dir_all(parent).await.map_err(|err| {
-            AgentToolError::ExecFailed(format!("create parent dir failed: {err}"))
-        })?;
-    }
-    if updated != original {
-        fs::write(&abs_path, updated.as_bytes())
-            .await
-            .map_err(|err| AgentToolError::ExecFailed(format!("write file failed: {err}")))?;
-    }
-    Ok(AgentToolResult::from_details(json!({
-        "ok": true,
-        "path": file_path,
-        "abs_path": abs_path.to_string_lossy().to_string(),
-        "matched": matched,
-        "created": !existed && updated != original,
-        "changed": updated != original,
-        "bytes_before": original.len(),
-        "bytes_after": updated.len(),
-    }))
-    .with_cmd_line(format!("{TOOL_EDIT_FILE} {file_path} mode={mode}"))
-    .with_result(if updated != original {
-        format!("{mode} {} -> {} bytes", original.len(), updated.len())
-    } else if matched {
-        "no change".to_string()
-    } else {
-        "anchor not found, no change".to_string()
-    }))
+    build_edit_file_tool(env).call(&env.call_ctx, args).await
 }
 
 fn success_envelope(tool_name: &str, result: AgentToolResult) -> CliResultEnvelope {
@@ -1624,181 +1500,6 @@ fn workspace_root_for_record(state_root: &Path, record: &CliWorkspaceRecord) -> 
         .unwrap_or_else(|| state_root.join("workspaces").join(&record.workspace_id))
 }
 
-fn resolve_cli_path(env: &CliRuntimeEnv, raw_path: &str) -> PathBuf {
-    let path = Path::new(raw_path.trim());
-    if path.is_absolute() {
-        canonicalize_or_normalize(path.to_path_buf(), None)
-    } else {
-        canonicalize_or_normalize(env.current_dir.join(path), None)
-    }
-}
-
-fn require_string_arg(args: &Json, key: &str) -> Result<String, AgentToolError> {
-    let value = args
-        .get(key)
-        .and_then(Json::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| AgentToolError::InvalidArgs(format!("missing or invalid `{key}`")))?;
-    Ok(value.to_string())
-}
-
-fn require_raw_string_arg(args: &Json, key: &str) -> Result<String, AgentToolError> {
-    args.get(key)
-        .and_then(Json::as_str)
-        .map(|value| value.to_string())
-        .ok_or_else(|| AgentToolError::InvalidArgs(format!("missing or invalid `{key}`")))
-}
-
-fn optional_string_arg(args: &Json, key: &str) -> Result<Option<String>, AgentToolError> {
-    let Some(value) = args.get(key) else {
-        return Ok(None);
-    };
-    let value = value
-        .as_str()
-        .map(str::trim)
-        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be a string")))?;
-    if value.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(value.to_string()))
-}
-
-fn parse_write_mode(args: &Json) -> Result<&'static str, AgentToolError> {
-    match args
-        .get("mode")
-        .and_then(Json::as_str)
-        .unwrap_or("write")
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "new" | "create" => Ok("new"),
-        "append" => Ok("append"),
-        "" | "write" | "overwrite" => Ok("write"),
-        other => Err(AgentToolError::InvalidArgs(format!(
-            "invalid write mode `{other}`, expected new/append/write"
-        ))),
-    }
-}
-
-fn parse_edit_mode(args: &Json) -> Result<&'static str, AgentToolError> {
-    match args
-        .get("mode")
-        .and_then(Json::as_str)
-        .unwrap_or("replace")
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "" | "replace" => Ok("replace"),
-        "after" => Ok("after"),
-        "before" => Ok("before"),
-        other => Err(AgentToolError::InvalidArgs(format!(
-            "invalid edit mode `{other}`, expected replace/after/before"
-        ))),
-    }
-}
-
-fn apply_line_range(
-    content: &str,
-    range: Option<&Json>,
-) -> Result<(String, String), AgentToolError> {
-    let Some(range) = range else {
-        return Ok((content.to_string(), String::new()));
-    };
-    let spec = range
-        .as_str()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| AgentToolError::InvalidArgs("`range` must be a non-empty string".to_string()))?;
-    let lines = content.lines().collect::<Vec<_>>();
-    if lines.is_empty() {
-        return Ok((String::new(), String::new()));
-    }
-    let total = lines.len();
-    let (start, end) = parse_line_range_text(spec, total)?;
-    let start_idx = start.saturating_sub(1).min(total);
-    let end_idx = end.min(total);
-    let slice = if start_idx < end_idx {
-        lines[start_idx..end_idx].join("\n")
-    } else {
-        String::new()
-    };
-    Ok((slice, format!("{start}-{end}")))
-}
-
-fn parse_line_range_text(raw: &str, total: usize) -> Result<(usize, usize), AgentToolError> {
-    let text = raw.trim();
-    if text.is_empty() || text == "-" {
-        return Ok((1, total));
-    }
-    if text == "$" {
-        return Ok((total, total));
-    }
-    let split = text
-        .find([',', ':'])
-        .or_else(|| text[1..].find('-').map(|idx| idx + 1));
-    if let Some(idx) = split {
-        let start_text = text[..idx].trim_end_matches(['-', ',', ':']).trim();
-        let end_text = text[idx + 1..].trim();
-        let start = parse_line_marker(start_text, total, 1)?;
-        let end = if let Some(delta) = end_text.strip_prefix('+') {
-            let count = delta.parse::<usize>().map_err(|_| {
-                AgentToolError::InvalidArgs(format!("invalid range `{raw}`"))
-            })?;
-            start.saturating_add(count.saturating_sub(1)).min(total)
-        } else {
-            parse_line_marker(end_text, total, total)?
-        };
-        if start == 0 || end == 0 || start > end {
-            return Err(AgentToolError::InvalidArgs(format!("invalid range `{raw}`")));
-        }
-        return Ok((start, end));
-    }
-
-    if let Some(tail) = text.strip_prefix('-') {
-        let count = tail
-            .parse::<usize>()
-            .map_err(|_| AgentToolError::InvalidArgs(format!("invalid range `{raw}`")))?;
-        let start = total.saturating_sub(count.saturating_sub(1)).max(1);
-        return Ok((start, total));
-    }
-
-    let line = parse_line_marker(text, total, total)?;
-    Ok((line, line))
-}
-
-fn parse_line_marker(text: &str, total: usize, empty_default: usize) -> Result<usize, AgentToolError> {
-    let text = text.trim();
-    if text.is_empty() {
-        return Ok(empty_default);
-    }
-    if text == "$" {
-        return Ok(total);
-    }
-    let value = text
-        .parse::<usize>()
-        .map_err(|_| AgentToolError::InvalidArgs(format!("invalid line marker `{text}`")))?;
-    if value == 0 {
-        return Err(AgentToolError::InvalidArgs(
-            "line markers are 1-based".to_string(),
-        ));
-    }
-    Ok(value.min(total))
-}
-
-fn build_read_file_cmd_line(path: &str, range: Option<&Json>, first_chunk: Option<&str>) -> String {
-    let mut cmd = format!("{TOOL_READ_FILE} {path}");
-    if let Some(range) = range.and_then(Json::as_str).map(str::trim).filter(|v| !v.is_empty()) {
-        cmd.push_str(format!(" range={range}").as_str());
-    }
-    if let Some(first_chunk) = first_chunk {
-        cmd.push_str(format!(" first_chunk=\"{}\"", first_chunk.replace('"', "\\\"")).as_str());
-    }
-    cmd
-}
-
 async fn build_task_manager_client(
     _env: &CliRuntimeEnv,
 ) -> Result<TaskManagerClient, AgentToolError> {
@@ -2034,115 +1735,6 @@ fn canonicalize_or_normalize(path: PathBuf, base_dir: Option<&Path>) -> PathBuf 
         base_dir.map(|base| base.join(&path)).unwrap_or(path)
     };
     std::fs::canonicalize(&absolute).unwrap_or_else(|_| normalize_abs_path(&absolute))
-}
-
-fn parse_read_file_bash_args(tokens: &[String]) -> Result<Json, AgentToolError> {
-    let mut out = serde_json::Map::<String, Json>::new();
-    if tokens.is_empty() {
-        return Err(AgentToolError::InvalidArgs(
-            "missing required arg `path`".to_string(),
-        ));
-    }
-
-    let has_key_value = tokens.iter().any(|token| token.contains('='));
-    if has_key_value {
-        if tokens.iter().any(|token| !token.contains('=')) {
-            return Err(AgentToolError::InvalidArgs(
-                "read_file bash args cannot mix positional args with key=value args".to_string(),
-            ));
-        }
-        for token in tokens {
-            let (raw_key, raw_value) = token.split_once('=').ok_or_else(|| {
-                AgentToolError::InvalidArgs("invalid key=value token".to_string())
-            })?;
-            let key = raw_key.trim();
-            if key.is_empty() {
-                return Err(AgentToolError::InvalidArgs(
-                    "arg key cannot be empty".to_string(),
-                ));
-            }
-            if key != "path" && key != "range" && key != "first_chunk" {
-                return Err(AgentToolError::InvalidArgs(format!(
-                    "unsupported read_file arg `{key}`"
-                )));
-            }
-            out.insert(key.to_string(), Json::String(raw_value.trim().to_string()));
-        }
-    } else {
-        if tokens.len() > 3 {
-            return Err(AgentToolError::InvalidArgs(format!(
-                "too many positional args for tool `{}`: got {}, max 3",
-                TOOL_READ_FILE,
-                tokens.len()
-            )));
-        }
-        if let Some(path) = tokens.first() {
-            out.insert("path".to_string(), Json::String(path.trim().to_string()));
-        }
-        if let Some(range) = tokens.get(1) {
-            out.insert("range".to_string(), Json::String(range.trim().to_string()));
-        }
-        if let Some(first_chunk) = tokens.get(2) {
-            out.insert(
-                "first_chunk".to_string(),
-                Json::String(first_chunk.trim().to_string()),
-            );
-        }
-    }
-
-    if out
-        .get("path")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .is_none()
-    {
-        return Err(AgentToolError::InvalidArgs(
-            "missing required arg `path`".to_string(),
-        ));
-    }
-
-    Ok(Json::Object(out))
-}
-
-fn rewrite_read_file_path_with_shell_cwd(args: &mut Json, shell_cwd: &Path) {
-    let Some(map) = args.as_object_mut() else {
-        return;
-    };
-    let Some(raw_path) = map.get("path").and_then(|value| value.as_str()) else {
-        return;
-    };
-
-    let trimmed = raw_path.trim();
-    if trimmed.is_empty() {
-        return;
-    }
-    let parsed = Path::new(trimmed);
-    if parsed.is_absolute() {
-        return;
-    }
-
-    let joined = shell_cwd.join(parsed);
-    map.insert(
-        "path".to_string(),
-        Json::String(joined.to_string_lossy().to_string()),
-    );
-}
-
-fn normalize_abs_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
-            std::path::Component::RootDir => normalized.push(component.as_os_str()),
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                let _ = normalized.pop();
-            }
-            std::path::Component::Normal(seg) => normalized.push(seg),
-        }
-    }
-    normalized
 }
 
 #[cfg(test)]
