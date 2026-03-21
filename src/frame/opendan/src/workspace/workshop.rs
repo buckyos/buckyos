@@ -17,19 +17,19 @@ use super::local_workspace::{
 };
 use crate::agent_bash::ExecBashTool as BuiltinExecBashTool;
 use crate::agent_session::AgentSessionMgr;
+use crate::agent_tool::{normalize_root_path, u64_to_usize_arg};
 use crate::agent_tool::{
     read_string_from_map, read_u64_from_map, AgentToolError, AgentToolManager,
     BindWorkspaceTool as SharedBindWorkspaceTool, CreateWorkspaceTool as SharedCreateWorkspaceTool,
     EditFileTool as SharedEditFileTool, FileToolConfig, MCPToolConfig, ManagedWorkspaceToolBackend,
-    ReadFileTool as SharedReadFileTool, SessionWorkspaceBindingView, WorkspaceRecordView,
-    TodoTool, TodoToolConfig, WorkspaceRuntimeBackend, WriteFileTool as SharedWriteFileTool,
+    ReadFileTool as SharedReadFileTool, SessionWorkspaceBindingView, TodoTool, TodoToolConfig,
+    WorkspaceRecordView, WorkspaceRuntimeBackend, WriteFileTool as SharedWriteFileTool,
     TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE, TOOL_EXEC_BASH, TOOL_READ_FILE,
     TOOL_TODO_MANAGE, TOOL_WORKLOG_MANAGE, TOOL_WRITE_FILE,
 };
 use crate::buildin_tool::WorkshopWriteAudit as BuiltinWorkshopWriteAudit;
-use crate::agent_tool::{normalize_root_path, u64_to_usize_arg};
-use ::agent_tool::resolve_path_under_root as resolve_path_in_agent_env;
 use crate::worklog::WorklogToolConfig;
+use ::agent_tool::resolve_path_under_root as resolve_path_in_agent_env;
 
 const DEFAULT_BASH_PATH: &str = "/bin/bash";
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
@@ -459,13 +459,7 @@ impl WorkspaceRuntimeBackend for OpenDanWorkspaceRuntime {
             })
             .await?;
 
-        Ok(WorkspaceRecordView {
-            workspace_id: workspace.workspace_id.clone(),
-            name: workspace.name.clone(),
-            payload: serde_json::to_value(&workspace).map_err(|err| {
-                AgentToolError::ExecFailed(format!("serialize workspace record failed: {err}"))
-            })?,
-        })
+        workspace.to_view()
     }
 
     async fn get_workspace_path(&self, workspace_id: &str) -> Result<PathBuf, AgentToolError> {
@@ -479,18 +473,9 @@ impl WorkspaceRuntimeBackend for OpenDanWorkspaceRuntime {
         session_id: &str,
         workspace_id: &str,
     ) -> Result<SessionWorkspaceBindingView, AgentToolError> {
-        let binding = self
-            .local_workspace_mgr
+        self.local_workspace_mgr
             .bind_local_workspace(session_id, workspace_id)
-            .await?;
-        Ok(SessionWorkspaceBindingView {
-            session_id: binding.session_id,
-            local_workspace_id: binding.local_workspace_id,
-            workspace_path: binding.workspace_path,
-            workspace_rel_path: binding.workspace_rel_path,
-            agent_env_root: binding.agent_env_root,
-            bound_at_ms: binding.bound_at_ms,
-        })
+            .await
     }
 
     async fn list_workspaces(&self) -> Result<Vec<WorkspaceRecordView>, AgentToolError> {
@@ -498,17 +483,7 @@ impl WorkspaceRuntimeBackend for OpenDanWorkspaceRuntime {
             .list_workspaces()
             .await
             .into_iter()
-            .map(|item| {
-                Ok(WorkspaceRecordView {
-                    workspace_id: item.workspace_id.clone(),
-                    name: item.name.clone(),
-                    payload: serde_json::to_value(&item).map_err(|err| {
-                        AgentToolError::ExecFailed(format!(
-                            "serialize workspace record failed: {err}"
-                        ))
-                    })?,
-                })
-            })
+            .map(|item| item.to_view())
             .collect()
     }
 
@@ -536,18 +511,9 @@ impl WorkspaceRuntimeBackend for OpenDanWorkspaceRuntime {
         &self,
         session_id: &str,
     ) -> Result<Option<SessionWorkspaceBindingView>, AgentToolError> {
-        Ok(self
-            .local_workspace_mgr
+        self.local_workspace_mgr
             .get_bound_local_workspace(session_id)
-            .await?
-            .map(|binding| SessionWorkspaceBindingView {
-                session_id: binding.session_id,
-                local_workspace_id: binding.local_workspace_id,
-                workspace_path: binding.workspace_path,
-                workspace_rel_path: binding.workspace_rel_path,
-                agent_env_root: binding.agent_env_root,
-                bound_at_ms: binding.bound_at_ms,
-            }))
+            .await
     }
 
     async fn persist_session_workspace_binding(
@@ -562,14 +528,7 @@ impl WorkspaceRuntimeBackend for OpenDanWorkspaceRuntime {
             session_id,
             workspace_id,
             workspace_name,
-            &SessionWorkspaceBinding {
-                session_id: binding.session_id.clone(),
-                local_workspace_id: binding.local_workspace_id.clone(),
-                workspace_path: binding.workspace_path.clone(),
-                workspace_rel_path: binding.workspace_rel_path.clone(),
-                agent_env_root: binding.agent_env_root.clone(),
-                bound_at_ms: binding.bound_at_ms,
-            },
+            binding,
         )
         .await
     }

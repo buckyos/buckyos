@@ -186,8 +186,7 @@ async fn test() -> std::result::Result<(), String> {
             |e| {
                 println!(
                     "Failed to generate session token: for admin + {} {}",
-                    app_id,
-                    e
+                    app_id, e
                 );
                 return e.to_string();
             },
@@ -206,13 +205,19 @@ async fn test() -> std::result::Result<(), String> {
         .call("sys_config_get", json!({"key": "system/rbac/policy"}))
         .await;
     if result.is_ok() {
-        println!("test GET system/rbac/policy via admin + {} should failed", app_id);
+        println!(
+            "test GET system/rbac/policy via admin + {} should failed",
+            app_id
+        );
         return Err(format!(
             "test GET system/rbac/policy via admin + {} should failed",
             app_id
         ));
     }
-    println!("<== test GET system/rbac/policy via admin + {}, pass", app_id);
+    println!(
+        "<== test GET system/rbac/policy via admin + {}, pass",
+        app_id
+    );
 
     println!(
         "==> test SET system/test_rbac/set via admin + {}, should failed",
@@ -225,13 +230,19 @@ async fn test() -> std::result::Result<(), String> {
         )
         .await;
     if result.is_ok() {
-        println!("test SET system/test_rbac/set via admin + {} should failed", app_id);
+        println!(
+            "test SET system/test_rbac/set via admin + {} should failed",
+            app_id
+        );
         return Err(format!(
             "test SET system/test_rbac/set via admin + {} should failed",
             app_id
         ));
     }
-    println!("<== test SET system/test_rbac/set via admin + {}, pass", app_id);
+    println!(
+        "<== test SET system/test_rbac/set via admin + {}, pass",
+        app_id
+    );
 
     println!(
         "==> test SET users/devtest/apps/{}/settings via admin + {}, should success",

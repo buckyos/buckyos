@@ -173,7 +173,8 @@ pub struct BuckyOSRuntime {
     last_update_service_info_time: RwLock<u64>,
     named_store_mgr: OnceCell<NamedStoreMgr>,
     system_config_client: OnceCell<Arc<SystemConfigClient>>,
-    background_task_status: Arc<RwLock<HashMap<RuntimeBackgroundTaskKind, RuntimeBackgroundTaskStatus>>>,
+    background_task_status:
+        Arc<RwLock<HashMap<RuntimeBackgroundTaskKind, RuntimeBackgroundTaskStatus>>>,
 
     pub force_https: bool,
     pub buckyos_root_dir: PathBuf,
@@ -897,11 +898,7 @@ impl BuckyOSRuntime {
         })?;
         let node_did = device_config.id.clone();
         let node_id = device_config.name.clone();
-        let instance_id = format!(
-            "{}-{}",
-            self.app_id,
-            device_config.name
-        );
+        let instance_id = format!("{}-{}", self.app_id, device_config.name);
         let main_port = *self.main_service_port.read().await;
         let mut service_ports = HashMap::new();
         if main_port > 0 {
@@ -1647,9 +1644,10 @@ impl BuckyOSRuntime {
             if now < exp.saturating_sub(10) {
                 return session_token_str;
             } else {
-                if let (Some(device_private_key), Some(device_config)) =
-                    (self.device_private_key.as_ref(), self.device_config.as_ref())
-                {
+                if let (Some(device_private_key), Some(device_config)) = (
+                    self.device_private_key.as_ref(),
+                    self.device_config.as_ref(),
+                ) {
                     let device_uid = device_config.name.clone();
                     let jwt_result = RPCSessionToken::generate_jwt_token(
                         device_uid.as_str(),
@@ -1718,9 +1716,7 @@ impl BuckyOSRuntime {
 
     pub fn get_local_cache_folder(&self) -> Result<PathBuf> {
         match self.runtime_type {
-            BuckyOSRuntimeType::AppClient => {
-                Err(self.unsupported_error("get_local_cache_folder"))
-            }
+            BuckyOSRuntimeType::AppClient => Err(self.unsupported_error("get_local_cache_folder")),
             BuckyOSRuntimeType::AppService => Ok(self
                 .buckyos_root_dir
                 .join("tmp")
@@ -1732,7 +1728,9 @@ impl BuckyOSRuntime {
                 .join(self.app_id.clone())),
             BuckyOSRuntimeType::FrameService
             | BuckyOSRuntimeType::KernelService
-            | BuckyOSRuntimeType::Kernel => Ok(self.buckyos_root_dir.join("tmp").join(self.app_id.clone())),
+            | BuckyOSRuntimeType::Kernel => {
+                Ok(self.buckyos_root_dir.join("tmp").join(self.app_id.clone()))
+            }
         }
     }
 
@@ -1768,18 +1766,19 @@ impl BuckyOSRuntime {
         match self.runtime_type {
             BuckyOSRuntimeType::AppClient => Err(self.unsupported_error("get_my_settings_path")),
             BuckyOSRuntimeType::AppService => Ok(format!(
-                    "users/{}/apps/{}/settings",
-                    self.user_id.as_ref().ok_or_else(|| {
-                        RPCErrors::ReasonError(
-                            "AppService get_my_settings_path requires resolved user_id"
-                                .to_string(),
-                        )
-                    })?,
-                    self.app_id.as_str()
-                )),
+                "users/{}/apps/{}/settings",
+                self.user_id.as_ref().ok_or_else(|| {
+                    RPCErrors::ReasonError(
+                        "AppService get_my_settings_path requires resolved user_id".to_string(),
+                    )
+                })?,
+                self.app_id.as_str()
+            )),
             BuckyOSRuntimeType::FrameService
             | BuckyOSRuntimeType::KernelService
-            | BuckyOSRuntimeType::Kernel => Ok(format!("services/{}/settings", self.app_id.as_str())),
+            | BuckyOSRuntimeType::Kernel => {
+                Ok(format!("services/{}/settings", self.app_id.as_str()))
+            }
         }
     }
 

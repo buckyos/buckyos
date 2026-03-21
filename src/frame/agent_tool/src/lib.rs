@@ -33,17 +33,19 @@ pub use json_args::{
 pub use memory::{AgentMemory, AgentMemoryConfig, MemoryRankItem};
 pub use path_utils::{
     normalize_abs_path, normalize_root_path, resolve_path_from_root, resolve_path_under_root,
-    to_abs_path,
+    sanitize_session_id_for_path, session_record_path, to_abs_path, MAX_SESSION_ID_LEN,
 };
 pub use runtime_utils::now_ms;
 pub use todo::{
-    get_next_ready_todo_code, get_next_ready_todo_text, get_session_todo_text_by_ref, TodoTool,
-    TodoToolConfig,
+    get_next_ready_todo_code, get_next_ready_todo_text, get_session_todo_text_by_ref,
+    TodoAdminListItem, TodoAdminListOptions, TodoAdminListResult, TodoTool, TodoToolConfig,
 };
 pub use workspace::{
     ExternalWorkspaceBinding, ExternalWorkspaceRuntimeBackend, ExternalWorkspaceServiceConfig,
-    ManagedExternalWorkspaceBackend, ManagedWorkspaceToolBackend, SessionWorkspaceBindingView,
-    WorkspaceRecordView, WorkspaceRuntimeBackend,
+    LocalWorkspaceLock, LocalWorkspaceSessionBinding, ManagedExternalWorkspaceBackend,
+    ManagedWorkspaceRecord, ManagedWorkspaceToolBackend, SessionWorkspaceBindingView,
+    WorkspaceErrorSummary, WorkspaceOwner, WorkspaceRecordView, WorkspaceRuntimeBackend,
+    WorkspaceStatus, WorkspaceType,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -2088,7 +2090,10 @@ mod tests {
 
     #[test]
     fn normalize_tool_name_only_trims_whitespace() {
-        assert_eq!(normalize_tool_name(" workshop.exec_bash "), "workshop.exec_bash");
+        assert_eq!(
+            normalize_tool_name(" workshop.exec_bash "),
+            "workshop.exec_bash"
+        );
         assert_eq!(normalize_tool_name("todo_manage"), "todo_manage");
         assert_eq!(normalize_tool_name(""), "");
     }

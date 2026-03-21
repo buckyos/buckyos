@@ -277,14 +277,15 @@ async fn get_system_config_client() -> Result<SystemConfigClient> {
 }
 
 async fn report_service_instance_info() -> Result<()> {
-    let service_config = VERIFY_SERVICE_CONFIG
-        .lock()
-        .await
-        .as_ref()
-        .cloned()
-        .ok_or(RPCErrors::ReasonError(
-            "verify_hub service config not loaded".to_string(),
-        ))?;
+    let service_config =
+        VERIFY_SERVICE_CONFIG
+            .lock()
+            .await
+            .as_ref()
+            .cloned()
+            .ok_or(RPCErrors::ReasonError(
+                "verify_hub service config not loaded".to_string(),
+            ))?;
 
     let mut service_ports = HashMap::new();
     service_ports.insert("www".to_string(), VERIFY_HUB_SERVICE_MAIN_PORT);
@@ -921,7 +922,9 @@ async fn load_service_config() -> Result<()> {
     cache_trustkey("verify-hub", verify_hub_pub_key).await;
     info!("verify_hub public key loaded from system config service OK!");
 
-    let device_info = control_panel_client.get_device_info(device_id.as_str()).await?;
+    let device_info = control_panel_client
+        .get_device_info(device_id.as_str())
+        .await?;
     let new_service_config = VerifyServiceConfig {
         zone_config: zone_config,
         device_id: device_id,

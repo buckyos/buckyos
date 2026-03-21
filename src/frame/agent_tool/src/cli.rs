@@ -18,12 +18,12 @@ use tokio::process::Command;
 
 use crate::{
     cli_exit_code_for_error, normalize_abs_path, parse_read_file_bash_args, render_cli_output,
-    rewrite_read_file_path_with_shell_cwd, AgentTool, AgentToolError, AgentToolResult,
-    BindWorkspaceTool, CliPendingReason, CliResultEnvelope, CliRunOutput, CliStatus,
-    CreateWorkspaceTool, EditFileTool, FileToolConfig, GetSessionTool, NoopFileWriteAudit,
-    ReadFileTool, SessionRuntimeContext, SessionViewBackend, TodoTool, TodoToolConfig,
-    WorkspaceToolBackend, WriteFileTool, TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE,
-    TOOL_GET_SESSION,
+    rewrite_read_file_path_with_shell_cwd, session_record_path, AgentTool, AgentToolError,
+    AgentToolResult, BindWorkspaceTool, CliPendingReason, CliResultEnvelope, CliRunOutput,
+    CliStatus, CreateWorkspaceTool, EditFileTool, FileToolConfig, GetSessionTool,
+    NoopFileWriteAudit, ReadFileTool, SessionRuntimeContext, SessionViewBackend, TodoTool,
+    TodoToolConfig, WorkspaceToolBackend, WriteFileTool, TOOL_BIND_WORKSPACE,
+    TOOL_CREATE_WORKSPACE, TOOL_GET_SESSION,
 };
 
 const TOOL_TODO: &str = "todo";
@@ -1261,15 +1261,16 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-fn session_file_path(state_root: &Path, session_id: &str) -> PathBuf {
-    state_root
-        .join("sessions")
-        .join(session_id)
-        .join(SESSION_RECORD_FILE)
+fn session_file_path(state_root: &Path, session_id: &str) -> Result<PathBuf, AgentToolError> {
+    session_record_path(
+        &state_root.join("sessions"),
+        session_id,
+        SESSION_RECORD_FILE,
+    )
 }
 
 async fn load_session_json(state_root: &Path, session_id: &str) -> Result<Json, AgentToolError> {
-    let path = session_file_path(state_root, session_id);
+    let path = session_file_path(state_root, session_id)?;
     let raw = fs::read_to_string(&path).await.map_err(|err| {
         AgentToolError::ExecFailed(format!(
             "read session file `{}` failed: {err}",
@@ -1289,7 +1290,7 @@ async fn save_session_json(
     session_id: &str,
     session: &Json,
 ) -> Result<(), AgentToolError> {
-    let path = session_file_path(state_root, session_id);
+    let path = session_file_path(state_root, session_id)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await.map_err(|err| {
             AgentToolError::ExecFailed(format!(

@@ -238,14 +238,7 @@ impl AgentTool for ExecBashTool {
             Some(&session_tool_env),
         );
         let run_result = self
-            .run_command_lines(
-                ctx,
-                &session_id,
-                &command,
-                &pwd,
-                timeout_ms,
-                &env_vars,
-            )
+            .run_command_lines(ctx, &session_id, &command, &pwd, timeout_ms, &env_vars)
             .await?;
         match run_result {
             ExecBashRunOutcome::Completed(run_result) => {

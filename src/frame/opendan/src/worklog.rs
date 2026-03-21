@@ -159,13 +159,23 @@ impl WorklogService {
         &self,
         options: WorklogListOptions,
     ) -> Result<Vec<WorklogRecord>, AgentToolError> {
+        Ok(self.list_worklog_page(options).await?.records)
+    }
+
+    pub async fn list_worklog_page(
+        &self,
+        options: WorklogListOptions,
+    ) -> Result<WorklogListPage, AgentToolError> {
         let filters = options.into_filters(self.cfg.default_list_limit, self.cfg.max_list_limit);
         let listed = self
             .run_db("worklog list records", move |conn| {
                 list_records(conn, &filters)
             })
             .await?;
-        Ok(listed.records)
+        Ok(WorklogListPage {
+            records: listed.records,
+            total: listed.total,
+        })
     }
 
     pub async fn append_record_for_session(
@@ -570,6 +580,8 @@ pub fn render_worklog_prompt_line_from_parts(
     let status = if status.is_empty() { "UNKNOWN" } else { status };
 
     let payload_text = compact_json_text(payload);
+    // Keep summary fallback for transient session-side records that have not been
+    // normalized into a structured prompt_view yet, especially StepSummary items.
     let digest = prompt_digest
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -994,6 +1006,12 @@ impl WorklogListOptions {
             offset: self.offset,
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct WorklogListPage {
+    pub records: Vec<WorklogRecord>,
+    pub total: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -2450,6 +2468,22 @@ mod tests {
         assert!(text.contains("received message from Alice"));
         assert!(text.contains("Step completed: homepage style updated"));
         assert!(text.contains("Reply: \"done\""));
+    }
+
+    #[test]
+    fn render_worklog_prompt_line_keeps_summary_fallback_for_transient_records() {
+        let line = render_worklog_prompt_line_from_parts(
+            "StepSummary",
+            "OK",
+            None,
+            Some("step summary: checked files"),
+            &json!({
+                "did_digest": "checked files",
+                "next_behavior": "WAIT_FOR_MSG"
+            }),
+        );
+
+        assert_eq!(line, "StepSummary status=OK step summary: checked files");
     }
 
     #[tokio::test]

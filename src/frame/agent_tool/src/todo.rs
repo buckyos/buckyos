@@ -133,6 +133,47 @@ impl TodoTool {
         .await
         .map_err(|err| AgentToolError::ExecFailed(format!("{op_name} join error: {err}")))?
     }
+
+    pub async fn list_admin_items(
+        &self,
+        options: TodoAdminListOptions,
+    ) -> Result<TodoAdminListResult, AgentToolError> {
+        let filters = TodoListFilters::from_status_names(&options.statuses)?;
+        let limit = options
+            .limit
+            .unwrap_or(self.cfg.default_list_limit)
+            .clamp(1, self.cfg.max_list_limit);
+        let offset = options.offset;
+        let owner_session_id = options
+            .owner_session_id
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+
+        let filters_for_list = filters.clone();
+        let owner_session_for_list = owner_session_id.clone();
+        let rows = self
+            .run_db("todo admin list", move |conn| {
+                list_todo_items_across_workspaces(
+                    conn,
+                    owner_session_for_list.as_deref(),
+                    &filters_for_list,
+                    limit,
+                    offset,
+                )
+            })
+            .await?;
+
+        let total = self
+            .run_db("todo admin count", move |conn| {
+                count_todo_items_across_workspaces(conn, owner_session_id.as_deref(), &filters)
+            })
+            .await?;
+
+        Ok(TodoAdminListResult {
+            items: rows.into_iter().map(TodoAdminListItem::from).collect(),
+            total,
+        })
+    }
 }
 
 #[path = "agent_todo_tool.rs"]
@@ -321,6 +362,20 @@ impl ActorCtx {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct TodoAdminListOptions {
+    pub owner_session_id: Option<String>,
+    pub statuses: Vec<String>,
+    pub limit: Option<usize>,
+    pub offset: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct TodoAdminListResult {
+    pub items: Vec<TodoAdminListItem>,
+    pub total: u64,
+}
+
 #[derive(Clone, Debug)]
 struct TodoListFilters {
     statuses: Vec<TodoStatus>,
@@ -407,6 +462,21 @@ impl TodoListFilters {
             query,
             sort_by,
             asc,
+        })
+    }
+
+    fn from_status_names(statuses: &[String]) -> Result<Self, AgentToolError> {
+        Ok(Self {
+            statuses: statuses
+                .iter()
+                .map(|status| TodoStatus::parse(status))
+                .collect::<Result<Vec<_>, _>>()?,
+            todo_type: None,
+            assignee: None,
+            label: None,
+            query: None,
+            sort_by: None,
+            asc: false,
         })
     }
 }
@@ -766,6 +836,43 @@ struct TodoListItem {
     updated_at: u64,
     created_by: ActorRefOut,
     order_pos: Option<i64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TodoAdminListItem {
+    pub workspace_id: String,
+    pub session_id: Option<String>,
+    pub todo_id: String,
+    pub todo_code: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub status: String,
+    pub priority: Option<i64>,
+    pub labels: Vec<String>,
+    pub skills: Vec<String>,
+    pub assignee: Option<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+impl From<TodoListItem> for TodoAdminListItem {
+    fn from(value: TodoListItem) -> Self {
+        Self {
+            workspace_id: value.workspace_id,
+            session_id: value.session_id,
+            todo_id: value.id,
+            todo_code: value.todo_code,
+            title: value.title,
+            description: value.description,
+            status: value.status,
+            priority: value.priority,
+            labels: value.labels,
+            skills: value.skills,
+            assignee: value.assignee,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1863,6 +1970,117 @@ fn list_todo_items(
     Ok(out)
 }
 
+fn count_todo_items_across_workspaces(
+    conn: &Connection,
+    owner_session_id: Option<&str>,
+    filters: &TodoListFilters,
+) -> Result<u64, AgentToolError> {
+    let mut sql = String::from("SELECT COUNT(1) FROM todo_items i WHERE 1=1");
+    let mut params_vec = Vec::<SqlValue>::new();
+
+    if let Some(session_id) = owner_session_id.filter(|value| !value.trim().is_empty()) {
+        sql.push_str(" AND i.session_id = ?");
+        params_vec.push(SqlValue::Text(session_id.to_string()));
+    }
+
+    if !filters.statuses.is_empty() {
+        sql.push_str(" AND i.status IN (");
+        for idx in 0..filters.statuses.len() {
+            if idx > 0 {
+                sql.push(',');
+            }
+            sql.push('?');
+            params_vec.push(SqlValue::Text(filters.statuses[idx].as_str().to_string()));
+        }
+        sql.push(')');
+    }
+
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|err| AgentToolError::ExecFailed(format!("prepare todo count failed: {err}")))?;
+    let total = stmt
+        .query_row(params_from_iter(params_vec), |row| row.get::<_, i64>(0))
+        .map_err(|err| AgentToolError::ExecFailed(format!("query todo count failed: {err}")))?;
+    Ok(total.max(0) as u64)
+}
+
+fn list_todo_items_across_workspaces(
+    conn: &Connection,
+    owner_session_id: Option<&str>,
+    filters: &TodoListFilters,
+    limit: usize,
+    offset: usize,
+) -> Result<Vec<TodoListItem>, AgentToolError> {
+    let mut sql = String::from(
+        "SELECT
+            i.id,
+            i.todo_code,
+            i.workspace_id,
+            i.session_id,
+            i.title,
+            i.description,
+            i.type,
+            i.status,
+            i.labels_json,
+            i.skills_json,
+            i.assignee_did,
+            i.priority,
+            i.estimate_json,
+            i.attempts,
+            i.last_error_json,
+            i.created_at,
+            i.updated_at,
+            i.created_by_kind,
+            i.created_by_did,
+            o.pos
+         FROM todo_items i
+         LEFT JOIN todo_order o
+           ON o.workspace_id = i.workspace_id AND o.todo_id = i.id
+         WHERE 1=1",
+    );
+
+    let mut params_vec = Vec::<SqlValue>::new();
+
+    if let Some(session_id) = owner_session_id.filter(|value| !value.trim().is_empty()) {
+        sql.push_str(" AND i.session_id = ?");
+        params_vec.push(SqlValue::Text(session_id.to_string()));
+    }
+
+    if !filters.statuses.is_empty() {
+        sql.push_str(" AND i.status IN (");
+        for idx in 0..filters.statuses.len() {
+            if idx > 0 {
+                sql.push(',');
+            }
+            sql.push('?');
+            params_vec.push(SqlValue::Text(filters.statuses[idx].as_str().to_string()));
+        }
+        sql.push(')');
+    }
+
+    sql.push_str(" ORDER BY i.updated_at DESC, i.created_at DESC, o.pos ASC");
+    sql.push_str(" LIMIT ? OFFSET ?");
+    params_vec.push(SqlValue::Integer(usize_to_i64(limit, "limit")?));
+    params_vec.push(SqlValue::Integer(usize_to_i64(offset, "offset")?));
+
+    let mut stmt = conn.prepare(&sql).map_err(|err| {
+        AgentToolError::ExecFailed(format!("prepare admin todo list failed: {err}"))
+    })?;
+    let rows = stmt
+        .query_map(params_from_iter(params_vec), map_todo_list_row)
+        .map_err(|err| {
+            AgentToolError::ExecFailed(format!("query admin todo list failed: {err}"))
+        })?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|err| {
+            AgentToolError::ExecFailed(format!("decode admin todo list row failed: {err}"))
+        })?);
+    }
+    Ok(out)
+}
+
 fn get_todo_detail(
     conn: &Connection,
     workspace_id: &str,
@@ -2761,6 +2979,7 @@ fn usize_to_i64(v: usize, field: &str) -> Result<i64, AgentToolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn build_todo_status_eventid_sanitizes_segments() {
@@ -2950,5 +3169,107 @@ mod tests {
             .expect("third todo");
         assert_eq!(third.item.todo_code, "T002");
         assert_eq!(third.dep_codes, vec!["T001".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn list_admin_items_aggregates_across_workspaces() {
+        let dir = tempdir().expect("temp dir");
+        let db_path = dir.path().join("todo.db");
+        let tool = TodoTool::new(TodoToolConfig::with_db_path(db_path.clone())).expect("tool");
+        let conn = Connection::open(&db_path).expect("open db");
+
+        conn.execute(
+            "INSERT INTO todo_items(
+                id, workspace_id, session_id, todo_code, title, type, status,
+                assignee_did, created_at, updated_at, created_by_kind, created_by_did
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            rusqlite::params![
+                "todo-a",
+                "ws-alpha",
+                "sess-admin",
+                "T001",
+                "alpha task",
+                "Task",
+                "WAIT",
+                "did:od:alice",
+                1000_i64,
+                2000_i64,
+                "root_agent",
+                "did:od:jarvis"
+            ],
+        )
+        .expect("insert todo-a");
+        conn.execute(
+            "INSERT INTO todo_items(
+                id, workspace_id, session_id, todo_code, title, type, status,
+                assignee_did, created_at, updated_at, created_by_kind, created_by_did
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            rusqlite::params![
+                "todo-b",
+                "ws-beta",
+                "sess-admin",
+                "T002",
+                "beta task",
+                "Task",
+                "DONE",
+                "did:od:bob",
+                3000_i64,
+                4000_i64,
+                "root_agent",
+                "did:od:jarvis"
+            ],
+        )
+        .expect("insert todo-b");
+        conn.execute(
+            "INSERT INTO todo_items(
+                id, workspace_id, session_id, todo_code, title, type, status,
+                assignee_did, created_at, updated_at, created_by_kind, created_by_did
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            rusqlite::params![
+                "todo-c",
+                "ws-gamma",
+                "sess-other",
+                "T003",
+                "other session task",
+                "Task",
+                "WAIT",
+                "did:od:charlie",
+                5000_i64,
+                6000_i64,
+                "root_agent",
+                "did:od:jarvis"
+            ],
+        )
+        .expect("insert todo-c");
+        drop(conn);
+
+        let listed = tool
+            .list_admin_items(TodoAdminListOptions {
+                owner_session_id: Some("sess-admin".to_string()),
+                statuses: vec!["WAIT".to_string(), "DONE".to_string()],
+                limit: Some(10),
+                offset: 0,
+            })
+            .await
+            .expect("list admin items");
+        assert_eq!(listed.total, 2);
+        assert_eq!(listed.items.len(), 2);
+        assert_eq!(listed.items[0].workspace_id, "ws-beta");
+        assert_eq!(listed.items[0].status, "DONE");
+        assert_eq!(listed.items[1].workspace_id, "ws-alpha");
+        assert_eq!(listed.items[1].status, "WAIT");
+
+        let waiting_only = tool
+            .list_admin_items(TodoAdminListOptions {
+                owner_session_id: Some("sess-admin".to_string()),
+                statuses: vec!["WAIT".to_string()],
+                limit: Some(10),
+                offset: 0,
+            })
+            .await
+            .expect("list waiting items");
+        assert_eq!(waiting_only.total, 1);
+        assert_eq!(waiting_only.items[0].workspace_id, "ws-alpha");
+        assert_eq!(waiting_only.items[0].todo_code, "T001");
     }
 }

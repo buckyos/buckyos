@@ -10,7 +10,14 @@ use tokio::fs;
 use tokio::sync::Mutex;
 
 use super::agent_skill::{self, AgentSkillRecord, AgentSkillSpec};
-use crate::agent_tool::{normalize_root_path, now_ms, AgentToolError};
+use crate::agent_tool::{
+    normalize_root_path, now_ms, AgentToolError, ManagedWorkspaceRecord,
+    SessionWorkspaceBindingView,
+};
+pub use crate::agent_tool::{
+    LocalWorkspaceLock, LocalWorkspaceSessionBinding, WorkspaceErrorSummary, WorkspaceOwner,
+    WorkspaceStatus, WorkspaceType,
+};
 use crate::worklog::{WorklogRecord, WorklogService, WorklogToolConfig};
 
 const DEFAULT_LOCK_TTL_MS: u64 = 120_000;
@@ -37,89 +44,7 @@ impl LocalWorkspaceManagerConfig {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkspaceType {
-    Local,
-    Remote,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkspaceOwner {
-    AgentCreated,
-    UserProvided,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkspaceStatus {
-    Ready,
-    Syncing,
-    Archived,
-    Error,
-    Conflict,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkspaceErrorSummary {
-    pub code: String,
-    pub summary: String,
-    pub timestamp_ms: u64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct LocalWorkspaceLock {
-    pub session_id: String,
-    pub acquired_at_ms: u64,
-    pub lease_expires_at_ms: u64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct LocalWorkspaceSessionBinding {
-    pub session_id: String,
-    pub bound_at_ms: u64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct WorkshopWorkspaceRecord {
-    pub workspace_id: String,
-    pub workspace_type: WorkspaceType,
-    pub owner: WorkspaceOwner,
-    pub name: String,
-    pub relative_path: Option<String>,
-    pub created_by_session: Option<String>,
-    pub policy_profile_id: Option<String>,
-    pub created_at_ms: u64,
-    pub updated_at_ms: u64,
-    pub last_sync_at_ms: Option<u64>,
-    pub status: WorkspaceStatus,
-    pub conflict_or_error: Option<WorkspaceErrorSummary>,
-    pub lock: Option<LocalWorkspaceLock>,
-    pub bound_sessions: Vec<LocalWorkspaceSessionBinding>,
-}
-
-impl Default for WorkshopWorkspaceRecord {
-    fn default() -> Self {
-        Self {
-            workspace_id: String::new(),
-            workspace_type: WorkspaceType::Local,
-            owner: WorkspaceOwner::AgentCreated,
-            name: String::new(),
-            relative_path: None,
-            created_by_session: None,
-            policy_profile_id: None,
-            created_at_ms: 0,
-            updated_at_ms: 0,
-            last_sync_at_ms: None,
-            status: WorkspaceStatus::Ready,
-            conflict_or_error: None,
-            lock: None,
-            bound_sessions: Vec::new(),
-        }
-    }
-}
+pub type WorkshopWorkspaceRecord = ManagedWorkspaceRecord;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -139,29 +64,7 @@ impl Default for WorkshopIndex {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct SessionWorkspaceBinding {
-    pub session_id: String,
-    pub local_workspace_id: String,
-    pub workspace_path: String,
-    pub workspace_rel_path: String,
-    pub agent_env_root: String,
-    pub bound_at_ms: u64,
-}
-
-impl Default for SessionWorkspaceBinding {
-    fn default() -> Self {
-        Self {
-            session_id: String::new(),
-            local_workspace_id: String::new(),
-            workspace_path: String::new(),
-            workspace_rel_path: String::new(),
-            agent_env_root: String::new(),
-            bound_at_ms: 0,
-        }
-    }
-}
+pub type SessionWorkspaceBinding = SessionWorkspaceBindingView;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]

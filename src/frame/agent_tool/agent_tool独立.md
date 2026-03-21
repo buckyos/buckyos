@@ -104,6 +104,8 @@ agent_loop本身在每个step后，都会判断是否做下面3个动作
 - session进入等待状态，等待目标事件的发生
 
 注意区分cmd_result和step_result. 
+注意区分append_cmd_result和渲染cmd_result是两回事。cmd_result是全量的，json格式的，但是渲染后通常是text格式的。
+渲染的逻辑由json格式定义，不用每个cmd的实现者自己决定怎么渲染
 
 
 

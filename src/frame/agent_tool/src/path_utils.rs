@@ -2,6 +2,8 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::AgentToolError;
 
+pub const MAX_SESSION_ID_LEN: usize = 180;
+
 pub fn normalize_abs_path(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
@@ -55,4 +57,43 @@ pub fn resolve_path_under_root(root: &Path, raw_path: &str) -> Result<PathBuf, A
         )));
     }
     Ok(normalized)
+}
+
+pub fn sanitize_session_id_for_path(session_id: &str) -> Result<String, AgentToolError> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return Err(AgentToolError::InvalidArgs(
+            "session_id cannot be empty".to_string(),
+        ));
+    }
+    if session_id.len() > MAX_SESSION_ID_LEN {
+        return Err(AgentToolError::InvalidArgs(format!(
+            "session_id too long (>{MAX_SESSION_ID_LEN})"
+        )));
+    }
+    if session_id == "." || session_id == ".." {
+        return Err(AgentToolError::InvalidArgs(
+            "session_id cannot be `.` or `..`".to_string(),
+        ));
+    }
+    if session_id.contains('/') || session_id.contains('\\') {
+        return Err(AgentToolError::InvalidArgs(
+            "session_id cannot contain path separators".to_string(),
+        ));
+    }
+    if session_id.chars().any(|ch| ch.is_control()) {
+        return Err(AgentToolError::InvalidArgs(
+            "session_id cannot contain control characters".to_string(),
+        ));
+    }
+    Ok(session_id.to_string())
+}
+
+pub fn session_record_path(
+    sessions_root: &Path,
+    session_id: &str,
+    file_name: &str,
+) -> Result<PathBuf, AgentToolError> {
+    let session_id = sanitize_session_id_for_path(session_id)?;
+    Ok(sessions_root.join(session_id).join(file_name))
 }

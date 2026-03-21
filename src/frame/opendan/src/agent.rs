@@ -3558,12 +3558,7 @@ async fn read_text_if_exists(path: &Path) -> Result<Option<String>> {
 }
 
 fn to_abs_path(path: &Path) -> Result<PathBuf> {
-    if path.is_absolute() {
-        return Ok(path.to_path_buf());
-    }
-    Ok(std::env::current_dir()
-        .context("read current_dir failed")?
-        .join(path))
+    ::agent_tool::to_abs_path(path).map_err(|err| anyhow!(err.to_string()))
 }
 
 async fn is_existing_dir(path: &Path) -> bool {

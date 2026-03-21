@@ -14,20 +14,22 @@ use buckyos_api::{
     OpenDanWorkspaceWorklogsResult,
 };
 use log::info;
-use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::{fs, task};
 
+use crate::agent_tool::{normalize_abs_path, now_ms};
 use crate::agent_tool::{
     optional_trimmed_string_arg as optional_string, require_trimmed_string_arg as require_string,
-    AgentTool, AgentToolError, AgentToolManager, AgentToolResult,
-    BindExternalWorkspaceTool as SharedBindExternalWorkspaceTool, ExternalWorkspaceRuntimeBackend,
-    ExternalWorkspaceServiceConfig, ListExternalWorkspacesTool as SharedListExternalWorkspacesTool,
-    ManagedExternalWorkspaceBackend, ToolSpec, TOOL_CREATE_SUB_AGENT,
+    sanitize_session_id_for_path, session_record_path, AgentTool, AgentToolError, AgentToolManager,
+    AgentToolResult, BindExternalWorkspaceTool as SharedBindExternalWorkspaceTool,
+    ExternalWorkspaceRuntimeBackend, ExternalWorkspaceServiceConfig,
+    ListExternalWorkspacesTool as SharedListExternalWorkspacesTool,
+    ManagedExternalWorkspaceBackend, TodoAdminListOptions, TodoTool, TodoToolConfig, ToolSpec,
+    TOOL_CREATE_SUB_AGENT,
 };
 use crate::behavior::SessionRuntimeContext;
-use crate::agent_tool::{normalize_abs_path, now_ms};
+use crate::worklog::{WorklogListOptions, WorklogService, WorklogToolConfig};
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
 const DEFAULT_SUB_AGENTS_DIR: &str = "sub-agents";
@@ -43,7 +45,6 @@ const DEFAULT_SUB_AGENT_ROLE: &str = "# Role\nYou are a specialized sub-agent.\n
 const DEFAULT_SUB_AGENT_SELF: &str = "# Self\n- Follow parent constraints\n- Keep output concise\n";
 const DEFAULT_KRPC_LIST_LIMIT: usize = 64;
 const MAX_KRPC_LIST_LIMIT: usize = 512;
-const MAX_SESSION_ID_LEN: usize = 180;
 const SESSION_STATUS_NORMAL: &str = "normal";
 const SESSION_STATUS_PAUSE: &str = "pause";
 const ACTIVE_WINDOW_MS: u64 = 120_000;
@@ -453,7 +454,8 @@ impl OpenDanRuntimeKrpcHandler {
         session_id: &str,
         status: &str,
     ) -> KRPCResult<OpenDanAgentSessionRecord> {
-        let session_id = sanitize_session_id_for_path(session_id)?;
+        let session_id =
+            sanitize_session_id_for_path(session_id).map_err(agent_tool_error_to_rpc)?;
         let session_id_for_update = session_id.clone();
         let status = status.to_string();
         let runtime_cfg = self.runtime.cfg.clone();
@@ -800,7 +802,8 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
         session_id: &str,
         _ctx: RPCContext,
     ) -> KRPCResult<OpenDanAgentSessionRecord> {
-        let session_id = sanitize_session_id_for_path(session_id)?;
+        let session_id =
+            sanitize_session_id_for_path(session_id).map_err(agent_tool_error_to_rpc)?;
         let session_id_for_search = session_id.clone();
         let runtime_cfg = self.runtime.cfg.clone();
         let agents = self
@@ -844,6 +847,10 @@ fn runtime_error_to_rpc(err: AiRuntimeError) -> RPCErrors {
     RPCErrors::ReasonError(err.to_string())
 }
 
+fn agent_tool_error_to_rpc(err: AgentToolError) -> RPCErrors {
+    RPCErrors::ReasonError(err.to_string())
+}
+
 fn normalize_limit(limit: Option<u32>) -> usize {
     let value = limit.map(|v| v as usize).unwrap_or(DEFAULT_KRPC_LIST_LIMIT);
     value.clamp(1, MAX_KRPC_LIST_LIMIT)
@@ -881,6 +888,67 @@ fn normalize_filter(value: &str) -> String {
         .to_lowercase()
         .replace([' ', '-'], "_")
         .to_string()
+}
+
+fn normalize_todo_domain_status(value: &str) -> KRPCResult<String> {
+    match normalize_filter(value).as_str() {
+        "wait" => Ok("WAIT".to_string()),
+        "in_progress" => Ok("IN_PROGRESS".to_string()),
+        "complete" => Ok("COMPLETE".to_string()),
+        "failed" => Ok("FAILED".to_string()),
+        "done" => Ok("DONE".to_string()),
+        "check_failed" => Ok("CHECK_FAILED".to_string()),
+        other => Err(RPCErrors::ReasonError(format!(
+            "unsupported todo status filter `{other}`"
+        ))),
+    }
+}
+
+fn map_workshop_todo_statuses(
+    status: Option<&str>,
+    include_closed: bool,
+) -> KRPCResult<Vec<String>> {
+    let mut statuses = match status.map(normalize_filter) {
+        Some(filter) if filter == "open" => vec![
+            "WAIT".to_string(),
+            "IN_PROGRESS".to_string(),
+            "COMPLETE".to_string(),
+            "FAILED".to_string(),
+            "CHECK_FAILED".to_string(),
+        ],
+        Some(filter) if filter == "done" => vec!["DONE".to_string()],
+        Some(filter) => vec![normalize_todo_domain_status(filter.as_str())?],
+        None if include_closed => Vec::new(),
+        None => vec![
+            "WAIT".to_string(),
+            "IN_PROGRESS".to_string(),
+            "COMPLETE".to_string(),
+            "FAILED".to_string(),
+            "CHECK_FAILED".to_string(),
+        ],
+    };
+
+    if !include_closed {
+        statuses.retain(|status| status != "DONE");
+    }
+
+    Ok(statuses)
+}
+
+fn parse_worklog_record_type(value: &str) -> KRPCResult<crate::worklog::WorklogRecordType> {
+    use crate::worklog::WorklogRecordType;
+
+    match normalize_filter(value).as_str() {
+        "getmessage" | "get_message" => Ok(WorklogRecordType::GetMessage),
+        "replymessage" | "reply_message" => Ok(WorklogRecordType::ReplyMessage),
+        "functionrecord" | "function_record" => Ok(WorklogRecordType::FunctionRecord),
+        "actionrecord" | "action_record" => Ok(WorklogRecordType::ActionRecord),
+        "createsubagent" | "create_sub_agent" => Ok(WorklogRecordType::CreateSubAgent),
+        "stepsummary" | "step_summary" => Ok(WorklogRecordType::StepSummary),
+        other => Err(RPCErrors::ReasonError(format!(
+            "unsupported worklog type filter `{other}`"
+        ))),
+    }
 }
 
 fn normalize_owner_session_id(value: &str) -> KRPCResult<String> {
@@ -938,26 +1006,6 @@ fn derive_agent_status(updated_at: Option<u64>) -> String {
     }
 }
 
-fn has_table(conn: &Connection, table_name: &str) -> KRPCResult<bool> {
-    let mut stmt = conn
-        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1 LIMIT 1")
-        .map_err(|error| {
-            RPCErrors::ReasonError(format!(
-                "prepare sqlite table check failed for `{table_name}`: {error}"
-            ))
-        })?;
-    let mut rows = stmt.query(params![table_name]).map_err(|error| {
-        RPCErrors::ReasonError(format!(
-            "query sqlite table check failed for `{table_name}`: {error}"
-        ))
-    })?;
-    rows.next().map(|row| row.is_some()).map_err(|error| {
-        RPCErrors::ReasonError(format!(
-            "read sqlite table check failed for `{table_name}`: {error}"
-        ))
-    })
-}
-
 fn query_workshop_todos_sync(
     db_path: &Path,
     agent_id: &str,
@@ -970,118 +1018,56 @@ fn query_workshop_todos_sync(
     if !db_path.exists() {
         return Ok((vec![], 0));
     }
-    let conn = Connection::open(db_path).map_err(|error| {
-        RPCErrors::ReasonError(format!(
-            "open todo db `{}` failed: {error}",
-            db_path.display()
-        ))
-    })?;
-    if !has_table(&conn, "todos")? {
-        return Ok((vec![], 0));
-    }
+    let tool = TodoTool::new(TodoToolConfig::with_db_path(db_path.to_path_buf()))
+        .map_err(agent_tool_error_to_rpc)?;
+    let statuses = map_workshop_todo_statuses(status, include_closed)?;
+    let listed = tokio::runtime::Handle::current()
+        .block_on(tool.list_admin_items(TodoAdminListOptions {
+            owner_session_id: owner_session_id.map(str::to_string),
+            statuses,
+            limit: Some(limit),
+            offset,
+        }))
+        .map_err(agent_tool_error_to_rpc)?;
 
-    let mut where_sql = String::from(" WHERE 1=1");
-    let mut where_params = Vec::<SqlValue>::new();
-
-    if let Some(status_filter) = status.map(normalize_filter) {
-        match status_filter.as_str() {
-            "open" => where_sql.push_str(" AND status NOT IN ('done','cancelled')"),
-            "done" => where_sql.push_str(" AND status IN ('done','cancelled')"),
-            raw => {
-                where_sql.push_str(" AND status = ?");
-                where_params.push(SqlValue::Text(raw.to_string()));
+    let items = listed
+        .items
+        .into_iter()
+        .map(|item| {
+            let status = if item.status == "DONE" {
+                "done".to_string()
+            } else {
+                "open".to_string()
+            };
+            OpenDanTodoItem {
+                todo_id: item.todo_id,
+                title: item.title,
+                status: status.clone(),
+                agent_id: Some(agent_id.to_string()),
+                description: item.description,
+                created_at: Some(item.created_at),
+                completed_at: if status == "done" {
+                    Some(item.updated_at)
+                } else {
+                    None
+                },
+                created_in_step_id: None,
+                completed_in_step_id: None,
+                extra: Some(json!({
+                    "raw_status": item.status,
+                    "priority": item.priority,
+                    "labels": item.labels,
+                    "skills": item.skills,
+                    "assignee": item.assignee,
+                    "workspace_id": item.workspace_id,
+                    "owner_session_id": item.session_id,
+                    "todo_code": item.todo_code,
+                })),
             }
-        }
-    }
-    if !include_closed {
-        where_sql.push_str(" AND status NOT IN ('done','cancelled')");
-    }
-    if let Some(v) = owner_session_id.map(str::trim).filter(|v| !v.is_empty()) {
-        where_sql.push_str(" AND owner_session_id = ?");
-        where_params.push(SqlValue::Text(v.to_string()));
-    }
-
-    let count_sql = format!("SELECT COUNT(1) FROM todos{}", where_sql);
-    let mut count_stmt = conn.prepare(&count_sql).map_err(|error| {
-        RPCErrors::ReasonError(format!("prepare todo count query failed: {error}"))
-    })?;
-    let total = count_stmt
-        .query_row(params_from_iter(where_params.clone()), |row| {
-            row.get::<_, i64>(0)
         })
-        .map_err(|error| RPCErrors::ReasonError(format!("query todo count failed: {error}")))?;
-    let total = total.max(0) as u64;
+        .collect::<Vec<_>>();
 
-    let mut list_sql = format!(
-        "SELECT id, title, description, status, priority, tags_json, task_id, task_status, created_at, updated_at
-        FROM todos{}",
-        where_sql
-    );
-    list_sql.push_str(" ORDER BY updated_at DESC, created_at DESC LIMIT ? OFFSET ?");
-
-    let mut list_params = where_params;
-    list_params.push(SqlValue::Integer(limit as i64));
-    list_params.push(SqlValue::Integer(offset as i64));
-
-    let mut stmt = conn.prepare(&list_sql).map_err(|error| {
-        RPCErrors::ReasonError(format!("prepare todo list query failed: {error}"))
-    })?;
-    let mut rows = stmt
-        .query(params_from_iter(list_params))
-        .map_err(|error| RPCErrors::ReasonError(format!("query todo list failed: {error}")))?;
-
-    let mut items = Vec::<OpenDanTodoItem>::new();
-    while let Some(row) = rows
-        .next()
-        .map_err(|error| RPCErrors::ReasonError(format!("read todo row failed: {error}")))?
-    {
-        let todo_id: String = row.get(0).unwrap_or_default();
-        let title: String = row.get(1).unwrap_or_default();
-        let description: String = row.get(2).unwrap_or_default();
-        let raw_status: String = row.get(3).unwrap_or_else(|_| "todo".to_string());
-        let priority: String = row.get(4).unwrap_or_else(|_| "normal".to_string());
-        let tags_json: String = row.get(5).unwrap_or_else(|_| "[]".to_string());
-        let tags = serde_json::from_str::<Json>(&tags_json).unwrap_or_else(|_| json!([]));
-        let task_id: Option<i64> = row.get(6).unwrap_or(None);
-        let task_status: Option<String> = row.get(7).unwrap_or(None);
-        let created_at = row.get::<_, i64>(8).unwrap_or(0).max(0) as u64;
-        let updated_at = row.get::<_, i64>(9).unwrap_or(0).max(0) as u64;
-
-        let status = if raw_status == "done" || raw_status == "cancelled" {
-            "done".to_string()
-        } else {
-            "open".to_string()
-        };
-
-        items.push(OpenDanTodoItem {
-            todo_id,
-            title,
-            status: status.clone(),
-            agent_id: Some(agent_id.to_string()),
-            description: if description.is_empty() {
-                None
-            } else {
-                Some(description)
-            },
-            created_at: Some(created_at),
-            completed_at: if status == "done" {
-                Some(updated_at)
-            } else {
-                None
-            },
-            created_in_step_id: None,
-            completed_in_step_id: None,
-            extra: Some(json!({
-                "raw_status": raw_status,
-                "priority": priority,
-                "tags": tags,
-                "task_id": task_id,
-                "task_status": task_status,
-            })),
-        });
-    }
-
-    Ok((items, total))
+    Ok((items, listed.total))
 }
 
 fn query_workshop_worklogs_sync(
@@ -1098,101 +1084,40 @@ fn query_workshop_worklogs_sync(
     if !db_path.exists() {
         return Ok((vec![], 0));
     }
-    let conn = Connection::open(db_path).map_err(|error| {
-        RPCErrors::ReasonError(format!(
-            "open worklog db `{}` failed: {error}",
-            db_path.display()
-        ))
-    })?;
-    if !has_table(&conn, "worklogs")? {
-        return Ok((vec![], 0));
-    }
+    let service = WorklogService::new(WorklogToolConfig::with_db_path(db_path.to_path_buf()))
+        .map_err(agent_tool_error_to_rpc)?;
+    let listed = tokio::runtime::Handle::current()
+        .block_on(service.list_worklog_page(WorklogListOptions {
+            owner_session_id: owner_session_id.map(str::to_string),
+            workspace_id: None,
+            step_id: step_id.map(str::to_string),
+            record_type: log_type.map(parse_worklog_record_type).transpose()?,
+            status: status.map(str::to_string),
+            impact_level: None,
+            tag: None,
+            keyword: keyword.map(str::to_string),
+            limit: Some(limit),
+            offset,
+        }))
+        .map_err(agent_tool_error_to_rpc)?;
 
-    let mut where_sql = String::from(" WHERE 1=1");
-    let mut where_params = Vec::<SqlValue>::new();
-
-    if let Some(v) = log_type.map(normalize_filter) {
-        where_sql.push_str(" AND log_type = ?");
-        where_params.push(SqlValue::Text(v));
-    }
-    if let Some(v) = status.map(normalize_filter) {
-        where_sql.push_str(" AND status = ?");
-        where_params.push(SqlValue::Text(v));
-    }
-    if let Some(v) = step_id.map(str::trim).filter(|v| !v.is_empty()) {
-        where_sql.push_str(" AND step_id = ?");
-        where_params.push(SqlValue::Text(v.to_string()));
-    }
-    if let Some(v) = keyword.map(str::trim).filter(|v| !v.is_empty()) {
-        let pattern = format!("%{v}%");
-        where_sql.push_str(" AND (summary LIKE ? OR payload_json LIKE ?)");
-        where_params.push(SqlValue::Text(pattern.clone()));
-        where_params.push(SqlValue::Text(pattern));
-    }
-    if let Some(v) = owner_session_id.map(str::trim).filter(|v| !v.is_empty()) {
-        where_sql.push_str(" AND owner_session_id = ?");
-        where_params.push(SqlValue::Text(v.to_string()));
-    }
-
-    let count_sql = format!("SELECT COUNT(1) FROM worklogs{}", where_sql);
-    let mut count_stmt = conn.prepare(&count_sql).map_err(|error| {
-        RPCErrors::ReasonError(format!("prepare worklog count query failed: {error}"))
-    })?;
-    let total = count_stmt
-        .query_row(params_from_iter(where_params.clone()), |row| {
-            row.get::<_, i64>(0)
+    let items = listed
+        .records
+        .into_iter()
+        .map(|record| OpenDanWorklogItem {
+            log_id: record.id,
+            log_type: record.record_type.as_str().to_string(),
+            status: record.status,
+            timestamp: record.timestamp,
+            agent_id: record.agent_did.or_else(|| Some(agent_id_hint.to_string())),
+            related_agent_id: record.subagent_did.or(record.related_agent_id),
+            step_id: record.step_id,
+            summary: record.summary,
+            payload: Some(record.payload),
         })
-        .map_err(|error| RPCErrors::ReasonError(format!("query worklog count failed: {error}")))?;
-    let total = total.max(0) as u64;
+        .collect::<Vec<_>>();
 
-    let mut list_sql = format!(
-        "SELECT log_id, log_type, status, timestamp, agent_id, related_agent_id, step_id, summary, payload_json
-        FROM worklogs{}",
-        where_sql
-    );
-    list_sql.push_str(" ORDER BY timestamp DESC, created_at DESC LIMIT ? OFFSET ?");
-
-    let mut list_params = where_params;
-    list_params.push(SqlValue::Integer(limit as i64));
-    list_params.push(SqlValue::Integer(offset as i64));
-
-    let mut stmt = conn.prepare(&list_sql).map_err(|error| {
-        RPCErrors::ReasonError(format!("prepare worklog list query failed: {error}"))
-    })?;
-    let mut rows = stmt
-        .query(params_from_iter(list_params))
-        .map_err(|error| RPCErrors::ReasonError(format!("query worklog list failed: {error}")))?;
-
-    let mut items = Vec::<OpenDanWorklogItem>::new();
-    while let Some(row) = rows
-        .next()
-        .map_err(|error| RPCErrors::ReasonError(format!("read worklog row failed: {error}")))?
-    {
-        let log_id: String = row.get(0).unwrap_or_default();
-        let row_log_type: String = row.get(1).unwrap_or_default();
-        let row_status: String = row.get(2).unwrap_or_else(|_| "info".to_string());
-        let timestamp = row.get::<_, i64>(3).unwrap_or(0).max(0) as u64;
-        let row_agent_id: Option<String> = row.get(4).unwrap_or(None);
-        let related_agent_id: Option<String> = row.get(5).unwrap_or(None);
-        let step_id: Option<String> = row.get(6).unwrap_or(None);
-        let summary: Option<String> = row.get(7).unwrap_or(None);
-        let payload_json: String = row.get(8).unwrap_or_else(|_| "{}".to_string());
-        let payload = serde_json::from_str::<Json>(&payload_json).ok();
-
-        items.push(OpenDanWorklogItem {
-            log_id,
-            log_type: row_log_type,
-            status: row_status,
-            timestamp,
-            agent_id: row_agent_id.or_else(|| Some(agent_id_hint.to_string())),
-            related_agent_id,
-            step_id,
-            summary,
-            payload,
-        });
-    }
-
-    Ok((items, total))
+    Ok((items, listed.total))
 }
 
 fn list_agent_session_ids_sync(
@@ -1235,7 +1160,13 @@ fn list_agent_session_ids_sync(
             continue;
         }
 
-        let session_file_path = entry.path().join(DEFAULT_AGENT_SESSION_FILE_NAME);
+        let Ok(session_file_path) = session_record_path(
+            sessions_dir,
+            raw_session_id.as_str(),
+            DEFAULT_AGENT_SESSION_FILE_NAME,
+        ) else {
+            continue;
+        };
         if !session_file_path.is_file() {
             continue;
         }
@@ -1285,9 +1216,9 @@ fn load_agent_session_record_for_agent_sync(
     if !sessions_dir.exists() {
         return Ok(None);
     }
-    let session_file = sessions_dir
-        .join(session_id)
-        .join(DEFAULT_AGENT_SESSION_FILE_NAME);
+    let session_file =
+        session_record_path(&sessions_dir, session_id, DEFAULT_AGENT_SESSION_FILE_NAME)
+            .map_err(agent_tool_error_to_rpc)?;
     if !session_file.is_file() {
         return Ok(None);
     }
@@ -1341,9 +1272,9 @@ fn update_agent_session_status_for_agent_sync(
     if !sessions_dir.exists() {
         return Ok(None);
     }
-    let session_file = sessions_dir
-        .join(session_id)
-        .join(DEFAULT_AGENT_SESSION_FILE_NAME);
+    let session_file =
+        session_record_path(&sessions_dir, session_id, DEFAULT_AGENT_SESSION_FILE_NAME)
+            .map_err(agent_tool_error_to_rpc)?;
     if !session_file.is_file() {
         return Ok(None);
     }
@@ -1396,36 +1327,6 @@ fn load_agent_session_record_sync(
         record.meta = json!({});
     }
     Ok(record)
-}
-
-fn sanitize_session_id_for_path(session_id: &str) -> KRPCResult<String> {
-    let session_id = session_id.trim();
-    if session_id.is_empty() {
-        return Err(RPCErrors::ReasonError(
-            "session_id cannot be empty".to_string(),
-        ));
-    }
-    if session_id.len() > MAX_SESSION_ID_LEN {
-        return Err(RPCErrors::ReasonError(format!(
-            "session_id too long (>{MAX_SESSION_ID_LEN})"
-        )));
-    }
-    if session_id == "." || session_id == ".." {
-        return Err(RPCErrors::ReasonError(
-            "session_id cannot be `.` or `..`".to_string(),
-        ));
-    }
-    if session_id.contains('/') || session_id.contains('\\') {
-        return Err(RPCErrors::ReasonError(
-            "session_id cannot contain path separators".to_string(),
-        ));
-    }
-    if session_id.chars().any(|ch| ch.is_control()) {
-        return Err(RPCErrors::ReasonError(
-            "session_id cannot contain control characters".to_string(),
-        ));
-    }
-    Ok(session_id.to_string())
 }
 
 #[derive(Clone)]
@@ -1549,14 +1450,19 @@ fn validate_simple_name(value: &str, field: &str) -> Result<(), AiRuntimeError> 
 }
 
 fn to_abs_path(path: &Path) -> Result<PathBuf, AiRuntimeError> {
-    if path.is_absolute() {
-        return Ok(path.to_path_buf());
-    }
-    let cwd = std::env::current_dir().map_err(|source| AiRuntimeError::Io {
-        path: ".".to_string(),
-        source,
-    })?;
-    Ok(cwd.join(path))
+    crate::agent_tool::to_abs_path(path).map_err(|err| match err {
+        AgentToolError::InvalidArgs(message) => AiRuntimeError::InvalidArgs(message),
+        AgentToolError::NotFound(message) => AiRuntimeError::InvalidArgs(message),
+        AgentToolError::AlreadyExists(message) => AiRuntimeError::AlreadyExists(message),
+        AgentToolError::ExecFailed(message) => AiRuntimeError::Io {
+            path: path.display().to_string(),
+            source: std::io::Error::other(message),
+        },
+        AgentToolError::Timeout => AiRuntimeError::Io {
+            path: path.display().to_string(),
+            source: std::io::Error::new(std::io::ErrorKind::TimedOut, "to_abs_path timed out"),
+        },
+    })
 }
 
 async fn create_minimal_agent_layout(

@@ -18,17 +18,17 @@
 - [x] 删除 msg center 旧 box/path 名兼容，位置在 [src/frame/opendan/src/agent.rs#L1383](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/agent.rs#L1383)。
 
 **P2 提取公共组件，消灭重复实现**
-- [ ] 把 `ai_runtime` 的 todo 查询从直写 SQL 改成调用 `agent_tool::todo` 领域层，起点在 [src/frame/opendan/src/ai_runtime.rs#L961](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/ai_runtime.rs#L961)。
-- [ ] 把 `ai_runtime` 的 worklog 查询从直写 SQL 改成调用 `opendan::worklog` 服务层，起点在 [src/frame/opendan/src/ai_runtime.rs#L1087](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/ai_runtime.rs#L1087)。
-- [ ] 合并 workspace 记录模型，收敛 [src/frame/opendan/src/workspace/local_workspace.rs#L87](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/workspace/local_workspace.rs#L87) 和 [src/frame/agent_tool/src/workspace.rs#L19](/Users/liuzhicong/project/buckyos/src/frame/agent_tool/src/workspace.rs#L19)。
-- [ ] 合并 session binding 模型，收敛 [src/frame/opendan/src/workspace/local_workspace.rs#L145](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/workspace/local_workspace.rs#L145) 和 [src/frame/agent_tool/src/workspace.rs#L27](/Users/liuzhicong/project/buckyos/src/frame/agent_tool/src/workspace.rs#L27)。
-- [ ] 合并 session id/path helper，优先收敛 [src/frame/opendan/src/agent_session.rs#L1417](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/agent_session.rs#L1417)、[src/frame/opendan/src/ai_runtime.rs#L1401](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/ai_runtime.rs#L1401)、[src/frame/opendan/src/agent.rs#L3564](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/agent.rs#L3564)、[src/frame/opendan/src/ai_runtime.rs#L1551](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/ai_runtime.rs#L1551)。
+- [x] 把 `ai_runtime` 的 todo 查询从直写 SQL 改成调用 `agent_tool::todo` 领域层，起点在 [src/frame/opendan/src/ai_runtime.rs#L961](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/ai_runtime.rs#L961)。
+- [x] 把 `ai_runtime` 的 worklog 查询从直写 SQL 改成调用 `opendan::worklog` 服务层，起点在 [src/frame/opendan/src/ai_runtime.rs#L1087](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/ai_runtime.rs#L1087)。
+- [x] 合并 workspace 记录模型，收敛 [src/frame/opendan/src/workspace/local_workspace.rs#L87](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/workspace/local_workspace.rs#L87) 和 [src/frame/agent_tool/src/workspace.rs#L19](/Users/liuzhicong/project/buckyos/src/frame/agent_tool/src/workspace.rs#L19)。
+- [x] 合并 session binding 模型，收敛 [src/frame/opendan/src/workspace/local_workspace.rs#L145](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/workspace/local_workspace.rs#L145) 和 [src/frame/agent_tool/src/workspace.rs#L27](/Users/liuzhicong/project/buckyos/src/frame/agent_tool/src/workspace.rs#L27)。
+- [x] 合并 session id/path helper，优先收敛 [src/frame/opendan/src/agent_session.rs#L1417](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/agent_session.rs#L1417)、[src/frame/opendan/src/ai_runtime.rs#L1401](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/ai_runtime.rs#L1401)、[src/frame/opendan/src/agent.rs#L3564](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/agent.rs#L3564)、[src/frame/opendan/src/ai_runtime.rs#L1551](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/ai_runtime.rs#L1551)。
 - [x] 删除 tool name normalization 的 provider 兼容语义，若确认外部不会再传 `module.tool`，处理点在 [src/frame/agent_tool/src/lib.rs#L277](/Users/liuzhicong/project/buckyos/src/frame/agent_tool/src/lib.rs#L277) 和 [src/frame/agent_tool/src/lib.rs#L1679](/Users/liuzhicong/project/buckyos/src/frame/agent_tool/src/lib.rs#L1679)。
 
 **P3 清理双轨渲染**
 - [x] 删除 DB worklog 的 legacy prompt line fallback，位置在 [src/frame/opendan/src/behavior/prompt.rs#L1359](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/behavior/prompt.rs#L1359)。
 - [x] 删除 runtime worklog 的 legacy line 渲染，位置在 [src/frame/opendan/src/behavior/prompt.rs#L1648](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/behavior/prompt.rs#L1648)。
-- [ ] 如果保留结构化渲染，检查 [src/frame/opendan/src/worklog.rs#L564](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/worklog.rs#L564) 是否仍需要对旧字段做兜底。
+- [x] 如果保留结构化渲染，检查 [src/frame/opendan/src/worklog.rs#L564](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/worklog.rs#L564) 是否仍需要对旧字段做兜底。
 
 **建议执行顺序**
 1. 先做 P0，风险最低，能快速减小代码量。

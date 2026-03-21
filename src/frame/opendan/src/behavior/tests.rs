@@ -82,8 +82,10 @@ impl AgentTool for EchoTool {
         args: Json,
     ) -> Result<AgentToolResult, crate::agent_tool::AgentToolError> {
         println!("[TEST][TOOL] echo called with args: {}", args);
-        Ok(AgentToolResult::from_details(json!({"tool": "echo", "ok": true, "args": args}))
-            .with_result("ok"))
+        Ok(
+            AgentToolResult::from_details(json!({"tool": "echo", "ok": true, "args": args}))
+                .with_result("ok"),
+        )
     }
 }
 

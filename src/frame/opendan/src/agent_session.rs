@@ -19,7 +19,7 @@ use tokio::sync::{Mutex, Notify, RwLock};
 
 pub use ::agent_tool::GetSessionTool;
 
-use crate::agent_tool::AgentToolError;
+use crate::agent_tool::{sanitize_session_id_for_path, session_record_path, AgentToolError};
 use crate::behavior::SessionRuntimeContext;
 use crate::worklog::{render_worklog_prompt_line, render_worklog_prompt_line_from_parts};
 use crate::workspace::LocalWorkspaceManager;
@@ -30,7 +30,6 @@ use crate::workspace_path::{
 const DEFAULT_SESSION_FILE: &str = "session.json";
 const DEFAULT_SESSION_SUMMARY_FILE: &str = "summary.md";
 const DEFAULT_MSG_RECORD_FILE: &str = "msg_record.jsonl";
-const MAX_SESSION_ID_LEN: usize = 180;
 const WORK_SESSION_PREFIX: &str = "work-";
 const DEFAULT_UI_BEHAVIOR: &str = "resolve_router";
 const DEFAULT_WORK_BEHAVIOR: &str = "plan";
@@ -1047,7 +1046,7 @@ impl AgentSessionMgr {
 
     pub async fn refresh_status_from_disk(&self, session_id: &str) -> Result<(), AgentToolError> {
         let session_id = sanitize_session_id(session_id)?;
-        let path = self.session_file_path(session_id.as_str());
+        let path = self.session_file_path(session_id.as_str())?;
         if !is_existing_file(&path).await {
             return Ok(());
         }
@@ -1270,10 +1269,8 @@ impl AgentSessionMgr {
             .await
     }
 
-    fn session_file_path(&self, session_id: &str) -> PathBuf {
-        self.sessions_root
-            .join(session_id)
-            .join(DEFAULT_SESSION_FILE)
+    fn session_file_path(&self, session_id: &str) -> Result<PathBuf, AgentToolError> {
+        session_record_path(&self.sessions_root, session_id, DEFAULT_SESSION_FILE)
     }
 
     async fn load_session_summary_from_file(
@@ -1415,33 +1412,7 @@ fn parse_runtime_meta(meta: &Json) -> SessionRuntimeState {
 }
 
 fn sanitize_session_id(input: &str) -> Result<String, AgentToolError> {
-    let session_id = input.trim();
-    if session_id.is_empty() {
-        return Err(AgentToolError::InvalidArgs(
-            "session_id cannot be empty".to_string(),
-        ));
-    }
-    if session_id.len() > MAX_SESSION_ID_LEN {
-        return Err(AgentToolError::InvalidArgs(format!(
-            "session_id too long (>{MAX_SESSION_ID_LEN})"
-        )));
-    }
-    if session_id == "." || session_id == ".." {
-        return Err(AgentToolError::InvalidArgs(
-            "session_id cannot be `.` or `..`".to_string(),
-        ));
-    }
-    if session_id.contains('/') || session_id.contains('\\') {
-        return Err(AgentToolError::InvalidArgs(
-            "session_id cannot contain path separators".to_string(),
-        ));
-    }
-    if session_id.chars().any(|ch| ch.is_control()) {
-        return Err(AgentToolError::InvalidArgs(
-            "session_id cannot contain control characters".to_string(),
-        ));
-    }
-    Ok(session_id.to_string())
+    sanitize_session_id_for_path(input)
 }
 
 fn normalize_optional_string(value: Option<String>) -> Option<String> {
