@@ -163,6 +163,7 @@ p, app, /config/users/*/agents/{app}/settings,read|write,allow
 p, app, /config/users/*/agents/{app}/spec,read,allow
 p, app, /config/users/*/agents/{app}/info,read|write,allow
 p, app, /config/services/*/info,read,allow
+p, app, /config/services/{app}/*,read|write,allow
 
 p, admin, /config/boot/*, read,allow
 p, admin,/config/system/rbac/policy,read,allow
