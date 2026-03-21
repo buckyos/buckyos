@@ -1,4 +1,4 @@
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use log::warn;
@@ -9,6 +9,10 @@ use crate::agent_tool::{
     tokenize_bash_command_line, AgentTool, AgentToolError, AgentToolResult, ToolSpec,
 };
 use crate::behavior::SessionRuntimeContext;
+use crate::runtime_utils::{
+    normalize_abs_path as shared_normalize_abs_path, optional_u64_arg, resolve_path_from_root,
+    u64_to_usize_arg,
+};
 use crate::worklog::{WorklogService, WorklogToolConfig};
 use crate::workspace::workshop::{AgentWorkshopConfig, WorkshopToolConfig};
 
@@ -699,13 +703,7 @@ fn optional_string(args: &Json, key: &str) -> Result<Option<String>, AgentToolEr
 }
 
 pub(crate) fn optional_u64(args: &Json, key: &str) -> Result<Option<u64>, AgentToolError> {
-    let Some(value) = args.get(key) else {
-        return Ok(None);
-    };
-    value
-        .as_u64()
-        .map(Some)
-        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be a positive integer")))
+    optional_u64_arg(args, key)
 }
 
 fn parse_edit_mode(args: &Json) -> Result<&'static str, AgentToolError> {
@@ -1114,35 +1112,11 @@ fn resolve_path_in_agent_env(
     agent_env_root: &Path,
     raw_path: &str,
 ) -> Result<PathBuf, AgentToolError> {
-    if raw_path.trim().is_empty() {
-        return Err(AgentToolError::InvalidArgs(
-            "path cannot be empty".to_string(),
-        ));
-    }
-    let user_path = Path::new(raw_path);
-    let candidate = if user_path.is_absolute() {
-        user_path.to_path_buf()
-    } else {
-        agent_env_root.join(user_path)
-    };
-    let normalized = normalize_abs_path(&candidate);
-    Ok(normalized)
+    resolve_path_from_root(agent_env_root, raw_path)
 }
 
 pub(crate) fn normalize_abs_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
-            Component::RootDir => normalized.push(component.as_os_str()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                let _ = normalized.pop();
-            }
-            Component::Normal(seg) => normalized.push(seg),
-        }
-    }
-    normalized
+    shared_normalize_abs_path(path)
 }
 
 pub(crate) fn is_path_under_any(path: &Path, roots: &[PathBuf]) -> bool {
@@ -1252,7 +1226,7 @@ fn build_simple_diff(display_path: &str, before: &str, after: &str) -> (String, 
 }
 
 fn u64_to_usize(v: u64) -> Result<usize, AgentToolError> {
-    usize::try_from(v).map_err(|_| AgentToolError::InvalidArgs(format!("value too large: {v}")))
+    u64_to_usize_arg(v, "value")
 }
 
 #[cfg(test)]

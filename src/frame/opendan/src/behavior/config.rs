@@ -51,7 +51,6 @@ pub struct BehaviorConfig {
     pub toolbox: BehaviorToolboxConfig,
 
     // 如果因为系统原因失败了（比如 step_limit),切换到哪个 behavior，不设置时切回 session 默认 behavior
-    #[serde(alias = "fallto", alias = "failed_back", alias = "fallback_behavior")]
     pub faild_back: Option<String>,
     pub step_limit: u32,
     pub llm: LLMBehaviorConfig,
@@ -312,10 +311,8 @@ impl BehaviorConfig {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct BehaviorMemoryConfig {
-    #[serde(alias = "total_limt")]
     pub total_limit: u32,
     pub agent_memory: BehaviorMemoryBucketConfig,
-    #[serde(alias = "session_summary")]
     pub workspace_summary: BehaviorMemoryBucketConfig,
 
     pub history_messages: BehaviorMemoryBucketConfig,
@@ -421,7 +418,6 @@ pub struct BehaviorToolboxConfig {
     pub tools: BehaviorToolsConfig,
     pub skills: Vec<String>,
     pub load_skills: Vec<String>,
-    #[serde(alias = "allow_tools")]
     pub loaded_tools: Vec<String>,
     pub default_load_actions: Vec<String>,
 }
@@ -998,7 +994,7 @@ toolbox:
     }
 
     #[test]
-    fn behavior_config_parses_faild_back_and_legacy_fallto() {
+    fn behavior_config_parses_faild_back() {
         let path = Path::new("route.yaml");
         let cfg = BehaviorConfig::parse_from_str(
             path,
@@ -1009,16 +1005,6 @@ faild_back: plan
         )
         .expect("parse behavior yaml");
         assert_eq!(cfg.faild_back.as_deref(), Some("plan"));
-
-        let legacy_cfg = BehaviorConfig::parse_from_str(
-            path,
-            r#"
-process_rule: test_rule
-fallto: do
-"#,
-        )
-        .expect("parse behavior yaml");
-        assert_eq!(legacy_cfg.faild_back.as_deref(), Some("do"));
     }
 
     #[test]
@@ -1085,14 +1071,14 @@ toolbox:
     }
 
     #[test]
-    fn behavior_config_memory_supports_total_limt_alias_and_normalizes_percent() {
+    fn behavior_config_memory_normalizes_percent() {
         let path = Path::new("memory.yaml");
         let cfg = BehaviorConfig::parse_from_str(
             path,
             r#"
 process_rule: memory_rule
 memory:
-  total_limt: 1024
+  total_limit: 1024
   first_prompt: "  memory header text  "
   last_prompt: "   "
   session_summaries:
@@ -1170,7 +1156,7 @@ toolbox:
     }
 
     #[test]
-    fn behavior_config_toolbox_alone_mode_uses_allow_tools_and_load_skills() {
+    fn behavior_config_toolbox_alone_mode_uses_loaded_tools_and_load_skills() {
         let path = Path::new("do.yaml");
         let cfg = BehaviorConfig::parse_from_str(
             path,
@@ -1183,7 +1169,7 @@ toolbox:
   skills:
     - coding/rust
     - coding/rust
-  allow_tools:
+  loaded_tools:
     - read_file
     - read_file
     - bash

@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use buckyos_api::{
-    get_buckyos_api_runtime, init_buckyos_api_runtime, BuckyOSRuntimeType, Task,
-    TaskManagerClient, TaskStatus,
+    get_buckyos_api_runtime, init_buckyos_api_runtime, BuckyOSRuntimeType, Task, TaskManagerClient,
+    TaskStatus,
 };
 use kRPC::kRPC;
 use serde::Serialize;
@@ -284,9 +284,12 @@ async fn execute(
             let before = task_mgr.get_task(task_id).await.map_err(|err| {
                 AgentToolError::ExecFailed(format!("get task `{task_id}` failed: {err}"))
             })?;
-            task_mgr.cancel_task(task_id, recursive).await.map_err(|err| {
-                AgentToolError::ExecFailed(format!("cancel task `{task_id}` failed: {err}"))
-            })?;
+            task_mgr
+                .cancel_task(task_id, recursive)
+                .await
+                .map_err(|err| {
+                    AgentToolError::ExecFailed(format!("cancel task `{task_id}` failed: {err}"))
+                })?;
             let interrupt_error = interrupt_task_if_supported(&before).await;
             let after = task_mgr.get_task(task_id).await.map_err(|err| {
                 AgentToolError::ExecFailed(format!("reload task `{task_id}` failed: {err}"))
@@ -440,9 +443,9 @@ fn parse_task_id_arg(tokens: &[String], tool_name: &str) -> Result<i64, AgentToo
         match tokens[idx].as_str() {
             "--task-id" => {
                 idx += 1;
-                let value = tokens.get(idx).ok_or_else(|| {
-                    with_tool_usage("missing value for `--task-id`", tool_name)
-                })?;
+                let value = tokens
+                    .get(idx)
+                    .ok_or_else(|| with_tool_usage("missing value for `--task-id`", tool_name))?;
                 task_id = Some(parse_task_id_value(value, tool_name)?);
             }
             token if token.starts_with("--") => {
@@ -484,12 +487,9 @@ fn parse_task_id_arg(tokens: &[String], tool_name: &str) -> Result<i64, AgentToo
 }
 
 fn parse_task_id_value(raw: &str, tool_name: &str) -> Result<i64, AgentToolError> {
-    raw.trim().parse::<i64>().map_err(|_| {
-        with_tool_usage(
-            format!("invalid task_id `{}`", raw.trim()),
-            tool_name,
-        )
-    })
+    raw.trim()
+        .parse::<i64>()
+        .map_err(|_| with_tool_usage(format!("invalid task_id `{}`", raw.trim()), tool_name))
 }
 
 fn parse_get_session_cli_command(
@@ -1024,9 +1024,7 @@ fn render_command_not_found_log(command: Option<&str>, argv: &[String]) -> Strin
     if command.is_empty() {
         "agent_tool auto-implement placeholder: command_not_found with empty command".to_string()
     } else {
-        format!(
-            "agent_tool auto-implement placeholder: missing command `{command}`{argv_text}"
-        )
+        format!("agent_tool auto-implement placeholder: missing command `{command}`{argv_text}")
     }
 }
 
@@ -1147,7 +1145,9 @@ async fn build_task_manager_client(
 ) -> Result<TaskManagerClient, AgentToolError> {
     if let Ok(runtime) = get_buckyos_api_runtime() {
         return runtime.get_task_mgr_client().await.map_err(|err| {
-            AgentToolError::ExecFailed(format!("init task-manager client from runtime failed: {err}"))
+            AgentToolError::ExecFailed(format!(
+                "init task-manager client from runtime failed: {err}"
+            ))
         });
     }
 
@@ -1275,9 +1275,10 @@ fn task_protocol_status(task: &Task) -> &'static str {
             _ => "success",
         },
         TaskStatus::Failed | TaskStatus::Canceled => "error",
-        TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused | TaskStatus::WaitingForApproval => {
-            "pending"
-        }
+        TaskStatus::Pending
+        | TaskStatus::Running
+        | TaskStatus::Paused
+        | TaskStatus::WaitingForApproval => "pending",
     }
 }
 

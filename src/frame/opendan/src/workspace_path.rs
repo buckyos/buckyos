@@ -32,6 +32,15 @@ pub(crate) fn resolve_bound_workspace_root(workspace_info: Option<&Json>) -> Opt
         .and_then(|binding| non_empty_path_str(&binding.workspace_path))
 }
 
+pub(crate) fn resolve_bound_workspace_id(workspace_info: Option<&Json>) -> Option<String> {
+    let info = workspace_info_view(workspace_info)?;
+    normalize_optional_text(Some(info.local_workspace_id.as_str())).or_else(|| {
+        info.binding
+            .as_ref()
+            .and_then(|binding| normalize_optional_text(Some(binding.local_workspace_id.as_str())))
+    })
+}
+
 pub(crate) fn resolve_session_workspace_root(
     workspace_info: Option<&Json>,
     session_cwd: &Path,

@@ -547,13 +547,13 @@ impl ExecBashTool {
                             command,
                             timeout_ms,
                             env_vars,
-                    command_lines.clone(),
-                    index,
-                    state,
-                    pending_run,
-                    allow_legacy_builtin_fallback,
-                )
-                .await?;
+                            command_lines.clone(),
+                            index,
+                            state,
+                            pending_run,
+                            allow_legacy_builtin_fallback,
+                        )
+                        .await?;
                     return Ok(ExecBashRunOutcome::Pending(pending_result));
                 }
             }
@@ -1470,8 +1470,7 @@ fn filter_session_cli_tool_names(raw_names: &[String]) -> Vec<String> {
         if tool_name.is_empty() {
             continue;
         }
-        if EXEC_BASH_AGENT_CLI_TOOL_NAMES.contains(&tool_name)
-            && seen.insert(tool_name.to_string())
+        if EXEC_BASH_AGENT_CLI_TOOL_NAMES.contains(&tool_name) && seen.insert(tool_name.to_string())
         {
             filtered.push(tool_name.to_string());
         }

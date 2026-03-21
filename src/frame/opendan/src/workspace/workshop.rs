@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -27,6 +27,10 @@ use crate::behavior::SessionRuntimeContext;
 use crate::buildin_tool::{
     EditFileTool as BuiltinEditFileTool, ReadFileTool as BuiltinReadFileTool,
     WorkshopWriteAudit as BuiltinWorkshopWriteAudit, WriteFileTool as BuiltinWriteFileTool,
+};
+use crate::runtime_utils::{
+    normalize_abs_path, normalize_root_path, resolve_path_under_root as resolve_path_in_agent_env,
+    u64_to_usize_arg,
 };
 use crate::worklog::WorklogToolConfig;
 
@@ -167,7 +171,7 @@ impl AgentWorkshop {
         mut cfg: AgentWorkshopConfig,
         create_if_missing: bool,
     ) -> Result<Self, AgentToolError> {
-        let agent_env_root = normalize_agent_env_root(&cfg.agent_env_root)?;
+        let agent_env_root = normalize_root_path(&cfg.agent_env_root)?;
         create_minimal_agent_env_dirs(&agent_env_root).await?;
         cfg.agent_env_root = agent_env_root.clone();
 
@@ -1114,17 +1118,6 @@ fn build_mcp_tool_config(tool_cfg: &WorkshopToolConfig) -> Result<MCPToolConfig,
     })
 }
 
-fn normalize_agent_env_root(root: &Path) -> Result<PathBuf, AgentToolError> {
-    let root_abs = if root.is_absolute() {
-        root.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(|err| AgentToolError::ExecFailed(format!("read current_dir failed: {err}")))?
-            .join(root)
-    };
-    Ok(normalize_abs_path(&root_abs))
-}
-
 async fn create_minimal_agent_env_dirs(agent_env_root: &Path) -> Result<(), AgentToolError> {
     let roots = [
         agent_env_root.to_path_buf(),
@@ -1180,6 +1173,10 @@ async fn load_tools_config(
     Ok(AgentWorkshopToolsConfig::default())
 }
 
+fn u64_to_usize(v: u64) -> Result<usize, AgentToolError> {
+    u64_to_usize_arg(v, "value")
+}
+
 fn validate_tools_config(cfg: &AgentWorkshopToolsConfig) -> Result<(), AgentToolError> {
     let mut seen = HashSet::new();
     for tool in &cfg.enabled_tools {
@@ -1196,50 +1193,6 @@ fn validate_tools_config(cfg: &AgentWorkshopToolsConfig) -> Result<(), AgentTool
         }
     }
     Ok(())
-}
-
-fn resolve_path_in_agent_env(
-    agent_env_root: &Path,
-    raw_path: &str,
-) -> Result<PathBuf, AgentToolError> {
-    if raw_path.trim().is_empty() {
-        return Err(AgentToolError::InvalidArgs(
-            "path cannot be empty".to_string(),
-        ));
-    }
-    let user_path = Path::new(raw_path);
-    let candidate = if user_path.is_absolute() {
-        user_path.to_path_buf()
-    } else {
-        agent_env_root.join(user_path)
-    };
-    let normalized = normalize_abs_path(&candidate);
-    if !normalized.starts_with(agent_env_root) {
-        return Err(AgentToolError::InvalidArgs(format!(
-            "path out of workspace scope: {raw_path}"
-        )));
-    }
-    Ok(normalized)
-}
-
-fn normalize_abs_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
-            Component::RootDir => normalized.push(component.as_os_str()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                let _ = normalized.pop();
-            }
-            Component::Normal(seg) => normalized.push(seg),
-        }
-    }
-    normalized
-}
-
-fn u64_to_usize(v: u64) -> Result<usize, AgentToolError> {
-    usize::try_from(v).map_err(|_| AgentToolError::InvalidArgs(format!("value too large: {v}")))
 }
 
 #[cfg(test)]
@@ -1463,9 +1416,9 @@ mod tests {
             Duration::from_secs(5),
             task_mgr.wait_for_task_end_with_interval(task_id, Duration::from_millis(100)),
         )
-            .await
-            .expect("task should finish within timeout")
-            .expect("wait for task end");
+        .await
+        .expect("task should finish within timeout")
+        .expect("wait for task end");
         let task = task_mgr.get_task(task_id).await.expect("get task");
         assert_eq!(task.status, TaskStatus::Completed);
         assert_eq!(task.data["status"], "success");
@@ -1726,8 +1679,7 @@ mod tests {
 
         let first_bash = &results[1];
         assert_eq!(first_bash["engine"], "tmux");
-        let first_payload =
-            parse_cli_json_line(first_bash["stdout"].as_str().unwrap_or_default());
+        let first_payload = parse_cli_json_line(first_bash["stdout"].as_str().unwrap_or_default());
         assert_eq!(first_payload["detail"]["content"], "L1");
 
         let second_bash = &results[3];

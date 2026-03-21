@@ -27,6 +27,7 @@ use tokio::time::{sleep, Duration};
 use opendan::agent::{AIAgent, AIAgentDeps};
 use opendan::agent_config::AIAgentConfig;
 use opendan::ai_runtime::{AiRuntime, AiRuntimeConfig, OpenDanRuntimeKrpcHandler};
+use opendan::runtime_utils::find_string_pointer;
 
 struct OpenDanHttpServer {
     rpc_handler: buckyos_api::OpenDanServerHandler<OpenDanRuntimeKrpcHandler>,
@@ -80,16 +81,16 @@ impl HttpServer for OpenDanHttpServer {
     }
 }
 
-const OPENDAN_AGENT_ID_ENV: [&str; 3] = ["OPENDAN_AGENT_ID", "AGENT_ID", "AGENT_INSTANCE_ID"];
-const OPENDAN_AGENT_ENV_ENV: [&str; 3] = ["OPENDAN_AGENT_ENV", "AGENT_ENV", "AGENT_ROOT"];
-const OPENDAN_AGENT_BIN_ENV: [&str; 3] = ["OPENDAN_AGENT_BIN", "AGENT_BIN", "AGENT_PACKAGE_ROOT"];
+const OPENDAN_AGENT_ID_ENV: [&str; 1] = ["OPENDAN_AGENT_ID"];
+const OPENDAN_AGENT_ENV_ENV: [&str; 1] = ["OPENDAN_AGENT_ENV"];
+const OPENDAN_AGENT_BIN_ENV: [&str; 1] = ["OPENDAN_AGENT_BIN"];
 const OPENDAN_AGENT_OWNER_ENV: [&str; 4] = [
     "OPENDAN_AGENT_OWNER",
     "AGENT_OWNER",
     "OWNER_USER_ID",
     "APP_OWNER_ID",
 ];
-const OPENDAN_SERVICE_PORT_ENV: [&str; 3] = ["OPENDAN_SERVICE_PORT", "SERVICE_PORT", "LISTEN_PORT"];
+const OPENDAN_SERVICE_PORT_ENV: [&str; 1] = ["OPENDAN_SERVICE_PORT"];
 const OPENDAN_SESSION_WORKER_THREADS_ENV: &str = "OPENDAN_SESSION_WORKER_THREADS";
 const OPENDAN_STARTUP_DEP_READY_WAIT_SECS: u64 = 10;
 
@@ -443,15 +444,6 @@ async fn load_agent_app_spec(agent_id: &str, owner: Option<&str>) -> Result<Opti
     Ok(None)
 }
 
-fn json_string_pointer<'a>(json: &'a Json, pointers: &[&str]) -> Option<&'a str> {
-    pointers.iter().find_map(|pointer| {
-        json.pointer(pointer)
-            .and_then(Json::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-    })
-}
-
 fn resolve_optional_path(
     cli_value: Option<&PathBuf>,
     env_keys: &[&str],
@@ -464,10 +456,10 @@ fn resolve_optional_path(
         .cloned()
         .or_else(|| get_first_env_var(env_keys).map(PathBuf::from))
         .or_else(|| {
-            spec.and_then(|spec| json_string_pointer(&spec.json, spec_pointers).map(PathBuf::from))
+            spec.and_then(|spec| find_string_pointer(&spec.json, spec_pointers).map(PathBuf::from))
         })
         .or_else(|| {
-            doc.and_then(|doc| json_string_pointer(&doc.json, doc_pointers).map(PathBuf::from))
+            doc.and_then(|doc| find_string_pointer(&doc.json, doc_pointers).map(PathBuf::from))
         })
 }
 
@@ -481,26 +473,9 @@ fn resolve_agent_env_root(
         startup.agent_env.as_ref(),
         &OPENDAN_AGENT_ENV_ENV,
         spec,
-        &[
-            "/agent_env",
-            "/agent_env_root",
-            "/runtime/agent_env",
-            "/app_spec/install_config/custom_config/agent_env",
-            "/app_spec/install_config/custom_config/agent_env_root",
-            "/app_spec/app_doc/install_config_tips/custom_config/agent_env",
-            "/app_spec/app_doc/install_config_tips/custom_config/agent_env_root",
-            "/install_config/custom_config/agent_env",
-            "/install_config/custom_config/agent_env_root",
-            "/app_doc/install_config_tips/custom_config/agent_env",
-            "/app_doc/install_config_tips/custom_config/agent_env_root",
-        ],
+        &["/install_config/custom_config/agent_env_root"],
         doc,
-        &[
-            "/agent_env",
-            "/agent_env_root",
-            "/paths/agent_env",
-            "/runtime/agent_env",
-        ],
+        &["/agent_env_root"],
     );
     if direct.is_some() {
         return direct.unwrap();
@@ -522,32 +497,9 @@ fn resolve_agent_package_root(
         startup.agent_bin.as_ref(),
         &OPENDAN_AGENT_BIN_ENV,
         spec,
-        &[
-            "/agent_bin",
-            "/agent_package_root",
-            "/package_root",
-            "/runtime/agent_bin",
-            "/runtime/package_root",
-            "/app_spec/install_config/custom_config/agent_bin",
-            "/app_spec/install_config/custom_config/agent_package_root",
-            "/app_spec/app_doc/install_config_tips/custom_config/agent_bin",
-            "/app_spec/app_doc/install_config_tips/custom_config/agent_package_root",
-            "/install_config/custom_config/agent_bin",
-            "/install_config/custom_config/agent_package_root",
-            "/app_doc/install_config_tips/custom_config/agent_bin",
-            "/app_doc/install_config_tips/custom_config/agent_package_root",
-        ],
+        &["/install_config/custom_config/agent_package_root"],
         doc,
-        &[
-            "/agent_bin",
-            "/agent_package_root",
-            "/package_root",
-            "/package/root",
-            "/paths/agent_bin",
-            "/paths/package",
-            "/runtime/agent_bin",
-            "/runtime/package_root",
-        ],
+        &["/agent_package_root"],
     );
     if direct.is_some() {
         return direct;
@@ -558,18 +510,9 @@ fn resolve_agent_package_root(
     }
 
     let pkg_name = doc.and_then(|doc| {
-        json_string_pointer(
-            &doc.json,
-            &[
-                "/pkg_name",
-                "/package/pkg_name",
-                "/package/pkg_id",
-                "/agent_pkg_name",
-                "/app/pkg_name",
-            ],
-        )
-        .map(pkg_unique_name)
-        .map(str::to_string)
+        find_string_pointer(&doc.json, &["/package/pkg_name"])
+            .map(pkg_unique_name)
+            .map(str::to_string)
     })?;
 
     Some(resolve_package_root_candidates(&pkg_name))

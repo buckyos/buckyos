@@ -23,13 +23,12 @@ use crate::agent_session::{AgentSession, AgentSessionMgr, SessionInputItem};
 use crate::agent_tool::{AgentToolError, AgentToolManager};
 use crate::workspace::{
     get_next_ready_todo_code, get_next_ready_todo_text, get_session_todo_text_by_ref,
-    AgentWorkshop, AgentWorkshopConfig, LocalWorkspaceManager, WorkshopIndex,
-    WorkshopWorkspaceRecord, WorkspaceType,
+    AgentWorkshop, AgentWorkshopConfig, LocalWorkspaceManager, WorkshopIndex, WorkspaceType,
 };
 use crate::workspace_path::{
     non_empty_path, resolve_agent_env_root, resolve_agent_env_root_from_local_workspace_hint,
-    resolve_default_local_workspace_path, resolve_session_workspace_root, WORKSHOP_INDEX_FILE_NAME,
-    WORKSHOP_TODO_DB_REL_PATH,
+    resolve_bound_workspace_id, resolve_default_local_workspace_path,
+    resolve_session_workspace_root, WORKSHOP_INDEX_FILE_NAME, WORKSHOP_TODO_DB_REL_PATH,
 };
 
 const MAX_INCLUDE_BYTES: usize = 64 * 1024;
@@ -1229,33 +1228,7 @@ fn resolve_session_workspace_id(
     workspace_info: Option<&Json>,
 ) -> Option<String> {
     normalize_optional_text(local_workspace_id)
-        .or_else(|| extract_workspace_id_from_json(workspace_info))
-}
-
-fn extract_workspace_id_from_json(value: Option<&Json>) -> Option<String> {
-    // FIXME(opendan-strong-typing): Weakly-typed compatibility lookup from Json is forbidden.
-    // Replace with strongly-typed structs + serde deserialization.
-    let value = value?;
-    for pointer in [
-        "/workspace_id",
-        "/local_workspace_id",
-        "/id",
-        "/workspace/id",
-        "/workspace/workspace_id",
-        "/workspace/local_workspace_id",
-        "/binding/workspace_id",
-        "/binding/local_workspace_id",
-    ] {
-        let parsed = value
-            .pointer(pointer)
-            .and_then(|item| item.as_str())
-            .map(str::trim)
-            .filter(|item| !item.is_empty());
-        if let Some(workspace_id) = parsed {
-            return Some(workspace_id.to_string());
-        }
-    }
-    None
+        .or_else(|| resolve_bound_workspace_id(workspace_info))
 }
 
 fn resolve_todo_db_path(
@@ -1288,45 +1261,7 @@ fn normalize_optional_text(value: Option<&str>) -> Option<String> {
 }
 
 fn resolve_workspace_info_text(workspace_info: &Json, key: &str) -> Option<String> {
-    for candidate in workspace_info_path_candidates(key) {
-        if let Some(value) = resolve_json_path(workspace_info, candidate.as_str()) {
-            if let Some(text) = json_value_to_compact_text(value) {
-                return Some(text);
-            }
-        }
-    }
-    None
-}
-
-fn workspace_info_path_candidates(key: &str) -> Vec<String> {
-    let mut out = Vec::<String>::new();
-    push_unique_path(&mut out, key);
-
-    if key == "current_todo" {
-        push_unique_path(&mut out, "workspace.current_todo");
-    }
-    if let Some(stripped) = key.strip_prefix("workspace.") {
-        push_unique_path(&mut out, stripped);
-    }
-    if key == "workspace.todolist" {
-        push_unique_path(&mut out, "todolist");
-    }
-    if let Some(stripped) = key.strip_prefix("workspace.todolist.") {
-        let rel_path = format!("todolist.{stripped}");
-        push_unique_path(&mut out, rel_path.as_str());
-    }
-    out
-}
-
-fn push_unique_path(paths: &mut Vec<String>, value: &str) {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return;
-    }
-    if paths.iter().any(|item| item == trimmed) {
-        return;
-    }
-    paths.push(trimmed.to_string());
+    resolve_json_path(workspace_info, key).and_then(json_value_to_compact_text)
 }
 
 async fn load_text_from_root(
@@ -1517,7 +1452,7 @@ fn truncate_utf8(text: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::{TodoTool, TodoToolConfig};
+    use crate::workspace::{TodoTool, TodoToolConfig, WorkshopWorkspaceRecord};
     use serde_json::json;
     use tempfile::tempdir;
 

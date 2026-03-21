@@ -1097,18 +1097,6 @@ fn parse_step_index_limit_from_text(value: &str) -> Option<(u32, u32)> {
     None
 }
 
-fn resolve_step_limit_from_text_candidates(values: &[Option<&str>]) -> Option<u32> {
-    for value in values {
-        let Some(value) = value.as_deref() else {
-            continue;
-        };
-        if let Some((_, limit)) = parse_step_index_limit_from_text(value) {
-            return Some(limit);
-        }
-    }
-    None
-}
-
 fn format_step_header_line(
     timestamp_ms: u64,
     behavior: Option<&str>,
@@ -1509,13 +1497,6 @@ fn render_db_worklog_timeline_records(
                             .and_then(parse_step_index_from_step_id)
                     })
                     .or_else(|| parsed_index_limit.map(|value| value.0));
-                let step_limit = parsed_index_limit.map(|value| value.1).or_else(|| {
-                    resolve_step_limit_from_text_candidates(&[
-                        record.summary.as_deref(),
-                        record.payload.get("result_digest").and_then(Json::as_str),
-                        record.payload.get("did_digest").and_then(Json::as_str),
-                    ])
-                });
                 output.push(MemoryTimelineRecord {
                     update_time: record.timestamp,
                     text: format_step_header_line(
@@ -2001,13 +1982,6 @@ fn render_runtime_worklog_timeline_records(
             let step_index = record
                 .step_index
                 .or_else(|| parsed_index_limit.map(|value| value.0));
-            let step_limit = parsed_index_limit.map(|value| value.1).or_else(|| {
-                resolve_step_limit_from_text_candidates(&[
-                    record.summary.as_deref(),
-                    record.payload.get("result_digest").and_then(Json::as_str),
-                    record.payload.get("did_digest").and_then(Json::as_str),
-                ])
-            });
             output.push(MemoryTimelineRecord {
                 update_time: record.timestamp,
                 text: format_step_header_line(

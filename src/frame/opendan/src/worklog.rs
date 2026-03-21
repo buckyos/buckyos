@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -17,6 +16,9 @@ use crate::agent_tool::{
     AgentTool, AgentToolError, AgentToolResult, ToolSpec, TOOL_WORKLOG_MANAGE,
 };
 use crate::behavior::SessionRuntimeContext;
+use crate::runtime_utils::{
+    now_ms, optional_u64_arg as optional_u64, u64_to_usize_arg as u64_to_usize,
+};
 
 const DEFAULT_LIST_LIMIT: usize = 64;
 const DEFAULT_MAX_LIST_LIMIT: usize = 256;
@@ -315,8 +317,6 @@ fn worklog_tool_spec() -> ToolSpec {
                 "action": { "type": "string" },
                 "record": { "type": "object" },
                 "records": { "type": "array", "items": { "type": "object" } },
-                "logs": { "type": "array", "items": { "type": "object" } },
-                "log": { "type": "object" },
                 "total": { "type": "integer" },
                 "text": { "type": "string" },
                 "prompt_text": { "type": "string" },
@@ -399,7 +399,6 @@ impl WorklogService {
             "ok": true,
             "action": "append_worklog",
             "record": inserted,
-            "log": legacy_log_view(&inserted),
         }))
     }
 
@@ -418,7 +417,6 @@ impl WorklogService {
             "ok": true,
             "action": "append_step_summary",
             "record": inserted,
-            "log": legacy_log_view(&inserted),
         }))
     }
 
@@ -457,16 +455,10 @@ impl WorklogService {
                 list_records(conn, &filters_for_db)
             })
             .await?;
-        let logs = listed
-            .records
-            .iter()
-            .map(legacy_log_view)
-            .collect::<Vec<_>>();
         Ok(json!({
             "ok": true,
             "action": "list_worklog",
             "records": listed.records,
-            "logs": logs,
             "total": listed.total,
             "limit": limit,
             "offset": offset
@@ -490,7 +482,6 @@ impl WorklogService {
             "ok": true,
             "action": "get_worklog",
             "record": record,
-            "log": legacy_log_view(&record),
         }))
     }
 
@@ -510,13 +501,11 @@ impl WorklogService {
                 )
             })
             .await?;
-        let logs = listed.iter().map(legacy_log_view).collect::<Vec<_>>();
         Ok(json!({
             "ok": true,
             "action": "list_step",
             "step_id": step_id,
             "records": listed,
-            "logs": logs,
             "total": listed.len()
         }))
     }
@@ -1830,22 +1819,6 @@ fn format_hhmm(timestamp_ms: u64) -> String {
     dt.format("%H:%M").to_string()
 }
 
-fn legacy_log_view(record: &WorklogRecord) -> Json {
-    json!({
-        "log_id": record.id,
-        "log_type": record.record_type,
-        "status": record.status,
-        "timestamp": record.timestamp,
-        "agent_id": record.agent_did,
-        "related_agent_id": record.related_agent_id,
-        "step_id": record.step_id,
-        "summary": record.summary,
-        "payload": record.payload,
-        "owner_session_id": record.session_id,
-        "workspace_id": record.workspace_id
-    })
-}
-
 fn parse_impact(
     map: &serde_json::Map<String, Json>,
     record_type: WorklogRecordType,
@@ -2233,13 +2206,6 @@ fn generate_worklog_id(timestamp_ms: u64) -> String {
     format!("wlrec_{}_{}", timestamp_ms, seq)
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
 fn to_rfc3339(ms: u64) -> String {
     let secs = (ms / 1000) as i64;
     let nanos = ((ms % 1000) * 1_000_000) as u32;
@@ -2347,22 +2313,6 @@ fn optional_non_empty(raw: &str) -> Option<String> {
         return None;
     }
     Some(trimmed.to_string())
-}
-
-fn optional_u64(args: &Json, key: &str) -> Result<Option<u64>, AgentToolError> {
-    let Some(value) = args.get(key) else {
-        return Ok(None);
-    };
-    let value = value.as_u64().ok_or_else(|| {
-        AgentToolError::InvalidArgs(format!("`{key}` must be an unsigned integer"))
-    })?;
-    Ok(Some(value))
-}
-
-fn u64_to_usize(value: u64, key: &str) -> Result<usize, AgentToolError> {
-    usize::try_from(value).map_err(|_| {
-        AgentToolError::InvalidArgs(format!("`{key}` is too large for current platform"))
-    })
 }
 
 fn u64_to_u32(value: u64) -> Option<u32> {

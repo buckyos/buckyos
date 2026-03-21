@@ -1,7 +1,7 @@
 use std::collections::HashMap;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use log::info;
 use serde::{Deserialize, Serialize};
@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 
 use super::agent_skill::{self, AgentSkillRecord, AgentSkillSpec};
 use crate::agent_tool::AgentToolError;
+use crate::runtime_utils::{normalize_root_path, now_ms};
 use crate::worklog::{WorklogRecord, WorklogService, WorklogToolConfig};
 
 const DEFAULT_LOCK_TTL_MS: u64 = 120_000;
@@ -254,7 +255,7 @@ impl LocalWorkspaceManager {
         mut cfg: LocalWorkspaceManagerConfig,
     ) -> Result<Self, AgentToolError> {
         let agent_did = validate_agent_did(agent_did.into())?;
-        cfg.agent_env_root = normalize_agent_env_root(&cfg.agent_env_root)?;
+        cfg.agent_env_root = normalize_root_path(&cfg.agent_env_root)?;
         if cfg.lock_ttl_ms == 0 {
             cfg.lock_ttl_ms = DEFAULT_LOCK_TTL_MS;
         }
@@ -295,7 +296,7 @@ impl LocalWorkspaceManager {
         mut cfg: LocalWorkspaceManagerConfig,
     ) -> Result<Self, AgentToolError> {
         let agent_did = validate_agent_did(agent_did.into())?;
-        cfg.agent_env_root = normalize_agent_env_root(&cfg.agent_env_root)?;
+        cfg.agent_env_root = normalize_root_path(&cfg.agent_env_root)?;
         if cfg.lock_ttl_ms == 0 {
             cfg.lock_ttl_ms = DEFAULT_LOCK_TTL_MS;
         }
@@ -1087,40 +1088,6 @@ async fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), Age
 
 fn io_error(action: &str, path: &Path, source: std::io::Error) -> AgentToolError {
     AgentToolError::ExecFailed(format!("{action} `{}` failed: {source}", path.display()))
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
-fn normalize_agent_env_root(root: &Path) -> Result<PathBuf, AgentToolError> {
-    let abs = if root.is_absolute() {
-        root.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(|err| AgentToolError::ExecFailed(format!("read current_dir failed: {err}")))?
-            .join(root)
-    };
-    Ok(normalize_abs_path(&abs))
-}
-
-fn normalize_abs_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
-            Component::RootDir => normalized.push(component.as_os_str()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                let _ = normalized.pop();
-            }
-            Component::Normal(seg) => normalized.push(seg),
-        }
-    }
-    normalized
 }
 
 #[derive(Clone, Debug, Default)]
