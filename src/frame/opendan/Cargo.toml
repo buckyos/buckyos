@@ -71,3 +71,11 @@ path = "src/create_workspace_bin.rs"
 [[bin]]
 name = "bind_workspace"
 path = "src/bind_workspace_bin.rs"
+
+[[bin]]
+name = "check_task"
+path = "src/check_task_bin.rs"
+
+[[bin]]
+name = "cancel_task"
+path = "src/cancel_task_bin.rs"

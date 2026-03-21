@@ -46,6 +46,9 @@ modules:
   opendan:
     type: rust
     name: opendan
+  agent_tool:
+    type: rust
+    name: agent_tool
   control_panel_web:
     type: web
     name: control_panel
@@ -82,6 +85,7 @@ apps:
       aicc: bin/aicc/
       msg_center: bin/msg-center/
       opendan: bin/opendan/
+      agent_tool: bin/opendan/
       scheduler-etc: etc/scheduler/
       boot-gateway-config: etc/boot_gateway.yaml
       util.py: bin/util.py
