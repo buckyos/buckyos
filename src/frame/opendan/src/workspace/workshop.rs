@@ -20,15 +20,14 @@ use crate::agent_bash::ExecBashTool as BuiltinExecBashTool;
 use crate::agent_session::AgentSessionMgr;
 use crate::agent_tool::{
     AgentToolError, AgentToolManager, BindWorkspaceTool as SharedBindWorkspaceTool,
-    CreateWorkspaceTool as SharedCreateWorkspaceTool, MCPToolConfig, WorkspaceToolBackend,
-    TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE, TOOL_EXEC_BASH, TOOL_READ_FILE,
-    TOOL_TODO_MANAGE, TOOL_WORKLOG_MANAGE, TOOL_WRITE_FILE,
+    CreateWorkspaceTool as SharedCreateWorkspaceTool, EditFileTool as SharedEditFileTool,
+    FileToolConfig, MCPToolConfig, ReadFileTool as SharedReadFileTool,
+    WorkspaceToolBackend, WriteFileTool as SharedWriteFileTool, TOOL_BIND_WORKSPACE,
+    TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE, TOOL_EXEC_BASH, TOOL_READ_FILE, TOOL_TODO_MANAGE,
+    TOOL_WORKLOG_MANAGE, TOOL_WRITE_FILE,
 };
 use crate::behavior::SessionRuntimeContext;
-use crate::buildin_tool::{
-    EditFileTool as BuiltinEditFileTool, ReadFileTool as BuiltinReadFileTool,
-    WorkshopWriteAudit as BuiltinWorkshopWriteAudit, WriteFileTool as BuiltinWriteFileTool,
-};
+use crate::buildin_tool::WorkshopWriteAudit as BuiltinWorkshopWriteAudit;
 use crate::runtime_utils::{
     normalize_abs_path, normalize_root_path, resolve_path_under_root as resolve_path_in_agent_env,
     u64_to_usize_arg,
@@ -333,23 +332,24 @@ impl AgentWorkshop {
                         )?;
                     }
                     TOOL_EDIT_FILE => {
-                        tool_mgr.register_tool(BuiltinEditFileTool::from_tool_config(
-                            &self.cfg,
-                            tool,
-                            write_audit.clone(),
-                        )?)?;
+                        let _ = tool;
+                        tool_mgr.register_tool(SharedEditFileTool::new(
+                            FileToolConfig::new(self.cfg.agent_env_root.clone()),
+                            Arc::new(write_audit.clone()),
+                        ))?;
                     }
                     TOOL_WRITE_FILE => {
-                        tool_mgr.register_tool(BuiltinWriteFileTool::from_tool_config(
-                            &self.cfg,
-                            tool,
-                            write_audit.clone(),
-                        )?)?;
+                        let _ = tool;
+                        tool_mgr.register_tool(SharedWriteFileTool::new(
+                            FileToolConfig::new(self.cfg.agent_env_root.clone()),
+                            Arc::new(write_audit.clone()),
+                        ))?;
                     }
                     TOOL_READ_FILE => {
-                        tool_mgr.register_tool(BuiltinReadFileTool::from_tool_config(
-                            &self.cfg, tool,
-                        )?)?;
+                        let _ = tool;
+                        tool_mgr.register_tool(SharedReadFileTool::new(FileToolConfig::new(
+                            self.cfg.agent_env_root.clone(),
+                        )))?;
                     }
                     TOOL_TODO_MANAGE => {
                         let policy = TodoToolPolicy::from_tool_config(&self.cfg, tool)?;

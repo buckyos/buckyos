@@ -11,8 +11,16 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Value as Json};
 use tokio::time::{timeout, Duration};
 
+pub mod cli;
+pub mod file_tools;
 pub mod todo;
 
+pub use file_tools::{
+    normalize_abs_path, parse_read_file_bash_args, rewrite_read_file_path_with_shell_cwd,
+    EditFileTool, FileToolConfig, FileWriteAuditBackend, FileWriteAuditRecord,
+    NoopFileWriteAudit, ReadFileTool, WriteFileTool, TOOL_EDIT_FILE, TOOL_READ_FILE,
+    TOOL_WRITE_FILE,
+};
 pub use todo::{
     get_next_ready_todo_code, get_next_ready_todo_text, get_session_todo_text_by_ref, TodoTool,
     TodoToolConfig,
@@ -306,6 +314,57 @@ pub struct AgentToolResult {
     pub details: Json,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CliStatus {
+    Success,
+    Error,
+    Pending,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CliPendingReason {
+    LongRunning,
+    UserApproval,
+    ExternalCallback,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CliRunOutput {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CliResultEnvelope {
+    pub status: CliStatus,
+    pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cmd_line: Option<String>,
+    pub detail: Json,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stdout: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stderr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_reason: Option<CliPendingReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_wait: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check_after: Option<u64>,
+}
+
+pub const CLI_EXIT_SUCCESS: i32 = 0;
+pub const CLI_EXIT_ERROR: i32 = 1;
+pub const CLI_EXIT_USAGE: i32 = 2;
+pub const CLI_EXIT_COMMAND_NOT_FOUND: i32 = 127;
+
 const PROMPT_STDIO_MAX_LINES: usize = 3000;
 
 fn truncate_prompt_stream_lines(content: &str, max_lines: usize) -> String {
@@ -429,6 +488,121 @@ impl Deref for AgentToolResult {
 impl std::fmt::Display for AgentToolResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.render_prompt())
+    }
+}
+
+impl CliResultEnvelope {
+    pub fn from_tool_result(tool_name: &str, result: AgentToolResult) -> Self {
+        let detail = result.details.clone();
+        let status = if detail.get("status").and_then(Json::as_str) == Some("pending") {
+            CliStatus::Pending
+        } else {
+            CliStatus::Success
+        };
+        Self {
+            status,
+            summary: result
+                .result
+                .clone()
+                .unwrap_or_else(|| "completed".to_string()),
+            tool: Some(tool_name.to_string()),
+            cmd_line: (!result.cmd_line.trim().is_empty()).then_some(result.cmd_line),
+            detail,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            pending_reason: result
+                .details
+                .get("pending_reason")
+                .and_then(Json::as_str)
+                .and_then(parse_cli_pending_reason),
+            task_id: result
+                .details
+                .get("task_id")
+                .and_then(Json::as_str)
+                .map(|value| value.to_string()),
+            estimated_wait: result
+                .details
+                .get("estimated_wait")
+                .and_then(Json::as_str)
+                .map(|value| value.to_string()),
+            check_after: result.details.get("check_after").and_then(Json::as_u64),
+        }
+    }
+
+    pub fn error(tool_name: Option<&str>, err: &AgentToolError) -> Self {
+        let message = err.to_string();
+        Self {
+            status: CliStatus::Error,
+            summary: message.clone(),
+            tool: tool_name.map(|value| value.to_string()),
+            cmd_line: None,
+            detail: json!({
+                "error_type": cli_error_kind(err),
+                "message": message,
+            }),
+            stdout: None,
+            stderr: None,
+            pending_reason: None,
+            task_id: None,
+            estimated_wait: None,
+            check_after: None,
+        }
+    }
+
+    pub fn success(tool: Option<String>, detail: Json, summary: impl Into<String>) -> Self {
+        Self {
+            status: CliStatus::Success,
+            summary: summary.into(),
+            tool,
+            cmd_line: None,
+            detail,
+            stdout: None,
+            stderr: None,
+            pending_reason: None,
+            task_id: None,
+            estimated_wait: None,
+            check_after: None,
+        }
+    }
+}
+
+pub fn render_cli_output(payload: &CliResultEnvelope, exit_code: i32) -> CliRunOutput {
+    let stdout = serde_json::to_string(payload).unwrap_or_else(|_| {
+        "{\"status\":\"error\",\"summary\":\"serialize cli result failed\",\"detail\":{}}"
+            .to_string()
+    });
+    CliRunOutput {
+        exit_code,
+        stdout,
+        stderr: String::new(),
+    }
+}
+
+pub fn cli_exit_code_for_error(err: &AgentToolError) -> i32 {
+    match err {
+        AgentToolError::InvalidArgs(_) | AgentToolError::NotFound(_) => CLI_EXIT_USAGE,
+        AgentToolError::AlreadyExists(_)
+        | AgentToolError::ExecFailed(_)
+        | AgentToolError::Timeout => CLI_EXIT_ERROR,
+    }
+}
+
+pub fn cli_error_kind(err: &AgentToolError) -> &'static str {
+    match err {
+        AgentToolError::NotFound(_) => "not_found",
+        AgentToolError::AlreadyExists(_) => "already_exists",
+        AgentToolError::InvalidArgs(_) => "invalid_args",
+        AgentToolError::ExecFailed(_) => "exec_failed",
+        AgentToolError::Timeout => "timeout",
+    }
+}
+
+fn parse_cli_pending_reason(raw: &str) -> Option<CliPendingReason> {
+    match raw.trim() {
+        "long_running" => Some(CliPendingReason::LongRunning),
+        "user_approval" => Some(CliPendingReason::UserApproval),
+        "external_callback" => Some(CliPendingReason::ExternalCallback),
+        _ => None,
     }
 }
 
@@ -899,11 +1073,7 @@ impl AgentTool for BindExternalWorkspaceTool {
         let workspace_path = require_string_arg(&args, "workspace_path")?;
         let binding = self
             .backend
-            .bind_external_workspace(
-                agent_did.as_str(),
-                name.as_str(),
-                workspace_path.as_str(),
-            )
+            .bind_external_workspace(agent_did.as_str(), name.as_str(), workspace_path.as_str())
             .await?;
 
         Ok(AgentToolResult::from_details(json!({

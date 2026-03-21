@@ -6,7 +6,6 @@ pub mod agent_environment;
 pub mod agent_memory;
 pub mod agent_session;
 pub mod agent_tool;
-pub mod agent_tools_cli;
 pub mod ai_runtime;
 pub mod behavior;
 pub mod buildin_tool;

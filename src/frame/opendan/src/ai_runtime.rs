@@ -187,7 +187,9 @@ impl AiRuntime {
             runtime: Arc::new(self.clone()),
         })?;
         tool_mgr.register_tool(SharedBindExternalWorkspaceTool::new(Arc::new(self.clone())))?;
-        tool_mgr.register_tool(SharedListExternalWorkspacesTool::new(Arc::new(self.clone())))?;
+        tool_mgr.register_tool(SharedListExternalWorkspacesTool::new(Arc::new(
+            self.clone(),
+        )))?;
         Ok(())
     }
 

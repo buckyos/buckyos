@@ -2,32 +2,32 @@ use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use async_trait::async_trait;
 use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, BuckyOSRuntimeType, Task, TaskManagerClient,
     TaskStatus,
 };
 use kRPC::kRPC;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
+use tokio::fs;
 use tokio::io::{self, AsyncReadExt};
 use tokio::process::Command;
 
-use crate::agent_environment::AgentEnvironment;
-use crate::agent_session::{AgentSessionMgr, GetSessionTool};
-use crate::agent_tool::{
-    AgentTool, AgentToolError, AgentToolManager, AgentToolResult, TOOL_BIND_WORKSPACE,
-    TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE, TOOL_GET_SESSION, TOOL_READ_FILE, TOOL_WRITE_FILE,
+use crate::{
+    cli_exit_code_for_error, render_cli_output, AgentTool, AgentToolError, AgentToolResult,
+    BindWorkspaceTool, CliPendingReason, CliResultEnvelope, CliRunOutput, CliStatus,
+    CreateWorkspaceTool, GetSessionTool, SessionRuntimeContext, SessionViewBackend, TodoTool,
+    TodoToolConfig, WorkspaceToolBackend, TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE,
+    TOOL_GET_SESSION,
 };
-use crate::behavior::SessionRuntimeContext;
-use crate::buildin_tool::{
-    normalize_abs_path, parse_read_file_bash_args, rewrite_read_file_path_with_shell_cwd,
-    EditFileTool, ReadFileTool, WorkshopWriteAudit, WriteFileTool,
-};
-use crate::worklog::WorklogToolConfig;
-use crate::workspace::workshop::{AgentWorkshopConfig, WorkshopToolConfig};
 
 const TOOL_TODO: &str = "todo";
+const TOOL_READ_FILE: &str = "read_file";
+const TOOL_WRITE_FILE: &str = "write_file";
+const TOOL_EDIT_FILE: &str = "edit_file";
 const TOOL_CHECK_TASK: &str = "check_task";
 const TOOL_CANCEL_TASK: &str = "cancel_task";
 const TOOL_NAMES: [&str; 9] = [
@@ -41,10 +41,8 @@ const TOOL_NAMES: [&str; 9] = [
     TOOL_CHECK_TASK,
     TOOL_CANCEL_TASK,
 ];
-const EXIT_SUCCESS: i32 = 0;
-const EXIT_ERROR: i32 = 1;
-const EXIT_USAGE: i32 = 2;
-const EXIT_COMMAND_NOT_FOUND: i32 = 127;
+const EXIT_SUCCESS: i32 = crate::CLI_EXIT_SUCCESS;
+const EXIT_COMMAND_NOT_FOUND: i32 = crate::CLI_EXIT_COMMAND_NOT_FOUND;
 const COMMAND_NOT_FOUND_PROXY: &str = "__command_not_found__";
 const MAIN_BINARY_NAME: &str = "agent_tool";
 const DEFAULT_AGENT_NAME: &str = "did:opendan:cli";
@@ -52,6 +50,9 @@ const DEFAULT_TRACE_ID: &str = "cli-trace";
 const DEFAULT_SESSION_ID: &str = "cli-session";
 const DEFAULT_WAKEUP_ID: &str = "cli-wakeup";
 const DEFAULT_BEHAVIOR: &str = "cli";
+const SESSION_RECORD_FILE: &str = "session.json";
+const SESSION_WORKSPACE_BINDINGS_REL_PATH: &str = "workspaces/session_workspace_bindings.json";
+const WORKSPACE_INDEX_FILE: &str = "index.json";
 
 #[derive(Clone, Debug)]
 struct CliRuntimeEnv {
@@ -99,13 +100,6 @@ impl CliRuntimeEnv {
     }
 }
 
-#[derive(Debug)]
-pub struct CliRunOutput {
-    pub exit_code: i32,
-    pub stdout: String,
-    pub stderr: String,
-}
-
 #[derive(Clone, Debug)]
 enum ContentInput {
     Inline(String),
@@ -150,44 +144,21 @@ enum ParsedCommand {
     },
 }
 
-#[derive(Clone, Debug, Serialize)]
-struct CliResultEnvelope {
-    status: &'static str,
-    summary: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cmd_line: Option<String>,
-    detail: Json,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stdout: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stderr: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pending_reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    task_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    estimated_wait: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    check_after: Option<u64>,
-}
-
 pub async fn run_process() -> CliRunOutput {
     let args = env::args_os().collect::<Vec<_>>();
     let env = match CliRuntimeEnv::from_process() {
         Ok(env) => env,
         Err(err) => {
-            let exit_code = exit_code_for_error(&err);
-            return render_output(error_envelope(None, err), exit_code);
+            let exit_code = cli_exit_code_for_error(&err);
+            return render_cli_output(&CliResultEnvelope::error(None, &err), exit_code);
         }
     };
 
     match execute(args, env, None).await {
         Ok(output) => output,
         Err(err) => {
-            let exit_code = exit_code_for_error(&err);
-            render_output(error_envelope(None, err), exit_code)
+            let exit_code = cli_exit_code_for_error(&err);
+            render_cli_output(&CliResultEnvelope::error(None, &err), exit_code)
         }
     }
 }
@@ -204,30 +175,21 @@ async fn execute(
             stdout: String::new(),
             stderr: render_command_not_found_log(command.as_deref(), &argv),
         }),
-        ParsedCommand::Help { tool_name } => Ok(render_output(
-            build_help_envelope(&env, tool_name.as_deref()).await,
+        ParsedCommand::Help { tool_name } => Ok(render_cli_output(
+            &build_help_envelope(&env, tool_name.as_deref()).await,
             EXIT_SUCCESS,
         )),
         ParsedCommand::BashTool { tool_name, line } => {
-            let tool_mgr = build_runtime_tool_manager(&env).await?;
-            let result = tool_mgr
-                .call_tool_from_bash_line_with_cwd(
-                    &env.call_ctx,
-                    &line,
-                    Some(env.current_dir.as_path()),
-                )
-                .await?
-                .ok_or_else(|| AgentToolError::NotFound(tool_name.clone()))?;
-            Ok(render_output(
-                success_envelope(&tool_name, result),
+            let result = execute_bash_tool(&env, &tool_name, &line).await?;
+            Ok(render_cli_output(
+                &success_envelope(&tool_name, result),
                 EXIT_SUCCESS,
             ))
         }
         ParsedCommand::ReadFile { tool_name, args } => {
-            let tool = build_read_file_tool(&env)?;
-            let result = tool.call(&env.call_ctx, args).await?;
-            Ok(render_output(
-                success_envelope(&tool_name, result),
+            let result = run_read_file(&env, args).await?;
+            Ok(render_cli_output(
+                &success_envelope(&tool_name, result),
                 EXIT_SUCCESS,
             ))
         }
@@ -241,10 +203,9 @@ async fn execute(
                 AgentToolError::InvalidArgs("write_file args must be object".to_string())
             })?;
             map.insert("content".to_string(), Json::String(content));
-            let tool = build_write_file_tool(&env)?;
-            let result = tool.call(&env.call_ctx, args).await?;
-            Ok(render_output(
-                success_envelope(&tool_name, result),
+            let result = run_write_file(&env, args).await?;
+            Ok(render_cli_output(
+                &success_envelope(&tool_name, result),
                 EXIT_SUCCESS,
             ))
         }
@@ -258,10 +219,9 @@ async fn execute(
                 AgentToolError::InvalidArgs("edit_file args must be object".to_string())
             })?;
             map.insert("new_content".to_string(), Json::String(new_content));
-            let tool = build_edit_file_tool(&env)?;
-            let result = tool.call(&env.call_ctx, args).await?;
-            Ok(render_output(
-                success_envelope(&tool_name, result),
+            let result = run_edit_file(&env, args).await?;
+            Ok(render_cli_output(
+                &success_envelope(&tool_name, result),
                 EXIT_SUCCESS,
             ))
         }
@@ -270,8 +230,8 @@ async fn execute(
             let task = task_mgr.get_task(task_id).await.map_err(|err| {
                 AgentToolError::ExecFailed(format!("get task `{task_id}` failed: {err}"))
             })?;
-            Ok(render_output(
-                build_check_task_envelope(&tool_name, task),
+            Ok(render_cli_output(
+                &build_check_task_envelope(&tool_name, task),
                 EXIT_SUCCESS,
             ))
         }
@@ -294,8 +254,8 @@ async fn execute(
             let after = task_mgr.get_task(task_id).await.map_err(|err| {
                 AgentToolError::ExecFailed(format!("reload task `{task_id}` failed: {err}"))
             })?;
-            Ok(render_output(
-                build_cancel_task_envelope(&tool_name, after, recursive, interrupt_error),
+            Ok(render_cli_output(
+                &build_cancel_task_envelope(&tool_name, after, recursive, interrupt_error),
                 EXIT_SUCCESS,
             ))
         }
@@ -797,35 +757,6 @@ fn parse_edit_file_cli_args(
     })
 }
 
-fn build_read_file_tool(env: &CliRuntimeEnv) -> Result<ReadFileTool, AgentToolError> {
-    ReadFileTool::from_tool_config(
-        &cli_workshop_config(env),
-        &WorkshopToolConfig::enabled(TOOL_READ_FILE),
-    )
-}
-
-fn build_write_file_tool(env: &CliRuntimeEnv) -> Result<WriteFileTool, AgentToolError> {
-    let cfg = cli_workshop_config(env);
-    let audit = WorkshopWriteAudit::new(WorklogToolConfig::with_db_path(
-        cli_state_root(env).join("worklog").join("worklog.db"),
-    ));
-    WriteFileTool::from_tool_config(&cfg, &WorkshopToolConfig::enabled(TOOL_WRITE_FILE), audit)
-}
-
-fn build_edit_file_tool(env: &CliRuntimeEnv) -> Result<EditFileTool, AgentToolError> {
-    let cfg = cli_workshop_config(env);
-    let audit = WorkshopWriteAudit::new(WorklogToolConfig::with_db_path(
-        cli_state_root(env).join("worklog").join("worklog.db"),
-    ));
-    EditFileTool::from_tool_config(&cfg, &WorkshopToolConfig::enabled(TOOL_EDIT_FILE), audit)
-}
-
-fn cli_workshop_config(env: &CliRuntimeEnv) -> AgentWorkshopConfig {
-    let mut cfg = AgentWorkshopConfig::new(&env.agent_env_root);
-    cfg.agent_did = env.call_ctx.agent_name.clone();
-    cfg
-}
-
 fn cli_state_root(env: &CliRuntimeEnv) -> PathBuf {
     if env.has_agent_env {
         env.agent_env_root.clone()
@@ -834,156 +765,515 @@ fn cli_state_root(env: &CliRuntimeEnv) -> PathBuf {
     }
 }
 
-fn success_envelope(tool_name: &str, result: AgentToolResult) -> CliResultEnvelope {
-    let detail = result.details.clone();
-    let status = if detail.get("status").and_then(Json::as_str) == Some("pending") {
-        "pending"
-    } else {
-        "success"
-    };
-    CliResultEnvelope {
-        status,
-        summary: result
-            .result
-            .clone()
-            .unwrap_or_else(|| "completed".to_string()),
-        tool: Some(tool_name.to_string()),
-        cmd_line: (!result.cmd_line.trim().is_empty()).then_some(result.cmd_line),
-        detail,
-        stdout: result.stdout,
-        stderr: result.stderr,
-        pending_reason: result
-            .details
-            .get("pending_reason")
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct CliLocalWorkspaceSessionBinding {
+    session_id: String,
+    bound_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct CliWorkspaceRecord {
+    workspace_id: String,
+    name: String,
+    relative_path: Option<String>,
+    created_by_session: Option<String>,
+    created_at_ms: u64,
+    updated_at_ms: u64,
+    bound_sessions: Vec<CliLocalWorkspaceSessionBinding>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct CliWorkspaceIndex {
+    agent_did: String,
+    workspaces: Vec<CliWorkspaceRecord>,
+    updated_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct CliSessionWorkspaceBinding {
+    session_id: String,
+    local_workspace_id: String,
+    workspace_path: String,
+    workspace_rel_path: String,
+    agent_env_root: String,
+    bound_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct CliSessionBindingsFile {
+    bindings: Vec<CliSessionWorkspaceBinding>,
+}
+
+#[derive(Clone)]
+struct CliSessionBackend {
+    state_root: PathBuf,
+}
+
+#[async_trait]
+impl SessionViewBackend for CliSessionBackend {
+    async fn session_view(&self, session_id: &str) -> Result<Json, AgentToolError> {
+        let session = load_session_json(&self.state_root, session_id).await?;
+        Ok(build_session_summary_view(&session))
+    }
+}
+
+#[derive(Clone)]
+struct CliWorkspaceBackend {
+    state_root: PathBuf,
+    agent_id: String,
+}
+
+#[async_trait]
+impl WorkspaceToolBackend for CliWorkspaceBackend {
+    async fn create_workspace(
+        &self,
+        ctx: &SessionRuntimeContext,
+        name: String,
+        summary: String,
+    ) -> Result<Json, AgentToolError> {
+        let session_id = ctx.session_id.trim();
+        if session_id.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "session_id is required".to_string(),
+            ));
+        }
+        let session = load_session_json(&self.state_root, session_id).await?;
+        if build_session_summary_view(&session)
+            .get("local_workspace_id")
             .and_then(Json::as_str)
-            .map(|value| value.to_string()),
-        task_id: result
-            .details
-            .get("task_id")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some()
+        {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "session `{session_id}` already bound local workspace"
+            )));
+        }
+
+        let now = now_ms();
+        let workspace_id = format!("ws-{now:x}-{:x}", std::process::id());
+        let workspace_rel_path = format!("workspaces/{workspace_id}");
+        let workspace_path = self.state_root.join(&workspace_rel_path);
+        fs::create_dir_all(&workspace_path).await.map_err(|err| {
+            AgentToolError::ExecFailed(format!(
+                "create workspace dir `{}` failed: {err}",
+                workspace_path.display()
+            ))
+        })?;
+        let summary_path = workspace_path.join("SUMMARY.md");
+        fs::write(&summary_path, format!("{}\n", summary.trim()))
+            .await
+            .map_err(|err| {
+                AgentToolError::ExecFailed(format!(
+                    "write workspace summary failed: path={} err={err}",
+                    summary_path.display()
+                ))
+            })?;
+
+        let mut index = load_workspace_index(&self.state_root).await?;
+        let workspace = CliWorkspaceRecord {
+            workspace_id: workspace_id.clone(),
+            name: name.trim().to_string(),
+            relative_path: Some(workspace_rel_path.clone()),
+            created_by_session: Some(session_id.to_string()),
+            created_at_ms: now,
+            updated_at_ms: now,
+            bound_sessions: vec![CliLocalWorkspaceSessionBinding {
+                session_id: session_id.to_string(),
+                bound_at_ms: now,
+            }],
+        };
+        index.workspaces.push(workspace.clone());
+        index.agent_did = self.agent_id.clone();
+        index.updated_at_ms = now;
+        save_workspace_index(&self.state_root, &index).await?;
+
+        let binding = CliSessionWorkspaceBinding {
+            session_id: session_id.to_string(),
+            local_workspace_id: workspace_id.clone(),
+            workspace_path: workspace_path.to_string_lossy().to_string(),
+            workspace_rel_path,
+            agent_env_root: self.state_root.to_string_lossy().to_string(),
+            bound_at_ms: now,
+        };
+        save_session_binding(&self.state_root, &binding).await?;
+        let session_updated = persist_session_workspace_binding(
+            &self.state_root,
+            session_id,
+            &workspace_id,
+            Some(workspace.name.as_str()),
+            &binding,
+        )
+        .await?;
+
+        Ok(json!({
+            "ok": true,
+            "workspace": workspace,
+            "binding": binding,
+            "summary_path": summary_path.to_string_lossy().to_string(),
+            "session_id": session_id,
+            "session_updated": session_updated
+        }))
+    }
+
+    async fn resolve_workspace_id(
+        &self,
+        workspace_ref: &str,
+        shell_cwd: Option<&Path>,
+    ) -> Result<String, AgentToolError> {
+        let workspace_ref = workspace_ref.trim();
+        if workspace_ref.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "workspace argument cannot be empty".to_string(),
+            ));
+        }
+
+        let index = load_workspace_index(&self.state_root).await?;
+        if let Some(found) = index
+            .workspaces
+            .iter()
+            .find(|item| item.workspace_id == workspace_ref)
+        {
+            return Ok(found.workspace_id.clone());
+        }
+
+        let parsed = Path::new(workspace_ref);
+        let candidate = if parsed.is_absolute() {
+            parsed.to_path_buf()
+        } else if let Some(cwd) = shell_cwd {
+            cwd.join(parsed)
+        } else {
+            std::env::current_dir()
+                .map_err(|err| {
+                    AgentToolError::ExecFailed(format!("read current_dir failed: {err}"))
+                })?
+                .join(parsed)
+        };
+        let normalized_candidate = canonicalize_or_normalize(candidate, None);
+        for item in index.workspaces {
+            let workspace_path = workspace_root_for_record(&self.state_root, &item);
+            if canonicalize_or_normalize(workspace_path, None) == normalized_candidate {
+                return Ok(item.workspace_id);
+            }
+        }
+
+        Err(AgentToolError::InvalidArgs(format!(
+            "workspace not found: `{workspace_ref}`; expected workspace_id or workspace_path"
+        )))
+    }
+
+    async fn bind_workspace(
+        &self,
+        _ctx: &SessionRuntimeContext,
+        session_id: &str,
+        workspace_id: &str,
+    ) -> Result<Json, AgentToolError> {
+        let session = load_session_json(&self.state_root, session_id).await?;
+        if build_session_summary_view(&session)
+            .get("local_workspace_id")
             .and_then(Json::as_str)
-            .map(|value| value.to_string()),
-        estimated_wait: None,
-        check_after: result.details.get("check_after").and_then(Json::as_u64),
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some()
+        {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "session `{session_id}` already bound local workspace"
+            )));
+        }
+        if load_session_binding(&self.state_root, session_id).await?.is_some() {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "session `{session_id}` already bound local workspace"
+            )));
+        }
+
+        let mut index = load_workspace_index(&self.state_root).await?;
+        let Some(workspace) = index
+            .workspaces
+            .iter_mut()
+            .find(|item| item.workspace_id == workspace_id)
+        else {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "workspace not found: `{workspace_id}`"
+            )));
+        };
+
+        let now = now_ms();
+        workspace.updated_at_ms = now;
+        workspace.bound_sessions.push(CliLocalWorkspaceSessionBinding {
+            session_id: session_id.to_string(),
+            bound_at_ms: now,
+        });
+        let workspace_snapshot = workspace.clone();
+        index.updated_at_ms = now;
+        save_workspace_index(&self.state_root, &index).await?;
+
+        let workspace_path = workspace_root_for_record(&self.state_root, &workspace_snapshot);
+        let binding = CliSessionWorkspaceBinding {
+            session_id: session_id.to_string(),
+            local_workspace_id: workspace_id.to_string(),
+            workspace_path: workspace_path.to_string_lossy().to_string(),
+            workspace_rel_path: workspace_snapshot
+                .relative_path
+                .clone()
+                .unwrap_or_else(|| format!("workspaces/{workspace_id}")),
+            agent_env_root: self.state_root.to_string_lossy().to_string(),
+            bound_at_ms: now,
+        };
+        save_session_binding(&self.state_root, &binding).await?;
+        let session_updated = persist_session_workspace_binding(
+            &self.state_root,
+            session_id,
+            workspace_id,
+            Some(workspace_snapshot.name.as_str()),
+            &binding,
+        )
+        .await?;
+
+        Ok(json!({
+            "ok": true,
+            "binding": binding,
+            "session_id": session_id,
+            "session_updated": session_updated
+        }))
     }
 }
 
-fn error_envelope(tool_name: Option<&str>, err: AgentToolError) -> CliResultEnvelope {
-    let message = err.to_string();
-    CliResultEnvelope {
-        status: "error",
-        summary: message.clone(),
-        tool: tool_name.map(|value| value.to_string()),
-        cmd_line: None,
-        detail: json!({
-            "error_type": error_kind(&err),
-            "message": message,
-        }),
-        stdout: None,
-        stderr: None,
-        pending_reason: None,
-        task_id: None,
-        estimated_wait: None,
-        check_after: None,
-    }
-}
-
-async fn build_help_envelope(env: &CliRuntimeEnv, tool_name: Option<&str>) -> CliResultEnvelope {
-    match load_help_specs(env).await {
-        Ok(specs) => help_envelope_from_specs(tool_name, &specs),
-        Err(_) => static_help_envelope(tool_name),
-    }
-}
-
-async fn load_help_specs(env: &CliRuntimeEnv) -> Result<Vec<(String, String)>, AgentToolError> {
-    let tool_mgr = build_runtime_tool_manager(env).await?;
-    let specs = TOOL_NAMES
-        .iter()
-        .map(|tool_name| {
-            let usage = tool_mgr
-                .get_bash_cmd(tool_name)
-                .map(|tool| tool.spec())
-                .or_else(|| tool_mgr.get_tool(tool_name).map(|tool| tool.spec()))
-                .and_then(|spec| spec.usage)
-                .unwrap_or_else(|| static_tool_usage(tool_name).to_string());
-            ((*tool_name).to_string(), usage)
-        })
-        .collect::<Vec<_>>();
-    Ok(specs)
-}
-
-fn help_envelope_from_specs(
-    tool_name: Option<&str>,
-    specs: &[(String, String)],
-) -> CliResultEnvelope {
+async fn execute_bash_tool(
+    env: &CliRuntimeEnv,
+    tool_name: &str,
+    line: &str,
+) -> Result<AgentToolResult, AgentToolError> {
     match tool_name {
-        Some(tool_name) => CliResultEnvelope {
-            status: "success",
-            summary: "show usage".to_string(),
-            tool: Some(tool_name.to_string()),
-            cmd_line: None,
-            detail: json!({
-                "tool": tool_name,
-                "usage": specs
-                    .iter()
-                    .find(|(name, _)| name == tool_name)
-                    .map(|(_, usage)| usage.as_str())
-                    .unwrap_or_else(|| static_tool_usage(tool_name)),
-            }),
-            stdout: None,
-            stderr: None,
-            pending_reason: None,
-            task_id: None,
-            estimated_wait: None,
-            check_after: None,
-        },
-        None => CliResultEnvelope {
-            status: "success",
-            summary: "show usage".to_string(),
-            tool: None,
-            cmd_line: None,
-            detail: json!({
-                "usage": generic_usage(),
-                "tools": specs.iter().map(|(tool_name, usage)| {
-                    json!({
-                        "name": tool_name,
-                        "usage": usage,
-                    })
-                }).collect::<Vec<_>>(),
-            }),
-            stdout: None,
-            stderr: None,
-            pending_reason: None,
-            task_id: None,
-            estimated_wait: None,
-            check_after: None,
-        },
+        TOOL_GET_SESSION => {
+            build_get_session_tool(env)?
+                .exec(&env.call_ctx, line, Some(env.current_dir.as_path()))
+                .await
+        }
+        TOOL_TODO => build_todo_tool(env)?
+            .exec(&env.call_ctx, line, Some(env.current_dir.as_path()))
+            .await,
+        TOOL_CREATE_WORKSPACE => {
+            build_create_workspace_tool(env)?
+                .exec(&env.call_ctx, line, Some(env.current_dir.as_path()))
+                .await
+        }
+        TOOL_BIND_WORKSPACE => {
+            build_bind_workspace_tool(env)?
+                .exec(&env.call_ctx, line, Some(env.current_dir.as_path()))
+                .await
+        }
+        _ => Err(AgentToolError::NotFound(tool_name.to_string())),
     }
+}
+
+fn build_get_session_tool(env: &CliRuntimeEnv) -> Result<GetSessionTool, AgentToolError> {
+    Ok(GetSessionTool::new(Arc::new(CliSessionBackend {
+        state_root: cli_state_root(env),
+    })))
+}
+
+fn build_todo_tool(env: &CliRuntimeEnv) -> Result<TodoTool, AgentToolError> {
+    TodoTool::new(TodoToolConfig::with_db_path(
+        cli_state_root(env).join("todo").join("todo.db"),
+    ))
+}
+
+fn build_create_workspace_tool(
+    env: &CliRuntimeEnv,
+) -> Result<CreateWorkspaceTool, AgentToolError> {
+    Ok(CreateWorkspaceTool::new(Arc::new(CliWorkspaceBackend {
+        state_root: cli_state_root(env),
+        agent_id: env.call_ctx.agent_name.clone(),
+    })))
+}
+
+fn build_bind_workspace_tool(env: &CliRuntimeEnv) -> Result<BindWorkspaceTool, AgentToolError> {
+    Ok(BindWorkspaceTool::new(Arc::new(CliWorkspaceBackend {
+        state_root: cli_state_root(env),
+        agent_id: env.call_ctx.agent_name.clone(),
+    })))
+}
+
+async fn run_read_file(env: &CliRuntimeEnv, args: Json) -> Result<AgentToolResult, AgentToolError> {
+    let file_path = require_string_arg(&args, "path")?;
+    let abs_path = resolve_cli_path(env, &file_path);
+    let bytes = fs::read(&abs_path)
+        .await
+        .map_err(|err| AgentToolError::ExecFailed(format!("read file failed: {err}")))?;
+    let full_content = String::from_utf8_lossy(&bytes).to_string();
+    let first_chunk = optional_string_arg(&args, "first_chunk")?;
+    let (selected_content, matched) = if let Some(first_chunk) = first_chunk.as_deref() {
+        if let Some(pos) = full_content.find(first_chunk) {
+            (full_content[pos..].to_string(), true)
+        } else {
+            (String::new(), false)
+        }
+    } else {
+        (full_content.clone(), true)
+    };
+    let (content, line_range) = apply_line_range(&selected_content, args.get("range"))?;
+    Ok(AgentToolResult::from_details(json!({
+        "ok": true,
+        "path": file_path,
+        "abs_path": abs_path.to_string_lossy().to_string(),
+        "content": content,
+        "matched": matched,
+        "line_range": line_range,
+        "bytes": full_content.len(),
+        "truncated": false,
+        "pwd": env.current_dir.to_string_lossy().to_string(),
+    }))
+    .with_cmd_line(build_read_file_cmd_line(&file_path, args.get("range"), first_chunk.as_deref()))
+    .with_result(format!("read {} bytes", full_content.len()))
+    .with_stdout((!content.trim().is_empty()).then_some(content)))
+}
+
+async fn run_write_file(
+    env: &CliRuntimeEnv,
+    args: Json,
+) -> Result<AgentToolResult, AgentToolError> {
+    let file_path = require_string_arg(&args, "path")?;
+    let content = require_raw_string_arg(&args, "content")?;
+    let mode = parse_write_mode(&args)?;
+    let abs_path = resolve_cli_path(env, &file_path);
+    let existed = fs::try_exists(&abs_path)
+        .await
+        .map_err(|err| AgentToolError::ExecFailed(format!("check file existence failed: {err}")))?;
+    if mode == "new" && existed {
+        return Err(AgentToolError::InvalidArgs(format!(
+            "file already exists: {}",
+            abs_path.display()
+        )));
+    }
+    let original = if existed {
+        String::from_utf8_lossy(
+            &fs::read(&abs_path)
+                .await
+                .map_err(|err| AgentToolError::ExecFailed(format!("read file failed: {err}")))?,
+        )
+        .to_string()
+    } else {
+        String::new()
+    };
+    let updated = match mode {
+        "append" => format!("{original}{content}"),
+        _ => content.clone(),
+    };
+    if let Some(parent) = abs_path.parent() {
+        fs::create_dir_all(parent).await.map_err(|err| {
+            AgentToolError::ExecFailed(format!("create parent dir failed: {err}"))
+        })?;
+    }
+    fs::write(&abs_path, updated.as_bytes())
+        .await
+        .map_err(|err| AgentToolError::ExecFailed(format!("write file failed: {err}")))?;
+    Ok(AgentToolResult::from_details(json!({
+        "ok": true,
+        "path": file_path,
+        "abs_path": abs_path.to_string_lossy().to_string(),
+        "created": !existed,
+        "changed": original != updated,
+        "bytes_before": original.len(),
+        "bytes_after": updated.len(),
+    }))
+    .with_cmd_line(format!("{TOOL_WRITE_FILE} {file_path} mode={mode}"))
+    .with_result(format!("{mode} {} -> {} bytes", original.len(), updated.len())))
+}
+
+async fn run_edit_file(env: &CliRuntimeEnv, args: Json) -> Result<AgentToolResult, AgentToolError> {
+    let file_path = require_string_arg(&args, "path")?;
+    let pos_chunk = require_string_arg(&args, "pos_chunk")?;
+    let new_content = require_raw_string_arg(&args, "new_content")?;
+    let mode = parse_edit_mode(&args)?;
+    let abs_path = resolve_cli_path(env, &file_path);
+    let existed = fs::try_exists(&abs_path)
+        .await
+        .map_err(|err| AgentToolError::ExecFailed(format!("check file existence failed: {err}")))?;
+    let original = if existed {
+        String::from_utf8_lossy(
+            &fs::read(&abs_path)
+                .await
+                .map_err(|err| AgentToolError::ExecFailed(format!("read file failed: {err}")))?,
+        )
+        .to_string()
+    } else {
+        String::new()
+    };
+    let (updated, matched) = if let Some(anchor_pos) = original.find(&pos_chunk) {
+        let updated = match mode {
+            "replace" => {
+                let mut out = original.clone();
+                let end = anchor_pos + pos_chunk.len();
+                out.replace_range(anchor_pos..end, &new_content);
+                out
+            }
+            "after" => {
+                let mut out = original.clone();
+                out.insert_str(anchor_pos + pos_chunk.len(), &new_content);
+                out
+            }
+            "before" => {
+                let mut out = original.clone();
+                out.insert_str(anchor_pos, &new_content);
+                out
+            }
+            _ => original.clone(),
+        };
+        (updated, true)
+    } else {
+        (original.clone(), false)
+    };
+    if let Some(parent) = abs_path.parent() {
+        fs::create_dir_all(parent).await.map_err(|err| {
+            AgentToolError::ExecFailed(format!("create parent dir failed: {err}"))
+        })?;
+    }
+    if updated != original {
+        fs::write(&abs_path, updated.as_bytes())
+            .await
+            .map_err(|err| AgentToolError::ExecFailed(format!("write file failed: {err}")))?;
+    }
+    Ok(AgentToolResult::from_details(json!({
+        "ok": true,
+        "path": file_path,
+        "abs_path": abs_path.to_string_lossy().to_string(),
+        "matched": matched,
+        "created": !existed && updated != original,
+        "changed": updated != original,
+        "bytes_before": original.len(),
+        "bytes_after": updated.len(),
+    }))
+    .with_cmd_line(format!("{TOOL_EDIT_FILE} {file_path} mode={mode}"))
+    .with_result(if updated != original {
+        format!("{mode} {} -> {} bytes", original.len(), updated.len())
+    } else if matched {
+        "no change".to_string()
+    } else {
+        "anchor not found, no change".to_string()
+    }))
+}
+
+fn success_envelope(tool_name: &str, result: AgentToolResult) -> CliResultEnvelope {
+    CliResultEnvelope::from_tool_result(tool_name, result)
+}
+
+async fn build_help_envelope(_env: &CliRuntimeEnv, tool_name: Option<&str>) -> CliResultEnvelope {
+    static_help_envelope(tool_name)
 }
 
 fn static_help_envelope(tool_name: Option<&str>) -> CliResultEnvelope {
     match tool_name {
-        Some(tool_name) => CliResultEnvelope {
-            status: "success",
-            summary: "show usage".to_string(),
-            tool: Some(tool_name.to_string()),
-            cmd_line: None,
-            detail: json!({
+        Some(tool_name) => CliResultEnvelope::success(
+            Some(tool_name.to_string()),
+            json!({
                 "tool": tool_name,
                 "usage": static_tool_usage(tool_name),
             }),
-            stdout: None,
-            stderr: None,
-            pending_reason: None,
-            task_id: None,
-            estimated_wait: None,
-            check_after: None,
-        },
-        None => CliResultEnvelope {
-            status: "success",
-            summary: "show usage".to_string(),
-            tool: None,
-            cmd_line: None,
-            detail: json!({
+            "show usage",
+        ),
+        None => CliResultEnvelope::success(
+            None,
+            json!({
                 "usage": generic_usage(),
                 "tools": TOOL_NAMES.iter().map(|tool_name| {
                     json!({
@@ -992,25 +1282,8 @@ fn static_help_envelope(tool_name: Option<&str>) -> CliResultEnvelope {
                     })
                 }).collect::<Vec<_>>(),
             }),
-            stdout: None,
-            stderr: None,
-            pending_reason: None,
-            task_id: None,
-            estimated_wait: None,
-            check_after: None,
-        },
-    }
-}
-
-fn render_output(payload: CliResultEnvelope, exit_code: i32) -> CliRunOutput {
-    let stdout = serde_json::to_string(&payload).unwrap_or_else(|_| {
-        "{\"status\":\"error\",\"summary\":\"serialize cli result failed\",\"detail\":{}}"
-            .to_string()
-    });
-    CliRunOutput {
-        exit_code,
-        stdout,
-        stderr: String::new(),
+            "show usage",
+        ),
     }
 }
 
@@ -1061,25 +1334,6 @@ fn generic_usage() -> &'static str {
     "agent_tool <read_file|write_file|edit_file|get_session|todo|create_workspace|bind_workspace|check_task|cancel_task> [args...]"
 }
 
-fn error_kind(err: &AgentToolError) -> &'static str {
-    match err {
-        AgentToolError::NotFound(_) => "not_found",
-        AgentToolError::AlreadyExists(_) => "already_exists",
-        AgentToolError::InvalidArgs(_) => "invalid_args",
-        AgentToolError::ExecFailed(_) => "exec_failed",
-        AgentToolError::Timeout => "timeout",
-    }
-}
-
-pub fn exit_code_for_error(err: &AgentToolError) -> i32 {
-    match err {
-        AgentToolError::InvalidArgs(_) | AgentToolError::NotFound(_) => EXIT_USAGE,
-        AgentToolError::AlreadyExists(_)
-        | AgentToolError::ExecFailed(_)
-        | AgentToolError::Timeout => EXIT_ERROR,
-    }
-}
-
 fn first_string_env(keys: &[&str]) -> Option<String> {
     keys.iter().find_map(|key| {
         env::var(key)
@@ -1122,22 +1376,427 @@ fn rewrite_path_with_shell_cwd(raw_path: String, current_dir: &Path) -> String {
         .to_string()
 }
 
-async fn build_runtime_tool_manager(
-    env: &CliRuntimeEnv,
-) -> Result<AgentToolManager, AgentToolError> {
-    let tool_mgr = AgentToolManager::new();
-    let session_store = Arc::new(
-        AgentSessionMgr::new(
-            env.call_ctx.agent_name.clone(),
-            env.agent_env_root.join("sessions"),
-            env.call_ctx.behavior.clone(),
-        )
-        .await?,
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn session_file_path(state_root: &Path, session_id: &str) -> PathBuf {
+    state_root.join("sessions").join(session_id).join(SESSION_RECORD_FILE)
+}
+
+async fn load_session_json(state_root: &Path, session_id: &str) -> Result<Json, AgentToolError> {
+    let path = session_file_path(state_root, session_id);
+    let raw = fs::read_to_string(&path).await.map_err(|err| {
+        AgentToolError::ExecFailed(format!("read session file `{}` failed: {err}", path.display()))
+    })?;
+    serde_json::from_str(&raw).map_err(|err| {
+        AgentToolError::ExecFailed(format!(
+            "parse session file `{}` failed: {err}",
+            path.display()
+        ))
+    })
+}
+
+async fn save_session_json(
+    state_root: &Path,
+    session_id: &str,
+    session: &Json,
+) -> Result<(), AgentToolError> {
+    let path = session_file_path(state_root, session_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await.map_err(|err| {
+            AgentToolError::ExecFailed(format!(
+                "create session dir `{}` failed: {err}",
+                parent.display()
+            ))
+        })?;
+    }
+    let bytes = serde_json::to_vec_pretty(session)
+        .map_err(|err| AgentToolError::ExecFailed(format!("serialize session failed: {err}")))?;
+    fs::write(&path, bytes).await.map_err(|err| {
+        AgentToolError::ExecFailed(format!("write session file `{}` failed: {err}", path.display()))
+    })
+}
+
+fn build_session_summary_view(session: &Json) -> Json {
+    let runtime_state = session
+        .pointer("/meta/runtime_state")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let status = session
+        .get("status")
+        .and_then(Json::as_str)
+        .unwrap_or("wait")
+        .trim()
+        .to_string();
+    let state = runtime_state
+        .get("state")
+        .and_then(Json::as_str)
+        .map(|value| value.to_ascii_uppercase())
+        .unwrap_or_else(|| status.to_ascii_uppercase());
+    json!({
+        "session_id": session.get("session_id").cloned().unwrap_or_else(|| Json::String(String::new())),
+        "status": status,
+        "state": state,
+        "title": session.get("title").cloned().unwrap_or(Json::Null),
+        "summary": session.get("summary").cloned().unwrap_or(Json::Null),
+        "current_behavior": runtime_state.get("current_behavior").cloned().unwrap_or(Json::Null),
+        "default_remote": runtime_state.get("default_remote").cloned().unwrap_or(Json::Null),
+        "step_index": runtime_state.get("step_index").cloned().unwrap_or_else(|| json!(0)),
+        "updated_at_ms": session.get("updated_at_ms").cloned().unwrap_or_else(|| json!(0)),
+        "last_activity_ms": session.get("last_activity_ms").cloned().unwrap_or_else(|| json!(0)),
+        "new_msg_count": 0,
+        "new_event_count": 0,
+        "history_msg_count": 0,
+        "history_event_count": 0,
+        "new_link_count": 0,
+        "workspace_info": runtime_state.get("workspace_info").cloned().unwrap_or(Json::Null),
+        "local_workspace_id": runtime_state.get("local_workspace_id").cloned().unwrap_or(Json::Null),
+        "meta": session.get("meta").cloned().unwrap_or_else(|| json!({})),
+    })
+}
+
+async fn load_workspace_index(state_root: &Path) -> Result<CliWorkspaceIndex, AgentToolError> {
+    let path = state_root.join(WORKSPACE_INDEX_FILE);
+    match fs::read_to_string(&path).await {
+        Ok(raw) => serde_json::from_str(&raw).map_err(|err| {
+            AgentToolError::ExecFailed(format!(
+                "parse workspace index `{}` failed: {err}",
+                path.display()
+            ))
+        }),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(CliWorkspaceIndex::default()),
+        Err(err) => Err(AgentToolError::ExecFailed(format!(
+            "read workspace index `{}` failed: {err}",
+            path.display()
+        ))),
+    }
+}
+
+async fn save_workspace_index(
+    state_root: &Path,
+    index: &CliWorkspaceIndex,
+) -> Result<(), AgentToolError> {
+    let path = state_root.join(WORKSPACE_INDEX_FILE);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await.map_err(|err| {
+            AgentToolError::ExecFailed(format!(
+                "create workspace index dir `{}` failed: {err}",
+                parent.display()
+            ))
+        })?;
+    }
+    let bytes = serde_json::to_vec_pretty(index).map_err(|err| {
+        AgentToolError::ExecFailed(format!("serialize workspace index failed: {err}"))
+    })?;
+    fs::write(&path, bytes).await.map_err(|err| {
+        AgentToolError::ExecFailed(format!(
+            "write workspace index `{}` failed: {err}",
+            path.display()
+        ))
+    })
+}
+
+async fn load_session_bindings_file(
+    state_root: &Path,
+) -> Result<CliSessionBindingsFile, AgentToolError> {
+    let path = state_root.join(SESSION_WORKSPACE_BINDINGS_REL_PATH);
+    match fs::read_to_string(&path).await {
+        Ok(raw) => serde_json::from_str(&raw).map_err(|err| {
+            AgentToolError::ExecFailed(format!(
+                "parse session bindings `{}` failed: {err}",
+                path.display()
+            ))
+        }),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            Ok(CliSessionBindingsFile::default())
+        }
+        Err(err) => Err(AgentToolError::ExecFailed(format!(
+            "read session bindings `{}` failed: {err}",
+            path.display()
+        ))),
+    }
+}
+
+async fn save_session_bindings_file(
+    state_root: &Path,
+    file: &CliSessionBindingsFile,
+) -> Result<(), AgentToolError> {
+    let path = state_root.join(SESSION_WORKSPACE_BINDINGS_REL_PATH);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await.map_err(|err| {
+            AgentToolError::ExecFailed(format!(
+                "create session bindings dir `{}` failed: {err}",
+                parent.display()
+            ))
+        })?;
+    }
+    let bytes = serde_json::to_vec_pretty(file).map_err(|err| {
+        AgentToolError::ExecFailed(format!("serialize session bindings failed: {err}"))
+    })?;
+    fs::write(&path, bytes).await.map_err(|err| {
+        AgentToolError::ExecFailed(format!(
+            "write session bindings `{}` failed: {err}",
+            path.display()
+        ))
+    })
+}
+
+async fn load_session_binding(
+    state_root: &Path,
+    session_id: &str,
+) -> Result<Option<CliSessionWorkspaceBinding>, AgentToolError> {
+    let file = load_session_bindings_file(state_root).await?;
+    Ok(file
+        .bindings
+        .into_iter()
+        .find(|item| item.session_id.trim() == session_id))
+}
+
+async fn save_session_binding(
+    state_root: &Path,
+    binding: &CliSessionWorkspaceBinding,
+) -> Result<(), AgentToolError> {
+    let mut file = load_session_bindings_file(state_root).await?;
+    file.bindings
+        .retain(|item| item.session_id.trim() != binding.session_id.trim());
+    file.bindings.push(binding.clone());
+    save_session_bindings_file(state_root, &file).await
+}
+
+async fn persist_session_workspace_binding(
+    state_root: &Path,
+    session_id: &str,
+    workspace_id: &str,
+    workspace_name: Option<&str>,
+    binding: &CliSessionWorkspaceBinding,
+) -> Result<bool, AgentToolError> {
+    let mut session = load_session_json(state_root, session_id).await?;
+    let Some(root_map) = session.as_object_mut() else {
+        return Err(AgentToolError::ExecFailed(
+            "session record must be a json object".to_string(),
+        ));
+    };
+    let meta = root_map
+        .entry("meta".to_string())
+        .or_insert_with(|| json!({}));
+    if !meta.is_object() {
+        *meta = json!({});
+    }
+    let meta_map = meta.as_object_mut().expect("meta object");
+    if !meta_map.contains_key("runtime_state") {
+        meta_map.insert("runtime_state".to_string(), json!({}));
+    }
+    let runtime_state = meta_map
+        .get_mut("runtime_state")
+        .expect("runtime_state present");
+    if !runtime_state.is_object() {
+        *runtime_state = json!({});
+    }
+    let workspace_info = json!({
+        "workspace_id": workspace_id,
+        "local_workspace_id": workspace_id,
+        "workspace_name": workspace_name.unwrap_or(""),
+        "workspace_type": "local",
+        "binding": binding
+    });
+    let runtime_map = runtime_state.as_object_mut().expect("runtime_state object");
+    runtime_map.insert(
+        "local_workspace_id".to_string(),
+        Json::String(workspace_id.to_string()),
     );
-    let environment = AgentEnvironment::new(&env.agent_env_root).await?;
-    environment.register_workshop_tools(&tool_mgr, session_store.clone())?;
-    tool_mgr.register_tool(GetSessionTool::new(session_store))?;
-    Ok(tool_mgr)
+    runtime_map.insert("workspace_info".to_string(), workspace_info);
+    let now = now_ms();
+    root_map.insert("updated_at_ms".to_string(), json!(now));
+    root_map.insert("last_activity_ms".to_string(), json!(now));
+    save_session_json(state_root, session_id, &session).await?;
+    Ok(true)
+}
+
+fn workspace_root_for_record(state_root: &Path, record: &CliWorkspaceRecord) -> PathBuf {
+    record
+        .relative_path
+        .as_deref()
+        .map(|rel| state_root.join(rel))
+        .unwrap_or_else(|| state_root.join("workspaces").join(&record.workspace_id))
+}
+
+fn resolve_cli_path(env: &CliRuntimeEnv, raw_path: &str) -> PathBuf {
+    let path = Path::new(raw_path.trim());
+    if path.is_absolute() {
+        canonicalize_or_normalize(path.to_path_buf(), None)
+    } else {
+        canonicalize_or_normalize(env.current_dir.join(path), None)
+    }
+}
+
+fn require_string_arg(args: &Json, key: &str) -> Result<String, AgentToolError> {
+    let value = args
+        .get(key)
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AgentToolError::InvalidArgs(format!("missing or invalid `{key}`")))?;
+    Ok(value.to_string())
+}
+
+fn require_raw_string_arg(args: &Json, key: &str) -> Result<String, AgentToolError> {
+    args.get(key)
+        .and_then(Json::as_str)
+        .map(|value| value.to_string())
+        .ok_or_else(|| AgentToolError::InvalidArgs(format!("missing or invalid `{key}`")))
+}
+
+fn optional_string_arg(args: &Json, key: &str) -> Result<Option<String>, AgentToolError> {
+    let Some(value) = args.get(key) else {
+        return Ok(None);
+    };
+    let value = value
+        .as_str()
+        .map(str::trim)
+        .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{key}` must be a string")))?;
+    if value.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(value.to_string()))
+}
+
+fn parse_write_mode(args: &Json) -> Result<&'static str, AgentToolError> {
+    match args
+        .get("mode")
+        .and_then(Json::as_str)
+        .unwrap_or("write")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "new" | "create" => Ok("new"),
+        "append" => Ok("append"),
+        "" | "write" | "overwrite" => Ok("write"),
+        other => Err(AgentToolError::InvalidArgs(format!(
+            "invalid write mode `{other}`, expected new/append/write"
+        ))),
+    }
+}
+
+fn parse_edit_mode(args: &Json) -> Result<&'static str, AgentToolError> {
+    match args
+        .get("mode")
+        .and_then(Json::as_str)
+        .unwrap_or("replace")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "" | "replace" => Ok("replace"),
+        "after" => Ok("after"),
+        "before" => Ok("before"),
+        other => Err(AgentToolError::InvalidArgs(format!(
+            "invalid edit mode `{other}`, expected replace/after/before"
+        ))),
+    }
+}
+
+fn apply_line_range(
+    content: &str,
+    range: Option<&Json>,
+) -> Result<(String, String), AgentToolError> {
+    let Some(range) = range else {
+        return Ok((content.to_string(), String::new()));
+    };
+    let spec = range
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AgentToolError::InvalidArgs("`range` must be a non-empty string".to_string()))?;
+    let lines = content.lines().collect::<Vec<_>>();
+    if lines.is_empty() {
+        return Ok((String::new(), String::new()));
+    }
+    let total = lines.len();
+    let (start, end) = parse_line_range_text(spec, total)?;
+    let start_idx = start.saturating_sub(1).min(total);
+    let end_idx = end.min(total);
+    let slice = if start_idx < end_idx {
+        lines[start_idx..end_idx].join("\n")
+    } else {
+        String::new()
+    };
+    Ok((slice, format!("{start}-{end}")))
+}
+
+fn parse_line_range_text(raw: &str, total: usize) -> Result<(usize, usize), AgentToolError> {
+    let text = raw.trim();
+    if text.is_empty() || text == "-" {
+        return Ok((1, total));
+    }
+    if text == "$" {
+        return Ok((total, total));
+    }
+    let split = text
+        .find([',', ':'])
+        .or_else(|| text[1..].find('-').map(|idx| idx + 1));
+    if let Some(idx) = split {
+        let start_text = text[..idx].trim_end_matches(['-', ',', ':']).trim();
+        let end_text = text[idx + 1..].trim();
+        let start = parse_line_marker(start_text, total, 1)?;
+        let end = if let Some(delta) = end_text.strip_prefix('+') {
+            let count = delta.parse::<usize>().map_err(|_| {
+                AgentToolError::InvalidArgs(format!("invalid range `{raw}`"))
+            })?;
+            start.saturating_add(count.saturating_sub(1)).min(total)
+        } else {
+            parse_line_marker(end_text, total, total)?
+        };
+        if start == 0 || end == 0 || start > end {
+            return Err(AgentToolError::InvalidArgs(format!("invalid range `{raw}`")));
+        }
+        return Ok((start, end));
+    }
+
+    if let Some(tail) = text.strip_prefix('-') {
+        let count = tail
+            .parse::<usize>()
+            .map_err(|_| AgentToolError::InvalidArgs(format!("invalid range `{raw}`")))?;
+        let start = total.saturating_sub(count.saturating_sub(1)).max(1);
+        return Ok((start, total));
+    }
+
+    let line = parse_line_marker(text, total, total)?;
+    Ok((line, line))
+}
+
+fn parse_line_marker(text: &str, total: usize, empty_default: usize) -> Result<usize, AgentToolError> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(empty_default);
+    }
+    if text == "$" {
+        return Ok(total);
+    }
+    let value = text
+        .parse::<usize>()
+        .map_err(|_| AgentToolError::InvalidArgs(format!("invalid line marker `{text}`")))?;
+    if value == 0 {
+        return Err(AgentToolError::InvalidArgs(
+            "line markers are 1-based".to_string(),
+        ));
+    }
+    Ok(value.min(total))
+}
+
+fn build_read_file_cmd_line(path: &str, range: Option<&Json>, first_chunk: Option<&str>) -> String {
+    let mut cmd = format!("{TOOL_READ_FILE} {path}");
+    if let Some(range) = range.and_then(Json::as_str).map(str::trim).filter(|v| !v.is_empty()) {
+        cmd.push_str(format!(" range={range}").as_str());
+    }
+    if let Some(first_chunk) = first_chunk {
+        cmd.push_str(format!(" first_chunk=\"{}\"", first_chunk.replace('"', "\\\"")).as_str());
+    }
+    cmd
 }
 
 async fn build_task_manager_client(
@@ -1204,7 +1863,7 @@ fn build_check_task_envelope(tool_name: &str, task: Task) -> CliResultEnvelope {
             .data
             .get("check_after")
             .and_then(Json::as_u64)
-            .or_else(|| (top_status == "pending").then_some(5)),
+            .or_else(|| (top_status == CliStatus::Pending).then_some(5)),
     }
 }
 
@@ -1229,7 +1888,7 @@ fn build_cancel_task_envelope(
     };
 
     CliResultEnvelope {
-        status: "success",
+        status: CliStatus::Success,
         summary,
         tool: Some(tool_name.to_string()),
         cmd_line: Some(format!("{tool_name} {}", task.id)),
@@ -1268,21 +1927,21 @@ fn normalized_task_detail(task: &Task) -> Json {
     detail
 }
 
-fn task_protocol_status(task: &Task) -> &'static str {
+fn task_protocol_status(task: &Task) -> CliStatus {
     match task.status {
         TaskStatus::Completed => match task.data.get("status").and_then(Json::as_str) {
-            Some("error") => "error",
-            _ => "success",
+            Some("error") => CliStatus::Error,
+            _ => CliStatus::Success,
         },
-        TaskStatus::Failed | TaskStatus::Canceled => "error",
+        TaskStatus::Failed | TaskStatus::Canceled => CliStatus::Error,
         TaskStatus::Pending
         | TaskStatus::Running
         | TaskStatus::Paused
-        | TaskStatus::WaitingForApproval => "pending",
+        | TaskStatus::WaitingForApproval => CliStatus::Pending,
     }
 }
 
-fn task_summary(task: &Task, protocol_status: &str) -> String {
+fn task_summary(task: &Task, protocol_status: CliStatus) -> String {
     task.data
         .get("summary")
         .and_then(Json::as_str)
@@ -1292,26 +1951,30 @@ fn task_summary(task: &Task, protocol_status: &str) -> String {
         .or_else(|| task.message.as_ref().map(|value| value.trim().to_string()))
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| match (protocol_status, task.status) {
-            ("pending", TaskStatus::WaitingForApproval) => {
+            (CliStatus::Pending, TaskStatus::WaitingForApproval) => {
                 format!("task {} is waiting for approval", task.id)
             }
-            ("pending", _) => format!("task {} is still running", task.id),
-            ("success", _) => format!("task {} completed", task.id),
-            ("error", TaskStatus::Canceled) => format!("task {} was canceled", task.id),
-            ("error", _) => format!("task {} failed", task.id),
-            _ => format!("task {} updated", task.id),
+            (CliStatus::Pending, _) => format!("task {} is still running", task.id),
+            (CliStatus::Success, _) => format!("task {} completed", task.id),
+            (CliStatus::Error, TaskStatus::Canceled) => format!("task {} was canceled", task.id),
+            (CliStatus::Error, _) => format!("task {} failed", task.id),
         })
 }
 
-fn task_pending_reason(task: &Task) -> Option<String> {
+fn task_pending_reason(task: &Task) -> Option<CliPendingReason> {
     task.data
         .get("pending_reason")
         .and_then(Json::as_str)
-        .map(|value| value.to_string())
+        .and_then(|value| match value {
+            "user_approval" => Some(CliPendingReason::UserApproval),
+            "external_callback" => Some(CliPendingReason::ExternalCallback),
+            "long_running" => Some(CliPendingReason::LongRunning),
+            _ => None,
+        })
         .or_else(|| match task.status {
-            TaskStatus::WaitingForApproval => Some("user_approval".to_string()),
+            TaskStatus::WaitingForApproval => Some(CliPendingReason::UserApproval),
             TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused => {
-                Some("long_running".to_string())
+                Some(CliPendingReason::LongRunning)
             }
             _ => None,
         })
@@ -1373,11 +2036,118 @@ fn canonicalize_or_normalize(path: PathBuf, base_dir: Option<&Path>) -> PathBuf 
     std::fs::canonicalize(&absolute).unwrap_or_else(|_| normalize_abs_path(&absolute))
 }
 
+fn parse_read_file_bash_args(tokens: &[String]) -> Result<Json, AgentToolError> {
+    let mut out = serde_json::Map::<String, Json>::new();
+    if tokens.is_empty() {
+        return Err(AgentToolError::InvalidArgs(
+            "missing required arg `path`".to_string(),
+        ));
+    }
+
+    let has_key_value = tokens.iter().any(|token| token.contains('='));
+    if has_key_value {
+        if tokens.iter().any(|token| !token.contains('=')) {
+            return Err(AgentToolError::InvalidArgs(
+                "read_file bash args cannot mix positional args with key=value args".to_string(),
+            ));
+        }
+        for token in tokens {
+            let (raw_key, raw_value) = token.split_once('=').ok_or_else(|| {
+                AgentToolError::InvalidArgs("invalid key=value token".to_string())
+            })?;
+            let key = raw_key.trim();
+            if key.is_empty() {
+                return Err(AgentToolError::InvalidArgs(
+                    "arg key cannot be empty".to_string(),
+                ));
+            }
+            if key != "path" && key != "range" && key != "first_chunk" {
+                return Err(AgentToolError::InvalidArgs(format!(
+                    "unsupported read_file arg `{key}`"
+                )));
+            }
+            out.insert(key.to_string(), Json::String(raw_value.trim().to_string()));
+        }
+    } else {
+        if tokens.len() > 3 {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "too many positional args for tool `{}`: got {}, max 3",
+                TOOL_READ_FILE,
+                tokens.len()
+            )));
+        }
+        if let Some(path) = tokens.first() {
+            out.insert("path".to_string(), Json::String(path.trim().to_string()));
+        }
+        if let Some(range) = tokens.get(1) {
+            out.insert("range".to_string(), Json::String(range.trim().to_string()));
+        }
+        if let Some(first_chunk) = tokens.get(2) {
+            out.insert(
+                "first_chunk".to_string(),
+                Json::String(first_chunk.trim().to_string()),
+            );
+        }
+    }
+
+    if out
+        .get("path")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        return Err(AgentToolError::InvalidArgs(
+            "missing required arg `path`".to_string(),
+        ));
+    }
+
+    Ok(Json::Object(out))
+}
+
+fn rewrite_read_file_path_with_shell_cwd(args: &mut Json, shell_cwd: &Path) {
+    let Some(map) = args.as_object_mut() else {
+        return;
+    };
+    let Some(raw_path) = map.get("path").and_then(|value| value.as_str()) else {
+        return;
+    };
+
+    let trimmed = raw_path.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let parsed = Path::new(trimmed);
+    if parsed.is_absolute() {
+        return;
+    }
+
+    let joined = shell_cwd.join(parsed);
+    map.insert(
+        "path".to_string(),
+        Json::String(joined.to_string_lossy().to_string()),
+    );
+}
+
+fn normalize_abs_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            std::path::Component::RootDir => normalized.push(component.as_os_str()),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                let _ = normalized.pop();
+            }
+            std::path::Component::Normal(seg) => normalized.push(seg),
+        }
+    }
+    normalized
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use crate::agent_session::AgentSessionMgr;
 
     use tempfile::tempdir;
     use tokio::fs;
@@ -1399,22 +2169,31 @@ mod tests {
     }
 
     async fn seed_session(agent_env_root: &Path, session_id: &str, pwd: &Path) {
-        let store = AgentSessionMgr::new(
-            "did:example:agent",
-            agent_env_root.join("sessions"),
-            "plan".to_string(),
-        )
-        .await
-        .expect("create session store");
-        let session = store
-            .ensure_session(session_id, Some("CLI Session".to_string()), None, None)
+        let now = now_ms();
+        let session = json!({
+            "session_id": session_id,
+            "owner_agent": "did:example:agent",
+            "title": "CLI Session",
+            "summary": "",
+            "status": "wait",
+            "created_at_ms": now,
+            "updated_at_ms": now,
+            "last_activity_ms": now,
+            "meta": {
+                "runtime_state": {
+                    "state": "wait",
+                    "current_behavior": "plan",
+                    "step_index": 0,
+                    "local_workspace_id": Json::Null,
+                    "workspace_info": {
+                        "workspace_path": pwd.to_string_lossy().to_string()
+                    }
+                }
+            }
+        });
+        save_session_json(agent_env_root, session_id, &session)
             .await
-            .expect("ensure session");
-        {
-            let mut guard = session.lock().await;
-            guard.pwd = pwd.to_path_buf();
-        }
-        store.save_session(session_id).await.expect("save session");
+            .expect("save session");
     }
 
     #[tokio::test]
