@@ -154,7 +154,7 @@ servers:
               if match $REQ.path "/.well-known/*" then
                 global SERVICE_ID="system_config";
               end
-              if !eq $SERVICE_ID "" then
+              if eq $SERVICE_ID "system_config" then
                 global TARGET_SERVICE_INFO=$SERVICE_INFO[$SERVICE_ID];
                 return true;
               end
